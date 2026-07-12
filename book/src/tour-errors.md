@@ -186,7 +186,7 @@ import time
 import semver
 
 fn parse_release(date: String, ver: String) -> Result(String, String):
-    // Result(DateTime, String)
+    // Result(DateTime, TimeError), converted to String by `?`
     let d = time.parse_iso8601(date)?
     // Result(Version, SemverError), converted to String by `?`
     let v = semver.parse(ver)?

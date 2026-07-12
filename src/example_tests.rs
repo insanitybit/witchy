@@ -1944,7 +1944,7 @@ fn main(console: Console):
     /// RFC3339 year domain that `time.iso8601` and `time.parse_iso8601` share.
     #[test]
     fn datetime_rejects_years_outside_fixed_iso_domain_on_both_backends() {
-        let src = "import time\n\nfn report(console: Console, r: Result(time.DateTime, String)):\n    match r:\n        Ok(d) -> console.print(time.iso8601(d))\n        Err(e) -> console.print(e)\n\nfn main(console: Console):\n    report(console, time.civil(0, 1, 1, 0, 0, 0))\n    report(console, time.civil(10000, 1, 1, 0, 0, 0))\n    report(console, time.parse_iso8601(\"0000-01-01T00:00:00Z\"))\n    report(console, time.parse_iso8601(\"9999-12-31T23:59:59Z\"))\n";
+        let src = "import time\n\nfn report(console: Console, r: Result(time.DateTime, time.TimeError)):\n    match r:\n        Ok(d) -> console.print(time.iso8601(d))\n        Err(e) -> console.print(time.time_error_message(e))\n\nfn main(console: Console):\n    report(console, time.civil(0, 1, 1, 0, 0, 0))\n    report(console, time.civil(10000, 1, 1, 0, 0, 0))\n    report(console, time.parse_iso8601(\"0000-01-01T00:00:00Z\"))\n    report(console, time.parse_iso8601(\"9999-12-31T23:59:59Z\"))\n";
         let expected = [
             "year 0 is out of range 1..9999",
             "year 10000 is out of range 1..9999",
@@ -7413,7 +7413,7 @@ fn main(console: Console):
     console.print(show_chunks(list.chunks([1, 2, 3], 2)) + "|" + show_chunks(list.chunks([1, 2, 3], 0)) + "|" + show_chunks(list.chunks([1, 2, 3], -1)))
     match time.civil(2026, 7, 5, 12, 34, 56):
         Ok(d) -> console.print(time.format(d, "done %") + "|" + time.format(d, "done %%") + "|" + time.format(d, "done %Q"))
-        Err(e) -> console.print(e)
+        Err(e) -> console.print(time.time_error_message(e))
     console.print(duration.human(duration.seconds(0 - 1)) + "|" + duration.human(duration.minutes(0 - 1)) + "|" + duration.human(duration.milliseconds(0 - 1)) + "|" + duration.human(duration.seconds(90)))
     console.print(duration.clock(duration.seconds(0 - 1)) + "|" + duration.clock(duration.seconds(3661)))
     console.print("${ascii.is_digit("55")}|${ascii.is_digit("5")}|${ascii.is_upper("ABC")}|${ascii.is_upper("A")}|${ascii.is_lower("az")}|${ascii.is_lower("z")}")
@@ -11162,7 +11162,7 @@ fn main(console: Console):
         // and parse(human(d)) round-trips.
         let client = r#"
 import duration
-fn show(o: Result(Duration, String)) -> String:
+fn show(o: Result(Duration, duration.DurationParseError)) -> String:
     match o:
         Ok(d) -> __render(duration.to_milliseconds(d))
         Err(_) -> "none"
@@ -22431,7 +22431,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     /// `duration.abs` saturates the most-negative value instead of staying negative.
     #[test]
     fn duration_parse_and_abs_edge_cases_backends_agree() {
-        let src = "import duration\nfn tag(r: Result(Duration, String)) -> String:\n    match r:\n        Ok(d) -> \"ok:\" + __render(duration.to_milliseconds(d))\n        Err(_e) -> \"err\"\nfn main(console: Console):\n    console.print(tag(duration.parse(\"ms\")))\n    console.print(tag(duration.parse(\"1h2m3s\")))\n    console.print(tag(duration.parse(\"99999999999999999999w\")))\n    console.print(__render(duration.to_milliseconds(duration.abs(duration.milliseconds(0 - 9223372036854775807 - 1)))))\n";
+        let src = "import duration\nfn tag(r: Result(Duration, duration.DurationParseError)) -> String:\n    match r:\n        Ok(d) -> \"ok:\" + __render(duration.to_milliseconds(d))\n        Err(_e) -> \"err\"\nfn main(console: Console):\n    console.print(tag(duration.parse(\"ms\")))\n    console.print(tag(duration.parse(\"1h2m3s\")))\n    console.print(tag(duration.parse(\"99999999999999999999w\")))\n    console.print(__render(duration.to_milliseconds(duration.abs(duration.milliseconds(0 - 9223372036854775807 - 1)))))\n";
         let expected = ["err", "ok:3723000", "err", "9223372036854775807"];
         let linked = resolve_std_src(src);
         assert_eq!(

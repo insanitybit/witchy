@@ -101,9 +101,9 @@ pub fn to_unix(d: DateTime) -> Int:
     days_from_civil(year(d), month(d), day(d)) * 86400 + hour(d) * 3600 + minute(d) * 60 + second(d)
 
 // A DateTime from civil UTC components, validated — `civil(2026, 2, 30, ...)`
-// is an Err, not a rollover. The typed form lets libraries classify malformed
+// is an Err, not a rollover. The typed error lets libraries classify malformed
 // components without parsing display text.
-pub fn civil_typed(y: Int, mo: Int, da: Int, h: Int, mi: Int, s: Int) -> Result(DateTime, TimeError):
+pub fn civil(y: Int, mo: Int, da: Int, h: Int, mi: Int, s: Int) -> Result(DateTime, TimeError):
     if y < 1 || y > 9999:
         return Err(YearOutOfRange(y))
     if mo < 1 || mo > 12:
@@ -114,10 +114,9 @@ pub fn civil_typed(y: Int, mo: Int, da: Int, h: Int, mi: Int, s: Int) -> Result(
         return Err(ClockOutOfRange(h, mi, s))
     Ok(DateTime(y, mo, da, h, mi, s))
 
-// Build a DateTime with String errors for application-style callers and older
-// code. Libraries that need to classify failure should use `civil_typed`.
-pub fn civil(y: Int, mo: Int, da: Int, h: Int, mi: Int, s: Int) -> Result(DateTime, String):
-    match civil_typed(y, mo, da, h, mi, s):
+// Build a DateTime with String errors for application-style boundaries.
+pub fn civil_string(y: Int, mo: Int, da: Int, h: Int, mi: Int, s: Int) -> Result(DateTime, String):
+    match civil(y, mo, da, h, mi, s):
         Ok(d) -> Ok(d)
         Err(e) -> Err(time_error_message(e))
 
@@ -139,23 +138,23 @@ pub fn days_in_month(y: Int, mo: Int) -> Int:
 
 // Parse RFC 3339 / ISO 8601: `2026-06-08T22:30:00Z`, an offset like
 // `+02:00` (normalized to UTC), fractional seconds (truncated), a space
-// instead of the `T`, or a bare `YYYY-MM-DD` (midnight UTC). The typed form
+// instead of the `T`, or a bare `YYYY-MM-DD` (midnight UTC). The typed error
 // preserves malformed dates, time fields, fractions, and offsets as structured
 // cases.
-pub fn parse_iso8601_typed(text: String) -> Result(DateTime, TimeError):
+pub fn parse_iso8601(text: String) -> Result(DateTime, TimeError):
     let t = string.trim(text)
-    let (y, mo, da) = parse_date_part_typed(t)?
+    let (y, mo, da) = parse_date_part(t)?
     if string.length(t) == 10:
-        return civil_typed(y, mo, da, 0, 0, 0)
+        return civil(y, mo, da, 0, 0, 0)
     let sep = string.substring(t, 10, 11)
     if sep != "T" && sep != "t" && sep != " ":
         return Err(MissingDateTimeSeparator(t))
     if string.length(t) < 19 || string.substring(t, 13, 14) != ":" || string.substring(t, 16, 17) != ":":
         return Err(InvalidIsoTime(t))
-    let h = int_at_typed(t, 11, 13)?
-    let mi = int_at_typed(t, 14, 16)?
-    let s = int_at_typed(t, 17, 19)?
-    let base = civil_typed(y, mo, da, h, mi, s)?
+    let h = int_at(t, 11, 13)?
+    let mi = int_at(t, 14, 16)?
+    let s = int_at(t, 17, 19)?
+    let base = civil(y, mo, da, h, mi, s)?
     // The rest: optional `.fraction` (truncated), then `Z`, an offset, or
     // nothing (read as UTC).
     var rest = string.drop(t, 19)
@@ -171,32 +170,31 @@ pub fn parse_iso8601_typed(text: String) -> Result(DateTime, TimeError):
     let sign = string.substring(rest, 0, 1)
     if sign != "+" && sign != "-" || string.length(rest) != 6 || string.substring(rest, 3, 4) != ":":
         return Err(BadUtcOffset(rest, t))
-    let oh = int_at_typed(rest, 1, 3)?
-    let om = int_at_typed(rest, 4, 6)?
+    let oh = int_at(rest, 1, 3)?
+    let om = int_at(rest, 4, 6)?
     if oh > 23 || om > 59:
         return Err(UtcOffsetOutOfRange(rest))
     let offset = oh * 3600 + om * 60
     let delta = if sign == "+": 0 - offset else: offset
     Ok(from_unix(to_unix(base) + delta))
 
-// Parse with String errors for application-style callers and older code.
-// Libraries that need to classify failure should use `parse_iso8601_typed`.
-pub fn parse_iso8601(text: String) -> Result(DateTime, String):
-    match parse_iso8601_typed(text):
+// Parse with String errors for application-style boundaries.
+pub fn parse_iso8601_string(text: String) -> Result(DateTime, String):
+    match parse_iso8601(text):
         Ok(d) -> Ok(d)
         Err(e) -> Err(time_error_message(e))
 
 // `YYYY-MM-DD` at the start of `t`.
-fn parse_date_part_typed(t: String) -> Result((Int, Int, Int), TimeError):
+fn parse_date_part(t: String) -> Result((Int, Int, Int), TimeError):
     if string.length(t) < 10 || string.substring(t, 4, 5) != "-" || string.substring(t, 7, 8) != "-":
         return Err(InvalidIsoDate(t))
-    let y = int_at_typed(t, 0, 4)?
-    let mo = int_at_typed(t, 5, 7)?
-    let da = int_at_typed(t, 8, 10)?
+    let y = int_at(t, 0, 4)?
+    let mo = int_at(t, 5, 7)?
+    let da = int_at(t, 8, 10)?
     Ok((y, mo, da))
 
 // The digits at `s[from..to]`, as an Int — Err on anything non-numeric.
-fn int_at_typed(s: String, from: Int, to: Int) -> Result(Int, TimeError):
+fn int_at(s: String, from: Int, to: Int) -> Result(Int, TimeError):
     let piece = string.substring(s, from, to)
     if piece == "" || !ascii.all_digits(piece):
         return Err(InvalidDigits(s, from, to, piece))

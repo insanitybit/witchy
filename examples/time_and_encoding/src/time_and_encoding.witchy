@@ -15,11 +15,11 @@ fn main(console: Console):
     // and bare dates; impossible dates are an Err, not a rollover.
     match time.parse_iso8601("2026-06-08T22:30:00+02:00"):
         Ok(p) -> console.print("parsed:  " + time.iso8601(p))
-        Err(e) -> console.print("ERR " + e)
+        Err(e) -> console.print("ERR " + time.time_error_message(e))
 
     match time.parse_iso8601("2026-02-30T00:00:00Z"):
         Ok(_) -> console.print("BAD: accepted Feb 30")
-        Err(e) -> console.print("checked: " + e)
+        Err(e) -> console.print("checked: " + time.time_error_message(e))
 
     let payload = "witchy 🧙"
     console.print("base64:  " + encoding.base64_encode(payload))

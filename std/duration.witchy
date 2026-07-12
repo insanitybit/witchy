@@ -199,8 +199,8 @@ pub fn human(d: Duration) -> String:
 // and a bare number as plain milliseconds. `Err` on a stray character, a unit with
 // no preceding count ("ms", "1hms"), a dangling unit-less number after units were
 // given ("1h30"), or a value that overflows a 64-bit millisecond count. The
-// typed form lets libraries classify malformed input without parsing display text.
-pub fn parse_typed(s: String) -> Result(Duration, DurationParseError):
+// typed error lets libraries classify malformed input without parsing display text.
+pub fn parse(s: String) -> Result(Duration, DurationParseError):
     var total = 0
     var cur = 0
     var seen_digit = false
@@ -243,10 +243,9 @@ pub fn parse_typed(s: String) -> Result(Duration, DurationParseError):
     else:
         Err(EmptyDuration(s))
 
-// Parse with String errors for application-style callers and older code.
-// Libraries that need to classify failure should use `parse_typed`.
-pub fn parse(s: String) -> Result(Duration, String):
-    match parse_typed(s):
+// Parse with String errors for application-style boundaries.
+pub fn parse_string(s: String) -> Result(Duration, String):
+    match parse(s):
         Ok(d) -> Ok(d)
         Err(e) -> Err(parse_error_message(e))
 

@@ -1,4 +1,4 @@
-//! Duration parsing exposes typed failures while legacy wrappers keep String errors.
+//! Duration parsing exposes typed failures on the primary parse API.
 
 use std::process::{Command, Output};
 
@@ -9,7 +9,7 @@ fn run(args: &[&str]) -> Output {
 }
 
 #[test]
-fn parse_typed_exposes_matchable_duration_errors_and_string_bridge() {
+fn parse_exposes_matchable_duration_errors_and_string_bridge() {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -34,32 +34,32 @@ fn classify(e: duration.DurationParseError) -> String:
         duration.EmptyDuration(raw) -> "empty:" + raw
 
 fn via_string(raw: String) -> Result(Duration, String):
-    let d = duration.parse_typed(raw)?
+    let d = duration.parse(raw)?
     Ok(d)
 
 fn main(console: Console):
-    match duration.parse_typed("1h30"):
+    match duration.parse("1h30"):
         Ok(_) -> console.print("bad")
         Err(e) ->
             console.print(classify(e))
             console.print(duration.parse_error_message(e))
             console.print(show.render(e))
-    match duration.parse_typed("ms"):
+    match duration.parse("ms"):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(classify(e))
-    match duration.parse_typed("1x"):
+    match duration.parse("1x"):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(classify(e))
-    match duration.parse_typed("999999999999999999999999999999999ms"):
+    match duration.parse("999999999999999999999999999999999ms"):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(classify(e))
-    match duration.parse_typed(""):
+    match duration.parse(""):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(classify(e))
     match via_string("1h30"):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(e)
-    match duration.parse("ms"):
+    match duration.parse_string("ms"):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(e)
 "#,

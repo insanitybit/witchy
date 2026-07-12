@@ -581,13 +581,13 @@ A clock string "H:MM:SS": minutes and seconds zero-padded, hours in full (so a l
 
 A compact label that omits leading zero units: `1h1m1s`, `1m30s`, `5s`, and `500ms` for a pure sub-second span. A negative span (e.g. from subtraction) keeps its sign as a single leading "-" over the absolute magnitude: `-1s`, `-1m30s` — not the truncated-division fields of the raw negative count.
 
-#### `fn parse_typed(s: String) -> Result(Duration, DurationParseError)`
+#### `fn parse(s: String) -> Result(Duration, DurationParseError)`
 
-Parse a duration string to a `Duration` — the inverse of `human`. Accepts unit-tagged input ("1h2m3s", "500ms", "2hr", any subset) using ms/s/m/h/hr/d/w, and a bare number as plain milliseconds. `Err` on a stray character, a unit with no preceding count ("ms", "1hms"), a dangling unit-less number after units were given ("1h30"), or a value that overflows a 64-bit millisecond count. The typed form lets libraries classify malformed input without parsing display text.
+Parse a duration string to a `Duration` — the inverse of `human`. Accepts unit-tagged input ("1h2m3s", "500ms", "2hr", any subset) using ms/s/m/h/hr/d/w, and a bare number as plain milliseconds. `Err` on a stray character, a unit with no preceding count ("ms", "1hms"), a dangling unit-less number after units were given ("1h30"), or a value that overflows a 64-bit millisecond count. The typed error lets libraries classify malformed input without parsing display text.
 
-#### `fn parse(s: String) -> Result(Duration, String)`
+#### `fn parse_string(s: String) -> Result(Duration, String)`
 
-Parse with String errors for application-style callers and older code. Libraries that need to classify failure should use `parse_typed`.
+Parse with String errors for application-style boundaries.
 
 ## `encoding`
 
@@ -2996,25 +2996,25 @@ The civil UTC date/time at `secs` SECONDS since the unix epoch (a classic unix t
 
 The unix timestamp for a DateTime (its inverse).
 
-#### `fn civil_typed(y: Int, mo: Int, da: Int, h: Int, mi: Int, s: Int) -> Result(DateTime, TimeError)`
+#### `fn civil(y: Int, mo: Int, da: Int, h: Int, mi: Int, s: Int) -> Result(DateTime, TimeError)`
 
-A DateTime from civil UTC components, validated — `civil(2026, 2, 30, ...)` is an Err, not a rollover. The typed form lets libraries classify malformed components without parsing display text.
+A DateTime from civil UTC components, validated — `civil(2026, 2, 30, ...)` is an Err, not a rollover. The typed error lets libraries classify malformed components without parsing display text.
 
-#### `fn civil(y: Int, mo: Int, da: Int, h: Int, mi: Int, s: Int) -> Result(DateTime, String)`
+#### `fn civil_string(y: Int, mo: Int, da: Int, h: Int, mi: Int, s: Int) -> Result(DateTime, String)`
 
-Build a DateTime with String errors for application-style callers and older code. Libraries that need to classify failure should use `civil_typed`.
+Build a DateTime with String errors for application-style boundaries.
 
 #### `fn days_in_month(y: Int, mo: Int) -> Int`
 
 Days in a month, honoring leap February. A month outside 1..12 is a contract violation (RFC-0044 rule 3): abort naming the bad argument rather than silently returning 31 (the old `_ -> 31` catch-all).
 
-#### `fn parse_iso8601_typed(text: String) -> Result(DateTime, TimeError)`
+#### `fn parse_iso8601(text: String) -> Result(DateTime, TimeError)`
 
-Parse RFC 3339 / ISO 8601: `2026-06-08T22:30:00Z`, an offset like `+02:00` (normalized to UTC), fractional seconds (truncated), a space instead of the `T`, or a bare `YYYY-MM-DD` (midnight UTC). The typed form preserves malformed dates, time fields, fractions, and offsets as structured cases.
+Parse RFC 3339 / ISO 8601: `2026-06-08T22:30:00Z`, an offset like `+02:00` (normalized to UTC), fractional seconds (truncated), a space instead of the `T`, or a bare `YYYY-MM-DD` (midnight UTC). The typed error preserves malformed dates, time fields, fractions, and offsets as structured cases.
 
-#### `fn parse_iso8601(text: String) -> Result(DateTime, String)`
+#### `fn parse_iso8601_string(text: String) -> Result(DateTime, String)`
 
-Parse with String errors for application-style callers and older code. Libraries that need to classify failure should use `parse_iso8601_typed`.
+Parse with String errors for application-style boundaries.
 
 #### `fn is_leap(y: Int) -> Bool`
 

@@ -1,4 +1,4 @@
-//! Time parsing exposes typed failures while legacy wrappers keep String errors.
+//! Time parsing exposes typed failures on the primary constructor and parser APIs.
 
 use std::process::{Command, Output};
 
@@ -40,50 +40,50 @@ fn classify(e: time.TimeError) -> String:
         time.UtcOffsetOutOfRange(offset) -> "offset-range:" + offset
 
 fn via_string(raw: String) -> Result(time.DateTime, String):
-    let d = time.parse_iso8601_typed(raw)?
+    let d = time.parse_iso8601(raw)?
     Ok(d)
 
 fn main(console: Console):
-    match time.civil_typed(2026, 2, 30, 0, 0, 0):
+    match time.civil(2026, 2, 30, 0, 0, 0):
         Ok(_) -> console.print("bad")
         Err(e) ->
             console.print(classify(e))
             console.print(time.time_error_message(e))
             console.print(show.render(e))
-    match time.civil_typed(0, 1, 1, 0, 0, 0):
+    match time.civil(0, 1, 1, 0, 0, 0):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(classify(e))
-    match time.civil_typed(2026, 13, 1, 0, 0, 0):
+    match time.civil(2026, 13, 1, 0, 0, 0):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(classify(e))
-    match time.civil_typed(2026, 1, 1, 24, 0, 0):
+    match time.civil(2026, 1, 1, 24, 0, 0):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(classify(e))
-    match time.parse_iso8601_typed("2026/01/01"):
+    match time.parse_iso8601("2026/01/01"):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(classify(e))
-    match time.parse_iso8601_typed("2026-01-01X00:00:00Z"):
+    match time.parse_iso8601("2026-01-01X00:00:00Z"):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(classify(e))
-    match time.parse_iso8601_typed("2026-01-01T00:00Z"):
+    match time.parse_iso8601("2026-01-01T00:00Z"):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(classify(e))
-    match time.parse_iso8601_typed("2026-01-01Taa:00:00Z"):
+    match time.parse_iso8601("2026-01-01Taa:00:00Z"):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(classify(e))
-    match time.parse_iso8601_typed("2026-01-01T00:00:00."):
+    match time.parse_iso8601("2026-01-01T00:00:00."):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(classify(e))
-    match time.parse_iso8601_typed("2026-01-01T00:00:00+0"):
+    match time.parse_iso8601("2026-01-01T00:00:00+0"):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(classify(e))
-    match time.parse_iso8601_typed("2026-01-01T00:00:00+25:00"):
+    match time.parse_iso8601("2026-01-01T00:00:00+25:00"):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(classify(e))
     match via_string("2026/01/01"):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(e)
-    match time.civil(2026, 13, 1, 0, 0, 0):
+    match time.civil_string(2026, 13, 1, 0, 0, 0):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(e)
 "#,

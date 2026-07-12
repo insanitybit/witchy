@@ -18,11 +18,11 @@ tracking: >
   consumers bridge typed URL failures explicitly at their current String API.
   std/semver.parse and parse_req return SemverError, with parse_string and
   parse_req_string as explicit String-rendering bridges; the package manager
-  consumes those typed errors at version-resolution boundaries. std/duration
-  exposes DurationParseError through parse_typed while keeping parse as the
-  String-rendering wrapper.
-  std/time exposes TimeError through civil_typed and parse_iso8601_typed while
-  keeping civil and parse_iso8601 as String-rendering wrappers. std/encoding
+  consumes those typed errors at version-resolution boundaries.
+  std/duration.parse returns DurationParseError, with parse_string as the
+  explicit String-rendering bridge. std/time.civil and parse_iso8601 return
+  TimeError, with civil_string and parse_iso8601_string as explicit
+  String-rendering bridges. std/encoding
   exposes EncodingError through typed hex/base64/base64url decoders, with JWT
   and WebAuthn consumers bridging those errors explicitly to their existing
   typed API. std/http exposes HttpError through typed URL, fallible request,
@@ -314,16 +314,15 @@ and Coven's stored-version comparison consume the typed parser directly, then
 render with `semver.semver_error_message` only at their existing outward
 boundaries. `semver.parse_string` and `parse_req_string` are the explicit
 application-style String bridges.
-`std/duration.parse_typed` now returns `duration.DurationParseError`,
+`std/duration.parse` now returns `duration.DurationParseError`,
 distinguishing overflow, stray characters, units without counts, trailing
-unit-less numbers, and empty input. `duration.parse` remains the
-application-style String wrapper, but its text is produced from the typed error
-instead of being the only representation of failure.
-`std/time.civil_typed` and `std/time.parse_iso8601_typed` now return
+unit-less numbers, and empty input. `duration.parse_string` is the explicit
+application-style String bridge.
+`std/time.civil` and `std/time.parse_iso8601` now return
 `time.TimeError`, preserving invalid civil components, malformed ISO date/time
 shapes, digit failures, fractional-second errors, and UTC-offset errors as
-matchable cases. The legacy `civil` and `parse_iso8601` wrappers keep returning
-`Result(_, String)` for existing application-style code.
+matchable cases. `time.civil_string` and `parse_iso8601_string` are the
+explicit application-style String bridges.
 `std/encoding` now exposes `encoding.EncodingError` through typed hex,
 base64, and base64url decoders/converters while keeping the legacy String
 wrappers. `std/jwt` and `std/webauthn` call the typed decoders and render with
