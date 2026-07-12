@@ -7243,7 +7243,19 @@ fn yn(b: Bool) -> String:
                 // capabilities introduced by compile-time generated source.
                 let fp = crate::capabilities::analyze(&footprint_module);
                 let console_only = fp.total.keys().all(|k| *k == "Console");
-                let runnable = has_main && console_only && !reads_argv;
+                // A Console-only footprint is NOT sufficient for browser-runnability:
+                // `std/vm` (par_map / with_dir / serve — multi-core workers) carries no
+                // host CAPABILITY, so it doesn't show in the footprint, but its lowering
+                // emits host imports (`vm_par_map_run`, `vm_serve_run`, …) the browser
+                // playground shim deliberately does not provide. Such a module compiles
+                // but cannot instantiate in-browser, so a Console-only `import vm` program
+                // was wrongly given a Run button that always errors ("capability
+                // 'vm_par_map_run' is not available in the browser playground"). All three
+                // of vm's public fns are worker-only, so linking `vm` at all disqualifies
+                // browser-runnability. (Verified end-to-end by scripts/audit-browser-runnable.mjs.)
+                let uses_workers = footprint_module.imports.iter().any(|m| m == "vm")
+                    || linked.imports.iter().any(|m| m == "vm");
+                let runnable = has_main && console_only && !reads_argv && !uses_workers;
                 // Right-precise footprint: `Console`, `Dir[Read]`, `Net[Connect,Tcp]`, ….
                 let footprint: Vec<String> = fp
                     .total

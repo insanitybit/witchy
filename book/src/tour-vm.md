@@ -9,6 +9,10 @@ Everything here preserves witchy's prime directive — the interpreter and the c
 backend produce identical output. That is not a happy accident; it *shaped* the
 surface, as you'll see.
 
+> The `vm` examples below have no **Run** button in the online book: worker VMs are a
+> native, multi-core facility, and the browser playground's pure-compute sandbox has no
+> workers to spawn. Run them with `witchy <file>` locally to see them in action.
+
 ## `vm.par_map`: use every core
 
 `vm.par_map(xs, f)` maps a function over a list with the elements processed in

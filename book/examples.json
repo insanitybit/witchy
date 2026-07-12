@@ -1953,10 +1953,8 @@
     "footprint": [
       "Console"
     ],
-    "output": [
-      "30"
-    ],
-    "runnable": true
+    "output": [],
+    "runnable": false
   },
   {
     "block": 2,
@@ -1980,10 +1978,7 @@
     "footprint": [
       "Console"
     ],
-    "output": [
-      "a",
-      "ab"
-    ],
-    "runnable": true
+    "output": [],
+    "runnable": false
   }
 ]
