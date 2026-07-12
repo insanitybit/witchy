@@ -191,9 +191,10 @@ Score(12, beta)
   story — the `Mirror` type and writing your own reflective consumers.
 - `derive(Deserialize)` (just `import json` — `Result`, `Option`, and their
   constructors are prelude names, so no extra imports even when a field is
-  `Option`) generates the inverse, `from_json(j) -> Result(Self, String)`, so
+  `Option`) generates the inverse,
+  `from_json(j) -> Result(Self, json.DeserializeError)`, so
   `Score.from_json(j)` rebuilds a record from a parsed `Json` and reports a bad
-  shape as `Err`.
+  shape as a matchable typed `Err`.
 
 Because an operator dispatches on its operands' type, a comparison works
 wherever the value comes from — including one you just bound in a `match` arm, an

@@ -39,7 +39,7 @@ to_ms` finds `duration.to_milliseconds`.
 
 | Module | What it gives you |
 |---|---|
-| `json` | parse and encode JSON — `json.decode(s)` returns `Result(Json, DecodeError)` (the parsed `Json` sum type, or a structured decode error; `json.decode_error_message(e)` renders it), so thread it with `?`; `json.stringify(x)` / `json.from_value(x)` encode *any* value reflectively (give your own types `derive(Reflect)`); `derive(Deserialize)` generates `from_json` to parse a record back. There is no `derive(Json)`. |
+| `json` | parse and encode JSON — `json.decode(s)` returns `Result(Json, DecodeError)` (the parsed `Json` sum type, or a structured decode error; `json.decode_error_message(e)` renders it), so thread it with `?`; `json.stringify(x)` / `json.from_value(x)` encode *any* value reflectively (give your own types `derive(Reflect)`); `derive(Deserialize)` generates `from_json` to parse a record back with `json.DeserializeError`. There is no `derive(Json)`. |
 | `toml` | TOML parsing |
 | `url` | URL parsing |
 | `encoding` | hex and base64 |

@@ -1028,13 +1028,60 @@ fn main(console: Console):
     /// implicit generic record derives a parameterized `Reflect` impl with bounds.
     #[test]
     fn derives_use_normalized_typeinfo_on_both_backends() {
-        let src = "import json\nimport list\nimport reflect\n\ntype UserId = String\n\ntype Person derive(Deserialize):\n    id: UserId\n\ntype Box derive(Reflect):\n    value: a\n\nfn main(console: Console):\n    match Person.from_json(json.JsonObject([(\"id\", json.JsonString(\"ada\"))])):\n        Ok(p) -> console.print(p.id)\n        Err(e) -> console.print(e)\n    match Box(3).reflect():\n        reflect.MRecord(_name, fields) -> console.print(\"${list.length(fields)}\")\n        _ -> console.print(\"bad\")\n";
+        let src = "import json\nimport list\nimport reflect\n\ntype UserId = String\n\ntype Person derive(Deserialize):\n    id: UserId\n\ntype Box derive(Reflect):\n    value: a\n\nfn main(console: Console):\n    match Person.from_json(json.JsonObject([(\"id\", json.JsonString(\"ada\"))])):\n        Ok(p) -> console.print(p.id)\n        Err(e) -> console.print(json.deserialize_error_message(e))\n    match Box(3).reflect():\n        reflect.MRecord(_name, fields) -> console.print(\"${list.length(fields)}\")\n        _ -> console.print(\"bad\")\n";
         let expected = ["ada", "1"];
         assert_eq!(link_run(src), expected, "interp derive sees normalized TypeInfo");
         assert_eq!(
             run_linked_on_wasm(&[("main", src)], "main"),
             expected,
             "compiled derive output from normalized TypeInfo must agree",
+        );
+    }
+
+    #[test]
+    fn derive_deserialize_uses_typed_json_error_on_both_backends() {
+        let src = r#"import json
+import list
+
+type Pet derive(Deserialize):
+    name: String
+    ages: List(Int)
+    tag: Option(String)
+
+fn via_string(j: json.Json) -> Result(Pet, String):
+    let pet = Pet.from_json(j)?
+    Ok(pet)
+
+fn classify(j: json.Json) -> String:
+    match Pet.from_json(j):
+        Ok(p) -> p.name + ":" + "${list.length(p.ages)}"
+        Err(e) ->
+            match e:
+                json.DeserializeMissingField(name) -> "missing:" + name
+                json.DeserializeExpected(shape) -> "expected:" + shape
+
+fn main(console: Console):
+    let ok = json.JsonObject([("name", json.JsonString("kit")), ("ages", json.JsonArray([json.JsonInt(1), json.JsonInt(2)]))])
+    let missing = json.JsonObject([("name", json.JsonString("kit"))])
+    let wrong = json.JsonObject([("name", json.JsonString("kit")), ("ages", json.JsonString("old"))])
+    console.print(classify(ok))
+    console.print(classify(missing))
+    console.print(classify(wrong))
+    match via_string(missing):
+        Ok(_) -> console.print("bad")
+        Err(e) -> console.print(e)
+"#;
+        let expected = [
+            "kit:2",
+            "missing:ages",
+            "expected:an array",
+            "missing field `ages`",
+        ];
+        assert_eq!(link_run(src), expected, "interp: typed derived JSON errors");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: typed derived JSON errors",
         );
     }
 
@@ -6106,7 +6153,7 @@ fn yn(b: Bool) -> String:
     /// the original JSON object.
     #[test]
     fn derive_deserialize_field_names_are_hygienic_on_both_backends() {
-        let src = "import json\n\ntype Odd derive(Deserialize):\n    j: String\n    Ok: String\n    Err: String\n    Some: String\n    None: String\n    rest: Option(List(Option(Int)))\n\nfn main(console: Console):\n    match json.decode(\"{\\\"j\\\": \\\"jay\\\", \\\"Ok\\\": \\\"ok\\\", \\\"Err\\\": \\\"err\\\", \\\"Some\\\": \\\"some\\\", \\\"None\\\": \\\"none\\\", \\\"rest\\\": [1, null, 3]}\"):\n        Ok(doc) -> match Odd.from_json(doc):\n            Ok(r) ->\n                console.print(r.j + \":\" + r.Ok + \":\" + r.Err + \":\" + r.Some + \":\" + r.None)\n                console.print(\"${r.rest}\")\n            Err(e) -> console.print(\"err \" + e)\n        Err(e) -> console.print(\"parse\")\n";
+        let src = "import json\n\ntype Odd derive(Deserialize):\n    j: String\n    Ok: String\n    Err: String\n    Some: String\n    None: String\n    rest: Option(List(Option(Int)))\n\nfn main(console: Console):\n    match json.decode(\"{\\\"j\\\": \\\"jay\\\", \\\"Ok\\\": \\\"ok\\\", \\\"Err\\\": \\\"err\\\", \\\"Some\\\": \\\"some\\\", \\\"None\\\": \\\"none\\\", \\\"rest\\\": [1, null, 3]}\"):\n        Ok(doc) -> match Odd.from_json(doc):\n            Ok(r) ->\n                console.print(r.j + \":\" + r.Ok + \":\" + r.Err + \":\" + r.Some + \":\" + r.None)\n                console.print(\"${r.rest}\")\n            Err(e) -> console.print(\"err \" + json.deserialize_error_message(e))\n        Err(e) -> console.print(\"parse\")\n";
         let want = ["jay:ok:err:some:none", "Some([Some(1), None, Some(3)])"];
         assert_eq!(link_run(src), want, "interp");
         assert_eq!(wasm_run(src), want, "wasm");
@@ -6218,7 +6265,7 @@ fn yn(b: Bool) -> String:
     /// and the caller ascribes the concrete type.
     #[test]
     fn derive_deserialize_generic_backends_agree() {
-        let src = "import json\nimport result\n\ntype Inner derive(Deserialize):\n    n: Int\n\ntype Box(a) derive(Deserialize):\n    value: a\n\nfn main(console: Console):\n    match json.decode(\"{\\\"value\\\": {\\\"n\\\": 7}}\"):\n        Ok(j) ->\n            let r: Result(Box(Inner), String) = Box.from_json(j)\n            match r:\n                Ok(b) -> console.print(__render(b.value.n))\n                Err(e) -> console.print(\"err\")\n        Err(e) -> console.print(\"parse\")\n";
+        let src = "import json\nimport result\n\ntype Inner derive(Deserialize):\n    n: Int\n\ntype Box(a) derive(Deserialize):\n    value: a\n\nfn main(console: Console):\n    match json.decode(\"{\\\"value\\\": {\\\"n\\\": 7}}\"):\n        Ok(j) ->\n            let r: Result(Box(Inner), json.DeserializeError) = Box.from_json(j)\n            match r:\n                Ok(b) -> console.print(__render(b.value.n))\n                Err(e) -> console.print(\"err\")\n        Err(e) -> console.print(\"parse\")\n";
         let want = ["7"];
         assert_eq!(link_run(src), want, "interp");
         assert_eq!(wasm_run(src), want, "wasm");

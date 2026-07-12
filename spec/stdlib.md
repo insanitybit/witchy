@@ -1219,13 +1219,20 @@ A JSON library — the witchy take on Go's encoding/json. This slice is the valu
 
 - `DecodeError { message: String }`
 
+#### `type DeserializeError`
+
+- `DeserializeMissingField(String)`
+- `DeserializeExpected(String)`
+
 #### `trait Deserialize`
 
 Reconstruct a value from a `Json`. Reflection can read a value's structure but not rebuild a value from structure, so `derive(Deserialize)` generates `from_json` per type. Encoding needs no trait: `from_value`, `stringify`, and `x.into()` already serialize any `Reflect` value.
 
-- `fn from_json(j: Json) -> Result(Self, String)`
+- `fn from_json(j: Json) -> Result(Self, DeserializeError)`
 
 #### `fn decode_error_message(e: DecodeError) -> String`
+
+#### `fn deserialize_error_message(e: DeserializeError) -> String`
 
 #### `fn encode(j: Json) -> String`
 
@@ -1275,25 +1282,25 @@ The element at index `i` of a JSON array.
 
 `j` as its key/value pairs, when it is an object — for iterating an object whose keys aren't known ahead of time.
 
-#### `fn require(j: Json, key: String) -> Result(Json, String)`
+#### `fn require(j: Json, key: String) -> Result(Json, DeserializeError)`
 
 --- Result-returning decoders (the backbone of `derive(Deserialize)`'s from_json) -----
 
-#### `fn int_of(j: Json) -> Result(Int, String)`
+#### `fn int_of(j: Json) -> Result(Int, DeserializeError)`
 
 Coerce a Json value to a scalar, or `Err` describing the expected shape.
 
-#### `fn string_of(j: Json) -> Result(String, String)`
+#### `fn string_of(j: Json) -> Result(String, DeserializeError)`
 
-#### `fn bool_of(j: Json) -> Result(Bool, String)`
+#### `fn bool_of(j: Json) -> Result(Bool, DeserializeError)`
 
-#### `fn float_of(j: Json) -> Result(Float, String)`
+#### `fn float_of(j: Json) -> Result(Float, DeserializeError)`
 
-#### `fn array_of(j: Json) -> Result(List(Json), String)`
+#### `fn array_of(j: Json) -> Result(List(Json), DeserializeError)`
 
 A JSON number with no fraction/exponent decodes to `JsonInt`, but it is still a valid `Float` field value (`{"ratio": 1}`), so widen it here.
 
-#### `fn optional(o: Option(Json), each: fn(Json) -> Result(a, String)) -> Result(Option(a), String)`
+#### `fn optional(o: Option(Json), each: fn(Json) -> Result(a, e)) -> Result(Option(a), e)`
 
 Decode an optional field: an absent key or an explicit `null` is `None`; otherwise the value is decoded via `each`. Used for `Option(_)` fields.
 

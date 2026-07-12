@@ -95,12 +95,12 @@ pub fn parse(text: String) -> Result(Record, RecordParseError):
 // from a well-formed JSON value with the wrong record shape.
 type RecordParseError:
     RecordJson(String)
-    RecordShape(String)
+    RecordShape(json.DeserializeError)
 
 pub fn record_parse_error_message(e: RecordParseError) -> String:
     match e:
         RecordJson(reason) -> reason
-        RecordShape(reason) -> reason
+        RecordShape(reason) -> json.deserialize_error_message(reason)
 
 impl Show for RecordParseError:
     fn show(self) -> String:

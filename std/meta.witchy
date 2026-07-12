@@ -268,10 +268,10 @@ fn json_decode_value(ty: TypeExpr, value: String) -> String:
                 "json.string_of(" + value + ")"
             else if name == "List" && list.length(args) == 1:
                 let elem = list.at(args, 0)
-                "result.all(list.map(json.array_of(" + value + ")?, fn(__e: json.Json) -> Result(" + type_source(elem) + ", String): " + json_decode_value(elem, "__e") + "))"
+                "result.all(list.map(json.array_of(" + value + ")?, fn(__e: json.Json) -> Result(" + type_source(elem) + ", json.DeserializeError): " + json_decode_value(elem, "__e") + "))"
             else if name == "Option" && list.length(args) == 1:
                 let elem = list.at(args, 0)
-                "json.optional(Some(" + value + "), fn(__e: json.Json) -> Result(" + type_source(elem) + ", String): " + json_decode_value(elem, "__e") + ")"
+                "json.optional(Some(" + value + "), fn(__e: json.Json) -> Result(" + type_source(elem) + ", json.DeserializeError): " + json_decode_value(elem, "__e") + ")"
             else:
                 type_source(ty) + ".from_json(" + value + ")"
         _ -> type_source(ty) + ".from_json(" + value + ")"
@@ -283,7 +283,7 @@ fn json_decode_field(ty: TypeExpr, object: String, key: String) -> String:
         TNamed(name, args) ->
             if name == "Option" && list.length(args) == 1:
                 let elem = list.at(args, 0)
-                "json.optional(json.get(" + object + ", \"" + key + "\"), fn(__e: json.Json) -> Result(" + type_source(elem) + ", String): " + json_decode_value(elem, "__e") + ")?"
+                "json.optional(json.get(" + object + ", \"" + key + "\"), fn(__e: json.Json) -> Result(" + type_source(elem) + ", json.DeserializeError): " + json_decode_value(elem, "__e") + ")?"
             else:
                 json_decode_value(ty, "json.require(" + object + ", \"" + key + "\")?") + "?"
         _ -> json_decode_value(ty, "json.require(" + object + ", \"" + key + "\")?") + "?"
@@ -302,7 +302,7 @@ pub fn derive_deserialize(t: TypeInfo) -> String:
         lets = list.push(lets, "        let " + local + " = " + json_decode_field(f.type_expr, "__j", f.name) + "\n")
         names = list.push(names, local)
         i = i + 1
-    let from_json = "    fn from_json(__j: json.Json) -> Result(Self, String):\n" + list.join(lets, "") + "        Ok(" + t.name + "(" + list.join(names, ", ") + "))\n"
+    let from_json = "    fn from_json(__j: json.Json) -> Result(Self, json.DeserializeError):\n" + list.join(lets, "") + "        Ok(" + t.name + "(" + list.join(names, ", ") + "))\n"
     // The generated body makes module-qualified calls (json.*, list.map, result.all);
     // emitted source is parsed on its own, so it must carry those imports for the
     // parser to qualify them (comptime merges them into the module). A generic type's

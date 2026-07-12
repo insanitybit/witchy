@@ -130,7 +130,8 @@ how `std/json` and `reflect.debug` are written.
 Reflection covers *encoding* — any reflectable value becomes a `Mirror`, and from
 there JSON, a debug string, or whatever you traverse it into. Going the other way,
 *decoding* a parsed value back into a typed record, is generated per type with
-`derive(Deserialize)` (`Type.from_json(j) -> Result(Type, String)`); see
+`derive(Deserialize)` (`Type.from_json(j) -> Result(Type, json.DeserializeError)`);
+see
 [Generics and Traits](tour-generics.md). There is deliberately no `derive(Json)`
 or `to_json` — encoding is reflective and needs nothing generated, while only
 decoding has to be.

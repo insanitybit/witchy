@@ -30,19 +30,38 @@ type Json:
 type DecodeError:
     message: String
 
+type DeserializeError:
+    DeserializeMissingField(String)
+    DeserializeExpected(String)
+
 pub fn decode_error_message(e: DecodeError) -> String:
     match e:
         DecodeError(message) -> message
+
+pub fn deserialize_error_message(e: DeserializeError) -> String:
+    match e:
+        DeserializeMissingField(key) -> "missing field `" + key + "`"
+        DeserializeExpected(shape) -> "expected " + shape
 
 impl Show for DecodeError:
     fn show(self) -> String:
         decode_error_message(self)
 
+impl Show for DeserializeError:
+    fn show(self) -> String:
+        deserialize_error_message(self)
+
 impl Error for DecodeError
+
+impl Error for DeserializeError
 
 impl From(DecodeError) for String:
     fn from(value: DecodeError) -> Self:
         decode_error_message(value)
+
+impl From(DeserializeError) for String:
+    fn from(value: DeserializeError) -> Self:
+        deserialize_error_message(value)
 
 fn decode_error(message: String) -> DecodeError:
     DecodeError(message)
@@ -670,46 +689,46 @@ pub fn as_object(j: Json) -> Option(List((String, Json))):
 // type. Encoding needs no trait: `from_value`, `stringify`, and `x.into()` already
 // serialize any `Reflect` value.
 trait Deserialize:
-    fn from_json(j: Json) -> Result(Self, String)
+    fn from_json(j: Json) -> Result(Self, DeserializeError)
 
 // --- Result-returning decoders (the backbone of `derive(Deserialize)`'s from_json) -----
-pub fn require(j: Json, key: String) -> Result(Json, String):
+pub fn require(j: Json, key: String) -> Result(Json, DeserializeError):
     match get(j, key):
         Some(v) -> Ok(v)
-        None -> Err("missing field `" + key + "`")
+        None -> Err(DeserializeMissingField(key))
 
 // Coerce a Json value to a scalar, or `Err` describing the expected shape.
-pub fn int_of(j: Json) -> Result(Int, String):
+pub fn int_of(j: Json) -> Result(Int, DeserializeError):
     match j:
         JsonInt(n) -> Ok(n)
-        _ -> Err("expected an integer")
+        _ -> Err(DeserializeExpected("an integer"))
 
-pub fn string_of(j: Json) -> Result(String, String):
+pub fn string_of(j: Json) -> Result(String, DeserializeError):
     match j:
         JsonString(s) -> Ok(s)
-        _ -> Err("expected a string")
+        _ -> Err(DeserializeExpected("a string"))
 
-pub fn bool_of(j: Json) -> Result(Bool, String):
+pub fn bool_of(j: Json) -> Result(Bool, DeserializeError):
     match j:
         JsonBool(b) -> Ok(b)
-        _ -> Err("expected a boolean")
+        _ -> Err(DeserializeExpected("a boolean"))
 
-pub fn float_of(j: Json) -> Result(Float, String):
+pub fn float_of(j: Json) -> Result(Float, DeserializeError):
     match j:
         JsonFloat(f) -> Ok(f)
         JsonInt(n) -> Ok(math.to_float(n))
-        _ -> Err("expected a number")
+        _ -> Err(DeserializeExpected("a number"))
 
 // A JSON number with no fraction/exponent decodes to `JsonInt`, but it is
 // still a valid `Float` field value (`{"ratio": 1}`), so widen it here.
-pub fn array_of(j: Json) -> Result(List(Json), String):
+pub fn array_of(j: Json) -> Result(List(Json), DeserializeError):
     match j:
         JsonArray(items) -> Ok(items)
-        _ -> Err("expected an array")
+        _ -> Err(DeserializeExpected("an array"))
 
 // Decode an optional field: an absent key or an explicit `null` is `None`;
 // otherwise the value is decoded via `each`. Used for `Option(_)` fields.
-pub fn optional(o: Option(Json), each: fn(Json) -> Result(a, String)) -> Result(Option(a), String):
+pub fn optional(o: Option(Json), each: fn(Json) -> Result(a, e)) -> Result(Option(a), e):
     match o:
         None -> Ok(None)
         Some(JsonNull) -> Ok(None)

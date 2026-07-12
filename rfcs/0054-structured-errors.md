@@ -328,6 +328,9 @@ application-style String bridge.
 shapes, digit failures, fractional-second errors, and UTC-offset errors as
 matchable cases. `time.civil_string` and `parse_iso8601_string` are the
 explicit application-style String bridges.
+`derive(Deserialize)` and the `std/json` reconstruction helpers now return
+`json.DeserializeError`, keeping missing fields and expected-shape failures
+matchable until the caller deliberately renders them.
 `std/encoding` now exposes `encoding.EncodingError` through primary hex,
 base64, and base64url decoders/converters. The explicit `*_string` bridges keep
 String-rendering available for application boundaries. `std/jwt` and
