@@ -21,7 +21,10 @@
 #
 # Stall resistance: the gate runs in its own process group under a monitor.
 # NEXTEST_STATUS_LEVEL=pass makes nextest stream one line per finished test, so
-# a healthy gate writes constantly; if the log goes quiet for
+# a healthy gate writes constantly. Cargo incremental output is disabled for the
+# gate worktree: it is repeatedly rebased across unrelated branches, so that
+# state has little reuse value and otherwise grows without bound between gates.
+# If the log goes quiet for
 # MERGE_QUEUE_STALL_TIMEOUT seconds (default 300) or the whole gate exceeds
 # MERGE_QUEUE_GATE_TIMEOUT seconds (default 2700), the process group is killed,
 # the candidate is journaled as timed out, the lock is released, and the queue
@@ -168,7 +171,7 @@ run_gate() { # run_gate <log>
     # `set -m` puts the background job in its own process group, so a timeout
     # can kill the WHOLE cargo/nextest tree, not just the top shell.
     set -m
-    ( cd "$gate_wt" && exec env NEXTEST_STATUS_LEVEL=pass bash -c "$gate_cmd" ) >"$log" 2>&1 &
+    ( cd "$gate_wt" && exec env CARGO_INCREMENTAL=0 NEXTEST_STATUS_LEVEL=pass bash -c "$gate_cmd" ) >"$log" 2>&1 &
     local gpid=$!
     set +m
     local why=""
