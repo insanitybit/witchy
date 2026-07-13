@@ -1052,30 +1052,34 @@ fn metamorphic_property_laws() {
 fn uaf_sanitizer_is_false_positive_free() {
     let programs = env_usize("WITCHY_UAF_FUZZ_PROGRAMS", 12);
     let statements = env_usize("WITCHY_UAF_FUZZ_STATEMENTS", 100);
-    for seed in 0..programs as u64 {
-        let (src, _) = gen_program(seed.wrapping_mul(0x1234_5678_9ABC_DEF1).wrapping_add(1), statements);
-        let path = unique_temp_path(&format!("uaf_{seed}"));
-        std::fs::File::create(&path).unwrap().write_all(src.as_bytes()).unwrap();
-        // rc-floor is the only lever that emits `$rc_free`, so it is the one the sanitizer alters.
-        let out = Command::new(BIN)
-            .args(["parity", path.to_str().unwrap()])
-            .env("WITCHY_OPT", "rc-floor")
-            .env("WITCHY_UAF_CHECK", "1")
-            .output()
-            .unwrap();
-        let _ = std::fs::remove_file(&path);
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(
-            out.status.code().is_some(),
-            "witchy crashed (signal) on seed {seed} under the UAF sanitizer — a bad poison store.\n--- program ---\n{src}\n--- stderr ---\n{stderr}"
-        );
-        if stdout.contains("DIVERGE") || stderr.contains("DIVERGE") {
-            panic!(
-                "UAF sanitizer FALSE POSITIVE on seed {seed}: a correct compiler diverged under WITCHY_UAF_CHECK=1 (poisoning a freed block must never change output).\n--- program ---\n{src}\n--- output ---\n{stdout}{stderr}"
-            );
-        }
-    }
+    std::thread::scope(|s| {
+        let handles: Vec<_> = (0..programs as u64).map(|seed| {
+            s.spawn(move || {
+                let (src, _) = gen_program(seed.wrapping_mul(0x1234_5678_9ABC_DEF1).wrapping_add(1), statements);
+                let path = unique_temp_path(&format!("uaf_{seed}"));
+                std::fs::File::create(&path).unwrap().write_all(src.as_bytes()).unwrap();
+                let out = Command::new(BIN)
+                    .args(["parity", path.to_str().unwrap()])
+                    .env("WITCHY_OPT", "rc-floor")
+                    .env("WITCHY_UAF_CHECK", "1")
+                    .output()
+                    .unwrap();
+                let _ = std::fs::remove_file(&path);
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                assert!(
+                    out.status.code().is_some(),
+                    "witchy crashed (signal) on seed {seed} under the UAF sanitizer — a bad poison store.\n--- program ---\n{src}\n--- stderr ---\n{stderr}"
+                );
+                if stdout.contains("DIVERGE") || stderr.contains("DIVERGE") {
+                    panic!(
+                        "UAF sanitizer FALSE POSITIVE on seed {seed}: a correct compiler diverged under WITCHY_UAF_CHECK=1 (poisoning a freed block must never change output).\n--- program ---\n{src}\n--- output ---\n{stdout}{stderr}"
+                    );
+                }
+            })
+        }).collect();
+        for h in handles { h.join().unwrap(); }
+    });
 }
 
 /// (RFC-0051 I1 step 3) The dup/drop assertion sweep — the fire-and-report backstop's
