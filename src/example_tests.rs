@@ -23230,6 +23230,33 @@ pub fn serve(console: Console, net: Net) -> Int:
         assert_eq!(wasm_run(src), want, "compiled: real mutators must write back");
     }
 
+    /// (BUG-575 / RFC-0043) A match arm used in statement position inherits
+    /// statement-position mutator semantics. The arm expression `out.push(value)`
+    /// must write back exactly like a bare statement in a block; it is not a value
+    /// result to be discarded by the surrounding `match`.
+    #[test]
+    fn rfc0043_match_arm_mutators_write_back_both_backends() {
+        let src = "import list\nimport option\n\
+                   fn collect(items: List(Option(String))) -> Result(List(String), String):\n\
+                   \x20   var out: List(String) = []\n\
+                   \x20   for item in items:\n\
+                   \x20       match item:\n\
+                   \x20           None -> return Err(\"missing\")\n\
+                   \x20           Some(value) -> out.push(value)\n\
+                   \x20   Ok(out)\n\
+                   \n\
+                   fn main(console: Console):\n\
+                   \x20   match collect([Some(\"x\"), Some(\"y\")]):\n\
+                   \x20       Ok(xs) -> console.print(\"${xs}\")\n\
+                   \x20       Err(e) -> console.print(e)\n\
+                   \x20   match collect([Some(\"ok\"), None]):\n\
+                   \x20       Ok(xs) -> console.print(\"${xs}\")\n\
+                   \x20       Err(e) -> console.print(e)\n";
+        let want = vec!["[x, y]".to_string(), "missing".to_string()];
+        assert_eq!(link_run(src), want, "interpreter: match-arm mutator writes back");
+        assert_eq!(wasm_run(src), want, "compiled: match-arm mutator writes back");
+    }
+
     /// (RFC-0043) A mutator in statement form on an IMMUTABLE `let` place has no
     /// `var` to write back to — a compile error naming the fix (declare `var`,
     /// or bind the result), not a silent discard.

@@ -1,6 +1,6 @@
 # BUG-575: Match-arm mutator method silently discards write-back
 
-Status: OPEN
+Status: FIXED
 Severity: HIGH
 Component: `witchy-types`, method lowering, RFC-0043
 
@@ -39,3 +39,14 @@ mutator arm nested in a loop, matching PM's accumulator shape.
 Use the explicit functional assignment in match arms. The PM site retains that
 form with an `idiom-exempt (BUG-575)` comment until lowering preserves the
 write-back.
+
+## Fix
+
+Fixed by treating expression-shaped `match` arm bodies as statement-position
+sites when the enclosing `match` is itself discarded. The trait/method rewrite
+pass now reuses the ordinary statement block rewrite for those arms; if an arm
+mutator becomes an assignment, the arm is wrapped in a one-statement block whose
+value is `Nil`.
+
+Regression: `rfc0043_match_arm_mutators_write_back_both_backends` covers the
+loop accumulator shape above on both interpreter and compiled WASM.

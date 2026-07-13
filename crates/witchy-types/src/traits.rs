@@ -2403,6 +2403,34 @@ impl Ctx<'_> {
         }
     }
 
+    /// Rewrite a single expression that occupies statement position but lives in
+    /// an expression-shaped AST slot, such as a `match` arm body whose enclosing
+    /// match is itself a statement. Reusing `rewrite_block` keeps RFC-0043's
+    /// mutator/discard rules in one place: if the expression turns into an
+    /// assignment, the arm stays expression-shaped by becoming a one-statement
+    /// block whose value is `Nil`.
+    fn rewrite_discarded_expr(&self, e: &mut Expr, scope: &mut Scope<Type>, line: u32) {
+        let expr = std::mem::replace(e, Expr::Bool(false));
+        let mut block = Block {
+            stmts: vec![Stmt::Expr(expr)],
+            lines: vec![line],
+            region: None,
+        };
+        self.rewrite_block(&mut block, scope, false);
+        let stmt = block.stmts.pop().expect("single-statement wrapper remains single");
+        let line = block.lines.pop().unwrap_or(line);
+        match stmt {
+            Stmt::Expr(expr) => *e = expr,
+            stmt => {
+                *e = Expr::Block(Block {
+                    stmts: vec![stmt],
+                    lines: vec![line],
+                    region: None,
+                });
+            }
+        }
+    }
+
     /// Resolve method syntax / trait calls within an expression. (RFC-0043)
     /// `value_position` flows to nested blocks so each knows whether its tail
     /// statement is consumed as a value: an `if`/`match` arm inherits the
@@ -2832,7 +2860,14 @@ impl Ctx<'_> {
                         self.rewrite_expr(g, &mut s);
                     }
                     // A match arm's body inherits the surrounding value position.
-                    self.rewrite_expr_vp(&mut arm.body, &mut s, value_position);
+                    // If the surrounding match is itself a statement, the arm is
+                    // a statement-position expression even though `MatchArm`
+                    // stores it as `Expr`.
+                    if value_position {
+                        self.rewrite_expr_vp(&mut arm.body, &mut s, true);
+                    } else {
+                        self.rewrite_discarded_expr(&mut arm.body, &mut s, arm.line);
+                    }
                 }
             }
             Expr::Lambda { params, body, .. } => {
