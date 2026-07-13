@@ -1893,6 +1893,11 @@ fn nullable_externref_option_cap(
     transparent_externref_brand_field_cap(&args[0], defs, &mut HashSet::new())
 }
 
+/// (RFC-0005 stage 4) A single-variant, non-generic, named-field record —
+/// `capability` or plain `type` alike — whose fields transitively carry a
+/// migrated externref capability (directly, via a transparent brand, or via
+/// another such record). These lower to wasm GC structs on the compiled
+/// backend; everything else cap-carrying stays reject-first.
 fn gc_cap_record_cap(
     name: &str,
     defs: &HashMap<&str, &ast::TypeDef>,
@@ -1903,7 +1908,7 @@ fn gc_cap_record_cap(
     }
     let out = (|| {
         let def = defs.get(name)?;
-        if !def.is_capability || !def.params.is_empty() || def.variants.len() != 1 {
+        if !def.params.is_empty() || def.variants.len() != 1 {
             return None;
         }
         let variant = def.variants.first()?;
@@ -1933,6 +1938,34 @@ fn gc_cap_record_field_cap(
         }
         ast::Type::Named(_, _) | ast::Type::Tuple(_) | ast::Type::Fn(_, _) => None,
     }
+}
+
+/// (RFC-0005 stage 4) The module's GC-lowered cap-carrying record types, as
+/// `(type name, constructor name)` pairs. This is THE home of the
+/// classification: typeck's boundary checks and codegen's struct registration
+/// both consume it, so they cannot disagree (BUG-566 was codegen holding a
+/// second, shallower copy that missed nested records and ICE'd the encoder).
+pub fn gc_cap_record_entries(module: &ast::Module) -> Vec<(String, String)> {
+    let type_defs: HashMap<&str, &ast::TypeDef> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Type(t) => Some((t.name.as_str(), t)),
+            _ => None,
+        })
+        .collect();
+    module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Type(t)
+                if gc_cap_record_cap(&t.name, &type_defs, &mut HashSet::new()).is_some() =>
+            {
+                t.variants.first().map(|v| (t.name.clone(), v.name.clone()))
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// (RFC-0005 §3) The `carries_cap` classification, scoped to the migrated
@@ -6967,12 +7000,8 @@ fn run_check_selected(
             c.transparent_externref_brands.insert(t.name.clone(), cap);
         }
     }
-    for item in &module.items {
-        if let Item::Type(t) = item
-            && gc_cap_record_cap(&t.name, &type_defs, &mut HashSet::new()).is_some()
-        {
-            c.gc_cap_records.insert(t.name.clone());
-        }
+    for (name, _ctor) in gc_cap_record_entries(module) {
+        c.gc_cap_records.insert(name);
     }
 
     // Reject typo'd / undeclared type names in signatures before they become

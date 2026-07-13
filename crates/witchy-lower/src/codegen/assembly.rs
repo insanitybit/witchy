@@ -188,47 +188,6 @@ fn transparent_externref_brand_entries(module: &Module) -> Vec<(String, String, 
     out
 }
 
-fn type_has_direct_externref_cap(ty: &Type, transparent: &HashSet<String>) -> bool {
-    match ty.unqualified() {
-        Type::Named(n, _) if is_builtin_externref_type(n) => true,
-        Type::Named(n, args) if args.is_empty() => transparent.contains(n),
-        Type::Tuple(items) => items.iter().any(|t| type_has_direct_externref_cap(t, transparent)),
-        Type::Fn(params, ret) => {
-            params.iter().any(|t| type_has_direct_externref_cap(t, transparent))
-                || type_has_direct_externref_cap(ret, transparent)
-        }
-        Type::Named(_, args) => args.iter().any(|t| type_has_direct_externref_cap(t, transparent)),
-        Type::Qualified(_, inner) => type_has_direct_externref_cap(inner, transparent),
-    }
-}
-
-fn gc_record_type_entries(module: &Module, transparent: &HashSet<String>) -> Vec<(String, String)> {
-    module
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Type(t)
-                if !is_compiler_syntax_type_name(&t.name)
-                    && t.is_capability
-                    && t.params.is_empty()
-                    && t.variants.len() == 1
-                    && !transparent.contains(&t.name) =>
-            {
-                let variant = t.variants.first()?;
-                if variant.field_names.is_empty() {
-                    return None;
-                }
-                variant
-                    .fields
-                    .iter()
-                    .any(|field| type_has_direct_externref_cap(field, transparent))
-                    .then(|| (t.name.clone(), variant.name.clone()))
-            }
-            _ => None,
-        })
-        .collect()
-}
-
 /// Register every item's compile-time metadata (parameter conventions,
 /// return kinds/types, record fields, generic shape hints, ...) on `cg`.
 fn register_module_items(cg: &mut Codegen, module: &Module) {
@@ -252,7 +211,10 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
         cg.transparent_externref_brands.insert(brand);
         cg.transparent_externref_ctors.insert(ctor, field);
     }
-    let gc_records = gc_record_type_entries(module, &cg.transparent_externref_brands);
+    // (RFC-0005 stage 4 / BUG-566) The GC-record classification lives in ONE
+    // home — typeck — and codegen consumes it, so the boundary checks and the
+    // struct registration can never disagree on which records are GC-lowered.
+    let gc_records = witchy_types::typeck::gc_cap_record_entries(module);
     // Collect parameter conventions up front so call sites can resolve `var`
     // write-back even for forward references.
     for item in &module.items {

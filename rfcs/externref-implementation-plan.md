@@ -551,3 +551,23 @@ those ordinals never become guest capability values. The remaining cleanup is
 terminology/API polish (`*_handle` names that mean host authority objects) and
 the deferred Stage 4 representation work for cap-carrying aggregates and
 closures.
+
+## Stage 4 progress (2026-07-13)
+
+**Records slice landed.** The GC-struct record representation proved by sealed
+`capability` records now covers PLAIN single-variant named-field records: the
+classifier (`gc_cap_record_entries`) lives in ONE home (`witchy-types`) and
+codegen consumes it, closing BUG-566 (typeck's recursive classification vs
+codegen's direct-field copy disagreed on NESTED records → checked-valid
+programs ICE'd the encoder). The slice also added the GC spread path
+(`T(field: v, ..base)` → `StructNew` over `StructGet`s, which place assignment
+desugars to) and excluded ref-typed records from SROA and the RFC-0033
+in-place record update (both slot-box fields; a GC record binds as one
+`GcRef` local and rebuilds by `StructNew`).
+
+Still reject-first, in the plan's order: cap-carrying multi-variant enums,
+positional newtypes over caps (use the named-field form or a `capability`
+brand), tuples, `List`/`Dict`/`Result` containers, and closure environments —
+closures remain the hard tail (a capture is invisible in the function TYPE, so
+cap-carrying and scalar closures flowing into one `fn`-typed param force a
+uniform environment representation).

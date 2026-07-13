@@ -107,6 +107,14 @@ fn match_gc_tmp(struct_id: u32) -> String {
     format!("__witchy_match_gc_{struct_id}")
 }
 
+/// (RFC-0005 stage 4) Scratch local holding a GC-struct spread base
+/// (`T(field: v, ..base)`) so a non-variable base is evaluated exactly once.
+/// Separate from `match_gc_tmp` — a spread inside a match arm must not clobber
+/// the scrutinee.
+fn update_gc_tmp(struct_id: u32) -> String {
+    format!("__witchy_update_gc_{struct_id}")
+}
+
 /// (RFC-0035 step 4) Scratch i64 slot holding a match's RESULT while its dup'd-read
 /// scrutinee is `$rc_drop`'d after the arms (`FromSlot` recovers any width). Shared is
 /// safe: each match writes-then-reads its result before its parent arm writes.
@@ -2315,6 +2323,10 @@ impl<'types> Codegen<'types> {
                 name: match_gc_tmp(id),
                 ty: witchy_wir::wir::WirTy::GcRef(id),
             });
+            locals.push(WirLocal {
+                name: update_gc_tmp(id),
+                ty: witchy_wir::wir::WirTy::GcRef(id),
+            });
         }
         locals.push(WirLocal { name: MATCH_RES.into(), ty: i64t() });
         for i in 0..SCRUT_POOL {
@@ -2712,7 +2724,14 @@ impl<'types> Codegen<'types> {
                     }
                     let mut sroa_done = false;
                     if !packed_done && !view_done && self.sroa_candidates.contains(name) {
-                        if let Some(args) = sroa_fields(value) {
+                        // (RFC-0005 stage 4) A cap-carrying (GC-lowered) record has
+                        // reference-typed fields with no i64 slot form — never SROA
+                        // it; the plain path binds it as one `GcRef` local.
+                        let ref_field = sroa_fields(value).is_some_and(|args| {
+                            args.iter()
+                                .any(|a| matches!(self.kind_of(a), Kind::ExternRef | Kind::GcRef(_)))
+                        });
+                        if !ref_field && let Some(args) = sroa_fields(value) {
                             let mut stores = Vec::with_capacity(args.len());
                             let mut ok = true;
                             for (idx, arg) in args.iter().enumerate() {
@@ -3042,6 +3061,10 @@ impl<'types> Codegen<'types> {
                     } else if self.collect_wir
                         && self.inplace_push.contains(name)
                         && analysis::self_inplace_op(name, value).is_some()
+                        // (RFC-0005 stage 4) A GC-lowered cap-carrying record has no
+                        // linear-memory buffer to mutate in place — fall through to
+                        // the plain rebind (`StructNew` via the RecordUpdate GC path).
+                        && !matches!(self.locals.get(name), Some(Kind::GcRef(_) | Kind::ExternRef))
                     {
                         let op = analysis::self_inplace_op(name, value).expect("guarded Some above");
                         // A dirty site (its RHS embeds an aliasing share of `name`)
@@ -5278,6 +5301,41 @@ impl<'types> Codegen<'types> {
             Expr::RecordUpdate { name: _, base, fields } => {
                 let tyname = self.record_type_of(base)?;
                 let names = self.record_fields.get(&tyname)?.clone();
+                // (RFC-0005 stage 4) A GC-lowered cap-carrying record spreads via
+                // `StructNew`, reading each un-updated field from the base struct
+                // with `StructGet` — the GC analog of the linear `mk{N}` below.
+                if let Some(struct_id) = self.gc_record_ids.get(&tyname).copied() {
+                    let (prelude, base_ref): (Option<witchy_wir::wir::WirNode>, W) =
+                        if let Expr::Var(v) = base.as_ref() {
+                            (None, W::GetLocal(v.clone()))
+                        } else {
+                            let bw = self.lower_expr(base)?;
+                            (
+                                Some(witchy_wir::wir::WirNode::SetLocal {
+                                    local: update_gc_tmp(struct_id),
+                                    value: bw,
+                                }),
+                                W::GetLocal(update_gc_tmp(struct_id)),
+                            )
+                        };
+                    let mut args = Vec::with_capacity(names.len());
+                    for (i, (fname, _)) in names.iter().enumerate() {
+                        if let Some((_, vexpr)) = fields.iter().find(|(n, _)| n == fname) {
+                            args.push(self.lower_expr(vexpr)?);
+                        } else {
+                            args.push(W::StructGet {
+                                struct_id,
+                                field: i as u32,
+                                base: Box::new(base_ref.clone()),
+                            });
+                        }
+                    }
+                    let new = W::StructNew { struct_id, args };
+                    return Some(match prelude {
+                        Some(p) => W::Seq(vec![p, witchy_wir::wir::WirNode::Push(new)]),
+                        None => new,
+                    });
+                }
                 let &(tag, nfields) = self.ctors.get(&tyname)?;
                 self.mk_arities.insert(nfields);
                 // A Var base is referenced directly; any other expression is

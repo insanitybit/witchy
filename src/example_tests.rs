@@ -4396,6 +4396,53 @@ fn main(console: Console):
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// RFC-0005 Stage 4 (records slice): a PLAIN record — not a sealed
+    /// `capability` declaration — may carry a migrated capability, lowered to a
+    /// typed GC struct. Positional/named construction, spread, field access
+    /// through a NESTED record chain, `match` destructuring, and `var` place
+    /// assignment all agree between the backends, and the authority never
+    /// crosses the i64 slot. Nesting is also the BUG-566 regression: the
+    /// classifier lives in one home now, so typeck and codegen cannot disagree
+    /// about which records GC-lower (the old codegen copy missed nested records
+    /// and ICE'd the encoder).
+    #[test]
+    fn plain_cap_record_runs_on_both_backends() {
+        use crate::runtime::{Capabilities, Runtime};
+        let root = std::env::temp_dir().join(format!("witchy_caprecord_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        std::fs::write(root.join("greeting.txt"), "hello-record").expect("seed");
+        let root_str = root.to_str().expect("utf8 root").to_string();
+        let src = "type Inner:\n    dir: Dir[Read]\n    tag: String\n\ntype Workspace:\n    inner: Inner\n    label: String\n    count: Int\n\nfn load(w: Workspace, name: String) -> String:\n    w.inner.dir.read(name)\n\nfn relabel(w: Workspace, label: String) -> Workspace:\n    Workspace(label: label, ..w)\n\nfn main(console: Console, root: Dir[Read]):\n    let w = Workspace(Inner(root, \"t\"), \"main\", 1)\n    console.print(load(w, \"greeting.txt\"))\n    let x = relabel(w, \"alt\")\n    console.print(\"${x.label} ${x.count}\")\n    var y = Workspace(inner: Inner(root, \"u\"), label: \"named\", count: 2)\n    y.count = 40 + y.count\n    console.print(\"${y.label} ${y.count}\")\n    match y:\n        Workspace(i, lab, n) -> console.print(\"${lab} ${n} ${i.tag}\")\n";
+        let want = vec![
+            "hello-record".to_string(),
+            "alt 1".to_string(),
+            "named 42".to_string(),
+            "named 42 u".to_string(),
+        ];
+        let linked = resolve_std_src(src);
+        assert_eq!(
+            interpreter::run_module(linked.clone(), &root_str, Vec::new()).expect("interp"),
+            want,
+            "interpreter",
+        );
+        let bin = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers plain cap-carrying records");
+        let mut rt = Runtime::batch().expect("runtime");
+        let caps = Capabilities {
+            print: true,
+            quiet: true,
+            dir_root: Some(root.clone()),
+            dir_read: true,
+            ..Default::default()
+        };
+        let mut actor = rt.spawn(&bin, caps, 64).expect("spawn");
+        actor.run().expect("run");
+        assert_eq!(actor.output(), want, "compiled WASM must agree");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// RFC-0005 Stage 3: a named sealed capability record can carry a migrated
     /// `Net` externref alongside ordinary data. The compiled backend lowers the
     /// record to a typed GC struct, so the carried authority never passes through

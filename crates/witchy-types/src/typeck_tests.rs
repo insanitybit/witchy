@@ -879,11 +879,11 @@ fn has_optional_id() -> Option(Bool):
         check_str("capability Handle:\n    f: File\n    label: String\nfn relabel(h: Handle, label: String) -> Handle:\n    match h:\n        Handle(f, _) -> Handle(f, label)\n")
             .expect("a named capability record can carry a migrated cap via GC-struct lowering");
 
-        // Plain structural records are still data, not authority wrappers. Reject
-        // them instead of silently lowering a File through `$mkN`/the i64 slot.
-        let err = check_str("type Handle:\n    f: File\nfn take(console: Console, h: Handle):\n    console.print(\"ok\")\n")
-            .expect_err("a plain File record field needs the GC-struct aggregate path");
-        assert!(err.contains("File") && err.contains("GC-struct"), "got: {err}");
+        // (RFC-0005 stage 4, records slice) A plain structural record carries a
+        // migrated cap via the SAME GC-struct lowering as a capability record —
+        // never through `$mkN`/the i64 slot.
+        check_str("type Handle:\n    f: File\nfn take(console: Console, h: Handle):\n    console.print(\"ok\")\n")
+            .expect("a plain cap-carrying record GC-lowers");
 
         let err = check_str("fn tupled(console: Console, pair: (File, Int)):\n    console.print(\"x\")\n")
             .expect_err("a File tuple element needs the GC-struct aggregate path");
@@ -941,6 +941,50 @@ fn ping(r: Redis) -> Int:
 "#;
         check_str(branded_net)
             .expect("Net migration is blocked on branded-cap aggregate representation");
+
+        // (RFC-0005 stage 4, records slice) A PLAIN single-variant named-field
+        // record may carry a migrated capability — it GC-lowers exactly like a
+        // sealed `capability` record: construction, field access, spread, and
+        // place assignment all type-check.
+        let plain_record = r#"
+type Workspace:
+    dir: Dir[Read]
+    label: String
+
+fn load(w: Workspace, name: String) -> String:
+    w.dir.read(name)
+
+fn relabel(w: Workspace, label: String) -> Workspace:
+    Workspace(label: label, ..w)
+"#;
+        check_str(plain_record).expect("plain cap-carrying records GC-lower");
+
+        // (BUG-566) Nesting one cap-carrying record in another classifies in
+        // BOTH homes (typeck + codegen consume one classifier), for `capability`
+        // and plain `type` alike.
+        let nested_record = r#"
+type Inner:
+    dir: Dir[Read]
+    tag: String
+
+type Outer:
+    inner: Inner
+    label: String
+
+fn load(o: Outer, name: String) -> String:
+    o.inner.dir.read(name)
+"#;
+        check_str(nested_record).expect("nested cap-carrying records GC-lower");
+
+        // Containers of, and closures over, a cap-carrying record stay
+        // reject-first: the record is itself cap-carrying.
+        let err = check_str("type W:\n    dir: Dir[Read]\n    label: String\n\nfn hold(xs: List(W)) -> Int:\n    0\n")
+            .expect_err("List of a cap-carrying record still needs the GC collection path");
+        assert!(err.contains("List") && err.contains("Dir"), "got: {err}");
+
+        let err = check_str("type W:\n    dir: Dir[Read]\n    label: String\n\nfn f(console: Console, w: W):\n    let g = fn() -> String: w.label\n    console.print(g())\n")
+            .expect_err("a closure capturing a cap-carrying record still needs the typed closure path");
+        assert!(err.contains("closure") && err.contains("Dir"), "got: {err}");
     }
 
     #[test]
