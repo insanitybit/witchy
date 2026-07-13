@@ -3,10 +3,10 @@
 # before you commit, and before you push. Steps are ordered cheap-to-expensive so
 # a failure surfaces as early as possible.
 #
-#   ./scripts/check.sh --fast  the COMMIT gate: build + clippy + tests (minus the
+#   ./scripts/check.sh --fast  the COMMIT gate: clippy + tests (minus the
 #                              load-flaky e2e), skipping the witchy-fmt and wasm
 #                              playground steps — the fast inner loop
-#   ./scripts/check.sh         build, clippy, fmt, tests, and the wasm playground build
+#   ./scripts/check.sh         clippy, fmt, wasm, tests (cheap checks first)
 #   ./scripts/check.sh --full  the PUSH gate: also the e2e suite + from-scratch acceptance
 #
 # Shards — ONE named section, for a focused pre-queue run in your own worktree.
