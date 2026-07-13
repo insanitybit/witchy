@@ -1213,7 +1213,7 @@ Perform a POST request with `body` (e.g. a JSON document). The body's byte lengt
 
 #### `fn get_url(net: Net[Connect, Tcp], raw: String) -> Result(Response, HttpError)`
 
-GET a full URL string (`http://host[:port]/path`), or an error if it doesn't parse. Saves splitting host/port/path by hand.
+GET a full URL string (`http://host[:port]/path`), returning an error when parsing, connecting, or response decoding fails. Saves splitting host/port/path by hand while preserving the fallible `Result` contract.
 
 #### `fn get_url_string(net: Net[Connect, Tcp], raw: String) -> Result(Response, String)`
 

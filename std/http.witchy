@@ -123,13 +123,14 @@ pub fn patch(net: Net[Connect, Tcp], host: String, port: Int, path: String, body
 pub fn head(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Response:
     request(net, "HEAD", host, port, path, "")
 
-// GET a full URL string (`http://host[:port]/path`), or an error if it doesn't
-// parse. Saves splitting host/port/path by hand.
+// GET a full URL string (`http://host[:port]/path`), returning an error when
+// parsing, connecting, or response decoding fails. Saves splitting
+// host/port/path by hand while preserving the fallible `Result` contract.
 pub fn get_url(net: Net[Connect, Tcp], raw: String) -> Result(Response, HttpError):
     match url.parse(raw):
         Ok(u) ->
             match scheme_secure(url.scheme(u)):
-                Ok(secure) -> Ok(request_with(net, secure, "GET", url.host(u), url.port(u), url.path(u), [], ""))
+                Ok(secure) -> try_request_with(net, secure, "GET", url.host(u), url.port(u), url.path(u), [], "")
                 Err(e) -> Err(e)
         Err(e) -> Err(InvalidUrl(e))
 
