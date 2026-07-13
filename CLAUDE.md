@@ -46,7 +46,7 @@ Don't file a bug as an RFC or an ad-hoc design doc as a bug; security findings s
   `witchy doc std/*.witchy > spec/stdlib.md`.
 - **Never `cargo fmt`.** The Rust here is HAND-FORMATTED on purpose — `cargo fmt`
   reformats ~70 files. The only formatting gate is `witchy fmt` over `std/*.witchy`
-  + `examples/*/src/*.witchy` (`projects/**` is not swept).
+  + `examples/*/src/*.witchy` + `projects/**/src/*.witchy`.
 - **`book/` and `README`/`spec` ` ```witchy ` blocks are executed tests.** A
   fenced `witchy` example must be a complete, correct program (it is parsed,
   type-checked, and run on both backends). Use an untagged or ` ```sh ` fence
