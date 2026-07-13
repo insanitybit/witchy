@@ -3254,6 +3254,7 @@ Matchable failures when parsing an inbound HTTP request frame. The server bounda
 
 - `UnsupportedTransferEncoding`
 - `ConflictingContentLength`
+- `BadRequestLine`
 
 #### `type Route`
 
@@ -3275,7 +3276,7 @@ A router: its routes plus the middleware layers wrapping the whole dispatch.
 
 #### `fn path(req: Request) -> String`
 
-The request path, percent-decoded for the handler (BUG-375). Routing itself runs on the RAW path (`raw_path_of`) and decodes each segment individually, so a `%2F` in a segment can't forge an extra path separator; this accessor decodes the whole path for display/logging.
+The request path, normalized and percent-decoded for the handler. Routing and this accessor see the same normalized form (BUG-432): consecutive slashes are collapsed and trailing slashes stripped. Percent-decoding is applied after normalization so a `%2F` stays inside one segment (no forged separator, BUG-375).
 
 #### `fn param(req: Request, name: String) -> Option(String)`
 

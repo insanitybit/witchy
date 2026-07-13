@@ -29,11 +29,13 @@ from json import Json
 type RequestParseError:
     UnsupportedTransferEncoding
     ConflictingContentLength
+    BadRequestLine
 
 pub fn request_parse_error_message(e: RequestParseError) -> String:
     match e:
         UnsupportedTransferEncoding -> "unsupported Transfer-Encoding"
         ConflictingContentLength -> "conflicting Content-Length headers"
+        BadRequestLine -> "malformed request line"
 
 impl Show for RequestParseError:
     fn show(self) -> String:
@@ -50,12 +52,12 @@ pub fn method(req: Request) -> String:
     match req:
         Request(m, _p, _pa, _q, _h, _b) -> m
 
-// The request path, percent-decoded for the handler (BUG-375). Routing itself
-// runs on the RAW path (`raw_path_of`) and decodes each segment individually, so a
-// `%2F` in a segment can't forge an extra path separator; this accessor decodes the
-// whole path for display/logging.
+// The request path, normalized and percent-decoded for the handler. Routing and
+// this accessor see the same normalized form (BUG-432): consecutive slashes are
+// collapsed and trailing slashes stripped. Percent-decoding is applied after
+// normalization so a `%2F` stays inside one segment (no forged separator, BUG-375).
 pub fn path(req: Request) -> String:
-    percent_decode(raw_path_of(req), false)
+    percent_decode(normalize_path(raw_path_of(req)), false)
 
 // The raw (still percent-encoded) request path — used by the router so that
 // segment boundaries are taken from literal `/` only.
@@ -305,8 +307,10 @@ fn with_params(req: Request, params: List((String, String))) -> Request:
         Request(m, p, _old, q, h, b) -> Request(m, p, params, q, h, b)
 
 // Match a path against a pattern, returning the captured params or None.
+// The request path is normalized (collapsed slashes, no trailing slash) before
+// segment splitting, so `/api//x/` routes identically to `/api/x`.
 fn match_path(pattern: String, p: String) -> Option(List((String, String))):
-    match_segs(split_path(pattern), split_path(p), [])
+    match_segs(split_path(pattern), split_path(normalize_path(p)), [])
 
 fn split_path(p: String) -> List(String):
     // (BUG-375) Split on literal `/` FIRST, then percent-decode each segment — so a
@@ -363,19 +367,17 @@ fn join_segs(xs: List(String)) -> String:
 // ---- Request parsing from the socket ----
 fn read_request(sock: Socket) -> Result(Request, Response):
     let request_line = sock.recv_line()
-    let m = first_word(request_line)
-    let target = second_word(request_line)
-    let raw_path = before(target, "?")
-    let q = parse_query(after(target, "?"))
-    let headers = read_headers(sock)
-    // Ambiguous or unsupported request framing is answered 400, not processed
-    // first-wins. In particular, `Transfer-Encoding` request bodies are rejected
-    // until the server has a strict chunked decoder for them.
-    match framed_length(headers):
+    match validate_request_line(request_line):
         Err(e) -> Err(request_parse_error_response(e))
-        Ok(len) ->
-            let body = if len > 0: sock.recv_bytes(len) else: ""
-            Ok(Request(m, raw_path, [], q, headers, body))
+        Ok((m, target)) ->
+            let raw_path = normalize_path(before(target, "?"))
+            let q = parse_query(after(target, "?"))
+            let headers = read_headers(sock)
+            match framed_length(headers):
+                Err(e) -> Err(request_parse_error_response(e))
+                Ok(len) ->
+                    let body = if len > 0: sock.recv_bytes(len) else: ""
+                    Ok(Request(m, raw_path, [], q, headers, body))
 
 fn read_headers(sock: Socket) -> List((String, String)):
     var hdrs = []
@@ -412,23 +414,24 @@ pub fn parse_request(raw: String) -> Result(Request, RequestParseError):
     let body_all = if sep < 0: "" else: string.substring(raw, sep + 4, string.char_count(raw))
     let lines = string.split(head, "\r\n")
     let request_line = if list.length(lines) > 0: list.at(lines, 0) else: ""
-    let m = first_word(request_line)
-    let target = second_word(request_line)
-    let raw_path = before(target, "?")
-    let q = parse_query(after(target, "?"))
-    var headers = []
-    var i = 1
-    while i < list.length(lines):
-        headers = match parse_header_line(list.at(lines, i)):
-            Some(hv) -> list.push(headers, hv)
-            None -> headers
-
-        i = i + 1
-    match framed_length(headers):
+    match validate_request_line(request_line):
         Err(e) -> Err(e)
-        Ok(len) ->
-            let body = if len > 0: string.take(body_all, len) else: ""
-            Ok(Request(m, raw_path, [], q, headers, body))
+        Ok((m, target)) ->
+            let raw_path = normalize_path(before(target, "?"))
+            let q = parse_query(after(target, "?"))
+            var headers = []
+            var i = 1
+            while i < list.length(lines):
+                headers = match parse_header_line(list.at(lines, i)):
+                    Some(hv) -> list.push(headers, hv)
+                    None -> headers
+
+                i = i + 1
+            match framed_length(headers):
+                Err(e) -> Err(e)
+                Ok(len) ->
+                    let body = if len > 0: string.take(body_all, len) else: ""
+                    Ok(Request(m, raw_path, [], q, headers, body))
 
 // Application/server-boundary bridge for callers that want the old "parse or 400
 // Response" shape explicitly.
@@ -532,6 +535,60 @@ fn flush_bytes(hex: String) -> String:
 
 fn is_hex(c: String) -> Bool:
     string.char_count(c) == 1 && string.contains("0123456789abcdefABCDEF", c)
+
+// Validate that a request line has the form "METHOD target HTTP/x.y". Returns
+// the method and target on success, or BadRequestLine on failure.
+fn validate_request_line(line: String) -> Result((String, String), RequestParseError):
+    let m = first_word(line)
+    if m == "" || m == line:
+        Err(BadRequestLine)
+    else:
+        let target = second_word(line)
+        if target == "":
+            Err(BadRequestLine)
+        else:
+            let version = third_word(line)
+            if !string.starts_with(version, "HTTP/"):
+                Err(BadRequestLine)
+            else:
+                Ok((m, target))
+
+// Normalize a path: collapse consecutive slashes and strip trailing slash
+// (except for the root path "/").
+fn normalize_path(p: String) -> String:
+    if p == "" || p == "/":
+        p
+    else:
+        var out = ""
+        var prev_slash = false
+        var i = 0
+        let n = string.char_count(p)
+        while i < n:
+            let ch = string.char_at(p, i) ?? ""
+            if ch == "/":
+                if !prev_slash:
+                    out = out + ch
+                prev_slash = true
+            else:
+                out = out + ch
+                prev_slash = false
+            i = i + 1
+        if string.char_count(out) > 1 && string.ends_with(out, "/"):
+            string.substring(out, 0, string.char_count(out) - 1)
+        else:
+            out
+
+fn third_word(s: String) -> String:
+    let sp = string.index_of(s, " ") ?? -1
+    if sp < 0:
+        ""
+    else:
+        let r = string.substring(s, sp + 1, string.char_count(s))
+        let sp2 = string.index_of(r, " ") ?? -1
+        if sp2 < 0:
+            ""
+        else:
+            string.trim(string.substring(r, sp2 + 1, string.char_count(r)))
 
 fn first_word(s: String) -> String:
     let sp = string.index_of(s, " ") ?? -1

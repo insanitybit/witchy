@@ -3009,6 +3009,7 @@ fn classify(e: server.RequestParseError) -> String:
     match e:
         server.UnsupportedTransferEncoding -> "transfer"
         server.ConflictingContentLength -> "length"
+        server.BadRequestLine -> "badline"
 
 fn via_string(raw: String) -> Result(http.Request, String):
     let req = server.parse_request(raw)?
@@ -4133,6 +4134,64 @@ fn main(console: Console):
             "truncated=chunked response ended before the declared chunk size".to_string(),
             "cl=1".to_string(),
             "true".to_string(),
+        ];
+        assert_eq!(link_run(src), expected, "interpreter");
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
+    }
+
+    /// BUG-438: malformed request lines are rejected before reaching handlers.
+    /// BUG-432: paths are normalized (collapsed slashes, no trailing slash).
+    #[test]
+    fn server_request_line_validation_and_path_normalization() {
+        let src = r#"import server
+import http
+from http import Request, Response
+
+fn hi(req: Request) -> Response:
+    server.text(200, "path=" + server.path(req))
+
+fn main(console: Console):
+    // BUG-438: malformed request lines rejected
+    match server.parse_request("GET\r\n\r\n"):
+        Ok(_r) -> console.print("bad: no target")
+        Err(e) -> console.print(server.request_parse_error_message(e))
+    match server.parse_request("GET /\r\n\r\n"):
+        Ok(_r) -> console.print("bad: no version")
+        Err(e) -> console.print(server.request_parse_error_message(e))
+    match server.parse_request("\r\n\r\n"):
+        Ok(_r) -> console.print("bad: empty line")
+        Err(e) -> console.print(server.request_parse_error_message(e))
+    // Valid request line succeeds
+    match server.parse_request("GET / HTTP/1.1\r\n\r\n"):
+        Ok(req) -> console.print("ok path=" + server.path(req))
+        Err(_e) -> console.print("bad: valid rejected")
+    // BUG-432: path normalization
+    match server.parse_request("GET //api//coven/index HTTP/1.1\r\n\r\n"):
+        Ok(req) -> console.print("norm=" + server.path(req))
+        Err(_e) -> console.print("bad: norm rejected")
+    match server.parse_request("GET /api/coven/index/ HTTP/1.1\r\n\r\n"):
+        Ok(req) -> console.print("trail=" + server.path(req))
+        Err(_e) -> console.print("bad: trail rejected")
+    match server.parse_request("GET / HTTP/1.1\r\n\r\n"):
+        Ok(req) -> console.print("root=" + server.path(req))
+        Err(_e) -> console.print("bad: root rejected")
+    // Router normalizes paths — double slashes and trailing slashes match
+    let app = server.router().get("/api/items", hi)
+    console.print(http.body(server.handle(app, Request("GET", "/api/items", [], [], [], ""))))
+    console.print(http.body(server.handle(app, Request("GET", "/api//items", [], [], [], ""))))
+    console.print(http.body(server.handle(app, Request("GET", "/api/items/", [], [], [], ""))))
+"#;
+        let expected = vec![
+            "malformed request line".to_string(),
+            "malformed request line".to_string(),
+            "malformed request line".to_string(),
+            "ok path=/".to_string(),
+            "norm=/api/coven/index".to_string(),
+            "trail=/api/coven/index".to_string(),
+            "root=/".to_string(),
+            "path=/api/items".to_string(),
+            "path=/api/items".to_string(),
+            "path=/api/items".to_string(),
         ];
         assert_eq!(link_run(src), expected, "interpreter");
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
