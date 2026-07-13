@@ -466,22 +466,21 @@ pub fn serve(console: Console) -> Int:
             vec!["Console"],
             "show's only capability demand is Console (for say)",
         );
-        // `http` takes a bare `Net` (full verbs) for now — not yet tightened to
-        // `Net[Connect]`/`Net[Listen]`.
+        // `http` is connect-only: it should never widen to bare/full Net.
         let http_fp = footprint(crate::linker::std_source("http").expect("bundled module"));
         assert_eq!(
-            http_fp.total.keys().copied().collect::<Vec<_>>(),
-            vec!["Net"],
-            "networking module `http` should require only Net",
+            http_fp.total,
+            cs(&[("Net", &["Connect", "Tcp"])]),
+            "http must be exactly Net[Connect, Tcp] — a widening here grants listen/server authority",
         );
-        // `server` takes `Net` plus `Secret` (RFC-0060: `serve_tls` accepts a
-        // private key as a use-only `Secret`) — authority is visible, as it
-        // should be for a module that can serve HTTPS.
+        // `server` takes `Net[Listen, Tcp]` plus `Secret` (RFC-0060: `serve_tls`
+        // accepts a private key as a use-only `Secret`) — authority is visible, as
+        // it should be for a module that can serve HTTPS.
         let server_fp = footprint(crate::linker::std_source("server").expect("bundled module"));
         assert_eq!(
-            server_fp.total.keys().copied().collect::<Vec<_>>(),
-            vec!["Net", "Secret"],
-            "server should require Net + Secret (serve_tls key)",
+            server_fp.total,
+            cs(&[("Net", &["Listen", "Tcp"]), ("Secret", &[])]),
+            "server must be exactly Net[Listen, Tcp] + Secret — a widening here grants client authority",
         );
         // `exec` takes an `Exec` (to spawn) plus a `Dir[Read]` (to name and
         // confine the executable) — exactly those two, nothing ambient.
