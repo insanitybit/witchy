@@ -443,10 +443,15 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     # changed, skip it; if the surface changed, run a reduced 10-seed sample (the
     # full 30 still run post-merge on CI under the checked heap, and in `--full`).
     # Fail SAFE: any doubt (git error, empty diff) -> full.
+    #
+    # Parity surface (reduced): compiler crates, std library, src/, examples,
+    # build infrastructure (Cargo.toml/lock, .cargo/, build.rs, rust-toolchain).
+    # Non-parity (skip): rfcs/, bugs/, docs, scripts/, projects/ (witchy apps
+    # that exercise the compiler but can't change its behavior), book/.
     local fuzz_mode="full"
     local changed
     if changed="$(git -C "$gate_wt" diff --name-only "$base..$sha" 2>/dev/null)" && [ -n "$changed" ]; then
-        if echo "$changed" | grep -qE '^(crates/|std/|src/|examples/|projects/|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)'; then
+        if echo "$changed" | grep -qE '^(crates/|std/|src/|examples/|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)'; then
             fuzz_mode="reduced"
         else
             fuzz_mode="skip"
