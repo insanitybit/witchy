@@ -2,8 +2,8 @@
 # build.sh — compile the glamour example runes to footprint-empty WASM for the
 # real-browser demo. Each rune `import glamour`, so the compiler must see
 # `glamour.witchy` as a resolvable sibling; we stage each rune next to a copy of
-# glamour in a scratch dir (exactly what the headless tests do), compile with the
-# DEBUG witchy binary, and drop the `.wasm` into this `demo/` directory.
+# glamour in a scratch dir (exactly what the headless tests do), compile with
+# the witchy binary, and drop the `.wasm` into this `demo/` directory.
 #
 # Usage:  ./build.sh        (run from web/witchy-runtime/demo/)
 # Output: demo/counter.wasm, demo/highlighter.wasm, demo/runecard.wasm,
@@ -13,12 +13,18 @@ set -euo pipefail
 # Resolve paths relative to this script so it works from any CWD.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
-WITCHY="$REPO/target/debug/witchy"
 GLAMOUR="$REPO/projects/glamour/src/glamour.witchy"
 
-if [[ ! -x "$WITCHY" ]]; then
-  echo "build.sh: debug witchy binary not found at $WITCHY" >&2
-  echo "  (build it once with: cargo build  — but NOT while another agent is mid-edit)" >&2
+# Find the witchy binary: prefer release, fall back to debug, then PATH.
+if [[ -x "$REPO/target/release/witchy" ]]; then
+  WITCHY="$REPO/target/release/witchy"
+elif [[ -x "$REPO/target/debug/witchy" ]]; then
+  WITCHY="$REPO/target/debug/witchy"
+elif command -v witchy >/dev/null 2>&1; then
+  WITCHY="$(command -v witchy)"
+else
+  echo "build.sh: no witchy binary found (tried target/release, target/debug, PATH)" >&2
+  echo "  (build with: cargo build --release)" >&2
   exit 1
 fi
 

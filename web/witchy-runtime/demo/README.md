@@ -35,12 +35,13 @@ From this `demo/` directory:
 ./build.sh
 ```
 
-This compiles the two runes with the **debug** witchy binary
-(`../../../target/debug/witchy`), staging `glamour.witchy` as a sibling so
-`import glamour` resolves, and writes `counter.wasm` + `highlighter.wasm` here.
+This compiles the four runes (counter, highlighter, runecard, covenbrowser),
+staging `glamour.witchy` as a sibling so `import glamour` resolves, and writes
+each `*.wasm` here. The script uses the release binary if available, then falls
+back to debug or PATH.
 
-> Requires `target/debug/witchy` to exist (`cargo build` once). The runes are
-> footprint-empty, so they instantiate under the deny-all shim.
+> Requires a witchy binary (`cargo build --release` or `cargo build`). The runes
+> are footprint-empty, so they instantiate under the deny-all shim.
 
 ## Serve & open
 
@@ -61,7 +62,7 @@ span counts and confirms `real <script> elements=0`.
 
 ## Files
 
-- `build.sh` — compiles both runes to `*.wasm`.
+- `build.sh` — compiles all four runes to `*.wasm`.
 - `index.html` — the page (`#counter` + `#highlight` mount points, styling).
 - `demo.mjs` — fetches the wasm, mounts the counter, renders the highlighter.
-- `counter.wasm` / `highlighter.wasm` — build outputs (created by `build.sh`).
+- `*.wasm` — build outputs (counter, highlighter, runecard, covenbrowser; created by `build.sh`).
