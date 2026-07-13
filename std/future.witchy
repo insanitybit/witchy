@@ -41,7 +41,7 @@ pub fn pending(x: a) -> Future(a):
 // ---- combinators ----
 
 // Sequence: run `f` to completion, then continue with `k` applied to its result.
-// This is what `let y = await f` lowers to (`k` is the continuation).
+// The CPS analogue of `let y = await f; k(y)` — continuation-passing over futures.
 pub fn and_then(f: Future(a), k: fn(a) -> Future(b)) -> Future(b):
     Future(fn(): and_then_step(poll(f), k))
 

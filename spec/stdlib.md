@@ -1102,7 +1102,7 @@ Completes with `x`, but yields control once first — a cooperative scheduling p
 
 #### `fn and_then(f: Future(a), k: fn(a) -> Future(b)) -> Future(b)`
 
-Sequence: run `f` to completion, then continue with `k` applied to its result. This is what `let y = await f` lowers to (`k` is the continuation).
+Sequence: run `f` to completion, then continue with `k` applied to its result. The CPS analogue of `let y = await f; k(y)` — continuation-passing over futures.
 
 #### `fn map(f: Future(a), g: fn(a) -> b) -> Future(b)`
 
