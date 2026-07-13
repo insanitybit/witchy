@@ -517,6 +517,11 @@ fn comment_before(lines: &[&str], i: usize) -> String {
     while start > 0 && lines[start - 1].trim_start().starts_with("//") {
         start -= 1;
     }
+    // A comment block beginning at source line zero is the module description,
+    // already rendered by `leading_comment`. Do not repeat it on the first item.
+    if start == 0 {
+        return String::new();
+    }
     join_comment(lines[start..i].iter())
 }
 
@@ -525,11 +530,26 @@ fn comment_before(lines: &[&str], i: usize) -> String {
 fn join_comment<'a>(it: impl Iterator<Item = &'a &'a str>) -> String {
     let mut paragraphs: Vec<String> = Vec::new();
     let mut current = String::new();
+    let mut in_separator = false;
     for l in it {
         let t = l.trim_start();
         match t.strip_prefix("//") {
             Some(rest) => {
                 let rest = rest.strip_prefix(' ').unwrap_or(rest);
+                let trimmed = rest.trim();
+                if in_separator {
+                    if trimmed.ends_with("---") {
+                        in_separator = false;
+                    }
+                    continue;
+                }
+                if trimmed.starts_with("---") {
+                    if !current.is_empty() {
+                        paragraphs.push(std::mem::take(&mut current));
+                    }
+                    in_separator = !trimmed.ends_with("---");
+                    continue;
+                }
                 if rest.trim().is_empty() {
                     if !current.is_empty() {
                         paragraphs.push(std::mem::take(&mut current));
@@ -568,6 +588,27 @@ mod tests {
         assert!(md.contains("#### `fn hello(name: String) -> String`"), "signature: {md}");
         assert!(md.contains("Say hello to `name`."), "fn doc: {md}");
         assert!(!md.contains("private_helper"), "private fn must be omitted: {md}");
+    }
+
+    // BUG-072: a top-of-file comment is the module description, even when the
+    // first declaration follows immediately. It must not also become item prose.
+    #[test]
+    fn module_comment_is_not_reused_for_first_public_item() {
+        let src = "// Module introduction.\npub fn first() -> Int:\n    1\n";
+        let md = render("sample", src).unwrap();
+        assert_eq!(md.matches("Module introduction.").count(), 1, "module doc: {md}");
+        assert!(md.contains("#### `fn first() -> Int`"), "first item: {md}");
+    }
+
+    // BUG-072: source-navigation separators are not API prose. Multi-line
+    // separators are common in intrinsic modules such as `std/math.witchy`.
+    #[test]
+    fn decorative_comment_separators_are_omitted() {
+        let src = "// Module introduction.\n// --- Native primitives (implemented by both backends;\n// placeholder bodies carry signatures). ---\n\npub fn first() -> Int:\n    1\n";
+        let md = render("sample", src).unwrap();
+        assert!(md.contains("Module introduction."), "module doc: {md}");
+        assert!(!md.contains("Native primitives"), "separator: {md}");
+        assert!(!md.contains("placeholder bodies"), "separator continuation: {md}");
     }
 
     #[test]

@@ -586,12 +586,6 @@ Conversion traits, following Rust's `std::convert`. `From(a)` builds the impleme
 
 #### `trait From(a)`
 
-Conversion traits, following Rust's `std::convert`. `From(a)` builds the implementing type from an `a`; `Into(b)` consumes `self` into a `b`. Implementing `From` is enough, since the blanket impl below derives the matching `Into`:
-
-  Celsius.from(deg)   build via From   value.into()        convert via the derived Into
-
-`from` takes no `self`, so the blanket impl calls it on the target type as `b.from(self)`. The `where` bound decides which `from` to call when the use site is monomorphized.
-
 - `fn from(value: a) -> Self`
 
 #### `trait Into(b)`
@@ -810,8 +804,6 @@ Construct from a count of one unit. Numeric constructors are convenience contrac
 Build a duration from hours, minutes, and seconds. Components may be negative, but scaling and addition abort if the total millisecond count would overflow.
 
 #### `fn to_milliseconds(d: Duration) -> Int`
-
----- Total conversions (whole units, truncated toward zero) ----
 
 #### `fn to_seconds(d: Duration) -> Int`
 
@@ -1637,8 +1629,6 @@ The element at index `i` of a JSON array.
 
 #### `fn require(j: Json, key: String) -> Result(Json, DeserializeError)`
 
---- Result-returning decoders (the backbone of `derive(Deserialize)`'s from_json) -----
-
 #### `fn int_of(j: Json) -> Result(Int, DeserializeError)`
 
 Coerce a Json value to a scalar, or `Err` describing the expected shape.
@@ -1663,7 +1653,7 @@ Build a JSON object whose keys are sorted (matching a serialized BTreeMap), e.g.
 
 #### `fn get_string(j: Json, key: String) -> Option(String)`
 
---- typed field accessors (get a key, then coerce) -------------------------- `get` composed with each `as_*` — the common case of reading a typed field out of an object without spelling the two steps every time.
+`get` composed with each `as_*` — the common case of reading a typed field out of an object without spelling the two steps every time.
 
 #### `fn get_int(j: Json, key: String) -> Option(Int)`
 
@@ -1697,7 +1687,7 @@ Encode an `Option` as payload-or-`null` — `Some(x)` through `each`, `None` as 
 
 #### `fn from_value(x: a) -> Json where a: Reflect`
 
---- reflective encoding (no derive) ----------------------------------------- `from_value(x)` encodes a value to `Json` by reflecting over its structure, so it works for any type with no derive. `stringify(x)` returns the encoded string.
+`from_value(x)` encodes a value to `Json` by reflecting over its structure, so it works for any type with no derive. `stringify(x)` returns the encoded string.
 
 #### `fn stringify(x: a) -> String where a: Reflect`
 
@@ -2123,7 +2113,7 @@ Sort any list whose elements are `Ord` ascending — a stable merge sort (O(n lo
 
 ## `math`
 
-The witchy standard math library: small integer helpers, pure and capability-free. (Comparison can't be generic without type classes, so these are Int-specific.) --- Native primitives (intercepted by both backends; self-recursive placeholder bodies give the type checker the signatures). ---
+The witchy standard math library: small integer helpers, pure and capability-free. (Comparison can't be generic without type classes, so these are Int-specific.)
 
 #### `fn to_float(n: Int) -> Float`
 
@@ -2210,8 +2200,6 @@ Render `n` in `base` (2..16) with lowercase digits; a negative `n` gets a leadin
 `n` in binary (e.g. 5 -> "101").
 
 #### `fn float_min(a: Float, b: Float) -> Float`
-
---- Float versions (Int comparison can't be reused for Float) ---
 
 #### `fn float_max(a: Float, b: Float) -> Float`
 
@@ -2874,7 +2862,7 @@ A `Dict` reflects to an `MRecord` — the same string-keyed shape a record uses,
 
 #### `fn debug(x: a) -> String where a: Reflect`
 
---- a second consumer: structural debug rendering --------------------------- `debug(x)` renders any value from its reflection, using the same `reflect` that backs `json`.
+`debug(x)` renders any value from its reflection, using the same `reflect` that backs `json`.
 
 ### Trait implementations
 
@@ -3192,7 +3180,7 @@ Matchable semantic-version parse failures. Requirement parsing reuses the same c
 
 #### `fn version(major: Int, minor: Int, patch: Int) -> Version`
 
---- constructors ------------------------------------------------------------ A convenience constructor for known-good components (e.g. a computed bump). A negative component is not a version at all, so it is a contract violation (RFC-0044 rule 3): fail loudly naming the bad coordinate rather than minting an impossible one. Untrusted input belongs in `parse`, which returns `Err` instead of aborting.
+A convenience constructor for known-good components (e.g. a computed bump). A negative component is not a version at all, so it is a contract violation (RFC-0044 rule 3): fail loudly naming the bad coordinate rather than minting an impossible one. Untrusted input belongs in `parse`, which returns `Err` instead of aborting.
 
 #### `fn parse(s: String) -> Result(Version, SemverError)`
 
@@ -3211,8 +3199,6 @@ Parse with String errors for application-style boundaries.
 #### `fn less(a: Version, b: Version) -> Bool`
 
 #### `fn parse_req(s: String) -> Result(Req, SemverError)`
-
---- constraints -------------------------------------------------------------
 
 #### `fn parse_req_string(s: String) -> Result(Req, String)`
 
@@ -3272,8 +3258,6 @@ A router: its routes plus the middleware layers wrapping the whole dispatch.
 
 #### `fn method(req: Request) -> String`
 
----- Request accessors ----
-
 #### `fn path(req: Request) -> String`
 
 The request path, normalized and percent-decoded for the handler. Routing and this accessor see the same normalized form (BUG-432): consecutive slashes are collapsed and trailing slashes stripped. Percent-decoding is applied after normalization so a `%2F` stays inside one segment (no forged separator, BUG-375).
@@ -3322,8 +3306,6 @@ A single form field, or `default` if absent.
 
 #### `fn text(code: Int, b: String) -> Response`
 
----- Response constructors (an axum `IntoResponse` in spirit) ----
-
 #### `fn html(code: Int, b: String) -> Response`
 
 #### `fn json(code: Int, b: String) -> Response`
@@ -3341,8 +3323,6 @@ A JSON response from any reflectable value. Reflection serializes it, so a handl
 #### `fn status_only(code: Int) -> Response`
 
 #### `fn ok(b: String) -> Response`
-
----- Status-named constructors (axum `StatusCode` ergonomics) ----
 
 #### `fn created(b: String) -> Response`
 
@@ -3966,8 +3946,6 @@ A task communicating via channels, producing an `a`.
 
 #### `sealed type Handle`
 
----- spawn + join ----
-
 - `Handle(Int)`
 
 #### `sealed type ChannelId`
@@ -4146,8 +4124,6 @@ Parse RFC 3339 / ISO 8601: `2026-06-08T22:30:00Z`, an offset like `+02:00` (norm
 Parse with String errors for application-style boundaries.
 
 #### `fn is_leap(y: Int) -> Bool`
-
---- calendar facts ----------------------------------------------------------
 
 #### `fn weekday(d: DateTime) -> Int`
 
