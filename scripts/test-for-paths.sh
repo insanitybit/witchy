@@ -68,6 +68,7 @@ for p in "${paths[@]}"; do
             # validator, catching that false Run button pre-submit.
             add "./scripts/check.sh --wasm" ;;
         projects/pm/* | projects/coven/* | projects/coven-web/* | projects/glamour/* | projects/docs/*)
+            add "find projects -type f -path '*/src/*.witchy' -exec ./target/debug/witchy fmt --check {} +"
             add "./scripts/check.sh --e2e" ;;
         tests/e2e.rs)
             add "./scripts/check.sh --e2e" ;;
