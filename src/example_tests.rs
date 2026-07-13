@@ -1211,6 +1211,21 @@ fn main(console: Console):
         );
     }
 
+    /// RFC-0080 second slice: built-in derive generators return `ItemSyntax`
+    /// directly. Source assembly still lives in `std/meta`, but the public
+    /// generator boundary is no longer `String`.
+    #[test]
+    fn builtin_derive_generators_return_typed_items_on_both_backends() {
+        let src = "import show\nimport meta\n\ntype Point:\n    x: Int\n\ncomptime:\n    for t in module_types:\n        if t.name == \"Point\":\n            let generated: ItemSyntax = meta.derive_show(t)\n            emit_item(generated)\n\nfn main(console: Console):\n    console.print(\"${Point(7)}\")\n";
+        let expected = ["Point(7)"];
+        assert_eq!(link_run(src), expected, "interp emits builtin typed derive item");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled emits builtin typed derive item",
+        );
+    }
+
     /// (BUG-180) Comptime is isolated from authority, but not from pure local
     /// helper code. A block can call a same-module generator helper, and a custom
     /// derive routes through the same reachable helper closure.

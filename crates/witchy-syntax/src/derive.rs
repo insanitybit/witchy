@@ -1,11 +1,11 @@
 //! `derive(...)` — desugar each derive to a comptime call of its witchy generator.
 //!
 //! The per-trait code generation is NOT here anymore: a `derive(X)` becomes a
-//! `comptime:` block `emit_item(item(meta.derive_<x>(typeInfo_of_T)))`
+//! `comptime:` block `emit_item(meta.derive_<x>(typeInfo_of_T))`
 //! (built-ins live in `std/meta`; a user derive routes to a bare `derive_<x>`
-//! they define). The generator still returns source text for compatibility, but
-//! the compiler-generated append boundary is typed as `meta.ItemSyntax` — the
-//! first RFC-0080 migration step away from raw textual emission.
+//! they define and is source-wrapped for compatibility). Built-ins now return
+//! `meta.ItemSyntax`; user derives may keep returning source text during the
+//! migration.
 
 use crate::ast::*;
 // foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
@@ -104,12 +104,12 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
         for d in &derives {
             match d.as_str() {
                 "Show" => {
-                    generated.push(derive_via_comptime("meta.derive_show", &derive_type));
+                    generated.push(derive_item_via_comptime("meta.derive_show", &derive_type));
                     needs_show = true;
                 }
                 "PartialEq" => {
                     if !emitted_partial_eq {
-                        generated.push(derive_via_comptime("meta.derive_partial_eq", &derive_type));
+                        generated.push(derive_item_via_comptime("meta.derive_partial_eq", &derive_type));
                         emitted_partial_eq = true;
                     }
                 }
@@ -121,10 +121,10 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                         ));
                     }
                     if !has_explicit_partial_eq && !emitted_partial_eq {
-                        generated.push(derive_via_comptime("meta.derive_partial_eq", &derive_type));
+                        generated.push(derive_item_via_comptime("meta.derive_partial_eq", &derive_type));
                         emitted_partial_eq = true;
                     }
-                    generated.push(derive_via_comptime("meta.derive_eq", &derive_type));
+                    generated.push(derive_item_via_comptime("meta.derive_eq", &derive_type));
                 }
                 "PartialOrd" => {
                     let is_record =
@@ -135,7 +135,7 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                             t.name
                         ));
                     }
-                    generated.push(derive_via_comptime("meta.derive_partial_ord", &derive_type));
+                    generated.push(derive_item_via_comptime("meta.derive_partial_ord", &derive_type));
                 }
                 "Ord" => {
                     let is_record =
@@ -152,10 +152,10 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                             t.name
                         ));
                     }
-                    generated.push(derive_via_comptime("meta.derive_ord", &derive_type));
+                    generated.push(derive_item_via_comptime("meta.derive_ord", &derive_type));
                 }
                 "Reflect" => {
-                    generated.push(derive_via_comptime("meta.derive_reflect", &derive_type));
+                    generated.push(derive_item_via_comptime("meta.derive_reflect", &derive_type));
                     needs_reflect = true;
                 }
                 // Decode only: reflection (json.value_of / stringify / Into(Json))
@@ -177,7 +177,7 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                             t.name, shape, field
                         ));
                     }
-                    generated.push(derive_via_comptime("meta.derive_deserialize", &derive_type));
+                    generated.push(derive_item_via_comptime("meta.derive_deserialize", &derive_type));
                     needs_deserialize = true;
                 }
                 // A user-defined derive: route to the witchy generator
@@ -185,7 +185,7 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                 // and which returns the impl source for the type. Anyone can add a
                 // derive this way; the per-trait codegen is no longer Rust-only.
                 other => {
-                    generated.push(derive_via_comptime(
+                    generated.push(derive_source_via_comptime(
                         &format!("derive_{}", other.to_lowercase()),
                         &derive_type,
                     ));
@@ -230,13 +230,26 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
     Ok(())
 }
 
-/// Desugar one `derive(X)` into a `comptime:` block that calls the witchy
-/// generator `generator(typeInfo)`, wraps the returned source as `meta.ItemSyntax`,
-/// and emits that item — so the per-trait code generation lives in witchy
-/// (std/meta), not here, while the append boundary is no longer an untyped string.
-/// The type's structure is embedded as a `meta.TypeInfo` literal; comptime
-/// auto-imports `meta`.
-fn derive_via_comptime(generator: &str, t: &TypeDef) -> Item {
+/// Desugar a built-in derive into a `comptime:` block that calls the witchy
+/// generator `generator(typeInfo)` and emits the returned `meta.ItemSyntax`.
+fn derive_item_via_comptime(generator: &str, t: &TypeDef) -> Item {
+    let emit = Expr::Call {
+        name: "emit_item".into(),
+        args: vec![Expr::Call {
+            name: generator.into(),
+            args: vec![crate::reflect::type_info_expr(t)],
+        }],
+    };
+    Item::Comptime(Block {
+        stmts: vec![Stmt::Expr(emit)],
+        lines: vec![0],
+        region: None,
+    })
+}
+
+/// Desugar a user-defined derive through the legacy source-string contract,
+/// then wrap that source as `meta.ItemSyntax` at the append boundary.
+fn derive_source_via_comptime(generator: &str, t: &TypeDef) -> Item {
     let emit = Expr::Call {
         name: "emit_item".into(),
         args: vec![Expr::Call {

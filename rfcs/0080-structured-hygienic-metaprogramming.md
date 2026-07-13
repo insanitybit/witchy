@@ -177,11 +177,14 @@ The first source-compatible slice is implemented:
 - `std/meta` exposes sealed `ItemSyntax` and `meta.item(source)`.
 - Every `comptime:` block receives a compiler-injected `emit_item(item:
   meta.ItemSyntax)` helper alongside legacy `emit(String)`.
-- `derive(...)` desugaring now appends through
+- `derive(...)` desugaring initially appended through
   `emit_item(item(generator(typeInfo)))`, with `item` from the compiler-injected
   `meta` imports, so the compiler-generated append
   boundary is typed even while built-in and custom derive generators continue to
   return source strings.
+- The second slice moves built-in `std/meta.derive_*` generators to return
+  `ItemSyntax` directly. User-defined derives keep the source-string contract
+  until the full structured custom-derive API lands.
 
 This is intentionally not the full RFC. The payload is still source-backed and
 there is no quotation, identifier hygiene, compile-time-only type enforcement,

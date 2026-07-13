@@ -1954,31 +1954,31 @@ A source-backed item wrapper. This is the migration bridge from today's source-e
 
 Render a structured type back to source text only when generated source needs to name the type. Semantic branching should stay on `TypeExpr`, not this string.
 
-#### `fn derive_show(t: TypeInfo) -> String`
+#### `fn derive_show(t: TypeInfo) -> ItemSyntax`
 
 `derive(Show)` -> constructor-shaped rendering with each field/payload rendered through its own `Show` impl. Primitive fields still match structural interpolation bytes, while fields with custom `Show` keep their public display form. Generic parameters carry a `: Show` bound, so the same code path compiles coherently on both backends.
 
-#### `fn derive_eq(t: TypeInfo) -> String`
+#### `fn derive_eq(t: TypeInfo) -> ItemSyntax`
 
 `derive(Eq)` → the total-equality marker. Refines `PartialEq` (derive both).
 
-#### `fn derive_partial_eq(t: TypeInfo) -> String`
+#### `fn derive_partial_eq(t: TypeInfo) -> ItemSyntax`
 
 `derive(PartialEq)` → field-wise structural equality. The operators dispatch per field, so it is content-correct on both backends: a record compares each field with `==`; a sum type matches the variant and compares payloads.
 
-#### `fn derive_reflect(t: TypeInfo) -> String`
+#### `fn derive_reflect(t: TypeInfo) -> ItemSyntax`
 
 `derive(Reflect)` → an `impl Reflect for T` building the value's `Mirror`: a record to `MRecord("T", [(field, reflect field)…])`, a sum type to a `match` over variants to `MVariant`. (The module must `import reflect`; caller checks.)
 
-#### `fn derive_ord(t: TypeInfo) -> String`
+#### `fn derive_ord(t: TypeInfo) -> ItemSyntax`
 
 `derive(Ord)` → lexicographic `compare` returning `Ordering` (records only; the caller validates the shape). Requires the `PartialEq`/`Eq`/`PartialOrd` impls too.
 
-#### `fn derive_partial_ord(t: TypeInfo) -> String`
+#### `fn derive_partial_ord(t: TypeInfo) -> ItemSyntax`
 
 `derive(PartialOrd)` → lexicographic `partial_compare` (records only).
 
-#### `fn derive_deserialize(t: TypeInfo) -> String`
+#### `fn derive_deserialize(t: TypeInfo) -> ItemSyntax`
 
 `derive(Deserialize)` generates `from_json` for a record (the caller validates the shape). It decodes and coerces each field, returning on the first error. There is no matching `Serialize` derive, because reflection (`json.from_value`, `stringify`, `Into(Json)`) already encodes any value, so only this reconstruction is per-type. The generated code uses only json/result/list/option.
 

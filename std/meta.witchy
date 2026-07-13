@@ -54,8 +54,8 @@ type TypeInfo:
     variants: List(VariantInfo)
 
 // --- built-in derive generators ----------------------------------------------
-// `derive(X)` desugars to a comptime call `meta.derive_<x>(typeInfo)` that returns
-// the impl source. These ARE witchy — the per-trait code generation that used to be
+// Built-in `derive(X)` desugars to a comptime call `meta.derive_<x>(typeInfo)`
+// that returns an `ItemSyntax`. These ARE witchy — the per-trait code generation that used to be
 // hardcoded in the Rust compiler now lives here as ordinary, readable functions over
 // `TypeInfo`, and anyone can write their own `derive_foo` the same way.
 
@@ -104,7 +104,10 @@ pub fn type_source(ty: TypeExpr) -> String:
 // interpolation bytes, while fields with custom `Show` keep their public display
 // form. Generic parameters carry a `: Show` bound, so the same code path compiles
 // coherently on both backends.
-pub fn derive_show(t: TypeInfo) -> String:
+pub fn derive_show(t: TypeInfo) -> ItemSyntax:
+    item(derive_show_source(t))
+
+fn derive_show_source(t: TypeInfo) -> String:
     let head = "impl Show for " + target_with_params(t) + where_each(t.params, "Show") + ":\n    fn show(self) -> String:\n"
     match t.kind:
         TypeRecord -> head + "        " + record_show_body(t.name, t.fields) + "\n"
@@ -144,13 +147,19 @@ fn variant_show_arm(v: VariantInfo) -> String:
     "            " + selfpat + " -> " + rhs
 
 // `derive(Eq)` → the total-equality marker. Refines `PartialEq` (derive both).
-pub fn derive_eq(t: TypeInfo) -> String:
+pub fn derive_eq(t: TypeInfo) -> ItemSyntax:
+    item(derive_eq_source(t))
+
+fn derive_eq_source(t: TypeInfo) -> String:
     "impl Eq for " + target_with_params(t) + where_each(t.params, "Eq") + "\n"
 
 // `derive(PartialEq)` → field-wise structural equality. The operators dispatch
 // per field, so it is content-correct on both backends: a record compares each
 // field with `==`; a sum type matches the variant and compares payloads.
-pub fn derive_partial_eq(t: TypeInfo) -> String:
+pub fn derive_partial_eq(t: TypeInfo) -> ItemSyntax:
+    item(derive_partial_eq_source(t))
+
+fn derive_partial_eq_source(t: TypeInfo) -> String:
     let head = "impl PartialEq for " + target_with_params(t) + where_each(t.params, "PartialEq") + ":\n    fn eq(self, other: " + target_with_params(t) + ") -> Bool:\n"
     match t.kind:
         TypeRecord -> head + "        " + record_eq_body(t.fields) + "\n"
@@ -209,7 +218,10 @@ fn reflect_call(ty: TypeExpr, value: String) -> String:
 // `derive(Reflect)` → an `impl Reflect for T` building the value's `Mirror`: a
 // record to `MRecord("T", [(field, reflect field)…])`, a sum type to a `match`
 // over variants to `MVariant`. (The module must `import reflect`; caller checks.)
-pub fn derive_reflect(t: TypeInfo) -> String:
+pub fn derive_reflect(t: TypeInfo) -> ItemSyntax:
+    item(derive_reflect_source(t))
+
+fn derive_reflect_source(t: TypeInfo) -> String:
     let head = "import reflect\n\nimpl Reflect for " + target_with_params(t) + where_each(t.params, "Reflect") + ":\n    fn reflect(self) -> reflect.Mirror:\n"
     if let TypeRecord = t.kind:
         var pairs = []
@@ -254,11 +266,17 @@ fn partial_ord_lexicographic_body(fields: List(FieldInfo), index: Int, indent: S
 
 // `derive(Ord)` → lexicographic `compare` returning `Ordering` (records only; the
 // caller validates the shape). Requires the `PartialEq`/`Eq`/`PartialOrd` impls too.
-pub fn derive_ord(t: TypeInfo) -> String:
+pub fn derive_ord(t: TypeInfo) -> ItemSyntax:
+    item(derive_ord_source(t))
+
+fn derive_ord_source(t: TypeInfo) -> String:
     "impl Ord for " + target_with_params(t) + where_each(t.params, "Ord") + ":\n    fn compare(self, other: " + target_with_params(t) + ") -> Ordering:\n" + ord_lexicographic_body(t.fields, 0, "        ")
 
 // `derive(PartialOrd)` → lexicographic `partial_compare` (records only).
-pub fn derive_partial_ord(t: TypeInfo) -> String:
+pub fn derive_partial_ord(t: TypeInfo) -> ItemSyntax:
+    item(derive_partial_ord_source(t))
+
+fn derive_partial_ord_source(t: TypeInfo) -> String:
     "impl PartialOrd for " + target_with_params(t) + where_each(t.params, "PartialOrd") + ":\n    fn partial_compare(self, other: " + target_with_params(t) + ") -> Option(Ordering):\n" + partial_ord_lexicographic_body(t.fields, 0, "        ")
 
 // A `Result`-producing decode of a `Json` value already in hand (recursive).
@@ -304,7 +322,10 @@ fn json_decode_field(ty: TypeExpr, object: String, key: String) -> String:
 // no matching `Serialize` derive, because reflection (`json.from_value`, `stringify`,
 // `Into(Json)`) already encodes any value, so only this reconstruction is per-type.
 // The generated code uses only json/result/list/option.
-pub fn derive_deserialize(t: TypeInfo) -> String:
+pub fn derive_deserialize(t: TypeInfo) -> ItemSyntax:
+    item(derive_deserialize_source(t))
+
+fn derive_deserialize_source(t: TypeInfo) -> String:
     var lets = []
     var names = []
     var i = 0
