@@ -17,6 +17,42 @@ python3 -m http.server -d web 8000
 Every `Console`-only example in this book runs there. It's the quickest way to
 follow along.
 
+## Installing a tagged release
+
+Tagged releases publish a `witchy` binary, the README and licenses in one
+archive, plus a `SHA256SUMS` manifest. Choose the archive for your machine:
+
+- Linux x86-64: `witchy-x86_64-unknown-linux-gnu.tar.gz`
+- Apple Silicon: `witchy-aarch64-apple-darwin.tar.gz`
+- Intel macOS: `witchy-x86_64-apple-darwin.tar.gz`
+
+The following example uses the GitHub CLI and the Apple Silicon artifact.
+Replace the tag and artifact as needed:
+
+```sh
+tag=v0.1.0
+artifact=witchy-aarch64-apple-darwin.tar.gz
+
+gh release download "$tag" --repo insanitybit/witchy \
+  --pattern "$artifact" --pattern SHA256SUMS
+awk -v file="$artifact" '$2 == file' SHA256SUMS > "$artifact.sha256"
+test -s "$artifact.sha256"
+
+# macOS:
+shasum -a 256 --check "$artifact.sha256"
+# Linux (use this instead of shasum):
+# sha256sum --check "$artifact.sha256"
+
+mkdir witchy-release
+tar -xzf "$artifact" -C witchy-release
+./witchy-release/witchy --version
+```
+
+The checksum proves that the archive matches the manifest attached to that
+release. Because the manifest is not independently signed, it detects download
+corruption or mismatched assets but does not provide a separate trust root from
+GitHub.
+
 ## Building from source
 
 To use witchy as a real tool — the sandbox, the package manager — build the
