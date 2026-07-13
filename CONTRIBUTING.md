@@ -36,11 +36,15 @@ witchy has two backends (interpreter = reference, compiled WASM) held to
 **zero silent divergence**. Before opening a PR:
 
 ```sh
-witchy parity path/to/program.witchy        # one program, both backends
-for f in examples/*.witchy; do              # the sweep CI runs
-    ./target/release/witchy parity "$f"
-done
+witchy parity path/to/program.witchy  # one program, both backends
+just parity-sweep                     # the maintained CI-shaped example sweep
 ```
+
+`parity-sweep` selects runnable `examples/*/src/*.witchy` programs containing
+`fn main`, fails closed on any non-zero parity result, and runs a positive
+control proving divergence is detected. Library modules and in-language
+`*_test.witchy` suites have no runnable `main`; `witchy test` and the Rust
+example matrix cover them instead.
 
 If you add observable behavior (a builtin, an operator, a stdlib function),
 implement it on the interpreter AND the WASM backend in the same change, with
