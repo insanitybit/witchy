@@ -73,6 +73,15 @@
     }
 
     #[test]
+    fn comptime_functions_round_trip_through_formatting() {
+        let src = "comptime fn make() -> ItemSyntax:\n    item(\"fn generated() -> Int:\\n    1\")\n\ncomptime:\n    emit_item(make())\n";
+        let out = reformat(src).expect("comptime fn round-trips");
+        assert!(out.contains("comptime fn make() -> ItemSyntax:"), "{out}");
+        assert!(out.contains("emit_item(make())"), "{out}");
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
+    }
+
+    #[test]
     fn anonymous_record_types_round_trip_through_formatting() {
         // RFC-0078 makes the structural record tier denotable in type position.
         // Formatting must print the source-level shape, not the synthetic
@@ -177,6 +186,7 @@
             from_imports: vec![],
             items: vec![Item::Function(Function {
                 public: false,
+                comptime_only: false,
                 name: "main".into(),
                 params: vec![Param {
                     name: "console".into(),

@@ -1146,6 +1146,9 @@ fn check_compiler_syntax_declarations(module: &Module) -> Result<(), TypeError> 
     for item in &module.items {
         match item {
             Item::Function(f) => {
+                if f.comptime_only {
+                    continue;
+                }
                 let home = decl_module(&f.name, &entry_module);
                 for p in &f.params {
                     if let Some(ty) = &p.ty {
@@ -6284,6 +6287,10 @@ impl Checker {
 
     fn check_function(&mut self, func: &Function) -> Result<(), TypeError> {
         borrow_escape_check(func)?;
+        let prev_compiler_syntax_allowed = self.compiler_syntax_allowed;
+        if func.comptime_only {
+            self.compiler_syntax_allowed = true;
+        }
         let (params, ret) = self.fn_sigs.get(&func.name).cloned().unwrap();
         self.scopes = vec![HashMap::new()];
         self.consumed.clear();
@@ -6450,6 +6457,7 @@ impl Checker {
                 }
             }
         }
+        self.compiler_syntax_allowed = prev_compiler_syntax_allowed;
         Ok(())
     }
 

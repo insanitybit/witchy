@@ -9,7 +9,14 @@
 
 use crate::ast::*;
 // foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
-use foldhash::HashSet;
+use foldhash::{HashMap, HashSet};
+
+#[derive(Clone, Copy)]
+enum UserDeriveOutput {
+    SourceString,
+    ItemSyntax,
+    ItemSyntaxList,
+}
 
 fn contains_concrete_float(ty: &Type) -> bool {
     match ty {
@@ -55,6 +62,36 @@ fn builtin_derive_on_fieldless_type(d: &str) -> bool {
     )
 }
 
+fn is_item_syntax_type(ty: &Type) -> bool {
+    matches!(ty, Type::Named(name, args) if args.is_empty() && (name == "ItemSyntax" || name == "meta.ItemSyntax"))
+}
+
+fn is_item_syntax_list_type(ty: &Type) -> bool {
+    matches!(ty, Type::Named(name, args) if name == "List" && matches!(args.as_slice(), [inner] if is_item_syntax_type(inner)))
+}
+
+fn user_derive_outputs(module: &Module) -> HashMap<String, UserDeriveOutput> {
+    let mut outputs = HashMap::default();
+    for item in &module.items {
+        let Item::Function(f) = item else { continue };
+        if !f.comptime_only || !f.name.starts_with("derive_") {
+            continue;
+        }
+        let Some(ret) = &f.ret else { continue };
+        let output = if is_item_syntax_type(ret) {
+            Some(UserDeriveOutput::ItemSyntax)
+        } else if is_item_syntax_list_type(ret) {
+            Some(UserDeriveOutput::ItemSyntaxList)
+        } else {
+            None
+        };
+        if let Some(output) = output {
+            outputs.insert(f.name.clone(), output);
+        }
+    }
+    outputs
+}
+
 /// Expand every `type T derive(...)` into a comptime call of the matching witchy
 /// generator. Unsupported shapes for the built-ins are loud errors; an unknown
 /// derive routes to a user-provided `derive_<name>` (a comptime error if absent).
@@ -64,6 +101,7 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
     let mut needs_reflect = false;
     let mut needs_show = false;
     let aliases = crate::aliases::resolved_map(module);
+    let user_derive_outputs = user_derive_outputs(module);
     let explicit_partial_eq_targets: HashSet<String> = module
         .items
         .iter()
@@ -185,10 +223,22 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                 // and which returns the impl source for the type. Anyone can add a
                 // derive this way; the per-trait codegen is no longer Rust-only.
                 other => {
-                    generated.push(derive_source_via_comptime(
-                        &format!("derive_{}", other.to_lowercase()),
-                        &derive_type,
-                    ));
+                    let generator = format!("derive_{}", other.to_lowercase());
+                    generated.push(match user_derive_outputs
+                        .get(&generator)
+                        .copied()
+                        .unwrap_or(UserDeriveOutput::SourceString)
+                    {
+                        UserDeriveOutput::SourceString => {
+                            derive_source_via_comptime(&generator, &derive_type)
+                        }
+                        UserDeriveOutput::ItemSyntax => {
+                            derive_item_via_comptime(&generator, &derive_type)
+                        }
+                        UserDeriveOutput::ItemSyntaxList => {
+                            derive_items_via_comptime(&generator, &derive_type)
+                        }
+                    });
                 }
             }
         }
@@ -259,6 +309,31 @@ fn derive_source_via_comptime(generator: &str, t: &TypeDef) -> Item {
                 args: vec![crate::reflect::type_info_expr(t)],
             }],
         }],
+    };
+    Item::Comptime(Block {
+        stmts: vec![Stmt::Expr(emit)],
+        lines: vec![0],
+        region: None,
+    })
+}
+
+/// Desugar a typed user-defined derive returning `List(ItemSyntax)`.
+fn derive_items_via_comptime(generator: &str, t: &TypeDef) -> Item {
+    let item_name = "generated_item".to_string();
+    let emit = Expr::For {
+        var: item_name.clone(),
+        iter: Box::new(Expr::Call {
+            name: generator.into(),
+            args: vec![crate::reflect::type_info_expr(t)],
+        }),
+        body: Block {
+            stmts: vec![Stmt::Expr(Expr::Call {
+                name: "emit_item".into(),
+                args: vec![Expr::Var(item_name)],
+            })],
+            lines: vec![0],
+            region: None,
+        },
     };
     Item::Comptime(Block {
         stmts: vec![Stmt::Expr(emit)],

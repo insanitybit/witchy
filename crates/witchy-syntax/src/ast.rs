@@ -213,6 +213,10 @@ impl PartialEq for Variant {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Function {
     pub public: bool,
+    /// `comptime fn` — a pure helper available only while expanding `comptime:`,
+    /// derives, and tagged literals. It is omitted from the runtime module after
+    /// compile-time expansion, so compiler syntax values can stay compile-time-only.
+    pub comptime_only: bool,
     pub name: String,
     pub params: Vec<Param>,
     pub ret: Option<Type>,

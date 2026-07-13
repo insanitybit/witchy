@@ -374,6 +374,7 @@ fn expand_one(
     });
     let main = Function {
         public: false,
+        comptime_only: false,
         name: "main".into(),
         params: vec![Param {
             name: "console".into(),

@@ -364,7 +364,7 @@ impl Parser {
             ));
         }
         if self.at(&Tok::Fn) || self.at(&Tok::Gen) || self.at(&Tok::Async) {
-            Ok(Item::Function(self.function(public)?))
+            Ok(Item::Function(self.function(public, false)?))
         } else if self.at(&Tok::Type) {
             self.type_def(false)
         } else if self.at_ident("sealed") {
@@ -401,6 +401,12 @@ impl Parser {
             // `comptime:` — compile-time item generation (additive, capability-
             // free; expanded by `crate::comptime` during linking).
             self.advance();
+            if self.at(&Tok::Fn) {
+                return Ok(Item::Function(self.function(false, true)?));
+            }
+            if self.at(&Tok::Gen) || self.at(&Tok::Async) {
+                return Err(self.error("`comptime` may only precede `fn` or a block"));
+            }
             let body = self.block()?;
             Ok(Item::Comptime(body))
         } else {
@@ -582,7 +588,7 @@ impl Parser {
                 // for type-associated (self-less) constructors — `Net.tcp(…)` —
                 // that a module exports as public API (RFC-0057).
                 let public = self.eat(&Tok::Pub);
-                methods.push(self.function(public)?);
+                methods.push(self.function(public, false)?);
             }
             self.expect(&Tok::RBrace)?;
         }
@@ -871,9 +877,12 @@ impl Parser {
         )
     }
 
-    fn function(&mut self, public: bool) -> Result<Function, ParseError> {
+    fn function(&mut self, public: bool, comptime_only: bool) -> Result<Function, ParseError> {
         let is_async = self.eat(&Tok::Async);
         let is_gen = self.eat(&Tok::Gen);
+        if comptime_only && (is_async || is_gen) {
+            return Err(self.error("`comptime fn` cannot be `async` or `gen`"));
+        }
         self.expect(&Tok::Fn)?;
         let name = self.ident()?;
         self.expect(&Tok::LParen)?;
@@ -898,6 +907,7 @@ impl Parser {
         self.in_gen = prev_gen;
         Ok(Function {
             public,
+            comptime_only,
             name,
             params,
             ret,

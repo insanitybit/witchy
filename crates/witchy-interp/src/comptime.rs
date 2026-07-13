@@ -180,6 +180,7 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
         let mut prog_items = reachable_local_items(&module.items, &body);
         prog_items.push(Item::Function(Function {
             public: false,
+            comptime_only: false,
             name: "main".into(),
             params: vec![Param {
                 name: "console".into(),
@@ -507,7 +508,37 @@ pub fn expand_compile_time(
     siblings: &[(String, Module)],
 ) -> Result<(), String> {
     expand(name, module)?;
-    crate::tagged::expand(name, module, siblings)
+    crate::tagged::expand(name, module, siblings)?;
+    if name != "comptime" {
+        strip_comptime_only_functions(module);
+    }
+    Ok(())
+}
+
+fn strip_comptime_only_functions(module: &mut Module) {
+    if !module.items.iter().any(|item| {
+        matches!(item, Item::Function(Function { comptime_only: true, .. }))
+    }) {
+        return;
+    }
+    let had_lines = !module.item_lines.is_empty();
+    let old_lines = std::mem::take(&mut module.item_lines);
+    let old_items = std::mem::take(&mut module.items);
+    let mut new_items = Vec::with_capacity(old_items.len());
+    let mut new_lines = Vec::with_capacity(old_lines.len());
+    for (idx, item) in old_items.into_iter().enumerate() {
+        if matches!(item, Item::Function(Function { comptime_only: true, .. })) {
+            continue;
+        }
+        new_items.push(item);
+        if had_lines {
+            new_lines.push(old_lines.get(idx).copied().unwrap_or(u32::MAX));
+        }
+    }
+    module.items = new_items;
+    if had_lines {
+        module.item_lines = new_lines;
+    }
 }
 
 #[cfg(test)]

@@ -807,6 +807,7 @@ pub fn analyze(module: &Module) -> Footprint {
         // scanned under the same rule; private impl helpers remain report-only.
         let mut item_entries = Vec::new();
         match item {
+            Item::Function(f) if f.comptime_only => {}
             Item::Function(f) => {
                 item_entries.push((
                     f.name.clone(),

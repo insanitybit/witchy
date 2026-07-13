@@ -792,6 +792,13 @@ interpolation uses it for values with a relevant impl once `show` is linked.
 Derives also work on a generic type. `type Box(a) derive(Reflect)` generates an impl
 that carries the type parameters and their bounds and specializes per type argument.
 
+User-defined derives are local compile-time generator functions named
+`derive_<lowercase-name>`. The legacy form returns source text, while a
+`comptime fn` generator may return `ItemSyntax` or `List(ItemSyntax)` to append
+typed generated items through the RFC-0080 channel. The generated declarations
+are still ordinary module items after expansion; they must type-check and pass
+footprint analysis like handwritten code.
+
 ### Reflection and anonymous structs
 
 `reflect(x)` returns a value's structure as a `Mirror`, which lets one function
@@ -852,6 +859,10 @@ deterministic by construction. Legacy `emit(line)` output, and direct
 channel or the typed item channel, but not both.
 Compiler syntax values such as `meta.ItemSyntax` are compile-time-only: runtime
 functions, fields, aliases, and expressions cannot store or return them.
+Top-level `comptime fn` declarations are helpers for this expansion phase. They
+may mention compile-time-only syntax types, may be called from `comptime:`,
+custom-derive, or tagged-literal expansion, and are stripped before the runtime
+module is linked and type-checked. Runtime code cannot call them.
 
 Generated code is analyzed exactly like handwritten code, and nothing existing
 can be rewritten, so a comptime block cannot launder authority out of a

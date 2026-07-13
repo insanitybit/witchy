@@ -175,6 +175,7 @@ fn lower_gen(f: Function, method: Option<&MethodCtx>) -> Result<(Function, Funct
     stmts.push(Stmt::Expr(Expr::Ctor { name: "None".to_string(), args: vec![] }));
     let helper = Function {
         public: false,
+        comptime_only: false,
         name: helper_name.clone(),
         params: helper_params,
         ret: elem.as_ref().map(|a| Type::Named("Option".to_string(), vec![a.clone()])),
@@ -209,6 +210,7 @@ fn lower_gen(f: Function, method: Option<&MethodCtx>) -> Result<(Function, Funct
     };
     let wrapper = Function {
         public: f.public,
+        comptime_only: false,
         name: f.name,
         params: f.params,
         ret: f.ret,

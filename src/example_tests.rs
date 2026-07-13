@@ -1244,6 +1244,32 @@ fn main(console: Console):
         assert!(err.contains("meta.ItemSyntax") && err.contains("compile-time-only"), "got: {err}");
     }
 
+    /// RFC-0080 fifth slice: `comptime fn` is a compile-time-only helper form.
+    /// It can return compiler syntax values to `comptime:` blocks, and is removed
+    /// before the runtime module is linked/type-checked.
+    #[test]
+    fn comptime_fn_helpers_emit_typed_items_and_do_not_escape_runtime() {
+        let src = "comptime fn generated_item() -> ItemSyntax:\n    item(\"fn generated() -> Int:\\n    77\")\n\ncomptime:\n    emit_item(generated_item())\n\nfn main(console: Console):\n    console.print(\"${generated()}\")\n";
+        let expected = ["77"];
+        assert_eq!(link_run(src), expected, "interp comptime fn typed helper");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled comptime fn typed helper",
+        );
+
+        let runtime_call = "comptime fn hidden() -> String:\n    \"nope\"\n\nfn main(console: Console):\n    console.print(hidden())\n";
+        match try_link_std(runtime_call) {
+            Ok(linked) => {
+                let err = typeck::check(&linked)
+                    .expect_err("runtime code must not call a stripped comptime fn")
+                    .message;
+                assert!(err.contains("hidden"), "got: {err}");
+            }
+            Err(err) => assert!(err.contains("hidden"), "got: {err}"),
+        }
+    }
+
     /// (BUG-180) Comptime is isolated from authority, but not from pure local
     /// helper code. A block can call a same-module generator helper, and a custom
     /// derive routes through the same reachable helper closure.
@@ -1265,6 +1291,30 @@ fn main(console: Console):
             run_linked_on_wasm(&[("main", derive_src)], "main"),
             expected,
             "compiled custom derive local helper",
+        );
+    }
+
+    /// RFC-0080 custom-derive migration: a local `comptime fn derive_x` may
+    /// return `ItemSyntax` or `List(ItemSyntax)`. Legacy string-returning derives
+    /// remain supported by the previous test.
+    #[test]
+    fn custom_derives_can_return_typed_items_on_both_backends() {
+        let one = "from meta import TypeInfo, ItemSyntax\n\ncomptime fn derive_hello(t: TypeInfo) -> ItemSyntax:\n    item(\"pub fn generated_one() -> Int:\\n    3\")\n\ntype Marker derive(Hello):\n    value: Int\n\nfn main(console: Console):\n    console.print(\"${generated_one()}\")\n";
+        let expected = ["3"];
+        assert_eq!(link_run(one), expected, "interp typed custom derive item");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", one)], "main"),
+            expected,
+            "compiled typed custom derive item",
+        );
+
+        let many = "from meta import TypeInfo, ItemSyntax\n\ncomptime fn derive_pair(t: TypeInfo) -> List(ItemSyntax):\n    [item(\"pub fn generated_left() -> Int:\\n    4\"), item(\"pub fn generated_right() -> Int:\\n    5\")]\n\ntype Marker derive(Pair):\n    value: Int\n\nfn main(console: Console):\n    console.print(\"${generated_left() + generated_right()}\")\n";
+        let expected = ["9"];
+        assert_eq!(link_run(many), expected, "interp typed custom derive item list");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", many)], "main"),
+            expected,
+            "compiled typed custom derive item list",
         );
     }
 
@@ -5930,6 +5980,22 @@ fn main(console: Console):
             "import compiler\nimport json\nfn main(console: Console):\n    match json.decode(compiler.footprint(\"pub fn serve(n: Net) -> Int:\\n    0\\n\")):\n        Ok(doc) -> console.print(\"valid\")\n        Err(e) -> console.print(\"invalid: \" + json.decode_error_message(e))\n",
         );
         assert_eq!(composed, vec!["valid"]);
+        // `comptime fn` helpers are not runtime entrypoints and must not widen
+        // source-string footprint reports even if their helper signature mentions
+        // a capability.
+        let comptime_helper = link_run(
+            "import compiler\nfn main(console: Console):\n    console.print(compiler.footprint(\"comptime fn helper(d: Dir[Read]) -> Int:\\n    0\\n\\npub fn visible() -> Int:\\n    1\\n\"))\n",
+        );
+        assert!(
+            !comptime_helper[0].contains("Dir[Read]") && !comptime_helper[0].contains("helper"),
+            "comptime helper leaked into footprint: {}",
+            comptime_helper[0]
+        );
+        assert!(
+            comptime_helper[0].contains("\"name\":\"visible\""),
+            "visible function missing: {}",
+            comptime_helper[0]
+        );
         // Malformed source degrades to an error object, not a crash.
         let bad = link_run(
             "import compiler\nfn main(console: Console):\n    console.print(compiler.footprint(\"fn oops(\"))\n",

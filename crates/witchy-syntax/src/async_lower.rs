@@ -526,6 +526,7 @@ impl<'a> Ctx<'a> {
         }
         self.segments.push(Function {
             public: false,
+            comptime_only: false,
             name: seg_name.clone(),
             params,
             ret: None,
@@ -750,6 +751,7 @@ impl<'a> Ctx<'a> {
                 });
                 self.segments.push(Function {
                     public: false,
+                    comptime_only: false,
                     name: recv_name.clone(),
                     params: recv_params,
                     ret: None,
@@ -778,6 +780,7 @@ impl<'a> Ctx<'a> {
 
         self.segments.push(Function {
             public: false,
+            comptime_only: false,
             name: seg_name.clone(),
             params,
             ret: None,
@@ -873,6 +876,7 @@ fn lower_async_fn_with(
     };
     let entry = Function {
         public: f.public,
+        comptime_only: false,
         name: f.name,
         params: f.params,
         // Source `async fn f() -> T` describes the completed value, so callers

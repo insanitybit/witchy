@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "first slice landed: source-backed meta.ItemSyntax + comptime emit_item; quotation/hygiene/full syntax API remains proposed"
+tracking: "source-backed meta.ItemSyntax, comptime emit_item, comptime fn helpers, and typed custom derives landed; quotation/hygiene/full syntax API remains proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -183,8 +183,7 @@ The first source-compatible slice is implemented:
   boundary is typed even while built-in and custom derive generators continue to
   return source strings.
 - The second slice moves built-in `std/meta.derive_*` generators to return
-  `ItemSyntax` directly. User-defined derives keep the source-string contract
-  until the full structured custom-derive API lands.
+  `ItemSyntax` directly.
 - The third slice separates the legacy source output channel (`emit` and direct
   `console.print` compatibility output) from the typed `emit_item(ItemSyntax)`
   channel and rejects a single `comptime:` block that mixes them.
@@ -192,9 +191,15 @@ The first source-compatible slice is implemented:
   runtime modules cannot mention it in signatures/fields/aliases or construct it
   through expressions such as `meta.item(...)`. The synthetic `comptime` module
   and `std/meta` remain the allowed homes.
+- The fifth slice adds top-level `comptime fn` helpers. They may use
+  compile-time-only syntax values, are callable during compile-time expansion,
+  and are stripped before the runtime module is linked and type-checked.
+- The sixth slice lets local user-defined custom derives return `ItemSyntax` or
+  `List(ItemSyntax)` directly. Legacy source-string custom derives remain
+  supported as the compatibility path.
 
 This is intentionally not the full RFC. The payload is still source-backed and
 there is no quotation, identifier hygiene, or structured expression/pattern/type
-constructors yet. The value is the migration seam: future work can move
-generators from `String` to structured constructors without changing the
-comptime append/merge path again.
+constructors yet. The value is the migration seam: future work can move the
+payload behind `ItemSyntax` from parsed source to structured constructors
+without changing the comptime append/merge path again.

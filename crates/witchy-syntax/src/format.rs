@@ -371,6 +371,9 @@ fn function(s: &mut String, f: &Function, indented: bool, c: &mut Comments, uppe
     if f.public {
         s.push_str("pub ");
     }
+    if f.comptime_only {
+        s.push_str("comptime ");
+    }
     if f.is_async {
         s.push_str("async ");
     }

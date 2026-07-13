@@ -124,6 +124,7 @@ fn method_fn(
     let ret = ret.map(|t| subst_self(&t, &self_ty));
     Function {
         public: true,
+        comptime_only: false,
         name,
         params,
         ret,
@@ -1254,6 +1255,7 @@ fn anon_union_show_impl(name: &str, variants: &[(String, usize)], arity: usize) 
         bounds: anon_union_bounds(arity, "Show"),
         methods: vec![Function {
             public: true,
+            comptime_only: false,
             name: "show".to_string(),
             params: vec![self_param()],
             ret: Some(named_type("String")),
@@ -1278,6 +1280,7 @@ fn anon_union_reflect_impl(name: &str, variants: &[(String, usize)], arity: usiz
         bounds: anon_union_bounds(arity, "Reflect"),
         methods: vec![Function {
             public: true,
+            comptime_only: false,
             name: "reflect".to_string(),
             params: vec![self_param()],
             ret: Some(Type::Named("reflect.Mirror".to_string(), Vec::new())),
@@ -1302,6 +1305,7 @@ fn anon_union_partial_eq_impl(name: &str, variants: &[(String, usize)], arity: u
         bounds: anon_union_bounds(arity, "PartialEq"),
         methods: vec![Function {
             public: true,
+            comptime_only: false,
             name: "eq".to_string(),
             params: vec![
                 self_param(),
