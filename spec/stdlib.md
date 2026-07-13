@@ -165,6 +165,18 @@ Whether `b` starts with `prefix`.
 
 Whether `b` ends with `suffix`.
 
+### Trait implementations
+
+#### `impl Show for BytesError`
+
+- `fn show(self) -> String`
+
+#### `impl Error for BytesError`
+
+#### `impl From(BytesError) for String`
+
+- `fn from(value: BytesError) -> Self`
+
 ## `chan`
 
 std/chan — decoupled concurrency: `spawn` concurrent tasks, communicate over first-class `channel`s. Spawning and channels are independent — you can spawn without a channel, and a channel is a value you create and pass around, not a task's mailbox. Built on a pure-witchy cooperative executor with a deterministic round-robin schedule, so a concurrent run is byte-identical on the interpreter and the compiled WebAssembly — no scheduler state in the runtime, no `Pin`.
@@ -318,7 +330,7 @@ The result of a comparison: `a` is `Less` than, `Equal` to, or `Greater` than `b
 `==` and `!=`. The minimal equality trait: implement `eq` and `ne` comes free. `Float` is `PartialEq` but NOT `Eq` — `NaN != NaN`, so equality is not reflexive.
 
 - `fn eq(self, other: Self) -> Bool`
-- `fn ne(self, other: Self) -> Bool`
+- `fn ne(self, other: Self) -> Bool` _(default)_
 
 #### `trait Eq: PartialEq`
 
@@ -330,10 +342,10 @@ Total equality: a marker refining `PartialEq` with reflexivity (no `NaN`). Types
 `<` `>` `<=` `>=`. `partial_compare` returns `None` for incomparable values (a `NaN`); the four ordering operators are then all false, as in Rust. Implement `partial_compare`; the rest come free.
 
 - `fn partial_compare(self, other: Self) -> Option(Ordering)`
-- `fn less(self, other: Self) -> Bool`
-- `fn greater(self, other: Self) -> Bool`
-- `fn less_equal(self, other: Self) -> Bool`
-- `fn greater_equal(self, other: Self) -> Bool`
+- `fn less(self, other: Self) -> Bool` _(default)_
+- `fn greater(self, other: Self) -> Bool` _(default)_
+- `fn less_equal(self, other: Self) -> Bool` _(default)_
+- `fn greater_equal(self, other: Self) -> Bool` _(default)_
 
 #### `trait Ord: Eq + PartialOrd`
 
@@ -360,6 +372,161 @@ The largest element of `xs`, or `default` when `xs` is empty. `default` is only 
 #### `fn minimum(xs: List(a), default: a) -> a where a: Ord`
 
 The smallest element of `xs`, or `default` when `xs` is empty. As with `maximum`, `default` is the empty fallback only, never a competing bound.
+
+### Trait implementations
+
+#### `impl PartialEq for Ordering`
+
+- `fn eq(self, other: Self) -> Bool`
+- `fn ne(self, other: Self) -> Bool`
+
+#### `impl Eq for Ordering`
+
+#### `impl PartialEq for Int`
+
+- `fn eq(self, other: Self) -> Bool`
+
+#### `impl Eq for Int`
+
+#### `impl PartialOrd for Int`
+
+- `fn partial_compare(self, other: Self) -> Option(Ordering)`
+
+#### `impl Ord for Int`
+
+- `fn compare(self, other: Self) -> Ordering`
+
+#### `impl PartialEq for Bool`
+
+- `fn eq(self, other: Self) -> Bool`
+
+#### `impl Eq for Bool`
+
+#### `impl PartialEq for String`
+
+Lexicographic ordering by code point — the same order `<` gives on strings, and content-correct in compiled code (both backends compare bytes, not pointers).
+
+- `fn eq(self, other: Self) -> Bool`
+
+#### `impl Eq for String`
+
+#### `impl PartialOrd for String`
+
+- `fn partial_compare(self, other: Self) -> Option(Ordering)`
+
+#### `impl Ord for String`
+
+- `fn compare(self, other: Self) -> Ordering`
+
+#### `impl PartialEq for Bytes`
+
+Byte buffers compare by byte contents, matching direct `==` and String's content equality. `Bytes` deliberately has equality but no ordering protocol.
+
+- `fn eq(self, other: Self) -> Bool`
+- `fn ne(self, other: Self) -> Bool`
+
+#### `impl Eq for Bytes`
+
+#### `impl PartialEq for Duration`
+
+- `fn eq(self, other: Self) -> Bool`
+
+#### `impl Eq for Duration`
+
+#### `impl PartialOrd for Duration`
+
+- `fn partial_compare(self, other: Self) -> Option(Ordering)`
+
+#### `impl Ord for Duration`
+
+- `fn compare(self, other: Self) -> Ordering`
+
+#### `impl PartialEq for Float`
+
+`Float` is `PartialEq` + `PartialOrd` only: a `NaN` is unequal to everything (including itself) and unordered, so `Float` is neither `Eq` nor `Ord`. Sort a `List(Float)` with a total wrapper or by comparing a derived key.
+
+- `fn eq(self, other: Self) -> Bool`
+
+#### `impl PartialOrd for Float`
+
+- `fn partial_compare(self, other: Self) -> Option(Ordering)`
+
+#### `impl PartialEq for List(a) where a: PartialEq`
+
+Lists compare element-by-element through the element type's `PartialEq` impl.
+
+- `fn eq(self, other: Self) -> Bool`
+
+#### `impl Eq for List(a) where a: Eq`
+
+#### `impl PartialEq for Option(a) where a: PartialEq`
+
+- `fn eq(self, other: Self) -> Bool`
+
+#### `impl Eq for Option(a) where a: Eq`
+
+#### `impl PartialEq for Result(a, e) where a: PartialEq, e: PartialEq`
+
+- `fn eq(self, other: Self) -> Bool`
+
+#### `impl Eq for Result(a, e) where a: Eq, e: Eq`
+
+#### `impl PartialEq for Dict(k, v) where k: Eq, v: PartialEq`
+
+- `fn eq(self, other: Self) -> Bool`
+
+#### `impl Eq for Dict(k, v) where k: Eq, v: Eq`
+
+#### `impl PartialEq for (a, b) where a: PartialEq, b: PartialEq`
+
+Tuples compare slot-by-slot through each slot's equality protocol. The tuple protocol surface is explicit through arity 8, matching `Show` and `Reflect`.
+
+- `fn eq(self, other: Self) -> Bool`
+- `fn ne(self, other: Self) -> Bool`
+
+#### `impl Eq for (a, b) where a: Eq, b: Eq`
+
+#### `impl PartialEq for (a, b, c) where a: PartialEq, b: PartialEq, c: PartialEq`
+
+- `fn eq(self, other: Self) -> Bool`
+- `fn ne(self, other: Self) -> Bool`
+
+#### `impl Eq for (a, b, c) where a: Eq, b: Eq, c: Eq`
+
+#### `impl PartialEq for (a, b, c, d) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq`
+
+- `fn eq(self, other: Self) -> Bool`
+- `fn ne(self, other: Self) -> Bool`
+
+#### `impl Eq for (a, b, c, d) where a: Eq, b: Eq, c: Eq, d: Eq`
+
+#### `impl PartialEq for (a, b, c, d, e) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq, e: PartialEq`
+
+- `fn eq(self, other: Self) -> Bool`
+- `fn ne(self, other: Self) -> Bool`
+
+#### `impl Eq for (a, b, c, d, e) where a: Eq, b: Eq, c: Eq, d: Eq, e: Eq`
+
+#### `impl PartialEq for (a, b, c, d, e, f) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq, e: PartialEq, f: PartialEq`
+
+- `fn eq(self, other: Self) -> Bool`
+- `fn ne(self, other: Self) -> Bool`
+
+#### `impl Eq for (a, b, c, d, e, f) where a: Eq, b: Eq, c: Eq, d: Eq, e: Eq, f: Eq`
+
+#### `impl PartialEq for (a, b, c, d, e, f, g) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq, e: PartialEq, f: PartialEq, g: PartialEq`
+
+- `fn eq(self, other: Self) -> Bool`
+- `fn ne(self, other: Self) -> Bool`
+
+#### `impl Eq for (a, b, c, d, e, f, g) where a: Eq, b: Eq, c: Eq, d: Eq, e: Eq, f: Eq, g: Eq`
+
+#### `impl PartialEq for (a, b, c, d, e, f, g, h) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq, e: PartialEq, f: PartialEq, g: PartialEq, h: PartialEq`
+
+- `fn eq(self, other: Self) -> Bool`
+- `fn ne(self, other: Self) -> Bool`
+
+#### `impl Eq for (a, b, c, d, e, f, g, h) where a: Eq, b: Eq, c: Eq, d: Eq, e: Eq, f: Eq, g: Eq, h: Eq`
 
 ## `compiler`
 
@@ -395,7 +562,19 @@ Render docs with String errors for application-style boundaries.
 
 #### `fn doc(name: String, source: String) -> String`
 
-Render `source` to Markdown API documentation (the same output as `witchy doc` for source-only modules): the module's public types and functions with their signatures and doc-comments, under a heading titled `name`. This only PARSES the source — it never runs it — so a registry can safely generate browsable docs from a rune's stored source on either backend. Display callers get parse/comptime-boundary errors as an HTML comment; tooling should prefer `try_doc`.
+Render `source` to Markdown API documentation (the same output as `witchy doc` for source-only modules): the module's public types, traits, trait implementations, and functions with their signatures and doc-comments, under a heading titled `name`. This only PARSES the source — it never runs it — so a registry can safely generate browsable docs from a rune's stored source on either backend. Display callers get parse/comptime-boundary errors as an HTML comment; tooling should prefer `try_doc`.
+
+### Trait implementations
+
+#### `impl Show for CompilerError`
+
+- `fn show(self) -> String`
+
+#### `impl Error for CompilerError`
+
+#### `impl From(CompilerError) for String`
+
+- `fn from(value: CompilerError) -> Self`
 
 ## `convert`
 
@@ -416,6 +595,12 @@ Conversion traits, following Rust's `std::convert`. `From(a)` builds the impleme
 - `fn from(value: a) -> Self`
 
 #### `trait Into(b)`
+
+- `fn into(self) -> b`
+
+### Trait implementations
+
+#### `impl Into(b) for a where b: From(a)`
 
 - `fn into(self) -> b`
 
@@ -485,6 +670,18 @@ SHA3-256 (FIPS 202) of a string's UTF-8 bytes, as 64 hex characters. (Native-onl
 #### `fn hmac_sha256(key: String, message: String) -> String`
 
 HMAC-SHA256 (FIPS 198-1). `key` is hex (so binary keys are representable); `message` is raw text. Returns the 64-hex-char tag. (Native-only.)
+
+### Trait implementations
+
+#### `impl Show for VerifyError`
+
+- `fn show(self) -> String`
+
+#### `impl Error for VerifyError`
+
+#### `impl From(VerifyError) for String`
+
+- `fn from(value: VerifyError) -> Self`
 
 ## `dict`
 
@@ -674,6 +871,18 @@ Parse a duration string to a `Duration` — the inverse of `human`. Accepts unit
 
 Parse with String errors for application-style boundaries.
 
+### Trait implementations
+
+#### `impl Show for DurationParseError`
+
+- `fn show(self) -> String`
+
+#### `impl Error for DurationParseError`
+
+#### `impl From(DurationParseError) for String`
+
+- `fn from(value: DurationParseError) -> Self`
+
 ## `encoding`
 
 encoding — hex and base64 for text conveniences and raw Bytes payloads.
@@ -776,6 +985,18 @@ Decode base64url to a HEX string — for binary that must round-trip through a w
 
 Decode base64url to hex with String errors for application-style boundaries.
 
+### Trait implementations
+
+#### `impl Show for EncodingError`
+
+- `fn show(self) -> String`
+
+#### `impl Error for EncodingError`
+
+#### `impl From(EncodingError) for String`
+
+- `fn from(value: EncodingError) -> Self`
+
 ## `error`
 
 The common bound for typed errors.
@@ -784,6 +1005,10 @@ Errors are ordinary values carried in `Result(_, e)`. Library-specific error enu
 
 #### `trait Error: Show`
 
+
+### Trait implementations
+
+#### `impl Error for String`
 
 ## `exec`
 
@@ -1126,6 +1351,28 @@ Strict response parsing for public client paths. In particular, malformed `Trans
 
 #### `RequestBuilder.send_string(net: Net[Connect, Tcp]) -> Result(Response, String)`
 
+### Trait implementations
+
+#### `impl Show for ResponseParseError`
+
+- `fn show(self) -> String`
+
+#### `impl Error for ResponseParseError`
+
+#### `impl From(ResponseParseError) for String`
+
+- `fn from(value: ResponseParseError) -> Self`
+
+#### `impl Show for HttpError`
+
+- `fn show(self) -> String`
+
+#### `impl Error for HttpError`
+
+#### `impl From(HttpError) for String`
+
+- `fn from(value: HttpError) -> Self`
+
 ## `iter`
 
 std/iter — lazy, pull-based iterators: the witchy take on Rust's Iterator, minus the part Rust most regrets. Because witchy values are "data" (no borrowing), there is no lending-iterator / GAT complexity: an `Iter(a)` is just a thunk that produces the next `Step`. Adapters (`map`/`filter`/ `take_while`/...) are lazy and compose without building intermediate lists; consumers (`collect`/`fold`/`find`/`count`) drive the pulling. Infinite iterators are fine (`count_from`, `repeat`) as long as something bounds them (`take`/`take_while`/`find`). Pure and capability-free; runs on both backends. `gen fn`/`yield` lower to this representation; `from_gen` is the low-level desugaring target for compiler-generated iterators.
@@ -1287,6 +1534,26 @@ A lazy STATEFUL map: thread `state` through `f`, which returns the new state and
 
 Concatenate an iterator OF iterators into one flat iterator, lazily and in order — `flatten` is `flat_map` with the identity function.
 
+### Trait implementations
+
+#### `impl FromIterator(a) for List(a)`
+
+- `fn from_iter(it: Iter(a)) -> List(a)`
+
+#### `impl FromIterator((k, v)) for Dict(k, v) where k: Eq`
+
+- `fn from_iter(it: Iter((k, v))) -> Dict(k, v)`
+
+#### `impl FromIterator(a) for Set(a) where a: Eq`
+
+A conditional impl: collecting into a `Set` needs `Eq` to deduplicate, so the `where a: Eq` rides on the impl head (the trait method itself stays bound-free).
+
+- `fn from_iter(it: Iter(a)) -> Set(a)`
+
+#### `impl FromIterator(String) for String`
+
+- `fn from_iter(it: Iter(String)) -> String`
+
 ## `json`
 
 A JSON library — the witchy take on Go's encoding/json. This slice is the value type and the encoder (serialization); the decoder (parsing) follows. Pure and capability-free, so — unlike networking — it compiles to WASM like the rest of the data std.
@@ -1434,6 +1701,40 @@ Encode an `Option` as payload-or-`null` — `Some(x)` through `each`, `None` as 
 
 #### `fn stringify(x: a) -> String where a: Reflect`
 
+### Trait implementations
+
+#### `impl Show for DecodeError`
+
+- `fn show(self) -> String`
+
+#### `impl Show for DeserializeError`
+
+- `fn show(self) -> String`
+
+#### `impl Error for DecodeError`
+
+#### `impl Error for DeserializeError`
+
+#### `impl From(DecodeError) for String`
+
+- `fn from(value: DecodeError) -> Self`
+
+#### `impl From(DeserializeError) for String`
+
+- `fn from(value: DeserializeError) -> Self`
+
+#### `impl Reflect for Json`
+
+A `Json` reflects to its own value rather than to the `Json` enum's shape, so `mirror_to_json(reflect(j))` returns `j`. This lets an already-built `Json` (a decoded record, a signed blob) sit inside a reflected value such as an anonymous struct, e.g. `json.stringify(.{record: decoded, ok: true})`.
+
+- `fn reflect(self) -> Mirror`
+
+#### `impl From(a) for Json where a: Reflect`
+
+Convert any reflectable value to `Json`, which also gives `Json.from(x)` and `x.into()` through `std/convert`'s blanket `Into`. This is `from_value` exposed as `From`, so a handler can accept `x: Into(Json)` instead of a pre-encoded string.
+
+- `fn from(value: a) -> Json`
+
 ## `jwt`
 
 jwt — verify a compact JWS / JWT (the OIDC identity-token shape), in PURE witchy over `crypto` (RS256), `encoding` (base64url), and `json`. Verification is computation, so this module has no host capability of its own — fetching the signing keys (JWKS discovery, over HTTPS) is a separate, network-bearing concern.
@@ -1521,6 +1822,18 @@ Optional convenience for callers that genuinely treat a malformed/missing key id
 #### `fn rsa_key_for_kid(jwks: Json, key_id: String) -> Result(String, JwtError)`
 
 Select the RSA public key for `kid` from a JWKS document (`{"keys":[{"kty":"RSA","kid": …,"n":…,"e":…}, …]}`) and return it as the DER PKCS#1 hex `verify_rs256`/`verify_oidc` want. This is how an OIDC verifier consumes a provider's published keys (Google, GitHub Actions): fetch the JWKS, read the token's `kid` (`jwt.kid`), then pick the key.
+
+### Trait implementations
+
+#### `impl Show for JwtError`
+
+- `fn show(self) -> String`
+
+#### `impl Error for JwtError`
+
+#### `impl From(JwtError) for String`
+
+- `fn from(value: JwtError) -> Self`
 
 ## `list`
 
@@ -2252,6 +2565,18 @@ GET `url` with a `Bearer` access token and parse the JSON body — the "read the
 
 #### `fn bearer_get_json_string(net: Net[Connect, Tcp], url: String, token: String) -> Result(Json, String)`
 
+### Trait implementations
+
+#### `impl Show for OAuthError`
+
+- `fn show(self) -> String`
+
+#### `impl Error for OAuthError`
+
+#### `impl From(OAuthError) for String`
+
+- `fn from(value: OAuthError) -> Self`
+
 ## `option`
 
 The witchy standard `Option` type and helpers. `Option`, `Some`, and `None` are prelude names and never need an import; `import option` brings in the qualified helper functions such as `option.map`. Pure and capability-free.
@@ -2551,6 +2876,92 @@ A `Dict` reflects to an `MRecord` — the same string-keyed shape a record uses,
 
 --- a second consumer: structural debug rendering --------------------------- `debug(x)` renders any value from its reflection, using the same `reflect` that backs `json`.
 
+### Trait implementations
+
+#### `impl Reflect for Int`
+
+- `fn reflect(self) -> Mirror`
+
+#### `impl Reflect for Float`
+
+- `fn reflect(self) -> Mirror`
+
+#### `impl Reflect for Bool`
+
+- `fn reflect(self) -> Mirror`
+
+#### `impl Reflect for String`
+
+- `fn reflect(self) -> Mirror`
+
+#### `impl Reflect for Bytes`
+
+- `fn reflect(self) -> Mirror`
+
+#### `impl Reflect for Nil`
+
+- `fn reflect(self) -> Mirror`
+
+#### `impl Reflect for Duration`
+
+- `fn reflect(self) -> Mirror`
+
+#### `impl Reflect for Ordering`
+
+- `fn reflect(self) -> Mirror`
+
+#### `impl Reflect for List(a) where a: Reflect`
+
+`List` and `Option` reflect through generic impls, so `reflect(x)` (and therefore `json.stringify`, `debug`, and any other reflective consumer) works on a bare list or option, not only on one held in a record field. Each impl specializes per element: dispatch falls back from `List<Int>` to the generic `List` impl, and the element type resolves through the `where` bound.
+
+- `fn reflect(self) -> Mirror`
+
+#### `impl Reflect for Option(a) where a: Reflect`
+
+- `fn reflect(self) -> Mirror`
+
+#### `impl Reflect for Result(a, e) where a: Reflect, e: Reflect`
+
+- `fn reflect(self) -> Mirror`
+
+#### `impl Reflect for Set(a) where a: Reflect`
+
+- `fn reflect(self) -> Mirror`
+
+#### `impl Reflect for Dict(k, v) where k: Reflect, v: Reflect`
+
+- `fn reflect(self) -> Mirror`
+
+#### `impl Reflect for (a, b) where a: Reflect, b: Reflect`
+
+Tuples reflect to `MTuple` (a JSON array, or a parenthesized debug). Each supported arity has its own impl; `reflect_one` on the destructured slots dispatches per slot type. The protocol surface is explicit through arity 8; larger tuples remain structural values but do not carry blanket `Reflect`.
+
+- `fn reflect(self) -> Mirror`
+
+#### `impl Reflect for (a, b, c) where a: Reflect, b: Reflect, c: Reflect`
+
+- `fn reflect(self) -> Mirror`
+
+#### `impl Reflect for (a, b, c, d) where a: Reflect, b: Reflect, c: Reflect, d: Reflect`
+
+- `fn reflect(self) -> Mirror`
+
+#### `impl Reflect for (a, b, c, d, e) where a: Reflect, b: Reflect, c: Reflect, d: Reflect, e: Reflect`
+
+- `fn reflect(self) -> Mirror`
+
+#### `impl Reflect for (a, b, c, d, e, f) where a: Reflect, b: Reflect, c: Reflect, d: Reflect, e: Reflect, f: Reflect`
+
+- `fn reflect(self) -> Mirror`
+
+#### `impl Reflect for (a, b, c, d, e, f, g) where a: Reflect, b: Reflect, c: Reflect, d: Reflect, e: Reflect, f: Reflect, g: Reflect`
+
+- `fn reflect(self) -> Mirror`
+
+#### `impl Reflect for (a, b, c, d, e, f, g, h) where a: Reflect, b: Reflect, c: Reflect, d: Reflect, e: Reflect, f: Reflect, g: Reflect, h: Reflect`
+
+- `fn reflect(self) -> Mirror`
+
 ## `regex`
 
 Regular expressions, powered by the Rust `regex` crate (RE2 semantics): linear time, with full alternation `a|b` and grouping `(...)` — and a loud error, not a silent non-match, on an invalid pattern. The engine itself is the native `match_spans`, which returns the character spans of every match; the whole public API here is built on those spans in plain witchy, so it runs the same on the interpreter and the compiled backend. Positions are character indices.
@@ -2813,6 +3224,22 @@ Whether `v` satisfies the constraint `req`.
 
 The highest version in `versions` that satisfies `req`, or None if none do. Keep the matching versions and fold to the highest — dogfoods std/iter.
 
+### Trait implementations
+
+#### `impl Show for SemverError`
+
+- `fn show(self) -> String`
+
+#### `impl Error for SemverError`
+
+#### `impl From(SemverError) for String`
+
+- `fn from(value: SemverError) -> Self`
+
+#### `impl Show for Version`
+
+- `fn show(self) -> String`
+
 ## `server`
 
 The witchy web framework — a slice of axum/tower over the `Net` capability, built on the shared `Request`/`Response` types in `http`.
@@ -3006,6 +3433,18 @@ Serve exactly `n` HTTPS requests then return — `serve_tls`'s one-shot/test twi
 
 #### `Router.layer(mw: fn(fn(Request) -> Response) -> fn(Request) -> Response) -> Router`
 
+### Trait implementations
+
+#### `impl Show for RequestParseError`
+
+- `fn show(self) -> String`
+
+#### `impl Error for RequestParseError`
+
+#### `impl From(RequestParseError) for String`
+
+- `fn from(value: RequestParseError) -> Self`
+
 ## `set`
 
 Set(a) — an unordered collection of distinct values. Members are compared by value equality (a `where a: Eq` bound on every operation that compares), so sets of Ints, Strings, tuples, or your own `Eq` types all work. Build one with `set.new()` / `set.from_list(xs)`, test membership with `set.contains`, and reach for `union`/`intersection`/`difference` for the algebra. A `Set` whose members are `Show` renders as `{a, b, c}` through interpolation or `show.say`; `set.to_list(s)` returns the members in insertion order.
@@ -3078,6 +3517,16 @@ Whether the two sets share no members.
 
 `s` with `x` removed (a no-op if absent).
 
+### Trait implementations
+
+#### `impl PartialEq for Set(a) where a: Eq`
+
+Two sets are equal when they hold exactly the same members, regardless of insertion order or the backing list's layout: `from_list([1, 2, 3])` equals `from_list([3, 2, 1])`. Without this impl, `==` falls back to the derived structural equality of the backing list (order-sensitive on the interpreter, and unresolvable on the compiled backend), which is not set equality.
+
+- `fn eq(self, other: Self) -> Bool`
+
+#### `impl Eq for Set(a) where a: Eq`
+
 ## `show`
 
 The witchy standard `Show` trait: render a value as a `String`. Built-in impls cover the scalars — `Int`, `Float`, `Bool`, `String`, `Bytes`, `Duration` (which shows in its human form, `1m30s`, not raw milliseconds) — and the built-in comparison result `Ordering`. A `List`, `Dict`, `Set`, `Option`, `Result`, or tuple through arity 8 whose elements are themselves `Show` renders structurally through each element's `Show` (`[a, b]`, `{k: v}`, `Some(x)`), so `show.say(console, [1, 2, 3])` and `show.say(console, someSet)` just work — and a custom element `Show` is honored (`[P<1,2>, P<3,4>]`). Implement `Show` for your own types to give them a custom readable form. `Show` is preluded: interpolation (`"${x}"`) always honors a relevant impl, while values without one keep the structural default. Pure except `say`, which takes the `Console` it prints to.
@@ -3093,6 +3542,98 @@ Render one `Show` value to a `String` — `render(point)`, `render(90000ms)`, `r
 #### `fn say(console: Console, x: impl Show)`
 
 Print any `Show` value without converting it by hand — `show.say(console, 42)`, `show.say(console, point)`, `show.say(console, [1, 2, 3])`. This is the explicit Show-accepting print helper; interpolation remains the normal inline rendering form. (A thin wrapper kept out of the `print` builtin so a builtin never depends on a std trait.)
+
+### Trait implementations
+
+#### `impl Show for Int`
+
+- `fn show(self) -> String`
+
+#### `impl Show for Bool`
+
+- `fn show(self) -> String`
+
+#### `impl Show for String`
+
+- `fn show(self) -> String`
+
+#### `impl Show for Bytes`
+
+- `fn show(self) -> String`
+
+#### `impl Show for Float`
+
+- `fn show(self) -> String`
+
+#### `impl Show for Duration`
+
+A Duration SHOWS in its human form ("1m30s"), unlike the structural `to_string`, which renders the underlying milliseconds — exactly the kind of custom rendering `Show` exists for.
+
+- `fn show(self) -> String`
+
+#### `impl Show for Ordering`
+
+- `fn show(self) -> String`
+
+#### `impl Show for List(a) where a: Show`
+
+A list renders as `[a, b, c]`, each element through its own `Show` — the same structural form `"${xs}"` produces, but honoring a custom element `Show`.
+
+- `fn show(self) -> String`
+
+#### `impl Show for Option(a) where a: Show`
+
+An option renders as `Some(x)` / `None`, the payload through its `Show`. Match bindings retain the constructor field's generic type, so dispatch is direct: no temporary 0-or-1 list is needed to recover `a`.
+
+- `fn show(self) -> String`
+
+#### `impl Show for Result(a, e) where a: Show, e: Show`
+
+A result renders as `Ok(x)` / `Err(e)`, each payload through its `Show`.
+
+- `fn show(self) -> String`
+
+#### `impl Show for Dict(k, v) where k: Show, v: Show`
+
+A dict renders as `{k1: v1, k2: v2}` (insertion order), keys and values each through their `Show`.
+
+- `fn show(self) -> String`
+
+#### `impl Show for Set(a) where a: Show`
+
+A set renders as `{a, b, c}` (members in insertion order), each through its `Show`.
+
+- `fn show(self) -> String`
+
+#### `impl Show for (a, b) where a: Show, b: Show`
+
+Tuples render as `(a, b)`; each supported arity has its own impl and dispatches per slot, as the derives do. The protocol surface is explicit through arity 8; larger tuples remain structural values but do not carry blanket `Show`.
+
+- `fn show(self) -> String`
+
+#### `impl Show for (a, b, c) where a: Show, b: Show, c: Show`
+
+- `fn show(self) -> String`
+
+#### `impl Show for (a, b, c, d) where a: Show, b: Show, c: Show, d: Show`
+
+- `fn show(self) -> String`
+
+#### `impl Show for (a, b, c, d, e) where a: Show, b: Show, c: Show, d: Show, e: Show`
+
+- `fn show(self) -> String`
+
+#### `impl Show for (a, b, c, d, e, f) where a: Show, b: Show, c: Show, d: Show, e: Show, f: Show`
+
+- `fn show(self) -> String`
+
+#### `impl Show for (a, b, c, d, e, f, g) where a: Show, b: Show, c: Show, d: Show, e: Show, f: Show, g: Show`
+
+- `fn show(self) -> String`
+
+#### `impl Show for (a, b, c, d, e, f, g, h) where a: Show, b: Show, c: Show, d: Show, e: Show, f: Show, g: Show, h: Show`
+
+- `fn show(self) -> String`
 
 ## `string`
 
@@ -3631,6 +4172,22 @@ RFC 3339 / ISO 8601 in UTC, e.g. `2026-06-08T22:30:00Z`.
 
 A strftime-style layout: `%Y-%m-%d %H:%M:%S`, `%A %B %d` and friends. Directives: %Y year, %m month, %d day, %H hour, %M minute, %S second, %a/%A weekday (short/full), %b/%B month name (short/full), %% a literal percent. Anything else after `%` passes through unchanged.
 
+### Trait implementations
+
+#### `impl Show for TimeError`
+
+- `fn show(self) -> String`
+
+#### `impl Error for TimeError`
+
+#### `impl From(TimeError) for String`
+
+- `fn from(value: TimeError) -> Self`
+
+#### `impl Show for DateTime`
+
+- `fn show(self) -> String`
+
 ## `toml`
 
 toml — a TOML reader written in pure witchy (no native code). Two ways in: `toml.decode(text)` parses a whole document into a structured `Toml` tree (the `json.decode` shape); or look individual values up by a `section.key` path with `toml.get`/`get_array`/`table`/... It supports top-level and `[section]` (and dotted `[a.b]`) tables, `key = value` for string/int/bool values, and `["a", "b"]` arrays. Comments (`#`) — whole-line and trailing — and blank lines are ignored. (Floats/dates decode as `TomlString`: witchy has no string->float primitive yet.)
@@ -3681,6 +4238,18 @@ Just the keys of `[section]` (unquoted), in file order.
 
 Read `key` from an inline table value like `{ path = "../money", version = "1" }`. Returns the unquoted value, or None if the key is absent.
 
+### Trait implementations
+
+#### `impl Show for TomlDecodeError`
+
+- `fn show(self) -> String`
+
+#### `impl Error for TomlDecodeError`
+
+#### `impl From(TomlDecodeError) for String`
+
+- `fn from(value: TomlDecodeError) -> Self`
+
 ## `url`
 
 Minimal URL parsing — the witchy slice of Go's net/url. Pure and capability-free, so it compiles to WASM. Handles `scheme://host[:port][/path]`; the port defaults by scheme (443 for https, else 80) and the path to "/".
@@ -3727,6 +4296,22 @@ Render a Url back to its string form — the inverse of `parse`. The port is sho
 #### `fn encode(s: String) -> String`
 
 Percent-encode `s` for use as a query-string value (RFC 3986): the unreserved set (`A-Z a-z 0-9 - _ . ~`) passes through, every other byte becomes `%XX`. Used to build query strings safely — e.g. an OAuth `redirect_uri`, `scope`, or `state`.
+
+### Trait implementations
+
+#### `impl Show for UrlError`
+
+- `fn show(self) -> String`
+
+#### `impl Error for UrlError`
+
+#### `impl From(UrlError) for String`
+
+- `fn from(value: UrlError) -> Self`
+
+#### `impl Show for Url`
+
+- `fn show(self) -> String`
 
 ## `vm`
 
@@ -3777,4 +4362,16 @@ Human-readable assertion failure text for logs and HTTP responses.
 #### `fn verify_assertion(stored_pubkey_hex: String, auth_data_hex: String, client_data_json: String, signature_hex: String, expected_challenge: String, expected_origin: String, expected_rp_id: String, require_uv: Bool) -> Result(Bool, AssertionError)`
 
 Verify an assertion. All `*_hex` arguments are hex-encoded bytes; `client_data_json` is the exact clientDataJSON text the browser signed over (it must be re-hashed verbatim, never re-serialized). `require_uv` demands user verification — pass `true` for a genuine second-factor gate. Returns `Ok(true)` when every check passes, or a typed `Err`.
+
+### Trait implementations
+
+#### `impl Show for AssertionError`
+
+- `fn show(self) -> String`
+
+#### `impl Error for AssertionError`
+
+#### `impl From(AssertionError) for String`
+
+- `fn from(value: AssertionError) -> Self`
 

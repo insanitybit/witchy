@@ -577,9 +577,10 @@ mod compiler {
     }
 
     /// Render witchy `source` to Markdown API documentation — the same output as the
-    /// `witchy doc` CLI: the module's public types and functions with their signatures
-    /// and doc-comments. `name` titles the module heading. Lets a registry generate
-    /// browsable docs from a rune's stored source, on either backend. This native
+    /// `witchy doc` CLI: the module's public types, traits, trait implementations,
+    /// and functions with their signatures and doc-comments. `name` titles the module
+    /// heading. Lets a registry generate browsable docs from a rune's stored source,
+    /// on either backend. This native
     /// source-string entry point deliberately rejects `comptime:` sources rather
     /// than rendering an under-approximation; the CLI expands source files before
     /// rendering. A parse/expansion-boundary error is returned as an HTML comment

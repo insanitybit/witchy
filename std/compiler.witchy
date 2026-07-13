@@ -79,8 +79,9 @@ pub fn try_doc_string(name: String, source: String) -> Result(String, String):
 
 // Render `source` to Markdown API documentation (the same output as `witchy doc`
 // for source-only modules):
-// the module's public types and functions with their signatures and doc-comments,
-// under a heading titled `name`. This only PARSES the source — it never runs it —
+// the module's public types, traits, trait implementations, and functions with
+// their signatures and doc-comments, under a heading titled `name`. This only
+// PARSES the source — it never runs it —
 // so a registry can safely generate browsable docs from a rune's stored source on
 // either backend. Display callers get parse/comptime-boundary errors as an HTML
 // comment; tooling should prefer `try_doc`.

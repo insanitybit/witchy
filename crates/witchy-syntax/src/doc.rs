@@ -1,13 +1,15 @@
 //! `witchy doc` — extract a module's public API into Markdown.
 //!
-//! Each `pub fn` becomes a heading with its signature (rendered from the AST, so
-//! it always matches the code) and its leading `//` doc-comment block (read from
-//! the source, since comments are not retained in the AST). The module's own
-//! top-of-file comment becomes the section description.
+//! Public types, traits, trait implementations, and functions are rendered from
+//! the AST so their declarations match the code. Leading `//` doc-comment blocks
+//! come from the source because comments are not retained in the AST. The
+//! module's own top-of-file comment becomes the section description.
 
 use std::fmt::Write;
 
-use crate::ast::{Expr, Item, MethodSig, Module, Param, TraitDef, Type, TypeDef, UnOp, Variant};
+use crate::ast::{
+    Expr, ImplDef, Item, MethodSig, Module, Param, TraitDef, Type, TypeDef, UnOp, Variant,
+};
 use crate::format::type_str;
 
 /// Render Markdown documentation for one module (named `module_name`) from its
@@ -87,7 +89,8 @@ pub fn render_module(module_name: &str, source: &str, module: &Module) -> Result
             let _ = writeln!(out, "{doc}\n");
         }
         for m in &t.methods {
-            let _ = writeln!(out, "- `{}`", method_sig_str(m));
+            let default = if m.default.is_some() { " _(default)_" } else { "" };
+            let _ = writeln!(out, "- `{}`{default}", method_sig_str(m));
         }
         let _ = writeln!(out);
     }
@@ -109,7 +112,7 @@ pub fn render_module(module_name: &str, source: &str, module: &Module) -> Result
     }
     // Inherent-impl associated (self-less) functions — `Net.tcp(…)` (RFC-0057).
     // These are namespaced under a type, not free functions, so render them
-    // qualified: `Type.name(...)`. Trait impls carry no new public surface.
+    // qualified: `Type.name(...)`.
     for item in &module.items {
         let Item::Impl(im) = item else { continue };
         if im.trait_name.is_some() {
@@ -142,6 +145,37 @@ pub fn render_module(module_name: &str, source: &str, module: &Module) -> Result
             if !doc.is_empty() {
                 let _ = writeln!(out, "{doc}\n");
             }
+        }
+    }
+    // A trait's usable surface includes the set of types implementing it. Keep
+    // that inventory after functions/inherent methods so their `####` headings
+    // do not become children of this `###` section (BUG-123).
+    let mut wrote_trait_impl_heading = false;
+    for item in &module.items {
+        let Item::Impl(im) = item else { continue };
+        if im.trait_name.is_none() {
+            continue;
+        }
+        if !wrote_trait_impl_heading {
+            any = true;
+            wrote_trait_impl_heading = true;
+            let _ = writeln!(out, "### Trait implementations\n");
+        }
+        let head = impl_header(im);
+        let _ = writeln!(out, "#### `{head}`\n");
+        let doc = doc_above_impl(&lines, &head);
+        if !doc.is_empty() {
+            let _ = writeln!(out, "{doc}\n");
+        }
+        for method in &im.methods {
+            let _ = writeln!(
+                out,
+                "- `{}`",
+                signature(&method.name, &method.params, &method.ret, &method.bounds),
+            );
+        }
+        if !im.methods.is_empty() {
+            let _ = writeln!(out);
         }
     }
     if !any {
@@ -361,6 +395,37 @@ fn trait_header(t: &TraitDef) -> String {
     h
 }
 
+/// A source-faithful trait implementation head, without the trailing colon.
+fn impl_header(im: &ImplDef) -> String {
+    let trait_name = im.trait_name.as_deref().expect("trait impl has a trait name");
+    let target = if im
+        .type_name
+        .strip_prefix("Tuple")
+        .and_then(|arity| arity.parse::<usize>().ok())
+        .is_some()
+    {
+        Type::Tuple(im.target_args.clone())
+    } else {
+        Type::Named(im.type_name.clone(), im.target_args.clone())
+    };
+    let mut head = format!(
+        "impl {} for {}",
+        bound_trait_str(trait_name, &im.trait_args),
+        type_str(&target),
+    );
+    if !im.bounds.is_empty() {
+        let bounds: Vec<String> = im
+            .bounds
+            .iter()
+            .map(|(var, trait_name, args)| {
+                format!("{var}: {}", bound_trait_str(trait_name, args))
+            })
+            .collect();
+        head.push_str(&format!(" where {}", bounds.join(", ")));
+    }
+    head
+}
+
 /// A trait method signature (`fn from(value: a) -> Self`). A trait method has no
 /// `where` bounds of its own here, so render with an empty bound set (BUG-073).
 fn method_sig_str(m: &MethodSig) -> String {
@@ -388,6 +453,18 @@ fn doc_above(lines: &[&str], marker: &str) -> String {
         return String::new();
     };
     comment_before(lines, i)
+}
+
+/// Implementation sections often use comments such as
+/// `// --- primitive impls ---` as source navigation. They are not API prose.
+fn doc_above_impl(lines: &[&str], marker: &str) -> String {
+    let doc = doc_above(lines, marker);
+    let trimmed = doc.trim();
+    if trimmed.starts_with("---") && trimmed.ends_with("---") {
+        String::new()
+    } else {
+        doc
+    }
 }
 
 /// Like [`doc_above`], but only matches a declaration that starts at column 0.
@@ -515,9 +592,46 @@ mod tests {
 
     #[test]
     fn renders_trait_supertraits() {
-        let src = "trait Ord: Eq + PartialOrd:\n    fn cmp(self, other: Self) -> Int\n";
+        let src = "trait Ord: Eq + PartialOrd:\n    fn cmp(self, other: Self) -> Int:\n        0\n";
         let md = render("cmp", src).unwrap();
         assert!(md.contains("#### `trait Ord: Eq + PartialOrd`"), "supertraits: {md}");
+        assert!(md.contains("`fn cmp(self, other: Self) -> Int` _(default)_"), "default: {md}");
+    }
+
+    // BUG-123: a module containing only trait impls still has public availability
+    // facts to document, including marker impls with no methods.
+    #[test]
+    fn renders_trait_implementation_inventory() {
+        let src = "// Trait-only module.\n\n// --- primitive impls ---\nimpl Show for Int:\n    fn show(self) -> String:\n        \"int\"\n\nimpl Eq for Int\n";
+        let md = render("traits", src).unwrap();
+
+        assert!(md.contains("### Trait implementations"), "section: {md}");
+        assert!(md.contains("#### `impl Show for Int`"), "scalar impl: {md}");
+        assert!(md.contains("- `fn show(self) -> String`"), "impl method: {md}");
+        assert!(md.contains("#### `impl Eq for Int`"), "marker impl: {md}");
+        assert!(!md.contains("primitive impls"), "source separator is not API prose: {md}");
+        assert!(!md.contains("_No public API._"), "trait impls are public API: {md}");
+    }
+
+    // BUG-123: generic trait arguments, target shapes, and conditional bounds
+    // remain visible for blanket/container implementations.
+    #[test]
+    fn renders_blanket_trait_implementation_bounds() {
+        let src = "// Lists collect elements that can be shown.\nimpl FromIterator(a) for List(a) where a: Show:\n    fn from_iter(self: Iter(a)) -> Self:\n        []\n\nimpl Eq for (a, b) where a: Eq, b: Eq\n";
+        let md = render("collect", src).unwrap();
+
+        assert!(
+            md.contains("#### `impl FromIterator(a) for List(a) where a: Show`"),
+            "blanket impl: {md}",
+        );
+        assert!(
+            md.contains("Lists collect elements that can be shown."),
+            "impl documentation: {md}",
+        );
+        assert!(
+            md.contains("#### `impl Eq for (a, b) where a: Eq, b: Eq`"),
+            "marker tuple impl: {md}",
+        );
     }
 
     // BUG-170: `type X = ...` aliases render (heading + doc + target).
