@@ -1261,6 +1261,12 @@ fn main(console: Console):
             .message;
         assert!(err.contains("meta.ExprSyntax") && err.contains("compile-time-only"), "got: {err}");
 
+        let runtime_block_signature = "from meta import BlockSyntax\n\nfn leak(x: BlockSyntax) -> BlockSyntax:\n    x\n";
+        let err = typeck::check(&resolve_std_src(runtime_block_signature))
+            .expect_err("runtime signatures must not expose BlockSyntax")
+            .message;
+        assert!(err.contains("meta.BlockSyntax") && err.contains("compile-time-only"), "got: {err}");
+
         let local_runtime_type = "type ItemSyntax:\n    value: Int\n\nfn main(console: Console):\n    let x = ItemSyntax(11)\n    console.print(\"${x.value}\")\n";
         let expected = ["11"];
         assert_eq!(link_run(local_runtime_type), expected, "local type name is ordinary");
@@ -1297,6 +1303,56 @@ fn main(console: Console):
         let invalid = "import meta\n\ncomptime:\n    emit_item(meta.function(true, meta.ident(\"bad-name\"), [], None, meta.expr_int(1)))\n\nfn main(console: Console):\n    console.print(\"x\")\n";
         let err = try_link_std(invalid).expect_err("invalid generated identifier must fail during comptime expansion");
         assert!(err.contains("meta.ident") && err.contains("bad-name"), "got: {err}");
+    }
+
+    /// RFC-0080 ninth slice: generated function bodies and matches can be
+    /// assembled from source-backed statement, block, pattern, and match-arm
+    /// values instead of falling back to one whole-body string template.
+    #[test]
+    fn meta_body_and_pattern_builders_emit_block_items_on_both_backends() {
+        let src = r#"import meta
+
+type Size = .[Small | Big(Int)]
+
+fn classify(n: Int) -> Size:
+    if n < 10:
+        .Small
+    else:
+        .Big(n)
+
+comptime:
+    let n = meta.ident("n")
+    let value = meta.ident("value")
+    let int = meta.type_named(meta.ident("Int"), [])
+    let string_ty = meta.type_named(meta.ident("String"), [])
+    let small_arm = meta.match_arm(meta.pattern_anon_ctor(meta.ident("Small"), []), meta.expr_raw("\"small\""))
+    let big_body = meta.expr_raw("\"big:\" + \"$" + "{value}\"")
+    let big_arm = meta.match_arm(meta.pattern_anon_ctor(meta.ident("Big"), [meta.pattern_var(value)]), big_body)
+    let matched = meta.expr_match(meta.expr_call(meta.expr_name(meta.ident("classify")), [meta.expr_name(n)]), [small_arm, big_arm])
+    let body = meta.block([meta.stmt_let(false, n, Some(int), meta.expr_int(12))], Some(matched))
+    emit_item(meta.function_block(true, meta.ident("generated"), [], Some(string_ty), body))
+
+fn main(console: Console):
+    console.print(generated())
+"#;
+        let expected = ["big:12"];
+        assert_eq!(link_run(src), expected, "interp block/pattern syntax-builder generated item");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled block/pattern syntax-builder generated item",
+        );
+
+        let empty_body = r#"import meta
+
+comptime:
+    emit_item(meta.function_block(false, meta.ident("bad"), [], None, meta.block([], None)))
+
+fn main(console: Console):
+    console.print("x")
+"#;
+        let err = try_link_std(empty_body).expect_err("empty generated block must fail during comptime expansion");
+        assert!(err.contains("meta.block") && err.contains("body"), "got: {err}");
     }
 
     /// RFC-0080 fifth slice: `comptime fn` is a compile-time-only helper form.

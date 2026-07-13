@@ -1919,6 +1919,22 @@ RFC-0080 first slice: a typed boundary for whole generated items. The compiler s
 
 - `ExprSyntax(String)`
 
+#### `sealed type PatternSyntax`
+
+- `PatternSyntax(String)`
+
+#### `sealed type StmtSyntax`
+
+- `StmtSyntax(String)`
+
+#### `sealed type BlockSyntax`
+
+- `BlockSyntax(String)`
+
+#### `sealed type MatchArmSyntax`
+
+- `MatchArmSyntax(String)`
+
 #### `sealed type ParamSyntax`
 
 - `ParamSyntax(String)`
@@ -1992,13 +2008,45 @@ Source-backed expression syntax. These constructors make the shape explicit whil
 
 #### `fn expr_bool(b: Bool) -> ExprSyntax`
 
+#### `fn expr_match(scrutinee: ExprSyntax, arms: List(MatchArmSyntax)) -> ExprSyntax`
+
 #### `fn expr_raw(source: String) -> ExprSyntax`
+
+#### `fn pattern_var(name: Ident) -> PatternSyntax`
+
+Source-backed pattern syntax. Patterns share validated identifiers with expressions, so generated matches cannot accidentally mint a reserved binding.
+
+#### `fn pattern_wildcard() -> PatternSyntax`
+
+#### `fn pattern_int(n: Int) -> PatternSyntax`
+
+#### `fn pattern_bool(b: Bool) -> PatternSyntax`
+
+#### `fn pattern_ctor(name: Ident, args: List(PatternSyntax)) -> PatternSyntax`
+
+#### `fn pattern_anon_ctor(tag: Ident, args: List(PatternSyntax)) -> PatternSyntax`
+
+#### `fn match_arm(pattern: PatternSyntax, body: ExprSyntax) -> MatchArmSyntax`
+
+#### `fn stmt_let(mutable: Bool, name: Ident, ty: Option(TypeSyntax), value: ExprSyntax) -> StmtSyntax`
+
+Source-backed statement and block syntax. These are still text at the compiler boundary, but they make block-shaped generators compose through typed, validated pieces instead of one large string template.
+
+#### `fn stmt_expr(expr: ExprSyntax) -> StmtSyntax`
+
+#### `fn stmt_return(value: ExprSyntax) -> StmtSyntax`
+
+#### `fn stmt_return_none() -> StmtSyntax`
+
+#### `fn block(stmts: List(StmtSyntax), tail: Option(ExprSyntax)) -> BlockSyntax`
 
 #### `fn param(name: Ident, ty: TypeSyntax) -> ParamSyntax`
 
-A function parameter and a single-expression function item. This is the first item constructor that avoids whole-function string templates in user code.
+A function parameter and function item constructors. The single-expression form now delegates to the block form so item generation has one body shape.
 
 #### `fn function(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: ExprSyntax) -> ItemSyntax`
+
+#### `fn function_block(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: BlockSyntax) -> ItemSyntax`
 
 #### `fn type_source(ty: TypeExpr) -> String`
 

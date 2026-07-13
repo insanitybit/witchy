@@ -207,6 +207,12 @@ The first source-compatible slice is implemented:
   and rejects keywords, `_`, non-ASCII spelling, and compiler-reserved `__`
   names before generated source is parsed. This is still validation, not
   hygienic origin tracking.
+- The ninth slice adds source-backed `PatternSyntax`, `StmtSyntax`,
+  `BlockSyntax`, and `MatchArmSyntax` wrappers plus builders for anonymous-union
+  patterns, match expressions, let/return/expression statements, blocks, and
+  block-bodied functions. This lets generators compose ordinary control-flow
+  bodies without one whole-function string template, while preserving the same
+  compile-time-only boundary as `ItemSyntax`.
 
 This is intentionally not the full RFC. The payload is still source-backed and
 there is no quotation, identifier hygiene, or compiler-owned expression/pattern/

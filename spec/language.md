@@ -858,16 +858,18 @@ deterministic by construction. Legacy `emit(line)` output, and direct
 `meta.ItemSyntax`. A single `comptime:` block may use the legacy source
 channel or the typed item channel, but not both.
 Compiler syntax values such as `meta.ItemSyntax`, `meta.TypeSyntax`,
-`meta.ExprSyntax`, and `meta.Ident` are compile-time-only: runtime functions,
-fields, aliases, and expressions cannot store or return them.
+`meta.ExprSyntax`, `meta.PatternSyntax`, `meta.StmtSyntax`, `meta.BlockSyntax`,
+`meta.MatchArmSyntax`, and `meta.Ident` are compile-time-only: runtime
+functions, fields, aliases, and expressions cannot store or return them.
 Top-level `comptime fn` declarations are helpers for this expansion phase. They
 may mention compile-time-only syntax types, may be called from `comptime:`,
 custom-derive, or tagged-literal expansion, and are stripped before the runtime
 module is linked and type-checked. Runtime code cannot call them.
 `std/meta` also exposes source-backed syntax builders such as `ident`,
-`type_named`, `expr_call`, `param`, and `function`; they make generated item
-structure typed at the API boundary and validate identifier spelling while full
-quotation and hygienic identifier origins remain future work.
+`type_named`, `expr_call`, `pattern_anon_ctor`, `match_arm`, `stmt_let`,
+`block`, `param`, and `function_block`; they make generated item structure
+typed at the API boundary and validate identifier spelling while full quotation
+and hygienic identifier origins remain future work.
 
 Generated code is analyzed exactly like handwritten code, and nothing existing
 can be rewritten, so a comptime block cannot launder authority out of a
