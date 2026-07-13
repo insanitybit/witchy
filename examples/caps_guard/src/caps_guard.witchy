@@ -17,18 +17,41 @@ fn main(console: Console, root: Dir[Read]) -> Int:
     console.print(gate(report))
     exit_code(report)
 
-// The process exit status: 2 on a blocked widening, 1 on a malformed diff, else 0
-// — so the gate can be wired into CI (`witchy caps_guard.witchy && deploy`).
+// The process exit status: 2 on a blocked widening, 1 on a malformed diff or
+// compiler error, else 0 — so the gate can be wired into CI
+// (`witchy caps_guard.witchy && deploy`).
 fn exit_code(report: String) -> Int:
     match json.decode(report):
-        Ok(doc) -> if widened(doc): 2 else: 0
+        Ok(doc) ->
+            if is_error(doc):
+                1
+            else if widened(doc):
+                2
+            else:
+                0
         Err(e) -> 1
 
-// Render the gate's JSON verdict for a human.
+// Render the gate's JSON verdict for a human. Fails closed: a compiler error
+// report is surfaced, never rendered as "OK: no new authority".
 fn gate(report: String) -> String:
     match json.decode(report):
-        Ok(doc) -> verdict(doc)
+        Ok(doc) ->
+            if is_error(doc):
+                "error: " + error_message(doc)
+            else:
+                verdict(doc)
         Err(e) -> "error: " + json.decode_error_message(e)
+
+// A compiler report shaped {"error": ...} means the diff could not be computed.
+fn is_error(doc: Json) -> Bool:
+    match json.get(doc, "error"):
+        Some(_) -> true
+        None -> false
+
+fn error_message(doc: Json) -> String:
+    match json.get_string(doc, "error"):
+        Some(m) -> m
+        None -> "unknown compiler error"
 
 fn verdict(doc: Json) -> String:
     if widened(doc):

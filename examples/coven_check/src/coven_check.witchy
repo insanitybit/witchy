@@ -17,22 +17,35 @@ fn main(console: Console, root: Dir[Read]) -> Int:
     let manifest = root.read("examples/data/rune_manifest.toml")
     let source = root.read("examples/data/sample_rune_v2.witchy")
     let declared = toml.get_array(manifest, "capabilities.runtime")
-    let demanded = total_caps(compiler.footprint(source))
-    // The demanded capabilities the manifest does not admit, rights-precisely
-    // (std/rights): a declared `Net[Connect]` does NOT cover a demanded full `Net`.
-    let missing = list.join(rights.uncovered(declared, demanded), ", ")
-    if missing.is_empty():
-        console.print("OK: manifest admits everything the code demands")
-        0
-    else:
-        console.print("UNDER-DECLARED: code demands " + missing + " not admitted by [capabilities]")
-        1
+    match total_caps(compiler.footprint(source)):
+        Err(e) ->
+            console.print("FAIL: " + e)
+            1
+        Ok(demanded) ->
+            // The demanded capabilities the manifest does not admit, rights-precisely
+            // (std/rights): a declared `Net[Connect]` does NOT cover a demanded full `Net`.
+            let missing = list.join(rights.uncovered(declared, demanded), ", ")
+            if missing.is_empty():
+                console.print("OK: manifest admits everything the code demands")
+                0
+            else:
+                console.print("UNDER-DECLARED: code demands " + missing + " not admitted by [capabilities]")
+                1
 
-// The capability names in a footprint report's "total" array.
-fn total_caps(report: String) -> List(String):
+// The capability names in a footprint report's "total" array. Fails closed: a
+// compiler error or malformed JSON is a fatal error, never an empty footprint.
+fn total_caps(report: String) -> Result(List(String), String):
     match json.decode(report):
-        Ok(doc) -> string_items(json.get(doc, "total"))
-        Err(e) -> []
+        Ok(doc) ->
+            match json.get(doc, "error"):
+                Some(_) -> Err("compiler error: " + error_message(doc))
+                None -> Ok(string_items(json.get(doc, "total")))
+        Err(e) -> Err("footprint report is not valid JSON: " + json.decode_error_message(e))
+
+fn error_message(doc: Json) -> String:
+    match json.get_string(doc, "error"):
+        Some(m) -> m
+        None -> "source does not compile"
 
 fn string_items(field: Option(Json)) -> List(String):
     var out = []

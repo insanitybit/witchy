@@ -14,11 +14,20 @@ fn main(console: Console, root: Dir[Read]):
     let report = compiler.footprint(root.read(target))
     console.print(target + " demands: " + total_of(report))
 
-// Pull the "total" array out of the footprint JSON and render it.
+// Pull the "total" array out of the footprint JSON and render it. Fails closed:
+// a compiler error report is surfaced, never rendered as "(none)".
 fn total_of(report: String) -> String:
     match json.decode(report):
-        Ok(doc) -> render_total(doc)
+        Ok(doc) ->
+            match json.get(doc, "error"):
+                Some(_) -> "compiler error: " + error_message(doc)
+                None -> render_total(doc)
         Err(e) -> "parse error: " + json.decode_error_message(e)
+
+fn error_message(doc: Json) -> String:
+    match json.get_string(doc, "error"):
+        Some(m) -> m
+        None -> "source does not compile"
 
 fn render_total(doc: Json) -> String:
     match json.get(doc, "total"):
