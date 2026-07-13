@@ -1093,27 +1093,32 @@ fn uaf_sanitizer_is_false_positive_free() {
 fn rc_assert_dup_drop_is_false_positive_free() {
     let programs = env_usize("WITCHY_RC_ASSERT_PROGRAMS", 12);
     let statements = env_usize("WITCHY_RC_ASSERT_STATEMENTS", 100);
-    for seed in 0..programs as u64 {
-        let (src, _) = gen_program(seed.wrapping_mul(0x0F1E_2D3C_4B5A_6978).wrapping_add(7), statements);
-        let path = unique_temp_path(&format!("rcassert_{seed}"));
-        std::fs::File::create(&path).unwrap().write_all(src.as_bytes()).unwrap();
-        let out = Command::new(BIN)
-            .args(["parity", path.to_str().unwrap()])
-            .env("WITCHY_OPT", "rc-floor")
-            .env("WITCHY_RC_ASSERT", "1")
-            .output()
-            .unwrap();
-        let _ = std::fs::remove_file(&path);
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(
-            out.status.code().is_some(),
-            "witchy crashed (signal) on seed {seed} under the RC assertion.\n--- program ---\n{src}\n--- stderr ---\n{stderr}"
-        );
-        if stdout.contains("DIVERGE") || stderr.contains("DIVERGE") {
-            panic!(
-                "RC-ASSERT I1 VIOLATION on seed {seed}: codegen emitted a dup/drop on a value with an implausible header (a view/slice/scalar reached a count op) under WITCHY_RC_ASSERT=1 — the type predicate is not airtight for this shape.\n--- program ---\n{src}\n--- output ---\n{stdout}{stderr}"
-            );
-        }
-    }
+    std::thread::scope(|s| {
+        let handles: Vec<_> = (0..programs as u64).map(|seed| {
+            s.spawn(move || {
+                let (src, _) = gen_program(seed.wrapping_mul(0x0F1E_2D3C_4B5A_6978).wrapping_add(7), statements);
+                let path = unique_temp_path(&format!("rcassert_{seed}"));
+                std::fs::File::create(&path).unwrap().write_all(src.as_bytes()).unwrap();
+                let out = Command::new(BIN)
+                    .args(["parity", path.to_str().unwrap()])
+                    .env("WITCHY_OPT", "rc-floor")
+                    .env("WITCHY_RC_ASSERT", "1")
+                    .output()
+                    .unwrap();
+                let _ = std::fs::remove_file(&path);
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                assert!(
+                    out.status.code().is_some(),
+                    "witchy crashed (signal) on seed {seed} under the RC assertion.\n--- program ---\n{src}\n--- stderr ---\n{stderr}"
+                );
+                if stdout.contains("DIVERGE") || stderr.contains("DIVERGE") {
+                    panic!(
+                        "RC-ASSERT I1 VIOLATION on seed {seed}: codegen emitted a dup/drop on a value with an implausible header (a view/slice/scalar reached a count op) under WITCHY_RC_ASSERT=1 — the type predicate is not airtight for this shape.\n--- program ---\n{src}\n--- output ---\n{stdout}{stderr}"
+                    );
+                }
+            })
+        }).collect();
+        for h in handles { h.join().unwrap(); }
+    });
 }

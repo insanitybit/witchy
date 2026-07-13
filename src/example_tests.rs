@@ -16301,7 +16301,7 @@ fn main(console: Console):
     /// path dependencies are exercised by the package-manager tests instead.)
     #[test]
     fn all_example_rune_tests_pass() {
-        let mut ran = 0usize;
+        let mut test_files: Vec<std::path::PathBuf> = Vec::new();
         for dir in std::fs::read_dir("examples").expect("examples directory") {
             let dir = dir.unwrap().path();
             if !dir.is_dir() {
@@ -16313,7 +16313,7 @@ fn main(console: Console):
             let Ok(rd) = std::fs::read_dir(dir.join("src")) else {
                 continue;
             };
-            let mut test_files: Vec<std::path::PathBuf> = rd
+            let mut files: Vec<std::path::PathBuf> = rd
                 .filter_map(|e| e.ok().map(|e| e.path()))
                 .filter(|p| {
                     p.file_name()
@@ -16321,16 +16321,23 @@ fn main(console: Console):
                         .is_some_and(|n| n.ends_with("_test.witchy"))
                 })
                 .collect();
-            test_files.sort();
-            for tf in test_files {
-                let p = tf.to_str().unwrap();
-                let (passed, failed) =
-                    crate::run_tests_in_file(p).unwrap_or_else(|e| panic!("{p}: {e}"));
-                assert!(failed.is_empty(), "{p}: test failures: {failed:?}");
-                assert!(!passed.is_empty(), "{p}: a `*_test.witchy` with no `test_*` functions");
-                ran += passed.len();
-            }
+            files.sort();
+            test_files.extend(files);
         }
+        assert!(!test_files.is_empty(), "no example rune test files found");
+        let ran: usize = std::thread::scope(|s| {
+            let handles: Vec<_> = test_files.iter().map(|tf| {
+                s.spawn(move || {
+                    let p = tf.to_str().unwrap();
+                    let (passed, failed) =
+                        crate::run_tests_in_file(p).unwrap_or_else(|e| panic!("{p}: {e}"));
+                    assert!(failed.is_empty(), "{p}: test failures: {failed:?}");
+                    assert!(!passed.is_empty(), "{p}: a `*_test.witchy` with no `test_*` functions");
+                    passed.len()
+                })
+            }).collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect::<Vec<_>>().into_iter().sum()
+        });
         assert!(ran > 0, "no example rune tests ran");
     }
 
