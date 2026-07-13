@@ -20,6 +20,8 @@ use witchy_syntax::ast::{
 };
 
 const MAX_COMPTIME_BLOCKS: usize = 256;
+// Per module, after generated `gen`/`async` helpers are lowered into real items.
+const MAX_COMPTIME_GENERATED_ITEMS: usize = 4096;
 const SOURCE_OUTPUT_MARKER: &str = "\u{1e}witchy:comptime:source:";
 const ITEM_OUTPUT_MARKER: &str = "\u{1e}witchy:comptime:item:";
 
@@ -27,8 +29,17 @@ const ITEM_OUTPUT_MARKER: &str = "\u{1e}witchy:comptime:item:";
 /// each and appending the items its output parses to. `name` is the module's
 /// name, for error messages.
 pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
+    expand_with_item_limit(name, module, MAX_COMPTIME_GENERATED_ITEMS)
+}
+
+fn expand_with_item_limit(
+    name: &str,
+    module: &mut Module,
+    max_generated_items: usize,
+) -> Result<(), String> {
     let mut i = 0;
     let mut expanded = 0;
+    let mut generated_items = 0usize;
     while i < module.items.len() {
         if !matches!(module.items[i], Item::Comptime(_)) {
             i += 1;
@@ -220,14 +231,36 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
                  parse: {e}\n--- emitted ---\n{src}"
             )
         })?;
+        let items_before_merge = module.items.len();
         merge_emitted_module(module, emitted, block_line);
-        *module = normalize_generated_module(module.clone())
+        let normalized = normalize_generated_module(module.clone())
             .map_err(|e| format!("module `{name}`: comptime generated source: {e}"))?;
+        let generated_by_block = normalized
+            .items
+            .len()
+            .checked_sub(items_before_merge)
+            .ok_or_else(|| {
+                format!("module `{name}`: comptime generated-item accounting underflow")
+            })?;
+        generated_items = generated_items
+            .checked_add(generated_by_block)
+            .ok_or_else(|| item_limit_error(name, max_generated_items))?;
+        if generated_items > max_generated_items {
+            return Err(item_limit_error(name, max_generated_items));
+        }
+        *module = normalized;
         // Do not increment `i`: removing the block shifted the next original item
         // into this slot, and normalization may also have appended derive-generated
         // comptime blocks for this same pass to consume.
     }
     Ok(())
+}
+
+fn item_limit_error(name: &str, max_generated_items: usize) -> String {
+    format!(
+        "module `{name}`: comptime expansion exceeded the generated-item limit of \
+         {max_generated_items}"
+    )
 }
 
 fn marked_console_print(marker: &str, value_name: &str) -> Expr {
@@ -543,6 +576,98 @@ fn strip_comptime_only_functions(module: &mut Module) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn generated_item_budget_allows_the_exact_boundary() {
+        let src = r#"
+comptime:
+    emit("fn first() -> Int:")
+    emit("    1")
+    emit("fn second() -> Int:")
+    emit("    2")
+
+fn main():
+    0
+"#;
+
+        let mut module = witchy_syntax::parser::parse_module(src).expect("parse");
+        super::expand_with_item_limit("main", &mut module, 2)
+            .expect("two generated items fit a two-item budget");
+    }
+
+    #[test]
+    fn generated_item_budget_rejects_one_block_over_the_limit() {
+        let src = r#"
+comptime:
+    emit("fn first() -> Int:")
+    emit("    1")
+    emit("fn second() -> Int:")
+    emit("    2")
+    emit("fn third() -> Int:")
+    emit("    3")
+
+fn main():
+    0
+"#;
+
+        let mut module = witchy_syntax::parser::parse_module(src).expect("parse");
+        let err = super::expand_with_item_limit("main", &mut module, 2)
+            .expect_err("three generated items must exceed a two-item budget");
+        assert!(
+            err.contains(
+                "module `main`: comptime expansion exceeded the generated-item limit of 2"
+            ),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn generated_item_budget_is_cumulative_across_blocks() {
+        let src = r#"
+comptime:
+    emit("fn first() -> Int:")
+    emit("    1")
+
+comptime:
+    emit("fn second() -> Int:")
+    emit("    2")
+
+fn main():
+    0
+"#;
+
+        let mut module = witchy_syntax::parser::parse_module(src).expect("parse");
+        let err = super::expand_with_item_limit("main", &mut module, 1)
+            .expect_err("separate blocks must share one generated-item budget");
+        assert!(
+            err.contains(
+                "module `main`: comptime expansion exceeded the generated-item limit of 1"
+            ),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn generated_item_budget_counts_lowered_helpers() {
+        let src = r#"
+comptime:
+    emit("gen fn generated() -> Iter(Int):")
+    emit("    yield 1")
+
+fn main():
+    0
+"#;
+
+        let mut module = witchy_syntax::parser::parse_module(src).expect("parse");
+        let err = super::expand_with_item_limit("main", &mut module, 1)
+            .expect_err("a generated wrapper and helper must consume two item slots");
+        assert!(
+            err.contains(
+                "module `main`: comptime expansion exceeded the generated-item limit of 1"
+            ),
+            "got: {err}"
+        );
+    }
+
     #[test]
     fn module_types_include_types_emitted_by_earlier_comptime_blocks() {
         let src = r#"
