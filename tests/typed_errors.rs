@@ -539,6 +539,12 @@ fn main(console: Console):
     match url.parse("http://[::1/p"):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(classify(e))
+    match url.parse("http://::1"):
+        Ok(u) -> console.print(url.host(u) + " " + "${url.port(u)}")
+        Err(_) -> console.print("bad")
+    match url.parse("http://2001:db8::1/path"):
+        Ok(u) -> console.print(url.host(u) + " " + "${url.port(u)}")
+        Err(_) -> console.print("bad")
     match url.parse_string("noscheme"):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(e)
@@ -549,6 +555,8 @@ fn main(console: Console):
             "invalid port in: http://h:999999/p",
             "invalid port in: http://h:999999/p",
             "bad-ipv6:http://[::1/p",
+            "::1 80",
+            "2001:db8::1 80",
             "missing `scheme://` in: noscheme",
         ],
     );

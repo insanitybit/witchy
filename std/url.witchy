@@ -131,6 +131,11 @@ fn host_port_split(authority: String) -> Int:
         let last = last_colon(authority)
         if last < 0:
             n
+        else if string.index_of(authority, ":") != Some(last):
+            // More than one colon means an unbracketed IPv6 literal, not a
+            // host followed by a decimal port. An explicit IPv6 port requires
+            // brackets (`[::1]:8080`) so the boundary is unambiguous.
+            n
         else:
             last
 
