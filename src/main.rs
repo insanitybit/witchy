@@ -1783,12 +1783,13 @@ fn run_tests_in_module(
         // interpreter oracle: a `witchy test` that passes must reflect the backend
         // that actually runs in production. A `test_*` is nullary (no capability
         // params), so the synthesized `main` needs no grants. A `testing.assert` /
-        // `fail_with` lowers to `__witchy_abort`, which `run_wasm_bytes` surfaces as
-        // the same location-prefixed `runtime error` the interpreter produced
-        // (RFC-0045 message parity), so a failure reads identically. A module
+        // `fail_with` lowers to `__witchy_abort`, which is authority-free and always
+        // linked by the runtime. Plain tests run under zero real host capability
+        // grants; the synthesized `main` plus codegen's reachability pruning keep
+        // unused effectful production functions out of the test artifact. A module
         // that does not lower is itself a failure: the test cannot run where it ships.
         let outcome = match codegen::compile_module_binary(&m) {
-            Ok(Some(bytes)) => run_wasm_bytes(&bytes).map(|_| ()),
+            Ok(Some(bytes)) => run_wasm_test_bytes(&bytes).map(|_| ()),
             Ok(None) => Err("does not lower to the compiled backend (WASM)".to_string()),
             Err(e) => Err(e.to_string()),
         };
@@ -1850,6 +1851,53 @@ mod test_mode_link_tests {
         let (passed, failed) = run_tests_in_file(suite.to_str().unwrap()).expect("test mode links");
         assert!(failed.is_empty(), "{failed:?}");
         assert_eq!(passed, vec!["suite.test_constructs_domain_edge_case".to_string()]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn witchy_test_prunes_unused_effectful_main_under_zero_grant() {
+        let dir = unique_dir("zero_grant_prunes_unused_effects");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let suite = dir.join("suite.witchy");
+        std::fs::write(
+            &suite,
+            "import testing\n\n\
+             fn main(console: Console, root: Dir[Read]):\n    \
+             console.print(root.read(\"secret.txt\"))\n\n\
+             fn test_pure_logic():\n    \
+             testing.assert_int_eq(2 + 2, 4)\n",
+        )
+        .unwrap();
+
+        let (passed, failed) = run_tests_in_file(suite.to_str().unwrap())
+            .expect("unused effectful main is replaced by the test driver");
+        assert!(failed.is_empty(), "{failed:?}");
+        assert_eq!(passed, vec!["suite.test_pure_logic".to_string()]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn witchy_test_zero_grant_keeps_abort_diagnostics() {
+        let dir = unique_dir("zero_grant_abort");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let suite = dir.join("suite.witchy");
+        std::fs::write(
+            &suite,
+            "import testing\n\n\
+             fn test_failure_message():\n    testing.fail_with(\"boom\")\n",
+        )
+        .unwrap();
+
+        let (passed, failed) = run_tests_in_file(suite.to_str().unwrap())
+            .expect("abort host import is authority-free under zero grant");
+        assert!(passed.is_empty(), "{passed:?}");
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].0, "suite.test_failure_message");
+        assert!(failed[0].1.contains("boom"), "{failed:?}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3172,6 +3220,30 @@ fn run_wasm_bytes(bytes: &[u8]) -> Result<Vec<String>, String> {
     // executing at wasm backtrace…" wrapper — so a routed `__witchy_abort` reads
     // as the clean, location-prefixed `runtime error` the interpreter produces,
     // which the differential harness (`parity_check`) compares byte-for-byte.
+    vm.run().map_err(|e| e.root_cause().to_string())?;
+    Ok(vm.output())
+}
+
+/// Run a compiled in-language test under exactly the authority a nullary test
+/// needs: captured output plus authority-free runtime support (`__witchy_abort`
+/// and heap guards are always linked by the runtime). No Clock/Rand/Env/Dir/File/
+/// Net/Secret/Exec imports are granted here; a reached real host-capability use
+/// therefore fails closed at instantiation.
+fn run_wasm_test_bytes(bytes: &[u8]) -> Result<Vec<String>, String> {
+    use crate::runtime::{Capabilities, Runtime};
+    let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
+    let mut vm = rt
+        .spawn(
+            bytes,
+            Capabilities {
+                print: true,
+                print_int: true,
+                quiet: true,
+                ..Default::default()
+            },
+            RUN_MEMORY_PAGES,
+        )
+        .map_err(|e| e.to_string())?;
     vm.run().map_err(|e| e.root_cause().to_string())?;
     Ok(vm.output())
 }

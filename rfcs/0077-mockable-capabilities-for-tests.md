@@ -6,8 +6,10 @@ created: 2026-07-08
 tracking: >
   Accepted in slices. Sealed domain-data construction is implemented for the
   entry module under `witchy test` and remains production-strict elsewhere.
-  Sealed capabilities stay strict until explicit mock backends land; real
-  integration grants remain a later runner feature.
+  Plain tests run with zero real host grants; unused effectful production code
+  is pruned from the synthesized test artifact. Sealed capabilities stay strict
+  until explicit mock backends land; real integration grants remain a later
+  runner feature.
 related:
   - "0002 (user-definable capabilities — sealing is a correctness contract, not the security boundary)"
   - "0005 (unforgeable capabilities — production invariant; the VM, not the seal, is the perimeter)"
@@ -19,12 +21,15 @@ related:
 
 # RFC-0077: Test doubles in witchy
 
-> **Implementation status (2026-07-13):** the first slice is implemented:
+> **Implementation status (2026-07-13):** the first slices are implemented:
 > `witchy test` links the entry test module in test mode, allowing direct
 > construction of foreign `sealed type` values so tests can exercise malformed
 > domain data. Production `run`/`check`/`compile`/`build`/comptime paths remain
 > strict, imported dependency modules do not inherit the privilege, and sealed
 > capabilities remain strict until mock capability backends are implemented.
+> Plain tests instantiate under zero real host capability grants; the synthesized
+> test `main` and compiled-backend reachability pruning keep unused effectful
+> production functions out of the test artifact.
 
 ## Summary
 
@@ -143,8 +148,8 @@ also production-strict; only the entry test module gets the privilege.
 Orthogonal to doubling. A `test_*` may declare capability parameters and, under
 explicit `witchy test --integration [--dir …] [--net …]`, receive REAL authority
 for tests that want a real effect. In the completed runner split, plain
-`witchy test` stays zero real grant; the first implemented slice does not change
-today's grant path.
+`witchy test` stays zero real grant; that plain-test side is implemented for
+nullary `test_*` functions.
 
 **Supply-chain boundary = whose test it is.** `witchy test <dir>` sweeps every
 `.witchy` including vendored dependencies. A **dependency's** swept tests always
@@ -246,9 +251,10 @@ exist, sealed capabilities remain production-strict even under `witchy test`.
 
 Resume the runtime portions only after all of these are true:
 
-1. Plain tests instantiate under a genuinely authority-free capability set, or
-   an equivalent import projection proves unused effectful production functions
-   cannot receive ambient test authority.
+1. Plain nullary tests instantiate under a genuinely authority-free capability
+   set, and compiled-backend reachability pruning proves unused effectful
+   production functions cannot receive ambient test authority. Implemented for
+   the current `witchy test` runner.
 2. Mock capabilities have explicit in-memory backends on the compiled path, with
    behavior tested against the real capability contracts.
 3. Integration tests remain an opt-in path for real authority, and dependency
