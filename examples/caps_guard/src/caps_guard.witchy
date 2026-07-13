@@ -4,7 +4,7 @@
 // ALLOW / BLOCK verdict — the block-on-widening decision that guards a dependency
 // upgrade. Together with caps_audit, this is the package manager's heart, in
 // witchy. Run:
-//   witchy examples/caps_guard.witchy
+//   witchy examples/caps_guard/src/caps_guard.witchy
 
 import compiler
 import string

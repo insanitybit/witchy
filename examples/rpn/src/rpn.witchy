@@ -3,7 +3,7 @@
 // pushed, an operator pops its two operands and pushes the result. Errors (stack
 // underflow, division by zero, an unknown token, a leftover stack) flow through
 // `Result`. Pure (Console only); identical on both backends. Run:
-//   witchy examples/rpn.witchy
+//   witchy examples/rpn/src/rpn.witchy
 
 import string
 

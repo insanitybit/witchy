@@ -3,8 +3,8 @@
 // the producer is `spawn`ed, and the channel is an ordinary value passed to both
 // sides, not a task's mailbox. Deterministic and byte-identical on both backends.
 //
-// Run:  witchy examples/channels.witchy
-//       witchy parity examples/channels.witchy
+// Run:  witchy examples/channels/src/channels.witchy
+//       witchy parity examples/channels/src/channels.witchy
 
 from chan import Receiver, Sender
 

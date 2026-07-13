@@ -2,7 +2,7 @@
 // it, where each segment is either an object key or (when it parses as a number)
 // an array index, then renders the selected value. A practical tour of std/json:
 // `decode`, `get` / `index`, and `encode`. Pure (Console only); identical on both
-// backends. Run:  witchy examples/jq.witchy
+// backends. Run:  witchy examples/jq/src/jq.witchy
 
 import string
 from json import Json

@@ -5,9 +5,9 @@
 // fully type-checked, with `peek` returning a generic `Option(a)`. Pure (only
 // `main` touches the Console), so it runs identically interpreted, compiled, and
 // inside the capability sandbox:
-//   witchy examples/generic_stack.witchy
-//   witchy parity examples/generic_stack.witchy
-//   witchy sandbox examples/generic_stack.witchy
+//   witchy examples/generic_stack/src/generic_stack.witchy
+//   witchy parity examples/generic_stack/src/generic_stack.witchy
+//   witchy sandbox examples/generic_stack/src/generic_stack.witchy
 
 import option
 import string

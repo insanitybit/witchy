@@ -7,8 +7,8 @@
 // Each `ticker` prints a line, then `await chan.yield_now()` hands control back to
 // the scheduler so the other task runs — hence the A/B interleaving.
 //
-// Run:  witchy examples/async_tasks.witchy
-//       witchy parity examples/async_tasks.witchy
+// Run:  witchy examples/async_tasks/src/async_tasks.witchy
+//       witchy parity examples/async_tasks/src/async_tasks.witchy
 
 import chan
 

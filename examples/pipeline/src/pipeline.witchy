@@ -1,9 +1,9 @@
 // Data pipelines compose the list module's transforms; for lazy chains over
-// large or infinite data, see std/iter (examples/lazy_fib.witchy).
+// large or infinite data, see std/iter (examples/lazy_fib/src/lazy_fib.witchy).
 // is the same UFCS sugar that powers the HTTP builders — `x.f(a)` is just
 // `f(x, a)`, resolved to the right `list` function. Pure, so it runs identically
 // on the interpreter and compiled to WASM.
-// Run: witchy examples/pipeline.witchy
+// Run: witchy examples/pipeline/src/pipeline.witchy
 
 import list
 import string

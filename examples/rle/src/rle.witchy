@@ -3,7 +3,7 @@
 // reverses that. We verify the pair forms a true round-trip: decode(encode(s))
 // == s for every sample. Pure string processing (to_chars, char compare, repeat)
 // over Console only, so it runs identically on both backends. Run:
-//   witchy examples/rle.witchy
+//   witchy examples/rle/src/rle.witchy
 
 import string
 import ascii

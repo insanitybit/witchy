@@ -3,7 +3,7 @@
 // is consistent with its row, column, and 3x3 box, and recurses — backtracking
 // (an `Option` `None`) when a cell admits no digit. Boards are *immutable*: each
 // trial builds a fresh board with one cell set, the natural functional style.
-// Pure (Console only). Run:  witchy examples/sudoku.witchy
+// Pure (Console only). Run:  witchy examples/sudoku/src/sudoku.witchy
 
 import string
 

@@ -3,7 +3,7 @@
 // corner: a matching line is unchanged ("  "), otherwise we step in the
 // direction of the longer subsequence, emitting a deletion ("- ", only in old)
 // or an insertion ("+ ", only in new). Pure (Console only); identical on both
-// backends. Run:  witchy examples/diff.witchy
+// backends. Run:  witchy examples/diff/src/diff.witchy
 
 import list
 import math

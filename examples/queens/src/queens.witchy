@@ -3,7 +3,7 @@
 // shares no column and no diagonal with the queens already placed. We count
 // every solution for the 8x8 board and render the first one found (column-order
 // DFS). Pure (Console only); identical interpreted and compiled. Run:
-//   witchy examples/queens.witchy
+//   witchy examples/queens/src/queens.witchy
 fn main(console: Console):
     let n = 8
     console.print("${n}" + "-queens solutions: " + "${count(n, [])}")

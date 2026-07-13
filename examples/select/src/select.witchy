@@ -3,8 +3,8 @@
 // producers feed separate channels and a collector merges them — a single task
 // reacting to whichever source speaks next, which one receiver can't express.
 //
-// Run:  witchy examples/select.witchy
-//       witchy parity examples/select.witchy
+// Run:  witchy examples/select/src/select.witchy
+//       witchy parity examples/select/src/select.witchy
 
 from chan import Receiver, Selected, Sender
 

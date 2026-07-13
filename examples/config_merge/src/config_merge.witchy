@@ -3,7 +3,7 @@
 // override) and `json.encode_pretty` from the std `json` module. Every function
 // here is pure, so this whole program prints identically on the interpreter and
 // the compiled WASM backend.
-// Run: witchy examples/config_merge.witchy
+// Run: witchy examples/config_merge/src/config_merge.witchy
 
 from json import Json
 

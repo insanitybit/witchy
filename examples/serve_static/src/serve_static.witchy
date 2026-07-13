@@ -3,7 +3,7 @@
 // holds the Net to listen, while the handler has exactly the request value it is
 // passed. Capability-carrying route closures are intentionally rejected until
 // RFC-0005's GC-struct closure environments land.
-// Run: witchy --net 127.0.0.1:8080 examples/serve_static.witchy
+// Run: witchy --net 127.0.0.1:8080 examples/serve_static/src/serve_static.witchy
 
 from http import Request, Response
 from server import Router

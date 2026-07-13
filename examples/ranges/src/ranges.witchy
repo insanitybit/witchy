@@ -3,9 +3,9 @@
 // literal arms, or-patterns (`a | b`), and `if` guards. Pure (only `main` touches
 // the Console), so the classification runs identically interpreted, compiled, and
 // inside the capability sandbox:
-//   witchy examples/ranges.witchy
-//   witchy parity examples/ranges.witchy
-//   witchy sandbox examples/ranges.witchy
+//   witchy examples/ranges/src/ranges.witchy
+//   witchy parity examples/ranges/src/ranges.witchy
+//   witchy sandbox examples/ranges/src/ranges.witchy
 
 import string
 

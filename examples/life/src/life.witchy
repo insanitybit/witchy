@@ -2,7 +2,7 @@
 // (`List(List(Bool))`); each generation applies the B3/S23 rule (a cell is born
 // with exactly 3 live neighbours and survives with 2 or 3). A glider drifts down
 // and to the right. Pure (Console only), so it runs identically on the
-// interpreter and compiled to WASM. Run:  witchy examples/life.witchy
+// interpreter and compiled to WASM. Run:  witchy examples/life/src/life.witchy
 
 import string
 

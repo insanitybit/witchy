@@ -2,7 +2,7 @@
 // each line within a column width, breaking before a word that would overflow.
 // A staple of text formatting, in a few lines of pure string handling. Pure
 // (Console only); identical interpreted and compiled. Run:
-//   witchy examples/wrap.witchy
+//   witchy examples/wrap/src/wrap.witchy
 
 import string
 

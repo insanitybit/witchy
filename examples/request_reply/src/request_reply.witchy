@@ -3,8 +3,8 @@
 // channel the request carried. No task indices, no hardcoded addresses — the
 // reply path is a first-class value the client chose.
 //
-// Run:  witchy examples/request_reply.witchy
-//       witchy parity examples/request_reply.witchy
+// Run:  witchy examples/request_reply/src/request_reply.witchy
+//       witchy parity examples/request_reply/src/request_reply.witchy
 
 from chan import Receiver, Sender
 

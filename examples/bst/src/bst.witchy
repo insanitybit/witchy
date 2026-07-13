@@ -3,8 +3,8 @@
 // Inserting a list and reading it back in order is a tree sort. Pure (only `main`
 // touches the Console), so it runs identically interpreted, compiled, and
 // sandboxed:
-//   witchy parity examples/bst.witchy
-//   witchy sandbox examples/bst.witchy
+//   witchy parity examples/bst/src/bst.witchy
+//   witchy sandbox examples/bst/src/bst.witchy
 
 import list
 import string

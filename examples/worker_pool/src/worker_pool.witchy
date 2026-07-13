@@ -4,8 +4,8 @@
 // same one to three spawned tasks just works. Results flow back on a second
 // channel to a printer. Deterministic and byte-identical on both backends.
 //
-// Run:  witchy examples/worker_pool.witchy
-//       witchy parity examples/worker_pool.witchy
+// Run:  witchy examples/worker_pool/src/worker_pool.witchy
+//       witchy parity examples/worker_pool/src/worker_pool.witchy
 
 from chan import Receiver, Sender
 

@@ -7,9 +7,9 @@
 // with zero risk that they phone home. (Give `bonus` a `net: Net` and try to
 // `connect`: there's no Net to hand it, so it won't even compile.)
 //
-//   witchy examples/plugin_host.witchy
-//   witchy parity examples/plugin_host.witchy     # backends agree
-//   witchy sandbox examples/plugin_host.witchy    # granted exactly: Console
+//   witchy examples/plugin_host/src/plugin_host.witchy
+//   witchy parity examples/plugin_host/src/plugin_host.witchy     # backends agree
+//   witchy sandbox examples/plugin_host/src/plugin_host.witchy    # granted exactly: Console
 
 import string
 

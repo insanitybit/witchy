@@ -4,7 +4,7 @@
 // Console into it (capture is dependency injection). A plain handler captures
 // nothing, so it structurally cannot log, fetch a URL, or read a file — even if
 // a dependency wrote it. `serve` holds the Net; handlers never do.
-// Run: witchy --net 127.0.0.1:8080 examples/serve_api.witchy
+// Run: witchy --net 127.0.0.1:8080 examples/serve_api/src/serve_api.witchy
 
 from http import Request, Response
 from json import Json

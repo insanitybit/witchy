@@ -3,7 +3,7 @@
 // `total_area` functions work for *any* Shape via a `where s: Shape` bound. Witchy
 // monomorphizes such a generic per concrete type, so trait code stays fast and
 // compiles to WASM identically to the interpreter. Pure (Console only). Run:
-//   witchy examples/traits.witchy
+//   witchy examples/traits/src/traits.witchy
 trait Shape:
     fn area(self) -> Int
     fn name(self) -> String

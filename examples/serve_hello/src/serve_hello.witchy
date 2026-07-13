@@ -7,7 +7,7 @@
 // `server.serve` uses ALL cores for free: it runs a prefork pool of worker VMs that
 // share the listener, and the kernel load-balances connections across them. You write
 // the handlers; the parallelism is automatic. (Use `server.serve_one` for one core.)
-// Run: witchy --net 127.0.0.1:8080 examples/serve_hello.witchy
+// Run: witchy --net 127.0.0.1:8080 examples/serve_hello/src/serve_hello.witchy
 
 from http import Request, Response
 from server import Router

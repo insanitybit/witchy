@@ -2,9 +2,9 @@
 // `xs.at(i)`. It chains for nested lists (`grid[r][c]`) and accepts any integer
 // expression as the index. Pure (only `main` touches the Console), so it runs
 // identically interpreted, compiled, and inside the capability sandbox:
-//   witchy examples/subscript.witchy
-//   witchy parity examples/subscript.witchy
-//   witchy sandbox examples/subscript.witchy
+//   witchy examples/subscript/src/subscript.witchy
+//   witchy parity examples/subscript/src/subscript.witchy
+//   witchy sandbox examples/subscript/src/subscript.witchy
 
 import string
 

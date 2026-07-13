@@ -3,8 +3,8 @@
 // `for` appear here: the producer iterates a *list* (`for n in [...]`), the worker
 // iterates a *receiver* (`for await n in rx`). Both lower onto the same executor.
 //
-// Run:  witchy examples/for_await.witchy
-//       witchy parity examples/for_await.witchy
+// Run:  witchy examples/for_await/src/for_await.witchy
+//       witchy parity examples/for_await/src/for_await.witchy
 
 from chan import Receiver, Sender
 

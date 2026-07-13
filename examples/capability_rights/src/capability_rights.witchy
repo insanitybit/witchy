@@ -6,8 +6,8 @@
 // or explicit with `as` when you want to name the narrowed handle. You can only
 // ever *drop* rights, never widen, so authority can't be laundered back up. Run
 // from the repo root:
-//   witchy examples/capability_rights.witchy
-//   witchy caps examples/capability_rights.witchy
+//   witchy examples/capability_rights/src/capability_rights.witchy
+//   witchy caps examples/capability_rights/src/capability_rights.witchy
 //     fetch  Net[Connect, Tcp]
 //     load   Dir[Read]
 //     serve  Net[Listen]

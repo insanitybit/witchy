@@ -4,9 +4,9 @@
 // recursion, tuples to thread the cursor, and character scanning — all pure
 // (only `main` touches the Console). So it runs identically interpreted,
 // compiled, and inside the capability sandbox:
-//   witchy examples/calculator.witchy   # interpret
-//   witchy parity examples/calculator.witchy
-//   witchy sandbox examples/calculator.witchy
+//   witchy examples/calculator/src/calculator.witchy   # interpret
+//   witchy parity examples/calculator/src/calculator.witchy
+//   witchy sandbox examples/calculator/src/calculator.witchy
 
 import string
 

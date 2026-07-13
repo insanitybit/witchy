@@ -3,7 +3,7 @@
 // combine and compare with the ordinary operators (`d * 2`, `a < b`, `a + b`).
 // The std `duration` module formats and parses them. Everything here is pure, so
 // it runs identically on the interpreter and compiled to WASM.
-// Run: witchy examples/durations.witchy
+// Run: witchy examples/durations/src/durations.witchy
 
 import duration
 

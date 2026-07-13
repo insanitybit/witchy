@@ -3,7 +3,7 @@
 // signature. We bucket words by signature using a parallel list of signatures
 // and groups (no Dict, so it compiles on both backends). Exercises sorting
 // characters (string `<`) and signature equality (string `==`). Pure (Console
-// only); identical interpreted and compiled. Run:  witchy examples/anagram.witchy
+// only); identical interpreted and compiled. Run:  witchy examples/anagram/src/anagram.witchy
 
 import string
 import list

@@ -4,9 +4,9 @@
 // `else`. `while let PAT = e:` loops as long as the scrutinee keeps matching,
 // perfect for draining a source until it runs dry. Both desugar to `match`, so
 // they run identically interpreted, compiled, and inside the capability sandbox:
-//   witchy examples/let_patterns.witchy
-//   witchy parity examples/let_patterns.witchy
-//   witchy sandbox examples/let_patterns.witchy
+//   witchy examples/let_patterns/src/let_patterns.witchy
+//   witchy parity examples/let_patterns/src/let_patterns.witchy
+//   witchy sandbox examples/let_patterns/src/let_patterns.witchy
 
 import option
 import string

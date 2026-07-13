@@ -4,7 +4,7 @@
 // node (a linear find-min, fine for a small graph), and relax its outgoing
 // edges. Afterwards we print every distance and reconstruct one shortest path.
 // Pure (Console only); identical interpreted and compiled. Run:
-//   witchy examples/dijkstra.witchy
+//   witchy examples/dijkstra/src/dijkstra.witchy
 
 import string
 import list

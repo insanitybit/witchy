@@ -3,7 +3,7 @@
 // file's capability footprint (`compiler.footprint`, returned as JSON), parses it
 // with `std/json`, and prints the total authority the file demands. A self-hosted
 // slice of `witchy caps` — proof the toolchain is usable from within witchy. Run:
-//   witchy examples/caps_audit.witchy
+//   witchy examples/caps_audit/src/caps_audit.witchy
 
 import compiler
 import string

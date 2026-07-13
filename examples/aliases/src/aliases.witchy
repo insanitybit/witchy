@@ -6,9 +6,9 @@
 // interpreted, compiled, and inside the capability sandbox. An alias expands in
 // EVERY written-type position — not just signatures and fields, but body-level
 // `let` ascriptions, `as` casts, lambda parameter/return types, and impl heads:
-//   witchy examples/aliases.witchy
-//   witchy parity examples/aliases.witchy
-//   witchy sandbox examples/aliases.witchy
+//   witchy examples/aliases/src/aliases.witchy
+//   witchy parity examples/aliases/src/aliases.witchy
+//   witchy sandbox examples/aliases/src/aliases.witchy
 
 import string
 

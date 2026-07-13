@@ -4,7 +4,7 @@
 // builds a string: a cell value is turned into a character by indexing a literal
 // of printable ASCII (index = value - 32), since the language has no chr/ord
 // builtin. Pure (Console only); identical on both backends. Run:
-//   witchy examples/brainfuck.witchy
+//   witchy examples/brainfuck/src/brainfuck.witchy
 
 import string
 

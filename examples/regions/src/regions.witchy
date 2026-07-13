@@ -3,7 +3,7 @@
 // what escapes — deep-copied out, except values from OUTSIDE the region,
 // which are shared rather than copied. A region never changes behavior, only
 // when memory is freed, so it runs identically interpreted and compiled.
-// Run:  witchy examples/regions.witchy
+// Run:  witchy examples/regions/src/regions.witchy
 
 import string
 

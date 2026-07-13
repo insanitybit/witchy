@@ -5,8 +5,8 @@
 // the brand, not just any `Dir`. The capability auditor sees through the brand —
 // `ConfigDir` still audits as `Dir`, so authority can't hide — while reporting
 // the refinement. Run from the repo root:
-//   witchy examples/branded_caps.witchy
-//   witchy caps examples/branded_caps.witchy     # load: Dir (refined: ConfigDir)
+//   witchy examples/branded_caps/src/branded_caps.witchy
+//   witchy caps examples/branded_caps/src/branded_caps.witchy     # load: Dir (refined: ConfigDir)
 
 import option
 

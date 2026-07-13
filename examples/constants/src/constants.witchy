@@ -3,9 +3,9 @@
 // binding of the same name shadows it. Constants are inlined at their use sites
 // before type-checking and code generation, so they cost nothing at runtime and
 // behave identically interpreted, compiled, and inside the capability sandbox:
-//   witchy examples/constants.witchy
-//   witchy parity examples/constants.witchy
-//   witchy sandbox examples/constants.witchy
+//   witchy examples/constants/src/constants.witchy
+//   witchy parity examples/constants/src/constants.witchy
+//   witchy sandbox examples/constants/src/constants.witchy
 
 import string
 

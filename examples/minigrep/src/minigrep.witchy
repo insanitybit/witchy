@@ -4,8 +4,8 @@
 // case-insensitive search when the IGNORE_CASE environment variable is set —
 // the same shape as the book's version, with witchy's capability-typed entry
 // point (the host grants Console, a read-only Dir, Env, and the args).
-//   witchy examples/minigrep.witchy nobody examples/data/poem.txt
-//   IGNORE_CASE=1 witchy examples/minigrep.witchy BODY examples/data/poem.txt
+//   witchy examples/minigrep/src/minigrep.witchy nobody examples/data/poem.txt
+//   IGNORE_CASE=1 witchy examples/minigrep/src/minigrep.witchy BODY examples/data/poem.txt
 
 import string
 
