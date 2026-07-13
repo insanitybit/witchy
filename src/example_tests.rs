@@ -1631,6 +1631,49 @@ fn main(console: Console):
         );
     }
 
+    /// RFC-0080 statement/block quote holes splice typed expression syntax into
+    /// parser-checked generated body fragments.
+    #[test]
+    fn quote_stmt_and_block_holes_splice_typed_exprsyntax_on_both_backends() {
+        let src = r#"
+import meta
+
+comptime:
+    let int = quote type:
+        Int
+    let forty = quote expr:
+        40
+    let two = quote expr:
+        2
+    let body = quote block:
+        let x = ${forty}
+        x + ${two}
+    emit_item(meta.function_block(true, meta.ident("answer_block"), [], Some(int), body))
+
+    let five = quote expr:
+        5
+    let stmt = quote stmt:
+        let y = ${five}
+    let one = quote expr:
+        1
+    let tail = quote expr:
+        y + ${one}
+    let body2 = meta.block([stmt], Some(tail))
+    emit_item(meta.function_block(true, meta.ident("answer_stmt"), [], Some(int), body2))
+
+fn main(console: Console):
+    console.print("${answer_block()}")
+    console.print("${answer_stmt()}")
+"#;
+        let expected = ["42", "6"];
+        assert_eq!(link_run(src), expected, "interp quote stmt/block holes");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled quote stmt/block holes",
+        );
+    }
+
     /// RFC-0080 item quotation parses one item at the quote site and hands it to
     /// the existing typed `meta.item` boundary.
     #[test]

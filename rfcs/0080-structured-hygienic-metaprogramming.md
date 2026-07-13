@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed syntax wrappers/builders with validated identifiers, comptime emit_item/fn helpers, typed custom derives, typed tagged-literal ExprSyntax returns, parser-backed expression/type/pattern/statement/block/item quotation, and expression/type/pattern quote holes landed; hygiene/full syntax API remains proposed"
+tracking: "source-backed syntax wrappers/builders with validated identifiers, comptime emit_item/fn helpers, typed custom derives, typed tagged-literal ExprSyntax returns, parser-backed expression/type/pattern/statement/block/item quotation, and expression/type/pattern plus statement/block expression quote holes landed; hygiene/full syntax API remains proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -258,11 +258,17 @@ The first source-compatible slice is implemented:
   `meta.block_raw(...)` wrappers. This completes the source-backed quotation
   categories needed by `meta.function_block` without claiming statement/block
   holes yet.
+- The eighteenth slice adds expression holes inside `quote stmt:` and
+  `quote block:`. A `${...}` in an expression position must evaluate to
+  `meta.ExprSyntax`, and the parser lowers the quote through typed
+  `meta.stmt_join(parts, holes)` / `meta.block_join(parts, holes)` boundaries.
+  Type and pattern holes inside statement/block quotation remain future work.
 
 This is intentionally not the full RFC. The payload is still source-backed and
 expression/type/pattern/statement/block/item quotation plus
-expression/type/pattern holes exist; statement/block holes, identifier hygiene,
-and compiler-owned expression/pattern/type syntax trees remain future work. The
-value is the migration seam: future work can move the payload behind these
-wrappers from parsed source to structured compiler nodes without changing the
-comptime append/merge path again.
+expression/type/pattern holes plus statement/block expression holes exist; type
+and pattern holes inside statement/block quotation, identifier hygiene, and
+compiler-owned expression/pattern/type syntax trees remain future work. The value
+is the migration seam: future work can move the payload behind these wrappers
+from parsed source to structured compiler nodes without changing the comptime
+append/merge path again.

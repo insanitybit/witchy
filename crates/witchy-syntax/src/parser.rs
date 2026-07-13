@@ -1823,9 +1823,12 @@ impl Parser {
         self.advance(); // category
         self.expect(&Tok::LBrace)?;
         if category == "block" {
-            let quoted = self.block_after_open()?;
+            self.quote_expr_hole_depth += 1;
+            let quoted = self.block_after_open();
+            self.quote_expr_hole_depth -= 1;
+            let quoted = quoted?;
             self.needs_meta_import = true;
-            return Ok(self.block_syntax_expr(&quoted));
+            return self.block_syntax_expr_with_holes(quoted);
         }
         let quoted = match category.as_str() {
             "expr" => {
@@ -1864,8 +1867,11 @@ impl Parser {
                 self.pattern_syntax_expr_with_holes(quoted, holes)?
             }
             "stmt" => {
-                let quoted = self.stmt()?;
-                self.stmt_syntax_expr(&quoted)
+                self.quote_expr_hole_depth += 1;
+                let quoted = self.stmt();
+                self.quote_expr_hole_depth -= 1;
+                let quoted = quoted?;
+                self.stmt_syntax_expr_with_holes(quoted)?
             }
             "item" => {
                 let quoted = self.item()?;
@@ -2006,6 +2012,29 @@ impl Parser {
         self.meta_call("block_raw", vec![Expr::Str(crate::format::block_str(quoted))])
     }
 
+    fn stmt_syntax_expr_with_holes(&self, mut quoted: Stmt) -> Result<Expr, ParseError> {
+        let mut holes = Vec::new();
+        Self::collect_quote_expr_holes_stmt(&mut quoted, &mut holes);
+        if holes.is_empty() {
+            return Ok(self.stmt_syntax_expr(&quoted));
+        }
+        let source = crate::format::stmt_str(&quoted);
+        let parts =
+            self.quote_hole_parts(&source, QUOTE_EXPR_HOLE_PREFIX, holes.len(), "statement")?;
+        Ok(self.meta_call("stmt_join", vec![Expr::List(parts), Expr::List(holes)]))
+    }
+
+    fn block_syntax_expr_with_holes(&self, mut quoted: Block) -> Result<Expr, ParseError> {
+        let mut holes = Vec::new();
+        Self::collect_quote_expr_holes_block(&mut quoted, &mut holes);
+        if holes.is_empty() {
+            return Ok(self.block_syntax_expr(&quoted));
+        }
+        let source = crate::format::block_str(&quoted);
+        let parts = self.quote_hole_parts(&source, QUOTE_EXPR_HOLE_PREFIX, holes.len(), "block")?;
+        Ok(self.meta_call("block_join", vec![Expr::List(parts), Expr::List(holes)]))
+    }
+
     fn collect_quote_expr_holes(expr: &mut Expr, holes: &mut Vec<Expr>) {
         if let Expr::Call { name, args } = expr {
             if name == QUOTE_EXPR_HOLE_INTRINSIC && args.len() == 1 {
@@ -2117,15 +2146,19 @@ impl Parser {
 
     fn collect_quote_expr_holes_block(block: &mut Block, holes: &mut Vec<Expr>) {
         for stmt in &mut block.stmts {
-            match stmt {
-                Stmt::Let { value, .. }
-                | Stmt::Assign { value, .. }
-                | Stmt::LetPattern { value, .. }
-                | Stmt::Yield(value)
-                | Stmt::Expr(value) => Self::collect_quote_expr_holes(value, holes),
-                Stmt::Return(Some(value)) => Self::collect_quote_expr_holes(value, holes),
-                Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
-            }
+            Self::collect_quote_expr_holes_stmt(stmt, holes);
+        }
+    }
+
+    fn collect_quote_expr_holes_stmt(stmt: &mut Stmt, holes: &mut Vec<Expr>) {
+        match stmt {
+            Stmt::Let { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::LetPattern { value, .. }
+            | Stmt::Yield(value)
+            | Stmt::Expr(value) => Self::collect_quote_expr_holes(value, holes),
+            Stmt::Return(Some(value)) => Self::collect_quote_expr_holes(value, holes),
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
     }
 

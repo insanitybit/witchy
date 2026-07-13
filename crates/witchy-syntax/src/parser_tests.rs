@@ -656,6 +656,26 @@ fn f():
     }
 
     #[test]
+    fn quote_stmt_holes_lower_to_meta_stmt_join() {
+        let m = parse_module(r#"
+fn f(value: meta.ExprSyntax):
+    quote stmt:
+        let x = ${value}
+"#).expect("quote stmt with expression holes should parse");
+        let Item::Function(f) = &m.items[0] else {
+            panic!("expected function");
+        };
+        let expected = Expr::Call {
+            name: "meta.stmt_join".into(),
+            args: vec![
+                Expr::List(vec![Expr::Str("let x = ".into()), Expr::Str("".into())]),
+                Expr::List(vec![Expr::Var("value".into())]),
+            ],
+        };
+        assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);
+    }
+
+    #[test]
     fn quote_block_lowers_to_meta_block_raw_with_canonical_source() {
         let m = parse_module(r#"
 fn f():
@@ -669,6 +689,31 @@ fn f():
         let expected = Expr::Call {
             name: "meta.block_raw".into(),
             args: vec![Expr::Str("let x = 5\nx + 1".into())],
+        };
+        assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);
+    }
+
+    #[test]
+    fn quote_block_holes_lower_to_meta_block_join() {
+        let m = parse_module(r#"
+fn f(value: meta.ExprSyntax, delta: meta.ExprSyntax):
+    quote block:
+        let x = ${value}
+        x + ${delta}
+"#).expect("quote block with expression holes should parse");
+        let Item::Function(f) = &m.items[0] else {
+            panic!("expected function");
+        };
+        let expected = Expr::Call {
+            name: "meta.block_join".into(),
+            args: vec![
+                Expr::List(vec![
+                    Expr::Str("let x = ".into()),
+                    Expr::Str("\nx + ".into()),
+                    Expr::Str("".into()),
+                ]),
+                Expr::List(vec![Expr::Var("value".into()), Expr::Var("delta".into())]),
+            ],
         };
         assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);
     }

@@ -2121,11 +2121,19 @@ Source-backed statement and block syntax. These are still text at the compiler b
 
 A source-backed statement wrapper for parser-checked `quote stmt:`.
 
+#### `fn stmt_join(parts: List(String), holes: List(ExprSyntax)) -> StmtSyntax`
+
+Join parser-checked statement quote fragments with typed expression holes.
+
 #### `fn block(stmts: List(StmtSyntax), tail: Option(ExprSyntax)) -> BlockSyntax`
 
 #### `fn block_raw(source: String) -> BlockSyntax`
 
 A source-backed block wrapper for parser-checked `quote block:`.
+
+#### `fn block_join(parts: List(String), holes: List(ExprSyntax)) -> BlockSyntax`
+
+Join parser-checked block quote fragments with typed expression holes.
 
 #### `fn param(name: Ident, ty: TypeSyntax) -> ParamSyntax`
 
