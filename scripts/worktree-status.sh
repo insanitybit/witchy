@@ -30,8 +30,6 @@ if [ -d "$queue_dir" ]; then
 fi
 is_queued() { [ -n "$queued_branches" ] && echo "$1" | grep -qxE "$queued_branches"; }
 
-removable_count=0
-removable_disk=0
 printf '%s\n' "worktrees (master @ ${master_sha:0:9}):"
 git -C "$root" worktree list --porcelain | awk '/^worktree /{print $2}' | while IFS= read -r wt; do
     branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
@@ -76,13 +74,23 @@ echo
 echo "local branches not checked out anywhere (candidates for deletion if merged):"
 checked_out="$(git -C "$root" worktree list --porcelain | awk '/^branch /{sub("refs/heads/",""); print $2}')"
 git -C "$root" for-each-ref refs/heads --format='%(refname:short)' | while IFS= read -r b; do
+    [ "$b" = "master" ] && continue
     echo "$checked_out" | grep -qx "$b" && continue
+    branch_sha="$(git -C "$root" rev-parse "$b")"
     ahead="$(git -C "$root" rev-list --count "master..$b")"
     q=""
     is_queued "$b" && q=" [QUEUED]"
     if [ "$ahead" = "0" ]; then
-        printf '  %-45s merged%s — cleanup: git branch -d %q\n' "$b" "$q" "$b"
-        [ "$prune_branches" -eq 1 ] && git -C "$root" branch -d "$b" 2>&1 | sed 's/^/    /'
+        printf '  %-45s merged%s — cleanup: git update-ref -d %q %q\n' \
+            "$b" "$q" "refs/heads/$b" "$branch_sha"
+        if [ "$prune_branches" -eq 1 ] && [ -z "$q" ]; then
+            if git -C "$root" merge-base --is-ancestor "$branch_sha" master &&
+                git -C "$root" update-ref -d "refs/heads/$b" "$branch_sha"; then
+                printf '    deleted %s at %s\n' "$b" "${branch_sha:0:9}"
+            else
+                printf '    SKIP %s (moved or no longer merged)\n' "$b"
+            fi
+        fi
     else
         last="$(git -C "$root" log -1 --format='%ar' "$b")"
         printf '  %-45s %s commits ahead%s (last activity %s)\n' "$b" "$ahead" "$q" "$last"
