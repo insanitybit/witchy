@@ -22,7 +22,11 @@ for arg in "$@"; do
     esac
 done
 if [ "${#paths[@]}" -eq 0 ]; then
-    while IFS= read -r p; do paths+=("$p"); done < <(git diff --name-only master...HEAD; git diff --name-only)
+    while IFS= read -r p; do paths+=("$p"); done < <(
+        git diff --name-only master...HEAD
+        git diff --name-only --cached
+        git diff --name-only
+    )
 fi
 if [ "${#paths[@]}" -eq 0 ]; then
     echo "test-for-paths: no changed files vs master (and no paths given)" >&2
@@ -92,6 +96,9 @@ for p in "${paths[@]}"; do
         scripts/worktree-create.sh)
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
             add "cargo nextest run --test worktree_create" ;;
+        scripts/check-spec-freshness.sh)
+            add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
+            add "./scripts/check-spec-freshness.sh" ;;
         scripts/test-for-paths.sh)
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
             add "cargo nextest run --test test_for_paths" ;;

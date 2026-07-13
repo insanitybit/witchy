@@ -1,5 +1,48 @@
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+struct TempRepo(PathBuf);
+
+impl TempRepo {
+    fn new() -> Self {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "witchy-test-for-paths-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(path.join("scripts")).expect("create fixture scripts");
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/test-for-paths.sh"),
+            path.join("scripts/test-for-paths.sh"),
+        )
+        .expect("copy path router");
+        Self(path)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempRepo {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn git(root: &Path, args: &[&str]) {
+    let output = Command::new("git").current_dir(root).args(args).output().expect("run git");
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
 
 fn route(paths: &[&str]) -> String {
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/test-for-paths.sh");
@@ -44,6 +87,42 @@ fn router_changes_run_router_regressions() {
     let output = route(&["scripts/test-for-paths.sh"]);
     assert!(output.contains("for f in scripts/*.sh; do bash -n"));
     assert!(output.contains("cargo nextest run --test test_for_paths"));
+}
+
+#[test]
+fn spec_freshness_script_runs_its_behavior_check() {
+    let output = route(&["scripts/check-spec-freshness.sh"]);
+    assert!(output.contains("for f in scripts/*.sh; do bash -n"));
+    assert!(output.contains("./scripts/check-spec-freshness.sh"));
+}
+
+#[test]
+fn staged_change_is_discovered_without_explicit_paths() {
+    let repo = TempRepo::new();
+    let root = repo.path();
+    git(root, &["init", "-q"]);
+    git(root, &["symbolic-ref", "HEAD", "refs/heads/master"]);
+    git(root, &["config", "user.name", "Witchy Test"]);
+    git(root, &["config", "user.email", "witchy-test@example.invalid"]);
+    fs::write(root.join("README.md"), "base\n").expect("write fixture base");
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "base"]);
+    fs::write(root.join("README.md"), "staged\n").expect("write staged fixture");
+    git(root, &["add", "README.md"]);
+
+    let output = Command::new("bash")
+        .current_dir(root)
+        .arg("scripts/test-for-paths.sh")
+        .output()
+        .expect("run staged path router");
+    assert!(
+        output.status.success(),
+        "router: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("router output is UTF-8");
+    assert!(stdout.contains("example_tests"), "staged README route: {stdout}");
+    assert!(!stdout.contains("no changed files"), "staged README was missed: {stdout}");
 }
 
 #[test]

@@ -1,6 +1,8 @@
-# Compiled Value Model
-
+---
 verified: fc38bbb8
+---
+
+# Compiled Value Model
 
 This is the shared map between the interpreter's semantic values and the
 compiled backend's WebAssembly representation. The interpreter remains the
