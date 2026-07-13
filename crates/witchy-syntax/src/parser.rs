@@ -1783,7 +1783,7 @@ impl Parser {
 
     fn quote_syntax(&mut self) -> Result<Expr, ParseError> {
         let Some(category) = self.quote_category().map(str::to_string) else {
-            return Err(self.error("expected `quote expr:` or `quote type:`"));
+            return Err(self.error("expected `quote expr:`, `quote type:`, or `quote pattern:`"));
         };
         self.advance(); // `quote`
         self.advance(); // category
@@ -1800,9 +1800,14 @@ impl Parser {
                 let quoted = self.ty()?;
                 self.type_syntax_expr(&quoted)?
             }
+            "pattern" => {
+                let quoted = self.pattern()?;
+                self.pattern_syntax_expr(&quoted)
+            }
             _ => {
                 return Err(self.error(format!(
-                    "`quote {category}:` is not implemented yet; use `quote expr:` or `quote type:`"
+                    "`quote {category}:` is not implemented yet; use `quote expr:`, \
+                     `quote type:`, or `quote pattern:`"
                 )));
             }
         };
@@ -1874,6 +1879,63 @@ impl Parser {
 
     fn type_syntax_exprs(&self, types: &[Type]) -> Result<Vec<Expr>, ParseError> {
         types.iter().map(|ty| self.type_syntax_expr(ty)).collect()
+    }
+
+    fn pattern_syntax_expr(&self, pattern: &Pattern) -> Expr {
+        match pattern {
+            Pattern::Wildcard => self.meta_call("pattern_wildcard", vec![]),
+            Pattern::Var(name) => self.meta_call("pattern_var", vec![self.meta_ident(name)]),
+            Pattern::Int(n) => self.meta_call("pattern_int", vec![Expr::Int(*n)]),
+            Pattern::Str(s) => self.meta_call("pattern_str", vec![Expr::Str(s.clone())]),
+            Pattern::Bool(b) => self.meta_call("pattern_bool", vec![Expr::Bool(*b)]),
+            Pattern::Ctor { name, args } => {
+                let rendered_args = Expr::List(self.pattern_syntax_exprs(args));
+                if let Some((module, ctor)) = name.split_once('.') {
+                    self.meta_call(
+                        "pattern_qualified_ctor",
+                        vec![self.meta_ident(module), self.meta_ident(ctor), rendered_args],
+                    )
+                } else {
+                    self.meta_call("pattern_ctor", vec![self.meta_ident(name), rendered_args])
+                }
+            }
+            Pattern::AnonCtor { tag, args } => self.meta_call(
+                "pattern_anon_ctor",
+                vec![self.meta_ident(tag), Expr::List(self.pattern_syntax_exprs(args))],
+            ),
+            Pattern::Tuple(patterns) => self.meta_call("pattern_tuple", vec![
+                Expr::List(self.pattern_syntax_exprs(patterns)),
+            ]),
+            Pattern::List { elems, rest } => {
+                let elems = Expr::List(self.pattern_syntax_exprs(elems));
+                match rest {
+                    None => self.meta_call("pattern_list", vec![elems]),
+                    Some(name) => self.meta_call(
+                        "pattern_list_rest",
+                        vec![elems, self.optional_meta_ident(name.as_ref())],
+                    ),
+                }
+            }
+            Pattern::Duration(ms) => self.meta_call("pattern_duration_ms", vec![Expr::Int(*ms)]),
+            Pattern::IntRange { lo, hi, inclusive } => self.meta_call(
+                "pattern_range",
+                vec![Expr::Int(*lo), Expr::Int(*hi), Expr::Bool(*inclusive)],
+            ),
+            Pattern::Or(alts) => self.meta_call("pattern_or", vec![
+                Expr::List(self.pattern_syntax_exprs(alts)),
+            ]),
+        }
+    }
+
+    fn pattern_syntax_exprs(&self, patterns: &[Pattern]) -> Vec<Expr> {
+        patterns.iter().map(|pattern| self.pattern_syntax_expr(pattern)).collect()
+    }
+
+    fn optional_meta_ident(&self, name: Option<&String>) -> Expr {
+        match name {
+            Some(name) => Expr::Ctor { name: "Some".to_string(), args: vec![self.meta_ident(name)] },
+            None => Expr::Ctor { name: "None".to_string(), args: vec![] },
+        }
     }
 
     /// Resolve a bare name into a variable, call, constructor, or a qualified

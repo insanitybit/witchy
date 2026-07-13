@@ -531,6 +531,35 @@ fn f():
     }
 
     #[test]
+    fn quote_pattern_lowers_to_structured_meta_builders() {
+        fn ident(name: &str) -> Expr {
+            Expr::Call { name: "meta.ident".into(), args: vec![Expr::Str(name.into())] }
+        }
+
+        fn call(name: &str, args: Vec<Expr>) -> Expr {
+            Expr::Call { name: format!("meta.{name}"), args }
+        }
+
+        let m = parse_module(r#"
+fn f():
+    quote pattern:
+        [1 | 2, ..rest]
+"#).expect("quote pattern should parse");
+        assert!(m.imports.contains(&"meta".to_string()), "quote pattern imports meta");
+        let Item::Function(f) = &m.items[0] else {
+            panic!("expected function");
+        };
+        let expected = call("pattern_list_rest", vec![
+            Expr::List(vec![call("pattern_or", vec![Expr::List(vec![
+                call("pattern_int", vec![Expr::Int(1)]),
+                call("pattern_int", vec![Expr::Int(2)]),
+            ])])]),
+            Expr::Ctor { name: "Some".into(), args: vec![ident("rest")] },
+        ]);
+        assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);
+    }
+
+    #[test]
     fn parses_constructors_vs_calls_by_case() {
         let stmts = fn_body(r#"
 fn f():

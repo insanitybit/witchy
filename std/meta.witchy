@@ -210,11 +210,51 @@ pub fn pattern_int(n: Int) -> PatternSyntax:
 pub fn pattern_bool(b: Bool) -> PatternSyntax:
     PatternSyntax(if b: "true" else: "false")
 
+// A string literal pattern.
+pub fn pattern_str(value: String) -> PatternSyntax:
+    PatternSyntax(string_literal(value))
+
+// A duration literal pattern from its whole-millisecond value.
+pub fn pattern_duration_ms(ms: Int) -> PatternSyntax:
+    PatternSyntax("${ms}ms")
+
+// An integer range pattern.
+pub fn pattern_range(lo: Int, hi: Int, inclusive: Bool) -> PatternSyntax:
+    let op = if inclusive: "..=" else: ".."
+    PatternSyntax("${lo}" + op + "${hi}")
+
 pub fn pattern_ctor(name: Ident, args: List(PatternSyntax)) -> PatternSyntax:
     pattern_with_head(ident_source(name), args)
 
+// A module-qualified constructor pattern such as `iter.Item(x)`.
+pub fn pattern_qualified_ctor(module: Ident, name: Ident, args: List(PatternSyntax)) -> PatternSyntax:
+    pattern_with_head(ident_source(module) + "." + ident_source(name), args)
+
 pub fn pattern_anon_ctor(tag: Ident, args: List(PatternSyntax)) -> PatternSyntax:
     pattern_with_head("." + ident_source(tag), args)
+
+// A tuple pattern.
+pub fn pattern_tuple(patterns: List(PatternSyntax)) -> PatternSyntax:
+    PatternSyntax("(" + list.join(pattern_sources(patterns), ", ") + ")")
+
+// An exact-length list pattern.
+pub fn pattern_list(patterns: List(PatternSyntax)) -> PatternSyntax:
+    PatternSyntax("[" + list.join(pattern_sources(patterns), ", ") + "]")
+
+// A list pattern with `..` or `..rest`.
+pub fn pattern_list_rest(patterns: List(PatternSyntax), rest: Option(Ident)) -> PatternSyntax:
+    let parts = pattern_sources(patterns)
+    let tail = match rest:
+        Some(name) -> ".." + ident_source(name)
+        None -> ".."
+
+    PatternSyntax("[" + list.join(list.push(parts, tail), ", ") + "]")
+
+// An or-pattern. Every alternative must bind the same names when type-checked.
+pub fn pattern_or(patterns: List(PatternSyntax)) -> PatternSyntax:
+    if list.is_empty(patterns):
+        fail("meta.pattern_or: at least one alternative is required")
+    PatternSyntax(list.join(pattern_sources(patterns), " | "))
 
 fn pattern_with_head(head: String, args: List(PatternSyntax)) -> PatternSyntax:
     if list.is_empty(args):
@@ -231,6 +271,25 @@ fn pattern_sources(patterns: List(PatternSyntax)) -> List(String):
     for pattern in patterns:
         out = list.push(out, pattern_source(pattern))
     out
+
+fn string_literal(value: String) -> String:
+    var out = "\""
+    for c in string.chars(value):
+        if c == "\"":
+            out = out + "\\\""
+        else if c == "\\":
+            out = out + "\\\\"
+        else if c == "\n":
+            out = out + "\\n"
+        else if c == "\t":
+            out = out + "\\t"
+        else if c == "\r":
+            out = out + "\\r"
+        else if c == "\0":
+            out = out + "\\0"
+        else:
+            out = out + c
+    out + "\""
 
 pub fn match_arm(pattern: PatternSyntax, body: ExprSyntax) -> MatchArmSyntax:
     MatchArmSyntax(pattern_source(pattern) + " -> " + expr_source(body))

@@ -2057,9 +2057,41 @@ Source-backed pattern syntax. Patterns share validated identifiers with expressi
 
 #### `fn pattern_bool(b: Bool) -> PatternSyntax`
 
+#### `fn pattern_str(value: String) -> PatternSyntax`
+
+A string literal pattern.
+
+#### `fn pattern_duration_ms(ms: Int) -> PatternSyntax`
+
+A duration literal pattern from its whole-millisecond value.
+
+#### `fn pattern_range(lo: Int, hi: Int, inclusive: Bool) -> PatternSyntax`
+
+An integer range pattern.
+
 #### `fn pattern_ctor(name: Ident, args: List(PatternSyntax)) -> PatternSyntax`
 
+#### `fn pattern_qualified_ctor(module: Ident, name: Ident, args: List(PatternSyntax)) -> PatternSyntax`
+
+A module-qualified constructor pattern such as `iter.Item(x)`.
+
 #### `fn pattern_anon_ctor(tag: Ident, args: List(PatternSyntax)) -> PatternSyntax`
+
+#### `fn pattern_tuple(patterns: List(PatternSyntax)) -> PatternSyntax`
+
+A tuple pattern.
+
+#### `fn pattern_list(patterns: List(PatternSyntax)) -> PatternSyntax`
+
+An exact-length list pattern.
+
+#### `fn pattern_list_rest(patterns: List(PatternSyntax), rest: Option(Ident)) -> PatternSyntax`
+
+A list pattern with `..` or `..rest`.
+
+#### `fn pattern_or(patterns: List(PatternSyntax)) -> PatternSyntax`
+
+An or-pattern. Every alternative must bind the same names when type-checked.
 
 #### `fn match_arm(pattern: PatternSyntax, body: ExprSyntax) -> MatchArmSyntax`
 

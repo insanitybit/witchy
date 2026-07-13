@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed syntax wrappers/builders with validated identifiers, comptime emit_item/fn helpers, typed custom derives, typed tagged-literal ExprSyntax returns, and parser-backed expression/type quotation landed; hygiene/full syntax API remains proposed"
+tracking: "source-backed syntax wrappers/builders with validated identifiers, comptime emit_item/fn helpers, typed custom derives, typed tagged-literal ExprSyntax returns, and parser-backed expression/type/pattern quotation landed; hygiene/full syntax API remains proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -231,9 +231,15 @@ The first source-compatible slice is implemented:
   `type_unique`, and friends), not to a new raw type-string constructor.
   Anonymous structural type quotation remains a follow-up because preserving
   those shapes needs real compiler-owned type syntax nodes.
+- The thirteenth slice adds `quote pattern:` for the current pattern AST:
+  variables, wildcards, literals, constructor and qualified-constructor
+  patterns, anonymous-union patterns, tuples, list rests, integer ranges,
+  durations, and or-patterns. It lowers to structured `PatternSyntax` builders,
+  including a small string-literal renderer inside `std/meta`, rather than a raw
+  pattern-string constructor.
 
 This is intentionally not the full RFC. The payload is still source-backed and
-only expression/type quotation exists; there is no identifier hygiene or
+only expression/type/pattern quotation exists; there is no identifier hygiene or
 compiler-owned expression/pattern/type syntax tree yet. The value is the
 migration seam: future work can move the payload behind these wrappers from
 parsed source to structured compiler nodes without changing the comptime

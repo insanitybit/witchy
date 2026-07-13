@@ -1490,6 +1490,45 @@ fn main(console: Console):
         );
     }
 
+    /// RFC-0080 pattern quotation lowers to structured `PatternSyntax` builders,
+    /// so generated match arms no longer need hand-rendered pattern strings.
+    #[test]
+    fn quote_pattern_builds_typed_patternsyntax_on_both_backends() {
+        let src = r#"
+import meta
+
+type Flag:
+    Small
+    Big(Int)
+
+comptime:
+    let flag = quote type:
+        Flag
+    let string = quote type:
+        String
+    let x = meta.ident("x")
+    let value = meta.ident("value")
+    let small_pat = quote pattern:
+        Small
+    let big_pat = quote pattern:
+        Big(value)
+    let small = meta.match_arm(small_pat, meta.expr_raw("\"small\""))
+    let big = meta.match_arm(big_pat, meta.expr_raw("\"big:\" + \"$" + "{value}\""))
+    emit_item(meta.function(true, meta.ident("classify"), [meta.param(x, flag)], Some(string), meta.expr_match(meta.expr_name(x), [small, big])))
+
+fn main(console: Console):
+    console.print(classify(Small))
+    console.print(classify(Big(9)))
+"#;
+        let expected = ["small", "big:9"];
+        assert_eq!(link_run(src), expected, "interp quote pattern generated match");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled quote pattern generated match",
+        );
+    }
+
     /// (BUG-182) A tagged literal in a standalone file whose stem is NOT a valid
     /// identifier (`tag-hyphen`) must still expand and run on both backends. Tag
     /// expansion seeds a throwaway parse with `import <qualifier>` lines built from

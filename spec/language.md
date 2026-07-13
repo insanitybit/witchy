@@ -870,12 +870,13 @@ module is linked and type-checked. Runtime code cannot call them.
 `block`, `param`, and `function_block`; they make generated item structure
 typed at the API boundary and validate identifier spelling while full quotation
 and hygienic identifier origins remain future work.
-`quote expr:` and `quote type:` are the first quotation forms. They parse the
-indented expression or type immediately and produce `meta.ExprSyntax` or
-`meta.TypeSyntax` through the same sealed source-backed channel as the
-`std/meta` builders. `quote type:` covers named/generic, module-qualified, tuple,
-function, ownership-qualified, and capability-right types; anonymous structural
-type quotation, holes, item quotation, and pattern quotation remain future work.
+`quote expr:`, `quote type:`, and `quote pattern:` are the first quotation forms.
+They parse the indented expression, type, or pattern immediately and produce
+`meta.ExprSyntax`, `meta.TypeSyntax`, or `meta.PatternSyntax` through the same
+sealed source-backed channel as the `std/meta` builders. `quote type:` covers
+named/generic, module-qualified, tuple, function, ownership-qualified, and
+capability-right types; anonymous structural type quotation, holes, item
+quotation, and hygiene remain future work.
 
 Generated code is analyzed exactly like handwritten code, and nothing existing
 can be rewritten, so a comptime block cannot launder authority out of a
