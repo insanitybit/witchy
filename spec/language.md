@@ -857,12 +857,17 @@ deterministic by construction. Legacy `emit(line)` output, and direct
 `emit_item(item)` is the typed RFC-0080 migration channel for
 `meta.ItemSyntax`. A single `comptime:` block may use the legacy source
 channel or the typed item channel, but not both.
-Compiler syntax values such as `meta.ItemSyntax` are compile-time-only: runtime
-functions, fields, aliases, and expressions cannot store or return them.
+Compiler syntax values such as `meta.ItemSyntax`, `meta.TypeSyntax`, and
+`meta.ExprSyntax` are compile-time-only: runtime functions, fields, aliases, and
+expressions cannot store or return them.
 Top-level `comptime fn` declarations are helpers for this expansion phase. They
 may mention compile-time-only syntax types, may be called from `comptime:`,
 custom-derive, or tagged-literal expansion, and are stripped before the runtime
 module is linked and type-checked. Runtime code cannot call them.
+`std/meta` also exposes source-backed syntax builders such as `type_named`,
+`expr_call`, `param`, and `function`; they make generated item structure typed
+at the API boundary while full quotation and hygienic identifiers remain future
+work.
 
 Generated code is analyzed exactly like handwritten code, and nothing existing
 can be rewritten, so a comptime block cannot launder authority out of a

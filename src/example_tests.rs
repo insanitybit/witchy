@@ -1228,7 +1228,7 @@ fn main(console: Console):
 
     /// RFC-0080 fourth slice: compiler syntax values are compile-time-only. The
     /// public migration seam is `emit_item(ItemSyntax)` inside `comptime:`, not
-    /// ordinary runtime construction or storage of `meta.ItemSyntax`.
+    /// ordinary runtime construction or storage of `meta.*Syntax`.
     #[test]
     fn item_syntax_is_compile_time_only_outside_comptime() {
         let runtime_value = "import meta\n\nfn main(console: Console):\n    let generated = meta.item(\"fn hidden() -> Int:\\n    1\")\n    console.print(\"runtime item\")\n";
@@ -1237,11 +1237,46 @@ fn main(console: Console):
             .message;
         assert!(err.contains("meta.ItemSyntax") && err.contains("compile-time-only"), "got: {err}");
 
+        let runtime_type_value = "import meta\n\nfn main(console: Console):\n    let ty = meta.type_named(\"Int\", [])\n    console.print(\"runtime type syntax\")\n";
+        let err = typeck::check(&resolve_std_src(runtime_type_value))
+            .expect_err("runtime meta.type_named must be rejected")
+            .message;
+        assert!(err.contains("meta.TypeSyntax") && err.contains("compile-time-only"), "got: {err}");
+
         let runtime_signature = "from meta import ItemSyntax\n\nfn leak(x: ItemSyntax) -> ItemSyntax:\n    x\n";
         let err = typeck::check(&resolve_std_src(runtime_signature))
             .expect_err("runtime signatures must not expose ItemSyntax")
             .message;
         assert!(err.contains("meta.ItemSyntax") && err.contains("compile-time-only"), "got: {err}");
+
+        let runtime_expr_signature = "from meta import ExprSyntax\n\nfn leak(x: ExprSyntax) -> ExprSyntax:\n    x\n";
+        let err = typeck::check(&resolve_std_src(runtime_expr_signature))
+            .expect_err("runtime signatures must not expose ExprSyntax")
+            .message;
+        assert!(err.contains("meta.ExprSyntax") && err.contains("compile-time-only"), "got: {err}");
+
+        let local_runtime_type = "type ItemSyntax:\n    value: Int\n\nfn main(console: Console):\n    let x = ItemSyntax(11)\n    console.print(\"${x.value}\")\n";
+        let expected = ["11"];
+        assert_eq!(link_run(local_runtime_type), expected, "local type name is ordinary");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", local_runtime_type)], "main"),
+            expected,
+            "compiled local type name is ordinary",
+        );
+    }
+
+    /// RFC-0080 seventh slice: source-backed syntax builders make generated item
+    /// structure explicit even before full quotation and hygiene land.
+    #[test]
+    fn meta_syntax_builders_emit_function_items_on_both_backends() {
+        let src = "import meta\n\nfn plus_one(x: Int) -> Int:\n    x + 1\n\ncomptime:\n    emit_item(meta.function(true, \"generated\", [meta.param(\"x\", meta.type_named(\"Int\", []))], Some(meta.type_named(\"Int\", [])), meta.expr_call(meta.expr_name(\"plus_one\"), [meta.expr_name(\"x\")])))\n\nfn main(console: Console):\n    console.print(\"${generated(7)}\")\n";
+        let expected = ["8"];
+        assert_eq!(link_run(src), expected, "interp syntax-builder generated item");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled syntax-builder generated item",
+        );
     }
 
     /// RFC-0080 fifth slice: `comptime fn` is a compile-time-only helper form.

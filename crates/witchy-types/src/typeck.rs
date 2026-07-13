@@ -1098,6 +1098,9 @@ fn structural_type_kind(name: &str) -> Option<&'static str> {
 fn compiler_syntax_type_name(name: &str) -> Option<&'static str> {
     match name {
         "meta.ItemSyntax" => Some("meta.ItemSyntax"),
+        "meta.TypeSyntax" => Some("meta.TypeSyntax"),
+        "meta.ExprSyntax" => Some("meta.ExprSyntax"),
+        "meta.ParamSyntax" => Some("meta.ParamSyntax"),
         _ => None,
     }
 }

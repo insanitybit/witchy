@@ -1911,6 +1911,18 @@ RFC-0080 first slice: a typed boundary for whole generated items. The compiler s
 
 - `ItemSyntax(String)`
 
+#### `sealed type TypeSyntax`
+
+- `TypeSyntax(String)`
+
+#### `sealed type ExprSyntax`
+
+- `ExprSyntax(String)`
+
+#### `sealed type ParamSyntax`
+
+- `ParamSyntax(String)`
+
 #### `type TypeExpr`
 
 A declared type expression, exposed as data so generators do not have to parse source-looking type strings.
@@ -1949,6 +1961,32 @@ A type's structure. `fields` is populated for records and `variants` for sums; b
 #### `fn item(source: String) -> ItemSyntax`
 
 A source-backed item wrapper. This is the migration bridge from today's source-emitting generators toward structured constructors and quotation.
+
+#### `fn type_named(name: String, args: List(TypeSyntax)) -> TypeSyntax`
+
+Source-backed type syntax. Prefer this to assembling type names at each generator call site; it is still a migration helper, not full hygiene.
+
+#### `fn type_expr(ty: TypeExpr) -> TypeSyntax`
+
+#### `fn expr_name(name: String) -> ExprSyntax`
+
+Source-backed expression syntax. These constructors make the shape explicit while quotation/hygienic identifiers are still pending.
+
+#### `fn expr_call(callee: ExprSyntax, args: List(ExprSyntax)) -> ExprSyntax`
+
+#### `fn expr_field(base: ExprSyntax, field: String) -> ExprSyntax`
+
+#### `fn expr_int(n: Int) -> ExprSyntax`
+
+#### `fn expr_bool(b: Bool) -> ExprSyntax`
+
+#### `fn expr_raw(source: String) -> ExprSyntax`
+
+#### `fn param(name: String, ty: TypeSyntax) -> ParamSyntax`
+
+A function parameter and a single-expression function item. This is the first item constructor that avoids whole-function string templates in user code.
+
+#### `fn function(public: Bool, name: String, params: List(ParamSyntax), ret: Option(TypeSyntax), body: ExprSyntax) -> ItemSyntax`
 
 #### `fn type_source(ty: TypeExpr) -> String`
 

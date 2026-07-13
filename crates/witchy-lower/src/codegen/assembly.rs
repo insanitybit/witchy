@@ -32,6 +32,46 @@ fn grantable_cap_names(module: &Module) -> HashSet<&str> {
         .collect()
 }
 
+fn is_compiler_syntax_type_name(name: &str) -> bool {
+    matches!(
+        name,
+        "meta.ItemSyntax" | "meta.TypeSyntax" | "meta.ExprSyntax" | "meta.ParamSyntax"
+            | "ItemSyntax" | "TypeSyntax" | "ExprSyntax" | "ParamSyntax"
+    )
+}
+
+fn ast_type_mentions_compiler_syntax(ty: &Type) -> bool {
+    match ty {
+        Type::Named(name, args) => {
+            is_compiler_syntax_type_name(name)
+                || args.iter().any(ast_type_mentions_compiler_syntax)
+        }
+        Type::Tuple(items) => items.iter().any(ast_type_mentions_compiler_syntax),
+        Type::Fn(params, ret) => {
+            params.iter().any(ast_type_mentions_compiler_syntax)
+                || ast_type_mentions_compiler_syntax(ret)
+        }
+        Type::Qualified(_, inner) => ast_type_mentions_compiler_syntax(inner),
+    }
+}
+
+fn function_signature_mentions_compiler_syntax(f: &Function) -> bool {
+    f.params
+        .iter()
+        .filter_map(|p| p.ty.as_ref())
+        .any(ast_type_mentions_compiler_syntax)
+        || f.ret.as_ref().is_some_and(ast_type_mentions_compiler_syntax)
+}
+
+fn strip_compiler_syntax_items_for_runtime(mut module: Module) -> Module {
+    module.items.retain(|item| match item {
+        Item::Type(t) => !is_compiler_syntax_type_name(&t.name),
+        Item::Function(f) => !function_signature_mentions_compiler_syntax(f),
+        _ => true,
+    });
+    module
+}
+
 /// (RFC-0040) If `f` is a cap-gated string export (`export_*(cap, String)`), the
 /// leading grantable capability's `(type name, field count)`.
 fn export_cap_of<'a>(f: &'a Function, module: &'a Module) -> Option<(&'a str, usize)> {
@@ -165,7 +205,8 @@ fn gc_record_type_entries(module: &Module, transparent: &HashSet<String>) -> Vec
         .iter()
         .filter_map(|item| match item {
             Item::Type(t)
-                if t.is_capability
+                if !is_compiler_syntax_type_name(&t.name)
+                    && t.is_capability
                     && t.params.is_empty()
                     && t.variants.len() == 1
                     && !transparent.contains(&t.name) =>
@@ -271,7 +312,7 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
                     }
                 }
             }
-            Item::Type(t) => {
+            Item::Type(t) if !is_compiler_syntax_type_name(&t.name) => {
                 if t.packed {
                     cg.packed_types.insert(t.name.clone());
                 }
@@ -306,7 +347,8 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
                     }
                 }
             }
-            Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
+            Item::Type(_)
+            | Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
         }
     }
     for (name, ctor) in gc_records {
@@ -362,6 +404,9 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
         };
         for item in &module.items {
             if let Item::Type(t) = item {
+                if is_compiler_syntax_type_name(&t.name) {
+                    continue;
+                }
                 if !t.partial_eq_derived && has_eq_fn(&t.name) {
                     cg.custom_eq_types.insert(t.name.clone());
                 }
@@ -372,6 +417,9 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
     // records, so binding `Circle(p)` in a pattern lets `p.field` resolve.
     for item in &module.items {
         if let Item::Type(t) = item {
+            if is_compiler_syntax_type_name(&t.name) {
+                continue;
+            }
             for variant in &t.variants {
                 let field_recs: Vec<Option<String>> = variant
                     .fields
@@ -528,7 +576,8 @@ fn assemble_wir_module_with_structs(
     };
     use witchy_wir::wir_prelude::WasmTy;
     // Front-end, identical to `compile_module_with`.
-    let recs = witchy_syntax::records::lower(module.clone()).map_err(|message| CodegenError { message })?;
+    let runtime_module = strip_compiler_syntax_items_for_runtime(module.clone());
+    let recs = witchy_syntax::records::lower(runtime_module).map_err(|message| CodegenError { message })?;
     let eq_types = eq_impl_types(&recs);
     let mut lowered = witchy_types::traits::lower_for_wasm(recs);
     witchy_syntax::parser::lower_sugar_module(&mut lowered);

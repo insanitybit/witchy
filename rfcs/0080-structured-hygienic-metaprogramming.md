@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed meta.ItemSyntax, comptime emit_item, comptime fn helpers, and typed custom derives landed; quotation/hygiene/full syntax API remains proposed"
+tracking: "source-backed syntax wrappers/builders, comptime emit_item/fn helpers, and typed custom derives landed; quotation/hygiene/full syntax API remains proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -197,9 +197,14 @@ The first source-compatible slice is implemented:
 - The sixth slice lets local user-defined custom derives return `ItemSyntax` or
   `List(ItemSyntax)` directly. Legacy source-string custom derives remain
   supported as the compatibility path.
+- The seventh slice adds source-backed `TypeSyntax`, `ExprSyntax`, and
+  `ParamSyntax` wrappers plus small constructors such as `type_named`,
+  `expr_call`, `param`, and `function`. These are compile-time-only like
+  `ItemSyntax`: they reduce whole-item string templates without pretending to
+  provide quotation, identifier validation, or hygiene yet.
 
 This is intentionally not the full RFC. The payload is still source-backed and
-there is no quotation, identifier hygiene, or structured expression/pattern/type
-constructors yet. The value is the migration seam: future work can move the
-payload behind `ItemSyntax` from parsed source to structured constructors
+there is no quotation, identifier hygiene, or compiler-owned expression/pattern/
+type syntax tree yet. The value is the migration seam: future work can move the
+payload behind these wrappers from parsed source to structured compiler nodes
 without changing the comptime append/merge path again.
