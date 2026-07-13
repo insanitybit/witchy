@@ -12113,7 +12113,7 @@ fn main(console: Console):
     fn sandbox_runs_compiled_and_captures_output() {
         // `witchy sandbox` compiles to WASM and runs in the capability sandbox,
         // returning the program's output.
-        let path = std::env::temp_dir().join("witchy_sandbox_smoke.witchy");
+        let path = std::env::temp_dir().join(format!("witchy_sandbox_smoke_{}.witchy", std::process::id()));
         std::fs::write(
             &path,
             "fn main(console: Console):\n    console.print(\"${6 * 7}\")\n",
@@ -12233,7 +12233,7 @@ fn main(console: Console):
     fn verify_file_agrees_on_a_simple_program() {
         // `witchy verify` runs a program on both backends and confirms identical
         // output; on a normal program that should succeed.
-        let path = std::env::temp_dir().join("witchy_verify_smoke.witchy");
+        let path = std::env::temp_dir().join(format!("witchy_verify_smoke_{}.witchy", std::process::id()));
         std::fs::write(
             &path,
             "fn main(console: Console):\n    console.print(\"${(2 + 3) * 4}\")\n    console.print(\"hi\")\n",
@@ -12251,7 +12251,7 @@ fn main(console: Console):
     /// backends produce the same complete location-prefixed diagnostic.
     #[test]
     fn parity_file_agrees_on_matching_aborts() {
-        let path = std::env::temp_dir().join("witchy_verify_abort.witchy");
+        let path = std::env::temp_dir().join(format!("witchy_verify_abort_{}.witchy", std::process::id()));
         std::fs::write(
             &path,
             "import list\nfn main(console: Console):\n    let xs = [1, 2]\n    console.print(\"${list.at(xs, 9)}\")\n",
@@ -12482,7 +12482,7 @@ fn main(console: Console):
         // precompiled module — with authority derived from its imports — produces
         // the same output as running the source. This is "ship the .wasm, run it
         // with witchy".
-        let tmp = std::env::temp_dir().join("witchy_tier1_precompiled.wasm");
+        let tmp = std::env::temp_dir().join(format!("witchy_tier1_precompiled_{}.wasm", std::process::id()));
         let out = tmp.to_str().unwrap();
         crate::emit_wasm_file("examples/calc/src/calc.witchy", out).expect("emit-wasm");
         let (from_wasm, _) =
@@ -16975,7 +16975,7 @@ fn main(console: Console):
     /// real: the generated rune both passes its own `check` and runs.
     #[test]
     fn pm_new_scaffolds_a_runnable_rune() {
-        let tmp = std::env::temp_dir().join("witchy_pm_new_test");
+        let tmp = std::env::temp_dir().join(format!("witchy_pm_new_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
 
@@ -17135,7 +17135,7 @@ fn main(console: Console):
 
     #[test]
     fn dir_write_is_confined_to_the_subtree() {
-        let tmp = std::env::temp_dir().join("witchy_dir_write_test");
+        let tmp = std::env::temp_dir().join(format!("witchy_dir_write_test_{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         let run = |src: &str| {
             let mods = vec![("main".to_string(), parser::parse_module(src).expect("parse"))];
@@ -17157,7 +17157,7 @@ fn main(console: Console):
     /// `make_dir` needs `Write`, and both stay confined to the capability's subtree.
     #[test]
     fn dir_list_and_make_dir_work_and_are_rights_checked() {
-        let tmp = std::env::temp_dir().join("witchy_dir_list_test");
+        let tmp = std::env::temp_dir().join(format!("witchy_dir_list_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(tmp.join("store")).unwrap();
         std::fs::write(tmp.join("store/bravo"), "b").unwrap();
@@ -17188,7 +17188,7 @@ fn main(console: Console):
     #[test]
     fn dir_write_refuses_a_symlink_leaf() {
         // A pre-existing symlink in the subtree must not let a write escape it.
-        let base = std::env::temp_dir().join("witchy_dir_symlink_test");
+        let base = std::env::temp_dir().join(format!("witchy_dir_symlink_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("sandbox")).unwrap();
         std::fs::write(base.join("secret.txt"), "ORIGINAL").unwrap();
@@ -17256,7 +17256,7 @@ fn main(console: Console):
     /// so a narrowed handle still reads the same confined subtree.
     #[test]
     fn as_narrowing_is_identity_at_runtime() {
-        let tmp = std::env::temp_dir().join("witchy_dir_as_narrow_test");
+        let tmp = std::env::temp_dir().join(format!("witchy_dir_as_narrow_test_{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(tmp.join("in.txt"), "narrowed").unwrap();
         let src = "fn main(console: Console, root: Dir):\n    let r = root as Dir[Read]\n    console.print(r.read(\"in.txt\"))\n";
