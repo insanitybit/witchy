@@ -169,9 +169,22 @@ fn default_port(scheme: String) -> Int:
 // (`host:99999999999999999999`) makes `parse` return an error rather than trap
 // inside `string.to_int` (which panics on an out-of-i64 magnitude).
 fn parse_port(digits: String) -> Option(Int):
-    match string.parse_int(digits):
-        Some(p) -> if p >= 0 && p <= 65535: Some(p) else: None
-        None -> None
+    if !all_decimal_digits(digits):
+        None
+    else:
+        match string.parse_int(digits):
+            Some(p) -> if p <= 65535: Some(p) else: None
+            None -> None
+
+fn all_decimal_digits(s: String) -> Bool:
+    if string.is_empty(s):
+        false
+    else:
+        var valid = true
+        for ch in string.chars(s):
+            if ch < "0" || ch > "9":
+                valid = false
+        valid
 
 pub fn scheme(u: Url) -> String:
     match u:

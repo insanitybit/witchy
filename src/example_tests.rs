@@ -11129,8 +11129,9 @@ fn main(console: Console):
 
     #[test]
     fn url_parse_rejects_bad_port_without_trapping_backends_agree() {
-        // A non-numeric or empty `:port` makes parse return None — it used to trap
-        // in string_to_int. A valid or defaulted port still parses, both backends.
+        // A non-decimal or empty `:port` makes parse return None — it used to trap
+        // in string_to_int. Signs accepted by the general integer parser are not
+        // URL port syntax. A valid or defaulted port still parses, both backends.
         let client = r#"
 import url
 import result
@@ -11143,6 +11144,8 @@ fn main(console: Console):
     console.print(p("https://h:abc/x"))
     console.print(p("https://h:/x"))
     console.print(p("https://h:80x/x"))
+    console.print(p("https://h:+80/x"))
+    console.print(p("https://h:-0/x"))
     console.print(p("https://h/x"))
 "#;
         let sources = [
@@ -11153,7 +11156,10 @@ fn main(console: Console):
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
         let compiled = run_linked_on_wasm(&sources, "main");
         assert_eq!(interpreted, compiled, "url bad-port diverged");
-        assert_eq!(compiled, vec!["ok:8443", "none", "none", "none", "ok:443"]);
+        assert_eq!(
+            compiled,
+            vec!["ok:8443", "none", "none", "none", "none", "none", "ok:443"]
+        );
     }
 
     #[test]
