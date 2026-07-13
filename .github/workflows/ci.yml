@@ -223,7 +223,7 @@ jobs:
         run: node scripts/validate_book_examples.mjs
 
   fmt:
-    name: Formatting check (std + examples)
+    name: Formatting check (std + examples + projects)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -236,11 +236,8 @@ jobs:
         run: cargo build --release
       - name: witchy fmt --check
         run: |
-          fail=0
-          for f in std/*.witchy examples/*/src/*.witchy; do
-            if ! ./target/release/witchy fmt --check "$f" >/dev/null 2>&1; then
-              echo "needs formatting: $f"
-              fail=1
-            fi
-          done
-          exit $fail
+          files=(std/*.witchy examples/*/src/*.witchy)
+          while IFS= read -r f; do
+            files+=("$f")
+          done < <(find projects -type f -path '*/src/*.witchy' -print | sort)
+          ./target/release/witchy fmt --check "${files[@]}"
