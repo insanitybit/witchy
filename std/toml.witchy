@@ -55,8 +55,8 @@ pub fn decode(text: String) -> Result(Toml, TomlDecodeError):
     var aot = ""
     var in_aot = false
     var aot_seq = 0
-    var seen_keys = []
-    var seen_tables = []
+    var seen_keys: List(String) = []
+    var seen_tables: List(String) = []
     for line in string.lines(text):
         let t = string.trim(line)
         if is_array_header(t):
