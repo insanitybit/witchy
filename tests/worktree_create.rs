@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 #[cfg(unix)]
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 struct TempRepo(PathBuf);
 
@@ -145,14 +145,23 @@ fn worktree_create_runs_background_prebuild_at_utility_priority() {
     created_path(&output);
 
     let cargo_trace = trace.join("cargo");
-    for _ in 0..100 {
-        if fs::read_to_string(&cargo_trace).is_ok_and(|calls| calls.lines().count() == 2) {
+    let taskpolicy_trace = trace.join("taskpolicy");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let taskpolicy_ready = taskpolicy_trace.is_file();
+        let cargo_ready =
+            fs::read_to_string(&cargo_trace).is_ok_and(|calls| calls.lines().count() == 2);
+        if taskpolicy_ready && cargo_ready {
             break;
         }
-        thread::sleep(std::time::Duration::from_millis(20));
+        assert!(
+            Instant::now() < deadline,
+            "background prebuild did not produce both traces within 10 seconds"
+        );
+        thread::sleep(Duration::from_millis(20));
     }
 
-    let priority = fs::read_to_string(trace.join("taskpolicy")).expect("taskpolicy was invoked");
+    let priority = fs::read_to_string(taskpolicy_trace).expect("taskpolicy was invoked");
     assert!(priority.starts_with("-c utility sh -c "), "unexpected taskpolicy command: {priority}");
     let cargo = fs::read_to_string(cargo_trace).expect("cargo was invoked");
     let calls: Vec<_> = cargo.lines().collect();

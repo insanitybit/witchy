@@ -89,3 +89,40 @@ lockfiles, and capability manifests — built and run through the package manage
 The package manager itself is also written in witchy: see
 [`projects/pm`](../projects/pm) (the client) and
 [`projects/coven`](../projects/coven) (the registry server).
+
+## Complete rune inventory
+
+The sections above are a guided tour. This table is the exhaustive index of
+top-level runnable example runes; the repository test suite keeps it in sync
+with `examples/*/witchy.toml`.
+
+<!-- runnable-inventory:start -->
+| Example | Example | Example | Example |
+|---|---|---|---|
+| [aliases](aliases/) | [anagram](anagram/) | [app](app/) | [async_tasks](async_tasks/) |
+| [bank](bank/) | [brainfuck](brainfuck/) | [branded_caps](branded_caps/) | [bst](bst/) |
+| [calc](calc/) | [calculator](calculator/) | [capability_rights](capability_rights/) | [caps_audit](caps_audit/) |
+| [caps_guard](caps_guard/) | [carried_state](carried_state/) | [channels](channels/) | [closures](closures/) |
+| [commands](commands/) | [compute](compute/) | [config_merge](config_merge/) | [constants](constants/) |
+| [conventions](conventions/) | [coven_check](coven_check/) | [dedup](dedup/) | [dice](dice/) |
+| [diff](diff/) | [dijkstra](dijkstra/) | [display](display/) | [durations](durations/) |
+| [equality](equality/) | [eval](eval/) | [file_capability](file_capability/) | [files](files/) |
+| [fizzbuzz](fizzbuzz/) | [floats](floats/) | [for_await](for_await/) | [generators](generators/) |
+| [generic_stack](generic_stack/) | [generics](generics/) | [guard](guard/) | [hello](hello/) |
+| [higher_order](higher_order/) | [higher_order_sum](higher_order_sum/) | [inventory](inventory/) | [jq](jq/) |
+| [largest](largest/) | [lazy_fib](lazy_fib/) | [let_patterns](let_patterns/) | [life](life/) |
+| [list_more](list_more/) | [list_ops](list_ops/) | [list_pipeline](list_pipeline/) | [listmatch](listmatch/) |
+| [loops](loops/) | [math_demo](math_demo/) | [matrix](matrix/) | [maze](maze/) |
+| [minigrep](minigrep/) | [mutate](mutate/) | [opt_mode](opt_mode/) | [option_std](option_std/) |
+| [ownership](ownership/) | [parse_kv](parse_kv/) | [pascal](pascal/) | [patterns](patterns/) |
+| [pipeline](pipeline/) | [plugin_host](plugin_host/) | [predicates](predicates/) | [queens](queens/) |
+| [ranges](ranges/) | [record_compiled](record_compiled/) | [record_update](record_update/) | [records](records/) |
+| [redis_capability](redis_capability/) | [regions](regions/) | [request_reply](request_reply/) | [rle](rle/) |
+| [roman](roman/) | [rpn](rpn/) | [scope](scope/) | [select](select/) |
+| [serve_api](serve_api/) | [serve_hello](serve_hello/) | [serve_static](serve_static/) | [shapes](shapes/) |
+| [signs](signs/) | [sort](sort/) | [stats](stats/) | [std_demo](std_demo/) |
+| [strings](strings/) | [subscript](subscript/) | [sudoku](sudoku/) | [temperature](temperature/) |
+| [text](text/) | [time_and_encoding](time_and_encoding/) | [toposort](toposort/) | [traits](traits/) |
+| [try](try/) | [tuples](tuples/) | [wordcount](wordcount/) | [worker_pool](worker_pool/) |
+| [wrap](wrap/) | [zip](zip/) | | |
+<!-- runnable-inventory:end -->
