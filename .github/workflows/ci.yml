@@ -232,12 +232,12 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/install-rust
-      - name: Build release binary
-        run: cargo build --release
+      - name: Build binary
+        run: cargo build -p witchy
       - name: witchy fmt --check
         run: |
           files=(std/*.witchy examples/*/src/*.witchy)
           while IFS= read -r f; do
             files+=("$f")
           done < <(find projects -type f -path '*/src/*.witchy' -print | sort)
-          ./target/release/witchy fmt --check "${files[@]}"
+          ./target/debug/witchy fmt --check "${files[@]}"
