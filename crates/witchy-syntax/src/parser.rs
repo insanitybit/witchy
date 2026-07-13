@@ -120,6 +120,10 @@ struct Parser {
     /// record `__anon...` prepended to the module, so `.{a: x}` is ordinary
     /// reflectable data — `json.stringify(.{…})`, `debug(.{…})` — with no builtins.
     anon_records: Vec<Vec<String>>,
+    /// True once `quote expr:` lowers to a `meta.expr_raw(...)` call. The
+    /// surface form is parser-backed, so the parser also makes the implied `meta`
+    /// module available to the linker.
+    needs_meta_import: bool,
     /// Current recursion depth of the mutually-recursive descent (expressions,
     /// types, patterns). Guarded against `MAX_PARSE_DEPTH` so deeply-nested
     /// untrusted source (e.g. `(((((…)))))`) returns a `ParseError` instead of
@@ -168,6 +172,7 @@ impl Parser {
             in_async: false,
             in_gen: false,
             anon_records: Vec::new(),
+            needs_meta_import: false,
             depth: 0,
         }
     }
@@ -345,6 +350,11 @@ impl Parser {
         while !self.at(&Tok::Eof) {
             item_lines.push(self.cur().line);
             items.push(self.item()?);
+        }
+        if self.needs_meta_import && !imports.iter().any(|i| i == "meta") {
+            imports.push("meta".to_string());
+            import_lines.push(u32::MAX);
+            self.imports.insert("meta".to_string());
         }
         Ok(Module {
             modes,
@@ -1550,6 +1560,9 @@ impl Parser {
 
     fn atom(&mut self) -> Result<Expr, ParseError> {
         match self.kind().clone() {
+            Tok::Ident(name) if name == "quote" && self.quote_category().is_some() => {
+                self.quote_expr()
+            }
             Tok::Int(n) => {
                 self.advance();
                 Ok(Expr::Int(n))
@@ -1754,6 +1767,37 @@ impl Parser {
             }
             other => Err(self.error(format!("expected an expression, found `{other}`"))),
         }
+    }
+
+    fn quote_category(&self) -> Option<&str> {
+        let Some(Token { kind: Tok::Ident(category), .. }) = self.toks.get(self.pos + 1) else {
+            return None;
+        };
+        if !matches!(self.toks.get(self.pos + 2).map(|t| &t.kind), Some(Tok::LBrace)) {
+            return None;
+        }
+        Some(category)
+    }
+
+    fn quote_expr(&mut self) -> Result<Expr, ParseError> {
+        let Some(category) = self.quote_category().map(str::to_string) else {
+            return Err(self.error("expected `quote expr:`"));
+        };
+        if category != "expr" {
+            return Err(self.error(format!(
+                "`quote {category}:` is not implemented yet; use `quote expr:`"
+            )));
+        }
+        self.advance(); // `quote`
+        self.advance(); // `expr`
+        self.expect(&Tok::LBrace)?;
+        let quoted = self.expr(0)?;
+        self.expect(&Tok::RBrace)?;
+        self.needs_meta_import = true;
+        Ok(Expr::Call {
+            name: "meta.expr_raw".to_string(),
+            args: vec![Expr::Str(crate::format::expr_str(&quoted))],
+        })
     }
 
     /// Resolve a bare name into a variable, call, constructor, or a qualified

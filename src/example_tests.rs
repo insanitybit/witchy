@@ -1444,6 +1444,28 @@ fn main(console: Console):
         );
     }
 
+    /// RFC-0080 expression quotation: `quote expr:` parses the quoted
+    /// expression immediately and produces a typed `meta.ExprSyntax` through the
+    /// same sealed source-backed channel as `meta.expr_raw`.
+    #[test]
+    fn quote_expr_builds_typed_exprsyntax_on_both_backends() {
+        let src = r#"
+comptime fn answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+    quote expr:
+        40 + 2
+
+fn main(console: Console):
+    console.print("${answer"ignored"}")
+"#;
+        let expected = ["42"];
+        assert_eq!(link_run(src), expected, "interp quote expr tagged literal");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled quote expr tagged literal",
+        );
+    }
+
     /// (BUG-182) A tagged literal in a standalone file whose stem is NOT a valid
     /// identifier (`tag-hyphen`) must still expand and run on both backends. Tag
     /// expansion seeds a throwaway parse with `import <qualifier>` lines built from

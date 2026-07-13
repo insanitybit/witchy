@@ -450,6 +450,43 @@ fn f(x: Int):
     }
 
     #[test]
+    fn quote_expr_lowers_to_meta_expr_raw_and_imports_meta() {
+        let m = parse_module(r#"
+fn f():
+    quote expr:
+        40 + 1 * 2
+"#).expect("quote expression should parse");
+        assert!(m.imports.contains(&"meta".to_string()), "quote expr imports meta");
+        let Item::Function(f) = &m.items[0] else {
+            panic!("expected function");
+        };
+        let Stmt::Expr(Expr::Call { name, args }) = &f.body.stmts[0] else {
+            panic!("expected lowered meta.expr_raw call, got {:?}", f.body.stmts[0]);
+        };
+        assert_eq!(name, "meta.expr_raw");
+        assert_eq!(args, &[Expr::Str("40 + 1 * 2".to_string())]);
+
+        let err = parse_module("fn f():\n    quote item:\n        1\n")
+            .expect_err("only expression quotation is implemented");
+        assert!(err.message.contains("`quote item:` is not implemented yet"), "{err}");
+    }
+
+    #[test]
+    fn quote_identifier_is_ordinary_outside_quote_form() {
+        let stmts = fn_body(r#"
+fn f():
+    quote(1)
+"#);
+        assert_eq!(
+            stmts,
+            vec![Stmt::Expr(Expr::Call {
+                name: "quote".into(),
+                args: vec![Expr::Int(1)],
+            })]
+        );
+    }
+
+    #[test]
     fn parses_constructors_vs_calls_by_case() {
         let stmts = fn_body(r#"
 fn f():

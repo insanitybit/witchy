@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed syntax wrappers/builders with validated identifiers, comptime emit_item/fn helpers, typed custom derives, and typed tagged-literal ExprSyntax returns landed; quotation/hygiene/full syntax API remains proposed"
+tracking: "source-backed syntax wrappers/builders with validated identifiers, comptime emit_item/fn helpers, typed custom derives, typed tagged-literal ExprSyntax returns, and parser-backed expression quotation landed; hygiene/full syntax API remains proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -219,9 +219,16 @@ The first source-compatible slice is implemented:
   now return the sealed typed expression wrapper; the compiler-generated harness
   unwraps it internally, then applies RFC-0006 opaque hole substitution exactly
   as before.
+- The eleventh slice adds parser-backed `quote expr:`. The parser parses
+  the quoted expression at the quote site, renders it to canonical source, lowers
+  the form to the sealed source-backed `meta.expr_raw(...)` constructor, and
+  auto-imports `meta` for the generated call. This removes unchecked expression
+  string spelling from the common typed-tag case without claiming item quotation,
+  holes, or hygiene.
 
 This is intentionally not the full RFC. The payload is still source-backed and
-there is no quotation, identifier hygiene, or compiler-owned expression/pattern/
-type syntax tree yet. The value is the migration seam: future work can move the
-payload behind these wrappers from parsed source to structured compiler nodes
-without changing the comptime append/merge path again.
+only expression quotation exists; there is no identifier hygiene or
+compiler-owned expression/pattern/type syntax tree yet. The value is the
+migration seam: future work can move the payload behind these wrappers from
+parsed source to structured compiler nodes without changing the comptime
+append/merge path again.

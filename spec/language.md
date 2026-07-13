@@ -870,6 +870,10 @@ module is linked and type-checked. Runtime code cannot call them.
 `block`, `param`, and `function_block`; they make generated item structure
 typed at the API boundary and validate identifier spelling while full quotation
 and hygienic identifier origins remain future work.
+`quote expr:` is the first quotation form: it parses the indented expression
+immediately and produces `meta.ExprSyntax` through the same sealed source-backed
+channel as `meta.expr_raw`. It does not support holes or item, pattern, or type
+quotation yet; use the `std/meta` builders for those.
 
 Generated code is analyzed exactly like handwritten code, and nothing existing
 can be rewritten, so a comptime block cannot launder authority out of a
