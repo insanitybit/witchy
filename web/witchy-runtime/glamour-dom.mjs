@@ -83,6 +83,29 @@ const isSafeElement = (tag) => SAFE_ELEMENTS.has(String(tag).toLowerCase());
 // into an iframe, so it is never written.
 const DANGEROUS_ATTRS = new Set(["srcdoc"]);
 
+// (BUG-512) Attribute/event NAME grammar shared with glamour's static renderer.
+// Re-check at this authority-holding sink even though the canonical serializer
+// already inertizes bad names: callers can hand the host arbitrary wire JSON.
+const isValidAttrName = (name) =>
+  typeof name === "string" && /^[A-Za-z][A-Za-z0-9_:.-]*$/.test(name);
+const isValidEventName = (name) =>
+  typeof name === "string" && /^[A-Za-z][A-Za-z0-9-]*$/.test(name);
+
+// The name reconciliation must add/remove after normalization too. Otherwise a
+// raw invalid wire name could survive an update or reach removeAttribute.
+function attrIdentity(attr) {
+  const [kind, name] = attr;
+  if (kind === "prop") {
+    return ["prop", isValidAttrName(name) ? name : "data-glamour-invalid-attr"];
+  }
+  if (kind === "on" || kind === "oninput") {
+    return isValidEventName(name)
+      ? ["event", name]
+      : ["prop", "data-glamour-invalid-event"];
+  }
+  return [kind, String(name)];
+}
+
 // (BUG-272) A compartment renderer id is a REGISTRY KEY, never URL path material. Same grammar
 // as glamour's `valid_renderer_id`: lowercase ASCII alnum / `-` / `_`, leading alnum, non-empty.
 // Excludes `/ . % ? #` so a crafted id can't escape the `/compartments/<id>/` namespace.
@@ -649,15 +672,27 @@ function safeUrl(value) {
 function applyAttr(el, attr, dispatch) {
   const [kind, a, b] = attr;
   if (kind === "prop") {
-    if (/^on/i.test(a)) return;                              // no string event handlers, ever
-    if (DANGEROUS_ATTRS.has(String(a).toLowerCase())) return; // (BUG-260) srcdoc is an HTML sink
+    if (!isValidAttrName(a)) {
+      el.setAttribute("data-glamour-invalid-attr", String(a));
+      return;
+    }
+    if (/^on/i.test(a)) return;                 // no string event handlers, ever
+    if (DANGEROUS_ATTRS.has(a.toLowerCase())) return; // (BUG-260) srcdoc is an HTML sink
     if (URL_ATTRS.has(a.toLowerCase())) el.setAttribute(a, safeUrl(b));
     else el.setAttribute(a, b);
   } else if (kind === "on") {
+    if (!isValidEventName(a)) {
+      el.setAttribute("data-glamour-invalid-event", "[msg]");
+      return;
+    }
     // `b` is the msg VALUE (its wire JSON). The handler hands it straight back to
     // the rune via dispatch — events are data, the shell performs no logic.
     addHandler(el, a, b, dispatch);
   } else if (kind === "oninput") {
+    if (!isValidEventName(a)) {
+      el.setAttribute("data-glamour-invalid-event", "[input]");
+      return;
+    }
     // `b` is the msg-variant TAG; on the event, dispatch `tag(target.value)` so the
     // rune receives the field's value as data (the forms/controlled-input path).
     addInputHandler(el, a, b, dispatch);
@@ -714,16 +749,17 @@ function removeHandler(el, event) {
 function reconcileAttrs(el, oldAttrs, newAttrs, dispatch) {
   const oldProps = new Set();
   const oldEvents = new Set();
-  for (const [kind, a] of oldAttrs) {
-    if (kind === "prop") oldProps.add(a);
-    else if (kind === "on" || kind === "oninput") oldEvents.add(a);
+  for (const attr of oldAttrs) {
+    const [kind, name] = attrIdentity(attr);
+    if (kind === "prop") oldProps.add(name);
+    else if (kind === "event") oldEvents.add(name);
   }
   const newProps = new Set();
   const newEvents = new Set();
   for (const attr of newAttrs) {
-    const [kind, a] = attr;
-    if (kind === "prop") newProps.add(a);
-    else if (kind === "on" || kind === "oninput") newEvents.add(a);
+    const [kind, name] = attrIdentity(attr);
+    if (kind === "prop") newProps.add(name);
+    else if (kind === "event") newEvents.add(name);
     applyAttr(el, attr, dispatch); // setAttribute / (re)addHandler with the new msg
   }
   // Drop props/handlers no longer present.

@@ -597,6 +597,10 @@ fn node_json(node: VNode(msg), msg_to_json: fn(msg) -> Json) -> Json:
         // `Inc` message into `update`. Events are data.
 
         // The shell fills the target's value into a `tag(value)` msg on `event`.
+
+        // Keep the live-DOM wire contract identical to `to_html`: an
+        // invalid name becomes an inert marker instead of reaching a
+        // host `setAttribute`/`addEventListener` sink (BUG-512).
         Text(s) -> JsonObject([("text", JsonString(s))])
         Compartment(renderer, grant, on_event) ->
             JsonObject([("compartment", JsonString(renderer)), ("grant", JsonString(grant)), ("on", JsonString(on_event))])
@@ -612,12 +616,22 @@ fn node_json(node: VNode(msg), msg_to_json: fn(msg) -> Json) -> Json:
             var ajs: List(Json) = []
             for a in attrs:
                 let aj: Json = match a:
-                    Prop(name, value) -> JsonArray([JsonString("prop"), JsonString(name), JsonString(value)])
+                    Prop(name, value) ->
+                        if valid_attr_name(name):
+                            JsonArray([JsonString("prop"), JsonString(name), JsonString(value)])
+                        else:
+                            JsonArray([JsonString("prop"), JsonString("data-glamour-invalid-attr"), JsonString(name)])
                     On(event, msg) ->
-                        let mj: Json = msg_to_json(msg)
-                        JsonArray([JsonString("on"), JsonString(event), mj])
+                        if valid_tag_name(event):
+                            let mj: Json = msg_to_json(msg)
+                            JsonArray([JsonString("on"), JsonString(event), mj])
+                        else:
+                            JsonArray([JsonString("prop"), JsonString("data-glamour-invalid-event"), JsonString("[msg]")])
                     OnInput(event, tag) ->
-                        JsonArray([JsonString("oninput"), JsonString(event), JsonString(tag)])
+                        if valid_tag_name(event):
+                            JsonArray([JsonString("oninput"), JsonString(event), JsonString(tag)])
+                        else:
+                            JsonArray([JsonString("prop"), JsonString("data-glamour-invalid-event"), JsonString("[input]")])
                 ajs.push(aj)
             var kjs: List(Json) = []
             for c in children:

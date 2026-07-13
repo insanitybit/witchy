@@ -199,6 +199,83 @@ try {
   // The differ patches in place: the same <div> node persists across re-renders
   // (no wholesale root replacement for a same-shaped tree).
   ok(querySelector(root, "div") === div, "the differ patches the existing DOM in place");
+
+  // BUG-512: the canonical serializer uses the same invalid-name markers as
+  // static HTML, so a bad property/event name never enters the wire as a sink.
+  const invalidSource = join(work, "invalid_attrs.witchy");
+  writeFileSync(
+    invalidSource,
+    `import glamour
+from glamour import VNode
+from json import Json
+
+type Msg:
+    Noop
+
+fn msg_to_json(_msg: Msg) -> Json:
+    JsonNull
+
+fn main(console: Console):
+    let node: VNode(Msg) = glamour.element("div", [glamour.prop("bad name", "value"), glamour.on("bad event", Noop), glamour.on_input("bad event", "Changed")], [])
+    console.print(glamour.to_html(node))
+    console.print(glamour.to_json(node, msg_to_json))
+`,
+  );
+  const invalidOutput = execFileSync(BIN, [invalidSource], { cwd: work, encoding: "utf8" })
+    .trimEnd()
+    .split("\n");
+  ok(
+    invalidOutput[0] === '<div data-glamour-invalid-attr="bad name" data-glamour-invalid-event="[msg]" data-glamour-invalid-event="[input]"></div>',
+    "static HTML inertizes invalid property and event names",
+  );
+  const invalidWire = JSON.parse(invalidOutput[1]);
+  ok(
+    JSON.stringify(invalidWire.attrs) === JSON.stringify([
+      ["prop", "data-glamour-invalid-attr", "bad name"],
+      ["prop", "data-glamour-invalid-event", "[msg]"],
+      ["prop", "data-glamour-invalid-event", "[input]"],
+    ]),
+    "the VNode wire format uses the same inert markers",
+  );
+
+  // Defense in depth: mount a hand-written wire response that bypasses the
+  // Glamour serializer. The authority-holding host must still reject bad names.
+  const rawSource = join(work, "raw_invalid_attr.witchy");
+  writeFileSync(
+    rawSource,
+    `pub fn export_step(_input: String) -> String:
+    if string.contains(_input, "\\\"msg\\\""):
+        "{\\"model\\":1,\\"vnode\\":{\\"el\\":\\"div\\",\\"attrs\\":[],\\"kids\\":[]},\\"cmd\\":{\\"cmd\\":\\"none\\"}}"
+    else:
+        "{\\"model\\":0,\\"vnode\\":{\\"el\\":\\"div\\",\\"attrs\\":[[\\"prop\\",\\"bad name\\",\\"raw\\"],[\\"on\\",\\"bad event\\",null]],\\"kids\\":[]},\\"cmd\\":{\\"cmd\\":\\"none\\"}}"
+
+fn main(console: Console):
+    console.print(export_step(""))
+`,
+  );
+  const rawWasmPath = join(work, "raw_invalid_attr.wasm");
+  execFileSync(BIN, ["compile", rawSource, "--out", rawWasmPath], { cwd: work });
+  const rawRoot = new FakeElement("root");
+  const rawApp = await mount(readFileSync(rawWasmPath), rawRoot, {
+    document: fakeDocument,
+    initialModel: 0,
+  });
+  const rawDiv = querySelector(rawRoot, "div");
+  ok(rawDiv.getAttribute("bad name") === null, "raw invalid wire names never reach setAttribute");
+  ok(
+    rawDiv.getAttribute("data-glamour-invalid-attr") === "bad name",
+    "the host records a raw invalid property name inertly",
+  );
+  ok(
+    rawDiv.getAttribute("data-glamour-invalid-event") === "[msg]",
+    "the host refuses a raw invalid event name",
+  );
+  rawApp.dispatch("next");
+  ok(
+    rawDiv.getAttribute("data-glamour-invalid-attr") === null &&
+      rawDiv.getAttribute("data-glamour-invalid-event") === null,
+    "reconciliation removes normalized invalid-name markers",
+  );
 } finally {
   rmSync(work, { recursive: true, force: true });
 }
