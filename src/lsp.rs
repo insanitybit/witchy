@@ -62,7 +62,7 @@ fn main_loop(connection: &Connection) -> LspResult {
 const KEYWORDS: &[&str] = &[
     "fn", "gen", "yield", "async", "await", "let", "var", "if", "else", "match", "for", "in",
     "while", "return", "break", "continue", "type", "trait", "impl", "import", "pub",
-    "own", "move", "where", "as", "retain", "without", "region", "comptime", "true", "false",
+    "own", "move", "where", "as", "capability", "region", "comptime", "from", "true", "false",
 ];
 
 const BUILTINS: &[&str] = &[
