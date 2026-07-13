@@ -77,6 +77,9 @@ for p in "${paths[@]}"; do
         scripts/zizmor.sh)
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
             add "./scripts/zizmor.sh --quiet --no-progress --persona=pedantic .github/workflows" ;;
+        scripts/worktree-warm.sh)
+            add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
+            add "cargo nextest run --test worktree_warm" ;;
         scripts/*.sh)
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done" ;;
         justfile)

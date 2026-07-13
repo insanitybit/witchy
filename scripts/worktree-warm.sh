@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Warm a fresh git worktree's build cache by APFS-cloning the main worktree's
-# `target/` directory (copy-on-write via `cp -c`: no real disk used until files
-# diverge).
+# Warm a fresh git worktree's build cache by cloning the main worktree's
+# `target/` directory. macOS uses APFS copy-on-write (`cp -c`), GNU cp uses
+# `--reflink=auto`, and other platforms fall back to an ordinary recursive copy.
 #
 # Why this works: dependency crates are compiled from ~/.cargo/registry paths,
 # which don't vary by worktree, so their fingerprints stay valid — all ~270 dep
@@ -33,13 +33,49 @@
 # (BUG-020). Per-worktree target + CoW seed keeps builds parallel AND warm.
 set -euo pipefail
 
+# This override is a portability escape hatch and a deterministic test hook.
+copy_mode="${WITCHY_WORKTREE_WARM_COPY_MODE:-}"
+if [[ -z "$copy_mode" ]]; then
+    if cp --help 2>&1 | grep -F -- '--reflink' >/dev/null; then
+        copy_mode="reflink"
+    elif [[ "$(uname -s)" == "Darwin" ]]; then
+        copy_mode="apfs"
+    else
+        copy_mode="copy"
+    fi
+fi
+case "$copy_mode" in
+    apfs) copy_description="APFS CoW clone" ;;
+    reflink) copy_description="reflink/copy" ;;
+    copy) copy_description="copy" ;;
+    *)
+        echo "worktree-warm: invalid WITCHY_WORKTREE_WARM_COPY_MODE '$copy_mode' (expected apfs, reflink, or copy)" >&2
+        exit 2
+        ;;
+esac
+
+copy_path() {
+    case "$copy_mode" in
+        apfs) cp -Rc "$@" ;;
+        reflink) cp -R --reflink=auto "$@" ;;
+        copy) cp -R "$@" ;;
+    esac
+}
+
 clone_deps() { # clone_deps <src-deps> <dest-deps>
     local src="$1" dst="$2"
     mkdir "$dst"
     # Batch retained entries into as few cp invocations as the platform's
     # argument limit permits. A cp per file would erase most of the speedup.
     find "$src" -mindepth 1 -maxdepth 1 ! -name '*.rcgu.o' \
-        -exec sh -c 'dst="$1"; shift; cp -Rc "$@" "$dst/"' sh "$dst" {} +
+        -exec sh -c '
+            mode="$1"; dst="$2"; shift 2
+            case "$mode" in
+                apfs) cp -Rc "$@" "$dst/" ;;
+                reflink) cp -R --reflink=auto "$@" "$dst/" ;;
+                copy) cp -R "$@" "$dst/" ;;
+            esac
+        ' sh "$copy_mode" "$dst" {} +
 }
 
 clone_profile() { # clone_profile <src-profile> <dest-profile>
@@ -52,7 +88,7 @@ clone_profile() { # clone_profile <src-profile> <dest-profile>
         if [[ "$base" == "deps" && -d "$entry" ]]; then
             clone_deps "$entry" "$dst/$base"
         else
-            cp -Rc "$entry" "$dst/$base"
+            copy_path "$entry" "$dst/$base"
         fi
     done
 }
@@ -61,11 +97,11 @@ clone_target() { # clone_target <src-target> <dest-target>
     local src="$1" dst="$2"
     mkdir "$dst"
     # CACHEDIR.TAG (written by cargo) marks target/ for backup tools to skip.
-    [[ -f "$src/CACHEDIR.TAG" ]] && cp -c "$src/CACHEDIR.TAG" "$dst/" 2>/dev/null || true
+    [[ -f "$src/CACHEDIR.TAG" ]] && copy_path "$src/CACHEDIR.TAG" "$dst/" 2>/dev/null || true
     # Clone each profile dir. Target-triple dirs contain another debug/release
     # layer, so descend once to apply the same incremental/deps filtering.
-    # `cp -Rc` requests a CoW clone (APFS); on a non-CoW filesystem it falls
-    # back to a real copy — still correct, just slower.
+    # copy_path uses the best clone primitive detected above, with an ordinary
+    # recursive copy as the portable fallback.
     local profile name entry base
     for profile in "$src"/*/; do
         name="$(basename "$profile")"
@@ -79,7 +115,7 @@ clone_target() { # clone_target <src-target> <dest-target>
                 if [[ -d "$entry" && ( "$base" == "debug" || "$base" == "release" ) ]]; then
                     clone_profile "$entry" "$dst/$name/$base"
                 else
-                    cp -Rc "$entry" "$dst/$name/$base"
+                    copy_path "$entry" "$dst/$name/$base"
                 fi
             done
         else
@@ -101,7 +137,7 @@ if [[ "${1:-}" == "--target-dir" ]]; then
         exit 1
     fi
     clone_target "$root/target" "$dest"
-    echo "worktree-warm: seeded $dest from $root/target (CoW clone, incremental/ and deps/*.rcgu.o skipped)"
+    echo "worktree-warm: seeded $dest from $root/target ($copy_description, incremental/ and deps/*.rcgu.o skipped)"
     exit 0
 fi
 
@@ -125,4 +161,4 @@ if [[ ! -d "$main/target" ]]; then
 fi
 
 clone_target "$main/target" "$dest/target"
-echo "worktree-warm: seeded $dest/target from $main/target (CoW clone, incremental/ and deps/*.rcgu.o skipped)"
+echo "worktree-warm: seeded $dest/target from $main/target ($copy_description, incremental/ and deps/*.rcgu.o skipped)"
