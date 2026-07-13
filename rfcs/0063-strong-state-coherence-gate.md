@@ -139,6 +139,13 @@ Local and CI release gates should match their labels:
 - release artifacts should include a clear `--version`/commit identity, checksums, and a
   documented verification path.
 
+Implementation progress (2026-07-13): `scripts/build-docs.sh` now fails before
+assembling a bundle when the browser compiler is absent. Non-runnable render
+smokes must opt out explicitly with `--allow-missing-compiler`; `just
+docs-build` and CI continue to stage the compiler and use the strict path. The
+real-book bundle test proves both the default rejection and the intentional
+non-runnable opt-out.
+
 ## Alternatives
 
 - **Do only RFC-0061.** This gives a green checkpoint, but the architecture can still feel

@@ -3,11 +3,26 @@
 # the book content, the browser compiler + shared web modules, and the classification manifest —
 # a bag of static files servable anywhere (GitHub Pages, `python3 -m http.server`), NO server.
 #
-#   ./scripts/build-docs.sh [OUTDIR]        (default: dist)
+#   ./scripts/build-docs.sh [OUTDIR]        (default: dist; browser compiler required)
+#   ./scripts/build-docs.sh --allow-missing-compiler [OUTDIR]
 #   python3 -m http.server -d dist 8000     # then open http://localhost:8000
 set -euo pipefail
 cd "$(dirname "$0")/.."
+ALLOW_MISSING_COMPILER=0
+if [[ "${1:-}" == "--allow-missing-compiler" ]]; then
+  ALLOW_MISSING_COMPILER=1
+  shift
+fi
+if [[ $# -gt 1 ]]; then
+  echo "usage: build-docs.sh [--allow-missing-compiler] [OUTDIR]" >&2
+  exit 2
+fi
 OUT="${1:-dist}"
+BROWSER_COMPILER="${WITCHY_BROWSER_WASM:-web/witchy.wasm}"
+if [[ ! -f "$BROWSER_COMPILER" && "$ALLOW_MISSING_COMPILER" -ne 1 ]]; then
+  echo "build-docs: $BROWSER_COMPILER missing; run ./scripts/build-playground.sh or pass --allow-missing-compiler for a non-runnable bundle" >&2
+  exit 1
+fi
 BIN="${WITCHY:-}"
 if [ -z "$BIN" ]; then
   # Honor a custom CARGO_TARGET_DIR (concurrent agents build into per-agent dirs).
@@ -43,10 +58,10 @@ cp book/examples.json "$OUT/"
 cp web/_headers "$OUT/"
 
 # 4. The browser compiler (built by build-playground.sh) — required for the Run buttons.
-if [ -f web/witchy.wasm ]; then
-  cp web/witchy.wasm "$OUT/"
+if [[ -f "$BROWSER_COMPILER" ]]; then
+  cp "$BROWSER_COMPILER" "$OUT/witchy.wasm"
 else
-  echo "warning: web/witchy.wasm missing — Run buttons won't work until you run ./scripts/build-playground.sh" >&2
+  echo "warning: browser compiler explicitly omitted; Run buttons will not work" >&2
 fi
 
 echo "built $OUT/ — serve with:  python3 -m http.server -d $OUT 8000"

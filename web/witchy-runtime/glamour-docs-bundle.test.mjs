@@ -54,10 +54,25 @@ const ok = (cond, msg) => { console.log(`  ${cond ? "ok" : "FAIL"}: ${msg}`); if
 
 const dist = mkdtempSync(join(tmpdir(), "witchy-dist-"));
 try {
-  // 1. Build the deployable bundle with the docs app pointed at the REAL book.
-  execFileSync("bash", [join(REPO, "scripts/build-docs.sh"), dist], {
+  // 1. Missing browser compiler assets fail closed unless the caller explicitly
+  // opts out. This render smoke test does not execute runnable cells, so it opts out.
+  const missingCompiler = join(dist, "missing-compiler.wasm");
+  let rejectedMissingCompiler = false;
+  try {
+    execFileSync("bash", [join(REPO, "scripts/build-docs.sh"), dist], {
+      cwd: REPO,
+      env: { ...process.env, WITCHY: BIN, WITCHY_BROWSER_WASM: missingCompiler },
+      stdio: "pipe",
+    });
+  } catch {
+    rejectedMissingCompiler = true;
+  }
+  ok(rejectedMissingCompiler, "the bundle build rejects a missing browser compiler by default");
+
+  // 2. Build the deployable bundle with the docs app pointed at the REAL book.
+  execFileSync("bash", [join(REPO, "scripts/build-docs.sh"), "--allow-missing-compiler", dist], {
     cwd: REPO,
-    env: { ...process.env, WITCHY: BIN },
+    env: { ...process.env, WITCHY: BIN, WITCHY_BROWSER_WASM: missingCompiler },
     stdio: "pipe",
   });
   for (const f of ["index.html", "docs.wasm", "glamour-dom.mjs", "witchy-runnable.js", "witchy-host.js", "docs-boot.js", "examples.json", "_headers", "content/SUMMARY.md", "content/introduction.md"]) {
@@ -67,7 +82,7 @@ try {
   const headers = readFileSync(join(dist, "_headers"), "utf8");
   ok(/Cross-Origin-Opener-Policy:\s*same-origin/.test(headers) && /Cross-Origin-Embedder-Policy:\s*require-corp/.test(headers), "the bundle ships strict COOP/COEP headers");
 
-  // 2. Mount the bundle's docs.wasm; fetch reads the bundle's staged `content/`.
+  // 3. Mount the bundle's docs.wasm; fetch reads the bundle's staged `content/`.
   const wasm = readFileSync(join(dist, "docs.wasm"));
   const fetchCalls = [];
   const fakeFetch = (url) => {
@@ -92,7 +107,7 @@ try {
   });
   await settle();
 
-  // 3. The REAL book renders: a full nav from the real SUMMARY.md, and a real page.
+  // 4. The REAL book renders: a full nav from the real SUMMARY.md, and a real page.
   ok(fetchCalls.some((u) => u.includes("/content/SUMMARY.md")), "the app fetches the real SUMMARY.md");
   const navButtons = qsa(root, "nav").flatMap((n) => qsa(n, "button"));
   ok(navButtons.length >= 10, `the real SUMMARY.md renders a full nav (got ${navButtons.length} pages)`);
@@ -100,7 +115,7 @@ try {
   ok(qsa(root, "h1").length + qsa(root, "h2").length >= 1, "the real home page renders a heading");
   ok(root.textContent.length > 200, "the real home page has substantial rendered content");
 
-  // 4. A real book page's own `witchy` fences become editable runnable cells. Navigate to a page
+  // 5. A real book page's own `witchy` fences become editable runnable cells. Navigate to a page
   //    that carries witchy examples and check for a cell (textarea), trying a few candidate pages.
   const goto = (title) => {
     const b = qsa(root, "nav").flatMap((n) => qsa(n, "button")).find((x) => x.textContent === title);
