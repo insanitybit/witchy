@@ -696,90 +696,99 @@ fn differential_fuzz_interpreter_vs_compiled() {
     let programs = env_usize("WITCHY_FUZZ_PROGRAMS", 30);
     let statements = env_usize("WITCHY_FUZZ_STATEMENTS", 100);
     let default_idx = CONFIGS.iter().position(|c| c.is_empty()).unwrap();
+
+    struct SeedResult {
+        kinds_used: u64,
+        tallies: Vec<ConfigTally>,
+        default_compared: usize,
+    }
+
+    // Run seeds in parallel — each is independent (spawns its own subprocesses).
+    // Panics (DIVERGE/Crash/Timeout) propagate naturally via thread::scope.
+    let results: Vec<SeedResult> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..programs as u64).map(|seed| {
+            s.spawn(move || {
+                let (src, used) = gen_program(seed.wrapping_mul(0x1234_5678_9ABC_DEF1).wrapping_add(1), statements);
+                let check_ok = check_accepts(&src, &format!("check_s{seed}")).unwrap_or_else(|out| {
+                    panic!("witchy check CRASHED (signal) on generated seed {seed}.\n--- program ---\n{src}\n--- output ---\n{out}")
+                });
+                let mut seed_tallies: Vec<ConfigTally> = (0..CONFIGS.len()).map(|_| ConfigTally::default()).collect();
+                let mut seed_outcomes: Vec<&'static str> = Vec::with_capacity(CONFIGS.len());
+                let mut default_compared: usize = 0;
+                for (ci, &cfg) in CONFIGS.iter().enumerate() {
+                    let label = if cfg.is_empty() { "<default>" } else { cfg };
+                    match run_parity(&src, cfg, &format!("s{seed}c{ci}")) {
+                        ParityResult::Crash(out) => {
+                            let min = shrink(&src, |s| is_failure(&run_parity_t(s, cfg, "shrink", shrink_timeout())), 4000);
+                            panic!(
+                                "witchy CRASHED (signal) on seed {seed} under WITCHY_OPT={label} — host-level memory unsafety.\n--- minimal repro ({} lines, from {}) ---\n{min}--- output ---\n{out}",
+                                min.lines().count(),
+                                src.lines().count()
+                            );
+                        }
+                        ParityResult::Diverge(out) => {
+                            let min = shrink(&src, |s| is_failure(&run_parity_t(s, cfg, "shrink", shrink_timeout())), 4000);
+                            panic!(
+                                "BACKENDS DIVERGE on seed {seed} under WITCHY_OPT={label} — an optimization changed observable behavior.\n--- minimal repro ({} lines, from {}) ---\n{min}--- output ---\n{out}",
+                                min.lines().count(),
+                                src.lines().count()
+                            );
+                        }
+                        ParityResult::TimedOut => panic!(
+                            "witchy parity TIMED OUT on seed {seed} under WITCHY_OPT={label} after {}s — a generated program hung (a bug; or raise WITCHY_FUZZ_TIMEOUT_SECS if legitimately slow).",
+                            fuzz_timeout().as_secs()
+                        ),
+                        ParityResult::Agree(n) => {
+                            seed_tallies[ci].agree += 1;
+                            seed_tallies[ci].compared_lines += n;
+                            seed_outcomes.push("agree");
+                            if cfg.is_empty() { default_compared = n; }
+                        }
+                        ParityResult::BothErrorAgree => {
+                            seed_tallies[ci].both_error += 1;
+                            seed_outcomes.push("both-error");
+                        }
+                        ParityResult::Skip => {
+                            assert!(
+                                !check_ok,
+                                "`witchy check` accepted generated seed {seed}, but parity skipped it under WITCHY_OPT={label} — check and the compiled backend have different acceptance sets.\n--- program ---\n{src}"
+                            );
+                            seed_tallies[ci].skip += 1;
+                            seed_outcomes.push("skip");
+                        }
+                    }
+                }
+                // Cross-config consistency (RFC-0058 §5).
+                if seed_outcomes[default_idx] == "agree" {
+                    for (ci, &cfg) in CONFIGS.iter().enumerate() {
+                        assert_ne!(
+                            seed_outcomes[ci], "skip",
+                            "config WITCHY_OPT={} SKIPPED seed {seed} that the default config AGREED on — a lever changed compilability (RFC-0058 §5).",
+                            if cfg.is_empty() { "<default>" } else { cfg }
+                        );
+                    }
+                }
+                SeedResult { kinds_used: used, tallies: seed_tallies, default_compared }
+            })
+        }).collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+
+    // Reduce per-seed results.
     let mut tallies: Vec<ConfigTally> = (0..CONFIGS.len()).map(|_| ConfigTally::default()).collect();
     let mut kinds_used: u64 = 0;
-    // Compared-line count per seed on the DEFAULT config — the execution-volume vacuity
-    // guard (RFC-0058 §1/§4, BUG-003) asserts its median is >= 1.
-    let mut default_compared: Vec<usize> = Vec::new();
-    for seed in 0..programs as u64 {
-        let (src, used) = gen_program(seed.wrapping_mul(0x1234_5678_9ABC_DEF1).wrapping_add(1), statements);
-        kinds_used |= used;
-        let check_ok = check_accepts(&src, &format!("check_s{seed}")).unwrap_or_else(|out| {
-            panic!("witchy check CRASHED (signal) on generated seed {seed}.\n--- program ---\n{src}\n--- output ---\n{out}")
-        });
-        // Per-config outcome for THIS seed, for the cross-config consistency check below.
-        let mut seed_outcomes: Vec<&'static str> = Vec::with_capacity(CONFIGS.len());
-        // Cross-lever differential: `parity` reads `WITCHY_OPT` for its compiled side; the
-        // interpreter oracle ignores it. So running parity under each config compares that
-        // config's compiled output against the one constant oracle — all-agree ⇒ all compiled
-        // outputs agree with each other. Any lever that changes observable behavior is a DIVERGE.
-        for (ci, &cfg) in CONFIGS.iter().enumerate() {
-            let label = if cfg.is_empty() { "<default>" } else { cfg };
-            match run_parity(&src, cfg, &format!("s{seed}c{ci}")) {
-                // A crash (no exit code) means the host process itself died — memory unsafety.
-                ParityResult::Crash(out) => {
-                    let min = shrink(&src, |s| is_failure(&run_parity_t(s, cfg, "shrink", shrink_timeout())), 4000);
-                    panic!(
-                        "witchy CRASHED (signal) on seed {seed} under WITCHY_OPT={label} — host-level memory unsafety.\n--- minimal repro ({} lines, from {}) ---\n{min}--- output ---\n{out}",
-                        min.lines().count(),
-                        src.lines().count()
-                    );
-                }
-                ParityResult::Diverge(out) => {
-                    let min = shrink(&src, |s| is_failure(&run_parity_t(s, cfg, "shrink", shrink_timeout())), 4000);
-                    panic!(
-                        "BACKENDS DIVERGE on seed {seed} under WITCHY_OPT={label} — an optimization changed observable behavior.\n--- minimal repro ({} lines, from {}) ---\n{min}--- output ---\n{out}",
-                        min.lines().count(),
-                        src.lines().count()
-                    );
-                }
-                // A hang is a bug — never silently "agree" (RFC-0058 §3).
-                ParityResult::TimedOut => panic!(
-                    "witchy parity TIMED OUT on seed {seed} under WITCHY_OPT={label} after {}s — a generated program hung (a bug; or raise WITCHY_FUZZ_TIMEOUT_SECS if legitimately slow).",
-                    fuzz_timeout().as_secs()
-                ),
-                ParityResult::Agree(n) => {
-                    tallies[ci].agree += 1;
-                    tallies[ci].compared_lines += n;
-                    seed_outcomes.push("agree");
-                    if cfg.is_empty() {
-                        default_compared.push(n);
-                    }
-                }
-                ParityResult::BothErrorAgree => {
-                    tallies[ci].both_error += 1;
-                    seed_outcomes.push("both-error");
-                    if cfg.is_empty() {
-                        default_compared.push(0);
-                    }
-                }
-                ParityResult::Skip => {
-                    assert!(
-                        !check_ok,
-                        "`witchy check` accepted generated seed {seed}, but parity skipped it under WITCHY_OPT={label} — check and the compiled backend have different acceptance sets.\n--- program ---\n{src}"
-                    );
-                    tallies[ci].skip += 1;
-                    seed_outcomes.push("skip");
-                    if cfg.is_empty() {
-                        default_compared.push(0);
-                    }
-                }
-            }
-        }
-        // Cross-config consistency (RFC-0058 §5): if the DEFAULT produced comparable output
-        // for this seed, no lever may SKIP it — a lever that changes compilability is a
-        // failure to explain, not silent slack. (A lever whose compiled OUTPUT differs is
-        // already a DIVERGE above; this catches a lever whose COMPILE outcome differs.)
-        if seed_outcomes[default_idx] == "agree" {
-            for (ci, &cfg) in CONFIGS.iter().enumerate() {
-                assert_ne!(
-                    seed_outcomes[ci], "skip",
-                    "config WITCHY_OPT={} SKIPPED seed {seed} that the default config AGREED on — a lever changed compilability (RFC-0058 §5).",
-                    if cfg.is_empty() { "<default>" } else { cfg }
-                );
-            }
+    let mut default_compared: Vec<usize> = Vec::with_capacity(programs);
+    for r in &results {
+        kinds_used |= r.kinds_used;
+        default_compared.push(r.default_compared);
+        for (ci, t) in r.tallies.iter().enumerate() {
+            tallies[ci].agree += t.agree;
+            tallies[ci].both_error += t.both_error;
+            tallies[ci].skip += t.skip;
+            tallies[ci].compared_lines += t.compared_lines;
         }
     }
+
     let labeled: Vec<(&str, &ConfigTally)> = CONFIGS
         .iter()
         .map(|c| if c.is_empty() { "<default>" } else { *c })

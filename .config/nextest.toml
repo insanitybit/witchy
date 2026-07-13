@@ -61,17 +61,13 @@ registry-serial = { max-threads = 2 }
 perf-serial = { max-threads = 1 }
 
 # Long-running regression guards: the three at-scale perf tests (50k-element
-# programs on both backends) and the differential fuzzer run 60-80s on an idle
-# machine — under a busy gate (concurrent agents, deep merge queue) they can
-# exceed the default 135s slow-kill and false-red a healthy branch (observed
-# 2026-07-07: two gates red with 1494/1495 and 1490/1493 passed). Serialize
-# them in their own group with a longer window; assertions are unchanged.
-# priority 90: the fuzzer is the single longest test (~50s); at default priority
-# it dispatched ~60% into the run (name order) and its tail ran after the bulk
-# had drained. Starting it near the front (just below the e2e servers' 100, so
-# those still claim their 2 slots first) overlaps it with the parallel bulk.
+# programs on both backends) run 60-80s on an idle machine — under a busy gate
+# (concurrent agents, deep merge queue) they can exceed the default 135s
+# slow-kill and false-red a healthy branch (observed 2026-07-07: two gates red
+# with 1494/1495 and 1490/1493 passed). Serialize them in their own group with
+# a longer window; assertions are unchanged.
 [[profile.default.overrides]]
-filter = 'test(/list_reverse_flatten_flat_map_are_linear_at_scale|inplace_set_at_is_fast_and_alias_safe|inplace_update_at_is_fast_and_alias_safe/) | (binary_id(witchy::differential_fuzz) & test(differential_fuzz_interpreter_vs_compiled))'
+filter = 'test(/list_reverse_flatten_flat_map_are_linear_at_scale|inplace_set_at_is_fast_and_alias_safe|inplace_update_at_is_fast_and_alias_safe/)'
 test-group = 'perf-serial'
 slow-timeout = { period = "120s", terminate-after = 3 }
 priority = 90
