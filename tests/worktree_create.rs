@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+#[cfg(unix)]
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 struct TempRepo(PathBuf);
@@ -59,6 +61,16 @@ fn create(repo: &Path, name: &str) -> Output {
         .expect("run worktree-create.sh")
 }
 
+#[cfg(unix)]
+fn write_executable(path: &Path, contents: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::write(path, contents).expect("write fake executable");
+    let mut permissions = fs::metadata(path).expect("fake executable metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).expect("make fake executable runnable");
+}
+
 fn created_path(output: &Output) -> PathBuf {
     assert!(
         output.status.success(),
@@ -99,4 +111,52 @@ fn worktree_create_never_reuses_a_merged_branch_name() {
     let live_branch = git(&live_path, &["branch", "--show-current"]);
     assert_ne!(live_branch, "worktree-live");
     assert!(live_branch.starts_with("worktree-live-"));
+}
+
+#[cfg(unix)]
+#[test]
+fn worktree_create_runs_background_prebuild_at_utility_priority() {
+    let repo = TempRepo::new();
+    let root = repo.path();
+    let bin = root.join("fake-bin");
+    let trace = root.join("prebuild-trace");
+    fs::create_dir(&bin).expect("create fake bin");
+    fs::create_dir(&trace).expect("create trace dir");
+    write_executable(
+        &bin.join("taskpolicy"),
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$WITCHY_PREBUILD_TRACE/taskpolicy\"\nshift 2\nexec \"$@\"\n",
+    );
+    write_executable(
+        &bin.join("cargo"),
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$WITCHY_PREBUILD_TRACE/cargo\"\n",
+    );
+
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/worktree-create.sh");
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").expect("PATH"));
+    let output = Command::new("bash")
+        .arg(script)
+        .arg("priority")
+        .current_dir(root)
+        .env("CLAUDE_PROJECT_DIR", root)
+        .env("WITCHY_PREBUILD_TRACE", &trace)
+        .env("PATH", path)
+        .output()
+        .expect("run worktree-create.sh");
+    created_path(&output);
+
+    let cargo_trace = trace.join("cargo");
+    for _ in 0..100 {
+        if fs::read_to_string(&cargo_trace).is_ok_and(|calls| calls.lines().count() == 2) {
+            break;
+        }
+        thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    let priority = fs::read_to_string(trace.join("taskpolicy")).expect("taskpolicy was invoked");
+    assert!(priority.starts_with("-c utility sh -c "), "unexpected taskpolicy command: {priority}");
+    let cargo = fs::read_to_string(cargo_trace).expect("cargo was invoked");
+    let calls: Vec<_> = cargo.lines().collect();
+    assert_eq!(calls.len(), 2, "expected build and test prebuild calls: {cargo}");
+    assert!(calls[0].starts_with("build --workspace --manifest-path "));
+    assert!(calls[1].starts_with("test --workspace --no-run --manifest-path "));
 }

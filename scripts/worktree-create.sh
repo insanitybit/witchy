@@ -67,7 +67,13 @@ git worktree add -b "$branch" "$dest" HEAD 1>&2 || exit 1
 # here means the agent's first `cargo nextest run` is a no-op link.
 # WITCHY_WORKTREE_CREATE_PREBUILD=0 keeps script integration tests hermetic.
 if [ "${WITCHY_WORKTREE_CREATE_PREBUILD:-1}" != "0" ] && command -v cargo >/dev/null 2>&1; then
-    nohup sh -c "cargo build --workspace --manifest-path '$dest/Cargo.toml' && \
+    priority=()
+    if command -v taskpolicy >/dev/null 2>&1; then
+        priority=(taskpolicy -c utility)
+    elif command -v nice >/dev/null 2>&1; then
+        priority=(nice -n 10)
+    fi
+    nohup "${priority[@]}" sh -c "cargo build --workspace --manifest-path '$dest/Cargo.toml' && \
         cargo test --workspace --no-run --manifest-path '$dest/Cargo.toml'" \
         >"$dest/.worktree-prebuild.log" 2>&1 </dev/null &
     disown
