@@ -13,8 +13,19 @@ fn main(console: Console, dir: Dir):
     console.print(load(dir, "notes.txt"))
 ```
 
+## Quick start
 
-**Language Stability**
+Build from source with a Rust toolchain, then run the hello-world example:
+
+```sh
+git clone https://github.com/insanitybit/witchy
+cd witchy
+cargo build --release
+./target/release/witchy examples/hello/src/hello.witchy
+```
+
+## Language stability
+
 Keep in mind that witchy is beyond unstable. I wouldn't even label it `0.0.0-alpha` at this point - even that level of semantic versioning feels like it's radically overstating things. The language isn't stable,
 the goals aren't stable, the repo names for the project aren't stable, nothing is stable. I could yank the repo at any moment.
 
@@ -142,7 +153,7 @@ straight from [`book/src/`](book/src/SUMMARY.md).
 
 Want to _run code_ with zero install instead? The [playground](#playground)
 compiles and runs your code in your browser. Or jump straight to
-[Install](#install) to build the `witchy` CLI.
+[Quick start](#quick-start) to build the `witchy` CLI.
 
 ## The language in 30 seconds
 
@@ -203,17 +214,6 @@ verified consumption — with one command:
 See [spec/local-registry.md](spec/local-registry.md) for the step-by-step
 version, and [rfcs/package-manager.md](rfcs/package-manager.md) for the full
 design and threat model.
-
-## Install
-
-From source (requires a Rust toolchain):
-
-```sh
-git clone https://github.com/insanitybit/witchy
-cd witchy
-cargo build --release
-./target/release/witchy examples/hello/src/hello.witchy
-```
 
 ## CLI
 
