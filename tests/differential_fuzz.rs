@@ -988,58 +988,64 @@ fn run_compiled(src: &str, cfg: &str, tag: &str) -> (bool, String) {
 #[test]
 fn metamorphic_dead_alloc_invariant() {
     let programs = env_usize("WITCHY_RECLAIM_PROGRAMS", 30);
-    for seed in 0..programs as u64 {
-        let (base, twin) = gen_reclaim_pair(seed.wrapping_mul(0xD1B5_4A32_D192_ED03).wrapping_add(3));
-        // Under each lever, inserting dead (unused) allocations must not change output.
-        for cfg in ["", "rc-floor"] {
-            let b = run_compiled(&base, cfg, &format!("{seed}_base"));
-            let t = run_compiled(&twin, cfg, &format!("{seed}_twin"));
-            assert_eq!(
-                b, t,
-                "dead-alloc metamorphic FAILED under WITCHY_OPT={cfg:?} on seed {seed}: inserting unused allocations changed observable behavior (a reclamation/aliasing bug).\n--- base ---\n{base}\n--- twin ---\n{twin}"
-            );
-        }
-    }
+    std::thread::scope(|s| {
+        let handles: Vec<_> = (0..programs as u64).map(|seed| {
+            s.spawn(move || {
+                let (base, twin) = gen_reclaim_pair(seed.wrapping_mul(0xD1B5_4A32_D192_ED03).wrapping_add(3));
+                for cfg in ["", "rc-floor"] {
+                    let b = run_compiled(&base, cfg, &format!("{seed}_base"));
+                    let t = run_compiled(&twin, cfg, &format!("{seed}_twin"));
+                    assert_eq!(
+                        b, t,
+                        "dead-alloc metamorphic FAILED under WITCHY_OPT={cfg:?} on seed {seed}: inserting unused allocations changed observable behavior (a reclamation/aliasing bug).\n--- base ---\n{base}\n--- twin ---\n{twin}"
+                    );
+                }
+            })
+        }).collect();
+        for h in handles { h.join().unwrap(); }
+    });
 }
 
 #[test]
 fn metamorphic_property_laws() {
     let programs = env_usize("WITCHY_LAW_PROGRAMS", 40);
-    for seed in 0..programs as u64 {
-        let src = gen_law_program(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(7));
-        let path = unique_temp_path(&format!("law_{seed}"));
-        std::fs::File::create(&path).unwrap().write_all(src.as_bytes()).unwrap();
-        // (a) backends must agree (a law that computes differently across backends is a bug).
-        let par = Command::new(BIN).args(["parity", path.to_str().unwrap()]).output().unwrap();
-        let pout = String::from_utf8_lossy(&par.stdout);
-        let perr = String::from_utf8_lossy(&par.stderr);
-        assert!(
-            par.status.code().is_some(),
-            "witchy crashed (signal) on law seed {seed}.\n--- program ---\n{src}\n{perr}"
-        );
-        if pout.contains("DIVERGE") || perr.contains("DIVERGE") {
-            panic!("BACKENDS DIVERGE on law seed {seed}.\n--- program ---\n{src}\n--- output ---\n{pout}{perr}");
-        }
-        assert!(par.status.success(), "law program failed to compile on seed {seed}.\n--- program ---\n{src}\n{pout}{perr}");
-        // (b) and the laws must actually HOLD — a both-backends-`false` law passes (a) but is a
-        // real violation, so inspect the compiled output directly (`witchy <file>` runs compiled).
-        let run = Command::new(BIN).arg(path.to_str().unwrap()).output().unwrap();
-        let _ = std::fs::remove_file(&path);
-        let rout = String::from_utf8_lossy(&run.stdout);
-        let lines: Vec<&str> = rout.lines().filter(|l| !l.is_empty()).collect();
-        assert_eq!(
-            lines.len(),
-            NLAWS,
-            "law seed {seed}: expected {NLAWS} law results, got {} (an early trap?).\n--- program ---\n{src}\n--- output ---\n{rout}",
-            lines.len()
-        );
-        for (i, line) in lines.iter().enumerate() {
-            assert_eq!(
-                *line, "true",
-                "algebraic LAW #{i} VIOLATED on seed {seed} (printed {line:?}) — a bug even though the backends agree.\n--- program ---\n{src}"
-            );
-        }
-    }
+    std::thread::scope(|s| {
+        let handles: Vec<_> = (0..programs as u64).map(|seed| {
+            s.spawn(move || {
+                let src = gen_law_program(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(7));
+                let path = unique_temp_path(&format!("law_{seed}"));
+                std::fs::File::create(&path).unwrap().write_all(src.as_bytes()).unwrap();
+                let par = Command::new(BIN).args(["parity", path.to_str().unwrap()]).output().unwrap();
+                let pout = String::from_utf8_lossy(&par.stdout);
+                let perr = String::from_utf8_lossy(&par.stderr);
+                assert!(
+                    par.status.code().is_some(),
+                    "witchy crashed (signal) on law seed {seed}.\n--- program ---\n{src}\n{perr}"
+                );
+                if pout.contains("DIVERGE") || perr.contains("DIVERGE") {
+                    panic!("BACKENDS DIVERGE on law seed {seed}.\n--- program ---\n{src}\n--- output ---\n{pout}{perr}");
+                }
+                assert!(par.status.success(), "law program failed to compile on seed {seed}.\n--- program ---\n{src}\n{pout}{perr}");
+                let run = Command::new(BIN).arg(path.to_str().unwrap()).output().unwrap();
+                let _ = std::fs::remove_file(&path);
+                let rout = String::from_utf8_lossy(&run.stdout);
+                let lines: Vec<&str> = rout.lines().filter(|l| !l.is_empty()).collect();
+                assert_eq!(
+                    lines.len(),
+                    NLAWS,
+                    "law seed {seed}: expected {NLAWS} law results, got {} (an early trap?).\n--- program ---\n{src}\n--- output ---\n{rout}",
+                    lines.len()
+                );
+                for (i, line) in lines.iter().enumerate() {
+                    assert_eq!(
+                        *line, "true",
+                        "algebraic LAW #{i} VIOLATED on seed {seed} (printed {line:?}) — a bug even though the backends agree.\n--- program ---\n{src}"
+                    );
+                }
+            })
+        }).collect();
+        for h in handles { h.join().unwrap(); }
+    });
 }
 
 #[test]
