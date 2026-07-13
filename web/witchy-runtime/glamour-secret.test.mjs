@@ -6,9 +6,10 @@
 // The host shell keeps the typed value in its OWN custody, hands it to an injected host
 // port on submit, and feeds back only the port's result. We assert: the real password
 // reaches the host port; the rune's model/wire NEVER contain it (only a non-sensitive
-// "NonEmpty" status and the port result); and the secret is unrecoverable from anything the
-// rune produced. This is the "a sibling cannot read another component's password" property,
-// made observable — reinforced structurally by the sealed `SecretInput`/`SecretRef` caps.
+// "NonEmpty" status and the port result); the secret is unrecoverable from anything the
+// rune produced; and removing the field revokes its slot and erases its host-held value.
+// This is the "a sibling cannot read another component's password" property, made observable
+// and lifecycle-safe — reinforced structurally by the sealed `SecretInput`/`SecretRef` caps.
 //
 // Usage:  node web/witchy-runtime/glamour-secret.test.mjs [path/to/witchy-binary]
 
@@ -63,11 +64,14 @@ import reflect
 type Msg derive(Reflect):
     PwStatus(String)
     Submit
+    Hide
+    Show
     Done(String)
 
 fn view(model: String, input: SecretInput) -> VNode(Msg):
+    let field = if model == "hidden": glamour.text("hidden") else: glamour.secret_input(input, "PwStatus")
     glamour.element("form", [], [
-        glamour.secret_input(input, "PwStatus"),
+        field,
         glamour.element("button", [glamour.on("click", Submit)], [glamour.text("sign in")]),
         glamour.element("span", [], [glamour.text(model)]),
     ])
@@ -76,6 +80,8 @@ fn update(model: String, msg: Msg, input: SecretInput, cred: CredentialPort) -> 
     match msg:
         PwStatus(s) -> ("status:" + s, NoCmd)
         Submit -> (model, glamour.submit_secret(glamour.secret_ref(input), cred, "Done"))
+        Hide -> ("hidden", NoCmd)
+        Show -> ("shown", NoCmd)
         Done(r) -> ("result:" + r, NoCmd)
 
 fn parse_model(j: Json) -> String:
@@ -96,6 +102,10 @@ fn parse_msg(j: Json) -> Msg:
                 PwStatus(arg_str(j, 0))
             else if v == "Done":
                 Done(arg_str(j, 0))
+            else if v == "Hide":
+                Hide
+            else if v == "Show":
+                Show
             else:
                 Submit
         None -> Submit
@@ -165,6 +175,26 @@ try {
   ok(qsa(root, "span")[0].textContent === "result:alice", "the rune sees only the port RESULT (the identity), never the secret");
   ok(!JSON.stringify(app.getModel()).includes(PASSWORD), "the password never entered the rune's model, even after submit");
   ok(!root.textContent.includes(PASSWORD), "the password never appears in the view, even after submit");
+
+  // Removing a secret field must revoke its slot immediately. A stale command emitted after
+  // removal is rejected, and remounting the same logical slot starts with empty custody rather
+  // than resurrecting the password that belonged to the old DOM field.
+  app.dispatch({ $variant: "Hide", $values: [] });
+  ok(qsa(root, "input").length === 0, "hiding the field removes the host-owned input");
+  let staleRejected = false;
+  try {
+    app.dispatch({ $variant: "Submit", $values: [] });
+  } catch (e) {
+    staleRejected = String(e).includes("not a rendered host-owned secret");
+  }
+  ok(staleRejected, "a removed field's stale secret slot is rejected");
+  ok(received.length === 1, "a stale slot never reaches the credential port");
+
+  app.dispatch({ $variant: "Show", $values: [] });
+  ok(qsa(root, "input").length === 1, "showing the field remounts the secret input");
+  app.dispatch({ $variant: "Submit", $values: [] });
+  await settle();
+  ok(received.length === 2 && received[1] === "", "a remounted slot does not recover the removed field's password");
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

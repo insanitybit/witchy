@@ -53,6 +53,32 @@ const isSecret = (v) =>
 // component makes the `/` separator unambiguous (injective). MUST match glamour's `slot_encode`.
 const escSlot = (s) => String(s).replace(/%/g, "%25").replace(/\//g, "%2F");
 const secretSlot = (v) => `${escSlot(v.secret.form)}/${escSlot(v.secret.field)}`;
+
+// Secret authority follows the CURRENT rendered tree, not every field that has
+// ever been mounted. Recompute after a successful patch and erase custody for
+// disappeared slots so removing then remounting a field cannot resurrect its
+// old value.
+function collectSecretSlots(v, slots = new Set()) {
+  if (isSecret(v)) {
+    slots.add(secretSlot(v));
+  } else if (isKeyed(v)) {
+    collectSecretSlots(v.node, slots);
+  } else if (isElement(v)) {
+    for (const kid of v.kids || []) collectSecretSlots(kid, slots);
+  }
+  return slots;
+}
+
+function syncRenderedSecretSlots(dispatch, vnode) {
+  const rendered = collectSecretSlots(vnode);
+  const store = dispatch.__secrets;
+  if (store) {
+    for (const slot of Object.keys(store)) {
+      if (!rendered.has(slot)) delete store[slot];
+    }
+  }
+  dispatch.__secretSlots = rendered;
+}
 // A host SLOT (RFC-0041): {"slot": kind, "data": payload}. The host's `kind` renderer mounts
 // a widget here (main frame); glamour renders it once and NEVER diffs into it.
 const isSlot = (v) => v != null && typeof v.slot === "string" && typeof v.data === "string";
@@ -288,6 +314,7 @@ export async function mount(wasmBytes, root, opts = {}) {
     if (disposed) return;                          // (BUG-377) a late callback is a no-op
     const { model: nextModel, vnode, cmd } = step(model, { msg });
     domRoot = patch(doc, root, domRoot, lastVNode, vnode, dispatch);
+    syncRenderedSecretSlots(dispatch, vnode);
     model = nextModel;
     lastVNode = vnode;
     interpretCmd(cmd);
@@ -307,6 +334,7 @@ export async function mount(wasmBytes, root, opts = {}) {
   model = first.model;
   lastVNode = first.vnode;
   domRoot = patch(doc, root, null, null, first.vnode, dispatch);
+  syncRenderedSecretSlots(dispatch, first.vnode);
   interpretCmd(first.cmd);
 
   // Client routing: if the app declares a route msg tag, mirror the URL into the loop —
@@ -344,6 +372,7 @@ export async function mount(wasmBytes, root, opts = {}) {
         removeRouteListener = null;
       }
       if (domRoot && domRoot.parentNode === root) root.removeChild(domRoot);
+      syncRenderedSecretSlots(dispatch, null);
       domRoot = null;
       lastVNode = null;
     },
@@ -611,9 +640,6 @@ function mountSecretInput(doc, node, dispatch) {
   el.setAttribute("type", "password");
   el.setAttribute("class", "glamour-secret");
   const slot = secretSlot(node);
-  // (BUG-357) Record that this slot is a genuinely rendered host-owned secret, so a
-  // `submit_secret` command naming it can be honored (and a forged slot cannot).
-  (dispatch.__secretSlots = dispatch.__secretSlots || new Set()).add(slot);
   const store = (dispatch.__secrets = dispatch.__secrets || {});
   if (typeof el.addEventListener === "function") {
     el.addEventListener("input", (ev) => {
