@@ -168,9 +168,22 @@ fn build_module(engine: &Engine, opt_wasm: &[u8], cacheable: bool) -> Result<Mod
         }
     }
     let optimized = binaryen_optimize(opt_wasm);
-    let module = Module::new(engine, &optimized)?;
-    if let (Some(path), std::borrow::Cow::Owned(optimized_wasm)) = (&path, optimized) {
-        let envelope = encode_optimized_wasm(input_hash, &optimized_wasm);
+    let mut optimized_valid = true;
+    let module = match Module::new(engine, optimized.as_ref()) {
+        Ok(module) => module,
+        Err(err) if matches!(optimized, std::borrow::Cow::Owned(_)) => {
+            if std::env::var_os("WIRDIAG").is_some() {
+                eprintln!("WIRBAIL wasm-opt-output-rejected: {err}");
+            }
+            optimized_valid = false;
+            Module::new(engine, opt_wasm)?
+        }
+        Err(err) => return Err(err),
+    };
+    if let (Some(path), std::borrow::Cow::Owned(optimized_wasm)) = (&path, &optimized)
+        && optimized_valid
+    {
+        let envelope = encode_optimized_wasm(input_hash, optimized_wasm);
         // Write-then-rename so a reader never sees a partial envelope. The temp
         // name carries a random suffix so concurrent compilers do not share a
         // temporary path; atomic rename publishes the complete validated wasm.
@@ -342,8 +355,24 @@ struct FileHandle {
     rights: FsRights,
 }
 
+#[derive(Clone, Debug)]
+struct NetHandle {
+    allow: Vec<String>,
+}
+
+#[derive(Clone)]
+struct SocketHandle {
+    stream: Arc<Mutex<std::io::BufReader<Box<dyn Stream>>>>,
+}
+
+#[derive(Clone)]
+struct ListenerHandle {
+    listener: std::sync::Arc<std::net::TcpListener>,
+    tls: Option<crate::net::ServerTlsConfig>,
+}
+
 /// Host-side state owned by a spawned VM's `Store`: its capability grant, output
-/// buffer, and the host-side `Dir`/`Net`/build handle tables. One state type
+/// buffer, and the host-side root-capability/build grant material. One state type
 /// means one set of capability host functions.
 const HEAP_POISON: u8 = 0xDB;
 
@@ -378,20 +407,10 @@ pub struct VmState {
     /// order), inner = its policy fields in order. Materialized into the guest by
     /// `user_cap_field_len` + `fill_pending` and wrapped in a record by codegen.
     pub(crate) user_cap_fields: Vec<Vec<String>>,
-    /// The `Net` capability handle table: index 0 is the granted allowlist,
-    /// and each `restrict` mints a narrower entry — host-side, unforgeable.
-    pub(crate) nets: Vec<Vec<String>>,
-    /// Open sockets, indexed by the guest's i32 Socket handles. Each is a plain or
-    /// TLS byte stream behind one `dyn Stream` (see `Stream`).
-    sockets: Vec<std::io::BufReader<Box<dyn Stream>>>,
-    /// Listening server sockets, indexed by the guest's i32 Listener handles, each
-    /// with its server-TLS config (RFC-0060): `Some` for a `listen_tls` listener,
-    /// whose accepts handshake host-side; `None` for plain HTTP. `Arc` so a
-    /// `server.serve` worker pool (RFC-0032) can share ONE bound listener across
-    /// worker VMs — `TcpListener::accept` is thread-safe, and the kernel load-balances
-    /// connections across the workers' accept calls (TLS state is per-connection,
-    /// so each worker handshakes its own accepts).
-    listeners: Vec<(std::sync::Arc<std::net::TcpListener>, Option<crate::net::ServerTlsConfig>)>,
+    /// Root `Net` grants awaiting wrapper-local `mint_net(i)`. Live `Net`,
+    /// `Socket`, and `Listener` values are externrefs carrying host-side handles,
+    /// not guest-forgeable indices into these grants.
+    nets: Vec<NetHandle>,
     /// (RFC-0032) When this VM is a `serve` POOL WORKER, the shared listener (plus
     /// its TLS config) it must reuse instead of binding its own. `listen` returns
     /// this; `serve_pool` sees it set and does NOT spawn another pool (only the
@@ -597,12 +616,13 @@ impl Runtime {
         // miscompile or a crafted module can't reach that machinery. We KEEP the
         // proposals we DO emit (bulk memory for `MemoryCopy`/`MemoryFill`, multi-value
         // for the `*_cap` ABI) at their defaults, and explicitly keep reference
-        // types / GC on for the externref capability core (RFC-0005 steps 2–6):
-        // nullable cap values emit `ref.null extern`/`ref.is_null`, and the later
-        // cap-carrying aggregate stage emits GC refs. Cranelift's
+        // types / function references / GC on for the externref capability core
+        // (RFC-0005 steps 2–6): nullable cap values emit `ref.null extern` /
+        // `ref.is_null`, and named cap-carrying records emit GC refs. Cranelift's
         // Spectre mitigations (heap + table access) are ON by default and stay on — do
         // NOT set `signals_based_traps(false)`, which would force them off.
         config.wasm_reference_types(true);
+        config.wasm_function_references(true);
         config.wasm_gc(true);
         config.wasm_threads(false);
         config.wasm_simd(false);
@@ -805,10 +825,15 @@ pub(crate) fn link_capability_imports(
     if caps.exec {
         linker.func_wrap("witchy", "exec_run", host_exec_run)?;
     }
+    let net = caps.net_allow.is_some();
+    // (RFC-0005 Stage 3) The `run` wrapper mints each root `Net` param as an
+    // `externref` via `mint_net`; only reachable when a Net grant exists.
+    if net {
+        linker.func_wrap("witchy", "mint_net", host_mint_net)?;
+    }
     // The Net family, linked per VERB right. Socket I/O carries no authority
     // of its own (a socket is only obtainable through a granted connect or
     // accept), so it is linked under either verb.
-    let net = caps.net_allow.is_some();
     if net && caps.net_connect {
         linker.func_wrap("witchy", "net_restrict", host_net_restrict)?;
         linker.func_wrap("witchy", "net_deny", host_net_deny)?;
@@ -1965,7 +1990,12 @@ fn vmstate_from_caps(
             rights: caps.file_rights.get(i).copied().unwrap_or_else(FsRights::full),
         })
         .collect();
-    let nets = caps.net_allow.iter().cloned().collect();
+    let nets = caps
+        .net_allow
+        .iter()
+        .cloned()
+        .map(|allow| NetHandle { allow })
+        .collect();
     VmState {
         id,
         caps: caps.clone(),
@@ -1979,8 +2009,6 @@ fn vmstate_from_caps(
         pending_ints: None,
         pending_bytes: None,
         nets,
-        sockets: Vec::new(),
-        listeners: Vec::new(),
         worker_listener,
         build_out: caps.build_out.clone(),
         build_read_roots: caps.build_read_roots.clone(),
@@ -2543,169 +2571,224 @@ fn host_build_exec_run(
 
 // --- the Net capability family ---
 //
-// Same shape as Dir: a guest `Net` is an i32 handle into the VM's host-side
-// allowlist table (`restrict` mints narrower entries); `Socket`/`Listener` are
-// handles into host-side connection tables. The allowlist check is the SAME
-// exact-match rule the interpreter applies, so the backends agree on which
-// addresses are reachable.
+// A guest `Net`, `Socket`, or `Listener` is an opaque externref carrying a
+// host-side authority object. There is no guest-visible integer handle to forge,
+// widen, or swap through linear-memory corruption. The address allowlist check is
+// the SAME rule the interpreter applies, so the backends still agree on reachability.
 
-fn net_allow(caller: &Caller<'_, VmState>, h: i32) -> Result<Vec<String>> {
+fn net_handle(caller: &Caller<'_, VmState>, h: i32) -> Result<NetHandle> {
     caller
         .data()
         .nets
         .get(h as usize)
         .cloned()
-        .ok_or_else(|| Error::msg(format!("invalid Net handle {h}")))
+        .ok_or_else(|| Error::msg(format!("invalid Net grant index {h}")))
 }
 
-/// `net_restrict(h, addr) -> handle`: attenuate to the allowlisted address set. `addr` may
-/// carry several patterns newline-joined (a `confine.union`); each must already be admitted.
-fn host_net_restrict(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) -> Result<i32> {
+fn net_handle_ref(caller: &Caller<'_, VmState>, n: Option<Rooted<ExternRef>>) -> Result<NetHandle> {
+    let n = n.ok_or_else(|| Error::msg("Net externref is null"))?;
+    n.data(caller)?
+        .ok_or_else(|| Error::msg("Net externref has no host data"))?
+        .downcast_ref::<NetHandle>()
+        .cloned()
+        .ok_or_else(|| Error::msg("Net externref has wrong host data"))
+}
+
+fn socket_handle_ref(
+    caller: &Caller<'_, VmState>,
+    s: Option<Rooted<ExternRef>>,
+) -> Result<SocketHandle> {
+    let s = s.ok_or_else(|| Error::msg("Socket externref is null"))?;
+    s.data(caller)?
+        .ok_or_else(|| Error::msg("Socket externref has no host data"))?
+        .downcast_ref::<SocketHandle>()
+        .cloned()
+        .ok_or_else(|| Error::msg("Socket externref has wrong host data"))
+}
+
+fn listener_handle_ref(
+    caller: &Caller<'_, VmState>,
+    l: Option<Rooted<ExternRef>>,
+) -> Result<ListenerHandle> {
+    let l = l.ok_or_else(|| Error::msg("Listener externref is null"))?;
+    l.data(caller)?
+        .ok_or_else(|| Error::msg("Listener externref has no host data"))?
+        .downcast_ref::<ListenerHandle>()
+        .cloned()
+        .ok_or_else(|| Error::msg("Listener externref has wrong host data"))
+}
+
+fn host_mint_net(mut caller: Caller<'_, VmState>, i: i32) -> Result<Option<Rooted<ExternRef>>> {
+    let net = net_handle(&caller, i)?;
+    ExternRef::new(&mut caller, net).map(Some)
+}
+
+fn socket_ref(
+    caller: &mut Caller<'_, VmState>,
+    stream: Box<dyn Stream>,
+) -> Result<Option<Rooted<ExternRef>>> {
+    ExternRef::new(caller, SocketHandle {
+        stream: Arc::new(Mutex::new(std::io::BufReader::new(stream))),
+    }).map(Some)
+}
+
+fn listener_ref(
+    caller: &mut Caller<'_, VmState>,
+    listener: std::sync::Arc<std::net::TcpListener>,
+    tls: Option<crate::net::ServerTlsConfig>,
+) -> Result<Option<Rooted<ExternRef>>> {
+    ExternRef::new(caller, ListenerHandle { listener, tls }).map(Some)
+}
+
+/// `net_restrict(net, addr) -> Net`: attenuate to the allowlisted address set.
+/// `addr` may carry several patterns newline-joined (a `confine.union`); each
+/// must already be admitted.
+fn host_net_restrict(
+    mut caller: Caller<'_, VmState>,
+    net_ref: Option<Rooted<ExternRef>>,
+    addr_ptr: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
-    let allow = net_allow(&caller, h)?;
-    let narrowed = witchy_caps::capabilities::net_only(&allow, &addr)
+    let net = net_handle_ref(&caller, net_ref)?;
+    let narrowed = witchy_caps::capabilities::net_only(&net.allow, &addr)
         .map_err(|p| Error::msg(format!("restrict: `{p}` is not in this Net capability")))?;
-    let nets = &mut caller.data_mut().nets;
-    nets.push(narrowed);
-    Ok((nets.len() - 1) as i32)
+    ExternRef::new(&mut caller, NetHandle { allow: narrowed }).map(Some)
 }
 
-/// `net_deny(h, addr) -> handle`: subtract an address pattern (RFC-0011 `net.deny`), or
-/// several newline-joined (a `confine.union`). A monotone exclusion — recorded as
-/// `!`-prefixed entries the shared `net_allows` honours; no admittance check (deny narrows).
-fn host_net_deny(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) -> Result<i32> {
+/// `net_deny(net, addr) -> Net`: subtract an address pattern (RFC-0011
+/// `net.deny`), or several newline-joined (a `confine.union`). A monotone
+/// exclusion recorded as `!`-prefixed entries the shared `net_allows` honours.
+fn host_net_deny(
+    mut caller: Caller<'_, VmState>,
+    net_ref: Option<Rooted<ExternRef>>,
+    addr_ptr: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
-    let mut allow = net_allow(&caller, h)?;
+    let mut allow = net_handle_ref(&caller, net_ref)?.allow;
     for p in addr.split('\n') {
         allow.push(format!("!{p}"));
     }
-    let nets = &mut caller.data_mut().nets;
-    nets.push(allow);
-    Ok((nets.len() - 1) as i32)
+    ExternRef::new(&mut caller, NetHandle { allow }).map(Some)
 }
 
-/// `net_connect(h, addr) -> Socket handle`: dial an allowlisted address.
-fn host_net_connect(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) -> Result<i32> {
+/// `net_connect(net, addr) -> Socket`: dial an allowlisted address.
+fn host_net_connect(
+    mut caller: Caller<'_, VmState>,
+    net_ref: Option<Rooted<ExternRef>>,
+    addr_ptr: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
-    let allow = net_allow(&caller, h)?;
+    let net = net_handle_ref(&caller, net_ref)?;
     let (tls, host_port) = crate::net::parse_scheme(&addr);
-    let targets = witchy_caps::capabilities::resolve_admitted(&allow, host_port)
+    let targets = witchy_caps::capabilities::resolve_admitted(&net.allow, host_port)
         .map_err(|e| Error::msg(format!("connect: {e}")))?;
     let stream = crate::net::dial(&targets, tls, host_port)
         .map_err(|e| Error::msg(format!("connect to `{addr}` failed: {e}")))?;
-    let sockets = &mut caller.data_mut().sockets;
-    sockets.push(std::io::BufReader::new(stream));
-    Ok((sockets.len() - 1) as i32)
+    socket_ref(&mut caller, stream)
 }
 
-/// `net_try_connect(h, addr) -> Socket handle | -1`: dial like `net_connect`,
-/// but a failed connection yields the `-1` sentinel (witchy wraps it as
-/// `Option(Socket)`'s `None`) instead of trapping. A capability violation — an
-/// address outside the allowlist — still traps: that is a policy breach, not a
-/// transient dial failure.
-fn host_net_try_connect(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) -> Result<i32> {
+/// `net_try_connect(net, addr) -> Option(Socket)`: failed connection yields null
+/// (Witchy's nullable-externref `None`) instead of trapping. A capability
+/// violation still traps: that is a policy breach, not transient network weather.
+fn host_net_try_connect(
+    mut caller: Caller<'_, VmState>,
+    net_ref: Option<Rooted<ExternRef>>,
+    addr_ptr: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
-    let allow = net_allow(&caller, h)?;
+    let net = net_handle_ref(&caller, net_ref)?;
     let (tls, host_port) = crate::net::parse_scheme(&addr);
-    let targets = witchy_caps::capabilities::resolve_admitted(&allow, host_port)
+    let targets = witchy_caps::capabilities::resolve_admitted(&net.allow, host_port)
         .map_err(|e| Error::msg(format!("try_connect: {e}")))?;
     match crate::net::dial(&targets, tls, host_port) {
-        Ok(stream) => {
-            let sockets = &mut caller.data_mut().sockets;
-            sockets.push(std::io::BufReader::new(stream));
-            Ok((sockets.len() - 1) as i32)
-        }
-        Err(_) => Ok(-1),
+        Ok(stream) => socket_ref(&mut caller, stream),
+        Err(_) => Ok(None),
     }
 }
 
-/// `net_resolve_size(h, host_ptr) -> bytes` (RFC-0020): resolve `host` to its current IP
-/// literals NOW, stage them, and report the `List(String)` byte size the guest reserves
-/// (then `write_pending_list` lays it out — the same two-phase protocol as `dir_list`). NO
-/// allowlist filtering: the program inspects the IPs and `connect_pinned` re-checks the
-/// chosen one, so resolve adds no authority beyond `connect`. Empty list => resolve failed.
-fn host_net_resolve_size(mut caller: Caller<'_, VmState>, _h: i32, host_ptr: i32) -> Result<i32> {
+/// `net_resolve_size(net, host_ptr) -> bytes` (RFC-0020): resolve `host` to its
+/// current IP literals NOW, stage them, and report the `List(String)` byte size
+/// the guest reserves. Resolve itself adds no authority, but the guest must still
+/// pass a real `Net` externref so null/forged values fail closed.
+fn host_net_resolve_size(
+    mut caller: Caller<'_, VmState>,
+    net_ref: Option<Rooted<ExternRef>>,
+    host_ptr: i32,
+) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let host = read_wstr(mem.data(&caller), host_ptr)?;
+    let _net = net_handle_ref(&caller, net_ref)?;
     let ips = crate::net::resolve_ips(&host);
     let size = 4 + 8 * ips.len() + ips.iter().map(|s| 4 + s.len()).sum::<usize>();
     caller.data_mut().pending_list = Some(ips);
     Ok(size as i32)
 }
 
-/// `net_connect_pinned(h, ip_ptr, host_ptr, port, secure) -> Socket handle` (RFC-0020):
-/// dial the EXACT `ip:port` — no DNS — while presenting `host` as the TLS SNI / `Host`.
-/// The Net allowlist is still enforced on `ip` (via `resolve_admitted`, which on a literal
-/// IP resolves to itself), so a pin can never exceed the capability's confinement. This is
-/// what closes the rebinding TOCTOU: the inspected IP is the dialed IP, no re-resolution.
+/// `net_connect_pinned(net, ip, host, port, secure) -> Socket` (RFC-0020): dial
+/// the EXACT `ip:port` with `host` carried only for TLS SNI / `Host`.
 fn host_net_connect_pinned(
     mut caller: Caller<'_, VmState>,
-    h: i32,
+    net_ref: Option<Rooted<ExternRef>>,
     ip_ptr: i32,
     host_ptr: i32,
     port: i64,
     secure: i32,
-) -> Result<i32> {
+) -> Result<Option<Rooted<ExternRef>>> {
     let mem = memory_of(&mut caller)?;
     let ip = read_wstr(mem.data(&caller), ip_ptr)?;
     let host = read_wstr(mem.data(&caller), host_ptr)?;
-    let allow = net_allow(&caller, h)?;
+    let net = net_handle_ref(&caller, net_ref)?;
     let ip_port = crate::net::authority(&ip, port);
-    let targets = witchy_caps::capabilities::resolve_admitted(&allow, &ip_port)
+    let targets = witchy_caps::capabilities::resolve_admitted(&net.allow, &ip_port)
         .map_err(|e| Error::msg(format!("connect_pinned: {e}")))?;
     let host_port = crate::net::authority(&host, port);
     let stream = crate::net::dial(&targets, secure != 0, &host_port)
         .map_err(|e| Error::msg(format!("connect_pinned to `{ip_port}` failed: {e}")))?;
-    let sockets = &mut caller.data_mut().sockets;
-    sockets.push(std::io::BufReader::new(stream));
-    Ok((sockets.len() - 1) as i32)
+    socket_ref(&mut caller, stream)
 }
 
-/// `net_try_connect_pinned(...) -> Socket handle | -1`: like `net_connect_pinned` but a
-/// failed connection yields `-1` (witchy wraps it as `Option(Socket)`'s `None`). A
-/// capability violation — a pinned IP outside the allowlist — still traps.
+/// `net_try_connect_pinned(...) -> Option(Socket)`: like `connect_pinned`, but a
+/// failed connection yields nullable-externref `None`. Capability violations trap.
 fn host_net_try_connect_pinned(
     mut caller: Caller<'_, VmState>,
-    h: i32,
+    net_ref: Option<Rooted<ExternRef>>,
     ip_ptr: i32,
     host_ptr: i32,
     port: i64,
     secure: i32,
-) -> Result<i32> {
+) -> Result<Option<Rooted<ExternRef>>> {
     let mem = memory_of(&mut caller)?;
     let ip = read_wstr(mem.data(&caller), ip_ptr)?;
     let host = read_wstr(mem.data(&caller), host_ptr)?;
-    let allow = net_allow(&caller, h)?;
+    let net = net_handle_ref(&caller, net_ref)?;
     let ip_port = crate::net::authority(&ip, port);
-    let targets = witchy_caps::capabilities::resolve_admitted(&allow, &ip_port)
+    let targets = witchy_caps::capabilities::resolve_admitted(&net.allow, &ip_port)
         .map_err(|e| Error::msg(format!("try_connect_pinned: {e}")))?;
     let host_port = crate::net::authority(&host, port);
     match crate::net::dial(&targets, secure != 0, &host_port) {
-        Ok(stream) => {
-            let sockets = &mut caller.data_mut().sockets;
-            sockets.push(std::io::BufReader::new(stream));
-            Ok((sockets.len() - 1) as i32)
-        }
-        Err(_) => Ok(-1),
+        Ok(stream) => socket_ref(&mut caller, stream),
+        Err(_) => Ok(None),
     }
 }
 
-/// `net_listen(h, addr) -> Listener handle`: bind an allowlisted address.
-fn host_net_listen(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) -> Result<i32> {
+/// `net_listen(net, addr) -> Listener`: bind an allowlisted address.
+fn host_net_listen(
+    mut caller: Caller<'_, VmState>,
+    net_ref: Option<Rooted<ExternRef>>,
+    addr_ptr: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
-    let allow = net_allow(&caller, h)?;
-    if !witchy_caps::capabilities::net_allows(&allow, &addr) {
+    let net = net_handle_ref(&caller, net_ref)?;
+    if !witchy_caps::capabilities::net_allows(&net.allow, &addr) {
         bail!("listen: `{addr}` is not permitted by this Net capability");
     }
-    // A `serve` pool worker reuses the primary's already-bound listener (so all
-    // workers `accept` from one socket) instead of binding the address again.
     let shared = caller.data().worker_listener.clone();
-    let entry = match shared {
+    let (listener, tls) = match shared {
         Some(entry) => entry,
         None => (
             std::sync::Arc::new(
@@ -2715,37 +2798,29 @@ fn host_net_listen(mut caller: Caller<'_, VmState>, h: i32, addr_ptr: i32) -> Re
             None,
         ),
     };
-    let listeners = &mut caller.data_mut().listeners;
-    listeners.push(entry);
-    Ok((listeners.len() - 1) as i32)
+    listener_ref(&mut caller, listener, tls)
 }
 
-/// (RFC-0060) `net_listen_tls(h, addr, cert_pem, key_handle) -> Listener handle`:
-/// bind an allowlisted address for HTTPS. The rustls `ServerConfig` is built ONCE
-/// here, from the certificate-chain PEM (public, guest-supplied text) and the
-/// private key resolved BY HANDLE from the host secret table — the key bytes
-/// never cross into guest memory (the signing-key pattern, `secret_seed_bytes`).
-/// Malformed or mismatched cert/key is a loud listen-time error; accepts on the
-/// returned listener handshake host-side and yield ordinary Socket handles.
+/// (RFC-0060) `net_listen_tls(net, addr, cert_pem, key_handle) -> Listener`:
+/// bind an allowlisted address for HTTPS. The private key is still resolved by
+/// host-side secret handle, so key bytes never enter guest memory.
 fn host_net_listen_tls(
     mut caller: Caller<'_, VmState>,
-    h: i32,
+    net_ref: Option<Rooted<ExternRef>>,
     addr_ptr: i32,
     cert_ptr: i32,
     key_handle: i32,
-) -> Result<i32> {
+) -> Result<Option<Rooted<ExternRef>>> {
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
     let cert_pem = read_wstr(mem.data(&caller), cert_ptr)?;
-    let allow = net_allow(&caller, h)?;
-    if !witchy_caps::capabilities::net_allows(&allow, &addr) {
+    let net = net_handle_ref(&caller, net_ref)?;
+    if !witchy_caps::capabilities::net_allows(&net.allow, &addr) {
         bail!("listen: `{addr}` is not permitted by this Net capability");
     }
     let key_bytes = secret_seed_bytes(&caller.data().caps, key_handle)?;
-    // A pool worker reuses the primary's bound listener + its TLS config wholesale;
-    // the primary builds the config (loud startup failure on bad key material).
     let shared = caller.data().worker_listener.clone();
-    let entry = match shared {
+    let (listener, tls) = match shared {
         Some(entry) => entry,
         None => {
             let config = crate::net::server_tls_config(&cert_pem, &key_bytes).map_err(Error::msg)?;
@@ -2758,24 +2833,16 @@ fn host_net_listen_tls(
             )
         }
     };
-    let listeners = &mut caller.data_mut().listeners;
-    listeners.push(entry);
-    Ok((listeners.len() - 1) as i32)
+    listener_ref(&mut caller, listener, tls)
 }
 
-/// `net_accept(listener) -> Socket handle`: block for a client connection. On a
-/// TLS listener (RFC-0060) the handshake is completed host-side before the Socket
-/// is minted; a failed handshake (plaintext client, bad ClientHello) drops that
-/// connection and keeps accepting — connection weather, not a program error.
-fn host_net_accept(mut caller: Caller<'_, VmState>, lid: i32) -> Result<i32> {
-    // Clone the `Arc` out so the blocking `accept` doesn't hold a borrow of the VM
-    // state — and so a shared (pool) listener is accepted concurrently by every worker.
-    let (listener, tls) = caller
-        .data()
-        .listeners
-        .get(lid as usize)
-        .cloned()
-        .ok_or_else(|| Error::msg("invalid listener"))?;
+/// `net_accept(listener) -> Socket`: block for a client connection. TLS listeners
+/// handshake host-side before minting the returned socket.
+fn host_net_accept(
+    mut caller: Caller<'_, VmState>,
+    listener_ref_: Option<Rooted<ExternRef>>,
+) -> Result<Option<Rooted<ExternRef>>> {
+    let ListenerHandle { listener, tls } = listener_handle_ref(&caller, listener_ref_)?;
     loop {
         let (stream, _peer) = listener
             .accept()
@@ -2787,25 +2854,22 @@ fn host_net_accept(mut caller: Caller<'_, VmState>, lid: i32) -> Result<i32> {
                 Err(_) => continue,
             },
         };
-        let state = caller.data_mut();
-        state.sockets.push(std::io::BufReader::new(stream));
-        return Ok((state.sockets.len() - 1) as i32);
+        return socket_ref(&mut caller, stream);
     }
 }
 
-/// (RFC-0032) `serve_pool(listener_handle)`: the `server.serve` worker pool. On the
+/// (RFC-0032) `serve_pool(listener)`: the `server.serve` worker pool. On the
 /// PRIMARY VM it spawns one worker VM per remaining core, each re-running the program
 /// (rebuilding the same routes with the same capabilities) but SHARING this bound
 /// listener. Every worker `accept`s from the one socket and the kernel load-balances
 /// connections, so the server uses all cores. A pool worker (its `worker_listener`
 /// already set) is a no-op here — only the primary spawns the pool.
-fn host_serve_pool(caller: Caller<'_, VmState>, listener_handle: i32) -> Result<()> {
+fn host_serve_pool(caller: Caller<'_, VmState>, listener_ref_: Option<Rooted<ExternRef>>) -> Result<()> {
     if caller.data().worker_listener.is_some() {
         return Ok(());
     }
-    let Some(listener) = caller.data().listeners.get(listener_handle as usize).cloned() else {
-        return Ok(());
-    };
+    let ListenerHandle { listener, tls } = listener_handle_ref(&caller, listener_ref_)?;
+    let listener = (listener, tls);
     let workers = std::thread::available_parallelism().map(|p| p.get()).unwrap_or(1).max(1);
     let engine = caller.data().engine.clone();
     let module = caller.data().module.clone();
@@ -2851,19 +2915,26 @@ fn run_server_worker(
 
 use crate::net::Stream;
 
-fn socket_of(state: &mut VmState, sid: i32) -> Result<&mut std::io::BufReader<Box<dyn Stream>>> {
-    state
-        .sockets
-        .get_mut(sid as usize)
-        .ok_or_else(|| Error::msg("invalid socket"))
+fn lock_socket(
+    socket: &SocketHandle,
+) -> Result<std::sync::MutexGuard<'_, std::io::BufReader<Box<dyn Stream>>>> {
+    socket
+        .stream
+        .lock()
+        .map_err(|_| Error::msg("socket lock poisoned"))
 }
 
 /// `net_send_line(sock, s)`: write the string and a trailing newline.
-fn host_net_send_line(mut caller: Caller<'_, VmState>, sid: i32, line_ptr: i32) -> Result<()> {
+fn host_net_send_line(
+    mut caller: Caller<'_, VmState>,
+    socket_ref_: Option<Rooted<ExternRef>>,
+    line_ptr: i32,
+) -> Result<()> {
     use std::io::Write;
     let mem = memory_of(&mut caller)?;
     let line = read_wstr(mem.data(&caller), line_ptr)?;
-    let sock = socket_of(caller.data_mut(), sid)?;
+    let socket = socket_handle_ref(&caller, socket_ref_)?;
+    let mut sock = lock_socket(&socket)?;
     sock.get_mut()
         .write_all(line.as_bytes())
         .and_then(|_| sock.get_mut().write_all(b"\n"))
@@ -2871,11 +2942,16 @@ fn host_net_send_line(mut caller: Caller<'_, VmState>, sid: i32, line_ptr: i32) 
 }
 
 /// `net_send_bytes(sock, s)`: write the exact bytes, no framing added.
-fn host_net_send_bytes(mut caller: Caller<'_, VmState>, sid: i32, ptr: i32) -> Result<()> {
+fn host_net_send_bytes(
+    mut caller: Caller<'_, VmState>,
+    socket_ref_: Option<Rooted<ExternRef>>,
+    ptr: i32,
+) -> Result<()> {
     use std::io::Write;
     let mem = memory_of(&mut caller)?;
     let s = read_wstr(mem.data(&caller), ptr)?;
-    let sock = socket_of(caller.data_mut(), sid)?;
+    let socket = socket_handle_ref(&caller, socket_ref_)?;
+    let mut sock = lock_socket(&socket)?;
     sock.get_mut()
         .write_all(s.as_bytes())
         .map_err(|e| Error::msg(format!("send failed: {e}")))
@@ -2883,45 +2959,58 @@ fn host_net_send_bytes(mut caller: Caller<'_, VmState>, sid: i32, ptr: i32) -> R
 
 /// `net_recv_line_len(sock) -> len`: read one line NOW (newline trimmed, like
 /// the interpreter), stage it, and report its length for `fill_pending`.
-fn host_net_recv_line_len(mut caller: Caller<'_, VmState>, sid: i32) -> Result<i32> {
-    let state = caller.data_mut();
-    let sock = socket_of(state, sid)?;
-    let raw = crate::net::read_line_capped(sock).map_err(|e| Error::msg(format!("recv failed: {e}")))?;
+fn host_net_recv_line_len(
+    mut caller: Caller<'_, VmState>,
+    socket_ref_: Option<Rooted<ExternRef>>,
+) -> Result<i32> {
+    let socket = socket_handle_ref(&caller, socket_ref_)?;
+    let raw = {
+        let mut sock = lock_socket(&socket)?;
+        crate::net::read_line_capped(&mut *sock).map_err(|e| Error::msg(format!("recv failed: {e}")))?
+    };
     let line = String::from_utf8_lossy(&raw);
     let trimmed = line.trim_end_matches('\n').to_string();
     let len = trimmed.len() as i32;
-    state.pending = Some(trimmed.into_bytes());
+    caller.data_mut().pending = Some(trimmed.into_bytes());
     Ok(len)
 }
 
 /// `net_recv_all_len(sock) -> len`: read to EOF NOW (lossy UTF-8, like the
 /// interpreter), stage it, and report its length.
-fn host_net_recv_all_len(mut caller: Caller<'_, VmState>, sid: i32) -> Result<i32> {
+fn host_net_recv_all_len(
+    mut caller: Caller<'_, VmState>,
+    socket_ref_: Option<Rooted<ExternRef>>,
+) -> Result<i32> {
     use std::io::Read;
-    let state = caller.data_mut();
-    let sock = socket_of(state, sid)?;
     let mut buf = Vec::new();
-    // (SEC-035) Cap the read so a peer streaming without EOF can't OOM the host. Read one
-    // byte past the cap to detect overflow, then fail closed.
-    sock.by_ref()
-        .take(crate::net::MAX_RECV_BYTES + 1)
-        .read_to_end(&mut buf)
-        .map_err(|e| Error::msg(format!("recv failed: {e}")))?;
+    let socket = socket_handle_ref(&caller, socket_ref_)?;
+    {
+        let mut sock = lock_socket(&socket)?;
+        // (SEC-035) Cap the read so a peer streaming without EOF can't OOM the host. Read one
+        // byte past the cap to detect overflow, then fail closed.
+        sock.by_ref()
+            .take(crate::net::MAX_RECV_BYTES + 1)
+            .read_to_end(&mut buf)
+            .map_err(|e| Error::msg(format!("recv failed: {e}")))?;
+    }
     if buf.len() as u64 > crate::net::MAX_RECV_BYTES {
         bail!("recv_all exceeded the {}-byte cap", crate::net::MAX_RECV_BYTES);
     }
     let s = String::from_utf8_lossy(&buf).into_owned();
     let len = s.len() as i32;
-    state.pending = Some(s.into_bytes());
+    caller.data_mut().pending = Some(s.into_bytes());
     Ok(len)
 }
 
 /// `net_recv_bytes_len(sock, n) -> len`: read exactly `n` bytes (fewer only on
 /// early EOF, matching the interpreter), stage them lossily, report the length.
-fn host_net_recv_bytes_len(mut caller: Caller<'_, VmState>, sid: i32, n: i64) -> Result<i32> {
+fn host_net_recv_bytes_len(
+    mut caller: Caller<'_, VmState>,
+    socket_ref_: Option<Rooted<ExternRef>>,
+    n: i64,
+) -> Result<i32> {
     use std::io::Read;
-    let state = caller.data_mut();
-    let sock = socket_of(state, sid)?;
+    let socket = socket_handle_ref(&caller, socket_ref_)?;
     let want = n.max(0) as usize;
     // `want` is guest-supplied (up to i64::MAX); do NOT pre-allocate it — that would let a
     // module request `sock.recv_bytes(huge)` and ABORT the host with a multi-GB/EB Vec even
@@ -2929,25 +3018,30 @@ fn host_net_recv_bytes_len(mut caller: Caller<'_, VmState>, sid: i32, n: i64) ->
     // actually received, not the claimed count.
     let mut buf = Vec::new();
     let mut chunk = [0u8; 8192];
-    while buf.len() < want {
-        let to_read = (want - buf.len()).min(chunk.len());
-        match sock.read(&mut chunk[..to_read]) {
-            Ok(0) => break,
-            Ok(k) => buf.extend_from_slice(&chunk[..k]),
-            Err(e) => bail!("recv failed: {e}"),
+    {
+        let mut sock = lock_socket(&socket)?;
+        while buf.len() < want {
+            let to_read = (want - buf.len()).min(chunk.len());
+            match sock.read(&mut chunk[..to_read]) {
+                Ok(0) => break,
+                Ok(k) => buf.extend_from_slice(&chunk[..k]),
+                Err(e) => bail!("recv failed: {e}"),
+            }
         }
     }
     let s = String::from_utf8_lossy(&buf).into_owned();
     let len = s.len() as i32;
-    state.pending = Some(s.into_bytes());
+    caller.data_mut().pending = Some(s.into_bytes());
     Ok(len)
 }
 
 /// `net_close(sock)`: shut the connection down (idempotent).
-fn host_net_close(mut caller: Caller<'_, VmState>, sid: i32) -> Result<()> {
-    if let Some(sock) = caller.data_mut().sockets.get_mut(sid as usize) {
-        sock.get_mut().shutdown();
-    }
+fn host_net_close(
+    caller: Caller<'_, VmState>,
+    socket_ref_: Option<Rooted<ExternRef>>,
+) -> Result<()> {
+    let socket = socket_handle_ref(&caller, socket_ref_)?;
+    lock_socket(&socket)?.get_mut().shutdown();
     Ok(())
 }
 

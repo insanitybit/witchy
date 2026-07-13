@@ -277,8 +277,8 @@ fn legacy_clock_and_tls_import_variants_are_classified() {
         &tls,
         legacy_import_module(
             "net_listen_tls",
-            &[ValType::I32, ValType::I32, ValType::I32, ValType::I32],
-            &[ValType::I32],
+            &[ValType::EXTERNREF, ValType::I32, ValType::I32, ValType::I32],
+            &[ValType::EXTERNREF],
             None,
         ),
     )

@@ -3648,6 +3648,46 @@ fn main(console: Console):
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// RFC-0005 Stage 3: a named sealed capability record can carry a migrated
+    /// `Net` externref alongside ordinary data. The compiled backend lowers the
+    /// record to a typed GC struct, so the carried authority never passes through
+    /// the i64 slot/linear-memory representation.
+    #[test]
+    fn carried_state_capability_record_runs_on_gc_struct_backend() {
+        use crate::runtime::{Capabilities, Runtime};
+        let src = "capability Postgres:\n    net: Net[Connect, Tcp]\n    table: String\n\nfn connect(net: Net[Connect, Tcp]) -> Postgres:\n    Postgres(net, \"public\")\n\nfn use_table(pg: Postgres, name: String) -> Postgres:\n    match pg:\n        Postgres(net, _) -> Postgres(net, name)\n\nfn count_rows(pg: Postgres, requested: String) -> String:\n    match pg:\n        Postgres(_, table) ->\n            if requested == table:\n                \"ok: counted rows in \" + requested\n            else:\n                \"denied: \" + requested + \" is outside this handle (scoped to \" + table + \")\"\n\nfn main(console: Console, net: Net):\n    let users = use_table(connect(net), \"users\")\n    console.print(count_rows(users, \"users\"))\n    console.print(count_rows(users, \"secrets\"))\n";
+        let want = vec![
+            "ok: counted rows in users".to_string(),
+            "denied: secrets is outside this handle (scoped to users)".to_string(),
+        ];
+        let linked = resolve_std_src(src);
+        assert_eq!(
+            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp"),
+            want,
+            "interpreter",
+        );
+        let bin = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers cap-carrying records to GC structs");
+        let mut rt = Runtime::batch().expect("runtime");
+        let mut actor = rt
+            .spawn(
+                &bin,
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    net_allow: Some(Vec::new()),
+                    net_connect: true,
+                    net_listen: true,
+                    ..Default::default()
+                },
+                64,
+            )
+            .expect("spawn");
+        actor.run().expect("run");
+        assert_eq!(actor.output(), want, "compiled WASM must agree");
+    }
+
     /// (RFC-0032) `vm.par_map` over `Bytes`: binary payloads cross to worker VMs by a
     /// RAW (non-lossy) byte copy. Maps a top-level fn over a list of Bytes in parallel;
     /// both backends agree (the interp oracle runs the sequential `list.map` body).
@@ -17227,7 +17267,7 @@ fn main(console: Console):
             "expected `Net`, found `Net[Connect]`",
         );
         err(
-            "type Server:\n    Server(Net)\nfn make(n: Net[Connect]) -> Server:\n    Server(n)\nfn main(c: Console, net: Net):\n    make(net as Net[Connect])\n",
+            "capability Server:\n    net: Net\nfn make(n: Net[Connect]) -> Server:\n    Server(n)\nfn main(c: Console, net: Net):\n    make(net as Net[Connect])\n",
             "expected `Net`, found `Net[Connect]`",
         );
     }

@@ -166,11 +166,11 @@
         );
 
         let wrapped_host_cap = check_str(
-            "type Holder:\n    net: Net\n\nfn capture(h: Holder) -> .[Wrapped(Holder)]:\n    .Wrapped(h)\n"
+            "capability Holder:\n    net: Net\n\nfn capture(h: Holder) -> .[Wrapped(Holder)]:\n    .Wrapped(h)\n"
         )
         .unwrap_err();
         assert!(
-            wrapped_host_cap.contains("anonymous union") && wrapped_host_cap.contains("Net"),
+            wrapped_host_cap.contains("anonymous union") && wrapped_host_cap.contains("Holder"),
             "{wrapped_host_cap}"
         );
 
@@ -852,7 +852,9 @@ fn has_optional_id() -> Option(Bool):
         // (RFC-0005 §4.4/§7) `File` is an unforgeable `externref` with no boxed
         // i64-slot representation. A bare `File` param/return stays an externref;
         // `Option(File)` is represented as nullable externref. Slot/heap containers
-        // (`Result`/`List`/`Dict`/records/tuples) remain rejected until GC lowering.
+        // (`Result`/`List`/`Dict`/tuples) remain rejected. A named sealed
+        // capability record may carry a migrated cap directly because the
+        // compiled backend lowers that nominal wrapper to a GC struct.
         check_str("fn ok(console: Console, f: File):\n    console.print(\"ok\")\nfn main(console: Console, f: File):\n    ok(console, f)\n")
             .expect("a bare File param/return is a plain externref — allowed");
 
@@ -874,11 +876,13 @@ fn has_optional_id() -> Option(Bool):
             .expect_err("Dict(_, File) slot-boxes an externref value");
         assert!(err.contains("File") && err.contains("Dict"), "got: {err}");
 
-        // Cap-carrying aggregates are the later GC-struct path, not part of the
-        // bare-File cut. Reject them instead of silently lowering a File through
-        // `$mkN`/the i64 slot.
+        check_str("capability Handle:\n    f: File\n    label: String\nfn relabel(h: Handle, label: String) -> Handle:\n    match h:\n        Handle(f, _) -> Handle(f, label)\n")
+            .expect("a named capability record can carry a migrated cap via GC-struct lowering");
+
+        // Plain structural records are still data, not authority wrappers. Reject
+        // them instead of silently lowering a File through `$mkN`/the i64 slot.
         let err = check_str("type Handle:\n    f: File\nfn take(console: Console, h: Handle):\n    console.print(\"ok\")\n")
-            .expect_err("a File record field needs the GC-struct aggregate path");
+            .expect_err("a plain File record field needs the GC-struct aggregate path");
         assert!(err.contains("File") && err.contains("GC-struct"), "got: {err}");
 
         let err = check_str("fn tupled(console: Console, pair: (File, Int)):\n    console.print(\"x\")\n")

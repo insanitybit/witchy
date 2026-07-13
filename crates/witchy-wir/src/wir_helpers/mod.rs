@@ -4276,7 +4276,7 @@ fn net_recv_helper(name: &str, len_import: &str, extra_n: bool) -> WirFunc {
     let getl = |n: &str| E::GetLocal(n.into());
     let i32c = E::ConstI32;
     let add = |l: E, r: E| E::Binary { op: BinOp::Add, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-    let mut params = vec![WirLocal { name: "s".into(), ty: WirTy::Bool }];
+    let mut params = vec![WirLocal { name: "s".into(), ty: WirTy::Extern }];
     let mut len_args = vec![getl("s")];
     if extra_n {
         params.push(WirLocal { name: "n".into(), ty: WirTy::Int });
@@ -4813,17 +4813,26 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_table: false,
         }),
         "net_connect" => Some(WirHelperSpec {
-            func: host_call_helper("net_connect", "net_connect", 2),
+            func: host_call_helper_typed(
+                "net_connect",
+                "net_connect",
+                &[WirTy::Extern, WirTy::Str],
+                WirTy::Extern,
+            ),
             helper_deps: &[],
             import_deps: &["net_connect"],
             uses_heap: false,
             uses_table: false,
         }),
-        // Fallible dial: returns the socket handle, or the `-1` sentinel on a
-        // failed connect (the codegen `try_connect` case wraps that as
-        // `Option(Socket)`'s `None`). A capability violation still traps host-side.
+        // Fallible dial: returns nullable externref `Some(Socket)`/`None`. A
+        // capability violation still traps host-side.
         "net_try_connect" => Some(WirHelperSpec {
-            func: host_call_helper("net_try_connect", "net_try_connect", 2),
+            func: host_call_helper_typed(
+                "net_try_connect",
+                "net_try_connect",
+                &[WirTy::Extern, WirTy::Str],
+                WirTy::Extern,
+            ),
             helper_deps: &[],
             import_deps: &["net_try_connect"],
             uses_heap: false,
@@ -4836,8 +4845,8 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             func: host_call_helper_typed(
                 "net_connect_pinned",
                 "net_connect_pinned",
-                &[WirTy::Bool, WirTy::Bool, WirTy::Bool, WirTy::Int, WirTy::Bool],
-                WirTy::Bool,
+                &[WirTy::Extern, WirTy::Str, WirTy::Str, WirTy::Int, WirTy::Bool],
+                WirTy::Extern,
             ),
             helper_deps: &[],
             import_deps: &["net_connect_pinned"],
@@ -4848,8 +4857,8 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             func: host_call_helper_typed(
                 "net_try_connect_pinned",
                 "net_try_connect_pinned",
-                &[WirTy::Bool, WirTy::Bool, WirTy::Bool, WirTy::Int, WirTy::Bool],
-                WirTy::Bool,
+                &[WirTy::Extern, WirTy::Str, WirTy::Str, WirTy::Int, WirTy::Bool],
+                WirTy::Extern,
             ),
             helper_deps: &[],
             import_deps: &["net_try_connect_pinned"],
@@ -4857,66 +4866,91 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_table: false,
         }),
         "net_listen" => Some(WirHelperSpec {
-            func: host_call_helper("net_listen", "net_listen", 2),
+            func: host_call_helper_typed(
+                "net_listen",
+                "net_listen",
+                &[WirTy::Extern, WirTy::Str],
+                WirTy::Extern,
+            ),
             helper_deps: &[],
             import_deps: &["net_listen"],
             uses_heap: false,
             uses_table: false,
         }),
         // (RFC-0060) HTTPS listen: `(net, addr, cert_pem, key_handle) -> Listener`.
-        // All four args are i32 slots (handles + string pointers); the private key
-        // travels ONLY as its host-table handle — the bytes stay host-side.
+        // The Net arg is an externref; the private key still travels ONLY as its
+        // host-table Secret handle — the bytes stay host-side.
         "net_listen_tls" => Some(WirHelperSpec {
-            func: host_call_helper("net_listen_tls", "net_listen_tls", 4),
+            func: host_call_helper_typed(
+                "net_listen_tls",
+                "net_listen_tls",
+                &[WirTy::Extern, WirTy::Str, WirTy::Str, WirTy::Bool],
+                WirTy::Extern,
+            ),
             helper_deps: &[],
             import_deps: &["net_listen_tls"],
             uses_heap: false,
             uses_table: false,
         }),
         "net_accept" => Some(WirHelperSpec {
-            func: host_call_helper("net_accept", "net_accept", 1),
+            func: host_call_helper_typed(
+                "net_accept",
+                "net_accept",
+                &[WirTy::Extern],
+                WirTy::Extern,
+            ),
             helper_deps: &[],
             import_deps: &["net_accept"],
             uses_heap: false,
             uses_table: false,
         }),
         "net_restrict" => Some(WirHelperSpec {
-            func: host_call_helper("net_restrict", "net_restrict", 2),
+            func: host_call_helper_typed(
+                "net_restrict",
+                "net_restrict",
+                &[WirTy::Extern, WirTy::Str],
+                WirTy::Extern,
+            ),
             helper_deps: &[],
             import_deps: &["net_restrict"],
             uses_heap: false,
             uses_table: false,
         }),
         "net_deny" => Some(WirHelperSpec {
-            func: host_call_helper("net_deny", "net_deny", 2),
+            func: host_call_helper_typed(
+                "net_deny",
+                "net_deny",
+                &[WirTy::Extern, WirTy::Str],
+                WirTy::Extern,
+            ),
             helper_deps: &[],
             import_deps: &["net_deny"],
             uses_heap: false,
             uses_table: false,
         }),
         "net_send_line" => Some(WirHelperSpec {
-            func: host_void_helper("net_send_line", "net_send_line", 2),
+            func: host_void_helper_typed("net_send_line", "net_send_line", &[WirTy::Extern, WirTy::Str]),
             helper_deps: &[],
             import_deps: &["net_send_line"],
             uses_heap: false,
             uses_table: false,
         }),
         "net_send_bytes" => Some(WirHelperSpec {
-            func: host_void_helper("net_send_bytes", "net_send_bytes", 2),
+            func: host_void_helper_typed("net_send_bytes", "net_send_bytes", &[WirTy::Extern, WirTy::Str]),
             helper_deps: &[],
             import_deps: &["net_send_bytes"],
             uses_heap: false,
             uses_table: false,
         }),
         "net_close" => Some(WirHelperSpec {
-            func: host_void_helper("net_close", "net_close", 1),
+            func: host_void_helper_typed("net_close", "net_close", &[WirTy::Extern]),
             helper_deps: &[],
             import_deps: &["net_close"],
             uses_heap: false,
             uses_table: false,
         }),
         "serve_pool" => Some(WirHelperSpec {
-            func: host_void_helper("serve_pool", "serve_pool", 1),
+            func: host_void_helper_typed("serve_pool", "serve_pool", &[WirTy::Extern]),
             helper_deps: &[],
             import_deps: &["serve_pool"],
             uses_heap: false,
@@ -5145,7 +5179,12 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         // resolves the name NOW and reports the marshaled byte size (`net_resolve_size`),
         // then `write_pending_list` lays the `List(String)` into the reserved block.
         "net_resolve" => Some(WirHelperSpec {
-            func: two_phase_helper("net_resolve", &["h", "host"], "net_resolve_size", "write_pending_list"),
+            func: two_phase_helper_typed(
+                "net_resolve",
+                &[("h".into(), WirTy::Extern), ("host".into(), WirTy::Str)],
+                "net_resolve_size",
+                "write_pending_list",
+            ),
             helper_deps: &["rc_alloc"],
             import_deps: &["net_resolve_size", "write_pending_list"],
             uses_heap: true,

@@ -145,6 +145,46 @@ fn transparent_externref_brand_entries(module: &Module) -> Vec<(String, String, 
     out
 }
 
+fn type_has_direct_externref_cap(ty: &Type, transparent: &HashSet<String>) -> bool {
+    match ty.unqualified() {
+        Type::Named(n, _) if is_builtin_externref_type(n) => true,
+        Type::Named(n, args) if args.is_empty() => transparent.contains(n),
+        Type::Tuple(items) => items.iter().any(|t| type_has_direct_externref_cap(t, transparent)),
+        Type::Fn(params, ret) => {
+            params.iter().any(|t| type_has_direct_externref_cap(t, transparent))
+                || type_has_direct_externref_cap(ret, transparent)
+        }
+        Type::Named(_, args) => args.iter().any(|t| type_has_direct_externref_cap(t, transparent)),
+        Type::Qualified(_, inner) => type_has_direct_externref_cap(inner, transparent),
+    }
+}
+
+fn gc_record_type_entries(module: &Module, transparent: &HashSet<String>) -> Vec<(String, String)> {
+    module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Type(t)
+                if t.is_capability
+                    && t.params.is_empty()
+                    && t.variants.len() == 1
+                    && !transparent.contains(&t.name) =>
+            {
+                let variant = t.variants.first()?;
+                if variant.field_names.is_empty() {
+                    return None;
+                }
+                variant
+                    .fields
+                    .iter()
+                    .any(|field| type_has_direct_externref_cap(field, transparent))
+                    .then(|| (t.name.clone(), variant.name.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// Register every item's compile-time metadata (parameter conventions,
 /// return kinds/types, record fields, generic shape hints, ...) on `cg`.
 fn register_module_items(cg: &mut Codegen, module: &Module) {
@@ -168,6 +208,7 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
         cg.transparent_externref_brands.insert(brand);
         cg.transparent_externref_ctors.insert(ctor, field);
     }
+    let gc_records = gc_record_type_entries(module, &cg.transparent_externref_brands);
     // Collect parameter conventions up front so call sites can resolve `var`
     // write-back even for forward references.
     for item in &module.items {
@@ -266,6 +307,44 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
                 }
             }
             Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
+        }
+    }
+    for (name, ctor) in gc_records {
+        if cg.gc_record_ids.contains_key(&name) {
+            continue;
+        }
+        let id = cg.gc_structs.len() as u32;
+        cg.gc_record_ids.insert(name.clone(), id);
+        cg.gc_record_ctors.insert(ctor, name);
+        cg.gc_structs.push(witchy_wir::wir::WirStructDef { fields: Vec::new() });
+    }
+    let gc_names: Vec<String> = cg.gc_record_ids.keys().cloned().collect();
+    for name in gc_names {
+        let Some(id) = cg.gc_record_ids.get(&name).copied() else {
+            continue;
+        };
+        let fields = cg
+            .record_field_types
+            .get(&name)
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|ty| Codegen::wir_kind(cg.kind_for_type(ty)))
+            .collect();
+        if let Some(slot) = cg.gc_structs.get_mut(id as usize) {
+            slot.fields = fields;
+        }
+    }
+    // Function return kinds may have been recorded before the GC-record registry
+    // existed. Refresh them now so forward references to cap-carrying records use
+    // the `(ref null $s)` ABI at call sites.
+    for item in &module.items {
+        if let Item::Function(f) = item {
+            let ret = f.ret.as_ref().map(|t| cg.kind_for_type(t)).unwrap_or(Kind::I32);
+            cg.fn_ret.insert(f.name.clone(), ret);
+            if let Some(Type::Fn(_, cret)) = &f.ret {
+                cg.fn_ret_closure_kind.insert(f.name.clone(), cg.kind_for_type(cret));
+            }
         }
     }
     // (RFC-0047) The whole-program set of types with a CUSTOM (non-derived)
@@ -389,7 +468,7 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
 pub fn compile_module_binary(
     module: &Module,
 ) -> Result<Option<Vec<u8>>, CodegenError> {
-    let Some(mut wir_module) = assemble_wir_module(module)? else {
+    let Some((mut wir_module, gc_structs)) = assemble_wir_module_with_structs(module)? else {
         return Ok(None);
     };
     witchy_wir::wir_opt::optimize(&mut wir_module);
@@ -417,7 +496,7 @@ pub fn compile_module_binary(
             return Ok(None);
         }
     }
-    let bytes = witchy_wir::wir_encode::encode(&wir_module, &[]);
+    let bytes = witchy_wir::wir_encode::encode(&wir_module, &gc_structs);
     // Validate before committing; a malformed assembly returns `Ok(None)`.
     if let Err(e) = wasmparser::validate(&bytes) {
         if std::env::var_os("WIRDIAG").is_some() {
@@ -437,6 +516,12 @@ pub fn compile_module_binary(
 pub fn assemble_wir_module(
     module: &Module,
 ) -> Result<Option<witchy_wir::wir::WirModule>, CodegenError> {
+    Ok(assemble_wir_module_with_structs(module)?.map(|(module, _)| module))
+}
+
+fn assemble_wir_module_with_structs(
+    module: &Module,
+) -> Result<Option<(witchy_wir::wir::WirModule, Vec<witchy_wir::wir::WirStructDef>)>, CodegenError> {
     use witchy_wir::wir::{
         DataSegment, GlobalInit, Kind as WK, WirExpr, WirFunc, WirGlobal, WirImport, WirModule,
         WirNode, WirTable,
@@ -495,6 +580,7 @@ pub fn assemble_wir_module(
     let mut main_param_is_args: Vec<bool> = Vec::new();
     let mut main_param_is_dir: Vec<bool> = Vec::new();
     let mut main_param_is_file: Vec<bool> = Vec::new();
+    let mut main_param_is_net: Vec<bool> = Vec::new();
     // RFC-0038: `Some((type_name, nfields))` for a grantable-capability `main` param
     // (its record is minted at the root); `None` otherwise.
     let mut main_param_user_cap: Vec<Option<(String, usize)>> = Vec::new();
@@ -548,6 +634,8 @@ pub fn assemble_wir_module(
                         .push(matches!(&p.ty, Some(Type::Named(n, _)) if n == "Dir"));
                     main_param_is_file
                         .push(matches!(&p.ty, Some(Type::Named(n, _)) if n == "File"));
+                    main_param_is_net
+                        .push(matches!(&p.ty, Some(Type::Named(n, _)) if n == "Net"));
                     let uc = match &p.ty {
                         Some(Type::Named(n, _)) => {
                             grantable_caps.get(n.as_str()).map(|nf| (n.clone(), *nf))
@@ -615,7 +703,7 @@ pub fn assemble_wir_module(
             WasmTy::I64 => WK::I64,
             WasmTy::F64 | WasmTy::F32 => WK::F64,
             // (RFC-0005) A migrated capability import (mint_dir, dir_*,
-            // mint_file, file_*)
+            // mint_file, file_*, mint_net, net_*)
             // takes/returns an unforgeable `externref`.
             WasmTy::ExternRef => WK::ExternRef,
         }
@@ -768,6 +856,9 @@ pub fn assemble_wir_module(
             if main_param_is_dir.iter().any(|is_dir| *is_dir) {
                 import_names.insert("mint_dir");
             }
+            if main_param_is_net.iter().any(|is_net| *is_net) {
+                import_names.insert("mint_net");
+            }
             // (RFC-0045) A user `fail(msg)` calls `__witchy_abort` directly (its
             // import_deps aren't consulted because it's not a registry helper), so
             // declare the import when user code reaches it.
@@ -828,6 +919,7 @@ pub fn assemble_wir_module(
             // is a right-less placeholder (handle 0).
             let mut dir_handle = 0i32;
             let mut file_handle = 0i32;
+            let mut net_handle = 0i32;
             let mut user_cap_ord = 0i32;
             let mut main_args: Vec<WirExpr> = Vec::with_capacity(main_params);
             for i in 0..main_params {
@@ -845,6 +937,12 @@ pub fn assemble_wir_module(
                         args: vec![WirExpr::ConstI32(file_handle)],
                     });
                     file_handle += 1;
+                } else if main_param_is_net.get(i).copied().unwrap_or(false) {
+                    main_args.push(WirExpr::CallHost {
+                        import: "mint_net".into(),
+                        args: vec![WirExpr::ConstI32(net_handle)],
+                    });
+                    net_handle += 1;
                 } else if let Some((tn, nfields)) = main_param_user_cap.get(i).cloned().flatten() {
                     // RFC-0038: mint the sealed record from the grant —
                     // `mk{N}(tag, build_user_cap_field(k, 0), …, build_user_cap_field(k, N-1))`.
@@ -1106,7 +1204,8 @@ pub fn assemble_wir_module(
                     DataSegment { offset: *off, bytes }
                 })
                 .collect();
-            return Ok(Some(WirModule {
+            let gc_structs = cg.gc_structs.clone();
+            return Ok(Some((WirModule {
                 imports: pruned_imports,
                 funcs: pruned_funcs,
                 memory_pages: 1,
@@ -1141,7 +1240,7 @@ pub fn assemble_wir_module(
                     }
                     exports
                 },
-            }));
+            }, gc_structs)));
         }
     }
 

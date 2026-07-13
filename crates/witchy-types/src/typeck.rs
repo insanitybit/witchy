@@ -1681,13 +1681,13 @@ fn packed_list_in_type(t: &ast::Type, packed_names: &HashSet<&str>) -> Option<St
 /// on the compiled backend at the CURRENT migration stage — the caps with NO boxed
 /// i64-slot representation. Stage 2 migrates `File` (the proving capability);
 /// stage 3 starts with `Dir`. The remaining handle-bearing caps (`Net`/`Secret`/
-/// `SecretStore`/`Exec`/`Socket`/`Listener`) keep their i32-handle representation
-/// until their own stage, so they may still (for now) cross a slot — e.g.
+/// `SecretStore`/`Exec`) keep their i32-handle representation until their own
+/// stage, so they may still (for now) cross a slot — e.g.
 /// `std/secretstore.get` returns `Option(Secret)`. `Console`/`Clock`/`Rand`/`Env`
 /// are zero-representation (no runtime handle) and never migrate. Widen this set
 /// as each capability migrates.
 fn is_externref_cap(name: &str) -> bool {
-    matches!(name, "Dir" | "File")
+    matches!(name, "Dir" | "File" | "Net" | "Socket" | "Listener")
 }
 
 fn transparent_externref_brand_cap(
@@ -1740,6 +1740,48 @@ fn nullable_externref_option_cap(
         return None;
     }
     transparent_externref_brand_field_cap(&args[0], defs, &mut HashSet::new())
+}
+
+fn gc_cap_record_cap(
+    name: &str,
+    defs: &HashMap<&str, &ast::TypeDef>,
+    seen: &mut HashSet<String>,
+) -> Option<String> {
+    if !seen.insert(name.to_string()) {
+        return None;
+    }
+    let out = (|| {
+        let def = defs.get(name)?;
+        if !def.is_capability || !def.params.is_empty() || def.variants.len() != 1 {
+            return None;
+        }
+        let variant = def.variants.first()?;
+        if variant.field_names.is_empty() {
+            return None;
+        }
+        variant
+            .fields
+            .iter()
+            .find_map(|field| gc_cap_record_field_cap(field, defs, seen))
+    })();
+    seen.remove(name);
+    out
+}
+
+fn gc_cap_record_field_cap(
+    t: &ast::Type,
+    defs: &HashMap<&str, &ast::TypeDef>,
+    seen: &mut HashSet<String>,
+) -> Option<String> {
+    match t {
+        ast::Type::Qualified(_, inner) => gc_cap_record_field_cap(inner, defs, seen),
+        ast::Type::Named(n, _) if is_externref_cap(n) => Some(n.clone()),
+        ast::Type::Named(n, args) if args.is_empty() => {
+            transparent_externref_brand_cap(n, defs, &mut HashSet::new())
+                .or_else(|| gc_cap_record_cap(n, defs, seen))
+        }
+        ast::Type::Named(_, _) | ast::Type::Tuple(_) | ast::Type::Fn(_, _) => None,
+    }
 }
 
 /// (RFC-0005 §3) The `carries_cap` classification, scoped to the migrated
@@ -1836,8 +1878,9 @@ fn reject_cap_slot_boundary(
                         });
                     }
                 }
-            } else if !is_externref_cap(n)
-                && transparent_externref_brand_cap(n, defs, &mut HashSet::new()).is_none()
+            } else if !(is_externref_cap(n)
+                || transparent_externref_brand_cap(n, defs, &mut HashSet::new()).is_some()
+                || (args.is_empty() && gc_cap_record_cap(n, defs, &mut HashSet::new()).is_some()))
             {
                 if let Some(cap) = carries_externref_cap(t, defs, &mut HashSet::new()) {
                     return Err(TypeError {
@@ -2407,9 +2450,12 @@ struct Checker {
     /// carried capability is `match`, which the linker confines to the home
     /// module — otherwise an alias would leak the underlying authority.
     sealed_types: HashSet<String>,
-    /// `capability X from Dir/File` brands whose compiled representation is the
-    /// same externref as their single underlying migrated host capability.
+    /// Single-field brands whose compiled representation is the same externref
+    /// as their single underlying migrated host capability.
     transparent_externref_brands: HashMap<String, String>,
+    /// Named non-generic capability records that the compiled backend lowers to
+    /// typed GC structs, so they may directly carry migrated externref caps.
+    gc_cap_records: HashSet<String>,
     adt_variants: HashMap<String, Vec<String>>,
     fn_conventions: HashMap<String, Vec<Convention>>,
     /// (RFC-0043) Functions that are mutators — `var` first param + a return of
@@ -3043,7 +3089,11 @@ impl Checker {
                 }
                 Ok(())
             }
-            Ty::Named(n, args) if !is_externref_cap(&n) && !self.transparent_externref_brands.contains_key(&n) => {
+            Ty::Named(n, args)
+                if !(is_externref_cap(&n)
+                    || self.transparent_externref_brands.contains_key(&n)
+                    || args.is_empty() && self.gc_cap_records.contains(&n)) =>
+            {
                 if let Some(cap) = self.ty_carries_externref_cap(&Ty::Named(n.clone(), args)) {
                     return terr(format!(
                         "`{ctx}` builds `{n}` carrying a `{cap}` capability; \
@@ -4250,7 +4300,11 @@ impl Checker {
                         ));
                     }
                     for (arg, fty) in args.iter().zip(&fields) {
-                        let at = self.infer_expected(arg, fty)?;
+                        let at = if self.ty_is_direct_externref_value(fty) {
+                            self.infer(arg)?
+                        } else {
+                            self.infer_expected(arg, fty)?
+                        };
                         self.coerce_arg(fty, &at).map_err(|e| TypeError {
                             message: format!("in constructor `{name}`: {}", e.message),
                         })?;
@@ -4797,7 +4851,11 @@ impl Checker {
                         ));
                     }
                     for (arg, fty) in args.iter().zip(&fields) {
-                        let at = self.infer_expected(arg, fty)?;
+                        let at = if self.ty_is_direct_externref_value(fty) {
+                            self.infer(arg)?
+                        } else {
+                            self.infer_expected(arg, fty)?
+                        };
                         // A capability field accepts a broader argument (a full
                         // `Net` into a `Net[Connect]` field), like a call boundary.
                         self.coerce_arg(fty, &at).map_err(|e| TypeError {
@@ -6497,6 +6555,7 @@ fn run_check_selected(
         record_fields: HashMap::new(),
         sealed_types: HashSet::new(),
         transparent_externref_brands: HashMap::new(),
+        gc_cap_records: HashSet::new(),
         adt_variants: HashMap::new(),
         fn_typarams: HashMap::new(),
         fn_bounds: HashMap::new(),
@@ -6667,6 +6726,13 @@ fn run_check_selected(
             && !is_externref_cap(&t.name)
         {
             c.transparent_externref_brands.insert(t.name.clone(), cap);
+        }
+    }
+    for item in &module.items {
+        if let Item::Type(t) = item
+            && gc_cap_record_cap(&t.name, &type_defs, &mut HashSet::new()).is_some()
+        {
+            c.gc_cap_records.insert(t.name.clone());
         }
     }
 

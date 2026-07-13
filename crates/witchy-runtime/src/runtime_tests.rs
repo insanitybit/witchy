@@ -67,6 +67,28 @@
             (drop (call $dir_read_len (ref.null extern) (i32.const 0)))))
     "#;
 
+    const NULL_NET_CONNECT: &str = r#"
+        (module
+          (import "witchy" "net_connect" (func $net_connect (param externref i32) (result externref)))
+          (memory (export "memory") 1)
+          (func (export "run")
+            (drop (call $net_connect (ref.null extern) (i32.const 0)))))
+    "#;
+
+    const NULL_SOCKET_CLOSE: &str = r#"
+        (module
+          (import "witchy" "net_close" (func $net_close (param externref)))
+          (func (export "run")
+            (call $net_close (ref.null extern))))
+    "#;
+
+    const NULL_LISTENER_ACCEPT: &str = r#"
+        (module
+          (import "witchy" "net_accept" (func $net_accept (param externref) (result externref)))
+          (func (export "run")
+            (drop (call $net_accept (ref.null extern)))))
+    "#;
+
     const DIRECT_FILE_WRITE: &str = r#"
         (module
           (import "witchy" "mint_file" (func $mint_file (param i32) (result externref)))
@@ -189,6 +211,72 @@
         assert!(
             detail.contains("Dir externref is null"),
             "expected null Dir externref rejection, got: {detail}"
+        );
+    }
+
+    #[test]
+    fn null_net_externref_is_rejected() {
+        let mut rt = Runtime::new().unwrap();
+        let mut vm = rt
+            .spawn(
+                NULL_NET_CONNECT,
+                Capabilities {
+                    net_allow: Some(vec!["127.0.0.1:1".to_string()]),
+                    net_connect: true,
+                    ..Default::default()
+                },
+                4,
+            )
+            .unwrap();
+        let err = vm.run().unwrap_err();
+        let detail = format!("{err:?}");
+        assert!(
+            detail.contains("Net externref is null"),
+            "expected null Net externref rejection, got: {detail}"
+        );
+    }
+
+    #[test]
+    fn null_socket_externref_is_rejected() {
+        let mut rt = Runtime::new().unwrap();
+        let mut vm = rt
+            .spawn(
+                NULL_SOCKET_CLOSE,
+                Capabilities {
+                    net_allow: Some(vec!["127.0.0.1:1".to_string()]),
+                    net_connect: true,
+                    ..Default::default()
+                },
+                4,
+            )
+            .unwrap();
+        let err = vm.run().unwrap_err();
+        let detail = format!("{err:?}");
+        assert!(
+            detail.contains("Socket externref is null"),
+            "expected null Socket externref rejection, got: {detail}"
+        );
+    }
+
+    #[test]
+    fn null_listener_externref_is_rejected() {
+        let mut rt = Runtime::new().unwrap();
+        let mut vm = rt
+            .spawn(
+                NULL_LISTENER_ACCEPT,
+                Capabilities {
+                    net_allow: Some(vec!["127.0.0.1:0".to_string()]),
+                    net_listen: true,
+                    ..Default::default()
+                },
+                4,
+            )
+            .unwrap();
+        let err = vm.run().unwrap_err();
+        let detail = format!("{err:?}");
+        assert!(
+            detail.contains("Listener externref is null"),
+            "expected null Listener externref rejection, got: {detail}"
         );
     }
 

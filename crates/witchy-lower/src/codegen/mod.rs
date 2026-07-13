@@ -104,6 +104,10 @@ const MATCH_TMP: &str = "__witchy_match_tmp";
 /// Scratch local holding an externref `match` scrutinee; externrefs cannot pass
 /// through the i64 slot used by MATCH_TMP.
 const MATCH_REF_TMP: &str = "__witchy_match_ref_tmp";
+/// Scratch local holding a GC-struct `match` scrutinee for cap-carrying records.
+fn match_gc_tmp(struct_id: u32) -> String {
+    format!("__witchy_match_gc_{struct_id}")
+}
 
 /// (RFC-0035 step 4) Scratch i64 slot holding a match's RESULT while its dup'd-read
 /// scrutinee is `$rc_drop`'d after the arms (`FromSlot` recovers any width). Shared is
@@ -161,15 +165,17 @@ const ENV_PARAM: &str = "__witchy_env";
 ///   * `F64` — `Float`.
 ///   * `I32` — concrete pointers (strings/lists/records/closures and unmigrated
 ///     capabilities) and `Bool`. These are the wasm32 address width.
-///   * `ExternRef` — migrated unforgeable capabilities (`Dir`/`File` in
-///     RFC-0005 stages 2–3). These must not cross the universal slot or
+///   * `ExternRef` — migrated unforgeable capabilities (`Dir`/`File`/`Net`,
+///     plus `Socket`/`Listener`). These must not cross the universal slot or
 ///     linear-memory heap.
+///   * `GcRef` — a typed GC-struct reference for named cap-carrying records.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     I32,
     I64,
     F64,
     ExternRef,
+    GcRef(u32),
 }
 
 fn ty_kind(t: &Type) -> Kind {
@@ -182,13 +188,17 @@ fn ty_kind(t: &Type) -> Kind {
     match t {
         Type::Named(n, _) if n == "Float" => Kind::F64,
         Type::Named(n, _) if n == "Int" || n == "Duration" => Kind::I64,
-        Type::Named(n, _) if n == "Dir" || n == "File" => Kind::ExternRef,
+        Type::Named(n, _)
+            if matches!(n.as_str(), "Dir" | "File" | "Net" | "Socket" | "Listener") =>
+        {
+            Kind::ExternRef
+        }
         _ => Kind::I32,
     }
 }
 
 fn is_builtin_externref_type(n: &str) -> bool {
-    n == "Dir" || n == "File"
+    matches!(n, "Dir" | "File" | "Net" | "Socket" | "Listener")
 }
 
 /// A finer source-level value type than `Kind`, used where i32 alone is
@@ -359,6 +369,8 @@ fn anon_union_variant_types(name: &str, args: &[Type]) -> Option<Vec<Vec<Type>>>
 fn promote_kind(a: Kind, b: Kind) -> Kind {
     if a == Kind::ExternRef && b == Kind::ExternRef {
         Kind::ExternRef
+    } else if let (Kind::GcRef(x), Kind::GcRef(y)) = (a, b) {
+        if x == y { Kind::GcRef(x) } else { Kind::I32 }
     } else if a == Kind::F64 || b == Kind::F64 {
         Kind::F64
     } else if a == Kind::I64 || b == Kind::I64 {
@@ -511,12 +523,18 @@ struct Codegen<'types> {
     /// Constructor name -> (variant tag, field count). A constructor value is a
     /// heap record `[tag: i32][field: i32]...`.
     ctors: HashMap<String, (u32, usize)>,
-    /// Single-field `capability X from Dir/File` brands that compile as the
+    /// Single-field brands over migrated host externrefs that compile as the
     /// underlying externref instead of a heap record.
     transparent_externref_brands: HashSet<String>,
     /// Constructor name -> its single underlying field type for transparent
     /// externref brands. The constructor lowers to its sole argument.
     transparent_externref_ctors: HashMap<String, Type>,
+    /// Named, non-generic cap-carrying records lowered as typed GC structs.
+    gc_record_ids: HashMap<String, u32>,
+    /// Constructor name -> owning GC-backed record type.
+    gc_record_ctors: HashMap<String, String>,
+    /// The WIR struct type declarations for `gc_record_ids`, indexed by id.
+    gc_structs: Vec<witchy_wir::wir::WirStructDef>,
     /// Constructor name -> per-field record type name (Some when that field is
     /// a record), so binding `Circle(p)` in a pattern lets `p.field` resolve.
     /// Only concrete (non-generic) field types are known here.
@@ -1008,6 +1026,9 @@ impl<'types> Codegen<'types> {
             ctors: HashMap::new(),
             transparent_externref_brands: HashSet::new(),
             transparent_externref_ctors: HashMap::new(),
+            gc_record_ids: HashMap::new(),
+            gc_record_ctors: HashMap::new(),
+            gc_structs: Vec::new(),
             ctor_field_records: HashMap::new(),
             mk_arities: HashSet::new(),
             next_label: 0,
@@ -1172,6 +1193,13 @@ impl<'types> Codegen<'types> {
     fn kind_for_type(&self, t: &Type) -> Kind {
         match t {
             Type::Named(n, _) if self.transparent_externref_brands.contains(n) => Kind::ExternRef,
+            Type::Named(n, args) if args.is_empty() => {
+                self.gc_record_ids
+                    .get(n)
+                    .copied()
+                    .map(Kind::GcRef)
+                    .unwrap_or_else(|| ty_kind(t))
+            }
             Type::Named(n, args)
                 if n == "Option" && args.len() == 1 && self.type_is_direct_externref(&args[0]) =>
             {
@@ -1198,6 +1226,12 @@ impl<'types> Codegen<'types> {
         } else {
             None
         }
+    }
+
+    fn gc_record_id_for_ctor(&self, name: &str) -> Option<(String, u32)> {
+        let owner = self.gc_record_ctors.get(name)?;
+        let id = self.gc_record_ids.get(owner).copied()?;
+        Some((owner.clone(), id))
     }
 
     /// The WASM kind a closure-valued expression returns: a function-typed
@@ -2278,6 +2312,12 @@ impl<'types> Codegen<'types> {
         locals.push(WirLocal { name: TYPECHECK_TMP.into(), ty: i32t() });
         locals.push(WirLocal { name: MATCH_TMP.into(), ty: i64t() });
         locals.push(WirLocal { name: MATCH_REF_TMP.into(), ty: witchy_wir::wir::WirTy::Extern });
+        for id in 0..self.gc_structs.len() as u32 {
+            locals.push(WirLocal {
+                name: match_gc_tmp(id),
+                ty: witchy_wir::wir::WirTy::GcRef(id),
+            });
+        }
         locals.push(WirLocal { name: MATCH_RES.into(), ty: i64t() });
         for i in 0..SCRUT_POOL {
             locals.push(WirLocal { name: format!("__witchy_scrut_save_{i}"), ty: i64t() });
@@ -2777,6 +2817,7 @@ impl<'types> Codegen<'types> {
                             Kind::F64 => W::ConstF64(0.0),
                             Kind::I32 => W::ConstI32(0),
                             Kind::ExternRef => W::RefNull(witchy_wir::wir::Kind::ExternRef),
+                            Kind::GcRef(id) => W::RefNull(witchy_wir::wir::Kind::GcRef(id)),
                         },
                     };
                     if self.cur_fn_var_params.is_empty() && self.cur_fn_own_param.is_none() {
@@ -3711,6 +3752,7 @@ impl<'types> Codegen<'types> {
             Kind::I64 => witchy_wir::wir::Kind::I64,
             Kind::F64 => witchy_wir::wir::Kind::F64,
             Kind::ExternRef => witchy_wir::wir::Kind::ExternRef,
+            Kind::GcRef(id) => witchy_wir::wir::Kind::GcRef(id),
         }
     }
 
@@ -3722,6 +3764,7 @@ impl<'types> Codegen<'types> {
             Kind::F64 => witchy_wir::wir::WirTy::Float,
             Kind::I32 => witchy_wir::wir::WirTy::Bool,
             Kind::ExternRef => witchy_wir::wir::WirTy::Extern,
+            Kind::GcRef(id) => witchy_wir::wir::WirTy::GcRef(id),
         }
     }
 
@@ -4158,6 +4201,88 @@ impl<'types> Codegen<'types> {
         })
     }
 
+    fn lower_gc_struct_pattern(
+        &mut self,
+        value: &witchy_wir::wir::WirExpr,
+        pat: &Pattern,
+        struct_id: u32,
+    ) -> Option<(witchy_wir::wir::WirExpr, witchy_wir::wir::WirSeq)> {
+        use witchy_wir::wir::{WirExpr as W, WirNode as N};
+        Some(match pat {
+            Pattern::Wildcard => (W::ConstI32(1), vec![]),
+            Pattern::Var(name) => (
+                W::ConstI32(1),
+                vec![N::SetLocal {
+                    local: name.clone(),
+                    value: value.clone(),
+                }],
+            ),
+            Pattern::Ctor { name, args } => {
+                let (owner, id) = self.gc_record_id_for_ctor(name)?;
+                if id != struct_id {
+                    return None;
+                }
+                let field_types = self.record_field_types.get(&owner)?.clone();
+                if field_types.len() != args.len() {
+                    return None;
+                }
+                let mut field_conds: Vec<W> = Vec::new();
+                let mut binds: witchy_wir::wir::WirSeq = Vec::new();
+                for (i, sub) in args.iter().enumerate() {
+                    let fty = field_types.get(i)?;
+                    let fk = self.kind_for_type(fty);
+                    let field = W::StructGet {
+                        struct_id,
+                        field: i as u32,
+                        base: Box::new(value.clone()),
+                    };
+                    let (cond, sub_binds) = match fk {
+                        Kind::ExternRef => self.lower_externref_pattern(&field, sub, Some(fty))?,
+                        Kind::GcRef(nested) => {
+                            self.lower_gc_struct_pattern(&field, sub, nested)?
+                        }
+                        _ => {
+                            let slot = W::ToSlot(Box::new(field), Self::wir_kind(fk));
+                            self.lower_pattern(&slot, sub, Some(fty))?
+                        }
+                    };
+                    if !matches!(cond, W::ConstI32(1)) {
+                        field_conds.push(cond);
+                    }
+                    binds.extend(sub_binds);
+                }
+                let cond = if field_conds.is_empty() {
+                    W::ConstI32(1)
+                } else {
+                    wir_and_chain(&field_conds)
+                };
+                (cond, binds)
+            }
+            Pattern::Or(alts) => {
+                let mut conds: Vec<W> = Vec::new();
+                let mut binds: witchy_wir::wir::WirSeq = Vec::new();
+                for alt in alts {
+                    let (c, b) =
+                        self.lower_gc_struct_pattern(value, alt, struct_id)?;
+                    if !b.is_empty() {
+                        binds.push(N::If {
+                            cond: c.clone(),
+                            then_: b,
+                            els: vec![],
+                            result: None,
+                        });
+                    }
+                    conds.push(c);
+                }
+                if conds.is_empty() {
+                    return None;
+                }
+                (wir_or_chain(&conds), binds)
+            }
+            _ => return None,
+        })
+    }
+
     /// Lower a `match` to WIR — only when EVERY arm has a scalar pattern (and its
     /// guard/body lower). Store the scrutinee in `$MATCH_TMP`, then an outer
     /// value-`block $d` holding per-arm `block $a` (test → `br_if` skip; binds;
@@ -4167,8 +4292,12 @@ impl<'types> Codegen<'types> {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
         let scrut_kind = self.kind_of(scrutinee);
         let result_kind = arms
-            .iter()
-            .fold(Kind::I32, |acc, a| promote_kind(acc, self.kind_of(&a.body)));
+            .split_first()
+            .map(|(first, rest)| {
+                rest.iter()
+                    .fold(self.kind_of(&first.body), |acc, a| promote_kind(acc, self.kind_of(&a.body)))
+            })
+            .unwrap_or(Kind::I32);
         let saved = self.next_label;
         // (RFC-0035 step 4) When the scrutinee is a `list.at` READ of a provably offset-0
         // element, it was `$rc_dup`'d at the read (step 1) and is DEAD after the match — an
@@ -4200,6 +4329,8 @@ impl<'types> Codegen<'types> {
         }
         let value = if scrut_kind == Kind::ExternRef {
             W::GetLocal(MATCH_REF_TMP.to_string())
+        } else if let Kind::GcRef(id) = scrut_kind {
+            W::GetLocal(match_gc_tmp(id))
         } else {
             W::GetLocal(MATCH_TMP.to_string())
         };
@@ -4213,6 +4344,8 @@ impl<'types> Codegen<'types> {
             let a_label = format!("a{id}_{i}");
             let (cond, binds) = match if scrut_kind == Kind::ExternRef {
                 self.lower_externref_pattern(&value, &arm.pattern, scrut_ty.as_ref())
+            } else if let Kind::GcRef(id) = scrut_kind {
+                self.lower_gc_struct_pattern(&value, &arm.pattern, id)
             } else {
                 self.lower_pattern(&value, &arm.pattern, scrut_ty.as_ref())
             } {
@@ -4301,6 +4434,19 @@ impl<'types> Codegen<'types> {
             return Some(W::Seq(vec![
                 N::SetLocal {
                     local: MATCH_REF_TMP.to_string(),
+                    value: scrut_w,
+                },
+                N::Block {
+                    label: format!("d{id}"),
+                    result: Some(Self::wir_ty_for_kind(result_kind)),
+                    body: arm_blocks,
+                },
+            ]));
+        }
+        if let Kind::GcRef(struct_id) = scrut_kind {
+            return Some(W::Seq(vec![
+                N::SetLocal {
+                    local: match_gc_tmp(struct_id),
                     value: scrut_w,
                 },
                 N::Block {
@@ -5103,6 +5249,17 @@ impl<'types> Codegen<'types> {
                     }
                     return self.lower_expr(&args[0]);
                 }
+                if let Some((owner, struct_id)) = self.gc_record_id_for_ctor(name) {
+                    let fields = self.record_field_types.get(&owner)?;
+                    if fields.len() != args.len() {
+                        return None;
+                    }
+                    let mut lowered = Vec::with_capacity(args.len());
+                    for arg in args {
+                        lowered.push(self.lower_expr(arg)?);
+                    }
+                    return Some(W::StructNew { struct_id, args: lowered });
+                }
                 if name == "Nil" && args.is_empty() {
                     return Some(W::ConstI32(0));
                 }
@@ -5542,6 +5699,17 @@ impl<'types> Codegen<'types> {
                         ));
                     }
                 }
+                if let Some(base_ty) = self.record_type_of(base) {
+                    if let Some(struct_id) = self.gc_record_ids.get(&base_ty).copied() {
+                        let names = self.record_fields.get(&base_ty)?;
+                        let idx = names.iter().position(|(n, _)| n == field)?;
+                        return Some(W::StructGet {
+                            struct_id,
+                            field: idx as u32,
+                            base: Box::new(self.lower_expr(base)?),
+                        });
+                    }
+                }
                 let (offset, kind) = if let Ok(i) = field.parse::<usize>() {
                     (4 + 8 * i, valtype_kind(self.val_type_of(e)))
                 } else {
@@ -5642,6 +5810,7 @@ impl<'types> Codegen<'types> {
                     Kind::F64 => W::ConstF64(0.0),
                     Kind::I32 => W::ConstI32(0),
                     Kind::ExternRef => W::RefNull(witchy_wir::wir::Kind::ExternRef),
+                    Kind::GcRef(id) => W::RefNull(witchy_wir::wir::Kind::GcRef(id)),
                 };
                 // The Err path early-returns the Err Result. In an var/own-ABI
                 // fn the return must carry the full multi-result tuple (the Err

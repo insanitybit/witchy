@@ -130,7 +130,7 @@ cannot instantiate.
 
 ## The imports
 
-ABI version 1 declares **84 imports** (`IMPORT_COUNT` in
+ABI version 1 declares **85 imports** (`IMPORT_COUNT` in
 `crates/witchy-wir/src/wir_prelude.rs`). That file owns the ordered signatures
 and the explicit metadata rendered below. The classes are:
 
@@ -186,9 +186,9 @@ byte-for-byte and instantiates an all-import probe against the native host.
 | `build_env_fill` | `(i32, i32, i32)` | capability authority | Build.Env | omitted |
 | `build_fetch_len` | `(i32, i32, i32) -> i32` | capability authority | Build.Fetch | omitted |
 | `build_exec_run` | `(i32, i32, i32) -> i32` | capability authority | Build.Exec | omitted |
-| `net_recv_line_len` | `(i32) -> i32` | capability authority | Net.Connect | omitted |
-| `net_recv_all_len` | `(i32) -> i32` | capability authority | Net.Connect | omitted |
-| `net_recv_bytes_len` | `(i32, i64) -> i32` | capability authority | Net.Connect | omitted |
+| `net_recv_line_len` | `(externref) -> i32` | capability authority | Net.Connect | omitted |
+| `net_recv_all_len` | `(externref) -> i32` | capability authority | Net.Connect | omitted |
+| `net_recv_bytes_len` | `(externref, i64) -> i32` | capability authority | Net.Connect | omitted |
 | `fill_pending` | `(i32)` | pure infrastructure | none | provided |
 | `crypto.sha512` | `(i32, i32)` | pure infrastructure | none | provided |
 | `crypto.sha3_256` | `(i32, i32)` | pure infrastructure | none | provided |
@@ -209,20 +209,21 @@ byte-for-byte and instantiates an all-import probe against the native host.
 | `mint_file` | `(i32) -> externref` | capability authority | File.grant | omitted |
 | `file_read_len` | `(externref) -> i32` | capability authority | File.handle | omitted |
 | `file_write` | `(externref, i32)` | capability authority | File.handle | omitted |
-| `net_connect` | `(i32, i32) -> i32` | capability authority | Net.Connect | omitted |
-| `net_try_connect` | `(i32, i32) -> i32` | capability authority | Net.Connect | omitted |
-| `net_resolve_size` | `(i32, i32) -> i32` | capability authority | Net.Connect | omitted |
-| `net_connect_pinned` | `(i32, i32, i32, i64, i32) -> i32` | capability authority | Net.Connect | omitted |
-| `net_try_connect_pinned` | `(i32, i32, i32, i64, i32) -> i32` | capability authority | Net.Connect | omitted |
-| `net_listen` | `(i32, i32) -> i32` | capability authority | Net.Listen | omitted |
-| `net_listen_tls` | `(i32, i32, i32, i32) -> i32` | capability authority | Net.Listen, Secret | omitted |
-| `net_accept` | `(i32) -> i32` | capability authority | Net.Listen | omitted |
-| `serve_pool` | `(i32)` | capability authority | Net.Listen | omitted |
-| `net_restrict` | `(i32, i32) -> i32` | capability authority | Net.Connect | omitted |
-| `net_deny` | `(i32, i32) -> i32` | capability authority | Net.Connect | omitted |
-| `net_send_line` | `(i32, i32)` | capability authority | Net.Connect | omitted |
-| `net_send_bytes` | `(i32, i32)` | capability authority | Net.Connect | omitted |
-| `net_close` | `(i32)` | capability authority | Net.Connect | omitted |
+| `mint_net` | `(i32) -> externref` | capability authority | Net.grant | omitted |
+| `net_connect` | `(externref, i32) -> externref` | capability authority | Net.Connect | omitted |
+| `net_try_connect` | `(externref, i32) -> externref` | capability authority | Net.Connect | omitted |
+| `net_resolve_size` | `(externref, i32) -> i32` | capability authority | Net.Connect | omitted |
+| `net_connect_pinned` | `(externref, i32, i32, i64, i32) -> externref` | capability authority | Net.Connect | omitted |
+| `net_try_connect_pinned` | `(externref, i32, i32, i64, i32) -> externref` | capability authority | Net.Connect | omitted |
+| `net_listen` | `(externref, i32) -> externref` | capability authority | Net.Listen | omitted |
+| `net_listen_tls` | `(externref, i32, i32, i32) -> externref` | capability authority | Net.Listen, Secret | omitted |
+| `net_accept` | `(externref) -> externref` | capability authority | Net.Listen | omitted |
+| `serve_pool` | `(externref)` | capability authority | Net.Listen | omitted |
+| `net_restrict` | `(externref, i32) -> externref` | capability authority | Net.Connect | omitted |
+| `net_deny` | `(externref, i32) -> externref` | capability authority | Net.Connect | omitted |
+| `net_send_line` | `(externref, i32)` | capability authority | Net.Connect | omitted |
+| `net_send_bytes` | `(externref, i32)` | capability authority | Net.Connect | omitted |
+| `net_close` | `(externref)` | capability authority | Net.Connect | omitted |
 | `now` | `() -> i64` | capability authority | Clock | omitted |
 | `now_monotonic` | `() -> i64` | capability authority | Clock | omitted |
 | `rand_u64` | `() -> i64` | capability authority | Rand | omitted |

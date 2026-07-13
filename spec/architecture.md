@@ -77,14 +77,16 @@ Because slots are untyped at runtime, type-directed code generation does the
 work types would: structural equality, for instance, derives an `EqShape` from
 the static types and generates a memoized helper function per shape.
 
-Capability values compile to **handles**: a `Dir` or `Net` is an i32 index
-into a host-side table whose entries are only this VM's own grants — the paths
-and allowlists themselves never enter guest memory, so nothing a module reads
-reveals another program's authority. The handle is still an ordinary integer,
-so the load-bearing guarantee is the type system's: source code cannot mint or
-widen a capability (there is no constructor to call). Hardening the *runtime*
-representation so a corrupted-linear-memory handle cannot be forged (an
-`externref` capability core) is tracked by
+Migrated capability values compile to opaque `externref`s, not integer slots:
+`Dir`, `File`, `Net`, `Socket`, and `Listener` are host-rooted authority
+objects whose paths, allowlists, streams, and listeners never enter guest
+memory. Code cannot mint or widen them, and corrupted linear memory cannot forge
+one. Because ordinary collections, tuples, function captures, and plain records
+still use i64 slots, migrated capabilities may cross only boundaries with a
+typed reference representation: directly, as nullable `Option(cap)` where the
+ABI carries a null externref, as transparent single-field capability brands, or
+inside named non-generic `capability` records lowered to Wasm GC structs.
+Remaining handle-bearing families continue to migrate under
 [RFC-0005](../rfcs/0005-unforgeable-capabilities.md). `Console`/`Clock`/`Env`
 are erased entirely (the linked host import *is* the authority).
 
@@ -136,12 +138,13 @@ function fails at instantiation, before any code runs.
 `link_capability_imports` (over the shared `VmState`) defines only the
 families the grant entitles: a program with no `Console` in its footprint
 physically has no `print` import, and a `Dir[Read]` footprint links the read
-family only. `Dir`/`File`/`Net` values compile to i32 handles into a host-side table
-(paths and allowlists never enter guest memory, and the table holds only this
-program's own grants); attenuation (`dir.subtree`, `dir.read_file`/`write_file`,
-`net.only`/`net.deny`) rewrites the handle. Unforgeability is enforced by the
-type system — source code cannot mint or widen a capability — while hardening the
-i32-handle runtime representation itself is
+family only. Migrated host-held capabilities (`Dir`, `File`, `Net`, `Socket`,
+`Listener`) compile to opaque `externref` values carrying host-side authority
+objects, so paths, allowlists, streams, and listeners never enter guest memory
+and cannot be forged by corrupting an integer handle. Attenuation
+(`dir.subtree`, `dir.read_file`/`write_file`, `net.only`/`net.deny`) mints a
+narrower host object and returns a new externref. Remaining handle-bearing
+families continue to migrate under
 [RFC-0005](../rfcs/0005-unforgeable-capabilities.md). The
 grant comes from the host: the dev grant for `run`/`parity`, the computed
 footprint for `witchy sandbox`. Resource bounds: a per-VM linear memory cap

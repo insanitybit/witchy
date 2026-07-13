@@ -2878,6 +2878,7 @@ fn run_wasm_module(
     let dir_grant = imports_authority(Authority::DirGrant);
     let dir_read = imports_authority(Authority::DirRead) || declares_right("Dir", "Read");
     let dir_write = imports_authority(Authority::DirWrite) || declares_right("Dir", "Write");
+    let net_grant = imports_authority(Authority::NetGrant);
     let net_connect = imports_authority(Authority::NetConnect) || declares_right("Net", "Connect");
     let net_listen = imports_authority(Authority::NetListen) || declares_right("Net", "Listen");
     let uses_secret_host = imports_authority(Authority::Secret);
@@ -2942,7 +2943,7 @@ fn run_wasm_module(
         );
     }
     caps.file_grants = file_grants;
-    if net_connect || net_listen || declares("Net") {
+    if net_grant || net_connect || net_listen || declares("Net") {
         caps.net_allow = Some(net_allow);
         caps.net_connect = net_connect;
         caps.net_listen = net_listen;

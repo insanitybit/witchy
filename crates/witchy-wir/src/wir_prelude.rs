@@ -246,9 +246,9 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "build_env_fill" (func $build_env_fill_host (param i32 i32 i32)))
   (import "witchy" "build_fetch_len" (func $build_fetch_len_host (param i32 i32 i32) (result i32)))
   (import "witchy" "build_exec_run" (func $build_exec_run_host (param i32 i32 i32) (result i32)))
-  (import "witchy" "net_recv_line_len" (func $net_recv_line_len_host (param i32) (result i32)))
-  (import "witchy" "net_recv_all_len" (func $net_recv_all_len_host (param i32) (result i32)))
-  (import "witchy" "net_recv_bytes_len" (func $net_recv_bytes_len_host (param i32 i64) (result i32)))
+  (import "witchy" "net_recv_line_len" (func $net_recv_line_len_host (param externref) (result i32)))
+  (import "witchy" "net_recv_all_len" (func $net_recv_all_len_host (param externref) (result i32)))
+  (import "witchy" "net_recv_bytes_len" (func $net_recv_bytes_len_host (param externref i64) (result i32)))
   (import "witchy" "fill_pending" (func $fill_pending_host (param i32)))
   (import "witchy" "crypto.sha512" (func $crypto_sha512_host (param i32 i32)))
   (import "witchy" "crypto.sha3_256" (func $crypto_sha3_256_host (param i32 i32)))
@@ -269,20 +269,21 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "mint_file" (func $mint_file_host (param i32) (result externref)))
   (import "witchy" "file_read_len" (func $file_read_len_host (param externref) (result i32)))
   (import "witchy" "file_write" (func $file_write_host (param externref i32)))
-  (import "witchy" "net_connect" (func $net_connect_host (param i32 i32) (result i32)))
-  (import "witchy" "net_try_connect" (func $net_try_connect_host (param i32 i32) (result i32)))
-  (import "witchy" "net_resolve_size" (func $net_resolve_size_host (param i32 i32) (result i32)))
-  (import "witchy" "net_connect_pinned" (func $net_connect_pinned_host (param i32 i32 i32 i64 i32) (result i32)))
-  (import "witchy" "net_try_connect_pinned" (func $net_try_connect_pinned_host (param i32 i32 i32 i64 i32) (result i32)))
-  (import "witchy" "net_listen" (func $net_listen_host (param i32 i32) (result i32)))
-  (import "witchy" "net_listen_tls" (func $net_listen_tls_host (param i32 i32 i32 i32) (result i32)))
-  (import "witchy" "net_accept" (func $net_accept_host (param i32) (result i32)))
-  (import "witchy" "serve_pool" (func $serve_pool_host (param i32)))
-  (import "witchy" "net_restrict" (func $net_restrict_host (param i32 i32) (result i32)))
-  (import "witchy" "net_deny" (func $net_deny_host (param i32 i32) (result i32)))
-  (import "witchy" "net_send_line" (func $net_send_line_host (param i32 i32)))
-  (import "witchy" "net_send_bytes" (func $net_send_bytes_host (param i32 i32)))
-  (import "witchy" "net_close" (func $net_close_host (param i32)))
+  (import "witchy" "mint_net" (func $mint_net_host (param i32) (result externref)))
+  (import "witchy" "net_connect" (func $net_connect_host (param externref i32) (result externref)))
+  (import "witchy" "net_try_connect" (func $net_try_connect_host (param externref i32) (result externref)))
+  (import "witchy" "net_resolve_size" (func $net_resolve_size_host (param externref i32) (result i32)))
+  (import "witchy" "net_connect_pinned" (func $net_connect_pinned_host (param externref i32 i32 i64 i32) (result externref)))
+  (import "witchy" "net_try_connect_pinned" (func $net_try_connect_pinned_host (param externref i32 i32 i64 i32) (result externref)))
+  (import "witchy" "net_listen" (func $net_listen_host (param externref i32) (result externref)))
+  (import "witchy" "net_listen_tls" (func $net_listen_tls_host (param externref i32 i32 i32) (result externref)))
+  (import "witchy" "net_accept" (func $net_accept_host (param externref) (result externref)))
+  (import "witchy" "serve_pool" (func $serve_pool_host (param externref)))
+  (import "witchy" "net_restrict" (func $net_restrict_host (param externref i32) (result externref)))
+  (import "witchy" "net_deny" (func $net_deny_host (param externref i32) (result externref)))
+  (import "witchy" "net_send_line" (func $net_send_line_host (param externref i32)))
+  (import "witchy" "net_send_bytes" (func $net_send_bytes_host (param externref i32)))
+  (import "witchy" "net_close" (func $net_close_host (param externref)))
   (import "witchy" "now" (func $now_host (result i64)))
   (import "witchy" "now_monotonic" (func $now_monotonic_host (result i64)))
   (import "witchy" "rand_u64" (func $rand_u64_host (result i64)))
@@ -299,7 +300,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 84;
+pub const IMPORT_COUNT: usize = 85;
 
 /// Version of the public `"witchy"` host-import contract.
 pub const WITCHY_ABI_VERSION: u32 = 1;
@@ -340,6 +341,7 @@ pub enum AbiImportAuthority {
     DirWrite,
     FileGrant,
     FileHandle,
+    NetGrant,
     NetConnect,
     NetListen,
     Clock,
@@ -362,6 +364,7 @@ impl AbiImportAuthority {
             Self::DirWrite => "Dir.Write",
             Self::FileGrant => "File.grant",
             Self::FileHandle => "File.handle",
+            Self::NetGrant => "Net.grant",
             Self::NetConnect => "Net.Connect",
             Self::NetListen => "Net.Listen",
             Self::Clock => "Clock",
@@ -384,6 +387,7 @@ const AUTH_DIR_READ: &[AbiImportAuthority] = &[AbiImportAuthority::DirRead];
 const AUTH_DIR_WRITE: &[AbiImportAuthority] = &[AbiImportAuthority::DirWrite];
 const AUTH_FILE_GRANT: &[AbiImportAuthority] = &[AbiImportAuthority::FileGrant];
 const AUTH_FILE_HANDLE: &[AbiImportAuthority] = &[AbiImportAuthority::FileHandle];
+const AUTH_NET_GRANT: &[AbiImportAuthority] = &[AbiImportAuthority::NetGrant];
 const AUTH_NET_CONNECT: &[AbiImportAuthority] = &[AbiImportAuthority::NetConnect];
 const AUTH_NET_LISTEN: &[AbiImportAuthority] = &[AbiImportAuthority::NetListen];
 const AUTH_NET_LISTEN_SECRET: &[AbiImportAuthority] =
@@ -461,6 +465,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "mint_file"
         | "file_read_len"
         | "file_write"
+        | "mint_net"
         | "net_connect"
         | "net_try_connect"
         | "net_resolve_size"
@@ -514,6 +519,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         "dir_write" | "dir_append" | "dir_make_dir" | "dir_create" => AUTH_DIR_WRITE,
         "mint_file" => AUTH_FILE_GRANT,
         "file_read_len" | "file_write" => AUTH_FILE_HANDLE,
+        "mint_net" => AUTH_NET_GRANT,
         "net_connect"
         | "net_try_connect"
         | "net_resolve_size"

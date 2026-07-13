@@ -15,8 +15,8 @@ impl Codegen<'_> {
     /// The WASM kind a compiled expression evaluates to.
     pub(crate) fn kind_of(&self, e: &Expr) -> Kind {
         if let Some(t) = self.ast_type_of_expr(e) {
-            if self.kind_for_type(&t) == Kind::ExternRef {
-                return Kind::ExternRef;
+            if let k @ (Kind::ExternRef | Kind::GcRef(_)) = self.kind_for_type(&t) {
+                return k;
             }
         }
         match e {
@@ -55,6 +55,18 @@ impl Codegen<'_> {
                     return valtype_kind(self.val_type_of(e));
                 }
                 if let Some(bt) = self.record_type_of(base) {
+                    if let Some(struct_id) = self.gc_record_ids.get(&bt).copied() {
+                        if let Some(fields) = self.record_field_types.get(&bt) {
+                            if let Some(names) = self.record_fields.get(&bt) {
+                                if let Some(idx) = names.iter().position(|(n, _)| n == field) {
+                                    return fields
+                                        .get(idx)
+                                        .map(|ty| self.kind_for_type(ty))
+                                        .unwrap_or(Kind::GcRef(struct_id));
+                                }
+                            }
+                        }
+                    }
                     if let Some(fields) = self.record_fields.get(&bt) {
                         if let Some((_, ft)) = fields.iter().find(|(n, _)| n == field) {
                             return name_kind(ft.as_deref());
@@ -74,8 +86,12 @@ impl Codegen<'_> {
             }
             Expr::Block(b) => self.block_kind(b),
             Expr::Match { arms, .. } => arms
-                .iter()
-                .fold(Kind::I32, |acc, a| promote_kind(acc, self.kind_of(&a.body))),
+                .split_first()
+                .map(|(first, rest)| {
+                    rest.iter()
+                        .fold(self.kind_of(&first.body), |acc, a| promote_kind(acc, self.kind_of(&a.body)))
+                })
+                .unwrap_or(Kind::I32),
             // `get_or(d, k, default)` returns the dict's value at the default's
             // kind (the i64 value slot is recovered to it at the call site).
             Expr::Call { name, args } if cap_ops::surface_name(name) == "dict.get_or" && args.len() == 3 => {
@@ -142,6 +158,10 @@ impl Codegen<'_> {
             Expr::Ctor { name, .. } if self.transparent_externref_ctors.contains_key(name) => {
                 Kind::ExternRef
             }
+            Expr::Ctor { name, .. } => self
+                .gc_record_id_for_ctor(name)
+                .map(|(_, id)| Kind::GcRef(id))
+                .unwrap_or(Kind::I32),
             _ => Kind::I32, // Bool, Str, List, Ctor, Spawn
         }
     }
