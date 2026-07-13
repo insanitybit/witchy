@@ -98,6 +98,20 @@ strip_ansi() { sed "s/$(printf '\033')\[[0-9;]*m//g"; }
 current_stage() { { strip_ansi <"$1" 2>/dev/null || true; } | { grep -E '^==> \[' || true; } | tail -1 | sed 's/^==> //'; }
 # All markers, one line: "[1] build (t+0s);[2] clippy (t+41s);..."
 stage_summary() { { strip_ansi <"$1" 2>/dev/null || true; } | { grep -E '^==> \[' || true; } | sed 's/^==> //' | paste -sd';' -; }
+# Extract a one-line failure summary from a red gate log: the failing stage +
+# first error/FAIL line. Helps agents diagnose without reading the full log.
+failure_summary() {
+    local log="$1" plain
+    plain="$(strip_ansi <"$log" 2>/dev/null)" || return 0
+    local stage; stage="$(echo "$plain" | grep -E '^==> \[' | tail -1 | sed 's/^==> //')"
+    local fail_line=""
+    fail_line="$(echo "$plain" | grep -m1 '^ *FAIL \[' | sed 's/^ *//' || true)"
+    [ -z "$fail_line" ] && fail_line="$(echo "$plain" | grep -m1 '^error\[E\|^error:' | head -c120 || true)"
+    [ -z "$fail_line" ] && fail_line="$(echo "$plain" | grep -m1 'could not compile' || true)"
+    local summary="${stage:+$stage}"
+    [ -n "$fail_line" ] && summary="${summary:+$summary: }$fail_line"
+    echo "${summary:-unknown failure}"
+}
 
 record() { # record <event> <branch> [key value]...
     local event="$1" branch="$2"; shift 2
@@ -455,14 +469,18 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
                 # A red BATCH indicts no one member: keep every queue file so
                 # each re-gates individually (batching only re-engages when a
                 # solo branch is at the head with others behind it).
-                note "batch of ${#batch_branches[@]} is $(echo "$why" | tr a-z A-Z) after ${took}s — re-queueing members for individual gates; see $log"
+                [ "$why" = "red" ] && extra="$(failure_summary "$log")"
+                note "batch of ${#batch_branches[@]} is $(echo "$why" | tr a-z A-Z) after ${took}s — $extra"
+                note "  re-queueing members for individual gates; log: $log"
                 record batch_red "$branch" members "${batch_branches[*]}" log "$log" \
                     elapsed_s "$took" reason "$extra"
                 # Mark every member no-batch so the retry gates them one by one.
                 local bf; for bf in "${batch_files[@]}"; do touch "$bf.nobatch"; done
                 return 1
             fi
-            note "$branch is $(echo "$why" | tr a-z A-Z) after ${took}s — see $log"
+            [ "$why" = "red" ] && extra="$(failure_summary "$log")"
+            note "$branch is $(echo "$why" | tr a-z A-Z) after ${took}s — $extra"
+            note "  log: $log"
             record "$why" "$branch" sha "$sha" log "$log" elapsed_s "$took" \
                 reason "$extra" stages "$(stage_summary "$log")"
             rm -f "$f"
