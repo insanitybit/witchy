@@ -71,6 +71,13 @@ USAGE:
     witchy caps     [file.witchy]                 report the capability footprint (defaults to the project entry)
     witchy caps-diff <old.witchy> <new.witchy>    fail if the footprint widened
     witchy which    <name>                        find a function in the standard library by (partial) name
+    witchy doc     <file.witchy>...                generate stdlib documentation from doc-comments
+    witchy compile <entry.witchy> [--dep name=path]... [--out <file.wasm>]
+                                                  compile to a standalone .wasm module
+    witchy build-step <file.witchy> [--out <dir>] [--read <dir>]...
+                                                  run a build-time entrypoint with declared grants
+    witchy grants-check <prog.witchy> <grants.toml>
+                                                  verify a program's footprint fits declared grants
     witchy fmt [--check] [--cap-methods] <file.witchy>
                                                    reformat in place (--check: verify only, --cap-methods: RFC-0076 migration)
     witchy lsp                                    run the language server
