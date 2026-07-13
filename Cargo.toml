@@ -2,6 +2,7 @@
 name = "witchy"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.96.1"
 description = "A capability-secure language with twin interpreter and WASM backends: a program's authority is a typed, auditable, enforceable artifact"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/insanitybit/witchy"
