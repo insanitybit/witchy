@@ -39,17 +39,18 @@ fn write(root: &Path, relative: &str, contents: &str) {
     fs::write(path, contents).expect("write fixture");
 }
 
-fn seed(repo: &Path, destination: &str, mode: Option<&str>) -> Output {
+fn run_warm(repo: &Path, args: &[&str], mode: Option<&str>) -> Output {
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/worktree-warm.sh");
     let mut command = Command::new("bash");
-    command
-        .arg(script)
-        .args(["--target-dir", destination])
-        .current_dir(repo);
+    command.arg(script).args(args).current_dir(repo);
     if let Some(mode) = mode {
         command.env("WITCHY_WORKTREE_WARM_COPY_MODE", mode);
     }
     command.output().expect("run worktree-warm.sh")
+}
+
+fn seed(repo: &Path, destination: &str, mode: Option<&str>) -> Output {
+    run_warm(repo, &["--target-dir", destination], mode)
 }
 
 fn assert_seed(repo: &Path, destination: &str) {
@@ -74,6 +75,30 @@ fn assert_seed(repo: &Path, destination: &str) {
         "wasm32-unknown-unknown/debug/debug",
     ] {
         assert!(!target.join(relative).exists(), "seed retained {relative}");
+    }
+}
+
+#[test]
+fn worktree_warm_help_and_usage_errors_are_stable() {
+    let repo = TempRepo::new();
+    let root = repo.path();
+
+    let help = run_warm(root, &["--help"], Some("invalid-but-help-must-not-probe-it"));
+    assert!(help.status.success());
+    let stdout = String::from_utf8_lossy(&help.stdout);
+    assert!(stdout.contains("worktree-warm.sh <path>"));
+    assert!(stdout.contains("worktree-warm.sh --target-dir <dir>"));
+    assert!(stdout.contains("worktree-warm.sh --help"));
+    assert!(!stdout.contains("set -euo pipefail"));
+
+    for (args, expected) in [
+        (vec!["--target-dir"], "usage: worktree-warm.sh --target-dir <dir>"),
+        (vec!["--unknown"], "unknown option '--unknown'"),
+        (vec!["one", "two"], "usage: worktree-warm.sh [<worktree-path>"),
+    ] {
+        let output = run_warm(root, &args, None);
+        assert_eq!(output.status.code(), Some(2), "args {args:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains(expected), "args {args:?}");
     }
 }
 

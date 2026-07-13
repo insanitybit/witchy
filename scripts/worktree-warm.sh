@@ -22,6 +22,7 @@
 #   ./scripts/worktree-warm.sh --target-dir <dir>  # seed a per-agent
 #                                                  # CARGO_TARGET_DIR (e.g.
 #                                                  # target-codex) from ./target
+#   ./scripts/worktree-warm.sh --help               # show this help
 #
 # The --target-dir form is for agents sharing the MAIN checkout with an
 # isolated target dir (the CLAUDE.md concurrency rule). Because the workspace
@@ -32,6 +33,33 @@
 # would serialize concurrent agents, and the local gates assume ./target
 # (BUG-020). Per-worktree target + CoW seed keeps builds parallel AND warm.
 set -euo pipefail
+
+print_help() {
+    sed -n '2,/^set -euo pipefail$/{ /^set -euo pipefail$/d; s/^# \{0,1\}//; p; }' "$0"
+}
+
+case "${1:-}" in
+    -h | --help)
+        print_help
+        exit 0
+        ;;
+    --target-dir)
+        if [[ "$#" -ne 2 || -z "${2:-}" ]]; then
+            echo "usage: worktree-warm.sh --target-dir <dir>" >&2
+            exit 2
+        fi
+        ;;
+    -*)
+        echo "worktree-warm: unknown option '${1}' (try --help)" >&2
+        exit 2
+        ;;
+    *)
+        if [[ "$#" -gt 1 ]]; then
+            echo "usage: worktree-warm.sh [<worktree-path> | --target-dir <dir>]" >&2
+            exit 2
+        fi
+        ;;
+esac
 
 # This override is a portability escape hatch and a deterministic test hook.
 copy_mode="${WITCHY_WORKTREE_WARM_COPY_MODE:-}"
@@ -125,7 +153,7 @@ clone_target() { # clone_target <src-target> <dest-target>
 }
 
 if [[ "${1:-}" == "--target-dir" ]]; then
-    dest="${2:?usage: worktree-warm.sh --target-dir <dir>}"
+    dest="$2"
     root="$(git rev-parse --show-toplevel)"
     case "$dest" in /*) ;; *) dest="$root/$dest" ;; esac
     if [[ -e "$dest" ]]; then
