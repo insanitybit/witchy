@@ -2517,49 +2517,14 @@ fn bare_cap_op_error(name: &str, arity: usize) -> Option<String> {
     if !cap_ops::is_op_name(name) {
         return None;
     }
-    let suggestion = match (name, arity) {
-        ("print", _) => "console.print(message)",
-        ("now", _) => "clock.now()",
-        ("now_monotonic", _) => "clock.now_monotonic()",
-        ("rand_u64", _) => "rand.rand_u64()",
-        ("read", 1) => "file.read()",
-        ("read", _) => "dir.read(path)",
-        ("write", 2) => "file.write(data)",
-        ("write", _) => "dir.write(path, data)",
-        ("append", _) => "dir.append(path, data)",
-        ("exists", _) => "dir.exists(path)",
-        ("is_dir", _) => "dir.is_dir(path)",
-        ("list", _) => "dir.list()",
-        ("make_dir", _) => "dir.make_dir(path)",
-        ("read_file", _) => "dir.read_file(path)",
-        ("write_file", _) => "dir.write_file(path)",
-        ("subtree", _) => "dir.subtree(path)",
-        ("connect", _) => "net.connect(addr)",
-        ("try_connect", _) => "net.try_connect(addr)",
-        ("listen", _) => "net.listen(addr)",
-        ("listen_tls", _) => "net.listen_tls(addr, cert_pem, key)",
-        ("only", _) => "cap.only(policy)",
-        ("deny", _) => "net.deny(policy)",
-        ("resolve", _) => "net.resolve(host)",
-        ("exec", _) => "exec.exec(dir, path, args, stdin)",
-        ("get_env", _) => "env.get_env(name)",
-        ("accept", _) => "listener.accept()",
-        ("serve_pool", _) => "listener.serve_pool()",
-        ("send_line", _) => "socket.send_line(line)",
-        ("send_bytes", _) => "socket.send_bytes(bytes)",
-        ("recv_line", _) => "socket.recv_line()",
-        ("recv_all", _) => "socket.recv_all()",
-        ("recv_bytes", _) => "socket.recv_bytes(n)",
-        ("close", _) => "socket.close()",
-        _ => {
-            return Some(format!(
-                "capability operation `{name}` is method-only; call it as `cap.{name}(…)`"
-            ))
-        }
-    };
-    Some(format!(
-        "capability operation `{name}` is method-only; write `{suggestion}` instead"
-    ))
+    match cap_ops::diagnostic_suggestion(name, arity) {
+        Some(suggestion) => Some(format!(
+            "capability operation `{name}` is method-only; write `{suggestion}` instead"
+        )),
+        None => Some(format!(
+            "capability operation `{name}` is method-only; call it as `cap.{name}(…)`"
+        )),
+    }
 }
 
 impl Checker {

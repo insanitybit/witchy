@@ -1127,21 +1127,27 @@ fn f() -> String:
     #[test]
     fn capabilities_do_not_leak_across_kinds() {
         // Holding one capability never confers another. A function given only a
-        // Console cannot reach the network or the filesystem: `connect` demands
-        // a Net and `read` demands a Dir, and a Console can't stand in for
-        // either. Authority is per-kind and (with no capability constructors)
+        // Console cannot reach the network or the filesystem: receiver-aware cap
+        // op lowering refuses `connect`/`read` on Console before they become host
+        // calls. Authority is per-kind and (with no capability constructors)
         // unforgeable — the heart of witchy's confinement guarantee.
         let net = check_str(r#"
 fn f(c: Console) -> Nil:
     c.connect("host")
 "#).unwrap_err();
-        assert!(net.contains("Net"), "expected a Net mismatch, got: {net}");
+        assert!(
+            net.contains("no method `connect` on `Console`"),
+            "expected a receiver-aware cap-op rejection, got: {net}"
+        );
         let dir = check_str(r#"
 fn f(c: Console) -> String:
     c.read("/etc/passwd")
 "#)
             .unwrap_err();
-        assert!(dir.contains("Dir"), "expected a Dir mismatch, got: {dir}");
+        assert!(
+            dir.contains("no method `read` on `Console`"),
+            "expected a receiver-aware cap-op rejection, got: {dir}"
+        );
     }
 
     #[test]
@@ -1825,12 +1831,25 @@ fn leak(s: String) -> Nil:
     }
 
     #[test]
+    fn rejects_bare_build_capability_ops_with_catalog_fixit() {
+        let src = r#"
+fn build(out: BuildOut):
+    write_out(out, "x.witchy", "// generated")
+"#;
+        let e = check_str(src).unwrap_err();
+        assert!(
+            e.contains("method-only") && e.contains("out.write_out(path, contents)"),
+            "got: {e}"
+        );
+    }
+
+    #[test]
     fn accepts_print_with_console_capability() {
         let src = r#"
 fn shout(console: Console, s: String) -> Nil:
     console.print(s)
 "#;
-        assert!(check_str(src).is_ok());
+        check_str(src).expect("console.print should type-check");
     }
 
     #[test]
@@ -1860,7 +1879,7 @@ fn read(f: File[Read]) -> String:
 fn main(console: Console, f: File[Read]):
     console.print(f.read())
 "#;
-        assert!(check_str(src).is_ok());
+        check_str(src).expect("file read capability method should type-check");
 
         let module = witchy_syntax::parser::parse_module(src).expect("parse");
         let lowered = crate::traits::lower_checked(module).expect("lower");
@@ -1970,6 +1989,51 @@ fn main(rand: Rand, net: Net[Listen, Tcp]):
             panic!("expected lowered listener.serve_pool call");
         };
         assert_eq!(serve_name, "__capop.serve_pool");
+    }
+
+    #[test]
+    fn capability_op_chains_preserve_receiver_kind() {
+        use witchy_syntax::ast::{Expr, Item, Stmt};
+
+        let src = r#"
+type DirPolicy:
+    Any
+
+fn load(dir: Dir[Read], policy: DirPolicy) -> String:
+    dir.only(policy).read("config.txt")
+"#;
+        check_str(src).expect("Dir.only(...).read(...) should type-check");
+
+        let module = witchy_syntax::parser::parse_module(src).expect("parse");
+        let lowered = crate::traits::lower_checked(module).expect("lower");
+        let load = lowered
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(f) if f.name == "load" => Some(f),
+                _ => None,
+            })
+            .expect("load");
+        let Some(Stmt::Expr(Expr::Call { name: read_name, args: read_args })) =
+            load.body.stmts.last()
+        else {
+            panic!("expected lowered dir.read call");
+        };
+        assert_eq!(read_name, "__capop.read");
+        let Some(Expr::Call { name: only_name, .. }) = read_args.first() else {
+            panic!("expected lowered dir.only receiver");
+        };
+        assert_eq!(only_name, "__capop.only");
+    }
+
+    #[test]
+    fn capability_methods_are_receiver_aware_before_lowering() {
+        let src = r#"
+fn main(dir: Dir):
+    dir.recv_line()
+"#;
+        let e = check_str(src).unwrap_err();
+        assert!(e.contains("no method `recv_line` on `Dir`"), "got: {e}");
     }
 
     #[test]

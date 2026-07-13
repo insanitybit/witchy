@@ -422,6 +422,14 @@ That restructure is the tracked follow-up; the string zoo is now dead-cited-code
 free (nothing routes new fixes into it) even though the local-judgment core
 survives.
 
+2026-07-12 follow-up: the cap-op part of this residual no longer owns its own
+operation/result table. `witchy_syntax::cap_ops` now catalogs cap-op receiver
+kinds, lowered arities, result shapes, and diagnostic examples; the quiet
+pre-mono pass reads those facts for chained cap-op results. The local judgment
+still exists because the empty-table pass still needs to type method-call
+receivers before annotate can produce a table, but new cap-op facts now have one
+home instead of a private RFC-0046 shadow list.
+
 **BUG-001 (Mono comparator hijack) — FIXED.** `rename_calls_block` threads a
 `Scope`; a call on a bound local (a `fn`-typed comparator param named like a
 trait method) is never renamed to the impl. Regression test on both backends.

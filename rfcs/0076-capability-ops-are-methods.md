@@ -21,6 +21,14 @@ related:
 
 # RFC-0076: Capability ops are methods
 
+Implementation follow-up (2026-07-12): the cap-op spelling module is now a
+catalog, not a bare name list. Each operation records its receiver kind, lowered
+arity, result shape, and diagnostic example. Bare-form diagnostics, method
+lowering's receiver check, and the quiet trait-dispatch pre-pass consume the
+catalog, shrinking the RFC-0046 `cap_op_return_type` residual without moving
+rights enforcement or host lowering out of their existing compiler/runtime
+homes.
+
 ## Summary
 
 Capability operations — `read`, `write`, `connect`, `listen`, `print`, and the

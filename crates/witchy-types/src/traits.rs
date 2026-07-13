@@ -1997,19 +1997,27 @@ fn local_expr_type(
     }
 }
 
-fn cap_op_result_type(e: &Expr) -> Option<Type> {
-    let Expr::Call { name, .. } = e else { return None };
-    match cap_ops::surface_name(name) {
-        "only" | "deny" => Some(named_type("Net")),
-        "subtree" | "make_dir" => Some(named_type("Dir")),
-        "read_file" | "write_file" => Some(named_type("File")),
-        "connect" | "connect_pinned" | "accept" => Some(named_type("Socket")),
-        "try_connect" | "try_connect_pinned" => Some(Type::Named(
-            "Option".to_string(),
-            vec![named_type("Socket")],
-        )),
-        "listen" | "listen_tls" => Some(named_type("Listener")),
-        _ => None,
+fn cap_op_result_type(e: &Expr, type_of: &dyn Fn(&Expr) -> Option<Type>) -> Option<Type> {
+    let Expr::Call { name, args } = e else { return None };
+    match cap_ops::result_shape(name, args.len())? {
+        cap_ops::ResultShape::SameReceiver => args.first().and_then(type_of),
+        cap_ops::ResultShape::Nil => Some(named_type("Nil")),
+        cap_ops::ResultShape::Int => Some(named_type("Int")),
+        cap_ops::ResultShape::String => Some(named_type("String")),
+        cap_ops::ResultShape::Bool => Some(named_type("Bool")),
+        cap_ops::ResultShape::ListString => {
+            Some(Type::Named("List".to_string(), vec![named_type("String")]))
+        }
+        cap_ops::ResultShape::OptionString => {
+            Some(Type::Named("Option".to_string(), vec![named_type("String")]))
+        }
+        cap_ops::ResultShape::Dir => Some(named_type("Dir")),
+        cap_ops::ResultShape::File => Some(named_type("File")),
+        cap_ops::ResultShape::Socket => Some(named_type("Socket")),
+        cap_ops::ResultShape::OptionSocket => {
+            Some(Type::Named("Option".to_string(), vec![named_type("Socket")]))
+        }
+        cap_ops::ResultShape::Listener => Some(named_type("Listener")),
     }
 }
 
@@ -2037,7 +2045,7 @@ impl Ctx<'_> {
             // method call on a cap-op result (`net.deny(...).only(...)`). The loud
             // pass gets the same fact from the checker's table; this is the empty-
             // table residual. See RFC-0046 step-4 note.
-            .or_else(|| cap_op_result_type(e))
+            .or_else(|| cap_op_result_type(e, &|a| self.type_ast(a, scope)))
     }
 
     /// Resolve an owner-specific trait method to its mangled impl for a receiver
@@ -2580,7 +2588,9 @@ impl Ctx<'_> {
                     // (`Rand` -> `rand`). Try this before owner-module UFCS so
                     // `rand.rand_u64()` lowers to the host op, while ordinary
                     // std helpers like `rand.hex(n)` still resolve below.
-                    if is_host_capability_ast(ty) && cap_ops::is_op_name(method) {
+                    if cap_receiver_kind_ast(ty)
+                        .is_some_and(|receiver| cap_ops::receiver_supports(method, receiver))
+                    {
                         let mut call_args = vec![std::mem::replace(
                             receiver.as_mut(),
                             Expr::Bool(false),
@@ -2686,7 +2696,11 @@ impl Ctx<'_> {
                 // the lowered call so the compiler still knows the user wrote
                 // method syntax (`dir.read("x")`) rather than the legacy bare
                 // intrinsic form (`dir.read("x")`).
-                if receiver_ty.as_ref().is_some_and(is_host_capability_ast) {
+                if receiver_ty
+                    .as_ref()
+                    .and_then(cap_receiver_kind_ast)
+                    .is_some_and(|receiver| cap_ops::receiver_supports(method, receiver))
+                {
                     let mut call_args =
                         vec![std::mem::replace(receiver.as_mut(), Expr::Bool(false))];
                     call_args.append(args);
@@ -2818,26 +2832,26 @@ fn type_variable_name(ty: &Type) -> Option<&str> {
     .then_some(name)
 }
 
-fn is_host_capability_ast(ty: &Type) -> bool {
-    let Some(name) = nominal_type_name(ty) else { return false };
-    matches!(
-        name,
-        "Net"
-            | "Dir"
-            | "File"
-            | "Console"
-            | "Clock"
-            | "Rand"
-            | "Env"
-            | "Exec"
-            | "Socket"
-            | "Listener"
-            | "BuildOut"
-            | "BuildRead"
-            | "BuildEnv"
-            | "BuildNet"
-            | "BuildExec"
-    )
+fn cap_receiver_kind_ast(ty: &Type) -> Option<cap_ops::ReceiverKind> {
+    let name = nominal_type_name(ty)?;
+    match name {
+        "Console" => Some(cap_ops::ReceiverKind::Console),
+        "Clock" => Some(cap_ops::ReceiverKind::Clock),
+        "Rand" => Some(cap_ops::ReceiverKind::Rand),
+        "Env" => Some(cap_ops::ReceiverKind::Env),
+        "Exec" => Some(cap_ops::ReceiverKind::Exec),
+        "BuildOut" => Some(cap_ops::ReceiverKind::BuildOut),
+        "BuildRead" => Some(cap_ops::ReceiverKind::BuildRead),
+        "BuildEnv" => Some(cap_ops::ReceiverKind::BuildEnv),
+        "BuildNet" => Some(cap_ops::ReceiverKind::BuildNet),
+        "BuildExec" => Some(cap_ops::ReceiverKind::BuildExec),
+        "File" => Some(cap_ops::ReceiverKind::File),
+        "Dir" => Some(cap_ops::ReceiverKind::Dir),
+        "Net" => Some(cap_ops::ReceiverKind::Net),
+        "Socket" => Some(cap_ops::ReceiverKind::Socket),
+        "Listener" => Some(cap_ops::ReceiverKind::Listener),
+        _ => None,
+    }
 }
 
 fn type_owner_module_name(name: &str) -> Option<&str> {
@@ -4171,7 +4185,7 @@ impl Mono<'_> {
                     &|arg| self.type_ast(arg, scope),
                 )
             })
-            .or_else(|| cap_op_result_type(e))
+            .or_else(|| cap_op_result_type(e, &|arg| self.type_ast(arg, scope)))
     }
 
     fn resolve_type_args(
