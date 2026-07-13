@@ -198,9 +198,31 @@ if [ "$fast" -eq 1 ]; then
 fi
 run "build (binary)"           cargo build -p witchy
 run "witchy fmt (std+examples)" witchy_fmt_check
-run "wasm playground build"    "${wasm_cargo[@]}" build --lib --no-default-features --target wasm32-unknown-unknown
-run "runnable book (browser)"  validate_runnable_book
+
+# Start wasm build in the background: it targets wasm32-unknown-unknown so it
+# shares NO artifacts with the native test suite. Overlapping them saves ~15s
+# (warm) to ~130s (cold) of wall-clock that would otherwise be serial.
+wasm_log="$(mktemp "${TMPDIR:-/tmp}/witchy-wasm-XXXXXX")"
+wasm_pid=""
+( "${wasm_cargo[@]}" build --lib --no-default-features --target wasm32-unknown-unknown >"$wasm_log" 2>&1 ) &
+wasm_pid=$!
+
 run "tests (workspace)"        "${test_cmd[@]}"
+
+# Collect the wasm build. If it failed, show its output and exit red.
+step=$((step + 1))
+t_wasm_collect=$(date +%s)
+printf '\n\033[1;34m==> [%d] wasm playground build (t+%ds)\033[0m\n' "$step" "$(( t_wasm_collect - t_start ))"
+if ! wait "$wasm_pid"; then
+    cat "$wasm_log"
+    rm -f "$wasm_log"
+    printf '\033[1;31mwasm playground build FAILED\033[0m\n'
+    exit 1
+fi
+rm -f "$wasm_log"
+printf '\033[1;34m    [%d] wasm playground build took %ds\033[0m\n' "$step" "$(( $(date +%s) - t_wasm_collect ))"
+
+run "runnable book (browser)"  validate_runnable_book
 if [ "$full" -eq 1 ]; then
     # RFC-0023 memory-safety sweep: re-run the differential fuzzer with the checked
     # heap on, so a codegen heap bug (wrong offset, missing ensure, mis-layout) in
