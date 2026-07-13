@@ -6739,6 +6739,40 @@ fn main(console: Console):
         assert_eq!(wasm_run(src), want, "wasm");
     }
 
+    /// (BUG-488) `toml.decode` rejects scalar/table namespace collisions: a key
+    /// defined as a scalar cannot later be opened as a table, and vice versa.
+    #[test]
+    fn toml_decode_rejects_scalar_table_namespace_collisions() {
+        let src = r#"import toml
+
+fn try(doc: String) -> String:
+    match toml.decode(doc):
+        Ok(_) -> "ok"
+        Err(e) -> toml.decode_error_message(e)
+
+fn main(console: Console):
+    // scalar then table: top-level `a = 1` then `[a]` header
+    console.print(try("a = 1\n[a]\nb = 2\n"))
+    // array-of-tables collides with scalar
+    console.print(try("a = 1\n[[a]]\nb = 2\n"))
+    // nested: scalar `a` blocks `[a.b]`
+    console.print(try("a = 1\n[a.b]\nc = 3\n"))
+    // nested scalar blocks sub-table: `[a]` defines `b = 1`, then `[a.b]` opens it
+    console.print(try("[a]\nb = 1\n[a.b]\nc = 2\n"))
+    // valid: separate namespaces
+    console.print(try("x = 1\n[y]\nz = 2\n"))
+"#;
+        let want = vec![
+            "`a` is already defined as a value, cannot redefine as a table".to_string(),
+            "`a` is already defined as a value, cannot redefine as `[[a]]`".to_string(),
+            "`a` is already defined as a value, cannot redefine as a table".to_string(),
+            "`a.b` is already defined as a value, cannot redefine as a table".to_string(),
+            "ok".to_string(),
+        ];
+        assert_eq!(link_run(src), want.clone(), "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
+    }
+
     /// Trailing `# comments` on values and arrays are stripped, but a `#` inside a
     /// quoted string and a `]` inside an array element (e.g. "Dir[Read]") are
     /// preserved — real manifests carry comments, so the reader must tolerate them.

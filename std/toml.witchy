@@ -57,11 +57,14 @@ pub fn decode(text: String) -> Result(Toml, TomlDecodeError):
     var aot_seq = 0
     var seen_keys: List(String) = []
     var seen_tables: List(String) = []
+    var scalar_paths: List(String) = []
     for line in string.lines(text):
         let t = string.trim(line)
         if is_array_header(t):
             aot = array_header_name(t)
             let _path = header_path(aot)?
+            if list.contains(scalar_paths, aot):
+                return Err(decode_error("`" + aot + "` is already defined as a value, cannot redefine as `[[" + aot + "]]`"))
             in_aot = true
             aot_seq = aot_seq + 1
             section = []
@@ -71,6 +74,8 @@ pub fn decode(text: String) -> Result(Toml, TomlDecodeError):
             let id = list.join(path, ".")
             if list.contains(seen_tables, id):
                 return Err(decode_error("duplicate TOML table `[" + id + "]`"))
+            if let Some(conflict) = ns_prefix_collision(path, scalar_paths):
+                return Err(decode_error("`" + conflict + "` is already defined as a value, cannot redefine as a table"))
             seen_tables = list.push(seen_tables, id)
             section = path
             in_aot = false
@@ -90,9 +95,21 @@ pub fn decode(text: String) -> Result(Toml, TomlDecodeError):
                         if list.contains(seen_keys, id):
                             return Err(decode_error("duplicate key `" + k + "` in TOML"))
                         seen_keys = list.push(seen_keys, id)
+                        let full_path = if list.length(section) == 0: k else: list.join(section, ".") + "." + k
+                        if list.contains(seen_tables, full_path):
+                            return Err(decode_error("`" + full_path + "` is already defined as a table, cannot redefine as a value"))
+                        scalar_paths = list.push(scalar_paths, full_path)
                         root = insert_kv(root, section, k, value)
                 None -> return Err(decode_error("`" + t + "` is not a TOML line (expected `key = value`, a `[section]` header, or a `#` comment)"))
     Ok(root)
+
+fn ns_prefix_collision(path: List(String), scalars: List(String)) -> Option(String):
+    var prefix = ""
+    for seg in path:
+        prefix = if string.is_empty(prefix): seg else: prefix + "." + seg
+        if list.contains(scalars, prefix):
+            return Some(prefix)
+    None
 
 // Append a fresh empty table to the array-of-tables at `key` (creating the array
 // if absent) — the effect of encountering a `[[key]]` header.
