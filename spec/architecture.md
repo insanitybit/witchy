@@ -16,7 +16,7 @@ source ──lexer──> tokens ──parser──> AST ──linker──> one
                                               typeck.rs
                                                   │
                   ┌───────────────────────────────┴───────────────┐
-             codegen.rs ──> WIR ──> wasm-encoder            interpreter.rs
+             codegen/ ───> WIR ──> wasm-encoder            interpreter.rs
              (the run path: lowered to a structured         (tree-walking;
               IR then encoded to a wasm binary,              the parity ORACLE,
               run on wasmtime)                               not a user run path)

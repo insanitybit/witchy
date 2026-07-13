@@ -2,7 +2,7 @@
 
 `witchy` is a capability-secure language with twin backends: the interpreter
 (`crates/witchy-interp/src/interpreter.rs`) is the reference, the compiled-WASM
-path (`crates/witchy-lower/src/codegen.rs`) must match it. **Authoritative docs:**
+path (`crates/witchy-lower/src/codegen/`) must match it. **Authoritative docs:**
 `CONTRIBUTING.md` (build/test/parity) and `spec/architecture.md` (pipeline +
 workspace layout). Read those first; this file only adds the things that have
 actually bitten agents.

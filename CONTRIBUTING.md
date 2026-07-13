@@ -115,7 +115,7 @@ See [spec/architecture.md](spec/architecture.md) for the pipeline and the
 workspace layout (the compiler is split into stage-aligned crates under
 `crates/`). Quick orientation: the interpreter
 (`crates/witchy-interp/src/interpreter.rs`) defines semantics; codegen
-(`crates/witchy-lower/src/codegen.rs`) must match it; typeck
+(`crates/witchy-lower/src/codegen/`) must match it; typeck
 (`crates/witchy-types/src/typeck.rs`) rejects what can't be made to agree; the
 wasmtime sandbox (`crates/witchy-runtime/src/runtime.rs`) is the security
 boundary (capability-gated host imports — anything you add there is part of the
