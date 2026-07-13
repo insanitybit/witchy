@@ -113,8 +113,8 @@ else
 fi
 
 # A named shard runs exactly one section and exits (reporting elapsed time).
-# The witchy formatter over the stdlib and examples (NOT rustfmt over the Rust —
-# that's hand-formatted and out of scope). Uses the binary built in step 1.
+# The witchy formatter over std, examples, and projects (NOT rustfmt over the
+# Rust — that's hand-formatted and out of scope). Uses the binary built above.
 # ONE invocation over every file, not one process per file: `witchy fmt --check`
 # already processes all path args, names each unformatted file on stderr, and
 # exits 1 iff any fails — so the per-file loop only paid ~200 extra process
@@ -125,6 +125,9 @@ witchy_fmt_check() {
     for f in std/*.witchy examples/*/src/*.witchy; do
         [ -f "$f" ] && files+=("$f")
     done
+    while IFS= read -r f; do
+        files+=("$f")
+    done < <(find projects -type f -path '*/src/*.witchy' -print 2>/dev/null | sort)
     [ "${#files[@]}" -eq 0 ] && return 0
     "$target_dir/debug/witchy" fmt --check "${files[@]}"
 }
