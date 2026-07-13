@@ -174,6 +174,7 @@ byte-for-byte and instantiates an all-import probe against the native host.
 | `dir_read_len` | `(externref, i32) -> i32` | capability authority | Dir.Read | omitted |
 | `dir_list_size` | `(externref) -> i32` | capability authority | Dir.Read | omitted |
 | `args_size` | `() -> i32` | launch input | none | omitted |
+| `testing_mock_dir` | `(i32) -> externref` | internal/toolchain service | none | omitted |
 | `write_pending_list` | `(i32)` | pure infrastructure | none | provided |
 | `vm_par_map_run` | `(i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `vm_par_map_write` | `(i32)` | internal/toolchain service | none | omitted |

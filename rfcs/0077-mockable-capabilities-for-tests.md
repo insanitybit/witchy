@@ -7,9 +7,10 @@ tracking: >
   Accepted in slices. Sealed domain-data construction is implemented for the
   entry module under `witchy test` and remains production-strict elsewhere.
   Plain tests run with zero real host grants; unused effectful production code
-  is pruned from the synthesized test artifact. Sealed capabilities stay strict
-  until explicit mock backends land; real integration grants remain a later
-  runner feature.
+  is pruned from the synthesized test artifact. `testing.mock_dir` is
+  implemented as a read-only in-memory `Dir[Read]` backend for plain tests.
+  Other mock capability backends and real integration grants remain later
+  runner/runtime features.
 related:
   - "0002 (user-definable capabilities — sealing is a correctness contract, not the security boundary)"
   - "0005 (unforgeable capabilities — production invariant; the VM, not the seal, is the perimeter)"
@@ -26,10 +27,12 @@ related:
 > construction of foreign `sealed type` values so tests can exercise malformed
 > domain data. Production `run`/`check`/`compile`/`build`/comptime paths remain
 > strict, imported dependency modules do not inherit the privilege, and sealed
-> capabilities remain strict until mock capability backends are implemented.
-> Plain tests instantiate under zero real host capability grants; the synthesized
-> test `main` and compiled-backend reachability pruning keep unused effectful
-> production functions out of the test artifact.
+> capabilities remain strict unless an explicit mock backend exists. Plain tests
+> instantiate under zero real host capability grants; the synthesized test
+> `main` and compiled-backend reachability pruning keep unused effectful
+> production functions out of the test artifact. The first mock capability
+> backend, `testing.mock_dir`, is implemented for read-only in-memory `Dir[Read]`
+> reads/lists/subtrees/file navigation.
 
 ## Summary
 
@@ -53,18 +56,21 @@ sealing was never the thing keeping the host safe. So the design is permissive:
    test module may construct foreign `sealed type` values — for example a
    `Version` with an arbitrary shape — *because doing so is safe*: the fake is
    data, and the VM boundary still holds.
-3. **Mock capability constructors: later runtime work.** In-memory `Dir`,
-   scripted `Clock`, mock `Net`/`Env`/`Rng`, and similar capability-typed test
-   doubles need explicit backends. Until those land, sealed capabilities remain
-   strict even under `witchy test`.
+3. **Mock capability constructors: explicit runtime work.** In-memory
+   `testing.mock_dir([...])` now mints a read-only `Dir[Read]` backed by guest
+   data, with the ordinary `read`/`exists`/`is_dir`/`subtree`/`list`/`read_file`
+   surface and no real filesystem grant. Scripted `Clock`, mock `Net`/`Env`/
+   `Rng`, and similar capability-typed test doubles still need explicit
+   backends. Until a backend lands for a capability, sealed capability values
+   remain strict even under `witchy test`.
 4. **Real capabilities in tests: also allowed** (integration tier) for tests
    that want an actual effect.
 
 One invariant governs all three, and it is about the VM, not the value:
 
 > **A test can construct or inject domain data freely; it can still reach the
-> host only through capabilities the VM was actually granted.** A future mock
-> capability will grant power over its own in-memory state, never a real host
+> host only through capabilities the VM was actually granted.** A mock
+> capability grants power over its own in-memory state, never a real host
 > effect, because the host mints and mediates every real handle.
 
 ## Why this is safe (the mechanical fact, verified)
@@ -77,10 +83,10 @@ the interpreter's direct-`std::fs` path. In the VM:
   to the guest, and mediates every op on it. The guest cannot forge a handle;
   the *number* of real handles the VM holds is fixed by the grant, independent
   of anything the guest constructs.
-- A test-constructed sealed domain value is plain heap data. Future mock
-  capabilities must likewise route to explicit in-memory backends (§2), never
-  to host functions, because no host function is linked for authority the VM
-  was not granted.
+- A test-constructed sealed domain value is plain heap data. Mock capabilities
+  must likewise route to explicit in-memory backends (§2), never to real host
+  authority, because no host function is linked for authority the VM was not
+  granted.
 
 So permitting in-language construction of sealed domain data changes NOTHING
 about host safety. The test runner relaxes domain-data construction only; sealed
@@ -124,15 +130,16 @@ Two test privileges the runner eventually grants to `test_*` code that plain
   testing how your code handles a malformed `Version` is good testing, and the
   seal exists for production correctness, which the test is not. Provided as a
   test-mode privilege, not a general escape (production sealing is unchanged).
-- **Mock capability constructors** — `testing.mock_dir([...])`,
-  `mock_clock(ms)`, `mock_net(responses)`, `mock_env([...])`, `mock_rng(seq)`:
-  capability-typed values backed by in-memory state. The code under test takes
-  an ordinary `Dir[Read]` and is unaware. Host-recognized in-memory backends on
-  both backends are real runtime work, per capability, and are not part of the
-  first slice.
+- **Mock capability constructors** — `testing.mock_dir([...])` is the first
+  implemented one: a host-recognized in-memory backend on both backends that
+  supports ordinary read-only `Dir[Read]` operations without granting the test
+  VM a real filesystem root. Future `mock_clock(ms)`, `mock_net(responses)`,
+  `mock_env([...])`, `mock_rng(seq)`, and similar capability-typed values must
+  land with the same explicit backend and differential coverage.
 
 Both are gated to the test runner (§3) and both are safe by §"Why this is safe":
-a forged sealed domain value is inert data; a mock capability has no host handle.
+a forged sealed domain value is inert data; a mock capability has no real host
+handle.
 
 ### 3. Test-mode gating
 
@@ -164,9 +171,11 @@ breach the VM regardless of whose code builds them.
 
 - Non-sealed double: an ordinary value with exactly its interface's methods —
   can't exceed them (automatic).
-- Mock capability / forged sealed domain value: heap data + a type tag, no host
-  handle — the VM's real-grant set is independent of it. Even in hostile code it
-  touches only its own heap or is inert data.
+- Mock capability / forged sealed domain value: heap data + a type tag, no real
+  host handle — the VM's real-grant set is independent of it. `testing.mock_dir`
+  is mediated by a host `externref`, but that backing contains only the guest's
+  own in-memory path/content map. Even in hostile code it touches only its own
+  heap/mock state or is inert data.
 - In the completed runner split, dependency-swept tests get zero REAL grant
   regardless of flags (§4).
 
@@ -246,8 +255,9 @@ The 2026-07-09 deferral was about a pre-RFC-0005 hazard: root capabilities were
 guest `i32` table indexes, so relaxing sealed capabilities under a broadly
 granted test VM could collide with real host handles. RFC-0005's externref
 migration removes that representation hazard for root capabilities, but it does
-not by itself implement mock capability semantics. Until explicit mock backends
-exist, sealed capabilities remain production-strict even under `witchy test`.
+not by itself implement mock capability semantics. `testing.mock_dir` is the
+first explicit backend; other capability mocks remain production-strict until
+their backends exist.
 
 Resume the runtime portions only after all of these are true:
 

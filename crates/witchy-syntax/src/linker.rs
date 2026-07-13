@@ -722,6 +722,7 @@ pub fn link_with_user_modules_with_mode(
     let mut items = Vec::new();
     let mut seen_anon_types: HashMap<String, TypeDef> = HashMap::new();
     let mut seen_anon_trait_impls: HashSet<(String, Vec<String>, String, Vec<String>)> = HashSet::new();
+    let access = LinkAccess { mode, entry };
     for (mname, m) in &modules {
         for item in &m.items {
             match item {
@@ -744,6 +745,7 @@ pub fn link_with_user_modules_with_mode(
                         bare_fn_imports.get(mname),
                         &fns,
                         &bound,
+                        access,
                     )?;
                     items.push(Item::Function(f2));
                 }
@@ -782,6 +784,7 @@ pub fn link_with_user_modules_with_mode(
                                 bare_fn_imports.get(mname),
                                 &fns,
                                 &bound,
+                                access,
                             )?;
                         }
                     }
@@ -807,6 +810,7 @@ pub fn link_with_user_modules_with_mode(
                             bare_fn_imports.get(mname),
                             &fns,
                             &bound,
+                            access,
                         )?;
                     }
                     items.push(Item::Impl(im2));
@@ -1247,6 +1251,12 @@ fn collect_bound_expr(e: &Expr, out: &mut HashSet<String>) {
     }
 }
 
+#[derive(Clone, Copy)]
+struct LinkAccess<'a> {
+    mode: LinkMode,
+    entry: &'a str,
+}
+
 fn rewrite_block(
     b: &mut Block,
     m: &str,
@@ -1254,14 +1264,15 @@ fn rewrite_block(
     bare_imports: Option<&HashMap<String, String>>,
     fns: &FnTable,
     bound: &HashSet<String>,
+    access: LinkAccess<'_>,
 ) -> Result<(), LinkError> {
     for stmt in &mut b.stmts {
         match stmt {
             Stmt::Let { value, .. }
             | Stmt::Assign { value, .. }
-            | Stmt::LetPattern { value, .. } => rewrite_expr(value, m, imps, bare_imports, fns, bound)?,
+            | Stmt::LetPattern { value, .. } => rewrite_expr(value, m, imps, bare_imports, fns, bound, access)?,
             Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => {
-                rewrite_expr(e, m, imps, bare_imports, fns, bound)?
+                rewrite_expr(e, m, imps, bare_imports, fns, bound, access)?
             }
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
@@ -1276,6 +1287,7 @@ fn rewrite_expr(
     bare_imports: Option<&HashMap<String, String>>,
     fns: &FnTable,
     bound: &HashSet<String>,
+    access: LinkAccess<'_>,
 ) -> Result<(), LinkError> {
     match e {
         Expr::Call { name, args } => {
@@ -1293,24 +1305,24 @@ fn rewrite_expr(
                     let mut call_args = Vec::new();
                     std::mem::swap(args, &mut call_args);
                     for a in &mut call_args {
-                        rewrite_expr(a, m, imps, bare_imports, fns, bound)?;
+                        rewrite_expr(a, m, imps, bare_imports, fns, bound, access)?;
                     }
                     *e = Expr::MethodCall { receiver, method, args: call_args };
                     return Ok(());
                 }
             }
-            *name = resolve_call(name, m, imps, bare_imports, fns, bound)?;
+            *name = resolve_call(name, m, imps, bare_imports, fns, bound, access)?;
             for a in args {
-                rewrite_expr(a, m, imps, bare_imports, fns, bound)?;
+                rewrite_expr(a, m, imps, bare_imports, fns, bound, access)?;
             }
         }
         // (RFC-0056) A labeled direct call: qualify the callee exactly like a plain
         // call so `keyword_args::resolve` can look up its declaration, and rewrite
         // the argument values. The labels ride along untouched until then.
         Expr::LabeledCall { name, args } => {
-            *name = resolve_call(name, m, imps, bare_imports, fns, bound)?;
+            *name = resolve_call(name, m, imps, bare_imports, fns, bound, access)?;
             for (_, a) in args {
-                rewrite_expr(a, m, imps, bare_imports, fns, bound)?;
+                rewrite_expr(a, m, imps, bare_imports, fns, bound, access)?;
             }
         }
         // A bare name matching a same-module function is a first-class reference
@@ -1324,19 +1336,19 @@ fn rewrite_expr(
             }
         }
         Expr::Apply { func, args } => {
-            rewrite_expr(func, m, imps, bare_imports, fns, bound)?;
+            rewrite_expr(func, m, imps, bare_imports, fns, bound, access)?;
             for a in args {
-                rewrite_expr(a, m, imps, bare_imports, fns, bound)?;
+                rewrite_expr(a, m, imps, bare_imports, fns, bound, access)?;
             }
         }
         Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. }
         | Expr::List(args) | Expr::Tuple(args) => {
             for a in args {
-                rewrite_expr(a, m, imps, bare_imports, fns, bound)?;
+                rewrite_expr(a, m, imps, bare_imports, fns, bound, access)?;
             }
         }
         Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } => {
-            rewrite_expr(expr, m, imps, bare_imports, fns, bound)?
+            rewrite_expr(expr, m, imps, bare_imports, fns, bound, access)?
         }
         // (RFC-0050 Part 2) A bare `module.fn` in value (non-call) position is a
         // first-class function value, produced by eta-expansion: `list.length`
@@ -1366,7 +1378,7 @@ fn rewrite_expr(
                 // precise "module `X` has no function `Y`" error — "unbound
                 // variable" never names a module again.
                 let qualified =
-                    resolve_call(&format!("{modname}.{field}"), m, imps, bare_imports, fns, bound)?;
+                    resolve_call(&format!("{modname}.{field}"), m, imps, bare_imports, fns, bound, access)?;
                 let sig = fns
                     .get(&modname)
                     .and_then(|s| s.get(&field))
@@ -1401,73 +1413,73 @@ fn rewrite_expr(
                     ));
                 }
             }
-            rewrite_expr(base, m, imps, bare_imports, fns, bound)?;
+            rewrite_expr(base, m, imps, bare_imports, fns, bound, access)?;
         }
         Expr::RecordUpdate { name: _, base, fields } => {
-            rewrite_expr(base, m, imps, bare_imports, fns, bound)?;
+            rewrite_expr(base, m, imps, bare_imports, fns, bound, access)?;
             for (_, value) in fields {
-                rewrite_expr(value, m, imps, bare_imports, fns, bound)?;
+                rewrite_expr(value, m, imps, bare_imports, fns, bound, access)?;
             }
         }
         Expr::Record { fields, spread, .. } => {
             for (_, value) in fields {
-                rewrite_expr(value, m, imps, bare_imports, fns, bound)?;
+                rewrite_expr(value, m, imps, bare_imports, fns, bound, access)?;
             }
             if let Some(s) = spread {
-                rewrite_expr(s, m, imps, bare_imports, fns, bound)?;
+                rewrite_expr(s, m, imps, bare_imports, fns, bound, access)?;
             }
         }
         Expr::Binary { lhs, rhs, .. } => {
-            rewrite_expr(lhs, m, imps, bare_imports, fns, bound)?;
-            rewrite_expr(rhs, m, imps, bare_imports, fns, bound)?;
+            rewrite_expr(lhs, m, imps, bare_imports, fns, bound, access)?;
+            rewrite_expr(rhs, m, imps, bare_imports, fns, bound, access)?;
         }
         Expr::Range { lo, hi, .. } => {
-            rewrite_expr(lo, m, imps, bare_imports, fns, bound)?;
-            rewrite_expr(hi, m, imps, bare_imports, fns, bound)?;
+            rewrite_expr(lo, m, imps, bare_imports, fns, bound, access)?;
+            rewrite_expr(hi, m, imps, bare_imports, fns, bound, access)?;
         }
         Expr::Index { base, index } => {
-            rewrite_expr(base, m, imps, bare_imports, fns, bound)?;
-            rewrite_expr(index, m, imps, bare_imports, fns, bound)?;
+            rewrite_expr(base, m, imps, bare_imports, fns, bound, access)?;
+            rewrite_expr(index, m, imps, bare_imports, fns, bound, access)?;
         }
         // Lowered to a plain `Call` before this runs; recurse for safety.
         Expr::MethodCall { receiver, args, .. } => {
-            rewrite_expr(receiver, m, imps, bare_imports, fns, bound)?;
+            rewrite_expr(receiver, m, imps, bare_imports, fns, bound, access)?;
             for a in args {
-                rewrite_expr(a, m, imps, bare_imports, fns, bound)?;
+                rewrite_expr(a, m, imps, bare_imports, fns, bound, access)?;
             }
         }
         Expr::WhileLet { scrutinee, body, .. } => {
-            rewrite_expr(scrutinee, m, imps, bare_imports, fns, bound)?;
-            rewrite_block(body, m, imps, bare_imports, fns, bound)?;
+            rewrite_expr(scrutinee, m, imps, bare_imports, fns, bound, access)?;
+            rewrite_block(body, m, imps, bare_imports, fns, bound, access)?;
         }
         Expr::If {
             cond,
             then_block,
             else_block,
         } => {
-            rewrite_expr(cond, m, imps, bare_imports, fns, bound)?;
-            rewrite_block(then_block, m, imps, bare_imports, fns, bound)?;
+            rewrite_expr(cond, m, imps, bare_imports, fns, bound, access)?;
+            rewrite_block(then_block, m, imps, bare_imports, fns, bound, access)?;
             if let Some(b) = else_block {
-                rewrite_block(b, m, imps, bare_imports, fns, bound)?;
+                rewrite_block(b, m, imps, bare_imports, fns, bound, access)?;
             }
         }
-        Expr::Lambda { body, .. } => rewrite_block(body, m, imps, bare_imports, fns, bound)?,
-        Expr::Block(b) => rewrite_block(b, m, imps, bare_imports, fns, bound)?,
+        Expr::Lambda { body, .. } => rewrite_block(body, m, imps, bare_imports, fns, bound, access)?,
+        Expr::Block(b) => rewrite_block(b, m, imps, bare_imports, fns, bound, access)?,
         Expr::While { cond, body } => {
-            rewrite_expr(cond, m, imps, bare_imports, fns, bound)?;
-            rewrite_block(body, m, imps, bare_imports, fns, bound)?;
+            rewrite_expr(cond, m, imps, bare_imports, fns, bound, access)?;
+            rewrite_block(body, m, imps, bare_imports, fns, bound, access)?;
         }
         Expr::For { iter, body, .. } => {
-            rewrite_expr(iter, m, imps, bare_imports, fns, bound)?;
-            rewrite_block(body, m, imps, bare_imports, fns, bound)?;
+            rewrite_expr(iter, m, imps, bare_imports, fns, bound, access)?;
+            rewrite_block(body, m, imps, bare_imports, fns, bound, access)?;
         }
         Expr::Match { scrutinee, arms } => {
-            rewrite_expr(scrutinee, m, imps, bare_imports, fns, bound)?;
+            rewrite_expr(scrutinee, m, imps, bare_imports, fns, bound, access)?;
             for arm in arms {
                 if let Some(g) = &mut arm.guard {
-                    rewrite_expr(g, m, imps, bare_imports, fns, bound)?;
+                    rewrite_expr(g, m, imps, bare_imports, fns, bound, access)?;
                 }
-                rewrite_expr(&mut arm.body, m, imps, bare_imports, fns, bound)?;
+                rewrite_expr(&mut arm.body, m, imps, bare_imports, fns, bound, access)?;
             }
         }
         Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::TaggedLit { .. } => {}
@@ -1780,7 +1792,12 @@ fn resolve_call(
     bare_imports: Option<&HashMap<String, String>>,
     fns: &FnTable,
     bound: &HashSet<String>,
+    access: LinkAccess<'_>,
 ) -> Result<String, LinkError> {
+    let accept = |resolved: String| -> Result<String, LinkError> {
+        check_test_only_call(&resolved, m, access)?;
+        Ok(resolved)
+    };
     check_private_intrinsic_call(name, m)?;
     if let Some((modname, fname)) = name.split_once('.') {
         // The prelude modules are importable-by-default everywhere (the link
@@ -1792,11 +1809,11 @@ fn resolve_call(
             ));
         }
         return match fns.get(modname).and_then(|s| s.get(fname)) {
-            Some(_) if modname == m => Ok(name.to_string()),
+            Some(_) if modname == m => accept(name.to_string()),
             Some(_) if private_intrinsic_friend_call(modname, fname, m) => {
-                Ok(name.to_string())
+                accept(name.to_string())
             }
-            Some(sig) if sig.public => Ok(name.to_string()),
+            Some(sig) if sig.public => accept(name.to_string()),
             Some(_) => lerr(format!("function `{modname}.{fname}` is private to module `{modname}`")),
             None => lerr(format!("module `{modname}` has no function `{fname}`")),
         };
@@ -1806,14 +1823,14 @@ fn resolve_call(
     // builtin would otherwise shadow it). Checked before BUILTINS for that
     // reason.
     if fns.get(m).is_some_and(|s| s.contains_key(name)) {
-        return Ok(format!("{m}.{name}"));
+        return accept(format!("{m}.{name}"));
     }
     if BUILTINS.contains(&name) {
         return Ok(name.to_string());
     }
     if !bound.contains(name) {
         if let Some(srcmod) = bare_imports.and_then(|imports| imports.get(name)) {
-            return Ok(format!("{srcmod}.{name}"));
+            return accept(format!("{srcmod}.{name}"));
         }
         if let Some(srcmod) = imps
             .iter()
@@ -1829,6 +1846,24 @@ fn resolve_call(
     // Not a function here and not a builtin: a local binding being applied (e.g.
     // a lambda parameter). Leave it unqualified; the type checker decides.
     Ok(name.to_string())
+}
+
+fn check_test_only_call(
+    resolved: &str,
+    module_name: &str,
+    access: LinkAccess<'_>,
+) -> Result<(), LinkError> {
+    if resolved != "testing.mock_dir" {
+        return Ok(());
+    }
+    if access.mode == LinkMode::Test && module_name == access.entry {
+        return Ok(());
+    }
+    lerr(
+        "`testing.mock_dir` is available only inside the entry module run by \
+         `witchy test`; production code and dependency test modules cannot mint \
+         mock capabilities",
+    )
 }
 
 // ---------------------------------------------------------------------------

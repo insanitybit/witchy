@@ -256,6 +256,10 @@ pub struct Capabilities {
     /// Empty means "use the coarse `dir_read`/`dir_write` grant for each Dir grant",
     /// preserving older callers that grant one uniform root.
     pub dir_rights: Vec<FsRights>,
+    /// Enable authority-free in-memory test capability constructors such as
+    /// `testing.mock_dir`. This links read-only Dir/File operation imports for
+    /// mock externrefs, but it does not mint or expose any real filesystem root.
+    pub test_mocks: bool,
     /// Direct `File` grants (RFC-0012): the i-th `File` parameter of `main` maps to
     /// the i-th path here. Backed by `--file` or `[files]`.
     pub file_grants: Vec<std::path::PathBuf>,
@@ -344,15 +348,33 @@ impl FsRights {
 }
 
 #[derive(Clone, Debug)]
+enum DirBacking {
+    Fs(std::path::PathBuf),
+    Mock {
+        root: String,
+        files: Arc<std::collections::BTreeMap<String, String>>,
+    },
+}
+
+#[derive(Clone, Debug)]
 struct DirAuthority {
-    base: std::path::PathBuf,
+    backing: DirBacking,
     policy: String,
     rights: FsRights,
 }
 
 #[derive(Clone, Debug)]
+enum FileBacking {
+    Fs(std::path::PathBuf),
+    Mock {
+        path: String,
+        files: Arc<std::collections::BTreeMap<String, String>>,
+    },
+}
+
+#[derive(Clone, Debug)]
 struct FileAuthority {
-    path: std::path::PathBuf,
+    backing: FileBacking,
     rights: FsRights,
 }
 
@@ -764,7 +786,6 @@ pub(crate) fn link_capability_imports(
     // imports above, it is ALWAYS defined; codegen calls it right before the trap so
     // the compiled abort carries the interpreter's exact message.
     linker.func_wrap("witchy", "__witchy_abort", host_witchy_abort)?;
-
     // --- capability wiring: only granted host functions are defined ---
     if caps.print {
         linker.func_wrap("witchy", "print", host_print)?;
@@ -787,13 +808,23 @@ pub(crate) fn link_capability_imports(
     }
     // The Dir family is linked per RIGHT, so a module compiled against a
     // write operation cannot even instantiate under a read-only grant.
-    let has_dir = caps.dir_root.is_some() || !caps.dir_roots.is_empty();
+    let has_real_dir = caps.dir_root.is_some() || !caps.dir_roots.is_empty();
     let dir_read = caps.dir_read || caps.dir_rights.iter().any(|r| r.read);
     let dir_write = caps.dir_write || caps.dir_rights.iter().any(|r| r.write);
-    if has_dir {
+    if caps.test_mocks {
+        // RFC-0077: test-only source can mint a read-only in-memory Dir. The
+        // import grants no host authority; it wraps guest-provided strings in an
+        // opaque externref so ordinary Dir[Read] code can be tested without real
+        // filesystem grants. Source-level link mode decides where
+        // `testing.mock_dir` is allowed; this runtime flag is the second line of
+        // defense for hosts embedding precompiled artifacts.
+        linker.func_wrap("witchy", "testing_mock_dir", host_testing_mock_dir)?;
+    }
+    if has_real_dir {
         linker.func_wrap("witchy", "mint_dir", host_mint_dir)?;
     }
-    if has_dir && dir_read {
+    let has_readable_dir = (has_real_dir && dir_read) || caps.test_mocks;
+    if has_readable_dir {
         linker.func_wrap("witchy", "dir_subdir", host_dir_subdir)?;
         linker.func_wrap("witchy", "dir_only", host_dir_only)?;
         linker.func_wrap("witchy", "dir_read_len", host_dir_read_len)?;
@@ -804,7 +835,7 @@ pub(crate) fn link_capability_imports(
         // File externref.
         linker.func_wrap("witchy", "dir_open", host_dir_open)?;
     }
-    if has_dir && dir_write {
+    if has_real_dir && dir_write {
         linker.func_wrap("witchy", "dir_write", host_dir_write)?;
         linker.func_wrap("witchy", "dir_append", host_dir_append)?;
         linker.func_wrap("witchy", "dir_make_dir", host_dir_make_dir)?;
@@ -826,10 +857,10 @@ pub(crate) fn link_capability_imports(
     } else {
         caps.file_rights.iter().any(|r| r.write)
     };
-    if (has_dir && dir_read) || direct_file_read {
+    if has_readable_dir || direct_file_read {
         linker.func_wrap("witchy", "file_read_len", host_file_read_len)?;
     }
-    if (has_dir && dir_write) || direct_file_write {
+    if (has_real_dir && dir_write) || direct_file_write {
         linker.func_wrap("witchy", "file_write", host_file_write)?;
     }
     // (RFC-0005 Stage 2) The `run` wrapper mints each `--file` `main` param as an
@@ -1553,8 +1584,151 @@ fn host_mint_dir(mut caller: Caller<'_, VmState>, i: i32) -> Result<Option<Roote
     ExternRef::new(&mut caller, dir).map(Some)
 }
 
+fn host_testing_mock_dir(
+    mut caller: Caller<'_, VmState>,
+    entries_ptr: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
+    let mem = memory_of(&mut caller)?;
+    let entries = read_wstr_pair_list(mem.data(&caller), entries_ptr)?;
+    let mut files = std::collections::BTreeMap::new();
+    for (path, contents) in entries {
+        let path = mock_normalize(&path)?;
+        if path.is_empty() {
+            return Err(Error::msg("mock Dir entry path must name a file"));
+        }
+        files.insert(path, contents);
+    }
+    let dir = DirAuthority {
+        backing: DirBacking::Mock {
+            root: String::new(),
+            files: Arc::new(files),
+        },
+        policy: String::new(),
+        rights: FsRights::new(true, false),
+    };
+    ExternRef::new(&mut caller, dir).map(Some)
+}
+
 fn confine(r: std::result::Result<std::path::PathBuf, crate::confine::ConfineError>) -> Result<std::path::PathBuf> {
     r.map_err(|e| Error::msg(e.0))
+}
+
+fn mock_normalize(rel: &str) -> Result<String> {
+    let path = std::path::Path::new(rel);
+    if path.is_absolute() {
+        return Err(Error::msg(format!("mock Dir path `{rel}` must be relative")));
+    }
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(part) => {
+                let Some(part) = part.to_str() else {
+                    return Err(Error::msg(format!("mock Dir path `{rel}` is not valid UTF-8")));
+                };
+                parts.push(part.to_string());
+            }
+            std::path::Component::ParentDir => {
+                return Err(Error::msg(format!("mock Dir path `{rel}` may not contain `..`")));
+            }
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                return Err(Error::msg(format!("mock Dir path `{rel}` must be relative")));
+            }
+        }
+    }
+    Ok(parts.join("/"))
+}
+
+fn mock_join(root: &str, rel: &str) -> Result<String> {
+    let rel = mock_normalize(rel)?;
+    Ok(match (root.is_empty(), rel.is_empty()) {
+        (_, true) => root.to_string(),
+        (true, false) => rel,
+        (false, false) => format!("{root}/{rel}"),
+    })
+}
+
+fn mock_is_dir(files: &std::collections::BTreeMap<String, String>, path: &str) -> bool {
+    if path.is_empty() {
+        return true;
+    }
+    let prefix = format!("{path}/");
+    files.keys().any(|entry| entry.starts_with(&prefix))
+}
+
+fn mock_exists(files: &std::collections::BTreeMap<String, String>, path: &str) -> bool {
+    files.contains_key(path) || mock_is_dir(files, path)
+}
+
+fn mock_list(files: &std::collections::BTreeMap<String, String>, root: &str) -> Result<Vec<String>> {
+    if !mock_is_dir(files, root) {
+        return Err(Error::msg(format!("list failed for mock Dir `{root}`: not a directory")));
+    }
+    let mut names = std::collections::BTreeSet::new();
+    let prefix = if root.is_empty() {
+        String::new()
+    } else {
+        format!("{root}/")
+    };
+    for path in files.keys() {
+        let Some(rest) = path.strip_prefix(&prefix) else {
+            continue;
+        };
+        if rest.is_empty() {
+            continue;
+        }
+        let name = rest.split('/').next().unwrap_or(rest);
+        names.insert(name.to_string());
+    }
+    Ok(names.into_iter().collect())
+}
+
+fn dir_child_backing(dir: &DirAuthority, name: &str) -> Result<DirBacking> {
+    match &dir.backing {
+        DirBacking::Fs(base) => {
+            Ok(DirBacking::Fs(confine(crate::confine::resolve(base, name))?))
+        }
+        DirBacking::Mock { root, files } => {
+            Ok(DirBacking::Mock { root: mock_join(root, name)?, files: files.clone() })
+        }
+    }
+}
+
+fn dir_file_backing(dir: &DirAuthority, rel: &str, write: bool) -> Result<FileBacking> {
+    match &dir.backing {
+        DirBacking::Fs(base) => {
+            let path = if write {
+                confine(crate::confine::resolve_write(base, rel))?
+            } else {
+                confine(crate::confine::resolve(base, rel))?
+            };
+            Ok(FileBacking::Fs(path))
+        }
+        DirBacking::Mock { root, files } => {
+            Ok(FileBacking::Mock { path: mock_join(root, rel)?, files: files.clone() })
+        }
+    }
+}
+
+fn read_file_backing(file: &FileBacking) -> Result<String> {
+    match file {
+        FileBacking::Fs(path) => std::fs::read_to_string(path)
+            .map_err(|e| Error::msg(format!("read failed for `{}`: {e}", path.display()))),
+        FileBacking::Mock { path, files } => files
+            .get(path)
+            .cloned()
+            .ok_or_else(|| Error::msg(format!("read failed for mock Dir `{path}`: no such file"))),
+    }
+}
+
+fn write_file_backing(file: &FileBacking, contents: String) -> Result<()> {
+    match file {
+        FileBacking::Fs(path) => std::fs::write(path, contents)
+            .map_err(|e| Error::msg(format!("write failed for `{}`: {e}", path.display()))),
+        FileBacking::Mock { path, .. } => Err(Error::msg(format!(
+            "write failed for mock Dir `{path}`: mock directories are read-only"
+        ))),
+    }
 }
 
 /// `dir_subdir(d, name) -> Dir`: attenuate to a confined subdirectory.
@@ -1570,9 +1744,8 @@ fn host_dir_subdir(
     // Opening a sub-directory is a directory traversal (RFC-0011 `kind`): a `files()`
     // policy forbids it, an `ext`/empty policy does not.
     dir_guard(&dir, &name, true)?;
-    let sub = confine(crate::confine::resolve(&dir.base, &name))?;
     ExternRef::new(&mut caller, DirAuthority {
-        base: sub,
+        backing: dir_child_backing(&dir, &name)?,
         policy: dir.policy,
         rights: dir.rights,
     }).map(Some)
@@ -1591,7 +1764,7 @@ fn host_dir_only(
     dir_require_read(&dir)?;
     let narrowed = witchy_caps::capabilities::dir_only(&dir.policy, &refine);
     ExternRef::new(&mut caller, DirAuthority {
-        base: dir.base,
+        backing: dir.backing,
         policy: narrowed,
         rights: dir.rights,
     }).map(Some)
@@ -1646,8 +1819,10 @@ fn host_dir_open(
     let dir = dir_authority_ref(&caller, d)?;
     dir_require_read(&dir)?;
     dir_guard(&dir, &rel, false)?;
-    let path = confine(crate::confine::resolve(&dir.base, &rel))?;
-    ExternRef::new(&mut caller, FileAuthority { path, rights: FsRights::new(true, false) }).map(Some)
+    ExternRef::new(&mut caller, FileAuthority {
+        backing: dir_file_backing(&dir, &rel, false)?,
+        rights: FsRights::new(true, false),
+    }).map(Some)
 }
 
 /// `dir_create(h, rel) -> File`: like `dir_open` but for a not-yet-existing target
@@ -1662,8 +1837,10 @@ fn host_dir_create(
     let dir = dir_authority_ref(&caller, d)?;
     dir_require_write(&dir)?;
     dir_guard(&dir, &rel, false)?;
-    let path = confine(crate::confine::resolve_write(&dir.base, &rel))?;
-    ExternRef::new(&mut caller, FileAuthority { path, rights: FsRights::new(false, true) }).map(Some)
+    ExternRef::new(&mut caller, FileAuthority {
+        backing: dir_file_backing(&dir, &rel, true)?,
+        rights: FsRights::new(false, true),
+    }).map(Some)
 }
 
 /// `file_read_len(f) -> byte length`: read the confined File externref NOW, stage its
@@ -1674,8 +1851,7 @@ fn host_file_read_len(mut caller: Caller<'_, VmState>, f: Option<Rooted<ExternRe
     if !file.rights.read {
         return Err(Error::msg("this File capability does not grant Read"));
     }
-    let contents = std::fs::read_to_string(&file.path)
-        .map_err(|e| Error::msg(format!("read failed for `{}`: {e}", file.path.display())))?;
+    let contents = read_file_backing(&file.backing)?;
     let len = contents.len() as i32;
     caller.data_mut().pending = Some(contents.into_bytes());
     Ok(len)
@@ -1694,8 +1870,7 @@ fn host_file_write(
     if !file.rights.write {
         return Err(Error::msg("this File capability does not grant Write"));
     }
-    std::fs::write(&file.path, contents)
-        .map_err(|e| Error::msg(format!("write failed for `{}`: {e}", file.path.display())))
+    write_file_backing(&file.backing, contents)
 }
 
 /// `dir_read_len(h, rel) -> byte length`: read the confined file NOW, stage its
@@ -1711,9 +1886,8 @@ fn host_dir_read_len(
     let dir = dir_authority_ref(&caller, d)?;
     dir_require_read(&dir)?;
     dir_guard(&dir, &rel, false)?;
-    let path = confine(crate::confine::resolve(&dir.base, &rel))?;
-    let contents = std::fs::read_to_string(&path)
-        .map_err(|e| Error::msg(format!("read failed for `{}`: {e}", path.display())))?;
+    let file = dir_file_backing(&dir, &rel, false)?;
+    let contents = read_file_backing(&file)?;
     let len = contents.len() as i32;
     caller.data_mut().pending = Some(contents.into_bytes());
     Ok(len)
@@ -1748,7 +1922,10 @@ fn host_exec_run(
     // every other Dir op: a `Dir[...].only(...)` may only run a file it admits — "you
     // can only run a file you can read" was false while this was skipped.
     dir_guard(&dir, &path, false)?;
-    let prog = confine(crate::confine::resolve(&dir.base, &path))?;
+    let DirBacking::Fs(base) = &dir.backing else {
+        return Err(Error::msg("exec cannot run programs from an in-memory mock Dir"));
+    };
+    let prog = confine(crate::confine::resolve(base, &path))?;
     let argv: Vec<&str> = if joined.is_empty() { Vec::new() } else { joined.split('\0').collect() };
     use std::io::Write as _;
     use std::process::{Command, Stdio};
@@ -1797,9 +1974,14 @@ fn host_dir_exists(
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
     let dir = dir_authority_ref(&caller, d)?;
     dir_require_read(&dir)?;
-    let ok = crate::confine::resolve(&dir.base, &rel)
-        .map(|p| p.exists())
-        .unwrap_or(false);
+    let ok = match &dir.backing {
+        DirBacking::Fs(base) => crate::confine::resolve(base, &rel)
+            .map(|p| p.exists())
+            .unwrap_or(false),
+        DirBacking::Mock { root, files } => {
+            mock_join(root, &rel).map(|path| mock_exists(files, &path)).unwrap_or(false)
+        }
+    };
     Ok(ok as i32)
 }
 
@@ -1813,9 +1995,14 @@ fn host_dir_is_dir(
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
     let dir = dir_authority_ref(&caller, d)?;
     dir_require_read(&dir)?;
-    let ok = crate::confine::resolve(&dir.base, &rel)
-        .map(|p| p.is_dir())
-        .unwrap_or(false);
+    let ok = match &dir.backing {
+        DirBacking::Fs(base) => crate::confine::resolve(base, &rel)
+            .map(|p| p.is_dir())
+            .unwrap_or(false),
+        DirBacking::Mock { root, files } => {
+            mock_join(root, &rel).map(|path| mock_is_dir(files, &path)).unwrap_or(false)
+        }
+    };
     Ok(ok as i32)
 }
 
@@ -1825,20 +2012,26 @@ fn host_dir_is_dir(
 fn host_dir_list_size(mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>) -> Result<i32> {
     let dir = dir_authority_ref(&caller, d)?;
     dir_require_read(&dir)?;
-    let mut names: Vec<String> = std::fs::read_dir(&dir.base)
-        .map_err(|e| Error::msg(format!("list failed for `{}`: {e}", dir.base.display())))?
-        .map(|entry| {
-            let entry =
-                entry.map_err(|e| Error::msg(format!("list failed for `{}`: {e}", dir.base.display())))?;
-            entry.file_name().into_string().map_err(|_| {
-                Error::msg(format!(
-                    "list failed for `{}`: directory entry name is not valid UTF-8",
-                    dir.base.display()
-                ))
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    names.sort();
+    let names: Vec<String> = match &dir.backing {
+        DirBacking::Fs(base) => {
+            let mut names: Vec<String> = std::fs::read_dir(base)
+                .map_err(|e| Error::msg(format!("list failed for `{}`: {e}", base.display())))?
+                .map(|entry| {
+                    let entry =
+                        entry.map_err(|e| Error::msg(format!("list failed for `{}`: {e}", base.display())))?;
+                    entry.file_name().into_string().map_err(|_| {
+                        Error::msg(format!(
+                            "list failed for `{}`: directory entry name is not valid UTF-8",
+                            base.display()
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            names.sort();
+            names
+        }
+        DirBacking::Mock { root, files } => mock_list(files, root)?,
+    };
     let size = 4 + 8 * names.len() + names.iter().map(|n| 4 + n.len()).sum::<usize>();
     caller.data_mut().pending_list = Some(names);
     Ok(size as i32)
@@ -1996,7 +2189,7 @@ fn vmstate_from_caps(
         .chain(caps.dir_roots.iter().cloned())
         .enumerate()
         .map(|(i, p)| DirAuthority {
-            base: p,
+            backing: DirBacking::Fs(p),
             policy: String::new(),
             rights: caps.dir_rights.get(i).copied().unwrap_or(default_dir_rights),
         })
@@ -2007,7 +2200,7 @@ fn vmstate_from_caps(
         .cloned()
         .enumerate()
         .map(|(i, path)| FileAuthority {
-            path,
+            backing: FileBacking::Fs(path),
             rights: caps.file_rights.get(i).copied().unwrap_or_else(FsRights::full),
         })
         .collect();
@@ -2138,7 +2331,9 @@ fn run_with_dir_worker(
     input: &[u8],
 ) -> Result<Vec<u8>> {
     let caps = Capabilities {
-        dir_root: Some(dir.base),
+        // The real authority is installed into `store.data_mut().dirs[0]` below.
+        // This synthetic root only makes the worker linker expose the Dir imports.
+        dir_root: Some(std::path::PathBuf::from(".")),
         dir_read: dir.rights.read,
         dir_write: dir.rights.write,
         dir_rights: vec![dir.rights],
@@ -2146,9 +2341,10 @@ fn run_with_dir_worker(
     };
     let (mut store, instance) =
         spawn_worker(engine, module, preempt, &caps, true, None, StoreLimitsBuilder::new().build())?;
-    // Attach the granted Dir's entry policy (RFC-0011) to the worker's sole root grant.
+    // Attach the exact granted Dir (including entry policy and backing) to the
+    // worker's sole root grant.
     if let Some(d) = store.data_mut().dirs.get_mut(0) {
-        d.policy = dir.policy;
+        *d = dir;
     }
     let galloc = instance.get_typed_func::<i32, i32>(&mut store, "__galloc")?;
     let call2 = instance.get_typed_func::<(i32, i64, i64), i64>(&mut store, "__call2")?;
@@ -2348,9 +2544,8 @@ fn host_dir_write(
     let dir = dir_authority_ref(&caller, d)?;
     dir_require_write(&dir)?;
     dir_guard(&dir, &rel, false)?;
-    let path = confine(crate::confine::resolve_write(&dir.base, &rel))?;
-    std::fs::write(&path, contents)
-        .map_err(|e| Error::msg(format!("write failed for `{}`: {e}", path.display())))
+    let file = dir_file_backing(&dir, &rel, true)?;
+    write_file_backing(&file, contents)
 }
 
 /// `dir_append(h, rel, contents)`: append to a confined file, creating it if
@@ -2368,14 +2563,20 @@ fn host_dir_append(
     let dir = dir_authority_ref(&caller, d)?;
     dir_require_write(&dir)?;
     dir_guard(&dir, &rel, false)?;
-    let path = confine(crate::confine::resolve_write(&dir.base, &rel))?;
-    use std::io::Write as _;
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .and_then(|mut f| f.write_all(contents.as_bytes()))
-        .map_err(|e| Error::msg(format!("append failed for `{}`: {e}", path.display())))
+    match dir_file_backing(&dir, &rel, true)? {
+        FileBacking::Fs(path) => {
+            use std::io::Write as _;
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .and_then(|mut f| f.write_all(contents.as_bytes()))
+                .map_err(|e| Error::msg(format!("append failed for `{}`: {e}", path.display())))
+        }
+        FileBacking::Mock { path, .. } => Err(Error::msg(format!(
+            "append failed for mock Dir `{path}`: mock directories are read-only"
+        ))),
+    }
 }
 
 /// `dir_make_dir(h, name)`: create a confined subdirectory (idempotent). Creating a
@@ -2390,9 +2591,19 @@ fn host_dir_make_dir(
     let dir = dir_authority_ref(&caller, d)?;
     dir_require_write(&dir)?;
     dir_guard(&dir, &name, true)?;
-    let path = confine(crate::confine::resolve_write(&dir.base, &name))?;
-    std::fs::create_dir_all(&path)
-        .map_err(|e| Error::msg(format!("make_dir failed for `{}`: {e}", path.display())))
+    match &dir.backing {
+        DirBacking::Fs(base) => {
+            let path = confine(crate::confine::resolve_write(base, &name))?;
+            std::fs::create_dir_all(&path)
+                .map_err(|e| Error::msg(format!("make_dir failed for `{}`: {e}", path.display())))
+        }
+        DirBacking::Mock { root, .. } => {
+            let path = mock_join(root, &name)?;
+            Err(Error::msg(format!(
+                "make_dir failed for mock Dir `{path}`: mock directories are read-only"
+            )))
+        }
+    }
 }
 
 // --- build-time host ops ---
@@ -3230,6 +3441,44 @@ fn read_wstr_list(data: &[u8], ptr: i32) -> Result<Vec<String>> {
             slot[0], slot[1], slot[2], slot[3], slot[4], slot[5], slot[6], slot[7],
         ]);
         out.push(read_wstr(data, elem as i32)?);
+    }
+    Ok(out)
+}
+
+/// Read a guest `List((String, String))`. Tuple values are laid out as
+/// `[tag/len: i32][field0: i64][field1: i64]`; each field is a string pointer.
+fn read_wstr_pair_list(data: &[u8], ptr: i32) -> Result<Vec<(String, String)>> {
+    let len_bytes = slice(data, ptr, 4)?;
+    let len = i32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]]);
+    let mut out = Vec::with_capacity((len.max(0) as usize).min(data.len() / 8));
+    for i in 0..len {
+        let slot = slice(data, ptr + 4 + 8 * i, 8)?;
+        let pair_ptr = i64::from_le_bytes([
+            slot[0], slot[1], slot[2], slot[3], slot[4], slot[5], slot[6], slot[7],
+        ]) as i32;
+        let first_slot = slice(data, pair_ptr + 4, 8)?;
+        let second_slot = slice(data, pair_ptr + 12, 8)?;
+        let first = i64::from_le_bytes([
+            first_slot[0],
+            first_slot[1],
+            first_slot[2],
+            first_slot[3],
+            first_slot[4],
+            first_slot[5],
+            first_slot[6],
+            first_slot[7],
+        ]) as i32;
+        let second = i64::from_le_bytes([
+            second_slot[0],
+            second_slot[1],
+            second_slot[2],
+            second_slot[3],
+            second_slot[4],
+            second_slot[5],
+            second_slot[6],
+            second_slot[7],
+        ]) as i32;
+        out.push((read_wstr(data, first)?, read_wstr(data, second)?));
     }
     Ok(out)
 }

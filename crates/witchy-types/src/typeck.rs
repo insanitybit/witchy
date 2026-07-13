@@ -3302,6 +3302,10 @@ impl Checker {
             intrinsics::BYTES_FROM_STRING => Some((vec![Ty::String], Ty::Bytes)),
             intrinsics::BYTES_FROM_LIST => Some((vec![Ty::List(Box::new(Ty::Int))], Ty::Bytes)),
             intrinsics::BYTES_TO_STRING => Some((vec![Ty::Bytes], Ty::String)),
+            intrinsics::TESTING_MOCK_DIR => Some((
+                vec![Ty::List(Box::new(Ty::Tuple(vec![Ty::String, Ty::String])))],
+                Ty::Dir(DirRights { read: true, write: false }),
+            )),
             // (RFC-0055) The channel-endpoint erasure bridge. `__erase` casts any
             // typed message to the executor's opaque `__Msg`; `__unerase` recovers
             // it at the endpoint's type. Representationally the identity on both

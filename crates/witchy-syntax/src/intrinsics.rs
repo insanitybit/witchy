@@ -25,6 +25,8 @@ pub const CHANNEL_SEND: &str = "__channel_send";
 pub const CHANNEL_RECV: &str = "__channel_recv";
 pub const CHANNEL_SELECT: &str = "__channel_select";
 
+pub const TESTING_MOCK_DIR: &str = "__mock_dir";
+
 pub const COMPILER_DOC_RESULT_JSON: &str = "compiler.__doc_result_json";
 
 pub const ERASURE_BRIDGES: &[&str] = &[ERASE, UNERASE];
@@ -47,6 +49,7 @@ pub const CHANNEL_BRIDGES: &[&str] = &[
 
 const MESSAGE_BRIDGE_CALLERS: &[&str] = &["chan", "task"];
 const BYTES_BRIDGE_CALLERS: &[&str] = &["bytes"];
+const TESTING_BRIDGE_CALLERS: &[&str] = &["testing"];
 
 pub fn is_render(name: &str) -> bool {
     name == GENERATED_RENDER
@@ -69,6 +72,8 @@ pub fn private_intrinsic_callers(bare_name: &str) -> Option<&'static [&'static s
         Some(MESSAGE_BRIDGE_CALLERS)
     } else if is_bytes_bridge(bare_name) {
         Some(BYTES_BRIDGE_CALLERS)
+    } else if bare_name == TESTING_MOCK_DIR {
+        Some(TESTING_BRIDGE_CALLERS)
     } else {
         None
     }
@@ -86,6 +91,10 @@ mod tests {
         for name in BYTES_BRIDGES {
             assert_eq!(private_intrinsic_callers(name), Some(BYTES_BRIDGE_CALLERS));
         }
+        assert_eq!(
+            private_intrinsic_callers(TESTING_MOCK_DIR),
+            Some(TESTING_BRIDGE_CALLERS)
+        );
     }
 
     #[test]

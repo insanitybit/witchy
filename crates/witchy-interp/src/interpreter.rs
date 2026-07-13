@@ -35,6 +35,24 @@ use witchy_syntax::intrinsics;
 use witchy_syntax::parser::parse_module;
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum DirValue {
+    Fs(PathBuf),
+    Mock {
+        root: String,
+        files: Rc<BTreeMap<String, String>>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FileValue {
+    Fs(PathBuf),
+    Mock {
+        path: String,
+        files: Rc<BTreeMap<String, String>>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Int(i64),
     Float(f64),
@@ -51,12 +69,12 @@ pub enum Value {
     // A confined directory: its root path + an entry policy (RFC-0011; `""` =
     // unrestricted). `dir.only(confine.ext(...))` narrows the policy; reads/writes
     // through the Dir are admitted only when the policy admits the entry name.
-    Dir(PathBuf, String),
+    Dir(DirValue, String),
     /// A file capability (RFC-0012): authority to one file (the leaf of the
     /// Dir/File hierarchy). Carries the confined host path; obtained by navigating
     /// a `Dir` (`dir.open`/`dir.create`) or as a `main` grant. Rights are checked
     /// at compile time, so the value carries only the path.
-    File(PathBuf),
+    File(FileValue),
     /// A network capability: an allow-list of permitted `host:port` destinations
     /// (wasi:sockets / cap-std-net style). Attenuable via `restrict`.
     Net(Vec<String>),
@@ -246,6 +264,128 @@ fn err<T, E: From<RuntimeError>>(message: impl Into<String>) -> Result<T, E> {
     Err(E::from(RuntimeError {
         message: message.into(),
     }))
+}
+
+fn mock_normalize(rel: &str) -> Result<String, RuntimeError> {
+    let path = Path::new(rel);
+    if path.is_absolute() {
+        return err(format!("mock Dir path `{rel}` must be relative"));
+    }
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(part) => {
+                let Some(part) = part.to_str() else {
+                    return err(format!("mock Dir path `{rel}` is not valid UTF-8"));
+                };
+                parts.push(part.to_string());
+            }
+            std::path::Component::ParentDir => {
+                return err(format!("mock Dir path `{rel}` may not contain `..`"));
+            }
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                return err(format!("mock Dir path `{rel}` must be relative"));
+            }
+        }
+    }
+    Ok(parts.join("/"))
+}
+
+fn mock_join(root: &str, rel: &str) -> Result<String, RuntimeError> {
+    let rel = mock_normalize(rel)?;
+    Ok(match (root.is_empty(), rel.is_empty()) {
+        (_, true) => root.to_string(),
+        (true, false) => rel,
+        (false, false) => format!("{root}/{rel}"),
+    })
+}
+
+fn mock_is_dir(files: &BTreeMap<String, String>, path: &str) -> bool {
+    if path.is_empty() {
+        return true;
+    }
+    let prefix = format!("{path}/");
+    files.keys().any(|entry| entry.starts_with(&prefix))
+}
+
+fn mock_exists(files: &BTreeMap<String, String>, path: &str) -> bool {
+    files.contains_key(path) || mock_is_dir(files, path)
+}
+
+fn mock_list(files: &BTreeMap<String, String>, root: &str) -> Result<Vec<String>, RuntimeError> {
+    if !mock_is_dir(files, root) {
+        return err(format!("list failed for mock Dir `{root}`: not a directory"));
+    }
+    let mut names = std::collections::BTreeSet::new();
+    let prefix = if root.is_empty() {
+        String::new()
+    } else {
+        format!("{root}/")
+    };
+    for path in files.keys() {
+        let Some(rest) = path.strip_prefix(&prefix) else {
+            continue;
+        };
+        if rest.is_empty() {
+            continue;
+        }
+        let name = rest.split('/').next().unwrap_or(rest);
+        names.insert(name.to_string());
+    }
+    Ok(names.into_iter().collect())
+}
+
+fn dir_child_value(dir: &DirValue, name: &str) -> Result<DirValue, RuntimeError> {
+    match dir {
+        DirValue::Fs(base) => Ok(DirValue::Fs(resolve(base, name)?)),
+        DirValue::Mock { root, files } => {
+            Ok(DirValue::Mock { root: mock_join(root, name)?, files: files.clone() })
+        }
+    }
+}
+
+fn dir_file_value(dir: &DirValue, rel: &str, write: bool) -> Result<FileValue, RuntimeError> {
+    match dir {
+        DirValue::Fs(base) => {
+            let path = if write {
+                resolve_write(base, rel)?
+            } else {
+                resolve(base, rel)?
+            };
+            Ok(FileValue::Fs(path))
+        }
+        DirValue::Mock { root, files } => {
+            Ok(FileValue::Mock { path: mock_join(root, rel)?, files: files.clone() })
+        }
+    }
+}
+
+fn read_file_value(file: &FileValue) -> Result<String, RuntimeError> {
+    match file {
+        FileValue::Fs(path) => match std::fs::read_to_string(path) {
+            Ok(contents) => Ok(contents),
+            Err(e) => err(format!("read failed for `{}`: {e}", path.display())),
+        },
+        FileValue::Mock { path, files } => files
+            .get(path)
+            .cloned()
+            .ok_or_else(|| RuntimeError {
+                message: format!("read failed for mock Dir `{path}`: no such file"),
+            }),
+    }
+}
+
+fn write_file_value(file: &FileValue, contents: &str) -> Result<(), RuntimeError> {
+    match file {
+        FileValue::Fs(path) => match std::fs::write(path, contents) {
+            Ok(()) => Ok(()),
+            Err(e) => err(format!("write failed for `{}`: {e}", path.display())),
+        },
+        FileValue::Mock { path, .. } => err(format!(
+            "write failed for mock Dir `{path}`: mock directories are read-only"
+        )),
+    }
 }
 
 /// Narrow a `Net`'s allowlist to a `NetPolicy`'s pattern set (`\n`-joined for a union from
@@ -781,7 +921,7 @@ impl Interpreter {
             Some(Type::Named(n, _)) if n == "Clock" => Ok(Value::Cap(Capability::Clock)),
             Some(Type::Named(n, _)) if n == "Rand" => Ok(Value::Cap(Capability::Rand)),
             Some(Type::Named(n, _)) if n == "Env" => Ok(Value::Cap(Capability::Env)),
-            Some(Type::Named(n, _)) if n == "Dir" => Ok(Value::Dir(self.root.clone(), String::new())),
+            Some(Type::Named(n, _)) if n == "Dir" => Ok(Value::Dir(DirValue::Fs(self.root.clone()), String::new())),
             Some(Type::Named(n, _)) if n == "Net" => Ok(Value::Net(self.net_allow.clone())),
             Some(Type::Named(n, _)) if n == "Exec" => Ok(Value::Cap(Capability::Exec)),
             Some(Type::Named(n, _)) if n == "Secret" => match self.signing_key {
@@ -1615,6 +1755,32 @@ impl Interpreter {
                 [Value::Dict(entries)] => Ok(Some(Value::Int(entries.len() as i64))),
                 _ => err("size expects a Dict"),
             },
+            intrinsics::TESTING_MOCK_DIR => match args {
+                [Value::List(entries)] => {
+                    let mut files = BTreeMap::new();
+                    for entry in entries {
+                        let Value::Tuple(fields) = entry else {
+                            return err("mock_dir entries must be `(String, String)` pairs");
+                        };
+                        let [Value::Str(path), Value::Str(contents)] = fields.as_slice() else {
+                            return err("mock_dir entries must be `(String, String)` pairs");
+                        };
+                        let path = mock_normalize(path)?;
+                        if path.is_empty() {
+                            return err("mock Dir entry path must name a file");
+                        }
+                        files.insert(path, contents.clone());
+                    }
+                    Ok(Some(Value::Dir(
+                        DirValue::Mock {
+                            root: String::new(),
+                            files: Rc::new(files),
+                        },
+                        String::new(),
+                    )))
+                }
+                _ => err("mock_dir expects a list of `(path, contents)` pairs"),
+            },
             // Filesystem capability (cap-std style): attenuate to a subdirectory.
             "subtree" => match args {
                 // A subtree inherits the parent's entry policy (refinement is monotone).
@@ -1624,7 +1790,7 @@ impl Interpreter {
                     if !witchy_caps::capabilities::dir_admits(pol, name, true) {
                         return err(format!("`{name}` is not permitted by this Dir capability's entry policy"));
                     }
-                    Ok(Some(Value::Dir(resolve(base, name)?, pol.clone())))
+                    Ok(Some(Value::Dir(dir_child_value(base, name)?, pol.clone())))
                 }
                 _ => err("subtree expects a Dir and a name"),
             },
@@ -1635,7 +1801,7 @@ impl Interpreter {
                     if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
                     }
-                    Ok(Some(Value::File(resolve(base, rel)?)))
+                    Ok(Some(Value::File(dir_file_value(base, rel, false)?)))
                 }
                 _ => err("read_file expects a Dir and a relative path"),
             },
@@ -1644,7 +1810,7 @@ impl Interpreter {
                     if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
                     }
-                    Ok(Some(Value::File(resolve_write(base, rel)?)))
+                    Ok(Some(Value::File(dir_file_value(base, rel, true)?)))
                 }
                 _ => err("write_file expects a Dir and a relative path"),
             },
@@ -1662,6 +1828,9 @@ impl Interpreter {
                     if !witchy_caps::capabilities::dir_admits(pol, path, false) {
                         return err(format!("`{path}` is not permitted by this Dir capability's entry policy"));
                     }
+                    let DirValue::Fs(base) = base else {
+                        return err("exec cannot run programs from an in-memory mock Dir");
+                    };
                     let prog = resolve(base, path)?;
                     let argv: Vec<&str> =
                         if joined.is_empty() { Vec::new() } else { joined.split('\0').collect() };
@@ -1699,17 +1868,10 @@ impl Interpreter {
                     if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
                     }
-                    let path = resolve(base, rel)?;
-                    match std::fs::read_to_string(&path) {
-                        Ok(contents) => Ok(Some(Value::Str(contents))),
-                        Err(e) => err(format!("read failed for `{}`: {e}", path.display())),
-                    }
+                    Ok(Some(Value::Str(read_file_value(&dir_file_value(base, rel, false)?)?)))
                 }
                 // A `File` is already a confined path; read it directly (RFC-0012).
-                [Value::File(path)] => match std::fs::read_to_string(path) {
-                    Ok(contents) => Ok(Some(Value::Str(contents))),
-                    Err(e) => err(format!("read failed for `{}`: {e}", path.display())),
-                },
+                [Value::File(file)] => Ok(Some(Value::Str(read_file_value(file)?))),
                 _ => err("read expects a Dir and a relative path, or a File"),
             },
             // Write a file relative to a Dir capability, confined to its subtree
@@ -1720,17 +1882,14 @@ impl Interpreter {
                     if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
                     }
-                    let path = resolve_write(base, rel)?;
-                    match std::fs::write(&path, contents) {
-                        Ok(()) => Ok(Some(Value::Nil)),
-                        Err(e) => err(format!("write failed for `{}`: {e}", path.display())),
-                    }
+                    write_file_value(&dir_file_value(base, rel, true)?, contents)?;
+                    Ok(Some(Value::Nil))
                 }
                 // A `File` is already a confined path; write it directly (RFC-0012).
-                [Value::File(path), Value::Str(contents)] => match std::fs::write(path, contents) {
-                    Ok(()) => Ok(Some(Value::Nil)),
-                    Err(e) => err(format!("write failed for `{}`: {e}", path.display())),
-                },
+                [Value::File(file), Value::Str(contents)] => {
+                    write_file_value(file, contents)?;
+                    Ok(Some(Value::Nil))
+                }
                 _ => err("write expects a Dir + path + contents, or a File + contents"),
             },
             // Append to a file (creating it if absent) — `write`'s confinement
@@ -1740,16 +1899,22 @@ impl Interpreter {
                     if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
                     }
-                    let path = resolve_write(base, rel)?;
-                    use std::io::Write as _;
-                    let res = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&path)
-                        .and_then(|mut f| f.write_all(contents.as_bytes()));
-                    match res {
-                        Ok(()) => Ok(Some(Value::Nil)),
-                        Err(e) => err(format!("append failed for `{}`: {e}", path.display())),
+                    match dir_file_value(base, rel, true)? {
+                        FileValue::Fs(path) => {
+                            use std::io::Write as _;
+                            let res = std::fs::OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open(&path)
+                                .and_then(|mut f| f.write_all(contents.as_bytes()));
+                            match res {
+                                Ok(()) => Ok(Some(Value::Nil)),
+                                Err(e) => err(format!("append failed for `{}`: {e}", path.display())),
+                            }
+                        }
+                        FileValue::Mock { path, .. } => err(format!(
+                            "append failed for mock Dir `{path}`: mock directories are read-only"
+                        )),
                     }
                 }
                 _ => err("append expects a Dir, a relative path, and contents"),
@@ -1759,7 +1924,12 @@ impl Interpreter {
             // simply reads as `false`. Lets `read` callers avoid a crash.
             "exists" => match args {
                 [Value::Dir(base, _), Value::Str(rel)] => {
-                    let ok = resolve(base, rel).map(|p| p.exists()).unwrap_or(false);
+                    let ok = match base {
+                        DirValue::Fs(base) => resolve(base, rel).map(|p| p.exists()).unwrap_or(false),
+                        DirValue::Mock { root, files } => {
+                            mock_join(root, rel).map(|path| mock_exists(files, &path)).unwrap_or(false)
+                        }
+                    };
                     Ok(Some(Value::Bool(ok)))
                 }
                 _ => err("exists expects a Dir and a relative path"),
@@ -1769,7 +1939,12 @@ impl Interpreter {
             // a caller can walk `src/**` without tripping over a file.
             "is_dir" => match args {
                 [Value::Dir(base, _), Value::Str(rel)] => {
-                    let ok = resolve(base, rel).map(|p| p.is_dir()).unwrap_or(false);
+                    let ok = match base {
+                        DirValue::Fs(base) => resolve(base, rel).map(|p| p.is_dir()).unwrap_or(false),
+                        DirValue::Mock { root, files } => {
+                            mock_join(root, rel).map(|path| mock_is_dir(files, &path)).unwrap_or(false)
+                        }
+                    };
                     Ok(Some(Value::Bool(ok)))
                 }
                 _ => err("is_dir expects a Dir and a relative path"),
@@ -1778,9 +1953,12 @@ impl Interpreter {
             // sorted names (deterministic — `read_dir` order is OS-dependent).
             "list" => match args {
                 [Value::Dir(base, _)] => {
-                    let mut names: Vec<String> = match std::fs::read_dir(base) {
-                        Ok(entries) => {
+                    let names: Vec<String> = match base {
+                        DirValue::Fs(base) => {
                             let mut names = Vec::new();
+                            let entries = std::fs::read_dir(base).map_err(|e| RuntimeError {
+                                message: format!("list failed for `{}`: {e}", base.display()),
+                            })?;
                             for entry in entries {
                                 let entry = match entry {
                                     Ok(entry) => entry,
@@ -1799,11 +1977,11 @@ impl Interpreter {
                                 };
                                 names.push(name);
                             }
+                            names.sort();
                             names
                         }
-                        Err(e) => return err(format!("list failed for `{}`: {e}", base.display())),
+                        DirValue::Mock { root, files } => mock_list(files, root)?,
                     };
-                    names.sort();
                     Ok(Some(Value::List(names.into_iter().map(Value::Str).collect())))
                 }
                 _ => err("list expects a Dir"),
@@ -1816,10 +1994,18 @@ impl Interpreter {
                     if !witchy_caps::capabilities::dir_admits(pol, name, true) {
                         return err(format!("`{name}` is not permitted by this Dir capability's entry policy"));
                     }
-                    let path = resolve_write(base, name)?;
-                    match std::fs::create_dir_all(&path) {
-                        Ok(()) => Ok(Some(Value::Nil)),
-                        Err(e) => err(format!("make_dir failed for `{}`: {e}", path.display())),
+                    match base {
+                        DirValue::Fs(base) => {
+                            let path = resolve_write(base, name)?;
+                            match std::fs::create_dir_all(&path) {
+                                Ok(()) => Ok(Some(Value::Nil)),
+                                Err(e) => err(format!("make_dir failed for `{}`: {e}", path.display())),
+                            }
+                        }
+                        DirValue::Mock { root, .. } => {
+                            let path = mock_join(root, name)?;
+                            err(format!("make_dir failed for mock Dir `{path}`: mock directories are read-only"))
+                        }
                     }
                 }
                 _ => err("make_dir expects a Dir and a name"),
@@ -3406,14 +3592,14 @@ fn run_module_inner_limited(
                         interp.dir_roots.get(dir_idx - 1).cloned().unwrap_or_else(|| interp.root.clone())
                     };
                     dir_idx += 1;
-                    vals.push(Value::Dir(r, String::new()));
+                    vals.push(Value::Dir(DirValue::Fs(r), String::new()));
                 } else if matches!(&p.ty, Some(Type::Named(n, _)) if n == "File") {
                     // The i-th `File` param maps to the i-th `--file` grant (RFC-0012).
                     let path = interp.file_grants.get(file_idx).cloned().ok_or_else(|| RuntimeError {
                         message: "`main` requires a `File`, but the host granted none (provide `--file <path>`)".into(),
                     })?;
                     file_idx += 1;
-                    vals.push(Value::File(path));
+                    vals.push(Value::File(FileValue::Fs(path)));
                 } else if let Some(Type::Named(tn, _)) = &p.ty {
                     // RFC-0038: a record-typed `main` param is a bare grantable cap
                     // (typeck guarantees it); mint the sealed record from the grant.

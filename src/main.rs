@@ -1901,6 +1901,63 @@ mod test_mode_link_tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn testing_mock_dir_is_test_mode_only() {
+        let dir = unique_dir("mock_dir_test_only");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let suite = dir.join("suite.witchy");
+        std::fs::write(
+            &suite,
+            "import testing\n\n\
+             fn main():\n    \
+             let root = testing.mock_dir([(\"config.txt\", \"ok\")])\n    \
+             testing.assert_eq(root.read(\"config.txt\"), \"ok\")\n",
+        )
+        .unwrap();
+
+        let err = link_file(suite.to_str().unwrap()).expect_err("production link must reject");
+        assert!(err.contains("testing.mock_dir") && err.contains("witchy test"), "{err}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn witchy_test_mock_dir_reads_in_memory_tree_under_zero_grant() {
+        let dir = unique_dir("mock_dir_zero_grant");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let suite = dir.join("suite.witchy");
+        std::fs::write(
+            &suite,
+            "import testing\n\n\
+             fn read_config(root: Dir[Read]) -> String:\n    \
+             root.read(\"app/config.txt\")\n\n\
+             fn test_mock_dir_read_surface():\n    \
+             let root = testing.mock_dir([\n        \
+             (\"app/config.txt\", \"ok\"),\n        \
+             (\"app/nested/name.txt\", \"Ada\"),\n        \
+             (\"README.md\", \"top\")\n    \
+             ])\n    \
+             testing.assert_eq(read_config(root), \"ok\")\n    \
+             testing.assert(root.exists(\"app/config.txt\"), \"file exists\")\n    \
+             testing.assert(root.is_dir(\"app\"), \"directory exists\")\n    \
+             testing.assert(!root.exists(\"missing.txt\"), \"missing path is false\")\n    \
+             let app = root.subtree(\"app\")\n    \
+             testing.assert_value_eq(app.list(), [\"config.txt\", \"nested\"])\n    \
+             let file = app.read_file(\"nested/name.txt\")\n    \
+             testing.assert_eq(file.read(), \"Ada\")\n",
+        )
+        .unwrap();
+
+        let (passed, failed) = run_tests_in_file(suite.to_str().unwrap())
+            .expect("mock Dir runs under zero real grants");
+        assert!(failed.is_empty(), "{failed:?}");
+        assert_eq!(passed, vec!["suite.test_mock_dir_read_surface".to_string()]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// `witchy test <file|dir>`: run in-language tests, print a cargo-style
@@ -3239,6 +3296,7 @@ fn run_wasm_test_bytes(bytes: &[u8]) -> Result<Vec<String>, String> {
                 print: true,
                 print_int: true,
                 quiet: true,
+                test_mocks: true,
                 ..Default::default()
             },
             RUN_MEMORY_PAGES,

@@ -739,6 +739,9 @@ impl Codegen<'_> {
                 let a = self.lower_args(&[&args[1], &args[2]])?;
                 if self.collect_wir { call("build_out_write", a) } else { nil0(host("build_out_write_host", a)) }
             }
+            (intrinsics::TESTING_MOCK_DIR, 1) => {
+                call("testing_mock_dir", self.lower_args(&[&args[0]])?)
+            }
             // --- calls with a pushed constant / slot conversions ---
             ("string.to_upper", 1) | ("string.to_lower", 1) => {
                 self.uses_ascii_case = true;

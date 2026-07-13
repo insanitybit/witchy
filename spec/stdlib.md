@@ -3064,6 +3064,10 @@ The witchy test support module. `witchy test <file>` discovers every zero-parame
 
   fn test_truth():       testing.assert(1 < 2, "one is less than two")
 
+#### `fn mock_dir(entries: List((String, String))) -> Dir[Read]`
+
+A read-only in-memory directory for tests. Each entry is a `(path, contents)` pair; paths are Dir-relative file paths. The returned capability supports the ordinary Dir[Read] surface (`read`, `exists`, `is_dir`, `subtree`, `list`, `read_file`) without granting any real filesystem authority.
+
 #### `fn assert(cond: Bool, msg: String)`
 
 Abort the test with `msg` unless `cond` holds.
