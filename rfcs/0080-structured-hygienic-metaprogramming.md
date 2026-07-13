@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed syntax wrappers/builders with validated identifiers, comptime emit_item/fn helpers, and typed custom derives landed; quotation/hygiene/full syntax API remains proposed"
+tracking: "source-backed syntax wrappers/builders with validated identifiers, comptime emit_item/fn helpers, typed custom derives, and typed tagged-literal ExprSyntax returns landed; quotation/hygiene/full syntax API remains proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -26,9 +26,10 @@ runtime mutation of the program.
 RFC-0006 proved that compile-time DSLs are useful: `html"..."` can parse an
 embedded language, preserve call-site holes, and emit safe ordinary witchy.
 RFC-0069 then made declaration reflection structured through `TypeInfo` and
-`TypeExpr`. The remaining generation boundary is still textual: `comptime`
-uses `emit(String)`, and tags return expression source which the compiler
-reparses.
+`TypeExpr`. The remaining generation boundary started textual: `comptime`
+used `emit(String)`, and tags returned expression source which the compiler
+reparsed. RFC-0080 is replacing those public boundaries with sealed syntax
+values while the payload is still source-backed internally.
 
 Text generation is adequate for a tagged literal but poor as witchy's general
 metaprogramming identity:
@@ -213,6 +214,11 @@ The first source-compatible slice is implemented:
   block-bodied functions. This lets generators compose ordinary control-flow
   bodies without one whole-function string template, while preserving the same
   compile-time-only boundary as `ItemSyntax`.
+- The tenth slice lets tagged-literal generators return `meta.ExprSyntax`
+  directly. Legacy `String` tags remain supported, but a `comptime fn` tag can
+  now return the sealed typed expression wrapper; the compiler-generated harness
+  unwraps it internally, then applies RFC-0006 opaque hole substitution exactly
+  as before.
 
 This is intentionally not the full RFC. The payload is still source-backed and
 there is no quotation, identifier hygiene, or compiler-owned expression/pattern/

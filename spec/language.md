@@ -899,15 +899,22 @@ and its `${…}` hole sources, and the compiler calls the `tag` function
 fn tag(parts: List(String), holes: List(String)) -> String
 ```
 
+or the typed RFC-0080 form
+
+```text
+comptime fn tag(parts: List(String), holes: List(String)) -> meta.ExprSyntax
+```
+
 with `parts` = the static fragments and `holes` = an **opaque marker** per hole —
 a token the tag *places* where that hole's value belongs (the tag does not read
-the hole's source). The tag returns witchy **expression source**; the compiler
-parses it and **substitutes** the real hole expression — parsed once at the call
-site, carrying its source position — at each marker, then splices the result over
-the literal before type checking. So both backends compile the same AST, the tag
-runs once in the compiler, and a hole's marker may be placed zero, once, or many
-times. The tag is an ordinary function (local or imported); only the items
-reachable from it run at expansion time.
+the hole's source). A legacy string tag returns witchy **expression source**; a
+typed tag returns `meta.ExprSyntax`, whose source payload remains sealed behind
+the compiler boundary. The compiler parses that generated expression and
+**substitutes** the real hole expression — parsed once at the call site, carrying
+its source position — at each marker, then splices the result over the literal
+before type checking. So both backends compile the same AST, the tag runs once in
+the compiler, and a hole's marker may be placed zero, once, or many times. The tag
+is local or imported; only the items reachable from it run at expansion time.
 
 Because a tag emits *code*, interpolation holes are typed **by position** (the
 substituted expression is type-checked normally) and there is no runtime string

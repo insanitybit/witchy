@@ -1429,6 +1429,21 @@ fn main(console: Console):
         );
     }
 
+    /// RFC-0080: tagged-literal generators can return typed `meta.ExprSyntax`
+    /// instead of raw expression-source strings. The tag remains a `comptime fn`,
+    /// so its compile-time-only return type never leaks into the runtime module.
+    #[test]
+    fn tagged_literals_can_return_typed_exprsyntax_on_both_backends() {
+        let src = "from meta import ExprSyntax, expr_raw\nimport list\n\ncomptime fn add_one(parts: List(String), holes: List(String)) -> ExprSyntax:\n    expr_raw(\"(\" + list.at(holes, 0) + \" + 1)\")\n\nfn main(console: Console):\n    let n = 41\n    console.print(\"${add_one\"value ${n}\"}\")\n";
+        let expected = ["42"];
+        assert_eq!(link_run(src), expected, "interp typed tagged literal");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled typed tagged literal",
+        );
+    }
+
     /// (BUG-182) A tagged literal in a standalone file whose stem is NOT a valid
     /// identifier (`tag-hyphen`) must still expand and run on both backends. Tag
     /// expansion seeds a throwaway parse with `import <qualifier>` lines built from

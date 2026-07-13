@@ -2,8 +2,9 @@
 //!
 //! A *tag* is an ordinary compile-time function
 //! `fn <tag>(parts: List(String), holes: List(String)) -> String` that returns
-//! witchy EXPRESSION SOURCE. A tagged literal `tag"a${x}b"` is expanded AT
-//! COMPILE TIME — before type-checking.
+//! witchy EXPRESSION SOURCE, or the RFC-0080 typed form
+//! `fn <tag>(parts: List(String), holes: List(String)) -> meta.ExprSyntax`. A
+//! tagged literal `tag"a${x}b"` is expanded AT COMPILE TIME — before type-checking.
 //!
 //! ## Marker substitution (the hygiene split)
 //!
@@ -36,7 +37,7 @@
 //! `comptime`/`derive`. `Expr::TaggedLit` is therefore UNREACHABLE after this
 //! pass; typeck, the interpreter, and both codegen backends panic on it.
 
-use witchy_syntax::ast::{Block, Expr, Function, Item, MatchArm, Module, Param, Stmt, Type};
+use witchy_syntax::ast::{Block, Expr, Function, Item, MatchArm, Module, Param, Pattern, Stmt, Type};
 use std::collections::{HashMap, HashSet};
 
 /// A tag may emit a tag (re-expansion); cap the nesting so a self-referential or
@@ -83,6 +84,8 @@ pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) ->
         siblings.iter().map(|(n, m)| (n.as_str(), m)).collect();
     let mut items = module.items.clone();
     let mut std_imports: Vec<String> = Vec::new();
+    let mut std_from_imports: Vec<(String, Vec<String>)> = Vec::new();
+    merge_std_from_imports(&mut std_from_imports, &module.from_imports);
     let mut seen = HashSet::new();
     seen.insert(name.to_string());
     let mut frontier: Vec<String> = module.imports.clone();
@@ -97,6 +100,7 @@ pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) ->
             continue;
         }
         if let Some(m) = by_name.get(imp.as_str()) {
+            merge_std_from_imports(&mut std_from_imports, &m.from_imports);
             items.extend(m.items.iter().cloned());
             frontier.extend(m.imports.iter().cloned());
         }
@@ -118,6 +122,7 @@ pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) ->
         name: name.to_string(),
         items,
         imports: std_imports,
+        from_imports: std_from_imports,
         qualifiers,
     };
     // Expand tagged literals in EVERY expression-bearing item position, not just
@@ -154,10 +159,17 @@ struct Context {
     name: String,
     items: Vec<Item>,
     imports: Vec<String>,
+    from_imports: Vec<(String, Vec<String>)>,
     /// Module names a tag's generated source may qualify against (the consumer +
     /// its transitive imports). Seeded as `import` lines in the throwaway parse so
     /// `glamour.text(…)` parses as a qualified call, not a method call.
     qualifiers: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TagOutput {
+    SourceString,
+    ExprSyntax,
 }
 
 /// Replace `expr` with its expansion if it is (or contains) a `TaggedLit`,
@@ -317,11 +329,75 @@ fn walk_block_depth(block: &mut Block, ctx: &Context, depth: u32) -> Result<(), 
     Ok(())
 }
 
+fn tag_output(ctx: &Context, tag: &str) -> TagOutput {
+    for item in &ctx.items {
+        let Item::Function(f) = item else {
+            continue;
+        };
+        if f.name != tag {
+            continue;
+        }
+        if f.ret.as_ref().is_some_and(is_expr_syntax_type) {
+            return TagOutput::ExprSyntax;
+        }
+        return TagOutput::SourceString;
+    }
+    TagOutput::SourceString
+}
+
+fn is_expr_syntax_type(ty: &Type) -> bool {
+    match ty {
+        Type::Qualified(_, inner) => is_expr_syntax_type(inner),
+        Type::Named(name, args) => {
+            args.is_empty() && (name == "ExprSyntax" || name == "meta.ExprSyntax")
+        }
+        Type::Tuple(_) | Type::Fn(_, _) => false,
+    }
+}
+
+fn merge_std_from_imports(target: &mut Vec<(String, Vec<String>)>, imports: &[(String, Vec<String>)]) {
+    for (module, names) in imports {
+        if witchy_syntax::linker::STD_MODULES.contains(&module.as_str()) {
+            merge_from_import(target, module, names);
+        }
+    }
+}
+
+fn merge_from_import(target: &mut Vec<(String, Vec<String>)>, module: &str, names: &[String]) {
+    if let Some((_, existing)) = target.iter_mut().find(|(m, _)| m == module) {
+        for name in names {
+            if !existing.contains(name) {
+                existing.push(name.clone());
+            }
+        }
+    } else {
+        target.push((module.to_string(), names.to_vec()));
+    }
+}
+
+fn ensure_from_imports(target: &mut Vec<(String, Vec<String>)>, module: &str, names: &[&str]) {
+    if let Some((_, existing)) = target.iter_mut().find(|(m, _)| m == module) {
+        for name in names {
+            let name = (*name).to_string();
+            if !existing.contains(&name) {
+                existing.push(name);
+            }
+        }
+    } else {
+        target.push((
+            module.to_string(),
+            names.iter().map(|name| (*name).to_string()).collect(),
+        ));
+    }
+}
+
 /// Run one tag: build a synthetic comptime program calling `tag(parts, holes)`,
 /// run it on the reference interpreter, and parse the emitted source as an
 /// expression. Mirrors `comptime::expand`'s construction (the `emit` print
 /// closure + std imports) but the program calls the tag rather than running a
-/// user block.
+/// user block. Legacy tags return `String`; RFC-0080 tags may return
+/// `meta.ExprSyntax`, which the harness destructures internally before printing
+/// the source payload.
 fn expand_one(
     ctx: &Context,
     tag: &str,
@@ -338,10 +414,20 @@ fn expand_one(
     // the tag returns. This is the hygiene split (RFC-0006): the tag never sees —
     // and so cannot mangle or capture — the author's hole expression.
     let markers: Vec<String> = (0..holes.len()).map(hole_marker).collect();
+    let output = tag_output(ctx, tag);
+    let tag_call = Expr::Call {
+        name: tag.to_string(),
+        args: vec![str_list(parts), str_list(&markers)],
+    };
 
     // fn main(console: Console):
     //     let emit = fn(line): console.print(line)
-    //     emit(<tag>([parts...], [holes...]))
+    //     emit(<tag>([parts...], [markers...]))
+    //
+    // or, for typed RFC-0080 tags:
+    //
+    //     match <tag>([parts...], [markers...]):
+    //         ExprSyntax(source) -> emit(source)
     let emit_closure = Stmt::Let {
         ty: None,
         name: "emit".into(),
@@ -365,13 +451,27 @@ fn expand_one(
             ret: None,
         },
     };
-    let emit_call = Stmt::Expr(Expr::Call {
-        name: "emit".into(),
-        args: vec![Expr::Call {
-            name: tag.to_string(),
-            args: vec![str_list(parts), str_list(&markers)],
-        }],
-    });
+    let emit_call = match output {
+        TagOutput::SourceString => Stmt::Expr(Expr::Call {
+            name: "emit".into(),
+            args: vec![tag_call],
+        }),
+        TagOutput::ExprSyntax => Stmt::Expr(Expr::Match {
+            scrutinee: Box::new(tag_call),
+            arms: vec![MatchArm {
+                line: 0,
+                pattern: Pattern::Ctor {
+                    name: "ExprSyntax".into(),
+                    args: vec![Pattern::Var("source".into())],
+                },
+                guard: None,
+                body: Expr::Call {
+                    name: "emit".into(),
+                    args: vec![Expr::Var("source".into())],
+                },
+            }],
+        }),
+    };
     let main = Function {
         public: false,
         comptime_only: false,
@@ -432,17 +532,21 @@ fn expand_one(
         .collect();
     items.push(Item::Function(main));
 
+    let mut from_imports = ctx.from_imports.clone();
+    if output == TagOutput::ExprSyntax {
+        ensure_from_imports(&mut from_imports, "meta", &["ExprSyntax"]);
+    }
     let prog = Module {
         modes: Vec::new(),
         imports: ctx.imports.clone(),
-        from_imports: Vec::new(),
+        from_imports,
         items,
         import_lines: Vec::new(),
         item_lines: Vec::new(),
     };
     let linked = crate::pipeline::link(vec![("comptime".into(), prog)], "comptime")
         .map_err(|e| format!("{}: {e}", where_()))?;
-    witchy_types::typeck::check(&linked).map_err(|e| format!("{}: {e}", where_()))?;
+    witchy_types::typeck::check_comptime(&linked).map_err(|e| format!("{}: {e}", where_()))?;
     let lines = crate::interpreter::run_module_budgeted(
         linked,
         ".",
