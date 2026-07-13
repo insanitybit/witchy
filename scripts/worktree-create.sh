@@ -14,7 +14,11 @@ set -u
 root="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
 cd "$root" || exit 1
 
-name=$(jq -r '.name // empty' 2>/dev/null || true)
+# Accept name from: (1) positional arg, (2) JSON on stdin (hook protocol), (3) generate one.
+name="${1:-}"
+if [ -z "$name" ] && [ ! -t 0 ]; then
+    name=$(jq -r '.name // empty' 2>/dev/null || true)
+fi
 [ -n "$name" ] || name="wt-$$-$(date +%s)"
 
 dest="$root/.claude/worktrees/$name"
