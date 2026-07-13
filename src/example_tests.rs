@@ -7378,59 +7378,56 @@ fn yn(b: Bool) -> String:
     fn documentation_examples_are_valid() {
         let files = doc_markdown_files();
 
-        let mut checked = 0usize;
-        let mut ran = 0usize;
-        for file in &files {
-            let Ok(text) = std::fs::read_to_string(file) else { continue };
-            for (idx, snippet) in extract_witchy_blocks(&text).into_iter().enumerate() {
-                let context = format!("{}: ```witchy block #{}", file.display(), idx + 1);
-                let module = parser::parse_module(&snippet)
-                    .unwrap_or_else(|e| panic!("{context} fails to parse: {e:?}\n---\n{snippet}"));
-                let linked = crate::pipeline::link(vec![("main".into(), module)], "main")
-                    .unwrap_or_else(|e| panic!("{context} fails to link: {e}\n---\n{snippet}"));
-                typeck::check(&linked)
-                    .unwrap_or_else(|e| panic!("{context} fails to type-check: {e}\n---\n{snippet}"));
-                checked += 1;
+        let results: Vec<(usize, usize)> = std::thread::scope(|s| {
+            let handles: Vec<_> = files.iter().map(|file| {
+                s.spawn(move || {
+                    let mut checked = 0usize;
+                    let mut ran = 0usize;
+                    let Ok(text) = std::fs::read_to_string(file) else { return (0, 0) };
+                    for (idx, snippet) in extract_witchy_blocks(&text).into_iter().enumerate() {
+                        let context = format!("{}: ```witchy block #{}", file.display(), idx + 1);
+                        let module = parser::parse_module(&snippet)
+                            .unwrap_or_else(|e| panic!("{context} fails to parse: {e:?}\n---\n{snippet}"));
+                        let linked = crate::pipeline::link(vec![("main".into(), module)], "main")
+                            .unwrap_or_else(|e| panic!("{context} fails to link: {e}\n---\n{snippet}"));
+                        typeck::check(&linked)
+                            .unwrap_or_else(|e| panic!("{context} fails to type-check: {e}\n---\n{snippet}"));
+                        checked += 1;
 
-                let has_main = linked
-                    .items
-                    .iter()
-                    .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"));
-                // Actors compile through a separate module path (and run on the
-                // demo scheduler), so the single-module run below doesn't apply —
-                // such examples are still fully parse + type-checked above.
-                let has_actor = false;
-                // A `main` that declares an argv parameter (`args: List(String)`)
-                // is type-checked but not run here: argv isn't a capability (so the
-                // footprint still looks "Console-only"), yet the interpreter and
-                // WASM run paths don't share an argv source, so comparing their
-                // output is meaningless. Same rationale as the actor skip above.
-                let reads_argv = linked.items.iter().any(|it| {
-                    matches!(it, ast::Item::Function(f) if f.name == "main"
-                        && f.params.iter().any(|p| matches!(&p.ty,
-                            Some(ast::Type::Named(n, args)) if n == "List"
-                                && matches!(args.first(),
-                                    Some(ast::Type::Named(s, _)) if s == "String"))))
-                });
-                let footprint = crate::capabilities::analyze(&linked);
-                let console_only = footprint.total.keys().all(|k| *k == "Console");
-                if has_main && console_only && !has_actor && !reads_argv {
-                    // Every console-only doc example compiles on the binary path
-                    // (AST → WIR → wasm-binary) and runs identically to the
-                    // interpreter.
-                    let bytes = codegen::compile_module_binary(&linked)
-                        .unwrap_or_else(|e| panic!("{context} fails to compile to WASM: {e}"))
-                        .unwrap_or_else(|| panic!("{context}: the binary backend does not support a construct it uses"));
-                    let interp =
-                        interpreter::run_module(linked, std::path::Path::new("."), Vec::new())
-                            .unwrap_or_else(|e| panic!("{context} fails on the interpreter: {e}"));
-                    let compiled = crate::run_wasm_bytes(&bytes)
-                        .unwrap_or_else(|e| panic!("{context} fails on WASM: {e}"));
-                    assert_eq!(interp, compiled, "{context}: the backends DIVERGE");
-                    ran += 1;
-                }
-            }
-        }
+                        let has_main = linked
+                            .items
+                            .iter()
+                            .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"));
+                        let has_actor = false;
+                        let reads_argv = linked.items.iter().any(|it| {
+                            matches!(it, ast::Item::Function(f) if f.name == "main"
+                                && f.params.iter().any(|p| matches!(&p.ty,
+                                    Some(ast::Type::Named(n, args)) if n == "List"
+                                        && matches!(args.first(),
+                                            Some(ast::Type::Named(s, _)) if s == "String"))))
+                        });
+                        let footprint = crate::capabilities::analyze(&linked);
+                        let console_only = footprint.total.keys().all(|k| *k == "Console");
+                        if has_main && console_only && !has_actor && !reads_argv {
+                            let bytes = codegen::compile_module_binary(&linked)
+                                .unwrap_or_else(|e| panic!("{context} fails to compile to WASM: {e}"))
+                                .unwrap_or_else(|| panic!("{context}: the binary backend does not support a construct it uses"));
+                            let interp =
+                                interpreter::run_module(linked, std::path::Path::new("."), Vec::new())
+                                    .unwrap_or_else(|e| panic!("{context} fails on the interpreter: {e}"));
+                            let compiled = crate::run_wasm_bytes(&bytes)
+                                .unwrap_or_else(|e| panic!("{context} fails on WASM: {e}"));
+                            assert_eq!(interp, compiled, "{context}: the backends DIVERGE");
+                            ran += 1;
+                        }
+                    }
+                    (checked, ran)
+                })
+            }).collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let checked: usize = results.iter().map(|(c, _)| c).sum();
+        let ran: usize = results.iter().map(|(_, r)| r).sum();
         assert!(checked >= 20, "expected the docs to carry many checked examples, found {checked}");
         assert!(ran >= 5, "expected several runnable doc examples, found {ran}");
     }
@@ -12256,15 +12253,20 @@ fn main(console: Console):
         // are libraries with no `main` cannot compile and are skipped — only a
         // genuine divergence fails. (This would have caught the trailing-newline
         // print divergence.)
-        let mut diverged = Vec::new();
-        for path in example_entries() {
-            let p = path.to_str().unwrap();
-            // Agree / both-error-agree, or an interpreter-only feature / no `main`
-            // (unexpected-error): not a divergence, skip. Only a real Diverge fails.
-            if let crate::ParityOutcome::Diverge { message, .. } = crate::parity_check(p) {
-                diverged.push(message);
-            }
-        }
+        let entries = example_entries();
+        let diverged: Vec<String> = std::thread::scope(|s| {
+            let handles: Vec<_> = entries.iter().map(|path| {
+                s.spawn(|| {
+                    let p = path.to_str().unwrap();
+                    if let crate::ParityOutcome::Diverge { message, .. } = crate::parity_check(p) {
+                        Some(message)
+                    } else {
+                        None
+                    }
+                })
+            }).collect();
+            handles.into_iter().filter_map(|h| h.join().unwrap()).collect()
+        });
         assert!(
             diverged.is_empty(),
             "examples diverge across backends:\n{}",
@@ -12281,40 +12283,46 @@ fn main(console: Console):
         // self-consistency guard that lets the differential oracle be retired.
         // Restricted to console-only, `main`-bearing programs so output is
         // self-contained and deterministic.
-        let mut diverged = Vec::new();
-        for path in example_entries() {
-            let p = path.to_str().unwrap();
-            let Ok((linked, _)) = crate::link_file(p) else {
-                continue;
-            };
-            if typeck::check(&linked).is_err() {
-                continue;
-            }
-            let has_main = linked
-                .items
-                .iter()
-                .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"));
-            let console_only = crate::capabilities::analyze(&linked)
-                .total
-                .keys()
-                .all(|k| *k == "Console");
-            if !has_main || !console_only {
-                continue;
-            }
-            let compile_with = |force_copy: bool| {
-                codegen::set_force_copy_for_tests(Some(force_copy));
-                let bytes = codegen::compile_module_binary(&linked);
-                codegen::set_force_copy_for_tests(None);
-                bytes
-            };
-            if let (Ok(Some(inplace)), Ok(Some(copy))) = (compile_with(false), compile_with(true)) {
-                let a = crate::run_wasm_bytes(&inplace);
-                let b = crate::run_wasm_bytes(&copy);
-                if a != b {
-                    diverged.push(format!("{p}: in-place {a:?} vs forced-copy {b:?}"));
-                }
-            }
-        }
+        let entries = example_entries();
+        let diverged: Vec<String> = std::thread::scope(|s| {
+            let handles: Vec<_> = entries.iter().map(|path| {
+                s.spawn(|| {
+                    let p = path.to_str().unwrap();
+                    let Ok((linked, _)) = crate::link_file(p) else {
+                        return None;
+                    };
+                    if typeck::check(&linked).is_err() {
+                        return None;
+                    }
+                    let has_main = linked
+                        .items
+                        .iter()
+                        .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"));
+                    let console_only = crate::capabilities::analyze(&linked)
+                        .total
+                        .keys()
+                        .all(|k| *k == "Console");
+                    if !has_main || !console_only {
+                        return None;
+                    }
+                    let compile_with = |force_copy: bool| {
+                        codegen::set_force_copy_for_tests(Some(force_copy));
+                        let bytes = codegen::compile_module_binary(&linked);
+                        codegen::set_force_copy_for_tests(None);
+                        bytes
+                    };
+                    if let (Ok(Some(inplace)), Ok(Some(copy))) = (compile_with(false), compile_with(true)) {
+                        let a = crate::run_wasm_bytes(&inplace);
+                        let b = crate::run_wasm_bytes(&copy);
+                        if a != b {
+                            return Some(format!("{p}: in-place {a:?} vs forced-copy {b:?}"));
+                        }
+                    }
+                    None
+                })
+            }).collect();
+            handles.into_iter().filter_map(|h| h.join().unwrap()).collect()
+        });
         assert!(
             diverged.is_empty(),
             "in-place and forced-copy codegen diverge:\n{}",
@@ -12333,44 +12341,50 @@ fn main(console: Console):
         // gated-lever memory bug hides. Restricted to console-only, `main`-bearing programs so the
         // run needs no capability grants and the output is deterministic.
         use crate::opt::{self, Opt, OptSet};
-        let mut diverged = Vec::new();
-        for path in example_entries() {
-            let p = path.to_str().unwrap();
-            let Ok((linked, _)) = crate::link_file(p) else {
-                continue;
-            };
-            if typeck::check(&linked).is_err() {
-                continue;
-            }
-            let has_main = linked
-                .items
-                .iter()
-                .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"));
-            let console_only = crate::capabilities::analyze(&linked)
-                .total
-                .keys()
-                .all(|k| *k == "Console");
-            if !has_main || !console_only {
-                continue;
-            }
-            let compile_with_rc = |on: bool| {
-                opt::set_for_tests(if on {
-                    Some(OptSet::default_set().with(Opt::RcFloor))
-                } else {
+        let entries = example_entries();
+        let diverged: Vec<String> = std::thread::scope(|s| {
+            let handles: Vec<_> = entries.iter().map(|path| {
+                s.spawn(|| {
+                    let p = path.to_str().unwrap();
+                    let Ok((linked, _)) = crate::link_file(p) else {
+                        return None;
+                    };
+                    if typeck::check(&linked).is_err() {
+                        return None;
+                    }
+                    let has_main = linked
+                        .items
+                        .iter()
+                        .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"));
+                    let console_only = crate::capabilities::analyze(&linked)
+                        .total
+                        .keys()
+                        .all(|k| *k == "Console");
+                    if !has_main || !console_only {
+                        return None;
+                    }
+                    let compile_with_rc = |on: bool| {
+                        opt::set_for_tests(if on {
+                            Some(OptSet::default_set().with(Opt::RcFloor))
+                        } else {
+                            None
+                        });
+                        let bytes = codegen::compile_module_binary(&linked);
+                        opt::set_for_tests(None);
+                        bytes
+                    };
+                    if let (Ok(Some(def)), Ok(Some(rc))) = (compile_with_rc(false), compile_with_rc(true)) {
+                        let a = crate::run_wasm_bytes(&def);
+                        let b = crate::run_wasm_bytes(&rc);
+                        if a != b {
+                            return Some(format!("{p}: default {a:?} vs rc-floor {b:?}"));
+                        }
+                    }
                     None
-                });
-                let bytes = codegen::compile_module_binary(&linked);
-                opt::set_for_tests(None);
-                bytes
-            };
-            if let (Ok(Some(def)), Ok(Some(rc))) = (compile_with_rc(false), compile_with_rc(true)) {
-                let a = crate::run_wasm_bytes(&def);
-                let b = crate::run_wasm_bytes(&rc);
-                if a != b {
-                    diverged.push(format!("{p}: default {a:?} vs rc-floor {b:?}"));
-                }
-            }
-        }
+                })
+            }).collect();
+            handles.into_iter().filter_map(|h| h.join().unwrap()).collect()
+        });
         assert!(
             diverged.is_empty(),
             "rc-floor diverges from the default codegen on examples (a reclamation use-after-free):\n{}",
@@ -12387,17 +12401,23 @@ fn main(console: Console):
     /// opt-in lever gets a sweep here so that class cannot recur. `set_for_tests` is thread-local,
     /// so the lever is isolated from the parallel test threads.
     fn assert_examples_agree_under(set: crate::opt::OptSet, lever: &str) {
-        crate::opt::set_for_tests(Some(set));
-        let mut diverged = Vec::new();
-        for path in example_entries() {
-            let p = path.to_str().unwrap();
-            // Agree / both-error-agree, or an interpreter-only feature / no `main`
-            // (unexpected-error): not a divergence, skip. Only a real Diverge fails.
-            if let crate::ParityOutcome::Diverge { message, .. } = crate::parity_check(p) {
-                diverged.push(message);
-            }
-        }
-        crate::opt::set_for_tests(None);
+        let entries = example_entries();
+        let diverged: Vec<String> = std::thread::scope(|s| {
+            let handles: Vec<_> = entries.iter().map(|path| {
+                s.spawn(|| {
+                    crate::opt::set_for_tests(Some(set));
+                    let p = path.to_str().unwrap();
+                    let result = if let crate::ParityOutcome::Diverge { message, .. } = crate::parity_check(p) {
+                        Some(message)
+                    } else {
+                        None
+                    };
+                    crate::opt::set_for_tests(None);
+                    result
+                })
+            }).collect();
+            handles.into_iter().filter_map(|h| h.join().unwrap()).collect()
+        });
         assert!(
             diverged.is_empty(),
             "examples diverge under WITCHY_OPT={lever} (a codegen bug the default sweep misses):\n{}",
@@ -16242,11 +16262,23 @@ fn main(console: Console):
             .collect();
         files.sort();
         assert!(!files.is_empty(), "no examples found");
-        for path in files {
-            let p = path.to_str().unwrap();
-            let result = crate::execute_file(p, Vec::new());
-            assert!(result.is_ok(), "example `{p}` failed: {result:?}");
-        }
+        let failures: Vec<String> = std::thread::scope(|s| {
+            let handles: Vec<_> = files.iter().map(|path| {
+                s.spawn(|| {
+                    let p = path.to_str().unwrap();
+                    match crate::execute_file(p, Vec::new()) {
+                        Ok(_) => None,
+                        Err(e) => Some(format!("{p}: {e:?}")),
+                    }
+                })
+            }).collect();
+            handles.into_iter().filter_map(|h| h.join().unwrap()).collect()
+        });
+        assert!(
+            failures.is_empty(),
+            "examples failed:\n{}",
+            failures.join("\n")
+        );
     }
 
     /// EVERY example — including the server demos that run forever (and so are
@@ -16254,17 +16286,25 @@ fn main(console: Console):
     /// type-check. Catches type errors the run test can't reach.
     #[test]
     fn all_examples_type_check() {
-        let mut any = false;
-        for path in example_entries() {
-            any = true;
-            let p = path.to_str().unwrap();
-            assert!(
-                crate::check_file(p).is_ok(),
-                "type-check failed for `{p}`: {:?}",
-                crate::check_file(p)
-            );
-        }
-        assert!(any, "no examples found");
+        let entries = example_entries();
+        assert!(!entries.is_empty(), "no examples found");
+        let failures: Vec<String> = std::thread::scope(|s| {
+            let handles: Vec<_> = entries.iter().map(|path| {
+                s.spawn(|| {
+                    let p = path.to_str().unwrap();
+                    match crate::check_file(p) {
+                        Ok(_) => None,
+                        Err(e) => Some(format!("{p}: {e:?}")),
+                    }
+                })
+            }).collect();
+            handles.into_iter().filter_map(|h| h.join().unwrap()).collect()
+        });
+        assert!(
+            failures.is_empty(),
+            "type-check failed:\n{}",
+            failures.join("\n")
+        );
     }
 
     /// Every example rune's in-language tests (`src/*_test.witchy`) pass. This
