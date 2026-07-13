@@ -614,8 +614,9 @@ function methodAllowed(methods, method) {
 // (or `data:text/html`) URL here is a script sink, so the value is scheme-checked.
 const URL_ATTRS = new Set(["href", "src", "action", "formaction", "poster", "xlink:href"]);
 
-// Keep relative URLs and the safe schemes; collapse everything else (above all
-// `javascript:`) to an inert `#`. `data:` is allowed only for inline images.
+// Keep scheme-less relative URLs and the safe schemes; collapse everything else
+// (above all `javascript:`) to an inert `#`. `data:` is allowed only for inline
+// raster images. This relative-path grammar mirrors markdown.safe_href.
 function safeUrl(value) {
   const s = String(value).trim();
   // (BUG-283) Reject on any ASCII C0 control or DEL BEFORE scheme detection. Browsers strip
@@ -623,12 +624,20 @@ function safeUrl(value) {
   // `javascript:` only after the shell has already written it. Release-facing URLs have no
   // legitimate raw controls — fail closed to `#`.
   if (/[\u0000-\u001F\u007F]/.test(s)) return "#";
-  // A single leading slash is a same-origin relative path; `//host` is protocol-relative
-  // (off-origin navigation) — SEC-025 — so the slash branch rejects a second slash.
-  if (/^(https?:|mailto:|tel:|\.|#|\?|\/(?!\/))/i.test(s)) return s; // relative or known-safe scheme
+  // Browsers normalize backslashes in special-scheme URLs. Reject every two-character
+  // slash-like prefix, not only `//`, so `/\host` cannot become protocol-relative after
+  // the sink check (SEC-025).
+  if (/^[\\/]{2}/.test(s)) return "#";
+  if (/^(https?:\/\/|mailto:|tel:)/i.test(s)) return s;
   // Inline images only, and only raster — `data:image/svg+xml` can carry script (SEC-026).
   if (/^data:image\/(png|jpe?g|gif|webp)[;,]/i.test(s)) return s;
-  return "#";                                                  // javascript:, data:text/html, svg, //host → inert
+  // A colon before any path/query/fragment delimiter introduces a scheme. Unknown
+  // schemes fail closed; otherwise this is an ordinary relative reference, including
+  // plain Markdown paths such as `guide/getting-started.md` (BUG-228).
+  const colon = s.indexOf(":");
+  const boundary = s.search(/[\\/?#]/);
+  if (colon >= 0 && (boundary < 0 || colon < boundary)) return "#";
+  return s;
 }
 
 // Apply one wire-format attribute to an element. This is the SINGLE DOM-write choke

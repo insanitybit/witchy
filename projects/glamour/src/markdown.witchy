@@ -207,7 +207,7 @@ fn safe_href(url: String) -> String:
         "#"
     else:
         let lower = string.to_lower(trimmed)
-        if string.starts_with(lower, "//"):
+        if protocol_relative(trimmed):
             "#"
         else if allowed_scheme(lower):
             trimmed
@@ -219,14 +219,24 @@ fn safe_href(url: String) -> String:
 fn allowed_scheme(lower: String) -> Bool:
     string.starts_with(lower, "http://") || string.starts_with(lower, "https://") || string.starts_with(lower, "mailto:") || string.starts_with(lower, "tel:")
 
-// A URL has a scheme when a `:` appears before any `/`, `?`, or `#` (so `foo:bar` is a scheme
-// but `foo/bar:baz` and `page.html` are relative paths).
+// Browsers normalize backslashes in special-scheme URLs. Any two leading slash-like
+// characters are therefore protocol-relative, including `//`, `\\`, `/\\`, and `\\/`.
+fn protocol_relative(s: String) -> Bool:
+    if string.length(s) < 2:
+        false
+    else:
+        let first = string.substring(s, 0, 1)
+        let second = string.substring(s, 1, 2)
+        (first == "/" || first == "\\") && (second == "/" || second == "\\")
+
+// A URL has a scheme when a `:` appears before any `/`, `\\`, `?`, or `#` (so `foo:bar` is
+// a scheme but `foo/bar:baz` and `page.html` are relative paths).
 fn has_scheme(s: String) -> Bool:
     let ci = string.index_of(s, ":") ?? -1
     if ci < 0:
         false
     else:
-        colon_before(ci, string.index_of(s, "/") ?? -1) && colon_before(ci, string.index_of(s, "?") ?? -1) && colon_before(ci, string.index_of(s, "#") ?? -1)
+        colon_before(ci, string.index_of(s, "/") ?? -1) && colon_before(ci, string.index_of(s, "\\") ?? -1) && colon_before(ci, string.index_of(s, "?") ?? -1) && colon_before(ci, string.index_of(s, "#") ?? -1)
 
 fn colon_before(colon: Int, other: Int) -> Bool:
     other < 0 || colon < other

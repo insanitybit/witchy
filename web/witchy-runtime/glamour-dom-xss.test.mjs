@@ -4,7 +4,8 @@
 // `javascript:` img src, and a string `onclick` handler — and we assert the shell
 // NEUTRALIZES them when building the DOM: URL attributes are scheme-checked (hostile
 // schemes collapse to `#`), and `on*` attributes are never written (handlers attach
-// ONLY via the typed `on(event, msg)` path). Safe URLs (relative, https) pass through.
+// ONLY via the typed `on(event, msg)` path). Safe URLs (plain/root-relative, https)
+// pass through.
 //
 // This exercises the real render path (mount -> createNode -> applyAttr), the same
 // single choke point both create and update route through. Usage:
@@ -115,12 +116,15 @@ type Msg derive(Reflect):
 fn view(model: Int) -> VNode(Msg):
     let evil = glamour.element("a", [glamour.prop("href", "javascript:alert(1)"), glamour.prop("onclick", "steal()"), glamour.prop("class", "danger")], [glamour.text("evil")])
     let rel = glamour.element("a", [glamour.prop("href", "/page")], [glamour.text("rel")])
+    let plain = glamour.element("a", [glamour.prop("href", "guide/page.md")], [glamour.text("plain")])
     let ok = glamour.element("a", [glamour.prop("href", "https://example.com")], [glamour.text("abs")])
     let pic = glamour.element("img", [glamour.prop("src", "javascript:alert(2)")], [])
     let proto = glamour.element("a", [glamour.prop("href", "//evil.com/x")], [glamour.text("proto")])
+    let slashlike = glamour.element("a", [glamour.prop("href", "/\\\\evil.com/x")], [glamour.text("slashlike")])
+    let unknown = glamour.element("a", [glamour.prop("href", "file:///tmp/secret")], [glamour.text("unknown")])
     let svg = glamour.element("img", [glamour.prop("src", "data:image/svg+xml,<svg onload=alert(1)>")], [])
     let png = glamour.element("img", [glamour.prop("src", "data:image/png;base64,iVBORw0KGgo=")], [])
-    glamour.element("div", [], [evil, rel, ok, pic, proto, svg, png])
+    glamour.element("div", [], [evil, rel, plain, ok, pic, proto, slashlike, unknown, svg, png])
 
 fn update(model: Int, msg: Msg) -> (Int, Cmd(Msg)):
     (model, NoCmd)
@@ -164,8 +168,8 @@ try {
   await mount(wasm, root, { document: fakeDocument, initialModel: 0 });
 
   const links = querySelectorAll(root, "a");
-  ok(links.length === 4, "four <a> elements render");
-  const [evil, rel, abs, proto] = links;
+  ok(links.length === 7, "seven <a> elements render");
+  const [evil, rel, plain, abs, proto, slashlike, unknown] = links;
 
   // The hostile link: javascript: href neutralized, string handler dropped.
   ok(evil.getAttribute("href") === "#", "javascript: href is sanitized to #");
@@ -174,6 +178,7 @@ try {
 
   // Safe URLs pass through untouched.
   ok(rel.getAttribute("href") === "/page", "a relative href passes through");
+  ok(plain.getAttribute("href") === "guide/page.md", "a plain relative href passes through");
   ok(abs.getAttribute("href") === "https://example.com", "an https href passes through");
 
   // The hostile image source is neutralized too.
@@ -183,6 +188,8 @@ try {
 
   // SEC-025: a protocol-relative //host href is off-origin navigation → neutralized.
   ok(proto.getAttribute("href") === "#", "protocol-relative // href is sanitized to #");
+  ok(slashlike.getAttribute("href") === "#", "slash/backslash protocol-relative href is sanitized to #");
+  ok(unknown.getAttribute("href") === "#", "an unknown URL scheme is sanitized to #");
   // SEC-026: data:image/svg+xml can carry script → neutralized; raster data: passes.
   ok(imgs[1].getAttribute("src") === "#", "data:image/svg+xml src is sanitized to #");
   ok(

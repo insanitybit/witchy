@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // RFC-0015 Phase A3: prove the Markdown renderer is XSS-safe. A rune renders
-// deliberately hostile UNTRUSTED Markdown — a raw `<script>` tag, a `javascript:`
-// link — via `markdown.to_vnode`, and we assert the resulting DOM is inert: raw HTML
+// deliberately hostile UNTRUSTED Markdown — a raw `<script>` tag and unsafe
+// links — via `markdown.to_vnode`, and we assert the resulting DOM is inert: raw HTML
 // is shown as literal TEXT (no `<script>` element is ever created — glamour has no
-// HTML-string sink), and the link's `javascript:` href is neutralized to `#`. Normal
-// Markdown (heading, bold, code, list) still renders to real elements.
+// HTML-string sink), unsafe hrefs are neutralized to `#`, and ordinary relative paths
+// remain navigable. Normal Markdown (heading, bold, code, list) still renders.
 //
 // Usage:  node web/witchy-runtime/glamour-markdown.test.mjs [path/to/witchy-binary]
 
@@ -112,7 +112,7 @@ type Msg derive(Reflect):
     Noop
 
 fn view(model: Int) -> VNode(Msg):
-    markdown.to_vnode("# Heading\\n\\nA raw <script>alert(1)</script> tag and a [trap](javascript:steal()) link and **bold** text.\\n\\n- item one\\n- item two\\n\\n| Left | Right |\\n|---|---|\\n| one | two |\\n| three | four |\\n")
+    markdown.to_vnode("# Heading\\n\\nA raw <script>alert(1)</script> tag, [js](javascript:steal), [vb](vbscript:steal), [data](data:text/plain,bad), and [proto](//evil.example/x) traps; safe [Intro](introduction.md) and [Guide](guide/getting-started.md) links; and **bold** text.\\n\\n- item one\\n- item two\\n\\n| Left | Right |\\n|---|---|\\n| one | two |\\n| three | four |\\n")
 
 fn update(model: Int, msg: Msg) -> (Int, Cmd(Msg)):
     (model, NoCmd)
@@ -161,9 +161,13 @@ try {
   // It is shown as literal text instead (glamour escapes by construction).
   ok(root.textContent.includes("<script>alert(1)</script>"), "the raw <script> is rendered as visible text");
 
-  // The javascript: link href is neutralized to #.
+  // Dangerous/unknown schemes and protocol-relative navigation are neutralized;
+  // ordinary Markdown-relative paths survive both sanitizer layers unchanged.
   const links = querySelectorAll(root, "a");
-  ok(links.length === 1 && links[0].getAttribute("href") === "#", "a javascript: link href is sanitized to #");
+  ok(links.length === 6, "six Markdown links render");
+  ok(links.slice(0, 4).every((link) => link.getAttribute("href") === "#"), "unsafe Markdown hrefs are sanitized to #");
+  ok(links[4].getAttribute("href") === "introduction.md", "a plain relative Markdown href survives");
+  ok(links[5].getAttribute("href") === "guide/getting-started.md", "a nested relative Markdown href survives");
 
   // Normal Markdown still renders to real elements.
   ok(querySelectorAll(root, "h1").length === 1, "a heading renders as <h1>");

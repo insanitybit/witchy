@@ -335,7 +335,7 @@ fn glamour_autocounter_footprint_is_empty() {
 /// — mounts it through the real shell, and asserts the DOM was NEUTRALIZED: URL
 /// attributes are scheme-checked (hostile schemes collapse to `#`), `on*` attributes
 /// are never written (handlers attach only via the typed `on(event, msg)` path), and
-/// safe URLs (relative, https) pass through untouched. This guards the single
+/// safe URLs (plain/root-relative, https) pass through untouched. This guards the single
 /// `applyAttr` choke point both the create and update render paths route through.
 #[test]
 fn glamour_dom_attribute_layer_neutralizes_xss() {
@@ -909,11 +909,10 @@ console.print(glamour.to_json(markdown.to_vnode(\"# Title\\n\\nA **bold** word, 
 /// RFC-0015 Phase A3: the Markdown renderer (`markdown.to_vnode`) is XSS-safe.
 ///
 /// The committed Node driver (`web/witchy-runtime/glamour-markdown.test.mjs`) compiles
-/// a rune that renders deliberately hostile UNTRUSTED Markdown — a raw `<script>` tag
-/// and a `javascript:` link — through `markdown.to_vnode`, mounts it, and asserts the
-/// DOM is inert: no `<script>` element is ever created (the raw HTML shows as literal
-/// text — glamour has no HTML-string sink), and the link's `javascript:` href is
-/// neutralized to `#`. Normal Markdown (heading, bold, list) still renders to real
+/// a rune that renders deliberately hostile UNTRUSTED Markdown plus ordinary relative
+/// links through `markdown.to_vnode`, mounts it, and asserts the DOM is inert: no
+/// `<script>` element is ever created, unsafe hrefs become `#`, and plain relative
+/// paths remain navigable. Normal Markdown (heading, bold, list) still renders to real
 /// elements. This is the safe-by-construction README/doc rendering RFC-0015 relies on.
 #[test]
 fn glamour_markdown_renderer_is_xss_safe() {
