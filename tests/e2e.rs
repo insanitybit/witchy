@@ -4709,7 +4709,7 @@ fn sandbox_reveal_gates_signing_key_only() {
         stderr(&out)
     );
 
-    // RFC-0060: a NAMED secret granted `,use-only` is usable by handle but
+    // RFC-0060: a NAMED secret granted `,use-only` is usable by opaque ref but
     // NOT revealable — the same `token` program that reveals fine above must
     // abort when the grant carries the use-only modifier.
     let out = Command::new(BIN)

@@ -121,8 +121,8 @@ const MATCH_RES: &str = "__witchy_match_res";
 /// skipped (a sound leak, not a wrong dec).
 const SCRUT_POOL: usize = 16;
 
-/// Scratch local holding a `SecretStore.get` handle (the host-table index) so it
-/// is fetched once and reused for both the present-test and the `Some` payload.
+/// Scratch local holding a `SecretStore.require` externref so it is fetched once
+/// and reused for both the present-test and returned `Secret`.
 const SECRET_TMP: &str = "__witchy_secret_tmp";
 
 /// Scratch i32 slot holding a `SecretStore.require` name-string pointer, so the
@@ -163,11 +163,11 @@ const ENV_PARAM: &str = "__witchy_env";
 ///     i64 and floats are bit-reinterpreted when they enter this representation
 ///     (see `to_slot`/`from_slot`).
 ///   * `F64` — `Float`.
-///   * `I32` — concrete pointers (strings/lists/records/closures and unmigrated
-///     capabilities) and `Bool`. These are the wasm32 address width.
+///   * `I32` — concrete pointers (strings/lists/records/closures and any
+///     future unmigrated handles) and `Bool`. These are the wasm32 address width.
 ///   * `ExternRef` — migrated unforgeable capabilities (`Dir`/`File`/`Net`,
-///     plus `Socket`/`Listener`). These must not cross the universal slot or
-///     linear-memory heap.
+///     `Socket`/`Listener`, and `Secret`). These must not cross the universal
+///     slot or linear-memory heap.
 ///   * `GcRef` — a typed GC-struct reference for named cap-carrying records.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -189,7 +189,7 @@ fn ty_kind(t: &Type) -> Kind {
         Type::Named(n, _) if n == "Float" => Kind::F64,
         Type::Named(n, _) if n == "Int" || n == "Duration" => Kind::I64,
         Type::Named(n, _)
-            if matches!(n.as_str(), "Dir" | "File" | "Net" | "Socket" | "Listener") =>
+            if matches!(n.as_str(), "Dir" | "File" | "Net" | "Socket" | "Listener" | "Secret") =>
         {
             Kind::ExternRef
         }
@@ -198,7 +198,7 @@ fn ty_kind(t: &Type) -> Kind {
 }
 
 fn is_builtin_externref_type(n: &str) -> bool {
-    matches!(n, "Dir" | "File" | "Net" | "Socket" | "Listener")
+    matches!(n, "Dir" | "File" | "Net" | "Socket" | "Listener" | "Secret")
 }
 
 /// A finer source-level value type than `Kind`, used where i32 alone is
@@ -2322,7 +2322,7 @@ impl<'types> Codegen<'types> {
         for i in 0..SCRUT_POOL {
             locals.push(WirLocal { name: format!("__witchy_scrut_save_{i}"), ty: i64t() });
         }
-        locals.push(WirLocal { name: SECRET_TMP.into(), ty: i32t() });
+        locals.push(WirLocal { name: SECRET_TMP.into(), ty: witchy_wir::wir::WirTy::Extern });
         locals.push(WirLocal { name: SECRET_NAME_TMP.into(), ty: i32t() });
         locals.push(WirLocal { name: ABORT_STR_TMP.into(), ty: i32t() });
         // Scratch slots for the inlined in-place `set_at` fast path (index i32,
@@ -6247,7 +6247,7 @@ impl<'types> Codegen<'types> {
                 for i in 0..SCRUT_POOL {
                     locals.push(WirLocal { name: format!("__witchy_scrut_save_{i}"), ty: WirTy::Int });
                 }
-                locals.push(WirLocal { name: SECRET_TMP.into(), ty: i32t() });
+                locals.push(WirLocal { name: SECRET_TMP.into(), ty: WirTy::Extern });
                 locals.push(WirLocal { name: SECRET_NAME_TMP.into(), ty: i32t() });
                 locals.push(WirLocal { name: ABORT_STR_TMP.into(), ty: i32t() });
                 // Scratch slots for the inlined in-place set_at/push fast path (a

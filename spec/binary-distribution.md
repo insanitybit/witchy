@@ -87,10 +87,10 @@ confinement go through the same `runtime.rs`/`confine.rs` as `witchy sandbox`. A
   validates the binary module and links only the granted host functions.
 - **Secret bytes never enter guest memory.** The runtime host holds secret
   material — signing keys, revealable value secrets, and TLS private keys — and
-  exposes each only through the operations that consume it (by handle for signing
-  and TLS serving; `crypto.reveal` for revealable value secrets, which errors on
-  signing keys and use-only secrets). No secret's raw bytes are copied into guest
-  linear memory.
+  exposes each only through the operations that consume it (by opaque reference
+  for signing and TLS serving; `crypto.reveal` for revealable value secrets,
+  which errors on signing keys and use-only secrets). No secret's raw bytes are
+  copied into guest linear memory.
 - **No silent capability grants.** A host links only the host functions the
   footprint declares; concrete resources (`--dir`, `--net`, `--secret`,
   `--secret-file`, `--signing-key`) are granted at launch.

@@ -130,7 +130,7 @@ cannot instantiate.
 
 ## The imports
 
-ABI version 1 declares **85 imports** (`IMPORT_COUNT` in
+ABI version 1 declares **86 imports** (`IMPORT_COUNT` in
 `crates/witchy-wir/src/wir_prelude.rs`). That file owns the ordered signatures
 and the explicit metadata rendered below. The classes are:
 
@@ -164,10 +164,11 @@ byte-for-byte and instantiates an all-import probe against the native host.
 | `field_strlist_size` | `(i32) -> i32` | internal/toolchain service | none | provided |
 | `float_to_str` | `(f64, i32) -> i32` | pure infrastructure | none | provided |
 | `encoding` | `(i32, i32, i32) -> i32` | pure infrastructure | none | provided |
-| `crypto.sign` | `(i32, i32, i32)` | capability authority | Secret | omitted |
-| `crypto.public_key` | `(i32, i32)` | capability authority | Secret | omitted |
-| `secretstore_lookup` | `(i32) -> i32` | capability authority | Secret | omitted |
-| `crypto_reveal_len` | `(i32) -> i32` | capability authority | Secret | omitted |
+| `crypto.sign` | `(externref, i32, i32)` | capability authority | Secret | omitted |
+| `crypto.public_key` | `(externref, i32)` | capability authority | Secret | omitted |
+| `secretstore_lookup` | `(i32) -> externref` | capability authority | Secret | omitted |
+| `crypto_reveal_len` | `(externref) -> i32` | capability authority | Secret | omitted |
+| `mint_secret` | `(i32) -> externref` | capability authority | Secret | omitted |
 | `env_len` | `(i32) -> i32` | capability authority | Env | omitted |
 | `env_fill` | `(i32, i32)` | capability authority | Env | omitted |
 | `dir_read_len` | `(externref, i32) -> i32` | capability authority | Dir.Read | omitted |
@@ -216,7 +217,7 @@ byte-for-byte and instantiates an all-import probe against the native host.
 | `net_connect_pinned` | `(externref, i32, i32, i64, i32) -> externref` | capability authority | Net.Connect | omitted |
 | `net_try_connect_pinned` | `(externref, i32, i32, i64, i32) -> externref` | capability authority | Net.Connect | omitted |
 | `net_listen` | `(externref, i32) -> externref` | capability authority | Net.Listen | omitted |
-| `net_listen_tls` | `(externref, i32, i32, i32) -> externref` | capability authority | Net.Listen, Secret | omitted |
+| `net_listen_tls` | `(externref, i32, i32, externref) -> externref` | capability authority | Net.Listen, Secret | omitted |
 | `net_accept` | `(externref) -> externref` | capability authority | Net.Listen | omitted |
 | `serve_pool` | `(externref)` | capability authority | Net.Listen | omitted |
 | `net_restrict` | `(externref, i32) -> externref` | capability authority | Net.Connect | omitted |

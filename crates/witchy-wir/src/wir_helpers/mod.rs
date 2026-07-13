@@ -3573,16 +3573,16 @@ fn crypto_hash_helper(name: &str, import: &str, hexlen: i32, inputs: &[&str]) ->
 }
 
 /// A keyed crypto op on a `Secret` — `crypto.sign(key, msg)` / `crypto.public_key(key)`.
-/// `key` is the Secret HANDLE (an i32 index into the host secret table); the host
-/// signs / derives the public key with the never-exposed bytes and writes `hexlen`
-/// hex chars. (Separate from `crypto_hash_helper`, whose inputs are all strings.)
+/// `key` is the opaque Secret externref; the host signs / derives the public key
+/// with the never-exposed bytes and writes `hexlen` hex chars. (Separate from
+/// `crypto_hash_helper`, whose inputs are all strings.)
 fn crypto_keyed_helper(name: &str, import: &str, hexlen: i32, has_msg: bool) -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-    let mut params = vec![WirLocal { name: "key".into(), ty: WirTy::Bool }];
+    let mut params = vec![WirLocal { name: "key".into(), ty: WirTy::Extern }];
     let mut host_args: Vec<E> = vec![getl("key")];
     if has_msg {
         params.push(WirLocal { name: "msg".into(), ty: WirTy::Str });
@@ -3707,10 +3707,10 @@ pub fn exec_helper() -> WirFunc {
     }
 }
 
-/// `$crypto_reveal(key) -> i32` — the raw bytes of the secret at handle `key` as
-/// a fresh String (lossy UTF-8). Identical staging to [`dir_read_helper`]: the
-/// host `crypto_reveal_len` reads the host-side secret and reports its byte
-/// length (staging the bytes), then `fill_pending` copies them into `res+4`. For
+/// `$crypto_reveal(key) -> i32` — the raw bytes of the Secret externref as a fresh
+/// String (lossy UTF-8). Identical staging to [`dir_read_helper`]: the host
+/// `crypto_reveal_len` reads the host-side secret and reports its byte length
+/// (staging the bytes), then `fill_pending` copies them into `res+4`. For
 /// value secrets (tokens, passwords) handed to an external sink — signing keys
 /// are used via `sign`/`public_key`, not revealed.
 pub fn crypto_reveal_helper() -> WirFunc {
@@ -3721,7 +3721,7 @@ pub fn crypto_reveal_helper() -> WirFunc {
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     WirFunc {
         name: "crypto_reveal".into(),
-        params: vec![WirLocal { name: "key".into(), ty: WirTy::Bool }],
+        params: vec![WirLocal { name: "key".into(), ty: WirTy::Extern }],
         ret: vec![WirTy::Str],
         locals: vec![
             WirLocal { name: "len".into(), ty: WirTy::Bool },
@@ -4171,17 +4171,12 @@ fn compiler_introspect_helper(name: &str, import: &str, nargs: usize) -> WirFunc
     }
 }
 
-/// A thin host-import wrapper `$name(a0..a{nargs-1}) -> i32` = `CallHost(import,
+/// A thin host-import wrapper `$name(a0..a{nargs-1}) -> T` = `CallHost(import,
 /// [a0..])`. Routing an inline host call through a registered helper keeps the
 /// user body free of direct `CallHost`s — so the capability-minimal prune isn't
 /// deferred (`no_direct_host` stays true) — and declares the import via
-/// `import_deps`. Used for the 2-arg `Dir` ops (subdir/exists/is_dir).
-fn host_call_helper(name: &str, import: &str, nargs: usize) -> WirFunc {
-    host_call_helper_ret(name, import, nargs, WirTy::Bool)
-}
-
-/// Like [`host_call_helper`] but with an explicit result type — for host imports
-/// whose result isn't the default i32 handle/pointer (e.g. `now` returns an i64).
+/// `import_deps`. The default parameter type is the legacy i32/pointer slot;
+/// use `host_call_helper_typed` for externref or i64 parameters.
 fn host_call_helper_ret(name: &str, import: &str, nargs: usize, ret: WirTy) -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
@@ -4767,11 +4762,11 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
-        // Resolve a named secret to its host-table handle (an i32 index, or -1
-        // if absent). Wraps the `secretstore_lookup` host import so user code
-        // stays free of direct CallHosts; the bytes never enter the guest.
+        // Resolve a named secret to a nullable opaque externref (`None` is null).
+        // Wraps the `secretstore_lookup` host import so user code stays free of
+        // direct CallHosts; the bytes never enter the guest.
         "secretstore_lookup" => Some(WirHelperSpec {
-            func: host_call_helper("secretstore_lookup", "secretstore_lookup", 1),
+            func: host_call_helper_typed("secretstore_lookup", "secretstore_lookup", &[WirTy::Str], WirTy::Extern),
             helper_deps: &[],
             import_deps: &["secretstore_lookup"],
             uses_heap: false,
@@ -4877,14 +4872,14 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
-        // (RFC-0060) HTTPS listen: `(net, addr, cert_pem, key_handle) -> Listener`.
-        // The Net arg is an externref; the private key still travels ONLY as its
-        // host-table Secret handle — the bytes stay host-side.
+        // (RFC-0060) HTTPS listen: `(net, addr, cert_pem, key) -> Listener`.
+        // Both authority-bearing args are externrefs; the private key bytes stay
+        // host-side.
         "net_listen_tls" => Some(WirHelperSpec {
             func: host_call_helper_typed(
                 "net_listen_tls",
                 "net_listen_tls",
-                &[WirTy::Extern, WirTy::Str, WirTy::Str, WirTy::Bool],
+                &[WirTy::Extern, WirTy::Str, WirTy::Str, WirTy::Extern],
                 WirTy::Extern,
             ),
             helper_deps: &[],

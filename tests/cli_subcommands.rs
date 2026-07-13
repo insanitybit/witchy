@@ -88,6 +88,55 @@ fn legacy_import_module(
     module.finish()
 }
 
+/// Raw external wasm with no launch metadata: mint the root `Secret` through the
+/// public ABI, then try to reveal it. This proves imported artifacts receive the
+/// same non-revealable signing-key authority as source modules without ever using
+/// the old forged `i32` Secret handle representation.
+fn signing_key_reveal_module() -> Vec<u8> {
+    let mut types = TypeSection::new();
+    types.ty().function([ValType::I32], [ValType::EXTERNREF]);
+    types.ty().function([ValType::EXTERNREF], [ValType::I32]);
+    types.ty().function([], []);
+
+    let mut imports = ImportSection::new();
+    imports.import("witchy", "mint_secret", EntityType::Function(0));
+    imports.import("witchy", "crypto_reveal_len", EntityType::Function(1));
+
+    let mut functions = FunctionSection::new();
+    functions.function(2);
+
+    let mut memories = MemorySection::new();
+    memories.memory(MemoryType {
+        minimum: 1,
+        maximum: None,
+        memory64: false,
+        shared: false,
+        page_size_log2: None,
+    });
+
+    let mut exports = ExportSection::new();
+    exports.export("memory", ExportKind::Memory, 0);
+    exports.export("run", ExportKind::Func, 2);
+
+    let mut run = Function::new([]);
+    run.instruction(&Instruction::I32Const(0));
+    run.instruction(&Instruction::Call(0));
+    run.instruction(&Instruction::Call(1));
+    run.instruction(&Instruction::Drop);
+    run.instruction(&Instruction::End);
+    let mut code = CodeSection::new();
+    code.function(&run);
+
+    let mut module = Module::new();
+    module.section(&types);
+    module.section(&imports);
+    module.section(&functions);
+    module.section(&memories);
+    module.section(&exports);
+    module.section(&code);
+    module.finish()
+}
+
 fn run(args: &[&str]) -> std::process::Output {
     Command::new(BIN).args(args).output().expect("spawn witchy")
 }
@@ -220,22 +269,13 @@ fn wasm_preserves_an_unused_root_secret_contract() {
 }
 
 #[test]
-fn legacy_reveal_import_receives_the_signing_key_grant() {
-    // BUG-427: the ABI import is `crypto_reveal_len`, not the source spelling
-    // `crypto.reveal`. Classification must install the granted key before the
-    // reveal host applies the sign-only policy.
+fn raw_wasm_reveal_import_receives_the_signing_key_grant() {
+    // BUG-427/RFC-0005: the ABI imports are `mint_secret` + `crypto_reveal_len`,
+    // not source spellings. Classification must install the granted key as an
+    // externref before the reveal host applies the sign-only policy.
     let dir = workdir("wasm-reveal-import");
     let wasm = dir.join("legacy_reveal.wasm");
-    std::fs::write(
-        &wasm,
-        legacy_import_module(
-            "crypto_reveal_len",
-            &[ValType::I32],
-            &[ValType::I32],
-            Some(&[0]),
-        ),
-    )
-    .unwrap();
+    std::fs::write(&wasm, signing_key_reveal_module()).unwrap();
     let seed = dir.join("seed.hex");
     std::fs::write(&seed, "41".repeat(32)).unwrap();
 
@@ -252,7 +292,7 @@ fn legacy_reveal_import_receives_the_signing_key_grant() {
     );
     assert!(!out.status.success(), "the signing key must remain non-revealable");
     assert!(error.contains("not revealable"), "expected the reveal policy guard: {error}");
-    assert!(!error.contains("no secret at handle"), "the granted key was not installed: {error}");
+    assert!(!error.contains("Secret externref is null"), "the granted key was not installed: {error}");
 }
 
 #[test]
@@ -277,7 +317,7 @@ fn legacy_clock_and_tls_import_variants_are_classified() {
         &tls,
         legacy_import_module(
             "net_listen_tls",
-            &[ValType::EXTERNREF, ValType::I32, ValType::I32, ValType::I32],
+            &[ValType::EXTERNREF, ValType::I32, ValType::I32, ValType::EXTERNREF],
             &[ValType::EXTERNREF],
             None,
         ),
@@ -312,11 +352,10 @@ fn legacy_clock_and_tls_import_variants_are_classified() {
 
 #[test]
 fn named_secret_does_not_satisfy_a_bare_secret() {
-    // BUG-116: a bare `Secret` main parameter is the ROOT signing-key handle
-    // (handle 0). A `--secret name=value` populates a SecretStore; if it also
-    // satisfied the bare Secret, the named value would land at handle 0 and
-    // `crypto.reveal(key)` would leak it as the root key. Only `--signing-key`
-    // mints a bare Secret.
+    // BUG-116/RFC-0005: a bare `Secret` main parameter is the ROOT signing-key
+    // externref. A `--secret name=value` populates a SecretStore; if it also
+    // satisfied the bare Secret, `crypto.reveal(key)` would leak it as the root
+    // key. Only `--signing-key` mints a bare Secret.
     let dir = workdir("bare-secret");
     let src = write(
         &dir,

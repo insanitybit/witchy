@@ -51,7 +51,7 @@ audit witchy code by reading signatures, not by tracing call graphs.
 | `Exec` | spawn a confined native subprocess | `exec.run(e, dir, path, args, stdin) -> (Int, String)` (std `exec`) |
 | `Net`, `Net[Connect]`, `Net[Listen]` (+ `Tcp`/`Udp`/`Uds` transport markers) | the network | `connect`, `listen`, `accept`, `send_line`, `recv_line`, `recv_all`, `only`, `deny`, … |
 | `SecretStore` | named secrets provisioned by the host (`--secret`/`--secret-file`/`--signing-key`) | `require(store, name) -> Secret`, `get(store, name) -> Option(Secret)` |
-| `Secret` | opaque host-held secret material obtained from a `SecretStore` | `crypto.sign`, `crypto.public_key` (Ed25519 signing keys); `server.serve_tls`/`serve_tls_n` consume a TLS private key by handle; `crypto.reveal` (revealable value secrets only — signing keys and use-only secrets are not revealable) |
+| `Secret` | opaque host-held secret material obtained from a `SecretStore` | `crypto.sign`, `crypto.public_key` (Ed25519 signing keys); `server.serve_tls`/`serve_tls_n` consume a TLS private key by opaque reference; `crypto.reveal` (revealable value secrets only — signing keys and use-only secrets are not revealable) |
 
 A `Dir` is not "the filesystem" — it is one subtree. `dir.read(path)` resolves
 `path` relative to the capability and rejects `..`, absolute paths, and

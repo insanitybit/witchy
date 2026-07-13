@@ -202,10 +202,10 @@ fn build_module(engine: &Engine, opt_wasm: &[u8], cacheable: bool) -> Result<Mod
 
 pub type VmId = u32;
 
-/// One named secret backing the `SecretStore` capability: its name, its raw
-/// bytes (kept host-side — the guest only ever holds the handle index), and
-/// whether it is **use-only** (RFC-0060). A use-only secret is still consumable
-/// by handle (`crypto.sign`, TLS serving), but `crypto.reveal` on it errors — so
+/// One named secret backing the `SecretStore` capability: its name, its raw bytes
+/// (kept host-side — the guest only ever holds an opaque externref), and whether
+/// it is **use-only** (RFC-0060). A use-only secret is still consumable by
+/// reference (`crypto.sign`, TLS serving), but `crypto.reveal` on it errors — so
 /// key material a program *serves* with can never be read back into guest memory.
 /// The default (`use_only == false`) is revealable, preserving existing behavior.
 #[derive(Clone, Debug, Default)]
@@ -299,10 +299,11 @@ pub struct Capabilities {
     /// material stays host-side; the guest only ever sees signatures and the
     /// public key.
     pub signing_key: Option<[u8; 32]>,
-    /// Named secrets backing the `SecretStore` capability, in handle order — a
-    /// `Secret` value is an index into this table, so the raw bytes stay host-side
-    /// (the guest only ever holds the handle). Index 0 is the `signing` secret
-    /// (from `--signing-key`), so a bare `Secret` capability is handle 0.
+    /// Named secrets backing the `SecretStore` capability. The guest never sees an
+    /// index into this vector: `secretstore_lookup` returns an opaque `Secret`
+    /// externref, and the root signing-key `Secret` is minted by `mint_secret`.
+    /// The `signing` entry (from `--signing-key`) is kept here so
+    /// `SecretStore.require("signing")` and bare `Secret` share one identity.
     pub secrets: Vec<SecretGrant>,
     /// The confined output directory backing a build step's `BuildOut`
     /// capability — where `write_out` may write generated source, and nowhere
@@ -369,6 +370,21 @@ struct SocketHandle {
 struct ListenerHandle {
     listener: std::sync::Arc<std::net::TcpListener>,
     tls: Option<crate::net::ServerTlsConfig>,
+}
+
+#[derive(Clone, Debug)]
+struct SecretHandle {
+    bytes: Vec<u8>,
+    use_only: bool,
+}
+
+impl SecretHandle {
+    fn from_grant(grant: &SecretGrant) -> Self {
+        Self {
+            bytes: grant.bytes.clone(),
+            use_only: grant.use_only,
+        }
+    }
 }
 
 /// Host-side state owned by a spawned VM's `Store`: its capability grant, output
@@ -848,9 +864,8 @@ pub(crate) fn link_capability_imports(
     }
     if net && caps.net_listen {
         linker.func_wrap("witchy", "net_listen", host_net_listen)?;
-        // (RFC-0060) HTTPS listen: same Listen right, plus a Secret key handle
-        // resolved host-side — an ungranted handle fails loudly in
-        // `secret_seed_bytes` at listen time, so no extra linking condition.
+        // (RFC-0060) HTTPS listen: same Listen right, plus a Secret externref
+        // resolved host-side. Null or wrong-host-data refs fail loudly at use.
         linker.func_wrap("witchy", "net_listen_tls", host_net_listen_tls)?;
         linker.func_wrap("witchy", "net_accept", host_net_accept)?;
         // (RFC-0032) The `server.serve` worker pool: spawn one worker VM per core, all
@@ -866,9 +881,14 @@ pub(crate) fn link_capability_imports(
         linker.func_wrap("witchy", "net_recv_bytes_len", host_net_recv_bytes_len)?;
         linker.func_wrap("witchy", "net_close", host_net_close)?;
     }
-    // The Secret capability: the seed never enters guest memory — the
-    // host signs and reports the public key on the guest's behalf.
+    // The root Secret capability: the signing-key seed never enters guest memory;
+    // `main(key: Secret)` receives an opaque host reference.
     if caps.signing_key.is_some() {
+        linker.func_wrap("witchy", "mint_secret", host_mint_secret)?;
+    }
+    // Any granted Secret (root signing key or named SecretStore secret) can be
+    // consumed by the keyed crypto helpers while bytes stay host-side.
+    if caps.signing_key.is_some() || !caps.secrets.is_empty() {
         linker.func_wrap("witchy", "crypto.sign", host_crypto_sign)?;
         linker.func_wrap("witchy", "crypto.public_key", host_crypto_public_key)?;
     }
@@ -929,12 +949,11 @@ pub(crate) fn link_capability_imports(
     linker.func_wrap("witchy", "crypto.sha3_256", host_sha3_256)?;
     linker.func_wrap("witchy", "crypto.hmac_sha256", host_hmac_sha256)?;
     linker.func_wrap("witchy", "crypto.rune_hash", host_crypto_rune_hash)?;
-    // Resolving a named secret to its host-table handle reveals nothing (an
-    // i32 index, or -1 when absent), so it is always linkable; an ungranted
-    // store simply yields -1 for every name.
+    // Resolving a named secret returns only an opaque nullable externref, so it
+    // is always linkable; an ungranted store simply yields null for every name.
     linker.func_wrap("witchy", "secretstore_lookup", host_secretstore_lookup)?;
-    // Revealing a value secret needs a granted secret at the handle (it errors
-    // otherwise), so it is always linkable — like `secretstore_lookup`.
+    // Revealing a value secret needs a non-null Secret ref (it errors otherwise),
+    // so it is always linkable — like `secretstore_lookup`.
     linker.func_wrap("witchy", "crypto_reveal_len", host_crypto_reveal_len)?;
     // The compiler's footprint analyses are pure functions of their source
     // arguments — the toolchain exposed to witchy, same registry bridge.
@@ -2801,15 +2820,15 @@ fn host_net_listen(
     listener_ref(&mut caller, listener, tls)
 }
 
-/// (RFC-0060) `net_listen_tls(net, addr, cert_pem, key_handle) -> Listener`:
-/// bind an allowlisted address for HTTPS. The private key is still resolved by
-/// host-side secret handle, so key bytes never enter guest memory.
+/// (RFC-0060) `net_listen_tls(net, addr, cert_pem, key) -> Listener`: bind an
+/// allowlisted address for HTTPS. The private key is resolved from an opaque
+/// Secret externref, so key bytes never enter guest memory.
 fn host_net_listen_tls(
     mut caller: Caller<'_, VmState>,
     net_ref: Option<Rooted<ExternRef>>,
     addr_ptr: i32,
     cert_ptr: i32,
-    key_handle: i32,
+    key_ref: Option<Rooted<ExternRef>>,
 ) -> Result<Option<Rooted<ExternRef>>> {
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
@@ -2818,7 +2837,7 @@ fn host_net_listen_tls(
     if !witchy_caps::capabilities::net_allows(&net.allow, &addr) {
         bail!("listen: `{addr}` is not permitted by this Net capability");
     }
-    let key_bytes = secret_seed_bytes(&caller.data().caps, key_handle)?;
+    let key_bytes = secret_handle_ref(&caller, key_ref)?.bytes;
     let shared = caller.data().worker_listener.clone();
     let (listener, tls) = match shared {
         Some(entry) => entry,
@@ -3045,36 +3064,64 @@ fn host_net_close(
     Ok(())
 }
 
-/// The raw bytes of the secret at `handle` (an index into the host secret table).
-/// (RFC-0005) No magic-index fallback: `handle` must name a real granted entry in
-/// `caps.secrets`. The signing key, when granted, is a normal `"signing"` entry in
-/// that table (populated at every grant site), so it resolves like any other secret —
-/// there is no special case a fabricated handle `0` could exploit.
-fn secret_seed_bytes(caps: &Capabilities, handle: i32) -> Result<Vec<u8>> {
-    if let Some(grant) = usize::try_from(handle).ok().and_then(|h| caps.secrets.get(h)) {
-        return Ok(grant.bytes.clone());
+// --- the Secret capability family ---
+//
+// A guest `Secret` is an opaque externref carrying host-side bytes plus the
+// reveal policy. The compiled backend no longer exposes dense secret-table
+// integers to guest code: `SecretStore.get` returns a nullable externref,
+// `require` checks for null immediately, and the root `Secret` is minted only
+// from the signing-key grant.
+
+fn signing_secret_handle(caller: &Caller<'_, VmState>, h: i32) -> Result<SecretHandle> {
+    if h != 0 {
+        return Err(Error::msg(format!("invalid Secret grant index {h}")));
     }
-    Err(Error::msg("crypto: no secret at that handle (none granted?)"))
+    let caps = &caller.data().caps;
+    let signing = caps
+        .signing_key
+        .ok_or_else(|| Error::msg("root Secret is not granted"))?;
+    if let Some(grant) = caps.secrets.iter().find(|grant| {
+        grant.name == "signing"
+            && witchy_caps::capabilities::secret_is_signing_key(Some(signing.as_slice()), &grant.bytes)
+    }) {
+        return Ok(SecretHandle::from_grant(grant));
+    }
+    Ok(SecretHandle {
+        bytes: signing.to_vec(),
+        use_only: false,
+    })
 }
 
-/// Whether the secret at `handle` was granted **use-only** (RFC-0060) — usable by
-/// handle but not revealable. A handle that names no granted secret is treated as
-/// not use-only; the consuming op's own `secret_seed_bytes` call raises the "no
-/// secret" error.
-fn secret_use_only(caps: &Capabilities, handle: i32) -> bool {
-    usize::try_from(handle)
-        .ok()
-        .and_then(|h| caps.secrets.get(h))
-        .is_some_and(|grant| grant.use_only)
+fn secret_handle_ref(
+    caller: &Caller<'_, VmState>,
+    secret: Option<Rooted<ExternRef>>,
+) -> Result<SecretHandle> {
+    let secret = secret.ok_or_else(|| Error::msg("Secret externref is null"))?;
+    secret
+        .data(caller)?
+        .ok_or_else(|| Error::msg("Secret externref has no host data"))?
+        .downcast_ref::<SecretHandle>()
+        .cloned()
+        .ok_or_else(|| Error::msg("Secret externref has wrong host data"))
 }
 
-/// `crypto.sign(key, msg_ptr, out_data_ptr)`: sign the message with the secret at
-/// handle `key` (host-side bytes) and write the 128 hex signature bytes into the
-/// guest's pre-allocated string — through the same native registry the interpreter
-/// uses, so the output is byte-identical.
-fn host_crypto_sign(mut caller: Caller<'_, VmState>, key: i32, msg_ptr: i32, out_ptr: i32) -> Result<()> {
+fn host_mint_secret(mut caller: Caller<'_, VmState>, i: i32) -> Result<Option<Rooted<ExternRef>>> {
+    let secret = signing_secret_handle(&caller, i)?;
+    ExternRef::new(&mut caller, secret).map(Some)
+}
+
+/// `crypto.sign(key, msg_ptr, out_data_ptr)`: sign the message with the opaque
+/// Secret externref (host-side bytes) and write the 128 hex signature bytes into
+/// the guest's pre-allocated string — through the same native registry the
+/// interpreter uses, so the output is byte-identical.
+fn host_crypto_sign(
+    mut caller: Caller<'_, VmState>,
+    key: Option<Rooted<ExternRef>>,
+    msg_ptr: i32,
+    out_ptr: i32,
+) -> Result<()> {
     use crate::value::NativeValue as Value;
-    let bytes = secret_seed_bytes(&caller.data().caps, key)?;
+    let bytes = secret_handle_ref(&caller, key)?.bytes;
     let mem = memory_of(&mut caller)?;
     let msg = read_wstr(mem.data(&caller), msg_ptr)?;
     let f = crate::native::lookup("crypto.sign")
@@ -3087,11 +3134,16 @@ fn host_crypto_sign(mut caller: Caller<'_, VmState>, key: i32, msg_ptr: i32, out
         .map_err(|e| Error::msg(format!("writing signature into guest memory: {e}")))
 }
 
-/// `crypto.public_key(key, out_data_ptr)`: write the 64 hex public-key bytes of the
-/// secret at handle `key` (safe to publish) into the guest's pre-allocated string.
-fn host_crypto_public_key(mut caller: Caller<'_, VmState>, key: i32, out_ptr: i32) -> Result<()> {
+/// `crypto.public_key(key, out_data_ptr)`: write the 64 hex public-key bytes of
+/// the opaque Secret externref (safe to publish) into the guest's pre-allocated
+/// string.
+fn host_crypto_public_key(
+    mut caller: Caller<'_, VmState>,
+    key: Option<Rooted<ExternRef>>,
+    out_ptr: i32,
+) -> Result<()> {
     use crate::value::NativeValue as Value;
-    let bytes = secret_seed_bytes(&caller.data().caps, key)?;
+    let bytes = secret_handle_ref(&caller, key)?.bytes;
     let f = crate::native::lookup("crypto.public_key")
         .ok_or_else(|| Error::msg("crypto.public_key is not registered"))?;
     let pk = match f(&[Value::Secret(bytes)]).map_err(|e| Error::msg(e.message))? {
@@ -3103,42 +3155,49 @@ fn host_crypto_public_key(mut caller: Caller<'_, VmState>, key: i32, out_ptr: i3
         .map_err(|e| Error::msg(format!("writing public key into guest memory: {e}")))
 }
 
-/// `secretstore_lookup(name_ptr) -> i32`: the host-table handle of the secret
-/// named `name`, or -1 if it was not granted. The bytes never cross into the
-/// guest — only the opaque handle, which `crypto.sign`/`reveal` resolve back to
-/// host-side bytes. (RFC-0005) The signing key is a normal `"signing"` entry in
-/// `caps.secrets` (populated at every grant site), so it is found by name like any
-/// other — no magic-index fallback.
-fn host_secretstore_lookup(mut caller: Caller<'_, VmState>, name_ptr: i32) -> Result<i32> {
+/// `secretstore_lookup(name_ptr) -> externref?`: the host-owned secret named
+/// `name`, or null if it was not granted. The bytes never cross into guest memory
+/// here; callers receive only an opaque `Secret` externref.
+fn host_secretstore_lookup(
+    mut caller: Caller<'_, VmState>,
+    name_ptr: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
     let mem = memory_of(&mut caller)?;
     let name = read_wstr(mem.data(&caller), name_ptr)?;
-    let caps = &caller.data().caps;
-    match caps.secrets.iter().position(|grant| grant.name == name) {
-        Some(i) => Ok(i as i32),
-        None => Ok(-1),
+    let grant = caller
+        .data()
+        .caps
+        .secrets
+        .iter()
+        .find(|grant| grant.name == name)
+        .map(SecretHandle::from_grant);
+    match grant {
+        Some(secret) => ExternRef::new(&mut caller, secret).map(Some),
+        None => Ok(None),
     }
 }
 
-/// `crypto_reveal_len(key) -> i32`: reveal the secret at handle `key` as a string
-/// (its raw bytes, lossy UTF-8 — through the same native registry the interpreter
-/// uses), stage it for `fill_pending`, and report its byte length. For value
-/// secrets handed to an external sink; the bytes only cross into the guest here.
-fn host_crypto_reveal_len(mut caller: Caller<'_, VmState>, key: i32) -> Result<i32> {
+/// `crypto_reveal_len(key) -> i32`: reveal the opaque Secret externref as a
+/// string (its raw bytes, lossy UTF-8 — through the same native registry the
+/// interpreter uses), stage it for `fill_pending`, and report its byte length.
+/// For value secrets handed to an external sink; the bytes only cross into the
+/// guest here.
+fn host_crypto_reveal_len(mut caller: Caller<'_, VmState>, key: Option<Rooted<ExternRef>>) -> Result<i32> {
     use crate::value::NativeValue as Value;
-    let bytes = secret_seed_bytes(&caller.data().caps, key)?;
-    // (RFC-0060) A use-only secret is consumable by handle but never revealable.
-    if secret_use_only(&caller.data().caps, key) {
+    let secret = secret_handle_ref(&caller, key)?;
+    // (RFC-0060) A use-only secret is consumable by opaque ref but never revealable.
+    if secret.use_only {
         bail!("{}", witchy_caps::capabilities::USE_ONLY_SECRET_REVEAL_ERROR);
     }
     if witchy_caps::capabilities::secret_is_signing_key(
         caller.data().caps.signing_key.as_ref().map(|s| s.as_slice()),
-        &bytes,
+        &secret.bytes,
     ) {
         bail!("the signing key is not revealable; use crypto.sign / crypto.public_key");
     }
     let f = crate::native::lookup("crypto.reveal")
         .ok_or_else(|| Error::msg("crypto.reveal is not registered"))?;
-    let s = match f(&[Value::Secret(bytes)]).map_err(|e| Error::msg(e.message))? {
+    let s = match f(&[Value::Secret(secret.bytes)]).map_err(|e| Error::msg(e.message))? {
         Value::Str(s) => s,
         _ => return Err(Error::msg("crypto.reveal did not return a String")),
     };

@@ -173,6 +173,7 @@ fn precompiled_runner_authority_rows_are_cataloged() {
     assert_eq!(authorities_for("net_listen"), vec![A::NetListen]);
     assert_eq!(authorities_for("serve_pool"), vec![A::NetListen]);
     assert_eq!(authorities_for("net_listen_tls"), vec![A::NetListen, A::Secret]);
+    assert_eq!(authorities_for("mint_secret"), vec![A::Secret]);
     assert_eq!(authorities_for("crypto.sign"), vec![A::Secret]);
     assert_eq!(authorities_for("now_monotonic"), vec![A::Clock]);
 }

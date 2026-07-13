@@ -912,13 +912,12 @@ fn has_optional_id() -> Option(Bool):
             .expect_err("a generic user aggregate instantiated with File needs the GC-struct aggregate path");
         assert!(err.contains("Box") && err.contains("File"), "got: {err}");
 
-        // Sibling caps still on the i32 path may cross a slot until their own stage:
-        // `std/secretstore.get -> Option(Secret)` must keep type-checking. These
-        // positive checks are intentional stage-order guards: adding a cap to
-        // `is_externref_cap` before its aggregate/API story exists breaks shipped
-        // language features rather than completing RFC-0005.
         check_str("fn get(console: Console, o: Option(Secret)):\n    console.print(\"x\")\n")
-            .expect("Secret is still an i32 handle this stage — Option(Secret) allowed");
+            .expect("Secret is externref-backed, so direct nullable Option(Secret) is allowed");
+
+        let err = check_str("fn collect(console: Console, xs: List(Secret)):\n    console.print(\"x\")\n")
+            .expect_err("List(Secret) stores externref elements");
+        assert!(err.contains("Secret") && err.contains("List"), "got: {err}");
 
         check_str("fn maybe_dir(console: Console, out: Option(Dir[Write])):\n    console.print(\"x\")\n")
             .expect("Dir is externref-backed this stage, so direct nullable Option(Dir) is allowed");

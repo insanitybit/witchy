@@ -1678,16 +1678,14 @@ fn packed_list_in_type(t: &ast::Type, packed_names: &HashSet<&str>) -> Option<St
 }
 
 /// (RFC-0005) Names of the capabilities represented as an unforgeable `externref`
-/// on the compiled backend at the CURRENT migration stage — the caps with NO boxed
-/// i64-slot representation. Stage 2 migrates `File` (the proving capability);
-/// stage 3 starts with `Dir`. The remaining handle-bearing caps (`Net`/`Secret`/
-/// `SecretStore`/`Exec`) keep their i32-handle representation until their own
-/// stage, so they may still (for now) cross a slot — e.g.
-/// `std/secretstore.get` returns `Option(Secret)`. `Console`/`Clock`/`Rand`/`Env`
-/// are zero-representation (no runtime handle) and never migrate. Widen this set
-/// as each capability migrates.
+/// on the compiled backend — the caps with NO boxed i64-slot representation.
+/// `Console`/`Clock`/`Rand`/`Env` are zero-representation (no runtime handle),
+/// while `SecretStore`/`Exec` are root authorities with no guest-held handle to
+/// migrate. `Option(cap)` is represented as nullable externref; structural
+/// containers/tuples/functions over these caps still need typed GC/closure
+/// lowering and are rejected at boundaries.
 fn is_externref_cap(name: &str) -> bool {
-    matches!(name, "Dir" | "File" | "Net" | "Socket" | "Listener")
+    matches!(name, "Dir" | "File" | "Net" | "Socket" | "Listener" | "Secret")
 }
 
 fn transparent_externref_brand_cap(

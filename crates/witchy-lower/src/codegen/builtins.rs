@@ -71,8 +71,8 @@ impl Codegen<'_> {
                 call("crypto_sha256", self.lower_args(&[&args[0]])?)
             }
             ("crypto.sign", 2) => {
-                // The Secret bytes stay host-side; the guest passes the key HANDLE
-                // (an i32 index into the host secret table) and the message.
+                // The Secret bytes stay host-side; the guest passes an opaque
+                // externref and the message.
                 self.uses_crypto_sign = true;
                 call("crypto_sign", self.lower_args(&[&args[0], &args[1]])?)
             }
@@ -81,8 +81,8 @@ impl Codegen<'_> {
                 call("crypto_public_key", self.lower_args(&[&args[0]])?)
             }
             ("crypto.reveal", 1) => {
-                // The Secret bytes stay host-side; the guest passes the key HANDLE
-                // and the host stages the revealed bytes as a fresh String.
+                // The Secret bytes stay host-side until this explicit reveal path;
+                // the guest passes only the opaque externref.
                 call("crypto_reveal", self.lower_args(&[&args[0]])?)
             }
             ("crypto.rune_hash", 2) => {
@@ -121,23 +121,17 @@ impl Codegen<'_> {
             }
             ("secretstore.require", 2) => {
                 // `SecretStore.require(name)` returns the `Secret` directly (no
-                // `Option`): the host-table handle IS the Secret's guest value. An
-                // absent secret must fail EAGERLY here — matching the interpreter,
-                // which errors at the require site rather than deferring to a later
-                // (or never-reached) use of a -1 handle (BUG-394). The name is
-                // evaluated ONCE into a scratch slot and reused for the lookup and
-                // the not-granted message. The store argument (handle 0) carries no
-                // guest state — ignored.
+                // `Option`): the host returns a nullable externref. An absent secret
+                // must fail EAGERLY here — matching the interpreter, which errors at
+                // the require site rather than deferring to a later (or never-reached)
+                // use of a null Secret. The name is evaluated ONCE into a scratch slot
+                // and reused for the lookup and the not-granted message. The store
+                // argument carries no guest state — ignored.
                 let name = self.lower_expr(&args[1])?;
                 let name_of = || W::GetLocal(SECRET_NAME_TMP.to_string());
                 let lookup = call("secretstore_lookup", vec![name_of()]);
-                let handle = || W::GetLocal(SECRET_TMP.to_string());
-                let missing = W::Binary {
-                    op: witchy_wir::wir::BinOp::Lt,
-                    kind: witchy_wir::wir::Kind::I32,
-                    lhs: Box::new(handle()),
-                    rhs: Box::new(W::ConstI32(0)),
-                };
+                let secret = || W::GetLocal(SECRET_TMP.to_string());
+                let missing = W::RefIsNull(Box::new(secret()));
                 let guard = N::If {
                     cond: missing,
                     then_: witchy_wir::wir_helpers::abort_nodes(
@@ -153,43 +147,13 @@ impl Codegen<'_> {
                     N::SetLocal { local: SECRET_NAME_TMP.to_string(), value: name },
                     N::SetLocal { local: SECRET_TMP.to_string(), value: lookup },
                     guard,
-                    N::Push(handle()),
+                    N::Push(secret()),
                 ])
             }
             ("secretstore.get", 2) => {
-                // `SecretStore.get(name)` builds `Option(Secret)` on the guest:
-                //   let h = secretstore_lookup(name)
-                //   if h >= 0 { Some(h) } else { None }
-                // The handle is the host secret-table index (an i32) — which IS the
-                // `Secret`'s guest representation, so `Some(h)` is `Some(Secret)`. The
-                // handle is fetched ONCE into a scratch local and reused, so the name
-                // string is allocated once. The store argument (handle 0) carries no
-                // guest state, so it is ignored.
-                let lookup = call("secretstore_lookup", vec![self.lower_expr(&args[1])?]);
-                let handle = || W::GetLocal(SECRET_TMP.to_string());
-                let cond = W::Binary {
-                    op: witchy_wir::wir::BinOp::Ge,
-                    kind: witchy_wir::wir::Kind::I32,
-                    lhs: Box::new(handle()),
-                    rhs: Box::new(W::ConstI32(0)),
-                };
-                self.mk_arities.insert(1);
-                self.mk_arities.insert(0);
-                let some = W::Call {
-                    func: "mk1".into(),
-                    args: vec![W::ConstI32(0), W::ToSlot(Box::new(handle()), witchy_wir::wir::Kind::I32)],
-                };
-                let none = W::Call { func: "mk0".into(), args: vec![W::ConstI32(1)] };
-                let choose = W::Control(Box::new(N::If {
-                    cond,
-                    then_: vec![N::Push(some)],
-                    els: vec![N::Push(none)],
-                    result: Some(witchy_wir::wir::WirTy::Str),
-                }));
-                W::Seq(vec![
-                    N::SetLocal { local: SECRET_TMP.to_string(), value: lookup },
-                    N::Push(choose),
-                ])
+                // `Option(Secret)` is nullable externref: a granted named secret is
+                // the `Some` payload, and `None` is `ref.null extern`.
+                call("secretstore_lookup", vec![self.lower_expr(&args[1])?])
             }
             ("compiler.footprint", 1) => {
                 self.uses_compiler_footprint = true;
@@ -720,9 +684,9 @@ impl Codegen<'_> {
                 let a = self.lower_args(&[&args[0], &args[1]])?;
                 if self.collect_wir { call("net_listen", a) } else { host("net_listen_host", a) }
             }
-            // (RFC-0060) HTTPS listen: `(net, addr, cert_pem, key) -> Listener`. The
-            // `key` argument is a Secret, whose guest value IS its host-table handle,
-            // so it lowers like any i32 — the key bytes never enter guest memory.
+            // (RFC-0060) HTTPS listen: `(net, addr, cert_pem, key) -> Listener`.
+            // The `key` argument is an opaque Secret externref; the key bytes never
+            // enter guest memory.
             ("listen_tls", 4) => {
                 self.used_net_ops.insert("listen");
                 let a = self.lower_args(&[&args[0], &args[1], &args[2], &args[3]])?;

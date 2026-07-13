@@ -224,10 +224,11 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "field_strlist_size" (func $field_strlist_size_host (param i32) (result i32)))
   (import "witchy" "float_to_str" (func $float_to_str_host (param f64 i32) (result i32)))
   (import "witchy" "encoding" (func $encoding_host (param i32 i32 i32) (result i32)))
-  (import "witchy" "crypto.sign" (func $crypto_sign_host (param i32 i32 i32)))
-  (import "witchy" "crypto.public_key" (func $crypto_public_key_host (param i32 i32)))
-  (import "witchy" "secretstore_lookup" (func $secretstore_lookup_host (param i32) (result i32)))
-  (import "witchy" "crypto_reveal_len" (func $crypto_reveal_len_host (param i32) (result i32)))
+  (import "witchy" "crypto.sign" (func $crypto_sign_host (param externref i32 i32)))
+  (import "witchy" "crypto.public_key" (func $crypto_public_key_host (param externref i32)))
+  (import "witchy" "secretstore_lookup" (func $secretstore_lookup_host (param i32) (result externref)))
+  (import "witchy" "crypto_reveal_len" (func $crypto_reveal_len_host (param externref) (result i32)))
+  (import "witchy" "mint_secret" (func $mint_secret_host (param i32) (result externref)))
   (import "witchy" "env_len" (func $env_len_host (param i32) (result i32)))
   (import "witchy" "env_fill" (func $env_fill_host (param i32 i32)))
   (import "witchy" "dir_read_len" (func $dir_read_len_host (param externref i32) (result i32)))
@@ -276,7 +277,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "net_connect_pinned" (func $net_connect_pinned_host (param externref i32 i32 i64 i32) (result externref)))
   (import "witchy" "net_try_connect_pinned" (func $net_try_connect_pinned_host (param externref i32 i32 i64 i32) (result externref)))
   (import "witchy" "net_listen" (func $net_listen_host (param externref i32) (result externref)))
-  (import "witchy" "net_listen_tls" (func $net_listen_tls_host (param externref i32 i32 i32) (result externref)))
+  (import "witchy" "net_listen_tls" (func $net_listen_tls_host (param externref i32 i32 externref) (result externref)))
   (import "witchy" "net_accept" (func $net_accept_host (param externref) (result externref)))
   (import "witchy" "serve_pool" (func $serve_pool_host (param externref)))
   (import "witchy" "net_restrict" (func $net_restrict_host (param externref i32) (result externref)))
@@ -300,7 +301,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 85;
+pub const IMPORT_COUNT: usize = 86;
 
 /// Version of the public `"witchy"` host-import contract.
 pub const WITCHY_ABI_VERSION: u32 = 1;
@@ -439,6 +440,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "crypto.public_key"
         | "secretstore_lookup"
         | "crypto_reveal_len"
+        | "mint_secret"
         | "env_len"
         | "env_fill"
         | "dir_read_len"
@@ -506,7 +508,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
     };
 
     let authorities = match name {
-        "crypto.sign" | "crypto.public_key" | "secretstore_lookup" | "crypto_reveal_len" => AUTH_SECRET,
+        "crypto.sign" | "crypto.public_key" | "secretstore_lookup" | "crypto_reveal_len" | "mint_secret" => AUTH_SECRET,
         "env_len" | "env_fill" => AUTH_ENV,
         "mint_dir" => AUTH_DIR_GRANT,
         "dir_read_len"

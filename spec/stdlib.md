@@ -2397,7 +2397,7 @@ The rights inside "Kind[A, B]" as ["A", "B"] (trimmed, blanks dropped).
 
 ## `secretstore`
 
-secretstore — read named secrets from the host-granted `SecretStore`. The secrets come from `--secret name=value` / `--secret-file name=path` (append `,use-only` to forbid `crypto.reveal`). `--signing-key <path>` grants the `signing` secret as a protected, non-revealable signing key — it is NOT the same as `--secret-file signing=<path>`, which grants an ordinary revealable named secret. Their bytes stay host-side. `get` is intercepted by the runtime, since a `SecretStore` is a capability, not plain data. A `Secret` is opaque host-held material consumed by specific operations: `crypto.sign` / `crypto.public_key` (Ed25519 signing keys), `server.serve_tls` / `serve_tls_n` (a TLS private key, by handle), and `crypto.reveal` — which succeeds only for revealable value secrets, and errors on signing keys and use-only secrets.
+secretstore — read named secrets from the host-granted `SecretStore`. The secrets come from `--secret name=value` / `--secret-file name=path` (append `,use-only` to forbid `crypto.reveal`). `--signing-key <path>` grants the `signing` secret as a protected, non-revealable signing key — it is NOT the same as `--secret-file signing=<path>`, which grants an ordinary revealable named secret. Their bytes stay host-side. `get` is intercepted by the runtime, since a `SecretStore` is a capability, not plain data. A `Secret` is opaque host-held material consumed by specific operations: `crypto.sign` / `crypto.public_key` (Ed25519 signing keys), `server.serve_tls` / `serve_tls_n` (a TLS private key, by opaque reference), and `crypto.reveal` — which succeeds only for revealable value secrets, and errors on signing keys and use-only secrets.
 
 #### `fn get(store: SecretStore, name: String) -> Option(Secret)`
 
@@ -2405,7 +2405,7 @@ Fetch the secret named `name`, or `None` if it was not granted.
 
 #### `fn require(store: SecretStore, name: String) -> Secret`
 
-Fetch a *required* secret named `name`, returning the `Secret` directly. Use this when absence is a configuration error (e.g. a server's root signing key): it fails loudly rather than handing back an `Option` to unwrap. The body is a placeholder — the runtime intercepts the call (interpreter) / lowers it to a host handle lookup (WASM); it is never executed.
+Fetch a *required* secret named `name`, returning the `Secret` directly. Use this when absence is a configuration error (e.g. a server's root signing key): it fails loudly rather than handing back an `Option` to unwrap. The body is a placeholder — the runtime intercepts the call (interpreter) / lowers it to a host Secret lookup (WASM); it is never executed.
 
 ## `semver`
 
@@ -2643,7 +2643,7 @@ Serve exactly `n` requests then return — for tests and one-shot servers.
 
 #### `fn serve_tls(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Secret, app: Router)`
 
-Serve `app` over HTTPS on `addr` forever, using ALL cores — `serve` with TLS terminated by the host. `cert_pem` is the PUBLIC certificate chain (PEM text — inline, or read via an ordinary `Dir` grant); `key` is the private key as a `Secret` (`secretstore.require(store, "tls-key")`), consumed BY HANDLE: the key bytes never enter this program's memory, so even a bug in a handler cannot exfiltrate them. Grant the key use-only (`--secret-file tls-key=key.pem,use-only`) and `crypto.reveal` on it errors too. A malformed or mismatched cert/key fails LOUDLY here at startup; an individual failed handshake (a plaintext client, a bad ClientHello) drops that connection and the server keeps serving. Handlers, `Router`, and `Request`/`Response` are unchanged — TLS is transparent above the accepted connection.
+Serve `app` over HTTPS on `addr` forever, using ALL cores — `serve` with TLS terminated by the host. `cert_pem` is the PUBLIC certificate chain (PEM text — inline, or read via an ordinary `Dir` grant); `key` is the private key as a `Secret` (`secretstore.require(store, "tls-key")`), consumed by opaque host reference: the key bytes never enter this program's memory, so even a bug in a handler cannot exfiltrate them. Grant the key use-only (`--secret-file tls-key=key.pem,use-only`) and `crypto.reveal` on it errors too. A malformed or mismatched cert/key fails LOUDLY here at startup; an individual failed handshake (a plaintext client, a bad ClientHello) drops that connection and the server keeps serving. Handlers, `Router`, and `Request`/`Response` are unchanged — TLS is transparent above the accepted connection.
 
 #### `fn serve_tls_n(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Secret, app: Router, n: Int)`
 

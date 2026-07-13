@@ -89,6 +89,21 @@
             (drop (call $net_accept (ref.null extern)))))
     "#;
 
+    const NULL_SECRET_REVEAL: &str = r#"
+        (module
+          (import "witchy" "crypto_reveal_len" (func $crypto_reveal_len (param externref) (result i32)))
+          (func (export "run")
+            (drop (call $crypto_reveal_len (ref.null extern)))))
+    "#;
+
+    const NULL_SECRET_SIGN: &str = r#"
+        (module
+          (import "witchy" "crypto.sign" (func $crypto_sign (param externref i32 i32)))
+          (memory (export "memory") 1)
+          (func (export "run")
+            (call $crypto_sign (ref.null extern) (i32.const 0) (i32.const 0))))
+    "#;
+
     const DIRECT_FILE_WRITE: &str = r#"
         (module
           (import "witchy" "mint_file" (func $mint_file (param i32) (result externref)))
@@ -277,6 +292,42 @@
         assert!(
             detail.contains("Listener externref is null"),
             "expected null Listener externref rejection, got: {detail}"
+        );
+    }
+
+    #[test]
+    fn null_secret_externref_is_rejected_by_reveal() {
+        let mut rt = Runtime::new().unwrap();
+        let mut vm = rt
+            .spawn(NULL_SECRET_REVEAL, Capabilities::default(), 4)
+            .unwrap();
+        let err = vm.run().unwrap_err();
+        let detail = format!("{err:?}");
+        assert!(
+            detail.contains("Secret externref is null"),
+            "expected null Secret externref rejection, got: {detail}"
+        );
+    }
+
+    #[test]
+    fn null_secret_externref_is_rejected_by_sign() {
+        let mut rt = Runtime::new().unwrap();
+        let mut vm = rt
+            .spawn(
+                NULL_SECRET_SIGN,
+                Capabilities {
+                    signing_key: Some([0x41; 32]),
+                    secrets: vec![SecretGrant::new("signing", vec![0x41; 32])],
+                    ..Default::default()
+                },
+                4,
+            )
+            .unwrap();
+        let err = vm.run().unwrap_err();
+        let detail = format!("{err:?}");
+        assert!(
+            detail.contains("Secret externref is null"),
+            "expected null Secret externref rejection, got: {detail}"
         );
     }
 

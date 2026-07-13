@@ -732,8 +732,9 @@ fn main() -> wasmtime::Result<()> {
             ..Default::default()
         };
         if let Some(seed) = signing_key {
-            // The signing key is the `signing` secret at handle 0 (a bare `Secret`),
-            // also reachable via `SecretStore.get("signing")`.
+            // The signing key is the `signing` named secret, also reachable via
+            // `SecretStore.get("signing")`; a bare `Secret` is minted from the
+            // same host-side bytes as an opaque externref.
             caps.secrets.push(runtime::SecretGrant::new("signing", seed.to_vec()));
         }
         // `batch()` (no preemption): a server blocks in host accept calls, and we never
@@ -1544,8 +1545,8 @@ fn flag_value(arg: &str, flag: &str, rest: &mut impl Iterator<Item = String>) ->
 /// taken literally (UTF-8 bytes) — a token, password, or connection string. The
 /// name must be non-empty and contain no `=` (everything after the first `=`, up
 /// to any trailing `,use-only`, is the value, so values may contain `=`). A
-/// trailing `,use-only` (RFC-0060) marks the secret usable by handle but not
-/// revealable (`crypto.reveal` errors); the default is revealable.
+/// trailing `,use-only` (RFC-0060) marks the secret usable by opaque `Secret`
+/// reference but not revealable (`crypto.reveal` errors); the default is revealable.
 fn parse_secret_inline(spec: &str) -> Result<runtime::SecretGrant, String> {
     let (body, use_only) = split_use_only(spec);
     match body.split_once('=') {
@@ -1558,8 +1559,8 @@ fn parse_secret_inline(spec: &str) -> Result<runtime::SecretGrant, String> {
 
 /// Parse a `--secret-file name=path[,use-only]` spec, reading the secret's bytes
 /// from the file. Whitespace is NOT trimmed (a secret file holds exactly its
-/// bytes). A trailing `,use-only` (RFC-0060) marks it usable by handle but not
-/// revealable — the shape a TLS private key should take.
+/// bytes). A trailing `,use-only` (RFC-0060) marks it usable by opaque `Secret`
+/// reference but not revealable — the shape a TLS private key should take.
 fn parse_secret_file(spec: &str) -> Result<runtime::SecretGrant, String> {
     let (body, use_only) = split_use_only(spec);
     match body.split_once('=') {
@@ -2169,13 +2170,12 @@ fn run_linked_compiled(
     // `--secret`. This keeps `run`/`sandbox` aligned with `parity` and both backends,
     // which run a `main(…, SecretStore)` fine with an empty store (BUG-112).
     //
-    // (BUG-116) A bare `Secret` is the ROOT signing-key handle (handle 0); only
+    // (BUG-116/RFC-0005) A bare `Secret` is the ROOT signing-key externref; only
     // `--signing-key` mints it. A `--secret name=value` populates the
-    // `SecretStore`, and named secrets follow the signing key in the handle
-    // table — so if we accepted a named secret here, the first one would land at
-    // handle 0 and `crypto.reveal(key)` on the bare `Secret` would read an
-    // arbitrary named value as the root key. A bare `Secret` therefore requires
-    // `--signing-key` specifically, independent of any named secrets.
+    // `SecretStore`, so accepting a named secret as the bare root would let
+    // `crypto.reveal(key)` read an arbitrary named value as the root key. A bare
+    // `Secret` therefore requires `--signing-key` specifically, independent of
+    // any named secrets.
     if grant.contains_key("Secret") && signing_key.is_none() {
         return Err(
             "this program needs a root `Secret` (the signing key), but none was granted — provide `--signing-key <seed-file>` (a named `--secret`/`--secret-file` populates a `SecretStore`, not the bare `Secret`)".to_string(),
@@ -2243,10 +2243,11 @@ fn run_linked_compiled(
     }
     if grant.contains_key("Secret") || grant.contains_key("SecretStore") {
         caps.signing_key = signing_key;
-        // The signing key is the `signing` secret at handle 0, so a `Secret`
-        // capability (always handle 0) and `SecretStore.get("signing")` agree.
-        // The `--secret`/`--secret-file` grants follow, each a named `Secret`
-        // reachable by `SecretStore.get(name)` / `.require(name)`.
+        // The signing key is also the named `signing` secret, so a bare root
+        // `Secret` and `SecretStore.get("signing")` agree by identity while
+        // still reaching the guest only as opaque refs. The `--secret` /
+        // `--secret-file` grants follow, each reachable by
+        // `SecretStore.get(name)` / `.require(name)`.
         if let Some(seed) = signing_key {
             caps.secrets.push(runtime::SecretGrant::new("signing", seed.to_vec()));
         }
@@ -2545,10 +2546,10 @@ fn run_file_sandboxed(
     // whole-program union, so a verify-only program that imports `crypto` is not
     // forced to be handed a `Secret` it never binds.
     let grant = capabilities::run_grant(&linked);
-    // (BUG-116) A bare `Secret` is the root signing-key handle; a named
-    // `--secret` populates a `SecretStore`, not the bare `Secret`. Requiring
-    // `--signing-key` specifically stops a named value from landing at handle 0
-    // and being revealed as the root key.
+    // (BUG-116/RFC-0005) A bare `Secret` is the root signing-key externref; a
+    // named `--secret` populates a `SecretStore`, not the bare `Secret`.
+    // Requiring `--signing-key` specifically stops a named value from being
+    // revealed as the root key.
     if grant.contains_key("Secret") && signing_key.is_none() {
         return Err(format!(
             "`{path}` needs a root `Secret` (the signing key), but none was granted — provide `--signing-key <seed-file>` (a named `--secret`/`--secret-file` populates a `SecretStore`, not the bare `Secret`)"
@@ -2726,7 +2727,7 @@ fn run_file_grants(
         }
     }
     // Secrets reach the program by name through the `SecretStore` (`require`/`get`);
-    // the bare `Secret` handle (`--signing-key`) is not granted via documents here.
+    // the bare root `Secret` (`--signing-key`) is not granted via documents here.
     run_linked_compiled(&linked, dir_roots, file_grants, net_allow, args, None, named_secrets, user_cap_fields, true)
 }
 

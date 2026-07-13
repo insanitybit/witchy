@@ -581,6 +581,7 @@ fn assemble_wir_module_with_structs(
     let mut main_param_is_dir: Vec<bool> = Vec::new();
     let mut main_param_is_file: Vec<bool> = Vec::new();
     let mut main_param_is_net: Vec<bool> = Vec::new();
+    let mut main_param_is_secret: Vec<bool> = Vec::new();
     // RFC-0038: `Some((type_name, nfields))` for a grantable-capability `main` param
     // (its record is minted at the root); `None` otherwise.
     let mut main_param_user_cap: Vec<Option<(String, usize)>> = Vec::new();
@@ -636,6 +637,8 @@ fn assemble_wir_module_with_structs(
                         .push(matches!(&p.ty, Some(Type::Named(n, _)) if n == "File"));
                     main_param_is_net
                         .push(matches!(&p.ty, Some(Type::Named(n, _)) if n == "Net"));
+                    main_param_is_secret
+                        .push(matches!(&p.ty, Some(Type::Named(n, _)) if n == "Secret"));
                     let uc = match &p.ty {
                         Some(Type::Named(n, _)) => {
                             grantable_caps.get(n.as_str()).map(|nf| (n.clone(), *nf))
@@ -703,7 +706,7 @@ fn assemble_wir_module_with_structs(
             WasmTy::I64 => WK::I64,
             WasmTy::F64 | WasmTy::F32 => WK::F64,
             // (RFC-0005) A migrated capability import (mint_dir, dir_*,
-            // mint_file, file_*, mint_net, net_*)
+            // mint_file, file_*, mint_net, net_*, mint_secret, crypto/secretstore)
             // takes/returns an unforgeable `externref`.
             WasmTy::ExternRef => WK::ExternRef,
         }
@@ -859,6 +862,9 @@ fn assemble_wir_module_with_structs(
             if main_param_is_net.iter().any(|is_net| *is_net) {
                 import_names.insert("mint_net");
             }
+            if main_param_is_secret.iter().any(|is_secret| *is_secret) {
+                import_names.insert("mint_secret");
+            }
             // (RFC-0045) A user `fail(msg)` calls `__witchy_abort` directly (its
             // import_deps aren't consulted because it's not a registry helper), so
             // declare the import when user code reaches it.
@@ -915,8 +921,9 @@ fn assemble_wir_module_with_structs(
             // Each `Dir` param is minted from a distinct root grant in declaration
             // order as an unforgeable externref (RFC-0005 Stage 3).
             // Each `File` param is minted from the corresponding direct `--file`
-            // grant as an unforgeable externref (RFC-0005 Stage 2); every other cap
-            // is a right-less placeholder (handle 0).
+            // grant as an unforgeable externref (RFC-0005 Stage 2). The root
+            // `Secret` is minted from the host's signing-key grant as an opaque
+            // externref; there is no guest-visible integer handle.
             let mut dir_handle = 0i32;
             let mut file_handle = 0i32;
             let mut net_handle = 0i32;
@@ -943,6 +950,11 @@ fn assemble_wir_module_with_structs(
                         args: vec![WirExpr::ConstI32(net_handle)],
                     });
                     net_handle += 1;
+                } else if main_param_is_secret.get(i).copied().unwrap_or(false) {
+                    main_args.push(WirExpr::CallHost {
+                        import: "mint_secret".into(),
+                        args: vec![WirExpr::ConstI32(0)],
+                    });
                 } else if let Some((tn, nfields)) = main_param_user_cap.get(i).cloned().flatten() {
                     // RFC-0038: mint the sealed record from the grant —
                     // `mk{N}(tag, build_user_cap_field(k, 0), …, build_user_cap_field(k, N-1))`.
@@ -1767,8 +1779,7 @@ mod diagnostic_site_tests {
 /// Compile a rune's build step to a WASM binary that runs in the zero-ambient
 /// build sandbox. The `build` entrypoint is renamed to `main` so the whole
 /// `compile_module_binary` pipeline (the `run` export, marshaling, helpers) is
-/// reused verbatim — its capability parameters lower to handle 0 exactly like
-/// `main`'s, and the only build-specific code is the `write_out`/`read_build`
+/// reused verbatim. The only build-specific code is the `write_out`/`read_build`
 /// host calls (the `build_out_write`/`build_read` WIR helpers), which never
 /// appear in an ordinary program (so parity is untouched). The host links only
 /// `build_out_write`/`build_read_len`, confined to the granted output sandbox
