@@ -451,3 +451,9 @@ implementation body moved fully into an inherent method. The source-level
 `list.map` are linker/compiler aliases to the generated method implementation
 symbol (`List__map`). This keeps old module-qualified and function-value code
 working while avoiding a duplicated std wrapper that calls out to the method.
+
+`List.filter` is the second body-owned operation. Its implementation likewise
+lives only on `impl List(a)`, while method calls, `list.filter(xs, pred)`, and
+value-position `list.filter` all target `List__filter`. The regression also
+checks the assembled WIR contains the method symbol and no legacy
+`list.filter` function body.

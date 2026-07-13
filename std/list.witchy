@@ -52,6 +52,14 @@ impl List(a):
             out = list.push(out, f(x))
         out
 
+    // Keep only the elements for which `keep` returns true.
+    pub fn filter(self, keep: fn(a) -> Bool) -> List(a):
+        var out = []
+        for x in self:
+            if keep(x):
+                out = list.push(out, x)
+        out
+
     pub fn reverse(var self) -> List(a):
         list.reverse(self)
 
@@ -124,14 +132,6 @@ pub fn range_step(start: Int, stop: Int, step: Int) -> List(Int):
             if i < 0 - 9223372036854775807 - 1 - step:
                 break
             i = i + step
-    out
-
-// Keep only the elements for which `keep` returns true.
-pub fn filter(xs: List(a), keep: fn(a) -> Bool) -> List(a):
-    var out = []
-    for x in xs:
-        if keep(x):
-            out = list.push(out, x)
     out
 
 // Split `xs` into (matching, non-matching) by `pred`, each preserving the
