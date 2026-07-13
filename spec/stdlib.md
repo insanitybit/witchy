@@ -4274,6 +4274,14 @@ Render a Url back to its string form — the inverse of `parse`. The port is sho
 
 Percent-encode `s` for use as a query-string value (RFC 3986): the unreserved set (`A-Z a-z 0-9 - _ . ~`) passes through, every other byte becomes `%XX`. Used to build query strings safely — e.g. an OAuth `redirect_uri`, `scope`, or `state`.
 
+#### `fn decode(s: String) -> String`
+
+Percent-decode `s` (RFC 3986 §2.1): each `%XX` becomes the byte it names. Consecutive `%XX` bytes are decoded together so multi-byte UTF-8 escapes (`%E2%82%AC` -> `€`) round-trip. A stray `%` not followed by two hex digits passes through literally (total, lossy). `+` stays literal — for form/query decoding where `+` means space, use `decode_form`.
+
+#### `fn decode_form(s: String) -> String`
+
+Like `decode`, but also maps `+` to a space — the `application/x-www-form-urlencoded` convention for query strings and form bodies (RFC 1866 §8.2.1).
+
 ### Trait implementations
 
 #### `impl Show for UrlError`

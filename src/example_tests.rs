@@ -11789,6 +11789,51 @@ fn main(console: Console):
         );
     }
 
+    /// (BUG-470) `url.decode` percent-decodes path components (+ stays literal),
+    /// `url.decode_form` also maps + to space (query/form convention). Both handle
+    /// multi-byte UTF-8 escapes and stray `%` passthrough. Parity on both backends.
+    #[test]
+    fn url_decode_and_decode_form_backends_agree() {
+        let client = r#"
+import url
+fn main(console: Console):
+    // Basic ASCII escapes
+    console.print(url.decode("hello%20world"))
+    // Multi-byte UTF-8 (€ = E2 82 AC)
+    console.print(url.decode("%E2%82%AC"))
+    // + stays literal in path mode
+    console.print(url.decode("a+b"))
+    // + becomes space in form mode
+    console.print(url.decode_form("a+b"))
+    // Mixed: encoded and plain
+    console.print(url.decode_form("key%3D%26val+ue"))
+    // Stray % passes through
+    console.print(url.decode("100%"))
+    // encode/decode round-trip
+    console.print(url.decode(url.encode("hello world/€")))
+"#;
+        let sources = [
+            ("option", crate::bundled_module("option").unwrap()),
+            ("url", crate::bundled_module("url").unwrap()),
+            ("main", client),
+        ];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "url.decode diverged");
+        assert_eq!(
+            compiled,
+            vec![
+                "hello world",
+                "€",
+                "a+b",
+                "a b",
+                "key=&val ue",
+                "100%",
+                "hello world/€",
+            ]
+        );
+    }
+
     #[test]
     fn url_parse_ipv6_and_userinfo_backends_agree() {
         // A bracketed IPv6 authority keeps its inner colons in the host and splits

@@ -239,3 +239,48 @@ fn percent(ch: String) -> String:
         out = out + "%" + string.substring(hex, i, i + 2)
         i = i + 2
     out
+
+// Percent-decode `s` (RFC 3986 §2.1): each `%XX` becomes the byte it names.
+// Consecutive `%XX` bytes are decoded together so multi-byte UTF-8 escapes
+// (`%E2%82%AC` -> `€`) round-trip. A stray `%` not followed by two hex digits
+// passes through literally (total, lossy). `+` stays literal — for form/query
+// decoding where `+` means space, use `decode_form`.
+pub fn decode(s: String) -> String:
+    pct_decode(s, false)
+
+// Like `decode`, but also maps `+` to a space — the
+// `application/x-www-form-urlencoded` convention for query strings and form
+// bodies (RFC 1866 §8.2.1).
+pub fn decode_form(s: String) -> String:
+    pct_decode(s, true)
+
+fn pct_decode(s: String, plus_space: Bool) -> String:
+    var out = ""
+    var pending = ""
+    var i = 0
+    let n = string.char_count(s)
+    while i < n:
+        let ch = string.char_at(s, i) ?? ""
+        if ch == "%" && i + 2 < n && is_hex_digit(string.char_at(s, i + 1) ?? "") && is_hex_digit(string.char_at(s, i + 2) ?? ""):
+            pending = pending + string.substring(s, i + 1, i + 3)
+            i = i + 3
+        else:
+            out = out + flush_hex(pending)
+            pending = ""
+            if plus_space && ch == "+":
+                out = out + " "
+            else:
+                out = out + ch
+            i = i + 1
+    out + flush_hex(pending)
+
+fn flush_hex(hex: String) -> String:
+    if hex == "":
+        ""
+    else:
+        match encoding.hex_decode(hex):
+            Ok(text) -> text
+            Err(_e) -> hex
+
+fn is_hex_digit(c: String) -> Bool:
+    string.char_count(c) == 1 && string.contains("0123456789abcdefABCDEF", c)
