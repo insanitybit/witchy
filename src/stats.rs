@@ -282,32 +282,38 @@ mod tests {
             // would diverge here.
             "fn main(console: Console):\n    let xs = [3, 1, 4, 1, 5, 9, 2, 6]\n    let ys = [10, 20]\n    var t = 0\n    for i in 0..list.length(xs):\n        t = t + xs[i] * i\n    for j in 0..list.length(ys):\n        t = t + ys[j]\n    console.print(\"${t}\")\n",
         ];
-        for src in corpus {
-            // The interpreter oracle (the fixed semantics; it has no WITCHY_OPT).
-            let linked = crate::resolve_std_only(src).expect("link");
-            typeck::check(&linked).expect("typeck");
-            let oracle =
-                crate::interpreter::run_module(linked, ".", Vec::new()).expect("interp run");
+        std::thread::scope(|s| {
+            let handles: Vec<_> = corpus.iter().map(|src| {
+                s.spawn(move || {
+                    let linked = crate::resolve_std_only(src).expect("link");
+                    typeck::check(&linked).expect("typeck");
+                    let oracle =
+                        crate::interpreter::run_module(linked, ".", Vec::new()).expect("interp run");
 
-            opt::set_for_tests(Some(OptSet::all()));
-            let base = compute(src).expect("compute all").output;
-            opt::set_for_tests(None);
-            assert_eq!(base, oracle, "wasm (all) must match the interpreter oracle");
+                    opt::set_for_tests(Some(OptSet::all()));
+                    let base = compute(src).expect("compute all").output;
+                    opt::set_for_tests(None);
+                    assert_eq!(base, oracle, "wasm (all) must match the interpreter oracle for:\n{src}");
 
-            let mut settings: Vec<(String, OptSet)> = vec![
-                ("none".into(), OptSet::none()),
-                ("default".into(), OptSet::default_set()),
-            ];
-            for o in Opt::ALL {
-                settings.push((format!("-{}", o.name()), OptSet::default_set().without(o)));
+                    let mut settings: Vec<(String, OptSet)> = vec![
+                        ("none".into(), OptSet::none()),
+                        ("default".into(), OptSet::default_set()),
+                    ];
+                    for o in Opt::ALL {
+                        settings.push((format!("-{}", o.name()), OptSet::default_set().without(o)));
+                    }
+                    for (label, set) in settings {
+                        opt::set_for_tests(Some(set));
+                        let out = compute(src).expect("compute").output;
+                        opt::set_for_tests(None);
+                        assert_eq!(out, base, "WITCHY_OPT={label} changed observable output for:\n{src}");
+                    }
+                })
+            }).collect();
+            for h in handles {
+                h.join().unwrap();
             }
-            for (label, set) in settings {
-                opt::set_for_tests(Some(set));
-                let out = compute(src).expect("compute").output;
-                opt::set_for_tests(None);
-                assert_eq!(out, base, "WITCHY_OPT={label} changed observable output");
-            }
-        }
+        });
     }
 
     fn interp(src: &str) -> Vec<String> {
