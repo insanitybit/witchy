@@ -20,7 +20,7 @@ link error: `mode opt` module `main` imports `stats`, which is not `mode opt` â€
 ```
 
 That's the point: under `mode opt` you can't accidentally pull in a
-non-optimized dependency. See [`../../opt_mode.witchy`](../../opt_mode.witchy)
+non-optimized dependency. See [`../../opt_mode/src/opt_mode.witchy`](../../opt_mode.witchy)
 for what `mode opt` enforces *inside* a single file, and
 [`rfcs/performance-modes.md`](../../../rfcs/performance-modes.md) for the full
 model.

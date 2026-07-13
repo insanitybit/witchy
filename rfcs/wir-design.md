@@ -11,7 +11,7 @@ in `src/wir.rs` (the IR types), `src/wir_opt.rs` (the peephole pass), and
 to WIR (`codegen::assemble_wir_module`) and `codegen::compile_module_binary`
 encodes it to a wasm binary. This document is the original design — the *why* and
 the shape — that the refactor in
-[binary-distribution.md](binary-distribution.md) delivered. The type sketches in
+[binary-distribution.md](../spec/binary-distribution.md) delivered. The type sketches in
 §2 are indicative of that design; for the exact current types read `src/wir.rs`
 (the shipped `WirTy`/`WirExpr`/`WirNode`/`WirModule` differ in naming, and in
 which aggregate operations are IR nodes vs. calls to prelude helper functions).
@@ -19,7 +19,7 @@ which aggregate operations are IR nodes vs. calls to prelude helper functions).
 The interpreter (`src/interpreter.rs`) is **not** part of WIR. It stays a
 tree-walking evaluator over the AST and remains the differential oracle. WIR is
 purely the compiled backend's internal form. The parity discipline
-([architecture.md](architecture.md)) is what validates every WIR change.
+([architecture.md](../spec/architecture.md)) is what validates every WIR change.
 
 ---
 
@@ -385,7 +385,7 @@ directly attacks witchy's most pervasive overhead.
   renaming locals (the existing `alpha_rename`/`Renamer` logic in codegen
   already does the AST analog and ports directly). Inlining is what unlocks
   devirtualizing `CallIndirect` → `Call` for the `list.map(xs, fn(x): …)` shape
-  (a goal in [performance.md](performance.md) Phase 2) and exposes more
+  (a goal in [performance.md](../spec/performance.md) Phase 2) and exposes more
   slot-conversion cancellation across the call boundary.
 
 All four are independent `fn(&mut WirModule)` passes in a fixed pipeline; a
@@ -468,7 +468,7 @@ intact.
 ### 4.4 Capability-import preservation (safety)
 
 Authority is "which host functions the module imports"
-([capabilities.md](capabilities.md), architecture.md §"WASM value model"). In
+([capabilities.md](../spec/capabilities.md), architecture.md §"WASM value model"). In
 WIR this is explicit and *more* auditable than today: `WirModule.imports` is the
 authority set, and a capability operation is a `CallHost{ import }` node — there
 is no other way to reach a host function. The footprint analyzer

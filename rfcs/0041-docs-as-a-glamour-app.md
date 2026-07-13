@@ -79,7 +79,7 @@ well-positioned to change that, because every hard piece already exists and is p
   oracle (`scripts/pg_validate.mjs`).
 - glamour is now capability-safe ([RFC-0039](0039-glamour-capability-safe-effects.md)),
   routes client-side (`UiRoute`), and enters through a host-minted root cap on an
-  exported step ([RFC-0040](0040-grantable-user-capabilities-on-exports.md)) — the
+  exported step ([RFC-0040](0040-grantable-caps-on-exported-entrypoints.md)) — the
   exact shape `coven_web_app` ships.
 
 So the docs can be a *sibling of coven-web*: a static, client-side glamour app. That

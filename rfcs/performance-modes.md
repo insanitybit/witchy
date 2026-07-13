@@ -31,7 +31,7 @@ fn main(console: Console):
 
 This document records the design. It builds on
 [ownership-analysis.md](ownership-analysis.md) (the uniqueness pass),
-[regions.md](regions.md), and [performance.md](performance.md).
+[regions.md](regions.md), and [performance.md](../spec/performance.md).
 
 ## The one substrate
 
@@ -207,7 +207,7 @@ lattice," and the two decouple. witchy is unusually suited to it: whole-program
 purity (effects already a lattice).
 
 Two async-era consumers motivate it concretely (see
-[performance.md](performance.md)): **await-capture escape** (every value live
+[performance.md](../spec/performance.md)): **await-capture escape** (every value live
 across an `await` is captured into a continuation closure = a share event the
 pass conservatively copies) and **per-task reclamation** (the `std/task`
 executor has no per-task arena reset; a sound per-step reset is an escape

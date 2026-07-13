@@ -55,7 +55,7 @@ when each task does real work rather than for tiny per-element calls.
 ## `Bytes`: the binary payload
 
 Crossing a VM boundary, or serializing anything structured, wants a flat byte buffer.
-That's the `Bytes` type ([`std/bytes`](stdlib.md)) — a UTF-8-free sequence of bytes,
+That's the `Bytes` type ([`std/bytes`](appendix-stdlib.md)) — a UTF-8-free sequence of bytes,
 the thing `String` (always valid UTF-8) can't faithfully hold:
 
 ```witchy
