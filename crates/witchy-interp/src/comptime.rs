@@ -15,7 +15,9 @@
 //! hard-isolation upgrade is mechanical because the channel is already
 //! "printed source in, items out".
 
-use witchy_syntax::ast::{Block, Expr, Function, ImplOrigin, Item, Module, Param, Stmt, Type};
+use witchy_syntax::ast::{
+    Block, Expr, Function, ImplOrigin, Item, MatchArm, Module, Param, Pattern, Stmt, Type,
+};
 
 const MAX_COMPTIME_BLOCKS: usize = 256;
 
@@ -52,10 +54,62 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
 
         // The block becomes `fn main(console: Console)` of a synthetic
         // program carrying the enclosing module's imports. `emit(line)` is
-        // the surface emit channel (a prepended closure over the console);
-        // `console.print(...)` works too. Linked recursively (a comptime
+        // the legacy source emit channel; `emit_item(meta.ItemSyntax)` is the
+        // typed RFC-0080 migration boundary. Both still write to the single
+        // console-backed append channel, so generated items keep one parse/merge
+        // path. `console.print(...)` works too. Linked recursively (a comptime
         // block cannot itself contain `comptime` — it is an item, not a
         // statement).
+        body.stmts.insert(
+            0,
+            witchy_syntax::ast::Stmt::Let {
+                ty: None,
+                name: "emit_item".into(),
+                mutable: false,
+                value: witchy_syntax::ast::Expr::Lambda {
+                    params: vec![Param {
+                        name: "syntax_value".into(),
+                        ty: Some(Type::Named("ItemSyntax".into(), Vec::new())),
+                        convention: Default::default(),
+                        default: None,
+                    }],
+                    body: Block {
+                        stmts: vec![witchy_syntax::ast::Stmt::Expr(
+                            witchy_syntax::ast::Expr::Match {
+                                scrutinee: Box::new(witchy_syntax::ast::Expr::Var(
+                                    "syntax_value".into(),
+                                )),
+                                arms: vec![MatchArm {
+                                    line: 0,
+                                    pattern: Pattern::Ctor {
+                                        name: "ItemSyntax".into(),
+                                        args: vec![Pattern::Var("source".into())],
+                                    },
+                                    guard: None,
+                                    body: witchy_syntax::ast::Expr::MethodCall {
+                                        receiver: Box::new(witchy_syntax::ast::Expr::Var(
+                                            "console".into(),
+                                        )),
+                                        method: "print".into(),
+                                        args: vec![witchy_syntax::ast::Expr::Var(
+                                            "source".into(),
+                                        )],
+                                    },
+                                }],
+                            },
+                        )],
+                        lines: vec![0],
+                        region: None,
+                    },
+                    ret: None,
+                },
+            },
+        );
+        if let Some(first) = body.lines.first().copied() {
+            body.lines.insert(0, first);
+        } else {
+            body.lines.push(0);
+        }
         body.stmts.insert(
             0,
             witchy_syntax::ast::Stmt::Let {
@@ -121,12 +175,13 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
             .filter(|i| witchy_syntax::linker::STD_MODULES.contains(&i.as_str()))
             .cloned()
             .collect();
-        let prog_from_imports: Vec<(String, Vec<String>)> = module
+        let mut prog_from_imports: Vec<(String, Vec<String>)> = module
             .from_imports
             .iter()
             .filter(|(m, _)| witchy_syntax::linker::STD_MODULES.contains(&m.as_str()))
             .cloned()
             .collect();
+        ensure_from_imports(&mut prog_from_imports, "meta", &["ItemSyntax", "item"]);
         if !prog_imports.iter().any(|i| i == "meta") {
             prog_imports.push("meta".into());
         }
@@ -252,6 +307,22 @@ fn merge_from_imports(
         } else {
             target.push((module, names));
         }
+    }
+}
+
+fn ensure_from_imports(target: &mut Vec<(String, Vec<String>)>, module: &str, names: &[&str]) {
+    if let Some((_, existing)) = target.iter_mut().find(|(m, _)| m == module) {
+        for name in names {
+            let name = (*name).to_string();
+            if !existing.contains(&name) {
+                existing.push(name);
+            }
+        }
+    } else {
+        target.push((
+            module.to_string(),
+            names.iter().map(|name| (*name).to_string()).collect(),
+        ));
     }
 }
 

@@ -1194,6 +1194,23 @@ fn main(console: Console):
         );
     }
 
+    /// RFC-0080 first slice: comptime can append a typed `meta.ItemSyntax`
+    /// through `emit_item`, so the compiler-facing generation boundary is no
+    /// longer only `emit(String)`. The payload is still source-backed in this
+    /// slice, then parsed/typechecked/footprint-analyzed exactly like handwritten
+    /// code.
+    #[test]
+    fn comptime_emit_item_adds_typed_generated_items_on_both_backends() {
+        let src = "comptime:\n    let generated = item(\"fn generated() -> Int:\\n    42\")\n    emit_item(generated)\n\nfn main(console: Console):\n    console.print(\"${generated()}\")\n";
+        let expected = ["42"];
+        assert_eq!(link_run(src), expected, "interp emits typed item");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled emits typed item",
+        );
+    }
+
     /// (BUG-180) Comptime is isolated from authority, but not from pure local
     /// helper code. A block can call a same-module generator helper, and a custom
     /// derive routes through the same reachable helper closure.
@@ -4500,11 +4517,11 @@ fn main(console: Console):
     /// `json.encode` escapes every C0 control character — RFC 8259 forbids a raw one
     /// inside a string, and a raw byte produced invalid JSON no conformant parser
     /// would accept. `\b`/`\f` take the short form, the rest `\u00XX` (a NUL is
-    /// ` `, not a raw byte); `json.decode` round-trips them. Identical on both
+    /// `\u0000`, not a raw byte); `json.decode` round-trips them. Identical on both
     /// backends (the bug was parity-silent — both emitted the same invalid output).
     #[test]
     fn json_encodes_control_characters_backends_agree() {
-        // NUL ( ), backspace (short \b), tab (short \t), and 0x1f ().
+        // NUL (\u0000), backspace (short \b), tab (short \t), and 0x1f (\u001f).
         let src = "import json\nfrom json import Json\nfn main(console: Console):\n    let s = string.from_code(0) + string.from_code(8) + string.from_code(9) + string.from_code(31)\n    let enc = json.encode(JsonString(s))\n    console.print(enc)\n    match json.decode(enc):\n        Ok(v) -> match v:\n            JsonString(d) -> console.print(\"${d == s}\")\n            _ -> console.print(\"notstr\")\n        Err(e) -> console.print(\"err\")";
         let expected = vec!["\"\\u0000\\b\\t\\u001f\"".to_string(), "true".to_string()];
         assert_eq!(link_run(src), expected, "interpreter");

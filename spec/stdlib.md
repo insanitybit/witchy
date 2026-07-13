@@ -1905,6 +1905,12 @@ Compile-time type introspection — the `typeInfo` half of witchy's comptime ref
 
 This is COMPILE-TIME structure (field names + declared type expressions), distinct from `std/reflect`'s runtime `Mirror` (a value's structure at runtime).
 
+#### `sealed type ItemSyntax`
+
+RFC-0080 first slice: a typed boundary for whole generated items. The compiler still stores the payload as source while the structured syntax API grows, but comptime code can hand `emit_item` an `ItemSyntax` instead of printing raw text.
+
+- `ItemSyntax(String)`
+
 #### `type TypeExpr`
 
 A declared type expression, exposed as data so generators do not have to parse source-looking type strings.
@@ -1939,6 +1945,10 @@ One constructor of a sum type: its name and positional payload types.
 A type's structure. `fields` is populated for records and `variants` for sums; both are empty for an uninhabited fieldless declaration.
 
 - `TypeInfo { name: String, kind: TypeKind, params: List(String), fields: List(FieldInfo), variants: List(VariantInfo) }`
+
+#### `fn item(source: String) -> ItemSyntax`
+
+A source-backed item wrapper. This is the migration bridge from today's source-emitting generators toward structured constructors and quotation.
 
 #### `fn type_source(ty: TypeExpr) -> String`
 

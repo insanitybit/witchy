@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking:
+tracking: "first slice landed: source-backed meta.ItemSyntax + comptime emit_item; quotation/hygiene/full syntax API remains proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -169,3 +169,22 @@ generated declaration to its macro invocation and definition.
 
 Rust procedural and declarative macros, Scala 3 quotes, Template Haskell, Zig
 comptime, Elixir quoted ASTs, and Racket syntax objects inform this design.
+
+## Implementation note (2026-07-13) — first slice
+
+The first source-compatible slice is implemented:
+
+- `std/meta` exposes sealed `ItemSyntax` and `meta.item(source)`.
+- Every `comptime:` block receives a compiler-injected `emit_item(item:
+  meta.ItemSyntax)` helper alongside legacy `emit(String)`.
+- `derive(...)` desugaring now appends through
+  `emit_item(item(generator(typeInfo)))`, with `item` from the compiler-injected
+  `meta` imports, so the compiler-generated append
+  boundary is typed even while built-in and custom derive generators continue to
+  return source strings.
+
+This is intentionally not the full RFC. The payload is still source-backed and
+there is no quotation, identifier hygiene, compile-time-only type enforcement,
+or structured expression/pattern/type constructors yet. The value is the
+migration seam: future work can move generators from `String` to structured
+constructors without changing the comptime append/merge path again.

@@ -1,11 +1,11 @@
 //! `derive(...)` — desugar each derive to a comptime call of its witchy generator.
 //!
 //! The per-trait code generation is NOT here anymore: a `derive(X)` becomes a
-//! `comptime:` block `emit(meta.derive_<x>(typeInfo_of_T))` (built-ins live in
-//! `std/meta`; a user derive routes to a bare `derive_<x>` they define). The
-//! comptime expansion (which runs next) calls the generator over the type's
-//! structure and appends the impl source it returns — so derives are ordinary,
-//! user-extensible witchy code over `meta.TypeInfo`, generated BEFORE type checking.
+//! `comptime:` block `emit_item(item(meta.derive_<x>(typeInfo_of_T)))`
+//! (built-ins live in `std/meta`; a user derive routes to a bare `derive_<x>`
+//! they define). The generator still returns source text for compatibility, but
+//! the compiler-generated append boundary is typed as `meta.ItemSyntax` — the
+//! first RFC-0080 migration step away from raw textual emission.
 
 use crate::ast::*;
 // foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
@@ -231,15 +231,20 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
 }
 
 /// Desugar one `derive(X)` into a `comptime:` block that calls the witchy
-/// generator `generator(typeInfo)` and emits its result — so the per-trait code
-/// generation lives in witchy (std/meta), not here. The type's structure is
-/// embedded as a `meta.TypeInfo` literal; comptime auto-imports `meta`.
+/// generator `generator(typeInfo)`, wraps the returned source as `meta.ItemSyntax`,
+/// and emits that item — so the per-trait code generation lives in witchy
+/// (std/meta), not here, while the append boundary is no longer an untyped string.
+/// The type's structure is embedded as a `meta.TypeInfo` literal; comptime
+/// auto-imports `meta`.
 fn derive_via_comptime(generator: &str, t: &TypeDef) -> Item {
     let emit = Expr::Call {
-        name: "emit".into(),
+        name: "emit_item".into(),
         args: vec![Expr::Call {
-            name: generator.into(),
-            args: vec![crate::reflect::type_info_expr(t)],
+            name: "item".into(),
+            args: vec![Expr::Call {
+                name: generator.into(),
+                args: vec![crate::reflect::type_info_expr(t)],
+            }],
         }],
     };
     Item::Comptime(Block {
