@@ -12218,17 +12218,16 @@ fn main(console: Console):
 
     #[test]
     fn every_example_type_checks() {
-        // Every shipped example must link and type-check (this also exercises
-        // import resolution and the constant/alias cycle checks). The parity test
-        // skips non-divergence errors, so without this a type error in an example
-        // could slip through CI.
-        let mut failures = Vec::new();
-        for path in example_entries() {
-            let p = path.to_str().unwrap();
-            if let Err(e) = crate::check_file(p) {
-                failures.push(format!("{p}: {e}"));
-            }
-        }
+        let entries = example_entries();
+        let failures: Vec<String> = std::thread::scope(|s| {
+            let handles: Vec<_> = entries.iter().map(|path| {
+                s.spawn(move || {
+                    let p = path.to_str().unwrap();
+                    crate::check_file(p).err().map(|e| format!("{p}: {e}"))
+                })
+            }).collect();
+            handles.into_iter().filter_map(|h| h.join().unwrap()).collect()
+        });
         assert!(failures.is_empty(), "examples fail to type-check:\n{}", failures.join("\n"));
     }
 
