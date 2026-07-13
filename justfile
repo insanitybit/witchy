@@ -25,9 +25,9 @@ build-release:
 build-all:
     cargo build --workspace --all-targets
 
-# Workspace unit + integration tests. Extra arguments are passed to cargo test.
+# Workspace unit + integration tests. Extra arguments are passed to nextest.
 test *ARGS:
-    cargo test --workspace {{ARGS}}
+    cargo nextest run --workspace {{ARGS}}
 
 # The exact nextest invocation used by CI's test job.
 test-ci:
