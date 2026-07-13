@@ -844,11 +844,16 @@ of any reflectable type.
 
 A top-level `comptime:` block runs **at compile time** with no capabilities
 reachable (there is no parameter list to receive one), making it
-deterministic by construction. `emit(line)` is its only channel: the output
-is parsed as witchy source and **appended** to the module before type
-checking and footprint analysis — generated code is analyzed exactly like
-handwritten code, and nothing existing can be rewritten, so a comptime
-block cannot launder authority out of a signature.
+deterministic by construction. Legacy `emit(line)` output, and direct
+`console.print(line)` for compatibility, are parsed as witchy source and
+**appended** to the module before type checking and footprint analysis.
+`emit_item(item)` is the typed RFC-0080 migration channel for
+`meta.ItemSyntax`. A single `comptime:` block may use the legacy source
+channel or the typed item channel, but not both.
+
+Generated code is analyzed exactly like handwritten code, and nothing existing
+can be rewritten, so a comptime block cannot launder authority out of a
+signature.
 
 ```witchy
 comptime:

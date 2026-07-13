@@ -185,6 +185,9 @@ The first source-compatible slice is implemented:
 - The second slice moves built-in `std/meta.derive_*` generators to return
   `ItemSyntax` directly. User-defined derives keep the source-string contract
   until the full structured custom-derive API lands.
+- The third slice separates the legacy source output channel (`emit` and direct
+  `console.print` compatibility output) from the typed `emit_item(ItemSyntax)`
+  channel and rejects a single `comptime:` block that mixes them.
 
 This is intentionally not the full RFC. The payload is still source-backed and
 there is no quotation, identifier hygiene, compile-time-only type enforcement,

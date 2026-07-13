@@ -16,10 +16,12 @@
 //! "printed source in, items out".
 
 use witchy_syntax::ast::{
-    Block, Expr, Function, ImplOrigin, Item, MatchArm, Module, Param, Pattern, Stmt, Type,
+    BinOp, Block, Expr, Function, ImplOrigin, Item, MatchArm, Module, Param, Pattern, Stmt, Type,
 };
 
 const MAX_COMPTIME_BLOCKS: usize = 256;
+const SOURCE_OUTPUT_MARKER: &str = "\u{1e}witchy:comptime:source:";
+const ITEM_OUTPUT_MARKER: &str = "\u{1e}witchy:comptime:item:";
 
 /// Expand every `comptime:` block in `module` (consuming the items), running
 /// each and appending the items its output parses to. `name` is the module's
@@ -52,14 +54,15 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
             0
         };
 
-        // The block becomes `fn main(console: Console)` of a synthetic
-        // program carrying the enclosing module's imports. `emit(line)` is
-        // the legacy source emit channel; `emit_item(meta.ItemSyntax)` is the
-        // typed RFC-0080 migration boundary. Both still write to the single
-        // console-backed append channel, so generated items keep one parse/merge
-        // path. `console.print(...)` works too. Linked recursively (a comptime
-        // block cannot itself contain `comptime` — it is an item, not a
-        // statement).
+        // The block becomes `fn main(console: Console)` of a synthetic program
+        // carrying the enclosing module's imports. `emit(line)` is the legacy
+        // source emit channel; `emit_item(meta.ItemSyntax)` is the typed
+        // RFC-0080 migration boundary. They still share the interpreter's
+        // console capture, but hidden markers let the host reject mixed channel
+        // use before parsing generated source. Direct `console.print(...)`
+        // remains legacy source output for compatibility. Linked recursively
+        // (a comptime block cannot itself contain `comptime` — it is an item,
+        // not a statement).
         body.stmts.insert(
             0,
             witchy_syntax::ast::Stmt::Let {
@@ -86,15 +89,7 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
                                         args: vec![Pattern::Var("source".into())],
                                     },
                                     guard: None,
-                                    body: witchy_syntax::ast::Expr::MethodCall {
-                                        receiver: Box::new(witchy_syntax::ast::Expr::Var(
-                                            "console".into(),
-                                        )),
-                                        method: "print".into(),
-                                        args: vec![witchy_syntax::ast::Expr::Var(
-                                            "source".into(),
-                                        )],
-                                    },
+                                    body: marked_console_print(ITEM_OUTPUT_MARKER, "source"),
                                 }],
                             },
                         )],
@@ -124,13 +119,10 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
                         default: None,
                     }],
                     body: Block {
-                        stmts: vec![witchy_syntax::ast::Stmt::Expr(
-                            witchy_syntax::ast::Expr::MethodCall {
-                                receiver: Box::new(witchy_syntax::ast::Expr::Var("console".into())),
-                                method: "print".into(),
-                                args: vec![witchy_syntax::ast::Expr::Var("line".into())],
-                            },
-                        )],
+                        stmts: vec![witchy_syntax::ast::Stmt::Expr(marked_console_print(
+                            SOURCE_OUTPUT_MARKER,
+                            "line",
+                        ))],
                         lines: vec![0],
                         region: None,
                     },
@@ -219,7 +211,8 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
             crate::interpreter::COMPTIME_STEP_LIMIT,
         )
             .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
-        let src = lines.join("\n");
+        let src = decode_comptime_output(lines)
+            .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
         let emitted = witchy_syntax::parser::parse_module(&src).map_err(|e| {
             format!(
                 "module `{name}`: comptime block emitted source that does not \
@@ -234,6 +227,44 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
         // comptime blocks for this same pass to consume.
     }
     Ok(())
+}
+
+fn marked_console_print(marker: &str, value_name: &str) -> Expr {
+    Expr::MethodCall {
+        receiver: Box::new(Expr::Var("console".into())),
+        method: "print".into(),
+        args: vec![Expr::Binary {
+            op: BinOp::Add,
+            lhs: Box::new(Expr::Str(marker.to_string())),
+            rhs: Box::new(Expr::Var(value_name.into())),
+        }],
+    }
+}
+
+fn decode_comptime_output(lines: Vec<String>) -> Result<String, String> {
+    let mut payloads = Vec::new();
+    let mut saw_source = false;
+    let mut saw_item = false;
+    for line in lines {
+        if let Some(payload) = line.strip_prefix(ITEM_OUTPUT_MARKER) {
+            saw_item = true;
+            payloads.push(payload.to_string());
+        } else if let Some(payload) = line.strip_prefix(SOURCE_OUTPUT_MARKER) {
+            saw_source = true;
+            payloads.push(payload.to_string());
+        } else {
+            saw_source = true;
+            payloads.push(line);
+        }
+    }
+    if saw_source && saw_item {
+        return Err(
+            "mixed legacy source output (`emit`/`console.print`) with typed item output \
+             (`emit_item`); use one output channel per `comptime:` block"
+                .into(),
+        );
+    }
+    Ok(payloads.join("\n"))
 }
 
 fn reachable_local_items(items: &[Item], root: &Block) -> Vec<Item> {
@@ -534,6 +565,40 @@ fn main(console: Console):
         let module = witchy_syntax::parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         witchy_types::typeck::check(&linked).expect("typecheck");
+    }
+
+    #[test]
+    fn mixed_source_and_typed_item_output_is_rejected() {
+        fn link_error(src: &str) -> String {
+            let module = witchy_syntax::parser::parse_module(src).expect("parse");
+            crate::pipeline::link(vec![("main".into(), module)], "main")
+                .expect_err("mixed comptime channels must be rejected")
+                .message
+        }
+
+        let via_emit = r#"
+comptime:
+    emit("fn legacy() -> Int:")
+    emit("    1")
+    emit_item(item("fn typed() -> Int:\n    2"))
+
+fn main(console: Console):
+    console.print("x")
+"#;
+        let err = link_error(via_emit);
+        assert!(err.contains("mixed legacy source output"), "got: {err}");
+
+        let via_console_print = r#"
+comptime:
+    emit_item(item("fn typed() -> Int:\n    2"))
+    console.print("fn legacy() -> Int:")
+    console.print("    1")
+
+fn main(console: Console):
+    console.print("x")
+"#;
+        let err = link_error(via_console_print);
+        assert!(err.contains("mixed legacy source output"), "got: {err}");
     }
 
     #[test]
