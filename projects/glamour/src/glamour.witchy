@@ -730,9 +730,13 @@ pub fn step_with(input: String, view: fn(model) -> VNode(msg), update: fn(model,
 // value, and namespaced/SVG tags.
 // ===========================================================================
 pub fn html(parts: List(String), holes: List(String)) -> String:
+    // A source `\0` escape is legal in a tagged literal's static parts, but NUL
+    // is the private hole-marker delimiter below. Reject it before weaving so
+    // static text can never be parsed as a synthetic hole (BUG-439).
+    let _safe_parts = reject_static_nul(parts)
     // Reconstruct the full template, replacing each hole with a sentinel marker
-    // `<NUL>N<NUL>` (NUL cannot appear in HTML source), so the parser can walk a
-    // single char stream and recover hole `N`'s source when it meets a marker.
+    // `<NUL>N<NUL>`, so the parser can walk a single char stream and recover
+    // hole `N`'s source when it meets a marker.
     let template = weave(parts)
     let toks = lex_html(template)
     // Parse one top-level node (the RFC's examples are single-rooted).
@@ -741,6 +745,13 @@ pub fn html(parts: List(String), holes: List(String)) -> String:
     // (BUG-227) A template must have exactly ONE root: reject any content after it.
     let _checked = no_trailing_tokens(toks, next)
     src
+
+fn reject_static_nul(parts: List(String)) -> Bool:
+    let nul = string.from_code(0)
+    for part in parts:
+        if string.contains(part, nul):
+            let _bad = fail("glamour html: NUL is not allowed in static template text")
+    true
 
 // (BUG-227) After the single root node, no meaningful tokens may remain — a second root
 // (`<div/><span/>`) or trailing markup is a compile-time error. Whitespace-only text runs
