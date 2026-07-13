@@ -69,6 +69,29 @@ witchy code (std/, examples/): `witchy fmt <file>` — CI runs `witchy fmt
 the API reference: `witchy doc std/*.witchy > spec/stdlib.md` (a test asserts it
 is current).
 
+## Witchy house style
+
+Witchy source in this repository follows the executable
+[Idiomatic witchy](book/src/idioms.md) chapter. In particular:
+
+- use interpolation for presentation strings, not concatenation;
+- use statement-form mutators such as `out.push(x)` and `d.insert(k, v)`, not
+  reassignment through `list.push` or `dict.insert`;
+- represent an absent value with `Option`, but a failed operation with `Result`
+  and propagate it with `?`; never use `Some(String)` to mean failure;
+- destructure tuple-valued iteration in the `for` binder;
+- prefer comprehensions and `list`/`iter` combinators when they make the data
+  flow clearer than an index-threaded loop;
+- use standard-library helpers instead of private wrappers with the same
+  contract; and
+- spell capability operations as methods on the capability value.
+
+Explicit concatenation remains appropriate when constructing a byte-exact
+protocol payload, cache key, generated source file, or similar format. Mark
+such a site with `// idiom-exempt: <reason>` so review can distinguish a format
+contract from presentation text. The formatter enforces layout; reviewers
+enforce these semantic idioms.
+
 ## Documentation is tested
 
 Runnable ` ```witchy ` examples in the markdown docs (`README.md`, `spec/*.md`,
