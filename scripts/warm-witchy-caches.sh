@@ -25,21 +25,22 @@ BIN="$target_dir/debug/witchy"
 
 home="$(mktemp -d -t witchy-warm)"
 cleanup() {
-    [ -n "${srv_pid:-}" ] && kill "$srv_pid" 2>/dev/null
-    [ -n "${srv_pid:-}" ] && wait "$srv_pid" 2>/dev/null
+    [ -n "${pm_pid:-}" ] && kill "$pm_pid" 2>/dev/null && wait "$pm_pid" 2>/dev/null
+    [ -n "${srv_pid:-}" ] && kill "$srv_pid" 2>/dev/null && wait "$srv_pid" 2>/dev/null
     rm -rf "$home"
 }
 trap cleanup EXIT
 
 # 1. The pm front-end (projects/pm): any subcommand compiles it. `pm list` in
 #    an empty home exits nonzero (no project) — the compile, and therefore the
-#    cache write, happens regardless.
-WITCHY_HOME="$home/pm" "$BIN" pm list >/dev/null 2>&1 || true
+#    cache write, happens regardless. Run in background so it overlaps coven.
+WITCHY_HOME="$home/pm" "$BIN" pm list >/dev/null 2>&1 &
+pm_pid=$!
 
 # 2. The coven registry server (projects/coven + siblings): compiles on
 #    startup, then binds. Spawn it on a free port, wait for the listener
 #    (listening == compile finished == caches written), then kill it.
-port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')" || { echo "warm-witchy-caches: no python3; pm warmed, skipping coven" >&2; exit 0; }
+port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')" || { wait "$pm_pid" 2>/dev/null; echo "warm-witchy-caches: no python3; pm warmed, skipping coven" >&2; exit 0; }
 regroot="$home/regroot"
 mkdir -p "$regroot"
 printf '%064d' 1 >"$regroot/root.seed"
@@ -56,6 +57,9 @@ for _ in $(seq 1 600); do
     fi
     sleep 0.2
 done
+
+# Wait for pm warm to finish (usually done by now since coven is slower).
+wait "$pm_pid" 2>/dev/null || true
 
 echo "warm-witchy-caches: embedded pm+coven caches warmed for $BIN" >&2
 exit 0
