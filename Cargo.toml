@@ -7,6 +7,31 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/insanitybit/witchy"
 keywords = ["language", "capability-security", "wasm", "sandbox", "supply-chain"]
 categories = ["compilers", "development-tools"]
+exclude = [
+    ".claude/",
+    ".github/",
+    "bench/",
+    "benchmarks/",
+    "bugs/",
+    "covenweb-before.png",
+    "editors/",
+    "external-refs/",
+    "justfile",
+    "OVERNIGHT_REPORT.md",
+    "projects/",
+    "proptest-regressions/",
+    "rfcs/",
+    "runecard-demo.png",
+    "scratch/",
+    "scripts/",
+    "security-eval/",
+    "target-*/",
+    "tests/",
+    "web/",
+    "wiki/",
+    "AGENTS.md",
+    "CLAUDE.md",
+]
 
 # RFC-0018: the compiler is being decomposed into stage-aligned crates under
 # crates/. The root `witchy` package is itself a workspace member (the binary +
