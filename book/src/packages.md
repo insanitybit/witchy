@@ -85,8 +85,13 @@ shuts down namespace hijacking.
 
 Release is two-phase. A publish lands **staged** — visible but not resolvable.
 A separate **promote**, by a different identity and with a second factor, makes
-it a real release. Separation of duties is enforced: the promoter can't be the
-uploader. And even once released, a version sits out a **staging cooldown**
+it a real release. On a trusted registry, Coven accepts that proof only from the
+verified identity token's issuer-signed `amr` claim (`mfa` or `webauthn`) and
+consumes the token's `jti`; a request-body marker cannot release anything.
+Coven Web instead verifies a fresh passkey assertion at the web edge and may
+forward to an internal anonymous-mode Coven that is never exposed directly.
+Separation of duties is enforced: the promoter can't be the uploader. And even
+once released, a version sits out a **staging cooldown**
 (72 hours by default) before `add`/`update` will resolve it — time for a
 compromised release to be noticed before anyone consumes it — unless you accept
 it explicitly with `--allow-fresh`. The release timestamp is part of the signed

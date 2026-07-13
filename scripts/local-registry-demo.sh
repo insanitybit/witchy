@@ -77,7 +77,8 @@ CI_TOKEN="$("$BIN" coven-mint-token --issuer-key "$DEMO/idp" --issuer local-idp 
 echo "(the version lands STAGED — it is not yet resolvable)"
 
 step "5. Promote to RELEASED (a human, with a second factor)"
-HUMAN_TOKEN="$("$BIN" coven-mint-token --issuer-key "$DEMO/idp" --issuer local-idp --sub alice)"
+HUMAN_TOKEN="$("$BIN" coven-mint-token --issuer-key "$DEMO/idp" --issuer local-idp \
+    --sub alice --claim amr=webauthn)"
 (cd lib && WITCHY_USER=alice COVEN_ID_TOKEN="$HUMAN_TOKEN" \
     "$BIN" promote acme/shout 1.0.0)
 

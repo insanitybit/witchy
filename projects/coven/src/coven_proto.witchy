@@ -18,8 +18,9 @@ type PublishRequest:
     uploaded_by: String
     id_token: Option(String)
 
-// A promote: the decoded rune name + version, the out-of-band second factor, and the
-// promoter identity (token or asserted).
+// A promote: the decoded rune name + version, promoter identity, and identity token.
+// `second_factor` is only a local/anonymous-mode confirmation marker; a trusted
+// registry ignores it and derives proof from the verified token's `amr` claim.
 type PromoteRequest:
     name: String
     version: String

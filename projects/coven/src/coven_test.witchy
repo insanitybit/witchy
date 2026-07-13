@@ -147,6 +147,23 @@ fn test_verify_token_errors_are_typed():
                 coven_trust.TokenMissingKid(id) -> testing.assert_eq(id, "gha")
                 _ -> testing.assert(false, "missing kid should be TokenMissingKid")
 
+// BUG-219: trusted promotion proof comes only from claims in the verified identity
+// token. A client-provided request marker must never substitute for an IdP `amr`.
+fn test_second_factor_method_accepts_verified_amr():
+    match coven_trust.second_factor_method(JsonObject([("amr", JsonString("webauthn"))])):
+        Some(method) -> testing.assert_eq(method, "webauthn")
+        None -> testing.assert(false, "a verified WebAuthn amr should be accepted")
+
+    let array_claims = JsonObject([("amr", JsonArray([JsonString("pwd"), JsonString("mfa")]))])
+    match coven_trust.second_factor_method(array_claims):
+        Some(method) -> testing.assert_eq(method, "mfa")
+        None -> testing.assert(false, "an accepted method in an amr array should be accepted")
+
+fn test_second_factor_method_rejects_client_marker():
+    let claims = JsonObject([("amr", JsonString("pwd")), ("second_factor", JsonString("webauthn"))])
+
+    testing.assert(option.is_none(coven_trust.second_factor_method(claims)), "a request marker is not verified authentication proof")
+
 // --- footprint recompute fails closed (BUG-422) ------------------------------
 // A source whose footprint cannot be computed (it does not compile) must be a hard
 // error, never a silently-empty footprint that trivially passes the under-declaration

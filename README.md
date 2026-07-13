@@ -77,13 +77,14 @@ No hidden "suddenly my dependency is pulling from ghostbin".
 The witchy package registry, `coven`, holds packages named `runes`. This registry is
 truly a "safe by default" system;
 
-- Two modes: an anonymous local mode for development, and trusted publishing —
-  short-lived OIDC identity tokens, no long-lived API keys to compromise —
+- Two modes: an anonymous local/demo mode, and trusted publishing — short-lived,
+  single-use OIDC identity tokens with no long-lived API keys to compromise —
   enabled once at least one trusted issuer is configured (`--trust-issuer` /
-  `--trust-issuer-jwks`).
+  `--trust-issuer-jwks`). Trusted promotion derives its second-factor proof from
+  the issuer-signed `amr` claim; a client-provided marker is never proof.
 - Full support for package signing and TUF.
-- Separation of states for "published" and "released" - your CI can handle publishing,
-  but a human has to manually (2FA'd) mark packages as released.
+- Separation of states for "published" and "released" - CI can stage a package,
+  but a distinct human identity with verified MFA must release it.
 - Dependency cooldowns and default-deny for build-time execution are the default.
 
 ### Safety at every level
@@ -194,8 +195,9 @@ Packages ("runes") publish to a content-addressed, signed registry. The
 distinguishing rule: **the registry and the client recompute every rune's
 capability footprint from source — declared metadata is never trusted**, and
 `witchy add`/`update` **block when a dependency's footprint widens** until you
-explicitly approve. Two-phase publish (stage → 2FA promote), TUF-style metadata
-against rollback/freeze, keyless OIDC trusted publishing, lockfiles, vendoring.
+explicitly approve. Two-phase publish (stage → verified-MFA promote), TUF-style
+metadata against rollback/freeze, keyless OIDC trusted publishing, lockfiles,
+vendoring.
 Resolving and installing dependencies executes no dependency code; a dependency's
 build step is default-deny, running only when you grant it explicitly — under
 build-only capabilities, per-rune grants, and a post-build footprint check — and

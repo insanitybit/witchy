@@ -94,7 +94,8 @@ import compiler
 // identity token; it can only ever produce a `Staged` version — never a released,
 // consumable one (`promote_checked` rejects any non-`Staged` state). Releasing a
 // version is a SEPARATE step that requires (a) a human-presented second factor —
-// a fresh, single-use WebAuthn 2FA assertion, NOT a replayable CI token — and
+// attested by the trusted identity provider's signed `amr` claim, not by a
+// client-provided marker — and
 // (b) separation of duties: the promoter identity must differ from the publisher.
 //
 // The consequence is the whole point: a FULL CI compromise (stolen OIDC token,
@@ -372,20 +373,24 @@ impl Coven:
         require(coven_validate.valid_name(req.name), 400, "invalid rune name `${req.name}`")?
         require(coven_validate.valid_version(req.version), 400, "invalid version `${req.version}`")?
         require(coven_store.record_exists(self.store, req.name, req.version), 404, "${req.name}@${req.version} not found")?
-        require(!string.is_empty(req.second_factor), 400, "promotion requires a second factor (the out-of-band 2FA event) — refusing to release")?
-        let (promoter, claims) = self.authorized_promoter(req, self.clock.now() / 1000)?
+        let (promoter, claims, factor) = self.authorized_promoter(req, self.clock.now() / 1000)?
         require(!string.is_empty(promoter), 400, "promotion requires an authenticated promoter identity")?
-        let resp = self.promote_checked(req.name, req.version, req.second_factor, promoter)?
+        require(!string.is_empty(factor), 400, "promotion requires a second factor (the out-of-band 2FA event) — refusing to release")?
+        let resp = self.promote_checked(req.name, req.version, factor, promoter, claims)?
         // BUG-281: bind the TOFU maintainer only now the promote has actually succeeded.
         if let Some(c) = claims:
             self.bind_maintainer(req.name, c)
         Ok(resp)
 
-    fn promote_checked(self, name: String, version: String, factor: String, promoter: String) -> Result(Response, CovenError):
+    fn promote_checked(self, name: String, version: String, factor: String, promoter: String, claims: Option(Json)) -> Result(Response, CovenError):
         let rec = self.load_record(name, version)?
         require(coven_record.state_of(rec.state) == Staged, 400, "${name}@${version} is ${rec.state}; only a staged version can be promoted")?
         require(promoter != rec.uploaded_by, 403, "separation of duties: the identity that published a version may not promote it")?
         require(coven_validate.single_line(promoter) && coven_validate.single_line(factor), 400, "record fields must not contain newlines")?
+        // BUG-219: a trusted promotion consumes the fresh MFA-attested token
+        // before mutating release state. A request marker is never proof.
+        if let Some(c) = claims:
+            self.consume_jti(c)?
         let signed = coven_record.sign_record(self.key, name, version, Released, rec.hash, rec.runtime_footprint, rec.uploaded_by, promoter, factor, coven_record.str_or_empty(rec.provenance), self.clock.now() / 1000)
         coven_store.write_record(self.store, name, version, signed)
         self.rebuild_metadata()
@@ -470,13 +475,14 @@ impl Coven:
                 Err(e) -> Err(CovenError(500, "corrupt trust policy for namespace `${ns}` (${json.decode_error_message(e)}); it must be repaired or rebound out of band"))
                 Ok(policy) -> enforce_publish_policy(policy, claims, ns)
 
-    fn authorized_promoter(self, req: PromoteRequest, now: Int) -> Result((String, Option(Json)), CovenError):
+    fn authorized_promoter(self, req: PromoteRequest, now: Int) -> Result((String, Option(Json), String), CovenError):
         if list.length(self.issuers) == 0:
-            Ok((req.promoted_by, None))
+            Ok((req.promoted_by, None, req.second_factor))
         else:
             let claims = verified_claims(self.issuers, req.id_token, now, "promoting on a trusted registry requires a short-lived identity token")?
+            let method = coven_trust.second_factor_method(claims).ok_or(CovenError(403, "trusted promotion requires the verified identity token's `amr` claim to attest `mfa` or `webauthn`; a request marker is not proof"))?
             let sub = self.authorize_promote(req.name, claims)?
-            Ok((sub, Some(claims)))
+            Ok((sub, Some(claims), "oidc-amr:${method}"))
 
     fn authorize_promote(self, name: String, claims: Json) -> Result(String, CovenError):
         // Authorize a promoter WITHOUT binding maintainership: allow the first promoter of an

@@ -199,7 +199,7 @@ impl RegistryServer {
 
     /// A human maintainer identity token (for promotion).
     fn human_token(&self, name: &str) -> String {
-        self.mint(name, &[])
+        self.mint(name, &[("amr", "webauthn")])
     }
 
     /// Like [`start`], but trusts the issuer via a **JWKS** document (the rotating form a
@@ -571,10 +571,40 @@ fn trusted_publishing_binds_repo_single_use_and_first_bind() {
     let out = fe.pm(&lib, &["publish", "."], Some(&good2));
     assert!(out.status.success() && stdout(&out).contains("publish: 200"), "legit re-publish: {}", stdout(&out));
 
-    // A distinct human promotes it to released.
+    // BUG-219: a client-controlled marker plus a valid identity token is not a
+    // second-factor proof. The trusted IdP must attest MFA/WebAuthn in `amr`.
+    let marker_only = server.mint("mallory", &[]);
+    let out = fe.pm(&lib, &["promote", "acme/secure", "1.1.0"], Some(&marker_only));
+    assert!(!out.status.success(), "a marker-only promote must be refused");
+    assert!(stdout(&out).contains("promote: 403"), "marker-only promote: {}", stdout(&out));
+
+    // A distinct human with IdP-attested WebAuthn promotes it to released.
     let alice = server.human_token("alice");
     let out = fe.pm(&lib, &["promote", "acme/secure", "1.1.0"], Some(&alice));
     assert!(out.status.success() && stdout(&out).contains("promote: 200"), "human promote: {}", stdout(&out));
+
+    // The attested token is single-use. It cannot release a second staged
+    // version; a freshly minted token for the same maintainer can.
+    std::fs::write(lib.join("witchy.toml"), "[rune]\nname = \"acme/secure\"\nversion = \"1.2.0\"\n").unwrap();
+    let good3 = server.ci_token("acme/secure-repo", "release.yml");
+    let out = fe.pm(&lib, &["publish", "."], Some(&good3));
+    assert!(out.status.success() && stdout(&out).contains("publish: 200"), "third publish: {}", stdout(&out));
+    let out = fe.pm(&lib, &["promote", "acme/secure", "1.2.0"], Some(&alice));
+    assert!(!out.status.success(), "a replayed MFA token must be refused");
+    assert!(stdout(&out).contains("promote: 403"), "replayed promote token: {}", stdout(&out));
+
+    let alice2 = server.human_token("alice");
+    let out = fe.pm(&lib, &["promote", "acme/secure", "1.2.0"], Some(&alice2));
+    assert!(out.status.success() && stdout(&out).contains("promote: 200"), "fresh human promote: {}", stdout(&out));
+    let (status, record) = http_get(
+        &format!("127.0.0.1:{}", server.port),
+        "/coven/record?name=acme~secure&version=1.2.0",
+    );
+    assert_eq!(status, 200, "promoted record fetch failed: {record}");
+    assert!(
+        record.contains("\"second_factor\":\"oidc-amr:webauthn\""),
+        "the signed record must contain the verified authentication method, not the request marker: {record}"
+    );
 }
 
 /// SEC-018: on a trusted registry, `yank` requires an EXISTING maintainer of the

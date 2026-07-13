@@ -1041,8 +1041,9 @@ fn coven_addr(env: Env, arg_addr: String) -> String:
 fn strip_scheme(u: String) -> String:
     string.replace(string.replace(u, "https://", ""), "http://", "")
 
-// promote <name> <version> [host:port] [identity] — release a staged version
-// (the out-of-band second factor; must be a DISTINCT identity from the uploader).
+// promote <name> <version> [host:port] [identity] — release a staged version.
+// Trusted registries require COVEN_ID_TOKEN to carry an IdP-attested MFA/WebAuthn
+// `amr`; the body marker below is only confirmation for anonymous local mode.
 fn cmd_promote(console: Console, net: Net, env: Env, args: List(String)) -> Int:
     let name = arg(args, 1)
     let version = arg(args, 2)
@@ -1058,7 +1059,7 @@ fn cmd_promote(console: Console, net: Net, env: Env, args: List(String)) -> Int:
                 1
             Ok(hp) ->
                 let (host, port) = hp
-                let body = coven_proto.promote_body(name, version, "webauthn", identity, id_token_from_env(env))
+                let body = coven_proto.promote_body(name, version, "local-confirmation", identity, id_token_from_env(env))
                 let resp = http.post(net, host, port, "/coven/promote", body)
                 console.print("promote: ${http.status(resp)}")
                 if http.status(resp) >= 200 && http.status(resp) < 300:
@@ -3439,6 +3440,7 @@ fn footprint_string_values(items: List(Json), field: String) -> Result(List(Stri
     var out = []
     var index = 0
     for item in items:
+        // idiom-exempt (BUG-575): match-arm method write-back is discarded.
         match json.as_string(item):
             None -> return Err(FootprintMalformedReport("`${field}` item ${index} is not a string"))
             // idiom-exempt (BUG-575): match-arm method write-back is discarded.
@@ -3482,7 +3484,7 @@ fn usage(console: Console):
     console.print("  add <pkg>[@<ver>] [host:port]    fetch + vendor a rune, pin it in witchy.lock")
     console.print("  add <name> <req> <coven> <dest>  resolve + fetch a rune into <dest> (explicit)")
     console.print("  publish <dir> [host:port] [id]    stage a rune to a coven registry")
-    console.print("  promote <name> <ver> [host:port] [id]  release a staged version")
+    console.print("  promote <name> <ver> [host:port] [id]  release staged (trusted: COVEN_ID_TOKEN with MFA amr)")
     console.print("  yank  <name> <ver> [host:port]   flag a released version as yanked")
     console.print("  list  <name> [host:port]         every version of a rune and its state")
     console.print("  outdated <dir> <host:port>       latest released version of each dep")

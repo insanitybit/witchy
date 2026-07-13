@@ -35,6 +35,26 @@ pub fn namespace_of(name: String) -> String:
 pub fn claim(claims: Json, key: String) -> String:
     coven_json.str(claims, key)
 
+// The second-factor method attested by an ALREADY VERIFIED OIDC token. Real
+// providers encode `amr` as an array; the local IdP harness uses a string claim.
+// Accept only an explicit MFA/WebAuthn method, never a client request marker.
+pub fn second_factor_method(claims: Json) -> Option(String):
+    match json.get(claims, "amr"):
+        Some(JsonString(method)) -> accepted_second_factor(method)
+        Some(JsonArray(methods)) -> list.find_map(methods, second_factor_item)
+        _ -> None
+
+fn second_factor_item(item: Json) -> Option(String):
+    match item:
+        JsonString(method) -> accepted_second_factor(method)
+        _ -> None
+
+fn accepted_second_factor(method: String) -> Option(String):
+    if method == "mfa" || method == "webauthn":
+        Some(method)
+    else:
+        None
+
 // A SLSA-style provenance attestation built from the VERIFIED identity-token claims,
 // bound to the content digest and stamped with the verification time (unix seconds).
 // Byte-identical to the Rust `attestation` (src/pm/server.rs): the field order,

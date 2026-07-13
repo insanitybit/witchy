@@ -77,10 +77,13 @@ separation is a load-bearing security invariant — not an ergonomic accident:
   OIDC identity token (trusted publishing), and the namespace's org must match the token's
   repository (SEC-023). A successful publish produces a **`Staged`** version and nothing else — a
   staged version is never resolved by `pm` and never served to consumers.
-- **Promote** (`POST /coven/promote`) is a *human* action from a **distinct system**. It is
-  authorized by a fresh, single-use **WebAuthn 2FA assertion** (a passkey challenge drawn from the
-  `Rand` CSPRNG, SEC-011) — explicitly **not** a CI/OIDC token — plus **separation of duties**: the
-  promoter identity must differ from the publisher. Only promotion flips `Staged → Released`.
+- **Promote** is a *human* action from a **distinct system**, with two supported enforcement
+  boundaries. A trusted core Coven verifies a short-lived identity token and requires the
+  issuer-signed `amr` claim to attest `mfa` or `webauthn`; it consumes the token's `jti` before
+  release. Coven Web instead verifies a fresh, single-use **WebAuthn 2FA assertion** (a passkey
+  challenge drawn from the `Rand` CSPRNG, SEC-011) and forwards only to an internal
+  anonymous-mode Coven. Both paths enforce **separation of duties**: the promoter identity must
+  differ from the publisher. Only promotion flips `Staged → Released`.
 
 **Why this matters:** it bounds the blast radius of a *total CI compromise*. A stolen OIDC token, a
 malicious workflow, or a poisoned build dependency can publish a malicious version — but it **cannot
@@ -97,8 +100,9 @@ signed provenance attestation on each record. The residual — a replayed publis
 *different* version in the same namespace during its short TTL — is contained by the promote gate and
 further narrowed by single-use enforcement on the token's `jti`.
 
-**Do not collapse this boundary.** Accepting a CI token for promote, dropping the second factor, or
-relaxing separation of duties would each let a CI compromise release packages directly.
+**Do not collapse this boundary.** Accepting a token without an issuer-attested MFA method,
+exposing Coven Web's anonymous upstream, dropping the WebAuthn check, or relaxing separation of
+duties would each let a CI or edge compromise release packages directly.
 
 ## Every state-changing web route is a verified WebAuthn assertion (not a session)
 
@@ -124,6 +128,12 @@ check. A plain, session-only `POST /api/coven/promote` (or `/yank`) would bypass
 mintable by any social login, could flip `Staged → Released` or yank a version with no passkey. Such
 routes therefore **do not exist**; there is no session-only write path. The Sec-Fetch CSRF layer
 still fronts every write, but it is a second line, not the authorization gate.
+
+That anonymous upstream is an implementation detail of the Coven Web deployment. It must listen
+only on a loopback/private boundary reachable by Coven Web and must never be exposed as the public
+registry write endpoint. A directly exposed registry must run trusted mode instead; there,
+`/coven/promote` ignores the request's `second_factor` marker and derives the signed factor from a
+verified OIDC `amr` claim.
 
 **Do not add a session-only write route.** Any new state-changing endpoint must mirror
 `h_wa_promote`/`h_wa_yank` and verify a WebAuthn assertion; gating it on `require_session` alone

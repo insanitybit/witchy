@@ -683,3 +683,11 @@ Each phase preserves the invariant that **no rune code ever runs with ambient
 authority** — build steps, when present, run only as sandboxed actors holding
 exactly the build-time capabilities the user explicitly granted, pinned in the
 lock and blocked from widening silently.
+
+> **2026-07-13 implementation note (BUG-219):** The trusted core Coven now
+> derives promotion proof only from a signature-verified OIDC token whose `amr`
+> claim contains `mfa` or `webauthn`, and consumes its non-empty `jti` before
+> changing release state. The request's `second_factor` string is ignored in
+> trusted mode. Anonymous mode retains a local confirmation marker; Coven Web
+> may use that mode only behind its own fresh, single-use WebAuthn verifier and
+> an internal, non-public upstream boundary.
