@@ -1783,7 +1783,9 @@ impl Parser {
 
     fn quote_syntax(&mut self) -> Result<Expr, ParseError> {
         let Some(category) = self.quote_category().map(str::to_string) else {
-            return Err(self.error("expected `quote expr:`, `quote type:`, or `quote pattern:`"));
+            return Err(self.error(
+                "expected `quote expr:`, `quote type:`, `quote pattern:`, or `quote item:`",
+            ));
         };
         self.advance(); // `quote`
         self.advance(); // category
@@ -1804,10 +1806,14 @@ impl Parser {
                 let quoted = self.pattern()?;
                 self.pattern_syntax_expr(&quoted)
             }
+            "item" => {
+                let quoted = self.item()?;
+                self.item_syntax_expr(quoted)
+            }
             _ => {
                 return Err(self.error(format!(
                     "`quote {category}:` is not implemented yet; use `quote expr:`, \
-                     `quote type:`, or `quote pattern:`"
+                     `quote type:`, `quote pattern:`, or `quote item:`"
                 )));
             }
         };
@@ -1936,6 +1942,18 @@ impl Parser {
             Some(name) => Expr::Ctor { name: "Some".to_string(), args: vec![self.meta_ident(name)] },
             None => Expr::Ctor { name: "None".to_string(), args: vec![] },
         }
+    }
+
+    fn item_syntax_expr(&self, item: Item) -> Expr {
+        let module = Module {
+            modes: Vec::new(),
+            imports: Vec::new(),
+            from_imports: Vec::new(),
+            items: vec![item],
+            import_lines: Vec::new(),
+            item_lines: vec![1],
+        };
+        self.meta_call("item", vec![Expr::Str(crate::format::module(&module, &[]))])
     }
 
     /// Resolve a bare name into a variable, call, constructor, or a qualified

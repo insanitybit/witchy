@@ -1529,6 +1529,29 @@ fn main(console: Console):
         );
     }
 
+    /// RFC-0080 item quotation parses one item at the quote site and hands it to
+    /// the existing typed `meta.item` boundary.
+    #[test]
+    fn quote_item_builds_typed_itemsyntax_on_both_backends() {
+        let src = r#"
+comptime:
+    let generated = quote item:
+        pub fn generated() -> Int:
+            88
+    emit_item(generated)
+
+fn main(console: Console):
+    console.print("${generated()}")
+"#;
+        let expected = ["88"];
+        assert_eq!(link_run(src), expected, "interp quote item generated function");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled quote item generated function",
+        );
+    }
+
     /// (BUG-182) A tagged literal in a standalone file whose stem is NOT a valid
     /// identifier (`tag-hyphen`) must still expand and run on both backends. Tag
     /// expansion seeds a throwaway parse with `import <qualifier>` lines built from

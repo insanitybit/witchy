@@ -466,9 +466,9 @@ fn f():
         assert_eq!(name, "meta.expr_raw");
         assert_eq!(args, &[Expr::Str("40 + 1 * 2".to_string())]);
 
-        let err = parse_module("fn f():\n    quote item:\n        1\n")
-            .expect_err("only expression quotation is implemented");
-        assert!(err.message.contains("`quote item:` is not implemented yet"), "{err}");
+        let err = parse_module("fn f():\n    quote module:\n        1\n")
+            .expect_err("module quotation is not implemented");
+        assert!(err.message.contains("`quote module:` is not implemented yet"), "{err}");
     }
 
     #[test]
@@ -557,6 +557,25 @@ fn f():
             Expr::Ctor { name: "Some".into(), args: vec![ident("rest")] },
         ]);
         assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);
+    }
+
+    #[test]
+    fn quote_item_lowers_to_meta_item_with_canonical_source() {
+        let m = parse_module(r#"
+fn f():
+    quote item:
+        pub fn generated() -> Int:
+            99
+"#).expect("quote item should parse");
+        assert!(m.imports.contains(&"meta".to_string()), "quote item imports meta");
+        let Item::Function(f) = &m.items[0] else {
+            panic!("expected function");
+        };
+        let Stmt::Expr(Expr::Call { name, args }) = &f.body.stmts[0] else {
+            panic!("expected lowered meta.item call, got {:?}", f.body.stmts[0]);
+        };
+        assert_eq!(name, "meta.item");
+        assert_eq!(args, &[Expr::Str("pub fn generated() -> Int:\n    99\n".to_string())]);
     }
 
     #[test]
