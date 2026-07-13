@@ -11162,7 +11162,8 @@ fn main(console: Console):
         // the port at the colon after `]` — matching the Net layer's last-colon /
         // bracket-aware split (BUG-351). Userinfo (`user@`, `user:pass@`) is outside
         // this minimal grammar and is rejected loudly rather than reinterpreted as
-        // host/port text (BUG-380). Both backends agree, and format round-trips.
+        // host/port text (BUG-380), and an empty bracketed literal is malformed.
+        // Both backends agree, and format round-trips.
         let client = r#"
 import url
 import result
@@ -11174,6 +11175,7 @@ fn main(console: Console):
     console.print(p("http://[::1]:8080/x"))
     console.print(p("http://[::1]/x"))
     console.print(p("https://[2001:db8::1]:443/y"))
+    console.print(p("http://[]/x"))
     console.print(p("https://user@example.com/x"))
     console.print(p("https://user:pass@example.com/x"))
     console.print(p("https://example.com:8443/z"))
@@ -11192,6 +11194,7 @@ fn main(console: Console):
                 "[::1] 8080 http://[::1]:8080/x",
                 "[::1] 80 http://[::1]/x",
                 "[2001:db8::1] 443 https://[2001:db8::1]/y",
+                "err",
                 "err",
                 "err",
                 "example.com 8443 https://example.com:8443/z",
