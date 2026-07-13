@@ -72,6 +72,8 @@ for p in "${paths[@]}"; do
             add "./scripts/check.sh --e2e" ;;
         tests/e2e.rs)
             add "./scripts/check.sh --e2e" ;;
+        scripts/*.sh)
+            add "for f in scripts/*.sh; do bash -n \"\$f\"; done" ;;
         spec/stdlib.md)
             echo "WARNING: spec/stdlib.md is GENERATED — edit std/*.witchy doc-comments instead" >&2
             add "cargo nextest run -E 'test(stdlib_docs_are_current)'" ;;
