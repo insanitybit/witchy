@@ -566,6 +566,30 @@ fn f():
     }
 
     #[test]
+    fn quote_type_holes_lower_to_meta_type_join() {
+        let m = parse_module(r#"
+fn f(ok: meta.TypeSyntax, err: meta.TypeSyntax):
+    quote type:
+        Result(${ok}, List(${err}))
+"#).expect("quote type with holes should parse");
+        let Item::Function(f) = &m.items[0] else {
+            panic!("expected function");
+        };
+        let expected = Expr::Call {
+            name: "meta.type_join".into(),
+            args: vec![
+                Expr::List(vec![
+                    Expr::Str("Result(".into()),
+                    Expr::Str(", List(".into()),
+                    Expr::Str("))".into()),
+                ]),
+                Expr::List(vec![Expr::Var("ok".into()), Expr::Var("err".into())]),
+            ],
+        };
+        assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);
+    }
+
+    #[test]
     fn quote_pattern_lowers_to_structured_meta_builders() {
         fn ident(name: &str) -> Expr {
             Expr::Call { name: "meta.ident".into(), args: vec![Expr::Str(name.into())] }
@@ -591,6 +615,26 @@ fn f():
             ])])]),
             Expr::Ctor { name: "Some".into(), args: vec![ident("rest")] },
         ]);
+        assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);
+    }
+
+    #[test]
+    fn quote_pattern_holes_lower_to_meta_pattern_join() {
+        let m = parse_module(r#"
+fn f(payload: meta.PatternSyntax):
+    quote pattern:
+        Some(${payload}) | None
+"#).expect("quote pattern with holes should parse");
+        let Item::Function(f) = &m.items[0] else {
+            panic!("expected function");
+        };
+        let expected = Expr::Call {
+            name: "meta.pattern_join".into(),
+            args: vec![
+                Expr::List(vec![Expr::Str("Some(".into()), Expr::Str(") | None".into())]),
+                Expr::List(vec![Expr::Var("payload".into())]),
+            ],
+        };
         assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);
     }
 

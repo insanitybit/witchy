@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed syntax wrappers/builders with validated identifiers, comptime emit_item/fn helpers, typed custom derives, typed tagged-literal ExprSyntax returns, parser-backed expression/type/pattern/item quotation, and expression quote holes landed; hygiene/full syntax API remains proposed"
+tracking: "source-backed syntax wrappers/builders with validated identifiers, comptime emit_item/fn helpers, typed custom derives, typed tagged-literal ExprSyntax returns, parser-backed expression/type/pattern/item quotation, and expression/type/pattern quote holes landed; hygiene/full syntax API remains proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -247,11 +247,15 @@ The first source-compatible slice is implemented:
   parser lowers the quote to `meta.expr_join(parts, holes)`. This composes with
   typed tagged literals: a tag can wrap an opaque RFC-0006 hole marker as
   `ExprSyntax` and splice it into parser-checked quoted code.
+- The sixteenth slice adds the same hole model to `quote type:` and
+  `quote pattern:`. A type hole must evaluate to `meta.TypeSyntax`; a pattern
+  hole must evaluate to `meta.PatternSyntax`. Quotes without holes keep the
+  structured builder lowering, while quotes with holes lower to typed
+  `meta.type_join(parts, holes)` / `meta.pattern_join(parts, holes)` boundaries.
 
 This is intentionally not the full RFC. The payload is still source-backed and
-only expression/type/pattern/item quotation plus expression holes exist;
-type/pattern holes, identifier hygiene, and compiler-owned
-expression/pattern/type syntax trees remain future work. The value is the
-migration seam: future work can move the payload behind these wrappers from
-parsed source to structured compiler nodes without changing the comptime
-append/merge path again.
+only expression/type/pattern/item quotation plus expression/type/pattern holes
+exist; identifier hygiene and compiler-owned expression/pattern/type syntax
+trees remain future work. The value is the migration seam: future work can move
+the payload behind these wrappers from parsed source to structured compiler
+nodes without changing the comptime append/merge path again.

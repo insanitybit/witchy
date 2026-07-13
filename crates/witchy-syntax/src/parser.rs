@@ -51,6 +51,8 @@ fn reserved_source_identifier(name: &str) -> bool {
 
 const QUOTE_EXPR_HOLE_INTRINSIC: &str = "@quote_expr_hole";
 const QUOTE_EXPR_HOLE_PREFIX: &str = "__witchy_quote_expr_hole_";
+const QUOTE_TYPE_HOLE_PREFIX: &str = "__witchy_quote_type_hole_";
+const QUOTE_PATTERN_HOLE_PREFIX: &str = "__witchy_quote_pattern_hole_";
 
 pub fn parse_module(src: &str) -> Result<Module, ParseError> {
     let tokens = tokenize(src).map_err(|e| ParseError {
@@ -130,6 +132,14 @@ struct Parser {
     /// Positive while parsing the literal body of `quote expr:`. `${...}` holes
     /// are syntax splices there; everywhere else they are rejected at parse time.
     quote_expr_hole_depth: u32,
+    /// Positive while parsing the literal body of `quote type:`.
+    quote_type_hole_depth: u32,
+    quote_type_holes: Vec<Expr>,
+    quote_type_hole_bases: Vec<usize>,
+    /// Positive while parsing the literal body of `quote pattern:`.
+    quote_pattern_hole_depth: u32,
+    quote_pattern_holes: Vec<Expr>,
+    quote_pattern_hole_bases: Vec<usize>,
     /// Current recursion depth of the mutually-recursive descent (expressions,
     /// types, patterns). Guarded against `MAX_PARSE_DEPTH` so deeply-nested
     /// untrusted source (e.g. `(((((…)))))`) returns a `ParseError` instead of
@@ -180,6 +190,12 @@ impl Parser {
             anon_records: Vec::new(),
             needs_meta_import: false,
             quote_expr_hole_depth: 0,
+            quote_type_hole_depth: 0,
+            quote_type_holes: Vec::new(),
+            quote_type_hole_bases: Vec::new(),
+            quote_pattern_hole_depth: 0,
+            quote_pattern_holes: Vec::new(),
+            quote_pattern_hole_bases: Vec::new(),
             depth: 0,
         }
     }
@@ -1053,6 +1069,9 @@ impl Parser {
     }
 
     fn ty_inner(&mut self) -> Result<Type, ParseError> {
+        if self.at(&Tok::QuoteHoleStart) {
+            return self.quote_type_hole();
+        }
         // Ownership/immutability qualifiers (RFC-0025/0026): `frozen T`, `unique T`,
         // `local unique T`. Contextual — only a qualifier keyword FOLLOWED BY a type
         // is one; a bare `frozen` (nothing following) stays an ordinary type variable.
@@ -1807,12 +1826,32 @@ impl Parser {
                 self.quote_expr_syntax_expr(quoted)?
             }
             "type" => {
-                let quoted = self.ty()?;
-                self.type_syntax_expr(&quoted)?
+                let base = self.quote_type_holes.len();
+                self.quote_type_hole_bases.push(base);
+                self.quote_type_hole_depth += 1;
+                let quoted = self.ty();
+                self.quote_type_hole_depth -= 1;
+                self.quote_type_hole_bases.pop();
+                if quoted.is_err() {
+                    self.quote_type_holes.truncate(base);
+                }
+                let quoted = quoted?;
+                let holes = self.quote_type_holes.split_off(base);
+                self.type_syntax_expr_with_holes(quoted, holes)?
             }
             "pattern" => {
-                let quoted = self.pattern()?;
-                self.pattern_syntax_expr(&quoted)
+                let base = self.quote_pattern_holes.len();
+                self.quote_pattern_hole_bases.push(base);
+                self.quote_pattern_hole_depth += 1;
+                let quoted = self.pattern();
+                self.quote_pattern_hole_depth -= 1;
+                self.quote_pattern_hole_bases.pop();
+                if quoted.is_err() {
+                    self.quote_pattern_holes.truncate(base);
+                }
+                let quoted = quoted?;
+                let holes = self.quote_pattern_holes.split_off(base);
+                self.pattern_syntax_expr_with_holes(quoted, holes)?
             }
             "item" => {
                 let quoted = self.item()?;
@@ -1834,16 +1873,53 @@ impl Parser {
         if self.quote_expr_hole_depth == 0 {
             return Err(self.error("`${...}` quote holes are only valid inside `quote expr:`"));
         }
-        self.advance(); // `${`
-        let saved_depth = std::mem::replace(&mut self.quote_expr_hole_depth, 0);
-        let expr = self.expr(0);
-        self.quote_expr_hole_depth = saved_depth;
-        let expr = expr?;
-        self.expect(&Tok::RBrace)?;
+        let expr = self.quote_hole_expr()?;
         Ok(Expr::Call {
             name: QUOTE_EXPR_HOLE_INTRINSIC.to_string(),
             args: vec![expr],
         })
+    }
+
+    fn quote_hole_expr(&mut self) -> Result<Expr, ParseError> {
+        self.advance(); // `${`
+        let saved_expr_depth = std::mem::replace(&mut self.quote_expr_hole_depth, 0);
+        let saved_type_depth = std::mem::replace(&mut self.quote_type_hole_depth, 0);
+        let saved_pattern_depth = std::mem::replace(&mut self.quote_pattern_hole_depth, 0);
+        let expr = self.expr(0);
+        self.quote_expr_hole_depth = saved_expr_depth;
+        self.quote_type_hole_depth = saved_type_depth;
+        self.quote_pattern_hole_depth = saved_pattern_depth;
+        let expr = expr?;
+        self.expect(&Tok::RBrace)?;
+        Ok(expr)
+    }
+
+    fn quote_type_hole(&mut self) -> Result<Type, ParseError> {
+        if self.quote_type_hole_depth == 0 {
+            return Err(self.error("`${...}` type quote holes are only valid inside `quote type:`"));
+        }
+        let Some(base) = self.quote_type_hole_bases.last().copied() else {
+            return Err(self.error("internal error: quote type hole has no active quote"));
+        };
+        let expr = self.quote_hole_expr()?;
+        let idx = self.quote_type_holes.len().saturating_sub(base);
+        self.quote_type_holes.push(expr);
+        Ok(Type::Named(format!("{QUOTE_TYPE_HOLE_PREFIX}{idx}"), Vec::new()))
+    }
+
+    fn quote_pattern_hole(&mut self) -> Result<Pattern, ParseError> {
+        if self.quote_pattern_hole_depth == 0 {
+            return Err(self.error(
+                "`${...}` pattern quote holes are only valid inside `quote pattern:`",
+            ));
+        }
+        let Some(base) = self.quote_pattern_hole_bases.last().copied() else {
+            return Err(self.error("internal error: quote pattern hole has no active quote"));
+        };
+        let expr = self.quote_hole_expr()?;
+        let idx = self.quote_pattern_holes.len().saturating_sub(base);
+        self.quote_pattern_holes.push(expr);
+        Ok(Pattern::Var(format!("{QUOTE_PATTERN_HOLE_PREFIX}{idx}")))
     }
 
     fn quote_expr_syntax_expr(&self, mut quoted: Expr) -> Result<Expr, ParseError> {
@@ -1853,19 +1929,58 @@ impl Parser {
         if holes.is_empty() {
             return Ok(self.meta_call("expr_raw", vec![Expr::Str(source)]));
         }
+        let parts = self.quote_hole_parts(&source, QUOTE_EXPR_HOLE_PREFIX, holes.len(), "expression")?;
+        Ok(self.meta_call("expr_join", vec![Expr::List(parts), Expr::List(holes)]))
+    }
 
-        let mut parts = Vec::with_capacity(holes.len() + 1);
-        let mut rest = source.as_str();
-        for i in 0..holes.len() {
-            let marker = format!("{QUOTE_EXPR_HOLE_PREFIX}{i}");
+    fn quote_hole_parts(
+        &self,
+        source: &str,
+        prefix: &str,
+        count: usize,
+        category: &str,
+    ) -> Result<Vec<Expr>, ParseError> {
+        let mut parts = Vec::with_capacity(count + 1);
+        let mut rest = source;
+        for i in 0..count {
+            let marker = format!("{prefix}{i}");
             let Some((before, after)) = rest.split_once(&marker) else {
-                return Err(self.error("internal error: quote expression hole marker was lost"));
+                return Err(self.error(format!(
+                    "internal error: quote {category} hole marker was lost"
+                )));
             };
             parts.push(Expr::Str(before.to_string()));
             rest = after;
         }
         parts.push(Expr::Str(rest.to_string()));
-        Ok(self.meta_call("expr_join", vec![Expr::List(parts), Expr::List(holes)]))
+        Ok(parts)
+    }
+
+    fn type_syntax_expr_with_holes(
+        &self,
+        quoted: Type,
+        holes: Vec<Expr>,
+    ) -> Result<Expr, ParseError> {
+        if holes.is_empty() {
+            return self.type_syntax_expr(&quoted);
+        }
+        let source = crate::format::type_str(&quoted);
+        let parts = self.quote_hole_parts(&source, QUOTE_TYPE_HOLE_PREFIX, holes.len(), "type")?;
+        Ok(self.meta_call("type_join", vec![Expr::List(parts), Expr::List(holes)]))
+    }
+
+    fn pattern_syntax_expr_with_holes(
+        &self,
+        quoted: Pattern,
+        holes: Vec<Expr>,
+    ) -> Result<Expr, ParseError> {
+        if holes.is_empty() {
+            return Ok(self.pattern_syntax_expr(&quoted));
+        }
+        let source = crate::format::pattern_str(&quoted);
+        let parts =
+            self.quote_hole_parts(&source, QUOTE_PATTERN_HOLE_PREFIX, holes.len(), "pattern")?;
+        Ok(self.meta_call("pattern_join", vec![Expr::List(parts), Expr::List(holes)]))
     }
 
     fn collect_quote_expr_holes(expr: &mut Expr, holes: &mut Vec<Expr>) {
@@ -2683,6 +2798,7 @@ impl Parser {
     /// rejection and Duration-literal admission (RFC-0052).
     fn pattern_primary(&mut self) -> Result<Pattern, ParseError> {
         match self.kind().clone() {
+            Tok::QuoteHoleStart => self.quote_pattern_hole(),
             Tok::LParen => {
                 self.advance();
                 let mut pats = Vec::new();

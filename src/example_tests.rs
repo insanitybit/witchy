@@ -1556,6 +1556,46 @@ fn main(console: Console):
         );
     }
 
+    /// RFC-0080 type/pattern quote holes splice typed syntax values into
+    /// parser-checked type and pattern quotations.
+    #[test]
+    fn quote_type_and_pattern_holes_splice_typed_syntax_on_both_backends() {
+        let src = r#"
+import meta
+import option
+
+comptime:
+    let int = quote type:
+        Int
+    let maybe_int = quote type:
+        Option(${int})
+    let string = quote type:
+        String
+    let x = meta.ident("x")
+    let value = meta.ident("value")
+    let value_pat = quote pattern:
+        value
+    let some_pat = quote pattern:
+        Some(${value_pat})
+    let none_pat = quote pattern:
+        None
+    let some = meta.match_arm(some_pat, meta.expr_raw("\"value:\" + \"$" + "{value}\""))
+    let none = meta.match_arm(none_pat, meta.expr_raw("\"none\""))
+    emit_item(meta.function(true, meta.ident("describe"), [meta.param(x, maybe_int)], Some(string), meta.expr_match(meta.expr_name(x), [some, none])))
+
+fn main(console: Console):
+    console.print(describe(Some(5)))
+    console.print(describe(None))
+"#;
+        let expected = ["value:5", "none"];
+        assert_eq!(link_run(src), expected, "interp quote type/pattern holes");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled quote type/pattern holes",
+        );
+    }
+
     /// RFC-0080 item quotation parses one item at the quote site and hands it to
     /// the existing typed `meta.item` boundary.
     #[test]

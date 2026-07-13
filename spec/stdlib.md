@@ -2031,6 +2031,10 @@ A capability type with rights, such as `Dir[Read]`.
 
 #### `fn type_expr(ty: TypeExpr) -> TypeSyntax`
 
+#### `fn type_join(parts: List(String), holes: List(TypeSyntax)) -> TypeSyntax`
+
+Join parser-checked type quote fragments with typed type holes.
+
 #### `fn expr_name(name: Ident) -> ExprSyntax`
 
 Source-backed expression syntax. These constructors make the shape explicit while quotation/hygienic identifiers are still pending.
@@ -2096,6 +2100,10 @@ A list pattern with `..` or `..rest`.
 #### `fn pattern_or(patterns: List(PatternSyntax)) -> PatternSyntax`
 
 An or-pattern. Every alternative must bind the same names when type-checked.
+
+#### `fn pattern_join(parts: List(String), holes: List(PatternSyntax)) -> PatternSyntax`
+
+Join parser-checked pattern quote fragments with typed pattern holes.
 
 #### `fn match_arm(pattern: PatternSyntax, body: ExprSyntax) -> MatchArmSyntax`
 

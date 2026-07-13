@@ -1789,6 +1789,10 @@ pub fn expr_str(e: &Expr) -> String {
     expr(e)
 }
 
+pub fn pattern_str(p: &Pattern) -> String {
+    pattern(p)
+}
+
 fn parse_fixed_width_usize(s: &str, pos: &mut usize, width: usize) -> Option<usize> {
     let end = pos.checked_add(width)?;
     let part = s.get(*pos..end)?;
