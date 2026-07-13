@@ -106,9 +106,21 @@ for p in "${paths[@]}"; do
             : ;; # prose only — but book/README witchy blocks are covered above
     esac
 done
-# Any Rust change ⇒ the fast gate belongs in the list, first.
+# Any Rust change means the fast gate already runs every workspace nextest test.
+# Drop narrower nextest selections it subsumes, but retain independent shards
+# such as WASM, e2e, and Witchy source formatting.
 if [ "$any_rust" -eq 1 ]; then
-    cmds=("./scripts/check.sh --fast" ${cmds[0]+"${cmds[@]}"})
+    remaining=()
+    for c in ${cmds[0]+"${cmds[@]}"}; do
+        case "$c" in
+            "cargo nextest run -p "* | \
+            "cargo nextest run --test "* | \
+            "cargo nextest run -E 'test(/^example_tests::/)'" | \
+            "cargo nextest run -E 'test(stdlib_docs_are_current)'") ;;
+            *) remaining+=("$c") ;;
+        esac
+    done
+    cmds=("./scripts/check.sh --fast" ${remaining[0]+"${remaining[@]}"})
 fi
 
 if [ "${#cmds[@]}" -eq 0 ]; then
