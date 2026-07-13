@@ -25,9 +25,13 @@ pub fn join(a: String, b: String) -> String:
         a + "/" + b
 
 // The final component: "a/b/c.txt" -> "c.txt", "a/b/" -> "b", "/" -> "/".
+// The empty relative path has the conventional lexical component "."; it is
+// never confused with the absolute root.
 pub fn base(p: String) -> String:
     let t = trim_slashes(p)
-    if string.is_empty(t) || t == "/":
+    if string.is_empty(t):
+        "."
+    else if t == "/":
         "/"
     else if string.contains(t, "/"):
         let (_head, b) = string.rsplit_once(t, "/")
@@ -36,11 +40,12 @@ pub fn base(p: String) -> String:
         t
 
 // The parent before the final component as `Some`: "a/b/c" -> Some("a/b"),
-// "/x" -> Some("/"). A single-component path has no parent, so "c" is `None`
-// (RFC-0044 rule 1: absence is `Option`, never an "" sentinel).
+// "/x" -> Some("/"). A single-component path and the root have no parent, so
+// "c" and "/" are `None` (RFC-0044 rule 1: absence is `Option`, never an ""
+// sentinel). In particular, repeatedly taking `dir` cannot loop at root.
 pub fn dir(p: String) -> Option(String):
     let t = trim_slashes(p)
-    if !string.contains(t, "/"):
+    if t == "/" || !string.contains(t, "/"):
         None
     else:
         let (head, _b) = string.rsplit_once(t, "/")
@@ -52,11 +57,12 @@ pub fn dir(p: String) -> Option(String):
 // The extension after the final `.` in the base name, WITHOUT the leading dot,
 // as `Some` ("a/b.tar.gz" -> Some("gz")) — matching Rust's `Path::extension`
 // both in dropping the dot AND in the `Option` shape (RFC-0044 rule 1). A base
-// with no extension, or a dotfile base (".bashrc"), is `None`.
+// with no extension, a dotfile base (".bashrc"), or the parent marker ("..")
+// is `None`. A trailing dot on an ordinary filename is an empty extension.
 pub fn ext(p: String) -> Option(String):
     let b = base(p)
     let i = string.last_index_of(b, ".") ?? -1
-    if i > 0:
+    if b != ".." && i > 0:
         Some(string.substring(b, i + 1, string.char_count(b)))
     else:
         None

@@ -7951,6 +7951,7 @@ fn show_chunks(xs: List(List(Int))) -> String:
 
 fn main(console: Console):
     console.print(path.base("/") + "|" + path.stem("/") + "|" + path.base("a/b/"))
+    console.print(path.base("") + "|" + (path.dir("/") ?? "<none>") + "|" + (path.ext("..") ?? "<none>") + "|" + path.stem("..") + "|[" + (path.ext("foo.") ?? "<none>") + "]|" + path.stem("foo."))
     console.print(show_chunks(list.chunks([1, 2, 3], 2)) + "|" + show_chunks(list.chunks([1, 2, 3], 0)) + "|" + show_chunks(list.chunks([1, 2, 3], -1)))
     match time.civil(2026, 7, 5, 12, 34, 56):
         Ok(d) -> console.print(time.format(d, "done %") + "|" + time.format(d, "done %%") + "|" + time.format(d, "done %Q"))
@@ -7967,6 +7968,7 @@ fn main(console: Console):
             compiled,
             vec![
                 "/|/|b",
+                ".|<none>|<none>|..|[]|foo",
                 "[[1,2];[3]]|[]|[]",
                 "done %|done %|done %Q",
                 "-1s|-1m0s|-1ms|1m30s",

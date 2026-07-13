@@ -2152,15 +2152,15 @@ Join two path pieces with a single `/`. An empty piece is ignored; an absolute `
 
 #### `fn base(p: String) -> String`
 
-The final component: "a/b/c.txt" -> "c.txt", "a/b/" -> "b", "/" -> "/".
+The final component: "a/b/c.txt" -> "c.txt", "a/b/" -> "b", "/" -> "/". The empty relative path has the conventional lexical component "."; it is never confused with the absolute root.
 
 #### `fn dir(p: String) -> Option(String)`
 
-The parent before the final component as `Some`: "a/b/c" -> Some("a/b"), "/x" -> Some("/"). A single-component path has no parent, so "c" is `None` (RFC-0044 rule 1: absence is `Option`, never an "" sentinel).
+The parent before the final component as `Some`: "a/b/c" -> Some("a/b"), "/x" -> Some("/"). A single-component path and the root have no parent, so "c" and "/" are `None` (RFC-0044 rule 1: absence is `Option`, never an "" sentinel). In particular, repeatedly taking `dir` cannot loop at root.
 
 #### `fn ext(p: String) -> Option(String)`
 
-The extension after the final `.` in the base name, WITHOUT the leading dot, as `Some` ("a/b.tar.gz" -> Some("gz")) — matching Rust's `Path::extension` both in dropping the dot AND in the `Option` shape (RFC-0044 rule 1). A base with no extension, or a dotfile base (".bashrc"), is `None`.
+The extension after the final `.` in the base name, WITHOUT the leading dot, as `Some` ("a/b.tar.gz" -> Some("gz")) — matching Rust's `Path::extension` both in dropping the dot AND in the `Option` shape (RFC-0044 rule 1). A base with no extension, a dotfile base (".bashrc"), or the parent marker ("..") is `None`. A trailing dot on an ordinary filename is an empty extension.
 
 #### `fn stem(p: String) -> String`
 
