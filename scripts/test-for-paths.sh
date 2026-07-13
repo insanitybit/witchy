@@ -58,7 +58,7 @@ for p in "${paths[@]}"; do
         std/*.witchy)
             add "cargo nextest run -E 'test(/^example_tests::/)'"
             add "cargo nextest run -E 'test(stdlib_docs_are_current)'"
-            add "for f in std/*.witchy; do ./target/debug/witchy fmt --check \$f; done" ;;
+            add "./target/debug/witchy fmt --check std/*.witchy" ;;
         examples/* | book/*)
             add "cargo nextest run -E 'test(/^example_tests::/)'"
             # A book/example change can flip a block's browser-runnability (e.g.
