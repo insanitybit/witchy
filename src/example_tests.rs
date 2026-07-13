@@ -3256,12 +3256,24 @@ fn main(console: Console):
     fn core_protocol_matrix_composes_on_both_backends() {
         let src = r#"import bytes
 import cmp
+import encoding
 import json
+import list
 import reflect
 import set
 import show
+import testing
+
+type Label derive(Reflect, PartialEq, Eq):
+    Label(String)
+
+impl Show for Label:
+    fn show(self) -> String:
+        match self:
+            Label(s) -> "<" + s + ">"
 
 type ProtocolRow derive(Reflect):
+    label: Label
     payload: Bytes
     wait: Duration
     order: Ordering
@@ -3275,6 +3287,11 @@ fn same(x: a, y: a) -> Bool where a: PartialEq:
 fn total_same(x: a, y: a) -> Bool where a: Eq:
     x == y
 
+fn sorted_window(xs: List(a)) -> String where a: Ord, a: Show:
+    var sortable = xs
+    let sorted = sortable.sort()
+    show.render(sorted) + "|" + show.render(list.min(sorted)) + "|" + show.render(list.max(sorted))
+
 fn main(console: Console):
     let b = bytes.from_string("hi")
     let other_b = bytes.from_string("hi")
@@ -3284,32 +3301,58 @@ fn main(console: Console):
     let other_outcome: Result(Bytes, String) = Ok(other_b)
     let tup = (7, "x", true, 90s, Greater)
     let other_tup = (7, "x", true, 90s, Greater)
-    let row = ProtocolRow(b, 90s, Greater, s, outcome, tup)
+    let labels = [Label("x"), Label("y")]
+    let other_labels = [Label("x"), Label("y")]
+    let row = ProtocolRow(Label("packet"), b, 90s, Greater, s, outcome, tup)
 
+    console.print(sorted_window([3, 1, 2]))
+    console.print(sorted_window(["b", "a", "c"]))
+    console.print("${labels}")
+    console.print(show.render(labels))
     console.print(show.render(b))
     console.print(show.render(90s))
     console.print(show.render(Greater))
     console.print(show.render(s))
     console.print(show.render(outcome))
     console.print(show.render(tup))
+    let hex = encoding.hex_encode_bytes(b)
+    match encoding.hex_decode_bytes(hex):
+        Ok(back) -> console.print(hex + ":" + back.to_string())
+        Err(e) -> console.print("bad:" + show.render(e))
+    match encoding.hex_decode_bytes("zz"):
+        Ok(_) -> console.print("bad")
+        Err(_) -> console.print("hex-err")
     console.print(json.stringify(row))
 
+    testing.assert_value_eq(labels, other_labels)
     console.print("${same(b, other_b)}")
     console.print("${total_same(b, other_b)}")
+    console.print("${same(labels, other_labels)}")
     console.print("${same(Some(Greater), Some(Greater))}")
     console.print("${same(outcome, other_outcome)}")
     console.print("${total_same(s, other_s)}")
     console.print("${same(tup, other_tup)}")
     console.print("${total_same(tup, other_tup)}")
+    console.print(show.render("nope".parse_int()))
+    console.print(show.render(list.get([10, 20], 9)))
+    match json.decode("1 2"):
+        Ok(_) -> console.print("bad")
+        Err(_) -> console.print("json-err")
 "#;
         let expected = [
+            "[1, 2, 3]|Some(1)|Some(3)",
+            "[a, b, c]|Some(a)|Some(c)",
+            "[<x>, <y>]",
+            "[<x>, <y>]",
             "Bytes(len=2)",
             "1m30s",
             "Greater",
             "{1, 2}",
             "Ok(Bytes(len=2))",
             "(7, x, true, 1m30s, Greater)",
-            "{\"payload\":[104,105],\"wait\":90000,\"order\":{\"$variant\":\"Greater\",\"$values\":[]},\"choices\":[1,2],\"outcome\":{\"$variant\":\"Ok\",\"$values\":[[104,105]]},\"tupled\":[7,\"x\",true,90000,{\"$variant\":\"Greater\",\"$values\":[]}]}",
+            "6869:hi",
+            "hex-err",
+            "{\"label\":{\"$variant\":\"Label\",\"$values\":[\"packet\"]},\"payload\":[104,105],\"wait\":90000,\"order\":{\"$variant\":\"Greater\",\"$values\":[]},\"choices\":[1,2],\"outcome\":{\"$variant\":\"Ok\",\"$values\":[[104,105]]},\"tupled\":[7,\"x\",true,90000,{\"$variant\":\"Greater\",\"$values\":[]}]}",
             "true",
             "true",
             "true",
@@ -3317,6 +3360,10 @@ fn main(console: Console):
             "true",
             "true",
             "true",
+            "true",
+            "None",
+            "None",
+            "json-err",
         ];
         assert_eq!(link_run(src), expected, "interp: core protocol matrix");
         assert_eq!(
