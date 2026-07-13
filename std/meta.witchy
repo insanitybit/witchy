@@ -115,6 +115,33 @@ pub fn type_named(name: Ident, args: List(TypeSyntax)) -> TypeSyntax:
 pub fn type_qualified(module: Ident, name: Ident, args: List(TypeSyntax)) -> TypeSyntax:
     type_with_head(ident_source(module) + "." + ident_source(name), args)
 
+// A tuple type such as `(Int, String)`.
+pub fn type_tuple(types: List(TypeSyntax)) -> TypeSyntax:
+    TypeSyntax("(" + list.join(type_syntax_sources(types), ", ") + ")")
+
+// A function type such as `fn(Int) -> String`.
+pub fn type_fn(params: List(TypeSyntax), ret: TypeSyntax) -> TypeSyntax:
+    TypeSyntax("fn(" + list.join(type_syntax_sources(params), ", ") + ") -> " + type_syntax_source(ret))
+
+// A deeply immutable type qualifier.
+pub fn type_frozen(ty: TypeSyntax) -> TypeSyntax:
+    TypeSyntax("frozen " + type_syntax_source(ty))
+
+// A unique-reference type qualifier.
+pub fn type_unique(ty: TypeSyntax) -> TypeSyntax:
+    TypeSyntax("unique " + type_syntax_source(ty))
+
+// A local unique-reference type qualifier.
+pub fn type_local_unique(ty: TypeSyntax) -> TypeSyntax:
+    TypeSyntax("local unique " + type_syntax_source(ty))
+
+// A capability type with rights, such as `Dir[Read]`.
+pub fn type_capability(name: Ident, rights: List(TypeSyntax)) -> TypeSyntax:
+    let head = ident_source(name)
+    if head != "Dir" && head != "File" && head != "Net":
+        fail("meta.type_capability: expected Dir, File, or Net")
+    TypeSyntax(head + "[" + list.join(type_syntax_sources(rights), ", ") + "]")
+
 fn type_with_head(head: String, args: List(TypeSyntax)) -> TypeSyntax:
     if list.is_empty(args):
         TypeSyntax(head)

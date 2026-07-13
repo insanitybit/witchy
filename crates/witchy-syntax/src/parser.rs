@@ -1561,7 +1561,7 @@ impl Parser {
     fn atom(&mut self) -> Result<Expr, ParseError> {
         match self.kind().clone() {
             Tok::Ident(name) if name == "quote" && self.quote_category().is_some() => {
-                self.quote_expr()
+                self.quote_syntax()
             }
             Tok::Int(n) => {
                 self.advance();
@@ -1770,8 +1770,10 @@ impl Parser {
     }
 
     fn quote_category(&self) -> Option<&str> {
-        let Some(Token { kind: Tok::Ident(category), .. }) = self.toks.get(self.pos + 1) else {
-            return None;
+        let category = match self.toks.get(self.pos + 1).map(|t| &t.kind) {
+            Some(Tok::Ident(category)) => category.as_str(),
+            Some(Tok::Type) => "type",
+            _ => return None,
         };
         if !matches!(self.toks.get(self.pos + 2).map(|t| &t.kind), Some(Tok::LBrace)) {
             return None;
@@ -1779,25 +1781,99 @@ impl Parser {
         Some(category)
     }
 
-    fn quote_expr(&mut self) -> Result<Expr, ParseError> {
+    fn quote_syntax(&mut self) -> Result<Expr, ParseError> {
         let Some(category) = self.quote_category().map(str::to_string) else {
-            return Err(self.error("expected `quote expr:`"));
+            return Err(self.error("expected `quote expr:` or `quote type:`"));
         };
-        if category != "expr" {
-            return Err(self.error(format!(
-                "`quote {category}:` is not implemented yet; use `quote expr:`"
-            )));
-        }
         self.advance(); // `quote`
-        self.advance(); // `expr`
+        self.advance(); // category
         self.expect(&Tok::LBrace)?;
-        let quoted = self.expr(0)?;
+        let quoted = match category.as_str() {
+            "expr" => {
+                let quoted = self.expr(0)?;
+                Expr::Call {
+                    name: "meta.expr_raw".to_string(),
+                    args: vec![Expr::Str(crate::format::expr_str(&quoted))],
+                }
+            }
+            "type" => {
+                let quoted = self.ty()?;
+                self.type_syntax_expr(&quoted)?
+            }
+            _ => {
+                return Err(self.error(format!(
+                    "`quote {category}:` is not implemented yet; use `quote expr:` or `quote type:`"
+                )));
+            }
+        };
         self.expect(&Tok::RBrace)?;
         self.needs_meta_import = true;
-        Ok(Expr::Call {
-            name: "meta.expr_raw".to_string(),
-            args: vec![Expr::Str(crate::format::expr_str(&quoted))],
-        })
+        Ok(quoted)
+    }
+
+    fn meta_call(&self, name: &str, args: Vec<Expr>) -> Expr {
+        Expr::Call { name: format!("meta.{name}"), args }
+    }
+
+    fn meta_ident(&self, name: &str) -> Expr {
+        self.meta_call("ident", vec![Expr::Str(name.to_string())])
+    }
+
+    fn type_syntax_expr(&self, ty: &Type) -> Result<Expr, ParseError> {
+        match ty {
+            Type::Named(name, args) => {
+                if name.starts_with("__anon") || name.starts_with("__union") {
+                    return Err(self.error(
+                        "`quote type:` does not support anonymous record or union types yet; \
+                         use a named type for now",
+                    ));
+                }
+                let rendered_args = self.type_syntax_exprs(args)?;
+                if matches!(name.as_str(), "Dir" | "File" | "Net") && !args.is_empty() {
+                    return Ok(self.meta_call(
+                        "type_capability",
+                        vec![self.meta_ident(name), Expr::List(rendered_args)],
+                    ));
+                }
+                if let Some((module, type_name)) = name.split_once('.') {
+                    Ok(self.meta_call(
+                        "type_qualified",
+                        vec![
+                            self.meta_ident(module),
+                            self.meta_ident(type_name),
+                            Expr::List(rendered_args),
+                        ],
+                    ))
+                } else {
+                    Ok(self.meta_call(
+                        "type_named",
+                        vec![self.meta_ident(name), Expr::List(rendered_args)],
+                    ))
+                }
+            }
+            Type::Tuple(types) => Ok(self.meta_call("type_tuple", vec![
+                Expr::List(self.type_syntax_exprs(types)?),
+            ])),
+            Type::Fn(params, ret) => Ok(self.meta_call(
+                "type_fn",
+                vec![
+                    Expr::List(self.type_syntax_exprs(params)?),
+                    self.type_syntax_expr(ret)?,
+                ],
+            )),
+            Type::Qualified(qual, inner) => {
+                let name = match qual {
+                    TypeQual::Frozen => "type_frozen",
+                    TypeQual::Unique => "type_unique",
+                    TypeQual::LocalUnique => "type_local_unique",
+                };
+                Ok(self.meta_call(name, vec![self.type_syntax_expr(inner)?]))
+            }
+        }
+    }
+
+    fn type_syntax_exprs(&self, types: &[Type]) -> Result<Vec<Expr>, ParseError> {
+        types.iter().map(|ty| self.type_syntax_expr(ty)).collect()
     }
 
     /// Resolve a bare name into a variable, call, constructor, or a qualified

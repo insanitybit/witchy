@@ -1466,6 +1466,30 @@ fn main(console: Console):
         );
     }
 
+    /// RFC-0080 type quotation lowers to structured `TypeSyntax` builders instead
+    /// of adding a public raw type-string constructor.
+    #[test]
+    fn quote_type_builds_typed_typesyntax_on_both_backends() {
+        let src = r#"
+import meta
+
+comptime:
+    let int = quote type:
+        Int
+    emit_item(meta.function(true, meta.ident("generated"), [], Some(int), meta.expr_int(7)))
+
+fn main(console: Console):
+    console.print("${generated()}")
+"#;
+        let expected = ["7"];
+        assert_eq!(link_run(src), expected, "interp quote type generated item");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled quote type generated item",
+        );
+    }
+
     /// (BUG-182) A tagged literal in a standalone file whose stem is NOT a valid
     /// identifier (`tag-hyphen`) must still expand and run on both backends. Tag
     /// expansion seeds a throwaway parse with `import <qualifier>` lines built from

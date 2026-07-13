@@ -2005,6 +2005,30 @@ Source-backed type syntax. Prefer this to assembling type names at each generato
 
 #### `fn type_qualified(module: Ident, name: Ident, args: List(TypeSyntax)) -> TypeSyntax`
 
+#### `fn type_tuple(types: List(TypeSyntax)) -> TypeSyntax`
+
+A tuple type such as `(Int, String)`.
+
+#### `fn type_fn(params: List(TypeSyntax), ret: TypeSyntax) -> TypeSyntax`
+
+A function type such as `fn(Int) -> String`.
+
+#### `fn type_frozen(ty: TypeSyntax) -> TypeSyntax`
+
+A deeply immutable type qualifier.
+
+#### `fn type_unique(ty: TypeSyntax) -> TypeSyntax`
+
+A unique-reference type qualifier.
+
+#### `fn type_local_unique(ty: TypeSyntax) -> TypeSyntax`
+
+A local unique-reference type qualifier.
+
+#### `fn type_capability(name: Ident, rights: List(TypeSyntax)) -> TypeSyntax`
+
+A capability type with rights, such as `Dir[Read]`.
+
 #### `fn type_expr(ty: TypeExpr) -> TypeSyntax`
 
 #### `fn expr_name(name: Ident) -> ExprSyntax`

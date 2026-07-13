@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed syntax wrappers/builders with validated identifiers, comptime emit_item/fn helpers, typed custom derives, typed tagged-literal ExprSyntax returns, and parser-backed expression quotation landed; hygiene/full syntax API remains proposed"
+tracking: "source-backed syntax wrappers/builders with validated identifiers, comptime emit_item/fn helpers, typed custom derives, typed tagged-literal ExprSyntax returns, and parser-backed expression/type quotation landed; hygiene/full syntax API remains proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -225,9 +225,15 @@ The first source-compatible slice is implemented:
   auto-imports `meta` for the generated call. This removes unchecked expression
   string spelling from the common typed-tag case without claiming item quotation,
   holes, or hygiene.
+- The twelfth slice adds `quote type:` for named/generic, module-qualified,
+  tuple, function, ownership-qualified, and capability-right types. It lowers to
+  structured `TypeSyntax` builders (`type_named`, `type_tuple`, `type_fn`,
+  `type_unique`, and friends), not to a new raw type-string constructor.
+  Anonymous structural type quotation remains a follow-up because preserving
+  those shapes needs real compiler-owned type syntax nodes.
 
 This is intentionally not the full RFC. The payload is still source-backed and
-only expression quotation exists; there is no identifier hygiene or
+only expression/type quotation exists; there is no identifier hygiene or
 compiler-owned expression/pattern/type syntax tree yet. The value is the
 migration seam: future work can move the payload behind these wrappers from
 parsed source to structured compiler nodes without changing the comptime

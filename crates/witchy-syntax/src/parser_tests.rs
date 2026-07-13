@@ -487,6 +487,50 @@ fn f():
     }
 
     #[test]
+    fn quote_type_lowers_to_structured_meta_builders() {
+        fn ident(name: &str) -> Expr {
+            Expr::Call { name: "meta.ident".into(), args: vec![Expr::Str(name.into())] }
+        }
+
+        fn named(name: &str, args: Vec<Expr>) -> Expr {
+            Expr::Call {
+                name: "meta.type_named".into(),
+                args: vec![ident(name), Expr::List(args)],
+            }
+        }
+
+        let m = parse_module(r#"
+fn f():
+    quote type:
+        fn(List(Int), json.Json) -> unique File[Read]
+"#).expect("quote type should parse");
+        assert!(m.imports.contains(&"meta".to_string()), "quote type imports meta");
+        let Item::Function(f) = &m.items[0] else {
+            panic!("expected function");
+        };
+        let expected = Expr::Call {
+            name: "meta.type_fn".into(),
+            args: vec![
+                Expr::List(vec![
+                    named("List", vec![named("Int", vec![])]),
+                    Expr::Call {
+                        name: "meta.type_qualified".into(),
+                        args: vec![ident("json"), ident("Json"), Expr::List(vec![])],
+                    },
+                ]),
+                Expr::Call {
+                    name: "meta.type_unique".into(),
+                    args: vec![Expr::Call {
+                        name: "meta.type_capability".into(),
+                        args: vec![ident("File"), Expr::List(vec![named("Read", vec![])])],
+                    }],
+                },
+            ],
+        };
+        assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);
+    }
+
+    #[test]
     fn parses_constructors_vs_calls_by_case() {
         let stmts = fn_body(r#"
 fn f():
