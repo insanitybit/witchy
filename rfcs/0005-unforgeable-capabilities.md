@@ -539,3 +539,12 @@ The companion plan scopes their migration explicitly.
 hardening is done, and the staged migration is specified and revised in the
 companion `rfcs/externref-implementation-plan.md` (2026-07-04 revision). The
 remaining work is the cut itself.
+
+**2026-07-13 implementation checkpoint.** The compiled backend's
+guest-represented authority values have moved to `externref`: `File`, `Dir`,
+`Net`, derived `Socket`/`Listener`, and `Secret`. `Exec`, `SecretStore`,
+zero-representation ambient caps, and build caps are enforced by source typing
+plus import/link grants rather than by guest-held authority handles. The
+remaining RFC-0005 work is the deferred Stage 4 representation for
+cap-carrying aggregates/closures and the final terminology/API cleanup around
+host-owned grant objects.

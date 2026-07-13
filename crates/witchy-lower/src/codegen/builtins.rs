@@ -517,7 +517,7 @@ impl Codegen<'_> {
             }
             // `exec(cap, dir, path, args, stdin) -> String`. The `Exec` cap (arg 0)
             // is a structural placeholder — `caps.exec` gates linking — so it is
-            // dropped; the WIR `exec` helper takes (dir handle, path, args, stdin).
+            // dropped; the WIR `exec` helper takes (Dir externref, path, args, stdin).
             ("exec", 5) => {
                 call("exec", self.lower_args(&[&args[1], &args[2], &args[3], &args[4]])?)
             }
@@ -565,19 +565,21 @@ impl Codegen<'_> {
             }
             ("read_build", 2) => {
                 self.used_build_ops.insert("read_build");
-                call("build_read", self.lower_args(&[&args[0], &args[1]])?)
+                // Build* caps are zero-representation at the host boundary:
+                // typeck requires the receiver, import gating grants authority.
+                call("build_read", self.lower_args(&[&args[1]])?)
             }
             ("get_build_env", 2) => {
                 self.used_build_ops.insert("get_build_env");
-                call("build_get_env", self.lower_args(&[&args[0], &args[1]])?)
+                call("build_get_env", self.lower_args(&[&args[1]])?)
             }
             ("fetch_build", 3) => {
                 self.used_build_ops.insert("fetch_build");
-                call("build_fetch", self.lower_args(&[&args[0], &args[1], &args[2]])?)
+                call("build_fetch", self.lower_args(&[&args[1], &args[2]])?)
             }
             ("run_tool", 3) => {
                 self.used_build_ops.insert("run_tool");
-                call("build_exec", self.lower_args(&[&args[0], &args[1], &args[2]])?)
+                call("build_exec", self.lower_args(&[&args[1], &args[2]])?)
             }
             ("recv_line", 1) => {
                 self.used_net_ops.insert("recv_line");
@@ -732,7 +734,9 @@ impl Codegen<'_> {
             }
             ("write_out", 3) => {
                 self.used_build_ops.insert("write_out");
-                let a = self.lower_args(&[&args[0], &args[1], &args[2]])?;
+                // BuildOut is checked at source level and granted by import
+                // linking; the host op needs only the generated path + bytes.
+                let a = self.lower_args(&[&args[1], &args[2]])?;
                 if self.collect_wir { call("build_out_write", a) } else { nil0(host("build_out_write_host", a)) }
             }
             // --- calls with a pushed constant / slot conversions ---

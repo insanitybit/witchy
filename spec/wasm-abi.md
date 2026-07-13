@@ -181,12 +181,12 @@ byte-for-byte and instantiates an all-import probe against the native host.
 | `vm_par_map_bytes_write` | `(i32)` | internal/toolchain service | none | omitted |
 | `vm_with_dir_run` | `(externref, i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `vm_serve_run` | `(i32, i32, i32) -> i32` | internal/toolchain service | none | omitted |
-| `build_read_len` | `(i32, i32) -> i32` | capability authority | Build.Read | omitted |
-| `build_out_write` | `(i32, i32, i32)` | capability authority | Build.Out | omitted |
-| `build_env_len` | `(i32, i32) -> i32` | capability authority | Build.Env | omitted |
-| `build_env_fill` | `(i32, i32, i32)` | capability authority | Build.Env | omitted |
-| `build_fetch_len` | `(i32, i32, i32) -> i32` | capability authority | Build.Fetch | omitted |
-| `build_exec_run` | `(i32, i32, i32) -> i32` | capability authority | Build.Exec | omitted |
+| `build_read_len` | `(i32) -> i32` | capability authority | Build.Read | omitted |
+| `build_out_write` | `(i32, i32)` | capability authority | Build.Out | omitted |
+| `build_env_len` | `(i32) -> i32` | capability authority | Build.Env | omitted |
+| `build_env_fill` | `(i32, i32)` | capability authority | Build.Env | omitted |
+| `build_fetch_len` | `(i32, i32) -> i32` | capability authority | Build.Fetch | omitted |
+| `build_exec_run` | `(i32, i32) -> i32` | capability authority | Build.Exec | omitted |
 | `net_recv_line_len` | `(externref) -> i32` | capability authority | Net.Connect | omitted |
 | `net_recv_all_len` | `(externref) -> i32` | capability authority | Net.Connect | omitted |
 | `net_recv_bytes_len` | `(externref, i64) -> i32` | capability authority | Net.Connect | omitted |
@@ -208,8 +208,8 @@ byte-for-byte and instantiates an all-import probe against the native host.
 | `dir_open` | `(externref, i32) -> externref` | capability authority | Dir.Read | omitted |
 | `dir_create` | `(externref, i32) -> externref` | capability authority | Dir.Write | omitted |
 | `mint_file` | `(i32) -> externref` | capability authority | File.grant | omitted |
-| `file_read_len` | `(externref) -> i32` | capability authority | File.handle | omitted |
-| `file_write` | `(externref, i32)` | capability authority | File.handle | omitted |
+| `file_read_len` | `(externref) -> i32` | capability authority | File.authority | omitted |
+| `file_write` | `(externref, i32)` | capability authority | File.authority | omitted |
 | `mint_net` | `(i32) -> externref` | capability authority | Net.grant | omitted |
 | `net_connect` | `(externref, i32) -> externref` | capability authority | Net.Connect | omitted |
 | `net_try_connect` | `(externref, i32) -> externref` | capability authority | Net.Connect | omitted |

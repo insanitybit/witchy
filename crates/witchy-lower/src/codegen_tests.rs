@@ -19,6 +19,38 @@
             .unwrap();
     }
 
+    fn import_param_counts(wasm: &[u8]) -> std::collections::BTreeMap<String, usize> {
+        let mut func_param_counts = Vec::new();
+        let mut imports = Vec::new();
+        for payload in wasmparser::Parser::new(0).parse_all(wasm) {
+            match payload.expect("valid wasm") {
+                wasmparser::Payload::TypeSection(reader) => {
+                    for ty in reader.into_iter_err_on_gc_types() {
+                        func_param_counts.push(ty.expect("function type").params().len());
+                    }
+                }
+                wasmparser::Payload::ImportSection(reader) => {
+                    for imp in reader.into_imports() {
+                        let imp = imp.expect("import");
+                        if let wasmparser::TypeRef::Func(idx) = imp.ty {
+                            imports.push((imp.name.to_string(), idx as usize));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        imports
+            .into_iter()
+            .map(|(name, idx)| {
+                let params = *func_param_counts
+                    .get(idx)
+                    .unwrap_or_else(|| panic!("missing function type {idx} for import {name}"));
+                (name, params)
+            })
+            .collect()
+    }
+
     #[test]
     fn build_module_is_zero_ambient() {
         // A compiled build step imports ONLY its build host functions — none of
@@ -49,6 +81,9 @@
         assert!(exports.iter().any(|e| e == "run"), "build entrypoint becomes the run export");
         assert!(imports.iter().any(|i| i == "build_out_write"), "write_out import present");
         assert!(imports.iter().any(|i| i == "build_read_len"), "read_build import present");
+        let params = import_param_counts(&wasm);
+        assert_eq!(params.get("build_out_write"), Some(&2), "BuildOut receiver must not cross the host ABI");
+        assert_eq!(params.get("build_read_len"), Some(&1), "BuildRead receiver must not cross the host ABI");
         // No runtime-authority imports leaked in.
         for forbidden in ["dir_write", "dir_read_len", "net_connect", "net_listen", "print", "now", "now_monotonic", "crypto.sign"] {
             assert!(!imports.iter().any(|i| i == forbidden), "build module must not import `{forbidden}`: {imports:?}");
@@ -86,6 +121,11 @@
                 "build primitive must not lower to runtime import `{forbidden}`: {imports:?}"
             );
         }
+        let params = import_param_counts(&wasm);
+        assert_eq!(params.get("build_env_len"), Some(&1), "BuildEnv receiver must not cross the host ABI");
+        assert_eq!(params.get("build_env_fill"), Some(&2), "BuildEnv receiver must not cross the host ABI");
+        assert_eq!(params.get("build_fetch_len"), Some(&2), "BuildNet receiver must not cross the host ABI");
+        assert_eq!(params.get("build_exec_run"), Some(&2), "BuildExec receiver must not cross the host ABI");
     }
 
     fn run_int(src: &str) -> i64 {

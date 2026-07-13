@@ -241,12 +241,12 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "vm_par_map_bytes_write" (func $vm_par_map_bytes_write_host (param i32)))
   (import "witchy" "vm_with_dir_run" (func $vm_with_dir_run_host (param externref i32 i32) (result i32)))
   (import "witchy" "vm_serve_run" (func $vm_serve_run_host (param i32 i32 i32) (result i32)))
-  (import "witchy" "build_read_len" (func $build_read_len_host (param i32 i32) (result i32)))
-  (import "witchy" "build_out_write" (func $build_out_write_host (param i32 i32 i32)))
-  (import "witchy" "build_env_len" (func $build_env_len_host (param i32 i32) (result i32)))
-  (import "witchy" "build_env_fill" (func $build_env_fill_host (param i32 i32 i32)))
-  (import "witchy" "build_fetch_len" (func $build_fetch_len_host (param i32 i32 i32) (result i32)))
-  (import "witchy" "build_exec_run" (func $build_exec_run_host (param i32 i32 i32) (result i32)))
+  (import "witchy" "build_read_len" (func $build_read_len_host (param i32) (result i32)))
+  (import "witchy" "build_out_write" (func $build_out_write_host (param i32 i32)))
+  (import "witchy" "build_env_len" (func $build_env_len_host (param i32) (result i32)))
+  (import "witchy" "build_env_fill" (func $build_env_fill_host (param i32 i32)))
+  (import "witchy" "build_fetch_len" (func $build_fetch_len_host (param i32 i32) (result i32)))
+  (import "witchy" "build_exec_run" (func $build_exec_run_host (param i32 i32) (result i32)))
   (import "witchy" "net_recv_line_len" (func $net_recv_line_len_host (param externref) (result i32)))
   (import "witchy" "net_recv_all_len" (func $net_recv_all_len_host (param externref) (result i32)))
   (import "witchy" "net_recv_bytes_len" (func $net_recv_bytes_len_host (param externref i64) (result i32)))
@@ -341,7 +341,7 @@ pub enum AbiImportAuthority {
     DirRead,
     DirWrite,
     FileGrant,
-    FileHandle,
+    FileAuthority,
     NetGrant,
     NetConnect,
     NetListen,
@@ -364,7 +364,7 @@ impl AbiImportAuthority {
             Self::DirRead => "Dir.Read",
             Self::DirWrite => "Dir.Write",
             Self::FileGrant => "File.grant",
-            Self::FileHandle => "File.handle",
+            Self::FileAuthority => "File.authority",
             Self::NetGrant => "Net.grant",
             Self::NetConnect => "Net.Connect",
             Self::NetListen => "Net.Listen",
@@ -387,7 +387,7 @@ const AUTH_DIR_GRANT: &[AbiImportAuthority] = &[AbiImportAuthority::DirGrant];
 const AUTH_DIR_READ: &[AbiImportAuthority] = &[AbiImportAuthority::DirRead];
 const AUTH_DIR_WRITE: &[AbiImportAuthority] = &[AbiImportAuthority::DirWrite];
 const AUTH_FILE_GRANT: &[AbiImportAuthority] = &[AbiImportAuthority::FileGrant];
-const AUTH_FILE_HANDLE: &[AbiImportAuthority] = &[AbiImportAuthority::FileHandle];
+const AUTH_FILE_AUTHORITY: &[AbiImportAuthority] = &[AbiImportAuthority::FileAuthority];
 const AUTH_NET_GRANT: &[AbiImportAuthority] = &[AbiImportAuthority::NetGrant];
 const AUTH_NET_CONNECT: &[AbiImportAuthority] = &[AbiImportAuthority::NetConnect];
 const AUTH_NET_LISTEN: &[AbiImportAuthority] = &[AbiImportAuthority::NetListen];
@@ -520,7 +520,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_open" => AUTH_DIR_READ,
         "dir_write" | "dir_append" | "dir_make_dir" | "dir_create" => AUTH_DIR_WRITE,
         "mint_file" => AUTH_FILE_GRANT,
-        "file_read_len" | "file_write" => AUTH_FILE_HANDLE,
+        "file_read_len" | "file_write" => AUTH_FILE_AUTHORITY,
         "mint_net" => AUTH_NET_GRANT,
         "net_connect"
         | "net_try_connect"

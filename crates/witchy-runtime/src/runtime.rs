@@ -244,16 +244,16 @@ pub struct Capabilities {
     /// Optional per-key restriction for ordinary `Env` host reads. `None`
     /// preserves the coarse grant; `Some(keys)` refuses every unnamed key.
     pub env_allow: Option<Vec<String>>,
-    /// The directory subtree backing the root `Dir` capability (handle 0).
+    /// The directory subtree backing the first root `Dir` grant.
     /// `None` denies the filesystem entirely; the `dir_read`/`dir_write` flags
     /// pick which operation families are linked within it.
     pub dir_root: Option<std::path::PathBuf>,
-    /// Additional `Dir` grants beyond handle 0, for a `main` that takes several
-    /// `Dir` parameters (positional: the i-th `Dir` param maps to handle `i`).
-    /// Handle 0 is `dir_root`; these back handles 1.. in order.
+    /// Additional root `Dir` grants, for a `main` that takes several `Dir`
+    /// parameters. The generated wrapper mints each parameter from its grant
+    /// ordinal; the ordinal never becomes the guest's `Dir` value.
     pub dir_roots: Vec<std::path::PathBuf>,
-    /// Per-Dir-handle rights, aligned with `dir_root` followed by `dir_roots`.
-    /// Empty means "use the coarse `dir_read`/`dir_write` grant for each handle",
+    /// Per-Dir-grant rights, aligned with `dir_root` followed by `dir_roots`.
+    /// Empty means "use the coarse `dir_read`/`dir_write` grant for each Dir grant",
     /// preserving older callers that grant one uniform root.
     pub dir_rights: Vec<FsRights>,
     /// Direct `File` grants (RFC-0012): the i-th `File` parameter of `main` maps to
@@ -268,7 +268,7 @@ pub struct Capabilities {
     /// May write within `dir_root` (write/make_dir).
     pub dir_write: bool,
     /// May spawn a native subprocess via `exec` (an `Exec` capability). The
-    /// executable is named + confined through a `Dir[Read]` handle, so `exec`
+    /// executable is named + confined through a `Dir[Read]` capability, so `exec`
     /// without filesystem read is useless — but the flag is tracked separately so
     /// `Exec` appears as its own authority. See rfcs/0004-self-hosted-cli.md.
     pub exec: bool,
@@ -276,7 +276,7 @@ pub struct Capabilities {
     /// preserves the ordinary coarse `Exec` grant; `Some(tools)` is used by
     /// BuildExec and refuses every tool not named here.
     pub exec_allow: Option<Vec<String>>,
-    /// The `host:port` allowlist backing the root `Net` capability (handle 0).
+    /// The `host:port` allowlist backing the root `Net` capability.
     /// `None` denies the network entirely; the verb flags below pick which
     /// operation families are linked within it.
     pub net_allow: Option<Vec<String>>,
@@ -344,41 +344,41 @@ impl FsRights {
 }
 
 #[derive(Clone, Debug)]
-struct DirHandle {
+struct DirAuthority {
     base: std::path::PathBuf,
     policy: String,
     rights: FsRights,
 }
 
 #[derive(Clone, Debug)]
-struct FileHandle {
+struct FileAuthority {
     path: std::path::PathBuf,
     rights: FsRights,
 }
 
 #[derive(Clone, Debug)]
-struct NetHandle {
+struct NetAuthority {
     allow: Vec<String>,
 }
 
 #[derive(Clone)]
-struct SocketHandle {
+struct SocketResource {
     stream: Arc<Mutex<std::io::BufReader<Box<dyn Stream>>>>,
 }
 
 #[derive(Clone)]
-struct ListenerHandle {
+struct ListenerResource {
     listener: std::sync::Arc<std::net::TcpListener>,
     tls: Option<crate::net::ServerTlsConfig>,
 }
 
 #[derive(Clone, Debug)]
-struct SecretHandle {
+struct SecretMaterial {
     bytes: Vec<u8>,
     use_only: bool,
 }
 
-impl SecretHandle {
+impl SecretMaterial {
     fn from_grant(grant: &SecretGrant) -> Self {
         Self {
             bytes: grant.bytes.clone(),
@@ -400,11 +400,11 @@ pub struct VmState {
     /// capabilities), so the host can observe a compiled program's output.
     pub(crate) output: Arc<Mutex<Vec<String>>>,
     /// Root `Dir` grants awaiting wrapper-local `mint_dir(i)`. A live guest `Dir`
-    /// is an externref carrying a cloned `DirHandle`, not this index.
-    dirs: Vec<DirHandle>,
+    /// is an externref carrying a cloned `DirAuthority`, not this index.
+    dirs: Vec<DirAuthority>,
     /// Direct `File` grants awaiting wrapper-local `mint_file(i)`. A live guest
-    /// `File` is an externref carrying a cloned `FileHandle`, not this index.
-    files: Vec<FileHandle>,
+    /// `File` is an externref carrying a cloned `FileAuthority`, not this index.
+    files: Vec<FileAuthority>,
     /// A host->guest transfer staged by a size-probing call (`dir_read_len`,
     /// `net_recv_*_len`, ...) and consumed by the matching `fill_pending`, so
     /// the data is read once with no time-of-check/time-of-use gap.
@@ -424,16 +424,17 @@ pub struct VmState {
     /// `user_cap_field_len` + `fill_pending` and wrapped in a record by codegen.
     pub(crate) user_cap_fields: Vec<Vec<String>>,
     /// Root `Net` grants awaiting wrapper-local `mint_net(i)`. Live `Net`,
-    /// `Socket`, and `Listener` values are externrefs carrying host-side handles,
+    /// `Socket`, and `Listener` values are externrefs carrying host-side resources,
     /// not guest-forgeable indices into these grants.
-    nets: Vec<NetHandle>,
+    nets: Vec<NetAuthority>,
     /// (RFC-0032) When this VM is a `serve` POOL WORKER, the shared listener (plus
     /// its TLS config) it must reuse instead of binding its own. `listen` returns
     /// this; `serve_pool` sees it set and does NOT spawn another pool (only the
     /// primary spawns workers).
     worker_listener: Option<(std::sync::Arc<std::net::TcpListener>, Option<crate::net::ServerTlsConfig>)>,
     /// A build step's confined output directory (`BuildOut`) and read roots
-    /// (`BuildRead`) — host-side, so a guest holds only an opaque handle.
+    /// (`BuildRead`) — host-side. Build capabilities are zero-representation at
+    /// the host ABI; import linking, not a guest handle, carries the authority.
     build_out: Option<std::path::PathBuf>,
     build_read_roots: Vec<std::path::PathBuf>,
     /// (RFC-0023) Checked-heap shadow. Each `heap_register(start,end)` the guest's
@@ -837,7 +838,7 @@ pub(crate) fn link_capability_imports(
         linker.func_wrap("witchy", "mint_file", host_mint_file)?;
     }
     // The Exec capability: spawn a confined subprocess. The executable is named
-    // through a `Dir[Read]` handle, so `exec_run` reuses `dir_base`/`confine`.
+    // through a `Dir[Read]` capability, so `exec_run` reuses `dir_base`/`confine`.
     if caps.exec {
         linker.func_wrap("witchy", "exec_run", host_exec_run)?;
     }
@@ -1490,7 +1491,7 @@ fn host_env_fill(mut caller: Caller<'_, VmState>, name_ptr: i32, out_ptr: i32) -
 
 // --- the Dir capability family ---
 //
-// A guest `Dir` value is an opaque externref carrying a host-side `DirHandle`.
+// A guest `Dir` value is an opaque externref carrying a host-side `DirAuthority`.
 // The paths never enter guest memory, and there is no guest-visible integer
 // handle to forge or widen. Every operation resolves through the SAME
 // `resolve`/`resolve_write` confinement the interpreter uses (lexical
@@ -1499,7 +1500,7 @@ fn host_env_fill(mut caller: Caller<'_, VmState>, name_ptr: i32, out_ptr: i32) -
 
 /// Look up a root Dir grant by ordinal while minting the root `Dir` externref
 /// for `main`. This ordinal never crosses into guest code.
-fn dir_handle(caller: &Caller<'_, VmState>, h: i32) -> Result<DirHandle> {
+fn dir_grant_by_ordinal(caller: &Caller<'_, VmState>, h: i32) -> Result<DirAuthority> {
     caller
         .data()
         .dirs
@@ -1509,16 +1510,16 @@ fn dir_handle(caller: &Caller<'_, VmState>, h: i32) -> Result<DirHandle> {
 }
 
 /// Recover the authority object carried by a guest `Dir` value.
-fn dir_handle_ref(caller: &Caller<'_, VmState>, d: Option<Rooted<ExternRef>>) -> Result<DirHandle> {
+fn dir_authority_ref(caller: &Caller<'_, VmState>, d: Option<Rooted<ExternRef>>) -> Result<DirAuthority> {
     let d = d.ok_or_else(|| Error::msg("Dir externref is null"))?;
     d.data(caller)?
         .ok_or_else(|| Error::msg("Dir externref has no host data"))?
-        .downcast_ref::<DirHandle>()
+        .downcast_ref::<DirAuthority>()
         .cloned()
         .ok_or_else(|| Error::msg("Dir externref has wrong host data"))
 }
 
-fn dir_require_read(dir: &DirHandle) -> Result<()> {
+fn dir_require_read(dir: &DirAuthority) -> Result<()> {
     if dir.rights.read {
         Ok(())
     } else {
@@ -1526,7 +1527,7 @@ fn dir_require_read(dir: &DirHandle) -> Result<()> {
     }
 }
 
-fn dir_require_write(dir: &DirHandle) -> Result<()> {
+fn dir_require_write(dir: &DirAuthority) -> Result<()> {
     if dir.rights.write {
         Ok(())
     } else {
@@ -1537,7 +1538,7 @@ fn dir_require_write(dir: &DirHandle) -> Result<()> {
 /// Trap unless Dir `dir`'s entry policy admits touching `name` (RFC-0011).
 /// `is_dir` is whether `name` denotes a directory entry (a traversal), so the policy's
 /// `kind:` dimension can distinguish files from directories.
-fn dir_guard(dir: &DirHandle, name: &str, is_dir: bool) -> Result<()> {
+fn dir_guard(dir: &DirAuthority, name: &str, is_dir: bool) -> Result<()> {
     if witchy_caps::capabilities::dir_admits(&dir.policy, name, is_dir) {
         Ok(())
     } else {
@@ -1548,7 +1549,7 @@ fn dir_guard(dir: &DirHandle, name: &str, is_dir: bool) -> Result<()> {
 }
 
 fn host_mint_dir(mut caller: Caller<'_, VmState>, i: i32) -> Result<Option<Rooted<ExternRef>>> {
-    let dir = dir_handle(&caller, i)?;
+    let dir = dir_grant_by_ordinal(&caller, i)?;
     ExternRef::new(&mut caller, dir).map(Some)
 }
 
@@ -1564,13 +1565,13 @@ fn host_dir_subdir(
 ) -> Result<Option<Rooted<ExternRef>>> {
     let mem = memory_of(&mut caller)?;
     let name = read_wstr(mem.data(&caller), name_ptr)?;
-    let dir = dir_handle_ref(&caller, d)?;
+    let dir = dir_authority_ref(&caller, d)?;
     dir_require_read(&dir)?;
     // Opening a sub-directory is a directory traversal (RFC-0011 `kind`): a `files()`
     // policy forbids it, an `ext`/empty policy does not.
     dir_guard(&dir, &name, true)?;
     let sub = confine(crate::confine::resolve(&dir.base, &name))?;
-    ExternRef::new(&mut caller, DirHandle {
+    ExternRef::new(&mut caller, DirAuthority {
         base: sub,
         policy: dir.policy,
         rights: dir.rights,
@@ -1586,10 +1587,10 @@ fn host_dir_only(
 ) -> Result<Option<Rooted<ExternRef>>> {
     let mem = memory_of(&mut caller)?;
     let refine = read_wstr(mem.data(&caller), policy_ptr)?;
-    let dir = dir_handle_ref(&caller, d)?;
+    let dir = dir_authority_ref(&caller, d)?;
     dir_require_read(&dir)?;
     let narrowed = witchy_caps::capabilities::dir_only(&dir.policy, &refine);
-    ExternRef::new(&mut caller, DirHandle {
+    ExternRef::new(&mut caller, DirAuthority {
         base: dir.base,
         policy: narrowed,
         rights: dir.rights,
@@ -1598,7 +1599,7 @@ fn host_dir_only(
 
 /// Look up a direct `--file` grant by ordinal while minting the root `File`
 /// externref for `main`. This ordinal never crosses into guest code.
-fn file_handle(caller: &Caller<'_, VmState>, f: i32) -> Result<FileHandle> {
+fn file_grant_by_ordinal(caller: &Caller<'_, VmState>, f: i32) -> Result<FileAuthority> {
     caller
         .data()
         .files
@@ -1610,11 +1611,11 @@ fn file_handle(caller: &Caller<'_, VmState>, f: i32) -> Result<FileHandle> {
 /// Recover the authority object carried by a guest `File` value. A valid guest
 /// value is an opaque `externref` minted by `mint_file` or `dir_open/create`; there
 /// is no guest-side integer handle to forge or swap.
-fn file_handle_ref(caller: &Caller<'_, VmState>, f: Option<Rooted<ExternRef>>) -> Result<FileHandle> {
+fn file_authority_ref(caller: &Caller<'_, VmState>, f: Option<Rooted<ExternRef>>) -> Result<FileAuthority> {
     let f = f.ok_or_else(|| Error::msg("File externref is null"))?;
     f.data(caller)?
         .ok_or_else(|| Error::msg("File externref has no host data"))?
-        .downcast_ref::<FileHandle>()
+        .downcast_ref::<FileAuthority>()
         .cloned()
         .ok_or_else(|| Error::msg("File externref has wrong host data"))
 }
@@ -1628,12 +1629,12 @@ fn file_handle_ref(caller: &Caller<'_, VmState>, f: Option<Rooted<ExternRef>>) -
 /// data alive while a live wasm frame references the `externref`), so no separate
 /// index table survives it (§8.9).
 fn host_mint_file(mut caller: Caller<'_, VmState>, i: i32) -> Result<Option<Rooted<ExternRef>>> {
-    let file = file_handle(&caller, i)?;
+    let file = file_grant_by_ordinal(&caller, i)?;
     ExternRef::new(&mut caller, file).map(Some)
 }
 
-/// `dir_open(h, rel) -> File` (RFC-0012/RFC-0005 Stage 2): open an existing file
-/// confined to Dir handle `h`, minting an unforgeable `File` externref.
+/// `dir_open(d, rel) -> File` (RFC-0012/RFC-0005 Stage 2): open an existing file
+/// confined to Dir externref `d`, minting an unforgeable `File` externref.
 /// `dir_create` is the write counterpart (the target need not exist yet).
 fn host_dir_open(
     mut caller: Caller<'_, VmState>,
@@ -1642,11 +1643,11 @@ fn host_dir_open(
 ) -> Result<Option<Rooted<ExternRef>>> {
     let mem = memory_of(&mut caller)?;
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
-    let dir = dir_handle_ref(&caller, d)?;
+    let dir = dir_authority_ref(&caller, d)?;
     dir_require_read(&dir)?;
     dir_guard(&dir, &rel, false)?;
     let path = confine(crate::confine::resolve(&dir.base, &rel))?;
-    ExternRef::new(&mut caller, FileHandle { path, rights: FsRights::new(true, false) }).map(Some)
+    ExternRef::new(&mut caller, FileAuthority { path, rights: FsRights::new(true, false) }).map(Some)
 }
 
 /// `dir_create(h, rel) -> File`: like `dir_open` but for a not-yet-existing target
@@ -1658,18 +1659,18 @@ fn host_dir_create(
 ) -> Result<Option<Rooted<ExternRef>>> {
     let mem = memory_of(&mut caller)?;
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
-    let dir = dir_handle_ref(&caller, d)?;
+    let dir = dir_authority_ref(&caller, d)?;
     dir_require_write(&dir)?;
     dir_guard(&dir, &rel, false)?;
     let path = confine(crate::confine::resolve_write(&dir.base, &rel))?;
-    ExternRef::new(&mut caller, FileHandle { path, rights: FsRights::new(false, true) }).map(Some)
+    ExternRef::new(&mut caller, FileAuthority { path, rights: FsRights::new(false, true) }).map(Some)
 }
 
 /// `file_read_len(f) -> byte length`: read the confined File externref NOW, stage its
 /// bytes, and report the length; the guest allocates and calls `fill_pending`.
 /// Mirrors `dir_read_len`, but a `File` is a leaf so there is no path argument.
 fn host_file_read_len(mut caller: Caller<'_, VmState>, f: Option<Rooted<ExternRef>>) -> Result<i32> {
-    let file = file_handle_ref(&caller, f)?;
+    let file = file_authority_ref(&caller, f)?;
     if !file.rights.read {
         return Err(Error::msg("this File capability does not grant Read"));
     }
@@ -1689,7 +1690,7 @@ fn host_file_write(
 ) -> Result<()> {
     let mem = memory_of(&mut caller)?;
     let contents = read_wstr(mem.data(&caller), contents_ptr)?;
-    let file = file_handle_ref(&caller, f)?;
+    let file = file_authority_ref(&caller, f)?;
     if !file.rights.write {
         return Err(Error::msg("this File capability does not grant Write"));
     }
@@ -1707,7 +1708,7 @@ fn host_dir_read_len(
 ) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
-    let dir = dir_handle_ref(&caller, d)?;
+    let dir = dir_authority_ref(&caller, d)?;
     dir_require_read(&dir)?;
     dir_guard(&dir, &rel, false)?;
     let path = confine(crate::confine::resolve(&dir.base, &rel))?;
@@ -1718,8 +1719,8 @@ fn host_dir_read_len(
     Ok(len)
 }
 
-/// `exec_run(h, path, args, stdin) -> byte length`: spawn the executable named by
-/// `path` within Dir handle `h` (confined like `dir_read`), passing `args` (a
+/// `exec_run(d, path, args, stdin) -> byte length`: spawn the executable named by
+/// `path` within Dir externref `d` (confined like `dir_read`), passing `args` (a
 /// single `\0`-joined argv string) and `stdin`. Captures the child's stdout+stderr
 /// and stages a payload `"<exit_code>\n<stdout><stderr>"`, reporting its byte
 /// length; the guest allocates and calls `fill_pending`. Mirrors `dir_read_len`'s
@@ -1741,7 +1742,7 @@ fn host_exec_run(
             return Err(Error::msg(format!("exec: `{path}` is not in this Exec grant's allow-list")));
         }
     }
-    let dir = dir_handle_ref(&caller, d)?;
+    let dir = dir_authority_ref(&caller, d)?;
     dir_require_read(&dir)?;
     // (RFC-0011) exec is the sharpest right, so it takes the SAME entry-policy gate as
     // every other Dir op: a `Dir[...].only(...)` may only run a file it admits — "you
@@ -1794,7 +1795,7 @@ fn host_dir_exists(
 ) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
-    let dir = dir_handle_ref(&caller, d)?;
+    let dir = dir_authority_ref(&caller, d)?;
     dir_require_read(&dir)?;
     let ok = crate::confine::resolve(&dir.base, &rel)
         .map(|p| p.exists())
@@ -1810,7 +1811,7 @@ fn host_dir_is_dir(
 ) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
-    let dir = dir_handle_ref(&caller, d)?;
+    let dir = dir_authority_ref(&caller, d)?;
     dir_require_read(&dir)?;
     let ok = crate::confine::resolve(&dir.base, &rel)
         .map(|p| p.is_dir())
@@ -1822,7 +1823,7 @@ fn host_dir_is_dir(
 /// the interpreter), stage the listing, and report the total byte size of the
 /// witchy `List(String)` structure the guest must reserve.
 fn host_dir_list_size(mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>) -> Result<i32> {
-    let dir = dir_handle_ref(&caller, d)?;
+    let dir = dir_authority_ref(&caller, d)?;
     dir_require_read(&dir)?;
     let mut names: Vec<String> = std::fs::read_dir(&dir.base)
         .map_err(|e| Error::msg(format!("list failed for `{}`: {e}", dir.base.display())))?
@@ -1975,8 +1976,9 @@ fn run_par_chunk(
 
 /// The single `VmState` constructor: build a VM's host state from the capabilities it
 /// is granted. The primary VM (`spawn`) and every worker VM (`spawn_worker`) go through
-/// here, so the dirs/nets/files/build handle tables are derived from `caps` in exactly
-/// one place. `worker_listener` is `Some` only for a `serve` pool worker.
+/// here, so the root Dir/File/Net grant material and build grants are derived
+/// from `caps` in exactly one place. `worker_listener` is `Some` only for a
+/// `serve` pool worker.
 fn vmstate_from_caps(
     id: VmId,
     caps: &Capabilities,
@@ -1993,7 +1995,7 @@ fn vmstate_from_caps(
         .cloned()
         .chain(caps.dir_roots.iter().cloned())
         .enumerate()
-        .map(|(i, p)| DirHandle {
+        .map(|(i, p)| DirAuthority {
             base: p,
             policy: String::new(),
             rights: caps.dir_rights.get(i).copied().unwrap_or(default_dir_rights),
@@ -2004,7 +2006,7 @@ fn vmstate_from_caps(
         .iter()
         .cloned()
         .enumerate()
-        .map(|(i, path)| FileHandle {
+        .map(|(i, path)| FileAuthority {
             path,
             rights: caps.file_rights.get(i).copied().unwrap_or_else(FsRights::full),
         })
@@ -2013,7 +2015,7 @@ fn vmstate_from_caps(
         .net_allow
         .iter()
         .cloned()
-        .map(|allow| NetHandle { allow })
+        .map(|allow| NetAuthority { allow })
         .collect();
     VmState {
         id,
@@ -2090,8 +2092,8 @@ fn sandbox_worker(
     )
 }
 
-/// (RFC-0032) `vm_with_dir_run(dir_handle, f_ptr, input_ptr) -> byte_size`: run `f` on
-/// `input` inside an isolated worker VM granted EXACTLY the `Dir` at `dir_handle` (its
+/// (RFC-0032) `vm_with_dir_run(dir_grant_by_ordinal, f_ptr, input_ptr) -> byte_size`: run `f` on
+/// `input` inside an isolated worker VM granted EXACTLY the `Dir` at `dir_grant_by_ordinal` (its
 /// `read`/`write` rights inherited from the parent) and NOTHING else — every other host
 /// import traps. Stages the result `Bytes` (`[len][bytes]`) for `fill_pending`. This is
 /// the capability-PASSING (Tier B) primitive: a sandboxed worker with attenuated authority.
@@ -2102,7 +2104,7 @@ fn host_vm_with_dir_run(
     input_ptr: i32,
 ) -> Result<i32> {
     let (dir, input, code_idx) = {
-        let dir = dir_handle_ref(&caller, dir_ref)?;
+        let dir = dir_authority_ref(&caller, dir_ref)?;
         let mem = memory_of(&mut caller)?;
         let data = mem.data(&caller);
         let input = read_wbytes(data, input_ptr)?;
@@ -2123,14 +2125,15 @@ fn host_vm_with_dir_run(
 }
 
 /// Run `f(dir, input)` on a fresh worker VM granted exactly the one `Dir`. `f` is a
-/// two-argument closure (the dir handle `0` + the input `Bytes` pointer), invoked through
-/// the `__call2` trampoline; the result `Bytes` is read raw out of the worker's memory.
+/// two-argument closure (the Dir minted from grant ordinal `0` + the input
+/// `Bytes` pointer), invoked through the `__call2` trampoline; the result
+/// `Bytes` is read raw out of the worker's memory.
 #[allow(clippy::too_many_arguments)]
 fn run_with_dir_worker(
     engine: &Engine,
     module: &Module,
     preempt: bool,
-    dir: DirHandle,
+    dir: DirAuthority,
     code_idx: i32,
     input: &[u8],
 ) -> Result<Vec<u8>> {
@@ -2143,7 +2146,7 @@ fn run_with_dir_worker(
     };
     let (mut store, instance) =
         spawn_worker(engine, module, preempt, &caps, true, None, StoreLimitsBuilder::new().build())?;
-    // Attach the granted Dir's entry policy (RFC-0011) to handle 0.
+    // Attach the granted Dir's entry policy (RFC-0011) to the worker's sole root grant.
     if let Some(d) = store.data_mut().dirs.get_mut(0) {
         d.policy = dir.policy;
     }
@@ -2342,7 +2345,7 @@ fn host_dir_write(
     let data = mem.data(&caller);
     let rel = read_wstr(data, rel_ptr)?;
     let contents = read_wstr(data, contents_ptr)?;
-    let dir = dir_handle_ref(&caller, d)?;
+    let dir = dir_authority_ref(&caller, d)?;
     dir_require_write(&dir)?;
     dir_guard(&dir, &rel, false)?;
     let path = confine(crate::confine::resolve_write(&dir.base, &rel))?;
@@ -2362,7 +2365,7 @@ fn host_dir_append(
     let data = mem.data(&caller);
     let rel = read_wstr(data, rel_ptr)?;
     let contents = read_wstr(data, contents_ptr)?;
-    let dir = dir_handle_ref(&caller, d)?;
+    let dir = dir_authority_ref(&caller, d)?;
     dir_require_write(&dir)?;
     dir_guard(&dir, &rel, false)?;
     let path = confine(crate::confine::resolve_write(&dir.base, &rel))?;
@@ -2384,7 +2387,7 @@ fn host_dir_make_dir(
 ) -> Result<()> {
     let mem = memory_of(&mut caller)?;
     let name = read_wstr(mem.data(&caller), name_ptr)?;
-    let dir = dir_handle_ref(&caller, d)?;
+    let dir = dir_authority_ref(&caller, d)?;
     dir_require_write(&dir)?;
     dir_guard(&dir, &name, true)?;
     let path = confine(crate::confine::resolve_write(&dir.base, &name))?;
@@ -2394,16 +2397,17 @@ fn host_dir_make_dir(
 
 // --- build-time host ops ---
 //
-// The build sandbox grants a single `BuildOut` (the confined output dir) and the
-// `BuildRead` roots, both held host-side in `VmState` — the guest's handle is
-// opaque and ignored. `write_out` confines through the same `resolve_write` as a
-// runtime `Dir`; `read_build` tries each granted root, matching the interpreter.
+// The build sandbox grants zero-representation capabilities: source must hold
+// `BuildOut`/`BuildRead`/`BuildEnv`/`BuildNet`/`BuildExec` to call these ops, but
+// no guest value crosses the host boundary. The host import is linked only when
+// the corresponding grant exists, and the grant material stays in `VmState`.
+// `write_out` confines through the same `resolve_write` as a runtime `Dir`;
+// `read_build` tries each granted root, matching the interpreter.
 
-/// `build_out_write(_h, name, contents)`: write generated source into the build
+/// `build_out_write(name, contents)`: write generated source into the build
 /// output sandbox (trap on escape — a `..` can't leave it).
 fn host_build_out_write(
     mut caller: Caller<'_, VmState>,
-    _h: i32,
     name_ptr: i32,
     contents_ptr: i32,
 ) -> Result<()> {
@@ -2424,10 +2428,10 @@ fn host_build_out_write(
         .map_err(|e| Error::msg(format!("write_out failed for `{}`: {e}", path.display())))
 }
 
-/// `build_read_len(_h, rel) -> byte length`: read the file from the first granted
+/// `build_read_len(rel) -> byte length`: read the file from the first granted
 /// read root that holds it, stage its bytes, and report the length; the guest
 /// allocates and calls `fill_pending` (identical staging to `dir_read_len`).
-fn host_build_read_len(mut caller: Caller<'_, VmState>, _h: i32, rel_ptr: i32) -> Result<i32> {
+fn host_build_read_len(mut caller: Caller<'_, VmState>, rel_ptr: i32) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
     let roots = caller.data().build_read_roots.clone();
@@ -2448,7 +2452,7 @@ fn host_build_read_len(mut caller: Caller<'_, VmState>, _h: i32, rel_ptr: i32) -
     Err(Error::msg(format!("read_build: `{rel}` not found in any granted read root ({last})")))
 }
 
-fn host_build_env_len(mut caller: Caller<'_, VmState>, _h: i32, name_ptr: i32) -> Result<i32> {
+fn host_build_env_len(mut caller: Caller<'_, VmState>, name_ptr: i32) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let name = read_wstr(mem.data(&caller), name_ptr)?;
     let env = caller
@@ -2477,7 +2481,6 @@ fn checked_build_env_len(name: &str, len: usize) -> Result<i32> {
 
 fn host_build_env_fill(
     mut caller: Caller<'_, VmState>,
-    _h: i32,
     name_ptr: i32,
     out_ptr: i32,
 ) -> Result<()> {
@@ -2501,7 +2504,6 @@ fn host_build_env_fill(
 
 fn host_build_fetch_len(
     mut caller: Caller<'_, VmState>,
-    _h: i32,
     host_ptr: i32,
     path_ptr: i32,
 ) -> Result<i32> {
@@ -2543,7 +2545,6 @@ fn host_build_fetch_len(
 
 fn host_build_exec_run(
     mut caller: Caller<'_, VmState>,
-    _h: i32,
     tool_ptr: i32,
     input_ptr: i32,
 ) -> Result<i32> {
@@ -2595,7 +2596,7 @@ fn host_build_exec_run(
 // widen, or swap through linear-memory corruption. The address allowlist check is
 // the SAME rule the interpreter applies, so the backends still agree on reachability.
 
-fn net_handle(caller: &Caller<'_, VmState>, h: i32) -> Result<NetHandle> {
+fn net_grant_by_ordinal(caller: &Caller<'_, VmState>, h: i32) -> Result<NetAuthority> {
     caller
         .data()
         .nets
@@ -2604,41 +2605,41 @@ fn net_handle(caller: &Caller<'_, VmState>, h: i32) -> Result<NetHandle> {
         .ok_or_else(|| Error::msg(format!("invalid Net grant index {h}")))
 }
 
-fn net_handle_ref(caller: &Caller<'_, VmState>, n: Option<Rooted<ExternRef>>) -> Result<NetHandle> {
+fn net_authority_ref(caller: &Caller<'_, VmState>, n: Option<Rooted<ExternRef>>) -> Result<NetAuthority> {
     let n = n.ok_or_else(|| Error::msg("Net externref is null"))?;
     n.data(caller)?
         .ok_or_else(|| Error::msg("Net externref has no host data"))?
-        .downcast_ref::<NetHandle>()
+        .downcast_ref::<NetAuthority>()
         .cloned()
         .ok_or_else(|| Error::msg("Net externref has wrong host data"))
 }
 
-fn socket_handle_ref(
+fn socket_resource_ref(
     caller: &Caller<'_, VmState>,
     s: Option<Rooted<ExternRef>>,
-) -> Result<SocketHandle> {
+) -> Result<SocketResource> {
     let s = s.ok_or_else(|| Error::msg("Socket externref is null"))?;
     s.data(caller)?
         .ok_or_else(|| Error::msg("Socket externref has no host data"))?
-        .downcast_ref::<SocketHandle>()
+        .downcast_ref::<SocketResource>()
         .cloned()
         .ok_or_else(|| Error::msg("Socket externref has wrong host data"))
 }
 
-fn listener_handle_ref(
+fn listener_resource_ref(
     caller: &Caller<'_, VmState>,
     l: Option<Rooted<ExternRef>>,
-) -> Result<ListenerHandle> {
+) -> Result<ListenerResource> {
     let l = l.ok_or_else(|| Error::msg("Listener externref is null"))?;
     l.data(caller)?
         .ok_or_else(|| Error::msg("Listener externref has no host data"))?
-        .downcast_ref::<ListenerHandle>()
+        .downcast_ref::<ListenerResource>()
         .cloned()
         .ok_or_else(|| Error::msg("Listener externref has wrong host data"))
 }
 
 fn host_mint_net(mut caller: Caller<'_, VmState>, i: i32) -> Result<Option<Rooted<ExternRef>>> {
-    let net = net_handle(&caller, i)?;
+    let net = net_grant_by_ordinal(&caller, i)?;
     ExternRef::new(&mut caller, net).map(Some)
 }
 
@@ -2646,7 +2647,7 @@ fn socket_ref(
     caller: &mut Caller<'_, VmState>,
     stream: Box<dyn Stream>,
 ) -> Result<Option<Rooted<ExternRef>>> {
-    ExternRef::new(caller, SocketHandle {
+    ExternRef::new(caller, SocketResource {
         stream: Arc::new(Mutex::new(std::io::BufReader::new(stream))),
     }).map(Some)
 }
@@ -2656,7 +2657,7 @@ fn listener_ref(
     listener: std::sync::Arc<std::net::TcpListener>,
     tls: Option<crate::net::ServerTlsConfig>,
 ) -> Result<Option<Rooted<ExternRef>>> {
-    ExternRef::new(caller, ListenerHandle { listener, tls }).map(Some)
+    ExternRef::new(caller, ListenerResource { listener, tls }).map(Some)
 }
 
 /// `net_restrict(net, addr) -> Net`: attenuate to the allowlisted address set.
@@ -2669,10 +2670,10 @@ fn host_net_restrict(
 ) -> Result<Option<Rooted<ExternRef>>> {
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
-    let net = net_handle_ref(&caller, net_ref)?;
+    let net = net_authority_ref(&caller, net_ref)?;
     let narrowed = witchy_caps::capabilities::net_only(&net.allow, &addr)
         .map_err(|p| Error::msg(format!("restrict: `{p}` is not in this Net capability")))?;
-    ExternRef::new(&mut caller, NetHandle { allow: narrowed }).map(Some)
+    ExternRef::new(&mut caller, NetAuthority { allow: narrowed }).map(Some)
 }
 
 /// `net_deny(net, addr) -> Net`: subtract an address pattern (RFC-0011
@@ -2685,11 +2686,11 @@ fn host_net_deny(
 ) -> Result<Option<Rooted<ExternRef>>> {
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
-    let mut allow = net_handle_ref(&caller, net_ref)?.allow;
+    let mut allow = net_authority_ref(&caller, net_ref)?.allow;
     for p in addr.split('\n') {
         allow.push(format!("!{p}"));
     }
-    ExternRef::new(&mut caller, NetHandle { allow }).map(Some)
+    ExternRef::new(&mut caller, NetAuthority { allow }).map(Some)
 }
 
 /// `net_connect(net, addr) -> Socket`: dial an allowlisted address.
@@ -2700,7 +2701,7 @@ fn host_net_connect(
 ) -> Result<Option<Rooted<ExternRef>>> {
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
-    let net = net_handle_ref(&caller, net_ref)?;
+    let net = net_authority_ref(&caller, net_ref)?;
     let (tls, host_port) = crate::net::parse_scheme(&addr);
     let targets = witchy_caps::capabilities::resolve_admitted(&net.allow, host_port)
         .map_err(|e| Error::msg(format!("connect: {e}")))?;
@@ -2719,7 +2720,7 @@ fn host_net_try_connect(
 ) -> Result<Option<Rooted<ExternRef>>> {
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
-    let net = net_handle_ref(&caller, net_ref)?;
+    let net = net_authority_ref(&caller, net_ref)?;
     let (tls, host_port) = crate::net::parse_scheme(&addr);
     let targets = witchy_caps::capabilities::resolve_admitted(&net.allow, host_port)
         .map_err(|e| Error::msg(format!("try_connect: {e}")))?;
@@ -2740,7 +2741,7 @@ fn host_net_resolve_size(
 ) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let host = read_wstr(mem.data(&caller), host_ptr)?;
-    let _net = net_handle_ref(&caller, net_ref)?;
+    let _net = net_authority_ref(&caller, net_ref)?;
     let ips = crate::net::resolve_ips(&host);
     let size = 4 + 8 * ips.len() + ips.iter().map(|s| 4 + s.len()).sum::<usize>();
     caller.data_mut().pending_list = Some(ips);
@@ -2760,7 +2761,7 @@ fn host_net_connect_pinned(
     let mem = memory_of(&mut caller)?;
     let ip = read_wstr(mem.data(&caller), ip_ptr)?;
     let host = read_wstr(mem.data(&caller), host_ptr)?;
-    let net = net_handle_ref(&caller, net_ref)?;
+    let net = net_authority_ref(&caller, net_ref)?;
     let ip_port = crate::net::authority(&ip, port);
     let targets = witchy_caps::capabilities::resolve_admitted(&net.allow, &ip_port)
         .map_err(|e| Error::msg(format!("connect_pinned: {e}")))?;
@@ -2783,7 +2784,7 @@ fn host_net_try_connect_pinned(
     let mem = memory_of(&mut caller)?;
     let ip = read_wstr(mem.data(&caller), ip_ptr)?;
     let host = read_wstr(mem.data(&caller), host_ptr)?;
-    let net = net_handle_ref(&caller, net_ref)?;
+    let net = net_authority_ref(&caller, net_ref)?;
     let ip_port = crate::net::authority(&ip, port);
     let targets = witchy_caps::capabilities::resolve_admitted(&net.allow, &ip_port)
         .map_err(|e| Error::msg(format!("try_connect_pinned: {e}")))?;
@@ -2802,7 +2803,7 @@ fn host_net_listen(
 ) -> Result<Option<Rooted<ExternRef>>> {
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
-    let net = net_handle_ref(&caller, net_ref)?;
+    let net = net_authority_ref(&caller, net_ref)?;
     if !witchy_caps::capabilities::net_allows(&net.allow, &addr) {
         bail!("listen: `{addr}` is not permitted by this Net capability");
     }
@@ -2833,11 +2834,11 @@ fn host_net_listen_tls(
     let mem = memory_of(&mut caller)?;
     let addr = read_wstr(mem.data(&caller), addr_ptr)?;
     let cert_pem = read_wstr(mem.data(&caller), cert_ptr)?;
-    let net = net_handle_ref(&caller, net_ref)?;
+    let net = net_authority_ref(&caller, net_ref)?;
     if !witchy_caps::capabilities::net_allows(&net.allow, &addr) {
         bail!("listen: `{addr}` is not permitted by this Net capability");
     }
-    let key_bytes = secret_handle_ref(&caller, key_ref)?.bytes;
+    let key_bytes = secret_material_ref(&caller, key_ref)?.bytes;
     let shared = caller.data().worker_listener.clone();
     let (listener, tls) = match shared {
         Some(entry) => entry,
@@ -2861,7 +2862,7 @@ fn host_net_accept(
     mut caller: Caller<'_, VmState>,
     listener_ref_: Option<Rooted<ExternRef>>,
 ) -> Result<Option<Rooted<ExternRef>>> {
-    let ListenerHandle { listener, tls } = listener_handle_ref(&caller, listener_ref_)?;
+    let ListenerResource { listener, tls } = listener_resource_ref(&caller, listener_ref_)?;
     loop {
         let (stream, _peer) = listener
             .accept()
@@ -2887,7 +2888,7 @@ fn host_serve_pool(caller: Caller<'_, VmState>, listener_ref_: Option<Rooted<Ext
     if caller.data().worker_listener.is_some() {
         return Ok(());
     }
-    let ListenerHandle { listener, tls } = listener_handle_ref(&caller, listener_ref_)?;
+    let ListenerResource { listener, tls } = listener_resource_ref(&caller, listener_ref_)?;
     let listener = (listener, tls);
     let workers = std::thread::available_parallelism().map(|p| p.get()).unwrap_or(1).max(1);
     let engine = caller.data().engine.clone();
@@ -2935,7 +2936,7 @@ fn run_server_worker(
 use crate::net::Stream;
 
 fn lock_socket(
-    socket: &SocketHandle,
+    socket: &SocketResource,
 ) -> Result<std::sync::MutexGuard<'_, std::io::BufReader<Box<dyn Stream>>>> {
     socket
         .stream
@@ -2952,7 +2953,7 @@ fn host_net_send_line(
     use std::io::Write;
     let mem = memory_of(&mut caller)?;
     let line = read_wstr(mem.data(&caller), line_ptr)?;
-    let socket = socket_handle_ref(&caller, socket_ref_)?;
+    let socket = socket_resource_ref(&caller, socket_ref_)?;
     let mut sock = lock_socket(&socket)?;
     sock.get_mut()
         .write_all(line.as_bytes())
@@ -2969,7 +2970,7 @@ fn host_net_send_bytes(
     use std::io::Write;
     let mem = memory_of(&mut caller)?;
     let s = read_wstr(mem.data(&caller), ptr)?;
-    let socket = socket_handle_ref(&caller, socket_ref_)?;
+    let socket = socket_resource_ref(&caller, socket_ref_)?;
     let mut sock = lock_socket(&socket)?;
     sock.get_mut()
         .write_all(s.as_bytes())
@@ -2982,7 +2983,7 @@ fn host_net_recv_line_len(
     mut caller: Caller<'_, VmState>,
     socket_ref_: Option<Rooted<ExternRef>>,
 ) -> Result<i32> {
-    let socket = socket_handle_ref(&caller, socket_ref_)?;
+    let socket = socket_resource_ref(&caller, socket_ref_)?;
     let raw = {
         let mut sock = lock_socket(&socket)?;
         crate::net::read_line_capped(&mut *sock).map_err(|e| Error::msg(format!("recv failed: {e}")))?
@@ -3002,7 +3003,7 @@ fn host_net_recv_all_len(
 ) -> Result<i32> {
     use std::io::Read;
     let mut buf = Vec::new();
-    let socket = socket_handle_ref(&caller, socket_ref_)?;
+    let socket = socket_resource_ref(&caller, socket_ref_)?;
     {
         let mut sock = lock_socket(&socket)?;
         // (SEC-035) Cap the read so a peer streaming without EOF can't OOM the host. Read one
@@ -3029,7 +3030,7 @@ fn host_net_recv_bytes_len(
     n: i64,
 ) -> Result<i32> {
     use std::io::Read;
-    let socket = socket_handle_ref(&caller, socket_ref_)?;
+    let socket = socket_resource_ref(&caller, socket_ref_)?;
     let want = n.max(0) as usize;
     // `want` is guest-supplied (up to i64::MAX); do NOT pre-allocate it — that would let a
     // module request `sock.recv_bytes(huge)` and ABORT the host with a multi-GB/EB Vec even
@@ -3059,7 +3060,7 @@ fn host_net_close(
     caller: Caller<'_, VmState>,
     socket_ref_: Option<Rooted<ExternRef>>,
 ) -> Result<()> {
-    let socket = socket_handle_ref(&caller, socket_ref_)?;
+    let socket = socket_resource_ref(&caller, socket_ref_)?;
     lock_socket(&socket)?.get_mut().shutdown();
     Ok(())
 }
@@ -3072,7 +3073,7 @@ fn host_net_close(
 // `require` checks for null immediately, and the root `Secret` is minted only
 // from the signing-key grant.
 
-fn signing_secret_handle(caller: &Caller<'_, VmState>, h: i32) -> Result<SecretHandle> {
+fn signing_secret_material(caller: &Caller<'_, VmState>, h: i32) -> Result<SecretMaterial> {
     if h != 0 {
         return Err(Error::msg(format!("invalid Secret grant index {h}")));
     }
@@ -3084,29 +3085,29 @@ fn signing_secret_handle(caller: &Caller<'_, VmState>, h: i32) -> Result<SecretH
         grant.name == "signing"
             && witchy_caps::capabilities::secret_is_signing_key(Some(signing.as_slice()), &grant.bytes)
     }) {
-        return Ok(SecretHandle::from_grant(grant));
+        return Ok(SecretMaterial::from_grant(grant));
     }
-    Ok(SecretHandle {
+    Ok(SecretMaterial {
         bytes: signing.to_vec(),
         use_only: false,
     })
 }
 
-fn secret_handle_ref(
+fn secret_material_ref(
     caller: &Caller<'_, VmState>,
     secret: Option<Rooted<ExternRef>>,
-) -> Result<SecretHandle> {
+) -> Result<SecretMaterial> {
     let secret = secret.ok_or_else(|| Error::msg("Secret externref is null"))?;
     secret
         .data(caller)?
         .ok_or_else(|| Error::msg("Secret externref has no host data"))?
-        .downcast_ref::<SecretHandle>()
+        .downcast_ref::<SecretMaterial>()
         .cloned()
         .ok_or_else(|| Error::msg("Secret externref has wrong host data"))
 }
 
 fn host_mint_secret(mut caller: Caller<'_, VmState>, i: i32) -> Result<Option<Rooted<ExternRef>>> {
-    let secret = signing_secret_handle(&caller, i)?;
+    let secret = signing_secret_material(&caller, i)?;
     ExternRef::new(&mut caller, secret).map(Some)
 }
 
@@ -3121,7 +3122,7 @@ fn host_crypto_sign(
     out_ptr: i32,
 ) -> Result<()> {
     use crate::value::NativeValue as Value;
-    let bytes = secret_handle_ref(&caller, key)?.bytes;
+    let bytes = secret_material_ref(&caller, key)?.bytes;
     let mem = memory_of(&mut caller)?;
     let msg = read_wstr(mem.data(&caller), msg_ptr)?;
     let f = crate::native::lookup("crypto.sign")
@@ -3143,7 +3144,7 @@ fn host_crypto_public_key(
     out_ptr: i32,
 ) -> Result<()> {
     use crate::value::NativeValue as Value;
-    let bytes = secret_handle_ref(&caller, key)?.bytes;
+    let bytes = secret_material_ref(&caller, key)?.bytes;
     let f = crate::native::lookup("crypto.public_key")
         .ok_or_else(|| Error::msg("crypto.public_key is not registered"))?;
     let pk = match f(&[Value::Secret(bytes)]).map_err(|e| Error::msg(e.message))? {
@@ -3170,7 +3171,7 @@ fn host_secretstore_lookup(
         .secrets
         .iter()
         .find(|grant| grant.name == name)
-        .map(SecretHandle::from_grant);
+        .map(SecretMaterial::from_grant);
     match grant {
         Some(secret) => ExternRef::new(&mut caller, secret).map(Some),
         None => Ok(None),
@@ -3184,7 +3185,7 @@ fn host_secretstore_lookup(
 /// guest here.
 fn host_crypto_reveal_len(mut caller: Caller<'_, VmState>, key: Option<Rooted<ExternRef>>) -> Result<i32> {
     use crate::value::NativeValue as Value;
-    let secret = secret_handle_ref(&caller, key)?;
+    let secret = secret_material_ref(&caller, key)?;
     // (RFC-0060) A use-only secret is consumable by opaque ref but never revealable.
     if secret.use_only {
         bail!("{}", witchy_caps::capabilities::USE_ONLY_SECRET_REVEAL_ERROR);

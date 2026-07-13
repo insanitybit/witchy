@@ -78,17 +78,18 @@ work types would: structural equality, for instance, derives an `EqShape` from
 the static types and generates a memoized helper function per shape.
 
 Migrated capability values compile to opaque `externref`s, not integer slots:
-`Dir`, `File`, `Net`, `Socket`, and `Listener` are host-rooted authority
-objects whose paths, allowlists, streams, and listeners never enter guest
-memory. Code cannot mint or widen them, and corrupted linear memory cannot forge
+`Dir`, `File`, `Net`, `Socket`, `Listener`, and `Secret` are host-rooted
+authority objects whose paths, allowlists, streams, listeners, and secret bytes
+never enter guest memory unless an explicit API such as `crypto.reveal` returns
+data. Code cannot mint or widen them, and corrupted linear memory cannot forge
 one. Because ordinary collections, tuples, function captures, and plain records
 still use i64 slots, migrated capabilities may cross only boundaries with a
 typed reference representation: directly, as nullable `Option(cap)` where the
 ABI carries a null externref, as transparent single-field capability brands, or
 inside named non-generic `capability` records lowered to Wasm GC structs.
-Remaining handle-bearing families continue to migrate under
-[RFC-0005](../rfcs/0005-unforgeable-capabilities.md). `Console`/`Clock`/`Env`
-are erased entirely (the linked host import *is* the authority).
+`Console`/`Clock`/`Rand`/`Env`/`Exec`/`SecretStore` and build capabilities are
+zero-representation authorities: type checking requires the source value, while
+the linked host import and launch grant carry the runtime authority.
 
 ## Memory model
 
@@ -139,13 +140,14 @@ function fails at instantiation, before any code runs.
 families the grant entitles: a program with no `Console` in its footprint
 physically has no `print` import, and a `Dir[Read]` footprint links the read
 family only. Migrated host-held capabilities (`Dir`, `File`, `Net`, `Socket`,
-`Listener`) compile to opaque `externref` values carrying host-side authority
-objects, so paths, allowlists, streams, and listeners never enter guest memory
-and cannot be forged by corrupting an integer handle. Attenuation
+`Listener`, `Secret`) compile to opaque `externref` values carrying host-side
+authority objects, so paths, allowlists, streams, listeners, and secret bytes
+never enter guest memory and cannot be forged by corrupting an integer handle.
+Attenuation
 (`dir.subtree`, `dir.read_file`/`write_file`, `net.only`/`net.deny`) mints a
-narrower host object and returns a new externref. Remaining handle-bearing
-families continue to migrate under
-[RFC-0005](../rfcs/0005-unforgeable-capabilities.md). The
+narrower host object and returns a new externref. Zero-representation
+capabilities enforce authority by the same structural import gating without
+passing a runtime handle. The
 grant comes from the host: the dev grant for `run`/`parity`, the computed
 footprint for `witchy sandbox`. Resource bounds: a per-VM linear memory cap
 and (under the scheduler) epoch-based preemption at loop back-edges to reclaim

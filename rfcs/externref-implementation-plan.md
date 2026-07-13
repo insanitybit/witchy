@@ -531,3 +531,23 @@ current full gate. Before BUG-550, the glamour e2e timed out as an
 interpreter-backed package-manager path; with BUG-550, it passes in isolation in
 10.575s on `master` and 11.123s on this integration stack. The final
 `./scripts/check.sh` gate for `integrate/rfc0005-final` is the merge authority.
+
+## Implementation status (2026-07-13)
+
+Stage 2 and the guest-represented Stage 3 surface have landed on `master`:
+`File`, `Dir`, `Net`, the derived `Socket`/`Listener` values, and `Secret` now
+cross the compiled host boundary as opaque `externref`s. `SecretStore` and
+`Exec` are zero-representation authority surfaces: the source value is checked,
+but the host import/link grant carries the runtime authority rather than a guest
+handle. The same is now true for build capabilities (`BuildOut`, `BuildRead`,
+`BuildEnv`, `BuildNet`, `BuildExec`): their host ABI no longer accepts an
+ignored leading `i32` receiver.
+
+Stage 5 is therefore narrowed from "delete all `VmState.dirs/nets/files`"
+to the actual invariant: delete every **guest-facing** integer authority handle.
+The runtime still keeps root grant material (`Dir`/`File`/`Net` grants and
+build grants) so generated wrappers can mint externrefs from grant ordinals, but
+those ordinals never become guest capability values. The remaining cleanup is
+terminology/API polish (`*_handle` names that mean host authority objects) and
+the deferred Stage 4 representation work for cap-carrying aggregates and
+closures.

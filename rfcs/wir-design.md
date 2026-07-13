@@ -234,7 +234,7 @@ Two layers, deliberately:
   ```rust
   pub enum WirTy {
       Int, Float, Bool, Duration, Str, Nil,
-      Capability,                       // erased -> i32 handle/placeholder
+      Capability,                       // externref for migrated caps; zero-rep placeholder otherwise
       List(Box<WirTy>),
       Tuple(Vec<WirTy>),
       Record(TypeName),

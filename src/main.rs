@@ -107,10 +107,11 @@ fn project_entry_file() -> Option<String> {
 /// toolchain like std (rfcs/0004-self-hosted-cli.md). `raw` is the front-end's
 /// argv (everything after the `witchy` subcommand): `--net <host:port>` flags are
 /// extracted into the program's `Net` allowlist, the rest become `main`'s `args`.
-/// It runs capability-confined: Console, the project `Dir` (cwd, handle 0), a
-/// `Dir` to the toolchain bin (handle 1, so it can drive the compiler via `Exec`),
-/// `Net`, `Env`, and its argv. This is the sole entry for the front-end's client
-/// verbs — both `witchy pm <verb>` and the top-level `witchy <verb>` route here.
+/// It runs capability-confined: Console, the project `Dir` (cwd, grant ordinal
+/// 0), a `Dir` to the toolchain bin (grant ordinal 1, so it can drive the
+/// compiler via `Exec`), `Net`, `Env`, and its argv. This is the sole entry for
+/// the front-end's client verbs — both `witchy pm <verb>` and the top-level
+/// `witchy <verb>` route here.
 fn run_embedded_pm(raw: Vec<String>) -> ! {
     use std::collections::{HashSet, VecDeque};
     let mut net_allow: Vec<String> = Vec::new();
@@ -204,8 +205,9 @@ fn run_embedded_pm(raw: Vec<String>) -> ! {
     // tree-walker made every command pay it (e.g. `pm add` of a glamour dep took
     // ~170s). All of pm's deps — `compiler.footprint`/`diff`/`doc`, `Exec`,
     // `Dir`/`Net`/`Env`/`Clock` — have host functions, so it lowers cleanly.
-    // `run_wasm_module` grants exactly the same authority (handle 0 = cwd, handle
-    // 1 = bin so `Exec` finds the compiler) and surfaces `main`'s `Int` exit code.
+    // `run_wasm_module` grants exactly the same authority (Dir grant ordinal 0 =
+    // cwd, ordinal 1 = bin so `Exec` finds the compiler) and surfaces `main`'s
+    // `Int` exit code.
     match run_wasm_module(&wasm, vec![cwd, bin], Vec::new(), net_allow, pm_args, None, Vec::new(), false) {
         Ok((lines, code)) => {
             for l in &lines {
@@ -573,8 +575,9 @@ fn main() -> wasmtime::Result<()> {
     // `witchy pm <args...>` runs the EMBEDDED witchy package-manager front-end
     // (projects/pm/src/pm.witchy) — the cargo-equivalent CLI, itself written in
     // witchy and bundled into the toolchain like std. It runs capability-confined:
-    // Console, the project `Dir` (cwd, handle 0), a `Dir` to the toolchain bin
-    // (handle 1, so it can drive the compiler via `Exec`), `Net`, and its argv.
+    // Console, the project `Dir` (cwd, grant ordinal 0), a `Dir` to the
+    // toolchain bin (grant ordinal 1, so it can drive the compiler via `Exec`),
+    // `Net`, and its argv.
     // This is the additive bootstrap of rfcs/0004-self-hosted-cli.md §5 — `src/pm`
     // is NOT yet removed; this proves the front-end runs as the embedded CLI.
     if std::env::args().nth(1).as_deref() == Some("pm") {
@@ -585,7 +588,7 @@ fn main() -> wasmtime::Result<()> {
     // registry server (projects/coven/src/coven.witchy) — the self-hosted coven, itself
     // written in witchy and bundled into the toolchain like std + the `pm` front-end.
     // It runs capability-confined: Console, Net (the listen addr), the registry `Dir`
-    // (handle 0), a `SecretStore` holding the root signing key, and a Clock. coven uses
+    // (grant ordinal 0), a `SecretStore` holding the root signing key, and a Clock. coven uses
     // `compiler.footprint` + the blocking accept loop, so it runs on the interpreter —
     // exactly like the `witchy pm` bootstrap above. This replaces the Rust `coven-serve`
     // (rfcs/0004-self-hosted-cli.md Phase 5); the IdP helpers `coven-gen-issuer` /
@@ -808,8 +811,8 @@ fn main() -> wasmtime::Result<()> {
     // granted exactly its computed footprint. `--dir` picks the subtree backing
     // a granted Dir (default `.`); each `--net` allowlists an address.
     if std::env::args().nth(1).as_deref() == Some("sandbox") {
-        // Multiple `--dir` grants map positionally to `main`'s `Dir` params: the
-        // first backs handle 0, the rest handles 1.. (rfcs/0004-self-hosted-cli.md).
+        // Multiple `--dir` grants map positionally to `main`'s `Dir` params:
+        // the first backs grant ordinal 0, the rest ordinals 1.. (rfcs/0004-self-hosted-cli.md).
         let mut dir_roots: Vec<std::path::PathBuf> = Vec::new();
         let mut file_grants: Vec<std::path::PathBuf> = Vec::new();
         let mut net_allow: Vec<String> = Vec::new();

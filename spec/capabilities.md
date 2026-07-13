@@ -382,10 +382,10 @@ call**. The enforcement is structural, not a runtime permission check:
   instantiation fails if it asks for one.
 - The Dir operations are linked *per right*: a module that imports the write
   operation cannot instantiate under a `Dir[Read]` grant.
-- A guest `Dir` value is an opaque handle into a host-side path table; the
-  paths never enter guest memory, so a module cannot forge or widen one, and
-  every resolution runs the same `..`/absolute/symlink confinement as the
-  interpreter.
+- A guest `Dir` value is an opaque host reference carrying its confined root,
+  rights, and entry policy; the paths never enter guest memory, so a module
+  cannot forge or widen one, and every resolution runs the same
+  `..`/absolute/symlink confinement as the interpreter.
 - Memory is capped; a scheduler can preempt a runaway guest at loop back-edges.
 - Concurrency stays *inside* the single VM: `async`/`await`, `spawn`, and
   channels lower to a cooperative executor written in witchy (`std/task`, with

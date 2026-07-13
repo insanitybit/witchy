@@ -924,9 +924,9 @@ fn assemble_wir_module_with_structs(
             // grant as an unforgeable externref (RFC-0005 Stage 2). The root
             // `Secret` is minted from the host's signing-key grant as an opaque
             // externref; there is no guest-visible integer handle.
-            let mut dir_handle = 0i32;
-            let mut file_handle = 0i32;
-            let mut net_handle = 0i32;
+            let mut dir_grant_ord = 0i32;
+            let mut file_grant_ord = 0i32;
+            let mut net_grant_ord = 0i32;
             let mut user_cap_ord = 0i32;
             let mut main_args: Vec<WirExpr> = Vec::with_capacity(main_params);
             for i in 0..main_params {
@@ -935,21 +935,21 @@ fn assemble_wir_module_with_structs(
                 } else if main_param_is_dir.get(i).copied().unwrap_or(false) {
                     main_args.push(WirExpr::CallHost {
                         import: "mint_dir".into(),
-                        args: vec![WirExpr::ConstI32(dir_handle)],
+                        args: vec![WirExpr::ConstI32(dir_grant_ord)],
                     });
-                    dir_handle += 1;
+                    dir_grant_ord += 1;
                 } else if main_param_is_file.get(i).copied().unwrap_or(false) {
                     main_args.push(WirExpr::CallHost {
                         import: "mint_file".into(),
-                        args: vec![WirExpr::ConstI32(file_handle)],
+                        args: vec![WirExpr::ConstI32(file_grant_ord)],
                     });
-                    file_handle += 1;
+                    file_grant_ord += 1;
                 } else if main_param_is_net.get(i).copied().unwrap_or(false) {
                     main_args.push(WirExpr::CallHost {
                         import: "mint_net".into(),
-                        args: vec![WirExpr::ConstI32(net_handle)],
+                        args: vec![WirExpr::ConstI32(net_grant_ord)],
                     });
-                    net_handle += 1;
+                    net_grant_ord += 1;
                 } else if main_param_is_secret.get(i).copied().unwrap_or(false) {
                     main_args.push(WirExpr::CallHost {
                         import: "mint_secret".into(),
