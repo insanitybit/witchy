@@ -63,14 +63,14 @@ fn ref_exists(repo: &Path, name: &str) -> bool {
         .success()
 }
 
-fn run_status(repo: &Path) -> Output {
+fn run_status(repo: &Path, args: &[&str]) -> Output {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/worktree-status.sh");
     let script = repo.join("scripts/worktree-status.sh");
     fs::create_dir_all(script.parent().expect("script parent")).expect("create scripts dir");
     fs::copy(source, &script).expect("copy worktree-status script");
     Command::new("bash")
         .arg(script)
-        .arg("--branches")
+        .args(args)
         .current_dir(repo)
         .output()
         .expect("run worktree-status.sh")
@@ -93,7 +93,7 @@ fn branch_pruning_is_relative_to_master_and_never_deletes_master() {
     git(root, &["commit", "--quiet", "-m", "feature work"]);
     git(root, &["branch", "unmerged-candidate"]);
 
-    let output = run_status(root);
+    let output = run_status(root, &["--branches"]);
     assert!(
         output.status.success(),
         "worktree-status failed: {}",
@@ -107,4 +107,49 @@ fn branch_pruning_is_relative_to_master_and_never_deletes_master() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!stdout.contains("cleanup: git branch -d master"));
     assert!(stdout.contains("deleted merged-candidate"));
+}
+
+#[test]
+fn worktree_pruning_requires_a_merge_journal_record() {
+    let repo = TempRepo::new();
+    let root = repo.path();
+    let fresh = root.join(".worktrees/fresh");
+    let merged = root.join(".worktrees/merged");
+    git(
+        root,
+        &["worktree", "add", "--quiet", "-b", "fresh-worktree", fresh.to_str().expect("fresh path"), "master"],
+    );
+    git(
+        root,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "merged-worktree",
+            merged.to_str().expect("merged path"),
+            "master",
+        ],
+    );
+    let journal = root.join("scratch/merge-queue/journal.jsonl");
+    fs::create_dir_all(journal.parent().expect("journal parent")).expect("create journal parent");
+    fs::write(
+        journal,
+        "{\"event\":\"merged\",\"branch\":\"merged-worktree\",\"sha\":\"fixture\"}\n",
+    )
+    .expect("write merge journal");
+
+    let output = run_status(root, &["--prune"]);
+    assert!(
+        output.status.success(),
+        "worktree-status failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(fresh.is_dir(), "fresh unjournaled worktree must survive pruning");
+    assert!(!merged.exists(), "journaled merged worktree should be pruned");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("fresh-worktree is not journaled merged"));
+    assert!(stdout.contains("REMOVE"));
+    assert!(stdout.contains("merged-worktree"));
 }
