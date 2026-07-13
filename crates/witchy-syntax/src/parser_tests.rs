@@ -639,6 +639,41 @@ fn f(payload: meta.PatternSyntax):
     }
 
     #[test]
+    fn quote_stmt_lowers_to_meta_stmt_raw_with_canonical_source() {
+        let m = parse_module(r#"
+fn f():
+    quote stmt:
+        let x: Int = 5
+"#).expect("quote stmt should parse");
+        let Item::Function(f) = &m.items[0] else {
+            panic!("expected function");
+        };
+        let expected = Expr::Call {
+            name: "meta.stmt_raw".into(),
+            args: vec![Expr::Str("let x: Int = 5".into())],
+        };
+        assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);
+    }
+
+    #[test]
+    fn quote_block_lowers_to_meta_block_raw_with_canonical_source() {
+        let m = parse_module(r#"
+fn f():
+    quote block:
+        let x = 5
+        x + 1
+"#).expect("quote block should parse");
+        let Item::Function(f) = &m.items[0] else {
+            panic!("expected function");
+        };
+        let expected = Expr::Call {
+            name: "meta.block_raw".into(),
+            args: vec![Expr::Str("let x = 5\nx + 1".into())],
+        };
+        assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);
+    }
+
+    #[test]
     fn quote_item_lowers_to_meta_item_with_canonical_source() {
         let m = parse_module(r#"
 fn f():

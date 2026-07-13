@@ -1195,6 +1195,10 @@ impl Parser {
 
     fn block(&mut self) -> Result<Block, ParseError> {
         self.expect(&Tok::LBrace)?;
+        self.block_after_open()
+    }
+
+    fn block_after_open(&mut self) -> Result<Block, ParseError> {
         let mut stmts = Vec::new();
         let mut lines = Vec::new();
         while !self.at(&Tok::RBrace) && !self.at(&Tok::Eof) {
@@ -1811,12 +1815,18 @@ impl Parser {
     fn quote_syntax(&mut self) -> Result<Expr, ParseError> {
         let Some(category) = self.quote_category().map(str::to_string) else {
             return Err(self.error(
-                "expected `quote expr:`, `quote type:`, `quote pattern:`, or `quote item:`",
+                "expected `quote expr:`, `quote type:`, `quote pattern:`, `quote stmt:`, \
+                 `quote block:`, or `quote item:`",
             ));
         };
         self.advance(); // `quote`
         self.advance(); // category
         self.expect(&Tok::LBrace)?;
+        if category == "block" {
+            let quoted = self.block_after_open()?;
+            self.needs_meta_import = true;
+            return Ok(self.block_syntax_expr(&quoted));
+        }
         let quoted = match category.as_str() {
             "expr" => {
                 self.quote_expr_hole_depth += 1;
@@ -1853,6 +1863,10 @@ impl Parser {
                 let holes = self.quote_pattern_holes.split_off(base);
                 self.pattern_syntax_expr_with_holes(quoted, holes)?
             }
+            "stmt" => {
+                let quoted = self.stmt()?;
+                self.stmt_syntax_expr(&quoted)
+            }
             "item" => {
                 let quoted = self.item()?;
                 self.item_syntax_expr(quoted)
@@ -1860,7 +1874,8 @@ impl Parser {
             _ => {
                 return Err(self.error(format!(
                     "`quote {category}:` is not implemented yet; use `quote expr:`, \
-                     `quote type:`, `quote pattern:`, or `quote item:`"
+                     `quote type:`, `quote pattern:`, `quote stmt:`, `quote block:`, \
+                     or `quote item:`"
                 )));
             }
         };
@@ -1981,6 +1996,14 @@ impl Parser {
         let parts =
             self.quote_hole_parts(&source, QUOTE_PATTERN_HOLE_PREFIX, holes.len(), "pattern")?;
         Ok(self.meta_call("pattern_join", vec![Expr::List(parts), Expr::List(holes)]))
+    }
+
+    fn stmt_syntax_expr(&self, quoted: &Stmt) -> Expr {
+        self.meta_call("stmt_raw", vec![Expr::Str(crate::format::stmt_str(quoted))])
+    }
+
+    fn block_syntax_expr(&self, quoted: &Block) -> Expr {
+        self.meta_call("block_raw", vec![Expr::Str(crate::format::block_str(quoted))])
     }
 
     fn collect_quote_expr_holes(expr: &mut Expr, holes: &mut Vec<Expr>) {

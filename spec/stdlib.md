@@ -2117,7 +2117,15 @@ Source-backed statement and block syntax. These are still text at the compiler b
 
 #### `fn stmt_return_none() -> StmtSyntax`
 
+#### `fn stmt_raw(source: String) -> StmtSyntax`
+
+A source-backed statement wrapper for parser-checked `quote stmt:`.
+
 #### `fn block(stmts: List(StmtSyntax), tail: Option(ExprSyntax)) -> BlockSyntax`
+
+#### `fn block_raw(source: String) -> BlockSyntax`
+
+A source-backed block wrapper for parser-checked `quote block:`.
 
 #### `fn param(name: Ident, ty: TypeSyntax) -> ParamSyntax`
 

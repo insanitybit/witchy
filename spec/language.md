@@ -870,14 +870,16 @@ module is linked and type-checked. Runtime code cannot call them.
 `block`, `param`, and `function_block`; they make generated item structure
 typed at the API boundary and validate identifier spelling while full quotation
 and hygienic identifier origins remain future work.
-`quote expr:`, `quote type:`, `quote pattern:`, and `quote item:` are the first
-quotation forms. They parse the indented expression, type, pattern, or single
-item immediately and produce `meta.ExprSyntax`, `meta.TypeSyntax`,
-`meta.PatternSyntax`, or `meta.ItemSyntax` through the same sealed source-backed
-channel as the `std/meta` builders. Inside `quote expr:`, `quote type:`, and
-`quote pattern:`, `${hole}` splices a `meta.ExprSyntax`, `meta.TypeSyntax`, or
-`meta.PatternSyntax` expression into that position; the hole is typed by the
-surrounding `comptime`/tag generator, not by runtime interpolation.
+`quote expr:`, `quote type:`, `quote pattern:`, `quote stmt:`, `quote block:`,
+and `quote item:` are the first quotation forms. They parse the indented
+expression, type, pattern, statement, block, or single item immediately and
+produce `meta.ExprSyntax`, `meta.TypeSyntax`, `meta.PatternSyntax`,
+`meta.StmtSyntax`, `meta.BlockSyntax`, or `meta.ItemSyntax` through the same
+sealed source-backed channel as the `std/meta` builders. Inside `quote expr:`,
+`quote type:`, and `quote pattern:`, `${hole}` splices a `meta.ExprSyntax`,
+`meta.TypeSyntax`, or `meta.PatternSyntax` expression into that position; the
+hole is typed by the surrounding `comptime`/tag generator, not by runtime
+interpolation. Statement/block quotation is currently hole-free.
 `quote type:` covers named/generic, module-qualified, tuple, function,
 ownership-qualified, and capability-right types; anonymous structural type
 quotation and hygiene remain future work.

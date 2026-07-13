@@ -1793,6 +1793,20 @@ pub fn pattern_str(p: &Pattern) -> String {
     pattern(p)
 }
 
+pub fn stmt_str(st: &Stmt) -> String {
+    let mut s = String::new();
+    let mut c = Comments { list: &[], cursor: 0, trailing: HashMap::new() };
+    stmt(&mut s, st, 0, &mut c, u32::MAX);
+    s.trim_end_matches('\n').to_string()
+}
+
+pub fn block_str(b: &Block) -> String {
+    let mut s = String::new();
+    let mut c = Comments { list: &[], cursor: 0, trailing: HashMap::new() };
+    block(&mut s, b, 0, &mut c, u32::MAX);
+    s.trim_end_matches('\n').to_string()
+}
+
 fn parse_fixed_width_usize(s: &str, pos: &mut usize, width: usize) -> Option<usize> {
     let end = pos.checked_add(width)?;
     let part = s.get(*pos..end)?;

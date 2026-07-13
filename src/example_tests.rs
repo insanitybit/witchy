@@ -1596,6 +1596,41 @@ fn main(console: Console):
         );
     }
 
+    /// RFC-0080 statement/block quotation parses function-body fragments at the
+    /// quote site and returns typed compiler syntax values for generation.
+    #[test]
+    fn quote_stmt_and_block_build_typed_body_syntax_on_both_backends() {
+        let src = r#"
+import meta
+
+comptime:
+    let int = quote type:
+        Int
+    let body = quote block:
+        let x: Int = 40
+        x + 2
+    emit_item(meta.function_block(true, meta.ident("answer_block"), [], Some(int), body))
+
+    let stmt = quote stmt:
+        let y: Int = 5
+    let tail = quote expr:
+        y + 1
+    let body2 = meta.block([stmt], Some(tail))
+    emit_item(meta.function_block(true, meta.ident("answer_stmt"), [], Some(int), body2))
+
+fn main(console: Console):
+    console.print("${answer_block()}")
+    console.print("${answer_stmt()}")
+"#;
+        let expected = ["42", "6"];
+        assert_eq!(link_run(src), expected, "interp quote stmt/block");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled quote stmt/block",
+        );
+    }
+
     /// RFC-0080 item quotation parses one item at the quote site and hands it to
     /// the existing typed `meta.item` boundary.
     #[test]

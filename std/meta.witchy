@@ -362,11 +362,19 @@ pub fn stmt_return(value: ExprSyntax) -> StmtSyntax:
 pub fn stmt_return_none() -> StmtSyntax:
     StmtSyntax("return")
 
+// A source-backed statement wrapper for parser-checked `quote stmt:`.
+pub fn stmt_raw(source: String) -> StmtSyntax:
+    StmtSyntax(source)
+
 pub fn block(stmts: List(StmtSyntax), tail: Option(ExprSyntax)) -> BlockSyntax:
     let lines = block_lines(stmts, tail)
     if list.is_empty(lines):
         fail("meta.block: body must contain at least one statement or tail expression")
     BlockSyntax(list.join(lines, "\n"))
+
+// A source-backed block wrapper for parser-checked `quote block:`.
+pub fn block_raw(source: String) -> BlockSyntax:
+    BlockSyntax(source)
 
 fn block_lines(stmts: List(StmtSyntax), tail: Option(ExprSyntax)) -> List(String):
     let lines = stmt_sources(stmts)
