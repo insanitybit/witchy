@@ -1467,6 +1467,11 @@ Matchable compact-JWT/OIDC verification failures. These distinguish malformed wi
 - `IssuerMismatch`
 - `NotYetValid`
 - `AuthorizedPartyMismatch`
+- `FreshnessPolicyInvalid`
+- `IssuedAtBeforeEpoch(Int)`
+- `IssuedAtAfterExpiry(Int, Int)`
+- `IssuedAtInFuture(Int, Int)`
+- `TokenLifetimeTooLong(Int, Int)`
 - `JwkModulusBase64(String)`
 - `JwkExponentBase64(String)`
 - `JwkModulusEmpty`
@@ -1485,7 +1490,13 @@ Verify an RS256 (RSASSA-PKCS1-v1_5 / SHA-256) compact JWT against a DER PKCS#1 R
 
 #### `fn verify_oidc(token: String, rsa_pubkey_der_hex: String, issuer: String, audience: String, now: Int) -> Result(Json, JwtError)`
 
-The full OIDC relying-party check: verify the RS256 signature AND that the token was minted by the expected `issuer` for the expected `audience`, and is valid now (`exp`/`nbf`). Returns the identity claims — `sub` plus provider-specific fields like GitHub's `repository` or Google's `email` — for the caller to authorize. This is the call a login or trusted-publishing flow makes once it holds the issuer's JWKS key (`rsa_key_from_jwk`). The issuer check is what binds a token to a TRUSTED provider: without it, anyone who can mint a JWT for the right audience would be admitted.
+The generic OIDC relying-party check: verify the RS256 signature AND that the token was minted by the expected `issuer` for the expected `audience`, and is valid now (`exp`/`nbf`). Returns the identity claims — `sub` plus provider-specific fields like GitHub's `repository` or Google's `email` — for the caller to authorize. This is the base check once it holds the issuer's JWKS key (`rsa_key_from_jwk`). Login and trusted-publishing flows should use `verify_oidc_fresh`, which adds their explicit `iat` and maximum-lifetime policy. The issuer check is what binds a token to a TRUSTED provider: without it, anyone who can mint a JWT for the right audience would be admitted.
+
+#### `fn verify_oidc_fresh(token: String, rsa_pubkey_der_hex: String, issuer: String, audience: String, now: Int, max_lifetime: Int, clock_skew: Int) -> Result(Json, JwtError)`
+
+The stricter relying-party entrypoint for short-lived identity tokens. RFC 7519 defines `iat` as optional in generic JWTs; OIDC relying parties choose their own acceptable freshness range. This variant makes that application policy explicit: `iat` is required, `exp - iat` may not exceed `max_lifetime`, and an issuer clock may lead the relying-party clock by at most `clock_skew` seconds. Signature, issuer, audience, expiry, nbf, and azp checks are still those of `verify_oidc`.
+
+`clock_skew` applies only to a future `iat`. Expiry and nbf remain strict, so this API never extends the token's signed validity interval.
 
 #### `fn header(token: String) -> Result(Json, JwtError)`
 
@@ -2113,7 +2124,7 @@ Exchange an authorization `code` for an access token at the provider's token end
 
 #### `fn exchange_code_id_token(net: Net[Connect, Tcp], token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, OAuthError)`
 
-Like `exchange_code`, but returns the OIDC `id_token` (a JWT carrying the user's identity) instead of the access token — for "Log in with Google" and other OIDC providers. Verify the returned token with `std/jwt` (`kid` → `rsa_key_for_kid` over the provider's JWKS → `verify_oidc`).
+Like `exchange_code`, but returns the OIDC `id_token` (a JWT carrying the user's identity) instead of the access token — for "Log in with Google" and other OIDC providers. Verify the returned token with `std/jwt` (`kid` → `rsa_key_for_kid` over the provider's JWKS → `verify_oidc_fresh` with that provider's lifetime policy).
 
 #### `fn exchange_code_id_token_string(net: Net[Connect, Tcp], token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, String)`
 

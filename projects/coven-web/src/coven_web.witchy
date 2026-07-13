@@ -580,7 +580,9 @@ fn select_and_verify(clock: Clock, jwks: Json, client_id: String, id_token: Stri
     let key_id = jwt.require_kid(id_token)?
     let der = jwt.rsa_key_for_kid(jwks, key_id)?
     // JWT `exp`/`nbf` are unix SECONDS; `clock.now()` is milliseconds.
-    let claims = jwt.verify_oidc(id_token, der, "https://accounts.google.com", client_id, clock.now() / 1000)?
+    // BUG-068: Google ID tokens carry `iat` and have a one-hour lifetime. Encode
+    // that relying-party policy here, with one minute for issuer clock lead.
+    let claims = jwt.verify_oidc_fresh(id_token, der, "https://accounts.google.com", client_id, clock.now() / 1000, 3600, 60)?
     Ok(claims)
 
 // Mint a bearer session for `who` and hand it to the SPA in the URL fragment (kept out of

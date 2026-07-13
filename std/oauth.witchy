@@ -81,7 +81,7 @@ pub fn exchange_code_string(net: Net[Connect, Tcp], token_url: String, client_id
 // Like `exchange_code`, but returns the OIDC `id_token` (a JWT carrying the user's
 // identity) instead of the access token — for "Log in with Google" and other OIDC
 // providers. Verify the returned token with `std/jwt` (`kid` → `rsa_key_for_kid` over the
-// provider's JWKS → `verify_oidc`).
+// provider's JWKS → `verify_oidc_fresh` with that provider's lifetime policy).
 pub fn exchange_code_id_token(net: Net[Connect, Tcp], token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, OAuthError):
     match token_response(net, token_url, client_id, client_secret, code, redirect_uri):
         Err(e) -> Err(e)

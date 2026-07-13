@@ -3270,8 +3270,13 @@ fn coven_web_google_login_verifies_id_token_and_completes_a_session() {
     // (SEC-008); the mock serves whatever the test puts in `token_slot` after capturing it.
     let header_b64 = b64url(br#"{"alg":"RS256","kid":"g1","typ":"JWT"}"#);
     let sign_id_token = |nonce: &str| -> String {
+        let iat = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock is after Unix epoch")
+            .as_secs();
+        let exp = iat + 3600;
         let payload = format!(
-            r#"{{"iss":"https://accounts.google.com","aud":"gClientID","email":"alice@example.com","email_verified":true,"sub":"1","exp":2000000000,"nbf":0,"nonce":"{nonce}"}}"#
+            r#"{{"iss":"https://accounts.google.com","aud":"gClientID","email":"alice@example.com","email_verified":true,"sub":"1","iat":{iat},"exp":{exp},"nbf":0,"nonce":"{nonce}"}}"#
         );
         let signed = format!("{header_b64}.{}", b64url(payload.as_bytes()));
         let mut sig = vec![0u8; idk.public_modulus_len()];

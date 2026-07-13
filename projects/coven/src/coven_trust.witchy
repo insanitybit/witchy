@@ -95,7 +95,7 @@ fn strict_strings(items: List(Json)) -> Result(List(String), TrustPolicyError):
 
 // Verify a request's identity token (a compact OIDC JWT): the token's `iss` selects the
 // trusted issuer's pinned key, then `verify_oidc` checks the RS256 signature, that the
-// audience is this registry, and that it has not expired. Reading `iss` BEFORE verifying
+// audience is this registry, and that it is a fresh, short-lived token. Reading `iss` BEFORE verifying
 // is safe — `verify_oidc` re-checks `iss` and the signature, so only a token actually
 // signed by the issuer it names (and trusted here) passes. Returns the verified claims, or
 // a matchable reason the server renders as 401.
@@ -106,7 +106,11 @@ pub fn verify_token(issuers: List(Issuer), token: String, now: Int) -> Result(Js
         None -> Err(TokenUntrustedIssuer(iss))
         Some(entry) ->
             let pubkey = signing_key(entry, token)?
-            jwt.verify_oidc(token, pubkey, iss, "coven-registry", now).map_err(fn(e: jwt.JwtError): TokenOidc(jwt.jwt_error_message(e)))
+            // BUG-068: trusted-publishing identity tokens are intentionally short-lived.
+            // The local IdP defaults to five minutes; permit up to ten minutes plus
+            // 60 seconds of issuer clock lead while rejecting absent `iat` or a longer
+            // signed lifetime.
+            jwt.verify_oidc_fresh(token, pubkey, iss, "coven-registry", now, 600, 60).map_err(fn(e: jwt.JwtError): TokenOidc(jwt.jwt_error_message(e)))
 
 // Matchable trusted-publishing identity-token failures. These sit above
 // `jwt.JwtError`: the registry also owns issuer trust and JWKS key-selection

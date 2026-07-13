@@ -14623,10 +14623,22 @@ fn main(console: Console):
         };
         let gh = "https://token.actions.githubusercontent.com";
         let token = sign_jwt(
-            r#"{"iss":"https://token.actions.githubusercontent.com","aud":"coven","sub":"repo:octo/witchy:ref:refs/heads/main","repository":"octo/witchy","nbf":0,"exp":9999}"#,
+            r#"{"iss":"https://token.actions.githubusercontent.com","aud":"coven","sub":"repo:octo/witchy:ref:refs/heads/main","repository":"octo/witchy","nbf":0,"iat":900,"exp":1200}"#,
         );
         let future = sign_jwt(
-            r#"{"iss":"https://token.actions.githubusercontent.com","aud":"coven","repository":"octo/witchy","nbf":5000,"exp":9999}"#,
+            r#"{"iss":"https://token.actions.githubusercontent.com","aud":"coven","repository":"octo/witchy","nbf":5000,"iat":900,"exp":5200}"#,
+        );
+        let long_lived = sign_jwt(
+            r#"{"iss":"https://token.actions.githubusercontent.com","aud":"coven","repository":"octo/witchy","iat":1000,"exp":1601}"#,
+        );
+        let missing_iat = sign_jwt(
+            r#"{"iss":"https://token.actions.githubusercontent.com","aud":"coven","repository":"octo/witchy","exp":1200}"#,
+        );
+        let future_iat = sign_jwt(
+            r#"{"iss":"https://token.actions.githubusercontent.com","aud":"coven","repository":"octo/witchy","iat":1061,"exp":1200}"#,
+        );
+        let skew_boundary = sign_jwt(
+            r#"{"iss":"https://token.actions.githubusercontent.com","aud":"coven","repository":"octo/witchy","iat":1060,"exp":1200}"#,
         );
         // (token, issuer-to-trust) -> printed line. now = 1000, audience "coven".
         let run = |tok: &str, issuer: &str| -> Vec<String> {
@@ -14647,6 +14659,35 @@ fn main(console: Console):
             run(&future, gh),
             vec!["JWT is not yet valid (nbf is in the future)".to_string()]
         );
+
+        // BUG-068: high-value relying parties opt into an explicit maximum signed
+        // lifetime and future-iat skew. This is application policy, not a silent
+        // change to generic OIDC verification. Typed errors expose the rejected
+        // claim relationship without requiring callers to parse display text.
+        let run_fresh = |tok: &str| -> Vec<String> {
+            let src = format!(
+                r#"import jwt
+import json
+fn main(console: Console):
+    match jwt.verify_oidc_fresh("{tok}", "{pk_hex}", "{gh}", "coven", 1000, 600, 60):
+        Ok(claims) -> console.print("ok:" + json.get_string(claims, "repository").unwrap_or("?"))
+        Err(e) ->
+            match e:
+                jwt.TokenLifetimeTooLong(actual, maximum) -> console.print("ttl:${{actual}}:${{maximum}}")
+                jwt.IssuedAtInFuture(iat, skew) -> console.print("future:${{iat}}:${{skew}}")
+                jwt.MissingClaim(name) -> console.print("missing:" + name)
+                _ -> console.print(jwt.jwt_error_message(e))
+"#
+            );
+            let interp = link_run(&src);
+            assert_eq!(interp, run_linked_on_wasm(&[("main", src.as_str())], "main"), "freshness policy backends agree");
+            interp
+        };
+        assert_eq!(run_fresh(&token), vec!["ok:octo/witchy".to_string()]);
+        assert_eq!(run_fresh(&skew_boundary), vec!["ok:octo/witchy".to_string()]);
+        assert_eq!(run_fresh(&long_lived), vec!["ttl:601:600".to_string()]);
+        assert_eq!(run_fresh(&missing_iat), vec!["missing:iat".to_string()]);
+        assert_eq!(run_fresh(&future_iat), vec!["future:1061:60".to_string()]);
     }
 
     /// OIDC Core §3.1.3.7 (BUG-270): when an ID token names MORE THAN ONE audience,

@@ -46,6 +46,11 @@ type JwtError:
     IssuerMismatch
     NotYetValid
     AuthorizedPartyMismatch
+    FreshnessPolicyInvalid
+    IssuedAtBeforeEpoch(Int)
+    IssuedAtAfterExpiry(Int, Int)
+    IssuedAtInFuture(Int, Int)
+    TokenLifetimeTooLong(Int, Int)
     JwkModulusBase64(String)
     JwkExponentBase64(String)
     JwkModulusEmpty
@@ -80,6 +85,11 @@ pub fn jwt_error_message(e: JwtError) -> String:
         IssuerMismatch -> "JWT issuer mismatch (untrusted identity provider)"
         NotYetValid -> "JWT is not yet valid (nbf is in the future)"
         AuthorizedPartyMismatch -> "JWT `azp` mismatch: a multi-audience OIDC token must name this client as the authorized party"
+        FreshnessPolicyInvalid -> "JWT freshness policy requires non-negative current time, maximum lifetime, and clock skew"
+        IssuedAtBeforeEpoch(iat) -> "JWT `iat` ${iat} is before the Unix epoch"
+        IssuedAtAfterExpiry(iat, exp) -> "JWT `iat` ${iat} is after its `exp` ${exp}"
+        IssuedAtInFuture(iat, skew) -> "JWT `iat` ${iat} is too far in the future (allowed issuer clock skew: ${skew}s)"
+        TokenLifetimeTooLong(actual, maximum) -> "JWT lifetime ${actual}s exceeds the relying party's ${maximum}s maximum"
         JwkModulusBase64(reason) -> "JWK modulus `n` is not valid base64url: " + reason
         JwkExponentBase64(reason) -> "JWK exponent `e` is not valid base64url: " + reason
         JwkModulusEmpty -> "JWK modulus `n` is empty or missing"
@@ -179,13 +189,15 @@ fn aud_array_matches(items: List(Json), audience: String) -> Result(Bool, JwtErr
                     found = true
     Ok(found)
 
-// The full OIDC relying-party check: verify the RS256 signature AND that the token was
+// The generic OIDC relying-party check: verify the RS256 signature AND that the token was
 // minted by the expected `issuer` for the expected `audience`, and is valid now
 // (`exp`/`nbf`). Returns the identity claims — `sub` plus provider-specific fields like
 // GitHub's `repository` or Google's `email` — for the caller to authorize. This is the
-// call a login or trusted-publishing flow makes once it holds the issuer's JWKS key
-// (`rsa_key_from_jwk`). The issuer check is what binds a token to a TRUSTED provider:
-// without it, anyone who can mint a JWT for the right audience would be admitted.
+// base check once it holds the issuer's JWKS key (`rsa_key_from_jwk`). Login and
+// trusted-publishing flows should use `verify_oidc_fresh`, which adds their explicit
+// `iat` and maximum-lifetime policy. The issuer check is what binds a token to a
+// TRUSTED provider: without it, anyone who can mint a JWT for the right audience
+// would be admitted.
 pub fn verify_oidc(token: String, rsa_pubkey_der_hex: String, issuer: String, audience: String, now: Int) -> Result(Json, JwtError):
     match verify_rs256(token, rsa_pubkey_der_hex, audience, now):
         Err(e) -> Err(e)
@@ -203,6 +215,37 @@ pub fn verify_oidc(token: String, rsa_pubkey_der_hex: String, issuer: String, au
                         Err(AuthorizedPartyMismatch)
                     else:
                         Ok(claims)
+
+// The stricter relying-party entrypoint for short-lived identity tokens. RFC 7519
+// defines `iat` as optional in generic JWTs; OIDC relying parties choose their own
+// acceptable freshness range. This variant makes that application policy explicit:
+// `iat` is required, `exp - iat` may not exceed `max_lifetime`, and an issuer clock
+// may lead the relying-party clock by at most `clock_skew` seconds. Signature,
+// issuer, audience, expiry, nbf, and azp checks are still those of `verify_oidc`.
+//
+// `clock_skew` applies only to a future `iat`. Expiry and nbf remain strict, so this
+// API never extends the token's signed validity interval.
+pub fn verify_oidc_fresh(token: String, rsa_pubkey_der_hex: String, issuer: String, audience: String, now: Int, max_lifetime: Int, clock_skew: Int) -> Result(Json, JwtError):
+    if now < 0 || max_lifetime < 0 || clock_skew < 0:
+        Err(FreshnessPolicyInvalid)
+    else:
+        let claims = verify_oidc(token, rsa_pubkey_der_hex, issuer, audience, now)?
+        check_freshness(claims, now, max_lifetime, clock_skew)?
+        Ok(claims)
+
+fn check_freshness(claims: Json, now: Int, max_lifetime: Int, clock_skew: Int) -> Result(Nil, JwtError):
+    let iat = require_int_claim(claims, "iat")?
+    let exp = require_int_claim(claims, "exp")?
+    if iat < 0:
+        Err(IssuedAtBeforeEpoch(iat))
+    else if iat > exp:
+        Err(IssuedAtAfterExpiry(iat, exp))
+    else if exp - iat > max_lifetime:
+        Err(TokenLifetimeTooLong(exp - iat, max_lifetime))
+    else if iat > now && iat - now > clock_skew:
+        Err(IssuedAtInFuture(iat, clock_skew))
+    else:
+        Ok(Nil)
 
 // OpenID Connect Core §3.1.3.7: when an ID Token carries MORE THAN ONE audience,
 // the `azp` (authorized party) claim MUST be present and MUST be this relying
