@@ -1149,6 +1149,33 @@ cross-checked against the computed footprint — see
 [capabilities.md](capabilities.md) and
 [0013-capability-grant-documents.md](../rfcs/0013-capability-grant-documents.md).
 
+`main` may also receive a library-defined capability when its declaration is
+explicitly `grantable`. The capability must be **bare**: none of its fields may
+carry transitive host authority such as `Net`, `Dir`, or `SecretStore`. The host
+mints each value from the `[user_caps]` entry whose key matches the parameter
+name:
+
+```text
+grantable capability UiRoot:
+    policy: String
+
+fn main(console: Console, ui: UiRoot):
+    console.print("UI policy granted")
+```
+
+```toml
+# app.grants.toml
+[user_caps]
+ui = { type = "UiRoot", policy = "coven-web" }
+```
+
+Grantable capabilities are policy authority, not aliases for hidden host
+authority. `witchy caps` therefore reports them on a separate `user caps` axis,
+and adding one to an entrypoint is a footprint widening. The full minting,
+bareness, and exported-root contract is in the **Grantable capabilities** section
+of [capabilities.md](capabilities.md) and
+[RFC-0038](../rfcs/0038-grantable-user-capabilities.md).
+
 ### 13.1 The build entrypoint
 
 A rune may ship a **build step**: a top-level `fn build` whose first parameter is
