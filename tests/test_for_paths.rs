@@ -157,3 +157,32 @@ fn mixed_rust_and_std_keeps_only_fast_and_std_formatting() {
     assert_eq!(commands[0], "./scripts/check.sh --fast");
     assert!(commands[1].contains("witchy fmt --check"), "{commands:?}");
 }
+
+#[test]
+fn glamour_runtime_changes_get_javascript_and_integration_checks() {
+    assert_eq!(
+        selected(&["web/witchy-runtime/glamour-dom.mjs"]),
+        [
+            "find web/witchy-runtime -type f -name '*.mjs' -exec node --check {} \\;",
+            "cargo nextest run --test glamour_dom",
+        ]
+    );
+}
+
+#[test]
+fn shared_browser_host_runs_every_dependent_integration_binary() {
+    let commands = selected(&["web/witchy-runtime/witchy-runtime.mjs"]);
+    assert_eq!(commands.len(), 2, "{commands:?}");
+    assert!(commands[0].contains("node --check"), "{commands:?}");
+    assert_eq!(
+        commands[1],
+        "cargo nextest run --test browser_shim --test browser_encoding --test glamour_dom --test wasm_abi_catalog"
+    );
+}
+
+#[test]
+fn unwrapped_browser_module_still_gets_javascript_syntax_checks() {
+    let output = route(&["web/witchy-runtime/hex-strict.test.mjs"]);
+    assert!(output.contains("node --check"), "{output}");
+    assert!(!output.contains("prose-only"), "{output}");
+}

@@ -40,6 +40,10 @@ add() { local c="$1"; local x; for x in ${cmds[0]+"${cmds[@]}"}; do [ "$x" = "$c
 any_rust=0
 for p in "${paths[@]}"; do
     case "$p" in
+        web/witchy-runtime/*.mjs)
+            add "find web/witchy-runtime -type f -name '*.mjs' -exec node --check {} \\;" ;;
+    esac
+    case "$p" in
         crates/witchy-types/*)
             any_rust=1
             add "cargo nextest run -p witchy-types"
@@ -74,6 +78,23 @@ for p in "${paths[@]}"; do
         projects/pm/* | projects/coven/* | projects/coven-web/* | projects/glamour/* | projects/docs/*)
             add "find projects -type f -path '*/src/*.witchy' -exec ./target/debug/witchy fmt --check {} +"
             add "./scripts/check.sh --e2e" ;;
+        web/witchy-runtime/glamour-*.mjs | \
+        web/witchy-runtime/heap-reset.test.mjs | \
+        web/witchy-runtime/highlighter.test.mjs | \
+        web/witchy-runtime/user-cap-export.test.mjs)
+            add "cargo nextest run --test glamour_dom" ;;
+        web/witchy-runtime/abort-message.test.mjs | \
+        web/witchy-runtime/playground-examples.test.mjs | \
+        web/witchy-runtime/spike.mjs | \
+        web/witchy-runtime/witchy-highlight.test.mjs | \
+        web/witchy-runtime/witchy-runnable.test.mjs)
+            add "cargo nextest run --test browser_shim" ;;
+        web/witchy-runtime/encoding-abi.test.mjs)
+            add "cargo nextest run --test browser_encoding" ;;
+        web/witchy-runtime/import-catalog.test.mjs)
+            add "cargo nextest run --test wasm_abi_catalog" ;;
+        web/witchy-runtime/witchy-runtime.mjs)
+            add "cargo nextest run --test browser_shim --test browser_encoding --test glamour_dom --test wasm_abi_catalog" ;;
         tests/e2e.rs)
             add "./scripts/check.sh --e2e" ;;
         tests/*.rs)
