@@ -14,6 +14,45 @@ const TEST_ROOT_SEED: [u8; 32] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
 ];
 
+fn panic_coven_startup(addr: &str, detail: &str, errlog: &Path) -> ! {
+    let stderr = std::fs::read_to_string(errlog).unwrap_or_default();
+    let stderr = stderr.trim();
+    panic!(
+        "witchy coven-serve never started listening on {addr}: {detail}{}",
+        if stderr.is_empty() {
+            " (no stderr captured)".to_string()
+        } else {
+            format!("\n--- coven-serve stderr ---\n{stderr}")
+        }
+    );
+}
+
+fn wait_for_coven_server(server: &mut Child, addr: &str, errlog: &Path) {
+    for _ in 0..SERVER_START_ATTEMPTS {
+        if std::net::TcpStream::connect(addr).is_ok() {
+            return;
+        }
+        match server.try_wait() {
+            Ok(Some(status)) => panic_coven_startup(addr, &format!("child exited with {status} before binding"), errlog),
+            Ok(None) => {}
+            Err(e) => {
+                let _ = server.kill();
+                let _ = server.wait();
+                panic_coven_startup(addr, &format!("cannot poll child status: {e}"), errlog);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(SERVER_START_POLL_MS));
+    }
+
+    let _ = server.kill();
+    let status = server.wait().ok();
+    panic_coven_startup(
+        addr,
+        &format!("child did not bind within the readiness window; terminated with {status:?}"),
+        errlog,
+    );
+}
+
 fn hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
@@ -84,11 +123,8 @@ impl RegistryServer {
             .port();
         let addr = format!("127.0.0.1:{port}");
 
-        // Capture the server's stderr to a file rather than discarding it, so a
-        // readiness-timeout panic can report WHY (a crash / port race) instead of
-        // a bare "never started" after 2 minutes — the long-flaky coven-serve e2e
-        // gave no diagnostics because stderr went to /dev/null. Diagnostics only:
-        // no timing or parallelism change.
+        // Capture stderr so the readiness helper can report a crash immediately
+        // and preserve diagnostics if a still-running child times out.
         let errlog = regroot.join("coven-serve.stderr");
         let errfile = std::fs::File::create(&errlog).expect("create server stderr log");
         let mut child = Command::new(BIN)
@@ -109,34 +145,7 @@ impl RegistryServer {
             .spawn()
             .expect("spawn coven-serve");
 
-        // Wait for the listener to come up.
-        let mut up = false;
-        for _ in 0..SERVER_START_ATTEMPTS {
-            if std::net::TcpStream::connect(&addr).is_ok() {
-                up = true;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(SERVER_START_POLL_MS));
-        }
-        if !up {
-            // Distinguish a crash (child already exited, with its stderr) from a
-            // genuine slow-bind (still running past the readiness window).
-            let exited = child.try_wait().ok().flatten();
-            let stderr = std::fs::read_to_string(&errlog).unwrap_or_default();
-            let stderr = stderr.trim();
-            let detail = match exited {
-                Some(status) => format!("child EXITED with {status} before binding"),
-                None => "child still running (slow bind under load, or wedged)".to_string(),
-            };
-            panic!(
-                "witchy coven-serve never started listening on {addr} — {detail}{}",
-                if stderr.is_empty() {
-                    " (no stderr captured)".to_string()
-                } else {
-                    format!("\n--- coven-serve stderr ---\n{stderr}")
-                }
-            );
-        }
+        wait_for_coven_server(&mut child, &addr, &errlog);
 
         RegistryServer {
             child,
@@ -414,6 +423,8 @@ fn start_basic_coven(tag: &str) -> (Child, String, PathBuf) {
     )
     .unwrap();
 
+    let errlog = store.join("coven-serve.stderr");
+    let errfile = std::fs::File::create(&errlog).expect("create server stderr log");
     let mut server = Command::new(BIN)
         .args([
             "coven-serve",
@@ -425,25 +436,41 @@ fn start_basic_coven(tag: &str) -> (Child, String, PathBuf) {
             seed.to_str().unwrap(),
         ])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::from(errfile))
         .spawn()
         .expect("spawn witchy coven-serve");
 
-    let mut up = false;
-    for _ in 0..SERVER_START_ATTEMPTS {
-        if std::net::TcpStream::connect(&addr).is_ok() {
-            up = true;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(SERVER_START_POLL_MS));
-    }
-    if !up {
-        let _ = server.kill();
-        let _ = server.wait();
-        panic!("witchy coven-serve never started on {addr}");
-    }
+    wait_for_coven_server(&mut server, &addr, &errlog);
 
     (server, addr, store)
+}
+
+#[test]
+fn coven_startup_reports_an_exited_child_without_waiting_for_timeout() {
+    let dir = unique("coven-startup-exit");
+    let errlog = dir.join("coven-serve.stderr");
+    let errfile = std::fs::File::create(&errlog).unwrap();
+    let missing = dir.join("missing.witchy");
+    let mut child = Command::new(BIN)
+        .arg(missing.to_str().unwrap())
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(errfile))
+        .spawn()
+        .unwrap();
+    child.wait().unwrap();
+
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        wait_for_coven_server(&mut child, "127.0.0.1:0", &errlog);
+    }))
+    .expect_err("an exited child must fail readiness immediately");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .unwrap_or("non-string panic");
+    assert!(message.contains("child exited with") && message.contains("missing.witchy"), "{message}");
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Recursively copy the contents of `src` into `dst` (used to lift a committed
