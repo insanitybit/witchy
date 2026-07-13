@@ -13449,25 +13449,25 @@ fn main(console: Console):
                 vec!["xxxxx".to_string(), "ok".to_string()],
             ),
         ];
-        let mut lowered_any = false;
-        for (src, want) in cases {
-            let module = parser::parse_module(src).expect("parse");
-            let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-            typeck::check(&linked).expect("typecheck");
-            let bytes = codegen::compile_module_binary(&linked)
-                .expect("compile_module_binary")
-                .unwrap_or_else(|| {
-                    panic!("expected the WIR binary path to handle this program:\n{src}")
-                });
-            lowered_any = true;
-            // AST → WIR → binary (no wat::parse_str) runs identically to the
-            // interpreter oracle and to the legacy WAT sink — AND under a
-            // print-ONLY grant, proving the pruned module imports only `print`.
-            assert_eq!(&run_bytes_print_only(&bytes), want, "binary path (print-only):\n{src}");
-            assert_eq!(&link_run(src), want, "interpreter oracle:\n{src}");
-            assert_eq!(&run_on_wasm(src), want, "legacy WAT path:\n{src}");
-        }
-        assert!(lowered_any, "the WIR binary path lowered nothing — convergence regressed");
+        assert!(!cases.is_empty(), "the WIR binary path lowered nothing — convergence regressed");
+        std::thread::scope(|s| {
+            let handles: Vec<_> = cases.iter().map(|(src, want)| {
+                s.spawn(move || {
+                    let module = parser::parse_module(src).expect("parse");
+                    let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+                    typeck::check(&linked).expect("typecheck");
+                    let bytes = codegen::compile_module_binary(&linked)
+                        .expect("compile_module_binary")
+                        .unwrap_or_else(|| {
+                            panic!("expected the WIR binary path to handle this program:\n{src}")
+                        });
+                    assert_eq!(&run_bytes_print_only(&bytes), want, "binary path (print-only):\n{src}");
+                    assert_eq!(&link_run(src), want, "interpreter oracle:\n{src}");
+                    assert_eq!(&run_on_wasm(src), want, "legacy WAT path:\n{src}");
+                })
+            }).collect();
+            for h in handles { h.join().unwrap(); }
+        });
     }
 
     /// The first host-import helper ($encoding) on the binary path. Kept out of
