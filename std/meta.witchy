@@ -23,18 +23,91 @@ sealed type ExprSyntax:
 sealed type ParamSyntax:
     ParamSyntax(String)
 
+sealed type Ident:
+    Ident(String)
+
 // A source-backed item wrapper. This is the migration bridge from today's
 // source-emitting generators toward structured constructors and quotation.
 pub fn item(source: String) -> ItemSyntax:
     ItemSyntax(source)
 
+// A validated Witchy identifier. This rejects keywords, `_`, non-ASCII source
+// spelling, and compiler-reserved `__` names before generated source is parsed.
+pub fn ident(name: String) -> Ident:
+    if !is_identifier(name):
+        fail("meta.ident: invalid identifier `" + name + "`")
+    Ident(name)
+
+pub fn is_identifier(name: String) -> Bool:
+    let n = string.char_count(name)
+    if n == 0 || name == "_" || is_keyword(name) || string.contains(name, "__"):
+        false
+    else:
+        var ok = is_ident_start(string.substring(name, 0, 1))
+        var i = 1
+        while i < n:
+            if !is_ident_continue(string.substring(name, i, i + 1)):
+                ok = false
+            i = i + 1
+        ok
+
+fn ident_source(id: Ident) -> String:
+    match id:
+        Ident(source) -> source
+
+fn is_ident_start(c: String) -> Bool:
+    c == "_" || "a" <= c && c <= "z" || "A" <= c && c <= "Z"
+
+fn is_ident_continue(c: String) -> Bool:
+    is_ident_start(c) || "0" <= c && c <= "9"
+
+fn is_keyword(name: String) -> Bool:
+    match name:
+        "fn" -> true
+        "gen" -> true
+        "yield" -> true
+        "async" -> true
+        "await" -> true
+        "let" -> true
+        "var" -> true
+        "match" -> true
+        "pub" -> true
+        "if" -> true
+        "else" -> true
+        "true" -> true
+        "false" -> true
+        "type" -> true
+        "own" -> true
+        "move" -> true
+        "import" -> true
+        "while" -> true
+        "for" -> true
+        "in" -> true
+        "return" -> true
+        "break" -> true
+        "continue" -> true
+        "trait" -> true
+        "impl" -> true
+        "where" -> true
+        "as" -> true
+        "region" -> true
+        "comptime" -> true
+        "capability" -> true
+        _ -> false
+
 // Source-backed type syntax. Prefer this to assembling type names at each
 // generator call site; it is still a migration helper, not full hygiene.
-pub fn type_named(name: String, args: List(TypeSyntax)) -> TypeSyntax:
+pub fn type_named(name: Ident, args: List(TypeSyntax)) -> TypeSyntax:
+    type_with_head(ident_source(name), args)
+
+pub fn type_qualified(module: Ident, name: Ident, args: List(TypeSyntax)) -> TypeSyntax:
+    type_with_head(ident_source(module) + "." + ident_source(name), args)
+
+fn type_with_head(head: String, args: List(TypeSyntax)) -> TypeSyntax:
     if list.is_empty(args):
-        TypeSyntax(name)
+        TypeSyntax(head)
     else:
-        TypeSyntax(name + "(" + list.join(type_syntax_sources(args), ", ") + ")")
+        TypeSyntax(head + "(" + list.join(type_syntax_sources(args), ", ") + ")")
 
 pub fn type_expr(ty: TypeExpr) -> TypeSyntax:
     TypeSyntax(type_source(ty))
@@ -51,14 +124,14 @@ fn type_syntax_sources(types: List(TypeSyntax)) -> List(String):
 
 // Source-backed expression syntax. These constructors make the shape explicit
 // while quotation/hygienic identifiers are still pending.
-pub fn expr_name(name: String) -> ExprSyntax:
-    ExprSyntax(name)
+pub fn expr_name(name: Ident) -> ExprSyntax:
+    ExprSyntax(ident_source(name))
 
 pub fn expr_call(callee: ExprSyntax, args: List(ExprSyntax)) -> ExprSyntax:
     ExprSyntax(expr_source(callee) + "(" + list.join(expr_sources(args), ", ") + ")")
 
-pub fn expr_field(base: ExprSyntax, field: String) -> ExprSyntax:
-    ExprSyntax(expr_source(base) + "." + field)
+pub fn expr_field(base: ExprSyntax, field: Ident) -> ExprSyntax:
+    ExprSyntax(expr_source(base) + "." + ident_source(field))
 
 pub fn expr_int(n: Int) -> ExprSyntax:
     ExprSyntax("${n}")
@@ -81,8 +154,8 @@ fn expr_sources(exprs: List(ExprSyntax)) -> List(String):
 
 // A function parameter and a single-expression function item. This is the first
 // item constructor that avoids whole-function string templates in user code.
-pub fn param(name: String, ty: TypeSyntax) -> ParamSyntax:
-    ParamSyntax(name + ": " + type_syntax_source(ty))
+pub fn param(name: Ident, ty: TypeSyntax) -> ParamSyntax:
+    ParamSyntax(ident_source(name) + ": " + type_syntax_source(ty))
 
 fn param_source(param: ParamSyntax) -> String:
     match param:
@@ -94,13 +167,13 @@ fn param_sources(params: List(ParamSyntax)) -> List(String):
         out = list.push(out, param_source(p))
     out
 
-pub fn function(public: Bool, name: String, params: List(ParamSyntax), ret: Option(TypeSyntax), body: ExprSyntax) -> ItemSyntax:
+pub fn function(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: ExprSyntax) -> ItemSyntax:
     let visibility = if public: "pub " else: ""
     let ret_source = match ret:
         Some(ty) -> " -> " + type_syntax_source(ty)
         None -> ""
 
-    item(visibility + "fn " + name + "(" + list.join(param_sources(params), ", ") + ")" + ret_source + ":\n    " + expr_source(body))
+    item(visibility + "fn " + ident_source(name) + "(" + list.join(param_sources(params), ", ") + ")" + ret_source + ":\n    " + expr_source(body))
 
 // A declared type expression, exposed as data so generators do not have to parse
 // source-looking type strings.

@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed syntax wrappers/builders, comptime emit_item/fn helpers, and typed custom derives landed; quotation/hygiene/full syntax API remains proposed"
+tracking: "source-backed syntax wrappers/builders with validated identifiers, comptime emit_item/fn helpers, and typed custom derives landed; quotation/hygiene/full syntax API remains proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -202,6 +202,11 @@ The first source-compatible slice is implemented:
   `expr_call`, `param`, and `function`. These are compile-time-only like
   `ItemSyntax`: they reduce whole-item string templates without pretending to
   provide quotation, identifier validation, or hygiene yet.
+- The eighth slice adds compile-time-only `Ident` plus `meta.ident`, moves
+  identifier positions in the source-backed builders to validated identifiers,
+  and rejects keywords, `_`, non-ASCII spelling, and compiler-reserved `__`
+  names before generated source is parsed. This is still validation, not
+  hygienic origin tracking.
 
 This is intentionally not the full RFC. The payload is still source-backed and
 there is no quotation, identifier hygiene, or compiler-owned expression/pattern/

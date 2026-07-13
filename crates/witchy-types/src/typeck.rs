@@ -1101,6 +1101,7 @@ fn compiler_syntax_type_name(name: &str) -> Option<&'static str> {
         "meta.TypeSyntax" => Some("meta.TypeSyntax"),
         "meta.ExprSyntax" => Some("meta.ExprSyntax"),
         "meta.ParamSyntax" => Some("meta.ParamSyntax"),
+        "meta.Ident" => Some("meta.Ident"),
         _ => None,
     }
 }

@@ -1237,11 +1237,17 @@ fn main(console: Console):
             .message;
         assert!(err.contains("meta.ItemSyntax") && err.contains("compile-time-only"), "got: {err}");
 
-        let runtime_type_value = "import meta\n\nfn main(console: Console):\n    let ty = meta.type_named(\"Int\", [])\n    console.print(\"runtime type syntax\")\n";
-        let err = typeck::check(&resolve_std_src(runtime_type_value))
-            .expect_err("runtime meta.type_named must be rejected")
+        let runtime_type_signature = "from meta import TypeSyntax\n\nfn leak(x: TypeSyntax) -> TypeSyntax:\n    x\n";
+        let err = typeck::check(&resolve_std_src(runtime_type_signature))
+            .expect_err("runtime signatures must not expose TypeSyntax")
             .message;
         assert!(err.contains("meta.TypeSyntax") && err.contains("compile-time-only"), "got: {err}");
+
+        let runtime_ident_value = "import meta\n\nfn main(console: Console):\n    let id = meta.ident(\"x\")\n    console.print(\"runtime ident\")\n";
+        let err = typeck::check(&resolve_std_src(runtime_ident_value))
+            .expect_err("runtime meta.ident must be rejected")
+            .message;
+        assert!(err.contains("meta.Ident") && err.contains("compile-time-only"), "got: {err}");
 
         let runtime_signature = "from meta import ItemSyntax\n\nfn leak(x: ItemSyntax) -> ItemSyntax:\n    x\n";
         let err = typeck::check(&resolve_std_src(runtime_signature))
@@ -1263,13 +1269,23 @@ fn main(console: Console):
             expected,
             "compiled local type name is ordinary",
         );
+
+        let local_ident_type = "type Ident:\n    value: Int\n\nfn main(console: Console):\n    let x = Ident(12)\n    console.print(\"${x.value}\")\n";
+        let expected = ["12"];
+        assert_eq!(link_run(local_ident_type), expected, "local Ident type is ordinary");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", local_ident_type)], "main"),
+            expected,
+            "compiled local Ident type is ordinary",
+        );
     }
 
-    /// RFC-0080 seventh slice: source-backed syntax builders make generated item
-    /// structure explicit even before full quotation and hygiene land.
+    /// RFC-0080 seventh/eighth slices: source-backed syntax builders make
+    /// generated item structure explicit, and identifier positions take validated
+    /// `meta.Ident` values even before full quotation and hygiene land.
     #[test]
     fn meta_syntax_builders_emit_function_items_on_both_backends() {
-        let src = "import meta\n\nfn plus_one(x: Int) -> Int:\n    x + 1\n\ncomptime:\n    emit_item(meta.function(true, \"generated\", [meta.param(\"x\", meta.type_named(\"Int\", []))], Some(meta.type_named(\"Int\", [])), meta.expr_call(meta.expr_name(\"plus_one\"), [meta.expr_name(\"x\")])))\n\nfn main(console: Console):\n    console.print(\"${generated(7)}\")\n";
+        let src = "import meta\n\nfn plus_one(x: Int) -> Int:\n    x + 1\n\ncomptime:\n    let x = meta.ident(\"x\")\n    let int = meta.type_named(meta.ident(\"Int\"), [])\n    emit_item(meta.function(true, meta.ident(\"generated\"), [meta.param(x, int)], Some(int), meta.expr_call(meta.expr_name(meta.ident(\"plus_one\")), [meta.expr_name(x)])))\n\nfn main(console: Console):\n    console.print(\"${generated(7)}\")\n";
         let expected = ["8"];
         assert_eq!(link_run(src), expected, "interp syntax-builder generated item");
         assert_eq!(
@@ -1277,6 +1293,10 @@ fn main(console: Console):
             expected,
             "compiled syntax-builder generated item",
         );
+
+        let invalid = "import meta\n\ncomptime:\n    emit_item(meta.function(true, meta.ident(\"bad-name\"), [], None, meta.expr_int(1)))\n\nfn main(console: Console):\n    console.print(\"x\")\n";
+        let err = try_link_std(invalid).expect_err("invalid generated identifier must fail during comptime expansion");
+        assert!(err.contains("meta.ident") && err.contains("bad-name"), "got: {err}");
     }
 
     /// RFC-0080 fifth slice: `comptime fn` is a compile-time-only helper form.

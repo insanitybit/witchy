@@ -1923,6 +1923,10 @@ RFC-0080 first slice: a typed boundary for whole generated items. The compiler s
 
 - `ParamSyntax(String)`
 
+#### `sealed type Ident`
+
+- `Ident(String)`
+
 #### `type TypeExpr`
 
 A declared type expression, exposed as data so generators do not have to parse source-looking type strings.
@@ -1962,19 +1966,27 @@ A type's structure. `fields` is populated for records and `variants` for sums; b
 
 A source-backed item wrapper. This is the migration bridge from today's source-emitting generators toward structured constructors and quotation.
 
-#### `fn type_named(name: String, args: List(TypeSyntax)) -> TypeSyntax`
+#### `fn ident(name: String) -> Ident`
+
+A validated Witchy identifier. This rejects keywords, `_`, non-ASCII source spelling, and compiler-reserved `__` names before generated source is parsed.
+
+#### `fn is_identifier(name: String) -> Bool`
+
+#### `fn type_named(name: Ident, args: List(TypeSyntax)) -> TypeSyntax`
 
 Source-backed type syntax. Prefer this to assembling type names at each generator call site; it is still a migration helper, not full hygiene.
 
+#### `fn type_qualified(module: Ident, name: Ident, args: List(TypeSyntax)) -> TypeSyntax`
+
 #### `fn type_expr(ty: TypeExpr) -> TypeSyntax`
 
-#### `fn expr_name(name: String) -> ExprSyntax`
+#### `fn expr_name(name: Ident) -> ExprSyntax`
 
 Source-backed expression syntax. These constructors make the shape explicit while quotation/hygienic identifiers are still pending.
 
 #### `fn expr_call(callee: ExprSyntax, args: List(ExprSyntax)) -> ExprSyntax`
 
-#### `fn expr_field(base: ExprSyntax, field: String) -> ExprSyntax`
+#### `fn expr_field(base: ExprSyntax, field: Ident) -> ExprSyntax`
 
 #### `fn expr_int(n: Int) -> ExprSyntax`
 
@@ -1982,11 +1994,11 @@ Source-backed expression syntax. These constructors make the shape explicit whil
 
 #### `fn expr_raw(source: String) -> ExprSyntax`
 
-#### `fn param(name: String, ty: TypeSyntax) -> ParamSyntax`
+#### `fn param(name: Ident, ty: TypeSyntax) -> ParamSyntax`
 
 A function parameter and a single-expression function item. This is the first item constructor that avoids whole-function string templates in user code.
 
-#### `fn function(public: Bool, name: String, params: List(ParamSyntax), ret: Option(TypeSyntax), body: ExprSyntax) -> ItemSyntax`
+#### `fn function(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: ExprSyntax) -> ItemSyntax`
 
 #### `fn type_source(ty: TypeExpr) -> String`
 
