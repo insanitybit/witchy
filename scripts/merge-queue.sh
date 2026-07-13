@@ -544,7 +544,24 @@ prewarm_gate() {
     note "idle: prewarming gate worktree at master ${m:0:9}"
     git -C "$gate_wt" rebase --abort >/dev/null 2>&1 || true
     git -C "$gate_wt" checkout --detach --quiet "$m" 2>/dev/null || { release_lock; return 0; }
-    ( cd "$gate_wt" && cargo build --workspace >/dev/null 2>&1 \
+    # Warm ALL profiles the gate uses: dev (clippy+build), test (nextest), and
+    # the wasm playground target. Without this, each cold profile adds 30-130s
+    # to the gate wall-clock. The wasm build needs the rustup toolchain's std
+    # (same PATH trick as check.sh).
+    local tc_bin=""
+    if command -v rustup >/dev/null 2>&1; then
+        rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
+        tc_bin="$(dirname "$(rustup which --toolchain stable rustc)")"
+    fi
+    ( cd "$gate_wt" \
+        && cargo build --workspace >/dev/null 2>&1 \
+        && cargo test --workspace --no-run >/dev/null 2>&1 \
+        && { if [ -n "$tc_bin" ]; then
+                 env -u RUSTC -u RUSTFLAGS PATH="$tc_bin:$PATH" \
+                     cargo build --lib --no-default-features --target wasm32-unknown-unknown >/dev/null 2>&1
+             else
+                 cargo build --lib --no-default-features --target wasm32-unknown-unknown >/dev/null 2>&1
+             fi || true; } \
         && { [ -x scripts/warm-witchy-caches.sh ] && ./scripts/warm-witchy-caches.sh >/dev/null 2>&1 || true; } ) \
         && echo "$m" >"$qdir/prewarmed" || true
     release_lock
