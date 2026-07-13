@@ -1,7 +1,7 @@
 ---
 rfc: NNNN
 title: <short title>
-status: proposed        # proposed | planned | implemented | rejected | superseded
+status: proposed        # proposed | accepted | planned | deferred | implemented | rejected | superseded
 created: YYYY-MM-DD
 superseded-by:          # NNNN-slug, only if status: superseded
 tracking:               # where implementation is tracked (commit/issue/PR), optional

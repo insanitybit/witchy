@@ -20,18 +20,28 @@ deliberately copying that separation.)
 ## Status lifecycle
 
 ```
-proposed ──▶ planned ──▶ implemented
-   │            │
-   ├────────────┴──▶ rejected      (decided against; kept for the record)
-   │
-   └──────────────▶ superseded     (replaced by a later RFC)
+proposed ──▶ accepted ──▶ planned ──▶ implemented
+   │            │            │
+   ├────────────┼────────────┴──▶ deferred      (parked with a revisit trigger)
+   ├────────────┴───────────────▶ rejected      (decided against; kept for the record)
+   └────────────────────────────▶ superseded    (replaced by a later RFC)
 ```
 
 - **proposed** — written up, under discussion. Still freely editable.
-- **planned** — accepted, we intend to build it. Still editable.
+- **accepted** — the decision or direction is approved, but this is not a claim
+  that the design is fully shipped. `tracking:` records implementation progress
+  or explains why the RFC is an ongoing policy rather than a finite feature.
+- **planned** — accepted and committed to a future implementation cut. Still editable.
+- **deferred** — consciously parked and not currently release-blocking.
+  `tracking:` records why and the evidence or event that should revive it.
 - **implemented** — shipped. **Frozen** from here on (see below).
 - **rejected** — decided against. Frozen. Kept so the reasoning isn't relitigated.
 - **superseded** — replaced. Frozen. Set `superseded-by:` to the new RFC.
+
+An accepted RFC may move directly to implemented when it ships without a
+separate planning phase. A deferred RFC may return to proposed, accepted, or
+planned when its revisit condition is met; changing the status and appending a
+dated note makes that revival explicit.
 
 ## Freeze + supersede, don't rewrite
 
