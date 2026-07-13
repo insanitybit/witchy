@@ -20,6 +20,23 @@ fn test_classify():
     testing.assert_eq(classify(5), "positive")
     testing.assert_eq(classify(0), "zero")
     testing.assert(classify(0 - 3) == "negative", "negatives classify as negative")
+
+trait Gateway:
+    fn charge(self, cents: Int) -> String
+
+type FakeGateway:
+    canned: String
+
+impl Gateway for FakeGateway:
+    fn charge(self, cents: Int) -> String:
+        self.canned
+
+fn checkout(gateway: g, cents: Int) -> String where g: Gateway:
+    gateway.charge(cents)
+
+fn test_checkout_uses_the_gateway_result():
+    let fake = FakeGateway(canned: "FAKE-OK")
+    testing.assert_eq(checkout(fake, 500), "FAKE-OK")
 ```
 
 Run them:
@@ -40,18 +57,45 @@ Point `witchy test` at a directory and it runs every `test_*` across all the
 `.witchy` files; a failure makes the command exit non-zero, so it drops straight
 into CI.
 
-## Tests are capability-free
+## Plain tests have no real authority
 
 Look at those test functions: none take a capability. That's not a restriction
-the runner imposes arbitrarily — it's the natural consequence of the model. A
-test exercises *logic*, and in witchy the logic worth testing is the pure core,
-which needs no authority. A test suite therefore **provably has no effects**: it
-can't accidentally hit the network, write a file, or depend on the clock. You
-can run anyone's witchy tests without wondering what they'll touch.
+the runner imposes arbitrarily: plain `witchy test` instantiates the compiled
+test artifact with zero real host grants. A test therefore cannot accidentally
+hit the network, write a file, inspect the environment, or depend on the real
+clock. Effectful production functions may live beside the tests, but the runner
+does not grant them authority merely because they were linked into a test.
 
 This is the payoff of the structure the project chapter pushed: when you keep
 effects at the edges, the middle — the part you test — is pure, and testing it is
 trivial and safe.
+
+## Testing with collaborators
+
+Code that talks to a service should depend on the behavior it needs, then accept
+that collaborator as a parameter. A test supplies an ordinary type with a fake
+implementation of the same trait. The `Gateway` and `FakeGateway` definitions
+in the example above show the complete pattern: production code accepts the
+trait-bounded value, while the test chooses the concrete fake and its canned
+result.
+
+Function parameters work the same way when a one-method trait would add no
+clarity. The important part is the explicit injection seam: Witchy does not
+monkeypatch or intercept a statically bound top-level function for tests. The
+test and production program exercise the same dispatch rules.
+
+## Constructing sealed domain data
+
+The entry module run by `witchy test` may directly construct a foreign sealed
+*data* type. This lets a test create malformed or boundary-case values that the
+type's production constructors intentionally prevent. Production commands
+remain strict, and imported dependency modules do not inherit this privilege.
+
+This relaxation does not manufacture authority. Sealed capabilities such as
+`Dir`, `Net`, and `Clock` still cannot be constructed by a test, and plain tests
+still receive zero real host grants. Capability-shaped in-memory fakes require
+explicit mock backends; until those exist, inject a trait or function around the
+effectful edge and test the logic behind it.
 
 ## The assertions
 
