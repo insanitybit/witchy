@@ -23,11 +23,12 @@ everything else is module-private.
 
 Method-call syntax, `value.method(args)`, is the idiomatic way to call the
 standard data libraries — `xs.map(f)`, `d.insert(k, v)`, `s.to_upper()` — and it
-chains left-to-right: `dict.new().insert("a", 1).insert("b", 2)`. For a built-in
-type this is sugar: `value.method(args)` resolves to `module.method(value, args)`,
-so `xs.map(f)` *is* `list.map(xs, f)`. The module-qualified form always works too,
-and is the only form when a helper lives in a module other than the receiver's
-type — `json.stringify(x)`, `math.to_float(n)`. The same dot syntax also calls
+chains left-to-right: `dict.new().insert("a", 1).insert("b", 2)`. For standard
+data types, the module-qualified form remains available too: it is either the
+same receiver-first module function (`dict.insert(d, k, v)`) or a compiler alias
+to the method implementation (`list.map(xs, f)`). Module qualification is also
+the only form when a helper lives in a module other than the receiver's type —
+`json.stringify(x)`, `math.to_float(n)`. The same dot syntax also calls
 **methods** you declare in an `impl` block with a `self` parameter — which we'll
 meet properly in the types chapter; the shape looks like this:
 

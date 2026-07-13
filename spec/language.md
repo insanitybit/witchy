@@ -329,7 +329,7 @@ Everything is an expression; a block's value is its final expression.
 | `& \| ^ ~ << >>` | bitwise on `Int` (shifts mask the count to 6 bits) |
 | `xs[i]`, `d[k]` | strict indexing, sugar for `list.at(xs, i)` / `dict.at(d, k)`; out of bounds or missing-key reads are runtime errors on every backend |
 | `lo..hi` | a half-open range (for-loop iteration; never materialized) |
-| `x.f(args)` | a method call: an `impl`/trait method on `x`, **or** the stdlib UFCS form `module.f(x, args)` for a built-in type (so `xs.map(f)` *is* `list.map(xs, f)`) |
+| `x.f(args)` | a method call: an `impl`/trait method on `x`; standard data modules also preserve equivalent module-qualified calls or compiler aliases such as `list.map(xs, f)` |
 | `e?` | unwrap `Ok`/`Some` or return the `Err`/`None` from the enclosing function |
 | `e? "msg"` | like `e?` with context: a `Result` `Err` gets `"msg: "` prepended; an `Option` `None` becomes `Err("msg")` |
 | `cap as Dir[Read]` | capability narrowing (drop rights; never widen) |
@@ -1107,7 +1107,9 @@ interpolation is the rendering.) For other modules,
 `import name` brings the module in under its name; **function** calls are
 module-qualified (`list.map(xs, f)`) — or, for a built-in type's own operations,
 the equivalent method form (`xs.map(f)`, see §4), which is the idiom for the data
-libraries. A module's `pub` **types and their constructors** are module-scoped
+libraries. Some std operations are real `impl` methods with compiler-provided
+module aliases; others remain receiver-first module functions. A module's `pub`
+**types and their constructors** are module-scoped
 the same way: after `import json` you name them qualified (`json.Json`,
 `json.JsonInt(1)`, `json.JsonObject([...])`). To use a type and its constructors
 *unqualified*, name it explicitly with `from json import Json` — a from-imported

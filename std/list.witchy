@@ -35,14 +35,22 @@ pub fn push(var xs: List(a), x: a) -> List(a):
 pub fn concat(var xs: List(a), ys: List(a)) -> List(a):
     list.concat(xs, ys)
 
-// Real methods mirror the primary mutator surface while the module functions
-// remain as stable, first-class values.
+// Real methods are the primary receiver surface. Legacy module functions remain
+// where their source bodies still live; selected names such as `map` are
+// compiler aliases to the method implementation.
 impl List(a):
     pub fn push(var self, x: a) -> List(a):
         list.push(self, x)
 
     pub fn concat(var self, ys: List(a)) -> List(a):
         list.concat(self, ys)
+
+    // Apply `f` to every element, collecting the results.
+    pub fn map(self, f: fn(a) -> b) -> List(b):
+        var out = []
+        for x in self:
+            out = list.push(out, f(x))
+        out
 
     pub fn reverse(var self) -> List(a):
         list.reverse(self)
@@ -116,13 +124,6 @@ pub fn range_step(start: Int, stop: Int, step: Int) -> List(Int):
             if i < 0 - 9223372036854775807 - 1 - step:
                 break
             i = i + step
-    out
-
-// Apply `f` to every element, collecting the results.
-pub fn map(xs: List(a), f: fn(a) -> b) -> List(b):
-    var out = []
-    for x in xs:
-        out = list.push(out, f(x))
     out
 
 // Keep only the elements for which `keep` returns true.

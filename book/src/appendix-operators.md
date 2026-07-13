@@ -18,7 +18,7 @@ has the precise semantics; this is the cheat sheet.
 | `xs[i]`, `d[k]` | strict indexing (sugar for `list.at(xs, i)` / `dict.at(d, k)`); out of bounds or missing-key reads error |
 | `xs[i] = v`, `d[k] = v`, `x.f = v` | assign to a place — sugar for a value update (`set_at` / record spread); the binding must be `var`. Compound `+=` etc. work |
 | `lo..hi` | half-open range, for iteration only |
-| `x.f(a)` | a method call: an `impl`/trait method, **or** the stdlib UFCS form `module.f(x, a)` (`xs.map(f)` == `list.map(xs, f)`) |
+| `x.f(a)` | a method call: an `impl`/trait method; standard data modules also keep equivalent module-qualified calls or compiler aliases such as `list.map(xs, f)` |
 | `${expr}` | string interpolation — renders *any* value into the string |
 | `e?` | unwrap `Ok`/`Some`, or early-return the `Err`/`None` |
 | `cap as T` | capability narrowing (drop rights; never widen) |

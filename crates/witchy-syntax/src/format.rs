@@ -64,6 +64,26 @@ impl Comments<'_> {
         }
     }
 
+    /// Flush comments at or above a header's indentation before the header is
+    /// printed. Deeper comments stay queued for the body printer.
+    fn before_header(&mut self, s: &mut String, depth: usize, header_col: u32, line: u32) {
+        let mut prev: Option<u32> = None;
+        while self.cursor < self.list.len() {
+            let (cl, cc, _) = &self.list[self.cursor];
+            if *cl >= line || *cc > header_col {
+                break;
+            }
+            if prev.is_some_and(|p| cl - p > 1) {
+                s.push('\n');
+            }
+            pad(s, depth);
+            s.push_str(&self.list[self.cursor].2);
+            s.push('\n');
+            prev = Some(*cl);
+            self.cursor += 1;
+        }
+    }
+
     fn remaining(&self) -> bool {
         self.cursor < self.list.len()
     }
@@ -517,6 +537,8 @@ fn trait_def(s: &mut String, t: &TraitDef, c: &mut Comments, upper: u32) {
 }
 
 fn impl_def(s: &mut String, im: &ImplDef, c: &mut Comments, upper: u32) {
+    const METHOD_HEADER_COL: u32 = 5;
+
     s.push_str("impl ");
     if let Some(t) = &im.trait_name {
         s.push_str(t);
@@ -565,6 +587,8 @@ fn impl_def(s: &mut String, im: &ImplDef, c: &mut Comments, upper: u32) {
         if i > 0 {
             s.push('\n');
         }
+        let first_body_line = m.body.lines.first().copied().unwrap_or(upper);
+        c.before_header(s, 1, METHOD_HEADER_COL, first_body_line);
         function(s, m, true, c, upper);
     }
 }

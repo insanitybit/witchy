@@ -444,3 +444,10 @@ their primary combinator and conversion surfaces (`map`, `map_or`,
 functions remain the stable function-value surface, but fallible/control-flow
 code no longer has to switch idioms when it moves from a user type method
 chain to `Option` or `Result`.
+
+Follow-up progress (2026-07-13): `List.map` is the first std operation whose
+implementation body moved fully into an inherent method. The source-level
+`fn list.map(xs, f)` wrapper is gone; `list.map(xs, f)` and value-position
+`list.map` are linker/compiler aliases to the generated method implementation
+symbol (`List__map`). This keeps old module-qualified and function-value code
+working while avoiding a duplicated std wrapper that calls out to the method.

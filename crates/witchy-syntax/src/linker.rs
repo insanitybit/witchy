@@ -102,7 +102,7 @@ type FnTable = HashMap<String, HashMap<String, EtaSig>>;
 type BareFnImports = HashMap<String, HashMap<String, String>>;
 
 /// The per-function facts eta-expansion consumes (RFC-0050 Part 2).
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct EtaSig {
     /// Number of declared parameters — the arity of the eta-expanded lambda.
     /// Includes RFC-0056 defaulted parameters: a function *value* ignores
@@ -115,6 +115,15 @@ struct EtaSig {
     /// Part of this module's public API. Same-module calls may use private
     /// helpers; imported or module-qualified cross-module calls may not.
     public: bool,
+    /// A compiler-provided module-function alias for an inherent method declared
+    /// in this module. `list.map(xs, f)` and `list.map` as a value target the
+    /// generated method implementation; the method body stays the single
+    /// implementation.
+    method_alias: bool,
+    /// The generated method implementation this alias targets, e.g. `List__map`.
+    /// It is appended by trait/impl lowering, so linker output may reference it
+    /// before it exists in the item list.
+    alias_target: Option<String>,
 }
 
 /// The source of a bundled standard-library module, if `name` is one. This is
@@ -657,8 +666,32 @@ pub fn link_with_user_modules_with_mode(
                         arity: f.params.len(),
                         is_var_procedure: f.is_var_procedure(),
                         public: f.public,
+                        method_alias: false,
+                        alias_target: None,
                     },
                 );
+            }
+        }
+        for item in &m.items {
+            let Item::Impl(im) = item else { continue };
+            if im.trait_name.is_some() {
+                continue;
+            }
+            for method in &im.methods {
+                let is_instance_method =
+                    method.params.first().is_some_and(|p| p.name == "self");
+                if method.public && is_instance_method && !names.contains_key(&method.name) {
+                    names.insert(
+                        method.name.clone(),
+                        EtaSig {
+                            arity: method.params.len(),
+                            is_var_procedure: method.is_var_procedure(),
+                            public: true,
+                            method_alias: true,
+                            alias_target: Some(inherent_method_symbol(im, &method.name)),
+                        },
+                    );
+                }
             }
         }
         fns.insert(name.clone(), names);
@@ -1311,7 +1344,17 @@ fn rewrite_expr(
                     return Ok(());
                 }
             }
-            *name = resolve_call(name, m, imps, bare_imports, fns, bound, access)?;
+            let resolved = resolve_call(name, m, imps, bare_imports, fns, bound, access)?;
+            if let Some(sig) = fn_sig(fns, &resolved).filter(|sig| sig.method_alias) {
+                *name = sig
+                    .alias_target
+                    .expect("method aliases carry the generated implementation name");
+                for a in args {
+                    rewrite_expr(a, m, imps, bare_imports, fns, bound, access)?;
+                }
+                return Ok(());
+            }
+            *name = resolved;
             for a in args {
                 rewrite_expr(a, m, imps, bare_imports, fns, bound, access)?;
             }
@@ -1320,7 +1363,15 @@ fn rewrite_expr(
         // call so `keyword_args::resolve` can look up its declaration, and rewrite
         // the argument values. The labels ride along untouched until then.
         Expr::LabeledCall { name, args } => {
-            *name = resolve_call(name, m, imps, bare_imports, fns, bound, access)?;
+            let resolved = resolve_call(name, m, imps, bare_imports, fns, bound, access)?;
+            if fn_sig(fns, &resolved).is_some_and(|sig| sig.method_alias) {
+                return lerr(format!(
+                    "`{resolved}` is a method alias; call it as `receiver.{}(...)` \
+                     or use the positional module form",
+                    resolved.rsplit_once('.').map_or(resolved.as_str(), |(_, name)| name)
+                ));
+            }
+            *name = resolved;
             for (_, a) in args {
                 rewrite_expr(a, m, imps, bare_imports, fns, bound, access)?;
             }
@@ -1382,7 +1433,7 @@ fn rewrite_expr(
                 let sig = fns
                     .get(&modname)
                     .and_then(|s| s.get(&field))
-                    .copied()
+                    .cloned()
                     .expect("resolve_call accepted the reference, so the function exists");
                 // A Nil-returning `var`-procedure has no value form: eta-expanding
                 // it would bind a `let` lambda parameter where a `var` is demanded
@@ -1397,7 +1448,7 @@ fn rewrite_expr(
                          or wrap it in your own `fn(var x): {modname}.{field}(x)`."
                     ));
                 }
-                *e = eta_lambda(&qualified, sig.arity);
+                *e = eta_lambda(&qualified, sig);
                 return Ok(());
             }
             // (BUG-303) A value-position `iter.count` whose base is a KNOWN std
@@ -1502,7 +1553,8 @@ fn is_prelude_module(name: &str) -> bool {
 /// single linked AST before either backend lowers: parity by construction. The
 /// arity is the callee's FULL declared parameter count; RFC-0056 defaults never
 /// attach to a function value, so every positional argument is present.
-fn eta_lambda(qualified: &str, arity: usize) -> Expr {
+fn eta_lambda(qualified: &str, sig: EtaSig) -> Expr {
+    let arity = sig.arity;
     let names: Vec<String> = (0..arity).map(|i| format!("__eta{i}")).collect();
     let params = names
         .iter()
@@ -1514,12 +1566,30 @@ fn eta_lambda(qualified: &str, arity: usize) -> Expr {
         })
         .collect();
     let args = names.into_iter().map(Expr::Var).collect();
-    let call = Expr::Call { name: qualified.to_string(), args };
+    let call = if sig.method_alias {
+        Expr::Call {
+            name: sig
+                .alias_target
+                .expect("method aliases carry the generated implementation name"),
+            args,
+        }
+    } else {
+        Expr::Call { name: qualified.to_string(), args }
+    };
     Expr::Lambda {
         params,
         body: Block { stmts: vec![Stmt::Expr(call)], lines: vec![0], region: None },
         ret: None,
     }
+}
+
+fn fn_sig(fns: &FnTable, qualified: &str) -> Option<EtaSig> {
+    let (modname, fname) = qualified.split_once('.')?;
+    fns.get(modname).and_then(|s| s.get(fname)).cloned()
+}
+
+fn inherent_method_symbol(im: &ImplDef, method: &str) -> String {
+    format!("{}__{method}", im.type_name)
 }
 
 // ---------------------------------------------------------------------------

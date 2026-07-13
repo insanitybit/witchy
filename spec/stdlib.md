@@ -1859,10 +1859,6 @@ The half-open span `lo..hi`: [lo, lo+1, ..., hi-1], empty when `lo >= hi`.
 
 The span from `start` toward `stop` (exclusive) advancing by `step`. A positive `step` counts up while below `stop`, a negative `step` counts down while above `stop`, and a zero `step` yields [] rather than looping forever.
 
-#### `fn map(xs: List(a), f: fn(a) -> b) -> List(b)`
-
-Apply `f` to every element, collecting the results.
-
 #### `fn filter(xs: List(a), keep: fn(a) -> Bool) -> List(a)`
 
 Keep only the elements for which `keep` returns true.
@@ -2086,6 +2082,10 @@ A new list with `x` appended (lists are values; the original is unchanged).
 #### `List.concat(ys: List(a)) -> List(a)`
 
 A new list that is `xs` followed by `ys`.
+
+#### `List.map(f: fn(a) -> b) -> List(b)`
+
+Apply `f` to every element, collecting the results.
 
 #### `List.reverse() -> List(a)`
 

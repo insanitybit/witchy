@@ -320,6 +320,18 @@
     }
 
     #[test]
+    fn preserves_impl_method_doc_comments() {
+        // Method doc comments sit at the method header's indentation. They must
+        // not be pulled into the previous or current method body.
+        let src = "impl List(a):\n    // Maps elements.\n    pub fn map(self, f: fn(a) -> b) -> List(b):\n        var out = []\n        out\n\n    // Counts elements.\n    pub fn count(self) -> Int:\n        0\n";
+        let out = reformat(src).expect("round-trips");
+        assert!(out.contains("    // Maps elements.\n    pub fn map"), "{out}");
+        assert!(out.contains("    // Counts elements.\n    pub fn count"), "{out}");
+        assert!(!out.contains("pub fn map(self, f: fn(a) -> b) -> List(b):\n        // Maps elements."), "{out}");
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
+    }
+
+    #[test]
     fn preserves_trailing_and_inline_comments() {
         // BUG-331: trailing line comments and inline block comments used to be
         // silently deleted because the formatter only re-emits own-line comments.

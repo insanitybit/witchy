@@ -620,6 +620,14 @@ mod tests {
         assert_eq!(md.matches("Trim whitespace.").count(), 2, "shared docs: {md}");
     }
 
+    #[test]
+    fn renders_inherent_method_doc_comments() {
+        let src = "impl List(a):\n    // Transform every element.\n    pub fn map(self, f: fn(a) -> b) -> List(b):\n        []\n";
+        let md = render("list", src).unwrap();
+        assert!(md.contains("#### `List.map(f: fn(a) -> b) -> List(b)`"), "method: {md}");
+        assert!(md.contains("Transform every element."), "method doc: {md}");
+    }
+
     // BUG-073: public traits (name, type params, supertraits, methods) render.
     #[test]
     fn renders_traits() {

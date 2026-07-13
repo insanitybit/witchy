@@ -4485,7 +4485,7 @@ fn main(console: Console):
 
     /// (RFC-0032) `vm.par_map` over `Bytes`: binary payloads cross to worker VMs by a
     /// RAW (non-lossy) byte copy. Maps a top-level fn over a list of Bytes in parallel;
-    /// both backends agree (the interp oracle runs the sequential `list.map` body).
+    /// both backends agree (the interp oracle runs the sequential `List.map` body).
     #[test]
     fn vm_par_map_bytes_backends_agree() {
         let src = "import vm\nimport bytes\n\nfn tag(b: Bytes) -> Bytes:\n    bytes.concat(b, bytes.from_string(\"!\"))\n\nfn main(console: Console):\n    let xs = [bytes.from_string(\"a\"), bytes.from_string(\"bb\"), bytes.from_string(\"ccc\")]\n    let ys = vm.par_map(xs, tag)\n    console.print(bytes.to_string(list.at(ys, 0)))\n    console.print(bytes.to_string(list.at(ys, 2)))\n    console.print(\"${bytes.length(list.at(ys, 1))}\")\n";
@@ -4497,7 +4497,7 @@ fn main(console: Console):
     /// (RFC-0032) `vm.par_map` stays correct when the native worker-VM fast path does
     /// NOT apply — a CAPTURING closure (here `fn(n): n + base`) would be unsound to run
     /// with a null environment in a separate worker VM, so the compiled backend must
-    /// fall through to the sequential `list.map` body. Both backends must still agree.
+    /// fall through to the sequential `List.map` body. Both backends must still agree.
     #[test]
     fn vm_par_map_capturing_closure_agrees() {
         let src = "import vm\n\nfn main(console: Console):\n    let base = 100\n    let ys = vm.par_map([1, 2, 3], fn(n): n + base)\n    console.print(\"${ys}\")\n";
@@ -20417,6 +20417,32 @@ fn main(console: Console):
     }
 
     #[test]
+    fn module_function_alias_to_method_body_backends_agree() {
+        // RFC-0050 follow-up: `list.map` is no longer a source-level function
+        // whose body owns the implementation. `impl List(a).map` owns it, while
+        // `list.map(xs, f)` and `list.map` as a value are compiler aliases to the
+        // generated method implementation. That keeps function-value compatibility
+        // without hand-written forwarding wrappers.
+        let client = r#"
+import list
+
+fn inc(n: Int) -> Int:
+    n + 1
+
+fn main(console: Console):
+    console.print("${list.map([1, 2], inc)}")
+    console.print("${[3, 4].map(inc)}")
+    let f = list.map
+    console.print("${f([5, 6], inc)}")
+"#;
+        let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, compiled, "module-method alias diverged");
+        assert_eq!(compiled, vec!["[2, 3]", "[4, 5]", "[6, 7]"]);
+    }
+
+    #[test]
     fn module_function_fold_and_generic_mutator_eta_backends_agree() {
         // (RFC-0050 Part 2) A 2-arity module function as a `fold` reducer, both a
         // concrete one (`math.max`) and a GENERIC RFC-0043 mutator (`list.concat`,
@@ -20637,11 +20663,11 @@ fn main(console: Console):
         let wir = codegen::assemble_wir_module(&linked)
             .expect("assemble")
             .expect("the binary path lowers this program");
-        // The binary path monomorphizes generics, so `list.map` appears as
-        // `list.map__Int__Int`; match on the `list.<fn>` prefix.
+        // The binary path monomorphizes generics, so the method implementation
+        // appears as `List__map__Int__Int`; match on the generated-method prefix.
         let names: Vec<&str> = wir.funcs.iter().map(|f| f.name.as_str()).collect();
         let has = |fn_name: &str| names.iter().any(|n| *n == fn_name || n.starts_with(&format!("{fn_name}__")));
-        assert!(has("list.map"), "map should be compiled: {names:?}");
+        assert!(has("List__map"), "map should be compiled: {names:?}");
         assert!(has("list.sum"), "sum should be compiled: {names:?}");
         assert!(!has("list.partition"), "partition should be eliminated: {names:?}");
         assert!(!has("list.windows"), "windows should be eliminated: {names:?}");
