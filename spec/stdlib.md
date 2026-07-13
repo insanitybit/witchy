@@ -2196,6 +2196,60 @@ Combine two options into an option of a pair: `Some((x, y))` only when both are 
 
 Collect a list of Options into an Option of the list: `Some` of every value in order, or `None` if any element is `None`.
 
+#### `Option.is_some() -> Bool`
+
+#### `Option.is_none() -> Bool`
+
+True if the option holds no value.
+
+#### `Option.unwrap_or(default: a) -> a`
+
+The Some value, or `default` if it's None.
+
+#### `Option.unwrap_or_else(f: fn() -> a) -> a`
+
+The Some value, or the result of calling `f` (a lazily-computed default).
+
+#### `Option.map(f: fn(a) -> b) -> Option(b)`
+
+Transform the Some value, leaving None untouched.
+
+#### `Option.map_or(default: b, f: fn(a) -> b) -> b`
+
+Apply `f` to the Some value, or return `default` for None — `map` then `unwrap_or` in one step.
+
+#### `Option.and_then(f: fn(a) -> Option(b)) -> Option(b)`
+
+Chain a fallible step: apply `f` (which itself yields an Option) to the Some value, or short-circuit on None.
+
+#### `Option.filter(keep: fn(a) -> Bool) -> Option(a)`
+
+Keep the Some value only if it satisfies `keep`; otherwise None.
+
+#### `Option.or(alt: Option(a)) -> Option(a)`
+
+The option if it is Some, otherwise the `alt` option.
+
+#### `Option.or_else(f: fn() -> Option(a)) -> Option(a)`
+
+The option if it is Some, otherwise the option produced by `f` (lazy).
+
+#### `Option.ok_or(err: e) -> Result(a, e)`
+
+Turn an Option into a Result: `Some(v)` becomes `Ok(v)`, `None` becomes `Err(err)` — the inverse of `result.ok`.
+
+#### `Option.ok_or_else(f: fn() -> e) -> Result(a, e)`
+
+Like `ok_or`, but the error for `None` is produced lazily by `f`.
+
+#### `Option.zip(other: Option(b)) -> Option((a, b))`
+
+Combine two options into an option of a pair: `Some((x, y))` only when both are `Some`, otherwise `None`.
+
+#### `Option.flatten() -> Option(a)`
+
+Collapse one layer of nesting: `Some(Some(v))` becomes `Some(v)`, and both `Some(None)` and `None` become `None`.
+
 ## `path`
 
 path — pure manipulation of '/'-separated path strings.
@@ -2472,6 +2526,60 @@ Collect a list of Results into a Result of the list: `Ok` of every value in orde
 #### `fn partition(xs: List(Result(a, e))) -> (List(a), List(e))`
 
 Split a list of Results into the Ok values and the Err values, each in order — for batch work that reports every failure, not just the first.
+
+#### `Result.is_ok() -> Bool`
+
+#### `Result.is_err() -> Bool`
+
+True if the result is an Err.
+
+#### `Result.unwrap_or(default: a) -> a`
+
+The Ok value, or `default` if it's an Err.
+
+#### `Result.unwrap_or_else(f: fn() -> a) -> a`
+
+The Ok value, or the result of calling `f` (a lazily-computed default).
+
+#### `Result.unwrap_err_or(default: e) -> e`
+
+The Err value, or `default` if it's Ok. This is the error-side counterpart of `unwrap_or`: it is a defaulting helper, not a strict assertion that `r` is Err.
+
+#### `Result.map_ok(f: fn(a) -> b) -> Result(b, e)`
+
+Transform the Ok value, leaving an Err untouched.
+
+#### `Result.map_err(f: fn(e) -> g) -> Result(a, g)`
+
+Transform the Err value, leaving an Ok untouched.
+
+#### `Result.map_or(default: b, f: fn(a) -> b) -> b`
+
+Apply `f` to the Ok value, or return `default` for an Err — `map_ok` then `unwrap_or` in one step.
+
+#### `Result.and_then(f: fn(a) -> Result(b, e)) -> Result(b, e)`
+
+Chain a fallible step: apply `f` (which itself yields a Result) to the Ok value, or propagate the Err unchanged.
+
+#### `Result.or(alt: Result(a, e)) -> Result(a, e)`
+
+The result if it is Ok, otherwise the `alt` result.
+
+#### `Result.or_else(f: fn(e) -> Result(a, e)) -> Result(a, e)`
+
+The result if it is Ok, otherwise the result produced by applying `f` to the error — a lazy, error-aware recovery step.
+
+#### `Result.ok() -> Option(a)`
+
+The Ok value as `Some`, or `None` for an Err — discards the error, turning a Result into an Option.
+
+#### `Result.err() -> Option(e)`
+
+The Err value as `Some`, or `None` for an Ok.
+
+#### `Result.flatten() -> Result(a, e)`
+
+Collapse one layer of nesting: `Ok(Ok(v))` becomes `Ok(v)`; `Ok(Err(e))` and `Err(e)` become `Err(e)`. The Result counterpart of `option.flatten`.
 
 ## `rights`
 

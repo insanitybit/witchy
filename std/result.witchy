@@ -99,6 +99,52 @@ pub fn err(r: Result(a, e)) -> Option(e):
         Ok(_) -> None
         Err(x) -> Some(x)
 
+// Real methods mirror the primary Result helper surface while the module
+// functions remain as stable, first-class values.
+impl Result(a, e):
+    pub fn is_ok(self) -> Bool:
+        result.is_ok(self)
+
+    pub fn is_err(self) -> Bool:
+        result.is_err(self)
+
+    pub fn unwrap_or(self, default: a) -> a:
+        result.unwrap_or(self, default)
+
+    pub fn unwrap_or_else(self, f: fn() -> a) -> a:
+        result.unwrap_or_else(self, f)
+
+    pub fn unwrap_err_or(self, default: e) -> e:
+        result.unwrap_err_or(self, default)
+
+    pub fn map_ok(self, f: fn(a) -> b) -> Result(b, e):
+        result.map_ok(self, f)
+
+    pub fn map_err(self, f: fn(e) -> g) -> Result(a, g):
+        result.map_err(self, f)
+
+    pub fn map_or(self, default: b, f: fn(a) -> b) -> b:
+        result.map_or(self, default, f)
+
+    pub fn and_then(self, f: fn(a) -> Result(b, e)) -> Result(b, e):
+        result.and_then(self, f)
+
+    pub fn or(self, alt: Result(a, e)) -> Result(a, e):
+        result.or(self, alt)
+
+    pub fn or_else(self, f: fn(e) -> Result(a, e)) -> Result(a, e):
+        result.or_else(self, f)
+
+    pub fn ok(self) -> Option(a):
+        result.ok(self)
+
+    pub fn err(self) -> Option(e):
+        result.err(self)
+
+impl Result(Result(a, e), e):
+    pub fn flatten(self) -> Result(a, e):
+        result.flatten(self)
+
 // Collect a list of Results into a Result of the list: `Ok` of every value in
 // order, or the first `Err` encountered (the "sequence" of fallible steps).
 pub fn all(xs: List(Result(a, e))) -> Result(List(a), e):

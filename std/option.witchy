@@ -101,6 +101,52 @@ pub fn zip(oa: Option(a), ob: Option(b)) -> Option((a, b)):
                 None -> None
         None -> None
 
+// Real methods mirror the primary Option helper surface while the module
+// functions remain as stable, first-class values.
+impl Option(a):
+    pub fn is_some(self) -> Bool:
+        option.is_some(self)
+
+    pub fn is_none(self) -> Bool:
+        option.is_none(self)
+
+    pub fn unwrap_or(self, default: a) -> a:
+        option.unwrap_or(self, default)
+
+    pub fn unwrap_or_else(self, f: fn() -> a) -> a:
+        option.unwrap_or_else(self, f)
+
+    pub fn map(self, f: fn(a) -> b) -> Option(b):
+        option.map(self, f)
+
+    pub fn map_or(self, default: b, f: fn(a) -> b) -> b:
+        option.map_or(self, default, f)
+
+    pub fn and_then(self, f: fn(a) -> Option(b)) -> Option(b):
+        option.and_then(self, f)
+
+    pub fn filter(self, keep: fn(a) -> Bool) -> Option(a):
+        option.filter(self, keep)
+
+    pub fn or(self, alt: Option(a)) -> Option(a):
+        option.or(self, alt)
+
+    pub fn or_else(self, f: fn() -> Option(a)) -> Option(a):
+        option.or_else(self, f)
+
+    pub fn ok_or(self, err: e) -> Result(a, e):
+        option.ok_or(self, err)
+
+    pub fn ok_or_else(self, f: fn() -> e) -> Result(a, e):
+        option.ok_or_else(self, f)
+
+    pub fn zip(self, other: Option(b)) -> Option((a, b)):
+        option.zip(self, other)
+
+impl Option(Option(a)):
+    pub fn flatten(self) -> Option(a):
+        option.flatten(self)
+
 // Collect a list of Options into an Option of the list: `Some` of every value in
 // order, or `None` if any element is `None`.
 pub fn all(xs: List(Option(a))) -> Option(List(a)):

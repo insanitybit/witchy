@@ -436,3 +436,11 @@ receiver-first surface (`length`, `at`, `get`, `concat`, `slice`, conversion,
 search, and prefix/suffix checks). The module functions remain as explicit
 module calls and first-class values, but ordinary byte-buffer code can use the
 same receiver syntax as `String`, `List`, `Dict`, and `Set`.
+
+Follow-up progress: `Option` and `Result` now have real inherent methods for
+their primary combinator and conversion surfaces (`map`, `map_or`,
+`and_then`, `filter`, `or`, `or_else`, `ok_or`, `zip`, `flatten`, `map_ok`,
+`map_err`, `ok`, `err`, and the defaulting unwrap helpers). The module
+functions remain the stable function-value surface, but fallible/control-flow
+code no longer has to switch idioms when it moves from a user type method
+chain to `Option` or `Result`.
