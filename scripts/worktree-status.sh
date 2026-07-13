@@ -1,11 +1,23 @@
 #!/usr/bin/env bash
 # One-screen dashboard of every worktree + branch state for concurrent agents:
 # what exists, what's dirty, what's ahead/behind master, what's queued in the
-# merge queue, and what looks abandoned. REPORTS ONLY — suggests cleanup
-# commands, never runs them.
+# merge queue, and what looks abandoned.
 #
-#   ./scripts/worktree-status.sh          # the dashboard
+#   ./scripts/worktree-status.sh            # the dashboard (reports only)
+#   ./scripts/worktree-status.sh --prune    # remove fully-merged CLEAN worktrees
+#   ./scripts/worktree-status.sh --branches # also delete merged local branches
 set -euo pipefail
+
+prune=0
+prune_branches=0
+for arg in "$@"; do
+    case "$arg" in
+        --prune) prune=1 ;;
+        --branches) prune_branches=1 ;;
+        -h|--help) sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "worktree-status: unknown arg '$arg'" >&2; exit 2 ;;
+    esac
+done
 
 here="$(cd "$(dirname "$0")/.." && pwd)"
 root="$(git -C "$here" worktree list --porcelain | head -1 | sed 's/^worktree //')"
@@ -18,6 +30,8 @@ if [ -d "$queue_dir" ]; then
 fi
 is_queued() { [ -n "$queued_branches" ] && echo "$1" | grep -qxE "$queued_branches"; }
 
+removable_count=0
+removable_disk=0
 printf '%s\n' "worktrees (master @ ${master_sha:0:9}):"
 git -C "$root" worktree list --porcelain | awk '/^worktree /{print $2}' | while IFS= read -r wt; do
     branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
@@ -27,16 +41,36 @@ git -C "$root" worktree list --porcelain | awk '/^worktree /{print $2}' | while 
     ahead="$(git -C "$wt" rev-list --count "master..HEAD" 2>/dev/null || echo '?')"
     behind="$(git -C "$wt" rev-list --count "HEAD..master" 2>/dev/null || echo '?')"
     last="$(git -C "$wt" log -1 --format='%h %ar %s' 2>/dev/null | cut -c1-70)"
+    disk=""
+    if [ -d "$wt/target" ]; then
+        disk_mb="$(du -sm "$wt/target" 2>/dev/null | awk '{print $1}')"
+        [ -n "$disk_mb" ] && disk=" [target: ${disk_mb}MB]"
+    fi
     q=""
     is_queued "$branch" && q=" [QUEUED]"
     merged=""
     if [ "$ahead" = "0" ] && [ "$wt" != "$root" ]; then merged=" [fully merged — removable]"; fi
-    printf '  %s\n    branch %s%s%s · %s · +%s/-%s vs master\n    last: %s\n' \
-        "$wt" "$branch" "$q" "$merged" "$dirty" "$ahead" "$behind" "$last"
+    printf '  %s\n    branch %s%s%s · %s · +%s/-%s vs master%s\n    last: %s\n' \
+        "$wt" "$branch" "$q" "$merged" "$dirty" "$ahead" "$behind" "$disk" "$last"
     if [ -n "$merged" ] && [ "$dirty" = "clean" ]; then
         printf '    cleanup: git worktree remove %q\n' "$wt"
     fi
 done
+
+if [ "$prune" -eq 1 ]; then
+    echo
+    echo "pruning fully-merged clean worktrees:"
+    git -C "$root" worktree list --porcelain | awk '/^worktree /{print $2}' | while IFS= read -r wt; do
+        [ "$wt" = "$root" ] && continue
+        branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+        ahead="$(git -C "$wt" rev-list --count "master..HEAD" 2>/dev/null || echo '?')"
+        [ "$ahead" = "0" ] || continue
+        n="$(git -C "$wt" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+        [ "$n" -eq 0 ] || { printf '  SKIP %s (dirty, %s files)\n' "$wt" "$n"; continue; }
+        printf '  REMOVE %s (%s)\n' "$wt" "$branch"
+        git -C "$root" worktree remove "$wt" 2>&1 | sed 's/^/    /'
+    done
+fi
 
 echo
 echo "local branches not checked out anywhere (candidates for deletion if merged):"
@@ -48,6 +82,7 @@ git -C "$root" for-each-ref refs/heads --format='%(refname:short)' | while IFS= 
     is_queued "$b" && q=" [QUEUED]"
     if [ "$ahead" = "0" ]; then
         printf '  %-45s merged%s — cleanup: git branch -d %q\n' "$b" "$q" "$b"
+        [ "$prune_branches" -eq 1 ] && git -C "$root" branch -d "$b" 2>&1 | sed 's/^/    /'
     else
         last="$(git -C "$root" log -1 --format='%ar' "$b")"
         printf '  %-45s %s commits ahead%s (last activity %s)\n' "$b" "$ahead" "$q" "$last"
