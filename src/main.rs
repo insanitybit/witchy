@@ -2875,6 +2875,7 @@ fn run_wasm_module(
     };
     let imports_authority =
         |authority| needs.iter().any(|name| abi_import_uses_authority(name, authority));
+    let dir_grant = imports_authority(Authority::DirGrant);
     let dir_read = imports_authority(Authority::DirRead) || declares_right("Dir", "Read");
     let dir_write = imports_authority(Authority::DirWrite) || declares_right("Dir", "Write");
     let net_connect = imports_authority(Authority::NetConnect) || declares_right("Net", "Connect");
@@ -2911,7 +2912,7 @@ fn run_wasm_module(
     if imports_authority(Authority::Exec) || declares("Exec") {
         caps.exec = true;
     }
-    if dir_read || dir_write || declares("Dir") {
+    if dir_grant || dir_read || dir_write || declares("Dir") {
         let mut roots = dir_roots;
         if roots.is_empty() {
             // Deny by omission (BUG-106): a strict/announced launch (`witchy sandbox

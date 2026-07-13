@@ -14,6 +14,11 @@ use witchy_syntax::{cap_ops, intrinsics};
 impl Codegen<'_> {
     /// The WASM kind a compiled expression evaluates to.
     pub(crate) fn kind_of(&self, e: &Expr) -> Kind {
+        if let Some(t) = self.ast_type_of_expr(e) {
+            if self.kind_for_type(&t) == Kind::ExternRef {
+                return Kind::ExternRef;
+            }
+        }
         match e {
             Expr::Int(_) | Expr::Duration(_) => Kind::I64,
             Expr::Float(_) => Kind::F64,
@@ -126,6 +131,17 @@ impl Codegen<'_> {
             // A closure call `f(x)` returns the universal i64 slot; recover it at
             // the closure's declared return kind (an Int-returning closure as i64).
             Expr::Apply { func, .. } => self.apply_ret_kind(func),
+            Expr::Ctor { name, args }
+                if (name == "Some" && args.len() == 1) || (name == "None" && args.is_empty()) =>
+            {
+                self.ast_type_of_expr(e)
+                    .filter(|t| self.option_externref_inner(t).is_some())
+                    .map(|_| Kind::ExternRef)
+                    .unwrap_or(Kind::I32)
+            }
+            Expr::Ctor { name, .. } if self.transparent_externref_ctors.contains_key(name) => {
+                Kind::ExternRef
+            }
             _ => Kind::I32, // Bool, Str, List, Ctor, Spawn
         }
     }

@@ -849,18 +849,15 @@ fn has_optional_id() -> Option(Bool):
 
     #[test]
     fn file_capability_cannot_cross_i64_slot_boundary() {
-        // (RFC-0005 §4.4/§7) `File` is (to be) an unforgeable `externref` with no
-        // boxed i64-slot representation, so it cannot be wrapped in `Option`/
-        // `Result`/`List`/`Dict` — the containers whose payload crosses the slot.
-        // A bare `File` param/return stays an `externref` and is fine.
+        // (RFC-0005 §4.4/§7) `File` is an unforgeable `externref` with no boxed
+        // i64-slot representation. A bare `File` param/return stays an externref;
+        // `Option(File)` is represented as nullable externref. Slot/heap containers
+        // (`Result`/`List`/`Dict`/records/tuples) remain rejected until GC lowering.
         check_str("fn ok(console: Console, f: File):\n    console.print(\"ok\")\nfn main(console: Console, f: File):\n    ok(console, f)\n")
             .expect("a bare File param/return is a plain externref — allowed");
 
-        // Option(File) — the payload is slot-boxed. (The reject fires on the
-        // signature, so a trivial body suffices.)
-        let err = check_str("fn find(console: Console, o: Option(File)):\n    console.print(\"x\")\n")
-            .expect_err("Option(File) slot-boxes an externref");
-        assert!(err.contains("File") && err.contains("Option"), "got: {err}");
+        check_str("fn find(console: Console, o: Option(File)):\n    console.print(\"x\")\n")
+            .expect("Option(File) is nullable externref — allowed");
 
         // List(File) — the collection stores externref elements (§7).
         let err = check_str("fn collect(console: Console, xs: List(File)):\n    console.print(\"x\")\n")
@@ -920,7 +917,7 @@ fn has_optional_id() -> Option(Bool):
             .expect("Secret is still an i32 handle this stage — Option(Secret) allowed");
 
         check_str("fn maybe_dir(console: Console, out: Option(Dir[Write])):\n    console.print(\"x\")\n")
-            .expect("Dir is still an i32 handle this stage — Option(Dir) allowed");
+            .expect("Dir is externref-backed this stage, so direct nullable Option(Dir) is allowed");
 
         let branded_dir = r#"
 capability ConfigDir from Dir[Read]
@@ -1941,10 +1938,10 @@ type Option(a):
     Some(a)
     None
 
-fn record(out: Option(Dir[Write]), name: String, line: String) -> Bool:
-    match out:
-        Some(d) ->
-            d.append(name, line)
+fn read(maybe: Option(Net[Connect]), addr: String) -> Bool:
+    match maybe:
+        Some(n) ->
+            let _s = n.connect(addr)
             true
         None -> false
 "#;
@@ -1957,6 +1954,44 @@ fn read_socket(maybe: Option(Socket)) -> String:
         None -> ""
 "#;
         check_str(builtin_option_socket).expect("capability methods resolve on builtin Option payloads");
+    }
+
+    #[test]
+    fn migrated_dir_cannot_cross_slot_or_higher_order_boundaries() {
+        let option_dir = r#"
+type Option(a):
+    Some(a)
+    None
+
+fn f(dir: Dir) -> Option(Dir):
+    Some(dir)
+"#;
+        check_str(option_dir).expect("Option(Dir) is represented as nullable externref");
+
+        let result_dir = r#"
+type Result(a, e):
+    Ok(a)
+    Err(e)
+
+fn f(dir: Dir) -> Result(Dir, String):
+    Ok(dir)
+"#;
+        let err = check_str(result_dir).expect_err("Dir is externref-backed and cannot enter Result");
+        assert!(err.contains("Dir") && err.contains("Result"), "got: {err}");
+
+        let higher_order_dir = r#"
+fn consume(f: fn(Dir, Bytes) -> Bytes):
+    0
+
+fn reader(dir: Dir, input: Bytes) -> Bytes:
+    input
+
+fn demo(dir: Dir):
+    consume(reader)
+"#;
+        let err = check_str(higher_order_dir)
+            .expect_err("Dir-bearing function values cannot use the slot-based closure ABI");
+        assert!(err.contains("Dir") && err.contains("function value"), "got: {err}");
     }
 
     #[test]

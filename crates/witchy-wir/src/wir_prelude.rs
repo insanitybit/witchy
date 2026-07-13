@@ -151,7 +151,7 @@ pub const MAX_MK: usize = 8;
 /// A single value type in a prelude signature, mirrored from wasm core valtypes.
 /// Beyond the four numerics, `ExternRef` names the wasm `externref` — the
 /// unforgeable representation a migrated capability import takes (RFC-0005:
-/// `mint_file`/`file_read_len`/`file_write`/`dir_open`/`dir_create`).
+/// `mint_dir`/`dir_*`, `mint_file`/`file_*`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WasmTy {
     I32,
@@ -230,15 +230,15 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "crypto_reveal_len" (func $crypto_reveal_len_host (param i32) (result i32)))
   (import "witchy" "env_len" (func $env_len_host (param i32) (result i32)))
   (import "witchy" "env_fill" (func $env_fill_host (param i32 i32)))
-  (import "witchy" "dir_read_len" (func $dir_read_len_host (param i32 i32) (result i32)))
-  (import "witchy" "dir_list_size" (func $dir_list_size_host (param i32) (result i32)))
+  (import "witchy" "dir_read_len" (func $dir_read_len_host (param externref i32) (result i32)))
+  (import "witchy" "dir_list_size" (func $dir_list_size_host (param externref) (result i32)))
   (import "witchy" "args_size" (func $args_size_host (result i32)))
   (import "witchy" "write_pending_list" (func $write_pending_list_host (param i32)))
   (import "witchy" "vm_par_map_run" (func $vm_par_map_run_host (param i32 i32) (result i32)))
   (import "witchy" "vm_par_map_write" (func $vm_par_map_write_host (param i32)))
   (import "witchy" "vm_par_map_bytes_run" (func $vm_par_map_bytes_run_host (param i32 i32) (result i32)))
   (import "witchy" "vm_par_map_bytes_write" (func $vm_par_map_bytes_write_host (param i32)))
-  (import "witchy" "vm_with_dir_run" (func $vm_with_dir_run_host (param i32 i32 i32) (result i32)))
+  (import "witchy" "vm_with_dir_run" (func $vm_with_dir_run_host (param externref i32 i32) (result i32)))
   (import "witchy" "vm_serve_run" (func $vm_serve_run_host (param i32 i32 i32) (result i32)))
   (import "witchy" "build_read_len" (func $build_read_len_host (param i32 i32) (result i32)))
   (import "witchy" "build_out_write" (func $build_out_write_host (param i32 i32 i32)))
@@ -256,15 +256,16 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "print_int" (func $print_int (param i64)))
   (import "witchy" "print_float" (func $print_float (param f64)))
   (import "witchy" "string_from_code" (func $string_from_code_host (param i64 i32) (result i32)))
-  (import "witchy" "dir_subdir" (func $dir_subdir_host (param i32 i32) (result i32)))
-  (import "witchy" "dir_only" (func $dir_only_host (param i32 i32) (result i32)))
-  (import "witchy" "dir_exists" (func $dir_exists_host (param i32 i32) (result i32)))
-  (import "witchy" "dir_is_dir" (func $dir_is_dir_host (param i32 i32) (result i32)))
-  (import "witchy" "dir_write" (func $dir_write_host (param i32 i32 i32)))
-  (import "witchy" "dir_append" (func $dir_append_host (param i32 i32 i32)))
-  (import "witchy" "dir_make_dir" (func $dir_make_dir_host (param i32 i32)))
-  (import "witchy" "dir_open" (func $dir_open_host (param i32 i32) (result externref)))
-  (import "witchy" "dir_create" (func $dir_create_host (param i32 i32) (result externref)))
+  (import "witchy" "mint_dir" (func $mint_dir_host (param i32) (result externref)))
+  (import "witchy" "dir_subdir" (func $dir_subdir_host (param externref i32) (result externref)))
+  (import "witchy" "dir_only" (func $dir_only_host (param externref i32) (result externref)))
+  (import "witchy" "dir_exists" (func $dir_exists_host (param externref i32) (result i32)))
+  (import "witchy" "dir_is_dir" (func $dir_is_dir_host (param externref i32) (result i32)))
+  (import "witchy" "dir_write" (func $dir_write_host (param externref i32 i32)))
+  (import "witchy" "dir_append" (func $dir_append_host (param externref i32 i32)))
+  (import "witchy" "dir_make_dir" (func $dir_make_dir_host (param externref i32)))
+  (import "witchy" "dir_open" (func $dir_open_host (param externref i32) (result externref)))
+  (import "witchy" "dir_create" (func $dir_create_host (param externref i32) (result externref)))
   (import "witchy" "mint_file" (func $mint_file_host (param i32) (result externref)))
   (import "witchy" "file_read_len" (func $file_read_len_host (param externref) (result i32)))
   (import "witchy" "file_write" (func $file_write_host (param externref i32)))
@@ -290,7 +291,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "crypto.__ecdsa_p256_verify_hex_status" (func $crypto_ecdsa_p256_verify_hex_status (param i32 i32 i32) (result i64)))
   (import "witchy" "crypto.__rsa_pkcs1_sha256_verify_status" (func $crypto_rsa_pkcs1_sha256_verify_status (param i32 i32 i32) (result i64)))
   (import "witchy" "crypto.__ed25519_verify_status" (func $crypto_ed25519_verify_status (param i32 i32 i32) (result i64)))
-  (import "witchy" "exec_run" (func $exec_run_host (param i32 i32 i32 i32) (result i32)))
+  (import "witchy" "exec_run" (func $exec_run_host (param externref i32 i32 i32) (result i32)))
   (import "witchy" "heap_register" (func $heap_register_host (param i32 i32)))
   (import "witchy" "heap_frontier" (func $heap_frontier_host (param i32)))
   (import "witchy" "__witchy_abort" (func $__witchy_abort (param i32 i64 i64 i32)))
@@ -298,7 +299,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 83;
+pub const IMPORT_COUNT: usize = 84;
 
 /// Version of the public `"witchy"` host-import contract.
 pub const WITCHY_ABI_VERSION: u32 = 1;
@@ -334,6 +335,7 @@ impl AbiImportClass {
 pub enum AbiImportAuthority {
     Secret,
     Env,
+    DirGrant,
     DirRead,
     DirWrite,
     FileGrant,
@@ -355,6 +357,7 @@ impl AbiImportAuthority {
         match self {
             Self::Secret => "Secret",
             Self::Env => "Env",
+            Self::DirGrant => "Dir.grant",
             Self::DirRead => "Dir.Read",
             Self::DirWrite => "Dir.Write",
             Self::FileGrant => "File.grant",
@@ -376,6 +379,7 @@ impl AbiImportAuthority {
 const NO_AUTHORITIES: &[AbiImportAuthority] = &[];
 const AUTH_SECRET: &[AbiImportAuthority] = &[AbiImportAuthority::Secret];
 const AUTH_ENV: &[AbiImportAuthority] = &[AbiImportAuthority::Env];
+const AUTH_DIR_GRANT: &[AbiImportAuthority] = &[AbiImportAuthority::DirGrant];
 const AUTH_DIR_READ: &[AbiImportAuthority] = &[AbiImportAuthority::DirRead];
 const AUTH_DIR_WRITE: &[AbiImportAuthority] = &[AbiImportAuthority::DirWrite];
 const AUTH_FILE_GRANT: &[AbiImportAuthority] = &[AbiImportAuthority::FileGrant];
@@ -451,6 +455,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_write"
         | "dir_append"
         | "dir_make_dir"
+        | "mint_dir"
         | "dir_open"
         | "dir_create"
         | "mint_file"
@@ -498,6 +503,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
     let authorities = match name {
         "crypto.sign" | "crypto.public_key" | "secretstore_lookup" | "crypto_reveal_len" => AUTH_SECRET,
         "env_len" | "env_fill" => AUTH_ENV,
+        "mint_dir" => AUTH_DIR_GRANT,
         "dir_read_len"
         | "dir_list_size"
         | "dir_subdir"

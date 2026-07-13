@@ -42,34 +42,38 @@ static and conservative, counting what the code is able to do regardless of
 whether the value is `None` at runtime. Optionality changes the control flow, not
 the authority on paper.
 
-## One of several shapes: a capability enum
+## One of several rights: keep the capability direct
 
-Sometimes the question isn't "do I have it?" but "which form do I have?" — say a
-`Dir[Read]` *or* a read-write `Dir`. That's just a sum type, and it needs no
-special support:
+Sometimes the question isn't "do I have it?" but "which rights do I want to use?"
+Keep the capability direct and branch into functions whose parameter types name
+the authority they need:
 
 ```witchy
-type Access:
-    ReadOnly(Dir[Read])
-    Writable(Dir[Write])
+fn read_only(d: Dir[Read], name: String) -> String:
+    d.read(name)
 
-fn handle(a: Access, name: String) -> String:
-    match a:
-        ReadOnly(d) -> d.read(name)
-        Writable(d) ->
-            d.write(name, "touched")
-            "wrote " + name
+fn touch(d: Dir[Write], name: String) -> String:
+    d.write(name, "touched")
+    "wrote " + name
+
+fn handle(dir: Dir, writable: Bool, name: String) -> String:
+    if writable:
+        touch(dir as Dir[Write], name)
+    else:
+        read_only(dir as Dir[Read], name)
 
 fn main(console: Console, dir: Dir):
-    console.print(handle(ReadOnly(dir as Dir[Read]), "notes.txt"))
-    console.print(handle(Writable(dir as Dir[Write]), "out.txt"))
+    console.print(handle(dir, false, "notes.txt"))
+    console.print(handle(dir, true, "out.txt"))
 ```
 
-`handle` accepts either variant and does the right thing for each. And again the
-footprint tells the truth — `witchy caps` reports `handle` as needing `Dir`
-(read **and** write), the *union* of what the variants permit, because a caller
-could hand it either one. The auditor sees straight through your enum, exactly as
-it sees through `Option` and through [branded capabilities](capabilities-narrowing.md).
+`handle` can read or write, so its footprint is the union: `Dir`. The narrower
+helpers still report only what they use (`Dir[Read]` and `Dir[Write]`).
+
+Capability-carrying records, enum variants, and closure environments are
+intentionally rejected until the GC-struct aggregate lowering is complete. That
+keeps compiled capabilities as unforgeable references instead of silently boxing
+them into ordinary heap slots.
 
 ## At the entry point
 

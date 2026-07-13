@@ -406,7 +406,7 @@ fn collect_clos_arities(seq: &WirSeq, out: &mut Vec<usize>) {
                     walk_expr(a, out);
                 }
             }
-            WirExpr::StructGet { base, .. } => walk_expr(base, out),
+            WirExpr::StructGet { base, .. } | WirExpr::RefIsNull(base) => walk_expr(base, out),
             // Leaves: no nested closure-arity references.
             WirExpr::ConstI64(_)
             | WirExpr::ConstF64(_)
@@ -845,6 +845,10 @@ impl EncodeCtx<'_> {
                     _ => unreachable!("RefNull of a non-reference kind {kind:?}"),
                 };
                 func.instruction(&Instruction::RefNull(heap));
+            }
+            WirExpr::RefIsNull(expr) => {
+                self.encode_expr(func, expr);
+                func.instruction(&Instruction::RefIsNull);
             }
         }
     }

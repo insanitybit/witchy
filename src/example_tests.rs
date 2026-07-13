@@ -278,7 +278,7 @@
 
         // An aggregate that carries a capability is still a heap value; the
         // convention matters for the aggregate even though the bare cap is exempt.
-        let cap_aggregate = "mode opt\n\nfn keep(maybe: Option(Dir)) -> Int:\n    1\n\nfn main(console: Console):\n    console.print(\"${1}\")\n";
+        let cap_aggregate = "mode opt\n\nfn keep(maybe: Option(Secret)) -> Int:\n    1\n\nfn main(console: Console):\n    console.print(\"${1}\")\n";
         let err = crate::enforce_performance_modes(&link_mode(cap_aggregate), "t")
             .expect_err("cap-carrying aggregate still needs an ownership convention");
         assert!(err.contains("ownership convention") && err.contains("maybe"), "{err}");
@@ -3600,29 +3600,40 @@ fn main(console: Console):
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
-    /// (RFC-0032) Capability-passing: `vm.with_dir(dir, f, input)` runs `f` in an isolated
-    /// worker VM granted EXACTLY `dir`. The worker reads a file through the passed `Dir`
-    /// (and could reach nothing else). Output is a deterministic function of the file +
-    /// input, so the interpreter (runs `f` directly) and the compiled backend (isolated
-    /// worker) agree — the isolation is a security property invisible to the result.
+    /// (RFC-0032/RFC-0005) `vm.with_dir(dir, f, input)` is intentionally fail-closed while
+    /// `Dir` is externref-backed but higher-order function values still use the slot-based
+    /// closure ABI. The API remains declared in `std/vm`; using it with a `fn(Dir, ...)`
+    /// value is rejected until the typed cap-closure boundary lands.
     #[test]
-    fn vm_with_dir_capability_passing_agrees() {
-        use crate::runtime::{Capabilities, Runtime};
-        let root = std::env::temp_dir().join(format!("witchy_withdir_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("mkdir");
-        std::fs::write(root.join("ok.txt"), "hello-from-dir").expect("seed");
-        let root_str = root.to_str().expect("utf8 root").to_string();
+    fn vm_with_dir_rejects_slot_based_dir_callback() {
         let src = "import vm\nimport bytes\n\nfn reader(d: Dir, name: Bytes) -> Bytes:\n    bytes.from_string(d.read(bytes.to_string(name)))\n\nfn main(console: Console, dir: Dir):\n    let out = vm.with_dir(dir, reader, bytes.from_string(\"ok.txt\"))\n    console.print(bytes.to_string(out))\n";
-        let want = vec!["hello-from-dir".to_string()];
+        let err = typeck::check(&resolve_std_src(src))
+            .expect_err("Dir-bearing function values cannot cross the current closure ABI");
+        assert!(err.message.contains("Dir") && err.message.contains("function value"), "{}", err.message);
+    }
+
+    /// RFC-0005 Stage 3: a single-field capability brand over `Dir` is transparent
+    /// at runtime, and `Option(ConfigDir)` is a nullable externref rather than a
+    /// heap slot. This preserves the sealed smart-constructor idiom for root caps.
+    #[test]
+    fn branded_dir_option_runs_on_both_backends() {
+        use crate::runtime::{Capabilities, Runtime};
+        let root = std::env::temp_dir().join(format!("witchy_brandeddir_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("data")).expect("mkdir");
+        std::fs::write(root.join("data").join("greeting.txt"), "hello-branded").expect("seed");
+        let root_str = root.to_str().expect("utf8 root").to_string();
+        let src = "capability ConfigDir from Dir[Read]\n\nfn config_dir(root: Dir[Read]) -> Option(ConfigDir):\n    if root.exists(\"data\"):\n        Some(ConfigDir(root.subtree(\"data\")))\n    else:\n        None\n\nfn load(c: ConfigDir, name: String) -> String:\n    match c:\n        ConfigDir(dir) -> dir.read(name)\n\nfn main(console: Console, root: Dir[Read]):\n    match config_dir(root):\n        Some(cfg) -> console.print(load(cfg, \"greeting.txt\"))\n        None -> console.print(\"missing\")\n";
+        let want = vec!["hello-branded".to_string()];
+        let linked = resolve_std_src(src);
         assert_eq!(
-            interpreter::run_module(resolve_std_src(src), &root_str, Vec::new()).expect("interp"),
+            interpreter::run_module(linked.clone(), &root_str, Vec::new()).expect("interp"),
             want,
             "interpreter",
         );
-        let bin = codegen::compile_module_binary(&resolve_std_src(src))
+        let bin = codegen::compile_module_binary(&linked)
             .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect("the binary path lowers branded Dir options");
         let mut rt = Runtime::batch().expect("runtime");
         let caps = Capabilities {
             print: true,

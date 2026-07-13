@@ -163,6 +163,7 @@ fn capability_imports_name_their_authority_family() {
 fn precompiled_runner_authority_rows_are_cataloged() {
     use AbiImportAuthority as A;
 
+    assert_eq!(authorities_for("mint_dir"), vec![A::DirGrant]);
     assert_eq!(authorities_for("dir_open"), vec![A::DirRead]);
     assert_eq!(authorities_for("dir_create"), vec![A::DirWrite]);
     assert_eq!(authorities_for("mint_file"), vec![A::FileGrant]);

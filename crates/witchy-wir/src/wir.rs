@@ -303,6 +303,9 @@ pub enum WirExpr {
     /// (RFC-0005) `ref.null` of a reference kind (`externref` or a concrete GC
     /// struct ref). The null initializer for a not-yet-populated cap slot.
     RefNull(Kind),
+    /// (RFC-0005) `ref.is_null`, used by nullable-externref encodings such as
+    /// `Option(Dir)` while Dir is represented as an externref.
+    RefIsNull(Box<WirExpr>),
 }
 
 /// A statement-level node: executes for effect and/or leaves a typed value.
@@ -938,6 +941,10 @@ fn print_expr(s: &mut String, e: &WirExpr, depth: usize) {
             };
             emit(s, depth, &format!("ref.null {heap}"));
         }
+        WirExpr::RefIsNull(expr) => {
+            print_expr(s, expr, depth);
+            emit(s, depth, "ref.is_null");
+        }
     }
 }
 
@@ -1017,7 +1024,7 @@ fn collect_clos_arities_seq(seq: &WirSeq, out: &mut Vec<usize>) {
                     walk_expr(a, out);
                 }
             }
-            WirExpr::StructGet { base, .. } => walk_expr(base, out),
+            WirExpr::StructGet { base, .. } | WirExpr::RefIsNull(base) => walk_expr(base, out),
             WirExpr::ConstI64(_)
             | WirExpr::ConstF64(_)
             | WirExpr::ConstI32(_)
@@ -1195,7 +1202,7 @@ pub fn heap_write_violations(module: &WirModule) -> Vec<String> {
                     expr_violates(a, hits);
                 }
             }
-            WirExpr::StructGet { base, .. } => expr_violates(base, hits),
+            WirExpr::StructGet { base, .. } | WirExpr::RefIsNull(base) => expr_violates(base, hits),
             WirExpr::ConstI64(_)
             | WirExpr::ConstF64(_)
             | WirExpr::ConstI32(_)

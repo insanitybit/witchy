@@ -80,21 +80,43 @@ fn isolated_worker_apis_accept_bare_top_level_callbacks() {
     let source = r#"
 import vm
 
-fn read_worker(_dir: Dir, input: Bytes) -> Bytes:
-    input
-
 fn service_worker(state: Bytes, _request: Bytes) -> Bytes:
     state
 
-fn invoke(dir: Dir, input: Bytes, requests: List(Bytes)) -> List(Bytes):
-    let first = vm.with_dir(dir, read_worker, input)
-    vm.serve(first, requests, service_worker)
+fn invoke(init: Bytes, requests: List(Bytes)) -> List(Bytes):
+    vm.serve(init, requests, service_worker)
 
 fn main(console: Console):
     console.print("ok")
 "#;
 
     check(source).expect("bare top-level callbacks preserve the worker boundary");
+}
+
+#[test]
+fn vm_with_dir_rejects_top_level_callbacks_until_typed_cap_closure_abi() {
+    let source = r#"
+import vm
+
+fn read_worker(_dir: Dir, input: Bytes) -> Bytes:
+    input
+
+fn invoke(dir: Dir, input: Bytes) -> Bytes:
+    vm.with_dir(dir, read_worker, input)
+
+fn main(console: Console):
+    console.print("ok")
+"#;
+
+    let error = check(source)
+        .expect_err("vm.with_dir still carries Dir through the closure/function ABI");
+    assert!(
+        error.contains("vm.with_dir")
+            && error.contains("Dir")
+            && error.contains("function value")
+            && error.contains("typed closure/GC lowering"),
+        "unexpected diagnostic: {error}"
+    );
 }
 
 #[test]

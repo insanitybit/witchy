@@ -354,9 +354,8 @@ pub struct VmState {
     /// Everything the VM has printed (via the `print`/`print_int`
     /// capabilities), so the host can observe a compiled program's output.
     pub(crate) output: Arc<Mutex<Vec<String>>>,
-    /// The `Dir` capability handle table: index 0 is the granted root, and each
-    /// `subdir` mints a new confined entry. The handle carries base, entry policy,
-    /// and read/write rights host-side; guest code only ever holds the i32 index.
+    /// Root `Dir` grants awaiting wrapper-local `mint_dir(i)`. A live guest `Dir`
+    /// is an externref carrying a cloned `DirHandle`, not this index.
     dirs: Vec<DirHandle>,
     /// Direct `File` grants awaiting wrapper-local `mint_file(i)`. A live guest
     /// `File` is an externref carrying a cloned `FileHandle`, not this index.
@@ -597,10 +596,14 @@ impl Runtime {
         // threads, SIMD, relaxed-SIMD, multiple memories, tail calls, memory64 — so a
         // miscompile or a crafted module can't reach that machinery. We KEEP the
         // proposals we DO emit (bulk memory for `MemoryCopy`/`MemoryFill`, multi-value
-        // for the `*_cap` ABI) at their defaults, and leave reference types / GC on for
-        // the eventual externref capability core (RFC-0005 steps 3–6). Cranelift's
+        // for the `*_cap` ABI) at their defaults, and explicitly keep reference
+        // types / GC on for the externref capability core (RFC-0005 steps 2–6):
+        // nullable cap values emit `ref.null extern`/`ref.is_null`, and the later
+        // cap-carrying aggregate stage emits GC refs. Cranelift's
         // Spectre mitigations (heap + table access) are ON by default and stay on — do
         // NOT set `signals_based_traps(false)`, which would force them off.
+        config.wasm_reference_types(true);
+        config.wasm_gc(true);
         config.wasm_threads(false);
         config.wasm_simd(false);
         config.wasm_relaxed_simd(false);
@@ -747,9 +750,12 @@ pub(crate) fn link_capability_imports(
     }
     // The Dir family is linked per RIGHT, so a module compiled against a
     // write operation cannot even instantiate under a read-only grant.
-    let has_dir = caps.dir_root.is_some();
+    let has_dir = caps.dir_root.is_some() || !caps.dir_roots.is_empty();
     let dir_read = caps.dir_read || caps.dir_rights.iter().any(|r| r.read);
     let dir_write = caps.dir_write || caps.dir_rights.iter().any(|r| r.write);
+    if has_dir {
+        linker.func_wrap("witchy", "mint_dir", host_mint_dir)?;
+    }
     if has_dir && dir_read {
         linker.func_wrap("witchy", "dir_subdir", host_dir_subdir)?;
         linker.func_wrap("witchy", "dir_only", host_dir_only)?;
@@ -1440,63 +1446,55 @@ fn host_env_fill(mut caller: Caller<'_, VmState>, name_ptr: i32, out_ptr: i32) -
 
 // --- the Dir capability family ---
 //
-// A guest `Dir` value is an i32 HANDLE into the VM's host-side path table
-// (`VmState::dirs`); the paths never enter guest memory, so a module cannot
-// forge or widen one. Handle 0 is the granted root. Every operation resolves
-// through the SAME `resolve`/`resolve_write` confinement the interpreter uses
-// (lexical `..`/absolute rejection + symlink-aware canonicalization), so the
-// two backends agree on exactly which paths are reachable.
+// A guest `Dir` value is an opaque externref carrying a host-side `DirHandle`.
+// The paths never enter guest memory, and there is no guest-visible integer
+// handle to forge or widen. Every operation resolves through the SAME
+// `resolve`/`resolve_write` confinement the interpreter uses (lexical
+// `..`/absolute rejection + symlink-aware canonicalization), so the two backends
+// agree on exactly which paths are reachable.
 
-/// Look up a Dir handle's base path (trap on a forged/out-of-range handle).
-fn dir_base(caller: &Caller<'_, VmState>, h: i32) -> Result<std::path::PathBuf> {
+/// Look up a root Dir grant by ordinal while minting the root `Dir` externref
+/// for `main`. This ordinal never crosses into guest code.
+fn dir_handle(caller: &Caller<'_, VmState>, h: i32) -> Result<DirHandle> {
     caller
         .data()
         .dirs
         .get(h as usize)
-        .map(|d| d.base.clone())
-        .ok_or_else(|| Error::msg(format!("invalid Dir handle {h}")))
+        .cloned()
+        .ok_or_else(|| Error::msg(format!("invalid Dir grant index {h}")))
 }
 
-/// Look up a Dir handle's entry policy (RFC-0011; `""` = unrestricted).
-fn dir_policy(caller: &Caller<'_, VmState>, h: i32) -> Result<String> {
-    caller
-        .data()
-        .dirs
-        .get(h as usize)
-        .map(|d| d.policy.clone())
-        .ok_or_else(|| Error::msg(format!("invalid Dir handle {h}")))
+/// Recover the authority object carried by a guest `Dir` value.
+fn dir_handle_ref(caller: &Caller<'_, VmState>, d: Option<Rooted<ExternRef>>) -> Result<DirHandle> {
+    let d = d.ok_or_else(|| Error::msg("Dir externref is null"))?;
+    d.data(caller)?
+        .ok_or_else(|| Error::msg("Dir externref has no host data"))?
+        .downcast_ref::<DirHandle>()
+        .cloned()
+        .ok_or_else(|| Error::msg("Dir externref has wrong host data"))
 }
 
-fn dir_rights(caller: &Caller<'_, VmState>, h: i32) -> Result<FsRights> {
-    caller
-        .data()
-        .dirs
-        .get(h as usize)
-        .map(|d| d.rights)
-        .ok_or_else(|| Error::msg(format!("invalid Dir handle {h}")))
-}
-
-fn dir_require_read(caller: &Caller<'_, VmState>, h: i32) -> Result<()> {
-    if dir_rights(caller, h)?.read {
+fn dir_require_read(dir: &DirHandle) -> Result<()> {
+    if dir.rights.read {
         Ok(())
     } else {
         Err(Error::msg("this Dir capability does not grant Read"))
     }
 }
 
-fn dir_require_write(caller: &Caller<'_, VmState>, h: i32) -> Result<()> {
-    if dir_rights(caller, h)?.write {
+fn dir_require_write(dir: &DirHandle) -> Result<()> {
+    if dir.rights.write {
         Ok(())
     } else {
         Err(Error::msg("this Dir capability does not grant Write"))
     }
 }
 
-/// Trap unless Dir handle `h`'s entry policy admits touching `name` (RFC-0011).
+/// Trap unless Dir `dir`'s entry policy admits touching `name` (RFC-0011).
 /// `is_dir` is whether `name` denotes a directory entry (a traversal), so the policy's
 /// `kind:` dimension can distinguish files from directories.
-fn dir_guard(caller: &Caller<'_, VmState>, h: i32, name: &str, is_dir: bool) -> Result<()> {
-    if witchy_caps::capabilities::dir_admits(&dir_policy(caller, h)?, name, is_dir) {
+fn dir_guard(dir: &DirHandle, name: &str, is_dir: bool) -> Result<()> {
+    if witchy_caps::capabilities::dir_admits(&dir.policy, name, is_dir) {
         Ok(())
     } else {
         Err(Error::msg(format!(
@@ -1505,40 +1503,53 @@ fn dir_guard(caller: &Caller<'_, VmState>, h: i32, name: &str, is_dir: bool) -> 
     }
 }
 
+fn host_mint_dir(mut caller: Caller<'_, VmState>, i: i32) -> Result<Option<Rooted<ExternRef>>> {
+    let dir = dir_handle(&caller, i)?;
+    ExternRef::new(&mut caller, dir).map(Some)
+}
+
 fn confine(r: std::result::Result<std::path::PathBuf, crate::confine::ConfineError>) -> Result<std::path::PathBuf> {
     r.map_err(|e| Error::msg(e.0))
 }
 
-/// `dir_subdir(h, name) -> handle`: attenuate to a confined subdirectory,
-/// minting a new handle.
-fn host_dir_subdir(mut caller: Caller<'_, VmState>, h: i32, name_ptr: i32) -> Result<i32> {
+/// `dir_subdir(d, name) -> Dir`: attenuate to a confined subdirectory.
+fn host_dir_subdir(
+    mut caller: Caller<'_, VmState>,
+    d: Option<Rooted<ExternRef>>,
+    name_ptr: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
     let mem = memory_of(&mut caller)?;
     let name = read_wstr(mem.data(&caller), name_ptr)?;
-    dir_require_read(&caller, h)?;
+    let dir = dir_handle_ref(&caller, d)?;
+    dir_require_read(&dir)?;
     // Opening a sub-directory is a directory traversal (RFC-0011 `kind`): a `files()`
     // policy forbids it, an `ext`/empty policy does not.
-    dir_guard(&caller, h, &name, true)?;
-    let base = dir_base(&caller, h)?;
-    let pol = dir_policy(&caller, h)?;
-    let rights = dir_rights(&caller, h)?;
-    let sub = confine(crate::confine::resolve(&base, &name))?;
-    let dirs = &mut caller.data_mut().dirs;
-    dirs.push(DirHandle { base: sub, policy: pol, rights }); // a subtree inherits policy and rights
-    Ok((dirs.len() - 1) as i32)
+    dir_guard(&dir, &name, true)?;
+    let sub = confine(crate::confine::resolve(&dir.base, &name))?;
+    ExternRef::new(&mut caller, DirHandle {
+        base: sub,
+        policy: dir.policy,
+        rights: dir.rights,
+    }).map(Some)
 }
 
-/// `dir_only(h, policy) -> handle` (RFC-0011): mint a Dir handle whose entry
-/// policy is the current one narrowed by `policy` (refinement only shrinks).
-fn host_dir_only(mut caller: Caller<'_, VmState>, h: i32, policy_ptr: i32) -> Result<i32> {
+/// `dir_only(d, policy) -> Dir` (RFC-0011): mint a Dir whose entry policy is the
+/// current one narrowed by `policy` (refinement only shrinks).
+fn host_dir_only(
+    mut caller: Caller<'_, VmState>,
+    d: Option<Rooted<ExternRef>>,
+    policy_ptr: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
     let mem = memory_of(&mut caller)?;
     let refine = read_wstr(mem.data(&caller), policy_ptr)?;
-    dir_require_read(&caller, h)?;
-    let base = dir_base(&caller, h)?;
-    let narrowed = witchy_caps::capabilities::dir_only(&dir_policy(&caller, h)?, &refine);
-    let rights = dir_rights(&caller, h)?;
-    let dirs = &mut caller.data_mut().dirs;
-    dirs.push(DirHandle { base, policy: narrowed, rights });
-    Ok((dirs.len() - 1) as i32)
+    let dir = dir_handle_ref(&caller, d)?;
+    dir_require_read(&dir)?;
+    let narrowed = witchy_caps::capabilities::dir_only(&dir.policy, &refine);
+    ExternRef::new(&mut caller, DirHandle {
+        base: dir.base,
+        policy: narrowed,
+        rights: dir.rights,
+    }).map(Some)
 }
 
 /// Look up a direct `--file` grant by ordinal while minting the root `File`
@@ -1580,25 +1591,33 @@ fn host_mint_file(mut caller: Caller<'_, VmState>, i: i32) -> Result<Option<Root
 /// `dir_open(h, rel) -> File` (RFC-0012/RFC-0005 Stage 2): open an existing file
 /// confined to Dir handle `h`, minting an unforgeable `File` externref.
 /// `dir_create` is the write counterpart (the target need not exist yet).
-fn host_dir_open(mut caller: Caller<'_, VmState>, h: i32, rel_ptr: i32) -> Result<Option<Rooted<ExternRef>>> {
+fn host_dir_open(
+    mut caller: Caller<'_, VmState>,
+    d: Option<Rooted<ExternRef>>,
+    rel_ptr: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
     let mem = memory_of(&mut caller)?;
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
-    dir_require_read(&caller, h)?;
-    dir_guard(&caller, h, &rel, false)?;
-    let base = dir_base(&caller, h)?;
-    let path = confine(crate::confine::resolve(&base, &rel))?;
+    let dir = dir_handle_ref(&caller, d)?;
+    dir_require_read(&dir)?;
+    dir_guard(&dir, &rel, false)?;
+    let path = confine(crate::confine::resolve(&dir.base, &rel))?;
     ExternRef::new(&mut caller, FileHandle { path, rights: FsRights::new(true, false) }).map(Some)
 }
 
 /// `dir_create(h, rel) -> File`: like `dir_open` but for a not-yet-existing target
 /// (confined via its parent, like `dir_write`).
-fn host_dir_create(mut caller: Caller<'_, VmState>, h: i32, rel_ptr: i32) -> Result<Option<Rooted<ExternRef>>> {
+fn host_dir_create(
+    mut caller: Caller<'_, VmState>,
+    d: Option<Rooted<ExternRef>>,
+    rel_ptr: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
     let mem = memory_of(&mut caller)?;
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
-    dir_require_write(&caller, h)?;
-    dir_guard(&caller, h, &rel, false)?;
-    let base = dir_base(&caller, h)?;
-    let path = confine(crate::confine::resolve_write(&base, &rel))?;
+    let dir = dir_handle_ref(&caller, d)?;
+    dir_require_write(&dir)?;
+    dir_guard(&dir, &rel, false)?;
+    let path = confine(crate::confine::resolve_write(&dir.base, &rel))?;
     ExternRef::new(&mut caller, FileHandle { path, rights: FsRights::new(false, true) }).map(Some)
 }
 
@@ -1637,13 +1656,17 @@ fn host_file_write(
 /// `dir_read_len(h, rel) -> byte length`: read the confined file NOW, stage its
 /// bytes, and report the length; the guest allocates and calls `fill_pending`.
 /// A failed read traps — the interpreter errors on it too.
-fn host_dir_read_len(mut caller: Caller<'_, VmState>, h: i32, rel_ptr: i32) -> Result<i32> {
+fn host_dir_read_len(
+    mut caller: Caller<'_, VmState>,
+    d: Option<Rooted<ExternRef>>,
+    rel_ptr: i32,
+) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
-    dir_require_read(&caller, h)?;
-    dir_guard(&caller, h, &rel, false)?;
-    let base = dir_base(&caller, h)?;
-    let path = confine(crate::confine::resolve(&base, &rel))?;
+    let dir = dir_handle_ref(&caller, d)?;
+    dir_require_read(&dir)?;
+    dir_guard(&dir, &rel, false)?;
+    let path = confine(crate::confine::resolve(&dir.base, &rel))?;
     let contents = std::fs::read_to_string(&path)
         .map_err(|e| Error::msg(format!("read failed for `{}`: {e}", path.display())))?;
     let len = contents.len() as i32;
@@ -1659,7 +1682,7 @@ fn host_dir_read_len(mut caller: Caller<'_, VmState>, h: i32, rel_ptr: i32) -> R
 /// two-phase protocol so both backends produce identical results. Needs `Exec`.
 fn host_exec_run(
     mut caller: Caller<'_, VmState>,
-    h: i32,
+    d: Option<Rooted<ExternRef>>,
     path_ptr: i32,
     args_ptr: i32,
     stdin_ptr: i32,
@@ -1674,13 +1697,13 @@ fn host_exec_run(
             return Err(Error::msg(format!("exec: `{path}` is not in this Exec grant's allow-list")));
         }
     }
-    dir_require_read(&caller, h)?;
+    let dir = dir_handle_ref(&caller, d)?;
+    dir_require_read(&dir)?;
     // (RFC-0011) exec is the sharpest right, so it takes the SAME entry-policy gate as
     // every other Dir op: a `Dir[...].only(...)` may only run a file it admits — "you
     // can only run a file you can read" was false while this was skipped.
-    dir_guard(&caller, h, &path, false)?;
-    let base = dir_base(&caller, h)?;
-    let prog = confine(crate::confine::resolve(&base, &path))?;
+    dir_guard(&dir, &path, false)?;
+    let prog = confine(crate::confine::resolve(&dir.base, &path))?;
     let argv: Vec<&str> = if joined.is_empty() { Vec::new() } else { joined.split('\0').collect() };
     use std::io::Write as _;
     use std::process::{Command, Stdio};
@@ -1720,24 +1743,32 @@ fn host_fill_pending(mut caller: Caller<'_, VmState>, out_ptr: i32) -> Result<()
 }
 
 /// `dir_exists(h, rel) -> bool`: total — an escaping or missing path is `false`.
-fn host_dir_exists(mut caller: Caller<'_, VmState>, h: i32, rel_ptr: i32) -> Result<i32> {
+fn host_dir_exists(
+    mut caller: Caller<'_, VmState>,
+    d: Option<Rooted<ExternRef>>,
+    rel_ptr: i32,
+) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
-    dir_require_read(&caller, h)?;
-    let base = dir_base(&caller, h)?;
-    let ok = crate::confine::resolve(&base, &rel)
+    let dir = dir_handle_ref(&caller, d)?;
+    dir_require_read(&dir)?;
+    let ok = crate::confine::resolve(&dir.base, &rel)
         .map(|p| p.exists())
         .unwrap_or(false);
     Ok(ok as i32)
 }
 
 /// `dir_is_dir(h, rel) -> bool`: total, like `dir_exists`.
-fn host_dir_is_dir(mut caller: Caller<'_, VmState>, h: i32, rel_ptr: i32) -> Result<i32> {
+fn host_dir_is_dir(
+    mut caller: Caller<'_, VmState>,
+    d: Option<Rooted<ExternRef>>,
+    rel_ptr: i32,
+) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
     let rel = read_wstr(mem.data(&caller), rel_ptr)?;
-    dir_require_read(&caller, h)?;
-    let base = dir_base(&caller, h)?;
-    let ok = crate::confine::resolve(&base, &rel)
+    let dir = dir_handle_ref(&caller, d)?;
+    dir_require_read(&dir)?;
+    let ok = crate::confine::resolve(&dir.base, &rel)
         .map(|p| p.is_dir())
         .unwrap_or(false);
     Ok(ok as i32)
@@ -1746,18 +1777,18 @@ fn host_dir_is_dir(mut caller: Caller<'_, VmState>, h: i32, rel_ptr: i32) -> Res
 /// `dir_list_size(h) -> bytes`: read the directory NOW (sorted names, matching
 /// the interpreter), stage the listing, and report the total byte size of the
 /// witchy `List(String)` structure the guest must reserve.
-fn host_dir_list_size(mut caller: Caller<'_, VmState>, h: i32) -> Result<i32> {
-    dir_require_read(&caller, h)?;
-    let base = dir_base(&caller, h)?;
-    let mut names: Vec<String> = std::fs::read_dir(&base)
-        .map_err(|e| Error::msg(format!("list failed for `{}`: {e}", base.display())))?
+fn host_dir_list_size(mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>) -> Result<i32> {
+    let dir = dir_handle_ref(&caller, d)?;
+    dir_require_read(&dir)?;
+    let mut names: Vec<String> = std::fs::read_dir(&dir.base)
+        .map_err(|e| Error::msg(format!("list failed for `{}`: {e}", dir.base.display())))?
         .map(|entry| {
             let entry =
-                entry.map_err(|e| Error::msg(format!("list failed for `{}`: {e}", base.display())))?;
+                entry.map_err(|e| Error::msg(format!("list failed for `{}`: {e}", dir.base.display())))?;
             entry.file_name().into_string().map_err(|_| {
                 Error::msg(format!(
                     "list failed for `{}`: directory entry name is not valid UTF-8",
-                    base.display()
+                    dir.base.display()
                 ))
             })
         })
@@ -2019,34 +2050,23 @@ fn sandbox_worker(
 /// the capability-PASSING (Tier B) primitive: a sandboxed worker with attenuated authority.
 fn host_vm_with_dir_run(
     mut caller: Caller<'_, VmState>,
-    dir_handle: i32,
+    dir_ref: Option<Rooted<ExternRef>>,
     f_ptr: i32,
     input_ptr: i32,
 ) -> Result<i32> {
-    let (path, policy, rights, input, code_idx) = {
-        let handle = caller
-            .data()
-            .dirs
-            .get(dir_handle as usize)
-            .cloned()
-            .ok_or_else(|| Error::msg(format!("invalid Dir handle {dir_handle}")))?;
+    let (dir, input, code_idx) = {
+        let dir = dir_handle_ref(&caller, dir_ref)?;
         let mem = memory_of(&mut caller)?;
         let data = mem.data(&caller);
         let input = read_wbytes(data, input_ptr)?;
         let cb = slice(data, f_ptr, 4)?;
-        (
-            handle.base,
-            handle.policy,
-            handle.rights,
-            input,
-            i32::from_le_bytes([cb[0], cb[1], cb[2], cb[3]]),
-        )
+        (dir, input, i32::from_le_bytes([cb[0], cb[1], cb[2], cb[3]]))
     };
     let engine = caller.data().engine.clone();
     let module = caller.data().module.clone();
     let preempt = caller.data().preempt;
     let result =
-        run_with_dir_worker(&engine, &module, preempt, path, policy, rights, code_idx, &input)?;
+        run_with_dir_worker(&engine, &module, preempt, dir, code_idx, &input)?;
     let mut staged = Vec::with_capacity(4 + result.len());
     staged.extend_from_slice(&(result.len() as i32).to_le_bytes());
     staged.extend_from_slice(&result);
@@ -2063,24 +2083,22 @@ fn run_with_dir_worker(
     engine: &Engine,
     module: &Module,
     preempt: bool,
-    path: std::path::PathBuf,
-    policy: String,
-    rights: FsRights,
+    dir: DirHandle,
     code_idx: i32,
     input: &[u8],
 ) -> Result<Vec<u8>> {
     let caps = Capabilities {
-        dir_root: Some(path),
-        dir_read: rights.read,
-        dir_write: rights.write,
-        dir_rights: vec![rights],
+        dir_root: Some(dir.base),
+        dir_read: dir.rights.read,
+        dir_write: dir.rights.write,
+        dir_rights: vec![dir.rights],
         ..Capabilities::default()
     };
     let (mut store, instance) =
         spawn_worker(engine, module, preempt, &caps, true, None, StoreLimitsBuilder::new().build())?;
     // Attach the granted Dir's entry policy (RFC-0011) to handle 0.
     if let Some(d) = store.data_mut().dirs.get_mut(0) {
-        d.policy = policy;
+        d.policy = dir.policy;
     }
     let galloc = instance.get_typed_func::<i32, i32>(&mut store, "__galloc")?;
     let call2 = instance.get_typed_func::<(i32, i64, i64), i64>(&mut store, "__call2")?;
@@ -2269,7 +2287,7 @@ fn host_vm_par_map_write(mut caller: Caller<'_, VmState>, base_ptr: i32) -> Resu
 /// escape — the interpreter errors on both).
 fn host_dir_write(
     mut caller: Caller<'_, VmState>,
-    h: i32,
+    d: Option<Rooted<ExternRef>>,
     rel_ptr: i32,
     contents_ptr: i32,
 ) -> Result<()> {
@@ -2277,10 +2295,10 @@ fn host_dir_write(
     let data = mem.data(&caller);
     let rel = read_wstr(data, rel_ptr)?;
     let contents = read_wstr(data, contents_ptr)?;
-    dir_require_write(&caller, h)?;
-    dir_guard(&caller, h, &rel, false)?;
-    let base = dir_base(&caller, h)?;
-    let path = confine(crate::confine::resolve_write(&base, &rel))?;
+    let dir = dir_handle_ref(&caller, d)?;
+    dir_require_write(&dir)?;
+    dir_guard(&dir, &rel, false)?;
+    let path = confine(crate::confine::resolve_write(&dir.base, &rel))?;
     std::fs::write(&path, contents)
         .map_err(|e| Error::msg(format!("write failed for `{}`: {e}", path.display())))
 }
@@ -2289,7 +2307,7 @@ fn host_dir_write(
 /// absent — `dir_write`'s confinement without clobbering existing contents.
 fn host_dir_append(
     mut caller: Caller<'_, VmState>,
-    h: i32,
+    d: Option<Rooted<ExternRef>>,
     rel_ptr: i32,
     contents_ptr: i32,
 ) -> Result<()> {
@@ -2297,10 +2315,10 @@ fn host_dir_append(
     let data = mem.data(&caller);
     let rel = read_wstr(data, rel_ptr)?;
     let contents = read_wstr(data, contents_ptr)?;
-    dir_require_write(&caller, h)?;
-    dir_guard(&caller, h, &rel, false)?;
-    let base = dir_base(&caller, h)?;
-    let path = confine(crate::confine::resolve_write(&base, &rel))?;
+    let dir = dir_handle_ref(&caller, d)?;
+    dir_require_write(&dir)?;
+    dir_guard(&dir, &rel, false)?;
+    let path = confine(crate::confine::resolve_write(&dir.base, &rel))?;
     use std::io::Write as _;
     std::fs::OpenOptions::new()
         .create(true)
@@ -2312,13 +2330,17 @@ fn host_dir_append(
 
 /// `dir_make_dir(h, name)`: create a confined subdirectory (idempotent). Creating a
 /// directory is a directory op (RFC-0011 `kind`): a `files()` policy forbids it.
-fn host_dir_make_dir(mut caller: Caller<'_, VmState>, h: i32, name_ptr: i32) -> Result<()> {
+fn host_dir_make_dir(
+    mut caller: Caller<'_, VmState>,
+    d: Option<Rooted<ExternRef>>,
+    name_ptr: i32,
+) -> Result<()> {
     let mem = memory_of(&mut caller)?;
     let name = read_wstr(mem.data(&caller), name_ptr)?;
-    dir_require_write(&caller, h)?;
-    dir_guard(&caller, h, &name, true)?;
-    let base = dir_base(&caller, h)?;
-    let path = confine(crate::confine::resolve_write(&base, &name))?;
+    let dir = dir_handle_ref(&caller, d)?;
+    dir_require_write(&dir)?;
+    dir_guard(&dir, &name, true)?;
+    let path = confine(crate::confine::resolve_write(&dir.base, &name))?;
     std::fs::create_dir_all(&path)
         .map_err(|e| Error::msg(format!("make_dir failed for `{}`: {e}", path.display())))
 }

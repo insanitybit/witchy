@@ -3605,7 +3605,7 @@ fn crypto_keyed_helper(name: &str, import: &str, hexlen: i32, has_msg: bool) -> 
     }
 }
 
-/// `$dir_read(h, rel) -> i32` — the contents of file `rel` under dir handle `h`,
+/// `$dir_read(h, rel) -> i32` — the contents of file `rel` under Dir externref `h`,
 /// as a String. Two-phase host protocol: `dir_read_len` reads the file and
 /// reports its byte length (staging the bytes host-side), then `fill_pending`
 /// copies the staged bytes into `res+4`. Needs the Dir(Read) capability.
@@ -3618,7 +3618,7 @@ pub fn dir_read_helper() -> WirFunc {
     WirFunc {
         name: "dir_read".into(),
         params: vec![
-            WirLocal { name: "h".into(), ty: WirTy::Bool },
+            WirLocal { name: "h".into(), ty: WirTy::Extern },
             WirLocal { name: "rel".into(), ty: WirTy::Str },
         ],
         ret: vec![WirTy::Str],
@@ -3671,7 +3671,7 @@ pub fn file_read_helper() -> WirFunc {
 }
 
 /// `$exec(h, path, args, stdin) -> i32` — spawn the executable `path` under Dir
-/// handle `h` (confined like `dir_read`), passing the `\0`-joined argv `args` and
+/// externref `h` (confined like `dir_read`), passing the `\0`-joined argv `args` and
 /// `stdin`, returning the payload string `"<exit_code>\n<stdout><stderr>"`.
 /// Two-phase host protocol identical to [`dir_read_helper`]: `exec_run` runs the
 /// process and reports the staged payload's byte length, then `fill_pending`
@@ -3685,7 +3685,7 @@ pub fn exec_helper() -> WirFunc {
     WirFunc {
         name: "exec".into(),
         params: vec![
-            WirLocal { name: "h".into(), ty: WirTy::Bool },
+            WirLocal { name: "h".into(), ty: WirTy::Extern },
             WirLocal { name: "path".into(), ty: WirTy::Str },
             WirLocal { name: "args".into(), ty: WirTy::Str },
             WirLocal { name: "stdin".into(), ty: WirTy::Str },
@@ -3812,7 +3812,7 @@ pub fn regex_match_spans_helper() -> WirFunc {
     }
 }
 
-/// `$dir_list(h) -> i32` — the entries of directory handle `h`, as a
+/// `$dir_list(h) -> i32` — the entries of Dir externref `h`, as a
 /// `List(String)`. The host reports the total byte size of the marshaled list
 /// (`dir_list_size`), then writes the whole `[count][ptr..]` + payload structure
 /// into the reserved block (`write_pending_list`). Needs the Dir(Read) capability.
@@ -3822,7 +3822,7 @@ pub fn dir_list_helper() -> WirFunc {
     let getl = |n: &str| E::GetLocal(n.into());
     WirFunc {
         name: "dir_list".into(),
-        params: vec![WirLocal { name: "h".into(), ty: WirTy::Bool }],
+        params: vec![WirLocal { name: "h".into(), ty: WirTy::Extern }],
         ret: vec![WirTy::Bool],
         locals: vec![
             WirLocal { name: "size".into(), ty: WirTy::Bool },
@@ -3845,12 +3845,22 @@ pub fn dir_list_helper() -> WirFunc {
 /// `write(res)` (the host lays the result out at the reserved block); `heap += size`;
 /// return `res`. The builtins differ ONLY in their params and the run/write host imports.
 fn two_phase_helper(name: &str, params: &[&str], run_import: &str, write_import: &str) -> WirFunc {
+    let typed = params.iter().map(|p| ((*p).to_string(), WirTy::Bool)).collect::<Vec<_>>();
+    two_phase_helper_typed(name, &typed, run_import, write_import)
+}
+
+fn two_phase_helper_typed(
+    name: &str,
+    params: &[(String, WirTy)],
+    run_import: &str,
+    write_import: &str,
+) -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
     WirFunc {
         name: name.into(),
-        params: params.iter().map(|p| WirLocal { name: (*p).into(), ty: WirTy::Bool }).collect(),
+        params: params.iter().map(|(p, ty)| WirLocal { name: p.clone(), ty: ty.clone() }).collect(),
         ret: vec![WirTy::Bool],
         locals: vec![
             WirLocal { name: "size".into(), ty: WirTy::Bool },
@@ -3859,7 +3869,7 @@ fn two_phase_helper(name: &str, params: &[&str], run_import: &str, write_import:
         body: vec![
             N::SetLocal {
                 local: "size".into(),
-                value: E::CallHost { import: run_import.into(), args: params.iter().map(|p| getl(p)).collect() },
+                value: E::CallHost { import: run_import.into(), args: params.iter().map(|(p, _)| getl(p)).collect() },
             },
             // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse).
             N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![getl("size")] } },
@@ -4718,16 +4728,16 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_table: false,
         }),
         "dir_subdir" => Some(WirHelperSpec {
-            func: host_call_helper("dir_subdir", "dir_subdir", 2),
+            func: host_call_helper_typed("dir_subdir", "dir_subdir", &[WirTy::Extern, WirTy::Str], WirTy::Extern),
             helper_deps: &[],
             import_deps: &["dir_subdir"],
             uses_heap: false,
             uses_table: false,
         }),
-        // RFC-0011: `dir.only(DirPolicy)` narrows a Dir's entry policy, minting a
-        // new Dir handle — mirrors `dir_subdir` (2 args, i32 handle result).
+        // RFC-0011/RFC-0005: `dir.only(DirPolicy)` narrows a Dir's entry policy,
+        // minting a fresh unforgeable Dir externref.
         "dir_only" => Some(WirHelperSpec {
-            func: host_call_helper("dir_only", "dir_only", 2),
+            func: host_call_helper_typed("dir_only", "dir_only", &[WirTy::Extern, WirTy::Str], WirTy::Extern),
             helper_deps: &[],
             import_deps: &["dir_only"],
             uses_heap: false,
@@ -4737,14 +4747,14 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         // confined File externref; `file_write` consumes that externref. Each wraps
         // its host import so user code stays free of direct CallHosts.
         "dir_open" => Some(WirHelperSpec {
-            func: host_call_helper_typed("dir_open", "dir_open", &[WirTy::Bool, WirTy::Str], WirTy::Extern),
+            func: host_call_helper_typed("dir_open", "dir_open", &[WirTy::Extern, WirTy::Str], WirTy::Extern),
             helper_deps: &[],
             import_deps: &["dir_open"],
             uses_heap: false,
             uses_table: false,
         }),
         "dir_create" => Some(WirHelperSpec {
-            func: host_call_helper_typed("dir_create", "dir_create", &[WirTy::Bool, WirTy::Str], WirTy::Extern),
+            func: host_call_helper_typed("dir_create", "dir_create", &[WirTy::Extern, WirTy::Str], WirTy::Extern),
             helper_deps: &[],
             import_deps: &["dir_create"],
             uses_heap: false,
@@ -4768,35 +4778,35 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_table: false,
         }),
         "dir_exists" => Some(WirHelperSpec {
-            func: host_call_helper("dir_exists", "dir_exists", 2),
+            func: host_call_helper_typed("dir_exists", "dir_exists", &[WirTy::Extern, WirTy::Str], WirTy::Bool),
             helper_deps: &[],
             import_deps: &["dir_exists"],
             uses_heap: false,
             uses_table: false,
         }),
         "dir_is_dir" => Some(WirHelperSpec {
-            func: host_call_helper("dir_is_dir", "dir_is_dir", 2),
+            func: host_call_helper_typed("dir_is_dir", "dir_is_dir", &[WirTy::Extern, WirTy::Str], WirTy::Bool),
             helper_deps: &[],
             import_deps: &["dir_is_dir"],
             uses_heap: false,
             uses_table: false,
         }),
         "dir_write" => Some(WirHelperSpec {
-            func: host_void_helper("dir_write", "dir_write", 3),
+            func: host_void_helper_typed("dir_write", "dir_write", &[WirTy::Extern, WirTy::Str, WirTy::Str]),
             helper_deps: &[],
             import_deps: &["dir_write"],
             uses_heap: false,
             uses_table: false,
         }),
         "dir_append" => Some(WirHelperSpec {
-            func: host_void_helper("dir_append", "dir_append", 3),
+            func: host_void_helper_typed("dir_append", "dir_append", &[WirTy::Extern, WirTy::Str, WirTy::Str]),
             helper_deps: &[],
             import_deps: &["dir_append"],
             uses_heap: false,
             uses_table: false,
         }),
         "dir_make_dir" => Some(WirHelperSpec {
-            func: host_void_helper("dir_make_dir", "dir_make_dir", 2),
+            func: host_void_helper_typed("dir_make_dir", "dir_make_dir", &[WirTy::Extern, WirTy::Str]),
             helper_deps: &[],
             import_deps: &["dir_make_dir"],
             uses_heap: false,

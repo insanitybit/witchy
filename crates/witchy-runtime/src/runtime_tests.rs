@@ -59,6 +59,14 @@
             (drop (call $file_read_len (ref.null extern)))))
     "#;
 
+    const NULL_DIR_READ: &str = r#"
+        (module
+          (import "witchy" "dir_read_len" (func $dir_read_len (param externref i32) (result i32)))
+          (memory (export "memory") 1)
+          (func (export "run")
+            (drop (call $dir_read_len (ref.null extern) (i32.const 0)))))
+    "#;
+
     const DIRECT_FILE_WRITE: &str = r#"
         (module
           (import "witchy" "mint_file" (func $mint_file (param i32) (result externref)))
@@ -148,6 +156,39 @@
         assert!(
             detail.contains("File externref is null"),
             "expected null File externref rejection, got: {detail}"
+        );
+    }
+
+    #[test]
+    fn null_dir_externref_is_rejected() {
+        let root = std::env::temp_dir().join(format!(
+            "witchy-null-dir-externref-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let mut rt = Runtime::new().unwrap();
+        let mut vm = rt
+            .spawn(
+                NULL_DIR_READ,
+                Capabilities {
+                    dir_root: Some(root.clone()),
+                    dir_read: true,
+                    ..Default::default()
+                },
+                4,
+            )
+            .unwrap();
+        let err = vm.run().unwrap_err();
+        let _ = std::fs::remove_dir_all(root);
+        let detail = format!("{err:?}");
+        assert!(
+            detail.contains("Dir externref is null"),
+            "expected null Dir externref rejection, got: {detail}"
         );
     }
 

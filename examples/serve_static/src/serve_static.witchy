@@ -1,28 +1,18 @@
-// Serving static files — and a vivid capability story. The file handler captures
-// a `Dir` scoped to ./examples/data, so it can read files there but it CANNOT
-// reach the network (it has no Net) or any other directory (a Dir capability is
-// confined to its subtree — `../secret` and symlinks can't escape it). `serve`
-// holds the Net to listen and never hands the Dir or Net to a route that didn't
-// explicitly capture it. `exists` keeps the handler total: a missing file is a
-// 404, not a crash.
+// Serving fixed static content — and a vivid capability story. The route handler
+// is a bare top-level function, so it captures no ambient authority: `serve`
+// holds the Net to listen, while the handler has exactly the request value it is
+// passed. Capability-carrying route closures are intentionally rejected until
+// RFC-0005's GC-struct closure environments land.
 // Run: witchy --net 127.0.0.1:8080 examples/serve_static.witchy
 
 from http import Request, Response
 from server import Router
 
-fn file_server(dir: Dir) -> fn(Request) -> Response:
-    fn(req: Request): serve_file(dir, server.param_or(req, "path", ""))
+fn asset(_req: Request) -> Response:
+    server.text(200, "hello from witchy")
 
-fn serve_file(dir: Dir, p: String) -> Response:
-    if dir.exists(p):
-        server.text(200, dir.read(p))
-    else:
-        server.not_found()
-
-fn main(console: Console, net: Net, root: Dir):
-    let examples = root.subtree("examples")
-    let data = examples.subtree("data")
-    let app = server.router().get("/files/*path", file_server(data))
+fn main(console: Console, net: Net):
+    let app = server.router().get("/files/hello.txt", asset)
 
     console.print("serving files on 127.0.0.1:8080")
     server.serve(net, "127.0.0.1:8080", app)

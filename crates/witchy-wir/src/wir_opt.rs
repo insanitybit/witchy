@@ -157,7 +157,7 @@ fn simplify_expr(expr: &mut WirExpr, changed: &mut bool) {
                 simplify_expr(a, changed);
             }
         }
-        WirExpr::StructGet { base, .. } => simplify_expr(base, changed),
+        WirExpr::StructGet { base, .. } | WirExpr::RefIsNull(base) => simplify_expr(base, changed),
         WirExpr::ConstI64(_)
         | WirExpr::ConstF64(_)
         | WirExpr::ConstI32(_)
@@ -273,7 +273,7 @@ fn expr_size(expr: &WirExpr) -> usize {
         WirExpr::Control(node) => node_size(node),
         WirExpr::Seq(nodes) => seq_size(nodes),
         WirExpr::StructNew { args, .. } => args.iter().map(expr_size).sum(),
-        WirExpr::StructGet { base, .. } => expr_size(base),
+        WirExpr::StructGet { base, .. } | WirExpr::RefIsNull(base) => expr_size(base),
         WirExpr::ConstI64(_)
         | WirExpr::ConstF64(_)
         | WirExpr::ConstI32(_)

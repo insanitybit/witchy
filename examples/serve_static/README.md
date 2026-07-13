@@ -1,15 +1,13 @@
 # serve_static
 
-Serving static files, and a vivid capability story. The file handler captures a
-`Dir` scoped to `./examples/data`, so it can read files there but cannot reach
-the network (it has no `Net`) or any other directory — a `Dir` is confined to
-its subtree, and `../secret` and symlinks can't escape it. `serve` holds the
-`Net` to listen and never hands the `Dir` or `Net` to a route that didn't
-capture it. `exists` keeps the handler total: a missing file is a 404, not a
-crash.
+Serving fixed static content with a minimal capability boundary. The route
+handler is a bare top-level function, so it captures no ambient authority:
+`serve` holds the `Net` to listen, while the handler has exactly the request
+value it is passed. Capability-carrying route closures are intentionally
+rejected until RFC-0005's typed closure environments land.
 
-**Shows:** the `server` router, wildcard path params, the `Dir` capability and
-`subdir` scoping, capability capture into a handler closure, and `not_found`.
+**Shows:** the `server` router, a top-level route handler, and a listener
+capability that never leaks into request handling.
 
 ## Run
 

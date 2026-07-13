@@ -1679,14 +1679,67 @@ fn packed_list_in_type(t: &ast::Type, packed_names: &HashSet<&str>) -> Option<St
 
 /// (RFC-0005) Names of the capabilities represented as an unforgeable `externref`
 /// on the compiled backend at the CURRENT migration stage — the caps with NO boxed
-/// i64-slot representation. Stage 2 migrates `File` (the proving capability); the
-/// remaining handle-bearing caps (`Dir`/`Net`/`Secret`/`SecretStore`/`Exec`/
-/// `Socket`/`Listener`) keep their i32-handle representation until their own stage,
-/// so they may still (for now) cross a slot — e.g. `std/secretstore.get` returns
-/// `Option(Secret)`. `Console`/`Clock`/`Rand`/`Env` are zero-representation (no
-/// runtime handle) and never migrate. Widen this set as each capability migrates.
+/// i64-slot representation. Stage 2 migrates `File` (the proving capability);
+/// stage 3 starts with `Dir`. The remaining handle-bearing caps (`Net`/`Secret`/
+/// `SecretStore`/`Exec`/`Socket`/`Listener`) keep their i32-handle representation
+/// until their own stage, so they may still (for now) cross a slot — e.g.
+/// `std/secretstore.get` returns `Option(Secret)`. `Console`/`Clock`/`Rand`/`Env`
+/// are zero-representation (no runtime handle) and never migrate. Widen this set
+/// as each capability migrates.
 fn is_externref_cap(name: &str) -> bool {
-    name == "File"
+    matches!(name, "Dir" | "File")
+}
+
+fn transparent_externref_brand_cap(
+    name: &str,
+    defs: &HashMap<&str, &ast::TypeDef>,
+    seen: &mut HashSet<String>,
+) -> Option<String> {
+    if is_externref_cap(name) {
+        return Some(name.to_string());
+    }
+    if !seen.insert(name.to_string()) {
+        return None;
+    }
+    let out = (|| {
+        let def = defs.get(name)?;
+        if !def.is_capability || def.variants.len() != 1 {
+            return None;
+        }
+        let variant = def.variants.first()?;
+        if variant.name != def.name || !variant.field_names.is_empty() || variant.fields.len() != 1 {
+            return None;
+        }
+        transparent_externref_brand_field_cap(variant.fields.first()?, defs, seen)
+    })();
+    seen.remove(name);
+    out
+}
+
+fn transparent_externref_brand_field_cap(
+    t: &ast::Type,
+    defs: &HashMap<&str, &ast::TypeDef>,
+    seen: &mut HashSet<String>,
+) -> Option<String> {
+    match t {
+        ast::Type::Qualified(_, inner) => transparent_externref_brand_field_cap(inner, defs, seen),
+        ast::Type::Named(n, args) if args.is_empty() => transparent_externref_brand_cap(n, defs, seen),
+        ast::Type::Named(n, _) if is_externref_cap(n) => Some(n.clone()),
+        ast::Type::Named(_, _) | ast::Type::Tuple(_) | ast::Type::Fn(_, _) => None,
+    }
+}
+
+fn nullable_externref_option_cap(
+    t: &ast::Type,
+    defs: &HashMap<&str, &ast::TypeDef>,
+) -> Option<String> {
+    let ast::Type::Named(n, args) = t.unqualified() else {
+        return None;
+    };
+    if n != "Option" || args.len() != 1 {
+        return None;
+    }
+    transparent_externref_brand_field_cap(&args[0], defs, &mut HashSet::new())
 }
 
 /// (RFC-0005 §3) The `carries_cap` classification, scoped to the migrated
@@ -1710,6 +1763,9 @@ fn carries_externref_cap(
         ast::Type::Named(n, args) => {
             if is_externref_cap(n) {
                 return Some(n.clone());
+            }
+            if let Some(cap) = transparent_externref_brand_cap(n, defs, seen) {
+                return Some(cap);
             }
             if let Some(hit) = args.iter().find_map(|a| carries_externref_cap(a, defs, seen)) {
                 return Some(hit);
@@ -1763,6 +1819,12 @@ fn reject_cap_slot_boundary(
             reject_cap_slot_boundary(ret, defs, ctx, position)
         }
         ast::Type::Named(n, args) => {
+            if n == "Option"
+                && matches!(position, "a parameter" | "a return type")
+                && nullable_externref_option_cap(t, defs).is_some()
+            {
+                return Ok(());
+            }
             if matches!(n.as_str(), "Option" | "Result" | "List" | "Dict") {
                 for a in args {
                     if let Some(cap) = carries_externref_cap(a, defs, &mut HashSet::new()) {
@@ -1774,7 +1836,9 @@ fn reject_cap_slot_boundary(
                         });
                     }
                 }
-            } else if !is_externref_cap(n) {
+            } else if !is_externref_cap(n)
+                && transparent_externref_brand_cap(n, defs, &mut HashSet::new()).is_none()
+            {
                 if let Some(cap) = carries_externref_cap(t, defs, &mut HashSet::new()) {
                     return Err(TypeError {
                         message: format!(
@@ -2343,6 +2407,9 @@ struct Checker {
     /// carried capability is `match`, which the linker confines to the home
     /// module — otherwise an alias would leak the underlying authority.
     sealed_types: HashSet<String>,
+    /// `capability X from Dir/File` brands whose compiled representation is the
+    /// same externref as their single underlying migrated host capability.
+    transparent_externref_brands: HashMap<String, String>,
     adt_variants: HashMap<String, Vec<String>>,
     fn_conventions: HashMap<String, Vec<Convention>>,
     /// (RFC-0043) Functions that are mutators — `var` first param + a return of
@@ -2788,12 +2855,13 @@ impl Checker {
     }
 
     /// The first migrated externref capability carried by `t`, if any. Kept in
-    /// lockstep with `is_externref_cap`; today only `File` has moved off the i32
-    /// handle path. This is used for expression-level shapes (not just annotated
-    /// `ast::Type`s), such as closure captures inferred from local bindings.
+    /// lockstep with `is_externref_cap`. This is used for expression-level shapes
+    /// (not just annotated `ast::Type`s), such as closure captures inferred from
+    /// local bindings.
     fn ty_carries_externref_cap(&self, t: &Ty) -> Option<&'static str> {
         fn go(c: &Checker, t: &Ty, seen: &mut HashSet<String>) -> Option<&'static str> {
             match c.resolve(t) {
+                Ty::Dir(_) => Some("Dir"),
                 Ty::File(_) => Some("File"),
                 Ty::List(inner) => go(c, &inner, seen),
                 Ty::Tuple(items) => items.iter().find_map(|i| go(c, i, seen)),
@@ -2802,8 +2870,11 @@ impl Checker {
                     .find_map(|p| go(c, p, seen))
                     .or_else(|| go(c, &ret, seen)),
                 Ty::Named(n, args) => {
-                    if args.iter().any(|a| go(c, a, seen).is_some()) {
-                        return Some("File");
+                    if let Some(cap) = c.transparent_externref_brands.get(&n) {
+                        return Some(if cap == "Dir" { "Dir" } else { "File" });
+                    }
+                    if let Some(hit) = args.iter().find_map(|a| go(c, a, seen)) {
+                        return Some(hit);
                     }
                     if !seen.insert(n.clone()) {
                         return None;
@@ -2820,6 +2891,14 @@ impl Checker {
             }
         }
         go(self, t, &mut HashSet::new())
+    }
+
+    fn ty_is_direct_externref_value(&self, t: &Ty) -> bool {
+        match self.resolve(t) {
+            Ty::Dir(_) | Ty::File(_) => true,
+            Ty::Named(n, args) => args.is_empty() && self.transparent_externref_brands.contains_key(&n),
+            _ => false,
+        }
     }
 
     /// The first authority type carried by `t`, independent of the current
@@ -2934,6 +3013,11 @@ impl Checker {
                 }
                 Ok(())
             }
+            Ty::Named(n, args)
+                if n == "Option" && args.len() == 1 && self.ty_is_direct_externref_value(&args[0]) =>
+            {
+                Ok(())
+            }
             Ty::Named(n, args) if matches!(n.as_str(), "Option" | "Result" | "Dict") => {
                 if let Some(cap) = args.iter().find_map(|a| self.ty_carries_externref_cap(a)) {
                     return terr(format!(
@@ -2944,7 +3028,22 @@ impl Checker {
                 }
                 Ok(())
             }
-            Ty::Named(n, args) if !is_externref_cap(&n) => {
+            Ty::Fn(params, ret) => {
+                if let Some(cap) = params
+                    .iter()
+                    .find_map(|p| self.ty_carries_externref_cap(p))
+                    .or_else(|| self.ty_carries_externref_cap(&ret))
+                {
+                    return terr(format!(
+                        "`{ctx}` carries a `{cap}` capability through a function value; \
+                         the current closure ABI boxes arguments as i64 slots, so cap-carrying \
+                         higher-order values require RFC-0005's typed closure/GC lowering — \
+                         pass the capability directly"
+                    ));
+                }
+                Ok(())
+            }
+            Ty::Named(n, args) if !is_externref_cap(&n) && !self.transparent_externref_brands.contains_key(&n) => {
                 if let Some(cap) = self.ty_carries_externref_cap(&Ty::Named(n.clone(), args)) {
                     return terr(format!(
                         "`{ctx}` builds `{n}` carrying a `{cap}` capability; \
@@ -4326,6 +4425,7 @@ impl Checker {
                     );
                 }
             }
+            self.reject_externref_cap_aggregate_ty(&at, &format!("argument to `{display}`"))?;
             self.coerce_arg(param_ty, &at)
                 .map_err(|e| TypeError { message: format!("in call to `{display}`: {}", e.message) })?;
         }
@@ -6396,6 +6496,7 @@ fn run_check_selected(
         ctor_typarams: HashMap::new(),
         record_fields: HashMap::new(),
         sealed_types: HashSet::new(),
+        transparent_externref_brands: HashMap::new(),
         adt_variants: HashMap::new(),
         fn_typarams: HashMap::new(),
         fn_bounds: HashMap::new(),
@@ -6445,6 +6546,14 @@ fn run_check_selected(
     c.adt_variants.insert("Result".into(), vec!["Ok".into(), "Err".into()]);
 
     // Pass 1: collect all signatures so definitions can refer to each other.
+    let type_defs: HashMap<&str, &ast::TypeDef> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Type(t) => Some((t.name.as_str(), t)),
+            _ => None,
+        })
+        .collect();
     for item in &module.items {
         match item {
             Item::Function(f) => {
@@ -6550,6 +6659,14 @@ fn run_check_selected(
             // Desugared to functions by `traits::lower` and constants inlined by
             // `witchy_syntax::consts` before this point.
             Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
+        }
+    }
+    for item in &module.items {
+        if let Item::Type(t) = item
+            && let Some(cap) = transparent_externref_brand_cap(&t.name, &type_defs, &mut HashSet::new())
+            && !is_externref_cap(&t.name)
+        {
+            c.transparent_externref_brands.insert(t.name.clone(), cap);
         }
     }
 

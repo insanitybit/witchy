@@ -130,7 +130,7 @@ cannot instantiate.
 
 ## The imports
 
-ABI version 1 declares **83 imports** (`IMPORT_COUNT` in
+ABI version 1 declares **84 imports** (`IMPORT_COUNT` in
 `crates/witchy-wir/src/wir_prelude.rs`). That file owns the ordered signatures
 and the explicit metadata rendered below. The classes are:
 
@@ -170,15 +170,15 @@ byte-for-byte and instantiates an all-import probe against the native host.
 | `crypto_reveal_len` | `(i32) -> i32` | capability authority | Secret | omitted |
 | `env_len` | `(i32) -> i32` | capability authority | Env | omitted |
 | `env_fill` | `(i32, i32)` | capability authority | Env | omitted |
-| `dir_read_len` | `(i32, i32) -> i32` | capability authority | Dir.Read | omitted |
-| `dir_list_size` | `(i32) -> i32` | capability authority | Dir.Read | omitted |
+| `dir_read_len` | `(externref, i32) -> i32` | capability authority | Dir.Read | omitted |
+| `dir_list_size` | `(externref) -> i32` | capability authority | Dir.Read | omitted |
 | `args_size` | `() -> i32` | launch input | none | omitted |
 | `write_pending_list` | `(i32)` | pure infrastructure | none | provided |
 | `vm_par_map_run` | `(i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `vm_par_map_write` | `(i32)` | internal/toolchain service | none | omitted |
 | `vm_par_map_bytes_run` | `(i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `vm_par_map_bytes_write` | `(i32)` | internal/toolchain service | none | omitted |
-| `vm_with_dir_run` | `(i32, i32, i32) -> i32` | internal/toolchain service | none | omitted |
+| `vm_with_dir_run` | `(externref, i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `vm_serve_run` | `(i32, i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `build_read_len` | `(i32, i32) -> i32` | capability authority | Build.Read | omitted |
 | `build_out_write` | `(i32, i32, i32)` | capability authority | Build.Out | omitted |
@@ -196,15 +196,16 @@ byte-for-byte and instantiates an all-import probe against the native host.
 | `print_int` | `(i64)` | pure infrastructure | none | provided |
 | `print_float` | `(f64)` | pure infrastructure | none | provided |
 | `string_from_code` | `(i64, i32) -> i32` | pure infrastructure | none | provided |
-| `dir_subdir` | `(i32, i32) -> i32` | capability authority | Dir.Read | omitted |
-| `dir_only` | `(i32, i32) -> i32` | capability authority | Dir.Read | omitted |
-| `dir_exists` | `(i32, i32) -> i32` | capability authority | Dir.Read | omitted |
-| `dir_is_dir` | `(i32, i32) -> i32` | capability authority | Dir.Read | omitted |
-| `dir_write` | `(i32, i32, i32)` | capability authority | Dir.Write | omitted |
-| `dir_append` | `(i32, i32, i32)` | capability authority | Dir.Write | omitted |
-| `dir_make_dir` | `(i32, i32)` | capability authority | Dir.Write | omitted |
-| `dir_open` | `(i32, i32) -> externref` | capability authority | Dir.Read | omitted |
-| `dir_create` | `(i32, i32) -> externref` | capability authority | Dir.Write | omitted |
+| `mint_dir` | `(i32) -> externref` | capability authority | Dir.grant | omitted |
+| `dir_subdir` | `(externref, i32) -> externref` | capability authority | Dir.Read | omitted |
+| `dir_only` | `(externref, i32) -> externref` | capability authority | Dir.Read | omitted |
+| `dir_exists` | `(externref, i32) -> i32` | capability authority | Dir.Read | omitted |
+| `dir_is_dir` | `(externref, i32) -> i32` | capability authority | Dir.Read | omitted |
+| `dir_write` | `(externref, i32, i32)` | capability authority | Dir.Write | omitted |
+| `dir_append` | `(externref, i32, i32)` | capability authority | Dir.Write | omitted |
+| `dir_make_dir` | `(externref, i32)` | capability authority | Dir.Write | omitted |
+| `dir_open` | `(externref, i32) -> externref` | capability authority | Dir.Read | omitted |
+| `dir_create` | `(externref, i32) -> externref` | capability authority | Dir.Write | omitted |
 | `mint_file` | `(i32) -> externref` | capability authority | File.grant | omitted |
 | `file_read_len` | `(externref) -> i32` | capability authority | File.handle | omitted |
 | `file_write` | `(externref, i32)` | capability authority | File.handle | omitted |
@@ -230,7 +231,7 @@ byte-for-byte and instantiates an all-import probe against the native host.
 | `crypto.__ecdsa_p256_verify_hex_status` | `(i32, i32, i32) -> i64` | pure infrastructure | none | provided |
 | `crypto.__rsa_pkcs1_sha256_verify_status` | `(i32, i32, i32) -> i64` | pure infrastructure | none | provided |
 | `crypto.__ed25519_verify_status` | `(i32, i32, i32) -> i64` | pure infrastructure | none | provided |
-| `exec_run` | `(i32, i32, i32, i32) -> i32` | capability authority | Exec | omitted |
+| `exec_run` | `(externref, i32, i32, i32) -> i32` | capability authority | Exec | omitted |
 | `heap_register` | `(i32, i32)` | runtime diagnostic | none | omitted |
 | `heap_frontier` | `(i32)` | runtime diagnostic | none | omitted |
 | `__witchy_abort` | `(i32, i64, i64, i32)` | runtime diagnostic | none | provided |

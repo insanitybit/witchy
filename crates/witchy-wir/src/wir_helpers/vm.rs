@@ -98,5 +98,14 @@ pub fn vm_serve_helper() -> WirFunc {
 /// `input` in an isolated worker VM granted exactly `dir`. The host stages the result
 /// `Bytes` (`vm_with_dir_run`), which `fill_pending` lays out into the reserved block.
 pub fn vm_with_dir_helper() -> WirFunc {
-    two_phase_helper("vm_with_dir", &["dir", "f", "input"], "vm_with_dir_run", "fill_pending")
+    two_phase_helper_typed(
+        "vm_with_dir",
+        &[
+            ("dir".to_string(), WirTy::Extern),
+            ("f".to_string(), WirTy::Bool),
+            ("input".to_string(), WirTy::Bool),
+        ],
+        "vm_with_dir_run",
+        "fill_pending",
+    )
 }

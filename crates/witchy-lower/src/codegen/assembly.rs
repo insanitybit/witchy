@@ -105,6 +105,46 @@ fn eq_impl_types(module: &Module) -> HashSet<String> {
         .collect()
 }
 
+fn transparent_externref_brand_entries(module: &Module) -> Vec<(String, String, Type)> {
+    let candidates: Vec<(String, String, Type)> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Type(t) if t.is_capability && t.variants.len() == 1 => {
+                let variant = t.variants.first()?;
+                if variant.name == t.name && variant.field_names.is_empty() && variant.fields.len() == 1 {
+                    Some((t.name.clone(), variant.name.clone(), variant.fields[0].clone()))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+        .collect();
+    let mut transparent: HashSet<String> = HashSet::new();
+    let mut out: Vec<(String, String, Type)> = Vec::new();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for (brand, ctor, field) in &candidates {
+            if transparent.contains(brand) {
+                continue;
+            }
+            let is_ref = match field.unqualified() {
+                Type::Named(n, _) if is_builtin_externref_type(n) => true,
+                Type::Named(n, args) if args.is_empty() => transparent.contains(n),
+                _ => false,
+            };
+            if is_ref {
+                transparent.insert(brand.clone());
+                out.push((brand.clone(), ctor.clone(), field.clone()));
+                changed = true;
+            }
+        }
+    }
+    out
+}
+
 /// Register every item's compile-time metadata (parameter conventions,
 /// return kinds/types, record fields, generic shape hints, ...) on `cg`.
 fn register_module_items(cg: &mut Codegen, module: &Module) {
@@ -123,6 +163,10 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
             cg.ctor_type_name.insert(name.to_string(), ty.to_string());
             cg.ctors.insert(name.to_string(), (tag as u32, *nfields));
         }
+    }
+    for (brand, ctor, field) in transparent_externref_brand_entries(module) {
+        cg.transparent_externref_brands.insert(brand);
+        cg.transparent_externref_ctors.insert(ctor, field);
     }
     // Collect parameter conventions up front so call sites can resolve `var`
     // write-back even for forward references.
@@ -149,7 +193,7 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
                         .collect(),
                 );
                 cg.fn_params.insert(f.name.clone(), f.params.clone());
-                let ret = f.ret.as_ref().map(ty_kind).unwrap_or(Kind::I32);
+                let ret = f.ret.as_ref().map(|t| cg.kind_for_type(t)).unwrap_or(Kind::I32);
                 cg.fn_ret.insert(f.name.clone(), ret);
                 if let Some(t) = &f.ret {
                     cg.fn_ret_valtype.insert(f.name.clone(), ty_to_valtype(t));
@@ -159,7 +203,7 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
                 // closure's return kind so a `let f = make(...)` then `f(x)` call
                 // recovers the result at the right width.
                 if let Some(Type::Fn(_, cret)) = &f.ret {
-                    cg.fn_ret_closure_kind.insert(f.name.clone(), ty_kind(cret));
+                    cg.fn_ret_closure_kind.insert(f.name.clone(), cg.kind_for_type(cret));
                 }
                 // A function returning a tuple: record its slot value types so a
                 // `let (a, b) = f(...)` destructures each at the right width.
@@ -570,7 +614,8 @@ pub fn assemble_wir_module(
             WasmTy::I32 => WK::I32,
             WasmTy::I64 => WK::I64,
             WasmTy::F64 | WasmTy::F32 => WK::F64,
-            // (RFC-0005) A migrated capability import (mint_file, file_*, dir_open/create)
+            // (RFC-0005) A migrated capability import (mint_dir, dir_*,
+            // mint_file, file_*)
             // takes/returns an unforgeable `externref`.
             WasmTy::ExternRef => WK::ExternRef,
         }
@@ -720,6 +765,9 @@ pub fn assemble_wir_module(
             if main_param_is_file.iter().any(|is_file| *is_file) {
                 import_names.insert("mint_file");
             }
+            if main_param_is_dir.iter().any(|is_dir| *is_dir) {
+                import_names.insert("mint_dir");
+            }
             // (RFC-0045) A user `fail(msg)` calls `__witchy_abort` directly (its
             // import_deps aren't consulted because it's not a registry helper), so
             // declare the import when user code reaches it.
@@ -773,8 +821,8 @@ pub fn assemble_wir_module(
             for name in &user_order {
                 pruned_funcs.push(cg.wir_funcs.get(name).expect("lowered above").clone());
             }
-            // Each `Dir` param maps to a distinct host handle in declaration order
-            // (0, 1, 2, …) so a `main` taking several `Dir`s gets several grants.
+            // Each `Dir` param is minted from a distinct root grant in declaration
+            // order as an unforgeable externref (RFC-0005 Stage 3).
             // Each `File` param is minted from the corresponding direct `--file`
             // grant as an unforgeable externref (RFC-0005 Stage 2); every other cap
             // is a right-less placeholder (handle 0).
@@ -786,7 +834,10 @@ pub fn assemble_wir_module(
                 if main_param_is_args.get(i).copied().unwrap_or(false) {
                     main_args.push(WirExpr::Call { func: "build_args".into(), args: vec![] });
                 } else if main_param_is_dir.get(i).copied().unwrap_or(false) {
-                    main_args.push(WirExpr::ConstI32(dir_handle));
+                    main_args.push(WirExpr::CallHost {
+                        import: "mint_dir".into(),
+                        args: vec![WirExpr::ConstI32(dir_handle)],
+                    });
                     dir_handle += 1;
                 } else if main_param_is_file.get(i).copied().unwrap_or(false) {
                     main_args.push(WirExpr::CallHost {
@@ -1146,7 +1197,7 @@ fn collect_called_funcs(seq: &[witchy_wir::wir::WirNode], out: &mut HashSet<Stri
                     expr(a, out);
                 }
             }
-            E::StructGet { base, .. } => expr(base, out),
+            E::StructGet { base, .. } | E::RefIsNull(base) => expr(base, out),
             E::ConstI64(_) | E::ConstF64(_) | E::ConstI32(_) | E::StrPtr(_) | E::MemorySize
             | E::GetLocal(_) | E::GetGlobal(_) | E::RefNull(_) => {}
         }
@@ -1238,7 +1289,7 @@ fn collect_called_host_imports(seq: &[witchy_wir::wir::WirNode], out: &mut HashS
                     expr(a, out);
                 }
             }
-            E::StructGet { base, .. } => expr(base, out),
+            E::StructGet { base, .. } | E::RefIsNull(base) => expr(base, out),
             E::ConstI64(_) | E::ConstF64(_) | E::ConstI32(_) | E::StrPtr(_) | E::MemorySize
             | E::GetLocal(_) | E::GetGlobal(_) | E::RefNull(_) => {}
         }
@@ -1390,7 +1441,7 @@ fn attach_diagnostic_site_expr(
                     reaches_host |= expr(arg, site);
                 }
             }
-            E::StructGet { base, .. } => reaches_host |= expr(base, site),
+            E::StructGet { base, .. } | E::RefIsNull(base) => reaches_host |= expr(base, site),
             E::ConstI64(_)
             | E::ConstF64(_)
             | E::ConstI32(_)

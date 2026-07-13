@@ -101,6 +101,9 @@ const TRY_TMP: &str = "__witchy_try_tmp";
 
 /// Scratch local holding a `match` scrutinee while arms test it.
 const MATCH_TMP: &str = "__witchy_match_tmp";
+/// Scratch local holding an externref `match` scrutinee; externrefs cannot pass
+/// through the i64 slot used by MATCH_TMP.
+const MATCH_REF_TMP: &str = "__witchy_match_ref_tmp";
 
 /// (RFC-0035 step 4) Scratch i64 slot holding a match's RESULT while its dup'd-read
 /// scrutinee is `$rc_drop`'d after the arms (`FromSlot` recovers any width). Shared is
@@ -156,10 +159,11 @@ const ENV_PARAM: &str = "__witchy_env";
 ///     i64 and floats are bit-reinterpreted when they enter this representation
 ///     (see `to_slot`/`from_slot`).
 ///   * `F64` — `Float`.
-///   * `I32` — concrete pointers (strings/lists/records/closures/capabilities)
-///     and `Bool`. These are the wasm32 address width.
-///   * `ExternRef` — migrated unforgeable capabilities (`File` in RFC-0005 Stage
-///     2). These must not cross the universal slot or linear-memory heap.
+///   * `I32` — concrete pointers (strings/lists/records/closures and unmigrated
+///     capabilities) and `Bool`. These are the wasm32 address width.
+///   * `ExternRef` — migrated unforgeable capabilities (`Dir`/`File` in
+///     RFC-0005 stages 2–3). These must not cross the universal slot or
+///     linear-memory heap.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     I32,
@@ -178,9 +182,13 @@ fn ty_kind(t: &Type) -> Kind {
     match t {
         Type::Named(n, _) if n == "Float" => Kind::F64,
         Type::Named(n, _) if n == "Int" || n == "Duration" => Kind::I64,
-        Type::Named(n, _) if n == "File" => Kind::ExternRef,
+        Type::Named(n, _) if n == "Dir" || n == "File" => Kind::ExternRef,
         _ => Kind::I32,
     }
+}
+
+fn is_builtin_externref_type(n: &str) -> bool {
+    n == "Dir" || n == "File"
 }
 
 /// A finer source-level value type than `Kind`, used where i32 alone is
@@ -503,6 +511,12 @@ struct Codegen<'types> {
     /// Constructor name -> (variant tag, field count). A constructor value is a
     /// heap record `[tag: i32][field: i32]...`.
     ctors: HashMap<String, (u32, usize)>,
+    /// Single-field `capability X from Dir/File` brands that compile as the
+    /// underlying externref instead of a heap record.
+    transparent_externref_brands: HashSet<String>,
+    /// Constructor name -> its single underlying field type for transparent
+    /// externref brands. The constructor lowers to its sole argument.
+    transparent_externref_ctors: HashMap<String, Type>,
     /// Constructor name -> per-field record type name (Some when that field is
     /// a record), so binding `Circle(p)` in a pattern lets `p.field` resolve.
     /// Only concrete (non-generic) field types are known here.
@@ -992,6 +1006,8 @@ impl<'types> Codegen<'types> {
             fn_conventions: HashMap::new(),
             fn_params: HashMap::new(),
             ctors: HashMap::new(),
+            transparent_externref_brands: HashSet::new(),
+            transparent_externref_ctors: HashMap::new(),
             ctor_field_records: HashMap::new(),
             mk_arities: HashSet::new(),
             next_label: 0,
@@ -1151,6 +1167,37 @@ impl<'types> Codegen<'types> {
                 .map(|(tag, arity)| self.anon_union_tag_code(&tag, arity))
                 .collect(),
         )
+    }
+
+    fn kind_for_type(&self, t: &Type) -> Kind {
+        match t {
+            Type::Named(n, _) if self.transparent_externref_brands.contains(n) => Kind::ExternRef,
+            Type::Named(n, args)
+                if n == "Option" && args.len() == 1 && self.type_is_direct_externref(&args[0]) =>
+            {
+                Kind::ExternRef
+            }
+            _ => ty_kind(t),
+        }
+    }
+
+    fn type_is_direct_externref(&self, t: &Type) -> bool {
+        match t.unqualified() {
+            Type::Named(n, _) if is_builtin_externref_type(n) => true,
+            Type::Named(n, args) if args.is_empty() => self.transparent_externref_brands.contains(n),
+            _ => false,
+        }
+    }
+
+    fn option_externref_inner<'a>(&self, t: &'a Type) -> Option<&'a Type> {
+        let Type::Named(n, args) = t.unqualified() else {
+            return None;
+        };
+        if n == "Option" && args.len() == 1 && self.type_is_direct_externref(&args[0]) {
+            args.first()
+        } else {
+            None
+        }
     }
 
     /// The WASM kind a closure-valued expression returns: a function-typed
@@ -1517,7 +1564,7 @@ impl<'types> Codegen<'types> {
                     let vt = ty_to_valtype(ty);
                     self.local_types.insert(name.clone(), ty.clone());
                     self.local_val_types.insert(name.clone(), vt);
-                    self.locals.insert(name.clone(), valtype_kind(vt));
+                    self.locals.insert(name.clone(), self.kind_for_type(ty));
                 }
             }
             Pattern::Tuple(parts) => {
@@ -2002,7 +2049,7 @@ impl<'types> Codegen<'types> {
         self.local_list_nesting.clear();
         self.local_fn_ret_kind.clear();
         for p in &f.params {
-            let k = p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32);
+            let k = p.ty.as_ref().map(|t| self.kind_for_type(t)).unwrap_or(Kind::I32);
             self.locals.insert(p.name.clone(), k);
             if let Some(t) = &p.ty {
                 self.local_val_types.insert(p.name.clone(), ty_to_valtype(t));
@@ -2011,7 +2058,7 @@ impl<'types> Codegen<'types> {
             // A function-typed parameter (`f: fn(...) -> RET`): remember RET's kind
             // so a closure call `f(x)` recovers the result at the right width.
             if let Some(Type::Fn(_, ret)) = &p.ty {
-                self.local_fn_ret_kind.insert(p.name.clone(), ty_kind(ret));
+                self.local_fn_ret_kind.insert(p.name.clone(), self.kind_for_type(ret));
             }
             // A nested-list parameter (`m: List(List(Int))`): record its
             // `(depth, scalar)` so `at(at(m, i), j)` recovers an Int as i64.
@@ -2086,7 +2133,7 @@ impl<'types> Codegen<'types> {
         // Result = the normal return value, then one slot per `var` parameter
         // (moved back out to the caller).
         let ret_kind = match &f.ret {
-            Some(t) => ty_kind(t),
+            Some(t) => self.kind_for_type(t),
             None => self.block_kind(renamed),
         };
         self.cur_fn_ret_kind = ret_kind;
@@ -2230,6 +2277,7 @@ impl<'types> Codegen<'types> {
         locals.push(WirLocal { name: TRY_TMP.into(), ty: i32t() });
         locals.push(WirLocal { name: TYPECHECK_TMP.into(), ty: i32t() });
         locals.push(WirLocal { name: MATCH_TMP.into(), ty: i64t() });
+        locals.push(WirLocal { name: MATCH_REF_TMP.into(), ty: witchy_wir::wir::WirTy::Extern });
         locals.push(WirLocal { name: MATCH_RES.into(), ty: i64t() });
         for i in 0..SCRUT_POOL {
             locals.push(WirLocal { name: format!("__witchy_scrut_save_{i}"), ty: i64t() });
@@ -2931,7 +2979,7 @@ impl<'types> Codegen<'types> {
                             .get(&callee)
                             .map(|ps| {
                                 ps.iter()
-                                    .map(|p| p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32))
+                                    .map(|p| p.ty.as_ref().map(|t| self.kind_for_type(t)).unwrap_or(Kind::I32))
                                     .collect()
                             })
                             .unwrap_or_default();
@@ -4059,6 +4107,57 @@ impl<'types> Codegen<'types> {
         })
     }
 
+    fn lower_externref_pattern(
+        &mut self,
+        value: &witchy_wir::wir::WirExpr,
+        pat: &Pattern,
+        expected: Option<&Type>,
+    ) -> Option<(witchy_wir::wir::WirExpr, witchy_wir::wir::WirSeq)> {
+        use witchy_wir::wir::{WirExpr as W, WirNode as N};
+        Some(match pat {
+            Pattern::Wildcard => (W::ConstI32(1), vec![]),
+            Pattern::Var(name) => (
+                W::ConstI32(1),
+                vec![N::SetLocal {
+                    local: name.clone(),
+                    value: value.clone(),
+                }],
+            ),
+            Pattern::Ctor { name, args } if name == "Some" && args.len() == 1 => {
+                let inner = expected.and_then(|t| self.option_externref_inner(t)).cloned()?;
+                let (sub_cond, sub_binds) =
+                    self.lower_externref_pattern(value, &args[0], Some(&inner))?;
+                let non_null = W::Unary {
+                    op: witchy_wir::wir::UnOp::Not,
+                    kind: witchy_wir::wir::Kind::I32,
+                    arg: Box::new(W::RefIsNull(Box::new(value.clone()))),
+                };
+                let cond = if matches!(sub_cond, W::ConstI32(1)) {
+                    non_null
+                } else {
+                    W::Binary {
+                        op: witchy_wir::wir::BinOp::And,
+                        kind: witchy_wir::wir::Kind::I32,
+                        lhs: Box::new(non_null),
+                        rhs: Box::new(sub_cond),
+                    }
+                };
+                (cond, sub_binds)
+            }
+            Pattern::Ctor { name, args } if name == "None" && args.is_empty() => {
+                expected.and_then(|t| self.option_externref_inner(t))?;
+                (W::RefIsNull(Box::new(value.clone())), vec![])
+            }
+            Pattern::Ctor { name, args }
+                if args.len() == 1 && self.transparent_externref_ctors.contains_key(name) =>
+            {
+                let field_ty = self.transparent_externref_ctors.get(name).cloned();
+                self.lower_externref_pattern(value, &args[0], field_ty.as_ref().or(expected))?
+            }
+            _ => return None,
+        })
+    }
+
     /// Lower a `match` to WIR — only when EVERY arm has a scalar pattern (and its
     /// guard/body lower). Store the scrutinee in `$MATCH_TMP`, then an outer
     /// value-`block $d` holding per-arm `block $a` (test → `br_if` skip; binds;
@@ -4067,16 +4166,9 @@ impl<'types> Codegen<'types> {
     fn lower_match(&mut self, scrutinee: &Expr, arms: &[MatchArm]) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
         let scrut_kind = self.kind_of(scrutinee);
-        let result_kind = arms.iter().fold(Kind::I32, |acc, a| {
-            let k = self.kind_of(&a.body);
-            if acc == Kind::F64 || k == Kind::F64 {
-                Kind::F64
-            } else if acc == Kind::I64 || k == Kind::I64 {
-                Kind::I64
-            } else {
-                Kind::I32
-            }
-        });
+        let result_kind = arms
+            .iter()
+            .fold(Kind::I32, |acc, a| promote_kind(acc, self.kind_of(&a.body)));
         let saved = self.next_label;
         // (RFC-0035 step 4) When the scrutinee is a `list.at` READ of a provably offset-0
         // element, it was `$rc_dup`'d at the read (step 1) and is DEAD after the match — an
@@ -4106,7 +4198,11 @@ impl<'types> Codegen<'types> {
         if drop_scrut {
             self.match_scrut_depth += 1;
         }
-        let value = W::GetLocal(MATCH_TMP.to_string());
+        let value = if scrut_kind == Kind::ExternRef {
+            W::GetLocal(MATCH_REF_TMP.to_string())
+        } else {
+            W::GetLocal(MATCH_TMP.to_string())
+        };
         let not = |c: W| W::Unary {
             op: witchy_wir::wir::UnOp::Not,
             kind: witchy_wir::wir::Kind::I32,
@@ -4115,7 +4211,11 @@ impl<'types> Codegen<'types> {
         let mut arm_blocks: witchy_wir::wir::WirSeq = Vec::with_capacity(arms.len() + 1);
         for (i, arm) in arms.iter().enumerate() {
             let a_label = format!("a{id}_{i}");
-            let (cond, binds) = match self.lower_pattern(&value, &arm.pattern, scrut_ty.as_ref()) {
+            let (cond, binds) = match if scrut_kind == Kind::ExternRef {
+                self.lower_externref_pattern(&value, &arm.pattern, scrut_ty.as_ref())
+            } else {
+                self.lower_pattern(&value, &arm.pattern, scrut_ty.as_ref())
+            } {
                 Some(cb) => cb,
                 None => {
                     if std::env::var_os("WIRDIAG").is_some() {
@@ -4197,6 +4297,19 @@ impl<'types> Codegen<'types> {
                 )),
             ]));
         }
+        if scrut_kind == Kind::ExternRef {
+            return Some(W::Seq(vec![
+                N::SetLocal {
+                    local: MATCH_REF_TMP.to_string(),
+                    value: scrut_w,
+                },
+                N::Block {
+                    label: format!("d{id}"),
+                    result: Some(Self::wir_ty_for_kind(result_kind)),
+                    body: arm_blocks,
+                },
+            ]));
+        }
         Some(W::Seq(vec![
             N::SetLocal {
                 local: MATCH_TMP.to_string(),
@@ -4219,7 +4332,7 @@ impl<'types> Codegen<'types> {
         let param_kinds: Vec<Kind> = self
             .fn_params
             .get(name)
-            .map(|ps| ps.iter().map(|p| p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32)).collect())
+            .map(|ps| ps.iter().map(|p| p.ty.as_ref().map(|t| self.kind_for_type(t)).unwrap_or(Kind::I32)).collect())
             .unwrap_or_default();
         let mut args_w = Vec::with_capacity(args.len());
         for (i, arg) in args.iter().enumerate() {
@@ -4263,7 +4376,11 @@ impl<'types> Codegen<'types> {
         let param_kinds: Vec<Kind> = self
             .fn_params
             .get(name)
-            .map(|ps| ps.iter().map(|p| p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32)).collect())
+            .map(|ps| {
+                ps.iter()
+                    .map(|p| p.ty.as_ref().map(|t| self.kind_for_type(t)).unwrap_or(Kind::I32))
+                    .collect()
+            })
             .unwrap_or_default();
         let mut args_w = Vec::with_capacity(args.len());
         for (i, arg) in args.iter().enumerate() {
@@ -4648,13 +4765,7 @@ impl<'types> Codegen<'types> {
                 Some(eb) => {
                     let tk = self.block_kind(then_block);
                     let ek = self.block_kind(eb);
-                    let ck = if tk == Kind::F64 || ek == Kind::F64 {
-                        Kind::F64
-                    } else if tk == Kind::I64 || ek == Kind::I64 {
-                        Kind::I64
-                    } else {
-                        Kind::I32
-                    };
+                    let ck = promote_kind(tk, ek);
                     let then_ = Self::convert_block_tail(self.lower_block(then_block)?, tk, ck);
                     let els = Self::convert_block_tail(self.lower_block(eb)?, ek, ck);
                     let cond = self.lower_expr(cond)?;
@@ -4976,6 +5087,22 @@ impl<'types> Codegen<'types> {
                 return self.lower_aggregate(tag_code, args, 0);
             }
             Expr::Ctor { name, args } => {
+                if let Some(ty) = self.ast_type_of_expr(e)
+                    && self.option_externref_inner(&ty).is_some()
+                {
+                    if name == "Some" && args.len() == 1 {
+                        return self.lower_expr(&args[0]);
+                    }
+                    if name == "None" && args.is_empty() {
+                        return Some(W::RefNull(witchy_wir::wir::Kind::ExternRef));
+                    }
+                }
+                if self.transparent_externref_ctors.contains_key(name) {
+                    if args.len() != 1 {
+                        return None;
+                    }
+                    return self.lower_expr(&args[0]);
+                }
                 if name == "Nil" && args.is_empty() {
                     return Some(W::ConstI32(0));
                 }
@@ -5871,10 +5998,10 @@ impl<'types> Codegen<'types> {
             }
         }
         for p in params {
-            let k = p.ty.as_ref().map(ty_kind).unwrap_or(Kind::I32);
+            let k = p.ty.as_ref().map(|t| self.kind_for_type(t)).unwrap_or(Kind::I32);
             self.locals.insert(p.name.clone(), k);
             if let Some(Type::Fn(_, ret)) = &p.ty {
-                self.local_fn_ret_kind.insert(p.name.clone(), ty_kind(ret));
+                self.local_fn_ret_kind.insert(p.name.clone(), self.kind_for_type(ret));
             }
         }
         self.infer_locals(body);
@@ -5946,6 +6073,7 @@ impl<'types> Codegen<'types> {
                 locals.push(WirLocal { name: TUPLE_TMP.into(), ty: i32t() });
                 locals.push(WirLocal { name: TRY_TMP.into(), ty: i32t() });
                 locals.push(WirLocal { name: MATCH_TMP.into(), ty: WirTy::Int });
+                locals.push(WirLocal { name: MATCH_REF_TMP.into(), ty: WirTy::Extern });
                 locals.push(WirLocal { name: MATCH_RES.into(), ty: WirTy::Int });
                 for i in 0..SCRUT_POOL {
                     locals.push(WirLocal { name: format!("__witchy_scrut_save_{i}"), ty: WirTy::Int });
