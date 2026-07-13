@@ -80,6 +80,9 @@ for p in "${paths[@]}"; do
         scripts/worktree-warm.sh)
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
             add "cargo nextest run --test worktree_warm" ;;
+        scripts/worktree-create.sh)
+            add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
+            add "cargo nextest run --test worktree_create" ;;
         scripts/*.sh)
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done" ;;
         justfile)

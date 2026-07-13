@@ -22,16 +22,34 @@ fi
 [ -n "$name" ] || name="wt-$$-$(date +%s)"
 
 dest="$root/.claude/worktrees/$name"
-branch="worktree-$name"
+base_branch="worktree-$name"
+branch="$base_branch"
+journal="$root/scratch/merge-queue/journal.jsonl"
 
 if [ -e "$dest" ]; then
     echo "worktree-create: $dest already exists" >&2
     exit 1
 fi
 
-# Unique-ify the branch if a previous worktree left one behind.
-if git show-ref --verify --quiet "refs/heads/$branch"; then
-    branch="$branch-$(date +%s)"
+# A deleted branch can still be journaled as merged. Reusing that name would
+# make the coordinator's next sweep remove this new, clean worktree.
+branch_was_merged() {
+    [ -f "$journal" ] &&
+        jq -e --arg branch "$1" 'select(.event == "merged" and .branch == $branch)' "$journal" >/dev/null 2>&1
+}
+branch_unavailable() {
+    git show-ref --verify --quiet "refs/heads/$1" || branch_was_merged "$1"
+}
+
+if branch_unavailable "$branch"; then
+    nonce="$(date +%s)-$$"
+    branch="$base_branch-$nonce"
+    attempt=0
+    while branch_unavailable "$branch"; do
+        attempt=$((attempt + 1))
+        branch="$base_branch-$nonce-$attempt"
+    done
+    echo "worktree-create: branch $base_branch already exists or was previously merged; using $branch" >&2
 fi
 
 git worktree add -b "$branch" "$dest" HEAD 1>&2 || exit 1
@@ -47,7 +65,8 @@ git worktree add -b "$branch" "$dest" HEAD 1>&2 || exit 1
 # Build both dev (for the binary) and test (for nextest) profiles — the test
 # profile needs cfg(test) so it recompiles all workspace crates; doing both
 # here means the agent's first `cargo nextest run` is a no-op link.
-if command -v cargo >/dev/null 2>&1; then
+# WITCHY_WORKTREE_CREATE_PREBUILD=0 keeps script integration tests hermetic.
+if [ "${WITCHY_WORKTREE_CREATE_PREBUILD:-1}" != "0" ] && command -v cargo >/dev/null 2>&1; then
     nohup sh -c "cargo build --workspace --manifest-path '$dest/Cargo.toml' && \
         cargo test --workspace --no-run --manifest-path '$dest/Cargo.toml'" \
         >"$dest/.worktree-prebuild.log" 2>&1 </dev/null &
