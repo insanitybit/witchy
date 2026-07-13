@@ -179,10 +179,11 @@ jobs:
           done < <(find projects -type f -path '*/src/*.witchy' -print | sort)
           ./target/release/witchy fmt --check "${files[@]}"
 
-  # Mirrors ci.yml `playground`: the shipped browser compiler must build and
-  # every runnable book block must agree with the committed manifest oracle.
+  # Mirrors ci.yml `playground` + `docs-build`: the shipped browser compiler
+  # must build, every runnable book block must agree with the committed
+  # manifest oracle, and the deployable docs bundle must assemble successfully.
   playground:
-    name: Playground wasm + runnable book
+    name: Docs bundle + runnable book
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -193,12 +194,19 @@ jobs:
       - uses: ./.github/actions/install-rust
         with:
           targets: wasm32-unknown-unknown
+      - name: Build the release binary for the docs compiler
+        run: cargo build --release
       - name: Build the interpreter for the browser
-        run: cargo build --release --lib --no-default-features --target wasm32-unknown-unknown
+        run: |
+          cargo build --release --lib --no-default-features --target wasm32-unknown-unknown
+          mkdir -p web
+          cp target/wasm32-unknown-unknown/release/witchy.wasm web/witchy.wasm
       - name: Validate the runnable book against the manifest oracle
         env:
           WITCHY_WASM_PATH: target/wasm32-unknown-unknown/release/witchy.wasm
         run: node scripts/validate_book_examples.mjs
+      - name: Assemble the deployable docs bundle
+        run: ./scripts/build-docs.sh dist
 
   build:
     name: Build ${{ matrix.target }}
