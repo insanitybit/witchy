@@ -469,9 +469,12 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             discard_errors: &discard_errors,
             table: &empty_table,
             bound_traits: std::cell::RefCell::new(HashMap::new()),
+            current_func: std::cell::RefCell::new(String::new()),
+            current_line: std::cell::Cell::new(0),
         };
         for item in &mut items {
             if let Item::Function(f) = item {
+                *ctx.current_func.borrow_mut() = f.name.clone();
                 ctx.set_bounds(&f.bounds);
                 let mut scope = Scope::new();
                 seed_typed_params(&f.params, &mut scope);
@@ -687,12 +690,15 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             discard_errors: &discard_errors,
             table: type_table,
             bound_traits: std::cell::RefCell::new(HashMap::new()),
+            current_func: std::cell::RefCell::new(String::new()),
+            current_line: std::cell::Cell::new(0),
         };
         for item in &mut module.items {
             if let Item::Function(f) = item {
                 if no_fallback.contains(&f.name) {
                     continue;
                 }
+                *ctx.current_func.borrow_mut() = f.name.clone();
                 ctx.set_bounds(&f.bounds);
                 let mut scope = Scope::new();
                 seed_typed_params(&f.params, &mut scope);
@@ -1799,6 +1805,11 @@ struct Ctx<'a> {
     /// ONLY when that variable is bound by the relevant comparison trait — an
     /// UNbounded generic `==` keeps the native structural comparison.
     bound_traits: std::cell::RefCell<HashMap<String, Vec<String>>>,
+    /// The function currently being rewritten, for diagnostics emitted before
+    /// the ordinary type checker can attach its own `at_loc` prefix.
+    current_func: std::cell::RefCell<String>,
+    /// The enclosing statement's source line while rewriting an expression.
+    current_line: std::cell::Cell<u32>,
 }
 
 fn table_ast_type(table: &crate::typeck::TypeTable, e: &Expr) -> Option<Type> {
@@ -2223,6 +2234,20 @@ impl Ctx<'_> {
         }
     }
 
+    fn current_location_prefix(&self) -> String {
+        let line = self.current_line.get();
+        if line == 0 {
+            return String::new();
+        }
+        let func = self.current_func.borrow();
+        let display = func.rsplit('.').next().unwrap_or(&func);
+        if display.is_empty() {
+            format!("line {line}: ")
+        } else {
+            format!("`{display}`, line {line}: ")
+        }
+    }
+
     /// `tail_is_value` is whether this block's final statement is in VALUE
     /// position — a function/closure body, or an `if`/`match` arm used as an
     /// expression — so its result is consumed and must NOT be turned into a
@@ -2230,6 +2255,7 @@ impl Ctx<'_> {
     fn rewrite_block(&self, b: &mut Block, scope: &mut Scope<Type>, tail_is_value: bool) {
         let last = b.stmts.len().wrapping_sub(1);
         for (i, stmt) in b.stmts.iter_mut().enumerate() {
+            self.current_line.set(b.lines.get(i).copied().unwrap_or(0));
             // The final statement of a value-position block IS the block's value;
             // its result is used, so it is never a write-back or a discard.
             let value_used = i == last && tail_is_value;
@@ -2724,8 +2750,9 @@ impl Ctx<'_> {
                     // talk about method resolution.
                     None if matches!(receiver.as_ref(), Expr::Var(m) if witchy_syntax::linker::STD_MODULES.contains(&m.as_str())) => {
                         let Expr::Var(m) = receiver.as_ref() else { unreachable!() };
+                        let loc = self.current_location_prefix();
                         self.missing_impls.borrow_mut().push(format!(
-                            "`{m}.{method}` looks like a module-qualified call, but `{m}` is \
+                            "{loc}`{m}.{method}` looks like a module-qualified call, but `{m}` is \
                              not imported — add `import {m}`"
                         ));
                     }

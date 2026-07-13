@@ -372,9 +372,9 @@ mod typecheck {
     }
 
     #[test]
-    // KNOWN-BAD (BUG-162): this module-qualified-call type error is the one probed
-    // message with NO position (`main`, line N) — RFC-0072's polish item 2. The
-    // golden locks the current position-less text so the fix is a deliberate diff.
+    // RFC-0072 phase 2: even module-qualified-call import hints discovered during
+    // method lowering carry the same enclosing function/line prefix as ordinary
+    // type errors.
     fn module_qualified_call_not_imported() {
         insta::assert_snapshot!(type_diag(
             "fn main(console: Console):\n    console.print(json.stringify(42))\n"

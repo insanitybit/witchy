@@ -7,8 +7,9 @@ tracking: quality audit 2026-07-07 (scratch/audit-2026-07-07-quality/REPORT.md, 
   Phase 1 harness ef9c99a1 (2026-07-08); phase 2 shipped 2026-07-09 —
   file context on type errors (8da0cf79), backtrace-switch trailer on traps,
   arity errors show parameter types (7d3465f4), jargon-class messages guided
-  (d7a37976) + goldens (cbb840fd). The known-bad line-zero position (BUG-162)
-  is the documented residual, tracked separately.
+  (d7a37976) + goldens (cbb840fd). The forgotten-import method-call diagnostic
+  gained ordinary function/line context on 2026-07-13. The known-bad line-zero
+  position (BUG-162) is the documented residual, tracked separately.
 related:
   - "0045 (compiled trap diagnostics — the runtime-error format this locks)"
   - "0050 (method-call generalization — Part 2 error contract, BUG-303, lands under this harness)"
@@ -66,9 +67,9 @@ problems:
 
 Small text gaps found by probing, in scope for the polish pass:
 
-- the **import-hint** type error is the only probed message with **no
+- the **import-hint** type error used to be the only probed message with **no
   position** (`type error: \`json.stringify\` looks like…` — no `` `func`,
-  line N ``);
+  line N ``); fixed 2026-07-13 under the golden harness;
 - **no filename** anywhere in type/link errors — ambiguous the moment a
   project has two modules (multi-file is the norm in `projects/`);
 - arity errors say `expects 2 argument(s) but got 3` without showing the
