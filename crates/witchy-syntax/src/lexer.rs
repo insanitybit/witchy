@@ -83,6 +83,9 @@ pub enum Tok {
     /// desugared to the internal render intrinsic. It parses as that generated call's `)`
     /// but displays as the user's `}` in diagnostics.
     InterpRBrace,
+    /// `${` outside a string. The parser only accepts it inside `quote expr:`,
+    /// where it opens an expression-syntax splice hole.
+    QuoteHoleStart,
     LBrace,
     RBrace,
     /// `.{` — opens an anonymous struct `.{ field: expr, … }`. The only place a
@@ -177,6 +180,7 @@ impl fmt::Display for Tok {
             LParen => write!(f, "("),
             RParen => write!(f, ")"),
             InterpRBrace => write!(f, "}}"),
+            QuoteHoleStart => write!(f, "${{"),
             LBrace => write!(f, "{{"),
             RBrace => write!(f, "}}"),
             DotLBrace => write!(f, ".{{"),
@@ -1023,6 +1027,10 @@ impl Lexer {
                 Tok::QuestionQuestion
             }
             ('?', _) => Tok::Question,
+            ('$', Some('{')) => {
+                self.bump();
+                Tok::QuoteHoleStart
+            }
             ('(', _) => Tok::LParen,
             (')', _) => Tok::RParen,
             // A bare `{` is not witchy syntax; `}` is only ever an anonymous-struct
@@ -1133,7 +1141,12 @@ pub fn apply_layout(tokens: Vec<Token>) -> Vec<Token> {
             lines.last_mut().unwrap().toks.push(t);
         }
         match kind {
-            Tok::LParen | Tok::LBracket | Tok::LBrace | Tok::DotLBrace | Tok::DotLBracket => depth += 1,
+            Tok::LParen
+            | Tok::LBracket
+            | Tok::LBrace
+            | Tok::QuoteHoleStart
+            | Tok::DotLBrace
+            | Tok::DotLBracket => depth += 1,
             Tok::RParen | Tok::InterpRBrace | Tok::RBracket | Tok::RBrace => depth -= 1,
             _ => {}
         }
@@ -1199,7 +1212,12 @@ pub fn apply_layout(tokens: Vec<Token>) -> Vec<Token> {
                     bdepth = new_bd;
                     out.push(t.clone());
                 }
-                Tok::LParen | Tok::LBracket | Tok::LBrace | Tok::DotLBrace | Tok::DotLBracket => {
+                Tok::LParen
+                | Tok::LBracket
+                | Tok::LBrace
+                | Tok::QuoteHoleStart
+                | Tok::DotLBrace
+                | Tok::DotLBracket => {
                     bdepth += 1;
                     out.push(t.clone());
                 }

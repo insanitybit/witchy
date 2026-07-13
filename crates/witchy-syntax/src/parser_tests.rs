@@ -472,6 +472,41 @@ fn f():
     }
 
     #[test]
+    fn quote_expr_holes_lower_to_meta_expr_join() {
+        let m = parse_module(r#"
+fn f(x: meta.ExprSyntax, y: meta.ExprSyntax):
+    quote expr:
+        add(${x}, 2 * ${y})
+"#).expect("quote expression with holes should parse");
+        assert!(m.imports.contains(&"meta".to_string()), "quote expr imports meta");
+        let Item::Function(f) = &m.items[0] else {
+            panic!("expected function");
+        };
+        let Stmt::Expr(Expr::Call { name, args }) = &f.body.stmts[0] else {
+            panic!("expected lowered meta.expr_join call, got {:?}", f.body.stmts[0]);
+        };
+        assert_eq!(name, "meta.expr_join");
+        assert_eq!(
+            args,
+            &[
+                Expr::List(vec![
+                    Expr::Str("add(".to_string()),
+                    Expr::Str(", 2 * ".to_string()),
+                    Expr::Str(")".to_string()),
+                ]),
+                Expr::List(vec![Expr::Var("x".to_string()), Expr::Var("y".to_string())]),
+            ]
+        );
+    }
+
+    #[test]
+    fn quote_expr_holes_are_rejected_outside_quote_expr() {
+        let err = parse_module("fn f(x: Int):\n    ${x}\n")
+            .expect_err("quote holes outside quote expr are invalid");
+        assert!(err.message.contains("only valid inside `quote expr:`"), "{err}");
+    }
+
+    #[test]
     fn quote_identifier_is_ordinary_outside_quote_form() {
         let stmts = fn_body(r#"
 fn f():

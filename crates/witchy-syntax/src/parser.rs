@@ -49,6 +49,9 @@ fn reserved_source_identifier(name: &str) -> bool {
     name.contains("__")
 }
 
+const QUOTE_EXPR_HOLE_INTRINSIC: &str = "@quote_expr_hole";
+const QUOTE_EXPR_HOLE_PREFIX: &str = "__witchy_quote_expr_hole_";
+
 pub fn parse_module(src: &str) -> Result<Module, ParseError> {
     let tokens = tokenize(src).map_err(|e| ParseError {
         message: e.message,
@@ -120,10 +123,13 @@ struct Parser {
     /// record `__anon...` prepended to the module, so `.{a: x}` is ordinary
     /// reflectable data — `json.stringify(.{…})`, `debug(.{…})` — with no builtins.
     anon_records: Vec<Vec<String>>,
-    /// True once `quote expr:` lowers to a `meta.expr_raw(...)` call. The
-    /// surface form is parser-backed, so the parser also makes the implied `meta`
-    /// module available to the linker.
+    /// True once a parser-backed `quote ...:` form lowers to a `std/meta`
+    /// constructor, so the parser also makes the implied `meta` module available
+    /// to the linker.
     needs_meta_import: bool,
+    /// Positive while parsing the literal body of `quote expr:`. `${...}` holes
+    /// are syntax splices there; everywhere else they are rejected at parse time.
+    quote_expr_hole_depth: u32,
     /// Current recursion depth of the mutually-recursive descent (expressions,
     /// types, patterns). Guarded against `MAX_PARSE_DEPTH` so deeply-nested
     /// untrusted source (e.g. `(((((…)))))`) returns a `ParseError` instead of
@@ -173,6 +179,7 @@ impl Parser {
             in_gen: false,
             anon_records: Vec::new(),
             needs_meta_import: false,
+            quote_expr_hole_depth: 0,
             depth: 0,
         }
     }
@@ -1563,6 +1570,7 @@ impl Parser {
             Tok::Ident(name) if name == "quote" && self.quote_category().is_some() => {
                 self.quote_syntax()
             }
+            Tok::QuoteHoleStart => self.quote_expr_hole(),
             Tok::Int(n) => {
                 self.advance();
                 Ok(Expr::Int(n))
@@ -1792,11 +1800,11 @@ impl Parser {
         self.expect(&Tok::LBrace)?;
         let quoted = match category.as_str() {
             "expr" => {
-                let quoted = self.expr(0)?;
-                Expr::Call {
-                    name: "meta.expr_raw".to_string(),
-                    args: vec![Expr::Str(crate::format::expr_str(&quoted))],
-                }
+                self.quote_expr_hole_depth += 1;
+                let quoted = self.expr(0);
+                self.quote_expr_hole_depth -= 1;
+                let quoted = quoted?;
+                self.quote_expr_syntax_expr(quoted)?
             }
             "type" => {
                 let quoted = self.ty()?;
@@ -1820,6 +1828,167 @@ impl Parser {
         self.expect(&Tok::RBrace)?;
         self.needs_meta_import = true;
         Ok(quoted)
+    }
+
+    fn quote_expr_hole(&mut self) -> Result<Expr, ParseError> {
+        if self.quote_expr_hole_depth == 0 {
+            return Err(self.error("`${...}` quote holes are only valid inside `quote expr:`"));
+        }
+        self.advance(); // `${`
+        let saved_depth = std::mem::replace(&mut self.quote_expr_hole_depth, 0);
+        let expr = self.expr(0);
+        self.quote_expr_hole_depth = saved_depth;
+        let expr = expr?;
+        self.expect(&Tok::RBrace)?;
+        Ok(Expr::Call {
+            name: QUOTE_EXPR_HOLE_INTRINSIC.to_string(),
+            args: vec![expr],
+        })
+    }
+
+    fn quote_expr_syntax_expr(&self, mut quoted: Expr) -> Result<Expr, ParseError> {
+        let mut holes = Vec::new();
+        Self::collect_quote_expr_holes(&mut quoted, &mut holes);
+        let source = crate::format::expr_str(&quoted);
+        if holes.is_empty() {
+            return Ok(self.meta_call("expr_raw", vec![Expr::Str(source)]));
+        }
+
+        let mut parts = Vec::with_capacity(holes.len() + 1);
+        let mut rest = source.as_str();
+        for i in 0..holes.len() {
+            let marker = format!("{QUOTE_EXPR_HOLE_PREFIX}{i}");
+            let Some((before, after)) = rest.split_once(&marker) else {
+                return Err(self.error("internal error: quote expression hole marker was lost"));
+            };
+            parts.push(Expr::Str(before.to_string()));
+            rest = after;
+        }
+        parts.push(Expr::Str(rest.to_string()));
+        Ok(self.meta_call("expr_join", vec![Expr::List(parts), Expr::List(holes)]))
+    }
+
+    fn collect_quote_expr_holes(expr: &mut Expr, holes: &mut Vec<Expr>) {
+        if let Expr::Call { name, args } = expr {
+            if name == QUOTE_EXPR_HOLE_INTRINSIC && args.len() == 1 {
+                let idx = holes.len();
+                let hole = args.pop().expect("checked one quote hole arg");
+                holes.push(hole);
+                *expr = Expr::Var(format!("{QUOTE_EXPR_HOLE_PREFIX}{idx}"));
+                return;
+            }
+        }
+
+        match expr {
+            Expr::Int(_)
+            | Expr::Float(_)
+            | Expr::Duration(_)
+            | Expr::Str(_)
+            | Expr::Bool(_)
+            | Expr::Var(_)
+            | Expr::TaggedLit { .. } => {}
+            Expr::List(xs)
+            | Expr::Tuple(xs)
+            | Expr::Call { args: xs, .. }
+            | Expr::Ctor { args: xs, .. }
+            | Expr::AnonCtor { args: xs, .. } => {
+                for x in xs {
+                    Self::collect_quote_expr_holes(x, holes);
+                }
+            }
+            Expr::LabeledCall { args, .. } => {
+                for (_, x) in args {
+                    Self::collect_quote_expr_holes(x, holes);
+                }
+            }
+            Expr::MethodCall { receiver, args, .. } => {
+                Self::collect_quote_expr_holes(receiver, holes);
+                for x in args {
+                    Self::collect_quote_expr_holes(x, holes);
+                }
+            }
+            Expr::Apply { func, args } => {
+                Self::collect_quote_expr_holes(func, holes);
+                for x in args {
+                    Self::collect_quote_expr_holes(x, holes);
+                }
+            }
+            Expr::Unary { expr, .. }
+            | Expr::Try(expr)
+            | Expr::As { expr, .. }
+            | Expr::Field { base: expr, .. } => Self::collect_quote_expr_holes(expr, holes),
+            Expr::Lambda { body, .. } | Expr::Block(body) => {
+                Self::collect_quote_expr_holes_block(body, holes);
+            }
+            Expr::RecordUpdate { base, fields, .. } => {
+                Self::collect_quote_expr_holes(base, holes);
+                for (_, x) in fields {
+                    Self::collect_quote_expr_holes(x, holes);
+                }
+            }
+            Expr::Record { fields, spread, .. } => {
+                for (_, x) in fields {
+                    Self::collect_quote_expr_holes(x, holes);
+                }
+                if let Some(spread) = spread {
+                    Self::collect_quote_expr_holes(spread, holes);
+                }
+            }
+            Expr::Binary { lhs, rhs, .. } => {
+                Self::collect_quote_expr_holes(lhs, holes);
+                Self::collect_quote_expr_holes(rhs, holes);
+            }
+            Expr::If { cond, then_block, else_block } => {
+                Self::collect_quote_expr_holes(cond, holes);
+                Self::collect_quote_expr_holes_block(then_block, holes);
+                if let Some(else_block) = else_block {
+                    Self::collect_quote_expr_holes_block(else_block, holes);
+                }
+            }
+            Expr::Match { scrutinee, arms } => {
+                Self::collect_quote_expr_holes(scrutinee, holes);
+                for arm in arms {
+                    if let Some(guard) = &mut arm.guard {
+                        Self::collect_quote_expr_holes(guard, holes);
+                    }
+                    Self::collect_quote_expr_holes(&mut arm.body, holes);
+                }
+            }
+            Expr::While { cond, body } => {
+                Self::collect_quote_expr_holes(cond, holes);
+                Self::collect_quote_expr_holes_block(body, holes);
+            }
+            Expr::For { iter, body, .. } => {
+                Self::collect_quote_expr_holes(iter, holes);
+                Self::collect_quote_expr_holes_block(body, holes);
+            }
+            Expr::Range { lo, hi, .. } => {
+                Self::collect_quote_expr_holes(lo, holes);
+                Self::collect_quote_expr_holes(hi, holes);
+            }
+            Expr::Index { base, index } => {
+                Self::collect_quote_expr_holes(base, holes);
+                Self::collect_quote_expr_holes(index, holes);
+            }
+            Expr::WhileLet { scrutinee, body, .. } => {
+                Self::collect_quote_expr_holes(scrutinee, holes);
+                Self::collect_quote_expr_holes_block(body, holes);
+            }
+        }
+    }
+
+    fn collect_quote_expr_holes_block(block: &mut Block, holes: &mut Vec<Expr>) {
+        for stmt in &mut block.stmts {
+            match stmt {
+                Stmt::Let { value, .. }
+                | Stmt::Assign { value, .. }
+                | Stmt::LetPattern { value, .. }
+                | Stmt::Yield(value)
+                | Stmt::Expr(value) => Self::collect_quote_expr_holes(value, holes),
+                Stmt::Return(Some(value)) => Self::collect_quote_expr_holes(value, holes),
+                Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+            }
+        }
     }
 
     fn meta_call(&self, name: &str, args: Vec<Expr>) -> Expr {

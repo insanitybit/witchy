@@ -2047,6 +2047,10 @@ Source-backed expression syntax. These constructors make the shape explicit whil
 
 #### `fn expr_raw(source: String) -> ExprSyntax`
 
+#### `fn expr_join(parts: List(String), holes: List(ExprSyntax)) -> ExprSyntax`
+
+Join parser-checked expression quote fragments with typed expression holes. `parts` must have exactly one more element than `holes`, as in string interpolation: part0, hole0, part1, ...
+
 #### `fn pattern_var(name: Ident) -> PatternSyntax`
 
 Source-backed pattern syntax. Patterns share validated identifiers with expressions, so generated matches cannot accidentally mint a reserved binding.

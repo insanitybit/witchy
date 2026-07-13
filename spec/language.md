@@ -874,10 +874,12 @@ and hygienic identifier origins remain future work.
 quotation forms. They parse the indented expression, type, pattern, or single
 item immediately and produce `meta.ExprSyntax`, `meta.TypeSyntax`,
 `meta.PatternSyntax`, or `meta.ItemSyntax` through the same sealed source-backed
-channel as the `std/meta` builders. `quote type:` covers named/generic,
-module-qualified, tuple, function, ownership-qualified, and capability-right
-types; anonymous structural type quotation, holes, and hygiene remain future
-work.
+channel as the `std/meta` builders. Inside `quote expr:`,
+`${hole}` splices a `meta.ExprSyntax` expression into that position; the hole is
+typed by the surrounding `comptime`/tag generator, not by runtime interpolation.
+`quote type:` covers named/generic, module-qualified, tuple, function,
+ownership-qualified, and capability-right types; anonymous structural type
+quotation, type/pattern holes, and hygiene remain future work.
 
 Generated code is analyzed exactly like handwritten code, and nothing existing
 can be rewritten, so a comptime block cannot launder authority out of a

@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed syntax wrappers/builders with validated identifiers, comptime emit_item/fn helpers, typed custom derives, typed tagged-literal ExprSyntax returns, and parser-backed expression/type/pattern/item quotation landed; hygiene/full syntax API remains proposed"
+tracking: "source-backed syntax wrappers/builders with validated identifiers, comptime emit_item/fn helpers, typed custom derives, typed tagged-literal ExprSyntax returns, parser-backed expression/type/pattern/item quotation, and expression quote holes landed; hygiene/full syntax API remains proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -241,10 +241,17 @@ The first source-compatible slice is implemented:
   at the quote site, renders canonical source through the formatter, and lowers
   to the existing `meta.item(...)` typed item boundary. This gives users a
   checked item quotation form without adding a second item-construction API.
+- The fifteenth slice adds expression holes inside `quote expr:`. A `${...}`
+  hole is accepted only inside the quoted expression body, its contents are
+  ordinary compile-time code that must evaluate to `meta.ExprSyntax`, and the
+  parser lowers the quote to `meta.expr_join(parts, holes)`. This composes with
+  typed tagged literals: a tag can wrap an opaque RFC-0006 hole marker as
+  `ExprSyntax` and splice it into parser-checked quoted code.
 
 This is intentionally not the full RFC. The payload is still source-backed and
-only expression/type/pattern/item quotation exists; there is no identifier
-hygiene or compiler-owned expression/pattern/type syntax tree yet. The value is the
+only expression/type/pattern/item quotation plus expression holes exist;
+type/pattern holes, identifier hygiene, and compiler-owned
+expression/pattern/type syntax trees remain future work. The value is the
 migration seam: future work can move the payload behind these wrappers from
 parsed source to structured compiler nodes without changing the comptime
 append/merge path again.

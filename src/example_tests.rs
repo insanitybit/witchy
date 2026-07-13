@@ -1466,6 +1466,33 @@ fn main(console: Console):
         );
     }
 
+    /// RFC-0080 quote holes splice typed expression syntax into a parser-checked
+    /// quoted expression. Tagged literals hand their holes to the tag as opaque
+    /// markers, so this also exercises the RFC-0006 hygiene split.
+    #[test]
+    fn quote_expr_holes_splice_typed_exprsyntax_on_both_backends() {
+        let src = r#"
+import list
+import meta
+
+comptime fn add_one(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+    let value = meta.expr_raw(list.at(holes, 0))
+    quote expr:
+        ${value} + 1
+
+fn main(console: Console):
+    let n = 41
+    console.print("${add_one"${n}"}")
+"#;
+        let expected = ["42"];
+        assert_eq!(link_run(src), expected, "interp quote expr holes tagged literal");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled quote expr holes tagged literal",
+        );
+    }
+
     /// RFC-0080 type quotation lowers to structured `TypeSyntax` builders instead
     /// of adding a public raw type-string constructor.
     #[test]
