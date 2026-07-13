@@ -401,6 +401,19 @@ pub fn std_source(name: &str) -> Option<&'static str> {
 /// implementation; `crate::pipeline::link` wires it in.
 pub type ComptimeExpander = fn(&str, &mut Module, &[(String, Module)]) -> Result<(), String>;
 
+/// Link-time policy for entry-specific privileges.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LinkMode {
+    /// Production/default linking: sealed constructors are available only in the
+    /// module that declares them.
+    Production,
+    /// `witchy test` linking: the entry module may construct foreign `sealed type`
+    /// values so tests can exercise malformed domain data. Sealed capabilities
+    /// stay production-strict; mock capability backends are a separate RFC-0077
+    /// increment.
+    Test,
+}
+
 /// Link `modules` (each a name + parsed module) into one flat module, with
 /// `entry` the module holding `main`. `expand` runs each module's compile-time
 /// passes (see [`ComptimeExpander`]).
@@ -408,6 +421,15 @@ pub fn link(
     modules: Vec<(String, Module)>,
     entry: &str,
     expand: ComptimeExpander,
+) -> Result<Module, LinkError> {
+    link_with_mode(modules, entry, expand, LinkMode::Production)
+}
+
+pub fn link_with_mode(
+    modules: Vec<(String, Module)>,
+    entry: &str,
+    expand: ComptimeExpander,
+    mode: LinkMode,
 ) -> Result<Module, LinkError> {
     // Safe by default for in-memory callers that have no source-provenance map:
     // a supplied reserved module is canonical only when its parsed AST matches
@@ -429,17 +451,27 @@ pub fn link(
             user_modules.insert(name.clone());
         }
     }
-    link_with_user_modules(modules, entry, expand, &user_modules)
+    link_with_user_modules_with_mode(modules, entry, expand, &user_modules, mode)
 }
 
 /// Like [`link`], but with the subset of module names that came from user
 /// source files rather than the bundled std fallback. This enforces the
 /// canonical ownership of reserved standard-library module names.
 pub fn link_with_user_modules(
+    modules: Vec<(String, Module)>,
+    entry: &str,
+    expand: ComptimeExpander,
+    user_modules: &std::collections::HashSet<String>,
+) -> Result<Module, LinkError> {
+    link_with_user_modules_with_mode(modules, entry, expand, user_modules, LinkMode::Production)
+}
+
+pub fn link_with_user_modules_with_mode(
     mut modules: Vec<(String, Module)>,
     entry: &str,
     expand: ComptimeExpander,
     user_modules: &std::collections::HashSet<String>,
+    mode: LinkMode,
 ) -> Result<Module, LinkError> {
     check_reserved_source_names(&modules)?;
     if let Some(name) = user_modules
@@ -612,7 +644,7 @@ pub fn link_with_user_modules(
     // `Expr::Ctor { name: "module.Ctor" }`, so a qualified spelling can no longer
     // slip past the name-keyed check (BUG-313, fail-closed). Modules are still
     // unmerged here, so each item knows its home module.
-    check_sealing(&modules)?;
+    check_sealing(&modules, mode, entry)?;
 
     let mut fns: FnTable = HashMap::new();
     for (name, m) in &modules {
@@ -1490,7 +1522,7 @@ fn eta_lambda(qualified: &str, arity: usize) -> Expr {
 /// constructor name (bare or canonical `module.Ctor`) -> (home module, is_capability).
 type SealMap = HashMap<String, (String, bool)>;
 
-fn check_sealing(modules: &[(String, Module)]) -> Result<(), LinkError> {
+fn check_sealing(modules: &[(String, Module)], mode: LinkMode, entry: &str) -> Result<(), LinkError> {
     // Each CONSTRUCTOR of a sealed type is registered under both its bare name and
     // its canonical `module.Ctor` spelling (whichever form reaches `seal_use` after
     // `type_resolve` — a qualified `m.Ctor` is the BUG-313 bypass). The value is the
@@ -1517,12 +1549,15 @@ fn check_sealing(modules: &[(String, Module)]) -> Result<(), LinkError> {
         return Ok(());
     }
     for (mname, m) in modules {
+        let allow_test_sealed_type_construction = mode == LinkMode::Test && mname == entry;
         for item in &m.items {
             match item {
-                Item::Function(f) => seal_block(&f.body, &sealed, mname)?,
+                Item::Function(f) => {
+                    seal_block(&f.body, &sealed, mname, allow_test_sealed_type_construction)?;
+                }
                 Item::Impl(im) => {
                     for method in &im.methods {
-                        seal_block(&method.body, &sealed, mname)?;
+                        seal_block(&method.body, &sealed, mname, allow_test_sealed_type_construction)?;
                     }
                 }
                 _ => {}
@@ -1532,7 +1567,13 @@ fn check_sealing(modules: &[(String, Module)]) -> Result<(), LinkError> {
     Ok(())
 }
 
-fn seal_use(name: &str, sealed: &SealMap, home: &str, verb: &str) -> Result<(), LinkError> {
+fn seal_use(
+    name: &str,
+    sealed: &SealMap,
+    home: &str,
+    verb: &str,
+    allow_test_sealed_type_construction: bool,
+) -> Result<(), LinkError> {
     if let Some((decl, is_capability)) = sealed.get(name) {
         // A `sealed type` (RFC-0065) restricts only CONSTRUCTION; matching/reading
         // are unaffected (DoD item 4). A `capability` (RFC-0002) additionally seals
@@ -1541,6 +1582,9 @@ fn seal_use(name: &str, sealed: &SealMap, home: &str, verb: &str) -> Result<(), 
             return Ok(());
         }
         if decl != home {
+            if verb == "construct" && !is_capability && allow_test_sealed_type_construction {
+                return Ok(());
+            }
             // Names may be bare or canonical `module.Ctor` here; show the bare ctor.
             let bare = name.rsplit('.').next().unwrap_or(name);
             let noun = if *is_capability { "sealed capability" } else { "sealed type" };
@@ -1554,45 +1598,57 @@ fn seal_use(name: &str, sealed: &SealMap, home: &str, verb: &str) -> Result<(), 
     Ok(())
 }
 
-fn seal_block(b: &Block, sealed: &SealMap, home: &str) -> Result<(), LinkError> {
+fn seal_block(
+    b: &Block,
+    sealed: &SealMap,
+    home: &str,
+    allow_test_sealed_type_construction: bool,
+) -> Result<(), LinkError> {
     for stmt in &b.stmts {
         match stmt {
             Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::LetPattern { value, .. } => {
-                seal_expr(value, sealed, home)?
+                seal_expr(value, sealed, home, allow_test_sealed_type_construction)?
             }
-            Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => seal_expr(e, sealed, home)?,
+            Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => {
+                seal_expr(e, sealed, home, allow_test_sealed_type_construction)?
+            }
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
     }
     Ok(())
 }
 
-fn seal_pattern(p: &Pattern, sealed: &SealMap, home: &str) -> Result<(), LinkError> {
+fn seal_pattern(
+    p: &Pattern,
+    sealed: &SealMap,
+    home: &str,
+    allow_test_sealed_type_construction: bool,
+) -> Result<(), LinkError> {
     match p {
         Pattern::Ctor { name, args } => {
-            seal_use(name, sealed, home, "destructure")?;
+            seal_use(name, sealed, home, "destructure", allow_test_sealed_type_construction)?;
             for a in args {
-                seal_pattern(a, sealed, home)?;
+                seal_pattern(a, sealed, home, allow_test_sealed_type_construction)?;
             }
         }
         Pattern::AnonCtor { args, .. } => {
             for a in args {
-                seal_pattern(a, sealed, home)?;
+                seal_pattern(a, sealed, home, allow_test_sealed_type_construction)?;
             }
         }
         Pattern::Tuple(ps) => {
             for q in ps {
-                seal_pattern(q, sealed, home)?;
+                seal_pattern(q, sealed, home, allow_test_sealed_type_construction)?;
             }
         }
         Pattern::List { elems, .. } => {
             for q in elems {
-                seal_pattern(q, sealed, home)?;
+                seal_pattern(q, sealed, home, allow_test_sealed_type_construction)?;
             }
         }
         Pattern::Or(alts) => {
             for q in alts {
-                seal_pattern(q, sealed, home)?;
+                seal_pattern(q, sealed, home, allow_test_sealed_type_construction)?;
             }
         }
         Pattern::Wildcard
@@ -1606,97 +1662,104 @@ fn seal_pattern(p: &Pattern, sealed: &SealMap, home: &str) -> Result<(), LinkErr
     Ok(())
 }
 
-fn seal_expr(e: &Expr, sealed: &SealMap, home: &str) -> Result<(), LinkError> {
+fn seal_expr(
+    e: &Expr,
+    sealed: &SealMap,
+    home: &str,
+    allow_test_sealed_type_construction: bool,
+) -> Result<(), LinkError> {
     match e {
         Expr::Ctor { name, args } => {
-            seal_use(name, sealed, home, "construct")?;
+            seal_use(name, sealed, home, "construct", allow_test_sealed_type_construction)?;
             for a in args {
-                seal_expr(a, sealed, home)?;
+                seal_expr(a, sealed, home, allow_test_sealed_type_construction)?;
             }
         }
         Expr::Call { args, .. } | Expr::AnonCtor { args, .. }
         | Expr::List(args) | Expr::Tuple(args) => {
             for a in args {
-                seal_expr(a, sealed, home)?;
+                seal_expr(a, sealed, home, allow_test_sealed_type_construction)?;
             }
         }
         Expr::LabeledCall { args, .. } => {
             for (_, a) in args {
-                seal_expr(a, sealed, home)?;
+                seal_expr(a, sealed, home, allow_test_sealed_type_construction)?;
             }
         }
         Expr::Apply { func, args } => {
-            seal_expr(func, sealed, home)?;
+            seal_expr(func, sealed, home, allow_test_sealed_type_construction)?;
             for a in args {
-                seal_expr(a, sealed, home)?;
+                seal_expr(a, sealed, home, allow_test_sealed_type_construction)?;
             }
         }
         Expr::MethodCall { receiver, args, .. } => {
-            seal_expr(receiver, sealed, home)?;
+            seal_expr(receiver, sealed, home, allow_test_sealed_type_construction)?;
             for a in args {
-                seal_expr(a, sealed, home)?;
+                seal_expr(a, sealed, home, allow_test_sealed_type_construction)?;
             }
         }
         Expr::Unary { expr, .. }
         | Expr::Try(expr)
         | Expr::As { expr, .. }
-        | Expr::Field { base: expr, .. } => seal_expr(expr, sealed, home)?,
+        | Expr::Field { base: expr, .. } => {
+            seal_expr(expr, sealed, home, allow_test_sealed_type_construction)?;
+        }
         Expr::RecordUpdate { name: _, base, fields } => {
-            seal_expr(base, sealed, home)?;
+            seal_expr(base, sealed, home, allow_test_sealed_type_construction)?;
             for (_, v) in fields {
-                seal_expr(v, sealed, home)?;
+                seal_expr(v, sealed, home, allow_test_sealed_type_construction)?;
             }
         }
         Expr::Record { fields, spread, .. } => {
             for (_, v) in fields {
-                seal_expr(v, sealed, home)?;
+                seal_expr(v, sealed, home, allow_test_sealed_type_construction)?;
             }
             if let Some(s) = spread {
-                seal_expr(s, sealed, home)?;
+                seal_expr(s, sealed, home, allow_test_sealed_type_construction)?;
             }
         }
         Expr::Binary { lhs, rhs, .. } => {
-            seal_expr(lhs, sealed, home)?;
-            seal_expr(rhs, sealed, home)?;
+            seal_expr(lhs, sealed, home, allow_test_sealed_type_construction)?;
+            seal_expr(rhs, sealed, home, allow_test_sealed_type_construction)?;
         }
         Expr::Range { lo, hi, .. } => {
-            seal_expr(lo, sealed, home)?;
-            seal_expr(hi, sealed, home)?;
+            seal_expr(lo, sealed, home, allow_test_sealed_type_construction)?;
+            seal_expr(hi, sealed, home, allow_test_sealed_type_construction)?;
         }
         Expr::Index { base, index } => {
-            seal_expr(base, sealed, home)?;
-            seal_expr(index, sealed, home)?;
+            seal_expr(base, sealed, home, allow_test_sealed_type_construction)?;
+            seal_expr(index, sealed, home, allow_test_sealed_type_construction)?;
         }
         Expr::WhileLet { pattern, scrutinee, body } => {
-            seal_pattern(pattern, sealed, home)?;
-            seal_expr(scrutinee, sealed, home)?;
-            seal_block(body, sealed, home)?;
+            seal_pattern(pattern, sealed, home, allow_test_sealed_type_construction)?;
+            seal_expr(scrutinee, sealed, home, allow_test_sealed_type_construction)?;
+            seal_block(body, sealed, home, allow_test_sealed_type_construction)?;
         }
         Expr::If { cond, then_block, else_block } => {
-            seal_expr(cond, sealed, home)?;
-            seal_block(then_block, sealed, home)?;
+            seal_expr(cond, sealed, home, allow_test_sealed_type_construction)?;
+            seal_block(then_block, sealed, home, allow_test_sealed_type_construction)?;
             if let Some(b) = else_block {
-                seal_block(b, sealed, home)?;
+                seal_block(b, sealed, home, allow_test_sealed_type_construction)?;
             }
         }
-        Expr::Lambda { body, .. } => seal_block(body, sealed, home)?,
-        Expr::Block(b) => seal_block(b, sealed, home)?,
+        Expr::Lambda { body, .. } => seal_block(body, sealed, home, allow_test_sealed_type_construction)?,
+        Expr::Block(b) => seal_block(b, sealed, home, allow_test_sealed_type_construction)?,
         Expr::While { cond, body } => {
-            seal_expr(cond, sealed, home)?;
-            seal_block(body, sealed, home)?;
+            seal_expr(cond, sealed, home, allow_test_sealed_type_construction)?;
+            seal_block(body, sealed, home, allow_test_sealed_type_construction)?;
         }
         Expr::For { iter, body, .. } => {
-            seal_expr(iter, sealed, home)?;
-            seal_block(body, sealed, home)?;
+            seal_expr(iter, sealed, home, allow_test_sealed_type_construction)?;
+            seal_block(body, sealed, home, allow_test_sealed_type_construction)?;
         }
         Expr::Match { scrutinee, arms } => {
-            seal_expr(scrutinee, sealed, home)?;
+            seal_expr(scrutinee, sealed, home, allow_test_sealed_type_construction)?;
             for arm in arms {
-                seal_pattern(&arm.pattern, sealed, home)?;
+                seal_pattern(&arm.pattern, sealed, home, allow_test_sealed_type_construction)?;
                 if let Some(g) = &arm.guard {
-                    seal_expr(g, sealed, home)?;
+                    seal_expr(g, sealed, home, allow_test_sealed_type_construction)?;
                 }
-                seal_expr(&arm.body, sealed, home)?;
+                seal_expr(&arm.body, sealed, home, allow_test_sealed_type_construction)?;
             }
         }
         Expr::Var(_)
@@ -2301,12 +2364,17 @@ mod tests {
     /// Link `lib` (module `sealed_lib`) with `user` (module `user`, the entry) and
     /// return the link error message, if any.
     fn link_lib_user(lib: &str, user: &str) -> Result<(), String> {
+        link_lib_user_with_mode(lib, user, LinkMode::Production)
+    }
+
+    fn link_lib_user_with_mode(lib: &str, user: &str, mode: LinkMode) -> Result<(), String> {
         let libm = crate::parser::parse_module(lib).expect("lib parses");
         let userm = crate::parser::parse_module(user).expect("user parses");
-        link(
+        link_with_mode(
             vec![("sealed_lib".to_string(), libm), ("user".to_string(), userm)],
             "user",
             noop_expand,
+            mode,
         )
         .map(|_| ())
         .map_err(|e| e.message)
@@ -2594,6 +2662,76 @@ mod tests {
                   let b = sealed_lib.wrap(41)\n    \
                   console.print(\"${sealed_lib.unwrap(b)}\")\n";
         assert!(link_lib_user(lib, ok).is_ok(), "smart-constructor use must be allowed");
+    }
+
+    #[test]
+    fn test_mode_allows_entry_to_construct_foreign_sealed_type() {
+        let lib = "sealed type Version:\n    Version(Int, Int, Int)\n\n\
+                   pub fn major(v: Version) -> Int:\n    \
+                   match v:\n        Version(n, _, _) -> n\n";
+        let user = "import sealed_lib\n\n\
+                    fn main(console: Console):\n    \
+                    let v = sealed_lib.Version(99, 0, 0)\n    \
+                    console.print(\"${sealed_lib.major(v)}\")\n";
+
+        let err = link_lib_user(lib, user).expect_err("production link must keep sealed types strict");
+        assert!(err.contains("sealed type") && err.contains("Version"), "{err}");
+
+        link_lib_user_with_mode(lib, user, LinkMode::Test)
+            .expect("entry test module may construct foreign sealed data");
+    }
+
+    #[test]
+    fn test_mode_keeps_sealed_capabilities_strict() {
+        let lib = "capability Vault from Net\n\n\
+                   pub fn make(net: Net) -> Vault:\n    Vault(net)\n";
+
+        let forge = "import sealed_lib\n\n\
+                     fn main(console: Console, net: Net):\n    \
+                     let forged = sealed_lib.Vault(net)\n    console.print(\"x\")\n";
+        let err = link_lib_user_with_mode(lib, forge, LinkMode::Test)
+            .expect_err("test mode must not forge sealed capabilities");
+        assert!(err.contains("sealed capability") && err.contains("construct"), "{err}");
+
+        let destr = "import sealed_lib\n\n\
+                     fn main(console: Console, net: Net):\n    \
+                     let v = sealed_lib.make(net)\n    \
+                     match v:\n        sealed_lib.Vault(inner) -> console.print(\"leak\")\n";
+        let err = link_lib_user_with_mode(lib, destr, LinkMode::Test)
+            .expect_err("test mode must not unwrap sealed capabilities");
+        assert!(err.contains("sealed capability") && err.contains("destructure"), "{err}");
+    }
+
+    #[test]
+    fn test_mode_does_not_relax_imported_dependency_modules() {
+        let lib = crate::parser::parse_module(
+            "sealed type Box:\n    BoxData(Int)\n",
+        )
+        .expect("lib parses");
+        let helper = crate::parser::parse_module(
+            "import sealed_lib\n\n\
+             pub fn fake() -> sealed_lib.Box:\n    sealed_lib.BoxData(1)\n",
+        )
+        .expect("helper parses");
+        let user = crate::parser::parse_module(
+            "import helper\n\n\
+             fn main(console: Console):\n    let b = helper.fake()\n    console.print(\"x\")\n",
+        )
+        .expect("user parses");
+
+        let err = link_with_mode(
+            vec![
+                ("sealed_lib".to_string(), lib),
+                ("helper".to_string(), helper),
+                ("user".to_string(), user),
+            ],
+            "user",
+            noop_expand,
+            LinkMode::Test,
+        )
+        .expect_err("only the entry test module receives sealed data construction privilege")
+        .message;
+        assert!(err.contains("sealed type") && err.contains("BoxData") && err.contains("helper"), "{err}");
     }
 
     /// Find the first `MethodCall` whose receiver is `Var(recv)` and method is

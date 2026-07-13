@@ -1293,7 +1293,11 @@ fn bundled_module(name: &str) -> Option<&'static str> {
 /// `<name>.witchy` files; reserved std names resolve from the bundled source.
 /// Returns the linked module and entry stem.
 fn link_file(path: &str) -> Result<(ast::Module, String), String> {
-    link_file_with_deps(path, &std::collections::HashMap::new())
+    link_file_with_mode(path, linker::LinkMode::Production)
+}
+
+fn link_file_with_mode(path: &str, mode: linker::LinkMode) -> Result<(ast::Module, String), String> {
+    link_file_with_deps_mode(path, &std::collections::HashMap::new(), mode)
 }
 
 /// Like `link_file`, but resolves named imports from an explicit dependency map
@@ -1304,6 +1308,14 @@ fn link_file(path: &str) -> Result<(ast::Module, String), String> {
 fn link_file_with_deps(
     path: &str,
     deps: &std::collections::HashMap<String, std::path::PathBuf>,
+) -> Result<(ast::Module, String), String> {
+    link_file_with_deps_mode(path, deps, linker::LinkMode::Production)
+}
+
+fn link_file_with_deps_mode(
+    path: &str,
+    deps: &std::collections::HashMap<String, std::path::PathBuf>,
+    mode: linker::LinkMode,
 ) -> Result<(ast::Module, String), String> {
     use std::collections::{HashSet, VecDeque};
     use std::path::{Path, PathBuf};
@@ -1370,7 +1382,7 @@ fn link_file_with_deps(
         modules.push((name, module));
     }
 
-    let linked = pipeline::link_with_user_modules(modules, &entry_stem, &user_modules)
+    let linked = pipeline::link_with_user_modules_with_mode(modules, &entry_stem, &user_modules, mode)
         .map_err(|e| e.to_string())?;
     Ok((linked, entry_stem))
 }
@@ -1793,9 +1805,54 @@ fn run_tests_in_module(
 /// dispatch to `run_tests_in_module`).
 #[cfg(test)]
 fn run_tests_in_file(path: &str) -> Result<(Vec<String>, Vec<TestFailure>), String> {
-    let (linked, stem) = link_file(path)?;
+    let (linked, stem) = link_file_with_mode(path, linker::LinkMode::Test)?;
     let (async_tests, gen_tests) = raw_test_shapes(path);
     run_tests_in_module(&linked, &stem, &async_tests, &gen_tests)
+}
+
+#[cfg(test)]
+mod test_mode_link_tests {
+    use super::{link_file, run_tests_in_file};
+
+    fn unique_dir(name: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("witchy_{name}_{}_{}", std::process::id(), nanos))
+    }
+
+    #[test]
+    fn witchy_test_allows_entry_to_construct_foreign_sealed_data() {
+        let dir = unique_dir("sealed_test_mode");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("sealed_lib.witchy"),
+            "sealed type Version:\n    Version(Int, Int, Int)\n\n\
+             pub fn major(v: Version) -> Int:\n    \
+             match v:\n        Version(n, _, _) -> n\n",
+        )
+        .unwrap();
+        let suite = dir.join("suite.witchy");
+        std::fs::write(
+            &suite,
+            "import sealed_lib\nimport testing\n\n\
+             fn test_constructs_domain_edge_case():\n    \
+             let v = sealed_lib.Version(99, 0, 0)\n    \
+             testing.assert_int_eq(sealed_lib.major(v), 99)\n",
+        )
+        .unwrap();
+
+        let prod = link_file(suite.to_str().unwrap()).expect_err("production link must reject");
+        assert!(prod.contains("sealed type") && prod.contains("Version"), "{prod}");
+
+        let (passed, failed) = run_tests_in_file(suite.to_str().unwrap()).expect("test mode links");
+        assert!(failed.is_empty(), "{failed:?}");
+        assert_eq!(passed, vec!["suite.test_constructs_domain_edge_case".to_string()]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// `witchy test <file|dir>`: run in-language tests, print a cargo-style
@@ -1837,7 +1894,7 @@ fn run_tests(path: &str) -> Result<bool, String> {
         // that links yet fails to TYPE-CHECK (or violates `mode opt`) is a genuinely
         // BROKEN test file: it must FAIL the run, never be silently skipped as
         // "ok. 0 passed". An explicit single file surfaces even a link error.
-        let (linked, stem) = match link_file(file) {
+        let (linked, stem) = match link_file_with_mode(file, linker::LinkMode::Test) {
             Ok(v) => v,
             Err(e) if meta.is_dir() => {
                 eprintln!("  skipped {file}: {e}");

@@ -6,12 +6,25 @@
 //! the linker and the comptime evaluator is fine.
 
 use witchy_syntax::ast::Module;
-use witchy_syntax::linker::LinkError;
+use witchy_syntax::linker::{LinkError, LinkMode};
 
 /// Link `modules` with the standard compile-time expander wired in (the common
 /// case). Equivalent to the old two-argument `linker::link`.
 pub fn link(modules: Vec<(String, Module)>, entry: &str) -> Result<Module, LinkError> {
-    witchy_syntax::linker::link(modules, entry, crate::comptime::expand_compile_time)
+    link_with_mode(modules, entry, LinkMode::Production)
+}
+
+pub fn link_with_mode(
+    modules: Vec<(String, Module)>,
+    entry: &str,
+    mode: LinkMode,
+) -> Result<Module, LinkError> {
+    witchy_syntax::linker::link_with_mode(
+        modules,
+        entry,
+        crate::comptime::expand_compile_time,
+        mode,
+    )
 }
 
 /// Link with origin hints for modules loaded from user files. This keeps the
@@ -21,10 +34,20 @@ pub fn link_with_user_modules(
     entry: &str,
     user_modules: &std::collections::HashSet<String>,
 ) -> Result<Module, LinkError> {
-    witchy_syntax::linker::link_with_user_modules(
+    link_with_user_modules_with_mode(modules, entry, user_modules, LinkMode::Production)
+}
+
+pub fn link_with_user_modules_with_mode(
+    modules: Vec<(String, Module)>,
+    entry: &str,
+    user_modules: &std::collections::HashSet<String>,
+    mode: LinkMode,
+) -> Result<Module, LinkError> {
+    witchy_syntax::linker::link_with_user_modules_with_mode(
         modules,
         entry,
         crate::comptime::expand_compile_time,
         user_modules,
+        mode,
     )
 }

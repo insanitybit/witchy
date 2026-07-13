@@ -1,17 +1,13 @@
 ---
 rfc: 0077
 title: "Test doubles in witchy — tests are permissive; the VM sandbox is the only boundary"
-status: deferred
+status: accepted
 created: 2026-07-08
-# Deferred 2026-07-09 after checking the actual `witchy test` execution path.
-# The runner uses broad dev grants, including cwd Dir read/write, while Dir is
-# still an i32 table index. The original zero-grant safety premise was false.
 tracking: >
-  Deferred beyond 0.1. Trait-injected doubles already work and may be
-  documented independently. Sealed-construction relaxation and mock
-  capability runtimes require a strict test grant model plus a representation
-  that cannot collide with real host handles; integration grants remain gated
-  on RFC-0005.
+  Accepted in slices. Sealed domain-data construction is implemented for the
+  entry module under `witchy test` and remains production-strict elsewhere.
+  Sealed capabilities stay strict until explicit mock backends land; real
+  integration grants remain a later runner feature.
 related:
   - "0002 (user-definable capabilities — sealing is a correctness contract, not the security boundary)"
   - "0005 (unforgeable capabilities — production invariant; the VM, not the seal, is the perimeter)"
@@ -23,10 +19,12 @@ related:
 
 # RFC-0077: Test doubles in witchy
 
-> **Deferred (2026-07-09):** the safety argument below describes the intended
-> destination, not the shipped test runner. `witchy test` currently executes
-> through the broad development grant path, so permitting capability forgery
-> would expose real host authority. See the deferral note after the riders.
+> **Implementation status (2026-07-13):** the first slice is implemented:
+> `witchy test` links the entry test module in test mode, allowing direct
+> construction of foreign `sealed type` values so tests can exercise malformed
+> domain data. Production `run`/`check`/`compile`/`build`/comptime paths remain
+> strict, imported dependency modules do not inherit the privilege, and sealed
+> capabilities remain strict until mock capability backends are implemented.
 
 ## Summary
 
@@ -36,10 +34,9 @@ collaborators, reach into internals, and trace execution to genuinely
 stress-test your code. In-language guarantees (unforgeable capabilities,
 invariant-guarding sealed types) are *production-correctness* contracts, NOT the
 security boundary. The security boundary is the WASM VM: a test can construct
-whatever it likes in-language and still cannot touch the host beyond the
-capabilities the VM was granted, because a real capability is a host-minted
-handle the guest cannot manufacture — a forged value is inert data with no
-host reach.
+domain data in-language and still cannot touch the host beyond the capabilities
+the VM was granted, because a real capability is a host-minted handle the guest
+cannot manufacture — a forged domain value is inert data with no host reach.
 
 This inverts the usual worry. We do NOT need to protect sealing from tests;
 sealing was never the thing keeping the host safe. So the design is permissive:
@@ -47,21 +44,23 @@ sealing was never the thing keeping the host safe. So the design is permissive:
 1. **Non-sealed test doubles: already work.** Depend on a `trait` (or a
    `fn`-typed parameter), inject a fake impl in a test. This is witchy's
    mocking, today, no new machinery — a docs gap, not a language gap.
-2. **Sealed-type doubles (capabilities AND sealed domain types): allowed under
-   the test runner.** `std/testing` may mint fakes of sealed types — an
-   in-memory `Dir`, a scripted `Clock`, a `Version` with an arbitrary shape —
-   *because doing so is safe*: the fake is data, and the VM boundary still holds.
-3. **Real capabilities in tests: also allowed** (integration tier) for tests
+2. **Sealed domain-data doubles: allowed under the test runner.** The entry
+   test module may construct foreign `sealed type` values — for example a
+   `Version` with an arbitrary shape — *because doing so is safe*: the fake is
+   data, and the VM boundary still holds.
+3. **Mock capability constructors: later runtime work.** In-memory `Dir`,
+   scripted `Clock`, mock `Net`/`Env`/`Rng`, and similar capability-typed test
+   doubles need explicit backends. Until those land, sealed capabilities remain
+   strict even under `witchy test`.
+4. **Real capabilities in tests: also allowed** (integration tier) for tests
    that want an actual effect.
 
 One invariant governs all three, and it is about the VM, not the value:
 
-> **A test can construct or inject anything in-language; it can still reach the
-> host only through capabilities the VM was actually granted.** A forged or
-> mock capability grants power over its own in-memory state, never a real host
-> effect — not because the language forbids constructing it, but because the
-> host mints and mediates every real handle, and a guest-constructed value has
-> none.
+> **A test can construct or inject domain data freely; it can still reach the
+> host only through capabilities the VM was actually granted.** A future mock
+> capability will grant power over its own in-memory state, never a real host
+> effect, because the host mints and mediates every real handle.
 
 ## Why this is safe (the mechanical fact, verified)
 
@@ -73,18 +72,16 @@ the interpreter's direct-`std::fs` path. In the VM:
   to the guest, and mediates every op on it. The guest cannot forge a handle;
   the *number* of real handles the VM holds is fixed by the grant, independent
   of anything the guest constructs.
-- A guest-constructed "capability" — a mock `Dir`, or even a forged sealed value
-  if we permit it — is a plain heap value with a capability *type tag* but no
-  host handle. A `write` against it routes to the in-memory backend (§2), never
-  to a host function, because no host function is linked for authority the VM
-  wasn't granted.
+- A test-constructed sealed domain value is plain heap data. Future mock
+  capabilities must likewise route to explicit in-memory backends (§2), never
+  to host functions, because no host function is linked for authority the VM
+  was not granted.
 
-So permitting in-language forgery of sealed values changes NOTHING about host
-safety. The interpreter's `Value::Dir(path, …)` → `std::fs::write` path (which a
-forged value *could* abuse) is not the test execution path; the VM is, and the
-VM's safety comes from handle-mediation, not from the type system refusing to
-build the value. Sealing stays enforced for production `run`/`compile` (where it
-IS the correctness contract); the test runner relaxes it.
+So permitting in-language construction of sealed domain data changes NOTHING
+about host safety. The test runner relaxes domain-data construction only; sealed
+capabilities stay locked until mock backends are explicit runtime values.
+Sealing stays enforced for production `run`/`compile` (where it IS the
+correctness contract).
 
 ## Design
 
@@ -110,40 +107,44 @@ Add a book chapter ("Testing with collaborators / test doubles") teaching this
 as the primary mocking story; CONTRIBUTING gains a lexicon line ("a test double
 is an injected trait impl, not an interception"). This covers most real cases.
 
-### 2. Sealed-type doubles under the test runner
+### 2. Sealed domain-data doubles under the test runner
 
-Two capabilities the test runner grants to `test_*` code that plain `run` does
-not:
+Two test privileges the runner eventually grants to `test_*` code that plain
+`run` does not:
 
-- **Mock capability constructors** — `testing.mock_dir([...])`,
-  `mock_clock(ms)`, `mock_net(responses)`, `mock_env([...])`, `mock_rng(seq)`:
-  capability-typed values backed by in-memory state. The code under test takes
-  an ordinary `Dir[Read]` and is unaware. Host-recognized in-memory backends on
-  both backends (real runtime work, per capability).
-- **Sealed-construction relaxation** — under the test runner, `test_*` code may
+- **Sealed domain-data construction** — under the test runner, entry `test_*`
+  code may
   construct sealed domain types directly (`Version(-1, 0, 0)`, a `Set` with a
   duplicate, a `Url` with impossible fields). This is *deliberately permitted*:
   testing how your code handles a malformed `Version` is good testing, and the
   seal exists for production correctness, which the test is not. Provided as a
   test-mode privilege, not a general escape (production sealing is unchanged).
+- **Mock capability constructors** — `testing.mock_dir([...])`,
+  `mock_clock(ms)`, `mock_net(responses)`, `mock_env([...])`, `mock_rng(seq)`:
+  capability-typed values backed by in-memory state. The code under test takes
+  an ordinary `Dir[Read]` and is unaware. Host-recognized in-memory backends on
+  both backends are real runtime work, per capability, and are not part of the
+  first slice.
 
 Both are gated to the test runner (§3) and both are safe by §"Why this is safe":
-a forged sealed value is inert data; a mock capability has no host handle.
+a forged sealed domain value is inert data; a mock capability has no host handle.
 
 ### 3. Test-mode gating
 
-`std/testing` and the sealed-construction relaxation are available only when the
-entry ran through `witchy test`, following the `mode opt` precedent (a
-transitive, linker-enforced attribute — `crates/witchy-syntax/src/linker.rs`). A
-production `run`/`compile`/`build` that imports `testing` or constructs a sealed
-type from outside its module is the same error it is today. So none of this
-surface exists in a shipped artifact.
+The sealed-construction relaxation is available only when the entry ran through
+`witchy test`, following the `mode opt` precedent (a linker-enforced mode —
+`crates/witchy-syntax/src/linker.rs`). A production `run`/`check`/`compile`/
+`build`/comptime path that constructs a sealed type from outside its module is
+the same error it is today. Imported dependency modules linked into a test are
+also production-strict; only the entry test module gets the privilege.
 
 ### 4. Real capabilities in tests (the integration tier)
 
 Orthogonal to doubling. A `test_*` may declare capability parameters and, under
 explicit `witchy test --integration [--dir …] [--net …]`, receive REAL authority
-for tests that want a real effect. Plain `witchy test` stays zero real grant.
+for tests that want a real effect. In the completed runner split, plain
+`witchy test` stays zero real grant; the first implemented slice does not change
+today's grant path.
 
 **Supply-chain boundary = whose test it is.** `witchy test <dir>` sweeps every
 `.witchy` including vendored dependencies. A **dependency's** swept tests always
@@ -158,10 +159,11 @@ breach the VM regardless of whose code builds them.
 
 - Non-sealed double: an ordinary value with exactly its interface's methods —
   can't exceed them (automatic).
-- Mock capability / forged sealed value: heap data + a type tag, no host handle
-  — the VM's real-grant set is independent of it. Even in hostile code it
+- Mock capability / forged sealed domain value: heap data + a type tag, no host
+  handle — the VM's real-grant set is independent of it. Even in hostile code it
   touches only its own heap or is inert data.
-- Dependency-swept tests get zero REAL grant regardless of flags (§4).
+- In the completed runner split, dependency-swept tests get zero REAL grant
+  regardless of flags (§4).
 
 There is no configuration in which an in-language construction yields a real host
 effect the VM was not granted. That is the whole safety argument, and it rests on
@@ -213,71 +215,50 @@ without opening production.
 
 1. **Docs first, zero code:** the "testing with collaborators" chapter (§1) —
    ships immediately, likely satisfies most demand.
-2. Confinement split (§4) — runner work; hardens the dependency-test real-grant
+2. Sealed domain-data relaxation (§2, construction) + test-mode gate (§3).
+   Implemented 2026-07-13 for the entry module only.
+3. Confinement split (§4) — runner work; hardens the dependency-test real-grant
    floor explicitly.
-3. Sealed relaxation (§2, construction) + mock backends (§2, capabilities) +
-   test-mode gate (§3).
-4. Lock the `witchy test` surface with RFC-0072 goldens.
+4. Mock capability backends (§2, capabilities).
+5. Lock the `witchy test` surface with RFC-0072 goldens.
 
 ## Riders (acceptance conditions, 2026-07-08)
 
-1. **The `--integration` tier is gated on RFC-0005 stages 2/3 merging.** The
-   plain-test tier is safe today by deny-by-omission host linking (see the
-   acceptance note in the header): with zero real grants, no host function
-   exists for a forged value to reach. But under `--integration` the VM DOES
-   hold real handles, and in the shipped i32 representation a forged
-   capability is an integer that could collide with a real handle-table
-   index. The RFC's "a forged value has no host reach" claim is
-   unconditionally true only post-externref. Plain-test features (§1 docs,
-   §2 mocks/relaxation, §3 gating, §4's zero-grant dependency floor) may land
-   now; `--integration` real-grant passing waits for 0005.
+1. **Mock capabilities require a runner grant split.** The first implemented
+   slice constructs only sealed domain data and keeps sealed capabilities
+   strict. Mock `Dir`/`Clock`/`Net`/`Env`/`Rng` values need explicit in-memory
+   backends plus a plain-test path with zero real host grants; integration tests
+   are the separate path that deliberately receives real authority.
 2. **The test-mode gate must be closed against every non-test entry**, and
    its absence goldened (RFC-0072): `run`, `compile`, `build` steps, comptime
    evaluation, and `pm`-driven builds each get a golden proving `testing.*`
    and sealed-construction-outside-home are rejected there. The gate is a
    linker attribute; the goldens are what keep it from silently widening.
 
-## Deferral note (2026-07-09)
+## Residual runtime note (2026-07-13)
 
-The first rider's premise was checked against names in the runtime but not
-against the test runner's actual call path. It is false today:
-
-- `run_tests_in_module` synthesizes a nullary `main`, compiles the entire linked
-  module, and executes it through `run_wasm_bytes`.
-- `run_wasm_bytes` is the development/differential path. Its `Capabilities`
-  grant output, Clock, Rand, Env, cwd `Dir` read/write, and both Net verbs.
-- The runtime's `Dir` value is still a guest `i32` indexing a host table whose
-  entry zero is the granted root. Grant-conditioned import linking does not
-  protect this path because the development grant deliberately links those
-  imports.
-
-Therefore a test-only relaxation that permits constructing sealed capability
-values could construct `Dir(0)` and invoke real operations on the repository
-working directory. The same collision class remains for other unmigrated
-integer-handle capabilities. The current seal is preventing that source-level
-forgery; removing it before the runtime boundary is ready would create the
-authority breach RFC-0005 exists to eliminate.
+The 2026-07-09 deferral was about a pre-RFC-0005 hazard: root capabilities were
+guest `i32` table indexes, so relaxing sealed capabilities under a broadly
+granted test VM could collide with real host handles. RFC-0005's externref
+migration removes that representation hazard for root capabilities, but it does
+not by itself implement mock capability semantics. Until explicit mock backends
+exist, sealed capabilities remain production-strict even under `witchy test`.
 
 Resume the runtime portions only after all of these are true:
 
-1. Plain tests instantiate under a genuinely authority-free capability set.
-   Because codegen currently emits imports for the whole linked module, this
-   also needs per-test reachability/dead-code elimination (or an equivalent
-   import projection) so unused effectful production functions do not prevent
-   a pure test module from instantiating.
-2. Mock capabilities have a representation that is mechanically disjoint from
-   real host handles. Completing RFC-0005 is the preferred model; a temporary
-   tagged mock representation would need its own security proof on both
-   backends.
-3. Integration tests remain gated on RFC-0005 for every granted capability,
-   not merely File, and dependency tests cannot receive those grants.
+1. Plain tests instantiate under a genuinely authority-free capability set, or
+   an equivalent import projection proves unused effectful production functions
+   cannot receive ambient test authority.
+2. Mock capabilities have explicit in-memory backends on the compiled path, with
+   behavior tested against the real capability contracts.
+3. Integration tests remain an opt-in path for real authority, and dependency
+   tests cannot receive those grants.
 4. Negative end-to-end tests prove that a plain test cannot read cwd, inspect
-   ambient environment, use randomness/time, or reach the network, and that
-   the test-only linker privilege is absent from every production/build path.
+   ambient environment, use randomness/time, or reach the network, and that the
+   test-only linker privilege is absent from every production/build path.
 
-The trait-injection guidance in section 1 is unaffected: it uses ordinary
-values and today's dispatch model, so it can ship as documentation without
-claiming this RFC's unsafe runtime pieces are implemented.
+The implemented sealed-domain-data relaxation is unaffected: it constructs
+ordinary heap data, not host authority.
 
 ## Prior art
 
