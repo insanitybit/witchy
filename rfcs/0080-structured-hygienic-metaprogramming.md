@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed syntax wrappers/builders with validated identifiers, comptime emit_item/fn helpers, typed custom derives, typed tagged-literal ExprSyntax returns, parser-backed expression/type/pattern/statement/block/item quotation, and expression/type/pattern plus statement/block mixed quote holes landed; hygiene/full syntax API remains proposed"
+tracking: "source-backed syntax wrappers/builders with validated identifiers, comptime emit_item/fn helpers, typed custom derives, typed tagged-literal ExprSyntax returns, parser-backed expression/type/pattern/statement/block/item quotation, expression/type/pattern plus statement/block mixed quote holes, and witchy expand landed; hygiene/full syntax API remains proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -274,6 +274,11 @@ The first source-compatible slice is implemented:
   grammar. Mixed item quotes lower to `meta.item_join_syntax(parts, holes)` so
   whole generated declarations can stay on the typed syntax boundary instead of
   reopening a raw source template at the item edge.
+- The twenty-first slice adds `witchy expand <file.witchy>`. It loads the entry
+  file plus sibling import sources for tag resolution, runs the same
+  `comptime:` and tagged-literal expansion pass used before linking, and prints
+  only the expanded entry module as canonical source. It is deliberately not a
+  full linked dump and does not type-check or compile the program.
 
 This is intentionally not the full RFC. The payload is still source-backed and
 expression/type/pattern/statement/block/item quotation plus

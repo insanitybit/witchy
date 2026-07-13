@@ -68,6 +68,7 @@ USAGE:
     witchy sandbox [--dir <root>] [--net <addr>]... <file.witchy> [args...]
                                                   compile and run in a VM granted exactly its footprint
     witchy emit-wat <file.witchy>                 print the compiled WebAssembly text (the module sandbox runs)
+    witchy expand  <file.witchy>                  print canonical source after comptime/tag expansion
     witchy caps     [file.witchy]                 report the capability footprint (defaults to the project entry)
     witchy caps-diff <old.witchy> <new.witchy>    fail if the footprint widened
     witchy which    <name>                        find a function in the standard library by (partial) name
@@ -296,6 +297,22 @@ fn main() -> wasmtime::Result<()> {
             }
         }
         print!("{out}");
+        return Ok(());
+    }
+    // `witchy expand <file>` prints the entry module after compile-time frontend
+    // expansion (`comptime:` items and tagged literals), in canonical source form.
+    if std::env::args().nth(1).as_deref() == Some("expand") {
+        let Some(path) = std::env::args().nth(2) else {
+            eprintln!("usage: witchy expand <file.witchy>");
+            std::process::exit(2);
+        };
+        match expand_file_source(&path) {
+            Ok(src) => print!("{src}"),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
         return Ok(());
     }
     // `witchy which <name>` — where does a function live in the standard
@@ -1324,6 +1341,20 @@ fn link_file_with_deps_mode(
     deps: &std::collections::HashMap<String, std::path::PathBuf>,
     mode: linker::LinkMode,
 ) -> Result<(ast::Module, String), String> {
+    let (modules, entry_stem, user_modules) = load_file_modules(path, deps)?;
+    let linked = pipeline::link_with_user_modules_with_mode(modules, &entry_stem, &user_modules, mode)
+        .map_err(|e| e.to_string())?;
+    Ok((linked, entry_stem))
+}
+
+type SourceModules = Vec<(String, ast::Module)>;
+type UserModuleSet = std::collections::HashSet<String>;
+type LoadedFileModules = (SourceModules, String, UserModuleSet);
+
+fn load_file_modules(
+    path: &str,
+    deps: &std::collections::HashMap<String, std::path::PathBuf>,
+) -> Result<LoadedFileModules, String> {
     use std::collections::{HashSet, VecDeque};
     use std::path::{Path, PathBuf};
 
@@ -1338,7 +1369,7 @@ fn link_file_with_deps_mode(
         .ok_or_else(|| format!("invalid file name: {path}"))?
         .to_string();
 
-    let mut modules: Vec<(String, ast::Module)> = Vec::new();
+    let mut modules: SourceModules = Vec::new();
     let mut loaded: HashSet<String> = HashSet::new();
     let mut user_modules: HashSet<String> = HashSet::new();
     let mut queue: VecDeque<(String, PathBuf)> = VecDeque::new();
@@ -1389,9 +1420,27 @@ fn link_file_with_deps_mode(
         modules.push((name, module));
     }
 
-    let linked = pipeline::link_with_user_modules_with_mode(modules, &entry_stem, &user_modules, mode)
-        .map_err(|e| e.to_string())?;
-    Ok((linked, entry_stem))
+    Ok((modules, entry_stem, user_modules))
+}
+
+fn expand_file_source(path: &str) -> Result<String, String> {
+    let (mut modules, entry_stem, _) =
+        load_file_modules(path, &std::collections::HashMap::new())?;
+    let names: Vec<String> = modules.iter().map(|(name, _)| name.clone()).collect();
+    for (i, name) in names.iter().enumerate() {
+        let siblings: Vec<(String, ast::Module)> = modules
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(_, module)| module.clone())
+            .collect();
+        comptime::expand_compile_time(name, &mut modules[i].1, &siblings)
+            .map_err(|e| format!("{path}: {e}"))?;
+    }
+    let Some((_, module)) = modules.into_iter().find(|(name, _)| name == &entry_stem) else {
+        return Err(format!("internal error: entry module `{entry_stem}` was not loaded"));
+    };
+    Ok(format::module(&module, &[]))
 }
 
 /// Parse, link, type-check, and verify compiled-backend acceptance WITHOUT
@@ -3696,6 +3745,71 @@ mod cli_flag_tests {
         assert_eq!(leading_opt_mode(&argv(&["app.wasm", "--debug", "hello"])), None);
         assert_eq!(leading_opt_mode(&argv(&["foo.witchy"])), None);
         assert_eq!(leading_opt_mode(&argv(&[])), None);
+    }
+}
+
+#[cfg(test)]
+mod expand_command_tests {
+    use super::expand_file_source;
+
+    fn unique_dir(name: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("witchy_{name}_{}_{}", std::process::id(), nanos))
+    }
+
+    #[test]
+    fn expand_file_prints_generated_items_without_comptime_blocks() {
+        let dir = unique_dir("expand_comptime");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("app.witchy");
+        std::fs::write(
+            &file,
+            "from meta import item\n\n\
+             comptime:\n    \
+             emit_item(item(\"pub fn generated() -> Int:\\n    42\"))\n\n\
+             fn main(console: Console):\n    \
+             console.print(\"${generated()}\")\n",
+        )
+        .unwrap();
+
+        let expanded = expand_file_source(file.to_str().unwrap()).expect("expand source");
+        assert!(!expanded.contains("comptime:"), "{expanded}");
+        assert!(expanded.contains("pub fn generated() -> Int:\n    42\n"), "{expanded}");
+        assert!(expanded.contains("fn main(console: Console):"), "{expanded}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn expand_file_uses_sibling_modules_for_imported_tags() {
+        let dir = unique_dir("expand_imported_tag");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("tags.witchy"),
+            "fn bump(parts: List(String), holes: List(String)) -> String:\n    \
+             \"(\" + list.at(holes, 0) + \" + 1)\"\n",
+        )
+        .unwrap();
+        let file = dir.join("app.witchy");
+        std::fs::write(
+            &file,
+            "import tags\n\n\
+             fn main(console: Console):\n    \
+             let n = bump\"value ${41}\"\n    \
+             console.print(\"${n}\")\n",
+        )
+        .unwrap();
+
+        let expanded = expand_file_source(file.to_str().unwrap()).expect("expand source");
+        assert!(!expanded.contains("bump\""), "{expanded}");
+        assert!(expanded.contains("41 + 1"), "{expanded}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

@@ -220,6 +220,24 @@
     }
 
     #[test]
+    fn single_expression_block_renders_its_value() {
+        // Tagged-literal expansion stamps hole source locations by wrapping the
+        // original expression in a one-expression block. That wrapper has no
+        // semantic surface and must not leak as the inline placeholder.
+        use crate::ast::*;
+        let block = Expr::Block(Block {
+            stmts: vec![Stmt::Expr(Expr::Binary {
+                op: BinOp::Add,
+                lhs: Box::new(Expr::Int(41)),
+                rhs: Box::new(Expr::Int(1)),
+            })],
+            lines: vec![7],
+            region: None,
+        });
+        assert_eq!(expr_str(&block), "41 + 1");
+    }
+
+    #[test]
     fn reformats_every_std_example_and_glamour_source_to_an_equal_ast() {
         // The printer must faithfully round-trip every shipped source file and
         // parseable book/README `witchy` fence. The shipped trees live at the

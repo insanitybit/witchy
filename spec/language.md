@@ -887,6 +887,10 @@ runtime interpolation.
 `quote type:` covers named/generic, module-qualified, tuple, function,
 ownership-qualified, and capability-right types; anonymous structural type
 quotation and hygiene remain future work.
+`witchy expand <file.witchy>` prints the entry module after `comptime:` item
+generation and tagged-literal expansion, rendered as canonical Witchy source.
+It is an inspection tool: it does not type-check, compile, or dump bundled
+standard-library implementation modules.
 
 Generated code is analyzed exactly like handwritten code, and nothing existing
 can be rewritten, so a comptime block cannot launder authority out of a

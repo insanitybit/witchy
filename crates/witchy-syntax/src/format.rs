@@ -1370,6 +1370,9 @@ fn expr(e: &Expr) -> String {
             if let Some(sugar) = comprehension_sugar(b) {
                 return sugar;
             }
+            if let Some(value) = block_value_opt(b) {
+                return value;
+            }
             "0".to_string()
         }
         // No inline form — caller should have routed these multi-line. Emit a
