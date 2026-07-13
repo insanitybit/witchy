@@ -93,13 +93,13 @@ case "$gate_fuzz" in
 esac
 
 # Prefer nextest (the project's runner); fall back to plain `cargo test`.
-# In --fast mode, exclude the load-flaky e2e binary (coven/glamour publish tests)
-# from the run — it is the push gate's job, not the per-commit loop's.
+# By default, exclude the load-flaky e2e binary (coven/glamour publish tests)
+# from the merge gate. It runs explicitly via `--e2e` and as part of `--full`.
 if cargo nextest --version >/dev/null 2>&1; then
-    # Combine the e2e exclusion (--fast) and the fuzz-skip exclusion into one
+    # Combine the e2e exclusion (default/--fast) and the fuzz-skip exclusion into one
     # filterset (nextest ANDs, so join with ` and `).
     excl=""
-    [ "$fast" -eq 1 ] && excl="not binary(e2e)"
+    [ "$full" -eq 0 ] && excl="not binary(e2e)"
     if [ -n "$fuzz_excl" ]; then
         excl="${excl:+$excl and }$fuzz_excl"
     fi
