@@ -42,7 +42,7 @@ use passes::{alpha_rename_module, flip_string_add_module, rewrite_try_ctx_module
 
 use crate::analysis::{self};
 use witchy_syntax::lambda_scan::{collect_pattern_vars, scan_lambda};
-use witchy_wir::layout::type_tag_of;
+use witchy_wir::layout::{type_tag_of, DATA_BASE};
 // foldhash (not SipHash): all keys are compiler-internal names/ids, never
 // attacker-chosen collections — see the note in witchy-types/src/typeck.rs.
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
@@ -71,8 +71,6 @@ fn cerr<T>(message: impl Into<String>) -> Result<T, CodegenError> {
         message: message.into(),
     })
 }
-
-const DATA_BASE: u32 = 8;
 
 /// Scratch local holding a tuple pointer while its elements are unpacked.
 const TUPLE_TMP: &str = "__witchy_tuple_tmp";

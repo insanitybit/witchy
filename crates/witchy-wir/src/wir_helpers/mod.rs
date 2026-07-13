@@ -146,7 +146,7 @@ pub fn heap_reclaim_helper() -> WirFunc {
     }
 }
 
-pub use crate::layout::{HEAP_REDZONE, RC_SIZE_MASK};
+pub use crate::layout::{slot_offset, slot_record_size, HEAP_REDZONE, RC_SIZE_MASK};
 
 /// (RFC-0023) Whether the opt-in checked heap is selected for this compile. Read from
 /// the environment like the other codegen toggles (`WITCHY_OPT`, `WIRDIAG`), so a
@@ -198,16 +198,16 @@ pub fn rc_assert_enabled() -> bool {
 }
 
 /// The `$mk{n}` allocator for an `n`-field record/tuple/list: bump-allocate
-/// `4 + 8n` bytes, store the i32 tag/length header then each i64 field slot,
+/// `slot_record_size(n)` bytes, store the i32 tag/length header then each i64 field slot,
 /// advance `$heap`, return the pointer. Mirrors `wir_prelude::mk_helper` /
 /// `codegen::mk_helper`. Calls `$ensure`; uses the `$heap` global.
 pub fn mk_helper(n: usize, checked: bool) -> WirFunc {
-    let size = 4 + 8 * n;
+    let size = slot_record_size(n);
     // (RFC-0023) When checked, reserve a trailing redzone the host poisons via
     // `heap_register` and sweeps after the run — so an overrun past this object's end
     // is caught. The object layout `[p, p+size)` and the returned `p` are unchanged,
     // so a correct program behaves identically; only `$heap` advances by `rz` more.
-    let rz = if checked { HEAP_REDZONE } else { 0 };
+    let rz = if checked { HEAP_REDZONE as i32 } else { 0 };
     // (RFC-0037 §3) Under WITCHY_TYPE_CHECK the caller rides an 8-bit TYPE tag in the high
     // byte of the `tag` argument; we mask it off the offset-0 variant word and stamp it into
     // the alloc header's high byte (p-4). Off the sanitizer the high byte is 0, so both the
@@ -224,7 +224,7 @@ pub fn mk_helper(n: usize, checked: bool) -> WirFunc {
         // returned pointer is the object base (header at `p-4`) — readers unchanged.
         WirNode::SetLocal {
             local: "p".into(),
-            value: WirExpr::Call { func: "rc_alloc".into(), args: vec![WirExpr::ConstI32((size + rz) as i32)] },
+            value: WirExpr::Call { func: "rc_alloc".into(), args: vec![WirExpr::ConstI32(size + rz)] },
         },
         // header: store the i32 variant tag at p+0 (low 24 bits; the high byte, if any, is the
         // debug type tag, masked off here so the discriminant readers see only the variant).
@@ -276,7 +276,7 @@ pub fn mk_helper(n: usize, checked: bool) -> WirFunc {
             ptr: WirExpr::GetLocal("p".into()),
             value: WirExpr::GetLocal(format!("f{i}")),
             kind: Kind::I64,
-            offset: (4 + 8 * i) as u32,
+            offset: slot_offset(i) as u32,
         });
     }
     // (RFC-0023) Hand the live object `[p, p+size)` to the host shadow, which poisons
@@ -290,7 +290,7 @@ pub fn mk_helper(n: usize, checked: bool) -> WirFunc {
                     op: BinOp::Add,
                     kind: Kind::I32,
                     lhs: Box::new(WirExpr::GetLocal("p".into())),
-                    rhs: Box::new(WirExpr::ConstI32(size as i32)),
+                    rhs: Box::new(WirExpr::ConstI32(size)),
                 },
             ],
         }));
