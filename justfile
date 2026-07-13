@@ -23,11 +23,15 @@ build-release:
 
 # Build everything CI builds (all bins, tests, examples).
 build-all:
-    cargo build --all-targets
+    cargo build --workspace --all-targets
 
-# ~870 unit + integration tests. Must stay green.
+# Workspace unit + integration tests. Extra arguments are passed to cargo test.
 test *ARGS:
-    cargo test {{ARGS}}
+    cargo test --workspace {{ARGS}}
+
+# The exact nextest invocation used by CI's test job.
+test-ci:
+    cargo nextest run --workspace --profile ci --all-targets
 
 # Checked-heap differential fuzz (CI `heap-check` job, RFC-0023): out-of-object
 # writes surface as redzone traps / a shadow-sweep failure.
@@ -36,7 +40,7 @@ heap-check:
 
 # Lint gate — CI runs this with -D warnings.
 clippy:
-    cargo clippy --all-targets -- -D warnings
+    cargo clippy --workspace --all-targets -- -D warnings
 
 alias lint := clippy
 
@@ -47,7 +51,7 @@ zizmor:
 # NOTE: there is deliberately NO `cargo fmt` recipe. The Rust in this repo is
 # hand-formatted on purpose (see scripts/check.sh); `cargo fmt` reformats ~71
 # files and fights the intended style. The only formatting gate is `witchy fmt`
-# over std/ + examples/ — see `wfmt` / `wfmt-check` below.
+# over std/, examples/, and projects/ — see `wfmt` / `wfmt-check` below.
 
 # --- witchy CLI passthroughs ---------------------------------------------
 
@@ -130,26 +134,25 @@ parity-sweep: build-release
     echo "parity-sweep: $files files, $compared compared lines, positive control OK"
     exit $fail
 
-# Format every std + example witchy file in place.
+# Format every std, example, and project witchy source in place.
 wfmt: build-release
     #!/usr/bin/env bash
     set -euo pipefail
-    for f in std/*.witchy examples/*/src/*.witchy; do
-        {{bin}} fmt "$f"
-    done
+    files=(std/*.witchy examples/*/src/*.witchy)
+    while IFS= read -r f; do
+        files+=("$f")
+    done < <(find projects -type f -path '*/src/*.witchy' -print | sort)
+    {{bin}} fmt "${files[@]}"
 
-# Verify std + example formatting without writing (CI fmt job).
+# Verify std, example, and project formatting without writing (CI fmt job).
 wfmt-check: build-release
     #!/usr/bin/env bash
-    set -uo pipefail
-    fail=0
-    for f in std/*.witchy examples/*/src/*.witchy; do
-        if ! {{bin}} fmt --check "$f" >/dev/null 2>&1; then
-            echo "needs formatting: $f"
-            fail=1
-        fi
-    done
-    exit $fail
+    set -euo pipefail
+    files=(std/*.witchy examples/*/src/*.witchy)
+    while IFS= read -r f; do
+        files+=("$f")
+    done < <(find projects -type f -path '*/src/*.witchy' -print | sort)
+    {{bin}} fmt --check "${files[@]}"
 
 # Regenerate the stdlib API reference (a test asserts it stays current).
 doc-std: build-release
@@ -199,12 +202,12 @@ wasm:
 # The full local gate — mirrors every ci.yml job EXCEPT the master-only Pages
 # deploy (`docs-deploy`), which needs GitHub Pages/OIDC and isn't locally
 # reproducible. See .github/workflows/ci.yml for the authoritative set.
-#   zizmor        -> zizmor          build/clippy/test -> build-all clippy test
+#   zizmor        -> zizmor       build/clippy/test -> build-all clippy test-ci
 #   heap-check    -> heap-check      parity            -> parity-sweep
 #   acceptance    -> e2e-quick       fmt               -> wfmt-check
 #   playground    -> playground book-validate          docs-build -> docs-build
 # Needs node (book-validate) and the wasm32 target (playground/docs-build).
-ci: build-all clippy test heap-check parity-sweep wfmt-check zizmor playground book-validate docs-build e2e-quick
+ci: build-all clippy test-ci heap-check parity-sweep wfmt-check zizmor playground book-validate docs-build e2e-quick
     @echo "✓ local CI gate passed (mirrors ci.yml minus the Pages deploy)"
 
 # Remove build artifacts.
