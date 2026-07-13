@@ -34,7 +34,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_witchy");
 
 /// Number of statement kinds the generator can emit (see `gen_program`'s match). The
 /// grammar-coverage meta-assertion requires every one of these to appear across a run.
-const NKINDS: u32 = 36;
+const NKINDS: u32 = 38;
 
 /// Deterministic splitmix-ish PRNG — reproducible runs (no wall clock / OS randomness).
 struct Rng(u64);
@@ -297,7 +297,7 @@ fn gen_program(seed: u64, statements: usize) -> (String, u64) {
     // Fixed record types so statements can construct + field-access heap structs (incl. a
     // nested record, the deepest heap-layout shape) without per-program type generation.
     let mut body = String::from(
-        "import string\nimport list\nimport math\nimport dict\n\n\
+        "import string\nimport list\nimport math\nimport dict\nimport bytes\n\n\
          type R:\n    a: Int\n    b: String\n    c: List(Int)\n\
          type P:\n    x: R\n    y: Int\n\
          type Q:\n    m: Int\n    n: Int\n\
@@ -468,7 +468,7 @@ fn gen_program(seed: u64, statements: usize) -> (String, u64) {
                     alnum(&mut r)
                 )
             }
-            _ => {
+            35 => {
                 // A list of ADTs iterated + matched — heap-payload ADTs inside a list buffer.
                 format!(
                     "    let shs{stmt_i} = [{}, {}, {}]\n    var acc{stmt_i} = 0\n    var jj{stmt_i} = 0\n    while jj{stmt_i} < 3:\n        acc{stmt_i} = acc{stmt_i} + shape_area(shs{stmt_i}[jj{stmt_i}])\n        jj{stmt_i} = jj{stmt_i} + 1\n    console.print(\"${{acc{stmt_i}}}\")\n",
@@ -477,6 +477,24 @@ fn gen_program(seed: u64, statements: usize) -> (String, u64) {
                     gen_shape(&mut r)
                 )
             }
+            36 => {
+                // Bytes share String's flat heap layout but use byte-oriented operations.
+                // Round-trip a computed string so both construction and decoding allocate.
+                format!(
+                    "    console.print(bytes.to_string(bytes.from_string({})))\n",
+                    gen_str(&mut r, depth.min(2))
+                )
+            }
+            37 => {
+                // Exercise byte concat/slice plus alias stability: the original buffers must
+                // remain readable after constructing and slicing a joined value.
+                let a = gen_str(&mut r, depth.min(2));
+                let b = gen_str(&mut r, depth.min(2));
+                format!(
+                    "    let ba{stmt_i} = bytes.from_string({a})\n    let bb{stmt_i} = bytes.from_string({b})\n    let bc{stmt_i} = bytes.concat(ba{stmt_i}, bb{stmt_i})\n    console.print(\"${{bytes.to_list(bytes.slice(bc{stmt_i}, (-2), bytes.length(bc{stmt_i}) + 2))}}\")\n    console.print(\"${{bytes.to_list(ba{stmt_i})}}\")\n    console.print(\"${{bytes.to_list(bb{stmt_i})}}\")\n"
+                )
+            }
+            _ => unreachable!("kind is sampled below NKINDS"),
         };
         body.push_str(&line);
     }
@@ -826,7 +844,7 @@ fn differential_fuzz_interpreter_vs_compiled() {
         );
     }
     eprintln!(
-        "differential fuzz: {programs} programs × {} configs; default median compared-lines {median}; per-config tallies {labeled:?}; kinds covered {kinds_used:#034b}",
+        "differential fuzz: {programs} programs × {} configs; default median compared-lines {median}; per-config tallies {labeled:?}; kinds covered {kinds_used:#040b}",
         CONFIGS.len()
     );
 }
@@ -889,7 +907,7 @@ fn is_sorted(xs: List(Int)) -> Bool:\n\
 \x20       i = i + 1\n\
 \x20   ok\n";
     format!(
-        "import list\nimport string\nimport dict\n\n{helpers}\nfn main(console: Console):\n\
+        "import list\nimport string\nimport dict\nimport bytes\nimport set\n\n{helpers}\nfn main(console: Console):\n\
          \x20   let xs = {xs}\n\
          \x20   let a = {a}\n\
          \x20   let b = {b}\n\
@@ -898,6 +916,10 @@ fn is_sorted(xs: List(Int)) -> Bool:\n\
          \x20   let d = dict.insert(dict.new(), \"seed\", 1)\n\
          \x20   let d2 = dict.insert(dict.insert(dict.new(), {s1}, {v}), {s2}, {v2})\n\
          \x20   let rt = dict.insert(dict.remove(d2, {s1}), {s1}, {v})\n\
+         \x20   let sa = set.from_list(a)\n\
+         \x20   let sb = set.from_list(b)\n\
+         \x20   let ba = bytes.from_string(s1)\n\
+         \x20   let bb = bytes.from_string(s2)\n\
          \x20   console.print(\"${{list.reverse(list.reverse(xs)) == xs}}\")\n\
          \x20   console.print(\"${{list.length(list.concat(a, b)) == list.length(a) + list.length(b)}}\")\n\
          \x20   console.print(\"${{list.sort(list.sort(xs)) == list.sort(xs)}}\")\n\
@@ -908,14 +930,20 @@ fn is_sorted(xs: List(Int)) -> Bool:\n\
          \x20   console.print(\"${{(dict.get_or(rt, {s1}, 0 - 1) == {v}) && (dict.length(rt) == dict.length(d2)) && (list.length(dict.pairs(rt)) == dict.length(rt))}}\")\n\
          \x20   console.print(\"${{string.length(s1 + s2) == string.length(s1) + string.length(s2)}}\")\n\
          \x20   console.print(\"${{string.reverse(string.reverse(s1)) == s1}}\")\n\
-         \x20   console.print(\"${{string.length(string.repeat(s1, {rep})) == string.length(s1) * {rep}}}\")\n"
+         \x20   console.print(\"${{string.length(string.repeat(s1, {rep})) == string.length(s1) * {rep}}}\")\n\
+         \x20   console.print(\"${{bytes.to_string(ba) == s1}}\")\n\
+         \x20   console.print(\"${{bytes.to_list(bytes.concat(ba, bb)) == list.concat(bytes.to_list(ba), bytes.to_list(bb))}}\")\n\
+         \x20   console.print(\"${{set.union(sa, sb) == set.union(sb, sa)}}\")\n\
+         \x20   console.print(\"${{set.is_subset(set.intersection(sa, sb), sa) && set.is_subset(set.intersection(sa, sb), sb)}}\")\n\
+         \x20   console.print(\"${{set.length(set.from_list(list.concat(a, a))) == set.length(sa)}}\")\n"
     )
 }
 
 /// Number of algebraic laws `gen_law_program` prints — used to assert none were skipped by an
 /// early trap (which would otherwise slip through as "fewer lines, all true"). The list laws
-/// now include sortedness + permutation and a dict remove/reinsert/iterate round-trip (§6).
-const NLAWS: usize = 11;
+/// include sortedness + permutation, dict remove/reinsert/iterate, byte-buffer round-trips,
+/// and set algebra (§6).
+const NLAWS: usize = 16;
 
 /// A minimal helper library for the dead-alloc metamorphic pair: the two alias/self-ref shapes
 /// whose reclamation is sensitive to free-list state (no `type R` dependency, unlike `HELPER_LIB`).

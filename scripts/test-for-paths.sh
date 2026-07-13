@@ -72,6 +72,12 @@ for p in "${paths[@]}"; do
             add "./scripts/check.sh --e2e" ;;
         tests/e2e.rs)
             add "./scripts/check.sh --e2e" ;;
+        tests/*.rs)
+            any_rust=1
+            test_name="${p#tests/}"
+            test_name="${test_name%.rs}"
+            printf -v test_name_q '%q' "$test_name"
+            add "cargo nextest run --test $test_name_q" ;;
         .github/workflows/* | .github/actions/* | .github/zizmor.yml)
             add "./scripts/zizmor.sh --quiet --no-progress --persona=pedantic .github/workflows" ;;
         scripts/zizmor.sh)
@@ -86,6 +92,9 @@ for p in "${paths[@]}"; do
         scripts/worktree-create.sh)
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
             add "cargo nextest run --test worktree_create" ;;
+        scripts/test-for-paths.sh)
+            add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
+            add "cargo nextest run --test test_for_paths" ;;
         scripts/*.sh)
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done" ;;
         justfile)
