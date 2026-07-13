@@ -7481,85 +7481,72 @@ fn yn(b: Bool) -> String:
     /// `output`. This is the single source of truth the runnable book reads, so the browser
     /// never re-derives classification (which could disagree with the authoritative Rust one).
     fn generate_examples_manifest() -> String {
-        let mut entries: Vec<serde_json::Value> = Vec::new();
-        for file in &doc_markdown_files() {
-            let Ok(text) = std::fs::read_to_string(file) else { continue };
-            for (idx, snippet) in extract_witchy_blocks(&text).into_iter().enumerate() {
-                let context = format!("{}: ```witchy block #{}", file.display(), idx + 1);
-                let module = parser::parse_module(&snippet)
-                    .unwrap_or_else(|e| panic!("{context} fails to parse: {e:?}"));
-                let mut footprint_module = module.clone();
-                crate::comptime::expand("main", &mut footprint_module)
-                    .unwrap_or_else(|e| panic!("{context} fails compile-time expansion: {e}"));
-                let linked = crate::pipeline::link(vec![("main".into(), module)], "main")
-                    .unwrap_or_else(|e| panic!("{context} fails to link: {e}"));
-                typeck::check(&linked).unwrap_or_else(|e| panic!("{context} fails to type-check: {e}"));
+        let files = doc_markdown_files();
+        let per_file: Vec<Vec<serde_json::Value>> = std::thread::scope(|s| {
+            let handles: Vec<_> = files.iter().map(|file| {
+                s.spawn(move || {
+                    let mut file_entries = Vec::new();
+                    let Ok(text) = std::fs::read_to_string(file) else { return file_entries };
+                    for (idx, snippet) in extract_witchy_blocks(&text).into_iter().enumerate() {
+                        let context = format!("{}: ```witchy block #{}", file.display(), idx + 1);
+                        let module = parser::parse_module(&snippet)
+                            .unwrap_or_else(|e| panic!("{context} fails to parse: {e:?}"));
+                        let mut footprint_module = module.clone();
+                        crate::comptime::expand("main", &mut footprint_module)
+                            .unwrap_or_else(|e| panic!("{context} fails compile-time expansion: {e}"));
+                        let linked = crate::pipeline::link(vec![("main".into(), module)], "main")
+                            .unwrap_or_else(|e| panic!("{context} fails to link: {e}"));
+                        typeck::check(&linked).unwrap_or_else(|e| panic!("{context} fails to type-check: {e}"));
 
-                let has_main = linked
-                    .items
-                    .iter()
-                    .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"));
-                let reads_argv = linked.items.iter().any(|it| {
-                    matches!(it, ast::Item::Function(f) if f.name == "main"
-                        && f.params.iter().any(|p| matches!(&p.ty,
-                            Some(ast::Type::Named(n, args)) if n == "List"
-                                && matches!(args.first(),
-                                    Some(ast::Type::Named(s, _)) if s == "String"))))
-                });
-                // Footprint the source module, not the flattened link: imported
-                // modules' public APIs are not entry points of this snippet. This
-                // matches `witchy caps` and `compiler.footprint`, while retaining
-                // capabilities introduced by compile-time generated source.
-                let fp = crate::capabilities::analyze(&footprint_module);
-                let console_only = fp.total.keys().all(|k| *k == "Console");
-                // A Console-only footprint is NOT sufficient for browser-runnability:
-                // `std/vm` (par_map / with_dir / serve — multi-core workers) carries no
-                // host CAPABILITY, so it doesn't show in the footprint, but its lowering
-                // emits host imports (`vm_par_map_run`, `vm_serve_run`, …) the browser
-                // playground shim deliberately does not provide. Such a module compiles
-                // but cannot instantiate in-browser, so a Console-only `import vm` program
-                // was wrongly given a Run button that always errors ("capability
-                // 'vm_par_map_run' is not available in the browser playground"). All three
-                // of vm's public fns are worker-only, so linking `vm` at all disqualifies
-                // browser-runnability. (Verified end-to-end by scripts/audit-browser-runnable.mjs.)
-                let uses_workers = footprint_module.imports.iter().any(|m| m == "vm")
-                    || linked.imports.iter().any(|m| m == "vm");
-                let runnable = has_main && console_only && !reads_argv && !uses_workers;
-                // Right-precise footprint: `Console`, `Dir[Read]`, `Net[Connect,Tcp]`, ….
-                let footprint: Vec<String> = fp
-                    .total
-                    .iter()
-                    .map(|(cap, rights)| {
-                        if rights.is_empty() {
-                            (*cap).to_string()
+                        let has_main = linked
+                            .items
+                            .iter()
+                            .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"));
+                        let reads_argv = linked.items.iter().any(|it| {
+                            matches!(it, ast::Item::Function(f) if f.name == "main"
+                                && f.params.iter().any(|p| matches!(&p.ty,
+                                    Some(ast::Type::Named(n, args)) if n == "List"
+                                        && matches!(args.first(),
+                                            Some(ast::Type::Named(s, _)) if s == "String"))))
+                        });
+                        let fp = crate::capabilities::analyze(&footprint_module);
+                        let console_only = fp.total.keys().all(|k| *k == "Console");
+                        let uses_workers = footprint_module.imports.iter().any(|m| m == "vm")
+                            || linked.imports.iter().any(|m| m == "vm");
+                        let runnable = has_main && console_only && !reads_argv && !uses_workers;
+                        let footprint: Vec<String> = fp
+                            .total
+                            .iter()
+                            .map(|(cap, rights)| {
+                                if rights.is_empty() {
+                                    (*cap).to_string()
+                                } else {
+                                    format!("{}[{}]", cap, rights.iter().copied().collect::<Vec<_>>().join(","))
+                                }
+                            })
+                            .collect();
+                        let output: Vec<String> = if runnable {
+                            interpreter::run_module(linked, std::path::Path::new("."), Vec::new())
+                                .unwrap_or_else(|e| panic!("{context} fails on the interpreter: {e}"))
                         } else {
-                            format!("{}[{}]", cap, rights.iter().copied().collect::<Vec<_>>().join(","))
-                        }
-                    })
-                    .collect();
-                // Only console-only, non-argv `main`s produce reproducible in-browser output
-                // (the deny-by-omission shim grants nothing else); everything else is
-                // compile-only in the book. The output is the interpreter oracle.
-                let output: Vec<String> = if runnable {
-                    interpreter::run_module(linked, std::path::Path::new("."), Vec::new())
-                        .unwrap_or_else(|e| panic!("{context} fails on the interpreter: {e}"))
-                } else {
-                    Vec::new()
-                };
-                entries.push(serde_json::json!({
-                    "file": file.display().to_string(),
-                    "block": idx + 1,
-                    "runnable": runnable,
-                    "console_only": console_only,
-                    // No doc block is intentionally uncompilable today (the policy is that
-                    // every ```witchy block is a correct program); the field is here for the
-                    // future teaching-example directive RFC-0041 describes.
-                    "expect_error": false,
-                    "footprint": footprint,
-                    "output": output,
-                }));
-            }
-        }
+                            Vec::new()
+                        };
+                        file_entries.push(serde_json::json!({
+                            "file": file.display().to_string(),
+                            "block": idx + 1,
+                            "runnable": runnable,
+                            "console_only": console_only,
+                            "expect_error": false,
+                            "footprint": footprint,
+                            "output": output,
+                        }));
+                    }
+                    file_entries
+                })
+            }).collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let entries: Vec<serde_json::Value> = per_file.into_iter().flatten().collect();
         serde_json::to_string_pretty(&serde_json::Value::Array(entries)).unwrap() + "\n"
     }
 
