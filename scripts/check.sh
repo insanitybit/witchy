@@ -3,9 +3,9 @@
 # before you commit, and before you push. Steps are ordered cheap-to-expensive so
 # a failure surfaces as early as possible.
 #
-#   ./scripts/check.sh --fast  the COMMIT gate: build + clippy + tests (minus the
-#                              load-flaky e2e), skipping the witchy-fmt and wasm
-#                              playground steps — the fast inner loop
+#   ./scripts/check.sh --fast  the COMMIT gate: clippy + tests (minus the
+#                              load-flaky e2e), plus witchy-fmt IF any .witchy
+#                              files changed — the fast inner loop
 #   ./scripts/check.sh         build, clippy, fmt, tests, and the wasm playground build
 #   ./scripts/check.sh --full  the PUSH gate: also the e2e suite + from-scratch acceptance
 #
@@ -191,7 +191,13 @@ run() {
 run "clippy (deny warnings)"   cargo clippy --workspace --all-targets -- -D warnings
 if [ "$fast" -eq 1 ]; then
     # The fast commit gate: clippy checks correctness; nextest compiles+links its
-    # own test binaries. No standalone build step needed (fmt doesn't run here).
+    # own test binaries. No standalone build step needed.
+    # Run the witchy fmt check IF any .witchy files are dirty — catches formatting
+    # mistakes without the cost of always building the binary + sweeping 200 files.
+    if git diff --name-only HEAD 2>/dev/null | grep -q '\.witchy$'; then
+        run "build (binary)"           cargo build -p witchy
+        run "witchy fmt (changed .witchy files)" witchy_fmt_check
+    fi
     run "tests (workspace, minus e2e)" "${test_cmd[@]}"
     printf '\n\033[1;32mfast gate green\033[0m — run without --fast before push (fmt + wasm), --full for e2e\n'
     exit 0
