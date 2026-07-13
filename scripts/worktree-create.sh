@@ -40,8 +40,12 @@ git worktree add -b "$branch" "$dest" HEAD 1>&2 || exit 1
 # during the agent's read/think phase instead of blocking its first command.
 # Safe to race the agent's own cargo: the per-target-dir build lock serializes
 # them and the work is shared either way. Fully detached; never fails creation.
+# Build both dev (for the binary) and test (for nextest) profiles — the test
+# profile needs cfg(test) so it recompiles all workspace crates; doing both
+# here means the agent's first `cargo nextest run` is a no-op link.
 if command -v cargo >/dev/null 2>&1; then
-    nohup cargo build --workspace --manifest-path "$dest/Cargo.toml" \
+    nohup sh -c "cargo build --workspace --manifest-path '$dest/Cargo.toml' && \
+        cargo test --workspace --no-run --manifest-path '$dest/Cargo.toml'" \
         >"$dest/.worktree-prebuild.log" 2>&1 </dev/null &
     disown
     echo "worktree-create: background workspace prebuild started (log: $dest/.worktree-prebuild.log)" >&2
