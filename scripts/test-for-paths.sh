@@ -72,10 +72,15 @@ for p in "${paths[@]}"; do
             add "./scripts/check.sh --e2e" ;;
         tests/e2e.rs)
             add "./scripts/check.sh --e2e" ;;
-        .github/workflows/*.yml | .github/workflows/*.yaml)
+        .github/workflows/* | .github/actions/* | .github/zizmor.yml)
+            add "./scripts/zizmor.sh --quiet --no-progress --persona=pedantic .github/workflows" ;;
+        scripts/zizmor.sh)
+            add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
             add "./scripts/zizmor.sh --quiet --no-progress --persona=pedantic .github/workflows" ;;
         scripts/*.sh)
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done" ;;
+        justfile)
+            add "just --list" ;;
         spec/stdlib.md)
             echo "WARNING: spec/stdlib.md is GENERATED — edit std/*.witchy doc-comments instead" >&2
             add "cargo nextest run -E 'test(stdlib_docs_are_current)'" ;;
