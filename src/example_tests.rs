@@ -1267,6 +1267,12 @@ fn main(console: Console):
             .message;
         assert!(err.contains("meta.BlockSyntax") && err.contains("compile-time-only"), "got: {err}");
 
+        let runtime_hole_signature = "from meta import SyntaxHole\n\nfn leak(x: SyntaxHole) -> SyntaxHole:\n    x\n";
+        let err = typeck::check(&resolve_std_src(runtime_hole_signature))
+            .expect_err("runtime signatures must not expose SyntaxHole")
+            .message;
+        assert!(err.contains("meta.SyntaxHole") && err.contains("compile-time-only"), "got: {err}");
+
         let local_runtime_type = "type ItemSyntax:\n    value: Int\n\nfn main(console: Console):\n    let x = ItemSyntax(11)\n    console.print(\"${x.value}\")\n";
         let expected = ["11"];
         assert_eq!(link_run(local_runtime_type), expected, "local type name is ordinary");
@@ -1671,6 +1677,51 @@ fn main(console: Console):
             run_linked_on_wasm(&[("main", src)], "main"),
             expected,
             "compiled quote stmt/block holes",
+        );
+    }
+
+    /// RFC-0080 statement/block quote holes preserve the typed category of every
+    /// splice, so body generators can combine type, pattern, and expression syntax
+    /// without returning to string templates.
+    #[test]
+    fn quote_stmt_and_block_mixed_holes_splice_typed_syntax_on_both_backends() {
+        let src = r#"
+import meta
+
+comptime:
+    let int = quote type:
+        Int
+    let forty = quote expr:
+        40
+    let two = quote expr:
+        2
+    let bound = quote pattern:
+        z
+    let body = quote block:
+        let x: ${int} = ${forty}
+        let ${bound} = x + ${two}
+        z
+    emit_item(meta.function_block(true, meta.ident("answer_block"), [], Some(int), body))
+
+    let six = quote expr:
+        6
+    let stmt = quote stmt:
+        let y: ${int} = ${six}
+    let tail = quote expr:
+        y
+    let body2 = meta.block([stmt], Some(tail))
+    emit_item(meta.function_block(true, meta.ident("answer_stmt"), [], Some(int), body2))
+
+fn main(console: Console):
+    console.print("${answer_block()}")
+    console.print("${answer_stmt()}")
+"#;
+        let expected = ["42", "6"];
+        assert_eq!(link_run(src), expected, "interp quote stmt/block mixed holes");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled quote stmt/block mixed holes",
         );
     }
 

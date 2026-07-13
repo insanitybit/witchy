@@ -656,7 +656,7 @@ fn f():
     }
 
     #[test]
-    fn quote_stmt_holes_lower_to_meta_stmt_join() {
+    fn quote_stmt_holes_lower_to_meta_stmt_join_syntax() {
         let m = parse_module(r#"
 fn f(value: meta.ExprSyntax):
     quote stmt:
@@ -666,10 +666,46 @@ fn f(value: meta.ExprSyntax):
             panic!("expected function");
         };
         let expected = Expr::Call {
-            name: "meta.stmt_join".into(),
+            name: "meta.stmt_join_syntax".into(),
             args: vec![
                 Expr::List(vec![Expr::Str("let x = ".into()), Expr::Str("".into())]),
-                Expr::List(vec![Expr::Var("value".into())]),
+                Expr::List(vec![Expr::Call {
+                    name: "meta.expr_hole".into(),
+                    args: vec![Expr::Var("value".into())],
+                }]),
+            ],
+        };
+        assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);
+    }
+
+    #[test]
+    fn quote_stmt_mixed_holes_lower_in_source_order() {
+        let m = parse_module(r#"
+fn f(ty: meta.TypeSyntax, value: meta.ExprSyntax):
+    quote stmt:
+        let x: ${ty} = ${value}
+"#).expect("quote stmt with mixed holes should parse");
+        let Item::Function(f) = &m.items[0] else {
+            panic!("expected function");
+        };
+        let expected = Expr::Call {
+            name: "meta.stmt_join_syntax".into(),
+            args: vec![
+                Expr::List(vec![
+                    Expr::Str("let x: ".into()),
+                    Expr::Str(" = ".into()),
+                    Expr::Str("".into()),
+                ]),
+                Expr::List(vec![
+                    Expr::Call {
+                        name: "meta.type_hole".into(),
+                        args: vec![Expr::Var("ty".into())],
+                    },
+                    Expr::Call {
+                        name: "meta.expr_hole".into(),
+                        args: vec![Expr::Var("value".into())],
+                    },
+                ]),
             ],
         };
         assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);
@@ -694,7 +730,7 @@ fn f():
     }
 
     #[test]
-    fn quote_block_holes_lower_to_meta_block_join() {
+    fn quote_block_holes_lower_to_meta_block_join_syntax() {
         let m = parse_module(r#"
 fn f(value: meta.ExprSyntax, delta: meta.ExprSyntax):
     quote block:
@@ -705,14 +741,68 @@ fn f(value: meta.ExprSyntax, delta: meta.ExprSyntax):
             panic!("expected function");
         };
         let expected = Expr::Call {
-            name: "meta.block_join".into(),
+            name: "meta.block_join_syntax".into(),
             args: vec![
                 Expr::List(vec![
                     Expr::Str("let x = ".into()),
                     Expr::Str("\nx + ".into()),
                     Expr::Str("".into()),
                 ]),
-                Expr::List(vec![Expr::Var("value".into()), Expr::Var("delta".into())]),
+                Expr::List(vec![
+                    Expr::Call {
+                        name: "meta.expr_hole".into(),
+                        args: vec![Expr::Var("value".into())],
+                    },
+                    Expr::Call {
+                        name: "meta.expr_hole".into(),
+                        args: vec![Expr::Var("delta".into())],
+                    },
+                ]),
+            ],
+        };
+        assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);
+    }
+
+    #[test]
+    fn quote_block_mixed_holes_lower_in_source_order() {
+        let m = parse_module(r#"
+fn f(ty: meta.TypeSyntax, value: meta.ExprSyntax, pat: meta.PatternSyntax, tail: meta.ExprSyntax):
+    quote block:
+        let x: ${ty} = ${value}
+        let ${pat} = x
+        ${tail}
+"#).expect("quote block with mixed holes should parse");
+        let Item::Function(f) = &m.items[0] else {
+            panic!("expected function");
+        };
+        let expected = Expr::Call {
+            name: "meta.block_join_syntax".into(),
+            args: vec![
+                Expr::List(vec![
+                    Expr::Str("let x: ".into()),
+                    Expr::Str(" = ".into()),
+                    Expr::Str("\nlet ".into()),
+                    Expr::Str(" = x\n".into()),
+                    Expr::Str("".into()),
+                ]),
+                Expr::List(vec![
+                    Expr::Call {
+                        name: "meta.type_hole".into(),
+                        args: vec![Expr::Var("ty".into())],
+                    },
+                    Expr::Call {
+                        name: "meta.expr_hole".into(),
+                        args: vec![Expr::Var("value".into())],
+                    },
+                    Expr::Call {
+                        name: "meta.pattern_hole".into(),
+                        args: vec![Expr::Var("pat".into())],
+                    },
+                    Expr::Call {
+                        name: "meta.expr_hole".into(),
+                        args: vec![Expr::Var("tail".into())],
+                    },
+                ]),
             ],
         };
         assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);

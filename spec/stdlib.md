@@ -1934,6 +1934,12 @@ RFC-0080 first slice: a typed boundary for whole generated items. The compiler s
 
 - `PatternSyntax(String)`
 
+#### `sealed type SyntaxHole`
+
+- `ExprHole(ExprSyntax)`
+- `TypeHole(TypeSyntax)`
+- `PatternHole(PatternSyntax)`
+
 #### `sealed type StmtSyntax`
 
 - `StmtSyntax(String)`
@@ -2105,6 +2111,12 @@ An or-pattern. Every alternative must bind the same names when type-checked.
 
 Join parser-checked pattern quote fragments with typed pattern holes.
 
+#### `fn expr_hole(expr: ExprSyntax) -> SyntaxHole`
+
+#### `fn type_hole(ty: TypeSyntax) -> SyntaxHole`
+
+#### `fn pattern_hole(pattern: PatternSyntax) -> SyntaxHole`
+
 #### `fn match_arm(pattern: PatternSyntax, body: ExprSyntax) -> MatchArmSyntax`
 
 #### `fn stmt_let(mutable: Bool, name: Ident, ty: Option(TypeSyntax), value: ExprSyntax) -> StmtSyntax`
@@ -2125,6 +2137,10 @@ A source-backed statement wrapper for parser-checked `quote stmt:`.
 
 Join parser-checked statement quote fragments with typed expression holes.
 
+#### `fn stmt_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> StmtSyntax`
+
+Join parser-checked statement quote fragments with typed syntax holes.
+
 #### `fn block(stmts: List(StmtSyntax), tail: Option(ExprSyntax)) -> BlockSyntax`
 
 #### `fn block_raw(source: String) -> BlockSyntax`
@@ -2134,6 +2150,10 @@ A source-backed block wrapper for parser-checked `quote block:`.
 #### `fn block_join(parts: List(String), holes: List(ExprSyntax)) -> BlockSyntax`
 
 Join parser-checked block quote fragments with typed expression holes.
+
+#### `fn block_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> BlockSyntax`
+
+Join parser-checked block quote fragments with typed syntax holes.
 
 #### `fn param(name: Ident, ty: TypeSyntax) -> ParamSyntax`
 

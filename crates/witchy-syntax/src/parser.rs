@@ -1823,12 +1823,28 @@ impl Parser {
         self.advance(); // category
         self.expect(&Tok::LBrace)?;
         if category == "block" {
+            let type_base = self.quote_type_holes.len();
+            let pattern_base = self.quote_pattern_holes.len();
+            self.quote_type_hole_bases.push(type_base);
+            self.quote_pattern_hole_bases.push(pattern_base);
             self.quote_expr_hole_depth += 1;
+            self.quote_type_hole_depth += 1;
+            self.quote_pattern_hole_depth += 1;
             let quoted = self.block_after_open();
             self.quote_expr_hole_depth -= 1;
+            self.quote_type_hole_depth -= 1;
+            self.quote_pattern_hole_depth -= 1;
+            self.quote_type_hole_bases.pop();
+            self.quote_pattern_hole_bases.pop();
+            if quoted.is_err() {
+                self.quote_type_holes.truncate(type_base);
+                self.quote_pattern_holes.truncate(pattern_base);
+            }
             let quoted = quoted?;
+            let type_holes = self.quote_type_holes.split_off(type_base);
+            let pattern_holes = self.quote_pattern_holes.split_off(pattern_base);
             self.needs_meta_import = true;
-            return self.block_syntax_expr_with_holes(quoted);
+            return self.block_syntax_expr_with_holes(quoted, type_holes, pattern_holes);
         }
         let quoted = match category.as_str() {
             "expr" => {
@@ -1867,11 +1883,27 @@ impl Parser {
                 self.pattern_syntax_expr_with_holes(quoted, holes)?
             }
             "stmt" => {
+                let type_base = self.quote_type_holes.len();
+                let pattern_base = self.quote_pattern_holes.len();
+                self.quote_type_hole_bases.push(type_base);
+                self.quote_pattern_hole_bases.push(pattern_base);
                 self.quote_expr_hole_depth += 1;
+                self.quote_type_hole_depth += 1;
+                self.quote_pattern_hole_depth += 1;
                 let quoted = self.stmt();
                 self.quote_expr_hole_depth -= 1;
+                self.quote_type_hole_depth -= 1;
+                self.quote_pattern_hole_depth -= 1;
+                self.quote_type_hole_bases.pop();
+                self.quote_pattern_hole_bases.pop();
+                if quoted.is_err() {
+                    self.quote_type_holes.truncate(type_base);
+                    self.quote_pattern_holes.truncate(pattern_base);
+                }
                 let quoted = quoted?;
-                self.stmt_syntax_expr_with_holes(quoted)?
+                let type_holes = self.quote_type_holes.split_off(type_base);
+                let pattern_holes = self.quote_pattern_holes.split_off(pattern_base);
+                self.stmt_syntax_expr_with_holes(quoted, type_holes, pattern_holes)?
             }
             "item" => {
                 let quoted = self.item()?;
@@ -2012,27 +2044,93 @@ impl Parser {
         self.meta_call("block_raw", vec![Expr::Str(crate::format::block_str(quoted))])
     }
 
-    fn stmt_syntax_expr_with_holes(&self, mut quoted: Stmt) -> Result<Expr, ParseError> {
-        let mut holes = Vec::new();
-        Self::collect_quote_expr_holes_stmt(&mut quoted, &mut holes);
-        if holes.is_empty() {
+    fn stmt_syntax_expr_with_holes(
+        &self,
+        mut quoted: Stmt,
+        type_holes: Vec<Expr>,
+        pattern_holes: Vec<Expr>,
+    ) -> Result<Expr, ParseError> {
+        let mut expr_holes = Vec::new();
+        Self::collect_quote_expr_holes_stmt(&mut quoted, &mut expr_holes);
+        if expr_holes.is_empty() && type_holes.is_empty() && pattern_holes.is_empty() {
             return Ok(self.stmt_syntax_expr(&quoted));
         }
         let source = crate::format::stmt_str(&quoted);
-        let parts =
-            self.quote_hole_parts(&source, QUOTE_EXPR_HOLE_PREFIX, holes.len(), "statement")?;
-        Ok(self.meta_call("stmt_join", vec![Expr::List(parts), Expr::List(holes)]))
+        let (parts, holes) =
+            self.quote_mixed_hole_parts(&source, expr_holes, type_holes, pattern_holes, "statement")?;
+        Ok(self.meta_call("stmt_join_syntax", vec![Expr::List(parts), Expr::List(holes)]))
     }
 
-    fn block_syntax_expr_with_holes(&self, mut quoted: Block) -> Result<Expr, ParseError> {
-        let mut holes = Vec::new();
-        Self::collect_quote_expr_holes_block(&mut quoted, &mut holes);
-        if holes.is_empty() {
+    fn block_syntax_expr_with_holes(
+        &self,
+        mut quoted: Block,
+        type_holes: Vec<Expr>,
+        pattern_holes: Vec<Expr>,
+    ) -> Result<Expr, ParseError> {
+        let mut expr_holes = Vec::new();
+        Self::collect_quote_expr_holes_block(&mut quoted, &mut expr_holes);
+        if expr_holes.is_empty() && type_holes.is_empty() && pattern_holes.is_empty() {
             return Ok(self.block_syntax_expr(&quoted));
         }
         let source = crate::format::block_str(&quoted);
-        let parts = self.quote_hole_parts(&source, QUOTE_EXPR_HOLE_PREFIX, holes.len(), "block")?;
-        Ok(self.meta_call("block_join", vec![Expr::List(parts), Expr::List(holes)]))
+        let (parts, holes) =
+            self.quote_mixed_hole_parts(&source, expr_holes, type_holes, pattern_holes, "block")?;
+        Ok(self.meta_call("block_join_syntax", vec![Expr::List(parts), Expr::List(holes)]))
+    }
+
+    fn quote_mixed_hole_parts(
+        &self,
+        source: &str,
+        expr_holes: Vec<Expr>,
+        type_holes: Vec<Expr>,
+        pattern_holes: Vec<Expr>,
+        category: &str,
+    ) -> Result<(Vec<Expr>, Vec<Expr>), ParseError> {
+        let mut markers = Vec::new();
+        for (idx, hole) in expr_holes.into_iter().enumerate() {
+            let marker = format!("{QUOTE_EXPR_HOLE_PREFIX}{idx}");
+            let Some(pos) = source.find(&marker) else {
+                return Err(self.error(format!(
+                    "internal error: quote {category} expression hole marker was lost"
+                )));
+            };
+            markers.push((pos, marker.len(), self.meta_call("expr_hole", vec![hole])));
+        }
+        for (idx, hole) in type_holes.into_iter().enumerate() {
+            let marker = format!("{QUOTE_TYPE_HOLE_PREFIX}{idx}");
+            let Some(pos) = source.find(&marker) else {
+                return Err(self.error(format!(
+                    "internal error: quote {category} type hole marker was lost"
+                )));
+            };
+            markers.push((pos, marker.len(), self.meta_call("type_hole", vec![hole])));
+        }
+        for (idx, hole) in pattern_holes.into_iter().enumerate() {
+            let marker = format!("{QUOTE_PATTERN_HOLE_PREFIX}{idx}");
+            let Some(pos) = source.find(&marker) else {
+                return Err(self.error(format!(
+                    "internal error: quote {category} pattern hole marker was lost"
+                )));
+            };
+            markers.push((pos, marker.len(), self.meta_call("pattern_hole", vec![hole])));
+        }
+
+        markers.sort_by_key(|(pos, _, _)| *pos);
+        let mut parts = Vec::with_capacity(markers.len() + 1);
+        let mut holes = Vec::with_capacity(markers.len());
+        let mut cursor = 0;
+        for (pos, len, hole) in markers {
+            if pos < cursor {
+                return Err(self.error(format!(
+                    "internal error: quote {category} hole markers overlapped"
+                )));
+            }
+            parts.push(Expr::Str(source[cursor..pos].to_string()));
+            holes.push(hole);
+            cursor = pos + len;
+        }
+        parts.push(Expr::Str(source[cursor..].to_string()));
+        Ok((parts, holes))
     }
 
     fn collect_quote_expr_holes(expr: &mut Expr, holes: &mut Vec<Expr>) {
