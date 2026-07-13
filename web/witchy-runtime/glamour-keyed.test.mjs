@@ -124,8 +124,12 @@ type Msg derive(Reflect):
 fn order(model: Int) -> List(String):
     if model == 0:
         ["a", "b", "c"]
-    else:
+    else if model == 1:
         ["c", "a", "b"]
+    else if model == 2:
+        ["dup", "dup"]
+    else:
+        ["a", "b"]
 
 fn view(model: Int) -> VNode(Msg):
     var lis = []
@@ -137,7 +141,12 @@ fn view(model: Int) -> VNode(Msg):
     ])
 
 fn update(model: Int, msg: Msg) -> (Int, Cmd(Msg)):
-    (1 - model, NoCmd)
+    if model == 0:
+        (1, NoCmd)
+    else if model == 3:
+        (2, NoCmd)
+    else:
+        (model, NoCmd)
 
 fn parse_model(j: Json) -> Int:
     match json.as_int(j):
@@ -192,6 +201,36 @@ try {
   ok(
     after.every((n) => n.__mark === n.getAttribute("data-key")),
     "each reordered <li> is the same DOM node moved into place (focus/caret would survive)",
+  );
+
+  // BUG-431: duplicate identity is rejected before initial DOM creation.
+  let initialDuplicate = null;
+  try {
+    await mount(wasm, new FakeElement("root"), {
+      document: fakeDocument,
+      initialModel: 2,
+    });
+  } catch (error) {
+    initialDuplicate = error;
+  }
+  ok(
+    String(initialDuplicate).includes("duplicate sibling key `dup`"),
+    "duplicate keys in an initial render fail loudly and name the key",
+  );
+
+  // The same invariant applies to an update before the reconciler can reassign
+  // a live node's identity.
+  const updateRoot = new FakeElement("root");
+  await mount(wasm, updateRoot, { document: fakeDocument, initialModel: 3 });
+  let updateDuplicate = null;
+  try {
+    querySelector(updateRoot, "button").dispatchEvent({ type: "click" });
+  } catch (error) {
+    updateDuplicate = error;
+  }
+  ok(
+    String(updateDuplicate).includes("duplicate sibling key `dup`"),
+    "duplicate keys introduced by an update fail before reconciliation",
   );
 } finally {
   rmSync(work, { recursive: true, force: true });

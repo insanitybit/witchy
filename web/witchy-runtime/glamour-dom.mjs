@@ -410,6 +410,8 @@ function patch(doc, parent, dom, oldV, newV, dispatch) {
   reconcileAttrs(dom, oldV.attrs || [], newV.attrs || [], dispatch);
   const oldKids = oldV.kids || [];
   const newKids = newV.kids || [];
+  assertUniqueSiblingKeys(oldKids);
+  assertUniqueSiblingKeys(newKids);
   // Snapshot the live child nodes up front (patch mutates `dom.childNodes`).
   const childNodes = Array.from(dom.childNodes);
   // Keyed reconciliation when any new child carries a stable key: reorders/inserts/removes
@@ -472,6 +474,20 @@ function reconcileKeyed(doc, parent, oldKids, newKids, childNodes, dispatch) {
   for (const d of ordered) parent.appendChild(d);
 }
 
+// A key is a sibling's stable identity, so duplicates have no coherent
+// reconciliation meaning. Reject them before a Map can silently overwrite one
+// old node or assign one new identity to multiple children (BUG-431).
+function assertUniqueSiblingKeys(kids) {
+  const seen = new Set();
+  for (const kid of kids) {
+    if (!isKeyed(kid)) continue;
+    if (seen.has(kid.key)) {
+      throw new Error(`glamour-dom: duplicate sibling key \`${kid.key}\``);
+    }
+    seen.add(kid.key);
+  }
+}
+
 function kindOrTagChanged(oldV, newV) {
   if (isText(oldV) !== isText(newV)) return true;
   if (isCompartment(oldV) !== isCompartment(newV)) return true;
@@ -511,7 +527,9 @@ function createNode(doc, v, dispatch) {
   const el = doc.createElement(safe ? v.el : "span");
   if (!safe) el.setAttribute("data-glamour-blocked-tag", String(v.el));
   for (const a of v.attrs || []) applyAttr(el, a, dispatch);
-  for (const k of v.kids || []) el.appendChild(createNode(doc, k, dispatch));
+  const kids = v.kids || [];
+  assertUniqueSiblingKeys(kids);
+  for (const k of kids) el.appendChild(createNode(doc, k, dispatch));
   return el;
 }
 
