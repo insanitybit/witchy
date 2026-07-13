@@ -880,8 +880,10 @@ sealed source-backed channel as the `std/meta` builders. Inside `quote expr:`,
 `quote pattern:`, `${hole}` splices a `meta.TypeSyntax` or `meta.PatternSyntax`;
 inside `quote stmt:` and `quote block:`, `${hole}` splices a
 `meta.ExprSyntax`, `meta.TypeSyntax`, or `meta.PatternSyntax` in expression,
-type, or pattern positions. Holes are typed by the surrounding `comptime`/tag
-generator, not by runtime interpolation.
+type, or pattern positions. `quote item:` accepts the same expression, type,
+and pattern holes anywhere those grammar positions occur inside the quoted
+item. Holes are typed by the surrounding `comptime`/tag generator, not by
+runtime interpolation.
 `quote type:` covers named/generic, module-qualified, tuple, function,
 ownership-qualified, and capability-right types; anonymous structural type
 quotation and hygiene remain future work.

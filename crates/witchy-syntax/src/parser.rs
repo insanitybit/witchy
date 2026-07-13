@@ -1906,8 +1906,27 @@ impl Parser {
                 self.stmt_syntax_expr_with_holes(quoted, type_holes, pattern_holes)?
             }
             "item" => {
-                let quoted = self.item()?;
-                self.item_syntax_expr(quoted)
+                let type_base = self.quote_type_holes.len();
+                let pattern_base = self.quote_pattern_holes.len();
+                self.quote_type_hole_bases.push(type_base);
+                self.quote_pattern_hole_bases.push(pattern_base);
+                self.quote_expr_hole_depth += 1;
+                self.quote_type_hole_depth += 1;
+                self.quote_pattern_hole_depth += 1;
+                let quoted = self.item();
+                self.quote_expr_hole_depth -= 1;
+                self.quote_type_hole_depth -= 1;
+                self.quote_pattern_hole_depth -= 1;
+                self.quote_type_hole_bases.pop();
+                self.quote_pattern_hole_bases.pop();
+                if quoted.is_err() {
+                    self.quote_type_holes.truncate(type_base);
+                    self.quote_pattern_holes.truncate(pattern_base);
+                }
+                let quoted = quoted?;
+                let type_holes = self.quote_type_holes.split_off(type_base);
+                let pattern_holes = self.quote_pattern_holes.split_off(pattern_base);
+                self.item_syntax_expr_with_holes(quoted, type_holes, pattern_holes)?
             }
             _ => {
                 return Err(self.error(format!(
@@ -1997,11 +2016,13 @@ impl Parser {
         let mut rest = source;
         for i in 0..count {
             let marker = format!("{prefix}{i}");
-            let Some((before, after)) = rest.split_once(&marker) else {
+            let Some(pos) = Self::quote_marker_pos(rest, &marker) else {
                 return Err(self.error(format!(
                     "internal error: quote {category} hole marker was lost"
                 )));
             };
+            let (before, after_marker) = rest.split_at(pos);
+            let after = &after_marker[marker.len()..];
             parts.push(Expr::Str(before.to_string()));
             rest = after;
         }
@@ -2078,6 +2099,52 @@ impl Parser {
         Ok(self.meta_call("block_join_syntax", vec![Expr::List(parts), Expr::List(holes)]))
     }
 
+    fn item_syntax_expr(&self, quoted: Item) -> Expr {
+        self.meta_call("item", vec![Expr::Str(Self::item_source(quoted))])
+    }
+
+    fn item_syntax_expr_with_holes(
+        &self,
+        mut quoted: Item,
+        type_holes: Vec<Expr>,
+        pattern_holes: Vec<Expr>,
+    ) -> Result<Expr, ParseError> {
+        let mut expr_holes = Vec::new();
+        Self::collect_quote_expr_holes_item(&mut quoted, &mut expr_holes);
+        if expr_holes.is_empty() && type_holes.is_empty() && pattern_holes.is_empty() {
+            return Ok(self.item_syntax_expr(quoted));
+        }
+        let source = Self::item_source(quoted);
+        let (parts, holes) =
+            self.quote_mixed_hole_parts(&source, expr_holes, type_holes, pattern_holes, "item")?;
+        Ok(self.meta_call("item_join_syntax", vec![Expr::List(parts), Expr::List(holes)]))
+    }
+
+    fn item_source(item: Item) -> String {
+        let module = Module {
+            modes: Vec::new(),
+            imports: Vec::new(),
+            from_imports: Vec::new(),
+            items: vec![item],
+            import_lines: Vec::new(),
+            item_lines: vec![1],
+        };
+        crate::format::module(&module, &[])
+    }
+
+    fn quote_marker_pos(source: &str, marker: &str) -> Option<usize> {
+        let mut offset = 0;
+        while let Some(pos) = source[offset..].find(marker) {
+            let absolute = offset + pos;
+            let next = source.as_bytes().get(absolute + marker.len()).copied();
+            if !next.is_some_and(|b| b.is_ascii_digit()) {
+                return Some(absolute);
+            }
+            offset = absolute + marker.len();
+        }
+        None
+    }
+
     fn quote_mixed_hole_parts(
         &self,
         source: &str,
@@ -2089,7 +2156,7 @@ impl Parser {
         let mut markers = Vec::new();
         for (idx, hole) in expr_holes.into_iter().enumerate() {
             let marker = format!("{QUOTE_EXPR_HOLE_PREFIX}{idx}");
-            let Some(pos) = source.find(&marker) else {
+            let Some(pos) = Self::quote_marker_pos(source, &marker) else {
                 return Err(self.error(format!(
                     "internal error: quote {category} expression hole marker was lost"
                 )));
@@ -2098,7 +2165,7 @@ impl Parser {
         }
         for (idx, hole) in type_holes.into_iter().enumerate() {
             let marker = format!("{QUOTE_TYPE_HOLE_PREFIX}{idx}");
-            let Some(pos) = source.find(&marker) else {
+            let Some(pos) = Self::quote_marker_pos(source, &marker) else {
                 return Err(self.error(format!(
                     "internal error: quote {category} type hole marker was lost"
                 )));
@@ -2107,7 +2174,7 @@ impl Parser {
         }
         for (idx, hole) in pattern_holes.into_iter().enumerate() {
             let marker = format!("{QUOTE_PATTERN_HOLE_PREFIX}{idx}");
-            let Some(pos) = source.find(&marker) else {
+            let Some(pos) = Self::quote_marker_pos(source, &marker) else {
                 return Err(self.error(format!(
                     "internal error: quote {category} pattern hole marker was lost"
                 )));
@@ -2260,6 +2327,41 @@ impl Parser {
         }
     }
 
+    fn collect_quote_expr_holes_item(item: &mut Item, holes: &mut Vec<Expr>) {
+        match item {
+            Item::Function(func) => Self::collect_quote_expr_holes_function(func, holes),
+            Item::Trait(trait_def) => {
+                for method in &mut trait_def.methods {
+                    Self::collect_quote_expr_holes_params(&mut method.params, holes);
+                    if let Some(default) = &mut method.default {
+                        Self::collect_quote_expr_holes_block(default, holes);
+                    }
+                }
+            }
+            Item::Impl(impl_def) => {
+                for method in &mut impl_def.methods {
+                    Self::collect_quote_expr_holes_function(method, holes);
+                }
+            }
+            Item::Const { value, .. } => Self::collect_quote_expr_holes(value, holes),
+            Item::Comptime(block) => Self::collect_quote_expr_holes_block(block, holes),
+            Item::Type(_) | Item::TypeAlias { .. } => {}
+        }
+    }
+
+    fn collect_quote_expr_holes_function(func: &mut Function, holes: &mut Vec<Expr>) {
+        Self::collect_quote_expr_holes_params(&mut func.params, holes);
+        Self::collect_quote_expr_holes_block(&mut func.body, holes);
+    }
+
+    fn collect_quote_expr_holes_params(params: &mut [Param], holes: &mut Vec<Expr>) {
+        for param in params {
+            if let Some(default) = &mut param.default {
+                Self::collect_quote_expr_holes(default, holes);
+            }
+        }
+    }
+
     fn meta_call(&self, name: &str, args: Vec<Expr>) -> Expr {
         Expr::Call { name: format!("meta.{name}"), args }
     }
@@ -2380,18 +2482,6 @@ impl Parser {
             Some(name) => Expr::Ctor { name: "Some".to_string(), args: vec![self.meta_ident(name)] },
             None => Expr::Ctor { name: "None".to_string(), args: vec![] },
         }
-    }
-
-    fn item_syntax_expr(&self, item: Item) -> Expr {
-        let module = Module {
-            modes: Vec::new(),
-            imports: Vec::new(),
-            from_imports: Vec::new(),
-            items: vec![item],
-            import_lines: Vec::new(),
-            item_lines: vec![1],
-        };
-        self.meta_call("item", vec![Expr::Str(crate::format::module(&module, &[]))])
     }
 
     /// Resolve a bare name into a variable, call, constructor, or a qualified

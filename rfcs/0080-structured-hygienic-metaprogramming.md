@@ -268,11 +268,17 @@ The first source-compatible slice is implemented:
   `meta.block_join_syntax(parts, holes)`, where every splice is wrapped as
   `meta.expr_hole`, `meta.type_hole`, or `meta.pattern_hole` according to the
   grammar position it occupied.
+- The twentieth slice extends the same mixed-hole model to `quote item:`.
+  Expression holes are collected from function/default/comptime bodies and
+  constants, while type and pattern holes are preserved from the quoted item
+  grammar. Mixed item quotes lower to `meta.item_join_syntax(parts, holes)` so
+  whole generated declarations can stay on the typed syntax boundary instead of
+  reopening a raw source template at the item edge.
 
 This is intentionally not the full RFC. The payload is still source-backed and
 expression/type/pattern/statement/block/item quotation plus
-expression/type/pattern holes plus mixed statement/block holes exist; identifier
-hygiene and compiler-owned expression/pattern/type syntax trees remain future
-work. The value is the migration seam: future work can move the payload behind
-these wrappers from parsed source to structured compiler nodes without changing
-the comptime append/merge path again.
+expression/type/pattern holes plus mixed statement/block/item holes exist;
+identifier hygiene and compiler-owned expression/pattern/type syntax trees
+remain future work. The value is the migration seam: future work can move the
+payload behind these wrappers from parsed source to structured compiler nodes
+without changing the comptime append/merge path again.

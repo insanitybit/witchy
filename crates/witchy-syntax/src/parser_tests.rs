@@ -828,6 +828,56 @@ fn f():
     }
 
     #[test]
+    fn quote_item_mixed_holes_lower_in_source_order() {
+        let m = parse_module(r#"
+fn f(ty: meta.TypeSyntax, value: meta.ExprSyntax, pat: meta.PatternSyntax, tail: meta.ExprSyntax):
+    quote item:
+        pub fn generated(x: ${ty}) -> ${ty}:
+            let ${pat} = ${value}
+            x + ${tail}
+"#).expect("quote item with mixed holes should parse");
+        let Item::Function(f) = &m.items[0] else {
+            panic!("expected function");
+        };
+        let expected = Expr::Call {
+            name: "meta.item_join_syntax".into(),
+            args: vec![
+                Expr::List(vec![
+                    Expr::Str("pub fn generated(x: ".into()),
+                    Expr::Str(") -> ".into()),
+                    Expr::Str(":\n    let ".into()),
+                    Expr::Str(" = ".into()),
+                    Expr::Str("\n    x + ".into()),
+                    Expr::Str("\n".into()),
+                ]),
+                Expr::List(vec![
+                    Expr::Call {
+                        name: "meta.type_hole".into(),
+                        args: vec![Expr::Var("ty".into())],
+                    },
+                    Expr::Call {
+                        name: "meta.type_hole".into(),
+                        args: vec![Expr::Var("ty".into())],
+                    },
+                    Expr::Call {
+                        name: "meta.pattern_hole".into(),
+                        args: vec![Expr::Var("pat".into())],
+                    },
+                    Expr::Call {
+                        name: "meta.expr_hole".into(),
+                        args: vec![Expr::Var("value".into())],
+                    },
+                    Expr::Call {
+                        name: "meta.expr_hole".into(),
+                        args: vec![Expr::Var("tail".into())],
+                    },
+                ]),
+            ],
+        };
+        assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);
+    }
+
+    #[test]
     fn parses_constructors_vs_calls_by_case() {
         let stmts = fn_body(r#"
 fn f():

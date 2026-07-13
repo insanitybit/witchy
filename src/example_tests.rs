@@ -1748,6 +1748,38 @@ fn main(console: Console):
         );
     }
 
+    /// RFC-0080 item quote holes keep the item boundary typed while splicing
+    /// expression, type, and pattern syntax into the generated declaration.
+    #[test]
+    fn quote_item_mixed_holes_generate_typed_function_on_both_backends() {
+        let src = r#"
+comptime:
+    let int = quote type:
+        Int
+    let forty = quote expr:
+        40
+    let bound = quote pattern:
+        z
+    let two = quote expr:
+        2
+    let generated = quote item:
+        pub fn answer(x: ${int}) -> ${int}:
+            let ${bound} = ${forty}
+            z + x + ${two}
+    emit_item(generated)
+
+fn main(console: Console):
+    console.print("${answer(0)}")
+"#;
+        let expected = ["42"];
+        assert_eq!(link_run(src), expected, "interp quote item mixed holes");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled quote item mixed holes",
+        );
+    }
+
     /// (BUG-182) A tagged literal in a standalone file whose stem is NOT a valid
     /// identifier (`tag-hyphen`) must still expand and run on both backends. Tag
     /// expansion seeds a throwaway parse with `import <qualifier>` lines built from

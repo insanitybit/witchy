@@ -1999,6 +1999,14 @@ A type's structure. `fields` is populated for records and `variants` for sums; b
 
 A source-backed item wrapper. This is the migration bridge from today's source-emitting generators toward structured constructors and quotation.
 
+#### `fn item_join(parts: List(String), holes: List(ExprSyntax)) -> ItemSyntax`
+
+Join parser-checked item quote fragments with typed expression holes.
+
+#### `fn item_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> ItemSyntax`
+
+Join parser-checked item quote fragments with typed syntax holes.
+
 #### `fn ident(name: String) -> Ident`
 
 A validated Witchy identifier. This rejects keywords, `_`, non-ASCII source spelling, and compiler-reserved `__` names before generated source is parsed.
