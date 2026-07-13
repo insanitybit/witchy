@@ -4229,13 +4229,13 @@ Read `key` from an inline table value like `{ path = "../money", version = "1" }
 
 ## `url`
 
-Minimal URL parsing — the witchy slice of Go's net/url. Pure and capability-free, so it compiles to WASM. Handles `scheme://host[:port][/path]`; the port defaults by scheme (443 for https, else 80) and the path to "/".
+Minimal URL parsing — the witchy slice of Go's net/url. Pure and capability-free, so it compiles to WASM. Handles `scheme://host[:port][/path][?query][#fragment]`; the port defaults by scheme (443 for https, else 80) and the path to "/".
 
 `parse` returns a matchable `UrlError`; `parse_string` is the String-rendering bridge for application-style callers. Simple scalar parses like `string.parse_int` stay `Option`.
 
 #### `sealed type Url`
 
-- `Url(String, String, Int, String)`
+- `Url(String, String, Int, String, Option(String), Option(String))`
 
 #### `type UrlError`
 
@@ -4265,6 +4265,28 @@ Parse a URL with String errors for application-style boundaries.
 #### `fn port(u: Url) -> Int`
 
 #### `fn path(u: Url) -> String`
+
+The historical complete post-authority suffix (path, query, and fragment). Kept for compatibility; use `pathname`, `query`, and `fragment` when component boundaries matter, or `request_target` for HTTP.
+
+#### `fn pathname(u: Url) -> String`
+
+The path component only, normalized to `/` when the URL omits a path.
+
+#### `fn query(u: Url) -> Option(String)`
+
+The query text without its leading `?`, retaining `Some("")` for a URL that explicitly ends its query component at `?`.
+
+#### `fn fragment(u: Url) -> Option(String)`
+
+The fragment text without its leading `#`, retaining `Some("")` for a URL that explicitly ends at `#`.
+
+#### `fn with_query(u: Url, key: String, value: String) -> Url`
+
+Add one percent-encoded query pair while preserving the fragment boundary. Existing query pairs remain in order; an explicitly empty query does not gain a leading `&`.
+
+#### `fn request_target(u: Url) -> String`
+
+The HTTP request target: path plus query, deliberately excluding the client-side fragment component (RFC 3986 section 3.5).
 
 #### `fn format(u: Url) -> String`
 

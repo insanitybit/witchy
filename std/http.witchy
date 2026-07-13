@@ -130,7 +130,7 @@ pub fn get_url(net: Net[Connect, Tcp], raw: String) -> Result(Response, HttpErro
     match url.parse(raw):
         Ok(u) ->
             match scheme_secure(url.scheme(u)):
-                Ok(secure) -> try_request_with(net, secure, "GET", url.host(u), url.port(u), url.path(u), [], "")
+                Ok(secure) -> try_request_with(net, secure, "GET", url.host(u), url.port(u), url.request_target(u), [], "")
                 Err(e) -> Err(e)
         Err(e) -> Err(InvalidUrl(e))
 
@@ -266,7 +266,7 @@ pub fn pin(net: Net[Connect, Tcp], raw: String, allow_ip: fn(String) -> Bool) ->
                 Ok(secure) ->
                     match first_allowed(net.resolve(url.host(u)), allow_ip):
                         None -> Err(NoResolvedAddressPassedPinPolicy(url.host(u)))
-                        Some(ip) -> Ok(PinnedUrl(url.host(u), url.port(u), secure, url.path(u), ip))
+                        Some(ip) -> Ok(PinnedUrl(url.host(u), url.port(u), secure, url.request_target(u), ip))
 
 pub fn pin_string(net: Net[Connect, Tcp], raw: String, allow_ip: fn(String) -> Bool) -> Result(PinnedUrl, String):
     match pin(net, raw, allow_ip):
@@ -360,12 +360,13 @@ impl RequestBuilder:
             RequestBuilder(m, u, hs, _b) -> RequestBuilder(m, u, hs, b)
 
     pub fn with_query(self, key: String, value: String) -> RequestBuilder:
-        // Append a `key=value` query parameter to the URL (chainable), choosing `?`
-        // for the first and `&` thereafter. The key and value are percent-encoded.
+        // Append a percent-encoded `key=value` query parameter before any
+        // fragment. A malformed URL remains unchanged and `send` reports it.
         match self:
             RequestBuilder(m, u, hs, b) ->
-                let sep = if string.contains(u, "?"): "&" else: "?"
-                RequestBuilder(m, u + sep + url.encode(key) + "=" + url.encode(value), hs, b)
+                match url.parse(u):
+                    Ok(parsed) -> RequestBuilder(m, url.format(url.with_query(parsed, key, value)), hs, b)
+                    Err(_e) -> RequestBuilder(m, u, hs, b)
 
     pub fn send(self, net: Net[Connect, Tcp]) -> Result(Response, HttpError):
         // Send the assembled request, parsing host/port/path from its URL. An `Err`
@@ -375,7 +376,7 @@ impl RequestBuilder:
                 match url.parse(u):
                     Ok(parsed) ->
                         match scheme_secure(url.scheme(parsed)):
-                            Ok(secure) -> try_request_with(net, secure, m, url.host(parsed), url.port(parsed), url.path(parsed), hs, b)
+                            Ok(secure) -> try_request_with(net, secure, m, url.host(parsed), url.port(parsed), url.request_target(parsed), hs, b)
                             Err(e) -> Err(e)
                     Err(e) -> Err(InvalidUrl(e))
 
