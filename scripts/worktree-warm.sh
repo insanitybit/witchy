@@ -11,9 +11,11 @@
 #
 # `incremental/` is deliberately NOT cloned: it holds only workspace-crate state
 # (deps don't compile incrementally), which is path-keyed and thus dead weight in
-# another worktree — and it dominates the file count (hundreds of thousands of
-# tiny files), which is what makes a naive `cp -Rc target` take minutes instead
-# of seconds.
+# another worktree. Cargo's `split-debuginfo = "unpacked"` also leaves one
+# `*.rcgu.o` file per codegen unit in `deps/`; those unpacked objects are not
+# needed to reuse Cargo's fingerprints, libraries, or linked test binaries. The
+# two sets dominate the file count (hundreds of thousands of tiny files), which
+# is what makes a naive `cp -Rc target` take minutes instead of seconds.
 #
 #   ./scripts/worktree-warm.sh                     # warm the current worktree
 #   ./scripts/worktree-warm.sh <path>              # warm the worktree at <path>
@@ -31,25 +33,58 @@
 # (BUG-020). Per-worktree target + CoW seed keeps builds parallel AND warm.
 set -euo pipefail
 
+clone_deps() { # clone_deps <src-deps> <dest-deps>
+    local src="$1" dst="$2"
+    mkdir "$dst"
+    # Batch retained entries into as few cp invocations as the platform's
+    # argument limit permits. A cp per file would erase most of the speedup.
+    find "$src" -mindepth 1 -maxdepth 1 ! -name '*.rcgu.o' \
+        -exec sh -c 'dst="$1"; shift; cp -Rc "$@" "$dst/"' sh "$dst" {} +
+}
+
+clone_profile() { # clone_profile <src-profile> <dest-profile>
+    local src="${1%/}/" dst="$2" entry base
+    mkdir "$dst"
+    for entry in "$src".??* "$src"*; do
+        base="$(basename "$entry")"
+        [[ -e "$entry" ]] || continue
+        [[ "$base" == "incremental" || "$base" == "." || "$base" == ".." ]] && continue
+        if [[ "$base" == "deps" && -d "$entry" ]]; then
+            clone_deps "$entry" "$dst/$base"
+        else
+            cp -Rc "$entry" "$dst/$base"
+        fi
+    done
+}
+
 clone_target() { # clone_target <src-target> <dest-target>
     local src="$1" dst="$2"
     mkdir "$dst"
     # CACHEDIR.TAG (written by cargo) marks target/ for backup tools to skip.
     [[ -f "$src/CACHEDIR.TAG" ]] && cp -c "$src/CACHEDIR.TAG" "$dst/" 2>/dev/null || true
-    # Clone each profile dir (debug, release, per-target triples), skipping
-    # incremental/. `cp -Rc` requests a CoW clone (APFS); on a non-CoW
-    # filesystem it falls back to a real copy — still correct, just slower.
+    # Clone each profile dir. Target-triple dirs contain another debug/release
+    # layer, so descend once to apply the same incremental/deps filtering.
+    # `cp -Rc` requests a CoW clone (APFS); on a non-CoW filesystem it falls
+    # back to a real copy — still correct, just slower.
     local profile name entry base
     for profile in "$src"/*/; do
         name="$(basename "$profile")"
         [[ "$name" == "tmp" ]] && continue
-        mkdir "$dst/$name"
-        for entry in "$profile".??* "$profile"*; do
-            base="$(basename "$entry")"
-            [[ -e "$entry" ]] || continue
-            [[ "$base" == "incremental" || "$base" == "." || "$base" == ".." ]] && continue
-            cp -Rc "$entry" "$dst/$name/$base"
-        done
+        if [[ -d "$profile/debug" || -d "$profile/release" ]]; then
+            mkdir "$dst/$name"
+            for entry in "$profile".??* "$profile"*; do
+                base="$(basename "$entry")"
+                [[ -e "$entry" ]] || continue
+                [[ "$base" == "." || "$base" == ".." ]] && continue
+                if [[ -d "$entry" && ( "$base" == "debug" || "$base" == "release" ) ]]; then
+                    clone_profile "$entry" "$dst/$name/$base"
+                else
+                    cp -Rc "$entry" "$dst/$name/$base"
+                fi
+            done
+        else
+            clone_profile "$profile" "$dst/$name"
+        fi
     done
 }
 
@@ -66,7 +101,7 @@ if [[ "${1:-}" == "--target-dir" ]]; then
         exit 1
     fi
     clone_target "$root/target" "$dest"
-    echo "worktree-warm: seeded $dest from $root/target (CoW clone, incremental/ skipped)"
+    echo "worktree-warm: seeded $dest from $root/target (CoW clone, incremental/ and deps/*.rcgu.o skipped)"
     exit 0
 fi
 
@@ -90,4 +125,4 @@ if [[ ! -d "$main/target" ]]; then
 fi
 
 clone_target "$main/target" "$dest/target"
-echo "worktree-warm: seeded $dest/target from $main/target (CoW clone, incremental/ skipped)"
+echo "worktree-warm: seeded $dest/target from $main/target (CoW clone, incremental/ and deps/*.rcgu.o skipped)"
