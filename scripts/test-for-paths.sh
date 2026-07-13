@@ -72,6 +72,8 @@ for p in "${paths[@]}"; do
             add "./scripts/check.sh --e2e" ;;
         tests/e2e.rs)
             add "./scripts/check.sh --e2e" ;;
+        .github/workflows/*.yml | .github/workflows/*.yaml)
+            add "./scripts/zizmor.sh --quiet --no-progress --persona=pedantic .github/workflows" ;;
         scripts/*.sh)
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done" ;;
         spec/stdlib.md)
