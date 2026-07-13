@@ -546,11 +546,11 @@ Matchable compiler-service failures. `SourceRejected` is the ordinary parse, typ
 
 #### `fn footprint(source: String) -> String`
 
-The capability footprint of witchy `source`, as JSON:   {"total":[..],"build":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]} or {"error":".."} if the source does not parse or contains `comptime:` blocks. Use the source-file CLI path for expanded comptime introspection. `build` is the build-time footprint — the build capabilities the rune's `build` entrypoint demands (gated separately from the runtime `total`). Parse it with `import json`.
+The capability footprint of witchy `source`, as JSON:   {"total":[..],"build":[..],"user_caps":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]} or {"error":".."} if the source does not parse or contains `comptime:` blocks. Use the source-file CLI path for expanded comptime introspection. `build` is the build-time footprint — the build capabilities the rune's `build` entrypoint demands (gated separately from the runtime `total`). `user_caps` lists grantable user-capability names the source requires. Parse it with `import json`.
 
 #### `fn diff(old: String, new: String) -> String`
 
-Compare two sources by capability footprint, as JSON:   {"widened":bool,"added":[..],"removed":[..]}   (or {"error":".."}) `widened` is the rights-precise block-on-widening gate: true when `new` demands any capability or right that `old` did not.
+Compare two sources by capability footprint, as JSON:   {"widened":bool,"added":[..],"removed":[..],"build_added":[..],    "build_removed":[..],"user_caps_added":[..],"user_caps_removed":[..]} or {"error":".."} if either source does not parse. `widened` is the rights-precise block-on-widening gate: true when `new` demands any runtime capability, build capability, or user cap that `old` did not.
 
 #### `fn try_doc(name: String, source: String) -> Result(String, CompilerError)`
 

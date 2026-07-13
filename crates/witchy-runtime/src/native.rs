@@ -611,9 +611,11 @@ mod compiler {
     }
 
     /// Compare two witchy sources by capability footprint, as JSON:
-    /// `{"widened":bool,"added":[..],"removed":[..]}` — the rights-precise
-    /// block-on-widening gate (the package manager's core safety check), exposed
-    /// to witchy. `{"error":".."}` if either source does not parse.
+    /// `{"widened":bool,"added":[..],"removed":[..],"build_added":[..],
+    /// "build_removed":[..],"user_caps_added":[..],"user_caps_removed":[..]}` —
+    /// the rights-precise block-on-widening gate (the package manager's core
+    /// safety check), exposed to witchy. `{"error":".."}` if either source does
+    /// not parse.
     pub fn diff(args: &[Value]) -> Result<Value, RuntimeError> {
         let [Value::Str(old_src), Value::Str(new_src)] = args else {
             return Err(type_error("compiler.diff expects (old_source, new_source) strings"));
@@ -628,11 +630,19 @@ mod compiler {
                 let d = witchy_caps::capabilities::diff(&old_fp, &new_fp);
                 let added = arr(d.added.iter().map(|(n, r)| witchy_caps::capabilities::show_cap(n, r)));
                 let removed = arr(d.removed.iter().map(|(n, r)| witchy_caps::capabilities::show_cap(n, r)));
+                let build_added = arr(d.build_added.iter().map(|(n, r)| witchy_caps::capabilities::show_cap(n, r)));
+                let build_removed = arr(d.build_removed.iter().map(|(n, r)| witchy_caps::capabilities::show_cap(n, r)));
+                let user_caps_added = arr(d.user_caps_added.iter().cloned());
+                let user_caps_removed = arr(d.user_caps_removed.iter().cloned());
                 format!(
-                    "{{\"widened\":{},\"added\":{},\"removed\":{}}}",
+                    "{{\"widened\":{},\"added\":{},\"removed\":{},\"build_added\":{},\"build_removed\":{},\"user_caps_added\":{},\"user_caps_removed\":{}}}",
                     d.widened(),
                     added,
-                    removed
+                    removed,
+                    build_added,
+                    build_removed,
+                    user_caps_added,
+                    user_caps_removed
                 )
             }
             (Err(e), _) | (_, Err(e)) => format!("{{\"error\":{}}}", string(&e.to_string())),

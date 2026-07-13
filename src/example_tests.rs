@@ -6724,6 +6724,34 @@ fn main(console: Console):
         assert!(narrow.contains("\"removed\":[\"Net[Listen]\"]"), "removed wrong: {narrow}");
     }
 
+    /// `compiler.diff` includes build-axis and user-cap axes in the JSON report
+    /// so self-hosted gates can explain which axis caused a widening.
+    #[test]
+    fn compiler_diff_includes_build_and_user_cap_axes() {
+        let diff = |old: &str, new: &str| -> String {
+            link_run(&format!(
+                "import compiler\nfn main(console: Console):\n    console.print(compiler.diff(\"{old}\", \"{new}\"))\n"
+            ))
+            .remove(0)
+        };
+        // A pure function gaining a build-time BuildExec is a build-axis widening.
+        let build = diff(
+            "pub fn pure() -> Int:\\n    0\\n",
+            "pub fn pure() -> Int:\\n    0\\npub fn build(e: BuildExec) -> Int:\\n    0\\n",
+        );
+        assert!(build.contains("\"widened\":true"), "build widening should set widened: {build}");
+        assert!(build.contains("\"build_added\":[\"BuildExec\"]"), "build_added should list BuildExec: {build}");
+        assert!(build.contains("\"build_removed\":[]"), "build_removed should be empty: {build}");
+        // Every diff includes all axes.
+        let runtime = diff(
+            "pub fn pure() -> Int:\\n    0\\n",
+            "pub fn f(n: Net[Connect]) -> Int:\\n    0\\n",
+        );
+        assert!(runtime.contains("\"build_added\":[]"), "no-build diff should have empty build_added: {runtime}");
+        assert!(runtime.contains("\"user_caps_added\":[]"), "no-user-cap diff should have empty user_caps_added: {runtime}");
+        assert!(runtime.contains("\"user_caps_removed\":[]"), "no-user-cap diff should have empty user_caps_removed: {runtime}");
+    }
+
     /// `std/toml` (pure witchy) reads `witchy.toml` manifests: `toml.get` for
     /// string values by `section.key`, `toml.get_array` for string arrays — what
     /// a self-hosted package manager needs to read a manifest.
