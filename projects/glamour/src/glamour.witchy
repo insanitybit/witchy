@@ -1016,10 +1016,10 @@ fn parse_element(toks: List(HtmlTok), at: Int, name: String, attrs: List(HAttr),
     else:
         let attr_src = emit_attrs(attrs, holes)
         if self_close:
-            ("glamour.element(\"" + name + "\", [" + attr_src + "], [])", at + 1)
+            ("glamour.element(\"" + escape_src(name) + "\", [" + attr_src + "], [])", at + 1)
         else:
             let (kids_src, after) = parse_children(toks, at + 1, name, holes)
-            ("glamour.element(\"" + name + "\", [" + attr_src + "], [" + kids_src + "])", after)
+            ("glamour.element(\"" + escape_src(name) + "\", [" + attr_src + "], [" + kids_src + "])", after)
 
 // Parse children until the matching `</name>`. Returns (comma-joined child
 // sources, index after the close tag).
