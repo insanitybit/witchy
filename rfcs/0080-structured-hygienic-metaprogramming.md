@@ -188,9 +188,13 @@ The first source-compatible slice is implemented:
 - The third slice separates the legacy source output channel (`emit` and direct
   `console.print` compatibility output) from the typed `emit_item(ItemSyntax)`
   channel and rejects a single `comptime:` block that mixes them.
+- The fourth slice makes `meta.ItemSyntax` compile-time-only in the checker:
+  runtime modules cannot mention it in signatures/fields/aliases or construct it
+  through expressions such as `meta.item(...)`. The synthetic `comptime` module
+  and `std/meta` remain the allowed homes.
 
 This is intentionally not the full RFC. The payload is still source-backed and
-there is no quotation, identifier hygiene, compile-time-only type enforcement,
-or structured expression/pattern/type constructors yet. The value is the
-migration seam: future work can move generators from `String` to structured
-constructors without changing the comptime append/merge path again.
+there is no quotation, identifier hygiene, or structured expression/pattern/type
+constructors yet. The value is the migration seam: future work can move
+generators from `String` to structured constructors without changing the
+comptime append/merge path again.

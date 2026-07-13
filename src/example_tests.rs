@@ -1226,6 +1226,24 @@ fn main(console: Console):
         );
     }
 
+    /// RFC-0080 fourth slice: compiler syntax values are compile-time-only. The
+    /// public migration seam is `emit_item(ItemSyntax)` inside `comptime:`, not
+    /// ordinary runtime construction or storage of `meta.ItemSyntax`.
+    #[test]
+    fn item_syntax_is_compile_time_only_outside_comptime() {
+        let runtime_value = "import meta\n\nfn main(console: Console):\n    let generated = meta.item(\"fn hidden() -> Int:\\n    1\")\n    console.print(\"runtime item\")\n";
+        let err = typeck::check(&resolve_std_src(runtime_value))
+            .expect_err("runtime meta.item must be rejected")
+            .message;
+        assert!(err.contains("meta.ItemSyntax") && err.contains("compile-time-only"), "got: {err}");
+
+        let runtime_signature = "from meta import ItemSyntax\n\nfn leak(x: ItemSyntax) -> ItemSyntax:\n    x\n";
+        let err = typeck::check(&resolve_std_src(runtime_signature))
+            .expect_err("runtime signatures must not expose ItemSyntax")
+            .message;
+        assert!(err.contains("meta.ItemSyntax") && err.contains("compile-time-only"), "got: {err}");
+    }
+
     /// (BUG-180) Comptime is isolated from authority, but not from pure local
     /// helper code. A block can call a same-module generator helper, and a custom
     /// derive routes through the same reachable helper closure.

@@ -850,6 +850,8 @@ deterministic by construction. Legacy `emit(line)` output, and direct
 `emit_item(item)` is the typed RFC-0080 migration channel for
 `meta.ItemSyntax`. A single `comptime:` block may use the legacy source
 channel or the typed item channel, but not both.
+Compiler syntax values such as `meta.ItemSyntax` are compile-time-only: runtime
+functions, fields, aliases, and expressions cannot store or return them.
 
 Generated code is analyzed exactly like handwritten code, and nothing existing
 can be rewritten, so a comptime block cannot launder authority out of a

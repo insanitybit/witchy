@@ -203,7 +203,7 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
         };
         let linked = crate::pipeline::link(vec![("comptime".into(), prog)], "comptime")
             .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
-        witchy_types::typeck::check(&linked)
+        witchy_types::typeck::check_comptime(&linked)
             .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
         let lines = crate::interpreter::run_module_budgeted(
             linked,

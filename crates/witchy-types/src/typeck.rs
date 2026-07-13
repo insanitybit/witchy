@@ -1095,6 +1095,147 @@ fn structural_type_kind(name: &str) -> Option<&'static str> {
     }
 }
 
+fn compiler_syntax_type_name(name: &str) -> Option<&'static str> {
+    match name {
+        "meta.ItemSyntax" => Some("meta.ItemSyntax"),
+        _ => None,
+    }
+}
+
+fn compiler_syntax_allowed_module(module: &str) -> bool {
+    matches!(module, "comptime" | "meta")
+}
+
+fn decl_module<'a>(name: &'a str, entry_module: &'a str) -> &'a str {
+    name.rsplit_once('.').map_or(entry_module, |(module, _)| module)
+}
+
+fn compiler_syntax_in_ast_type(t: &ast::Type) -> Option<&'static str> {
+    match t {
+        ast::Type::Qualified(_, inner) => compiler_syntax_in_ast_type(inner),
+        ast::Type::Tuple(items) => items.iter().find_map(compiler_syntax_in_ast_type),
+        ast::Type::Fn(params, ret) => params
+            .iter()
+            .chain(std::iter::once(ret.as_ref()))
+            .find_map(compiler_syntax_in_ast_type),
+        ast::Type::Named(name, args) => {
+            compiler_syntax_type_name(name).or_else(|| args.iter().find_map(compiler_syntax_in_ast_type))
+        }
+    }
+}
+
+fn reject_runtime_compiler_syntax_ast_type(
+    t: &ast::Type,
+    home_module: &str,
+    context: &str,
+) -> Result<(), TypeError> {
+    if compiler_syntax_allowed_module(home_module) {
+        return Ok(());
+    }
+    if let Some(name) = compiler_syntax_in_ast_type(t) {
+        let module = if home_module.is_empty() { "this module" } else { home_module };
+        return terr(format!(
+            "compiler syntax type `{name}` is compile-time-only; `{context}` is in runtime module `{module}`. Use it only inside `comptime:`/`std/meta` helpers and pass generated items to `emit_item`"
+        ));
+    }
+    Ok(())
+}
+
+fn check_compiler_syntax_declarations(module: &Module) -> Result<(), TypeError> {
+    let entry_module = detect_entry_module(module);
+    for item in &module.items {
+        match item {
+            Item::Function(f) => {
+                let home = decl_module(&f.name, &entry_module);
+                for p in &f.params {
+                    if let Some(ty) = &p.ty {
+                        reject_runtime_compiler_syntax_ast_type(
+                            ty,
+                            home,
+                            &format!("parameter `{}` of `{}`", p.name, diagnostic_callable_name(&f.name)),
+                        )?;
+                    }
+                }
+                if let Some(ret) = &f.ret {
+                    reject_runtime_compiler_syntax_ast_type(
+                        ret,
+                        home,
+                        &format!("return type of `{}`", diagnostic_callable_name(&f.name)),
+                    )?;
+                }
+            }
+            Item::Type(t) => {
+                let home = decl_module(&t.name, &entry_module);
+                for variant in &t.variants {
+                    for (idx, field) in variant.fields.iter().enumerate() {
+                        let field_name = variant
+                            .field_names
+                            .get(idx)
+                            .map_or_else(|| format!("field {}", idx + 1), |name| format!("field `{name}`"));
+                        reject_runtime_compiler_syntax_ast_type(
+                            field,
+                            home,
+                            &format!("{field_name} of type `{}`", dequalify_home(&t.name, home)),
+                        )?;
+                    }
+                }
+            }
+            Item::Trait(tr) => {
+                let home = decl_module(&tr.name, &entry_module);
+                for method in &tr.methods {
+                    for p in &method.params {
+                        if let Some(ty) = &p.ty {
+                            reject_runtime_compiler_syntax_ast_type(
+                                ty,
+                                home,
+                                &format!("parameter `{}` of trait method `{}`", p.name, method.name),
+                            )?;
+                        }
+                    }
+                    if let Some(ret) = &method.ret {
+                        reject_runtime_compiler_syntax_ast_type(
+                            ret,
+                            home,
+                            &format!("return type of trait method `{}`", method.name),
+                        )?;
+                    }
+                }
+            }
+            Item::Impl(im) => {
+                let home = decl_module(&im.type_name, &entry_module);
+                for method in &im.methods {
+                    for p in &method.params {
+                        if let Some(ty) = &p.ty {
+                            reject_runtime_compiler_syntax_ast_type(
+                                ty,
+                                home,
+                                &format!("parameter `{}` of method `{}`", p.name, method.name),
+                            )?;
+                        }
+                    }
+                    if let Some(ret) = &method.ret {
+                        reject_runtime_compiler_syntax_ast_type(
+                            ret,
+                            home,
+                            &format!("return type of method `{}`", method.name),
+                        )?;
+                    }
+                }
+            }
+            Item::TypeAlias { name, ty, .. } => {
+                let home = decl_module(name, &entry_module);
+                reject_runtime_compiler_syntax_ast_type(
+                    ty,
+                    home,
+                    &format!("type alias `{}`", dequalify_home(name, home)),
+                )?;
+            }
+            Item::Const { .. } | Item::Comptime(_) => {}
+        }
+    }
+    Ok(())
+}
+
 fn is_compiler_generated_structural_impl(im: &ast::ImplDef) -> bool {
     if im.origin != ImplOrigin::CompilerGenerated {
         return false;
@@ -2515,6 +2656,10 @@ struct Checker {
     /// The entry module's name (the home of the unqualified `main`), used as the
     /// home for a bare function whose name carries no `module.` prefix (BUG-292).
     entry_module: String,
+    /// True only while checking the isolated program used to execute a
+    /// `comptime:` block; ordinary runtime modules cannot traffic in compiler
+    /// syntax values such as `meta.ItemSyntax`.
+    compiler_syntax_allowed: bool,
 }
 
 /// Render a canonical `module.Name` for a diagnostic: strip the qualifier when it
@@ -3033,6 +3178,38 @@ impl Checker {
             | Ty::Socket | Ty::Listener | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv
             | Ty::BuildNet | Ty::BuildExec | Ty::Var(_) => Ok(()),
         }
+    }
+
+    fn compiler_syntax_ty(&self, t: &Ty) -> Option<&'static str> {
+        match self.resolve(t) {
+            Ty::List(inner) => self.compiler_syntax_ty(&inner),
+            Ty::Tuple(items) => items.iter().find_map(|item| self.compiler_syntax_ty(item)),
+            Ty::Fn(params, ret) => params
+                .iter()
+                .chain(std::iter::once(ret.as_ref()))
+                .find_map(|item| self.compiler_syntax_ty(item)),
+            Ty::Named(name, args) => {
+                compiler_syntax_type_name(&name).or_else(|| args.iter().find_map(|arg| self.compiler_syntax_ty(arg)))
+            }
+            Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
+            | Ty::Bool | Ty::Nil | Ty::Console | Ty::Clock | Ty::Rand | Ty::Env
+            | Ty::Secret | Ty::Exec | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
+            | Ty::Socket | Ty::Listener | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv
+            | Ty::BuildNet | Ty::BuildExec | Ty::Var(_) => None,
+        }
+    }
+
+    fn reject_runtime_compiler_syntax_ty(&self, t: &Ty, ctx: &str) -> Result<(), TypeError> {
+        if self.compiler_syntax_allowed || compiler_syntax_allowed_module(&self.cur_module) {
+            return Ok(());
+        }
+        if let Some(name) = self.compiler_syntax_ty(t) {
+            return terr(format!(
+                "`{ctx}` has compiler syntax type `{name}`, which is compile-time-only; \
+                 use it only inside `comptime:`/`std/meta` helpers and pass generated items to `emit_item`"
+            ));
+        }
+        Ok(())
     }
 
     fn reject_externref_cap_aggregate_ty(&self, t: &Ty, ctx: &str) -> Result<(), TypeError> {
@@ -4244,6 +4421,7 @@ impl Checker {
         if let Some(kind) = float_key_position(&self.resolve(&t)) {
             return terr(float_key_reject_message(kind));
         }
+        self.reject_runtime_compiler_syntax_ty(&t, "expression")?;
         if let Some(rec) = &mut self.type_record {
             rec.insert(expr as *const Expr as usize, t.clone());
         }
@@ -4537,6 +4715,7 @@ impl Checker {
         }
         self.reject_externref_cap_aggregate_ty(&ret, &format!("call to `{call_name}`"))?;
         self.reject_structural_authority_ty(&ret, &format!("call to `{call_name}`"))?;
+        self.reject_runtime_compiler_syntax_ty(&ret, &format!("call to `{call_name}`"))?;
         Ok(ret)
     }
 
@@ -6132,6 +6311,16 @@ impl Checker {
             .rsplit_once('.')
             .map_or_else(|| self.entry_module.clone(), |(m, _)| m.to_string());
         for (param, ty) in func.params.iter().zip(&params) {
+            self.reject_runtime_compiler_syntax_ty(
+                ty,
+                &format!("parameter `{}` of `{}`", param.name, diagnostic_callable_name(&func.name)),
+            )?;
+        }
+        self.reject_runtime_compiler_syntax_ty(
+            &ret,
+            &format!("return type of `{}`", diagnostic_callable_name(&func.name)),
+        )?;
+        for (param, ty) in func.params.iter().zip(&params) {
             // (RFC-0025) A `frozen` parameter is deeply immutable, so a mutable
             // convention (`var`/`own`, which exist to mutate/consume the argument)
             // contradicts it.
@@ -6268,6 +6457,19 @@ impl Checker {
 
 /// Type-check a whole module. Returns the first error found.
 pub fn check(module: &Module) -> Result<(), TypeError> {
+    check_with_compiler_syntax(module, false)
+}
+
+/// Type-check the isolated program used to execute a `comptime:` block.
+///
+/// This mode allows compiler syntax values such as `meta.ItemSyntax` to flow
+/// through helper expressions while the ordinary public checker still rejects
+/// them from runtime modules.
+pub fn check_comptime(module: &Module) -> Result<(), TypeError> {
+    check_with_compiler_syntax(module, true)
+}
+
+fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) -> Result<(), TypeError> {
     // Catch duplicate top-level functions before lowering, while `impl` methods
     // are still distinct from free functions (so overloaded methods aren't
     // mistaken for duplicates) and source lines are still available.
@@ -6292,6 +6494,9 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
     // but covers single-module paths like `check_str`).
     let recs = witchy_syntax::records::lower(module.clone()).map_err(|message| TypeError { message })?;
     check_type_names(&recs)?;
+    if !compiler_syntax_allowed {
+        check_compiler_syntax_declarations(&recs)?;
+    }
     check_trait_names(&recs)?;
     let trait_method_names = collect_trait_method_names(&recs);
 
@@ -6303,7 +6508,7 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
         Ok(lowered) => {
             check_unique_parameters(&lowered)?;
             check_var_conventions(&lowered)?;
-            run_check_with_trait_methods(&lowered, false, &trait_method_names).map(|_| ())
+            run_check_with_trait_methods(&lowered, false, &trait_method_names, compiler_syntax_allowed).map(|_| ())
         }
         Err(message) => {
             // (BUG-307) Mono's "cannot infer the result type" fallback fires when
@@ -6317,7 +6522,12 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
             // teaching message.
             if message.contains("cannot infer the result type") {
                 if let Err(real) =
-                    run_check_with_trait_methods(&crate::traits::lower(recs), false, &trait_method_names)
+                    run_check_with_trait_methods(
+                        &crate::traits::lower(recs),
+                        false,
+                        &trait_method_names,
+                        compiler_syntax_allowed,
+                    )
                 {
                     // Plain lowering can't resolve the un-inferable bounded call and
                     // leaves it as an unknown function — that artifact IS the same
@@ -6476,7 +6686,7 @@ fn annotate_with_conversion_fns(
     module: Module,
     from_conversion_fns: Option<&HashSet<String>>,
 ) -> TypedModule {
-    let table = match run_check_selected(&module, true, None, None, from_conversion_fns) {
+    let table = match run_check_selected(&module, true, None, None, from_conversion_fns, false) {
         Ok(Some(table)) => table,
         Err(e) => {
             if std::env::var_os("WITCHY_DEBUG_ANNOTATE").is_some() {
@@ -6526,7 +6736,7 @@ pub(crate) fn check_selected_lowered(
     names: &HashSet<String>,
     from_conversion_fns: &HashSet<String>,
 ) -> Result<(), TypeError> {
-    run_check_selected(module, false, Some(names), None, Some(from_conversion_fns))
+    run_check_selected(module, false, Some(names), None, Some(from_conversion_fns), false)
         .map(|_| ())
 }
 
@@ -6534,8 +6744,16 @@ fn run_check_with_trait_methods(
     module: &Module,
     record: bool,
     trait_method_names: &HashSet<String>,
+    compiler_syntax_allowed: bool,
 ) -> Result<Option<TypeTable>, TypeError> {
-    run_check_selected(module, record, None, Some(trait_method_names), None)
+    run_check_selected(
+        module,
+        record,
+        None,
+        Some(trait_method_names),
+        None,
+        compiler_syntax_allowed,
+    )
 }
 
 fn run_check_selected(
@@ -6544,6 +6762,7 @@ fn run_check_selected(
     selected_functions: Option<&HashSet<String>>,
     trait_method_names: Option<&HashSet<String>>,
     from_conversion_fns: Option<&HashSet<String>>,
+    compiler_syntax_allowed: bool,
 ) -> Result<Option<TypeTable>, TypeError> {
     let module = &module;
     let mut c = Checker {
@@ -6574,6 +6793,7 @@ fn run_check_selected(
         cur_line: 0,
         cur_module: String::new(),
         entry_module: detect_entry_module(module),
+        compiler_syntax_allowed,
     };
 
     let option_a = c.fresh();
