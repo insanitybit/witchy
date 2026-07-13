@@ -87,11 +87,38 @@ pub fn to_lower(var s: String) -> String:
 pub fn trim(var s: String) -> String:
     string.trim(s)
 
-// Real methods mirror the primary string value-mutator surface while the module
-// functions remain as stable, first-class values.
+// Real methods mirror the primary string surface while the module functions
+// remain as stable, first-class values.
 impl String:
+    pub fn length(self) -> Int:
+        string.length(self)
+
+    pub fn char_count(self) -> Int:
+        string.char_count(self)
+
+    pub fn chars(self) -> List(String):
+        string.chars(self)
+
+    pub fn split(self, sep: String) -> List(String):
+        string.split(self, sep)
+
+    pub fn contains(self, needle: String) -> Bool:
+        string.contains(self, needle)
+
+    pub fn starts_with(self, prefix: String) -> Bool:
+        string.starts_with(self, prefix)
+
+    pub fn ends_with(self, suffix: String) -> Bool:
+        string.ends_with(self, suffix)
+
+    pub fn index_of(self, needle: String) -> Option(Int):
+        string.index_of(self, needle)
+
     pub fn replace(var self, from: String, to: String) -> String:
         string.replace(self, from, to)
+
+    pub fn substring(self, start: Int, end: Int) -> String:
+        string.substring(self, start, end)
 
     pub fn to_upper(var self) -> String:
         string.to_upper(self)
@@ -101,6 +128,12 @@ impl String:
 
     pub fn trim(var self) -> String:
         string.trim(self)
+
+    pub fn to_int(self) -> Int:
+        string.to_int(self)
+
+    pub fn repeat(self, n: Int) -> String:
+        string.repeat(self, n)
 
     pub fn pad_left(var self, width: Int, fill: String) -> String:
         string.pad_left(self, width, fill)
@@ -117,8 +150,50 @@ impl String:
     pub fn strip_suffix(var self, suffix: String) -> String:
         string.strip_suffix(self, suffix)
 
+    pub fn char_at(self, i: Int) -> Option(String):
+        string.char_at(self, i)
+
+    pub fn is_empty(self) -> Bool:
+        string.is_empty(self)
+
+    pub fn reverse(self) -> String:
+        string.reverse(self)
+
+    pub fn take(self, n: Int) -> String:
+        string.take(self, n)
+
+    pub fn drop(self, n: Int) -> String:
+        string.drop(self, n)
+
+    pub fn count(self, sub: String) -> Int:
+        string.count(self, sub)
+
+    pub fn words(self) -> List(String):
+        string.words(self)
+
     pub fn replace_first(var self, from: String, to: String) -> String:
         string.replace_first(self, from, to)
+
+    pub fn split_once_opt(self, sep: String) -> Option((String, String)):
+        string.split_once_opt(self, sep)
+
+    pub fn split_once(self, sep: String) -> (String, String):
+        string.split_once(self, sep)
+
+    pub fn last_index_of(self, sep: String) -> Option(Int):
+        string.last_index_of(self, sep)
+
+    pub fn rsplit_once_opt(self, sep: String) -> Option((String, String)):
+        string.rsplit_once_opt(self, sep)
+
+    pub fn rsplit_once(self, sep: String) -> (String, String):
+        string.rsplit_once(self, sep)
+
+    pub fn parse_int(self) -> Option(Int):
+        string.parse_int(self)
+
+    pub fn lines(self) -> List(String):
+        string.lines(self)
 
     pub fn trim_start(var self) -> String:
         string.trim_start(self)

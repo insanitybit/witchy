@@ -425,6 +425,12 @@ first converted slice, with
 record-field write-back, statement-form write-back, module function calls, and
 compiled/interpreter parity.
 
+The next string slice extends the same standard-library rule from pure mutators
+to the common read/combinator surface: `String` now has real inherent methods for
+operations such as `length`, `split`, `contains`, `index_of`, `split_once`,
+`parse_int`, `lines`, and the existing value-mutators. Module functions remain
+the stable function-value and explicit-module surface.
+
 Follow-up progress: `Bytes` now has real inherent methods for its primary
 receiver-first surface (`length`, `at`, `get`, `concat`, `slice`, conversion,
 search, and prefix/suffix checks). The module functions remain as explicit

@@ -2075,6 +2075,63 @@ fn main(console: Console):
         );
     }
 
+    /// (RFC-0050) String's read/combinator surface is also a real method API,
+    /// not just receiver-first module functions reached through UFCS.
+    #[test]
+    fn string_read_methods_work_on_both_backends() {
+        let src = r#"import string
+
+fn main(console: Console):
+    let text = "alpha,beta,alpha"
+    console.print("${text.length()}")
+    console.print("${text.char_count()}")
+    console.print("${text.contains("beta")}")
+    console.print("${text.starts_with("alpha")}")
+    console.print("${text.ends_with("omega")}")
+    console.print("${text.split(",")}")
+    console.print("${text.index_of("beta")}")
+    console.print("${text.last_index_of("alpha")}")
+    let (left, right) = text.split_once(",")
+    console.print(left + "|" + right)
+    let (rleft, rright) = text.rsplit_once(",")
+    console.print(rleft + "|" + rright)
+    console.print("${"cafe".substring(1, 3)}")
+    console.print("${"ha".repeat(3)}")
+    console.print("${"alpha beta".words()}")
+    console.print("${"a\nb".lines()}")
+    console.print("${"42".parse_int()}")
+    console.print("${"x".parse_int()}")
+    console.print("${"abc".char_at(1)}")
+    console.print("${"abc".take(2)}|${"abc".drop(1)}|${"abc".reverse()}|${"banana".count("an")}")
+"#;
+        let expected = [
+            "16",
+            "16",
+            "true",
+            "true",
+            "false",
+            "[alpha, beta, alpha]",
+            "Some(6)",
+            "Some(11)",
+            "alpha|beta,alpha",
+            "alpha,beta|alpha",
+            "af",
+            "hahaha",
+            "[alpha, beta]",
+            "[a, b]",
+            "Some(42)",
+            "None",
+            "Some(b)",
+            "ab|bc|cba|2",
+        ];
+        assert_eq!(link_run(src), expected, "interp: string read methods");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled: string read methods",
+        );
+    }
+
     /// (BUG-535) Lists are ordinary comparison-protocol values: if their elements
     /// satisfy `PartialEq`/`Eq`, the list itself satisfies the same bound instead
     /// of relying on one-off direct-operator magic.
