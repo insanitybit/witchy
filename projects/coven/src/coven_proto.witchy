@@ -1,9 +1,10 @@
 // coven_proto — the client<->server request envelopes, as types. The server reads
 // `req.name` instead of fishing fields out of raw JSON, and the client builds the
-// very shape the server parses, so the two never drift. This is coven's own
-// (unsigned) wire protocol, so the readers are deliberately lenient: an absent or
-// wrong-typed field on untrusted input reads as its empty value, never a hard error.
+// very shape the server parses, so the two never drift. Parsers are fallible: a
+// missing or empty required field returns Err at the envelope boundary rather than
+// defaulting to "" and failing later inside authorization/storage.
 
+import string
 import coven_json
 import coven_validate
 from json import Json
@@ -34,25 +35,49 @@ type YankRequest:
     id_token: Option(String)
 
 // --- server side: parse an untrusted request body into its envelope --------------
-pub fn publish_of(doc: Json) -> PublishRequest:
-    PublishRequest(coven_json.str(doc, "manifest_toml"), source_files(doc), coven_json.str(doc, "uploaded_by"), json.get_string(doc, "id_token"))
+pub fn publish_of(doc: Json) -> Result(PublishRequest, String):
+    let manifest = require_str(doc, "manifest_toml")?
+    let files = source_files(doc)?
+    let uploaded_by = coven_json.str(doc, "uploaded_by")
+    Ok(PublishRequest(manifest, files, uploaded_by, json.get_string(doc, "id_token")))
 
-pub fn promote_of(doc: Json) -> PromoteRequest:
-    PromoteRequest(coven_validate.unwire(coven_json.str(doc, "name")), coven_json.str(doc, "version"), coven_json.str(doc, "second_factor"), coven_json.str(doc, "promoted_by"), json.get_string(doc, "id_token"))
+pub fn promote_of(doc: Json) -> Result(PromoteRequest, String):
+    let name = require_str(doc, "name")?
+    let version = require_str(doc, "version")?
+    let factor = require_str(doc, "second_factor")?
+    let promoted_by = coven_json.str(doc, "promoted_by")
+    Ok(PromoteRequest(coven_validate.unwire(name), version, factor, promoted_by, json.get_string(doc, "id_token")))
 
-pub fn yank_of(doc: Json) -> YankRequest:
-    YankRequest(coven_validate.unwire(coven_json.str(doc, "name")), coven_json.str(doc, "version"), json.get_string(doc, "id_token"))
+pub fn yank_of(doc: Json) -> Result(YankRequest, String):
+    let name = require_str(doc, "name")?
+    let version = require_str(doc, "version")?
+    Ok(YankRequest(coven_validate.unwire(name), version, json.get_string(doc, "id_token")))
+
+fn require_str(doc: Json, key: String) -> Result(String, String):
+    match json.get_string(doc, key):
+        Some(s) -> if string.is_empty(s): Err("missing required field `" + key + "`") else: Ok(s)
+        None -> Err("missing required field `" + key + "`")
 
 // The wire source is {"source":{"files":[[path,text],...]}} (matches SourceDto).
-fn source_files(doc: Json) -> List((String, String)):
-    let files = json.get(doc, "source")
+fn source_files(doc: Json) -> Result(List((String, String)), String):
+    let files_json = json.get(doc, "source")
         .and_then(fn(src: Json): json.get(src, "files"))
         .and_then(fn(a: Json): json.as_array(a))
-        .unwrap_or([])
-    list.map(files, file_pair)
+    match files_json:
+        Some(files) ->
+            var out = []
+            for it in files:
+                let pair = file_pair(it)?
+                out = list.push(out, pair)
+            Ok(out)
+        None -> Err("missing required field `source.files`")
 
-fn file_pair(it: Json) -> (String, String):
-    (coven_json.index_str(it, 0), coven_json.index_str(it, 1))
+fn file_pair(it: Json) -> Result((String, String), String):
+    let path = coven_json.index_str(it, 0)
+    if string.is_empty(path):
+        Err("source file entry has empty path")
+    else:
+        Ok((path, coven_json.index_str(it, 1)))
 
 // --- client side: build the exact body the server parses -------------------------
 // `id_token` is the trusted-publishing identity token: `Some(t)` on a trusted registry,

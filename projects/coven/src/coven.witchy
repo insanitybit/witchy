@@ -333,7 +333,7 @@ impl Coven:
         guard(fn(req: Request) -> Result(Response, CovenError): self.do_publish(body(req)?))
 
     fn do_publish(self, doc: Json) -> Result(Response, CovenError):
-        let req = coven_proto.publish_of(doc)
+        let req = coven_proto.publish_of(doc).map_err(fn(e: String): CovenError(400, e))?
         let name = toml.get(req.manifest, "rune.name").unwrap_or("")
         let version = toml.get(req.manifest, "rune.version").unwrap_or("")
         require(coven_validate.valid_name(name), 400, "invalid rune name `${name}` (need lowercase `namespace/name`, no traversal)")?
@@ -368,7 +368,7 @@ impl Coven:
         guard(fn(req: Request) -> Result(Response, CovenError): self.do_promote(body(req)?))
 
     fn do_promote(self, doc: Json) -> Result(Response, CovenError):
-        let req = coven_proto.promote_of(doc)
+        let req = coven_proto.promote_of(doc).map_err(fn(e: String): CovenError(400, e))?
         require(coven_validate.valid_name(req.name), 400, "invalid rune name `${req.name}`")?
         require(coven_validate.valid_version(req.version), 400, "invalid version `${req.version}`")?
         require(coven_store.record_exists(self.store, req.name, req.version), 404, "${req.name}@${req.version} not found")?
@@ -397,7 +397,7 @@ impl Coven:
         guard(fn(req: Request) -> Result(Response, CovenError): self.do_yank(body(req)?))
 
     fn do_yank(self, doc: Json) -> Result(Response, CovenError):
-        let req = coven_proto.yank_of(doc)
+        let req = coven_proto.yank_of(doc).map_err(fn(e: String): CovenError(400, e))?
         require(coven_validate.valid_name(req.name), 400, "invalid rune name `${req.name}`")?
         require(coven_validate.valid_version(req.version), 400, "invalid version `${req.version}`")?
         let rec = self.load_record(req.name, req.version)?

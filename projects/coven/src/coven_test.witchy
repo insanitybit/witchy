@@ -100,9 +100,11 @@ fn test_publish_body_round_trips_id_token():
     let body = coven_proto.publish_body("[rune]\n", [], "ci-bot", Some("tok123"))
     match json.decode(body):
         Ok(doc) ->
-            match coven_proto.publish_of(doc).id_token:
-                Some(t) -> testing.assert_eq(t, "tok123")
-                None -> testing.assert(false, "id_token should round-trip as Some")
+            match coven_proto.publish_of(doc):
+                Ok(req) -> match req.id_token:
+                    Some(t) -> testing.assert_eq(t, "tok123")
+                    None -> testing.assert(false, "id_token should round-trip as Some")
+                Err(e) -> testing.assert(false, "publish_of failed: ${e}")
         Err(e) -> testing.assert(false, "decode failed: ${json.decode_error_message(e)}")
 
 fn test_publish_body_omits_id_token_when_anonymous():
@@ -113,9 +115,11 @@ fn test_yank_body_carries_id_token():
     let body = coven_proto.yank_body("acme/x", "1.0.0", Some("ytok"))
     match json.decode(body):
         Ok(doc) ->
-            match coven_proto.yank_of(doc).id_token:
-                Some(t) -> testing.assert_eq(t, "ytok")
-                None -> testing.assert(false, "yank_body id_token should round-trip as Some")
+            match coven_proto.yank_of(doc):
+                Ok(req) -> match req.id_token:
+                    Some(t) -> testing.assert_eq(t, "ytok")
+                    None -> testing.assert(false, "yank_body id_token should round-trip as Some")
+                Err(e) -> testing.assert(false, "yank_of failed: ${e}")
         Err(e) -> testing.assert(false, "decode failed: ${json.decode_error_message(e)}")
 
 fn unsigned_token(iss: String) -> String:
