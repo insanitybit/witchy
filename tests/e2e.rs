@@ -4609,6 +4609,75 @@ fn sandbox_dir_requires_explicit_grant() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// RFC-0077 rider 2: authority-free mock constructors are a `witchy test`
+/// privilege, not a generally available way to mint capability-shaped values.
+/// Pin every production entry that can otherwise reach linking or comptime.
+#[test]
+fn testing_mock_dir_is_rejected_by_production_entry_paths() {
+    let dir = unique("mock-dir-production-gate");
+    let source = dir.join("main.witchy");
+    std::fs::write(
+        &source,
+        "import testing\n\nfn main():\n    let _root = testing.mock_dir([(\"config.txt\", \"secret\")])\n",
+    )
+    .unwrap();
+    let source = source.to_str().unwrap();
+    let wasm = dir.join("main.wasm");
+
+    let assert_denied = |label: &str, out: Output| {
+        let diag = format!("{}{}", stdout(&out), stderr(&out));
+        assert!(!out.status.success(), "{label} unexpectedly enabled testing.mock_dir: {diag}");
+        assert!(
+            diag.contains("testing.mock_dir") && diag.contains("witchy test"),
+            "{label} failed for the wrong reason instead of the test-mode gate: {diag}"
+        );
+    };
+
+    assert_denied("direct run", Command::new(BIN).arg(source).output().unwrap());
+    assert_denied("check", Command::new(BIN).args(["check", source]).output().unwrap());
+    assert_denied("compile", Command::new(BIN).args(["compile", source]).output().unwrap());
+    assert_denied(
+        "emit-wasm",
+        Command::new(BIN)
+            .args(["emit-wasm", source, "-o", wasm.to_str().unwrap()])
+            .output()
+            .unwrap(),
+    );
+    assert_denied("pm build", Command::new(BIN).args(["pm", "build", source]).output().unwrap());
+
+    let build_step = dir.join("build.witchy");
+    std::fs::write(
+        &build_step,
+        "import testing\n\nfn build(out: BuildOut):\n    let _root = testing.mock_dir([(\"config.txt\", \"secret\")])\n",
+    )
+    .unwrap();
+    assert_denied(
+        "build step",
+        Command::new(BIN)
+            .args([
+                "build-step",
+                build_step.to_str().unwrap(),
+                "--out",
+                dir.join("build-out").to_str().unwrap(),
+            ])
+            .output()
+            .unwrap(),
+    );
+
+    let comptime = dir.join("comptime.witchy");
+    std::fs::write(
+        &comptime,
+        "import testing\n\ncomptime:\n    let _root = testing.mock_dir([(\"config.txt\", \"secret\")])\n\nfn main():\n    0\n",
+    )
+    .unwrap();
+    assert_denied(
+        "comptime check",
+        Command::new(BIN).args(["check", comptime.to_str().unwrap()]).output().unwrap(),
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[cfg(unix)]
 #[test]
 fn sandbox_dir_list_rejects_non_utf8_names() {
