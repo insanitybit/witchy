@@ -24,10 +24,12 @@ sealed type Version derive(PartialEq, Eq, PartialOrd, Ord):
     minor: Int
     patch: Int
 
-// A version constraint (requirement).
-type Req:
-    Caret(Version)
-    Tilde(Version)
+// A version constraint (requirement). `Req` is sealed so requirements retain
+// the component precision recorded by `parse_req`; use that parser rather
+// than forging a raw variant.
+sealed type Req:
+    Caret(Version, Int)
+    Tilde(Version, Int)
     Exact(Version)
     AtLeast(Version)
     Any
@@ -135,9 +137,11 @@ pub fn parse_req(s: String) -> Result(Req, SemverError):
     if t == "*":
         Ok(Any)
     else if string.starts_with(t, "^"):
-        wrap_caret(parse(string.drop(t, 1)))
+        let raw = string.drop(t, 1)
+        wrap_caret(parse(raw), version_precision(raw))
     else if string.starts_with(t, "~"):
-        wrap_tilde(parse(string.drop(t, 1)))
+        let raw = string.drop(t, 1)
+        wrap_tilde(parse(raw), version_precision(raw))
     else if string.starts_with(t, ">="):
         wrap_atleast(parse(string.drop(t, 2)))
     else:
@@ -148,14 +152,17 @@ pub fn parse_req_string(s: String) -> Result(Req, String):
         Ok(r) -> Ok(r)
         Err(e) -> Err(semver_error_message(e))
 
-fn wrap_caret(r: Result(Version, SemverError)) -> Result(Req, SemverError):
+fn version_precision(raw: String) -> Int:
+    list.length(string.split(string.trim(raw), "."))
+
+fn wrap_caret(r: Result(Version, SemverError), precision: Int) -> Result(Req, SemverError):
     match r:
-        Ok(v) -> Ok(Caret(v))
+        Ok(v) -> Ok(Caret(v, precision))
         Err(e) -> Err(e)
 
-fn wrap_tilde(r: Result(Version, SemverError)) -> Result(Req, SemverError):
+fn wrap_tilde(r: Result(Version, SemverError), precision: Int) -> Result(Req, SemverError):
     match r:
-        Ok(v) -> Ok(Tilde(v))
+        Ok(v) -> Ok(Tilde(v, precision))
         Err(e) -> Err(e)
 
 fn wrap_atleast(r: Result(Version, SemverError)) -> Result(Req, SemverError):
@@ -174,17 +181,27 @@ pub fn matches(req: Req, v: Version) -> Bool:
         Any -> true
         Exact(r) -> v == r
         AtLeast(r) -> v >= r
-        Tilde(r) -> v.major == r.major && v.minor == r.minor && v.patch >= r.patch
-        Caret(r) -> caret_matches(r, v)
+        Tilde(r, precision) -> tilde_matches(r, precision, v)
+        Caret(r, precision) -> caret_matches(r, precision, v)
 
-// `^x.y.z` is compatible up to the next bump of the left-most non-zero component:
-// ^1.2.3 stays in 1.x, ^0.4.0 stays in 0.4.x, ^0.0.3 is exactly 0.0.3.
-fn caret_matches(r: Version, v: Version) -> Bool:
+// `~x` stays in x.*, while `~x.y` and `~x.y.z` stay in x.y.*.
+fn tilde_matches(r: Version, precision: Int, v: Version) -> Bool:
     if v < r:
         false
-    else if r.major > 0:
+    else if precision == 1:
         v.major == r.major
-    else if r.minor > 0:
+    else:
+        v.major == r.major && v.minor == r.minor
+
+// Caret compatibility ends at the next bump of the left-most non-zero written
+// component. Omitted zero components remain a range: `^0` covers 0.*, while
+// `^0.0` covers 0.0.* and `^0.0.3` covers only 0.0.3.
+fn caret_matches(r: Version, precision: Int, v: Version) -> Bool:
+    if v < r:
+        false
+    else if r.major > 0 || precision == 1:
+        v.major == r.major
+    else if r.minor > 0 || precision == 2:
         v.major == 0 && v.minor == r.minor
     else:
         v.major == 0 && v.minor == 0 && v.patch == r.patch

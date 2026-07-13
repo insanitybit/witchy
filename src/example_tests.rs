@@ -6218,10 +6218,20 @@ fn main(console: Console):
     console.print(yes(req_matches("^1.2.0", "1.9.9")))
     console.print(yes(req_matches("^1.2.0", "2.0.0")))
     console.print(yes(req_matches("^0.4.0", "0.5.0")))
+    console.print(yes(req_matches("^0", "0.9.9")))
+    console.print(yes(req_matches("^0", "1.0.0")))
+    console.print(yes(req_matches("^0.0", "0.0.9")))
+    console.print(yes(req_matches("^0.0", "0.1.0")))
+    console.print(yes(req_matches("^0.0.3", "0.0.4")))
     console.print(yes(req_matches("~1.2.0", "1.2.9")))
     console.print(yes(req_matches("~1.2.0", "1.3.0")))
+    console.print(yes(req_matches("~1", "1.9.9")))
+    console.print(yes(req_matches("~1", "2.0.0")))
+    console.print(yes(req_matches("~1.2", "1.2.9")))
+    console.print(yes(req_matches("~1.2", "1.3.0")))
     console.print(yes(req_matches(">=1.0.0", "3.0.0")))
     console.print(best_of("^1.2.0"))
+    console.print(best_zero("^0"))
 
 fn req_matches(r: String, v: String) -> Bool:
     match semver.parse_req(r):
@@ -6238,12 +6248,23 @@ fn best_of(r: String) -> String:
             None -> "(none)"
         Err(e) -> "err"
 
+fn best_zero(r: String) -> String:
+    let vs = [semver.version(0, 0, 0), semver.version(0, 4, 2), semver.version(0, 9, 9), semver.version(1, 0, 0)]
+    match semver.parse_req(r):
+        Ok(req) -> match semver.best(vs, req):
+            Some(v) -> semver.format(v)
+            None -> "(none)"
+        Err(e) -> "err"
+
 fn yes(b: Bool) -> String:
     if b: "y" else: "n"
 "#;
         assert_eq!(
             link_run(src),
-            vec!["y", "n", "n", "y", "n", "y", "1.9.9"]
+            vec![
+                "y", "n", "n", "y", "n", "y", "n", "n", "y", "n", "y", "n", "y",
+                "n", "y", "1.9.9", "0.9.9"
+            ]
         );
     }
 

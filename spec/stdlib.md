@@ -2479,12 +2479,12 @@ A version orders by major, then minor, then patch — exactly the lexicographic 
 
 - `Version { major: Int, minor: Int, patch: Int }`
 
-#### `type Req`
+#### `sealed type Req`
 
-A version constraint (requirement).
+A version constraint (requirement). `Req` is sealed so requirements retain the component precision recorded by `parse_req`; use that parser rather than forging a raw variant.
 
-- `Caret(Version)`
-- `Tilde(Version)`
+- `Caret(Version, Int)`
+- `Tilde(Version, Int)`
 - `Exact(Version)`
 - `AtLeast(Version)`
 - `Any`
