@@ -24,17 +24,7 @@ cargo build --release
 ./target/release/witchy examples/hello/src/hello.witchy
 ```
 
-## Language stability
-
-Keep in mind that witchy is beyond unstable. I wouldn't even label it `0.0.0-alpha` at this point - even that level of semantic versioning feels like it's radically overstating things. The language isn't stable,
-the goals aren't stable, the repo names for the project aren't stable, nothing is stable. I could yank the repo at any moment.
-
-Perhaps most importantly, `witchy` shouldn't be trusted. A significant amount of witchy's security requires that code is memory safe - not *all* of the security, but plenty of it.
-
-Currently, I've spent no real effort ensuring that the generated code actually is safe. The "worst case" should only be a program that's confined to the wasm
-VM, but guarantees within that VM would be totally available if there's a way to trigger arbitrary code execution in the generated code.
-
-# Why witchy?
+## Why witchy?
 
 Supply chain security is a serious problem. Packages have very good reasons for running
 code during install time, yet the capability is typically all or nothing. Libraries in most
@@ -70,7 +60,7 @@ reviewable change that `witchy caps` flags.
 ### Build-Time Execution, safe by default
 
 The capability model extends out to build time execution. Build scripts are full `witchy` programs, but once
-again we can reason about those in terms of their capabiltiies. A dependency `foo` that only
+again we can reason about those in terms of their capabilities. A dependency `foo` that only
 requires `Clock` gets compromised, now it asks for `Net` - that gets flagged!
 
 ```
@@ -84,7 +74,7 @@ No hidden "suddenly my dependency is pulling from ghostbin".
 
 ### Witchy's Package Registry - Coven
 
-The witchy package registry, `coven`, holdes packages named `runes`. This registry is
+The witchy package registry, `coven`, holds packages named `runes`. This registry is
 truly a "safe by default" system;
 
 - Two modes: an anonymous local mode for development, and trusted publishing —
@@ -107,6 +97,16 @@ truly a "safe by default" system;
 - Dependency cooldowns, Trusted Publishing, auditing, are all baked into the registry and the tooling.
 
 Every piece of `witchy` is designed with security in mind.
+
+## Language stability
+
+Keep in mind that witchy is beyond unstable. I wouldn't even label it `0.0.0-alpha` at this point - even that level of semantic versioning feels like it's radically overstating things. The language isn't stable,
+the goals aren't stable, the repo names for the project aren't stable, nothing is stable. I could yank the repo at any moment.
+
+Perhaps most importantly, `witchy` shouldn't be trusted. A significant amount of witchy's security requires that code is memory safe - not *all* of the security, but plenty of it.
+
+Currently, I've spent no real effort ensuring that the generated code actually is safe. The "worst case" should only be a program that's confined to the wasm
+VM, but guarantees within that VM would be totally available if there's a way to trigger arbitrary code execution in the generated code.
 
 ## AI disclosure
 
