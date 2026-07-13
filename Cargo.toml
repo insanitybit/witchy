@@ -20,6 +20,7 @@ name = "witchy"
 # in-browser playground (`cargo build --lib --no-default-features
 # --target wasm32-unknown-unknown`).
 crate-type = ["rlib", "cdylib"]
+doctest = false
 
 [[bin]]
 name = "witchy"
@@ -105,6 +106,7 @@ aws-lc-rs = "1"
 # actually need to step through variables.
 [profile.dev]
 debug = "line-tables-only"
+split-debuginfo = "unpacked"
 
 # Tests run these crates hard (tree-walking interpreter, witchy->WASM lowering,
 # wasmtime host glue); unoptimized they dominate suite time. Opt just the hot
