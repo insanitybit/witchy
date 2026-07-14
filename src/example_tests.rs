@@ -2,12 +2,7 @@
     use wasmtime::{Engine, Module};
 
     fn interp(src: &str) -> Vec<String> {
-        assert!(
-            typeck::check_str(src).is_ok(),
-            "type error: {:?}",
-            typeck::check_str(src)
-        );
-        interpreter::run(src).expect("should run")
+        link_run(src)
     }
 
     /// Link a single-`main` source (pulling in any imported std module) and run
@@ -293,7 +288,7 @@
     /// accepted silently.
     #[test]
     fn mode_rejects_accumulator_cliff() {
-        let cliff = "mode opt\n\nfn main(console: Console):\n    var xs = []\n    var snaps = []\n    for i in [1, 2, 3]:\n        snaps = list.push(snaps, xs)\n        xs = list.push(xs, i)\n    console.print(\"${list.length(xs)}\")\n";
+        let cliff = "mode opt\n\nfn main(console: Console):\n    var xs = []\n    var snaps = []\n    for i in [1, 2, 3]:\n        list.push(snaps, xs)\n        list.push(xs, i)\n    console.print(\"${list.length(xs)}\")\n";
         let err = crate::enforce_performance_modes(&link_mode(cliff), "t")
             .expect_err("a repeated copy-revert in a mode file must be rejected");
         assert!(err.contains("rebuilt by copy"), "{err}");
@@ -307,9 +302,9 @@
     /// in-place — passes enforcement and runs.
     #[test]
     fn clean_mode_program_passes_and_runs() {
-        let src = "mode opt\n\nfn main(console: Console):\n    var xs = []\n    for i in [1, 2, 3]:\n        xs = list.push(xs, i)\n    console.print(\"${list.length(xs)}\")\n";
+        let src = "mode opt\n\nfn main(console: Console):\n    var xs = []\n    for i in [1, 2, 3]:\n        list.push(xs, i)\n    console.print(\"${list.length(xs)}\")\n";
         crate::enforce_performance_modes(&link_mode(src), "t").expect("clean mode program passes");
-        assert_eq!(interpreter::run(src).expect("interp"), vec!["3"]);
+        assert_eq!(link_run(src), vec!["3"]);
     }
 
     /// `crypto.sha256` — a native intrinsic of the `crypto` module, *not* a global
@@ -561,14 +556,14 @@
     /// errors inside an async body lose the normal `fn`, line N prefix.
     #[test]
     fn async_lowered_type_errors_keep_source_locations() {
-        let before_await = "import list\nimport chan\n\nasync fn work(console: Console) -> Nil:\n    var xs: List(Int) = []\n    xs = list.push(xs, \"bad\")\n    chan.yield_now().await\n    return\n\nasync fn main(console: Console):\n    work(console).await\n";
+        let before_await = "import list\nimport chan\n\nasync fn work(console: Console) -> Nil:\n    var xs: List(Int) = []\n    list.push(xs, \"bad\")\n    chan.yield_now().await\n    return\n\nasync fn main(console: Console):\n    work(console).await\n";
         let err = typeck::check(&resolve_std_src(before_await))
             .expect_err("async type error before await must be rejected")
             .to_string();
         assert!(err.contains("`main.work`, line 6:"), "async diagnostic lost location: {err}");
         assert!(err.contains("expected `Int`, found `String`"), "{err}");
 
-        let after_await = "import list\nimport chan\n\nasync fn work(console: Console) -> Nil:\n    var xs: List(Int) = []\n    chan.yield_now().await\n    xs = list.push(xs, \"bad\")\n    return\n\nasync fn main(console: Console):\n    work(console).await\n";
+        let after_await = "import list\nimport chan\n\nasync fn work(console: Console) -> Nil:\n    var xs: List(Int) = []\n    chan.yield_now().await\n    list.push(xs, \"bad\")\n    return\n\nasync fn main(console: Console):\n    work(console).await\n";
         let err = typeck::check(&resolve_std_src(after_await))
             .expect_err("async type error after await must be rejected")
             .to_string();
@@ -2501,7 +2496,7 @@ fn main(console: Console):
     /// helpers as `==`, including String fields and enum payloads.
     #[test]
     fn compound_dict_keys_work_on_both_backends() {
-        let src = "import cmp\nimport dict\n\ntype Pair derive(PartialEq, Eq):\n    id: Int\n    label: String\n\ntype Tag derive(PartialEq, Eq):\n    ById(Int)\n    ByName(String)\n\nfn main(console: Console):\n    var records = dict.new()\n    records = dict.insert(records, Pair(100000, \"a\"), 10)\n    records = dict.insert(records, Pair(100000, \"a\"), 20)\n    console.print(\"${dict.get_or(records, Pair(100000, \"a\"), 0)}\")\n    console.print(\"${dict.contains_key(records, Pair(100000, \"a\"))}\")\n    console.print(\"${dict.length(records)}\")\n\n    var tags = dict.new()\n    tags = dict.insert(tags, ById(7), \"id\")\n    tags = dict.insert(tags, ByName(\"x\"), \"name\")\n    tags = dict.insert(tags, ById(7), \"id2\")\n    console.print(dict.get_or(tags, ById(7), \"missing\"))\n    console.print(dict.get_or(tags, ByName(\"x\"), \"missing\"))\n    console.print(\"${dict.length(tags)}\")\n";
+        let src = "import cmp\nimport dict\n\ntype Pair derive(PartialEq, Eq):\n    id: Int\n    label: String\n\ntype Tag derive(PartialEq, Eq):\n    ById(Int)\n    ByName(String)\n\nfn main(console: Console):\n    var records = dict.new()\n    dict.insert(records, Pair(100000, \"a\"), 10)\n    dict.insert(records, Pair(100000, \"a\"), 20)\n    console.print(\"${dict.get_or(records, Pair(100000, \"a\"), 0)}\")\n    console.print(\"${dict.contains_key(records, Pair(100000, \"a\"))}\")\n    console.print(\"${dict.length(records)}\")\n\n    var tags = dict.new()\n    dict.insert(tags, ById(7), \"id\")\n    dict.insert(tags, ByName(\"x\"), \"name\")\n    dict.insert(tags, ById(7), \"id2\")\n    console.print(dict.get_or(tags, ById(7), \"missing\"))\n    console.print(dict.get_or(tags, ByName(\"x\"), \"missing\"))\n    console.print(\"${dict.length(tags)}\")\n";
         let expected = ["20", "true", "1", "id2", "name", "2"];
         assert_eq!(link_run(src), expected, "interp: compound dict keys");
         assert_eq!(
@@ -2516,7 +2511,7 @@ fn main(console: Console):
     /// place assignment through a Dict agree on both backends.
     #[test]
     fn dict_subscript_read_and_nested_place_assignment_work_on_both_backends() {
-        let src = "import dict\n\nfn main(console: Console):\n    var counts: Dict(String, Int) = dict.new()\n    counts[\"a\"] = 1\n    counts[\"a\"] += 2\n    console.print(\"${counts[\"a\"]}\")\n\n    var nested: Dict(String, Dict(String, Int)) = dict.new()\n    nested[\"outer\"] = dict.insert(dict.new(), \"inner\", 1)\n    nested[\"outer\"][\"inner\"] = 7\n    console.print(\"${nested[\"outer\"][\"inner\"]}\")\n\n    var rows: Dict(String, List(Int)) = dict.new()\n    rows[\"r\"] = [1, 2, 3]\n    rows[\"r\"][1] = 9\n    console.print(\"${rows[\"r\"]}\")\n";
+        let src = "import dict\n\nfn main(console: Console):\n    var counts: Dict(String, Int) = dict.new()\n    counts[\"a\"] = 1\n    counts[\"a\"] += 2\n    console.print(\"${counts[\"a\"]}\")\n\n    var nested: Dict(String, Dict(String, Int)) = dict.new()\n    var inner: Dict(String, Int) = dict.new()\n    dict.insert(inner, \"inner\", 1)\n    nested[\"outer\"] = inner\n    nested[\"outer\"][\"inner\"] = 7\n    console.print(\"${nested[\"outer\"][\"inner\"]}\")\n\n    var rows: Dict(String, List(Int)) = dict.new()\n    rows[\"r\"] = [1, 2, 3]\n    rows[\"r\"][1] = 9\n    console.print(\"${rows[\"r\"]}\")\n";
         let expected = ["3", "7", "[1, 9, 3]"];
         assert_eq!(link_run(src), expected, "interp: dict subscript read");
         assert_eq!(
@@ -2532,9 +2527,9 @@ fn main(console: Console):
     /// shape and the `var self` method shape needed by the stdlib method sweep.
     #[test]
     fn var_record_container_field_updates_keep_headers_on_both_backends() {
-        let list_free = "type Buf:\n    items: List(Int)\n\nfn add(var b: Buf, x: Int):\n    b.items = list.push(b.items, x)\n\nfn main(console: Console):\n    var b = Buf([])\n    var i = 0\n    while i < 16:\n        add(b, i)\n        i = i + 1\n    console.print(\"${list.at(b.items, 15)}\")\n    console.print(\"${list.length(b.items)}\")\n";
-        let list_method = "type Buf:\n    items: List(Int)\n\nimpl Buf:\n    fn add(var self, x: Int) -> Nil:\n        self.items = list.push(self.items, x)\n        return\n\nfn main(console: Console):\n    var b = Buf([])\n    var i = 0\n    while i < 16:\n        b.add(i)\n        i = i + 1\n    console.print(\"${list.at(b.items, 15)}\")\n    console.print(\"${list.length(b.items)}\")\n";
-        let dict_field = "import dict\n\ntype Tally:\n    counts: Dict(Int, Int)\n\nfn bump(var t: Tally, k: Int):\n    t.counts = dict.insert(t.counts, k, k * 2)\n\nfn main(console: Console):\n    var t = Tally(dict.new())\n    var i = 0\n    while i < 50:\n        bump(t, i)\n        i = i + 1\n    console.print(\"${dict.get_or(t.counts, 49, 0)}\")\n    console.print(\"${dict.length(t.counts)}\")\n";
+        let list_free = "type Buf:\n    items: List(Int)\n\nfn add(var b: Buf, x: Int):\n    list.push(b.items, x)\n\nfn main(console: Console):\n    var b = Buf([])\n    var i = 0\n    while i < 16:\n        add(b, i)\n        i = i + 1\n    console.print(\"${list.at(b.items, 15)}\")\n    console.print(\"${list.length(b.items)}\")\n";
+        let list_method = "type Buf:\n    items: List(Int)\n\nimpl Buf:\n    fn add(var self, x: Int) -> Nil:\n        list.push(self.items, x)\n        return\n\nfn main(console: Console):\n    var b = Buf([])\n    var i = 0\n    while i < 16:\n        b.add(i)\n        i = i + 1\n    console.print(\"${list.at(b.items, 15)}\")\n    console.print(\"${list.length(b.items)}\")\n";
+        let dict_field = "import dict\n\ntype Tally:\n    counts: Dict(Int, Int)\n\nfn bump(var t: Tally, k: Int):\n    dict.insert(t.counts, k, k * 2)\n\nfn main(console: Console):\n    var t = Tally(dict.new())\n    var i = 0\n    while i < 50:\n        bump(t, i)\n        i = i + 1\n    console.print(\"${dict.get_or(t.counts, 49, 0)}\")\n    console.print(\"${dict.length(t.counts)}\")\n";
 
         for (label, src, expected) in [
             ("list free function", list_free, vec!["15", "16"]),
@@ -2554,7 +2549,7 @@ fn main(console: Console):
     /// with first-occurrence semantics; all-occurrences removal remains `filter`.
     #[test]
     fn list_remove_removes_first_occurrence_on_both_backends() {
-        let src = "import list\n\nfn main(console: Console):\n    var xs = [1, 2, 3, 2]\n    xs.remove(2)\n    console.print(\"${xs}\")\n    xs.remove(9)\n    console.print(\"${xs}\")\n    console.print(\"${list.remove([\"a\", \"b\", \"a\"], \"a\")}\")\n";
+        let src = "import list\n\nfn main(console: Console):\n    var xs = [1, 2, 3, 2]\n    xs.remove(2)\n    console.print(\"${xs}\")\n    xs.remove(9)\n    console.print(\"${xs}\")\n    var words = [\"a\", \"b\", \"a\"]\n    let _removed = list.remove(words, \"a\")\n    console.print(\"${words}\")\n";
         let expected = ["[1, 3, 2]", "[1, 3, 2]", "[b, a]"];
         assert_eq!(link_run(src), expected, "interp: list.remove");
         assert_eq!(
@@ -2598,8 +2593,8 @@ fn main(console: Console):
     /// like List/Dict/Set. Module functions remain callable for function-value
     /// and explicit-module use.
     #[test]
-    fn string_mutator_methods_write_back_on_both_backends() {
-        let src = "import string\n\nfn main(console: Console):\n    var s = \"  hello  \"\n    s.trim()\n    console.print(s)\n    s.to_upper()\n    console.print(s)\n    s.replace(\"HELLO\", \"hi\")\n    console.print(s)\n    s.pad_left(5, \"0\")\n    console.print(s)\n    s.pad_right(7, \"!\")\n    console.print(s)\n    s.center(9, \".\")\n    console.print(s)\n    s.strip_prefix(\".\")\n    s.strip_suffix(\".\")\n    console.print(s)\n    s.replace_first(\"hi\", \"bye\")\n    console.print(s)\n    var t = \"  edge  \"\n    t.trim_start()\n    console.print(t)\n    t.trim_end()\n    console.print(t)\n    console.print(string.trim(\"  module  \"))\n    console.print(string.replace_first(\"alpha alpha\", \"alpha\", \"beta\"))\n";
+    fn string_transform_methods_require_explicit_reassignment() {
+        let src = "import string\n\nfn main(console: Console):\n    var s = \"  hello  \"\n    s = s.trim()\n    console.print(s)\n    s = s.to_upper()\n    console.print(s)\n    s = s.replace(\"HELLO\", \"hi\")\n    console.print(s)\n    s = s.pad_left(5, \"0\")\n    console.print(s)\n    s = s.pad_right(7, \"!\")\n    console.print(s)\n    s = s.center(9, \".\")\n    console.print(s)\n    s = s.strip_prefix(\".\")\n    s = s.strip_suffix(\".\")\n    console.print(s)\n    s = s.replace_first(\"hi\", \"bye\")\n    console.print(s)\n    var t = \"  edge  \"\n    t = t.trim_start()\n    console.print(t)\n    t = t.trim_end()\n    console.print(t)\n    console.print(string.trim(\"  module  \"))\n    console.print(string.replace_first(\"alpha alpha\", \"alpha\", \"beta\"))\n";
         let expected = [
             "hello",
             "HELLO",
@@ -2784,7 +2779,7 @@ fn main(console: Console):
     /// `Dict(k, v)`.
     #[test]
     fn dict_equality_satisfies_protocol_bounds_on_both_backends() {
-        let src = "import cmp\nimport dict\nimport testing\n\ntype Key derive(Show, Eq):\n    id: Int\n    cache: Int\n\nimpl PartialEq for Key:\n    fn eq(self, other: Key) -> Bool:\n        self.id == other.id\n\ntype Val derive(Show, Eq):\n    label: String\n    noise: Int\n\nimpl PartialEq for Val:\n    fn eq(self, other: Val) -> Bool:\n        self.label == other.label\n\nfn same(x: a, y: a) -> Bool where a: PartialEq:\n    x == y\n\nfn total_same(x: a, y: a) -> Bool where a: Eq:\n    x == y\n\nfn make_left() -> Dict(Key, Val):\n    var d = dict.new()\n    d = dict.insert(d, Key(1, 10), Val(\"one\", 100))\n    d = dict.insert(d, Key(2, 20), Val(\"two\", 200))\n    d\n\nfn make_right() -> Dict(Key, Val):\n    var d = dict.new()\n    d = dict.insert(d, Key(2, 99), Val(\"two\", 999))\n    d = dict.insert(d, Key(1, 42), Val(\"one\", 111))\n    d\n\nfn main(console: Console):\n    let left = make_left()\n    let right = make_right()\n    console.print(\"${left == right}\")\n    console.print(\"${same(left, right)}\")\n    console.print(\"${total_same(left, right)}\")\n    testing.assert_value_eq(left, right)\n";
+        let src = "import cmp\nimport dict\nimport testing\n\ntype Key derive(Show, Eq):\n    id: Int\n    cache: Int\n\nimpl PartialEq for Key:\n    fn eq(self, other: Key) -> Bool:\n        self.id == other.id\n\ntype Val derive(Show, Eq):\n    label: String\n    noise: Int\n\nimpl PartialEq for Val:\n    fn eq(self, other: Val) -> Bool:\n        self.label == other.label\n\nfn same(x: a, y: a) -> Bool where a: PartialEq:\n    x == y\n\nfn total_same(x: a, y: a) -> Bool where a: Eq:\n    x == y\n\nfn make_left() -> Dict(Key, Val):\n    var d = dict.new()\n    dict.insert(d, Key(1, 10), Val(\"one\", 100))\n    dict.insert(d, Key(2, 20), Val(\"two\", 200))\n    d\n\nfn make_right() -> Dict(Key, Val):\n    var d = dict.new()\n    dict.insert(d, Key(2, 99), Val(\"two\", 999))\n    dict.insert(d, Key(1, 42), Val(\"one\", 111))\n    d\n\nfn main(console: Console):\n    let left = make_left()\n    let right = make_right()\n    console.print(\"${left == right}\")\n    console.print(\"${same(left, right)}\")\n    console.print(\"${total_same(left, right)}\")\n    testing.assert_value_eq(left, right)\n";
         let expected = ["true", "true", "true"];
         assert_eq!(link_run(src), expected, "interp: dict PartialEq bounds");
         assert_eq!(
@@ -3500,8 +3495,8 @@ fn total_same(x: a, y: a) -> Bool where a: Eq:
 
 fn sorted_window(xs: List(a)) -> String where a: Ord, a: Show:
     var sortable = xs
-    let sorted = sortable.sort()
-    show.render(sorted) + "|" + show.render(list.min(sorted)) + "|" + show.render(list.max(sorted))
+    sortable.sort()
+    show.render(sortable) + "|" + show.render(list.min(sortable)) + "|" + show.render(list.max(sortable))
 
 fn main(console: Console):
     let b = bytes.from_string("hi")
@@ -5017,8 +5012,8 @@ fn main(console: Console):
         assert_eq!(interpreter::run(strs).expect("interp str"), ["h", "5"]);
         assert_eq!(run_linked_on_wasm(&[("main", strs)], "main"), ["h", "5"], "wasm str");
 
-        let dict = "fn lookup(let d: Dict(String, Int)) -> Int:\n    dict.get_or(d, \"a\", -1)\nfn main(c: Console):\n    var m = dict.new()\n    m = dict.insert(m, \"a\", 42)\n    c.print(\"${lookup(m)}\")\n    c.print(\"${dict.length(m)}\")\n";
-        assert_eq!(interpreter::run(dict).expect("interp dict"), ["42", "1"]);
+        let dict = "fn lookup(let d: Dict(String, Int)) -> Int:\n    dict.get_or(d, \"a\", -1)\nfn main(c: Console):\n    var m = dict.new()\n    dict.insert(m, \"a\", 42)\n    c.print(\"${lookup(m)}\")\n    c.print(\"${dict.length(m)}\")\n";
+        assert_eq!(link_run(dict), ["42", "1"]);
         assert_eq!(run_linked_on_wasm(&[("main", dict)], "main"), ["42", "1"], "wasm dict");
     }
 
@@ -5703,7 +5698,7 @@ fn main(console: Console):
     /// size). The alias still sees its snapshot.
     #[test]
     fn analysis_alias_before_loop_stays_linear() {
-        let src = "fn main(console: Console):\n    var xs = [1, 2, 3]\n    let snapshot = xs\n    var i = 0\n    while i < 50000:\n        xs = list.push(xs, i)\n        i = i + 1\n    console.print(\"${snapshot}\")\n    console.print(\"${list.length(xs)}\")\n";
+        let src = "fn main(console: Console):\n    var xs = [1, 2, 3]\n    let snapshot = xs\n    var i = 0\n    while i < 50000:\n        list.push(xs, i)\n        i = i + 1\n    console.print(\"${snapshot}\")\n    console.print(\"${list.length(xs)}\")\n";
         let want = vec!["[1, 2, 3]".to_string(), "50003".to_string()];
         assert_eq!(link_run(src), want, "interpreter");
         let (out, reowns) = wasm_run_reowns(src);
@@ -5716,7 +5711,7 @@ fn main(console: Console):
     /// exactly what the cliff diagnostic exists to flag.
     #[test]
     fn analysis_alias_inside_loop_reowns_per_iteration() {
-        let src = "fn main(console: Console):\n    var ys = []\n    var last = [9]\n    var j = 0\n    while j < 200:\n        ys = list.push(ys, j)\n        last = ys\n        j = j + 1\n    console.print(\"${list.length(last)}\")\n";
+        let src = "fn main(console: Console):\n    var ys = []\n    var last = [9]\n    var j = 0\n    while j < 200:\n        list.push(ys, j)\n        last = ys\n        j = j + 1\n    console.print(\"${list.length(last)}\")\n";
         let want = vec!["200".to_string()];
         assert_eq!(link_run(src), want, "interpreter");
         let (out, reowns) = wasm_run_reowns(src);
@@ -5729,7 +5724,7 @@ fn main(console: Console):
     /// aliases out). Under the whitelist this was an instant disqualification.
     #[test]
     fn analysis_readonly_call_keeps_loop_linear() {
-        let src = "fn peek(xs: List(Int)) -> Int:\n    list.length(xs)\n\nfn main(console: Console):\n    var ws = []\n    var m = 0\n    var probe = 0\n    while m < 3000:\n        ws = list.push(ws, m)\n        probe = peek(ws)\n        m = m + 1\n    console.print(\"${probe}\")\n";
+        let src = "fn peek(xs: List(Int)) -> Int:\n    list.length(xs)\n\nfn main(console: Console):\n    var ws = []\n    var m = 0\n    var probe = 0\n    while m < 3000:\n        list.push(ws, m)\n        probe = peek(ws)\n        m = m + 1\n    console.print(\"${probe}\")\n";
         let want = vec!["3000".to_string()];
         assert_eq!(link_run(src), want, "interpreter");
         let (out, reowns) = wasm_run_reowns(src);
@@ -5742,7 +5737,7 @@ fn main(console: Console):
     /// and the alias keeps its snapshot.
     #[test]
     fn analysis_alias_returning_call_still_kills() {
-        let src = "fn same(xs: List(Int)) -> List(Int):\n    xs\n\nfn main(console: Console):\n    var xs = [1]\n    var i = 0\n    while i < 100:\n        xs = list.push(xs, i)\n        i = i + 1\n    let held = same(xs)\n    xs = list.push(xs, 999)\n    console.print(\"${list.length(held)}\")\n    console.print(\"${list.length(xs)}\")\n";
+        let src = "fn same(xs: List(Int)) -> List(Int):\n    xs\n\nfn main(console: Console):\n    var xs = [1]\n    var i = 0\n    while i < 100:\n        list.push(xs, i)\n        i = i + 1\n    let held = same(xs)\n    list.push(xs, 999)\n    console.print(\"${list.length(held)}\")\n    console.print(\"${list.length(xs)}\")\n";
         let want = vec!["101".to_string(), "102".to_string()];
         assert_eq!(link_run(src), want, "interpreter");
         let (out, _) = wasm_run_reowns(src);
@@ -5754,7 +5749,7 @@ fn main(console: Console):
     /// and stays value-semantic on both backends.
     #[test]
     fn analysis_dirty_shapes_stay_value_semantic() {
-        let src = "fn main(console: Console):\n    var s = \"ab\"\n    var k = 0\n    while k < 5:\n        s = s + s\n        k = k + 1\n    console.print(\"${string.length(s)}\")\n    var d = dict.new()\n    var zs = [1]\n    d = dict.insert(d, \"snap\", zs)\n    zs = list.push(zs, 2)\n    console.print(\"${list.length(dict.get_or(d, \"snap\", []))}\")\n    console.print(\"${list.length(zs)}\")\n";
+        let src = "fn main(console: Console):\n    var s = \"ab\"\n    var k = 0\n    while k < 5:\n        s = s + s\n        k = k + 1\n    console.print(\"${string.length(s)}\")\n    var d = dict.new()\n    var zs = [1]\n    dict.insert(d, \"snap\", zs)\n    list.push(zs, 2)\n    console.print(\"${list.length(dict.get_or(d, \"snap\", []))}\")\n    console.print(\"${list.length(zs)}\")\n";
         let want: Vec<String> = ["64", "1", "2"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
@@ -5765,7 +5760,7 @@ fn main(console: Console):
     /// local — a loud compile failure).
     #[test]
     fn analysis_lambda_accumulator_compiles() {
-        let src = "fn main(console: Console):\n    let build = fn(n: Int):\n        var acc = [0]\n        var t = 0\n        while t < n:\n            acc = list.push(acc, t)\n            t = t + 1\n        list.length(acc)\n    console.print(\"${build(1000)}\")\n";
+        let src = "fn main(console: Console):\n    let build = fn(n: Int):\n        var acc = [0]\n        var t = 0\n        while t < n:\n            list.push(acc, t)\n            t = t + 1\n        list.length(acc)\n    console.print(\"${build(1000)}\")\n";
         let want = vec!["1001".to_string()];
         assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
@@ -5856,7 +5851,7 @@ fn main(console: Console):
     fn for_tuple_patterns_destructure() {
         // Both the parenthesized and the unparenthesized (canonical, Python-style)
         // tuple patterns parse and run identically on both backends.
-        let head = "fn main(console: Console):\n    var d = dict.new()\n    d = dict.insert(d, \"a\", 1)\n    d = dict.insert(d, \"b\", 2)\n";
+        let head = "fn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, \"a\", 1)\n    dict.insert(d, \"b\", 2)\n";
         let paren = format!("{head}    for (k, v) in dict.pairs(d):\n        console.print(\"${{k}}=${{v}}\")\n");
         let unparen = format!("{head}    for k, v in dict.pairs(d):\n        console.print(\"${{k}}=${{v}}\")\n");
         let want: Vec<String> = ["a=1", "b=2"].iter().map(|s| s.to_string()).collect();
@@ -6076,7 +6071,7 @@ fn main(console: Console):
     /// this guards that they stay in sync.
     #[test]
     fn coalesce_fallback_both_backends() {
-        let src = "import option\n\nfn find(b: Bool) -> Option(String):\n    if b: Some(\"hit\") else: None\n\nfn parse(s: String) -> Result(Int, String):\n    match string.parse_int(s):\n        Some(n) -> Ok(n)\n        None -> Err(\"bad int\")\n\nfn main(console: Console):\n    console.print(find(true) ?? \"fallback\")\n    console.print(find(false) ?? \"fallback\")\n    console.print(\"${parse(\"41\") ?? 0}\")\n    console.print(\"${parse(\"x\") ?? 9}\")\n    let d = dict.new().insert(\"a\", 1)\n    console.print(\"${dict.get(d, \"a\") ?? dict.get(d, \"b\") ?? 0}\")\n    console.print(\"${dict.get(d, \"z\") ?? dict.get(d, \"b\") ?? 5}\")\n    console.print(\"${Some(\"\") ?? \"x\"}\")\n    console.print(\"${false || true}\")\n";
+        let src = "import option\n\nfn find(b: Bool) -> Option(String):\n    if b: Some(\"hit\") else: None\n\nfn parse(s: String) -> Result(Int, String):\n    match string.parse_int(s):\n        Some(n) -> Ok(n)\n        None -> Err(\"bad int\")\n\nfn main(console: Console):\n    console.print(find(true) ?? \"fallback\")\n    console.print(find(false) ?? \"fallback\")\n    console.print(\"${parse(\"41\") ?? 0}\")\n    console.print(\"${parse(\"x\") ?? 9}\")\n    var d = dict.new()\n    dict.insert(d, \"a\", 1)\n    console.print(\"${dict.get(d, \"a\") ?? dict.get(d, \"b\") ?? 0}\")\n    console.print(\"${dict.get(d, \"z\") ?? dict.get(d, \"b\") ?? 5}\")\n    console.print(\"${Some(\"\") ?? \"x\"}\")\n    console.print(\"${false || true}\")\n";
         let want: Vec<String> = ["hit", "fallback", "41", "9", "1", "5", "", "true"]
             .iter()
             .map(|s| s.to_string())
@@ -6279,7 +6274,7 @@ comptime:
                 emit("fn to_json_${t.name}(v: ${t.name}) -> Json:")
                 var pairs = []
                 for f in t.fields:
-                    pairs = list.push(pairs, "(\"" + f.name + "\", " + ctor(f.type_expr) + "(v." + f.name + "))")
+                    list.push(pairs, "(\"" + f.name + "\", " + ctor(f.type_expr) + "(v." + f.name + "))")
                 emit("    JsonObject([" + list.join(pairs, ", ") + "])")
                 emit("")
             _ -> Nil
@@ -6308,7 +6303,7 @@ fn main(console: Console):
     /// pointer-compare and return None.
     #[test]
     fn runtime_built_dict_keys_compare_by_content() {
-        let src = "import dict\nimport string\n\nfn main(console: Console):\n    var d = dict.new()\n    d = dict.insert(d, string.trim(\"  host  \"), \"localhost\")\n    let parts = string.split(\"port=8080\", \"=\")\n    d = dict.insert(d, list.at(parts, 0), list.at(parts, 1))\n    d = dict.insert(d, \"lit\" + \"eral\", \"joined\")\n    match dict.get(d, \"host\"):\n        Some(v) -> console.print(\"host=\" + v)\n        None -> console.print(\"host MISSING\")\n    match dict.get(d, \"port\"):\n        Some(v) -> console.print(\"port=\" + v)\n        None -> console.print(\"port MISSING\")\n    console.print(\"${dict.contains_key(d, \"literal\")}\")\n    console.print(\"${dict.length(d)}\")\n";
+        let src = "import dict\nimport string\n\nfn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, string.trim(\"  host  \"), \"localhost\")\n    let parts = string.split(\"port=8080\", \"=\")\n    dict.insert(d, list.at(parts, 0), list.at(parts, 1))\n    dict.insert(d, \"lit\" + \"eral\", \"joined\")\n    match dict.get(d, \"host\"):\n        Some(v) -> console.print(\"host=\" + v)\n        None -> console.print(\"host MISSING\")\n    match dict.get(d, \"port\"):\n        Some(v) -> console.print(\"port=\" + v)\n        None -> console.print(\"port MISSING\")\n    console.print(\"${dict.contains_key(d, \"literal\")}\")\n    console.print(\"${dict.length(d)}\")\n";
         let want: Vec<String> = ["host=localhost", "port=8080", "true", "3"]
             .iter()
             .map(|s| s.to_string())
@@ -6393,7 +6388,7 @@ fn main(console: Console):
     /// clones at every call by design.)
     #[test]
     fn analysis_own_abi_pipelines_in_place() {
-        let src = "fn grow(own xs: List(Int), n: Int) -> List(Int):\n    xs = list.push(xs, n)\n    xs\n\nfn main(console: Console):\n    var xs = [0]\n    var i = 0\n    while i < 3000:\n        xs = grow(move xs, i)\n        i = i + 1\n    console.print(\"${list.length(xs)}\")\n    console.print(\"${list.at(xs, 3000)}\")\n";
+        let src = "fn grow(own xs: List(Int), n: Int) -> List(Int):\n    list.push(xs, n)\n    xs\n\nfn main(console: Console):\n    var xs = [0]\n    var i = 0\n    while i < 3000:\n        xs = grow(move xs, i)\n        i = i + 1\n    console.print(\"${list.length(xs)}\")\n    console.print(\"${list.at(xs, 3000)}\")\n";
         let want = vec!["3001".to_string(), "2999".to_string()];
         assert_eq!(link_run(src), want, "interpreter");
         let (out, reowns) = wasm_run_reowns(src);
@@ -6406,7 +6401,7 @@ fn main(console: Console):
     /// correct, never corrupting.
     #[test]
     fn analysis_own_abi_partial_return_paths_are_sound() {
-        let src = "fn cap_at(own xs: List(Int), n: Int) -> List(Int):\n    if list.length(xs) >= n:\n        []\n    else:\n        xs = list.push(xs, n)\n        xs\n\nfn main(console: Console):\n    var xs = [0]\n    var i = 0\n    while i < 50:\n        xs = cap_at(move xs, i)\n        i = i + 1\n    console.print(\"${xs}\")\n";
+        let src = "fn cap_at(own xs: List(Int), n: Int) -> List(Int):\n    if list.length(xs) >= n:\n        []\n    else:\n        list.push(xs, n)\n        xs\n\nfn main(console: Console):\n    var xs = [0]\n    var i = 0\n    while i < 50:\n        xs = cap_at(move xs, i)\n        i = i + 1\n    console.print(\"${xs}\")\n";
         let interp = link_run(src);
         assert_eq!(wasm_run(src), interp, "wasm must agree on the mixed paths");
     }
@@ -6416,7 +6411,7 @@ fn main(console: Console):
     /// must be identical — any divergence is an analysis soundness bug.
     #[test]
     fn forced_copy_mode_is_differential() {
-        let src = "fn tag(let prefix: String, n: Int) -> String:\n    prefix + \"${n}\"\n\nfn main(console: Console):\n    var xs = []\n    let alias = xs\n    var s = \"\"\n    var d = dict.new()\n    var i = 0\n    while i < 800:\n        xs = list.push(xs, i)\n        s = s + tag(\"x\", i)\n        d = dict.update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    console.print(\"${list.length(xs)}\")\n    console.print(\"${list.length(alias)}\")\n    console.print(\"${string.length(s)}\")\n    console.print(\"${dict.get_or(d, 3, 0)}\")\n";
+        let src = "fn tag(let prefix: String, n: Int) -> String:\n    prefix + \"${n}\"\n\nfn main(console: Console):\n    var xs = []\n    let alias = xs\n    var s = \"\"\n    var d = dict.new()\n    var i = 0\n    while i < 800:\n        list.push(xs, i)\n        s = s + tag(\"x\", i)\n        dict.update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    console.print(\"${list.length(xs)}\")\n    console.print(\"${list.length(alias)}\")\n    console.print(\"${string.length(s)}\")\n    console.print(\"${dict.get_or(d, 3, 0)}\")\n";
         let optimized = wasm_run(src);
         codegen::set_force_copy_for_tests(Some(true));
         let forced = wasm_run(src);
@@ -6432,7 +6427,7 @@ fn main(console: Console):
     /// overwrite its header.
     #[test]
     fn loop_watermark_rejects_outer_var_writeback() {
-        let src = "type Buf:\n    items: List(Int)\n\nfn add(var b: Buf, x: Int) -> Nil:\n    b = Buf(items: list.push(b.items, x))\n    return\n\nfn main(console: Console):\n    var b = Buf(items: [])\n    var i = 0\n    while i < 16:\n        add(b, i)\n        i = i + 1\n    console.print(\"${list.at(b.items, 15)}\")\n    console.print(\"${list.length(b.items)}\")\n";
+        let src = "type Buf:\n    items: List(Int)\n\nfn add(var b: Buf, x: Int) -> Nil:\n    list.push(b.items, x)\n    return\n\nfn main(console: Console):\n    var b = Buf(items: [])\n    var i = 0\n    while i < 16:\n        add(b, i)\n        i = i + 1\n    console.print(\"${list.at(b.items, 15)}\")\n    console.print(\"${list.length(b.items)}\")\n";
         let expected = vec!["15".to_string(), "16".to_string()];
         assert_eq!(link_run(src), expected, "interpreter");
         assert_eq!(wasm_run(src), expected, "wasm");
@@ -6443,15 +6438,20 @@ fn main(console: Console):
     /// to corrupt the length header; the dict case read garbage memory.
     #[test]
     fn loop_watermark_rejects_outer_var_record_field_writeback() {
-        let list_src = "import list\n\ntype Buf:\n    items: List(Int)\n\nfn add(var b: Buf, x: Int):\n    b.items = list.push(b.items, x)\n\nfn main(console: Console):\n    var b = Buf([])\n    var i = 0\n    while i < 16:\n        add(b, i)\n        i = i + 1\n    console.print(\"${list.at(b.items, 15)}\")\n    console.print(\"${list.length(b.items)}\")\n";
+        let list_src = "import list\n\ntype Buf:\n    items: List(Int)\n\nfn add(var b: Buf, x: Int):\n    list.push(b.items, x)\n\nfn main(console: Console):\n    var b = Buf([])\n    var i = 0\n    while i < 16:\n        add(b, i)\n        i = i + 1\n    console.print(\"${list.at(b.items, 15)}\")\n    console.print(\"${list.length(b.items)}\")\n";
         let list_expected = vec!["15".to_string(), "16".to_string()];
         assert_eq!(link_run(list_src), list_expected, "interpreter: list field");
         assert_eq!(wasm_run(list_src), list_expected, "wasm: list field");
 
-        let dict_src = "import dict\n\ntype Tally:\n    counts: Dict(Int, Int)\n\nfn bump(var t: Tally, k: Int):\n    t.counts = dict.insert(t.counts, k, k * 2)\n\nfn main(console: Console):\n    var t = Tally(dict.new())\n    var i = 0\n    while i < 50:\n        bump(t, i)\n        i = i + 1\n    console.print(\"${dict.get_or(t.counts, 49, 0)}\")\n    console.print(\"${dict.length(t.counts)}\")\n";
+        let dict_src = "import dict\n\ntype Tally:\n    counts: Dict(Int, Int)\n\nfn bump(var t: Tally, k: Int):\n    dict.insert(t.counts, k, k * 2)\n\nfn main(console: Console):\n    var t = Tally(dict.new())\n    var i = 0\n    while i < 50:\n        bump(t, i)\n        i = i + 1\n    console.print(\"${dict.get_or(t.counts, 49, 0)}\")\n    console.print(\"${dict.length(t.counts)}\")\n";
         let dict_expected = vec!["98".to_string(), "50".to_string()];
         assert_eq!(link_run(dict_src), dict_expected, "interpreter: dict field");
         assert_eq!(wasm_run(dict_src), dict_expected, "wasm: dict field");
+
+        let sibling_src = "import dict\nimport set\n\ntype Bag:\n    counts: Dict(String, Int)\n    seen: Set(String)\n\nfn inc(n: Int) -> Int:\n    n + 1\n\nfn main(console: Console):\n    var bag = Bag(dict.new(), set.new())\n    var i = 0\n    while i < 16:\n        bag.counts.update(\"hit\", 0, inc)\n        bag.seen.insert(\"k${i}\")\n        i = i + 1\n    console.print(\"${dict.get_or(bag.counts, \"hit\", 0)}\")\n    console.print(\"${set.length(bag.seen)}\")\n";
+        let sibling_expected = vec!["16".to_string(), "16".to_string()];
+        assert_eq!(link_run(sibling_src), sibling_expected, "interpreter: sibling fields");
+        assert_eq!(wasm_run(sibling_src), sibling_expected, "wasm: sibling fields");
     }
 
     /// Std containers may expose real inherent methods without reopening bare
@@ -6460,7 +6460,7 @@ fn main(console: Console):
     /// resolve to `list.push`/`list.concat` when those owner functions exist.
     #[test]
     fn std_list_impl_methods_and_free_functions_coexist_on_both_backends() {
-        let src = "import list\n\ntype Buf:\n    items: List(Int)\n\nfn main(console: Console):\n    var b = Buf([])\n    var i = 0\n    while i < 16:\n        b.items.push(i)\n        i = i + 1\n    console.print(\"${list.at(b.items, 15)}\")\n    console.print(\"${list.length(b.items)}\")\n\n    var xs = [1]\n    xs.push(2)\n    xs.concat([3, 4])\n    console.print(\"${xs}\")\n\n    let ys = list.concat(list.push(xs, 5), [6])\n    console.print(\"${ys}\")\n";
+        let src = "import list\n\ntype Buf:\n    items: List(Int)\n\nfn main(console: Console):\n    var b = Buf([])\n    var i = 0\n    while i < 16:\n        b.items.push(i)\n        i = i + 1\n    console.print(\"${list.at(b.items, 15)}\")\n    console.print(\"${list.length(b.items)}\")\n\n    var xs = [1]\n    xs.push(2)\n    xs = xs.concat([3, 4])\n    console.print(\"${xs}\")\n\n    list.push(xs, 5)\n    let ys = list.concat(xs, [6])\n    console.print(\"${ys}\")\n";
         let expected = vec![
             "15".to_string(),
             "16".to_string(),
@@ -6476,7 +6476,7 @@ fn main(console: Console):
     /// functions still exist and remain the in-place backend target.
     #[test]
     fn std_dict_set_impl_methods_and_free_functions_coexist_on_both_backends() {
-        let src = "import dict\nimport set\n\ntype Bag:\n    counts: Dict(String, Int)\n    seen: Set(String)\n\nfn inc(n: Int) -> Int:\n    n + 1\n\nfn main(console: Console):\n    var bag = Bag(dict.new(), set.new())\n    var i = 0\n    while i < 20:\n        bag.counts.update(\"hit\", 0, inc)\n        bag.seen.insert(\"k${i}\")\n        i = i + 1\n    bag.counts.insert(\"extra\", 7)\n    bag.counts.remove(\"extra\")\n    bag.seen.remove(\"k0\")\n    console.print(\"${dict.get_or(bag.counts, \"hit\", 0)}\")\n    console.print(\"${dict.length(bag.counts)}\")\n    console.print(\"${set.length(bag.seen)}\")\n    console.print(\"${set.contains(bag.seen, \"k0\")}\")\n\n    let d = dict.remove(dict.insert(dict.new(), \"x\", 1), \"missing\")\n    let s = set.remove(set.insert(set.new(), \"x\"), \"missing\")\n    console.print(\"${dict.get_or(d, \"x\", 0)}\")\n    console.print(\"${set.contains(s, \"x\")}\")\n";
+        let src = "import dict\nimport set\n\ntype Bag:\n    counts: Dict(String, Int)\n    seen: Set(String)\n\nfn inc(n: Int) -> Int:\n    n + 1\n\nfn main(console: Console):\n    var bag = Bag(dict.new(), set.new())\n    var i = 0\n    while i < 20:\n        bag.counts.update(\"hit\", 0, inc)\n        bag.seen.insert(\"k${i}\")\n        i = i + 1\n    bag.counts.insert(\"extra\", 7)\n    bag.counts.remove(\"extra\")\n    bag.seen.remove(\"k0\")\n    console.print(\"${dict.get_or(bag.counts, \"hit\", 0)}\")\n    console.print(\"${dict.length(bag.counts)}\")\n    console.print(\"${set.length(bag.seen)}\")\n    console.print(\"${set.contains(bag.seen, \"k0\")}\")\n\n    var d = dict.new()\n    dict.insert(d, \"x\", 1)\n    dict.remove(d, \"missing\")\n    var s = set.new()\n    set.insert(s, \"x\")\n    set.remove(s, \"missing\")\n    console.print(\"${dict.get_or(d, \"x\", 0)}\")\n    console.print(\"${set.contains(s, \"x\")}\")\n";
         let expected = vec![
             "20".to_string(),
             "1".to_string(),
@@ -6499,7 +6499,7 @@ fn main(console: Console):
     #[test]
     fn witchy_opt_sweep_is_differential() {
         use crate::opt::{self, Opt, OptSet};
-        let src = "fn tag(let prefix: String, n: Int) -> String:\n    prefix + \"${n}\"\n\nfn main(console: Console):\n    var xs = []\n    let alias = xs\n    var s = \"\"\n    var d = dict.new()\n    var i = 0\n    while i < 600:\n        xs = list.push(xs, i)\n        s = s + tag(\"x\", i)\n        d = dict.update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    console.print(\"${list.length(xs)}\")\n    console.print(\"${list.length(alias)}\")\n    console.print(\"${string.length(s)}\")\n    console.print(\"${dict.get_or(d, 3, 0)}\")\n";
+        let src = "fn tag(let prefix: String, n: Int) -> String:\n    prefix + \"${n}\"\n\nfn main(console: Console):\n    var xs = []\n    let alias = xs\n    var s = \"\"\n    var d = dict.new()\n    var i = 0\n    while i < 600:\n        list.push(xs, i)\n        s = s + tag(\"x\", i)\n        dict.update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    console.print(\"${list.length(xs)}\")\n    console.print(\"${list.length(alias)}\")\n    console.print(\"${string.length(s)}\")\n    console.print(\"${dict.get_or(d, 3, 0)}\")\n";
         let oracle = link_run(src);
 
         let mut settings: Vec<(String, OptSet)> = vec![
@@ -6533,7 +6533,7 @@ fn main(console: Console):
     #[test]
     fn rc_floor_last_use_drop_is_differential_and_bounds_the_leak() {
         use crate::opt::{self, Opt, OptSet};
-        let src = "import list\nimport dict\nfn main(console: Console):\n    var acc = dict.new()\n    var i = 0\n    let base = [1, 2, 3, 4, 5]\n    while i < 2000:\n        let scratch = list.concat(base, base)\n        let n = list.length(scratch)\n        acc = dict.insert(acc, i % 8, n)\n        i = i + 1\n    console.print(\"${dict.length(acc)}\")\n";
+        let src = "import list\nimport dict\nfn main(console: Console):\n    var acc = dict.new()\n    var i = 0\n    let base = [1, 2, 3, 4, 5]\n    while i < 2000:\n        let scratch = list.concat(base, base)\n        let n = list.length(scratch)\n        dict.insert(acc, i % 8, n)\n        i = i + 1\n    console.print(\"${dict.length(acc)}\")\n";
         let oracle = link_run(src);
 
         // rc-floor OFF (explicit — it is default-on now): correct, but the scratch leaks each iteration.
@@ -6579,7 +6579,7 @@ fn main(console: Console):
     /// overwrites its slot. `held` must still observe the original element.
     #[test]
     fn rc_corpus_element_read_lives_past_set_at() {
-        let src = "import list\ntype Box:\n    Box(String)\nfn unwrap(b: Box) -> String:\n    match b:\n        Box(s) -> s\nfn main(console: Console):\n    var xs = [Box(\"a\"), Box(\"b\"), Box(\"c\")]\n    let held = list.at(xs, 1)\n    xs = list.set_at(xs, 1, Box(\"z\"))\n    console.print(unwrap(held))\n    console.print(unwrap(list.at(xs, 1)))\n";
+        let src = "import list\ntype Box:\n    Box(String)\nfn unwrap(b: Box) -> String:\n    match b:\n        Box(s) -> s\nfn main(console: Console):\n    var xs = [Box(\"a\"), Box(\"b\"), Box(\"c\")]\n    let held = list.at(xs, 1)\n    list.set_at(xs, 1, Box(\"z\"))\n    console.print(unwrap(held))\n    console.print(unwrap(list.at(xs, 1)))\n";
         assert_rc_corpus_stable(src, &["b", "z"]);
     }
 
@@ -6587,7 +6587,7 @@ fn main(console: Console):
     /// overwritten. Both aliases must survive (count ≥ 2 at the overwrite).
     #[test]
     fn rc_corpus_aliased_element_survives_container_mutation() {
-        let src = "import list\ntype Box:\n    Box(String)\nfn unwrap(b: Box) -> String:\n    match b:\n        Box(s) -> s\nfn main(console: Console):\n    var xs = [Box(\"a\"), Box(\"b\")]\n    let a1 = list.at(xs, 0)\n    let a2 = list.at(xs, 0)\n    xs = list.set_at(xs, 0, Box(\"z\"))\n    console.print(unwrap(a1))\n    console.print(unwrap(a2))\n    console.print(unwrap(list.at(xs, 0)))\n";
+        let src = "import list\ntype Box:\n    Box(String)\nfn unwrap(b: Box) -> String:\n    match b:\n        Box(s) -> s\nfn main(console: Console):\n    var xs = [Box(\"a\"), Box(\"b\")]\n    let a1 = list.at(xs, 0)\n    let a2 = list.at(xs, 0)\n    list.set_at(xs, 0, Box(\"z\"))\n    console.print(unwrap(a1))\n    console.print(unwrap(a2))\n    console.print(unwrap(list.at(xs, 0)))\n";
         assert_rc_corpus_stable(src, &["a", "a", "z"]);
     }
 
@@ -6596,7 +6596,7 @@ fn main(console: Console):
     /// the original container slot overwritten. The stored copy must survive.
     #[test]
     fn rc_corpus_element_stored_elsewhere_survives_container_mutation() {
-        let src = "import list\ntype Box:\n    Box(String)\nfn unwrap(b: Box) -> String:\n    match b:\n        Box(s) -> s\nfn main(console: Console):\n    var xs = [Box(\"a\"), Box(\"b\")]\n    var ys = []\n    ys = list.push(ys, list.at(xs, 0))\n    xs = list.set_at(xs, 0, Box(\"z\"))\n    console.print(unwrap(list.at(ys, 0)))\n    console.print(unwrap(list.at(xs, 0)))\n";
+        let src = "import list\ntype Box:\n    Box(String)\nfn unwrap(b: Box) -> String:\n    match b:\n        Box(s) -> s\nfn main(console: Console):\n    var xs = [Box(\"a\"), Box(\"b\")]\n    var ys = []\n    list.push(ys, list.at(xs, 0))\n    list.set_at(xs, 0, Box(\"z\"))\n    console.print(unwrap(list.at(ys, 0)))\n    console.print(unwrap(list.at(xs, 0)))\n";
         assert_rc_corpus_stable(src, &["a", "z"]);
     }
 
@@ -6614,7 +6614,7 @@ fn main(console: Console):
     /// $rc_alloc'd cell, not a static literal) read into a binding that outlives the set_at.
     #[test]
     fn rc_corpus_heap_string_element_survives_set_at() {
-        let src = "import list\nfn main(console: Console):\n    var i = 1\n    var xs = [\"v${i}\", \"v${i + 1}\", \"v${i + 2}\"]\n    let held = list.at(xs, 1)\n    xs = list.set_at(xs, 1, \"v${i + 9}\")\n    console.print(held)\n    console.print(list.at(xs, 1))\n";
+        let src = "import list\nfn main(console: Console):\n    var i = 1\n    var xs = [\"v${i}\", \"v${i + 1}\", \"v${i + 2}\"]\n    let held = list.at(xs, 1)\n    list.set_at(xs, 1, \"v${i + 9}\")\n    console.print(held)\n    console.print(list.at(xs, 1))\n";
         assert_rc_corpus_stable(src, &["v2", "v10"]);
     }
 
@@ -6622,14 +6622,14 @@ fn main(console: Console):
     /// cell) read into a binding that outlives the set_at.
     #[test]
     fn rc_corpus_list_element_survives_set_at() {
-        let src = "import list\nfn main(console: Console):\n    var i = 1\n    var xs = [[i, i + 1], [i + 2, i + 3], [i + 4, i + 5]]\n    let held = list.at(xs, 1)\n    xs = list.set_at(xs, 1, [9, 9])\n    console.print(\"${held}\")\n    console.print(\"${list.at(xs, 1)}\")\n";
+        let src = "import list\nfn main(console: Console):\n    var i = 1\n    var xs = [[i, i + 1], [i + 2, i + 3], [i + 4, i + 5]]\n    let held = list.at(xs, 1)\n    list.set_at(xs, 1, [9, 9])\n    console.print(\"${held}\")\n    console.print(\"${list.at(xs, 1)}\")\n";
         assert_rc_corpus_stable(src, &["[3, 4]", "[9, 9]"]);
     }
 
     /// Matrix: a TUPLE element (`List((Int, Int))`) read into a binding that outlives the set_at.
     #[test]
     fn rc_corpus_tuple_element_survives_set_at() {
-        let src = "import list\nfn main(console: Console):\n    var i = 1\n    var xs = [(i, i + 1), (i + 2, i + 3), (i + 4, i + 5)]\n    let held = list.at(xs, 1)\n    xs = list.set_at(xs, 1, (9, 9))\n    console.print(\"${held}\")\n    console.print(\"${list.at(xs, 1)}\")\n";
+        let src = "import list\nfn main(console: Console):\n    var i = 1\n    var xs = [(i, i + 1), (i + 2, i + 3), (i + 4, i + 5)]\n    let held = list.at(xs, 1)\n    list.set_at(xs, 1, (9, 9))\n    console.print(\"${held}\")\n    console.print(\"${list.at(xs, 1)}\")\n";
         assert_rc_corpus_stable(src, &["(3, 4)", "(9, 9)"]);
     }
 
@@ -6638,7 +6638,7 @@ fn main(console: Console):
     /// DIFFERENT negative offset than a plain record. Read into a binding that outlives the set_at.
     #[test]
     fn rc_corpus_dict_element_survives_set_at() {
-        let src = "import list\nimport dict\nfn mkd(v: Int) -> Dict(String, Int):\n    var d = dict.new()\n    d = dict.insert(d, \"k\", v)\n    d\nfn main(console: Console):\n    var xs = [mkd(1), mkd(2), mkd(3)]\n    let held = list.at(xs, 1)\n    xs = list.set_at(xs, 1, mkd(9))\n    console.print(\"${dict.get(held, \"k\")}\")\n    console.print(\"${dict.get(list.at(xs, 1), \"k\")}\")\n";
+        let src = "import list\nimport dict\nfn mkd(v: Int) -> Dict(String, Int):\n    var d = dict.new()\n    dict.insert(d, \"k\", v)\n    d\nfn main(console: Console):\n    var xs = [mkd(1), mkd(2), mkd(3)]\n    let held = list.at(xs, 1)\n    list.set_at(xs, 1, mkd(9))\n    console.print(\"${dict.get(held, \"k\")}\")\n    console.print(\"${dict.get(list.at(xs, 1), \"k\")}\")\n";
         assert_rc_corpus_stable(src, &["Some(2)", "Some(9)"]);
     }
 
@@ -6646,7 +6646,7 @@ fn main(console: Console):
     /// overwritten. Both aliases must survive (refcount ≥ 2 at the displaced drop).
     #[test]
     fn rc_corpus_aliased_heap_string_survives_set_at() {
-        let src = "import list\nfn main(console: Console):\n    var i = 1\n    var xs = [\"v${i}\", \"v${i + 1}\"]\n    let a1 = list.at(xs, 0)\n    let a2 = list.at(xs, 0)\n    xs = list.set_at(xs, 0, \"v${i + 9}\")\n    console.print(a1)\n    console.print(a2)\n    console.print(list.at(xs, 0))\n";
+        let src = "import list\nfn main(console: Console):\n    var i = 1\n    var xs = [\"v${i}\", \"v${i + 1}\"]\n    let a1 = list.at(xs, 0)\n    let a2 = list.at(xs, 0)\n    list.set_at(xs, 0, \"v${i + 9}\")\n    console.print(a1)\n    console.print(a2)\n    console.print(list.at(xs, 0))\n";
         assert_rc_corpus_stable(src, &["v1", "v1", "v10"]);
     }
 
@@ -6655,7 +6655,7 @@ fn main(console: Console):
     /// (not a let-binding); its heap payload is extracted into `r`, which must survive the set_at.
     #[test]
     fn rc_corpus_match_on_read_adt_payload_survives_set_at() {
-        let src = "import list\ntype W:\n    W(String)\nfn unwrap(w: W) -> String:\n    match w:\n        W(s) -> s\nfn main(console: Console):\n    var i = 1\n    var ws = [W(\"v${i}\"), W(\"v${i + 1}\"), W(\"v${i + 2}\")]\n    let r = match list.at(ws, 1):\n        W(s) -> s\n    ws = list.set_at(ws, 1, W(\"v${i + 9}\"))\n    console.print(r)\n    console.print(unwrap(list.at(ws, 1)))\n";
+        let src = "import list\ntype W:\n    W(String)\nfn unwrap(w: W) -> String:\n    match w:\n        W(s) -> s\nfn main(console: Console):\n    var i = 1\n    var ws = [W(\"v${i}\"), W(\"v${i + 1}\"), W(\"v${i + 2}\")]\n    let r = match list.at(ws, 1):\n        W(s) -> s\n    list.set_at(ws, 1, W(\"v${i + 9}\"))\n    console.print(r)\n    console.print(unwrap(list.at(ws, 1)))\n";
         assert_rc_corpus_stable(src, &["v2", "v10"]);
     }
 
@@ -6663,7 +6663,7 @@ fn main(console: Console):
     /// same shape as returning it or sending it down a channel). The stored copy must survive.
     #[test]
     fn rc_corpus_heap_string_element_stored_elsewhere_survives() {
-        let src = "import list\nfn main(console: Console):\n    var i = 1\n    var xs = [\"v${i}\", \"v${i + 1}\"]\n    var ys = []\n    ys = list.push(ys, list.at(xs, 0))\n    xs = list.set_at(xs, 0, \"v${i + 9}\")\n    console.print(list.at(ys, 0))\n    console.print(list.at(xs, 0))\n";
+        let src = "import list\nfn main(console: Console):\n    var i = 1\n    var xs = [\"v${i}\", \"v${i + 1}\"]\n    var ys = []\n    list.push(ys, list.at(xs, 0))\n    list.set_at(xs, 0, \"v${i + 9}\")\n    console.print(list.at(ys, 0))\n    console.print(list.at(xs, 0))\n";
         assert_rc_corpus_stable(src, &["v1", "v10"]);
     }
 
@@ -6686,7 +6686,7 @@ fn main(console: Console):
     /// Both displaced elements must survive through their bindings.
     #[test]
     fn rc_corpus_nested_match_on_read_uses_the_scrut_pool() {
-        let src = "import list\ntype W:\n    W(String)\ntype Box:\n    Box(String)\nfn main(console: Console):\n    var i = 1\n    var xs = [W(\"a${i}\"), W(\"b${i}\")]\n    var ys = [Box(\"c${i}\"), Box(\"d${i}\")]\n    let r = match list.at(xs, 0):\n        W(s1) ->\n            match list.at(ys, 0):\n                Box(s2) -> s1 + s2\n    xs = list.set_at(xs, 0, W(\"z${i}\"))\n    ys = list.set_at(ys, 0, Box(\"q${i}\"))\n    console.print(r)\n";
+        let src = "import list\ntype W:\n    W(String)\ntype Box:\n    Box(String)\nfn main(console: Console):\n    var i = 1\n    var xs = [W(\"a${i}\"), W(\"b${i}\")]\n    var ys = [Box(\"c${i}\"), Box(\"d${i}\")]\n    let r = match list.at(xs, 0):\n        W(s1) ->\n            match list.at(ys, 0):\n                Box(s2) -> s1 + s2\n    list.set_at(xs, 0, W(\"z${i}\"))\n    list.set_at(ys, 0, Box(\"q${i}\"))\n    console.print(r)\n";
         assert_rc_corpus_stable(src, &["a1c1"]);
     }
 
@@ -6695,7 +6695,7 @@ fn main(console: Console):
     /// dup/drop on a List element whose own children are heap.
     #[test]
     fn rc_corpus_nested_list_element_survives_set_at() {
-        let src = "import list\nfn main(console: Console):\n    var i = 1\n    var ls = [[\"p${i}\", \"q${i}\"], [\"r${i}\"]]\n    let inner = list.at(ls, 0)\n    ls = list.set_at(ls, 0, [\"z${i}\"])\n    console.print(list.at(inner, 1))\n    console.print(list.at(list.at(ls, 0), 0))\n";
+        let src = "import list\nfn main(console: Console):\n    var i = 1\n    var ls = [[\"p${i}\", \"q${i}\"], [\"r${i}\"]]\n    let inner = list.at(ls, 0)\n    list.set_at(ls, 0, [\"z${i}\"])\n    console.print(list.at(inner, 1))\n    console.print(list.at(list.at(ls, 0), 0))\n";
         assert_rc_corpus_stable(src, &["q1", "z1"]);
     }
 
@@ -6727,7 +6727,7 @@ fn main(console: Console):
     #[test]
     fn rc_free_at_overwrite_does_not_free_a_literal_sec_039() {
         use crate::opt::{self, Opt, OptSet};
-        let src = "fn main(console: Console):\n    var xs = [3, 1, 2]\n    xs = list.sort(xs)\n    console.print(\"${xs}\")\n    var t = \"abc\"\n    t = string.trim(t)\n    console.print(\"[${t}]\")\n";
+        let src = "fn main(console: Console):\n    var xs = [3, 1, 2]\n    list.sort(xs)\n    console.print(\"${xs}\")\n    var t = \"abc\"\n    t = string.trim(t)\n    console.print(\"[${t}]\")\n";
         let oracle = link_run(src);
         assert_eq!(oracle, vec!["[1, 2, 3]", "[abc]"], "oracle shape changed");
         let mut settings: Vec<(String, OptSet)> = vec![
@@ -7148,7 +7148,7 @@ fn main(console: Console):
     let lock = "[[rune]]\nname = \"money\"\nhash = \"sha256:aa\"\n\n[[rune]]\nname = \"util\"\nhash = \"sha256:bb\"\n"
     var names = []
     for block in toml.array_tables(lock, "rune"):
-        names = list.push(names, opt(toml.get(block, "name")) + "=" + opt(toml.get(block, "hash")))
+        list.push(names, opt(toml.get(block, "name")) + "=" + opt(toml.get(block, "hash")))
     console.print(list.join(names, "|"))
 
 fn opt(o: Option(String)) -> String:
@@ -7479,7 +7479,7 @@ fn yn(b: Bool) -> String:
     /// changes observable behavior, only when memory is reclaimed.
     #[test]
     fn region_blocks_value_escape_and_parity() {
-        let src = "import string\n\nfn main(console: Console):\n    let summary = region:\n        var parts = []\n        for i in 0..50:\n            parts = list.push(parts, \"${i}\")\n        list.join(parts, \",\")\n    console.print(\"${string.length(summary)}\")\n    var n = 0\n    let direct = region -> Int:\n        n = n + 42\n        n\n    console.print(\"${direct}\")\n";
+        let src = "import string\n\nfn main(console: Console):\n    let summary = region:\n        var parts = []\n        for i in 0..50:\n            list.push(parts, \"${i}\")\n        list.join(parts, \",\")\n    console.print(\"${string.length(summary)}\")\n    var n = 0\n    let direct = region -> Int:\n        n = n + 42\n        n\n    console.print(\"${direct}\")\n";
         let want: Vec<String> = ["139", "42"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want.clone(), "interpreter");
         assert_eq!(wasm_run(src), want, "compiled WASM must agree");
@@ -7491,7 +7491,7 @@ fn yn(b: Bool) -> String:
     /// through shared, all agreeing with the interpreter.
     #[test]
     fn region_copy_out_shapes_agree_on_both_backends() {
-        let src = "type Stack:\n    Empty\n    Push(a, Stack(a))\n\ntype Reading:\n    sensor: String\n    values: List(Int)\n\nfn main(console: Console):\n    let st = region -> Stack(Int):\n        Push(1, Push(2, Empty))\n    console.print(\"${st == Push(1, Push(2, Empty))}\")\n    let r = region -> Reading:\n        var vs = []\n        for i in 0..50:\n            vs = list.push(vs, i * i)\n        Reading(sensor: \"t\" + \"0\", values: vs)\n    console.print(r.sensor)\n    console.print(\"${list.at(r.values, 49)}\")\n    let d = region -> Dict(String, Int):\n        var m = dict.new()\n        for i in 0..100:\n            m = dict.insert(m, \"k\" + \"${i}\", i)\n        m\n    console.print(\"${dict.get_or(d, \"k42\", 0 - 1)}\")\n    let shared = \"parent-side\"\n    let s = region -> String:\n        shared\n    console.print(s)\n    let nested = region -> Int:\n        let inner = region -> String:\n            \"abc\" + \"def\"\n        string.length(inner)\n    console.print(\"${nested}\")\n";
+        let src = "type Stack:\n    Empty\n    Push(a, Stack(a))\n\ntype Reading:\n    sensor: String\n    values: List(Int)\n\nfn main(console: Console):\n    let st = region -> Stack(Int):\n        Push(1, Push(2, Empty))\n    console.print(\"${st == Push(1, Push(2, Empty))}\")\n    let r = region -> Reading:\n        var vs = []\n        for i in 0..50:\n            list.push(vs, i * i)\n        Reading(sensor: \"t\" + \"0\", values: vs)\n    console.print(r.sensor)\n    console.print(\"${list.at(r.values, 49)}\")\n    let d = region -> Dict(String, Int):\n        var m = dict.new()\n        for i in 0..100:\n            dict.insert(m, \"k\" + \"${i}\", i)\n        m\n    console.print(\"${dict.get_or(d, \"k42\", 0 - 1)}\")\n    let shared = \"parent-side\"\n    let s = region -> String:\n        shared\n    console.print(s)\n    let nested = region -> Int:\n        let inner = region -> String:\n            \"abc\" + \"def\"\n        string.length(inner)\n    console.print(\"${nested}\")\n";
         let want: Vec<String> = ["true", "t0", "2401", "42", "parent-side", "6"]
             .iter()
             .map(|s| s.to_string())
@@ -7506,7 +7506,7 @@ fn yn(b: Bool) -> String:
     /// grows), so only the region machinery reclaims. WASM-only for speed.
     #[test]
     fn region_reclaims_inside_nonresettable_loops() {
-        let src = "fn main(console: Console):\n    var total = 0\n    var keep = []\n    for i in 0..100000:\n        let last = region -> Int:\n            var row = []\n            var j = 0\n            for j in 0..1000:\n                row = list.push(row, j)\n            list.at(row, 999)\n        total = total + last\n        keep = list.push(keep, i)\n    console.print(\"${total}\")\n    console.print(\"${list.length(keep)}\")\n";
+        let src = "fn main(console: Console):\n    var total = 0\n    var keep = []\n    for i in 0..100000:\n        let last = region -> Int:\n            var row = []\n            var j = 0\n            for j in 0..1000:\n                list.push(row, j)\n            list.at(row, 999)\n        total = total + last\n        list.push(keep, i)\n    console.print(\"${total}\")\n    console.print(\"${list.length(keep)}\")\n";
         assert_eq!(wasm_run(src), vec!["99900000", "100000"]);
     }
 
@@ -7629,7 +7629,7 @@ fn yn(b: Bool) -> String:
     /// of the chain result comes from the type table, not a local-var-only map.
     #[test]
     fn field_projection_on_call_chain_backends_agree() {
-        let src = "import cmp\n\ntype Top derive(Ord, PartialOrd, Eq, PartialEq):\n    label: String\n\nfn main(console: Console):\n    let xs = [Top(label: \"b\"), Top(label: \"a\")]\n    console.print(list.sort(xs).at(0).label)\n    console.print([Top(label: \"b\"), Top(label: \"a\")].at(0).label)\n    console.print(list.at([Top(label: \"b\"), Top(label: \"a\")], 0).label)\n";
+        let src = "import cmp\n\ntype Top derive(Ord, PartialOrd, Eq, PartialEq):\n    label: String\n\nfn main(console: Console):\n    var xs = [Top(label: \"b\"), Top(label: \"a\")]\n    list.sort(xs)\n    console.print(xs.at(0).label)\n    console.print([Top(label: \"b\"), Top(label: \"a\")].at(0).label)\n    console.print(list.at([Top(label: \"b\"), Top(label: \"a\")], 0).label)\n";
         let want = ["a", "b", "b"];
         assert_eq!(link_run(src), want, "interp");
         assert_eq!(wasm_run(src), want, "wasm");
@@ -7649,8 +7649,8 @@ fn yn(b: Bool) -> String:
         for prog in [
             "fn main(console: Console):\n    var xs = [1, 2, 3]\n    xs[5] = 9\n    console.print(\"${xs}\")\n",
             "fn main(console: Console):\n    var xs = [1, 2, 3]\n    xs[0 - 1] = 9\n    console.print(\"${xs}\")\n",
-            "fn main(console: Console):\n    var xs = [1, 2, 3]\n    xs = list.set_at(xs, 5, 9)\n    console.print(\"${xs}\")\n",
-            "fn main(console: Console):\n    var xs = [1, 2, 3]\n    xs = list.update_at(xs, 9, fn(x: Int): x + 1)\n    console.print(\"${xs}\")\n",
+            "fn main(console: Console):\n    var xs = [1, 2, 3]\n    list.set_at(xs, 5, 9)\n    console.print(\"${xs}\")\n",
+            "fn main(console: Console):\n    var xs = [1, 2, 3]\n    list.update_at(xs, 9, fn(x: Int): x + 1)\n    console.print(\"${xs}\")\n",
         ] {
             let (lmod, wasm) = compile(prog);
             assert!(interpreter::run_module(lmod, ".", Vec::new()).is_err(), "interp must trap: {prog}");
@@ -7718,7 +7718,7 @@ fn yn(b: Bool) -> String:
     /// are type errors — the region's only pointer escape is its value.
     #[test]
     fn region_rejects_outer_pointer_assign_and_yield() {
-        let leak = "fn main(console: Console):\n    var leak = [1]\n    let x = region:\n        leak = list.push(leak, 2)\n        7\n    console.print(\"${x}\")\n";
+        let leak = "fn main(console: Console):\n    var leak = [1]\n    let x = region:\n        list.push(leak, 2)\n        7\n    console.print(\"${x}\")\n";
         let module = parser::parse_module(leak).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         let err = typeck::check(&linked).expect_err("outer pointer assign must be rejected");
@@ -7730,7 +7730,7 @@ fn yn(b: Bool) -> String:
     /// growth), and a missing-key probe all agree with the interpreter.
     #[test]
     fn dict_hash_index_agrees_on_both_backends() {
-        let src = "fn main(console: Console):\n    var d = dict.new()\n    for i in 0..3000:\n        d = dict.insert(d, \"k\" + \"${i}\", i * 2)\n    console.print(\"${dict.length(d)}\")\n    console.print(\"${dict.get_or(d, \"k2999\", 0 - 1)}\")\n    console.print(\"${dict.get_or(d, \"absent\", 0 - 1)}\")\n    console.print(\"${dict.contains_key(d, \"k1500\")}\")\n    d = dict.remove(d, \"k0\")\n    console.print(\"${dict.length(d)}\")\n    d = dict.insert(d, \"again\", 7)\n    console.print(\"${dict.get_or(d, \"again\", 0 - 1)}\")\n";
+        let src = "fn main(console: Console):\n    var d = dict.new()\n    for i in 0..3000:\n        dict.insert(d, \"k\" + \"${i}\", i * 2)\n    console.print(\"${dict.length(d)}\")\n    console.print(\"${dict.get_or(d, \"k2999\", 0 - 1)}\")\n    console.print(\"${dict.get_or(d, \"absent\", 0 - 1)}\")\n    console.print(\"${dict.contains_key(d, \"k1500\")}\")\n    dict.remove(d, \"k0\")\n    console.print(\"${dict.length(d)}\")\n    dict.insert(d, \"again\", 7)\n    console.print(\"${dict.get_or(d, \"again\", 0 - 1)}\")\n";
         let want: Vec<String> = ["3000", "5998", "-1", "true", "2999", "7"]
             .iter()
             .map(|s| s.to_string())
@@ -7753,7 +7753,7 @@ fn yn(b: Bool) -> String:
     fn list_reverse_flatten_flat_map_are_linear_at_scale() {
         let src = |n: u32| {
             format!(
-                "fn main(console: Console):\n    var xs = []\n    for i in 0..{n}:\n        xs = list.push(xs, i)\n    let r = list.reverse(xs)\n    console.print(\"${{list.at(r, 0)}}\")\n    console.print(\"${{list.at(r, {last})}}\")\n    console.print(\"${{list.flatten([[1, 2], [], [3]])}}\")\n    console.print(\"${{list.flat_map([1, 2, 3], fn(x: Int): [x, x * 10])}}\")\n",
+                "fn main(console: Console):\n    var xs = []\n    for i in 0..{n}:\n        list.push(xs, i)\n    var r = xs\n    list.reverse(r)\n    console.print(\"${{list.at(r, 0)}}\")\n    console.print(\"${{list.at(r, {last})}}\")\n    console.print(\"${{list.flatten([[1, 2], [], [3]])}}\")\n    console.print(\"${{list.flat_map([1, 2, 3], fn(x: Int): [x, x * 10])}}\")\n",
                 last = n - 1
             )
         };
@@ -7780,7 +7780,7 @@ fn yn(b: Bool) -> String:
     fn inplace_set_at_is_fast_and_alias_safe() {
         let src = |n: u32| {
             format!(
-                "fn main(console: Console):\n    var xs = []\n    for i in 0..{n}:\n        xs = list.push(xs, 0)\n    var k = 0\n    while k < {n}:\n        xs = list.set_at(xs, k, k * 2)\n        k = k + 1\n    console.print(\"${{list.at(xs, {last})}}\")\n    xs = list.set_at(xs, {last}, 7)\n    console.print(\"${{list.length(xs)}}\")\n    var ys = [1, 2, 3]\n    let alias = ys\n    ys = list.set_at(ys, 1, 99)\n    console.print(\"${{list.at(ys, 1)}}\")\n    console.print(\"${{list.at(alias, 1)}}\")\n",
+                "fn main(console: Console):\n    var xs = []\n    for i in 0..{n}:\n        list.push(xs, 0)\n    var k = 0\n    while k < {n}:\n        list.set_at(xs, k, k * 2)\n        k = k + 1\n    console.print(\"${{list.at(xs, {last})}}\")\n    list.set_at(xs, {last}, 7)\n    console.print(\"${{list.length(xs)}}\")\n    var ys = [1, 2, 3]\n    let alias = ys\n    list.set_at(ys, 1, 99)\n    console.print(\"${{list.at(ys, 1)}}\")\n    console.print(\"${{list.at(alias, 1)}}\")\n",
                 last = n - 1
             )
         };
@@ -7803,7 +7803,7 @@ fn yn(b: Bool) -> String:
     fn inplace_update_at_is_fast_and_alias_safe() {
         let src = |n: u32| {
             format!(
-                "fn main(console: Console):\n    var xs = []\n    for i in 0..{n}:\n        xs = list.push(xs, 1)\n    var k = 0\n    while k < {n}:\n        xs = list.update_at(xs, k, fn(v: Int): v + 1)\n        k = k + 1\n    console.print(\"${{list.at(xs, {last})}}\")\n    xs = list.update_at(xs, {last}, fn(v: Int): v + 1)\n    console.print(\"${{list.length(xs)}}\")\n    var ys = [1, 2, 3]\n    let alias = ys\n    ys = list.update_at(ys, 1, fn(v: Int): v + 100)\n    console.print(\"${{list.at(ys, 1)}}\")\n    console.print(\"${{list.at(alias, 1)}}\")\n",
+                "fn main(console: Console):\n    var xs = []\n    for i in 0..{n}:\n        list.push(xs, 1)\n    var k = 0\n    while k < {n}:\n        list.update_at(xs, k, fn(v: Int): v + 1)\n        k = k + 1\n    console.print(\"${{list.at(xs, {last})}}\")\n    list.update_at(xs, {last}, fn(v: Int): v + 1)\n    console.print(\"${{list.length(xs)}}\")\n    var ys = [1, 2, 3]\n    let alias = ys\n    list.update_at(ys, 1, fn(v: Int): v + 100)\n    console.print(\"${{list.at(ys, 1)}}\")\n    console.print(\"${{list.at(alias, 1)}}\")\n",
                 last = n - 1
             )
         };
@@ -7822,7 +7822,7 @@ fn yn(b: Bool) -> String:
     /// copying insert, so the alias still sees the original.
     #[test]
     fn inplace_dict_insert_is_fast_and_alias_safe() {
-        let src = "fn main(console: Console):\n    var d = dict.new()\n    for i in 0..2000:\n        d = dict.insert(d, i, i * 2)\n    console.print(\"${dict.length(d)}\")\n    console.print(\"${dict.get_or(d, 1999, 0 - 1)}\")\n    var e = dict.new()\n    let alias = e\n    e = dict.insert(e, 1, 10)\n    console.print(\"${dict.length(alias)}\")\n    console.print(\"${dict.length(e)}\")\n";
+        let src = "fn main(console: Console):\n    var d = dict.new()\n    for i in 0..2000:\n        dict.insert(d, i, i * 2)\n    console.print(\"${dict.length(d)}\")\n    console.print(\"${dict.get_or(d, 1999, 0 - 1)}\")\n    var e = dict.new()\n    let alias = e\n    dict.insert(e, 1, 10)\n    console.print(\"${dict.length(alias)}\")\n    console.print(\"${dict.length(e)}\")\n";
         let want: Vec<String> =
             ["2000", "3998", "0", "1"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want.clone(), "interpreter");
@@ -7836,7 +7836,7 @@ fn yn(b: Bool) -> String:
     /// quadratic and would take far too long at this scale.
     #[test]
     fn arena_resets_keep_escape_free_loops_constant_memory() {
-        let src = "fn main(console: Console):\n    var total = 0\n    for i in 0..200000:\n        var row = []\n        var j = 0\n        for j in 0..1000:\n            row = list.push(row, j)\n        total = total + list.at(row, 999)\n    console.print(\"${total}\")\n";
+        let src = "fn main(console: Console):\n    var total = 0\n    for i in 0..200000:\n        var row = []\n        var j = 0\n        for j in 0..1000:\n            list.push(row, j)\n        total = total + list.at(row, 999)\n    console.print(\"${total}\")\n";
         assert_eq!(wasm_run(src), vec!["199800000"]);
     }
 
@@ -7860,7 +7860,7 @@ fn yn(b: Bool) -> String:
     fn inplace_push_is_fast_and_alias_safe() {
         // 50k would take minutes under clone-per-push on either backend; both
         // have an in-place fast path for the unaliased self-assign shape.
-        let src = "fn main(console: Console):\n    var xs = []\n    for i in 0..50000:\n        xs = list.push(xs, i)\n    console.print(\"${list.length(xs)}\")\n    console.print(\"${list.at(xs, 49999)}\")\n    var small = [1]\n    let alias = small\n    small = list.push(small, 2)\n    console.print(\"${alias}\")\n    console.print(\"${small}\")\n";
+        let src = "fn main(console: Console):\n    var xs = []\n    for i in 0..50000:\n        list.push(xs, i)\n    console.print(\"${list.length(xs)}\")\n    console.print(\"${list.at(xs, 49999)}\")\n    var small = [1]\n    let alias = small\n    list.push(small, 2)\n    console.print(\"${alias}\")\n    console.print(\"${small}\")\n";
         let want: Vec<String> = ["50000", "49999", "[1]", "[1, 2]"]
             .iter()
             .map(|s| s.to_string())
@@ -7875,7 +7875,7 @@ fn yn(b: Bool) -> String:
     /// semantics hold.
     #[test]
     fn inplace_dict_upsert_is_fast_and_alias_safe() {
-        let src = "fn main(console: Console):\n    var d = dict.new()\n    for i in 0..10000:\n        d = dict.insert(d, i, i)\n    console.print(\"${dict.length(d)}\")\n    var counts = dict.new()\n    for i in 0..30000:\n        counts = dict.update(counts, i % 3, 0, fn(n: Int): n + 1)\n    console.print(\"${dict.get_or(counts, 0, 0)}\")\n    var small = dict.new()\n    small = dict.insert(small, 1, 10)\n    let alias = small\n    small = dict.insert(small, 2, 20)\n    console.print(\"${dict.length(alias)}\")\n    console.print(\"${dict.length(small)}\")\n";
+        let src = "fn main(console: Console):\n    var d = dict.new()\n    for i in 0..10000:\n        dict.insert(d, i, i)\n    console.print(\"${dict.length(d)}\")\n    var counts = dict.new()\n    for i in 0..30000:\n        dict.update(counts, i % 3, 0, fn(n: Int): n + 1)\n    console.print(\"${dict.get_or(counts, 0, 0)}\")\n    var small = dict.new()\n    dict.insert(small, 1, 10)\n    let alias = small\n    dict.insert(small, 2, 20)\n    console.print(\"${dict.length(alias)}\")\n    console.print(\"${dict.length(small)}\")\n";
         let want: Vec<String> = ["10000", "10000", "1", "2"]
             .iter()
             .map(|s| s.to_string())
@@ -8170,7 +8170,7 @@ fn yn(b: Bool) -> String:
     /// found via `list.repeat(-1, n)`.
     #[test]
     fn wasm_negative_int_survives_the_generic_list_abi() {
-        let src = "fn fill(x: a, n: Int) -> List(a):\n    var out = []\n    var i = 0\n    while i < n:\n        out = list.push(out, x)\n        i = i + 1\n    out\n\nfn show(xs: List(Int)) -> String:\n    var out = \"\"\n    for v in xs:\n        out = out + \"${v}\" + \" \"\n    out\n\nfn main(console: Console):\n    console.print(show(fill(-1, 3)))\n";
+        let src = "fn fill(x: a, n: Int) -> List(a):\n    var out = []\n    var i = 0\n    while i < n:\n        list.push(out, x)\n        i = i + 1\n    out\n\nfn show(xs: List(Int)) -> String:\n    var out = \"\"\n    for v in xs:\n        out = out + \"${v}\" + \" \"\n    out\n\nfn main(console: Console):\n    console.print(show(fill(-1, 3)))\n";
         let want = vec!["-1 -1 -1 ".to_string()];
         assert_eq!(interp(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
@@ -8196,7 +8196,7 @@ fn yn(b: Bool) -> String:
     /// (Regression for the big-int-through-generic gap.)
     #[test]
     fn wasm_monomorphizes_big_int_through_generic() {
-        let src = "fn fill(x: a, n: Int) -> List(a):\n    var out = []\n    var i = 0\n    while i < n:\n        out = list.push(out, x)\n        i = i + 1\n    out\n\nfn main(console: Console):\n    let xs = fill(5000000000, 2)\n    console.print(\"${list.at(xs, 0)}\")\n";
+        let src = "fn fill(x: a, n: Int) -> List(a):\n    var out = []\n    var i = 0\n    while i < n:\n        list.push(out, x)\n        i = i + 1\n    out\n\nfn main(console: Console):\n    let xs = fill(5000000000, 2)\n    console.print(\"${list.at(xs, 0)}\")\n";
         let want = vec!["5000000000".to_string()];
         assert_eq!(interp(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
@@ -8237,21 +8237,23 @@ fn yn(b: Bool) -> String:
     /// error teaches the standard escapes (a scaled Int, or a String rendering).
     #[test]
     fn dict_float_keys_are_a_compile_error() {
-        let src = "fn main(console: Console):\n    let d = dict.insert(dict.new(), 1.5, \"a\")\n    console.print(dict.get_or(d, 1.5, \"?\"))\n";
-        let e = typeck::check_str(src).expect_err("a Float-keyed dict must be rejected");
+        let src = "fn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, 1.5, \"a\")\n    console.print(dict.get_or(d, 1.5, \"?\"))\n";
+        let e = typeck::check(&resolve_std_src(src))
+            .expect_err("a Float-keyed dict must be rejected")
+            .to_string();
         assert!(
             e.contains("not a valid `Dict` key") && e.contains("Eq"),
             "teaching error naming the Eq requirement, got: {e}"
         );
         // The NaN case (the original hole) is rejected by the same type rule,
         // before any runtime lookup can silently miss.
-        let nan = "fn main(console: Console):\n    let d = dict.insert(dict.new(), 0.0 / 0.0, \"nan\")\n    console.print(dict.get_or(d, 0.0 / 0.0, \"missing\"))\n";
+        let nan = "fn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, 0.0 / 0.0, \"nan\")\n    console.print(dict.get_or(d, 0.0 / 0.0, \"missing\"))\n";
         assert!(
-            typeck::check_str(nan).expect_err("a NaN Float key must be rejected").contains("not a valid `Dict` key"),
+            typeck::check(&resolve_std_src(nan)).expect_err("a NaN Float key must be rejected").to_string().contains("not a valid `Dict` key"),
             "the NaN-key hole is closed by the type rule"
         );
         // An Int-keyed dict (the suggested escape) still works on both backends.
-        let ok = "fn main(console: Console):\n    let d = dict.insert(dict.new(), 3, \"a\")\n    console.print(dict.get_or(d, 3, \"?\"))\n";
+        let ok = "fn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, 3, \"a\")\n    console.print(dict.get_or(d, 3, \"?\"))\n";
         assert_eq!(interp(ok), vec!["a"], "interpreter (Int key)");
         assert_eq!(run_on_wasm(ok), vec!["a"], "compiled WASM (Int key)");
     }
@@ -8261,7 +8263,7 @@ fn yn(b: Bool) -> String:
     /// makes it true.
     #[test]
     fn set_float_members_are_a_compile_error() {
-        let src = "import set\n\nfn main(console: Console):\n    var s = set.new()\n    s = set.insert(s, 1.5)\n    console.print(\"${set.length(s)}\")\n";
+        let src = "import set\n\nfn main(console: Console):\n    var s = set.new()\n    set.insert(s, 1.5)\n    console.print(\"${set.length(s)}\")\n";
         let linked = resolve_std_src(src);
         let e = typeck::check(&linked).expect_err("a Float-membered set must be rejected").to_string();
         assert!(e.contains("not a valid `Set` member") && e.contains("Eq"), "teaching error, got: {e}");
@@ -9125,8 +9127,9 @@ fn main(console: Console, root: Dir):
     var names = []
     for f in fs.collect_files(root, "", "", ".witchy"):
         let (rel, _contents) = f
-        names = list.push(names, rel)
-    console.print(list.join(list.sort(names), ","))
+        list.push(names, rel)
+    list.sort(names)
+    console.print(list.join(names, ","))
 "#;
         let linked = resolve_std_src(src);
         let interpreted =
@@ -9930,7 +9933,7 @@ fn main(console: Console, root: Dir):
     /// a structural memcmp of differing fields would yield `false` — the tell.)
     #[test]
     fn custom_partial_eq_is_honored_at_every_depth() {
-        let src = "type P:\n    P(Int)\n\nimpl PartialEq for P:\n    fn eq(self, other: P) -> Bool:\n        true\n\nfn main(console: Console):\n    console.print(\"${P(1) == P(2)}\")\n    console.print(\"${[P(1)] == [P(2)]}\")\n    console.print(\"${Some(P(1)) == Some(P(2))}\")\n    console.print(\"${(P(1), 0) == (P(2), 0)}\")\n    let a = dict.insert(dict.new(), 1, P(1))\n    let b = dict.insert(dict.new(), 1, P(2))\n    console.print(\"${a == b}\")\n";
+        let src = "type P:\n    P(Int)\n\nimpl PartialEq for P:\n    fn eq(self, other: P) -> Bool:\n        true\n\nfn main(console: Console):\n    console.print(\"${P(1) == P(2)}\")\n    console.print(\"${[P(1)] == [P(2)]}\")\n    console.print(\"${Some(P(1)) == Some(P(2))}\")\n    console.print(\"${(P(1), 0) == (P(2), 0)}\")\n    var a = dict.new()\n    dict.insert(a, 1, P(1))\n    var b = dict.new()\n    dict.insert(b, 1, P(2))\n    console.print(\"${a == b}\")\n";
         let want = vec![
             "true".to_string(), // top-level impl (as before)
             "true".to_string(), // inside a List — NEW: was false
@@ -10058,7 +10061,7 @@ fn main(console: Console, root: Dir):
     /// (Closes the former loud-error gaps.)
     #[test]
     fn option_and_dict_equality_agree_on_both_backends() {
-        let src = "import option\n\nfn main(console: Console):\n    let none_i: Option(Int) = None\n    console.print(\"${Some(5) == Some(5)}\")\n    console.print(\"${Some(5) == Some(6)}\")\n    console.print(\"${Some(5) == None}\")\n    console.print(\"${none_i == None}\")\n    console.print(\"${Some(\"a\") == Some(\"a\")}\")\n    console.print(\"${Some(\"a\") == Some(\"b\")}\")\n    let a = dict.insert(dict.insert(dict.new(), \"k\", 1), \"j\", 2)\n    let b = dict.insert(dict.insert(dict.new(), \"k\", 1), \"j\", 2)\n    let c = dict.insert(dict.insert(dict.new(), \"k\", 1), \"j\", 9)\n    let rev = dict.insert(dict.insert(dict.new(), \"j\", 2), \"k\", 1)\n    console.print(\"${a == b}\")\n    console.print(\"${a == c}\")\n    console.print(\"${a == rev}\")\n";
+        let src = "import option\n\nfn pair(a: Int, b: Int) -> Dict(String, Int):\n    var d = dict.new()\n    dict.insert(d, \"k\", a)\n    dict.insert(d, \"j\", b)\n    d\n\nfn main(console: Console):\n    let none_i: Option(Int) = None\n    console.print(\"${Some(5) == Some(5)}\")\n    console.print(\"${Some(5) == Some(6)}\")\n    console.print(\"${Some(5) == None}\")\n    console.print(\"${none_i == None}\")\n    console.print(\"${Some(\"a\") == Some(\"a\")}\")\n    console.print(\"${Some(\"a\") == Some(\"b\")}\")\n    let a = pair(1, 2)\n    let b = pair(1, 2)\n    let c = pair(1, 9)\n    var rev = dict.new()\n    dict.insert(rev, \"j\", 2)\n    dict.insert(rev, \"k\", 1)\n    console.print(\"${a == b}\")\n    console.print(\"${a == c}\")\n    console.print(\"${a == rev}\")\n";
         let want = vec![
             "true".to_string(),
             "false".to_string(),
@@ -10244,7 +10247,7 @@ fn main(console: Console, root: Dir):
     /// conversion.)
     #[test]
     fn to_string_of_builtin_call_results_agrees() {
-        let src = "fn main(console: Console):\n    let d = dict.insert(dict.insert(dict.new(), \"a\", 1), \"b\", 2)\n    console.print(\"${dict.contains_key(d, \"a\")}\")\n    console.print(\"${dict.contains_key(d, \"z\")}\")\n    console.print(\"${dict.length(d)}\")\n    console.print(\"${string.contains(\"hello\", \"ell\")}\")\n";
+        let src = "fn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, \"a\", 1)\n    dict.insert(d, \"b\", 2)\n    console.print(\"${dict.contains_key(d, \"a\")}\")\n    console.print(\"${dict.contains_key(d, \"z\")}\")\n    console.print(\"${dict.length(d)}\")\n    console.print(\"${string.contains(\"hello\", \"ell\")}\")\n";
         let want = vec![
             "true".to_string(),
             "false".to_string(),
@@ -10292,6 +10295,87 @@ fn main(console: Console, root: Dir):
         );
     }
 
+    #[test]
+    fn rfc0087_structured_return_spellings_and_caller_propagation_agree() {
+        let src = r#"import option
+import result
+
+fn via_try(var left: Int, var right: Int, r: Result(Int, String)) -> Result(Int, String):
+    left = left + 100
+    right = right + 10
+    let got = r?
+    Ok(got)
+
+fn via_explicit_return(var left: Int, var right: Int, r: Result(Int, String)) -> Result(Int, String):
+    left = left + 100
+    right = right + 10
+    match r:
+        Ok(got) -> Ok(got)
+        Err(message) -> return Err(message)
+
+fn via_tail_err(var left: Int, var right: Int) -> Result(Int, String):
+    left = left + 100
+    right = right + 10
+    Err("stop")
+
+fn option_receiver_try(var state: Option(Int), var count: Int) -> Option(Int):
+    count = count + 1
+    let value = state?
+    state = Some(value + 1)
+    Some(value)
+
+fn update_or_none(var n: Int, succeeds: Bool) -> Option(Int):
+    n = n + 10
+    if succeeds:
+        Some(n)
+    else:
+        None
+
+fn caller_try(var n: Int) -> Option(Int):
+    let value = update_or_none(n, false)?
+    Some(value)
+
+fn main(console: Console):
+    var a = 1
+    var b = 10
+    let by_try = via_try(a, b, Err("stop"))
+    console.print("${a} ${b} ${by_try}")
+
+    var c = 1
+    var d = 10
+    let by_return = via_explicit_return(c, d, Err("stop"))
+    console.print("${c} ${d} ${by_return}")
+
+    var e = 1
+    var f = 10
+    let by_tail = via_tail_err(e, f)
+    console.print("${e} ${f} ${by_tail}")
+
+    var state: Option(Int) = None
+    var count = 0
+    let option_result = option_receiver_try(state, count)
+    console.print("${state} ${count} ${option_result}")
+
+    var propagated = 1
+    let propagated_result = caller_try(propagated)
+    console.print("${propagated} ${propagated_result}")
+
+    var fallback_state = 2
+    let fallback = update_or_none(fallback_state, false) ?? fallback_state + 100
+    console.print("${fallback_state} ${fallback}")
+"#;
+        let want = [
+            "101 20 Err(stop)",
+            "101 20 Err(stop)",
+            "101 20 Err(stop)",
+            "None 1 None",
+            "11 None",
+            "12 112",
+        ];
+        assert_eq!(link_run(src), want, "interpreter structured returns");
+        assert_eq!(wasm_run(src), want, "compiled structured returns");
+    }
+
     /// The `encoding` module (hex/base64) must agree on both backends. WASM
     /// bridges each `String -> String` transform to the same native registry the
     /// interpreter uses (a host import), so output is byte-for-byte identical.
@@ -10326,7 +10410,7 @@ fn main(console: Console, root: Dir):
     /// interpreter-only dict-upsert gap.)
     #[test]
     fn dict_update_upsert_agrees_on_both_backends() {
-        let src = "fn main(console: Console):\n    let d = dict.insert(dict.insert(dict.new(), \"a\", 1), \"b\", 2)\n    let d2 = dict.update(d, \"a\", 0, fn(x: Int): x + 10)\n    let d3 = dict.update(d2, \"c\", 100, fn(x: Int): x + 1)\n    console.print(\"${dict.get_or(d3, \"a\", -1)}\")\n    console.print(\"${dict.get_or(d3, \"b\", -1)}\")\n    console.print(\"${dict.get_or(d3, \"c\", -1)}\")\n    console.print(\"${dict.length(d3)}\")\n    let counts = dict.update(dict.update(dict.new(), \"hit\", 0, fn(n: Int): n + 1), \"hit\", 0, fn(n: Int): n + 1)\n    console.print(\"${dict.get_or(counts, \"hit\", -1)}\")\n";
+        let src = "fn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, \"a\", 1)\n    dict.insert(d, \"b\", 2)\n    dict.update(d, \"a\", 0, fn(x: Int): x + 10)\n    dict.update(d, \"c\", 100, fn(x: Int): x + 1)\n    console.print(\"${dict.get_or(d, \"a\", -1)}\")\n    console.print(\"${dict.get_or(d, \"b\", -1)}\")\n    console.print(\"${dict.get_or(d, \"c\", -1)}\")\n    console.print(\"${dict.length(d)}\")\n    var counts = dict.new()\n    dict.update(counts, \"hit\", 0, fn(n: Int): n + 1)\n    dict.update(counts, \"hit\", 0, fn(n: Int): n + 1)\n    console.print(\"${dict.get_or(counts, \"hit\", -1)}\")\n";
         let want = vec![
             "11".to_string(),
             "2".to_string(),
@@ -10395,10 +10479,10 @@ fn main(console: Console, root: Dir):
     /// (a pointer in the low bits) still works. (Regression for big-Int-Dict.)
     #[test]
     fn wasm_dict_keeps_big_int_values() {
-        let big = "fn main(console: Console):\n    var d = dict.new()\n    d = dict.insert(d, \"k\", 9000000000)\n    console.print(\"${dict.get_or(d, \"k\", 0)}\")\n";
+        let big = "fn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, \"k\", 9000000000)\n    console.print(\"${dict.get_or(d, \"k\", 0)}\")\n";
         assert_eq!(interp(big), vec!["9000000000"], "interpreter");
         assert_eq!(run_on_wasm(big), vec!["9000000000"], "WASM");
-        let s = "fn main(console: Console):\n    var d = dict.new()\n    d = dict.insert(d, \"a\", \"hello\")\n    console.print(dict.get_or(d, \"a\", \"none\"))\n";
+        let s = "fn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, \"a\", \"hello\")\n    console.print(dict.get_or(d, \"a\", \"none\"))\n";
         assert_eq!(interp(s), vec!["hello"], "interpreter (string value)");
         assert_eq!(run_on_wasm(s), vec!["hello"], "WASM (string value)");
     }
@@ -10408,7 +10492,7 @@ fn main(console: Console, root: Dir):
     /// carries it to `dict.values(d)`, so the loop variable is i64.
     #[test]
     fn wasm_dict_values_iteration_keeps_big_ints() {
-        let src = "fn main(console: Console):\n    var d = dict.new()\n    d = dict.insert(d, \"k\", 9000000000)\n    var s = 0\n    for v in dict.values(d):\n        s = s + v\n    console.print(\"${s}\")\n";
+        let src = "fn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, \"k\", 9000000000)\n    var s = 0\n    for v in dict.values(d):\n        s = s + v\n    console.print(\"${s}\")\n";
         assert_eq!(interp(src), vec!["9000000000"], "interpreter");
         assert_eq!(run_on_wasm(src), vec!["9000000000"], "WASM");
     }
@@ -10443,7 +10527,7 @@ fn main(console: Console, root: Dir):
     /// `List(a)` return carries the element type. (The deepest nesting case.)
     #[test]
     fn wasm_big_int_through_list_of_tuples_generic() {
-        let src = "fn firsts(ps: List((a, b))) -> List(a):\n    var out = []\n    for p in ps:\n        let (x, y) = p\n        out = list.push(out, x)\n    out\n\nfn main(console: Console):\n    console.print(\"${list.at(firsts([(9000000000, 1)]), 0)}\")\n";
+        let src = "fn firsts(ps: List((a, b))) -> List(a):\n    var out = []\n    for p in ps:\n        let (x, y) = p\n        list.push(out, x)\n    out\n\nfn main(console: Console):\n    console.print(\"${list.at(firsts([(9000000000, 1)]), 0)}\")\n";
         assert_eq!(interp(src), vec!["9000000000"], "interpreter");
         assert_eq!(run_on_wasm(src), vec!["9000000000"], "WASM");
     }
@@ -10918,9 +11002,9 @@ fn main(console: Console):
                 r#"
 fn main(console: Console):
     var d = dict.new()
-    d = dict.insert(d, "a", 1)
-    d = dict.insert(d, "b", 2)
-    d = dict.insert(d, "a", 9)
+    dict.insert(d, "a", 1)
+    dict.insert(d, "b", 2)
+    dict.insert(d, "a", 9)
     console.print("${(dict.get_or(d, "a", 0) + dict.length(d))}")
 "#,
             ),
@@ -11014,11 +11098,13 @@ import list
 
 fn main(console: Console):
     let xs = [5, 3, 8, 1, 9, 2]
-    let rev = list.reverse(xs)
+    var rev = xs
+    list.reverse(rev)
     console.print((("${list.at(rev, 0)}" + ",") + "${list.at(rev, 5)}"))
     console.print((("${list.length(list.take(xs, 3))}" + ":") + "${list.at(list.take(xs, 3), 2)}"))
     console.print("${list.at(list.drop(xs, 4), 0)}")
-    let sorted = list.sort_by(xs, fn(a: Int, b: Int): (a < b))
+    var sorted = xs
+    list.sort_by(sorted, fn(a: Int, b: Int): (a < b))
     console.print((("${list.at(sorted, 0)}" + "..") + "${list.at(sorted, 5)}"))
     let pairs = list.zip([1, 2, 3], [10, 20, 30])
     let (pa, pb) = list.at(pairs, 1)
@@ -11177,9 +11263,9 @@ fn main(console: Console):
 import list
 
 fn main(console: Console):
-    let words = ["cherry", "apple", "banana", "date", "apple"]
-    let sorted = list.sort_by(words, fn(a: String, b: String): (a < b))
-    for w in sorted:
+    var words = ["cherry", "apple", "banana", "date", "apple"]
+    list.sort_by(words, fn(a: String, b: String): (a < b))
+    for w in words:
         console.print(w)
 "#;
         let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
@@ -11553,7 +11639,7 @@ fn main(console: Console):
     /// (`set.from_list(iter.collect(...))`) — identical on both backends.
     #[test]
     fn std_set_type_iteration_and_collect_agree() {
-        let client = "import set\nimport iter\nimport show\n\nfn main(console: Console):\n    let s = set.from_list([3, 1, 2, 3, 1])\n    console.print(\"${set.length(s)}\")\n    console.print(\"${set.contains(s, 2)}\")\n    var total = 0\n    for x in s:\n        total = (total + x)\n    console.print(\"${total}\")\n    let r = set.remove(s, 2)\n    console.print(show(r))\n    let cs: Set(Int) = iter.collect(iter.range(1, 4))\n    console.print(show(cs))\n";
+        let client = "import set\nimport iter\nimport show\n\nfn main(console: Console):\n    var s = set.from_list([3, 1, 2, 3, 1])\n    console.print(\"${set.length(s)}\")\n    console.print(\"${set.contains(s, 2)}\")\n    var total = 0\n    for x in s:\n        total = (total + x)\n    console.print(\"${total}\")\n    set.remove(s, 2)\n    console.print(show(s))\n    let cs: Set(Int) = iter.collect(iter.range(1, 4))\n    console.print(show(cs))\n";
         let sources = [
             ("cmp", crate::bundled_module("cmp").unwrap()),
             ("option", crate::bundled_module("option").unwrap()),
@@ -11777,15 +11863,20 @@ type Stack(a):
 impl Stack(a):
     fn empty() -> Stack(a):
         Stack([])
-    fn push(self, x: a) -> Stack(a):
-        Stack(list.push(self.items, x))
+    fn push(var self, x: a) -> Nil:
+        list.push(self.items, x)
     fn howbig(self) -> Int:
         list.length(self.items)
 
 fn main(console: Console):
-    let s = Stack.empty().push(1).push(2).push(3)
+    var s = Stack.empty()
+    s.push(1)
+    s.push(2)
+    s.push(3)
     console.print("${s.howbig()}")
-    let w = Stack.empty().push("a").push("b")
+    var w = Stack.empty()
+    w.push("a")
+    w.push("b")
     console.print("${w.howbig()}")
 "#;
         assert_eq!(interp(client), vec!["3", "2"]);
@@ -12219,7 +12310,8 @@ fn main(console: Console):
         let bad = r#"
 import prng
 fn main(console: Console):
-    let (_i, _r) = prng.next_below(prng.seed(1), 2147483647)
+    var r = prng.seed(1)
+    let _i = prng.next_below(r, 2147483647)
     console.print("unreachable")
 "#;
         let linked = resolve_std_src(bad);
@@ -12236,7 +12328,7 @@ fn main(console: Console):
         let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort");
         assert!(cerr.contains("cannot be covered"), "compiled core mismatch: {cerr}");
 
-        let ok = "import prng\nfn main(console: Console):\n    let (i, _r) = prng.next_below(prng.seed(1), 6)\n    console.print(\"${i >= 0 && i < 6}\")\n";
+        let ok = "import prng\nfn main(console: Console):\n    var r = prng.seed(1)\n    let i = prng.next_below(r, 6)\n    console.print(\"${i >= 0 && i < 6}\")\n";
         assert_eq!(link_run(ok), vec!["true"], "interpreter small bound");
         assert_eq!(wasm_run(ok), vec!["true"], "compiled small bound");
     }
@@ -12258,9 +12350,9 @@ fn snd(p: (String, Int)) -> Int:
 fn lt(a: Int, b: Int) -> Bool:
     a < b
 fn main(console: Console):
-    let people = [("alice", 30), ("bob", 25), ("carol", 35)]
-    let sorted = list.sort_by(people, func.on_key(lt, snd))
-    console.print(list.join(list.map(sorted, fst), ","))
+    var people = [("alice", 30), ("bob", 25), ("carol", 35)]
+    list.sort_by(people, func.on_key(lt, snd))
+    console.print(list.join(list.map(people, fst), ","))
     let by_age = func.on_key(lt, snd)
     console.print(if by_age(("x", 1), ("y", 2)): "lt" else: "ge")
 "#;
@@ -12518,14 +12610,15 @@ fn main(console: Console):
     var out = []
     var i = 0
     while i < 4:
-        let (n, r2) = prng.next(r)
-        out = list.push(out, n)
-        r = r2
+        let n = prng.next(r)
+        list.push(out, n)
         i = i + 1
     console.print(list.join(list.map(out, fn(n: Int): "${n}"), ","))
-    let (d, _r3) = prng.next_below(prng.seed(42), 6)
+    var r3 = prng.seed(42)
+    let d = prng.next_below(r3, 6)
     console.print("${d}")
-    let (b, _r4) = prng.next_bool(prng.seed(2))
+    var r4 = prng.seed(2)
+    let b = prng.next_bool(r4)
     console.print(if b: "even" else: "odd")
 "#;
         let sources = [
@@ -12632,9 +12725,11 @@ fn main(console: Console):
 import prng
 import option
 fn main(console: Console):
-    let (c, _r) = prng.choice(["a", "b", "c", "d"], prng.seed(1))
+    var r = prng.seed(1)
+    let c = prng.choice(["a", "b", "c", "d"], r)
     console.print(option.unwrap_or(c, "?"))
-    let (e, _r2) = prng.choice([], prng.seed(1))
+    var r2 = prng.seed(1)
+    let e = prng.choice([], r2)
     console.print(option.unwrap_or(e, "empty"))
 "#;
         let sources = [
@@ -13664,9 +13759,9 @@ fn tag(it: Item) -> String:
     match it:
         Item(_k, t) -> t
 fn main(console: Console):
-    let xs = [Item(2, "a"), Item(1, "b"), Item(2, "c"), Item(1, "d"), Item(2, "e")]
-    let sorted = list.sort_by(xs, fn(p: Item, q: Item): key(p) < key(q))
-    for it in sorted:
+    var xs = [Item(2, "a"), Item(1, "b"), Item(2, "c"), Item(1, "d"), Item(2, "e")]
+    list.sort_by(xs, fn(p: Item, q: Item): key(p) < key(q))
+    for it in xs:
         console.print("${key(it)}" + tag(it))
 "#;
         let sources = [("list", crate::bundled_module("list").unwrap()), ("main", client)];
@@ -13696,12 +13791,16 @@ fn build(s: String) -> String:
     acc
 
 fn main(console: Console):
-    let words = [build("pear"), build("apple"), build("fig"), build("apple")]
-    console.print(list.join(list.sort(words), ","))
-    console.print(list.join(list.sort(["c", "a", "b"]), ""))
+    var words = [build("pear"), build("apple"), build("fig"), build("apple")]
+    list.sort(words)
+    console.print(list.join(words, ","))
+    var letters = ["c", "a", "b"]
+    list.sort(letters)
+    console.print(list.join(letters, ""))
     console.print(cmp.max_of(build("alpha"), build("omega")))
     console.print(cmp.maximum([build("x"), build("a"), build("m")], ""))
-    let nums = list.sort([3, 1, 2, 1])
+    var nums = [3, 1, 2, 1]
+    list.sort(nums)
     console.print("${(list.at(nums, 0) + (list.at(nums, 3) * 10))}")
 "#;
         let sources = [
@@ -13851,7 +13950,6 @@ fn main(console: Console):
     /// what the program printed.
     fn run_on_wasm(src: &str) -> Vec<String> {
         use crate::runtime::{Capabilities, Runtime};
-        assert!(typeck::check_str(src).is_ok(), "{:?}", typeck::check_str(src));
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
@@ -14051,7 +14149,7 @@ fn main(console: Console):
     /// counter ≤ 2), not O(n) copies — and prints the right element.
     #[test]
     fn wir_inplace_accumulator_is_o1_reowns() {
-        let src = "fn build(n: Int) -> List(Int):\n    var xs: List(Int) = []\n    for i in 0..n:\n        xs = list.push(xs, i)\n    xs\n\nfn main(console: Console):\n    let ys = build(500)\n    console.print(\"${list.at(ys, 499)}\")\n";
+        let src = "fn build(n: Int) -> List(Int):\n    var xs: List(Int) = []\n    for i in 0..n:\n        list.push(xs, i)\n    xs\n\nfn main(console: Console):\n    let ys = build(500)\n    console.print(\"${list.at(ys, 499)}\")\n";
         let want = vec!["499".to_string()];
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
@@ -14070,7 +14168,7 @@ fn main(console: Console):
     /// binary path; runs identically to the interpreter oracle AND the WAT path.
     #[test]
     fn wir_inplace_accumulator_runs_and_agrees() {
-        let src = "fn build(n: Int) -> List(Int):\n    var xs: List(Int) = []\n    for i in 0..n:\n        xs = list.push(xs, i)\n    xs\n\nfn main(console: Console):\n    let ys = build(3)\n    console.print(\"${list.at(ys, 0)}\")\n    console.print(\"${list.at(ys, 1)}\")\n    console.print(\"${list.at(ys, 2)}\")\n";
+        let src = "fn build(n: Int) -> List(Int):\n    var xs: List(Int) = []\n    for i in 0..n:\n        list.push(xs, i)\n    xs\n\nfn main(console: Console):\n    let ys = build(3)\n    console.print(\"${list.at(ys, 0)}\")\n    console.print(\"${list.at(ys, 1)}\")\n    console.print(\"${list.at(ys, 2)}\")\n";
         let want = vec!["0".to_string(), "1".to_string(), "2".to_string()];
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
@@ -14091,7 +14189,7 @@ fn main(console: Console):
     /// per insert) — the timing-free proof the copy-per-insert path was avoided.
     #[test]
     fn wir_inplace_dict_insert_is_o1_reowns() {
-        let src = "fn build(n: Int) -> Dict(String, Int):\n    var d = dict.new()\n    for i in 0..n:\n        d = dict.insert(d, \"k\" + \"${i}\", i)\n    d\n\nfn main(console: Console):\n    let m = build(500)\n    console.print(\"${dict.get_or(m, \"k499\", 0 - 1)}\")\n    console.print(\"${dict.length(m)}\")\n";
+        let src = "fn build(n: Int) -> Dict(String, Int):\n    var d = dict.new()\n    for i in 0..n:\n        dict.insert(d, \"k\" + \"${i}\", i)\n    d\n\nfn main(console: Console):\n    let m = build(500)\n    console.print(\"${dict.get_or(m, \"k499\", 0 - 1)}\")\n    console.print(\"${dict.length(m)}\")\n";
         let want = vec!["499".to_string(), "500".to_string()];
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
@@ -14132,7 +14230,7 @@ fn main(console: Console):
     /// `$__witchy_reowns` stays O(1).
     #[test]
     fn wir_inplace_dict_update_is_o1_reowns() {
-        let src = "fn build(n: Int) -> Dict(String, Int):\n    var d = dict.new()\n    var i = 0\n    while i < n:\n        d = dict.update(d, \"k\" + \"${i % 10}\", 0, fn(c: Int): c + 1)\n        i = i + 1\n    d\n\nfn main(console: Console):\n    let d = build(500)\n    console.print(\"${dict.get_or(d, \"k0\", 0 - 1)}\")\n    console.print(\"${dict.length(d)}\")\n";
+        let src = "fn build(n: Int) -> Dict(String, Int):\n    var d = dict.new()\n    var i = 0\n    while i < n:\n        dict.update(d, \"k\" + \"${i % 10}\", 0, fn(c: Int): c + 1)\n        i = i + 1\n    d\n\nfn main(console: Console):\n    let d = build(500)\n    console.print(\"${dict.get_or(d, \"k0\", 0 - 1)}\")\n    console.print(\"${dict.length(d)}\")\n";
         let want = vec!["50".to_string(), "10".to_string()];
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
@@ -14203,11 +14301,11 @@ fn main(console: Console):
     fn single_allocator_invariant_holds_on_lowered_programs() {
         let progs = [
             // accumulators: list push / dict insert / string concat self-assigns
-            "fn main(console: Console):\n    var xs = []\n    var d = dict.new()\n    var s = \"\"\n    for i in 0..50:\n        xs = list.push(xs, i)\n        d = dict.insert(d, \"k${i}\", i)\n        s = s + \"x\"\n    xs = list.set_at(xs, 0, 9)\n    console.print(\"${list.length(xs)} ${dict.length(d)} ${string.length(s)}\")\n",
+            "fn main(console: Console):\n    var xs = []\n    var d = dict.new()\n    var s = \"\"\n    for i in 0..50:\n        list.push(xs, i)\n        dict.insert(d, \"k${i}\", i)\n        s = s + \"x\"\n    list.set_at(xs, 0, 9)\n    console.print(\"${list.length(xs)} ${dict.length(d)} ${string.length(s)}\")\n",
             // scalar region reclaim (the watermark rewind exemption)
-            "import string\n\nfn main(console: Console):\n    let n = region -> Int:\n        var parts = []\n        for i in 0..20:\n            parts = list.push(parts, \"p${i}\")\n        list.length(parts)\n    console.print(\"${n}\")\n",
+            "import string\n\nfn main(console: Console):\n    let n = region -> Int:\n        var parts = []\n        for i in 0..20:\n            list.push(parts, \"p${i}\")\n        list.length(parts)\n    console.print(\"${n}\")\n",
             // pointer region copy-out (the `heap = wm + copied_len` advance-rewind)
-            "import string\n\nfn main(console: Console):\n    let summary = region:\n        var parts = []\n        for i in 0..20:\n            parts = list.push(parts, \"p${i}\")\n        list.join(parts, \",\")\n    console.print(\"${string.length(summary)}\")\n",
+            "import string\n\nfn main(console: Console):\n    let summary = region:\n        var parts = []\n        for i in 0..20:\n            list.push(parts, \"p${i}\")\n        list.join(parts, \",\")\n    console.print(\"${string.length(summary)}\")\n",
         ];
         for src in progs {
             let linked = resolve_std_src(src);
@@ -14498,14 +14596,14 @@ fn main(console: Console):
             // dict with String keys ($dict_new/insert/get_or/has/size →
             // $dict_find + $key_eq's $str_eq path) on the binary path.
             (
-                "fn main(console: Console):\n    let d = dict.insert(dict.insert(dict.new(), \"a\", 1), \"b\", 2)\n    console.print(\"${dict.get_or(d, \"a\", 0)}\")\n    console.print(\"${dict.get_or(d, \"z\", 99)}\")\n    console.print(\"${dict.contains_key(d, \"b\")}\")\n    console.print(\"${dict.contains_key(d, \"z\")}\")\n    console.print(\"${dict.length(d)}\")\n",
+                "fn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, \"a\", 1)\n    dict.insert(d, \"b\", 2)\n    console.print(\"${dict.get_or(d, \"a\", 0)}\")\n    console.print(\"${dict.get_or(d, \"z\", 99)}\")\n    console.print(\"${dict.contains_key(d, \"b\")}\")\n    console.print(\"${dict.contains_key(d, \"z\")}\")\n    console.print(\"${dict.length(d)}\")\n",
                 vec!["1".to_string(), "99".to_string(), "true".to_string(), "false".to_string(), "2".to_string()],
             ),
             // dict iteration + remove ($dict_keys/values/pairs/remove). Asserts
             // order-independent facts (lengths, post-remove membership) so it's
             // robust to entry ordering.
             (
-                "fn main(console: Console):\n    let d = dict.insert(dict.insert(dict.new(), \"a\", 1), \"b\", 2)\n    console.print(\"${list.length(dict.keys(d))}\")\n    console.print(\"${list.length(dict.values(d))}\")\n    console.print(\"${list.length(dict.pairs(d))}\")\n    let d2 = dict.remove(d, \"a\")\n    console.print(\"${dict.length(d2)}\")\n    console.print(\"${dict.contains_key(d2, \"a\")}\")\n    console.print(\"${dict.contains_key(d2, \"b\")}\")\n",
+                "fn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, \"a\", 1)\n    dict.insert(d, \"b\", 2)\n    console.print(\"${list.length(dict.keys(d))}\")\n    console.print(\"${list.length(dict.values(d))}\")\n    console.print(\"${list.length(dict.pairs(d))}\")\n    var d2 = d\n    dict.remove(d2, \"a\")\n    console.print(\"${dict.length(d2)}\")\n    console.print(\"${dict.contains_key(d2, \"a\")}\")\n    console.print(\"${dict.contains_key(d2, \"b\")}\")\n",
                 vec!["2".to_string(), "2".to_string(), "2".to_string(), "1".to_string(), "false".to_string(), "true".to_string()],
             ),
             // a capturing closure: the lambda closes over `k` (an Int local),
@@ -14593,7 +14691,7 @@ fn main(console: Console):
             // a register and resetting `$heap`) and a `List(Int)` result (reclaimed via
             // the generated `$rcopy_list_int`: scalar payload, one `memory.copy`).
             (
-                "fn main(console: Console):\n    let s = region -> Int:\n        var sum = 0\n        for i in 0..10:\n            sum = sum + i\n        sum\n    console.print(\"${s}\")\n    let xs = region -> List(Int):\n        var ys = []\n        for i in 0..5:\n            ys = list.push(ys, i * i)\n        ys\n    console.print(\"${list.at(xs, 3)}\")\n",
+                "fn main(console: Console):\n    let s = region -> Int:\n        var sum = 0\n        for i in 0..10:\n            sum = sum + i\n        sum\n    console.print(\"${s}\")\n    let xs = region -> List(Int):\n        var ys = []\n        for i in 0..5:\n            list.push(ys, i * i)\n        ys\n    console.print(\"${list.at(xs, 3)}\")\n",
                 vec!["45".to_string(), "9".to_string()],
             ),
             // a `region -> (Int, String):` tuple — the generated `$rcopy_tuple_*`
@@ -14609,7 +14707,7 @@ fn main(console: Console):
             // each element string through `$rcopy_str`, so every slot holds a biased
             // pointer into the reclaimed block.
             (
-                "fn main(console: Console):\n    let xs = region -> List(String):\n        var ys = []\n        for i in 0..3:\n            ys = list.push(ys, \"n\" + \"${i}\")\n        ys\n    let after = \"OK\"\n    console.print(list.at(xs, 0))\n    console.print(list.at(xs, 2))\n    console.print(after)\n",
+                "fn main(console: Console):\n    let xs = region -> List(String):\n        var ys = []\n        for i in 0..3:\n            list.push(ys, \"n\" + \"${i}\")\n        ys\n    let after = \"OK\"\n    console.print(list.at(xs, 0))\n    console.print(list.at(xs, 2))\n    console.print(after)\n",
                 vec!["n0".to_string(), "n2".to_string(), "OK".to_string()],
             ),
             // enum/record structural render: the generated `$ts_*` tag-dispatch
@@ -14753,7 +14851,7 @@ fn main(console: Console):
     /// interpreter directly.)
     #[test]
     fn wir_dict_update_binary_path() {
-        let src = "fn main(console: Console):\n    var d = dict.new()\n    d = dict.update(d, \"a\", 0, fn(c: Int): c + 1)\n    d = dict.update(d, \"a\", 0, fn(c: Int): c + 1)\n    d = dict.update(d, \"a\", 0, fn(c: Int): c + 1)\n    d = dict.update(d, \"b\", 0, fn(c: Int): c + 1)\n    console.print(\"${d}\")\n    console.print(\"${dict.get_or(d, \"a\", -1)}\")\n";
+        let src = "fn main(console: Console):\n    var d = dict.new()\n    dict.update(d, \"a\", 0, fn(c: Int): c + 1)\n    dict.update(d, \"a\", 0, fn(c: Int): c + 1)\n    dict.update(d, \"a\", 0, fn(c: Int): c + 1)\n    dict.update(d, \"b\", 0, fn(c: Int): c + 1)\n    console.print(\"${d}\")\n    console.print(\"${dict.get_or(d, \"a\", -1)}\")\n";
         let want = vec!["{a: 3, b: 1}".to_string(), "3".to_string()];
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
@@ -14792,7 +14890,7 @@ fn main(console: Console):
     /// isn't resolvable by the WAT-leg `check_str`, so compare binary vs oracle.)
     #[test]
     fn wir_own_abi_move_pipeline_binary_path() {
-        let src = "fn grow(own xs: List(Int), n: Int) -> List(Int):\n    xs = list.push(xs, n)\n    xs\n\nfn main(console: Console):\n    var xs = []\n    for i in 1..6:\n        xs = grow(move xs, i)\n    console.print(\"${xs}\")\n";
+        let src = "fn grow(own xs: List(Int), n: Int) -> List(Int):\n    list.push(xs, n)\n    xs\n\nfn main(console: Console):\n    var xs = []\n    for i in 1..6:\n        xs = grow(move xs, i)\n    console.print(\"${xs}\")\n";
         let want = vec!["[1, 2, 3, 4, 5]".to_string()];
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
@@ -14812,7 +14910,7 @@ fn main(console: Console):
     /// "unknown local $acc__cap"). (2-way: list.push isn't WAT-leg resolvable.)
     #[test]
     fn wir_lambda_inplace_accumulator_binary_path() {
-        let src = "fn main(console: Console):\n    let build = fn(n: Int):\n        var acc = [0]\n        var t = 0\n        while t < n:\n            acc = list.push(acc, t)\n            t = t + 1\n        list.length(acc)\n    console.print(\"${build(5)}\")\n";
+        let src = "fn main(console: Console):\n    let build = fn(n: Int):\n        var acc = [0]\n        var t = 0\n        while t < n:\n            list.push(acc, t)\n            t = t + 1\n        list.length(acc)\n    console.print(\"${build(5)}\")\n";
         let want = vec!["6".to_string()];
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
@@ -16281,9 +16379,9 @@ fn main() -> Int:
 import list
 
 fn main() -> Int:
-    let xs = [3, 1, 4, 1, 5, 9, 2, 6]
-    let sorted = list.sort_by(xs, fn(a: Int, b: Int): (a < b))
-    ((list.at(sorted, 0) * 100) + list.at(sorted, 7))
+    var xs = [3, 1, 4, 1, 5, 9, 2, 6]
+    list.sort_by(xs, fn(a: Int, b: Int): (a < b))
+    ((list.at(xs, 0) * 100) + list.at(xs, 7))
 "#;
         assert_eq!(
             run_linked_on_wasm(
@@ -16541,7 +16639,9 @@ fn main(console: Console):
     console.print("${[[1, 2], [3]]}")
     console.print("${(1, "two", true)}")
     console.print("${[Circle(2), Dot]}")
-    let d = dict.insert(dict.insert(dict.new(), "a", 1), "b", 2)
+    var d = dict.new()
+    dict.insert(d, "a", 1)
+    dict.insert(d, "b", 2)
     console.print("${d}")
     let tc = ([1, 2], (3, 4))          // a let-bound tuple whose slots are compound
     console.print("${tc}")
@@ -16669,9 +16769,9 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     var d = dict.new()
-    d = dict.insert(d, "a", 1)
-    d = dict.insert(d, "b", 2)
-    d = dict.insert(d, "a", 10)
+    dict.insert(d, "a", 1)
+    dict.insert(d, "b", 2)
+    dict.insert(d, "a", 10)
     console.print("${dict.get_or(d, "a", 0)}")
     console.print("${dict.get_or(d, "b", 0)}")
     console.print("${dict.get_or(d, "z", (0 - 1))}")
@@ -16688,8 +16788,8 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     var d = dict.new()
-    d = dict.insert(d, 1, 100)
-    d = dict.insert(d, 2, 200)
+    dict.insert(d, 1, 100)
+    dict.insert(d, 2, 200)
     console.print("${dict.get_or(d, 1, 0)}")
     console.print("${dict.get_or(d, 2, 0)}")
     console.print("${dict.get_or(d, 3, (0 - 1))}")
@@ -16715,14 +16815,14 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     var d = dict.new()
-    d = dict.insert(d, console, 5)
+    dict.insert(d, console, 5)
     console.print("${dict.length(d)}")
 "#;
-        let module = parser::parse_module(src).expect("parse");
-        let err = codegen::compile_module_binary(&module)
-            .expect_err("should reject");
+        let linked = resolve_std_src(src);
+        typeck::check(&linked).expect("the generic Dict surface remains type-checkable");
+        let err = codegen::compile_module_binary(&linked).expect_err("should reject");
         assert!(
-            err.to_string().contains("could not determine the Dict key type"),
+            err.to_string().contains("Dict key type"),
             "unexpected error: {err}"
         );
     }
@@ -16876,8 +16976,8 @@ type Item:
 
 fn main(console: Console):
     var d = dict.new()
-    d = dict.insert(d, "apple", Item(3, 10))
-    d = dict.insert(d, "bread", Item(2, 5))
+    dict.insert(d, "apple", Item(3, 10))
+    dict.insert(d, "bread", Item(2, 5))
     let it = dict.get_or(d, "apple", Item(0, 0))
     console.print("${((it).price * (it).qty)}")
     let missing = dict.get_or(d, "milk", Item(0, 0))
@@ -16894,21 +16994,24 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     var d = dict.new()
-    d = dict.insert(d, "a", 1)
-    d = dict.insert(d, "b", 2)
-    d = dict.insert(d, "c", 3)
-    let d2 = dict.remove(d, "b")
+    dict.insert(d, "a", 1)
+    dict.insert(d, "b", 2)
+    dict.insert(d, "c", 3)
+    var d2 = d
+    dict.remove(d2, "b")
     console.print("${dict.length(d2)}")
     console.print("${if dict.contains_key(d2, "b"): 1 else: 0}")
     console.print("${dict.get_or(d2, "a", 0)}")
     console.print("${dict.get_or(d2, "c", 0)}")
-    let d3 = dict.remove(d, "missing")
+    var d3 = d
+    dict.remove(d3, "missing")
     console.print("${dict.length(d3)}")
     console.print("${dict.length(d)}")
     var nums = dict.new()
-    nums = dict.insert(nums, 10, 100)
-    nums = dict.insert(nums, 20, 200)
-    let nums2 = dict.remove(nums, 10)
+    dict.insert(nums, 10, 100)
+    dict.insert(nums, 20, 200)
+    var nums2 = nums
+    dict.remove(nums2, 10)
     console.print("${dict.length(nums2)}")
     console.print("${dict.get_or(nums2, 20, 0)}")
 "#;
@@ -16932,9 +17035,9 @@ fn main(console: Console):
 import dict
 fn main(console: Console):
     var b = dict.new()
-    b = dict.insert(b, "x", 1)
-    b = dict.remove(b, "x")
-    b = dict.insert(b, "x", 5)
+    dict.insert(b, "x", 1)
+    dict.remove(b, "x")
+    dict.insert(b, "x", 5)
     console.print("${dict.get_or(b, "x", -1)}")
     console.print("${list.length(dict.keys(b))}")
     console.print("${dict.get_or(b, "x", -1)}")
@@ -16950,9 +17053,9 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     var d = dict.new()
-    d = dict.insert(d, "a", 10)
-    d = dict.insert(d, "b", 20)
-    d = dict.insert(d, "c", 30)
+    dict.insert(d, "a", 10)
+    dict.insert(d, "b", 20)
+    dict.insert(d, "c", 30)
     var ksum = 0
     for k in dict.keys(d):
         ksum = (ksum + string.length(k))
@@ -17101,7 +17204,7 @@ fn main() -> Int:
     var out = []
     var i = 0
     while (i < 200):
-        out = list.push(out, i)
+        list.push(out, i)
         i = (i + 1)
     var total = 0
     for x in out:
@@ -17159,7 +17262,7 @@ fn main() -> Int:
 fn double_all(xs: List(Int)) -> List(Int):
     var out = []
     for x in xs:
-        out = list.push(out, (x * 2))
+        list.push(out, (x * 2))
     out
 
 fn main() -> Int:
@@ -17727,7 +17830,7 @@ fn main(console: Console):
     var es = []
     let ps: List((Int, String)) = iter.collect(iter.enumerate(iter.from_list(["a", "b", "c"])))
     for p in ps:
-        es = list.push(es, "${func.first(p)}" + func.second(p))
+        list.push(es, "${func.first(p)}" + func.second(p))
     console.print(list.join(es, " "))
     console.print("${iter.count(iter.zip(iter.count_from(1), iter.from_list([0, 0, 0])))}")
     console.print("${iter.sum(iter.chain(iter.range(0, 4), iter.range(10, 13)))}")
@@ -18019,7 +18122,7 @@ fn strict_strings(items: List(Json)) -> Result(List(String), FootprintError):
     for it in items:
         match json.as_string(it):
             None -> return Err(NonStringElement)
-            Some(s) -> out = list.push(out, s)
+            Some(s) -> list.push(out, s)
     Ok(out)
 
 fn show(r: Result(List(String), FootprintError)) -> String:
@@ -18957,7 +19060,7 @@ fn main(console: Console):
 fn main(console: Console):
     var fs = []
     for i in [1, 2, 3]:
-        fs = list.push(fs, fn(x: Int): (x + i))
+        list.push(fs, fn(x: Int): (x + i))
     let f0 = list.at(fs, 0)
     let f2 = list.at(fs, 2)
     console.print("${f0(10)}")
@@ -19038,9 +19141,9 @@ fn main(console: Console):
     console.print(string.replace("aaa", "a", "bb"))
     console.print(string.replace("hello world", "o", "0"))
     var d = dict.new()
-    d = dict.insert(d, 1, 100)
-    d = dict.insert(d, 2, 200)
-    d = dict.insert(d, 1, 111)
+    dict.insert(d, 1, 100)
+    dict.insert(d, 2, 200)
+    dict.insert(d, 1, 111)
     console.print("${dict.get_or(d, 1, 0)}")
     console.print("${dict.get_or(d, 2, 0)}")
     console.print("${dict.length(d)}")
@@ -19062,11 +19165,11 @@ fn main(console: Console):
     console.print("${(7 % (0 - 2))}")
     console.print("${((0 - 7) / (0 - 2))}")
     var d = dict.new()
-    d = dict.insert(d, "k", 1)
-    d = dict.insert(d, "k", 2)
+    dict.insert(d, "k", 1)
+    dict.insert(d, "k", 2)
     console.print("${dict.get_or(d, "k", 0)}")
     console.print("${dict.length(d)}")
-    d = dict.remove(d, "missing")
+    dict.remove(d, "missing")
     console.print("${dict.length(d)}")
     console.print("${dict.get_or(d, "absent", 99)}")
 "#;
@@ -19481,7 +19584,7 @@ fn main(console: Console):
     var i = 0
     while (i < 3):
         let captured = i
-        fns = list.push(fns, fn(x: Int): (x + captured))
+        list.push(fns, fn(x: Int): (x + captured))
         i = (i + 1)
     for f in fns:
         console.print("${f(10)}")
@@ -19817,16 +19920,17 @@ fn main(console: Console):
     #[test]
     fn dict_string_key_through_helpers_backends_agree() {
         let src = r#"
-fn put(d: Dict(String, Int), k: String, v: Int) -> Dict(String, Int):
+fn put(var d: Dict(String, Int), k: String, v: Int) -> Nil:
     dict.insert(d, k, v)
+    return
 
 fn lookup(d: Dict(String, Int), k: String) -> Int:
     dict.get_or(d, k, (0 - 1))
 
 fn main(console: Console):
     var d = dict.new()
-    d = put(d, "apple", 1)
-    d = put(d, "banana", 2)
+    put(d, "apple", 1)
+    put(d, "banana", 2)
     console.print("${lookup(d, ("ap" + "ple"))}")
     console.print("${lookup(d, "banana")}")
     console.print("${lookup(d, "cherry")}")
@@ -19963,7 +20067,8 @@ fn main(console: Console):
 import list
 
 fn main(console: Console):
-    let s = list.sort([3, 1, 4, 1, 5, 9, 2, 6])
+    var s = [3, 1, 4, 1, 5, 9, 2, 6]
+    list.sort(s)
     for x in s:
         console.print("${x}")
     let u = list.unique([1, 2, 2, 3, 1, 4, 3])
@@ -20196,7 +20301,9 @@ fn main(console: Console):
     let evens = list.filter(ps, fn(p: P): (((p).x % 2) == 0))
     for p in evens:
         console.print("${(p).y}")
-    for p in list.reverse(ps):
+    var reversed = ps
+    list.reverse(reversed)
+    for p in reversed:
         console.print("${(p).x}")
 "#;
         let sources = [("main", client)];
@@ -20780,20 +20887,15 @@ fn main(console: Console):
     }
 
     #[test]
-    fn module_var_procedure_has_no_value_form_is_link_error() {
-        // (RFC-0050 Part 2) A Nil-returning `var`-procedure (RFC-0043) is EXCLUDED
-        // from eta-expansion: a `let` lambda parameter cannot satisfy the `var`
-        // demand. The linker rejects it up front with an error that names the real
-        // cause, rather than letting a later pass mislead.
-        let helper = "pub fn scale(var n: Int):\n    n = n * 2\n";
-        let client = "import helper\n\nfn main():\n    let f = helper.scale\n    f\n";
-        let modules = vec![
-            ("helper".to_string(), parser::parse_module(helper).expect("parse helper")),
-            ("main".to_string(), parser::parse_module(client).expect("parse main")),
-        ];
-        let err = crate::pipeline::link(modules, "main")
-            .expect_err("a var-procedure has no value form");
-        assert!(format!("{err}").contains("has no value form"), "{err}");
+    fn var_function_value_preserves_convention() {
+        // RFC-0087 carries parameter conventions in function types, so closures
+        // remain first-class without erasing their write-back ABI.
+        let client = "fn main(console: Console):\n    let f = fn(var n: Int):\n        n = n * 2\n    var n = 21\n    f(n)\n    console.print(\"${n}\")\n";
+        let sources = [("main", client)];
+        let interpreted = interpreter::run_program(&sources, "main").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "main");
+        assert_eq!(interpreted, vec!["42"]);
+        assert_eq!(compiled, interpreted);
     }
 
     #[test]
@@ -22042,7 +22144,7 @@ fn main(console: Console):
     // `cmp.reverse`, and `list.sort` over the user type.
     #[test]
     fn comparison_operators_dispatch_on_user_types() {
-        let src = "import cmp\n\ntype Coord derive(PartialEq, Eq, PartialOrd, Ord):\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let a = Coord(1, 2)\n    let b = Coord(1, 5)\n    console.print(\"${a == a} ${a == b} ${a != b}\")\n    console.print(\"${a < b} ${b > a} ${a <= a} ${b >= b}\")\n    console.print(\"${compare(a, b)}\")\n    console.print(\"${cmp.reverse(compare(a, b))}\")\n    console.print(\"${list.sort([Coord(2, 0), Coord(1, 9), Coord(1, 1)])}\")\n";
+        let src = "import cmp\n\ntype Coord derive(PartialEq, Eq, PartialOrd, Ord):\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let a = Coord(1, 2)\n    let b = Coord(1, 5)\n    console.print(\"${a == a} ${a == b} ${a != b}\")\n    console.print(\"${a < b} ${b > a} ${a <= a} ${b >= b}\")\n    console.print(\"${compare(a, b)}\")\n    console.print(\"${cmp.reverse(compare(a, b))}\")\n    var coords = [Coord(2, 0), Coord(1, 9), Coord(1, 1)]\n    list.sort(coords)\n    console.print(\"${coords}\")\n";
         let want: Vec<String> = [
             "true false true",
             "true true true true",
@@ -22065,7 +22167,7 @@ fn main(console: Console):
         let ok = "import cmp\n\nfn main(console: Console):\n    console.print(\"${1.5 < 2.5} ${2.5 == 2.5} ${2.5 != 1.5}\")\n";
         assert_eq!(link_run(ok), vec!["true true true".to_string()], "Float PartialOrd works");
 
-        let bad = "import cmp\n\nfn main(console: Console):\n    console.print(\"${list.sort([3.0, 1.0, 2.0])}\")\n";
+        let bad = "import cmp\n\nfn main(console: Console):\n    var floats = [3.0, 1.0, 2.0]\n    list.sort(floats)\n    console.print(\"${floats}\")\n";
         let module = parser::parse_module(bad).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         let err = typeck::check(&linked).expect_err("Float is not Ord — list.sort must reject it").message;
@@ -23713,10 +23815,8 @@ pub fn serve(console: Console, net: Net) -> Int:
         let err = typeck::check(&linked)
             .expect_err("a mutator on a `let` place must be an error")
             .to_string();
-        assert!(
-            err.contains("mutates its receiver") && err.contains("mutable place"),
-            "the immutable-place error must explain the fix, got: {err}"
-        );
+        assert!(err.contains("immutable") && err.contains("`let`"),
+            "the immutable-place error must explain the fix, got: {err}");
     }
 
     // ---- RFC-0087: uniform var write-back ----
@@ -24146,7 +24246,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     /// Int-only `list.sort`); Ints still sort. Identical on both backends.
     #[test]
     fn list_sort_orders_records_through_ord_backends_agree() {
-        let src = "import list\ntype V derive(PartialEq, Eq, PartialOrd, Ord):\n    major: Int\n    minor: Int\nfn main(console: Console):\n    for v in [V(3, 1), V(1, 2), V(2, 0)].sort():\n        console.print(\"${v.major}\" + \".\" + \"${v.minor}\")\n    console.print(\"${[3, 1, 2, 5].sort()}\")\n";
+        let src = "import list\ntype V derive(PartialEq, Eq, PartialOrd, Ord):\n    major: Int\n    minor: Int\nfn main(console: Console):\n    var values = [V(3, 1), V(1, 2), V(2, 0)]\n    values.sort()\n    for v in values:\n        console.print(\"${v.major}\" + \".\" + \"${v.minor}\")\n    var ints = [3, 1, 2, 5]\n    ints.sort()\n    console.print(\"${ints}\")\n";
         let expected = ["1.2", "2.0", "3.1", "[1, 2, 3, 5]"];
         let linked = resolve_std_src(src);
         assert_eq!(

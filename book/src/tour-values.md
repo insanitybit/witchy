@@ -111,7 +111,7 @@ fn main(console: Console):
     console.print("${n} = ${word}")
     console.print("${pair.0} = ${pair.1}")
 
-    let ages = dict.new().insert("ada", 36).insert("bob", 41)
+    let ages = dict.from_pairs([("ada", 36), ("bob", 41)])
     console.print("${ages.get_or("ada", 0)}")
     console.print("${ages.get_or("nobody", 0)}")
 ```

@@ -20,7 +20,7 @@ fn main(console: Console, clock: Clock):
         seed = (seed * 1103515245 + 12345) % 2147483648
         let b = (seed / 65536) % 4
         let ch = if b == 0: "A" else if b == 1: "C" else if b == 2: "G" else: "T"
-        cs = list.push(cs, ch)
+        list.push(cs, ch)
         i = i + 1
     var counts = dict.new()
     var j = 0
@@ -30,7 +30,7 @@ fn main(console: Console, clock: Clock):
         while m < k:
             kmer = kmer + list.at(cs, j + m)
             m = m + 1
-        counts = dict.update(counts, kmer, 0, fn(c: Int): c + 1)
+        dict.update(counts, kmer, 0, fn(c: Int): c + 1)
         j = j + 1
     let bench_t1 = clock.now_monotonic()
     console.print("${dict.length(counts)}")

@@ -120,6 +120,9 @@ enum CodegenPlace {
     },
 }
 
+type ClosureWriteback = (CodegenPlace, Kind, String);
+type LoweredClosureArgs = (Vec<witchy_wir::wir::WirExpr>, Vec<ClosureWriteback>);
+
 /// One captured variable for a closure: (name, record-type-name,
 /// list-element-type-name, slot kind).
 type CaptureInfo = (String, Option<String>, Option<String>, Kind);
@@ -1327,7 +1330,7 @@ impl<'types> Codegen<'types> {
         args: &[Expr],
         conventions: &[Convention],
         param_kinds: &[Kind],
-    ) -> Option<(Vec<witchy_wir::wir::WirExpr>, Vec<(CodegenPlace, Kind, String)>)> {
+    ) -> Option<LoweredClosureArgs> {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
         let mut slots = Vec::with_capacity(args.len());
         let mut writebacks = Vec::new();
@@ -1379,7 +1382,7 @@ impl<'types> Codegen<'types> {
     fn finish_closure_multi_call(
         &mut self,
         call: witchy_wir::wir::WirNode,
-        writebacks: Vec<(CodegenPlace, Kind, String)>,
+        writebacks: Vec<ClosureWriteback>,
         result_kind: Kind,
     ) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
@@ -2887,6 +2890,18 @@ impl<'types> Codegen<'types> {
         let mut seq: witchy_wir::wir::WirSeq = Vec::with_capacity(block.stmts.len() + 1);
         let mut tail_is_value = false;
         for (i, stmt) in block.stmts.iter().enumerate() {
+            // Public collection intrinsics still lower to their value-producing
+            // implementation internally. In RFC-0087 statement form, feed that
+            // value into the existing self-assignment machinery so the receiver
+            // is written back instead of dropping the updated collection.
+            let rewritten = match stmt {
+                Stmt::Expr(value) => analysis::direct_inplace_root(value).map(|root| {
+                    Stmt::Assign { name: root.to_string(), value: value.clone() }
+                }),
+                _ => None,
+            };
+            let analyzed_stmt = stmt;
+            let stmt = rewritten.as_ref().unwrap_or(stmt);
             let stmt_start = seq.len();
             match stmt {
                 Stmt::Let { name, value, .. } => {
@@ -3327,7 +3342,7 @@ impl<'types> Codegen<'types> {
                         // at end. Hoisted across all in-place shapes below.
                         let dirty = match self.facts_stack.last() {
                             Some((facts, _, _)) if facts.accumulators.contains(name) => {
-                                facts.is_dirty(stmt)
+                                facts.is_dirty(analyzed_stmt)
                             }
                             _ => true,
                         };
@@ -3382,7 +3397,7 @@ impl<'types> Codegen<'types> {
                                 });
                             }
                             analysis::InPlaceOp::SetAt(iexpr, vexpr) => {
-                                // `xs = list.set_at(xs, i, v)`: in-place element store via
+                                // `list.set_at(xs, i, v)`: in-place element store via
                                 // `$list_set_cap` (mutate the owned buffer's slot, O(1)),
                                 // mirroring the list-push fast path. Without it the plain
                                 // rebind rebuilds the whole list each set — O(n²) memory
@@ -3487,7 +3502,7 @@ impl<'types> Codegen<'types> {
                                 });
                             }
                             analysis::InPlaceOp::UpdateAt(iexpr, fexpr) => {
-                                // `xs = list.update_at(xs, i, f)`: in-place element update
+                                // `list.update_at(xs, i, f)`: in-place element update
                                 // via `$list_update_cap` (apply the closure to the owned
                                 // slot, O(1)), mirroring the set_at fast path. Without it the
                                 // plain rebind copies the whole list each update — O(n²)
@@ -3536,7 +3551,7 @@ impl<'types> Codegen<'types> {
                                 });
                             }
                             analysis::InPlaceOp::Insert(kexpr, vexpr) => {
-                                // `d = dict.insert(d, k, v)`: the in-place dict upsert via
+                                // `dict.insert(d, k, v)`: the in-place dict upsert via
                                 // `$dict_insert_cap` (O(1) amortized into owned entry slack),
                                 // mirroring the list-push fast path. Without it the plain
                                 // rebind below copies the whole dict each insert — O(n²)
@@ -3571,7 +3586,7 @@ impl<'types> Codegen<'types> {
                                 });
                             }
                             analysis::InPlaceOp::Update(kexpr, dexpr, fexpr) => {
-                                // `d = dict.update(d, k, dflt, f)`: the in-place upsert via
+                                // `dict.update(d, k, dflt, f)`: the in-place upsert via
                                 // `$dict_update_cap` (apply the closure, reinsert into owned
                                 // slack), mirroring the dict-insert fast path. Without it the
                                 // plain rebind copies the whole dict each update.
@@ -3824,7 +3839,7 @@ impl<'types> Codegen<'types> {
                         // (RFC-0016) RC-floor free-at-overwrite: `name` is a confined,
                         // never-aliased heap var overwritten by a builtin that allocates
                         // a FRESH buffer while threading the old one through as its
-                        // receiver (`d = dict.remove(d, k)`) — a shape the in-place fast
+                        // receiver (`dict.remove(d, k)`) — a shape the in-place fast
                         // paths above did not claim, so it would otherwise leak the old
                         // buffer every iteration (the cache-eviction leak). The old
                         // buffer is now dead: evaluate the fresh result (which still
@@ -3876,7 +3891,7 @@ impl<'types> Codegen<'types> {
                         tail_is_value = false;
                     } else {
                         // A plain local reassignment, INCLUDING a self-assign
-                        // accumulator (`s = s + x`, `xs = list.push(xs, e)`) that the
+                        // accumulator (`s = s + x`, `list.push(xs, e)`) that the
                         // in-place fast path above didn't claim: lower it as a
                         // fresh-value rebind. That is exactly the interpreter's value
                         // semantics — the RHS allocates a new value and rebinds the
@@ -3919,7 +3934,7 @@ impl<'types> Codegen<'types> {
                 let killed: Vec<String> = self
                     .facts_stack
                     .last()
-                    .map(|(f, _, _)| f.kills_after(stmt).to_vec())
+                    .map(|(f, _, _)| f.kills_after(analyzed_stmt).to_vec())
                     .unwrap_or_default();
                 for v in &killed {
                     if self.inplace_push.contains(v) {
@@ -7262,12 +7277,28 @@ impl<'types> Codegen<'types> {
     }
 
     fn call_writes_outer_heap(&self, name: &str, args: &[Expr], inner: &HashSet<String>) -> bool {
+        fn place_root(expr: &Expr) -> Option<&str> {
+            match expr {
+                Expr::Var(root) => Some(root),
+                Expr::Field { base, .. } | Expr::Index { base, .. } => place_root(base),
+                Expr::Call { name, args }
+                    if matches!(name.as_str(), "list.at" | "dict.at") && args.len() == 2 =>
+                {
+                    place_root(&args[0])
+                }
+                _ => None,
+            }
+        }
+
         let Some(convs) = self.fn_conventions.get(name) else {
             return false;
         };
         convs.iter().enumerate().any(|(i, conv)| {
             *conv == Convention::Var
-                && matches!(args.get(i), Some(Expr::Var(v)) if self.outer_write_can_escape_heap(v, inner))
+                && args
+                    .get(i)
+                    .and_then(place_root)
+                    .is_some_and(|root| self.outer_write_can_escape_heap(root, inner))
         })
     }
 

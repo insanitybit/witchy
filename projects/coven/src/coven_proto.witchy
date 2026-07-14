@@ -68,7 +68,7 @@ fn source_files(doc: Json) -> Result(List((String, String)), String):
             var out = []
             for it in files:
                 let pair = file_pair(it)?
-                out = list.push(out, pair)
+                list.push(out, pair)
             Ok(out)
         None -> Err("missing required field `source.files`")
 
@@ -95,7 +95,10 @@ pub fn yank_body(name: String, version: String, id_token: Option(String)) -> Str
 // Append the `id_token` field only when a token is present, so an anonymous body omits it.
 fn with_id_token(fields: List((String, Json)), id_token: Option(String)) -> List((String, Json)):
     match id_token:
-        Some(t) -> list.push(fields, ("id_token", JsonString(t)))
+        Some(t) ->
+            var out = fields
+            out.push(("id_token", JsonString(t)))
+            out
         None -> fields
 
 fn file_jsons(files: List((String, String))) -> List(Json):

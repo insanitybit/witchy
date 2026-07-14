@@ -3630,7 +3630,7 @@ impl Checker {
                 let elem = self.fresh();
                 Some((vec![Ty::List(Box::new(elem.clone())), Ty::Int], elem))
             }
-            "list.__push" => {
+            "list.__push" | witchy_syntax::intrinsics::GENERATED_LIST_PUSH => {
                 let elem = self.fresh();
                 Some((
                     vec![Ty::List(Box::new(elem.clone())), elem.clone()],
@@ -7373,7 +7373,7 @@ fn pattern_dup_binding(p: &Pattern) -> Option<String> {
 pub fn intrinsic(name: &str) -> bool {
     matches!(
         name,
-        "list.__push" | "list.__set_at" | "list.at" | "list.length" | "list.concat"
+        "list.__push" | witchy_syntax::intrinsics::GENERATED_LIST_PUSH | "list.__set_at" | "list.at" | "list.length" | "list.concat"
             | "dict.new" | "dict.__insert" | "dict.get_or" | "dict.at" | "dict.contains_key" | "dict.__remove"
             | "dict.__update" | "dict.keys" | "dict.values" | "dict.pairs" | "dict.length"
             | "string.split" | "string.trim" | "string.contains" | "string.starts_with"

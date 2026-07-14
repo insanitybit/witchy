@@ -6,6 +6,7 @@
 //! interpreter dispatch, and lowering agree on one identity source.
 
 pub const GENERATED_RENDER: &str = "@render";
+pub const GENERATED_LIST_PUSH: &str = "@list_push";
 pub const RETIRED_SOURCE_RENDER: &str = "__render";
 pub const TRY_CONTEXT: &str = "__try_ctx";
 
@@ -100,6 +101,7 @@ mod tests {
     #[test]
     fn generated_frontend_intrinsics_are_not_std_bridges() {
         assert_eq!(private_intrinsic_callers(GENERATED_RENDER), None);
+        assert_eq!(private_intrinsic_callers(GENERATED_LIST_PUSH), None);
         assert_eq!(private_intrinsic_callers(RETIRED_SOURCE_RENDER), None);
         assert_eq!(private_intrinsic_callers(TRY_CONTEXT), None);
         assert_eq!(private_intrinsic_callers(COMPILER_DOC_RESULT_JSON), None);

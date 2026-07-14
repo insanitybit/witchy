@@ -474,7 +474,10 @@ fn push_path_dep(root: Dir, dir: String, flags: List(String), pair: (String, Str
             None -> flags
 
 fn dep_flag(flags: List(String), name: String, src: String) -> List(String):
-    list.push(list.push(flags, "--dep"), "${name}=${src}")
+    var out = flags
+    out.push("--dep")
+    out.push("${name}=${src}")
+    out
 
 // Whether a `--dep <name>=...` flag is already present.
 fn has_dep(flags: List(String), name: String) -> Bool:
@@ -903,7 +906,9 @@ fn tree_children(console: Console, root: Dir, dir: String, indent: String, seen:
             console.print("${indent}${name} (${dep_source(inline)})")
             if let Some(rel) = toml.inline_get(inline, "path"):
                 if !seen.contains(name):
-                    tree_children(console, root, normalize_path(join_path(dir, rel)), "${indent}  ", list.push(seen, name))
+                    var next_seen = seen
+                    next_seen.push(name)
+                    tree_children(console, root, normalize_path(join_path(dir, rel)), "${indent}  ", next_seen)
 
 // vendor <dir> — materialize path dependencies' sources into <dir>/vendor/<name>
 // for offline, auditable builds. Copies each dep's src/*.witchy and manifest.
@@ -1221,7 +1226,9 @@ fn why_path(root: Dir, dir: String, target: String, seen: List(String)) -> Optio
                 else:
                     if let Some(rel) = toml.inline_get(inline, "path"):
                         if !seen.contains(name):
-                            if let Some(sub) = why_path(root, normalize_path(join_path(dir, rel)), target, list.push(seen, name)):
+                            var next_seen = seen
+                            next_seen.push(name)
+                            if let Some(sub) = why_path(root, normalize_path(join_path(dir, rel)), target, next_seen):
                                 found = Some("${name} -> ${sub}")
     found
 
@@ -1792,7 +1799,9 @@ fn add_unique(xs: List(String), x: String) -> List(String):
     if xs.contains(x):
         xs
     else:
-        list.push(xs, x)
+        var out = xs
+        out.push(x)
+        out
 
 // The canonical lockfile text for a rune: a `[[rune]]` block per dependency,
 // pinning its resolved version, source, content hash, and runtime footprint.
@@ -3357,7 +3366,7 @@ fn footprint_string_values(items: List(Json), field: String) -> Result(List(Stri
         match json.as_string(item):
             None -> return Err(FootprintMalformedReport("`${field}` item ${index} is not a string"))
             // idiom-exempt (BUG-575): match-arm method write-back is discarded.
-            Some(value) -> out = list.push(out, value)
+            Some(value) -> list.push(out, value)
 
         index = index + 1
     Ok(out)

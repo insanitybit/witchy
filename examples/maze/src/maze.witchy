@@ -24,7 +24,8 @@ fn main(console: Console):
 // it from). The goal appears in the map exactly when it is reachable.
 fn solve(maze: List(String), start: Int, goal: Int, width: Int) -> Dict(Int, Int):
     var queue = [start]
-    var prev = dict.insert(dict.new(), start, start)
+    var prev = dict.new()
+    prev.insert(start, start)
     var found = false
     while queue.length() > 0 && !found:
         let pos = queue.at(0)
@@ -34,8 +35,8 @@ fn solve(maze: List(String), start: Int, goal: Int, width: Int) -> Dict(Int, Int
         else:
             for step in steps(maze, pos, width):
                 if !prev.contains_key(step):
-                    prev = prev.insert(step, pos)
-                    queue = queue.push(step)
+                    prev.insert(step, pos)
+                    queue.push(step)
     prev
 
 // The open (non-wall) neighbours of `pos`, up/down/left/right.
@@ -50,10 +51,10 @@ fn steps(maze: List(String), pos: Int, width: Int) -> List(Int):
     out
 
 fn consider(maze: List(String), out: List(Int), r: Int, c: Int, width: Int) -> List(Int):
+    var result = out
     if r >= 0 && r < maze.length() && c >= 0 && c < width && cell(maze, r, c) != "#":
-        out.push(r * width + c)
-    else:
-        out
+        result.push(r * width + c)
+    result
 
 pub fn cell(maze: List(String), r: Int, c: Int) -> String:
     string.substring(maze.at(r), c, c + 1)
@@ -76,11 +77,12 @@ pub fn find(maze: List(String), m: String, width: Int) -> Int:
 fn render_path(console: Console, maze: List(String), prev: Dict(Int, Int), start: Int, goal: Int, width: Int):
     // The set of cells on the chosen route (a Dict used as a set); the goal is on
     // it and renders as `E` regardless.
-    var route = dict.insert(dict.new(), goal, 1)
+    var route = dict.new()
+    route.insert(goal, 1)
     var at_pos = goal
     var steps_count = 0
     while at_pos != start:
-        route = route.insert(at_pos, 1)
+        route.insert(at_pos, 1)
         at_pos = prev.get_or(at_pos, start)
         steps_count = steps_count + 1
     console.print("shortest path: ${steps_count} steps")
@@ -108,6 +110,6 @@ fn rest(xs: List(Int)) -> List(Int):
     var out = []
     var i = 1
     while i < xs.length():
-        out = out.push(xs.at(i))
+        out.push(xs.at(i))
         i = i + 1
     out

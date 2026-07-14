@@ -14,7 +14,7 @@ pub fn search(query: String, contents: String) -> List(String):
     var hits = []
     for line in string.lines(contents):
         if string.contains(line, query):
-            hits = list.push(hits, line)
+            list.push(hits, line)
     hits
 
 // Case-insensitive variant: fold both sides to lower case before comparing.
@@ -23,7 +23,7 @@ pub fn search_insensitive(query: String, contents: String) -> List(String):
     var hits = []
     for line in string.lines(contents):
         if string.contains(string.to_lower(line), needle):
-            hits = list.push(hits, line)
+            list.push(hits, line)
     hits
 
 // Case-insensitive search is on when IGNORE_CASE is set (to any value).

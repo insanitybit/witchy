@@ -92,9 +92,9 @@ fn set(xs: List(Int), index: Int, value: Int) -> List(Int):
     var k = 0
     for x in xs:
         if k == index:
-            out = out.push(value)
+            out.push(value)
         else:
-            out = out.push(x)
+            out.push(x)
         k = k + 1
     out
 
@@ -102,6 +102,6 @@ fn zeros(n: Int) -> List(Int):
     var out = []
     var k = 0
     while k < n:
-        out = out.push(0)
+        out.push(0)
         k = k + 1
     out

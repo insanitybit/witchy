@@ -42,6 +42,7 @@ const BUILTINS: &[&str] = &[
     "print_int",
     "print_float",
     GENERATED_RENDER_INTRINSIC,
+    crate::intrinsics::GENERATED_LIST_PUSH,
     "int_to_string",
     "string_length",
     "to_upper",

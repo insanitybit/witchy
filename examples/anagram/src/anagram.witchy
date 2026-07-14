@@ -20,15 +20,17 @@ pub fn group_anagrams(words: List(String)) -> List(List(String)):
         let sig = signature(word)
         let index = index_of(signatures, sig)
         if index < 0:
-            signatures = list.push(signatures, sig)
-            groups = list.push(groups, [word])
+            list.push(signatures, sig)
+            list.push(groups, [word])
         else:
             groups = append_at(groups, index, word)
     groups
 
 // A word's characters sorted and rejoined — equal exactly for anagrams.
 pub fn signature(word: String) -> String:
-    list.join(list.sort_by(string.chars(word), fn(a: String, b: String): a < b), "")
+    var chars = string.chars(word)
+    chars.sort_by(fn(a: String, b: String): a < b)
+    list.join(chars, "")
 
 // The index of `target` in `xs`, or -1 if absent.
 pub fn index_of(xs: List(String), target: String) -> Int:
@@ -46,8 +48,10 @@ fn append_at(groups: List(List(String)), index: Int, word: String) -> List(List(
     var i = 0
     for group in groups:
         if i == index:
-            out = list.push(out, list.push(group, word))
+            var updated = group
+            updated.push(word)
+            out.push(updated)
         else:
-            out = list.push(out, group)
+            list.push(out, group)
         i = i + 1
     out

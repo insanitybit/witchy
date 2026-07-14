@@ -1339,7 +1339,7 @@ impl Parser {
             // The left side is a *place*: a variable, a subscript `x[i]`, or a
             // field `x.f` (RFC-0022). Parse it as an expression (it stops at the
             // assignment operator), then desugar to a plain `Stmt::Assign` of the
-            // base variable — `x[i] = v` -> `x = x.set_at(i, v)`, `x.f = v` ->
+            // base variable — `x[i] = v` -> `x.set_at(i, v)`, `x.f = v` ->
             // `x = RecordUpdate{x, f: v}`.
             let place = self.expr(0)?;
             // `place op= e` desugars to `place = place op e`; plain `place = e` is
@@ -2798,7 +2798,7 @@ impl Parser {
     /// Desugar a list comprehension with one or more generators and filters —
     /// `[elem for x in xs (if c)* (for y in ys)* ...]` — into a block that builds
     /// the list with nested loops/conditionals: `{ var acc = []; for x in xs {
-    /// (if c) (for y in ys { ... list.push(acc, elem) }) }; acc }`. The clauses
+    /// (if c) (for y in ys { ... acc = @list_push(acc, elem) }) }; acc }`. The clauses
     /// nest in source order, so later generators see earlier loop variables.
     fn list_comprehension(&mut self, elem: Expr) -> Result<Expr, ParseError> {
         enum Clause {
@@ -2826,10 +2826,13 @@ impl Parser {
         let acc = format!("__compr{}", self.compr_counter);
         self.compr_counter += 1;
         // Innermost action: append `elem` to the accumulator.
-        let mut inner = Stmt::Expr(Expr::Call {
-            name: "list.push".to_string(),
-            args: vec![Expr::Var(acc.clone()), elem],
-        });
+        let mut inner = Stmt::Assign {
+            name: acc.clone(),
+            value: Expr::Call {
+                name: crate::intrinsics::GENERATED_LIST_PUSH.to_string(),
+                args: vec![Expr::Var(acc.clone()), elem],
+            },
+        };
         // Wrap from the innermost clause outward.
         for clause in clauses.into_iter().rev() {
             let body = Block { stmts: vec![inner], lines: vec![0], region: None };
@@ -3354,7 +3357,7 @@ fn desugar_for_var(n: usize, name: String, list_var: String, body: Block) -> Exp
         index: Box::new(Expr::Var(idx.clone())),
     };
     let bind = Stmt::Let { name: name.clone(), ty: None, mutable: true, value: elem() };
-    // `xs[idx] = name` — desugar_place_assign turns it into `xs = xs.set_at(idx, name)`.
+    // `xs[idx] = name` — desugar_place_assign turns it into `xs.set_at(idx, name)`.
     let writeback = desugar_place_assign(elem(), Expr::Var(name))
         .expect("an index place always desugars");
     // Keep the original body's source lines on the middle statements (the
@@ -3498,7 +3501,7 @@ fn compound_assign_op(t: &Tok) -> Option<BinOp> {
 
 /// Desugar `lo..hi` (half-open) or `lo..=hi` (inclusive) integer ranges into a
 /// block that builds the list: `{ var acc = []; var i = lo; let end = hi;
-/// while i < end (or i <= end) { list.push(acc, i); i = i + 1 }; acc }`. `hi`
+/// while i < end (or i <= end) { acc = @list_push(acc, i); i = i + 1 }; acc }`. `hi`
 /// is bound once so it isn't re-evaluated each iteration. Self-contained.
 ///
 /// A free function (not a parser method) because the parser keeps ranges as
@@ -3524,10 +3527,13 @@ pub fn desugar_range(lo: Expr, hi: Expr, inclusive: bool) -> Expr {
     };
     let body = Block {
         stmts: vec![
-            Stmt::Expr(Expr::Call {
-                name: "list.push".to_string(),
-                args: vec![Expr::Var(acc.clone()), Expr::Var(idx.clone())],
-            }),
+            Stmt::Assign {
+                name: acc.clone(),
+                value: Expr::Call {
+                    name: crate::intrinsics::GENERATED_LIST_PUSH.to_string(),
+                    args: vec![Expr::Var(acc.clone()), Expr::Var(idx.clone())],
+                },
+            },
             Stmt::Assign {
                 name: idx.clone(),
                 value: Expr::Binary {

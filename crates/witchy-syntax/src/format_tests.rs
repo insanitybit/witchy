@@ -528,7 +528,7 @@
 
     #[test]
     fn preserves_index_place_assignment() {
-        // BUG-333: `xs[i] = v` used to print as the desugared `xs = xs.set_at(...)`.
+        // BUG-333: `xs[i] = v` used to print as the desugared `xs.set_at(...)`.
         // It now round-trips to the RFC-0022 canonical form, compound included.
         let src = "fn main(console: Console):\n    var xs = [1, 2, 3]\n    xs[0] = 9\n    xs[1] += 5\n    var d = dict.new()\n    d[\"k\"] = 1\n    print(console, \"${xs.at(0)}\")\n";
         let out = reformat(src).expect("index place-assign round-trips");

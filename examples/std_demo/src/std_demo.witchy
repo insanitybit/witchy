@@ -11,5 +11,6 @@ fn main(console: Console):
     console.print("${total}")
 
     let odds = ns.filter(fn(n: Int): n % 2 == 1)
-    let rev = odds.reverse()
+    var rev = odds
+    rev.reverse()
     console.print("${rev.at(0)}")

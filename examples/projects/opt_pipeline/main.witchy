@@ -9,7 +9,7 @@ fn main(console: Console):
     // Build the sample in place — O(n) under `mode opt`, not O(n²) copying.
     var xs = []
     for i in [4, 8, 15, 16, 23, 42]:
-        xs = list.push(xs, i)
+        list.push(xs, i)
 
     console.print("n:    ${stats.count(xs)}")
     console.print("sum:  ${stats.total(xs)}")

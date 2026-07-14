@@ -97,7 +97,7 @@ fn fv_expr(e: &Expr, s: &mut LambdaScan) {
         // of each rather than assume they are gone (a lambda body may legitimately
         // subscript a captured list, `fn(i): xs[i]`, or method-call it). A
         // place-assignment target (`xs[i] = v`) never appears here — the parser
-        // desugars it to `xs = xs.set_at(i, v)` (a `Stmt::Assign`) at parse time —
+        // desugars it to `xs.set_at(i, v)` (a `Stmt::Assign`) at parse time —
         // so an `Index`/`Field` here is always a READ.
         Expr::Range { lo, hi, .. } => {
             fv_expr(lo, s);

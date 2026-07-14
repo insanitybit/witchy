@@ -10,12 +10,12 @@ fn main(console: Console):
     var labelled = []
     for pair in names.enumerate():
         let (i, name) = pair
-        labelled = labelled.push("${i}" + ":" + name)
+        labelled.push("${i}" + ":" + name)
     console.print(labelled.join(" "))
 
     let ages = [30, 25, 40]
     var joined = []
     for entry in names.zip(ages):
         let (name, age) = entry
-        joined = joined.push(name + "=" + "${age}")
+        joined.push(name + "=" + "${age}")
     console.print(joined.join(" "))

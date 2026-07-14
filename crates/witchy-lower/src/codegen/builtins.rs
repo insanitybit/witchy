@@ -828,7 +828,7 @@ impl Codegen<'_> {
                     Self::wir_convert(self.lower_expr(&args[2])?, ek, Kind::I64),
                 ])
             }
-            ("list.__push", 2) => {
+            ("list.__push" | witchy_syntax::intrinsics::GENERATED_LIST_PUSH, 2) => {
                 let xk = self.kind_of(&args[1]);
                 call("list_push", vec![
                     self.lower_expr(&args[0])?,

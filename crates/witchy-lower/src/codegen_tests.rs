@@ -471,7 +471,7 @@ type Key:
 
 fn main() -> Int:
     var d = dict.new()
-    d = dict.insert(d, Key(1), 1)
+    d = dict.__insert(d, Key(1), 1)
     dict.get_or(d, Key(1), 0)
 "#;
         let module = parse_module(src).expect("parse");

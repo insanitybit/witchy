@@ -25,12 +25,11 @@ dialing example.com:8080
 dialing example.com:8080
 ```
 
-## Statement-form mutators, not reassignment ladders
+## Uniform `var` write-back
 
-A mutator method called as a statement on a `var` writes back
-([RFC-0022](../rfcs/0022-place-assignment.md) sugar): `xs.push(v)` *is*
-`xs = list.push(xs, v)`. The same goes for `d.insert(k, v)`, `d[k] = v`, and
-`xs[i] = v`.
+A `var` parameter writes back in every expression position. Method and free
+forms are equivalent: `xs.push(v)` and `list.push(xs, v)` both require a mutable
+place. The same rule covers `d.insert(k, v)`, `d[k] = v`, and `xs[i] = v`.
 
 ```witchy
 fn main(console: Console):

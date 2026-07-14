@@ -20,7 +20,7 @@ fn main(console: Console):
     // off this path would just be a note; under `mode opt` it would be an error.
     var xs = []
     for i in [1, 2, 3, 4, 5]:
-        xs = xs.push(i * i)
+        xs.push(i * i)
     console.print("squares: ${xs}")
     console.print("sum:     ${sum(xs)}")
 

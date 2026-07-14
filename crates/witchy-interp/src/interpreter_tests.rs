@@ -1558,8 +1558,8 @@ fn main() -> Int:
         let src = r#"
 fn main(console: Console):
     var d = dict.new()
-    d = dict.insert(d, "a", 10)
-    d = dict.insert(d, "b", 20)
+    d = dict.__insert(d, "a", 10)
+    d = dict.__insert(d, "b", 20)
     var sum = 0
     for v in dict.values(d):
         sum = (sum + v)
@@ -1577,9 +1577,9 @@ fn main(console: Console):
     fn dict_insert_get_has_keys_and_immutability() {
         let src = r#"
 fn main(console: Console):
-    let a = dict.insert(dict.new(), "x", 1)
-    let b = dict.insert(a, "y", 2)
-    let c = dict.insert(b, "x", 9)
+    let a = dict.__insert(dict.new(), "x", 1)
+    let b = dict.__insert(a, "y", 2)
+    let c = dict.__insert(b, "x", 9)
     console.print("${dict.get_or(c, "x", 0)}")
     console.print("${dict.get_or(c, "y", 0)}")
     console.print("${dict.get_or(c, "z", 0)}")
@@ -1654,7 +1654,7 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     let a = [1, 2]
-    let b = list.push(a, 3)
+    let b = list.__push(a, 3)
     console.print("${list.length(a)}")
     console.print("${list.length(b)}")
     let c = list.concat(a, [9, 9])

@@ -904,7 +904,7 @@ fn has_optional_id() -> Option(Bool):
             .expect_err("an inferred tuple carrying File needs the GC-struct aggregate path");
         assert!(err.contains("tuple") && err.contains("File"), "got: {err}");
 
-        let err = check_str("fn main(console: Console, f: File):\n    let d = dict.insert(dict.new(), \"cfg\", f)\n    console.print(\"x\")\n")
+        let err = check_str("fn main(console: Console, f: File):\n    let d = dict.__insert(dict.new(), \"cfg\", f)\n    console.print(\"x\")\n")
             .expect_err("an inferred Dict(String, File) needs the GC-struct aggregate path");
         assert!(err.contains("Dict") && err.contains("File"), "got: {err}");
 
@@ -1397,7 +1397,7 @@ fn f(a: (Int, Int), b: (Int, Int)) -> Bool:
 fn tally(words: List(String)) -> Int:
     var d = dict.new()
     for w in words:
-        d = dict.insert(d, w, (dict.get_or(d, w, 0) + 1))
+        d = dict.__insert(d, w, (dict.get_or(d, w, 0) + 1))
     dict.length(d)
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
@@ -1439,7 +1439,7 @@ fn fix(s: String) -> String:
     fn push_and_concat_are_generic() {
         let src = r#"
 fn ints() -> List(Int):
-    list.push([1, 2], 3)
+    list.__push([1, 2], 3)
 
 fn strs() -> List(String):
     list.concat(["a"], ["b", "c"])
@@ -1450,7 +1450,7 @@ fn strs() -> List(String):
     #[test]
     fn rejects_push_element_type_mismatch() {
         // Pushing a String onto a List(Int) must fail.
-        assert!(check_str("fn f() -> List(Int) { list.push([1, 2], \"x\") }").is_err());
+        assert!(check_str("fn f() -> List(Int) { list.__push([1, 2], \"x\") }").is_err());
     }
 
     #[test]
@@ -2570,9 +2570,9 @@ fn main():
         // must carry a `where k: Eq` bound — the key is hashed and compared.
         for op in [
             "dict.get_or(d, key, fallback)",
-            "dict.insert(d, key, fallback)",
+            "dict.__insert(d, key, fallback)",
             "dict.contains_key(d, key)",
-            "dict.remove(d, key)",
+            "dict.__remove(d, key)",
         ] {
             let src = format!("fn f(d: Dict(k, v), key: k, fallback: v) -> v:\n    {op}\n    fallback\n");
             let err = check_str(&src).unwrap_err();
@@ -2655,12 +2655,12 @@ fn main():
     #[test]
     fn rfc0087_impl_methods_accept_var_with_auxiliary_returns() {
         check_str(
-            "type Box:\n    Box(List(Int))\nimpl Box:\n    fn row3_static(var xs: List(Int), n: Int) -> Int:\n        xs.push(n)\n        n\n",
+            "type Box:\n    Box(List(Int))\nimpl Box:\n    fn row3_static(var xs: List(Int), n: Int) -> Int:\n        xs = list.__push(xs, n)\n        n\n",
         )
         .expect("a static impl method may combine var write-back with a result");
 
         check_str(
-            "type Box:\n    Box(List(Int))\nimpl Box:\n    fn row3_method(self, var xs: List(Int)) -> List(Int):\n        xs.push(1)\n",
+            "type Box:\n    Box(List(Int))\nimpl Box:\n    fn row3_method(self, var xs: List(Int)) -> List(Int):\n        xs = list.__push(xs, 1)\n        xs\n",
         )
         .expect("an instance method may have a non-receiver var parameter");
     }
@@ -2703,11 +2703,10 @@ fn main():
     }
 
     #[test]
-    fn rfc0064_discarded_free_call_is_an_error() {
-        // (RFC-0064 Check 3) A non-`Nil` FREE call in statement position whose
-        // result is discarded is the same discard error the method form already
-        // raised — a free call does NOT write back (its first argument is not the
-        // syntactic target), so the value is silently thrown away without this.
+    fn rfc0087_discarded_var_free_call_is_allowed() {
+        // RFC-0087 makes free and method forms identical: a call with a resolved
+        // var convention may discard its ordinary result because write-back is
+        // already an observable effect.
         //
         // The discard classifier lives in the trait/method rewrite pass, which the
         // single-module `check_str` harness only runs when the module "needs
@@ -2716,12 +2715,10 @@ fn main():
         // every program (verified: even a std-free `f()` discard errors on both).
         const LOWER: &str = "type Tag:\n    v: Int\nimpl Tag:\n    fn id(self) -> Int:\n        self.v\n";
 
-        // A user mutator called in free form as a statement: its return is lost.
-        let mutator_free = check_str(&format!(
+        check_str(&format!(
             "{LOWER}fn add(var xs: List(Int), x: Int) -> List(Int):\n    xs\nfn main(console: Console):\n    var xs: List(Int) = []\n    add(xs, 2)\n    console.print(\"hi\")\n"
         ))
-        .unwrap_err();
-        assert!(mutator_free.contains("is discarded"), "{mutator_free}");
+        .expect("a var free call may discard its independent result");
 
         // ANY non-`Nil` free call (not only mutators) whose result is discarded.
         let nonmut_free = check_str(&format!(

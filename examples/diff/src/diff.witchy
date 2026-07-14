@@ -21,22 +21,23 @@ pub fn diff(old: List(String), new: List(String)) -> List(String):
     var j = new.length()
     while i > 0 && j > 0:
         if old.at(i - 1) == new.at(j - 1):
-            out = out.push("  " + old.at(i - 1))
+            out.push("  " + old.at(i - 1))
             i = i - 1
             j = j - 1
         else if list.at(table.at(i - 1), j) >= list.at(table.at(i), j - 1):
-            out = out.push("- " + old.at(i - 1))
+            out.push("- " + old.at(i - 1))
             i = i - 1
         else:
-            out = out.push("+ " + new.at(j - 1))
+            out.push("+ " + new.at(j - 1))
             j = j - 1
     while i > 0:
-        out = out.push("- " + old.at(i - 1))
+        out.push("- " + old.at(i - 1))
         i = i - 1
     while j > 0:
-        out = out.push("+ " + new.at(j - 1))
+        out.push("+ " + new.at(j - 1))
         j = j - 1
     out.reverse()
+    out
 
 // table[i][j] = length of the LCS of old[0..i] and new[0..j], built row by row.
 fn lcs_table(old: List(String), new: List(String)) -> List(List(Int)):
@@ -54,9 +55,9 @@ fn lcs_table(old: List(String), new: List(String)) -> List(List(Int)):
                 value = above.at(j - 1) + 1
             else:
                 value = math.max(row.at(j - 1), above.at(j))
-            row = row.push(value)
+            row.push(value)
             j = j + 1
-        table = table.push(row)
+        table.push(row)
         i = i + 1
     table
 
@@ -64,6 +65,6 @@ fn zeros(n: Int) -> List(Int):
     var out = []
     var k = 0
     while k < n:
-        out = out.push(0)
+        out.push(0)
         k = k + 1
     out

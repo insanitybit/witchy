@@ -566,7 +566,7 @@ mod lowering {
     #[test]
     fn dict_record_key_not_lowerable() {
         insta::assert_snapshot!(lower_diag(
-            "import dict\n\ntype K:\n    a: Int\n    b: Int\n\nfn main(console: Console):\n    var d = dict.new()\n    d = dict.insert(d, K(a: 1, b: 2), \"v\")\n    console.print(\"hi\")\n"
+            "import dict\n\ntype K:\n    a: Int\n    b: Int\n\nfn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, K(a: 1, b: 2), \"v\")\n    console.print(\"hi\")\n"
         ));
     }
 }

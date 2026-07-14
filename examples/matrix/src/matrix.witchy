@@ -20,7 +20,7 @@ fn show(console: Console, m: List(List(Int))):
     for row in m:
         var cells = []
         for value in row:
-            cells = cells.push(string.pad_left("${value}", width, " "))
+            cells.push(string.pad_left("${value}", width, " "))
         console.print("[ " + cells.join(" ") + " ]")
 
 // The widest decimal cell, so every column lines up.
@@ -42,9 +42,9 @@ pub fn transpose(m: List(List(Int))) -> List(List(Int)):
         var column = []
         var r = 0
         while r < rows:
-            column = column.push(list.at(m.at(r), c))
+            column.push(list.at(m.at(r), c))
             r = r + 1
-        out = out.push(column)
+        out.push(column)
         c = c + 1
     out
 
@@ -63,9 +63,9 @@ pub fn multiply(a: List(List(Int)), b: List(List(Int))) -> List(List(Int)):
             while k < inner:
                 sum = sum + list.at(a.at(i), k) * list.at(b.at(k), j)
                 k = k + 1
-            row = row.push(sum)
+            row.push(sum)
             j = j + 1
-        out = out.push(row)
+        out.push(row)
         i = i + 1
     out
 
@@ -77,10 +77,10 @@ pub fn identity(n: Int) -> List(List(Int)):
         var j = 0
         while j < n:
             if i == j:
-                row = row.push(1)
+                row.push(1)
             else:
-                row = row.push(0)
+                row.push(0)
             j = j + 1
-        out = out.push(row)
+        out.push(row)
         i = i + 1
     out

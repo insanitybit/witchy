@@ -431,7 +431,7 @@ pub fn confined_reassigned_vars_block(body: &Block, summaries: &Summaries) -> Ha
     // (e.g. `std/string.last_index_of`: `var rest = s; rest = string.substring(rest, …)`). Later
     // reassignments are fresh allocations, but excluding the whole var is the sound, simple floor
     // (a missed reclamation only leaks). Fresh-allocation inits (`[]`, `dict.new()`, a literal, a
-    // call result) are NOT aliases and stay eligible — so `var d = dict.new(); d = dict.remove(d,…)`
+    // call result) are NOT aliases and stay eligible — so `var d = dict.new(); d = dict.__remove(d,…)`
     // (the cache-eviction accumulator) is unaffected.
     let mut alias_init = HashSet::new();
     collect_alias_initialized_vars(body, &mut alias_init);
@@ -872,15 +872,19 @@ mod tests {
     fn eviction_accumulator_is_an_rc_floor_candidate() {
         // `d` threads through dict.insert/remove (neither leaks arg0) and is never
         // used as a whole value elsewhere → confined, reclaimable.
-        let src = "import dict\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < 10:\n        d = dict.insert(d, i, i)\n        d = dict.remove(d, i)\n        i = i + 1\n    console.print(\"${dict.length(d)}\")\n";
-        assert!(rc_floor(src).contains("d"), "confined eviction accumulator is a candidate");
+        let src = "import dict\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < 10:\n        d = dict.__insert(d, i, i)\n        d = dict.__remove(d, i)\n        i = i + 1\n    console.print(\"${dict.length(d)}\")\n";
+        let candidates = rc_floor(src);
+        assert!(
+            candidates.contains("d"),
+            "confined eviction accumulator is a candidate: {candidates:?}"
+        );
     }
 
     #[test]
     fn whole_value_escape_disqualifies_rc_floor() {
         // `d` is passed WHOLE to a user fn that returns it (its summary leaks arg0),
         // so its buffer may be aliased out → not reclaimable.
-        let src = "import dict\nfn keep(x: Dict) -> Dict:\n    x\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < 10:\n        d = dict.insert(d, i, i)\n        d = keep(d)\n        i = i + 1\n    console.print(\"${dict.length(d)}\")\n";
+        let src = "import dict\nfn keep(x: Dict) -> Dict:\n    x\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < 10:\n        d = dict.__insert(d, i, i)\n        d = keep(d)\n        i = i + 1\n    console.print(\"${dict.length(d)}\")\n";
         assert!(!rc_floor(src).contains("d"), "a var aliased out by a call escapes");
     }
 
@@ -972,7 +976,7 @@ mod tests {
     #[test]
     fn slice_whose_source_is_mutated_is_not_a_candidate() {
         let f = func(
-            "fn d(var xs: List(Int)) -> Int:\n    let w = list.slice(xs, 1, 3)\n    xs = list.push(xs, 9)\n    list.at(w, 0)\n",
+            "fn d(var xs: List(Int)) -> Int:\n    let w = list.slice(xs, 1, 3)\n    xs = list.__push(xs, 9)\n    list.at(w, 0)\n",
         );
         assert!(
             !confined_slice_candidates(&f).contains("w"),
@@ -1165,11 +1169,11 @@ mod tests {
 
     #[test]
     fn reassigned_names_sees_reassignment() {
-        // A reassigned capture is unsafe to thread at the call site. (In-place `.push`
-        // sugar reaches codegen already desugared to this `x = list.push(x, ..)` shape
-        // by the method-resolution pass, so `collect_assigned_targets` catches it too.)
+        // A reassigned capture is unsafe to thread at the call site. Typed std
+        // var lowering reaches codegen in this private value-rebind shape, so
+        // `collect_assigned_targets` catches it too.
         let f = func(
-            "fn d() -> Int:\n    var xs = [1]\n    xs = list.push(xs, 2)\n    let f = fn(): list.length(xs)\n    f()\n",
+            "fn d() -> Int:\n    var xs = [1]\n    xs = list.__push(xs, 2)\n    let f = fn(): list.length(xs)\n    f()\n",
         );
         assert!(reassigned_names(&f.body).contains("xs"), "a reassigned var is caught");
     }

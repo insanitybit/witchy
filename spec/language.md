@@ -268,10 +268,11 @@ expression statement, which is the form `fmt` prints.
 
 **Assigning to a place.** Beyond a bare variable, the left of `=` may be a
 subscript or a field — `xs[i] = v`, `d[k] = v`, `acct.balance = b` (the binding
-must be a `var`). Each is sugar for reassigning the variable
-(`xs = xs.set_at(i, v)`, `acct = Account(balance: b, ..acct)`), so it keeps value
-semantics while reading like in-place mutation — and the uniqueness analysis makes
-it an in-place update. Compound forms (`xs[i] += v`, `d[k] += v`) work too.
+must be a `var`). The destination base and projection coordinates are captured
+once, then the right-hand side is evaluated, and finally the updated aggregate is
+written back to the root. This keeps value semantics while reading like in-place
+mutation, and uniqueness analysis may perform the store in place. Compound forms
+(`xs[i] += v`, `d[k] += v`) work too.
 
 ```witchy
 type Account:
@@ -288,20 +289,18 @@ fn main(console: Console):
     console.print("${acct.balance}")
 ```
 
-A **method call used as a statement** on a `var` place belongs to the same
-family, and it writes back by **declaration**: a function is a *mutator* when
-its first parameter is a `var` receiver whose type it also returns
-(`fn push(var xs: List(a), x: a) -> List(a)`). A statement-position call to a
-mutator on a `var` place writes its result back, so `xs.push(v)` *is*
-`xs = list.push(xs, v)` and `d.insert(k, v)` mutates `d` in place; the signature
-in [the stdlib reference](stdlib.md) shows the `var` receiver, so which functions
-mutate is documented where it is declared. A call that is *not* a mutator and
-whose result is thrown away is a **compile error** — bind it, reassign it, or
-discard it explicitly with `let _ =` — which catches the mistake of calling a
-value-returning method (`xs.length()`, `xs.map(f)`) and forgetting its result.
-A mutator statement on a `let` place is likewise an error (declare it `var`, or
-bind the result). In expression position a method call is an ordinary value call
-— `let ys = xs.push(4)` builds a new list and leaves `xs` alone.
+A parameter declared `var` is move-in/move-out in every call position. The
+argument must be a mutable place; the callee receives its current value and every
+structured return writes the callee's final parameter value back to that place.
+The ordinary return value is independent, so `pop(var xs) -> Option(a)` both
+updates `xs` and produces an element. Free, method, trait, closure, and indirect
+calls use the same rule; statement position merely permits discarding an
+independent result from a call that has a resolved `var` effect.
+
+A non-`var`, non-`Nil` call whose result is thrown away is a **compile error**:
+bind it or discard it explicitly with `let _ =`. A `var` call on a `let` binding
+or temporary is also an error. To derive a changed copy, create a mutable copy
+explicitly (`var ys = xs; ys.push(4)`).
 
 ```witchy
 fn main(console: Console):
@@ -328,6 +327,27 @@ Everything is an expression; a block's value is its final expression.
 | `!` | negation |
 | `& \| ^ ~ << >>` | bitwise on `Int` (shifts mask the count to 6 bits) |
 | `xs[i]`, `d[k]` | strict indexing, sugar for `list.at(xs, i)` / `dict.at(d, k)`; out of bounds or missing-key reads are runtime errors on every backend |
+
+### Evaluation order
+
+Expressions evaluate in deterministic source order. A method receiver precedes
+its explicit arguments; call arguments evaluate left to right as written (also
+for labels); an index evaluates its base before its coordinate; unary operands
+evaluate first and binary operands evaluate left before right. `&&`, `||`, and
+`??` short-circuit. Tuple/list elements, constructor and record fields, and
+interpolation holes evaluate left to right. Comprehension generators nest left to
+right; each filter precedes the element expression for that iteration. `if`
+evaluates its condition before the selected branch, and `match`/`if let` evaluate
+their scrutinee before selection. Assignment captures destination coordinates,
+then evaluates the right-hand side, then stores.
+
+A `var` argument captures and reads its place at its argument position. Its
+write-back commits after the callee returns and before the call yields its ordinary
+result. Earlier `var` arguments remain reserved until that commit: later arguments
+may read snapshots, but may not write back to an overlapping place. Two `var`
+arguments with the same root are accepted only when their projections are proven
+disjoint (for example `swap(xs[0], xs[1])`); dynamic or prefix-overlapping places
+are rejected.
 | `lo..hi` | a half-open range (for-loop iteration; never materialized) |
 | `x.f(args)` | a method call: an `impl`/trait method on `x`; standard data modules also preserve equivalent module-qualified calls or compiler aliases such as `list.map(xs, f)` |
 | `e?` | unwrap `Ok`/`Some` or return the `Err`/`None` from the enclosing function |
@@ -543,27 +563,26 @@ an occurs check).
 |---|---|
 | (default) | owned, observably immutable value — the callee may read but the caller sees no change |
 | `let` | immutable **borrow**; may not escape — returning a `let`-borrowed parameter is a type error |
-| `var` | a write-back parameter, in one of two shapes by the return type: a **procedure channel** (returns `Nil`) mutates the parameter and writes it back to the caller's variable — even on early `return`/`?`; a **mutator receiver** (first parameter, returns that parameter's type — `fn push(var xs: List(a), …) -> List(a)`) declares that the function's statement form writes back (§3), while its expression form is an ordinary value call |
+| `var` | move-in/move-out write-back: requires a mutable caller place and commits the parameter's final value on every structured return, independently of parameter position or ordinary return type |
 | `own` | ownership transfer; the **callee** consumes the argument, so using the source afterwards is a check-time error |
 | `move e` | use-site ownership transfer; the **caller** consumes the source binding (see below), idiomatically paired with `own` |
 
 ```witchy
-fn bump(var n: Int):
+fn bump(var n: Int) -> Int:
     n = n + 1
+    n
 
 fn main(console: Console):
     var counter = 41
-    bump(counter)
-    console.print("${counter}")
+    let result = bump(counter)
+    console.print("${counter} ${result}")
 ```
 
-`bump` above is a **procedure channel**: a `var` parameter and a `Nil` return, so
-the call site must pass a mutable `var` (`bump(counter)`) and the mutation is
-written back through the parameter. A `var` **first** parameter whose type the
-function *returns* is instead a **mutator receiver** (`fn push(var xs: List(a),
-x: a) -> List(a)`): its expression form is a plain value call that accepts any
-receiver argument, and it is its *statement* form that writes back (§3). The two
-readings are disjoint by return shape, so a reader never guesses which applies.
+`bump` writes `42` back to `counter` and independently returns `42`. The same
+convention appears in function types (`fn(var Int) -> Int`) and is part of type
+identity: `fn(Int) -> Int` is not interchangeable with it. A `var` parameter may
+not have a default, and async/generator functions may not declare one because a
+suspension could outlive the caller's place.
 
 `own` and `move` are two independent ways to end a binding's life, meeting in the
 middle. `own` consumes from the **callee** side: passing any variable to an `own`
@@ -574,9 +593,8 @@ parameter alike — so a later use of `x` is the same check-time error even when
 parameter only took an ordinary copy. The two compose: `f(move x)` into an `own`
 parameter is a hand-off both sides spell out, and on the compiled backend it is a
 guaranteed no-copy move. `move` is **not** accepted into a **procedure-channel**
-`var` parameter — that argument must be a plain mutable variable, since the
-callee writes it back (a mutator receiver's expression form is an ordinary value
-call, so it accepts `move` like any value parameter). On both backends `move` is
+`var` parameter — that argument must be a live mutable place, since the callee
+writes it back. On both backends `move` is
 value-neutral (value semantics copy already); it changes only *when* a copy is
 elided, never any result.
 
@@ -1036,7 +1054,7 @@ lookups (`dict.get`, `list.head`, …).
 
 ```witchy
 fn main(console: Console):
-    let ages = dict.new().insert("ada", 36)
+    let ages = dict.from_pairs([("ada", 36)])
     console.print("${dict.get(ages, "ada") ?? 0}")
     console.print("${dict.get(ages, "bob") ?? 0}")
 ```

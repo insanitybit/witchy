@@ -14,6 +14,6 @@ fn main(console: Console):
     let summary = region -> String:
         var words = []
         for i in 0..1000:
-            words = words.push("w" + "${i}")
+            words.push("w" + "${i}")
         summarize(words)
     console.print(summary)

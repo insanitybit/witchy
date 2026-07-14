@@ -20,7 +20,9 @@ pub fn count(n: Int, placed: List(Int)) -> Int:
         var col = 0
         while col < n:
             if safe(placed, col):
-                total = total + count(n, placed.push(col))
+                var next = placed
+                next.push(col)
+                total = total + count(n, next)
             col = col + 1
         total
 
@@ -34,7 +36,9 @@ pub fn solve(n: Int, placed: List(Int)) -> List(Int):
         var col = 0
         while col < n && !found:
             if safe(placed, col):
-                let attempt = solve(n, placed.push(col))
+                var next = placed
+                next.push(col)
+                let attempt = solve(n, next)
                 if attempt.length() == n:
                     result = attempt
                     found = true

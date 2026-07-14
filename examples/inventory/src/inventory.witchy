@@ -4,9 +4,9 @@
 // interpolation: `${expr}` renders the value and splices it into the string.
 fn main(console: Console):
     var prices = dict.new()
-    prices = dict.insert(prices, "apple", 3)
-    prices = dict.insert(prices, "bread", 2)
-    prices = dict.insert(prices, "milk", 4)
+    dict.insert(prices, "apple", 3)
+    dict.insert(prices, "bread", 2)
+    dict.insert(prices, "milk", 4)
 
     var total = 0
     for v in dict.values(prices):

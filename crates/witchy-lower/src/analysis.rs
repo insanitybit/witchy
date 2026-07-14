@@ -118,7 +118,12 @@ impl Facts {
 /// `xs = push(xs, e)`: the appended element.
 fn self_push_elem<'a>(name: &str, value: &'a Expr) -> Option<&'a Expr> {
     if let Expr::Call { name: f, args } = value {
-        if matches!(f.as_str(), "list.push" | "list.__push") && args.len() == 2 {
+        if (matches!(
+            f.as_str(),
+            "list.push" | "list.__push" | witchy_syntax::intrinsics::GENERATED_LIST_PUSH
+        ) || f.starts_with("list.push__"))
+            && args.len() == 2
+        {
             if matches!(&args[0], Expr::Var(v) if v == name) {
                 return Some(&args[1]);
             }
@@ -130,7 +135,10 @@ fn self_push_elem<'a>(name: &str, value: &'a Expr) -> Option<&'a Expr> {
 /// `d = insert(d, k, v)`: the key and value.
 fn self_insert_args<'a>(name: &str, value: &'a Expr) -> Option<(&'a Expr, &'a Expr)> {
     if let Expr::Call { name: f, args } = value {
-        if matches!(f.as_str(), "dict.insert" | "dict.__insert") && args.len() == 3 {
+        if (matches!(f.as_str(), "dict.insert" | "dict.__insert")
+            || f.starts_with("dict.insert__"))
+            && args.len() == 3
+        {
             if matches!(&args[0], Expr::Var(v) if v == name) {
                 return Some((&args[1], &args[2]));
             }
@@ -145,7 +153,10 @@ fn self_update_args<'a>(
     value: &'a Expr,
 ) -> Option<(&'a Expr, &'a Expr, &'a Expr)> {
     if let Expr::Call { name: f, args } = value {
-        if matches!(f.as_str(), "dict.update" | "dict.__update") && args.len() == 4 {
+        if (matches!(f.as_str(), "dict.update" | "dict.__update")
+            || f.starts_with("dict.update__"))
+            && args.len() == 4
+        {
             if matches!(&args[0], Expr::Var(v) if v == name) {
                 return Some((&args[1], &args[2], &args[3]));
             }
@@ -160,7 +171,10 @@ fn self_update_args<'a>(
 /// match that suffixed form as well as the bare name.
 fn self_set_at<'a>(name: &str, value: &'a Expr) -> Option<(&'a Expr, &'a Expr)> {
     if let Expr::Call { name: f, args } = value {
-        if (f == "list.set_at" || f.starts_with("list.set_at__")) && args.len() == 3 {
+        if (matches!(f.as_str(), "list.set_at" | "list.__set_at")
+            || f.starts_with("list.set_at__"))
+            && args.len() == 3
+        {
             if matches!(&args[0], Expr::Var(v) if v == name) {
                 return Some((&args[1], &args[2]));
             }
@@ -173,7 +187,10 @@ fn self_set_at<'a>(name: &str, value: &'a Expr) -> Option<(&'a Expr, &'a Expr)> 
 /// [`self_set_at`], `list.update_at` is a monomorphized stdlib function.
 fn self_update_at<'a>(name: &str, value: &'a Expr) -> Option<(&'a Expr, &'a Expr)> {
     if let Expr::Call { name: f, args } = value {
-        if (f == "list.update_at" || f.starts_with("list.update_at__")) && args.len() == 3 {
+        if (matches!(f.as_str(), "list.update_at" | "list.__update_at")
+            || f.starts_with("list.update_at__"))
+            && args.len() == 3
+        {
             if matches!(&args[0], Expr::Var(v) if v == name) {
                 return Some((&args[1], &args[2]));
             }
@@ -225,6 +242,27 @@ pub fn self_own_call<'a>(
 
 fn is_self_assign_shape(name: &str, value: &Expr, summaries: &Summaries) -> bool {
     self_inplace_op(name, value).is_some() || self_own_call(name, value, summaries).is_some()
+}
+
+/// The RFC-0087 statement form of an operation backed by the existing
+/// RFC-0051 in-place paths. Trait lowering mangles generic public functions, so
+/// recognize both their bare and specialized names. Arbitrary `var` calls are
+/// deliberately excluded: only operations with a proven fast path establish an
+/// accumulator fact.
+pub(crate) fn direct_inplace_root(value: &Expr) -> Option<&str> {
+    let Expr::Call { name, args } = value else { return None };
+    let recognized = matches!(name.as_str(), "list.push" | "list.set_at" | "list.update_at"
+        | "dict.insert" | "dict.update")
+        || ["list.push__", "list.set_at__", "list.update_at__", "dict.insert__", "dict.update__"]
+            .iter()
+            .any(|prefix| name.starts_with(prefix));
+    if !recognized {
+        return None;
+    }
+    match args.first() {
+        Some(Expr::Var(root)) => Some(root),
+        _ => None,
+    }
 }
 
 /// The recognized in-place self-assign accumulation operations (`x = f(x, …)`),
@@ -503,6 +541,13 @@ fn collect_accumulators(
                     loop_sites.entry(*lp).or_default().insert(name.clone());
                 }
             }
+        } else if let Stmt::Expr(value) = stmt
+            && let Some(name) = direct_inplace_root(value)
+        {
+            accs.insert(name.to_string());
+            for lp in loop_ptrs.iter() {
+                loop_sites.entry(*lp).or_default().insert(name.to_string());
+            }
         }
         match stmt {
             Stmt::Let { value, .. }
@@ -754,11 +799,23 @@ impl<'a> Walker<'a> {
                     }
                 }
                 Stmt::Expr(e) => {
-                    // The statement's value is discarded — only what a call
-                    // can smuggle out (per summaries) or a nested statement
-                    // does is live. The block-tail case is the exception.
-                    let live = tail_live && i == last;
-                    self.scan(e, live, "the surrounding expression", &mut shares);
+                    if direct_inplace_root(e).is_some_and(|name| self.accs.contains(name))
+                        && let Expr::Call { args, .. } = e
+                    {
+                        // The receiver is consumed and written back, just as in
+                        // the former self-assignment shape. Only the remaining
+                        // arguments can create a live alias of the accumulator.
+                        self.facts.site_entries += 1;
+                        for arg in args.iter().skip(1) {
+                            self.scan(arg, true, "stored by an in-place operation", &mut shares);
+                        }
+                    } else {
+                        // The statement's value is discarded — only what a call
+                        // can smuggle out (per summaries) or a nested statement
+                        // does is live. The block-tail case is the exception.
+                        let live = tail_live && i == last;
+                        self.scan(e, live, "the surrounding expression", &mut shares);
+                    }
                 }
                 Stmt::Return(Some(e)) => {
                     if self.returns_are_live {
@@ -2322,7 +2379,7 @@ mod last_use_tests {
     /// A reassigned binding's churn is rc-floor's free-at-overwrite, not this pass.
     #[test]
     fn reassigned_binding_is_not_dropped() {
-        let d = drops("import list\nfn f():\n    var buf = []\n    buf = list.push(buf, 1)\n    0\n");
+        let d = drops("import list\nfn f():\n    var buf = []\n    buf = list.__push(buf, 1)\n    0\n");
         assert_eq!(d.total(), 0, "`buf` is reassigned");
     }
 }
@@ -2372,12 +2429,14 @@ mod shape_matcher_tests {
         Expr::Call { name: name.to_string(), args }
     }
 
-    // ---- self_push_elem: `xs = list.push(xs, e)` ----
+    // ---- self_push_elem: `xs = list.__push(xs, e)` ----
 
     #[test]
     fn push_matches_self_append() {
-        let v = call("list.push", vec![var("xs"), int(1)]);
-        assert!(self_push_elem("xs", &v).is_some());
+        for f in ["list.push", "list.push__task.Handle"] {
+            let v = call(f, vec![var("xs"), int(1)]);
+            assert!(self_push_elem("xs", &v).is_some(), "{f} should match");
+        }
     }
 
     #[test]
@@ -2401,8 +2460,10 @@ mod shape_matcher_tests {
 
     #[test]
     fn insert_matches_self_upsert_and_rejects_alias() {
-        let ok = call("dict.insert", vec![var("d"), int(1), int(2)]);
-        assert!(self_insert_args("d", &ok).is_some());
+        for f in ["dict.insert", "dict.insert__String__Int"] {
+            let ok = call(f, vec![var("d"), int(1), int(2)]);
+            assert!(self_insert_args("d", &ok).is_some(), "{f} should match");
+        }
         let alias = call("dict.insert", vec![var("e"), int(1), int(2)]);
         assert!(self_insert_args("d", &alias).is_none());
     }
@@ -2419,7 +2480,7 @@ mod shape_matcher_tests {
 
     #[test]
     fn set_at_matches_bare_and_monomorphized_names() {
-        for f in ["list.set_at", "list.set_at__Int"] {
+        for f in ["list.set_at", "list.__set_at", "list.set_at__Int"] {
             let v = call(f, vec![var("xs"), int(0), int(9)]);
             assert!(self_set_at("xs", &v).is_some(), "{f} should match");
         }

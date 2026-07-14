@@ -668,7 +668,7 @@ fn compound_op(op: BinOp) -> Option<&'static str> {
 }
 
 /// Re-sugar an RFC-0022 place-assignment. `desugar_place_assign` lowers `v[i] = e`
-/// to `v = v.set_at(i, e)` and `v.f = e` to `v = update v: f = e` (a
+/// to `v.set_at(i, e)` and `v.f = e` to `v = update v: f = e` (a
 /// `RecordUpdate`); this recovers the canonical surface form, and the compound
 /// `v[i] += e` / `v.f += e` when the RHS reads the same place. Returns `None` when
 /// `value` is not such a self-assignment, so a plain assignment prints normally.
@@ -737,7 +737,7 @@ fn for_var_sugar<'a>(idx: &str, iter: &'a Expr, body: &'a Block) -> Option<(&'a 
     {
         return None;
     }
-    // Last stmt: `list[idx] = x`  (i.e. `list = list.set_at(idx, x)`).
+    // Last stmt: `list[idx] = x`  (i.e. `list.set_at(idx, x)`).
     let Stmt::Assign { name: wb_list, value: wb } = body.stmts.last()? else { return None };
     if wb_list != list_var {
         return None;
@@ -1648,7 +1648,7 @@ fn operand(e: &Expr, parent: u8, is_right: bool) -> String {
 /// Print a comprehension's desugar back as the literal it came from.
 ///
 /// `[elem for x in xs if c ...]` parses to a block of the exact shape
-/// `{ var __comprN = []; <for/if nest ending in list.push(__comprN,
+/// `{ var __comprN = []; <for/if nest ending in __comprN = @list_push(__comprN,
 /// elem)>; __comprN }`; this is its inverse. The shape is strict (single-
 /// statement nesting, the accumulator name, the push call), and both
 /// spellings parse to the same AST modulo the fresh accumulator counter, so a
@@ -1682,8 +1682,11 @@ fn comprehension_sugar(b: &Block) -> Option<String> {
                 clauses.push_str(&format!(" if {}", expr(cond)));
                 cur = &then_block.stmts[0];
             }
-            Stmt::Expr(Expr::Call { name: push, args }) => {
-                if push != "list.push" || args.len() != 2 {
+            Stmt::Assign { name, value: Expr::Call { name: push, args } } => {
+                if name != acc
+                    || push != crate::intrinsics::GENERATED_LIST_PUSH
+                    || args.len() != 2
+                {
                     return None;
                 }
                 if !matches!(&args[0], Expr::Var(v) if v == acc) {

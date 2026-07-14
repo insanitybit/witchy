@@ -5,21 +5,21 @@ pub fn range(n: Int) -> List(Int):
     var out = []
     var i = 0
     while i < n:
-        out = out.push(i)
+        out.push(i)
         i = i + 1
     out
 
 pub fn map(xs: List(a), f: fn(a) -> b) -> List(b):
     var out = []
     for x in xs:
-        out = out.push(f(x))
+        out.push(f(x))
     out
 
 pub fn filter(xs: List(Int), keep: fn(Int) -> Bool) -> List(Int):
     var out = []
     for x in xs:
         if keep(x):
-            out = out.push(x)
+            out.push(x)
     out
 
 pub fn sum(xs: List(Int)) -> Int:

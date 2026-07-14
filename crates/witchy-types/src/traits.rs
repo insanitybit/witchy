@@ -20,7 +20,7 @@
 //! RECEIVER'S TYPE, so the write-back decision reads the resolved callee's
 //! declaration (`Function::is_mutator`) rather than a whole-program name census.
 //! A statement `xs.push(1)` on a `var` place whose resolved callee is a mutator
-//! becomes `xs = list.push(xs, 1)`; a non-mutator statement call whose result is
+//! becomes `list.push(xs, 1)`; a non-mutator statement call whose result is
 //! non-Nil is a discard error. The rewrite edits the single AST both backends
 //! consume (via `lower`/`lower_for_wasm`) and the checker consumes (via
 //! `lower_checked`), so parity holds by construction.
@@ -2322,17 +2322,9 @@ impl Ctx<'_> {
                 Stmt::Return(Some(e)) | Stmt::Yield(e) => self.rewrite_expr_vp(e, scope, true),
                 Stmt::Expr(e) => {
                     self.rewrite_expr_vp(e, scope, value_used);
-                    // (RFC-0064 Check 3) A discarded, non-Nil FREE call in
-                    // statement position — a bare `list.push(xs, 2)`, a user
-                    // mutator called free-form, or ANY non-Nil free call whose
-                    // result is thrown away — is a discard error too, exactly like
-                    // the method form (RFC-0043:192-195). A free call does NOT
-                    // write back (the receiver of a method call is the target; the
-                    // first ARGUMENT of a free call is not), so the fix is the
-                    // method form (or `let _ = …`). A callee absent from the table
-                    // (a bare intrinsic / cap-op) has no declared return here and
-                    // is treated as Nil — no false positive, matching
-                    // `rewrite_expr_stmt_method`.
+                    // A discarded non-Nil call is legal only when its resolved
+                    // declaration carries a var write-back. Free and method forms
+                    // use the same convention table.
                     if !value_used {
                         if let Expr::Call { name, .. } = e {
                             let returns_nil = self.returns_nil.get(name).copied().unwrap_or(true);
@@ -2340,6 +2332,13 @@ impl Ctx<'_> {
                                 let bare = name.rsplit('.').next().unwrap_or(name);
                                 self.discard_errors.borrow_mut().push(discarded_result_msg(bare));
                             }
+                        }
+                        // Preserve the proven RFC-0051 storage paths for the common
+                        // discarded std mutators. This is a typed optimization: the
+                        // source call has already resolved to a concrete var callee,
+                        // and both source forms retain uniform write-back semantics.
+                        if let Some(writeback) = discarded_std_var_writeback(e, self.var_calls) {
+                            *stmt = writeback;
                         }
                     }
                 }
@@ -2356,7 +2355,7 @@ impl Ctx<'_> {
     /// After ordinary resolution (`rewrite_expr` turns the `MethodCall` into a
     /// `Call { name, .. }`), the resolved function name tells us:
     /// - a MUTATOR (`is_mutator`, e.g. `list.push`) on a mutable place -> the
-    ///   write-back rewrite `xs.push(1)` => `xs = list.push(xs, 1)`;
+    ///   write-back rewrite `xs.push(1)` => `list.push(xs, 1)`;
     /// - a mutator on an immutable place / non-place -> a "declare it `var`, or
     ///   bind the result" error;
     /// - a non-mutator returning `Nil` -> a plain statement (as today);
@@ -3235,6 +3234,32 @@ fn build_mutation_tables(
         }
     }
     (var_calls, returns_nil)
+}
+
+fn discarded_std_var_writeback(
+    expr: &Expr,
+    var_calls: &HashSet<String>,
+) -> Option<Stmt> {
+    let Expr::Call { name, args } = expr else { return None };
+    if !var_calls.contains(name) {
+        return None;
+    }
+    let place = args.first()?.clone();
+    let private = if name == "list.push" || name.starts_with("list.push__") {
+        "list.__push"
+    } else if name == "list.set_at" || name.starts_with("list.set_at__") {
+        "list.__set_at"
+    } else if name == "dict.insert" || name.starts_with("dict.insert__") {
+        "dict.__insert"
+    } else if name == "dict.update" || name.starts_with("dict.update__") {
+        "dict.__update"
+    } else if name == "dict.remove" || name.starts_with("dict.remove__") {
+        "dict.__remove"
+    } else {
+        return None;
+    };
+    let value = Expr::Call { name: private.to_string(), args: args.clone() };
+    witchy_syntax::parser::desugar_place_assign(place, value).ok()
 }
 
 /// Record type name -> its named field types, for typing `x.field` receivers.

@@ -23,9 +23,9 @@ can be looking.
 Most of the compiled tier's speed comes from machinery that needs **no
 annotations** — it triggers on shapes the compiler can prove unaliased:
 
-- **Linear update, analysis-driven.** A self-assign accumulation —
-  `xs = list.push(xs, e)`, `s = s + piece`, `d = dict.insert(d, k, v)`,
-  `d = dict.update(d, k, dflt, f)` — mutates the collection in place with
+- **Linear update, analysis-driven.** A uniform `var` accumulation —
+  `xs.push(e)`, `s = s + piece`, `d.insert(k, v)`,
+  `d.update(k, dflt, f)` — may mutate the collection in place with
   capacity doubling. The *uniqueness pass* decides when that is sound: an
   alias zeroes the ownership token exactly where it is created (one copy
   re-owns; it does not disqualify the whole function), a **read-only helper
@@ -39,8 +39,9 @@ annotations** — it triggers on shapes the compiler can prove unaliased:
 
   ```witchy
   fn grow(own xs: List(Int), n: Int) -> List(Int):
-      xs = xs.push(n)
-      xs
+      var out = move xs
+      out.push(n)
+      out
 
   // 100k iterations, one owned buffer end to end.
   // O(n), ~8 ms compiled.
@@ -52,7 +53,7 @@ annotations** — it triggers on shapes the compiler can prove unaliased:
   through the call instead of copying at every boundary.
 - **Threads through your own types, too.** None of this is limited to the
   builtin collections. A record field update `s.count = s.count + 1` mutates
-  the record in place; growing a field's list `s.items = list.push(s.items, x)`
+  the record in place; growing a field's list `s.items.push(x)`
   grows *that* buffer in place; and an `own` record parameter threaded through a
   function (`s = bump(move s)`) keeps the record uniquely owned across the call.
   So a wrapper type carries the same zero-copy behavior as the collection it

@@ -34,7 +34,10 @@ fn step(outcome: Outcome, token: String) -> Outcome:
 
 fn push_or_apply(stack: List(Int), token: String) -> Outcome:
     match string.parse_int(token):
-        Some(n) -> Stack(list.push(stack, n))
+        Some(n) ->
+            var next = stack
+            next.push(n)
+            Stack(next)
         None -> apply_operator(stack, token)
 
 fn apply_operator(stack: List(Int), op: String) -> Outcome:
@@ -45,7 +48,10 @@ fn apply_operator(stack: List(Int), op: String) -> Outcome:
         let b = list.at(stack, n - 1)
         let a = list.at(stack, n - 2)
         match compute(op, a, b):
-            Ok(result) -> Stack(list.push(prefix(stack, n - 2), result))
+            Ok(result) ->
+                var next = prefix(stack, n - 2)
+                next.push(result)
+                Stack(next)
             Err(message) -> Failure(message)
 
 fn compute(op: String, a: Int, b: Int) -> Result(Int, String):
@@ -78,6 +84,6 @@ fn prefix(xs: List(Int), k: Int) -> List(Int):
     var i = 0
     for x in xs:
         if i < k:
-            out = list.push(out, x)
+            list.push(out, x)
         i = i + 1
     out

@@ -14,13 +14,14 @@ pub fn word_counts(text: String) -> Dict(String, Int):
     for raw in string.words(text):
         let word = normalize(raw)
         if string.length(word) > 0:
-            counts = dict.update(counts, word, 0, fn(running: Int): running + 1)
+            dict.update(counts, word, 0, fn(running: Int): running + 1)
     counts
 
 // The `limit` most frequent words, most frequent first, ties broken by spelling
 // so the ranking is deterministic. Returns (word, count) pairs.
 pub fn top_words(text: String, limit: Int) -> List((String, Int)):
-    let ranked = list.sort_by(dict.pairs(word_counts(text)), more_common)
+    var ranked = dict.pairs(word_counts(text))
+    list.sort_by(ranked, more_common)
     list.take(ranked, limit)
 
 fn more_common(a: (String, Int), b: (String, Int)) -> Bool:

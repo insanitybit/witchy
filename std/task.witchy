@@ -221,6 +221,15 @@ fn ring_grow(buf: List(__Msg), head: Int, count: Int, msg: __Msg, cap: Int) -> (
     list.set_at(nb, count, msg)
     (nb, 0, count + 1, cap)
 
+fn ring_put(own buf: List(__Msg), head: Int, count: Int, msg: __Msg, cap: Int) -> (List(__Msg), Int, Int, Int):
+    var out = move buf
+    let physcap = list.length(out)
+    if count < physcap:
+        list.set_at(out, (head + count) % physcap, msg)
+        (out, head, count + 1, cap)
+    else:
+        ring_grow(out, head, count, msg, cap)
+
 // The local index (within `chs`) and global id of the first listed channel with a
 // pending message, or None if all are empty. Drives the `PullAny`/`select` path.
 fn first_ready(k: Int, chs: List(Int), channels: List((List(__Msg), Int, Int, Int))) -> Option((Int, Int)):
@@ -269,15 +278,9 @@ pub fn run(root: Task(Nil)):
                     else:
                         unit()
                 WaitSend(ch, msg, cont) ->
-                    let (buf, head, count, cap) = list.at(channels, ch)
+                    let (wait_buf, head, count, cap) = list.at(channels, ch)
                     if cap == 0 || count < cap:
-                        let physcap = list.length(buf)
-                        if count < physcap:
-                            var next_buf = buf
-                            list.set_at(next_buf, (head + count) % physcap, msg)
-                            list.set_at(channels, ch, (next_buf, head, count + 1, cap))
-                        else:
-                            list.set_at(channels, ch, ring_grow(buf, head, count, msg, cap))
+                        list.set_at(channels, ch, ring_put(wait_buf, head, count, msg, cap))
                         list.set_at(slots, i, Active(cont(unit())))
                         prog = true
                     else:
@@ -318,15 +321,9 @@ pub fn run(root: Task(Nil)):
                             list.push(channels, ring_new(cap))
                             prog = true
                         Push(ch, msg, cont) ->
-                            let (buf, head, count, cap) = list.at(channels, ch)
+                            let (push_buf, head, count, cap) = list.at(channels, ch)
                             if cap == 0 || count < cap:
-                                let physcap = list.length(buf)
-                                if count < physcap:
-                                    var next_buf = buf
-                                    list.set_at(next_buf, (head + count) % physcap, msg)
-                                    list.set_at(channels, ch, (next_buf, head, count + 1, cap))
-                                else:
-                                    list.set_at(channels, ch, ring_grow(buf, head, count, msg, cap))
+                                list.set_at(channels, ch, ring_put(push_buf, head, count, msg, cap))
                                 list.set_at(slots, i, Active(cont(unit())))
                                 prog = true
                             else:
@@ -372,15 +369,9 @@ pub fn run(root: Task(Nil)):
                 match list.at(slots, j):
                     WaitRecv(_ch, cont) -> list.set_at(slots, j, Active(cont(None)))
                     WaitSend(ch, msg, cont) ->
-                        let (buf, head, count, cap) = list.at(channels, ch)
+                        let (close_buf, head, count, cap) = list.at(channels, ch)
                         list.set_at(slots, j, Active(cont(unit())))
-                        let physcap = list.length(buf)
-                        if count < physcap:
-                            var next_buf = buf
-                            list.set_at(next_buf, (head + count) % physcap, msg)
-                            list.set_at(channels, ch, (next_buf, head, count + 1, cap))
-                        else:
-                            list.set_at(channels, ch, ring_grow(buf, head, count, msg, cap))
+                        list.set_at(channels, ch, ring_put(close_buf, head, count, msg, cap))
                     WaitAny(_chs, cont) -> list.set_at(slots, j, Active(cont(None)))
                     WaitJoin(_t, cont) -> list.set_at(slots, j, Active(cont(unit())))
                     _ -> unit()

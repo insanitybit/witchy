@@ -33,7 +33,7 @@ pub fn parse(text: String) -> List(Task):
     var out = []
     for line in string.lines(text):
         if let Some(task) = parse_line(line):
-            out = list.push(out, task)
+            list.push(out, task)
     out
 
 // Total number of tasks.
@@ -56,5 +56,5 @@ pub fn render(tasks: List(Task)) -> String:
     var out = []
     for task in tasks:
         let mark = if is_done(task): "[x]" else: "[ ]"
-        out = list.push(out, mark + " " + title(task))
+        list.push(out, mark + " " + title(task))
     list.join(out, "\n")

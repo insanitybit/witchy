@@ -112,8 +112,8 @@ lifetimes the compiler can prove (or the user declares):
 On top of reclamation, hot mutation paths avoid allocating at all. The
 **uniqueness pass** (`crates/witchy-lower/src/analysis.rs`, design in
 [ownership-analysis.md](../rfcs/ownership-analysis.md)) drives in-place mutation of
-the self-assign accumulation shapes (`xs = list.push(xs, e)`, `s = s <> p`,
-`d = insert/dict.update(d, …)`, `x = f(move x)`) through a runtime ownership
+typed `var` accumulation (`xs.push(e)`, `d.insert(k, v)`) and ordinary linear
+updates (`s = s <> p`, `x = f(move x)`) through a runtime ownership
 token: the analysis finds every statement that can create a live whole-alias
 (the token is zeroed there — path-sensitively) and every site whose own RHS
 embeds one; everything provably unaliased mutates in place with capacity

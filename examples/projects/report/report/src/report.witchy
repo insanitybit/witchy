@@ -20,7 +20,7 @@ fn report(text: String) -> String:
 fn render(records: List(Json)) -> String:
     var scores = []
     for r in records:
-        scores = list.push(scores, score_of(r))
+        list.push(scores, score_of(r))
     list.join(["records: " + "${stats.count(scores)}", "total:   " + "${stats.total(scores)}", "max:     " + "${stats.max(scores)}", "average: " + "${stats.average(scores)}"], "\n")
 
 // The integer "score" field of one record, defaulting to 0 if absent / non-int.

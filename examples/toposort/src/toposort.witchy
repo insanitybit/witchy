@@ -29,7 +29,7 @@ pub fn toposort(nodes: List(String), edges: List((String, String))) -> Result(Li
     var stuck = false
     while list.length(order) < list.length(nodes) && !stuck:
         match next_ready(nodes, edges, order):
-            Some(node) -> order = list.push(order, node)
+            Some(node) -> list.push(order, node)
             None -> stuck = true
     if stuck:
         Err("cycle among " + list.join(remaining(nodes, order), ", "))
@@ -57,7 +57,7 @@ fn remaining(nodes: List(String), emitted: List(String)) -> List(String):
     var out = []
     for node in nodes:
         if !member(emitted, node):
-            out = list.push(out, node)
+            list.push(out, node)
     out
 
 fn member(xs: List(String), x: String) -> Bool:

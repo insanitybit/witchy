@@ -11,7 +11,7 @@ fn main(console: Console, clock: Clock):
     var xs = []
     var k = 0
     while k < 5000:
-        xs = list.push(xs, k)
+        list.push(xs, k)
         k = k + 1
     var total = 0
     var rep = 0

@@ -23,10 +23,13 @@ everything else is module-private.
 
 Method-call syntax, `value.method(args)`, is the idiomatic way to call the
 standard data libraries — `xs.map(f)`, `d.insert(k, v)`, `s.to_upper()` — and it
-chains left-to-right: `dict.new().insert("a", 1).insert("b", 2)`. For standard
-data types, the module-qualified form remains available too: it is either the
-same receiver-first module function (`dict.insert(d, k, v)`) or a compiler alias
-to the method implementation (`list.map(xs, f)`). Module qualification is also
+uses the same parameter conventions as free calls. A `var` receiver such as
+`insert` requires a mutable place and writes back; pure transformations such as
+`map` may chain. Build a dictionary value with `dict.from_pairs([("a", 1),
+("b", 2)])`, since a temporary receiver has no write-back place. For standard
+data types, the module-qualified form remains available too: it is the same
+receiver-first module function (`dict.insert(d, k, v)`) or a compiler alias to
+the method implementation (`list.map(xs, f)`). Module qualification is also
 the only form when a helper lives in a module other than the receiver's type —
 `json.stringify(x)`, `math.to_float(n)`. The same dot syntax also calls
 **methods** you declare in an `impl` block with a `self` parameter — which we'll
@@ -146,7 +149,7 @@ one is a compile error. Ranges are never materialized into a list — `for n in
 
 A `var` collection updates in place by subscript or field — `xs[i] = v`,
 `d[k] = v`, `acct.balance = b` (and compound forms like `xs[i] += v` / `d[k] += v`). It's shorthand for
-the value update (`xs = xs.set_at(i, v)`), so witchy's value semantics hold while
+the value update (`xs.set_at(i, v)`), so witchy's value semantics hold while
 it reads like mutation, and the optimizer keeps it in place:
 
 ```witchy

@@ -64,11 +64,11 @@ fn tokenize(source: String) -> Result(List(Token), String):
             while i < n && ascii.is_digit(chars.at(i)):
                 value = value * 10 + (ascii.to_digit(chars.at(i)) ?? 0)
                 i = i + 1
-            tokens = tokens.push(Num(value))
+            tokens.push(Num(value))
         else:
             match symbol(c):
                 Some(tok) ->
-                    tokens = tokens.push(tok)
+                    tokens.push(tok)
                     i = i + 1
                 None -> failure = "unexpected character `" + c + "`"
     if failure.is_empty():

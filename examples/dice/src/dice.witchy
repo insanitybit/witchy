@@ -1,7 +1,7 @@
 // Deterministic pseudo-randomness with the std `prng` module: a seed replays
 // the same sequence, so this prints the same rolls every run — and identically on
-// the interpreter and compiled to WASM. The generator state is threaded
-// explicitly through an `Rng` value (no hidden global, no capability needed).
+// the interpreter and compiled to WASM. `var Rng` write-back advances the
+// explicit state (no hidden global and no capability needed).
 // Run: witchy examples/dice/src/dice.witchy
 
 import prng
@@ -13,9 +13,8 @@ fn main(console: Console):
     var rolls = []
     var i = 0
     while i < 10:
-        let (face, next) = prng.next_below(r, 6)
-        rolls = rolls.push(face + 1)
-        r = next
+        let face = r.next_below(6)
+        rolls.push(face + 1)
         i = i + 1
     console.print(list.join(rolls.map(fn(n: Int): "${n}"), " "))
     console.print("total: " + "${rolls.sum()}")

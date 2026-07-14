@@ -31,6 +31,11 @@
 import option
 from task import Task, Handle, ChannelId
 
+fn appended(own xs: List(a), x: a) -> List(a):
+    var out = move xs
+    list.push(out, x)
+    out
+
 // (RFC-0042) `Task` and `Handle` are owned by std/task. The raw scheduler
 // protocol is sealed; chan reaches channel effects through task's compiler-private
 // bridge, carrying a non-mintable `ChannelId`. Channel tasks and async-fn tasks
@@ -156,9 +161,7 @@ fn spawn_all_into(children: List(Task(Nil)), i: Int, hs: List(Handle)) -> Task(L
         done(hs)
     else:
         and_then(spawn(list.at(children, i)), fn(h):
-            var next = hs
-            list.push(next, h)
-            spawn_all_into(children, i + 1, next)
+            spawn_all_into(children, i + 1, appended(move hs, h))
         )
 
 // Join every handle in `hs` while the executor can make progress. Like `join`,
@@ -213,10 +216,7 @@ fn recv_n_into(rx: Receiver(m), n: Int, acc: List(m)) -> Task(List(m)):
     else:
         and_then(recv(rx), fn(o):
             match o:
-                Some(x) ->
-                    var next = acc
-                    list.push(next, x)
-                    recv_n_into(rx, n - 1, next)
+                Some(x) -> recv_n_into(rx, n - 1, appended(move acc, x))
                 None -> done(acc)
         )
 
@@ -251,10 +251,7 @@ fn recv_each_into(rxs: List(Receiver(m)), i: Int, acc: List(m)) -> Task(List(m))
     else:
         and_then(recv(list.at(rxs, i)), fn(o):
             match o:
-                Some(x) ->
-                    var next = acc
-                    list.push(next, x)
-                    recv_each_into(rxs, i + 1, next)
+                Some(x) -> recv_each_into(rxs, i + 1, appended(move acc, x))
                 None -> recv_each_into(rxs, i + 1, acc)
         )
 
@@ -275,11 +272,7 @@ fn par_build_into(items: List(a), i: Int, f: fn(a) -> Task(m), jobs: List(Task(N
         and_then(channel(0), fn(pair):
             let (tx, rx) = pair
             let job = and_then(f(list.at(items, i)), fn(r): send(tx, r))
-            var next_jobs = jobs
-            var next_rxs = rxs
-            list.push(next_jobs, job)
-            list.push(next_rxs, rx)
-            par_build_into(items, i + 1, f, next_jobs, next_rxs)
+            par_build_into(items, i + 1, f, appended(move jobs, job), appended(move rxs, rx))
         )
 
 // STRUCTURED parallel map (the level-1 combinator): run `f` over every item of

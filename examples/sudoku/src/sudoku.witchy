@@ -87,7 +87,7 @@ fn place(board: List(List(Int)), r: Int, c: Int, n: Int) -> List(List(Int)):
     var out = []
     var i = 0
     for row in board:
-        out = out.push(if i == r: set_at(row, c, n) else: row)
+        out.push(if i == r: set_at(row, c, n) else: row)
         i = i + 1
     out
 
@@ -95,7 +95,7 @@ fn set_at(row: List(Int), c: Int, n: Int) -> List(Int):
     var out = []
     var j = 0
     for v in row:
-        out = out.push(if j == c: n else: v)
+        out.push(if j == c: n else: v)
         j = j + 1
     out
 
@@ -109,6 +109,6 @@ pub fn render(board: List(List(Int))) -> String:
     for row in board:
         var cells = []
         for v in row:
-            cells = cells.push("${v}")
-        lines = lines.push(cells.join(""))
+            cells.push("${v}")
+        lines.push(cells.join(""))
     lines.join("\n")

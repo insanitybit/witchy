@@ -1,7 +1,7 @@
 // fannkuch-redux (benchmarksgame): for each permutation of [0..n), count the
 // pancake flips that bring element 0 to the front; report a checksum and the max
 // flip count. Permutation rotation and the per-permutation flip both mutate small
-// fixed-size arrays in place via `xs = list.set_at(xs, i, v)` — O(1) per element
+// fixed-size arrays in place via `list.set_at(xs, i, v)` — O(1) per element
 // only because of the in-place set_at fast path (otherwise each set rebuilds the
 // whole array). Output encodes both results as `checksum*1000 + maxflips`.
 
@@ -10,28 +10,28 @@ import list
 fn fannkuch(n: Int) -> Int:
     var perm1 = []
     for i in list.range(n):
-        perm1 = list.push(perm1, i)
+        list.push(perm1, i)
     var count = []
     for i in list.range(n):
-        count = list.push(count, 0)
+        list.push(count, 0)
     // `perm` is allocated ONCE and refilled in place each permutation (like Go's
     // `copy(perm, perm1)`); allocating a fresh copy per permutation would leak
     // 10! transient arrays into the never-freeing bump allocator and OOM.
     var perm = []
     for i in list.range(n):
-        perm = list.push(perm, 0)
+        list.push(perm, 0)
     var max_flips = 0
     var checksum = 0
     var perm_count = 0
     var r = n
     while true:
         while r != 1:
-            count = list.set_at(count, r - 1, r)
+            list.set_at(count, r - 1, r)
             r = r - 1
         if list.at(perm1, 0) != 0:
             var j = 0
             while j < n:
-                perm = list.set_at(perm, j, list.at(perm1, j))
+                list.set_at(perm, j, list.at(perm1, j))
                 j = j + 1
             var flips = 0
             var k = list.at(perm, 0)
@@ -41,8 +41,8 @@ fn fannkuch(n: Int) -> Int:
                 while lo < hi:
                     let a = list.at(perm, lo)
                     let b = list.at(perm, hi)
-                    perm = list.set_at(perm, lo, b)
-                    perm = list.set_at(perm, hi, a)
+                    list.set_at(perm, lo, b)
+                    list.set_at(perm, hi, a)
                     lo = lo + 1
                     hi = hi - 1
                 flips = flips + 1
@@ -60,10 +60,10 @@ fn fannkuch(n: Int) -> Int:
             let perm0 = list.at(perm1, 0)
             var i = 0
             while i < r:
-                perm1 = list.set_at(perm1, i, list.at(perm1, i + 1))
+                list.set_at(perm1, i, list.at(perm1, i + 1))
                 i = i + 1
-            perm1 = list.set_at(perm1, r, perm0)
-            count = list.set_at(count, r, list.at(count, r) - 1)
+            list.set_at(perm1, r, perm0)
+            list.set_at(count, r, list.at(count, r) - 1)
             if list.at(count, r) > 0:
                 advanced = true
             else:

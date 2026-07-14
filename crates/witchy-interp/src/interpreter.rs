@@ -1948,7 +1948,7 @@ impl Interpreter {
             },
             // Return a new list with `x` appended (lists are values, so this does
             // not mutate the original).
-            "list.__push" => match args {
+            "list.__push" | witchy_syntax::intrinsics::GENERATED_LIST_PUSH => match args {
                 [Value::List(items), x] => {
                     let mut out = items.clone();
                     out.push(x.clone());
@@ -2809,8 +2809,8 @@ impl Interpreter {
     }
 
     /// The interpreter-side linear-update fast path: a self-assignment of an
-    /// accumulation shape — `xs = list.push(xs, e)`, `d = dict.insert(d, k, v)`,
-    /// `d = dict.update(d, k, dflt, f)`, `s = s + p` (any left spine) — mutates the
+    /// accumulation shape — `list.push(xs, e)`, `dict.insert(d, k, v)`,
+    /// `dict.update(d, k, dflt, f)`, `s = s + p` (any left spine) — mutates the
     /// variable's slot in place instead of cloning the whole collection per
     /// step, turning accumulate-in-loop from O(n²) into O(n). Sound because
     /// values are fully owned (binding one clones it; no two bindings share
@@ -2826,7 +2826,8 @@ impl Interpreter {
     ) -> Result<bool, Flow> {
         match rhs {
             Expr::Call { name: f, args }
-                if f == "list.__push" && args.len() == 2
+                if matches!(f.as_str(), "list.__push" | witchy_syntax::intrinsics::GENERATED_LIST_PUSH)
+                    && args.len() == 2
                     && matches!(&args[0], Expr::Var(v) if v == name)
                     && !expr_mentions(&args[1], name)
                     && !matches!(env.get(f), Some(Value::Closure { .. })) =>

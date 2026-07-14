@@ -296,7 +296,7 @@
       "Console"
     ],
     "output": [
-      "42"
+      "42 42"
     ],
     "runnable": true
   },
@@ -1107,7 +1107,8 @@
       "Console"
     ],
     "output": [
-      "[1, 2, 3]",
+      "[1, 2]",
+      "3",
       "1"
     ],
     "runnable": true
@@ -1121,10 +1122,18 @@
       "Console"
     ],
     "output": [
-      "[1, 2, 3]",
       "[9, 9]"
     ],
     "runnable": true
+  },
+  {
+    "block": 3,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/mutating-methods.md",
+    "footprint": [],
+    "output": [],
+    "runnable": false
   },
   {
     "block": 1,

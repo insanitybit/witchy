@@ -88,7 +88,7 @@ compiler-proven escape-free loop iterations (watermark resets), and
 user-declared [`region:` blocks](appendix-performance.md) whose value escapes
 by copy-out. Hot paths
 avoid allocating at all: an ownership analysis proves where accumulation
-(`xs = list.push(xs, e)`, `s = s + p`, `d = dict.insert(d, k, v)`,
+(`xs.push(e)`, `s = s + p`, `d.insert(k, v)`,
 `x = f(move x)`) can mutate in place — aliases cost one copy where they
 happen, never the whole loop — and dicts carry a hidden hash index. The result
 runs at native-class throughput: a string builder stays linear instead of

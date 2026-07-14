@@ -1,53 +1,51 @@
-# Mutating-method statements — `nodes.push(x)`
+# Uniform `var` write-back
 
-A method call used as a **statement** on a mutable place writes its result back to
-that place, so the data libraries read like in-place mutation while keeping value
-semantics underneath:
+A `var` parameter means move-in/move-out in every call. Its argument must be a
+mutable place; the function receives the current value and writes its final value
+back on every structured return. The ordinary return value is independent.
 
 ```witchy
+fn take_last(var xs: List(Int)) -> Option(Int):
+    xs.pop()
+
 fn main(console: Console):
-    var xs = []
-    xs.push(1)
-    xs.push(2)
+    var xs = [1, 2]
     xs.push(3)
-    // [1, 2, 3]
+    let last = take_last(xs)
     console.print("${xs}")
+    console.print("${last ?? 0}")
 
     var tally = dict.new()
     tally.insert("a", 1)
     tally.insert("b", 2)
-    // 1
     console.print("${tally.get_or("a", 0)}")
 ```
 
-`xs.push(1)` as a statement is exactly `xs = list.push(xs, 1)` — the completion of
-the `xs[i] = v` / `d[k] = v` family — and the uniqueness analysis keeps it an
-in-place write, so a push loop stays O(n).
+Free and method calls are equivalent: `xs.push(3)` resolves to the same
+`var`-declared operation as `list.push(xs, 3)`. Statement position may discard a
+`var` call's independent result because the write-back is already an effect. A
+non-`var`, non-`Nil` result still requires a binding or `let _ =`.
 
-The rule is precise, and it is a **declaration**: a statement-position
-`place.method(args)` writes back **only when** the place is a `var` (you cannot
-mutate a `let`) and the resolved function declares a `var` receiver — that is
-what marks it a mutator (`fn push(var xs: List(a), x: a) -> List(a)`). So
-`xs.push(v)` and `d.insert(k, v)` write back, while a call that is *not* a
-mutator and whose result is thrown away is a **compile error** — you either
-bind it, reassign it, or discard it explicitly with `let _ =`:
+An immutable binding or temporary cannot be a write-back target:
 
 ```witchy
 fn main(console: Console):
-    var xs = [1, 2, 3]
-    // Explicit discard: `length` is not a mutator.
-    let _ = xs.length()
-    // [1, 2, 3], unchanged
-    console.print("${xs}")
-
     let frozen = [9, 9]
-    // frozen.push(1) would be a compile error — `frozen` is a `let`
-    // [9, 9]
+    // frozen.push(1)       // error: root must be `var`
+    // list.push([1], 2)    // error: temporary has no write-back place
     console.print("${frozen}")
 ```
 
-Writing `xs.length()` as a bare statement is now that error (`result of
-`length` is discarded`): it catches the mistake of calling a value-returning
-method and forgetting to use its result. In expression position the method call
-is unchanged — `let ys = xs.push(4)` builds a new list and leaves `xs` alone —
-so only statements on a `var` place mutate.
+To derive a changed copy, make that copy explicit:
+
+```witchy
+fn sorted_copy() -> List(Int):
+    let original = [3, 1, 2]
+    var sorted = original
+    sorted.sort()
+    sorted
+```
+
+This keeps one reading rule in expressions too. `let item = xs.pop()`, a call in
+an argument, and a call inside `??` all commit write-back before the enclosing
+expression continues.

@@ -687,9 +687,7 @@ The core operations are native primitives (intercepted by both backends; the bod
 
 An empty Dict.
 
-#### `fn insert(var d: Dict(k, v), key: k, val: v) -> Dict(k, v) where k: Eq`
-
-A new dict with `key` set to `val` (replacing any existing entry). Insertion order of first appearance is preserved. The `d[key] = val` sugar (RFC-0022) desugars to this: the shared `set_at` place-assign is retargeted to `insert` once the receiver is known to be a Dict (RFC-0049).
+#### `fn insert(var d: Dict(k, v), key: k, val: v) -> Option(v) where k: Eq`
 
 #### `fn get_or(d: Dict(k, v), key: k, default: v) -> v where k: Eq`
 
@@ -699,17 +697,13 @@ The value for `key`, or `default` when absent.
 
 The value for `key`, or a runtime error when absent. This is the read half of the `d[key]` subscript surface; use `get`/`get_or` when absence is ordinary.
 
-#### `fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) -> Dict(k, v) where k: Eq`
-
-Single-lookup upsert: apply `f` to the current value (or `default` when `key` is absent) and store the result under `key`.
+#### `fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) -> Nil where k: Eq`
 
 #### `fn contains_key(d: Dict(k, v), key: k) -> Bool where k: Eq`
 
 Whether `key` is present. The `_key` suffix is deliberate: a Dict contains key/value pairs, so bare `contains` would be ambiguous between keys and values.
 
-#### `fn remove(var d: Dict(k, v), key: k) -> Dict(k, v) where k: Eq`
-
-A new dict with `key` (and its value) removed; unchanged when absent.
+#### `fn remove(var d: Dict(k, v), key: k) -> Option(v) where k: Eq`
 
 #### `fn keys(d: Dict(k, v)) -> List(k)`
 
@@ -745,7 +739,7 @@ A new Dict with every value passed through `f` (keys unchanged).
 
 Keep only the entries for which `keep(key, value)` holds.
 
-#### `fn merge(var a: Dict(k, v), b: Dict(k, v)) -> Dict(k, v) where k: Eq`
+#### `fn merge(a: Dict(k, v), b: Dict(k, v)) -> Dict(k, v) where k: Eq`
 
 `a` with `b`'s entries laid over it (on a key collision, `b` wins).
 
@@ -757,17 +751,11 @@ Swap keys and values. With duplicate values, a later entry wins.
 
 The values whose keys satisfy `pred`, in the Dict's iteration order.
 
-#### `Dict.insert(key: k, val: v) -> Dict(k, v)`
+#### `Dict.insert(key: k, val: v) -> Option(v)`
 
-A new dict with `key` set to `val` (replacing any existing entry). Insertion order of first appearance is preserved. The `d[key] = val` sugar (RFC-0022) desugars to this: the shared `set_at` place-assign is retargeted to `insert` once the receiver is known to be a Dict (RFC-0049).
+#### `Dict.update(key: k, default: v, f: fn(v) -> v) -> Nil`
 
-#### `Dict.update(key: k, default: v, f: fn(v) -> v) -> Dict(k, v)`
-
-Single-lookup upsert: apply `f` to the current value (or `default` when `key` is absent) and store the result under `key`.
-
-#### `Dict.remove(key: k) -> Dict(k, v)`
-
-A new dict with `key` (and its value) removed; unchanged when absent.
+#### `Dict.remove(key: k) -> Option(v)`
 
 ## `duration`
 
@@ -1837,11 +1825,11 @@ The number of elements.
 
 The element at `index` (0-based). Out of bounds is a runtime error on every backend.
 
-#### `fn push(var xs: List(a), x: a) -> List(a)`
+#### `fn push(var xs: List(a), x: a) -> Nil`
 
-A new list with `x` appended (lists are values; the original is unchanged).
+Append `x` in place.
 
-#### `fn concat(var xs: List(a), ys: List(a)) -> List(a)`
+#### `fn concat(xs: List(a), ys: List(a)) -> List(a)`
 
 A new list that is `xs` followed by `ys`.
 
@@ -1979,15 +1967,11 @@ Combine two lists element-wise with `f`, stopping at the shorter one.
 
 Insert `sep` between adjacent elements: [a, b, c] -> [a, sep, b, sep, c].
 
-#### `fn reverse(var xs: List(a)) -> List(a)`
+#### `fn reverse(var xs: List(a)) -> Nil`
 
-The list, reversed.
+#### `fn sort_by(var xs: List(a), less: fn(a, a) -> Bool) -> Nil`
 
-#### `fn sort_by(var xs: List(a), less: fn(a, a) -> Bool) -> List(a)`
-
-Sort using a caller-supplied "is-less-than" comparator — a stable merge sort (O(n log n)), so equal elements keep their original order. Generic over the element type.
-
-#### `fn sort(var xs: List(a)) -> List(a) where a: Ord`
+#### `fn sort(var xs: List(a)) -> Nil where a: Ord`
 
 Sort any list whose elements are `Ord` ascending — a stable merge sort (O(n log n)) that dispatches through the element type's total order, so `xs.sort()` works for `Int`, `String`, `Duration`, or your own derived-`Ord` records, content-correct on both backends (RFC-0046). A merely-partial type like `Float` (not `Ord`) is rejected at the bound; sort those with `sort_by`.
 
@@ -1995,7 +1979,7 @@ Sort any list whose elements are `Ord` ascending — a stable merge sort (O(n lo
 
 Whether `target` appears in the list, by the element type's `Eq` impl. The `where a: Eq` bound monomorphizes the equality per element type, so the comparison is content-correct on both backends — including user record element types, which the compiled backend cannot compare through an unbounded generic `==` (RFC-0046).
 
-#### `fn remove(var xs: List(a), target: a) -> List(a) where a: Eq`
+#### `fn remove(var xs: List(a), target: a) -> Bool where a: Eq`
 
 A new list with the first occurrence of `target` removed; unchanged when absent. To remove every occurrence, use `filter(xs, fn(y): y != target)`.
 
@@ -2047,13 +2031,19 @@ Split `xs` into consecutive sublists of length `n` (the final one may be shorter
 
 The elements in the half-open index range [start, end), clamped to bounds. `slice(xs, 1, 3)` of [a,b,c,d] is [b,c].
 
-#### `fn set_at(var xs: List(a), index: Int, value: a) -> List(a)`
+#### `fn set_at(var xs: List(a), index: Int, value: a) -> Nil`
 
-A copy of `xs` with the element at `index` replaced by `value`. An out-of-range (or negative) index is a runtime error on both backends, exactly like `list.at` and `xs[i]` read — a write that would silently vanish is a contract violation (RFC-0044 rule 3), so it aborts rather than discarding the value. (Lists are immutable, so this returns a new list rather than mutating in place.)
+Store `value` at `index`. An out-of-range (or negative) index is a runtime error on both backends, symmetric with `list.at` and `xs[i]`.
 
-#### `fn update_at(var xs: List(a), index: Int, f: fn(a) -> a) -> List(a)`
+#### `fn update_at(var xs: List(a), index: Int, f: fn(a) -> a) -> Nil`
 
 A copy of `xs` with the function `f` applied to the element at `index`. An out-of-range (or negative) index is a runtime error on both backends, exactly like `list.at` — a silently discarded update is a contract violation (RFC-0044 rule 3), so it aborts rather than leaving the list unchanged.
+
+#### `fn pop(var xs: List(a)) -> Option(a)`
+
+#### `fn pop_front(var xs: List(a)) -> Option(a)`
+
+#### `fn swap(var xs: List(a), i: Int, j: Int) -> Nil`
 
 #### `fn windows(xs: List(a), n: Int) -> List(List(a))`
 
@@ -2071,9 +2061,9 @@ Split a list of pairs into a pair of lists — the inverse of `zip`.
 
 Pair each element with its index: `[a, b]` -> `[(0, a), (1, b)]`.
 
-#### `List.push(x: a) -> List(a)`
+#### `List.push(x: a) -> Nil`
 
-A new list with `x` appended (lists are values; the original is unchanged).
+Append `x` in place.
 
 #### `List.concat(ys: List(a)) -> List(a)`
 
@@ -2087,27 +2077,29 @@ Apply `f` to every element, collecting the results.
 
 Keep only the elements for which `keep` returns true.
 
-#### `List.reverse() -> List(a)`
+#### `List.reverse() -> Nil`
 
-The list, reversed.
+#### `List.sort_by(less: fn(a, a) -> Bool) -> Nil`
 
-#### `List.sort_by(less: fn(a, a) -> Bool) -> List(a)`
+#### `List.set_at(index: Int, value: a) -> Nil`
 
-Sort using a caller-supplied "is-less-than" comparator — a stable merge sort (O(n log n)), so equal elements keep their original order. Generic over the element type.
+Store `value` at `index`. An out-of-range (or negative) index is a runtime error on both backends, symmetric with `list.at` and `xs[i]`.
 
-#### `List.set_at(index: Int, value: a) -> List(a)`
-
-A copy of `xs` with the element at `index` replaced by `value`. An out-of-range (or negative) index is a runtime error on both backends, exactly like `list.at` and `xs[i]` read — a write that would silently vanish is a contract violation (RFC-0044 rule 3), so it aborts rather than discarding the value. (Lists are immutable, so this returns a new list rather than mutating in place.)
-
-#### `List.update_at(index: Int, f: fn(a) -> a) -> List(a)`
+#### `List.update_at(index: Int, f: fn(a) -> a) -> Nil`
 
 A copy of `xs` with the function `f` applied to the element at `index`. An out-of-range (or negative) index is a runtime error on both backends, exactly like `list.at` — a silently discarded update is a contract violation (RFC-0044 rule 3), so it aborts rather than leaving the list unchanged.
 
-#### `List.remove(target: a) -> List(a)`
+#### `List.pop() -> Option(a)`
+
+#### `List.pop_front() -> Option(a)`
+
+#### `List.swap(i: Int, j: Int) -> Nil`
+
+#### `List.remove(target: a) -> Bool`
 
 A new list with the first occurrence of `target` removed; unchanged when absent. To remove every occurrence, use `filter(xs, fn(y): y != target)`.
 
-#### `List.sort() -> List(a)`
+#### `List.sort() -> Nil`
 
 Sort any list whose elements are `Ord` ascending — a stable merge sort (O(n log n)) that dispatches through the element type's total order, so `xs.sort()` works for `Int`, `String`, `Duration`, or your own derived-`Ord` records, content-correct on both backends (RFC-0046). A merely-partial type like `Float` (not `Ord`) is rejected at the bound; sort those with `sort_by`.
 
@@ -2772,21 +2764,37 @@ A small deterministic PRNG: the Park-Miller "minimal standard" LCG, `state' = st
 
 A generator from seed `s` (any Int is mapped into the valid range 1..modulus).
 
-#### `fn next(r: Rng) -> (Int, Rng)`
+#### `fn next(var r: Rng) -> Int`
 
-Advance the generator: a pseudo-random Int in [1, 2^31-1) and the next state. The incoming state is normalized first, so a hand-built `Rng(0)` / `Rng(-5)` (which bypasses `seed`) still yields an in-range draw instead of sticking at 0 or going negative.
+Advance the generator and return a pseudo-random Int in [1, 2^31-1). The incoming state is normalized first, so a hand-built `Rng(0)` / `Rng(-5)` (which bypasses `seed`) still yields an in-range draw instead of sticking at 0 or going negative.
 
-#### `fn next_below(r: Rng, bound: Int) -> (Int, Rng)`
+#### `fn next_below(var r: Rng, bound: Int) -> Int`
 
-A pseudo-random Int in [0, bound) and the next state. `bound` must be positive (RFC-0044 rule 3): a non-positive bound has no valid range, so it fails loudly naming the bad argument rather than dividing by zero. It must also be below the generator range `2^31-1` (`next`'s cardinality): the reducer is `n % bound`, so a `bound` at or above that range cannot produce every value in `[0, bound)` and would silently under-cover it — that impossible case fails loudly too. For a `bound` well below the range the modulo bias is negligible; for a strictly uniform bounded draw, use the `Rand` capability's byte-oriented helpers.
+A pseudo-random Int in [0, bound). `bound` must be positive (RFC-0044 rule 3): a non-positive bound has no valid range, so it fails loudly naming the bad argument rather than dividing by zero. It must also be below the generator range `2^31-1` (`next`'s cardinality): the reducer is `n % bound`, so a `bound` at or above that range cannot produce every value in `[0, bound)` and would silently under-cover it — that impossible case fails loudly too. For a `bound` well below the range the modulo bias is negligible; for a strictly uniform bounded draw, use the `Rand` capability's byte-oriented helpers.
 
-#### `fn next_bool(r: Rng) -> (Bool, Rng)`
+#### `fn next_bool(var r: Rng) -> Bool`
 
-A pseudo-random Bool (true ~half the time) and the next state.
+A pseudo-random Bool (true ~half the time).
 
-#### `fn choice(xs: List(a), r: Rng) -> (Option(a), Rng)`
+#### `fn choice(xs: List(a), var r: Rng) -> Option(a)`
 
-A pseudo-randomly chosen element of `xs` (`None` if empty) and the next state. The index comes from `next_below`, whose `% len` reducer carries a negligible modulo bias for ordinary list lengths — plenty for tests, sampling, and games, but not a strict uniform distribution (see `next_below`).
+A pseudo-randomly chosen element of `xs` (`None` if empty). The index comes from `next_below`, whose `% len` reducer carries a negligible modulo bias for ordinary list lengths — plenty for tests, sampling, and games, but not a strict uniform distribution (see `next_below`).
+
+#### `Rng.next() -> Int`
+
+Advance the generator and return a pseudo-random Int in [1, 2^31-1). The incoming state is normalized first, so a hand-built `Rng(0)` / `Rng(-5)` (which bypasses `seed`) still yields an in-range draw instead of sticking at 0 or going negative.
+
+#### `Rng.next_below(bound: Int) -> Int`
+
+A pseudo-random Int in [0, bound). `bound` must be positive (RFC-0044 rule 3): a non-positive bound has no valid range, so it fails loudly naming the bad argument rather than dividing by zero. It must also be below the generator range `2^31-1` (`next`'s cardinality): the reducer is `n % bound`, so a `bound` at or above that range cannot produce every value in `[0, bound)` and would silently under-cover it — that impossible case fails loudly too. For a `bound` well below the range the modulo bias is negligible; for a strictly uniform bounded draw, use the `Rand` capability's byte-oriented helpers.
+
+#### `Rng.next_bool() -> Bool`
+
+A pseudo-random Bool (true ~half the time).
+
+#### `Rng.choice(xs: List(a)) -> Option(a)`
+
+A pseudo-randomly chosen element of `xs` (`None` if empty). The index comes from `next_below`, whose `% len` reducer carries a negligible modulo bias for ordinary list lengths — plenty for tests, sampling, and games, but not a strict uniform distribution (see `next_below`).
 
 ## `rand`
 
@@ -3444,13 +3452,13 @@ The empty set.
 
 A set of the distinct values in `xs` (duplicates collapse).
 
-#### `fn insert(var s: Set(a), x: a) -> Set(a) where a: Eq`
+#### `fn insert(var s: Set(a), x: a) -> Bool where a: Eq`
 
-`s` with `x` added (a no-op if already present).
+Add `x`, returning whether it was newly inserted.
 
-#### `fn remove(var s: Set(a), x: a) -> Set(a) where a: Eq`
+#### `fn remove(var s: Set(a), x: a) -> Bool where a: Eq`
 
-`s` with `x` removed (a no-op if absent).
+Remove `x`, returning whether it was present.
 
 #### `fn contains(s: Set(a), x: a) -> Bool where a: Eq`
 
@@ -3492,13 +3500,13 @@ Whether every member of `s` is also in `t`.
 
 Whether the two sets share no members.
 
-#### `Set.insert(x: a) -> Set(a)`
+#### `Set.insert(x: a) -> Bool`
 
-`s` with `x` added (a no-op if already present).
+Add `x`, returning whether it was newly inserted.
 
-#### `Set.remove(x: a) -> Set(a)`
+#### `Set.remove(x: a) -> Bool`
 
-`s` with `x` removed (a no-op if absent).
+Remove `x`, returning whether it was present.
 
 ### Trait implementations
 
@@ -3658,7 +3666,7 @@ Whether `needle` occurs in `s`.
 
 The character index (counted by Unicode scalar) of the first occurrence of `needle` as `Some`, or `None` when `needle` does not occur (RFC-0044 rule 1: absence is `Option`, never a -1 sentinel). An empty `needle` matches nothing (the module-wide empty-pattern rule, matching `last_index_of`/`count`). For a bare yes/no, use `contains`.
 
-#### `fn replace(var s: String, from: String, to: String) -> String`
+#### `fn replace(s: String, from: String, to: String) -> String`
 
 Replace every occurrence of `from` with `to`.
 
@@ -3666,13 +3674,13 @@ Replace every occurrence of `from` with `to`.
 
 The substring from character index `start` (inclusive) to `end` (exclusive), counted by Unicode scalar; out-of-range indices clamp.
 
-#### `fn to_upper(var s: String) -> String`
+#### `fn to_upper(s: String) -> String`
 
 ASCII case mapping (the portable set both backends share).
 
-#### `fn to_lower(var s: String) -> String`
+#### `fn to_lower(s: String) -> String`
 
-#### `fn trim(var s: String) -> String`
+#### `fn trim(s: String) -> String`
 
 Strip leading and trailing ASCII whitespace.
 
@@ -3684,23 +3692,23 @@ Parse a decimal integer; junk, overflow, or an empty string ABORTS the program (
 
 Repeat a string `n` times.
 
-#### `fn pad_left(var s: String, width: Int, fill: String) -> String`
+#### `fn pad_left(s: String, width: Int, fill: String) -> String`
 
 Left-pad `s` with copies of `fill` until it is `width` characters wide. The padding is trimmed to fit exactly, so any non-empty fill yields a result of exactly `width` chars; `s` is returned unchanged when already that long. An empty `fill` can never reach the promised width, so when padding is needed it fails loudly (RFC-0044 rule 3) instead of returning a short string.
 
-#### `fn pad_right(var s: String, width: Int, fill: String) -> String`
+#### `fn pad_right(s: String, width: Int, fill: String) -> String`
 
 Right-pad `s` with copies of `fill` until it is `width` characters wide; an empty `fill` fails loudly when padding is needed (see `pad_left`).
 
-#### `fn center(var s: String, width: Int, fill: String) -> String`
+#### `fn center(s: String, width: Int, fill: String) -> String`
 
 Center `s` in a field `width` characters wide, padding both sides with `fill`; an odd remainder goes on the right. `s` is returned unchanged when already at least that wide; an empty `fill` fails loudly when padding is needed (see `pad_left`).
 
-#### `fn strip_prefix(var s: String, prefix: String) -> String`
+#### `fn strip_prefix(s: String, prefix: String) -> String`
 
 Remove `prefix` from the front of `s` when present; otherwise return `s` unchanged. The complement of the `starts_with` builtin.
 
-#### `fn strip_suffix(var s: String, suffix: String) -> String`
+#### `fn strip_suffix(s: String, suffix: String) -> String`
 
 Remove `suffix` from the end of `s` when present; otherwise return `s` unchanged. The complement of the `ends_with` builtin.
 
@@ -3732,7 +3740,7 @@ The number of non-overlapping occurrences of `sub` in `s` (0 for an empty `sub`)
 
 The whitespace-separated words of `text`: tabs, newlines, and carriage returns are treated as spaces, and empty pieces (from runs of whitespace) are dropped. `words("the  quick\tfox")` is `["the", "quick", "fox"]`.
 
-#### `fn replace_first(var s: String, from: String, to: String) -> String`
+#### `fn replace_first(s: String, from: String, to: String) -> String`
 
 Replace only the first occurrence of `from` with `to`; return `s` unchanged when `from` is absent. An empty `from` matches nothing (the module-wide empty-pattern rule: `count`/`index_of`/`last_index_of` treat it as absent). (The `replace` builtin replaces every occurrence.)
 
@@ -3764,11 +3772,11 @@ Safely parse a base-10 integer: an optional leading `-`/`+` then one or more dig
 
 Split text into its newline-separated lines.
 
-#### `fn trim_start(var s: String) -> String`
+#### `fn trim_start(s: String) -> String`
 
 Remove leading whitespace.
 
-#### `fn trim_end(var s: String) -> String`
+#### `fn trim_end(s: String) -> String`
 
 Remove trailing whitespace.
 

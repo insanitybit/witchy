@@ -89,4 +89,6 @@ fn scan_compartments(s: String) -> List(String):
             []
         else:
             let id = string.substring(after, 0, close)
-            list.push(scan_compartments(string.drop(after, close)), id)
+            var out = scan_compartments(string.drop(after, close))
+            out.push(id)
+            out

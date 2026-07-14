@@ -29,17 +29,18 @@ fn normalize(s: Int) -> Int:
 pub fn seed(s: Int) -> Rng:
     Rng(normalize(s))
 
-// Advance the generator: a pseudo-random Int in [1, 2^31-1) and the next state.
+// Advance the generator and return a pseudo-random Int in [1, 2^31-1).
 // The incoming state is normalized first, so a hand-built `Rng(0)` / `Rng(-5)`
 // (which bypasses `seed`) still yields an in-range draw instead of sticking at 0
 // or going negative.
-pub fn next(r: Rng) -> (Int, Rng):
+pub fn next(var r: Rng) -> Int:
     match r:
         Rng(state) ->
             let n = normalize(state) * 16807 % modulus()
-            (n, Rng(n))
+            r = Rng(n)
+            n
 
-// A pseudo-random Int in [0, bound) and the next state. `bound` must be positive
+// A pseudo-random Int in [0, bound). `bound` must be positive
 // (RFC-0044 rule 3): a non-positive bound has no valid range, so it fails loudly
 // naming the bad argument rather than dividing by zero. It must also be below the
 // generator range `2^31-1` (`next`'s cardinality): the reducer is `n % bound`, so
@@ -47,27 +48,37 @@ pub fn next(r: Rng) -> (Int, Rng):
 // would silently under-cover it — that impossible case fails loudly too. For a
 // `bound` well below the range the modulo bias is negligible; for a strictly
 // uniform bounded draw, use the `Rand` capability's byte-oriented helpers.
-pub fn next_below(r: Rng, bound: Int) -> (Int, Rng):
+pub fn next_below(var r: Rng, bound: Int) -> Int:
     if bound <= 0:
         fail("prng.next_below: bound `${bound}` must be positive")
     if bound >= modulus():
         fail("prng.next_below: bound `${bound}` is at or above the generator range (2^31-1) and cannot be covered")
-    let (n, r2) = next(r)
-    (n % bound, r2)
+    next(r) % bound
 
-// A pseudo-random Bool (true ~half the time) and the next state.
-pub fn next_bool(r: Rng) -> (Bool, Rng):
-    let (n, r2) = next(r)
-    (n % 2 == 0, r2)
+// A pseudo-random Bool (true ~half the time).
+pub fn next_bool(var r: Rng) -> Bool:
+    next(r) % 2 == 0
 
-// A pseudo-randomly chosen element of `xs` (`None` if empty) and the next state.
+// A pseudo-randomly chosen element of `xs` (`None` if empty).
 // The index comes from `next_below`, whose `% len` reducer carries a negligible
 // modulo bias for ordinary list lengths — plenty for tests, sampling, and games,
 // but not a strict uniform distribution (see `next_below`).
-pub fn choice(xs: List(a), r: Rng) -> (Option(a), Rng):
+pub fn choice(xs: List(a), var r: Rng) -> Option(a):
     let len = list.length(xs)
     if len == 0:
-        (None, r)
+        None
     else:
-        let (i, r2) = next_below(r, len)
-        (Some(list.at(xs, i)), r2)
+        Some(list.at(xs, next_below(r, len)))
+
+impl Rng:
+    pub fn next(var self) -> Int:
+        next(self)
+
+    pub fn next_below(var self, bound: Int) -> Int:
+        next_below(self, bound)
+
+    pub fn next_bool(var self) -> Bool:
+        next_bool(self)
+
+    pub fn choice(var self, xs: List(a)) -> Option(a):
+        choice(xs, self)

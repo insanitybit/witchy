@@ -3,7 +3,7 @@ fn main(console: Console, clock: Clock):
     var acc = []
     var i = 0
     while i < 3000000:
-        acc = list.push(acc, i)
+        list.push(acc, i)
         i = i + 1
     var total = 0
     for x in acc:

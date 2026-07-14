@@ -69,7 +69,7 @@ mod tests {
 
     // An accumulation loop: in-place push keeps it O(n); forced copy re-owns at
     // every iteration and balloons the heap to O(n^2).
-    const ACC: &str = "fn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < 400:\n        xs = list.push(xs, i)\n        i = i + 1\n    console.print(\"${list.length(xs)}\")\n";
+    const ACC: &str = "fn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < 400:\n        list.push(xs, i)\n        i = i + 1\n    console.print(\"${list.length(xs)}\")\n";
 
     // A soak loop: per-iteration scratch that never escapes. The `region`
     // (loop-watermark) reclaim resets the arena each iteration, so heap stays
@@ -162,7 +162,7 @@ mod tests {
     /// buffer is never aliased — the field-push-safe gate lets R2 fire.
     #[test]
     fn record_field_list_push_is_in_place() {
-        const REC: &str = "type Stack:\n    items: List(Int)\n    size: Int\n\nfn build(n: Int) -> Stack:\n    var s = Stack([], 0)\n    var i = 0\n    while i < n:\n        s.items = list.push(s.items, i)\n        i = i + 1\n    s\n\nfn main(console: Console):\n    console.print(\"${list.length(build(200).items)}\")\n";
+        const REC: &str = "type Stack:\n    items: List(Int)\n    size: Int\n\nfn build(n: Int) -> Stack:\n    var s = Stack([], 0)\n    var i = 0\n    while i < n:\n        list.push(s.items, i)\n        i = i + 1\n    s\n\nfn main(console: Console):\n    console.print(\"${list.length(build(200).items)}\")\n";
         opt::set_for_tests(Some(OptSet::default_set()));
         let on = compute(REC).expect("on");
         opt::set_for_tests(Some(OptSet::default_set().without(Opt::InPlace)));
@@ -217,7 +217,7 @@ mod tests {
         let corpus = [
             // accumulation (inplace) + string build + dict update + fold, with a
             // `nodes.push` statement and escape-free loop scratch (region).
-            "fn main(console: Console):\n    var xs = []\n    var s = \"\"\n    var d = dict.new()\n    var i = 0\n    while i < 300:\n        let scratch = [i, i + 1]\n        xs.push(i + list.length(scratch) - 2)\n        s = s + \"${i % 10}\"\n        d = dict.update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    let folded = 2 * 3 + 4\n    console.print(\"${list.length(xs)}\")\n    console.print(\"${string.length(s)}\")\n    console.print(\"${dict.get_or(d, 3, 0)}\")\n    console.print(\"${folded}\")\n",
+            "fn main(console: Console):\n    var xs = []\n    var s = \"\"\n    var d = dict.new()\n    var i = 0\n    while i < 300:\n        let scratch = [i, i + 1]\n        xs.push(i + list.length(scratch) - 2)\n        s = s + \"${i % 10}\"\n        dict.update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    let folded = 2 * 3 + 4\n    console.print(\"${list.length(xs)}\")\n    console.print(\"${string.length(s)}\")\n    console.print(\"${dict.get_or(d, 3, 0)}\")\n    console.print(\"${folded}\")\n",
             // `for var` write-back over record elements.
             "type P:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    var ps = [P(1, 2), P(3, 4)]\n    for var p in ps:\n        p.x = p.x + 100\n    console.print(\"${ps}\")\n",
             // confined slice VIEW: a read-only window over an unmutated param,
@@ -252,21 +252,21 @@ mod tests {
             // `WITCHY_OPT` setting and match the interpreter — the parity guard for
             // the residual the floor will eventually bound (see
             // `cache_eviction_leaks_without_rc_floor`).
-            "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < 40:\n        d = dict.insert(d, i, i * 2)\n        d = dict.remove(d, i)\n        i = i + 1\n    console.print(\"${dict.length(d)}\")\n    d = dict.insert(d, 7, 70)\n    console.print(\"${dict.get_or(d, 7, 0)}\")\n",
+            "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < 40:\n        dict.insert(d, i, i * 2)\n        dict.remove(d, i)\n        i = i + 1\n    console.print(\"${dict.length(d)}\")\n    dict.insert(d, 7, 70)\n    console.print(\"${dict.get_or(d, 7, 0)}\")\n",
             // (RFC-0033 R2) FIELD-PATH list push: `s.items = list.push(s.items, x)`
             // grows the field's list buffer in place (build), AND a FIELD-ALIASED case
             // (`let snap = s.items`) that must NOT mutate the snapshot — value
             // semantics pin "102". The field-push-safe gate disables R2 once the field
             // is read for the snapshot; an unsound in-place would print "202" (caught
             // here, e.g. under `-sroa`, which is how the naive R2 was rejected).
-            "type Stack:\n    items: List(Int)\n    size: Int\n\nfn build(n: Int) -> Stack:\n    var s = Stack([], 0)\n    var i = 0\n    while i < n:\n        s.items = list.push(s.items, i)\n        i = i + 1\n    s\n\nfn aliased() -> Int:\n    var s = Stack([], 0)\n    s.items = list.push(s.items, 1)\n    let snap = s.items\n    s.items = list.push(s.items, 2)\n    list.length(snap) * 100 + list.length(s.items)\n\nfn main(console: Console):\n    console.print(\"${list.length(build(50).items)}\")\n    console.print(\"${aliased()}\")\n",
+            "type Stack:\n    items: List(Int)\n    size: Int\n\nfn build(n: Int) -> Stack:\n    var s = Stack([], 0)\n    var i = 0\n    while i < n:\n        list.push(s.items, i)\n        i = i + 1\n    s\n\nfn aliased() -> Int:\n    var s = Stack([], 0)\n    list.push(s.items, 1)\n    let snap = s.items\n    list.push(s.items, 2)\n    list.length(snap) * 100 + list.length(s.items)\n\nfn main(console: Console):\n    console.print(\"${list.length(build(50).items)}\")\n    console.print(\"${aliased()}\")\n",
             // (RFC-0033 R2) WHOLE-RECORD alias of a field-push record: `let x = s`
             // then another `s.items = list.push(s.items, …)`. The field-push-safe gate
             // PASSES (s.items is read only as the push receiver), so the second guard —
             // `eff = field_cap * (record owned)` — must force a field copy because the
             // record is no longer uniquely owned, leaving the alias's `x.items` length
             // at 1. An unsound in-place would grow x's shared buffer to 2.
-            "type Stack:\n    items: List(Int)\n    size: Int\n\nfn whole() -> Stack:\n    var s = Stack([], 0)\n    s.items = list.push(s.items, 1)\n    let x = s\n    s.items = list.push(s.items, 2)\n    s.size = list.length(x.items)\n    s\n\nfn main(console: Console):\n    let r = whole()\n    console.print(\"${r.size}\")\n    console.print(\"${list.length(r.items)}\")\n",
+            "type Stack:\n    items: List(Int)\n    size: Int\n\nfn whole() -> Stack:\n    var s = Stack([], 0)\n    list.push(s.items, 1)\n    let x = s\n    list.push(s.items, 2)\n    s.size = list.length(x.items)\n    s\n\nfn main(console: Console):\n    let r = whole()\n    console.print(\"${r.size}\")\n    console.print(\"${list.length(r.items)}\")\n",
             // (RFC-0034 L3) Closure devirtualization: `g` is a single-bound CAPTURING
             // closure (captures `k`) called in a loop — devirtualized to a direct
             // `call $__lamw`, the env (so the capture) must still flow, so toggling
@@ -332,7 +332,7 @@ mod tests {
     fn confined_view_elides_the_slice_copy() {
         // `xs` is a 400-element param; `win` slices the whole thing and reads it
         // only via `length`/`at`. The window copy is ~400*8 bytes.
-        let src = "import list\n\nfn win(xs: List(Int)) -> Int:\n    let w = list.slice(xs, 0, 400)\n    var t = 0\n    var j = 0\n    while j < list.length(w):\n        t = t + list.at(w, j)\n        j = j + 1\n    t\n\nfn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < 400:\n        xs = list.push(xs, i)\n        i = i + 1\n    console.print(\"${win(xs)}\")\n";
+        let src = "import list\n\nfn win(xs: List(Int)) -> Int:\n    let w = list.slice(xs, 0, 400)\n    var t = 0\n    var j = 0\n    while j < list.length(w):\n        t = t + list.at(w, j)\n        j = j + 1\n    t\n\nfn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < 400:\n        list.push(xs, i)\n        i = i + 1\n    console.print(\"${win(xs)}\")\n";
         opt::set_for_tests(Some(OptSet::default_set()));
         let on = compute(src).expect("views on");
         opt::set_for_tests(Some(OptSet::default_set().without(Opt::Views)));
@@ -479,7 +479,7 @@ mod tests {
     fn bounded_keyset_dict_cache_is_already_bounded() {
         let prog = |n: i32| {
             format!(
-                "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < {n}:\n        d = dict.insert(d, i % 8, i)\n        i = i + 1\n    console.print(\"${{dict.length(d)}}\")\n"
+                "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < {n}:\n        dict.insert(d, i % 8, i)\n        i = i + 1\n    console.print(\"${{dict.length(d)}}\")\n"
             )
         };
         opt::set_for_tests(Some(OptSet::default_set()));
@@ -517,7 +517,7 @@ mod tests {
     fn cache_eviction_bounded_by_rc_floor() {
         let prog = |n: i32| {
             format!(
-                "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < {n}:\n        d = dict.insert(d, i, i)\n        d = dict.remove(d, i)\n        i = i + 1\n    console.print(\"${{dict.length(d)}}\")\n"
+                "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    var i = 0\n    while i < {n}:\n        dict.insert(d, i, i)\n        dict.remove(d, i)\n        i = i + 1\n    console.print(\"${{dict.length(d)}}\")\n"
             )
         };
         // RC-floor OFF (the opt-in lever absent): the eviction garbage leaks O(n).
@@ -617,7 +617,7 @@ mod tests {
     /// leak metric for the shared-value floor — a direct object count, sharper than heap bytes.
     #[test]
     fn read_out_churn_reclaimed_by_rc_floor() {
-        let src = "import list\ntype Box:\n    Box(String)\nfn unwrap(b: Box) -> String:\n    match b:\n        Box(s) -> s\nfn main(console: Console):\n    var xs = [Box(\"a\"), Box(\"b\"), Box(\"c\"), Box(\"d\")]\n    var i = 0\n    while i < 2000:\n        let held = list.at(xs, 0)\n        let s = unwrap(held)\n        xs = list.set_at(xs, 0, Box(\"z\"))\n        i = i + 1\n    console.print(unwrap(list.at(xs, 1)))\n";
+        let src = "import list\ntype Box:\n    Box(String)\nfn unwrap(b: Box) -> String:\n    match b:\n        Box(s) -> s\nfn main(console: Console):\n    var xs = [Box(\"a\"), Box(\"b\"), Box(\"c\"), Box(\"d\")]\n    var i = 0\n    while i < 2000:\n        let held = list.at(xs, 0)\n        let s = unwrap(held)\n        list.set_at(xs, 0, Box(\"z\"))\n        i = i + 1\n    console.print(unwrap(list.at(xs, 1)))\n";
         opt::set_for_tests(Some(OptSet::default_set().without(Opt::RcFloor)));
         let off = compute(src).expect("off");
         opt::set_for_tests(Some(OptSet::default_set().with(Opt::RcFloor)));
@@ -689,7 +689,7 @@ mod tests {
         // The all-scalar producer/consumer kernel, parametric in N (ring cap 64).
         let soa_src = |n: i64| {
             format!(
-                "import list\n\nfn wrap(x: Int, m: Int) -> Int:\n    if x >= m: x - m else: x\n\nfn run(np: Int, cap: Int) -> Int:\n    var ring = list.range_between(0, cap)\n    var head = 0\n    var tail = 0\n    var count = 0\n    var status = [0, 0]\n    var f0 = [np, 0]\n    var f1 = [0, 0]\n    var go = true\n    while go:\n        var prog = false\n        if list.at(status, 0) != 3:\n            if count < cap:\n                let i = list.at(f1, 0)\n                if i < list.at(f0, 0):\n                    ring = list.set_at(ring, tail, i)\n                    tail = wrap(tail + 1, cap)\n                    count = count + 1\n                    f1 = list.set_at(f1, 0, i + 1)\n                    prog = true\n                else:\n                    status = list.set_at(status, 0, 3)\n                    prog = true\n        if list.at(status, 1) != 3:\n            if count > 0:\n                let v = list.at(ring, head)\n                head = wrap(head + 1, cap)\n                count = count - 1\n                f0 = list.set_at(f0, 1, list.at(f0, 1) + v)\n                let seen = list.at(f1, 1) + 1\n                f1 = list.set_at(f1, 1, seen)\n                if seen >= np:\n                    status = list.set_at(status, 1, 3)\n                prog = true\n        if list.at(status, 0) == 3 && list.at(status, 1) == 3:\n            go = false\n        else if prog:\n            go = true\n        else:\n            go = false\n    list.at(f0, 1)\n\nfn main(console: Console):\n    console.print(\"${{run({n}, 64)}}\")\n",
+                "import list\n\nfn wrap(x: Int, m: Int) -> Int:\n    if x >= m: x - m else: x\n\nfn run(np: Int, cap: Int) -> Int:\n    var ring = list.range_between(0, cap)\n    var head = 0\n    var tail = 0\n    var count = 0\n    var status = [0, 0]\n    var f0 = [np, 0]\n    var f1 = [0, 0]\n    var go = true\n    while go:\n        var prog = false\n        if list.at(status, 0) != 3:\n            if count < cap:\n                let i = list.at(f1, 0)\n                if i < list.at(f0, 0):\n                    list.set_at(ring, tail, i)\n                    tail = wrap(tail + 1, cap)\n                    count = count + 1\n                    list.set_at(f1, 0, i + 1)\n                    prog = true\n                else:\n                    list.set_at(status, 0, 3)\n                    prog = true\n        if list.at(status, 1) != 3:\n            if count > 0:\n                let v = list.at(ring, head)\n                head = wrap(head + 1, cap)\n                count = count - 1\n                list.set_at(f0, 1, list.at(f0, 1) + v)\n                let seen = list.at(f1, 1) + 1\n                list.set_at(f1, 1, seen)\n                if seen >= np:\n                    list.set_at(status, 1, 3)\n                prog = true\n        if list.at(status, 0) == 3 && list.at(status, 1) == 3:\n            go = false\n        else if prog:\n            go = true\n        else:\n            go = false\n    list.at(f0, 1)\n\nfn main(console: Console):\n    console.print(\"${{run({n}, 64)}}\")\n",
                 n = n,
             )
         };
@@ -814,7 +814,7 @@ mod tests {
     /// re-allocates the whole list per element (O(n^2)). Output is identical.
     #[test]
     fn for_var_writeback_is_in_place() {
-        let src = "fn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < 300:\n        xs = list.push(xs, i)\n        i = i + 1\n    for var x in xs:\n        x = x + 1\n    console.print(\"${xs.at(0)}\")\n    console.print(\"${xs.at(299)}\")\n";
+        let src = "fn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < 300:\n        list.push(xs, i)\n        i = i + 1\n    for var x in xs:\n        x = x + 1\n    console.print(\"${xs.at(0)}\")\n    console.print(\"${xs.at(299)}\")\n";
         opt::set_for_tests(Some(OptSet::default_set()));
         let on = compute(src).expect("inplace on");
         opt::set_for_tests(Some(OptSet::default_set().without(Opt::InPlace)));

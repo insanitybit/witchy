@@ -14,7 +14,7 @@ fn main(console: Console, clock: Clock):
     var xs = []
     var i = 0
     while i < 200000:
-        xs = list.push(xs, i)
+        list.push(xs, i)
         i = i + 1
     let n = list.length(xs)
 

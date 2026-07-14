@@ -62,18 +62,19 @@ pub fn path_to(names: List(String), prev: List(Int), target: Int) -> List(String
     var reversed = []
     var current = target
     while current >= 0:
-        reversed = reversed.push(names.at(current))
+        reversed.push(names.at(current))
         current = prev.at(current)
     reversed.reverse()
+    reversed
 
 fn put(xs: List(Int), index: Int, value: Int) -> List(Int):
     var out = []
     var i = 0
     for x in xs:
         if i == index:
-            out = out.push(value)
+            out.push(value)
         else:
-            out = out.push(x)
+            out.push(x)
         i = i + 1
     out
 
@@ -82,9 +83,9 @@ fn put_bool(xs: List(Bool), index: Int, value: Bool) -> List(Bool):
     var i = 0
     for x in xs:
         if i == index:
-            out = out.push(value)
+            out.push(value)
         else:
-            out = out.push(x)
+            out.push(x)
         i = i + 1
     out
 
@@ -92,7 +93,7 @@ fn filled(n: Int, value: Int) -> List(Int):
     var out = []
     var i = 0
     while i < n:
-        out = out.push(value)
+        out.push(value)
         i = i + 1
     out
 
@@ -100,6 +101,6 @@ fn filled_bool(n: Int, value: Bool) -> List(Bool):
     var out = []
     var i = 0
     while i < n:
-        out = out.push(value)
+        out.push(value)
         i = i + 1
     out

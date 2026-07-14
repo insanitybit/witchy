@@ -11,7 +11,7 @@ fn main(console: Console, clock: Clock):
     var i = 0
     while i < 1000000:
         let w = f"word{i % 1000}"
-        d = dict.update(d, w, 0, fn(n: Int): n + 1)
+        dict.update(d, w, 0, fn(n: Int): n + 1)
         i = i + 1
     var total = 0
     for v in dict.values(d):

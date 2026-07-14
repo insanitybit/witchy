@@ -19,7 +19,7 @@ import iter
 fn show(xs: List(Int)) -> String:
     var parts = []
     for x in xs:
-        parts = parts.push("${x}")
+        parts.push("${x}")
     parts.join(", ")
 
 fn main(console: Console):
@@ -61,7 +61,7 @@ gen fn fibs() -> Iter(Int):
 fn show(xs: List(Int)) -> String:
     var parts = []
     for x in xs:
-        parts = parts.push("${x}")
+        parts.push("${x}")
     parts.join(", ")
 
 fn main(console: Console):
@@ -94,7 +94,7 @@ gen fn collatz(start: Int) -> Iter(Int):
 fn show(xs: List(Int)) -> String:
     var parts = []
     for x in xs:
-        parts = parts.push("${x}")
+        parts.push("${x}")
     parts.join(", ")
 
 fn main(console: Console):

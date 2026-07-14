@@ -8,7 +8,7 @@ fn main(console: Console):
 
     var counts = dict.new()
     for w in words:
-        counts = dict.insert(counts, w, dict.get_or(counts, w, 0) + 1)
+        dict.insert(counts, w, dict.get_or(counts, w, 0) + 1)
 
     console.print("${dict.get_or(counts, "the", 0)}")
     console.print("${dict.get_or(counts, "cat", 0)}")
