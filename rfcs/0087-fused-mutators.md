@@ -13,6 +13,8 @@ related:
   - "0050 (method-call generalization - method and free-call forms must agree)"
   - "0051 (memory-safety invariants - optimization follows ownership facts, never method names)"
   - "0070 (0.1 blocking set - one spelling per concept, break rather than deprecate)"
+  - "0083 (opt-mode lifetimes - returned views must block write-back to their live owner)"
+  - "0088 (ownership-aware extraction - optional no-copy implementation after semantics land)"
 tracking: implementation issue TBD
 ---
 
@@ -57,6 +59,10 @@ The receiver must be a mutable place. The call may appear wherever an
 expression of its declared return type may appear. Witchy specifies expression
 evaluation order so effects are deterministic rather than restricting useful
 calls to a bespoke set of "root" positions.
+
+A bare statement may discard a call's ordinary result when the resolved call
+has at least one `var` write-back. The write-back is the statement's effect. A
+non-`var`, non-`Nil` call still requires an explicit `let _ =` discard.
 
 This RFC supersedes RFC-0043's return-shape table and RFC-0064's row-3 error.
 It retains their central lesson: mutation is declared, resolved per concrete
@@ -235,15 +241,25 @@ This RFC deliberately does not introduce "root positions." Effects inside
 expressions already exist through capability calls. A general-purpose language
 needs a general order rule, not a mutation-specific expression grammar.
 
-The existing discarded-result rule remains uniform. A non-`Nil` call used as a
-bare statement is an error whether or not it has `var` parameters:
+The discarded-result rule distinguishes calls that already have a declared
+write-back effect from calls whose only product is their value. A non-`Nil` call
+with at least one resolved `var` argument may be used as a bare statement; its
+ordinary result is discarded after all write-backs commit:
 
 ```
-stack.pop()                // error: Option result discarded
-let _ = stack.pop()        // explicit discard; stack still writes back
+stack.pop()                // legal: pop and discard the Option result
+let _ = stack.pop()        // also legal: makes the discard explicit
 ```
 
-A `Nil`-returning operation such as `stack.push(job)` remains a normal statement.
+A non-`var`, non-`Nil` call used as a bare statement remains an error:
+
+```
+parse(text)                // error: result discarded; use `let _ = parse(text)`
+```
+
+This is not a second mutation rule. A `var` call writes back in every context;
+statement position merely declines its independent result channel. A
+`Nil`-returning operation such as `stack.push(job)` remains a normal statement.
 
 ### 4. Evaluation order
 
@@ -256,7 +272,10 @@ Witchy evaluates user expressions in deterministic source order:
 4. Unary operators evaluate their operand first. Binary operators evaluate the
    left operand before the right. `&&`, `||`, and `??` retain short-circuiting.
 5. Tuple and list elements, constructor fields, record fields, and interpolation
-   holes evaluate left to right in source order.
+   holes evaluate left to right in source order. A comprehension evaluates its
+   generators from left to right as nested loops, each iterable in its ordinary
+   iteration order; filters and the element expression run in written order for
+   each reached iteration.
 6. `if` evaluates its condition before its selected branch. `match`, `if let`,
    and `while let` evaluate the scrutinee before pattern selection and the
    selected body.
@@ -269,16 +288,25 @@ move-in value. After all arguments are evaluated, the callee runs. On return,
 all write-backs commit before the call expression yields its declared result to
 the enclosing expression.
 
+Reservation does not remove or mutate the caller's visible value while later
+arguments are evaluated. A later same-root read observes the value as of that
+later argument position. The callee has not run and no write-back has committed,
+so the read is a snapshot of the same pre-call value; CoW preserves that snapshot
+if the callee subsequently changes its local copy.
+
 Evaluating a `var` argument reserves that place as a write-back destination
 until the call commits. Later argument expressions may read it: the read
 produces an ordinary value snapshot, and CoW preserves that snapshot if the
-callee later updates the `var` value. They may not perform another write-back
-to an overlapping place. The checker uses resolved call effects to reject that
-write conflict locally:
+callee later updates the `var` value. A later argument may not perform another
+write-back to an overlapping place while that reservation is live. A write-back
+completed by an earlier argument is no longer reserved, so legality follows the
+same source order as execution. The checker uses resolved call effects to reject
+the live conflict locally:
 
 ```
 push(stack, stack.last())                 // legal: later argument only reads
 outer(stack, inner(stack))                // error if both calls write `stack`
+outer(inner(stack), stack)                // legal: inner commits before reserve
 ```
 
 The written argument order therefore matters in the same visible way it does
@@ -305,6 +333,11 @@ the captured path. Capturing a place records its root and projection
 coordinates, not an old aggregate snapshot. If the RHS changes the same root
 such that the captured projection is no longer valid, the final store fails by
 the same bounds/field rule as an ordinary place assignment.
+
+This is sequential access, not an overlapping-`var` reservation: the assignment
+has not moved a value out or promised a later call write-back when its coordinates
+are captured. The RHS completes before the assignment store. The checker does
+not reject same-root RHS mutation merely because it may make an index invalid.
 
 This section extends the source-order guarantee already required for keyword
 arguments to every expression family. Both backends must share the same typed
@@ -358,8 +391,16 @@ return and makes no partial-write-back guarantee. No user code resumes after an
 uncaught trap. Host boundaries that catch failures must represent them as a
 normal `Result` if write-back state is observable.
 
-Write-back is all-or-nothing at the language level. The caller cannot observe a
-subset of a multi-`var` call's final values.
+`?` is an ordinary early return, not a transaction boundary. Its desugared
+`match` plus `return Err(e)`/`return None` form has exactly the same write-back
+behavior as the `?` spelling. A function that needs rollback stages changes in
+ordinary locals and assigns its `var` parameters only after every fallible step
+succeeds.
+
+Write-back is all-or-nothing at the language level: every final `var` value from
+one structured return commits together, and the caller cannot observe a subset.
+This is commit atomicity, not rollback of mutations merely because the ordinary
+result is `Err` or `None`.
 
 ### 7. Methods, traits, and free calls agree
 
@@ -427,6 +468,12 @@ Ordinary mutable locals inside async and generator bodies may be passed to
 synchronous `var` calls before or after `await`, or between `yield`s. Their
 write-back completes before the next suspension point.
 
+The shipped async lowering threads locals live across `await` as parameters of
+ordinary segment functions. A synchronous `var` call on such a local must write
+back before the segment constructs its continuation. This seam is a required
+differential test; it does not depend on the deferred frame-record design from
+RFC-0059.
+
 A later opt-mode lifetime RFC may admit asynchronous `var` parameters by
 proving that a place remains exclusively live until task completion. That is a
 compatible extension; this RFC establishes the synchronous semantics it must
@@ -463,7 +510,7 @@ The compiled backend already has the basic multi-result vehicle in
 local; the typed lowerer then commits that scratch through its place plan. A
 plain local destination may be written directly as an optimization. Indirect
 calls require the same result envelope. Early-return lowering appends every
-current `var` local to the result tuple.
+current `var` parameter to the result tuple.
 
 The interpreter must use the same call outcome rather than special-casing
 simple `Expr::Var` arguments in its environment:
@@ -479,6 +526,15 @@ Both backends consume the same resolved convention and place plan. No backend
 may infer write-back from a function name, return shape, statement position, or
 runtime value.
 
+This place-plan machinery is a prerequisite, not incidental plumbing. The
+current interpreter accepts only a bare variable as a procedure-style write-back
+destination, and the compiled fast path likewise assumes local destinations.
+Implementation therefore proceeds oracle-first: build and adversarially test the
+interpreter's nested read/store plan, then make WIR lowering consume the same
+resolved plan. RFC acceptance is blocked until nested field/index plans,
+single-evaluation coordinates, alias snapshots, and post-RHS bounds failures
+agree on both backends.
+
 ### 11. Ownership and optimization
 
 Uniform `var` is a semantic ownership convention, not an optimization hint:
@@ -492,6 +548,15 @@ The uniqueness pass may optimize an unaliased `var` value in place. When the
 value is shared it must preserve CoW behavior. Per the standing RFC-0051 rule,
 new operations may not add method-name-specific `*_cap` helpers or `self_*`
 recognizers.
+
+The semantic cut must preserve the existing load-bearing in-place family in the
+same Phase-1 change that removes statement-mutator reassignment. Today those
+paths recognize `x = f(x, ...)`; after this RFC they must be re-keyed to the
+resolved typed `var` call plus its write-back place. Existing `list.push`,
+`list.set_at`/`update_at`, `dict.insert`/`update`, and string-concat helpers remain
+until a separately measured general mechanism replaces them. Landing correct
+write-back while silently dropping those paths is not acceptable: RFC-0051
+measured OOM and multi-fold regressions without them.
 
 The write-back ABI alone does not make `List.pop` O(1). A correct baseline may
 copy. An optimized pop needs a general ownership-aware extraction operation in
@@ -524,6 +589,7 @@ List.pop_front(var self) -> Option(a)
 List.sort(var self) -> Nil
 List.reverse(var self) -> Nil
 List.set_at(var self, index, value) -> Nil
+List.swap(var self, i: Int, j: Int) -> Nil
 
 Dict.insert(var self, key, value) -> Option(v)
 Dict.remove(var self, key) -> Option(v)
@@ -532,8 +598,9 @@ Set.remove(var self, value) -> Bool
 ```
 
 The exact `Dict`/`Set` auxiliary result follows their totality contract, but no
-self-returning mutator twin remains. Pure queries and transformations retain
-ordinary parameters:
+self-returning mutator twin remains. Their common statement form may discard the
+auxiliary result without `let _ =` because the resolved call has `var`
+write-back. Pure queries and transformations retain ordinary parameters:
 
 ```
 List.map(self, f) -> List(b)
@@ -571,6 +638,16 @@ for _ in 0..10:
 
 This call in argument position is intentional and deterministic under section
 4. No mutation-specific expression restriction is required.
+
+Dictionary construction that formerly chained through temporary receivers uses
+the existing total constructor:
+
+```
+let ages = dict.from_pairs([("ada", 36), ("bob", 41)])
+```
+
+`dict.new().insert(...)` is intentionally not retained: a temporary has no
+caller place for write-back.
 
 ### API audit rule
 
@@ -627,10 +704,28 @@ becomes:
 let value = step(state)
 ```
 
-The compiler emits targeted migration diagnostics for old stdlib signatures
-and call shapes. The formatter may perform unambiguous statement rewrites, but
-it must not guess whether an expression call intended mutation or a derived
-copy.
+Before flipping semantics, the implementation branch runs a type-resolved
+mutation census over std, examples, book, and projects. It classifies every
+resolved current mutator call as a mechanical self-rebind, statement mutation,
+derived-copy expression, nested/argument call, or temporary-receiver chain, and
+classifies every `var self -> Self` declaration as imperative or pure. A regex
+count is not acceptance evidence.
+
+Temporary migration tooling makes expression-position calls to an old resolved
+mutator receiver loud during the repository cut, forcing an explicit
+copy-first-or-mutate decision. This is migration tooling, not permanent source
+semantics, and is removed before release. The formatter may perform unambiguous
+statement rewrites, but it must not guess whether an expression call intended
+mutation or a derived copy.
+
+The review census at master `1d96bcfe` is a sizing floor, not the final report:
+386 self-reassignment sites are expected to be mechanical; roughly 20
+argument-position mutator calls require restructuring; the executed book example
+contains one temporary-receiver insertion chain; 17 statement insertions exercise
+the auxiliary-result discard decision; and 26 `var`-receiver operations require
+signature classification. The compiler-produced, type-resolved report remains
+authoritative because these classes overlap and source text alone cannot resolve
+the callee.
 
 Because Witchy is pre-0.1, this RFC chooses one coherent semantic cut rather
 than editions, compatibility shims, or duplicate APIs. The repository, book,
@@ -643,8 +738,11 @@ Required diagnostics include:
 - immutable or temporary `var` argument: name the callee, parameter, and the
   binding that must become `var`;
 - overlapping `var` places: print both argument positions and their common
-  mutable root;
-- discarded non-`Nil` result: preserve the existing `let _ =` teaching fix;
+  mutable root; when a nested call conflicts with an earlier reservation, name
+  the earlier argument and explain that written evaluation order keeps that
+  reservation live;
+- discarded non-`Nil` result from a call without `var` write-back: preserve the
+  existing `let _ =` teaching fix;
 - `move` passed to `var`: explain that write-back needs a live place;
 - defaulted `var` parameter: explain that omission has no write-back target;
 - async/gen `var` parameter: name suspension and the deferred lifetime model;
@@ -661,22 +759,29 @@ The RFC is implemented only when all of the following are true:
 1. Declaration checking accepts every return type and parameter position for
    `var`; the RFC-0064 row-3 error is removed.
 2. Every direct and method call writes back every `var` parameter on tail,
-   explicit `return`, and callee-side `?`.
+   explicit `return`, and callee-side `?`; a partial-progress multi-`var` test
+   proves that `?`, its explicit-return desugaring, and tail `Err` commit the same
+   final values. The matrix includes a Result/Option receiver mutator with an
+   additional `var` parameter so mutator classification cannot bypass the `?`
+   path.
 3. Immutable places, temporaries, `move`, defaults, and overlapping places fail
    with the diagnostics above.
 4. Nested field/index places evaluate each index exactly once and write back on
    both backends.
-5. Expression-order tests cover calls, operators, tuples/lists, interpolation,
-   `??`, match/if, and assignment with observable effects.
+5. Expression-order tests cover calls, operators, tuples/lists,
+   comprehensions, interpolation, `??`, match/if, and assignment with observable
+   effects.
 6. Free-call and method-call forms have identical behavior.
 7. Trait declarations and implementations preserve conventions through typed
    dispatch.
 8. Function values and closures carry conventions through direct and indirect
    calls on both backends.
 9. Async/gen parameters reject while synchronous `var` calls on their locals
-   work across suspension points.
-10. Non-`Nil` discarded calls still reject; `let _ =` performs write-back and
-    explicitly discards only the ordinary result.
+   work across suspension points, including a local threaded through the shipped
+   async segment-function lowering.
+10. A bare call with resolved `var` write-back may discard its ordinary result;
+    a non-`var`, non-`Nil` bare call still rejects; `let _ =` remains an explicit
+    discard in either case.
 11. Differential tests cover zero, one, and multiple `var` parameters; generic
     and alias-equal return types; same-typed auxiliary results; and caller-side
     `?`/`??` after write-back.
@@ -686,6 +791,16 @@ The RFC is implemented only when all of the following are true:
     syntax, and complete evaluation order. `spec/stdlib.md` is regenerated.
 14. Any optimized extraction path has aliasing, refcount, heap-bound, and
     benchmark evidence; otherwise no O(1) or no-copy claim is published.
+15. The Phase-1 semantic cut preserves RFC-0051's existing in-place behavior.
+    `word_count`, `dict_count`, `list_sum`, and `knucleotide` do not OOM, and
+    `list_index`, `binary_trees`, and `expr_eval` stay within RFC-0051's recorded
+    non-regression thresholds. `WITCHY_OPT=-inplace` remains the forced-copy
+    differential oracle, not the release configuration.
+16. A checked-in type-resolved migration report accounts for every affected
+    declaration and call in std, examples, book, and projects before the old
+    rewrite is deleted.
+17. This cut lands before 0.1 as RFC-0070's uniform-mutation coherence item; the
+    release ledger and changelog do not describe the superseded two-shape rule.
 
 ## Alternatives
 
@@ -744,6 +859,10 @@ back into exclusive caller places.
   shim.
 - Pure chaining through imperative names disappears. Deriving a changed copy
   takes a mutable local, which is longer but honest about the copy and update.
+- Bare statement calls with `var` write-back may discard an auxiliary result.
+  This trades the blanket unused-result error for ergonomic imperative updates;
+  APIs whose result must be inspected need an explicit future must-use contract,
+  not an accidental dependence on whether they mutate.
 - Specifying full expression order constrains future optimizer reordering.
   Observable effects already require that constraint; optimizers may reorder
   only when effect and alias analysis proves equivalence.
@@ -784,7 +903,9 @@ On acceptance:
   force. Its return-shape classification and statement-only mutator rewrite are
   superseded.
 - RFC-0064's declaration check rejecting non-`Nil`, non-self `var` functions is
-  deleted. Its discarded-result error remains and applies uniformly.
+  deleted. Its discarded-result error remains for non-`var` calls; a call with a
+  resolved `var` write-back may be a statement because write-back is already an
+  observable declared effect.
 - RFC-0028's place machinery remains, but method-statement write-back is no
   longer a special desugar. Typed `var` calls use generalized place plans.
 - RFC-0050 method syntax continues to be ordinary resolved call sugar; this RFC

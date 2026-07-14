@@ -5,6 +5,10 @@ status: proposed
 created: 2026-07-12
 superseded-by:
 tracking:
+related:
+  - "0029 (optimization contract - missed facts copy or reject in opt mode)"
+  - "0087 (uniform var write-back - active returned views block owner write-back)"
+  - "0088 (ownership-aware extraction - active loans constrain in-place extraction)"
 ---
 
 # RFC-0083: Opt-mode lifetimes and returnable borrowed views
@@ -15,7 +19,9 @@ Complete the tier-4 work anticipated by RFC-0026, RFC-0028, RFC-0029, and
 `performance-modes.md`: `mode opt` files may name lifetime relationships and
 return read-only borrowed views without copying. Lifetimes describe
 representation validity, not new observable aliasing. Normal witchy retains
-owned value semantics and no lifetime syntax requirement.
+owned value semantics and no lifetime syntax requirement. A returned view still
+carries its owner obligation across the mode boundary: normal callers do not
+spell lifetimes, but the checker enforces the callee's declared relation.
 
 The first version deliberately excludes mutable references. Read-only borrows
 can be materialized to owned values as a differential oracle; observable mutable
@@ -88,15 +94,51 @@ frozen. Sending a view through a channel or storing it in an owned `Dynamic`
 value requires materialization unless the receiver's scope is statically within
 the same lifetime.
 
+The typed function convention records each returned view's dependency on an
+input lifetime. That relation survives direct calls, trait dispatch, function
+values, and module boundaries. At a call site, the returned value creates a loan
+of the corresponding owner. The loan ends at the view's last use, or when the
+view is consumed by `.owned()` and the owned result no longer depends on the
+source storage.
+
 ### Public APIs and mode boundaries
 
 A public function may expose a borrowed result only from a `mode opt` module.
 Normal callers can consume it in a statically bounded scope or call `.owned()`
-to materialize. Type inference inserts no hidden long-lived borrow.
+to materialize. Type inference inserts no hidden long-lived borrow, but it does
+instantiate and enforce the borrow relation already present in the function
+type. Normal source does not need lifetime syntax for this enforcement.
 
 At a normal-to-opt boundary, ordinary owned arguments satisfy borrowed inputs.
 At an opt-to-normal boundary, a borrowed result must be consumed locally or
 materialized before entering an API that promises ownership.
+
+While that returned view is live, every caller mode rejects moving or mutating
+its owner, including passing the owner to `own` or `var`, assigning through an
+owner place, or carrying an unresolved loan across task/channel escape. This is
+the same borrow rule as inside `mode opt`; a mode boundary cannot erase it.
+
+### Cross-mode enforcement and representation
+
+The return-to-input lifetime relation is a typed call fact, not an AST-local
+heuristic and not merely an escape-summary bit. The normal-mode type checker
+consumes it when checking the caller body. The ownership/uniqueness analysis
+consumes the same active-loan fact: an owner with a live shared loan is not
+available for an in-place mutation or extraction path, even when its reference
+count happens to be one.
+
+The compiled representation must also keep the borrowed storage alive. A view
+either retains a runtime root/lease for its owner or is proven not to outlive an
+already-live owner local; the root is released after the view's last use. Host
+views carry the corresponding host lease. `Summaries::arg_leaks` may transport
+part of this information, but it is not the semantic source of truth and cannot
+replace the function type's lifetime relation.
+
+The interpreter may materialize views for simplicity, but it must enforce the
+same source-level owner loan. Forced-copy differential mode is a value oracle,
+not permission to accept a mutation that the borrowed representation rejects.
+Users who need to mutate the owner first materialize with `.owned()` and end the
+view's use.
 
 ### Semantic parity and fallback
 
@@ -126,6 +168,31 @@ the performance RFCs. It must not become a second AST-local fact engine.
 Diagnostics name the owner, borrow creation, required lifetime, conflicting move
 or mutation, and the `.owned()` escape hatch.
 
+The diagnostic at a normal-mode call site also names the opt-mode API whose
+return type created the loan. Optimization diagnostics distinguish a live loan
+from ordinary refcount sharing; silently treating a live loan as unique would be
+a soundness bug, not a missed optimization.
+
+## Acceptance criteria
+
+1. Typed direct, trait, and indirect calls preserve an output-to-input lifetime
+   relation; erasing conventions at a function-value boundary is rejected.
+2. Normal and opt callers reject owner mutation, move, and `var` write-back
+   while a returned view remains live, with matching diagnostics.
+3. Last-use analysis and `.owned()` end the loan without extending it to the
+   owner's whole lexical scope.
+4. Nested owners, views returned through one wrapper function, and multiple
+   shared views retain the correct root and reject the same conflicts.
+5. WIR keeps owner storage or its host lease alive until the last view use;
+   refcount, trap, and early-return tests detect premature release and leaks.
+6. Ownership analysis treats an active view loan as unavailable for in-place
+   update or extraction. Forced-copy and optimized executions remain value
+   equivalent.
+7. Async, closure, task, channel, record, and `Dynamic` escape cases either
+   prove the lifetime relation or require materialization.
+8. Interpreter and compiled-backend tests cover every boundary above, including
+   a normal caller of an opt API.
+
 ## Alternatives
 
 - **Copy every returned slice.** Keeps the language simple but blocks zero-copy
@@ -145,6 +212,9 @@ or mutation, and the `.owned()` escape hatch.
 - Mode boundaries and materialization rules add API-design choices.
 - Precise interprocedural lifetime facts likely require CFG/SSA work.
 - Borrowed host resources remain a separate hard problem.
+- Normal code can receive a borrow diagnostic after calling an opt API even
+  though normal source never spells a lifetime. The diagnostic must make the
+  hidden function-type relation and `.owned()` remedy explicit.
 
 ## Prior art
 

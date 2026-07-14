@@ -12,6 +12,7 @@ related:
   - "0005 / externref-implementation-plan (decided IN, scoped)"
   - "0054 (decided UN-DEFERRED)"
   - "0066 (decided IN)"
+  - "0087 (uniform var write-back - decided IN before 0.1)"
 ---
 
 # RFC-0070: the 0.1 blocking set
@@ -195,6 +196,21 @@ here). RFC-0069 closes the stringly `TypeInfo` representation before 0.1;
 higher-order metadata beyond declaration kind and type expressions remains
 future work. A matrix test enumerates type × protocol and fails on silent holes.
 
+### D10 — One `var` convention before the first release
+
+RFC-0087 lands as part of the 0.1 coherence cut. The current return-shape table
+makes one `var` declaration mean procedure write-back, statement-only receiver
+write-back, or rejection according to return type and call context. Shipping that
+rule in 0.1 and replacing it immediately afterward would spend the project's
+cheapest breaking-change window on a known temporary model.
+
+Before the tag, `var` means synchronous move-in/move-out for every resolved call,
+independent of return type and expression position. The cut includes the
+type-resolved migration census, nested-place parity gate, convention-bearing
+function values, auxiliary-result statement ergonomics, and RFC-0051 performance
+non-regression required by RFC-0087. No asynchronous `var` parameter, lifetime
+surface, or no-copy extraction claim enters the blocking set.
+
 ## Out — the deferral ledger (0067's "accepted residual" bucket)
 
 | Item | Status decision | Where it's documented |
@@ -217,8 +233,8 @@ No fifth states: everything open is in a decision above or in this table.
    fidelity** (enabler) first among the agent work.
 3. **D2** one-checker mechanism + acceptance-differential gate.
 4. **D5** kill list (one-cut, mechanical parts via the now-trustworthy fmt).
-5. **D3** error cut, then **D6** pipeline reorder, then **D9** protocol
-   matrix.
+5. **D3** error cut, then **D6** pipeline reorder, then **D10** uniform `var`,
+   then **D9** protocol matrix.
 6. Docs truth pass (0063 §1/§6), 0061 operational checklist, tag 0.1.0.
 
 ## What this buys
