@@ -4792,7 +4792,14 @@ impl Checker {
             let mut var_places = Vec::new();
             for (i, (arg, conv)) in args.iter().zip(&convs).enumerate() {
                 match conv {
-                    Convention::Var => match var_place(arg) {
+                    Convention::Var => {
+                        if matches!(arg, Expr::Unary { op: UnOp::Move, .. }) {
+                            return terr(format!(
+                                "argument {} to `{name}` uses `move` for a `var` parameter; write-back requires a live mutable place in the caller",
+                                i + 1
+                            ));
+                        }
+                        match var_place(arg) {
                         Some(place) if self.is_mutable(&place.root) == Some(true) => {
                             for (previous_index, previous) in &var_places {
                                 if places_overlap(previous, &place) {
@@ -4804,6 +4811,7 @@ impl Checker {
                                     ));
                                 }
                             }
+                            self.reject_later_writeback_conflict(name, args, i, &place)?;
                             var_places.push((i, place));
                         }
                         Some(place) => {
@@ -4819,7 +4827,8 @@ impl Checker {
                                 i + 1
                             ))
                         }
-                    },
+                        }
+                    }
                     Convention::Own => {
                         if let Expr::Var(v) = arg {
                             self.consumed.insert(v.clone());
@@ -4847,7 +4856,14 @@ impl Checker {
         let mut var_places = Vec::new();
         for (index, (arg, convention)) in args.iter().zip(conventions).enumerate() {
             match convention {
-                Convention::Var => match var_place(arg) {
+                Convention::Var => {
+                    if matches!(arg, Expr::Unary { op: UnOp::Move, .. }) {
+                        return terr(format!(
+                            "argument {} to `{name}` uses `move` for a `var` parameter; write-back requires a live mutable place in the caller",
+                            index + 1
+                        ));
+                    }
+                    match var_place(arg) {
                     Some(place) if self.is_mutable(&place.root) == Some(true) => {
                         for (previous_index, previous) in &var_places {
                             if places_overlap(previous, &place) {
@@ -4859,6 +4875,7 @@ impl Checker {
                                 ));
                             }
                         }
+                        self.reject_later_writeback_conflict(name, args, index, &place)?;
                         var_places.push((index, place));
                     }
                     Some(place) => {
@@ -4874,13 +4891,177 @@ impl Checker {
                             index + 1
                         ));
                     }
-                },
+                    }
+                }
                 Convention::Own => {
                     if let Expr::Var(var) = arg {
                         self.consumed.insert(var.clone());
                     }
                 }
                 Convention::Let | Convention::Borrow => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn call_conventions_for_expr(&self, name: &str) -> Option<Vec<Convention>> {
+        self.fn_conventions.get(name).cloned().or_else(|| {
+            let ty = self.lookup(name)?;
+            match self.resolve(&ty) {
+                Ty::Fn(_, _, conventions) => Some(conventions.clone()),
+                _ => None,
+            }
+        })
+    }
+
+    fn collect_var_writebacks_in_expr(
+        &self,
+        expr: &Expr,
+        out: &mut Vec<(String, usize, VarPlace)>,
+    ) {
+        match expr {
+            Expr::Call { name, args } => {
+                if let Some(conventions) = self.call_conventions_for_expr(name) {
+                    for (index, (argument, convention)) in
+                        args.iter().zip(&conventions).enumerate()
+                    {
+                        if *convention == Convention::Var
+                            && let Some(place) = var_place(argument)
+                        {
+                            out.push((name.clone(), index, place));
+                        }
+                    }
+                }
+                for argument in args {
+                    self.collect_var_writebacks_in_expr(argument, out);
+                }
+            }
+            Expr::Apply { func, args } => {
+                if let Expr::Var(name) = func.as_ref()
+                    && let Some(conventions) = self.call_conventions_for_expr(name)
+                {
+                    for (index, (argument, convention)) in
+                        args.iter().zip(&conventions).enumerate()
+                    {
+                        if *convention == Convention::Var
+                            && let Some(place) = var_place(argument)
+                        {
+                            out.push((name.clone(), index, place));
+                        }
+                    }
+                }
+                self.collect_var_writebacks_in_expr(func, out);
+                for argument in args {
+                    self.collect_var_writebacks_in_expr(argument, out);
+                }
+            }
+            Expr::Ctor { args, .. }
+            | Expr::AnonCtor { args, .. }
+            | Expr::List(args)
+            | Expr::Tuple(args) => {
+                for argument in args {
+                    self.collect_var_writebacks_in_expr(argument, out);
+                }
+            }
+            Expr::Unary { expr, .. }
+            | Expr::Try(expr)
+            | Expr::As { expr, .. }
+            | Expr::Field { base: expr, .. } => self.collect_var_writebacks_in_expr(expr, out),
+            Expr::RecordUpdate { base, fields, .. } => {
+                self.collect_var_writebacks_in_expr(base, out);
+                for (_, value) in fields {
+                    self.collect_var_writebacks_in_expr(value, out);
+                }
+            }
+            Expr::Binary { lhs, rhs, .. }
+            | Expr::Index { base: lhs, index: rhs }
+            | Expr::Range { lo: lhs, hi: rhs, .. } => {
+                self.collect_var_writebacks_in_expr(lhs, out);
+                self.collect_var_writebacks_in_expr(rhs, out);
+            }
+            Expr::If { cond, then_block, else_block } => {
+                self.collect_var_writebacks_in_expr(cond, out);
+                self.collect_var_writebacks_in_block(then_block, out);
+                if let Some(block) = else_block {
+                    self.collect_var_writebacks_in_block(block, out);
+                }
+            }
+            Expr::Match { scrutinee, arms } => {
+                self.collect_var_writebacks_in_expr(scrutinee, out);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        self.collect_var_writebacks_in_expr(guard, out);
+                    }
+                    self.collect_var_writebacks_in_expr(&arm.body, out);
+                }
+            }
+            Expr::Block(block) => self.collect_var_writebacks_in_block(block, out),
+            Expr::While { cond, body } => {
+                self.collect_var_writebacks_in_expr(cond, out);
+                self.collect_var_writebacks_in_block(body, out);
+            }
+            Expr::WhileLet { scrutinee, body, .. } => {
+                self.collect_var_writebacks_in_expr(scrutinee, out);
+                self.collect_var_writebacks_in_block(body, out);
+            }
+            Expr::For { iter, body, .. } => {
+                self.collect_var_writebacks_in_expr(iter, out);
+                self.collect_var_writebacks_in_block(body, out);
+            }
+            // Constructing a lambda does not execute its body, so calls in it do
+            // not conflict with a reservation held by the enclosing call.
+            Expr::Lambda { .. }
+            | Expr::MethodCall { .. }
+            | Expr::Record { .. }
+            | Expr::LabeledCall { .. }
+            | Expr::Int(_)
+            | Expr::Duration(_)
+            | Expr::Float(_)
+            | Expr::Str(_)
+            | Expr::Bool(_)
+            | Expr::Var(_)
+            | Expr::TaggedLit { .. } => {}
+        }
+    }
+
+    fn collect_var_writebacks_in_block(
+        &self,
+        block: &Block,
+        out: &mut Vec<(String, usize, VarPlace)>,
+    ) {
+        for statement in &block.stmts {
+            match statement {
+                Stmt::Let { value, .. }
+                | Stmt::Assign { value, .. }
+                | Stmt::LetPattern { value, .. }
+                | Stmt::Return(Some(value))
+                | Stmt::Expr(value)
+                | Stmt::Yield(value) => self.collect_var_writebacks_in_expr(value, out),
+                Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+            }
+        }
+    }
+
+    fn reject_later_writeback_conflict(
+        &self,
+        callee: &str,
+        args: &[Expr],
+        reserved_index: usize,
+        reserved: &VarPlace,
+    ) -> Result<(), TypeError> {
+        for (later_index, argument) in args.iter().enumerate().skip(reserved_index + 1) {
+            let mut writebacks = Vec::new();
+            self.collect_var_writebacks_in_expr(argument, &mut writebacks);
+            for (nested_callee, nested_index, nested_place) in writebacks {
+                if places_overlap(reserved, &nested_place) {
+                    return terr(format!(
+                        "argument {} to `{callee}` reserves `var` place rooted in `{}` until the call returns, but later argument {} writes back to an overlapping place through argument {} of `{nested_callee}`; written evaluation order keeps the earlier reservation live",
+                        reserved_index + 1,
+                        reserved.root,
+                        later_index + 1,
+                        nested_index + 1,
+                    ));
+                }
             }
         }
         Ok(())

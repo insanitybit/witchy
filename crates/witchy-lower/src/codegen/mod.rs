@@ -78,6 +78,10 @@ const CALL_RESULT_I64_TMP: &str = "__witchy_call_result_i64";
 const CALL_RESULT_F64_TMP: &str = "__witchy_call_result_f64";
 const CALL_RESULT_EXTERN_TMP: &str = "__witchy_call_result_extern";
 
+fn assign_scratch(component: &str, level: usize) -> String {
+    format!("__witchy_assign_{component}_{level}")
+}
+
 fn call_result_gc_tmp(struct_id: u32) -> String {
     format!("__witchy_call_result_gc_{struct_id}")
 }
@@ -1052,6 +1056,9 @@ struct Codegen<'types> {
     clos_arities: HashSet<usize>,
     /// Current nesting level of expression application, indexing `APPLY_POOL`.
     apply_level: usize,
+    /// Nesting depth for assignment-place staging. A RHS block may contain
+    /// another assignment, so each live captured destination needs its own slots.
+    assign_level: usize,
     /// Stack of enclosing loops' `(break-target, continue-target)` WASM labels
     /// (innermost last), so `break`/`continue` branch to the right block.
     loop_labels: Vec<(String, String)>,
@@ -1212,6 +1219,7 @@ impl<'types> Codegen<'types> {
             next_anon_union_tag_code: 0,
             clos_arities: HashSet::new(),
             apply_level: 0,
+            assign_level: 0,
             loop_labels: Vec::new(),
         }
     }
@@ -2403,6 +2411,7 @@ impl<'types> Codegen<'types> {
         self.begin_unit(renamed);
 
         self.apply_level = 0;
+        self.assign_level = 0;
         self.wm_level = 0;
         // Lower the body straight to WIR (`assemble_wir_module` sets `collect_wir`
         // for the function being compiled). `lower_block` is the block lowering: it
@@ -2546,6 +2555,9 @@ impl<'types> Codegen<'types> {
         locals.push(WirLocal { name: MATCH_RES.into(), ty: i64t() });
         for i in 0..SCRUT_POOL {
             locals.push(WirLocal { name: format!("__witchy_scrut_save_{i}"), ty: i64t() });
+            locals.push(WirLocal { name: assign_scratch("list", i), ty: i32t() });
+            locals.push(WirLocal { name: assign_scratch("index", i), ty: i64t() });
+            locals.push(WirLocal { name: assign_scratch("value", i), ty: i64t() });
             for prefix in ["coord", "result", "root"] {
                 locals.push(WirLocal { name: var_scratch(prefix, i, Kind::I32), ty: i32t() });
                 locals.push(WirLocal { name: var_scratch(prefix, i, Kind::I64), ty: i64t() });
@@ -6858,8 +6870,10 @@ impl<'types> Codegen<'types> {
         self.cur_fn_ret_kind = Kind::I64;
         self.cur_fn_ret_slot = true;
         let saved_apply = self.apply_level;
+        let saved_assign = self.assign_level;
         let saved_wm = self.wm_level;
         self.apply_level = 0;
+        self.assign_level = 0;
         self.wm_level = 0;
         let body_res = self.lower_block(body);
         // The lambda's OWN in-place accumulators (`var acc = []` + a self-push loop
@@ -6869,6 +6883,7 @@ impl<'types> Codegen<'types> {
         let lambda_inplace = self.inplace_push.clone();
         let block_kind = self.block_kind(body);
         self.apply_level = saved_apply;
+        self.assign_level = saved_assign;
         self.wm_level = saved_wm;
         let fin = self.finish_unit("lambda");
         self.inplace_push = saved_inplace;
@@ -6930,6 +6945,9 @@ impl<'types> Codegen<'types> {
                 locals.push(WirLocal { name: MATCH_RES.into(), ty: WirTy::Int });
                 for i in 0..SCRUT_POOL {
                     locals.push(WirLocal { name: format!("__witchy_scrut_save_{i}"), ty: WirTy::Int });
+                    locals.push(WirLocal { name: assign_scratch("list", i), ty: i32t() });
+                    locals.push(WirLocal { name: assign_scratch("index", i), ty: WirTy::Int });
+                    locals.push(WirLocal { name: assign_scratch("value", i), ty: WirTy::Int });
                     for prefix in ["coord", "result", "root"] {
                         locals.push(WirLocal {
                             name: var_scratch(prefix, i, Kind::I32),

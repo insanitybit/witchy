@@ -459,6 +459,20 @@
         );
     }
 
+    #[test]
+    fn rfc0087_async_and_generator_var_parameters_are_rejected_explicitly() {
+        for (src, kind) in [
+            ("async fn bad(var state: Int) -> Nil:\n    return\n", "async"),
+            ("gen fn bad(var state: Int) -> Iter(Int):\n    yield state\n", "generator"),
+        ] {
+            let err = parser::parse_module(src).expect_err("suspending `var` parameter");
+            let message = format!("{err:?}");
+            assert!(message.contains(kind), "diagnostic must name {kind}: {message}");
+            assert!(message.contains("`var` parameter `state`"), "diagnostic: {message}");
+            assert!(message.contains("suspension"), "diagnostic: {message}");
+        }
+    }
+
     /// (RFC-0056 v1) Keyword labels are excluded on UFCS method calls — the method
     /// callee resolves later (by receiver type, in traits.rs), so labels have no
     /// declaration to bind against yet. Rejected at parse time.
@@ -1014,6 +1028,25 @@
         assert_eq!(wasm_run(src), want, "compiled indirect nested write-back");
     }
 
+    #[test]
+    fn rfc0087_trait_dispatch_preserves_var_conventions_on_both_backends() {
+        let src = "trait Advance:\n    fn advance(var self, by: Int) -> Int\n\ntype Counter:\n    value: Int\n\nimpl Advance for Counter:\n    fn advance(var self, by: Int) -> Int:\n        self.value = self.value + by\n        self.value\n\nfn step(var value: a, by: Int) -> Int where a: Advance:\n    value.advance(by)\n\nfn main(console: Console):\n    var counter = Counter(5)\n    let result = step(counter, 7)\n    console.print(\"${counter.value} ${result}\")\n";
+        let want = ["12 12"];
+        assert_eq!(link_run(src), want, "interpreter trait `var` dispatch");
+        assert_eq!(wasm_run(src), want, "compiled trait `var` dispatch");
+
+        let mismatch = "trait Advance:\n    fn advance(var self, by: Int) -> Int\n\ntype Counter:\n    value: Int\n\nimpl Advance for Counter:\n    fn advance(self, by: Int) -> Int:\n        self.value + by\n";
+        let linked = crate::pipeline::link(
+            vec![("main".to_string(), parser::parse_module(mismatch).expect("parse"))],
+            "main",
+        )
+        .expect("link");
+        let err = typeck::check(&linked)
+            .expect_err("trait implementation must retain the declared convention");
+        assert!(err.message.contains("convention"), "trait mismatch: {err}");
+        assert!(err.message.contains("Var"), "trait mismatch must show required `var`: {err}");
+    }
+
     /// Nested field/index places capture their coordinates once, stage the rebuilt
     /// root, and commit the same result on both engines.
     #[test]
@@ -1030,6 +1063,115 @@
         let want = ["ok"];
         assert_eq!(link_run(src), want, "interpreter composes disjoint places");
         assert_eq!(wasm_run(src), want, "compiled backend composes disjoint places");
+    }
+
+    #[test]
+    fn rfc0087_exclusivity_and_var_place_diagnostics_are_resolved() {
+        let error = |case: &str, src: &str| {
+            typeck::check(&resolve_std_src(src))
+                .err()
+                .unwrap_or_else(|| panic!("{case}: invalid `var` place must be rejected"))
+                .message
+        };
+        let duplicate = "fn exchange(var a: Int, var b: Int) -> Nil:\n    return\nfn main(console: Console):\n    var n = 1\n    exchange(n, n)\n";
+        let message = error("duplicate", duplicate);
+        assert!(message.contains("arguments 1 and 2"), "overlap positions: {message}");
+        assert!(message.contains("rooted in `n`"), "overlap root: {message}");
+
+        let dynamic = "import list\n\nfn exchange(var a: Int, var b: Int) -> Nil:\n    return\nfn main(console: Console):\n    var xs = [1, 2]\n    var i = 0\n    var j = 1\n    exchange(xs[i], xs[j])\n";
+        assert!(error("dynamic", dynamic).contains("overlapping `var` places"));
+
+        let reservation = "fn inner(var n: Int) -> Int:\n    n = n + 1\n    n\nfn outer(var n: Int, snapshot: Int) -> Nil:\n    return\nfn main(console: Console):\n    var n = 0\n    outer(n, inner(n))\n";
+        let message = error("reservation", reservation);
+        assert!(message.contains("reserves `var` place"), "reservation: {message}");
+        assert!(message.contains("written evaluation order"), "reservation order: {message}");
+
+        let moved = "fn bump(var n: Int) -> Nil:\n    return\nfn main(console: Console):\n    var n = 0\n    bump(move n)\n";
+        let message = error("move", moved);
+        assert!(message.contains("uses `move`"), "move diagnostic: {message}");
+        assert!(message.contains("live mutable place"), "move fix: {message}");
+
+        let temporary = "fn bump(var n: Int) -> Nil:\n    return\nfn main(console: Console):\n    bump(1)\n";
+        assert!(error("temporary", temporary).contains("must be a mutable place"));
+
+        let immutable = "fn bump(var n: Int) -> Nil:\n    return\nfn test(n: Int) -> Nil:\n    bump(n)\n    return\nfn main(console: Console):\n    test(1)\n";
+        let message = error("immutable", immutable);
+        assert!(message.contains("root `n` must be a mutable `var`"), "immutable: {message}");
+    }
+
+    #[test]
+    fn rfc0087_completed_effects_and_proven_disjoint_places_are_legal() {
+        let src = "import list\n\nfn bump(var n: Int) -> Int:\n    n = n + 1\n    n\nfn use_after(value: Int, var target: Int) -> Nil:\n    target = target + value\n    return\nfn exchange(var a: Int, var b: Int) -> Nil:\n    let old = a\n    a = b\n    b = old\n    return\nfn main(console: Console):\n    var n = 1\n    use_after(bump(n), n)\n    var xs = [4, 9]\n    exchange(xs[0], xs[1])\n    console.print(\"${n} ${xs}\")\n";
+        let want = ["4 [9, 4]"];
+        assert_eq!(link_run(src), want, "interpreter ordered/disjoint calls");
+        assert_eq!(wasm_run(src), want, "compiled ordered/disjoint calls");
+    }
+
+    #[test]
+    fn rfc0087_expression_evaluation_order_is_identical_on_both_backends() {
+        let src = r#"import list
+
+fn mark(var log: List(Int), value: Int) -> Int:
+    log.push(value)
+    value
+
+fn mark_zero(var log: List(Int), value: Int) -> Int:
+    log.push(value)
+    0
+
+fn mark_bool(var log: List(Int), value: Int, result: Bool) -> Bool:
+    log.push(value)
+    result
+
+fn mark_none(var log: List(Int), value: Int) -> Option(Int):
+    log.push(value)
+    None
+
+fn mark_some(var log: List(Int), value: Int) -> Option(Int):
+    log.push(value)
+    Some(value)
+
+fn pair(a: Int, b: Int) -> Int:
+    a + b
+
+type Marker:
+    value: Int
+
+impl Marker:
+    fn combine(self, other: Int) -> Int:
+        self.value + other
+
+fn make_marker(var log: List(Int), value: Int) -> Marker:
+    Marker(mark(log, value))
+
+fn main(console: Console):
+    var log: List(Int) = []
+    let call = pair(mark(log, 1), mark(log, 2))
+    let operator = mark(log, 3) + mark(log, 4)
+    let tuple = (mark(log, 5), mark(log, 6))
+    let list_value = [mark(log, 7), mark(log, 8)]
+    let mapped = [mark(log, x + 2) for x in [mark(log, 9), mark(log, 10)]]
+    let filtered = [mark(log, x * 2 + 12) for x in [1, 2] if mark_bool(log, x * 2 + 11, true)]
+    let text = "${mark(log, 17)} ${mark(log, 18)}"
+    let fallback = mark_none(log, 19) ?? mark(log, 20)
+    let short_fallback = mark_some(log, 21) ?? mark(log, 22)
+    let matched = match mark_some(log, 23):
+        Some(value) -> mark(log, 24) + value
+        None -> 0
+    let selected = if mark_bool(log, 25, true):
+        mark(log, 26)
+    else:
+        0
+    var target = [0]
+    target[mark_zero(log, 27)] = mark(log, 28)
+    let and_value = mark_bool(log, 29, false) && mark_bool(log, 30, true)
+    let or_value = mark_bool(log, 31, true) || mark_bool(log, 32, false)
+    let method = make_marker(log, 33).combine(mark(log, 34))
+    console.print("${log}")
+"#;
+        let want = ["[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 24, 25, 26, 27, 28, 29, 31, 33, 34]"];
+        assert_eq!(link_run(src), want, "interpreter expression order");
+        assert_eq!(wasm_run(src), want, "compiled expression order");
     }
 
     #[test]
@@ -21161,6 +21303,10 @@ async fn main(console: Console):
 import chan
 from chan import Sender, Receiver
 
+fn bump(var n: Int) -> Int:
+    n = n + 1
+    n
+
 async fn counter(tx: Sender(Int), n: Int) -> Nil:
     var i = 0
     while i < n:
@@ -21175,11 +21321,12 @@ async fn total(console: Console, rx: Receiver(Int)) -> Nil:
 
 async fn var_across(console: Console) -> Nil:
     var acc = 10
-    acc = acc + 5
+    let first = bump(acc)
     chan.yield_now().await
+    bump(acc)
     acc = acc + 100
     chan.yield_now().await
-    console.print("acc ${acc}")
+    console.print("acc ${acc} first ${first}")
 
 async fn main(console: Console):
     var_across(console).await
@@ -21197,8 +21344,9 @@ async fn main(console: Console):
             .expect("the binary path lowers this program");
         let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
         assert_eq!(interp_out, wasm_out, "state-machine async lowering diverged across backends");
-        // var_across: 10+5+100 = 115.  while sends 0..5, folded sum = 0+1+2+3+4 = 10.
-        assert_eq!(interp_out, vec!["acc 115", "sum 10"]);
+        // The synchronous value-returning `var` calls update a local threaded
+        // through the shipped async segment functions on both sides of `await`.
+        assert_eq!(interp_out, vec!["acc 112 first 11", "sum 10"]);
     }
 
     // The headline of the unification: `async`/`await` and channels are ONE

@@ -836,25 +836,45 @@ impl Codegen<'_> {
                 ])
             }
             ("list.__set_at", 3) => {
+                let level = self.assign_level;
+                if level >= SCRUT_POOL {
+                    return None;
+                }
                 let ik = self.kind_of(&args[1]);
                 let vk = self.kind_of(&args[2]);
-                let checked_list = self.lower_expr(&args[0])?;
-                let checked_index =
-                    Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I64);
-                let list = self.lower_expr(&args[0])?;
-                let index = Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I32);
-                let value = self.lower_expr(&args[2])?;
+                self.assign_level = level + 1;
+                let lowered = (|| {
+                    Some((
+                        self.lower_expr(&args[0])?,
+                        Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I64),
+                        self.lower_expr(&args[2])?,
+                    ))
+                })();
+                self.assign_level = level;
+                let (list, index, value) = lowered?;
+                let list_tmp = assign_scratch("list", level);
+                let index_tmp = assign_scratch("index", level);
+                let value_tmp = assign_scratch("value", level);
                 W::Seq(vec![
+                    // Assignment order is destination base, destination
+                    // coordinate, RHS, then the checked store. Stage all three
+                    // so no source expression is lowered or evaluated twice.
+                    N::SetLocal { local: list_tmp.clone(), value: list },
+                    N::SetLocal { local: index_tmp.clone(), value: index },
+                    N::SetLocal {
+                        local: value_tmp.clone(),
+                        value: W::ToSlot(Box::new(value), Self::wir_kind(vk)),
+                    },
                     N::Drop(W::Call {
                         func: "list_at".into(),
-                        args: vec![checked_list, checked_index],
+                        args: vec![W::GetLocal(list_tmp.clone()), W::GetLocal(index_tmp.clone())],
                     }),
                     N::CallStoreMulti {
                         func: "list_set_cap".into(),
                         args: vec![
-                            list,
-                            index,
-                            W::ToSlot(Box::new(value), Self::wir_kind(vk)),
+                            W::GetLocal(list_tmp),
+                            Self::wir_convert(W::GetLocal(index_tmp), Kind::I64, Kind::I32),
+                            W::GetLocal(value_tmp),
                             W::ConstI32(0),
                         ],
                         dests: vec![TUPLE_TMP.to_string(), "__witchy_owncap".to_string()],

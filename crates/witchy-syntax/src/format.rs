@@ -1648,7 +1648,7 @@ fn operand(e: &Expr, parent: u8, is_right: bool) -> String {
 /// Print a comprehension's desugar back as the literal it came from.
 ///
 /// `[elem for x in xs if c ...]` parses to a block of the exact shape
-/// `{ var __comprN = []; <for/if nest ending in __comprN = list.push(__comprN,
+/// `{ var __comprN = []; <for/if nest ending in list.push(__comprN,
 /// elem)>; __comprN }`; this is its inverse. The shape is strict (single-
 /// statement nesting, the accumulator name, the push call), and both
 /// spellings parse to the same AST modulo the fresh accumulator counter, so a
@@ -1682,8 +1682,8 @@ fn comprehension_sugar(b: &Block) -> Option<String> {
                 clauses.push_str(&format!(" if {}", expr(cond)));
                 cur = &then_block.stmts[0];
             }
-            Stmt::Assign { name, value: Expr::Call { name: push, args } } => {
-                if name != acc || push != "list.push" || args.len() != 2 {
+            Stmt::Expr(Expr::Call { name: push, args }) => {
+                if push != "list.push" || args.len() != 2 {
                     return None;
                 }
                 if !matches!(&args[0], Expr::Var(v) if v == acc) {

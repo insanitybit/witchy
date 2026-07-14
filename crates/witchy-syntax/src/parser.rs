@@ -922,6 +922,15 @@ impl Parser {
         self.pending_impl_bounds.clear();
         let params = self.params(true)?;
         self.expect(&Tok::RParen)?;
+        if (is_async || is_gen)
+            && let Some(param) = params.iter().find(|param| param.convention == Convention::Var)
+        {
+            let kind = if is_async { "async" } else { "generator" };
+            return Err(self.error(format!(
+                "a {kind} function cannot take `var` parameter `{}`: suspension may outlive the caller's write-back place; use an ordinary parameter or mutate a local until the lifetime model admits suspended `var` access",
+                param.name,
+            )));
+        }
         let ret = if self.eat(&Tok::RArrow) {
             Some(self.ty()?)
         } else {
@@ -2789,7 +2798,7 @@ impl Parser {
     /// Desugar a list comprehension with one or more generators and filters —
     /// `[elem for x in xs (if c)* (for y in ys)* ...]` — into a block that builds
     /// the list with nested loops/conditionals: `{ var acc = []; for x in xs {
-    /// (if c) (for y in ys { ... acc = list.push(acc, elem) }) }; acc }`. The clauses
+    /// (if c) (for y in ys { ... list.push(acc, elem) }) }; acc }`. The clauses
     /// nest in source order, so later generators see earlier loop variables.
     fn list_comprehension(&mut self, elem: Expr) -> Result<Expr, ParseError> {
         enum Clause {
@@ -2817,13 +2826,10 @@ impl Parser {
         let acc = format!("__compr{}", self.compr_counter);
         self.compr_counter += 1;
         // Innermost action: append `elem` to the accumulator.
-        let mut inner = Stmt::Assign {
-            name: acc.clone(),
-            value: Expr::Call {
-                name: "list.push".to_string(),
-                args: vec![Expr::Var(acc.clone()), elem],
-            },
-        };
+        let mut inner = Stmt::Expr(Expr::Call {
+            name: "list.push".to_string(),
+            args: vec![Expr::Var(acc.clone()), elem],
+        });
         // Wrap from the innermost clause outward.
         for clause in clauses.into_iter().rev() {
             let body = Block { stmts: vec![inner], lines: vec![0], region: None };
@@ -3492,7 +3498,7 @@ fn compound_assign_op(t: &Tok) -> Option<BinOp> {
 
 /// Desugar `lo..hi` (half-open) or `lo..=hi` (inclusive) integer ranges into a
 /// block that builds the list: `{ var acc = []; var i = lo; let end = hi;
-/// while i < end (or i <= end) { acc = list.push(acc, i); i = i + 1 }; acc }`. `hi`
+/// while i < end (or i <= end) { list.push(acc, i); i = i + 1 }; acc }`. `hi`
 /// is bound once so it isn't re-evaluated each iteration. Self-contained.
 ///
 /// A free function (not a parser method) because the parser keeps ranges as
@@ -3518,13 +3524,10 @@ pub fn desugar_range(lo: Expr, hi: Expr, inclusive: bool) -> Expr {
     };
     let body = Block {
         stmts: vec![
-            Stmt::Assign {
-                name: acc.clone(),
-                value: Expr::Call {
-                    name: "list.push".to_string(),
-                    args: vec![Expr::Var(acc.clone()), Expr::Var(idx.clone())],
-                },
-            },
+            Stmt::Expr(Expr::Call {
+                name: "list.push".to_string(),
+                args: vec![Expr::Var(acc.clone()), Expr::Var(idx.clone())],
+            }),
             Stmt::Assign {
                 name: idx.clone(),
                 value: Expr::Binary {
