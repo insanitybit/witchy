@@ -2,7 +2,7 @@
 
 Severity: MED
 Status: FIXED
-Verified: 2026-07-07 CODE on branch worktree-wt-bug-254-chan-task-dedup
+Verified: 2026-07-13 FIXED on master: std/chan imports Task/Step/Slot/Handle from std/task (no duplication)
 Component: `std/task`, `std/chan`, async/channel stdlib API, RFC-0059 migration
 
 ## Problem

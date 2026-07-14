@@ -1,6 +1,6 @@
 # BUG-559: Duration interpolation renders raw milliseconds without `show`
 
-Status: REJECTED
+Status: FIXED on master (the one-rendering-protocol cut, `ed2d5dd1`)
 Severity: LOW
 Component: RFC-0053 rendering model, `Duration`, interpolation
 
@@ -10,23 +10,19 @@ An ignored local bug note proposed changing bare interpolation of a `Duration`
 from the structural millisecond representation (`"${90000ms}"` -> `90000`) to
 the human `Show` representation (`1m30s`).
 
-That conflicts with the shipped RFC-0053 rendering model. Interpolation is
-`show`-gated: modules that do not import/link `show` keep structural
-`__render`, while modules that do import `show` route renderable values through
-their `Show` impls. `std/show.witchy` already implements `Show for Duration`
-using `duration.human`.
+The import-gated RFC-0053 behavior was inconsistent: an otherwise-unused import
+changed a value's observable display. `show` is now preluded, so interpolation
+always routes a relevant type through `Show`. `Duration` therefore uses
+`duration.human` in every module.
 
 ## Verification
 
-The existing regression
-`rfc0053_duration_interpolation_is_show_gated_on_both_backends` pins both
-halves of the rule:
+The regression in `tests/rendering_protocol.rs` pins both spellings:
 
-- without `show`, `90000ms` interpolates structurally as `90000`;
-- with `import show`, interpolation, `show.render`, and `show.say` all render
-  `90000ms` as `1m30s` on both backends.
+- with or without `import show`, interpolation renders `90000ms` as `1m30s`;
+- `show.render` and `show.say` agree on both backends.
 
 ## Resolution
 
-Rejected as a bug. This is an intentional import-gated rendering boundary, not
-a stale Duration omission.
+Imports expose names but do not select semantics. The former rejection is
+superseded by the one-rendering-protocol cut.

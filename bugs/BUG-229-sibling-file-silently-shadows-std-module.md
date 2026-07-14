@@ -74,6 +74,11 @@ contract (warn/error/precise-error-text) is chosen.
 
 ## Fixed
 
+The diagnostic-only fix is superseded on master: bundled std module names are
+reserved and a local/dependency module using one is rejected at link entry
+(`crates/witchy-syntax/src/linker.rs`). Silent substitution is no longer a
+supported outcome.
+
 The CLI file/dependency loader now tracks which modules came from actual user
 files, and passes that origin set into the linker. When a user-provided module
 has the same name as a bundled std module and a dotted call/reference misses, the

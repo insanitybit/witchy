@@ -34,17 +34,29 @@ load-flaky under overlap) and a merge landing mid-gate invalidates that gate.
   prints the ones matching your diff (`--run` executes them); the building
   blocks are `./scripts/check.sh --fast` / `--e2e` / `--examples` / `--wasm`.
 - When your branch is green on its shard: `./scripts/merge-queue.sh submit <branch>`,
-  then `./scripts/merge-queue.sh wait <branch>` to block until the terminal
-  outcome (prints the journal event as JSON; exit 0 iff merged) instead of
-  hand-rolling a polling loop. The coordinator BATCHES compatible queued
-  branches (clean rebase + disjoint files) into one gate, so deep queues no
-  longer cost one full gate per branch; a red batch re-gates every member
-  individually, so a batch can never blame or block your branch unfairly.
-  `submit --front <branch>` exists for genuinely urgent fixes — use sparingly.
-  The coordinator rebases it onto latest master in a warm worktree, runs the
-  single serialized full gate, and fast-forwards master on green (re-gating if
-  master moved). Watch the outcome with `./scripts/merge-queue.sh status` or
+  then **KEEP WORKING — do not idle on the gate.** Start the next queue item on
+  a fresh branch off master immediately. The gate lock serializes full gates
+  and merges to master, nothing else: it never blocks editing, committing, or
+  `check.sh --fast` in your own worktree with your own target dir. Use
+  `./scripts/merge-queue.sh wait <branch>` (blocks until the terminal journal
+  event; exit 0 iff merged) only when your next task stacks on the pending
+  branch; otherwise check the journal for reds before ending your session and
+  fix/resubmit then. The coordinator BATCHES compatible queued branches (clean
+  rebase + disjoint files) into one gate, so deep queues no longer cost one
+  full gate per branch — submitting and moving on makes batching MORE
+  effective, not less; a red batch re-gates every member individually, so a
+  batch can never blame or block your branch unfairly. `submit --front
+  <branch>` exists for genuinely urgent fixes — use sparingly. The coordinator
+  rebases it onto latest master in a warm worktree, runs the single serialized
+  full gate, and fast-forwards master on green (re-gating if master moved).
+  Watch the outcome with `./scripts/merge-queue.sh status` or
   `scratch/merge-queue/journal.jsonl`; gate logs are in `scratch/merge-queue/logs/`.
+- While a gate is live (`status` shows `gate_lock`), your builds compete with
+  it for CPU — the slow-gate outliers (5-10× normal) are exactly gates that
+  overlapped agent builds. Run long builds/tests at reduced priority so the
+  gate stays ~3min: `taskpolicy -c utility cargo …` / `taskpolicy -c utility
+  cargo nextest …`. Hold off on the e2e-heavy shards (`--e2e`, `--examples`)
+  until the gate finishes; build/clippy/`--fast` are fine anytime.
 - If `submit` or `./scripts/merge-queue.sh doctor` says NO COORDINATOR RUNNING,
   start the detached one: `./scripts/merge-queue.sh daemon` (survives your
   session; log in `scratch/merge-queue/coordinator.log`).

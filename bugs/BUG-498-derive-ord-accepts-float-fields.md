@@ -1,7 +1,8 @@
 # BUG-498: `derive(Ord)` accepted records with `Float` fields
 
 - **Severity:** MED
-- **Status:** FIXED
+- **Status:** FIXED (commit e760a0e: derive rejects concrete Float for Eq/Ord)
+- **Verified:** 2026-07-13 FIXED on master (e760a0e): derive rejects Float for Eq/Ord
 - **Component:** `std/meta`, `derive(Ord)`, `derive(PartialOrd)`, `std/cmp`, total-order contract
 
 ## Problem
