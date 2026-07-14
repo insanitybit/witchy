@@ -2638,76 +2638,45 @@ fn main():
     }
 
     #[test]
-    fn rfc0064_row3_var_shapes_are_rejected() {
-        // (RFC-0064 Check 1) Row 3 of RFC-0043's table: a `var` parameter that is
-        // neither a procedure channel (`-> Nil`) nor a mutator receiver (first
-        // parameter, self-typed return) carries the abolished *combined*
-        // write-back+return semantics and is a compile error at the shared gate —
-        // rejected before either backend lowers, so parity holds by construction.
-
-        // (a) `var` in a NON-first position with a self-typed return.
-        let non_first =
-            check_str("fn f(x: Int, var xs: List(Int)) -> List(Int):\n    xs\n").unwrap_err();
-        assert!(
-            non_first.contains("write-back channel") && non_first.contains("mutator receiver"),
-            "{non_first}"
-        );
-
-        // (b) `var` FIRST with an UNRELATED (non-`Nil`, non-receiver) return type —
-        // the shape the interpreter used to run with combined semantics while the
-        // WASM backend rejected it; now rejected identically at type-check.
-        let unrelated =
-            check_str("fn f(var xs: List(Int), x: Int) -> Int:\n    x\n").unwrap_err();
-        assert!(unrelated.contains("mutator receiver"), "{unrelated}");
-
-        // Both legal shapes still compile: a procedure channel (`-> Nil`) and a
-        // mutator receiver (first parameter, self-typed return).
+    fn rfc0087_var_shapes_accept_any_return_and_parameter_position() {
+        // RFC-0087 removes the return-shape table. Every `var` parameter is one
+        // move-in/move-out channel independent of its position and the ordinary
+        // return type.
+        check_str("fn f(x: Int, var xs: List(Int)) -> List(Int):\n    xs\n")
+            .expect("a non-first var parameter may accompany a value return");
+        check_str("fn f(var xs: List(Int), x: Int) -> Int:\n    x\n")
+            .expect("a first var parameter may accompany an unrelated return");
         check_str("fn bump(var n: Int):\n    n = n + 1\n")
-            .expect("a `var` procedure channel is valid");
+            .expect("a Nil-returning var function remains valid");
         check_str("fn keep(var xs: List(Int), x: Int) -> List(Int):\n    xs\n")
-            .expect("a mutator receiver is valid");
+            .expect("a self-typed ordinary return remains valid");
     }
 
     #[test]
-    fn rfc0064_row3_var_shapes_are_rejected_in_impl_methods() {
-        // (BUG-436 / RFC-0064 Check 1) Impl methods lower to ordinary functions.
-        // Re-run the same row-3 validation after trait/impl lowering so method
-        // surfaces cannot keep the abolished combined write-back+return channel.
-        let static_method = check_str(
+    fn rfc0087_impl_methods_accept_var_with_auxiliary_returns() {
+        check_str(
             "type Box:\n    Box(List(Int))\nimpl Box:\n    fn row3_static(var xs: List(Int), n: Int) -> Int:\n        xs.push(n)\n        n\n",
         )
-        .unwrap_err();
-        assert!(static_method.contains("write-back channel"), "{static_method}");
+        .expect("a static impl method may combine var write-back with a result");
 
-        let instance_method = check_str(
+        check_str(
             "type Box:\n    Box(List(Int))\nimpl Box:\n    fn row3_method(self, var xs: List(Int)) -> List(Int):\n        xs.push(1)\n",
         )
-        .unwrap_err();
-        assert!(instance_method.contains("write-back channel"), "{instance_method}");
+        .expect("an instance method may have a non-receiver var parameter");
     }
 
     #[test]
-    fn rfc0064_ambiguous_elided_var_receiver_must_annotate() {
-        // (RFC-0064 Check 2) A `var` FIRST parameter with an ELIDED return whose
-        // inferred tail type equals the receiver's type is ambiguous between a
-        // mutator (`-> T`, statement form writes back) and a procedure (`-> Nil`).
-        // Write-back is DECLARED, not inferred (RFC-0043's thesis), and this is
-        // the one property whose inferred value changes call-site semantics, so
-        // the author must annotate the intent.
-        let err = check_str("fn bump(var xs: List(Int), by: Int):\n    xs\n").unwrap_err();
-        assert!(err.contains("annotate the intent"), "{err}");
-
-        // An EXPLICIT self-typed return declares a mutator with no extra ceremony.
+    fn rfc0087_elided_var_returns_are_inferred_normally() {
+        // Return inference no longer selects a write-back convention, so an
+        // elided value return is no more ambiguous for `var` than for `let`.
+        check_str("fn bump(var xs: List(Int), by: Int):\n    xs\n")
+            .expect("an elided self-typed return is valid");
+        check_str("fn f(var xs: List(Int), x: Int):\n    x\n")
+            .expect("an elided unrelated return is valid");
         check_str("fn bump(var xs: List(Int), by: Int) -> List(Int):\n    xs\n")
-            .expect("an explicit self-typed return is an unambiguous mutator");
-        // `-> Nil` (with a `return`) is the other unambiguous choice — a procedure.
+            .expect("an explicit self-typed return remains valid");
         check_str("fn bump(var xs: List(Int), by: Int) -> Nil:\n    xs = xs\n    return\n")
-            .expect("an explicit `-> Nil` return is an unambiguous procedure");
-        // A `var` first param whose inferred tail is a DIFFERENT type is untouched
-        // by this rule (its non-`Nil` shape is instead caught by Check 1).
-        let other =
-            check_str("fn f(var xs: List(Int), x: Int):\n    x\n").unwrap_err();
-        assert!(other.contains("mutator receiver"), "{other}");
+            .expect("an explicit Nil return remains valid");
     }
 
     #[test]

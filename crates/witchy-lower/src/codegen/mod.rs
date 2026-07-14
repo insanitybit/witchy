@@ -74,6 +74,23 @@ fn cerr<T>(message: impl Into<String>) -> Result<T, CodegenError> {
 
 /// Scratch local holding a tuple pointer while its elements are unpacked.
 const TUPLE_TMP: &str = "__witchy_tuple_tmp";
+const CALL_RESULT_I64_TMP: &str = "__witchy_call_result_i64";
+const CALL_RESULT_F64_TMP: &str = "__witchy_call_result_f64";
+const CALL_RESULT_EXTERN_TMP: &str = "__witchy_call_result_extern";
+
+fn call_result_gc_tmp(struct_id: u32) -> String {
+    format!("__witchy_call_result_gc_{struct_id}")
+}
+
+fn call_result_tmp(kind: Kind) -> String {
+    match kind {
+        Kind::I32 => TUPLE_TMP.to_string(),
+        Kind::I64 => CALL_RESULT_I64_TMP.to_string(),
+        Kind::F64 => CALL_RESULT_F64_TMP.to_string(),
+        Kind::ExternRef => CALL_RESULT_EXTERN_TMP.to_string(),
+        Kind::GcRef(id) => call_result_gc_tmp(id),
+    }
+}
 
 /// One captured variable for a closure: (name, record-type-name,
 /// list-element-type-name, slot kind).
@@ -1669,15 +1686,30 @@ impl<'types> Codegen<'types> {
                     // `let ok = match f() { Some(n) -> n ... }` would type `ok` as
                     // i32 (n not yet known to be i64) while the match emits i64.
                     self.infer_locals_expr(value);
-                    let k = self.kind_of(value);
+                    // The legacy shape inference cannot recover generic `?`
+                    // payloads or an elided result from a value-returning `var`
+                    // call. Use the authoritative table for those two shapes;
+                    // retain the established inference elsewhere because several
+                    // specialized lowerings intentionally choose their local ABI.
+                    let needs_resolved_type = matches!(value, Expr::Try(_))
+                        || matches!(value, Expr::Call { name, .. }
+                            if self.fn_conventions.get(name).is_some_and(|cs|
+                                cs.contains(&Convention::Var)));
+                    let inferred_type = needs_resolved_type
+                        .then(|| self.type_table.type_of(value))
+                        .flatten()
+                        .and_then(witchy_types::typeck::ty_to_ast);
+                    let k = inferred_type
+                        .as_ref()
+                        .map(|ty| self.kind_for_type(ty))
+                        .unwrap_or_else(|| self.kind_of(value));
                     self.locals.insert(name.clone(), k);
-                    let vt = self.val_type_of(value);
+                    let vt = inferred_type
+                        .as_ref()
+                        .map(ty_to_valtype)
+                        .unwrap_or_else(|| self.val_type_of(value));
                     self.local_val_types.insert(name.clone(), vt);
-                    if let Some(t) = self
-                        .type_table
-                        .type_of(value)
-                        .and_then(witchy_types::typeck::ty_to_ast)
-                    {
+                    if let Some(t) = inferred_type {
                         self.local_types.insert(name.clone(), t);
                     }
                     let evt = self.elem_val_type_of(value);
@@ -2314,11 +2346,18 @@ impl<'types> Codegen<'types> {
         }
         locals.push(WirLocal { name: "__witchy_owncap".into(), ty: i32t() });
         locals.push(WirLocal { name: TUPLE_TMP.into(), ty: i32t() });
+        locals.push(WirLocal { name: CALL_RESULT_I64_TMP.into(), ty: i64t() });
+        locals.push(WirLocal { name: CALL_RESULT_F64_TMP.into(), ty: WirTy::Float });
+        locals.push(WirLocal { name: CALL_RESULT_EXTERN_TMP.into(), ty: WirTy::Extern });
         locals.push(WirLocal { name: TRY_TMP.into(), ty: i32t() });
         locals.push(WirLocal { name: TYPECHECK_TMP.into(), ty: i32t() });
         locals.push(WirLocal { name: MATCH_TMP.into(), ty: i64t() });
         locals.push(WirLocal { name: MATCH_REF_TMP.into(), ty: witchy_wir::wir::WirTy::Extern });
         for id in 0..self.gc_structs.len() as u32 {
+            locals.push(WirLocal {
+                name: call_result_gc_tmp(id),
+                ty: witchy_wir::wir::WirTy::GcRef(id),
+            });
             locals.push(WirLocal {
                 name: match_gc_tmp(id),
                 ty: witchy_wir::wir::WirTy::GcRef(id),
@@ -4537,7 +4576,12 @@ impl<'types> Codegen<'types> {
     /// locals (written back). We then push the scratch — the call's value. Each
     /// var arg must be a non-global local `Var` (CallStoreMulti uses `local.set`);
     /// otherwise we defer to WAT (`None`).
-    fn lower_var_call(&mut self, name: &str, args: &[Expr]) -> Option<witchy_wir::wir::WirExpr> {
+    fn lower_var_call(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        result_kind: Kind,
+    ) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
         let convs = self.fn_conventions.get(name).cloned()?;
         let param_kinds: Vec<Kind> = self
@@ -4558,8 +4602,11 @@ impl<'types> Codegen<'types> {
                 None => w,
             });
         }
-        // dest[0] = scratch for the declared return; then each var arg's local.
-        let mut dests = vec![TUPLE_TMP.to_string()];
+        // dest[0] = a kind-correct scratch for the declared return; then each var
+        // arg's local. A single i32 tuple scratch is insufficient now that RFC-0087
+        // admits independent scalar and reference returns from a `var` function.
+        let result_tmp = call_result_tmp(result_kind);
+        let mut dests = vec![result_tmp.clone()];
         for (i, conv) in convs.iter().enumerate() {
             if *conv == Convention::Var {
                 match args.get(i) {
@@ -4573,7 +4620,7 @@ impl<'types> Codegen<'types> {
         }
         Some(W::Seq(vec![
             N::CallStoreMulti { func: name.to_string(), args: args_w, dests },
-            N::Push(W::GetLocal(TUPLE_TMP.to_string())),
+            N::Push(W::GetLocal(result_tmp)),
         ]))
     }
 
@@ -5835,8 +5882,11 @@ impl<'types> Codegen<'types> {
             // Err/None. The `var` epilogue variant stays in legacy.
             Expr::Try(inner) => {
                 use witchy_wir::wir::WirNode as N;
-                let payload_kind =
-                    self.match_payload_valtype(inner).map(valtype_kind).unwrap_or(Kind::I32);
+                let payload_kind = self
+                    .ast_type_of_expr(e)
+                    .map(|ty| self.kind_for_type(&ty))
+                    .or_else(|| self.match_payload_valtype(inner).map(valtype_kind))
+                    .unwrap_or(Kind::I32);
                 let inner_w = self.lower_expr(inner)?;
                 let tmp = TRY_TMP.to_string();
                 let cond = W::Unary {
@@ -5992,7 +6042,11 @@ impl<'types> Codegen<'types> {
                     && !self.locals.contains_key(name)
                     && self.summaries.own_abi(name).is_none()
                 {
-                    return self.lower_var_call(name, args);
+                    let result_kind = self
+                        .ast_type_of_expr(e)
+                        .map(|ty| self.kind_for_type(&ty))
+                        .unwrap_or_else(|| self.kind_of(e));
+                    return self.lower_var_call(name, args, result_kind);
                 }
                 // Exactly the compiled `$name` user functions — never an
                 // intrinsic/native (those have no emitted func to call), never a
@@ -6296,6 +6350,12 @@ impl<'types> Codegen<'types> {
                 }
                 locals.push(WirLocal { name: "__witchy_owncap".into(), ty: i32t() });
                 locals.push(WirLocal { name: TUPLE_TMP.into(), ty: i32t() });
+                locals.push(WirLocal { name: CALL_RESULT_I64_TMP.into(), ty: WirTy::Int });
+                locals.push(WirLocal { name: CALL_RESULT_F64_TMP.into(), ty: WirTy::Float });
+                locals.push(WirLocal { name: CALL_RESULT_EXTERN_TMP.into(), ty: WirTy::Extern });
+                for id in 0..self.gc_structs.len() as u32 {
+                    locals.push(WirLocal { name: call_result_gc_tmp(id), ty: WirTy::GcRef(id) });
+                }
                 locals.push(WirLocal { name: TRY_TMP.into(), ty: i32t() });
                 locals.push(WirLocal { name: MATCH_TMP.into(), ty: WirTy::Int });
                 locals.push(WirLocal { name: MATCH_REF_TMP.into(), ty: WirTy::Extern });

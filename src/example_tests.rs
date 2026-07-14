@@ -934,49 +934,25 @@
         );
     }
 
-    /// (RFC-0064 Check 1, parity) A row-3 `var` shape — the abolished *combined*
-    /// write-back+return — is rejected at the shared type-check gate both backends
-    /// run before lowering, so BOTH refuse it identically. The `var`-first /
-    /// unrelated-return variant used to RUN on the interpreter (combined semantics)
-    /// while only WASM rejected it — an interpreter-only shape this closes.
+    /// RFC-0087: the ordinary result and every `var` write-back are independent
+    /// channels. Parameter position and return shape do not classify the call.
     #[test]
-    fn rfc0064_row3_var_shape_rejected_on_both_backends() {
-        // (a) `var` in a NON-first position with a self-typed return.
-        let non_first =
-            "fn f(x: Int, var xs: List(Int)) -> List(Int):\n    xs\nfn main(console: Console):\n    console.print(\"hi\")\n";
-        let e1 = typeck::check_str(non_first).expect_err("row-3 (non-first var) is a type error");
-        assert!(e1.contains("write-back channel") && e1.contains("mutator receiver"), "{e1}");
-        // (b) `var` FIRST with an UNRELATED return type — the interpreter-only shape.
-        let unrelated =
-            "fn f(var xs: List(Int), x: Int) -> Int:\n    x\nfn main(console: Console):\n    console.print(\"hi\")\n";
-        let e2 = typeck::check_str(unrelated).expect_err("row-3 (unrelated return) is a type error");
-        assert!(e2.contains("mutator receiver"), "{e2}");
-        // A legal mutator's statement form writes back identically on both backends.
+    fn rfc0087_value_returning_nonfirst_var_writes_back_on_both_backends() {
         let interp_std = |src: &str| interpreter::run_module(resolve_std_src(src), ".", Vec::new()).expect("run");
-        let ok = "import list\n\nfn main(console: Console):\n    var xs: List(Int) = []\n    xs.push(1)\n    xs.push(2)\n    console.print(\"${xs}\")\n";
-        assert_eq!(interp_std(ok), ["[1, 2]"], "interp mutator statement writes back");
-        assert_eq!(wasm_run(ok), ["[1, 2]"], "compiled mutator statement writes back");
+        let src = "import list\n\nfn append_len(x: Int, var xs: List(Int)) -> Int:\n    xs = list.push(xs, x)\n    list.length(xs)\n\nfn main(console: Console):\n    var xs = [1]\n    let n = append_len(9, xs)\n    console.print(\"${xs}\")\n    console.print(\"${n}\")\n";
+        let want = ["[1, 9]", "2"];
+        assert_eq!(interp_std(src), want, "interpreter returns and writes back");
+        assert_eq!(wasm_run(src), want, "compiled backend returns and writes back");
     }
 
-    /// (RFC-0064 Check 2, parity) The BUG-213 trap: `fn bump(var xs: List(Int), by):
-    /// xs.push(by)` (elided return, inferred tail == receiver type) is ambiguous
-    /// between a mutator and a procedure. It now errors at the DECLARATION on both
-    /// backends (the shared gate), instead of silently classifying as a mutator so
-    /// every free call is a no-op. Both explicit annotations run identically.
+    /// Return inference does not select mutation semantics. An elided result on a
+    /// `var` function uses the same move-in/move-out ABI as an annotated result.
     #[test]
-    fn rfc0064_ambiguous_elided_var_receiver_rejected_on_both_backends() {
-        let bad = "fn bump(var xs: List(Int), by: Int):\n    xs\nfn main(console: Console):\n    console.print(\"hi\")\n";
-        let err = typeck::check_str(bad).expect_err("ambiguous elided var receiver must annotate");
-        assert!(err.contains("annotate the intent"), "{err}");
-        let interp_std = |src: &str| interpreter::run_module(resolve_std_src(src), ".", Vec::new()).expect("run");
-        // `-> Nil` declares a PROCEDURE (write-back through the param) — runs the same.
-        let proc = "import list\n\nfn bump(var xs: List(Int), by: Int) -> Nil:\n    xs = list.push(xs, by)\n    return\nfn main(console: Console):\n    var xs: List(Int) = []\n    bump(xs, 5)\n    console.print(\"${xs}\")\n";
-        assert_eq!(interp_std(proc), ["[5]"], "interp procedure writes back through the param");
-        assert_eq!(wasm_run(proc), ["[5]"], "compiled procedure agrees");
-        // `-> List(Int)` declares a MUTATOR — its expression form delivers the value.
-        let mutator = "import list\n\nfn bump(var xs: List(Int), by: Int) -> List(Int):\n    list.push(xs, by)\nfn main(console: Console):\n    var xs: List(Int) = []\n    let ys = bump(xs, 5)\n    console.print(\"${ys}\")\n";
-        assert_eq!(interp_std(mutator), ["[5]"], "interp mutator expression form");
-        assert_eq!(wasm_run(mutator), ["[5]"], "compiled mutator agrees");
+    fn rfc0087_elided_value_return_var_call_agrees_on_both_backends() {
+        let src = "fn bump(var n: Int):\n    n = n + 1\n    n * 2\n\nfn main(console: Console):\n    var n = 1\n    let result = bump(n)\n    console.print(\"${n}\")\n    console.print(\"${result}\")\n";
+        let want = ["2", "4"];
+        assert_eq!(link_run(src), want, "interpreter elided return");
+        assert_eq!(wasm_run(src), want, "compiled elided return");
     }
 
     /// (RFC-0064 Check 3, parity) A discarded non-`Nil` FREE call in statement
@@ -10057,29 +10033,27 @@ fn main(console: Console, root: Dir):
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
-    /// (RFC-0043 §2 / RFC-0064 Check 1) A `var`-first parameter with a value
-    /// return UNRELATED to that parameter is the abolished *combined*
-    /// write-back+return form: the var param written back through the parameter
-    /// AND a separate value returned (the old `?`-early-return carried the var
-    /// params out via a multi-result tuple). RFC-0043 declared this a row-3
-    /// compile error; RFC-0064 enforces it at the shared type-check gate, so both
-    /// backends now reject it identically — before either lowers. A `?` inside a
-    /// var-writeback function is exactly this shape (a procedure returns `Nil`, so
-    /// it cannot `?`; a mutator writes back via self-assign, not the tuple
-    /// epilogue), so no legal program reaches the old path. Var write-back on an
-    /// early return survives for the legal PROCEDURE form — see
-    /// `return_in_var_fn_agrees_on_both_backends`.
+    /// RFC-0087 structured returns commit every final `var` value together. A
+    /// callee-side `?` is ordinary early return, so mutations completed before
+    /// propagation remain visible on both the success and error paths.
     #[test]
-    fn combined_writeback_and_return_var_fn_is_rejected() {
-        let src = "import result\n\nfn step(var n: Int, r: Result(Int, String)) -> Result(Int, String):\n    n = n + 100\n    let got = r?\n    n = n + got\n    Ok(n)\n\nfn main(console: Console):\n    var a = 1\n    let ok = step(a, Ok(5))\n    console.print(\"${a}\")\n    console.print(\"${ok.unwrap_or(0)}\")\n";
+    fn rfc0087_multi_var_try_commits_partial_progress_on_both_backends() {
+        let src = "import result\n\nfn step(var left: Int, var right: Int, r: Result(Int, String)) -> Result(Int, String):\n    left = left + 100\n    right = right + 10\n    let got = r?\n    left = left + got\n    right = right + got * 2\n    Ok(left + right)\n\nfn main(console: Console):\n    var a = 1\n    var b = 10\n    let ok = step(a, b, Ok(5))\n    console.print(\"${a}\")\n    console.print(\"${b}\")\n    console.print(\"${ok.unwrap_or(0)}\")\n\n    var c = 2\n    var d = 20\n    let failed = step(c, d, Err(\"stop\"))\n    console.print(\"${c}\")\n    console.print(\"${d}\")\n    console.print(\"${failed.unwrap_or(-1)}\")\n";
         let linked = resolve_std_src(src);
-        let err = typeck::check(&linked)
-            .expect_err("the combined write-back+return `var` form must be a compile error")
-            .to_string();
-        assert!(
-            err.contains("a `var` parameter must be a write-back channel")
-                && err.contains("mutator receiver"),
-            "the row-3 error must name the rule, got: {err}"
+        typeck::check(&linked).expect("value-returning multi-var functions are valid");
+        let want = vec!["106", "30", "136", "102", "30", "-1"];
+        assert_eq!(
+            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interpreter"),
+            want,
+            "interpreter commits every var on success and callee-side ?",
+        );
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers multi-var structured returns");
+        assert_eq!(
+            crate::run_wasm_bytes(&bytes).expect("wasm run"),
+            want,
+            "compiled backend matches the interpreter's ? write-back",
         );
     }
 
@@ -23504,94 +23478,56 @@ pub fn serve(console: Console, net: Net) -> Int:
         );
     }
 
-    // ---- RFC-0064: finish enforcing RFC-0043's mutation classification ----
+    // ---- RFC-0087: uniform var write-back ----
 
-    /// (RFC-0064 Check 1) The two row-3 shapes — a `var` in a NON-first position
-    /// with a self-typed return, and a `var` FIRST parameter with an UNRELATED
-    /// return — carried the abolished *combined* write-back+return semantics. Both
-    /// are now compile errors at the shared type-check gate (so both backends
-    /// reject identically). The second shape used to RUN on the interpreter while
-    /// the WASM backend rejected it — a parity divergence this closes.
+    /// The ordinary result and `var` write-back are independent channels. Neither
+    /// parameter position nor a result matching the mutable argument classifies
+    /// the call, and both backends commit the same final values.
     #[test]
-    fn rfc0064_row3_var_shapes_are_compile_errors() {
-        // (a) `var` non-first + self-typed return.
+    fn rfc0087_former_row3_shapes_write_back_on_both_backends() {
         let non_first = "import list\n\
                          fn foo(x: Int, var xs: List(Int)) -> List(Int):\n\
-                         \x20   xs.push(x)\n\
+                         \x20   xs = list.push(xs, x)\n\
+                         \x20   xs\n\
                          fn main(console: Console):\n\
                          \x20   var xs = [1]\n\
                          \x20   let ys = foo(9, xs)\n\
+                         \x20   console.print(\"${xs}\")\n\
                          \x20   console.print(\"${ys}\")\n";
-        // (b) `var` first + unrelated return type (the parity-divergence shape).
         let unrelated = "import list\n\
                          fn foo(var xs: List(Int)) -> Int:\n\
+                         \x20   xs.push(9)\n\
                          \x20   list.length(xs)\n\
                          fn main(console: Console):\n\
                          \x20   var xs = [1]\n\
                          \x20   let n = foo(xs)\n\
+                         \x20   console.print(\"${xs}\")\n\
                          \x20   console.print(\"${n}\")\n";
-        for src in [non_first, unrelated] {
-            let linked = resolve_std_src(src);
-            let err = typeck::check(&linked)
-                .expect_err("a row-3 `var` shape must be a compile error")
-                .to_string();
-            assert!(
-                err.contains("a `var` parameter must be a write-back channel")
-                    && err.contains("mutator receiver"),
-                "the row-3 error must state the rule, got: {err}"
-            );
+        for (src, want) in [
+            (non_first, vec!["[1, 9]".to_string(), "[1, 9]".to_string()]),
+            (unrelated, vec!["[1, 9]".to_string(), "2".to_string()]),
+        ] {
+            assert_eq!(link_run(src), want, "interpreter writes back and returns");
+            assert_eq!(wasm_run(src), want, "compiled backend agrees");
         }
     }
 
-    /// (RFC-0064 Check 2) The acceptance gauntlet. `fn bump(var xs: List(Int),
-    /// by): xs.push(by)` (elided return, tail = `List(Int)` = receiver type) used
-    /// to silently no-op; now it is a compile error demanding the author annotate
-    /// intent — write-back is DECLARED, not inferred. Annotating `-> List(Int)`
-    /// makes it a mutator whose EXPRESSION form runs and agrees on both backends;
-    /// annotating `-> Nil` (via `return`) makes it a procedure that writes back.
+    /// Return inference never selects mutation semantics. An inferred result uses
+    /// the same move-in/move-out ABI as an explicitly annotated result.
     #[test]
-    fn rfc0064_ambiguous_elided_var_receiver_must_annotate() {
+    fn rfc0087_elided_var_result_writes_back_on_both_backends() {
         let elided = "import list\n\
                       fn bump(var xs: List(Int), by: Int):\n\
-                      \x20   xs.push(by)\n\
+                      \x20   xs = list.push(xs, by)\n\
+                      \x20   list.length(xs)\n\
                       fn main(console: Console):\n\
                       \x20   var xs = [1, 2, 3]\n\
-                      \x20   let ys = bump(xs, 5)\n\
-                      \x20   console.print(\"${ys}\")\n";
-        let linked = resolve_std_src(elided);
-        let err = typeck::check(&linked)
-            .expect_err("an ambiguous elided `var` receiver must demand annotation")
-            .to_string();
-        assert!(
-            err.contains("has a `var` receiver and its body's tail is the receiver's type")
-                && err.contains("-> List(Int)")
-                && err.contains("-> Nil"),
-            "the annotate error must name both intents, got: {err}"
-        );
-
-        // Annotated `-> List(Int)`: a mutator; its EXPRESSION form runs on both.
-        let mutator = "import list\n\
-                       fn bump(var xs: List(Int), by: Int) -> List(Int):\n\
-                       \x20   xs.push(by)\n\
-                       fn main(console: Console):\n\
-                       \x20   var xs = [1, 2, 3]\n\
-                       \x20   let ys = bump(xs, 5)\n\
-                       \x20   console.print(\"${ys}\")\n";
-        let want = vec!["[1, 2, 3, 5]".to_string()];
-        assert_eq!(link_run(mutator), want, "interpreter: annotated mutator expr form");
-        assert_eq!(wasm_run(mutator), want, "compiled: annotated mutator expr form");
-
-        // Annotated as a procedure (`return` → Nil): writes back through the var.
-        let procedure = "import list\n\
-                         fn bump(var xs: List(Int), by: Int):\n\
-                         \x20   xs.push(by)\n\
-                         \x20   return\n\
-                         fn main(console: Console):\n\
-                         \x20   var xs = [1, 2, 3]\n\
-                         \x20   bump(xs, 5)\n\
-                         \x20   console.print(\"${xs}\")\n";
-        assert_eq!(link_run(procedure), want, "interpreter: procedure writes back");
-        assert_eq!(wasm_run(procedure), want, "compiled: procedure writes back");
+                      \x20   let n = bump(xs, 5)\n\
+                      \x20   console.print(\"${xs}\")\n\
+                      \x20   console.print(\"${n}\")\n";
+        let want = vec!["[1, 2, 3, 5]".to_string(), "4".to_string()];
+        assert_eq!(link_run(elided), want, "interpreter inferred return");
+        assert_eq!(wasm_run(elided), want, "compiled inferred return");
     }
 
     /// (RFC-0064 Check 3) A discarded non-Nil FREE call in statement position is a

@@ -820,35 +820,6 @@ fn check_unique_parameters(module: &Module) -> Result<(), TypeError> {
     Ok(())
 }
 
-/// (RFC-0064 Check 1) Enforce RFC-0043's row-3 rule: a function with any `var`
-/// parameter must be EITHER a procedure channel (`is_var_procedure` — returns
-/// `Nil`/nothing) OR a mutator receiver (`is_mutator` — first parameter, returning
-/// that parameter's type). Every other `var` shape carries the abolished
-/// *combined* write-back+return semantics and is a compile error:
-///   (a) a `var` in a NON-first position with a self-typed return, and
-///   (b) a `var` FIRST parameter with an UNRELATED (non-`Nil`, non-receiver)
-///       return — the interpreter-only shape the WASM backend rejects, so this
-///       also closes a parity divergence.
-/// Runs before lowering for source-quality diagnostics on free functions, and
-/// again after trait/impl lowering so method bodies cannot bypass the same
-/// declaration-shape contract.
-fn check_var_conventions(module: &Module) -> Result<(), TypeError> {
-    for item in &module.items {
-        if let Item::Function(f) = item {
-            let has_var = f.params.iter().any(|p| p.convention == Convention::Var);
-            if has_var && !f.is_mutator() && !f.is_var_procedure() {
-                let bare = f.name.rsplit('.').next().unwrap_or(&f.name);
-                return terr(format!(
-                    "`{bare}`: a `var` parameter must be a write-back channel (return `Nil`) or a \
-                     mutator receiver (first parameter, returning its type); split the function or \
-                     return a tuple"
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
 /// The type names the checker knows without a declaration: primitives, host
 /// capabilities, and the built-in generics. Mirrors the named arms of
 /// `to_ty_generic` plus the opaque generics the checker itself produces
@@ -6407,45 +6378,6 @@ impl Checker {
                 e.message
             ),
         })?;
-        // (RFC-0064 Checks 1+2) A `var`-param function with an ELIDED return. An
-        // elided return is INFERRED from the body tail — it does NOT imply `Nil`,
-        // so `is_var_procedure` (which optimistically reads an absent return as a
-        // Nil procedure) is only correct when the inferred tail really is `Nil`.
-        // Now that the body is inferred, classify the function by that tail:
-        //   - tail is `Nil`  -> a genuine procedure channel (today's semantics);
-        //   - tail == the `var` FIRST parameter's type -> AMBIGUOUS (Check 2): an
-        //     elided mutator (`-> T`, statement form writes back) and a procedure
-        //     (`-> Nil`) are indistinguishable by inference, and this is the one
-        //     signature property whose inferred value changes call-site semantics,
-        //     so the author must annotate the intent (an EXPLICIT return already
-        //     declares it, so `func.ret.is_some()` is exempt — never reaches here);
-        //   - any other non-`Nil` tail -> row 3 (Check 1): a `var` parameter on a
-        //     value-returning function is the abolished combined write-back+return
-        //     shape — including the `var`-first/unrelated-return case that ran on
-        //     the interpreter but was rejected only by the WASM backend (an
-        //     accidental interpreter-only shape), now rejected here for BOTH.
-        // A still-unresolved (generic) tail is left alone; a later specialization
-        // re-checks it.
-        if func.ret.is_none() && func.params.iter().any(|p| p.convention == Convention::Var) {
-            let body_ty = self.resolve(&body);
-            if !matches!(body_ty, Ty::Nil | Ty::Var(_)) {
-                let bare = func.name.rsplit('.').next().unwrap_or(&func.name);
-                let first_is_var =
-                    func.params.first().is_some_and(|p| p.convention == Convention::Var);
-                if first_is_var && self.resolve(&params[0]) == body_ty {
-                    return terr(format!(
-                        "`{bare}` has a `var` receiver and its body's tail is the receiver's type — \
-                         annotate the intent: `-> {body_ty}` declares a mutator (statement form \
-                         writes back); `-> Nil` (or add `return`) declares a procedure"
-                    ));
-                }
-                return terr(format!(
-                    "`{bare}`: a `var` parameter must be a write-back channel (return `Nil`) or a \
-                     mutator receiver (first parameter, returning its type); split the function or \
-                     return a tuple"
-                ));
-            }
-        }
         // (BUG-395 / RFC-0047) A generic `Dict` key operation performed in this
         // (unbounded) body must have an `Eq` key. Now that the body is fully
         // inferred, a key type that still carries a type variable is an UNBOUNDED
@@ -6535,11 +6467,6 @@ fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) ->
     // incoherent. Validate before lowering for source-quality diagnostics.
     check_unique_parameters(module)?;
 
-    // (RFC-0064 Check 1) A `var` parameter must be a procedure channel or a
-    // mutator receiver — every other shape is the abolished combined write-back
-    // (rejected before either backend lowers, so parity holds by construction).
-    check_var_conventions(module)?;
-
     // Lower named-field record construction (a no-op once the linker has done so,
     // but covers single-module paths like `check_str`).
     let recs = witchy_syntax::records::lower(module.clone()).map_err(|message| TypeError { message })?;
@@ -6557,7 +6484,6 @@ fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) ->
     match crate::traits::lower_checked(recs.clone()) {
         Ok(lowered) => {
             check_unique_parameters(&lowered)?;
-            check_var_conventions(&lowered)?;
             run_check_with_trait_methods(&lowered, false, &trait_method_names, compiler_syntax_allowed).map(|_| ())
         }
         Err(message) => {
