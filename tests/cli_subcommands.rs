@@ -437,7 +437,7 @@ fn check_rejects_programs_the_compiled_backend_cannot_accept() {
     let bad = write(
         &dir,
         "dict_record_key.witchy",
-        "type Key:\n    Key(Int)\n\nfn main(console: Console):\n    var d = dict.new()\n    d = dict.insert(d, Key(1), \"one\")\n    console.print(dict.get_or(d, Key(1), \"missing\"))\n",
+        "fn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, console, \"one\")\n    console.print(\"${dict.length(d)}\")\n",
     );
     let out = run(&["check", &bad]);
     assert!(!out.status.success(), "check must fail for a compiled-backend reject");

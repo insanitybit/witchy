@@ -60,6 +60,11 @@ files (including nested projects), 8 book files, 3 top-level project files, and
 9 benchmark files. The generated `book/examples.json` manifest was regenerated
 after the source cut.
 
+Embedded Witchy fixtures and generators in the Rust integration suite were
+migrated in the same cut. Derived-copy fuzz expressions use small pure wrappers
+that copy into a local and invoke the uniform `var` operation, so the generated
+programs remain valid while continuing to exercise mutation and both backends.
+
 Residual guards on the final tree find no tuple-threaded PRNG calls and no old
 self-returning `List`/`Dict`/`Set` assignment form. A derived-copy use must now
 be written explicitly; the compiler rejects a temporary or immutable place
@@ -70,11 +75,14 @@ their resolved declaration performs `var` write-back.
 
 The executable corpus gate links the real standard library and compiles or runs
 all book examples, standalone examples, and nested example projects on the
-interpreter and compiled backend. The post-cut run covers 925 cases. Focused
+interpreter and compiled backend. The post-cut run covers 930 cases. Focused
 RFC-0087 tests additionally resolve free calls, method calls, generic calls,
 trait dispatch, indirect function values, nested field/index places,
 caller-side and callee-side `?`, `??`, auxiliary-result discard, and locals live
-across the shipped async segment lowering.
+across the shipped async segment lowering. A generated-`Reflect` regression
+also proves that a uniform `var` call refines an initially empty generic
+container from its value argument, replacing the type evidence the old
+self-assignment shape supplied incidentally.
 
 This compiler pass is the final accounting for affected calls: an old
 self-returning use cannot type-check against the new declarations, and a
@@ -96,3 +104,12 @@ memory-cliff kernels `word_count`, `dict_count`, `list_sum`, and `knucleotide`
 all complete under the post-cut implementation. The write-back lowering is
 therefore keyed into the existing ownership/in-place machinery rather than
 silently falling back to whole-buffer copies.
+
+## Final validation
+
+The implementation closeout passed the 1,836-test fast workspace shard with
+clippy warnings denied, the 930-case executable example shard, the WASM shard
+with 107 runnable book blocks agreeing, all six nested example workspace E2E
+tests, std/project Witchy format checks, and web runtime JavaScript syntax
+checks. The three path-dependency locks affected by the source migration were
+regenerated and verified by those workspace E2E tests.

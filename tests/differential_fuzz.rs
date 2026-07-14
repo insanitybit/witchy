@@ -196,11 +196,11 @@ fn gen_dkey(r: &mut Rng) -> String {
 }
 
 fn gen_dict(r: &mut Rng, ops: u32) -> String {
-    let mut d = format!("dict.insert(dict.new(), {}, {})", gen_dkey(r), gen_int(r, 1));
+    let mut d = format!("dict_inserted(dict.new(), {}, {})", gen_dkey(r), gen_int(r, 1));
     for _ in 0..ops {
         d = match r.below(4) {
-            1 => format!("dict.remove({}, {})", d, gen_dkey(r)),
-            _ => format!("dict.insert({}, {}, {})", d, gen_dkey(r), gen_int(r, 1)),
+            1 => format!("dict_removed({}, {})", d, gen_dkey(r)),
+            _ => format!("dict_inserted({}, {}, {})", d, gen_dkey(r), gen_int(r, 1)),
         };
     }
     d
@@ -257,6 +257,14 @@ fn alias_field(rr: R) -> String:\n\
 \x20   var b = rr.b\n\
 \x20   b = b + \"z\"\n\
 \x20   b\n\
+fn dict_inserted(d: Dict(String, Int), key: String, value: Int) -> Dict(String, Int):\n\
+\x20   var out = d\n\
+\x20   dict.insert(out, key, value)\n\
+\x20   out\n\
+fn dict_removed(d: Dict(String, Int), key: String) -> Dict(String, Int):\n\
+\x20   var out = d\n\
+\x20   dict.remove(out, key)\n\
+\x20   out\n\
 fn shape_area(sh: Shape) -> Int:\n\
 \x20   match sh:\n\
 \x20       Circle(rr) -> rr * rr\n\
@@ -266,7 +274,7 @@ fn grow(own xs: List(Int), n: Int) -> List(Int):\n\
 \x20   var ys = xs\n\
 \x20   var i = 0\n\
 \x20   while i < n:\n\
-\x20       ys = list.push(ys, i)\n\
+\x20       list.push(ys, i)\n\
 \x20       i = i + 1\n\
 \x20   ys\n\
 fn swap2(own a: List(Int), own b: List(Int)) -> (List(Int), List(Int)):\n\
@@ -905,7 +913,23 @@ fn is_sorted(xs: List(Int)) -> Bool:\n\
 \x20       if list.at(xs, i) < list.at(xs, i - 1):\n\
 \x20           ok = false\n\
 \x20       i = i + 1\n\
-\x20   ok\n";
+\x20   ok\n\
+fn reversed(xs: List(Int)) -> List(Int):\n\
+\x20   var out = xs\n\
+\x20   list.reverse(out)\n\
+\x20   out\n\
+fn sorted(xs: List(Int)) -> List(Int):\n\
+\x20   var out = xs\n\
+\x20   list.sort(out)\n\
+\x20   out\n\
+fn dict_inserted(d: Dict(String, Int), key: String, value: Int) -> Dict(String, Int):\n\
+\x20   var out = d\n\
+\x20   dict.insert(out, key, value)\n\
+\x20   out\n\
+fn dict_removed(d: Dict(String, Int), key: String) -> Dict(String, Int):\n\
+\x20   var out = d\n\
+\x20   dict.remove(out, key)\n\
+\x20   out\n";
     format!(
         "import list\nimport string\nimport dict\nimport bytes\nimport set\n\n{helpers}\nfn main(console: Console):\n\
          \x20   let xs = {xs}\n\
@@ -913,20 +937,20 @@ fn is_sorted(xs: List(Int)) -> Bool:\n\
          \x20   let b = {b}\n\
          \x20   let s1 = {s1}\n\
          \x20   let s2 = {s2}\n\
-         \x20   let d = dict.insert(dict.new(), \"seed\", 1)\n\
-         \x20   let d2 = dict.insert(dict.insert(dict.new(), {s1}, {v}), {s2}, {v2})\n\
-         \x20   let rt = dict.insert(dict.remove(d2, {s1}), {s1}, {v})\n\
+         \x20   let d = dict_inserted(dict.new(), \"seed\", 1)\n\
+         \x20   let d2 = dict_inserted(dict_inserted(dict.new(), {s1}, {v}), {s2}, {v2})\n\
+         \x20   let rt = dict_inserted(dict_removed(d2, {s1}), {s1}, {v})\n\
          \x20   let sa = set.from_list(a)\n\
          \x20   let sb = set.from_list(b)\n\
          \x20   let ba = bytes.from_string(s1)\n\
          \x20   let bb = bytes.from_string(s2)\n\
-         \x20   console.print(\"${{list.reverse(list.reverse(xs)) == xs}}\")\n\
+         \x20   console.print(\"${{reversed(reversed(xs)) == xs}}\")\n\
          \x20   console.print(\"${{list.length(list.concat(a, b)) == list.length(a) + list.length(b)}}\")\n\
-         \x20   console.print(\"${{list.sort(list.sort(xs)) == list.sort(xs)}}\")\n\
-         \x20   console.print(\"${{list.length(list.sort(xs)) == list.length(xs)}}\")\n\
-         \x20   console.print(\"${{is_sorted(list.sort(xs))}}\")\n\
-         \x20   console.print(\"${{is_perm(list.sort(xs), xs)}}\")\n\
-         \x20   console.print(\"${{dict.get_or(dict.insert(d, {k}, {v}), {k}, 0 - 1) == {v}}}\")\n\
+         \x20   console.print(\"${{sorted(sorted(xs)) == sorted(xs)}}\")\n\
+         \x20   console.print(\"${{list.length(sorted(xs)) == list.length(xs)}}\")\n\
+         \x20   console.print(\"${{is_sorted(sorted(xs))}}\")\n\
+         \x20   console.print(\"${{is_perm(sorted(xs), xs)}}\")\n\
+         \x20   console.print(\"${{dict.get_or(dict_inserted(d, {k}, {v}), {k}, 0 - 1) == {v}}}\")\n\
          \x20   console.print(\"${{(dict.get_or(rt, {s1}, 0 - 1) == {v}) && (dict.length(rt) == dict.length(d2)) && (list.length(dict.pairs(rt)) == dict.length(rt))}}\")\n\
          \x20   console.print(\"${{string.length(s1 + s2) == string.length(s1) + string.length(s2)}}\")\n\
          \x20   console.print(\"${{string.reverse(string.reverse(s1)) == s1}}\")\n\

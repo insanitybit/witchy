@@ -866,14 +866,12 @@ mod tests {
         );
     }
 
-    /// Regression (the `next_row`/pascal failure): a self-returning method call in
-    /// TAIL position is the block's value — the function's return — so it must NOT
-    /// be rewritten to a (Nil-valued) write-back. A non-tail one still is.
+    /// Regression (the `next_row`/pascal failure): a pure method call in tail
+    /// position is the block's value, while an earlier `var` call is a statement.
     #[test]
     fn tail_position_method_call_is_not_rewritten() {
-        let src = "fn grow(row: List(Int)) -> List(Int):\n    var out = [0]\n    out.push(row.at(0))\n    out.push(99)\n\nfn main(console: Console):\n    console.print(\"${grow([7])}\")\n";
-        // out.push(row.at(0)) is non-tail -> rewritten (out becomes [0, 7]);
-        // out.push(99) is the TAIL -> the returned value [0, 7, 99], not a discard.
+        let src = "fn grow(row: List(Int)) -> List(Int):\n    var out = [0]\n    out.push(row.at(0))\n    out.concat([99])\n\nfn main(console: Console):\n    console.print(\"${grow([7])}\")\n";
+        // `push` writes back in statement position; pure `concat` supplies the tail value.
         let oracle = interp(src);
         assert_eq!(oracle, vec!["[0, 7, 99]".to_string()]);
         opt::set_for_tests(Some(OptSet::default_set()));

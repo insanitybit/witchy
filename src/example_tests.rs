@@ -996,7 +996,7 @@
     #[test]
     fn rfc0087_result_receiver_mutator_extra_var_writes_back_on_try() {
         let interp_std = |src: &str| interpreter::run_module(resolve_std_src(src), ".", Vec::new()).expect("run");
-        let src = "import list\n\nfn step(var r: Result(Int, String), var log: List(Int)) -> Result(Int, String):\n    log = list.push(log, 1)\n    let v = r?\n    log = list.push(log, v)\n    Ok(v + 1)\n\nfn main(console: Console):\n    var bad: Result(Int, String) = Err(\"nope\")\n    var log: List(Int) = []\n    let out = step(bad, log) ?? -1\n    console.print(\"${log}\")\n    console.print(\"${out}\")\n";
+        let src = "import list\n\nfn step(var r: Result(Int, String), var log: List(Int)) -> Result(Int, String):\n    log.push(1)\n    let v = r?\n    log.push(v)\n    Ok(v + 1)\n\nfn main(console: Console):\n    var bad: Result(Int, String) = Err(\"nope\")\n    var log: List(Int) = []\n    let out = step(bad, log) ?? -1\n    console.print(\"${log}\")\n    console.print(\"${out}\")\n";
         // The pre-`?` append committed ([1]); the post-`?` append never ran.
         let want = ["[1]", "-1"];
         assert_eq!(interp_std(src), want, "interpreter commits the extra var param on `?`");
@@ -5994,6 +5994,18 @@ fn main(console: Console):
             crate::format::reformat(src).unwrap().contains(".{files: files}"),
             "`.{{…}}` round-trips through fmt"
         );
+    }
+
+    /// Uniform `var` calls must preserve the element-type refinement that the
+    /// former `xs = list.push(xs, value)` shape supplied through assignment.
+    /// This is especially important for generated `Reflect` implementations,
+    /// where leaving `xs` as a bare `List` produces an invalid specialization.
+    #[test]
+    fn var_call_refines_empty_list_for_generated_reflect_on_both_backends() {
+        let src = "import json\n\nfn main(console: Console):\n    var rows = []\n    for name in [\"ada\"]:\n        rows.push(.{name: name, score: 7})\n    console.print(json.stringify(.{rows: rows}))\n";
+        let want = vec!["{\"rows\":[{\"name\":\"ada\",\"score\":7}]}".to_string()];
+        assert_eq!(link_run(src), want, "interpreter");
+        assert_eq!(wasm_run(src), want, "wasm");
     }
 
     /// REFLECTION: `json.stringify(x)` encodes ANY value with no `derive(Json)` —

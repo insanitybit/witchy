@@ -211,6 +211,11 @@ function values, auxiliary-result statement ergonomics, and RFC-0051 performance
 non-regression required by RFC-0087. No asynchronous `var` parameter, lifetime
 surface, or no-copy extraction claim enters the blocking set.
 
+Implementation status (2026-07-14): shipped. The compiler, standard library,
+executable corpus, language specification, and performance gate now use the
+single move-in/move-out convention; the checked-in census and measurements are
+in `rfcs/0087-migration-report.md`.
+
 ## Out — the deferral ledger (0067's "accepted residual" bucket)
 
 | Item | Status decision | Where it's documented |

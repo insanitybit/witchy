@@ -1,8 +1,9 @@
 ---
 rfc: 0087
 title: "Uniform var write-back: one parameter convention for every call"
-status: proposed
+status: implemented
 created: 2026-07-13
+implemented: 2026-07-14
 predecessors:
   - "0043 (declared mutation - replaced the method-name census with var declarations)"
   - "0064 (complete mutation classification - enforced the return-shape table this RFC removes)"
@@ -15,7 +16,9 @@ related:
   - "0070 (0.1 blocking set - one spelling per concept, break rather than deprecate)"
   - "0083 (opt-mode lifetimes - returned views must block write-back to their live owner)"
   - "0088 (ownership-aware extraction - optional no-copy implementation after semantics land)"
-tracking: implementation issue TBD
+tracking: "Shipped in the 0.1 coherence cut; declaration and call-site census,
+  corpus verification, and RFC-0051 benchmark evidence are recorded in
+  rfcs/0087-migration-report.md"
 ---
 
 # RFC-0087: Uniform `var` write-back

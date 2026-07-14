@@ -134,7 +134,7 @@ fn order(model: Int) -> List(String):
 fn view(model: Int) -> VNode(Msg):
     var lis = []
     for k in order(model):
-        lis = list.push(lis, glamour.keyed(k, glamour.element("li", [glamour.prop("data-key", k)], [glamour.text(k)])))
+        list.push(lis, glamour.keyed(k, glamour.element("li", [glamour.prop("data-key", k)], [glamour.text(k)])))
     glamour.element("div", [], [
         glamour.element("button", [glamour.on("click", Reorder)], [glamour.text("reorder")]),
         glamour.element("ul", [], lis),

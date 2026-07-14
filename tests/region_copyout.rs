@@ -16,7 +16,7 @@ fn recursive_adt_region_result_is_copied_out() {
 
 #[test]
 fn dict_region_result_recursively_copies_keys_and_values() {
-    let source = "fn main(console: Console):\n    let values = region -> Dict(String, List(Int)):\n        var xs = []\n        xs = list.push(xs, 1)\n        xs = list.push(xs, 2)\n        var key = \"\"\n        key = key + \"a\"\n        key = key + \"b\"\n        var out = dict.new()\n        out = dict.insert(out, key, xs)\n        out\n    var noise = []\n    for i in 0..100:\n        noise = list.push(noise, i)\n    console.print(\"${list.length(dict.get_or(values, \"ab\", []))}\")\n";
+    let source = "fn main(console: Console):\n    let values = region -> Dict(String, List(Int)):\n        var xs = []\n        list.push(xs, 1)\n        list.push(xs, 2)\n        var key = \"\"\n        key = key + \"a\"\n        key = key + \"b\"\n        var out = dict.new()\n        dict.insert(out, key, xs)\n        out\n    var noise = []\n    for i in 0..100:\n        list.push(noise, i)\n    console.print(\"${list.length(dict.get_or(values, \"ab\", []))}\")\n";
 
     let result = stats::compute(source).expect("compile and run Dict region");
     assert_eq!(result.output, ["2"]);

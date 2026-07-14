@@ -1598,23 +1598,27 @@ impl<T> Scope<T> {
 
 fn merge_refined_outer_ast_types(parent: &mut Scope<Type>, child: &Scope<Type>) {
     for (name, refined) in &child.types {
-        let Some(existing) = parent.types.get(name) else { continue };
-        let same_head = match (existing.unqualified(), refined.unqualified()) {
-            (Type::Named(left, _), Type::Named(right, _)) => left == right,
-            (Type::Tuple(left), Type::Tuple(right)) => left.len() == right.len(),
-            (Type::Fn(left, _, lc), Type::Fn(right, _, rc)) => {
-                left.len() == right.len() && lc == rc
-            }
-            _ => false,
-        };
-        let carries_arguments = match refined.unqualified() {
-            Type::Named(_, args) => !args.is_empty(),
-            Type::Tuple(_) | Type::Fn(_, _, _) => true,
-            Type::Qualified(_, _) => unreachable!("unqualified strips qualifiers"),
-        };
-        if existing != refined && same_head && carries_arguments {
-            parent.types.insert(name.clone(), refined.clone());
+        refine_ast_scope_type(parent, name, refined);
+    }
+}
+
+fn refine_ast_scope_type(scope: &mut Scope<Type>, name: &str, refined: &Type) {
+    let Some(existing) = scope.types.get(name) else { return };
+    let same_head = match (existing.unqualified(), refined.unqualified()) {
+        (Type::Named(left, _), Type::Named(right, _)) => left == right,
+        (Type::Tuple(left), Type::Tuple(right)) => left.len() == right.len(),
+        (Type::Fn(left, _, lc), Type::Fn(right, _, rc)) => {
+            left.len() == right.len() && lc == rc
         }
+        _ => false,
+    };
+    let carries_arguments = match refined.unqualified() {
+        Type::Named(_, args) => !args.is_empty(),
+        Type::Tuple(_) | Type::Fn(_, _, _) => true,
+        Type::Qualified(_, _) => unreachable!("unqualified strips qualifiers"),
+    };
+    if existing != refined && same_head && carries_arguments {
+        scope.types.insert(name.to_string(), refined.clone());
     }
 }
 
@@ -2073,6 +2077,25 @@ impl Ctx<'_> {
             .or_else(|| cap_op_result_type(e, &|a| self.type_ast(a, scope)))
     }
 
+    fn refine_var_call_args(&self, name: &str, args: &[Expr], scope: &mut Scope<Type>) {
+        let Some((params, _, conventions)) = self.fn_sigs.get(name) else { return };
+        let mut bindings = HashMap::new();
+        for (param, arg) in params.iter().zip(args) {
+            let (Some(pattern), Some(actual)) = (param, self.type_ast(arg, scope)) else {
+                continue;
+            };
+            let _ = bind_ast_type_vars(pattern, &actual, &mut bindings);
+        }
+        for ((param, convention), arg) in params.iter().zip(conventions).zip(args) {
+            if *convention != Convention::Var {
+                continue;
+            }
+            let (Some(pattern), Expr::Var(binding)) = (param, arg) else { continue };
+            let refined = subst_trait_params(pattern, &bindings);
+            refine_ast_scope_type(scope, binding, &refined);
+        }
+    }
+
     /// Resolve an owner-specific trait method to its mangled impl for a receiver
     /// type. A concrete generic type falls back to its head, where generic impls
     /// are registered:
@@ -2498,6 +2521,7 @@ impl Ctx<'_> {
                         }
                     }
                 }
+                self.refine_var_call_args(name, args, scope);
             }
             Expr::Apply { func, args } => {
                 self.rewrite_expr(func, scope);
@@ -2660,6 +2684,7 @@ impl Ctx<'_> {
                             Expr::Bool(false),
                         )];
                         call_args.append(args);
+                        self.refine_var_call_args(&func, &call_args, scope);
                         *e = Expr::Call { name: func, args: call_args };
                         return;
                     }
@@ -2670,6 +2695,7 @@ impl Ctx<'_> {
                                 Expr::Bool(false),
                             )];
                             call_args.append(args);
+                            self.refine_var_call_args(&mangled, &call_args, scope);
                             *e = Expr::Call { name: mangled, args: call_args };
                             return;
                         }
@@ -2801,6 +2827,7 @@ impl Ctx<'_> {
                 );
                 // A loop evaluates to Nil, so its body's tail value is discarded.
                 self.rewrite_block(body, &mut s, false);
+                merge_refined_outer_ast_types(scope, &s);
             }
             Expr::If {
                 cond,
@@ -2810,14 +2837,20 @@ impl Ctx<'_> {
                 self.rewrite_expr(cond, scope);
                 // An `if` used as an expression yields its arms' tails, so each
                 // arm inherits the surrounding value position.
-                self.rewrite_block(then_block, &mut scope.clone(), value_position);
+                let mut then_scope = scope.clone();
+                self.rewrite_block(then_block, &mut then_scope, value_position);
+                merge_refined_outer_ast_types(scope, &then_scope);
                 if let Some(b) = else_block {
-                    self.rewrite_block(b, &mut scope.clone(), value_position);
+                    let mut else_scope = scope.clone();
+                    self.rewrite_block(b, &mut else_scope, value_position);
+                    merge_refined_outer_ast_types(scope, &else_scope);
                 }
             }
             Expr::While { cond, body } => {
                 self.rewrite_expr(cond, scope);
-                self.rewrite_block(body, &mut scope.clone(), false);
+                let mut body_scope = scope.clone();
+                self.rewrite_block(body, &mut body_scope, false);
+                merge_refined_outer_ast_types(scope, &body_scope);
             }
             Expr::For { var, iter, body } => {
                 self.rewrite_expr(iter, scope);
@@ -2840,6 +2873,7 @@ impl Ctx<'_> {
                     None => s.bind_local(var),
                 }
                 self.rewrite_block(body, &mut s, false);
+                merge_refined_outer_ast_types(scope, &s);
             }
             Expr::Match { scrutinee, arms } => {
                 self.rewrite_expr(scrutinee, scope);
@@ -2864,6 +2898,7 @@ impl Ctx<'_> {
                     } else {
                         self.rewrite_discarded_expr(&mut arm.body, &mut s, arm.line);
                     }
+                    merge_refined_outer_ast_types(scope, &s);
                 }
             }
             Expr::Lambda { params, body, .. } => {
@@ -2872,7 +2907,11 @@ impl Ctx<'_> {
                 // A closure body's tail IS its return value.
                 self.rewrite_block(body, &mut s, true);
             }
-            Expr::Block(b) => self.rewrite_block(b, &mut scope.clone(), value_position),
+            Expr::Block(b) => {
+                let mut block_scope = scope.clone();
+                self.rewrite_block(b, &mut block_scope, value_position);
+                merge_refined_outer_ast_types(scope, &block_scope);
+            }
             Expr::Var(_) | Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::TaggedLit { .. } => {}
         }
     }
@@ -3330,13 +3369,14 @@ fn bind_ast_type_vars_inner(
         }
         (Type::Named(pattern_name, pattern_args), Type::Named(name, args)) => {
             pattern_name == name
-                && pattern_args.len() == args.len()
-                && pattern_args
-                    .iter()
-                    .zip(args)
-                    .all(|(pattern, concrete)| {
-                        bind_ast_type_vars_inner(pattern, concrete, out)
-                    })
+                // Empty literals initially carry only their container head. They
+                // are incomplete evidence, so let another argument bind the
+                // element variables before rejecting the call's full shape.
+                && (args.is_empty()
+                    || (pattern_args.len() == args.len()
+                        && pattern_args.iter().zip(args).all(|(pattern, concrete)| {
+                            bind_ast_type_vars_inner(pattern, concrete, out)
+                        })))
         }
         (Type::Tuple(pattern_items), Type::Tuple(items)) => {
             pattern_items.len() == items.len()
@@ -4266,6 +4306,25 @@ impl Mono<'_> {
             .or_else(|| cap_op_result_type(e, &|arg| self.type_ast(arg, scope)))
     }
 
+    fn refine_var_call_args(&self, name: &str, args: &[Expr], scope: &mut Scope<Type>) {
+        let Some((params, _, conventions)) = self.fn_sigs.get(name) else { return };
+        let mut bindings = HashMap::new();
+        for (param, arg) in params.iter().zip(args) {
+            let (Some(pattern), Some(actual)) = (param, self.type_ast(arg, scope)) else {
+                continue;
+            };
+            let _ = bind_ast_type_vars(pattern, &actual, &mut bindings);
+        }
+        for ((param, convention), arg) in params.iter().zip(conventions).zip(args) {
+            if *convention != Convention::Var {
+                continue;
+            }
+            let (Some(pattern), Expr::Var(binding)) = (param, arg) else { continue };
+            let refined = subst_trait_params(pattern, &bindings);
+            refine_ast_scope_type(scope, binding, &refined);
+        }
+    }
+
     fn resolve_type_args(
         &self,
         template: &Function,
@@ -4548,6 +4607,7 @@ impl Mono<'_> {
                 for a in args.iter_mut() {
                     self.walk_expr(a, scope);
                 }
+                self.refine_var_call_args(name, args, scope);
                 // (RFC-0053) Interpolation desugars to the internal render intrinsic,
                 // the structural fallback. At this point monomorphization has concrete
                 // type evidence for `x`, so values whose public display model is `Show`
@@ -4564,7 +4624,23 @@ impl Mono<'_> {
                 }
                 if let Some(template) = self.templates.get(name.as_str()).cloned() {
                     match self.resolve_type_args(&template, args, scope, result_ty.as_ref()) {
-                        Some(type_args) => *name = self.specialize(name, type_args),
+                        Some(type_args) => {
+                            let subst: HashMap<String, Type> = type_var_list(&template)
+                                .into_iter()
+                                .zip(type_args.iter().cloned())
+                                .collect();
+                            for (param, arg) in template.params.iter().zip(args.iter()) {
+                                if param.convention != Convention::Var {
+                                    continue;
+                                }
+                                let (Some(pattern), Expr::Var(binding)) = (&param.ty, arg) else {
+                                    continue;
+                                };
+                                let refined = subst_trait_params(pattern, &subst);
+                                refine_ast_scope_type(scope, binding, &refined);
+                            }
+                            *name = self.specialize(name, type_args);
+                        }
                         // A BOUNDED template has no generic fallback (its body
                         // can't compile unresolved), so failing to infer is an
                         // error — and for a result-position variable the fix
@@ -4652,6 +4728,7 @@ impl Mono<'_> {
                     &mut s,
                 );
                 self.walk_block(body, &mut s);
+                merge_refined_outer_ast_types(scope, &s);
             }
             Expr::If {
                 cond,
@@ -4670,7 +4747,9 @@ impl Mono<'_> {
             }
             Expr::While { cond, body } => {
                 self.walk_expr(cond, scope);
-                self.walk_block(body, &mut scope.clone());
+                let mut body_scope = scope.clone();
+                self.walk_block(body, &mut body_scope);
+                merge_refined_outer_ast_types(scope, &body_scope);
             }
             Expr::For { var, iter, body } => {
                 self.walk_expr(iter, scope);
@@ -4874,6 +4953,15 @@ mod structured_dispatch_tests {
             &mut bindings,
         ));
         assert_eq!(bindings.get("a"), Some(&named_type("Float")));
+
+        let empty_container = nominal("List", Vec::new());
+        bindings.clear();
+        assert!(bind_ast_type_vars(
+            &nominal("List", vec![named_type("a")]),
+            &empty_container,
+            &mut bindings,
+        ));
+        assert!(bindings.is_empty(), "a bare container head is incomplete evidence");
     }
 
     #[test]

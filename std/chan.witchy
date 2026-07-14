@@ -160,9 +160,7 @@ fn spawn_all_into(children: List(Task(Nil)), i: Int, hs: List(Handle)) -> Task(L
     if i >= list.length(children):
         done(hs)
     else:
-        and_then(spawn(list.at(children, i)), fn(h):
-            spawn_all_into(children, i + 1, appended(move hs, h))
-        )
+        and_then(spawn(list.at(children, i)), fn(h): spawn_all_into(children, i + 1, appended(move hs, h)))
 
 // Join every handle in `hs` while the executor can make progress. Like `join`,
 // quiescence releases a parked join even if a child has a continuation that will
