@@ -21,6 +21,34 @@ the common case (though `return` exists for early exits). Parameters *must* be
 annotated; locals are inferred. A `pub fn` is exported from its module;
 everything else is module-private.
 
+## Recursion and proper tail calls
+
+When a function's final action is a call to itself, witchy runs that **direct
+self-tail call** without growing the control stack. This is a language guarantee
+on both backends, not an optimization hint, and it needs no special syntax:
+
+```witchy
+fn swap_down(n: Int, a: Int, b: Int) -> Int:
+    if n == 0:
+        a * 10 + b
+    else:
+        swap_down(n - 1, b, a)
+
+fn main(console: Console):
+    console.print("${swap_down(100000, 2, 7)}")
+```
+
+```text
+27
+```
+
+Self-tail-call arguments still evaluate left to right and then replace the
+parameters all at once, which is why the swap above works. A recursive call does
+not qualify when the caller must still add to its result, inspect it with `?`,
+rebuild a `var` place, or perform other observable work. The guarantee bounds
+stack; it does not by itself promise zero allocation or constant running time.
+Mutual and indirect tail calls are the next RFC-0090 stages.
+
 Method-call syntax, `value.method(args)`, is the idiomatic way to call the
 standard data libraries — `xs.map(f)`, `d.insert(k, v)`, `s.to_upper()` — and it
 uses the same parameter conventions as free calls. A `var` receiver such as

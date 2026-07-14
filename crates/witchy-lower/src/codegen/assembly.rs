@@ -469,6 +469,7 @@ pub fn compile_module_binary(
     let Some((mut wir_module, gc_structs)) = assemble_wir_module_with_structs(module)? else {
         return Ok(None);
     };
+    witchy_wir::wir_opt::lower_self_tail_calls(&mut wir_module);
     witchy_wir::wir_opt::optimize(&mut wir_module);
     // Robustness net: if any reached `Call` names a func that didn't make it into
     // the module — an unregistered guest helper like `$string_from_code`, which

@@ -1429,9 +1429,7 @@ fn main(console: Console):
     }
 
     #[test]
-    fn deep_recursion_is_a_graceful_error_not_a_crash() {
-        // Runaway recursion must hit the depth limit and return an error rather
-        // than overflowing the stack and aborting the host.
+    fn deep_self_tail_recursion_uses_constant_stack() {
         let src = r#"
 fn rec(n: Int) -> Int:
     if (n == 0):
@@ -1442,8 +1440,78 @@ fn rec(n: Int) -> Int:
 fn main(console: Console):
     console.print("${rec(5000000)}")
 "#;
-        let e = run(src).unwrap_err();
-        assert!(e.message.contains("too deep"), "got: {}", e.message);
+        assert_eq!(run(src).unwrap(), vec!["0"]);
+    }
+
+    #[test]
+    fn non_tail_recursion_still_reports_the_depth_guard() {
+        let src = r#"
+fn rec(n: Int) -> Int:
+    if (n == 0):
+        0
+    else:
+        (1 + rec((n - 1)))
+
+fn main(console: Console):
+    console.print("${rec(5000000)}")
+"#;
+        let error = run(src).unwrap_err();
+        assert!(error.message.contains("too deep"), "got: {}", error.message);
+    }
+
+    #[test]
+    fn self_tail_arguments_rebind_simultaneously() {
+        let src = r#"
+fn swap_down(n: Int, a: Int, b: Int) -> Int:
+    if (n == 0):
+        ((a * 10) + b)
+    else:
+        swap_down((n - 1), b, a)
+
+fn main(console: Console):
+    console.print("${swap_down(1000001, 2, 7)}")
+"#;
+        assert_eq!(run(src).unwrap(), vec!["72"]);
+    }
+
+    #[test]
+    fn nested_explicit_return_is_a_tail_position() {
+        let src = r#"
+fn down(n: Int) -> Int:
+    if (n > 0):
+        return down((n - 1))
+    9
+
+fn main(console: Console):
+    console.print("${down(5000000)}")
+"#;
+        assert_eq!(run(src).unwrap(), vec!["9"]);
+    }
+
+    #[test]
+    fn self_tail_calls_still_consume_the_evaluation_budget() {
+        let src = r#"
+fn forever(n: Int) -> Int:
+    forever((n + 1))
+
+fn main():
+    forever(0)
+"#;
+        let error = run_capped(src, 100).unwrap_err();
+        assert!(error.message.contains("step budget"), "got: {}", error.message);
+    }
+
+    #[test]
+    fn local_closure_shadowing_function_name_is_not_self_recursion() {
+        let src = r#"
+fn apply_once(n: Int) -> Int:
+    let apply_once = fn(x: Int): (x + 1)
+    apply_once(n)
+
+fn main(console: Console):
+    console.print("${apply_once(41)}")
+"#;
+        assert_eq!(run(src).unwrap(), vec!["42"]);
     }
 
     #[test]

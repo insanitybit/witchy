@@ -1,6 +1,6 @@
     use super::*;
     use crate::wir::{
-        BinOp, DataSegment, Kind, WirExpr, WirFunc, WirImport, WirModule, WirNode, WirTy,
+        BinOp, DataSegment, Kind, WirExpr, WirFunc, WirImport, WirLocal, WirModule, WirNode, WirTy,
     };
 
     /// A bare module wrapping a single func, for exercising `optimize`.
@@ -29,6 +29,124 @@
             body: vec![WirNode::Return(Some(body_expr))],
             raw_body: None,
         }
+    }
+
+    #[test]
+    fn lowers_self_tail_call_to_simultaneous_rebind_and_loop() {
+        let recur = WirFunc {
+            name: "count".into(),
+            params: vec![
+                WirLocal { name: "n".into(), ty: WirTy::Int },
+                WirLocal { name: "acc".into(), ty: WirTy::Int },
+            ],
+            ret: vec![WirTy::Int],
+            locals: vec![],
+            body: vec![WirNode::Push(WirExpr::Control(Box::new(WirNode::If {
+                cond: WirExpr::Binary {
+                    op: BinOp::Eq,
+                    kind: Kind::I64,
+                    lhs: Box::new(WirExpr::GetLocal("n".into())),
+                    rhs: Box::new(WirExpr::ConstI64(0)),
+                },
+                then_: vec![WirNode::Push(WirExpr::GetLocal("acc".into()))],
+                els: vec![WirNode::Push(WirExpr::Call {
+                    func: "count".into(),
+                    args: vec![
+                        WirExpr::Binary {
+                            op: BinOp::Sub,
+                            kind: Kind::I64,
+                            lhs: Box::new(WirExpr::GetLocal("n".into())),
+                            rhs: Box::new(WirExpr::ConstI64(1)),
+                        },
+                        WirExpr::GetLocal("n".into()),
+                    ],
+                })],
+                result: Some(WirTy::Int),
+            })))],
+            raw_body: None,
+        };
+        let mut module = module_with(recur);
+
+        assert_eq!(lower_self_tail_calls(&mut module), 1);
+        let func = &module.funcs[0];
+        assert_eq!(func.locals.len(), 2, "one staging local per parameter");
+        let [WirNode::Loop { label, body }, WirNode::Unreachable] = func.body.as_slice() else {
+            panic!("expected loop-wrapped function, got {:?}", func.body);
+        };
+        let [WirNode::Return(Some(WirExpr::Control(control)))] = body.as_slice() else {
+            panic!("expected returned value-if in loop, got {body:?}");
+        };
+        let WirNode::If { then_, els, result: Some(WirTy::Int), .. } = control.as_ref() else {
+            panic!("expected typed value-if, got {control:?}");
+        };
+        assert!(matches!(then_.as_slice(), [WirNode::Push(WirExpr::GetLocal(n))] if n == "acc"));
+        let [WirNode::Push(WirExpr::Control(escape))] = els.as_slice() else {
+            panic!("expected tail escape expression, got {els:?}");
+        };
+        let WirNode::Block { body: escape_body, result: Some(WirTy::Int), .. } = escape.as_ref() else {
+            panic!("expected typed escape block, got {escape:?}");
+        };
+        assert!(matches!(escape_body.get(4), Some(WirNode::Br { target, cond: None }) if target == label));
+        assert!(matches!(escape_body.first(), Some(WirNode::SetLocal { local, .. }) if local == &func.locals[0].name));
+        assert!(matches!(escape_body.get(1), Some(WirNode::SetLocal { local, .. }) if local == &func.locals[1].name));
+        assert!(matches!(escape_body.get(2), Some(WirNode::SetLocal { local, value: WirExpr::GetLocal(_) }) if local == "n"));
+        assert!(matches!(escape_body.get(3), Some(WirNode::SetLocal { local, value: WirExpr::GetLocal(_) }) if local == "acc"));
+    }
+
+    #[test]
+    fn leaves_multi_result_self_call_for_its_writeback_continuation() {
+        let recur = WirFunc {
+            name: "bump".into(),
+            params: vec![WirLocal { name: "n".into(), ty: WirTy::Int }],
+            ret: vec![WirTy::Int, WirTy::Int],
+            locals: vec![],
+            body: vec![WirNode::Push(WirExpr::Call {
+                func: "bump".into(),
+                args: vec![WirExpr::GetLocal("n".into())],
+            })],
+            raw_body: None,
+        };
+        let mut module = module_with(recur);
+
+        assert_eq!(lower_self_tail_calls(&mut module), 0);
+        assert!(matches!(module.funcs[0].body.as_slice(), [WirNode::Push(WirExpr::Call { .. })]));
+    }
+
+    #[test]
+    fn rewrites_match_style_result_branch_without_erasing_its_block_type() {
+        let recur = WirFunc {
+            name: "search".into(),
+            params: vec![WirLocal { name: "n".into(), ty: WirTy::Int }],
+            ret: vec![WirTy::Int],
+            locals: vec![],
+            body: vec![WirNode::Push(WirExpr::Control(Box::new(WirNode::Block {
+                label: "match_result".into(),
+                result: Some(WirTy::Int),
+                body: vec![
+                    WirNode::Push(WirExpr::Call {
+                        func: "search".into(),
+                        args: vec![WirExpr::GetLocal("n".into())],
+                    }),
+                    WirNode::Br { target: "match_result".into(), cond: None },
+                    WirNode::Unreachable,
+                ],
+            })))],
+            raw_body: None,
+        };
+        let mut module = module_with(recur);
+
+        assert_eq!(lower_self_tail_calls(&mut module), 1);
+        let [WirNode::Loop { body, .. }, WirNode::Unreachable] = module.funcs[0].body.as_slice() else {
+            panic!("expected loop lowering, got {:?}", module.funcs[0].body);
+        };
+        let [WirNode::Return(Some(WirExpr::Control(block)))] = body.as_slice() else {
+            panic!("expected returned result block, got {body:?}");
+        };
+        let WirNode::Block { result: Some(WirTy::Int), body, .. } = block.as_ref() else {
+            panic!("match result block lost its type: {block:?}");
+        };
+        assert!(matches!(body.first(), Some(WirNode::Push(WirExpr::Control(_)))));
+        assert!(matches!(body.get(1), Some(WirNode::Br { target, cond: None }) if target == "match_result"));
     }
 
     #[test]

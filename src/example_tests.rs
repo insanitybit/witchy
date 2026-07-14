@@ -10283,6 +10283,25 @@ fn main(console: Console, root: Dir):
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
     }
 
+    /// RFC-0090 makes proper self-tail calls a language guarantee, not an
+    /// optimizer choice. This depth is far beyond either backend's ordinary
+    /// call stack, and the argument swap pins simultaneous parameter rebinding.
+    #[test]
+    fn proper_self_tail_calls_use_constant_stack_on_both_backends() {
+        let src = r#"
+fn swap_down(n: Int, a: Int, b: Int) -> Int:
+    match n:
+        0 -> ((a * 10) + b)
+        _ -> swap_down((n - 1), b, a)
+
+fn main(console: Console):
+    console.print("${swap_down(5000001, 2, 7)}")
+"#;
+        let want = vec!["72".to_string()];
+        assert_eq!(interp(src), want.clone(), "interpreter trampoline");
+        assert_eq!(run_on_wasm(src), want, "compiled WIR loop");
+    }
+
     /// RFC-0087 structured returns commit every final `var` value together. A
     /// callee-side `?` is ordinary early return, so mutations completed before
     /// propagation remain visible on both the success and error paths.

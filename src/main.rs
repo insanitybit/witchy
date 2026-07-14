@@ -2352,6 +2352,7 @@ fn emit_wat_file(path: &str) -> Result<String, String> {
              does not support (an interpreter-only feature?)"
                 .to_string()
         })?;
+    wir_opt::lower_self_tail_calls(&mut wir);
     wir_opt::optimize(&mut wir);
     Ok(wir::to_wat(&wir))
 }

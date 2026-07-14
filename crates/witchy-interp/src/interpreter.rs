@@ -247,6 +247,9 @@ impl std::error::Error for RuntimeError {}
 enum Flow {
     Err(RuntimeError),
     Return(Value),
+    /// A direct self-tail call. The enclosing function boundary replaces its
+    /// parameter environment and continues without growing the Rust stack.
+    TailCall(Vec<Value>),
     /// `break` — caught by the innermost loop, which stops.
     Break,
     /// `continue` — caught by the innermost loop, which proceeds to the next
@@ -441,7 +444,7 @@ fn finish(r: Result<Value, Flow>) -> Result<Value, RuntimeError> {
         Ok(v) => Ok(v),
         Err(Flow::Return(v)) => Ok(v),
         Err(Flow::Err(e)) => Err(e),
-        Err(Flow::Break | Flow::Continue) => {
+        Err(Flow::Break | Flow::Continue | Flow::TailCall(_)) => {
             Err(RuntimeError { message: "`break`/`continue` outside a loop".into() })
         }
     }
@@ -787,6 +790,9 @@ pub struct Interpreter {
     /// gracefully well before that.
     depth: u32,
     depth_limit: u32,
+    /// Current named function boundary, used to recognize explicit-return tail
+    /// calls even when the `return` is nested in a non-tail control expression.
+    tail_function: Option<Rc<Function>>,
     pub output: Vec<String>,
 }
 
@@ -926,6 +932,7 @@ impl Interpreter {
             assert_site: None,
             depth: 0,
             depth_limit: DEFAULT_DEPTH_LIMIT,
+            tail_function: None,
             output: Vec::new(),
         }
     }
@@ -1103,7 +1110,7 @@ impl Interpreter {
         })
     }
 
-    pub fn call(&mut self, name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
+    pub fn call(&mut self, name: &str, mut args: Vec<Value>) -> Result<Value, RuntimeError> {
         if let Some(v) = self.call_builtin(name, &args)? {
             return Ok(v);
         }
@@ -1117,14 +1124,6 @@ impl Interpreter {
                 args.len()
             ));
         }
-        let mut env = Env::new();
-        for (param, value) in func.params.iter().zip(args) {
-            env.define(
-                param.name.clone(),
-                value,
-                param.convention.binds_mutable(),
-            );
-        }
         let prev_fn = std::mem::replace(&mut self.cur_fn, name.to_string());
         let prev_line = self.cur_line;
         self.depth += 1;
@@ -1132,7 +1131,21 @@ impl Interpreter {
             self.depth -= 1;
             return err("call stack too deep (possible infinite recursion)");
         }
-        let result = finish(self.eval_block(&func.body, &mut env));
+        let prev_tail_function = self.tail_function.replace(func.clone());
+        let result = loop {
+            let mut env = Env::new();
+            for (param, value) in func.params.iter().zip(&args) {
+                env.define(
+                    param.name.clone(),
+                    value.clone(),
+                    param.convention.binds_mutable(),
+                );
+            }
+            match self.eval_function_block(&func.body, &func, &mut env) {
+                Err(Flow::TailCall(next)) => args = next,
+                other => break finish(other),
+            }
+        };
         self.depth -= 1;
         // On success, restore the caller's complete source context. On error,
         // keep this function and its last line so the innermost failure is
@@ -1142,6 +1155,7 @@ impl Interpreter {
             self.cur_fn = prev_fn;
             self.cur_line = prev_line;
         }
+        self.tail_function = prev_tail_function;
         result
     }
 
@@ -1369,7 +1383,9 @@ impl Interpreter {
         }
         let prev_fn = std::mem::replace(&mut self.cur_fn, owner);
         let prev_line = self.cur_line;
+        let prev_tail_function = self.tail_function.take();
         let result = self.eval_block(&body, &mut cenv);
+        self.tail_function = prev_tail_function;
         self.depth -= 1;
         if matches!(&result, Ok(_) | Err(Flow::Return(_))) {
             self.cur_fn = prev_fn;
@@ -1378,7 +1394,7 @@ impl Interpreter {
         let value = match result {
             Ok(v) | Err(Flow::Return(v)) => v,
             Err(e @ Flow::Err(_)) => return Err(e),
-            Err(Flow::Break | Flow::Continue) => {
+            Err(Flow::Break | Flow::Continue | Flow::TailCall(_)) => {
                 return err("`break`/`continue` outside a loop");
             }
         };
@@ -1470,7 +1486,7 @@ impl Interpreter {
                 .map(|function| function.params.iter().map(|param| param.convention).collect())
                 .unwrap_or_default(),
         };
-        let (argvals, places) = self.eval_call_args(args, &conventions, env)?;
+        let (mut argvals, places) = self.eval_call_args(args, &conventions, env)?;
         // `dict.update(dict, key, default, f)`: a single-lookup upsert. Handled here
         // (not in the pure builtin table) because it applies the updater closure
         // `f` to the current value — or `default` when the key is absent — which
@@ -1544,14 +1560,8 @@ impl Interpreter {
                 argvals.len()
             ));
         }
-        let mut fenv = Env::new();
         let mut writebacks: Vec<(CapturedPlace, String)> = Vec::new();
         for (i, param) in func.params.iter().enumerate() {
-            fenv.define(
-                param.name.clone(),
-                argvals[i].clone(),
-                param.convention.binds_mutable(),
-            );
             if matches!(param.convention, Convention::Var) {
                 let place = places
                     .get(i)
@@ -1571,19 +1581,39 @@ impl Interpreter {
             self.depth -= 1;
             return err("call stack too deep (possible infinite recursion)");
         }
-        let block_result = self.eval_block(&func.body, &mut fenv);
-        self.depth -= 1;
-        let result = match block_result {
-            Ok(v) => v,
-            Err(Flow::Return(v)) => v,
-            // On error keep `cur_fn = name` so the innermost frame is reported.
-            Err(e @ Flow::Err(_)) => return Err(e),
-            Err(Flow::Break | Flow::Continue) => {
-                return err("`break`/`continue` outside a loop")
+        let prev_tail_function = self.tail_function.replace(func.clone());
+        let (result, fenv) = loop {
+            let mut fenv = Env::new();
+            for (param, value) in func.params.iter().zip(&argvals) {
+                fenv.define(
+                    param.name.clone(),
+                    value.clone(),
+                    param.convention.binds_mutable(),
+                );
+            }
+            match self.eval_function_block(&func.body, &func, &mut fenv) {
+                Err(Flow::TailCall(next)) => {
+                    debug_assert_eq!(next.len(), func.params.len());
+                    argvals = next;
+                }
+                Ok(value) | Err(Flow::Return(value)) => break (value, fenv),
+                // On error keep `cur_fn = name` so the innermost frame is reported.
+                Err(e @ Flow::Err(_)) => {
+                    self.depth -= 1;
+                    self.tail_function = prev_tail_function;
+                    return Err(e);
+                }
+                Err(Flow::Break | Flow::Continue) => {
+                    self.depth -= 1;
+                    self.tail_function = prev_tail_function;
+                    return err("`break`/`continue` outside a loop")
+                }
             }
         };
+        self.depth -= 1;
         self.cur_fn = prev_fn;
         self.cur_line = prev_line;
+        self.tail_function = prev_tail_function;
         let writebacks = writebacks
             .into_iter()
             .map(|(place, param_name)| {
@@ -2942,6 +2972,179 @@ impl Interpreter {
         }
     }
 
+    /// Evaluate a function body with direct self-tail positions exposed to the
+    /// function boundary. This is independent from the compiled WIR loop so the
+    /// interpreter remains a genuine parity oracle.
+    fn eval_function_block(
+        &mut self,
+        block: &Block,
+        function: &Function,
+        env: &mut Env,
+    ) -> Result<Value, Flow> {
+        let needs_scope = block
+            .stmts
+            .iter()
+            .any(|s| matches!(s, Stmt::Let { .. } | Stmt::LetPattern { .. }));
+        if needs_scope {
+            env.push();
+        }
+        let last = block.stmts.len().saturating_sub(1);
+        let mut result = Value::Nil;
+        for (index, stmt) in block.stmts.iter().enumerate() {
+            if let Some(line) = block.lines.get(index) {
+                self.cur_line = *line;
+            }
+            let step = match stmt {
+                Stmt::Let { name, mutable, value, .. } => {
+                    let value = self.eval(value, env)?;
+                    env.define(name.clone(), value, *mutable);
+                    Ok(Value::Nil)
+                }
+                Stmt::Assign { name, value } => {
+                    if !self.try_inplace_assign(name, value, env)? {
+                        let value = self.eval(value, env)?;
+                        match env.assign(name, value) {
+                            Assign::Done => {}
+                            Assign::Immutable => {
+                                return err(format!(
+                                    "cannot assign to `{name}`: it is immutable (declared with `let`)"
+                                ));
+                            }
+                            Assign::Unbound => {
+                                return err(format!("cannot assign to unbound variable `{name}`"));
+                            }
+                        }
+                    }
+                    Ok(Value::Nil)
+                }
+                Stmt::LetPattern { pattern, value } => {
+                    let value = self.eval(value, env)?;
+                    if !match_pattern(pattern, &value, env) {
+                        return err(format!(
+                            "irrefutable `let` pattern did not match the value `{value}`"
+                        ));
+                    }
+                    Ok(Value::Nil)
+                }
+                Stmt::Return(value) => {
+                    let value = match value {
+                        Some(expr) => self.eval_tail_expr(expr, function, env)?,
+                        None => Value::Nil,
+                    };
+                    Err(Flow::Return(value))
+                }
+                Stmt::Break => Err(Flow::Break),
+                Stmt::Continue => Err(Flow::Continue),
+                Stmt::Expr(expr) | Stmt::Yield(expr) if index == last => {
+                    self.eval_tail_expr(expr, function, env)
+                }
+                Stmt::Expr(expr) | Stmt::Yield(expr) => self.eval(expr, env),
+            };
+            match step {
+                Ok(value) => result = value,
+                Err(flow) => {
+                    if needs_scope {
+                        env.pop();
+                    }
+                    return Err(flow);
+                }
+            }
+        }
+        if needs_scope {
+            env.pop();
+        }
+        Ok(result)
+    }
+
+    fn eval_tail_expr(
+        &mut self,
+        expr: &Expr,
+        function: &Function,
+        env: &mut Env,
+    ) -> Result<Value, Flow> {
+        let handled_here = matches!(
+            expr,
+            Expr::Call { name, .. }
+                if name == &function.name
+                    && !matches!(env.get(name), Some(Value::Closure { .. }))
+                    && function.params.iter().all(|param| {
+                        matches!(param.convention, Convention::Let | Convention::Borrow)
+                    })
+        ) || matches!(
+            expr,
+            Expr::If { .. }
+                | Expr::Match { .. }
+                | Expr::Block(_)
+                | Expr::Binary { op: BinOp::Coalesce, .. }
+        );
+        if handled_here {
+            self.steps += 1;
+            if self.steps > self.step_limit {
+                return err("evaluation step budget exceeded (possible infinite loop)");
+            }
+        }
+        match expr {
+            Expr::Call { name, args }
+                if name == &function.name
+                    && !matches!(env.get(name), Some(Value::Closure { .. }))
+                    && function.params.iter().all(|param| {
+                        matches!(param.convention, Convention::Let | Convention::Borrow)
+                    }) =>
+            {
+                let conventions: Vec<_> = function
+                    .params
+                    .iter()
+                    .map(|param| param.convention)
+                    .collect();
+                let (values, places) = self.eval_call_args(args, &conventions, env)?;
+                debug_assert!(places.iter().all(Option::is_none));
+                Err(Flow::TailCall(values))
+            }
+            Expr::If { cond, then_block, else_block } => match self.eval(cond, env)? {
+                Value::Bool(true) => self.eval_function_block(then_block, function, env),
+                Value::Bool(false) => match else_block {
+                    Some(block) => self.eval_function_block(block, function, env),
+                    None => Ok(Value::Nil),
+                },
+                other => err(format!("`if` condition must be a Bool, got `{other}`")),
+            },
+            Expr::Match { scrutinee, arms } => {
+                let value = self.eval(scrutinee, env)?;
+                for arm in arms {
+                    env.push();
+                    if match_pattern(&arm.pattern, &value, env) {
+                        let guard_ok = match &arm.guard {
+                            Some(guard) => matches!(self.eval(guard, env)?, Value::Bool(true)),
+                            None => true,
+                        };
+                        if guard_ok {
+                            let result = self.eval_tail_expr(&arm.body, function, env);
+                            env.pop();
+                            return result;
+                        }
+                    }
+                    env.pop();
+                }
+                err(format!("no match arm for value `{value}`"))
+            }
+            Expr::Block(block) => self.eval_function_block(block, function, env),
+            Expr::Binary { op: BinOp::Coalesce, lhs, rhs } => match self.eval(lhs, env)? {
+                Value::Ctor { name, mut fields }
+                    if (name == "Some" || name == "Ok") && fields.len() == 1 =>
+                {
+                    Ok(fields.remove(0))
+                }
+                Value::Ctor { name, .. } if name == "None" || name == "Err" => {
+                    self.eval_tail_expr(rhs, function, env)
+                }
+                other => err(format!(
+                    "`??` expects an Option or Result on the left, got `{other}`"
+                )),
+            },
+            _ => self.eval(expr, env),
+        }
+    }
+
     fn eval_block(&mut self, block: &Block, env: &mut Env) -> Result<Value, Flow> {
         // Only open a scope if the block actually introduces bindings. Most
         // function bodies and if-branches are binding-free (just an expression),
@@ -3001,7 +3204,10 @@ impl Interpreter {
                 }
                 Stmt::Return(opt) => {
                     let v = match opt {
-                        Some(e) => self.eval(e, env)?,
+                        Some(e) => match self.tail_function.clone() {
+                            Some(function) => self.eval_tail_expr(e, &function, env)?,
+                            None => self.eval(e, env)?,
+                        },
                         None => Value::Nil,
                     };
                     if needs_scope {

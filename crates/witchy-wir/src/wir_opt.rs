@@ -23,7 +23,270 @@
 //! pre-encoded wasm bytes with no WIR tree to walk.
 
 
-use crate::wir::{WirExpr, WirModule, WirNode, WirSeq};
+use crate::wir::{WirExpr, WirFunc, WirLocal, WirModule, WirNode, WirSeq};
+
+/// Lower direct self-tail calls to parameter rebinding plus a loop.
+///
+/// This is a semantic lowering, not an optional optimization. Multi-result
+/// functions are left alone because their caller-side write-back/ownership
+/// envelope is real residual work and is not yet a proper tail edge.
+pub fn lower_self_tail_calls(module: &mut WirModule) -> usize {
+    module.funcs.iter_mut().map(lower_func_self_tail_calls).sum()
+}
+
+struct TailCtx<'a> {
+    function: &'a str,
+    params: &'a [WirLocal],
+    temps: &'a [WirLocal],
+    loop_label: &'a str,
+    result_ty: crate::wir::WirTy,
+}
+
+fn lower_func_self_tail_calls(func: &mut WirFunc) -> usize {
+    let [result_ty] = func.ret.as_slice() else { return 0 };
+    if func.raw_body.is_some() {
+        return 0;
+    }
+
+    let loop_label = unique_local_name(func, "__witchy_tail_loop");
+    let temps: Vec<_> = func
+        .params
+        .iter()
+        .enumerate()
+        .map(|(index, param)| WirLocal {
+            name: unique_local_name(func, &format!("__witchy_tail_arg_{index}")),
+            ty: param.ty.clone(),
+        })
+        .collect();
+    let ctx = TailCtx {
+        function: &func.name,
+        params: &func.params,
+        temps: &temps,
+        loop_label: &loop_label,
+        result_ty: result_ty.clone(),
+    };
+
+    let mut body = func.body.clone();
+    let mut count = rewrite_explicit_returns_seq(&mut body, &ctx);
+    count += rewrite_function_tail(&mut body, &ctx);
+    if count == 0 {
+        return 0;
+    }
+
+    func.locals.extend(temps);
+    func.body = vec![WirNode::Loop { label: loop_label, body }, WirNode::Unreachable];
+    count
+}
+
+fn unique_local_name(func: &WirFunc, stem: &str) -> String {
+    let occupied = |candidate: &str| {
+        func.params.iter().chain(&func.locals).any(|local| local.name == candidate)
+    };
+    if !occupied(stem) {
+        return stem.to_string();
+    }
+    for suffix in 1usize.. {
+        let candidate = format!("{stem}_{suffix}");
+        if !occupied(&candidate) {
+            return candidate;
+        }
+    }
+    unreachable!("the local-name suffix space is finite")
+}
+
+fn rewrite_function_tail(seq: &mut WirSeq, ctx: &TailCtx<'_>) -> usize {
+    let Some(last) = seq.last_mut() else { return 0 };
+    match last {
+        WirNode::Push(expr) => {
+            let count = rewrite_tail_value_expr(expr, ctx);
+            let expr = match std::mem::replace(last, WirNode::Unreachable) {
+                WirNode::Push(expr) => expr,
+                _ => unreachable!(),
+            };
+            *last = WirNode::Return(Some(expr));
+            count
+        }
+        WirNode::Return(Some(expr)) => rewrite_tail_value_expr(expr, ctx),
+        _ => 0,
+    }
+}
+
+fn rewrite_tail_value_seq(seq: &mut WirSeq, ctx: &TailCtx<'_>) -> usize {
+    let explicit = rewrite_explicit_returns_seq(seq, ctx);
+    let Some(last) = seq.last_mut() else { return explicit };
+    explicit
+        + match last {
+            WirNode::Push(expr) | WirNode::Return(Some(expr)) => {
+                rewrite_tail_value_expr(expr, ctx)
+            }
+            WirNode::If { then_, els, result: Some(_), .. } => {
+                rewrite_tail_value_seq(then_, ctx) + rewrite_tail_value_seq(els, ctx)
+            }
+            WirNode::Block { label, result: Some(_), body } => {
+                rewrite_result_branches(body, label, ctx)
+            }
+            _ => 0,
+        }
+}
+
+fn rewrite_tail_value_expr(expr: &mut WirExpr, ctx: &TailCtx<'_>) -> usize {
+    match expr {
+        WirExpr::Call { func, args }
+            if func == ctx.function && args.len() == ctx.params.len() =>
+        {
+            let args = std::mem::take(args);
+            let mut body = Vec::with_capacity(args.len() * 2 + 2);
+            for (arg, temp) in args.into_iter().zip(ctx.temps) {
+                body.push(WirNode::SetLocal { local: temp.name.clone(), value: arg });
+            }
+            for (param, temp) in ctx.params.iter().zip(ctx.temps) {
+                body.push(WirNode::SetLocal {
+                    local: param.name.clone(),
+                    value: WirExpr::GetLocal(temp.name.clone()),
+                });
+            }
+            body.push(WirNode::Br { target: ctx.loop_label.to_string(), cond: None });
+            body.push(WirNode::Unreachable);
+            *expr = WirExpr::Control(Box::new(WirNode::Block {
+                label: "__witchy_tail_escape".into(),
+                result: Some(ctx.result_ty.clone()),
+                body,
+            }));
+            1
+        }
+        WirExpr::Control(node) => match node.as_mut() {
+            WirNode::If { then_, els, result: Some(_), .. } => {
+                rewrite_tail_value_seq(then_, ctx) + rewrite_tail_value_seq(els, ctx)
+            }
+            WirNode::Block { label, result: Some(_), body } => {
+                rewrite_result_branches(body, label, ctx)
+            }
+            _ => 0,
+        },
+        WirExpr::Seq(seq) => rewrite_tail_value_seq(seq, ctx),
+        _ => 0,
+    }
+}
+
+/// Match lowering leaves each selected arm as `Push(value); br $result` inside
+/// nested blocks. Rewrite only those value positions, retaining the result block
+/// and its type for every non-recursive arm.
+fn rewrite_result_branches(seq: &mut WirSeq, target: &str, ctx: &TailCtx<'_>) -> usize {
+    let mut count = rewrite_explicit_returns_seq(seq, ctx);
+    let mut index = 0;
+    while index + 1 < seq.len() {
+        let branches_to_result = matches!(
+            &seq[index + 1],
+            WirNode::Br { target: branch_target, cond: None } if branch_target == target
+        );
+        if branches_to_result && let WirNode::Push(expr) = &mut seq[index] {
+            count += rewrite_tail_value_expr(expr, ctx);
+        }
+        index += 1;
+    }
+    for node in seq {
+        count += match node {
+            WirNode::If { then_, els, .. } => {
+                rewrite_result_branches(then_, target, ctx)
+                    + rewrite_result_branches(els, target, ctx)
+            }
+            WirNode::Block { body, .. } | WirNode::Loop { body, .. } => {
+                rewrite_result_branches(body, target, ctx)
+            }
+            _ => 0,
+        };
+    }
+    count
+}
+
+fn rewrite_explicit_returns_seq(seq: &mut WirSeq, ctx: &TailCtx<'_>) -> usize {
+    seq.iter_mut().map(|node| rewrite_explicit_returns_node(node, ctx)).sum()
+}
+
+fn rewrite_explicit_returns_node(node: &mut WirNode, ctx: &TailCtx<'_>) -> usize {
+    match node {
+        WirNode::Return(Some(expr)) => rewrite_tail_value_expr(expr, ctx),
+        WirNode::If { cond, then_, els, .. } => {
+            rewrite_explicit_returns_expr(cond, ctx)
+                + rewrite_explicit_returns_seq(then_, ctx)
+                + rewrite_explicit_returns_seq(els, ctx)
+        }
+        WirNode::Block { body, .. } | WirNode::Loop { body, .. } => {
+            rewrite_explicit_returns_seq(body, ctx)
+        }
+        WirNode::SetLocal { value, .. } | WirNode::SetGlobal { value, .. } => {
+            rewrite_explicit_returns_expr(value, ctx)
+        }
+        WirNode::Store { ptr, value, .. } | WirNode::Store8 { ptr, value, .. } => {
+            rewrite_explicit_returns_expr(ptr, ctx) + rewrite_explicit_returns_expr(value, ctx)
+        }
+        WirNode::CallStoreMulti { args, .. } => {
+            args.iter_mut().map(|arg| rewrite_explicit_returns_expr(arg, ctx)).sum()
+        }
+        WirNode::CallIndirectStoreMulti { args, index, .. } => {
+            args.iter_mut()
+                .map(|arg| rewrite_explicit_returns_expr(arg, ctx))
+                .sum::<usize>()
+                + rewrite_explicit_returns_expr(index, ctx)
+        }
+        WirNode::MemoryCopy { dest, src, len } => {
+            rewrite_explicit_returns_expr(dest, ctx)
+                + rewrite_explicit_returns_expr(src, ctx)
+                + rewrite_explicit_returns_expr(len, ctx)
+        }
+        WirNode::MemoryFill { dest, value, len } => {
+            rewrite_explicit_returns_expr(dest, ctx)
+                + rewrite_explicit_returns_expr(value, ctx)
+                + rewrite_explicit_returns_expr(len, ctx)
+        }
+        WirNode::StructSet { base, value, .. } => {
+            rewrite_explicit_returns_expr(base, ctx) + rewrite_explicit_returns_expr(value, ctx)
+        }
+        WirNode::Br { cond: Some(expr), .. }
+        | WirNode::Drop(expr)
+        | WirNode::Do(expr)
+        | WirNode::Push(expr) => rewrite_explicit_returns_expr(expr, ctx),
+        WirNode::Br { cond: None, .. } | WirNode::Return(None) | WirNode::Unreachable => 0,
+    }
+}
+
+fn rewrite_explicit_returns_expr(expr: &mut WirExpr, ctx: &TailCtx<'_>) -> usize {
+    match expr {
+        WirExpr::ToSlot(inner, _)
+        | WirExpr::FromSlot(inner, _)
+        | WirExpr::Unary { arg: inner, .. }
+        | WirExpr::Convert { arg: inner, .. }
+        | WirExpr::Load { ptr: inner, .. }
+        | WirExpr::Load8U { ptr: inner, .. }
+        | WirExpr::MemoryGrow(inner)
+        | WirExpr::StructGet { base: inner, .. }
+        | WirExpr::RefIsNull(inner) => rewrite_explicit_returns_expr(inner, ctx),
+        WirExpr::Binary { lhs, rhs, .. } => {
+            rewrite_explicit_returns_expr(lhs, ctx) + rewrite_explicit_returns_expr(rhs, ctx)
+        }
+        WirExpr::Call { args, .. }
+        | WirExpr::CallHost { args, .. }
+        | WirExpr::StructNew { args, .. } => {
+            args.iter_mut().map(|arg| rewrite_explicit_returns_expr(arg, ctx)).sum()
+        }
+        WirExpr::CallIndirect { args, index, .. } => {
+            args.iter_mut()
+                .map(|arg| rewrite_explicit_returns_expr(arg, ctx))
+                .sum::<usize>()
+                + rewrite_explicit_returns_expr(index, ctx)
+        }
+        WirExpr::Control(node) => rewrite_explicit_returns_node(node, ctx),
+        WirExpr::Seq(seq) => rewrite_explicit_returns_seq(seq, ctx),
+        WirExpr::ConstI64(_)
+        | WirExpr::ConstF64(_)
+        | WirExpr::ConstI32(_)
+        | WirExpr::StrPtr(_)
+        | WirExpr::MemorySize
+        | WirExpr::GetLocal(_)
+        | WirExpr::GetGlobal(_)
+        | WirExpr::RefNull(_) => 0,
+    }
+}
 
 /// Counts from one [`optimize`] run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

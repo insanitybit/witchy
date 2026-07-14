@@ -557,6 +557,21 @@ Parameter annotations are required; the return type may be inferred for
 non-`pub` functions. Locals are inferred (Hindley-Milner-style unification with
 an occurs check).
 
+**Direct self-tail calls use constant control stack.** A recursive call qualifies
+when its complete result becomes the current function's result directly, with no
+caller calculation, write-back, drop, conversion, loan cleanup, or error
+inspection remaining. This includes self-calls in a function's final expression,
+`return`, and the selected tail branches of `if`, `match`, blocks, and `??`. It
+excludes calls inside operators, constructors, `?`, guards, conditions, and
+arguments. Mutual and indirect proper-tail lowering is tracked by RFC-0090 and
+is not yet part of the shipped guarantee.
+
+No tail-call keyword or sigil is required. Arguments still evaluate left to
+right and are rebound simultaneously (`f(b, a)` swaps correctly). A textually
+final `var` call is proper only when its complete move-out envelope can be
+forwarded unchanged; ordinary caller-place reconstruction is real residual
+work. The guarantee bounds stack, not heap allocation or total running time.
+
 **Parameter conventions** (Hylo-style value semantics):
 
 | Convention | Meaning |

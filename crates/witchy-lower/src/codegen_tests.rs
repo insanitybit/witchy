@@ -730,6 +730,61 @@ fn main() -> Int:
     }
 
     #[test]
+    fn compiles_deep_self_tail_recursion_without_wasm_stack_growth() {
+        let src = r#"
+fn swap_down(n: Int, a: Int, b: Int) -> Int:
+    if (n == 0):
+        ((a * 10) + b)
+    else:
+        swap_down((n - 1), b, a)
+
+fn main() -> Int:
+    swap_down(1000001, 2, 7)
+"#;
+        assert_eq!(run_int(src), 72);
+    }
+
+    #[test]
+    fn compiles_nested_explicit_return_as_a_tail_edge() {
+        let src = r#"
+fn down(n: Int) -> Int:
+    if (n > 0):
+        return down((n - 1))
+    9
+
+fn main() -> Int:
+    down(5000000)
+"#;
+        assert_eq!(run_int(src), 9);
+    }
+
+    #[test]
+    fn compiles_match_arm_self_tail_edge_without_erasing_result_block() {
+        let src = r#"
+fn down(n: Int) -> Int:
+    match n:
+        0 -> 9
+        _ -> down((n - 1))
+
+fn main() -> Int:
+    down(5000000)
+"#;
+        assert_eq!(run_int(src), 9);
+    }
+
+    #[test]
+    fn compiles_coalesce_fallback_as_a_tail_edge() {
+        let src = r#"
+fn down(n: Int) -> Int:
+    (if (n == 0): Some(9) else: None) ?? down((n - 1))
+
+fn main() -> Int:
+    down(5000000)
+"#;
+        assert_eq!(run_int(src), 9);
+    }
+
+    #[test]
     fn compiles_var_writeback() {
         // `var` compiles to move-in / move-out: bump returns the updated n,
         // and the caller writes it back into x.
