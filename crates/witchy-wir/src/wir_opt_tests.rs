@@ -1,6 +1,7 @@
     use super::*;
     use crate::wir::{
-        BinOp, DataSegment, Kind, WirExpr, WirFunc, WirImport, WirLocal, WirModule, WirNode, WirTy,
+        BinOp, DataSegment, Kind, WirExpr, WirFunc, WirImport, WirLocal, WirModule, WirNode, WirTable,
+        WirTy,
     };
 
     /// A bare module wrapping a single func, for exercising `optimize`.
@@ -67,7 +68,7 @@
         };
         let mut module = module_with(recur);
 
-        assert_eq!(lower_self_tail_calls(&mut module), 1);
+        assert_eq!(lower_direct_tail_calls(&mut module), 1);
         let func = &module.funcs[0];
         assert_eq!(func.locals.len(), 2, "one staging local per parameter");
         let [WirNode::Loop { label, body }, WirNode::Unreachable] = func.body.as_slice() else {
@@ -86,11 +87,17 @@
         let WirNode::Block { body: escape_body, result: Some(WirTy::Int), .. } = escape.as_ref() else {
             panic!("expected typed escape block, got {escape:?}");
         };
-        assert!(matches!(escape_body.get(4), Some(WirNode::Br { target, cond: None }) if target == label));
+        assert_eq!(escape_body.len(), 10);
         assert!(matches!(escape_body.first(), Some(WirNode::SetLocal { local, .. }) if local == &func.locals[0].name));
         assert!(matches!(escape_body.get(1), Some(WirNode::SetLocal { local, .. }) if local == &func.locals[1].name));
-        assert!(matches!(escape_body.get(2), Some(WirNode::SetLocal { local, value: WirExpr::GetLocal(_) }) if local == "n"));
-        assert!(matches!(escape_body.get(3), Some(WirNode::SetLocal { local, value: WirExpr::GetLocal(_) }) if local == "acc"));
+        assert!(matches!(escape_body.get(2), Some(WirNode::SetLocal { local, value: WirExpr::ConstI64(0) }) if local == "n"));
+        assert!(matches!(escape_body.get(3), Some(WirNode::SetLocal { local, value: WirExpr::ConstI64(0) }) if local == "acc"));
+        assert!(matches!(escape_body.get(4), Some(WirNode::SetLocal { local, value: WirExpr::GetLocal(_) }) if local == "n"));
+        assert!(matches!(escape_body.get(5), Some(WirNode::SetLocal { local, value: WirExpr::GetLocal(_) }) if local == "acc"));
+        assert!(matches!(escape_body.get(6), Some(WirNode::SetLocal { local, value: WirExpr::ConstI64(0) }) if local == &func.locals[0].name));
+        assert!(matches!(escape_body.get(7), Some(WirNode::SetLocal { local, value: WirExpr::ConstI64(0) }) if local == &func.locals[1].name));
+        assert!(matches!(escape_body.get(8), Some(WirNode::Br { target, cond: None }) if target == label));
+        assert!(matches!(escape_body.last(), Some(WirNode::Unreachable)));
     }
 
     #[test]
@@ -108,8 +115,148 @@
         };
         let mut module = module_with(recur);
 
-        assert_eq!(lower_self_tail_calls(&mut module), 0);
+        assert_eq!(lower_direct_tail_calls(&mut module), 0);
         assert!(matches!(module.funcs[0].body.as_slice(), [WirNode::Push(WirExpr::Call { .. })]));
+    }
+
+    #[test]
+    fn lowers_mutual_tail_component_to_one_dispatcher_and_abi_wrappers() {
+        let member = |name: &str, target: &str| WirFunc {
+            name: name.into(),
+            params: vec![WirLocal { name: "n".into(), ty: WirTy::Int }],
+            ret: vec![WirTy::Bool],
+            locals: vec![],
+            body: vec![WirNode::Push(WirExpr::Control(Box::new(WirNode::If {
+                cond: WirExpr::Binary {
+                    op: BinOp::Eq,
+                    kind: Kind::I64,
+                    lhs: Box::new(WirExpr::GetLocal("n".into())),
+                    rhs: Box::new(WirExpr::ConstI64(0)),
+                },
+                then_: vec![WirNode::Push(WirExpr::ConstI32(i32::from(name == "even")))],
+                els: vec![WirNode::Push(WirExpr::Call {
+                    func: target.into(),
+                    args: vec![WirExpr::Binary {
+                        op: BinOp::Sub,
+                        kind: Kind::I64,
+                        lhs: Box::new(WirExpr::GetLocal("n".into())),
+                        rhs: Box::new(WirExpr::ConstI64(1)),
+                    }],
+                })],
+                result: Some(WirTy::Bool),
+            })))],
+            raw_body: None,
+        };
+        let mut module = module_with(member("even", "odd"));
+        module.funcs.push(member("odd", "even"));
+        module.exports.push(("is_even".into(), "even".into()));
+        module.table = Some(WirTable { funcs: vec!["even".into(), "odd".into()] });
+        let mut repeated = module.clone();
+
+        assert_eq!(lower_direct_tail_calls(&mut module), 2);
+        assert_eq!(lower_direct_tail_calls(&mut repeated), 2);
+        assert_eq!(crate::wir::to_wat(&module), crate::wir::to_wat(&repeated));
+        assert_eq!(module.funcs.len(), 3, "one dispatcher per SCC");
+        let dispatcher = &module.funcs[2];
+        assert!(dispatcher.name.starts_with("__witchy_tail_scc_"));
+        assert_eq!(dispatcher.params.len(), 3, "state plus two disjoint parameter banks");
+        assert!(matches!(dispatcher.body.as_slice(), [WirNode::Loop { .. }, WirNode::Unreachable]));
+        assert_eq!(module.exports, vec![("is_even".to_string(), "even".to_string())]);
+        assert_eq!(
+            module.table.as_ref().expect("table retained").funcs,
+            vec!["even".to_string(), "odd".to_string()],
+        );
+        let binary = crate::wir_encode::encode(&module, &[]);
+        wasmparser::validate(&binary).expect("dispatcher wrappers retain a valid table/export ABI");
+        let mut residual_tail_calls = std::collections::HashSet::new();
+        collect_function_tail_calls(&dispatcher.body, &mut residual_tail_calls);
+        assert!(
+            !residual_tail_calls.contains("even") && !residual_tail_calls.contains("odd"),
+            "guaranteed edges must contain no recursive backend call: {residual_tail_calls:?}",
+        );
+        for (state, wrapper) in module.funcs[..2].iter().enumerate() {
+            assert_eq!(wrapper.params.len(), 1);
+            assert_eq!(wrapper.params[0].name, "n");
+            assert_eq!(wrapper.params[0].ty, WirTy::Int);
+            let [WirNode::Push(WirExpr::Call { func, args })] = wrapper.body.as_slice() else {
+                panic!("expected ABI wrapper, got {:?}", wrapper.body);
+            };
+            assert_eq!(func, &dispatcher.name);
+            assert!(matches!(args.first(), Some(WirExpr::ConstI32(value)) if *value == state as i32));
+        }
+    }
+
+    #[test]
+    fn mutual_dispatcher_preserves_reference_parameter_kinds() {
+        fn contains_reference_clear(seq: &[WirNode], prefix: &str) -> bool {
+            seq.iter().any(|node| match node {
+                WirNode::SetLocal {
+                    local,
+                    value: WirExpr::RefNull(Kind::ExternRef),
+                } => local.starts_with(prefix),
+                WirNode::If { then_, els, .. } => {
+                    contains_reference_clear(then_, prefix)
+                        || contains_reference_clear(els, prefix)
+                }
+                WirNode::Block { body, .. } | WirNode::Loop { body, .. } => {
+                    contains_reference_clear(body, prefix)
+                }
+                WirNode::Return(Some(WirExpr::Control(control)))
+                | WirNode::Push(WirExpr::Control(control)) => {
+                    contains_reference_clear(std::slice::from_ref(control.as_ref()), prefix)
+                }
+                WirNode::Return(Some(WirExpr::Seq(seq))) | WirNode::Push(WirExpr::Seq(seq)) => {
+                    contains_reference_clear(seq, prefix)
+                }
+                _ => false,
+            })
+        }
+
+        let first = WirFunc {
+            name: "first".into(),
+            params: vec![WirLocal { name: "n".into(), ty: WirTy::Int }],
+            ret: vec![WirTy::Int],
+            locals: vec![],
+            body: vec![WirNode::Push(WirExpr::Call {
+                func: "second".into(),
+                args: vec![WirExpr::RefNull(Kind::ExternRef), WirExpr::GetLocal("n".into())],
+            })],
+            raw_body: None,
+        };
+        let second = WirFunc {
+            name: "second".into(),
+            params: vec![
+                WirLocal { name: "cap".into(), ty: WirTy::Extern },
+                WirLocal { name: "n".into(), ty: WirTy::Int },
+            ],
+            ret: vec![WirTy::Int],
+            locals: vec![],
+            body: vec![WirNode::Push(WirExpr::Call {
+                func: "first".into(),
+                args: vec![WirExpr::GetLocal("n".into())],
+            })],
+            raw_body: None,
+        };
+        let mut module = module_with(first);
+        module.funcs.push(second);
+
+        assert_eq!(lower_direct_tail_calls(&mut module), 2);
+        let dispatcher = &module.funcs[2];
+        assert!(dispatcher.params.iter().any(|param| param.ty == WirTy::Extern));
+        assert!(
+            contains_reference_clear(&dispatcher.body, "__witchy_tail_p_"),
+            "departing reference banks must release their roots",
+        );
+        assert!(
+            contains_reference_clear(&dispatcher.body, "__witchy_tail_arg_"),
+            "reference staging temporaries must release their roots",
+        );
+        let [WirNode::Push(WirExpr::Call { args, .. })] = module.funcs[0].body.as_slice() else {
+            panic!("expected first wrapper");
+        };
+        assert!(args.iter().any(|arg| matches!(arg, WirExpr::RefNull(Kind::ExternRef))));
+        let binary = crate::wir_encode::encode(&module, &[]);
+        wasmparser::validate(&binary).expect("reference-typed dispatcher must validate");
     }
 
     #[test]
@@ -135,7 +282,7 @@
         };
         let mut module = module_with(recur);
 
-        assert_eq!(lower_self_tail_calls(&mut module), 1);
+        assert_eq!(lower_direct_tail_calls(&mut module), 1);
         let [WirNode::Loop { body, .. }, WirNode::Unreachable] = module.funcs[0].body.as_slice() else {
             panic!("expected loop lowering, got {:?}", module.funcs[0].body);
         };

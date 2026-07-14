@@ -1444,6 +1444,46 @@ fn main(console: Console):
     }
 
     #[test]
+    fn deep_mutual_tail_recursion_uses_constant_stack() {
+        let src = r#"
+fn even(n: Int) -> Bool:
+    if n == 0:
+        true
+    else:
+        odd(n - 1)
+
+fn odd(n: Int) -> Bool:
+    if n == 0:
+        false
+    else:
+        even(n - 1)
+
+fn main(console: Console):
+    console.print("${even(250000)}")
+"#;
+        assert_eq!(run(src).unwrap(), vec!["true"]);
+    }
+
+    #[test]
+    fn mutual_tail_edges_stage_arguments_and_honor_explicit_return() {
+        let src = r#"
+fn left(n: Int, a: Int, b: Int) -> Int:
+    if n == 0:
+        return a * 10 + b
+    return right(n - 1, b, a)
+
+fn right(n: Int, a: Int, b: Int) -> Int:
+    if n == 0:
+        return a * 10 + b
+    return left(n - 1, b, a)
+
+fn main(console: Console):
+    console.print("${left(1001, 2, 7)}")
+"#;
+        assert_eq!(run(src).unwrap(), vec!["72"]);
+    }
+
+    #[test]
     fn non_tail_recursion_still_reports_the_depth_guard() {
         let src = r#"
 fn rec(n: Int) -> Int:

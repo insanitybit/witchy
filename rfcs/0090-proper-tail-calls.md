@@ -10,7 +10,7 @@ related:
   - "0083 (opt-mode lifetimes - loans must end or transfer across a tail edge)"
   - "0087 (uniform var write-back - move-out is part of the callable ABI)"
   - "0089 (fully in-place functional kernels - requires constant control stack)"
-tracking: implementation proceeds in four parity-gated stages; self-tail lowering is stage 1
+tracking: stages 1-2 (direct self and mutually recursive components) are implemented; indirect calls are stage 3
 ---
 
 # RFC-0090: Guaranteed proper tail calls
@@ -125,6 +125,13 @@ with more than one callable lowers to a dispatcher loop with a typed state tag
 and disjoint parameter banks. Each edge stages the destination arguments, sets
 the destination state, and branches to the dispatcher header. Public and
 non-tail entry wrappers preserve the original callable ABIs.
+
+The portable implementation uses one WIR dispatcher per component. Its parameter
+banks retain each member's exact scalar or reference kinds. After staging the
+arguments, every transition clears the departing bank (releasing reference
+roots), rebinds the destination parameters, clears its staging temporaries, and
+resets its local bank before entering the body. The state machine therefore has
+ordinary fresh-call semantics.
 
 Only ABI-compatible edges join a dispatcher. An incompatible edge remains an
 ordinary non-tail call because forwarding would leave real work in the caller.

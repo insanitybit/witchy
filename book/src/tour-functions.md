@@ -23,8 +23,9 @@ everything else is module-private.
 
 ## Recursion and proper tail calls
 
-When a function's final action is a call to itself, witchy runs that **direct
-self-tail call** without growing the control stack. This is a language guarantee
+When a function's final action is a direct recursive call, witchy runs that
+**proper tail call** without growing the control stack. This covers both self
+recursion and directly mutually recursive functions. It is a language guarantee
 on both backends, not an optimization hint, and it needs no special syntax:
 
 ```witchy
@@ -42,12 +43,36 @@ fn main(console: Console):
 27
 ```
 
-Self-tail-call arguments still evaluate left to right and then replace the
-parameters all at once, which is why the swap above works. A recursive call does
+Tail-call arguments still evaluate left to right and then replace the destination
+parameters all at once, which is why the swap above works. Mutually recursive
+functions use the same rule and keep their ordinary public function signatures:
+
+```witchy
+fn even(n: Int) -> Bool:
+    if n == 0:
+        true
+    else:
+        odd(n - 1)
+
+fn odd(n: Int) -> Bool:
+    if n == 0:
+        false
+    else:
+        even(n - 1)
+
+fn main(console: Console):
+    console.print("${even(10000)}")
+```
+
+```text
+true
+```
+
+A recursive call does
 not qualify when the caller must still add to its result, inspect it with `?`,
 rebuild a `var` place, or perform other observable work. The guarantee bounds
 stack; it does not by itself promise zero allocation or constant running time.
-Mutual and indirect tail calls are the next RFC-0090 stages.
+Indirect calls through function values are the next RFC-0090 stage.
 
 Method-call syntax, `value.method(args)`, is the idiomatic way to call the
 standard data libraries — `xs.map(f)`, `d.insert(k, v)`, `s.to_upper()` — and it

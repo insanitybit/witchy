@@ -10302,6 +10302,30 @@ fn main(console: Console):
         assert_eq!(run_on_wasm(src), want, "compiled WIR loop");
     }
 
+    /// RFC-0090 direct recursive components use one typed dispatcher. Different
+    /// source signatures occupy disjoint banks, and every edge still stages its
+    /// arguments before changing logical functions.
+    #[test]
+    fn proper_mutual_tail_calls_use_constant_stack_on_both_backends() {
+        let src = r#"
+fn left(own n: Int, a: Int, b: Int) -> Int:
+    match n:
+        0 -> ((a * 10) + b)
+        _ -> right((n - 1), b, a, "right")
+
+fn right(own n: Int, a: Int, b: Int, label: String) -> Int:
+    if n == 0:
+        return (a * 10) + b
+    return left((n - 1), b, a)
+
+fn main(console: Console):
+    console.print("${left(250001, 2, 7)}")
+"#;
+        let want = vec!["72".to_string()];
+        assert_eq!(interp(src), want.clone(), "interpreter SCC trampoline");
+        assert_eq!(run_on_wasm(src), want, "compiled WIR SCC dispatcher");
+    }
+
     /// RFC-0087 structured returns commit every final `var` value together. A
     /// callee-side `?` is ordinary early return, so mutations completed before
     /// propagation remain visible on both the success and error paths.

@@ -745,6 +745,27 @@ fn main() -> Int:
     }
 
     #[test]
+    fn compiles_deep_mutual_tail_recursion_without_wasm_stack_growth() {
+        let src = r#"
+fn even(own n: Int) -> Int:
+    if n == 0:
+        1
+    else:
+        odd(n - 1)
+
+fn odd(own n: Int) -> Int:
+    if n == 0:
+        0
+    else:
+        even(n - 1)
+
+fn main() -> Int:
+    even(5000000)
+"#;
+        assert_eq!(run_int(src), 1);
+    }
+
+    #[test]
     fn compiles_nested_explicit_return_as_a_tail_edge() {
         let src = r#"
 fn down(n: Int) -> Int:
