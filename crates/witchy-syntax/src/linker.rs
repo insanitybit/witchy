@@ -1335,6 +1335,7 @@ struct RewriteContext<'a> {
     entry: &'a str,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn rewrite_block(
     b: &mut Block,
     m: &str,
