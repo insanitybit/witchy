@@ -1079,11 +1079,22 @@ impl Parser {
             return Ok(Type::Qualified(q, Box::new(self.ty()?)));
         }
         if self.eat(&Tok::Fn) {
-            // Function type: `fn(T1, T2) -> R`.
+            // Function type: `fn(T1, var T2, own T3) -> R`.
             self.expect(&Tok::LParen)?;
             let mut params = Vec::new();
+            let mut conventions = Vec::new();
             while !self.at(&Tok::RParen) {
+                let convention = if self.eat(&Tok::Var) {
+                    Convention::Var
+                } else if self.eat(&Tok::Own) {
+                    Convention::Own
+                } else if self.eat(&Tok::Let) {
+                    Convention::Borrow
+                } else {
+                    Convention::Let
+                };
                 params.push(self.ty()?);
+                conventions.push(convention);
                 if !self.eat(&Tok::Comma) {
                     break;
                 }
@@ -1091,7 +1102,7 @@ impl Parser {
             self.expect(&Tok::RParen)?;
             self.expect(&Tok::RArrow)?;
             let ret = self.ty()?;
-            return Ok(Type::Fn(params, Box::new(ret)));
+            return Ok(Type::Fn(params, Box::new(ret), conventions));
         }
         if self.eat(&Tok::DotLBrace) {
             return self.anon_record_type();
@@ -2405,10 +2416,26 @@ impl Parser {
             Type::Tuple(types) => Ok(self.meta_call("type_tuple", vec![
                 Expr::List(self.type_syntax_exprs(types)?),
             ])),
-            Type::Fn(params, ret) => Ok(self.meta_call(
-                "type_fn",
+            Type::Fn(params, ret, conventions) => Ok(self.meta_call(
+                "type_fn_with_conventions",
                 vec![
                     Expr::List(self.type_syntax_exprs(params)?),
+                    Expr::List(
+                        conventions
+                            .iter()
+                            .map(|convention| {
+                                Expr::Str(
+                                    match convention {
+                                        Convention::Let => "value",
+                                        Convention::Borrow => "borrow",
+                                        Convention::Var => "var",
+                                        Convention::Own => "own",
+                                    }
+                                    .to_string(),
+                                )
+                            })
+                            .collect(),
+                    ),
                     self.type_syntax_expr(ret)?,
                 ],
             )),

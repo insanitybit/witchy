@@ -351,7 +351,7 @@ fn is_expr_syntax_type(ty: &Type) -> bool {
         Type::Named(name, args) => {
             args.is_empty() && (name == "ExprSyntax" || name == "meta.ExprSyntax")
         }
-        Type::Tuple(_) | Type::Fn(_, _) => false,
+        Type::Tuple(_) | Type::Fn(_, _, _) => false,
     }
 }
 

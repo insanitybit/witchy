@@ -2129,7 +2129,7 @@ impl<'types> Codegen<'types> {
             }
             // A function-typed parameter (`f: fn(...) -> RET`): remember RET's kind
             // so a closure call `f(x)` recovers the result at the right width.
-            if let Some(Type::Fn(_, ret)) = &p.ty {
+            if let Some(Type::Fn(_, ret, _)) = &p.ty {
                 self.local_fn_ret_kind.insert(p.name.clone(), self.kind_for_type(ret));
             }
             // A nested-list parameter (`m: List(List(Int))`): record its
@@ -6279,7 +6279,7 @@ impl<'types> Codegen<'types> {
         for p in params {
             let k = p.ty.as_ref().map(|t| self.kind_for_type(t)).unwrap_or(Kind::I32);
             self.locals.insert(p.name.clone(), k);
-            if let Some(Type::Fn(_, ret)) = &p.ty {
+            if let Some(Type::Fn(_, ret, _)) = &p.ty {
                 self.local_fn_ret_kind.insert(p.name.clone(), self.kind_for_type(ret));
             }
         }
@@ -7006,7 +7006,7 @@ impl<'types> Codegen<'types> {
                 Type::Qualified(_, inner) => mentions(inner, name),
                 Type::Named(n, args) => n == name || args.iter().any(|a| mentions(a, name)),
                 Type::Tuple(ts) => ts.iter().any(|t| mentions(t, name)),
-                Type::Fn(params, ret) => {
+                Type::Fn(params, ret, _) => {
                     params.iter().any(|p| mentions(p, name)) || mentions(ret, name)
                 }
             }
@@ -7292,7 +7292,7 @@ fn list_param_of_var(params: &[witchy_syntax::ast::Param], tv: &str) -> Option<u
 /// the given type-var `tv`).
 fn fn_param_returning_var(params: &[witchy_syntax::ast::Param], tv: &str) -> Option<usize> {
     params.iter().position(|p| {
-        matches!(&p.ty, Some(Type::Fn(_, ret)) if bare_type_var(ret).as_deref() == Some(tv))
+        matches!(&p.ty, Some(Type::Fn(_, ret, _)) if bare_type_var(ret).as_deref() == Some(tv))
     })
 }
 
@@ -7324,7 +7324,7 @@ fn type_has_var(t: &Type) -> bool {
                 || args.iter().any(type_has_var)
         }
         Type::Tuple(ts) => ts.iter().any(type_has_var),
-        Type::Fn(ps, r) => ps.iter().any(type_has_var) || type_has_var(r),
+        Type::Fn(ps, r, _) => ps.iter().any(type_has_var) || type_has_var(r),
     }
 }
 

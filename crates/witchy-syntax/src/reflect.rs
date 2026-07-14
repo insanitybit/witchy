@@ -120,11 +120,24 @@ fn type_expr(t: &Type) -> Expr {
             name: "meta.TTuple".into(),
             args: vec![Expr::List(ts.iter().map(type_expr).collect())],
         },
-        Type::Fn(ps, r) => Expr::Ctor {
+        Type::Fn(ps, r, conventions) => Expr::Ctor {
             name: "meta.TFn".into(),
             args: vec![
                 Expr::List(ps.iter().map(type_expr).collect()),
                 type_expr(r),
+                Expr::List(
+                    conventions
+                        .iter()
+                        .map(|convention| {
+                            s(match convention {
+                                Convention::Let => "value",
+                                Convention::Borrow => "borrow",
+                                Convention::Var => "var",
+                                Convention::Own => "own",
+                            })
+                        })
+                        .collect(),
+                ),
             ],
         },
     }

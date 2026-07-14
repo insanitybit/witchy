@@ -2680,6 +2680,29 @@ fn main():
     }
 
     #[test]
+    fn rfc0087_function_values_retain_and_enforce_conventions() {
+        check_str(
+            "fn bump(var n: Int) -> Int:\n    n = n + 1\n    n\n\nfn apply(f: fn(var Int) -> Int, var n: Int) -> Int:\n    f(n)\n\nfn main():\n    var n = 1\n    let f: fn(var Int) -> Int = bump\n    let _ = apply(f, n)\n",
+        )
+        .expect("var functions are first-class and indirect calls accept mutable places");
+
+        let immutable = check_str(
+            "fn bump(var n: Int) -> Int:\n    n\n\nfn main():\n    let n = 1\n    let f: fn(var Int) -> Int = bump\n    let _ = f(n)\n",
+        )
+        .expect_err("an indirect var call must reject an immutable argument");
+        assert!(immutable.contains("mutable `var`"), "{immutable}");
+
+        let mismatch = check_str(
+            "fn pure(n: Int) -> Int:\n    n\n\nfn use(f: fn(var Int) -> Int) -> Nil:\n    return\n\nfn main():\n    use(pure)\n",
+        )
+        .expect_err("function conventions are part of type identity");
+        assert!(
+            mismatch.contains("fn(var Int) -> Int") && mismatch.contains("fn(Int) -> Int"),
+            "{mismatch}"
+        );
+    }
+
+    #[test]
     fn rfc0064_discarded_free_call_is_an_error() {
         // (RFC-0064 Check 3) A non-`Nil` FREE call in statement position whose
         // result is discarded is the same discard error the method form already

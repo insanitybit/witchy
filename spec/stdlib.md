@@ -2267,7 +2267,7 @@ A declared type expression, exposed as data so generators do not have to parse s
 
 - `TNamed(String, List(TypeExpr))`
 - `TTuple(List(TypeExpr))`
-- `TFn(List(TypeExpr), TypeExpr)`
+- `TFn(List(TypeExpr), TypeExpr, List(String))`
 - `TQualified(String, TypeExpr)`
 
 #### `type TypeKind`
@@ -2327,6 +2327,8 @@ A tuple type such as `(Int, String)`.
 #### `fn type_fn(params: List(TypeSyntax), ret: TypeSyntax) -> TypeSyntax`
 
 A function type such as `fn(Int) -> String`.
+
+#### `fn type_fn_with_conventions(params: List(TypeSyntax), conventions: List(String), ret: TypeSyntax) -> TypeSyntax`
 
 #### `fn type_frozen(ty: TypeSyntax) -> TypeSyntax`
 

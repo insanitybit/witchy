@@ -430,7 +430,7 @@ impl<'a> Scope<'a> {
         match ty {
             Type::Qualified(_, inner) => self.resolve_type(inner),
             Type::Tuple(ts) => ts.iter_mut().try_for_each(|t| self.resolve_type(t)),
-            Type::Fn(ps, r) => {
+            Type::Fn(ps, r, _) => {
                 ps.iter_mut().try_for_each(|p| self.resolve_type(p))?;
                 self.resolve_type(r)
             }

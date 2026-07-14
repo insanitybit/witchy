@@ -22,7 +22,7 @@ fn contains_concrete_float(ty: &Type) -> bool {
     match ty {
         Type::Named(n, args) => n == "Float" || args.iter().any(contains_concrete_float),
         Type::Tuple(slots) => slots.iter().any(contains_concrete_float),
-        Type::Fn(params, ret) => {
+        Type::Fn(params, ret, _) => {
             params.iter().any(contains_concrete_float) || contains_concrete_float(ret)
         }
         Type::Qualified(_, inner) => contains_concrete_float(inner),
@@ -39,7 +39,7 @@ fn unsupported_deserialize_shape(ty: &Type) -> Option<&'static str> {
     match ty {
         Type::Named(_, args) => args.iter().find_map(unsupported_deserialize_shape),
         Type::Tuple(_) => Some("tuple"),
-        Type::Fn(_, _) => Some("function"),
+        Type::Fn(_, _, _) => Some("function"),
         Type::Qualified(_, inner) => unsupported_deserialize_shape(inner),
     }
 }

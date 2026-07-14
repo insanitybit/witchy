@@ -232,7 +232,7 @@ impl Codegen<'_> {
             other => other,
         };
         match inner {
-            Type::Tuple(_) | Type::Fn(_, _) => true,
+            Type::Tuple(_) | Type::Fn(_, _, _) => true,
             Type::Named(n, _) => {
                 n == "String"
                     || n == "List"

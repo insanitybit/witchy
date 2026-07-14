@@ -544,7 +544,7 @@ fn f():
             panic!("expected function");
         };
         let expected = Expr::Call {
-            name: "meta.type_fn".into(),
+            name: "meta.type_fn_with_conventions".into(),
             args: vec![
                 Expr::List(vec![
                     named("List", vec![named("Int", vec![])]),
@@ -553,6 +553,7 @@ fn f():
                         args: vec![ident("json"), ident("Json"), Expr::List(vec![])],
                     },
                 ]),
+                Expr::List(vec![Expr::Str("value".into()), Expr::Str("value".into())]),
                 Expr::Call {
                     name: "meta.type_unique".into(),
                     args: vec![Expr::Call {
@@ -563,6 +564,35 @@ fn f():
             ],
         };
         assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);
+    }
+
+    #[test]
+    fn function_types_retain_parameter_conventions() {
+        let module = parse_module(
+            "fn use(f: fn(var Int, let String, own Bytes, Bool) -> Int):\n    0\n",
+        )
+        .expect("convention-bearing function type should parse");
+        let Item::Function(function) = &module.items[0] else {
+            panic!("expected function");
+        };
+        let Some(Type::Fn(params, ret, conventions)) = &function.params[0].ty else {
+            panic!("expected function-typed parameter");
+        };
+        assert_eq!(params.len(), 4);
+        assert_eq!(ret.as_ref(), &Type::Named("Int".into(), Vec::new()));
+        assert_eq!(
+            conventions,
+            &vec![
+                Convention::Var,
+                Convention::Borrow,
+                Convention::Own,
+                Convention::Let,
+            ]
+        );
+        assert_eq!(
+            crate::format::type_str(function.params[0].ty.as_ref().unwrap()),
+            "fn(var Int, let String, own Bytes, Bool) -> Int"
+        );
     }
 
     #[test]

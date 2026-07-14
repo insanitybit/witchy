@@ -50,7 +50,7 @@ fn ast_type_mentions_compiler_syntax(ty: &Type) -> bool {
                 || args.iter().any(ast_type_mentions_compiler_syntax)
         }
         Type::Tuple(items) => items.iter().any(ast_type_mentions_compiler_syntax),
-        Type::Fn(params, ret) => {
+        Type::Fn(params, ret, _) => {
             params.iter().any(ast_type_mentions_compiler_syntax)
                 || ast_type_mentions_compiler_syntax(ret)
         }
@@ -249,7 +249,7 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
                 // A function returning a closure (`-> fn(...) -> RET`): record the
                 // closure's return kind so a `let f = make(...)` then `f(x)` call
                 // recovers the result at the right width.
-                if let Some(Type::Fn(_, cret)) = &f.ret {
+                if let Some(Type::Fn(_, cret, _)) = &f.ret {
                     cg.fn_ret_closure_kind.insert(f.name.clone(), cg.kind_for_type(cret));
                 }
                 // A function returning a tuple: record its slot value types so a
@@ -349,7 +349,7 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
         if let Item::Function(f) = item {
             let ret = f.ret.as_ref().map(|t| cg.kind_for_type(t)).unwrap_or(Kind::I32);
             cg.fn_ret.insert(f.name.clone(), ret);
-            if let Some(Type::Fn(_, cret)) = &f.ret {
+            if let Some(Type::Fn(_, cret, _)) = &f.ret {
                 cg.fn_ret_closure_kind.insert(f.name.clone(), cg.kind_for_type(cret));
             }
         }

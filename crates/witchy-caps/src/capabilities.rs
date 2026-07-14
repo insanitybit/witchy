@@ -80,7 +80,7 @@ fn build_caps_in(ty: &Type, out: &mut CapSet) {
             }
         }
         Type::Tuple(ts) => ts.iter().for_each(|t| build_caps_in(t, out)),
-        Type::Fn(params, ret) => {
+        Type::Fn(params, ret, _) => {
             params.iter().for_each(|p| build_caps_in(p, out));
             build_caps_in(ret, out);
         }
@@ -511,7 +511,7 @@ fn caps_in(ty: &Type, taint: &HashMap<String, CapSet>, out: &mut CapSet) {
                 caps_in(t, taint, out);
             }
         }
-        Type::Fn(params, ret) => {
+        Type::Fn(params, ret, _) => {
             for p in params {
                 caps_in(p, taint, out);
             }

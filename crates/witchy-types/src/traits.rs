@@ -150,9 +150,10 @@ fn subst_self(t: &Type, self_ty: &Type) -> Type {
             Type::Named(n.clone(), args.iter().map(|a| subst_self(a, self_ty)).collect())
         }
         Type::Tuple(ts) => Type::Tuple(ts.iter().map(|a| subst_self(a, self_ty)).collect()),
-        Type::Fn(ps, r) => Type::Fn(
+        Type::Fn(ps, r, conventions) => Type::Fn(
             ps.iter().map(|a| subst_self(a, self_ty)).collect(),
             Box::new(subst_self(r, self_ty)),
+            conventions.clone(),
         ),
     }
 }
@@ -767,10 +768,24 @@ fn display_type(t: &Type) -> String {
         Type::Tuple(ts) => {
             format!("({})", ts.iter().map(display_type).collect::<Vec<_>>().join(", "))
         }
-        Type::Fn(ps, r) => {
+        Type::Fn(ps, r, conventions) => {
+            let rendered = ps
+                .iter()
+                .enumerate()
+                .map(|(i, ty)| {
+                    let prefix = match conventions.get(i).copied().unwrap_or_default() {
+                        Convention::Let => "",
+                        Convention::Borrow => "let ",
+                        Convention::Var => "var ",
+                        Convention::Own => "own ",
+                    };
+                    format!("{prefix}{}", display_type(ty))
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
             format!(
                 "fn({}) -> {}",
-                ps.iter().map(display_type).collect::<Vec<_>>().join(", "),
+                rendered,
                 display_type(r)
             )
         }
@@ -799,9 +814,10 @@ fn subst_trait_params(t: &Type, vars: &HashMap<String, Type>) -> Type {
             Type::Named(n.clone(), args.iter().map(|a| subst_trait_params(a, vars)).collect())
         }
         Type::Tuple(ts) => Type::Tuple(ts.iter().map(|a| subst_trait_params(a, vars)).collect()),
-        Type::Fn(ps, r) => Type::Fn(
+        Type::Fn(ps, r, conventions) => Type::Fn(
             ps.iter().map(|a| subst_trait_params(a, vars)).collect(),
             Box::new(subst_trait_params(r, vars)),
+            conventions.clone(),
         ),
     }
 }
@@ -1095,7 +1111,7 @@ fn collect_anon_union_heads_type(ty: &Type, out: &mut HashMap<String, usize>) {
                 collect_anon_union_heads_type(item, out);
             }
         }
-        Type::Fn(params, ret) => {
+        Type::Fn(params, ret, _) => {
             for param in params {
                 collect_anon_union_heads_type(param, out);
             }
@@ -1591,12 +1607,14 @@ fn merge_refined_outer_ast_types(parent: &mut Scope<Type>, child: &Scope<Type>) 
         let same_head = match (existing.unqualified(), refined.unqualified()) {
             (Type::Named(left, _), Type::Named(right, _)) => left == right,
             (Type::Tuple(left), Type::Tuple(right)) => left.len() == right.len(),
-            (Type::Fn(left, _), Type::Fn(right, _)) => left.len() == right.len(),
+            (Type::Fn(left, _, lc), Type::Fn(right, _, rc)) => {
+                left.len() == right.len() && lc == rc
+            }
             _ => false,
         };
         let carries_arguments = match refined.unqualified() {
             Type::Named(_, args) => !args.is_empty(),
-            Type::Tuple(_) | Type::Fn(_, _) => true,
+            Type::Tuple(_) | Type::Fn(_, _, _) => true,
             Type::Qualified(_, _) => unreachable!("unqualified strips qualifiers"),
         };
         if existing != refined && same_head && carries_arguments {
@@ -1846,7 +1864,7 @@ fn declared_expr_type(
             _ => None,
         },
         Expr::Call { name, args } => {
-            let (params, ret) = fn_sigs.get(name)?;
+            let (params, ret, _) = fn_sigs.get(name)?;
             let mut binds = HashMap::new();
             for (param, arg) in params.iter().zip(args) {
                 let (Some(param), Some(arg_ty)) = (param, type_of(arg)) else {
@@ -1909,10 +1927,11 @@ fn local_expr_type(
         Expr::Str(_) => Some(named_type("String")),
         Expr::Bool(_) => Some(named_type("Bool")),
         Expr::Var(name) => scope.get(name).cloned().or_else(|| {
-            let (params, ret) = fn_sigs.get(name)?;
+            let (params, ret, conventions) = fn_sigs.get(name)?;
             Some(Type::Fn(
                 params.iter().cloned().collect::<Option<Vec<_>>>()?,
                 Box::new(ret.clone()),
+                conventions.clone(),
             ))
         }),
         Expr::Field { base, field } => {
@@ -1956,7 +1975,7 @@ fn local_expr_type(
             declared_expr_type(e, fn_sigs, type_of)
         }
         Expr::Apply { func, .. } => match type_of(func)?.unqualified() {
-            Type::Fn(_, ret) => Some((**ret).clone()),
+            Type::Fn(_, ret, _) => Some((**ret).clone()),
             _ => None,
         },
         Expr::RecordUpdate { base, .. } => type_of(base),
@@ -1988,6 +2007,7 @@ fn local_expr_type(
         },
         Expr::Range { .. } => Some(Type::Named("List".to_string(), vec![named_type("Int")])),
         Expr::Lambda { params, body, ret } => {
+            let conventions = params.iter().map(|param| param.convention).collect();
             let params = params
                 .iter()
                 .map(|param| param.ty.clone())
@@ -1997,7 +2017,7 @@ fn local_expr_type(
                 Some(Stmt::Return(None)) => Some(named_type("Nil")),
                 _ => None,
             })?;
-            Some(Type::Fn(params, Box::new(ret)))
+            Some(Type::Fn(params, Box::new(ret), conventions))
         }
         Expr::AnonCtor { .. }
         | Expr::LabeledCall { .. }
@@ -2885,7 +2905,7 @@ impl Ctx<'_> {
 fn nominal_type_name(ty: &Type) -> Option<&str> {
     match ty.unqualified() {
         Type::Named(name, _) => Some(name),
-        Type::Tuple(_) | Type::Fn(_, _) => None,
+        Type::Tuple(_) | Type::Fn(_, _, _) => None,
         Type::Qualified(_, _) => unreachable!("unqualified strips qualifiers"),
     }
 }
@@ -3081,8 +3101,17 @@ fn type_key(t: &Type) -> String {
                 stack.push(Part::Char('>'));
                 push_items(&mut stack, items);
             }
-            Part::Ty(Type::Fn(params, ret)) => {
-                key.push_str("fn(");
+            Part::Ty(Type::Fn(params, ret, conventions)) => {
+                key.push_str("fn[");
+                for convention in conventions {
+                    key.push(match convention {
+                        Convention::Let => 'l',
+                        Convention::Borrow => 'b',
+                        Convention::Var => 'v',
+                        Convention::Own => 'o',
+                    });
+                }
+                key.push_str("](");
                 stack.push(Part::Ty(ret));
                 stack.push(Part::Text(")->"));
                 push_items(&mut stack, params);
@@ -3150,7 +3179,7 @@ fn mutator_needs_place_msg(method: &str) -> String {
 /// A function's parameter types (None for an unannotated param) and return type,
 /// kept so a generic call's result type can be recovered by binding the return
 /// type variable from an argument — e.g. `list.at(xs: List(a), Int) -> a`.
-type FnSig = (Vec<Option<Type>>, Type);
+type FnSig = (Vec<Option<Type>>, Type, Vec<Convention>);
 
 #[derive(Clone, Debug)]
 struct CtorInfo {
@@ -3165,7 +3194,8 @@ fn build_fn_sigs(items: &[Item]) -> HashMap<String, FnSig> {
         if let Item::Function(f) = item {
             if let Some(ret) = &f.ret {
                 let ptys = f.params.iter().map(|p| p.ty.clone()).collect();
-                fn_sigs.insert(f.name.clone(), (ptys, ret.clone()));
+                let conventions = f.params.iter().map(|p| p.convention).collect();
+                fn_sigs.insert(f.name.clone(), (ptys, ret.clone(), conventions));
             }
         }
     }
@@ -3339,8 +3369,12 @@ fn bind_ast_type_vars_inner(
                         bind_ast_type_vars_inner(pattern, concrete, out)
                     })
         }
-        (Type::Fn(pattern_params, pattern_ret), Type::Fn(params, ret)) => {
+        (
+            Type::Fn(pattern_params, pattern_ret, pattern_conventions),
+            Type::Fn(params, ret, conventions),
+        ) => {
             pattern_params.len() == params.len()
+                && pattern_conventions == conventions
                 && pattern_params
                     .iter()
                     .zip(params)
@@ -3689,7 +3723,7 @@ fn type_head_key(ty: &Type) -> Option<String> {
     match ty.unqualified() {
         Type::Named(name, _) => Some(name.clone()),
         Type::Tuple(items) => Some(format!("Tuple{}", items.len())),
-        Type::Fn(_, _) => None,
+        Type::Fn(_, _, _) => None,
         Type::Qualified(_, _) => unreachable!("unqualified strips qualifiers"),
     }
 }
@@ -4344,7 +4378,9 @@ impl Mono<'_> {
         f.ret = f.ret.as_ref().map(|t| subst_trait_params(t, &subst));
         if let Some(ret) = &f.ret {
             let params = f.params.iter().map(|param| param.ty.clone()).collect();
-            self.fn_sigs.insert(mangled.clone(), (params, ret.clone()));
+            let conventions = f.params.iter().map(|param| param.convention).collect();
+            self.fn_sigs
+                .insert(mangled.clone(), (params, ret.clone(), conventions));
         }
         // Substitute the body's type ANNOTATIONS too (`var items: List(a) = []`,
         // `x as T`), so a specialization's body type-checks at the concrete type.
@@ -4718,6 +4754,7 @@ mod structured_dispatch_tests {
             (
                 vec![Some(nominal("List", vec![a.clone()]))],
                 nominal("Option", vec![nominal("List", vec![a])]),
+                vec![Convention::Let],
             ),
         );
         let expression = Expr::Call {
@@ -4744,6 +4781,7 @@ mod structured_dispatch_tests {
             (
                 Vec::new(),
                 nominal("Dict", vec![named_type("k"), named_type("v")]),
+                Vec::new(),
             ),
         );
         let unbound = declared_expr_type(

@@ -2184,7 +2184,7 @@ fn check_reserved_type(
                 check_reserved_type(module_name, item, generated_anon_types)?;
             }
         }
-        Type::Fn(params, ret) => {
+        Type::Fn(params, ret, _) => {
             for param in params {
                 check_reserved_type(module_name, param, generated_anon_types)?;
             }

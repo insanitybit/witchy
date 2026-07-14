@@ -260,8 +260,8 @@ pub enum Ty {
     /// A user-declared type, possibly with type arguments: `Option(Int)`,
     /// `Result(String, Error)`. Non-generic types carry an empty argument list.
     Named(String, Vec<Ty>),
-    /// A function type: parameter types and a return type.
-    Fn(Vec<Ty>, Box<Ty>),
+    /// A function type: parameter types, return type, and parameter conventions.
+    Fn(Vec<Ty>, Box<Ty>, Vec<Convention>),
     Var(u32),
 }
 
@@ -317,13 +317,19 @@ impl fmt::Display for Ty {
                 }
                 Ok(())
             }
-            Ty::Fn(params, ret) => {
+            Ty::Fn(params, ret, conventions) => {
                 write!(f, "fn(")?;
                 for (i, t) in params.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{t}")?;
+                    let prefix = match conventions.get(i).copied().unwrap_or_default() {
+                        Convention::Let => "",
+                        Convention::Borrow => "let ",
+                        Convention::Var => "var ",
+                        Convention::Own => "own ",
+                    };
+                    write!(f, "{prefix}{t}")?;
                 }
                 write!(f, ") -> {ret}")
             }
@@ -989,7 +995,7 @@ fn validate_type(
     match t {
         ast::Type::Qualified(_, inner) => validate_type(inner, known, arities),
         ast::Type::Tuple(ts) => ts.iter().try_for_each(|x| validate_type(x, known, arities)),
-        ast::Type::Fn(params, ret) => {
+        ast::Type::Fn(params, ret, _) => {
             params.iter().try_for_each(|p| validate_type(p, known, arities))?;
             validate_type(ret, known, arities)
         }
@@ -1094,7 +1100,7 @@ fn compiler_syntax_in_ast_type(t: &ast::Type) -> Option<&'static str> {
     match t {
         ast::Type::Qualified(_, inner) => compiler_syntax_in_ast_type(inner),
         ast::Type::Tuple(items) => items.iter().find_map(compiler_syntax_in_ast_type),
-        ast::Type::Fn(params, ret) => params
+        ast::Type::Fn(params, ret, _) => params
             .iter()
             .chain(std::iter::once(ret.as_ref()))
             .find_map(compiler_syntax_in_ast_type),
@@ -1239,7 +1245,7 @@ fn authority_taint_type(
     match ty {
         ast::Type::Qualified(_, inner) => authority_taint_type(inner, defs, seen),
         ast::Type::Tuple(items) => items.iter().find_map(|t| authority_taint_type(t, defs, seen)),
-        ast::Type::Fn(params, ret) => params
+        ast::Type::Fn(params, ret, _) => params
             .iter()
             .chain(std::iter::once(ret.as_ref()))
             .find_map(|t| authority_taint_type(t, defs, seen)),
@@ -1277,7 +1283,7 @@ fn reject_structural_authority_type(
         ast::Type::Tuple(items) => {
             items.iter().try_for_each(|item| reject_structural_authority_type(item, defs))
         }
-        ast::Type::Fn(params, ret) => {
+        ast::Type::Fn(params, ret, _) => {
             params.iter().try_for_each(|param| reject_structural_authority_type(param, defs))?;
             reject_structural_authority_type(ret, defs)
         }
@@ -1793,7 +1799,7 @@ fn packed_list_in_type(t: &ast::Type, packed_names: &HashSet<&str>) -> Option<St
             args.iter().find_map(|a| packed_list_in_type(a, packed_names))
         }
         ast::Type::Tuple(items) => items.iter().find_map(|a| packed_list_in_type(a, packed_names)),
-        ast::Type::Fn(args, ret) => args
+        ast::Type::Fn(args, ret, _) => args
             .iter()
             .find_map(|a| packed_list_in_type(a, packed_names))
             .or_else(|| packed_list_in_type(ret, packed_names)),
@@ -1847,7 +1853,7 @@ fn transparent_externref_brand_field_cap(
         ast::Type::Qualified(_, inner) => transparent_externref_brand_field_cap(inner, defs, seen),
         ast::Type::Named(n, args) if args.is_empty() => transparent_externref_brand_cap(n, defs, seen),
         ast::Type::Named(n, _) if is_externref_cap(n) => Some(n.clone()),
-        ast::Type::Named(_, _) | ast::Type::Tuple(_) | ast::Type::Fn(_, _) => None,
+        ast::Type::Named(_, _) | ast::Type::Tuple(_) | ast::Type::Fn(_, _, _) => None,
     }
 }
 
@@ -1907,7 +1913,7 @@ fn gc_cap_record_field_cap(
             transparent_externref_brand_cap(n, defs, &mut HashSet::new())
                 .or_else(|| gc_cap_record_cap(n, defs, seen))
         }
-        ast::Type::Named(_, _) | ast::Type::Tuple(_) | ast::Type::Fn(_, _) => None,
+        ast::Type::Named(_, _) | ast::Type::Tuple(_) | ast::Type::Fn(_, _, _) => None,
     }
 }
 
@@ -1953,7 +1959,7 @@ fn carries_externref_cap(
     match t {
         ast::Type::Qualified(_, inner) => carries_externref_cap(inner, defs, seen),
         ast::Type::Tuple(items) => items.iter().find_map(|a| carries_externref_cap(a, defs, seen)),
-        ast::Type::Fn(args, ret) => args
+        ast::Type::Fn(args, ret, _) => args
             .iter()
             .find_map(|a| carries_externref_cap(a, defs, seen))
             .or_else(|| carries_externref_cap(ret, defs, seen)),
@@ -2011,7 +2017,7 @@ fn reject_cap_slot_boundary(
             }
             items.iter().try_for_each(|a| reject_cap_slot_boundary(a, defs, ctx, position))
         }
-        ast::Type::Fn(args, ret) => {
+        ast::Type::Fn(args, ret, _) => {
             args.iter().try_for_each(|a| reject_cap_slot_boundary(a, defs, ctx, position))?;
             reject_cap_slot_boundary(ret, defs, ctx, position)
         }
@@ -2103,7 +2109,7 @@ fn float_key_position(t: &Ty) -> Option<FloatKeyKind> {
         Ty::Named(_, args) => args.iter().find_map(float_key_position),
         Ty::List(e) => float_key_position(e),
         Ty::Tuple(ts) => ts.iter().find_map(float_key_position),
-        Ty::Fn(ps, r) => ps.iter().chain(std::iter::once(r.as_ref())).find_map(float_key_position),
+        Ty::Fn(ps, r, _) => ps.iter().chain(std::iter::once(r.as_ref())).find_map(float_key_position),
         _ => None,
     }
 }
@@ -2128,7 +2134,7 @@ fn first_type_var(t: &Ty) -> Option<u32> {
         Ty::List(e) => first_type_var(e),
         Ty::Tuple(ts) => ts.iter().find_map(first_type_var),
         Ty::Named(_, args) => args.iter().find_map(first_type_var),
-        Ty::Fn(ps, r) => ps.iter().chain(std::iter::once(r.as_ref())).find_map(first_type_var),
+        Ty::Fn(ps, r, _) => ps.iter().chain(std::iter::once(r.as_ref())).find_map(first_type_var),
         _ => None,
     }
 }
@@ -2336,7 +2342,7 @@ fn type_host_taint<'a>(
         }
         ast::Type::Qualified(_, inner) => type_host_taint(inner, types, seen),
         ast::Type::Tuple(ts) => ts.iter().find_map(|t| type_host_taint(t, types, seen)),
-        ast::Type::Fn(params, ret) => params
+        ast::Type::Fn(params, ret, _) => params
             .iter()
             .chain(std::iter::once(ret.as_ref()))
             .find_map(|t| type_host_taint(t, types, seen)),
@@ -2543,7 +2549,7 @@ fn collect_type_params(t: &ast::Type, acc: &mut Vec<String>) {
                 collect_type_params(x, acc);
             }
         }
-        ast::Type::Fn(params, ret) => {
+        ast::Type::Fn(params, ret, _) => {
             for p in params {
                 collect_type_params(p, acc);
             }
@@ -2865,10 +2871,11 @@ impl Checker {
             ast::Type::Tuple(ts) => {
                 return Ty::Tuple(ts.iter().map(|t| self.to_ty(t)).collect());
             }
-            ast::Type::Fn(params, ret) => {
+            ast::Type::Fn(params, ret, conventions) => {
                 return Ty::Fn(
                     params.iter().map(|t| self.to_ty(t)).collect(),
                     Box::new(self.to_ty(ret)),
+                    conventions.clone(),
                 );
             }
         };
@@ -2900,9 +2907,10 @@ impl Checker {
             ast::Type::Tuple(ts) => {
                 Ty::Tuple(ts.iter().map(|t| self.to_ty_generic(t, vars)).collect())
             }
-            ast::Type::Fn(params, ret) => Ty::Fn(
+            ast::Type::Fn(params, ret, conventions) => Ty::Fn(
                 params.iter().map(|t| self.to_ty_generic(t, vars)).collect(),
                 Box::new(self.to_ty_generic(ret, vars)),
+                conventions.clone(),
             ),
             ast::Type::Named(name, args) => {
                 if let Some(t) =
@@ -2981,9 +2989,10 @@ impl Checker {
             Ty::Named(n, args) => {
                 Ty::Named(n, args.iter().map(|x| self.subst_vars(x, map)).collect())
             }
-            Ty::Fn(params, ret) => Ty::Fn(
+            Ty::Fn(params, ret, conventions) => Ty::Fn(
                 params.iter().map(|x| self.subst_vars(x, map)).collect(),
                 Box::new(self.subst_vars(&ret, map)),
+                conventions,
             ),
             other => other,
         }
@@ -2998,9 +3007,10 @@ impl Checker {
             Ty::List(e) => Ty::List(Box::new(self.resolve(e))),
             Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| self.resolve(t)).collect()),
             Ty::Named(n, args) => Ty::Named(n.clone(), args.iter().map(|t| self.resolve(t)).collect()),
-            Ty::Fn(params, ret) => Ty::Fn(
+            Ty::Fn(params, ret, conventions) => Ty::Fn(
                 params.iter().map(|t| self.resolve(t)).collect(),
                 Box::new(self.resolve(ret)),
+                conventions.clone(),
             ),
             _ => t.clone(),
         }
@@ -3070,7 +3080,7 @@ impl Checker {
                 Ty::File(_) => Some("File"),
                 Ty::List(inner) => go(c, &inner, seen),
                 Ty::Tuple(items) => items.iter().find_map(|i| go(c, i, seen)),
-                Ty::Fn(params, ret) => params
+                Ty::Fn(params, ret, _) => params
                     .iter()
                     .find_map(|p| go(c, p, seen))
                     .or_else(|| go(c, &ret, seen)),
@@ -3130,7 +3140,7 @@ impl Checker {
             Ty::BuildExec => Some("BuildExec".to_string()),
             Ty::List(inner) => self.ty_authority_taint(&inner, seen),
             Ty::Tuple(items) => items.iter().find_map(|item| self.ty_authority_taint(item, seen)),
-            Ty::Fn(params, ret) => params
+            Ty::Fn(params, ret, _) => params
                 .iter()
                 .chain(std::iter::once(ret.as_ref()))
                 .find_map(|item| self.ty_authority_taint(item, seen)),
@@ -3170,7 +3180,7 @@ impl Checker {
             Ty::Tuple(items) => {
                 items.iter().try_for_each(|item| self.reject_structural_authority_ty(item, ctx))
             }
-            Ty::Fn(params, ret) => {
+            Ty::Fn(params, ret, _) => {
                 params.iter().try_for_each(|param| self.reject_structural_authority_ty(param, ctx))?;
                 self.reject_structural_authority_ty(&ret, ctx)
             }
@@ -3200,7 +3210,7 @@ impl Checker {
         match self.resolve(t) {
             Ty::List(inner) => self.compiler_syntax_ty(&inner),
             Ty::Tuple(items) => items.iter().find_map(|item| self.compiler_syntax_ty(item)),
-            Ty::Fn(params, ret) => params
+            Ty::Fn(params, ret, _) => params
                 .iter()
                 .chain(std::iter::once(ret.as_ref()))
                 .find_map(|item| self.compiler_syntax_ty(item)),
@@ -3265,7 +3275,7 @@ impl Checker {
                 }
                 Ok(())
             }
-            Ty::Fn(params, ret) => {
+            Ty::Fn(params, ret, _) => {
                 if let Some(cap) = params
                     .iter()
                     .find_map(|p| self.ty_carries_externref_cap(p))
@@ -3327,7 +3337,9 @@ impl Checker {
                 }
                 Ok(())
             }
-            (Ty::Fn(xp, xr), Ty::Fn(yp, yr)) if xp.len() == yp.len() => {
+            (Ty::Fn(xp, xr, xc), Ty::Fn(yp, yr, yc))
+                if xp.len() == yp.len() && xc == yc =>
+            {
                 for (p, q) in xp.iter().zip(yp) {
                     self.unify(p, q)?;
                 }
@@ -3346,7 +3358,7 @@ impl Checker {
             Ty::List(inner) => self.occurs(x, &inner),
             Ty::Tuple(items) => items.iter().any(|i| self.occurs(x, i)),
             Ty::Named(_, args) => args.iter().any(|a| self.occurs(x, a)),
-            Ty::Fn(params, ret) => {
+            Ty::Fn(params, ret, _) => {
                 params.iter().any(|p| self.occurs(x, p)) || self.occurs(x, &ret)
             }
             _ => false,
@@ -3600,7 +3612,11 @@ impl Checker {
                 let k = self.fresh();
                 let v = self.fresh();
                 let d = Ty::Named("Dict".into(), vec![k.clone(), v.clone()]);
-                let f = Ty::Fn(vec![v.clone()], Box::new(v.clone()));
+                let f = Ty::Fn(
+                    vec![v.clone()],
+                    Box::new(v.clone()),
+                    vec![Convention::Let],
+                );
                 Some((vec![d.clone(), k, v, f], d))
             }
             "dict.contains_key" => {
@@ -4195,7 +4211,7 @@ impl Checker {
     /// elsewhere).
     fn uncomparable_kind(&self, t: &Ty, seen: &mut HashSet<String>) -> Option<Uncomparable> {
         match t {
-            Ty::Fn(_, _) => Some(Uncomparable::Function),
+            Ty::Fn(_, _, _) => Some(Uncomparable::Function),
             Ty::Console | Ty::Clock | Ty::Rand | Ty::Env | Ty::Secret | Ty::Exec | Ty::Socket
             | Ty::Listener | Ty::Dir(_) | Ty::File(_) | Ty::Net(_) | Ty::BuildOut | Ty::BuildRead
             | Ty::BuildEnv | Ty::BuildNet | Ty::BuildExec => Some(Uncomparable::Capability),
@@ -4560,7 +4576,7 @@ impl Checker {
         // yet unconstrained variable (which we pin to a function type).
         if !is_cap_op && let Some(vty) = self.lookup(name) {
             match self.resolve(&vty) {
-                Ty::Fn(param_tys, ret) => {
+                Ty::Fn(param_tys, ret, conventions) => {
                     if param_tys.len() != args.len() {
                         let display = diagnostic_callable_name(name);
                         return terr(format!(
@@ -4582,6 +4598,7 @@ impl Checker {
                             message: format!("in call to `{display}`: {}", e.message),
                         })?;
                     }
+                    self.enforce_function_value_conventions(name, args, &conventions)?;
                     return Ok(*ret);
                 }
                 Ty::Var(_) => {
@@ -4590,7 +4607,14 @@ impl Checker {
                         argtys.push(self.infer(arg)?);
                     }
                     let ret = expected.cloned().unwrap_or_else(|| self.fresh());
-                    self.unify(&vty, &Ty::Fn(argtys, Box::new(ret.clone())))?;
+                    self.unify(
+                        &vty,
+                        &Ty::Fn(
+                            argtys,
+                            Box::new(ret.clone()),
+                            vec![Convention::Let; args.len()],
+                        ),
+                    )?;
                     return Ok(ret);
                 }
                 _ => {} // a non-function local with this name: fall through
@@ -4733,6 +4757,38 @@ impl Checker {
         self.reject_structural_authority_ty(&ret, &format!("call to `{call_name}`"))?;
         self.reject_runtime_compiler_syntax_ty(&ret, &format!("call to `{call_name}`"))?;
         Ok(ret)
+    }
+
+    fn enforce_function_value_conventions(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        conventions: &[Convention],
+    ) -> Result<(), TypeError> {
+        for (arg, convention) in args.iter().zip(conventions) {
+            match convention {
+                Convention::Var => match arg {
+                    Expr::Var(var) if self.is_mutable(var) == Some(true) => {}
+                    Expr::Var(var) => {
+                        return terr(format!(
+                            "argument `{var}` to `{name}` is passed to a `var` parameter, so it must be a mutable `var`"
+                        ));
+                    }
+                    _ => {
+                        return terr(format!(
+                            "the argument to a `var` parameter of `{name}` must be a mutable variable"
+                        ));
+                    }
+                },
+                Convention::Own => {
+                    if let Expr::Var(var) = arg {
+                        self.consumed.insert(var.clone());
+                    }
+                }
+                Convention::Let | Convention::Borrow => {}
+            }
+        }
+        Ok(())
     }
 
     fn infer_block_expected(&mut self, block: &Block, expected: &Ty) -> Result<Ty, TypeError> {
@@ -4904,17 +4960,9 @@ impl Checker {
                 if let Some(t) = self.lookup(name) {
                     return Ok(t);
                 }
-                // A bare top-level function name used as a value is a first-class
-                // function. Reject `var`/`own` functions, whose move-in/out
-                // calling convention can't be expressed as a plain value.
+                // A bare top-level function name used as a value retains its
+                // parameter conventions in the function type.
                 if let Some((params, ret)) = self.fn_sigs.get(name).cloned() {
-                    if let Some(convs) = self.fn_conventions.get(name) {
-                        if convs.iter().any(|c| *c != Convention::Let) {
-                            return terr(format!(
-                                "`{name}` takes a `var`/`own` parameter, so it can't be used as a function value"
-                            ));
-                        }
-                    }
                     let typarams: HashSet<u32> = self
                         .fn_typarams
                         .get(name)
@@ -4923,7 +4971,12 @@ impl Checker {
                         .map(|(_, id)| *id)
                         .collect();
                     let (params, ret) = self.instantiate(&params, &ret, &typarams);
-                    return Ok(Ty::Fn(params, Box::new(ret)));
+                    let conventions = self
+                        .fn_conventions
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_else(|| vec![Convention::Let; params.len()]);
+                    return Ok(Ty::Fn(params, Box::new(ret), conventions));
                 }
                 if self.trait_method_names.contains(name) {
                     return terr(format!(
@@ -4993,14 +5046,15 @@ impl Checker {
                 })?;
                 self.current_ret = saved_ret;
                 self.pop();
-                Ok(Ty::Fn(param_tys, Box::new(lambda_ret)))
+                let conventions = params.iter().map(|p| p.convention).collect();
+                Ok(Ty::Fn(param_tys, Box::new(lambda_ret), conventions))
             }
             Expr::Call { name, args } => self.infer_call(name, args, None),
             Expr::Apply { func, args } => {
                 // The callee is an arbitrary expression of function type; unify
                 // it with `fn(argtys) -> r` and yield `r`.
                 let fty = self.infer(func)?;
-                if let Ty::Fn(param_tys, ret) = self.resolve(&fty) {
+                if let Ty::Fn(param_tys, ret, conventions) = self.resolve(&fty) {
                     if param_tys.len() != args.len() {
                         return terr(format!(
                             "function application expects {} argument(s) but got {}",
@@ -5014,6 +5068,11 @@ impl Checker {
                             message: format!("in function application: {}", e.message),
                         })?;
                     }
+                    self.enforce_function_value_conventions(
+                        "function value",
+                        args,
+                        &conventions,
+                    )?;
                     return Ok(*ret);
                 }
                 let mut argtys = Vec::new();
@@ -5021,7 +5080,14 @@ impl Checker {
                     argtys.push(self.infer(arg)?);
                 }
                 let ret = self.fresh();
-                self.unify(&fty, &Ty::Fn(argtys, Box::new(ret.clone())))
+                self.unify(
+                    &fty,
+                    &Ty::Fn(
+                        argtys,
+                        Box::new(ret.clone()),
+                        vec![Convention::Let; args.len()],
+                    ),
+                )
                     .map_err(|e| TypeError {
                         message: format!("in function application: {}", e.message),
                     })?;
@@ -6600,7 +6666,7 @@ impl TypedModule {
 
 /// Convert a resolved checker type to the surface `ast::Type` shape the
 /// backends' type-directed machinery (eq/to_string shapes, valtypes)
-/// consumes. None where no surface form exists (functions, free variables).
+/// consumes. None where no surface form exists (free variables).
 pub fn ty_to_ast(t: &Ty) -> Option<witchy_syntax::ast::Type> {
     use witchy_syntax::ast::Type as T;
     Some(match t {
@@ -6634,7 +6700,12 @@ pub fn ty_to_ast(t: &Ty) -> Option<witchy_syntax::ast::Type> {
             n.clone(),
             args.iter().map(ty_to_ast).collect::<Option<Vec<_>>>()?,
         ),
-        Ty::Fn(..) | Ty::Var(_) => return None,
+        Ty::Fn(params, ret, conventions) => T::Fn(
+            params.iter().map(ty_to_ast).collect::<Option<Vec<_>>>()?,
+            Box::new(ty_to_ast(ret)?),
+            conventions.clone(),
+        ),
+        Ty::Var(_) => return None,
     })
 }
 
@@ -6644,7 +6715,7 @@ fn ty_has_var(t: &Ty) -> bool {
         Ty::List(e) => ty_has_var(e),
         Ty::Tuple(ts) => ts.iter().any(ty_has_var),
         Ty::Named(_, args) => args.iter().any(ty_has_var),
-        Ty::Fn(ps, r) => ps.iter().any(ty_has_var) || ty_has_var(r),
+        Ty::Fn(ps, r, _) => ps.iter().any(ty_has_var) || ty_has_var(r),
         _ => false,
     }
 }

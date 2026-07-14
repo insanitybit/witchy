@@ -1945,8 +1945,22 @@ pub fn type_str(t: &Type) -> String {
         Type::Tuple(ts) => {
             format!("({})", ts.iter().map(type_str).collect::<Vec<_>>().join(", "))
         }
-        Type::Fn(ps, r) => {
-            format!("fn({}) -> {}", ps.iter().map(type_str).collect::<Vec<_>>().join(", "), type_str(r))
+        Type::Fn(ps, r, conventions) => {
+            let rendered = ps
+                .iter()
+                .enumerate()
+                .map(|(i, ty)| {
+                    let prefix = match conventions.get(i).copied().unwrap_or_default() {
+                        Convention::Let => "",
+                        Convention::Borrow => "let ",
+                        Convention::Var => "var ",
+                        Convention::Own => "own ",
+                    };
+                    format!("{prefix}{}", type_str(ty))
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("fn({rendered}) -> {}", type_str(r))
         }
     }
 }

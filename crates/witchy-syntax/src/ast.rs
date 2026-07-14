@@ -322,8 +322,10 @@ impl Convention {
 pub enum Type {
     Named(String, Vec<Type>),
     Tuple(Vec<Type>),
-    /// A function type: `fn(Int, String) -> Bool`.
-    Fn(Vec<Type>, Box<Type>),
+    /// A function type: parameter types, return type, and one convention per
+    /// parameter. An empty convention vector is tolerated only for legacy
+    /// compiler-generated values and means all-default `let` parameters.
+    Fn(Vec<Type>, Box<Type>, Vec<Convention>),
     /// (RFC-0025/0026) An ownership/immutability qualifier on a type: `frozen T`,
     /// `unique T`, `local unique T`. A compile-time CONTRACT — typeck enforces it
     /// (a `frozen` value may not be mutated; a `unique` value must be the sole
@@ -730,7 +732,7 @@ pub fn collect_type_names<S: Extend<String>>(t: &Type, out: &mut S) {
                 collect_type_names(t, out);
             }
         }
-        Type::Fn(params, ret) => {
+        Type::Fn(params, ret, _) => {
             for p in params {
                 collect_type_names(p, out);
             }
@@ -806,7 +808,7 @@ pub fn collect_type_vars(t: &Type, out: &mut Vec<String>) {
                 collect_type_vars(t, out);
             }
         }
-        Type::Fn(params, ret) => {
+        Type::Fn(params, ret, _) => {
             for p in params {
                 collect_type_vars(p, out);
             }

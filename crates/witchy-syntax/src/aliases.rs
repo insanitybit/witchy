@@ -188,7 +188,7 @@ fn resolve_type(ty: &mut Type, map: &HashMap<String, Alias>) -> bool {
             }
             changed
         }
-        Type::Fn(params, ret) => {
+        Type::Fn(params, ret, _) => {
             let mut changed = false;
             for p in params {
                 changed |= resolve_type(p, map);
@@ -222,7 +222,7 @@ fn substitute_alias_params(ty: &mut Type, subst: &HashMap<String, Type>) -> bool
             }
             changed
         }
-        Type::Fn(params, ret) => {
+        Type::Fn(params, ret, _) => {
             let mut changed = false;
             for p in params {
                 changed |= substitute_alias_params(p, subst);

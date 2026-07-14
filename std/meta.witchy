@@ -147,6 +147,20 @@ pub fn type_tuple(types: List(TypeSyntax)) -> TypeSyntax:
 pub fn type_fn(params: List(TypeSyntax), ret: TypeSyntax) -> TypeSyntax:
     TypeSyntax("fn(" + list.join(type_syntax_sources(params), ", ") + ") -> " + type_syntax_source(ret))
 
+pub fn type_fn_with_conventions(params: List(TypeSyntax), conventions: List(String), ret: TypeSyntax) -> TypeSyntax:
+    var rendered = []
+    var i = 0
+    for param in params:
+        let prefix = match list.at(conventions, i):
+            "borrow" -> "let "
+            "var" -> "var "
+            "own" -> "own "
+            _ -> ""
+
+        rendered = list.push(rendered, prefix + type_syntax_source(param))
+        i = i + 1
+    TypeSyntax("fn(" + list.join(rendered, ", ") + ") -> " + type_syntax_source(ret))
+
 // A deeply immutable type qualifier.
 pub fn type_frozen(ty: TypeSyntax) -> TypeSyntax:
     TypeSyntax("frozen " + type_syntax_source(ty))
@@ -510,7 +524,7 @@ pub fn function_block(public: Bool, name: Ident, params: List(ParamSyntax), ret:
 type TypeExpr:
     TNamed(String, List(TypeExpr))
     TTuple(List(TypeExpr))
-    TFn(List(TypeExpr), TypeExpr)
+    TFn(List(TypeExpr), TypeExpr, List(String))
     TQualified(String, TypeExpr)
 
 // The declaration shape. `TypeUninhabited` is intentionally not called "unit":
@@ -571,6 +585,20 @@ fn type_sources(types: List(TypeExpr)) -> List(String):
         out = list.push(out, type_source(ty))
     out
 
+fn function_type_sources(types: List(TypeExpr), conventions: List(String)) -> List(String):
+    var out = []
+    var i = 0
+    for ty in types:
+        let prefix = match list.at(conventions, i):
+            "borrow" -> "let "
+            "var" -> "var "
+            "own" -> "own "
+            _ -> ""
+
+        out = list.push(out, prefix + type_source(ty))
+        i = i + 1
+    out
+
 // Render a structured type back to source text only when generated source needs
 // to name the type. Semantic branching should stay on `TypeExpr`, not this
 // string.
@@ -582,7 +610,7 @@ pub fn type_source(ty: TypeExpr) -> String:
             else:
                 name + "(" + list.join(type_sources(args), ", ") + ")"
         TTuple(slots) -> "(" + list.join(type_sources(slots), ", ") + ")"
-        TFn(params, ret) -> "fn(" + list.join(type_sources(params), ", ") + ") -> " + type_source(ret)
+        TFn(params, ret, conventions) -> "fn(" + list.join(function_type_sources(params, conventions), ", ") + ") -> " + type_source(ret)
         TQualified(q, inner) -> q + " " + type_source(inner)
 
 // `derive(Show)` -> constructor-shaped rendering with each field/payload rendered
