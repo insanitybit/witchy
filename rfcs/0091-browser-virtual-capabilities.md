@@ -1,5 +1,5 @@
 ---
-rfc: 0079
+rfc: 0091
 title: "Browser-runnable capability examples — real Clock/Net/Env, an in-memory Dir"
 status: proposed
 created: 2026-07-10
@@ -16,7 +16,7 @@ tracking: >
   needed), and only Dir requires a real in-memory backing.
 ---
 
-# RFC-0079: Browser-runnable capability examples
+# RFC-0091: Browser-runnable capability examples
 
 ## Problem
 

@@ -43,7 +43,7 @@ This is also why, in the runnable version of this book, a `Console`-only example
 has a **Run** button but one reaching for another authority currently does not:
 the browser host links those imports as trapping stubs, so the module can't run.
 The planned fix (see
-[RFC-0079](https://github.com/insanitybit/witchy/blob/master/rfcs/0079-browser-virtual-capabilities.md))
+[RFC-0091](https://github.com/insanitybit/witchy/blob/master/rfcs/0091-browser-virtual-capabilities.md))
 is to back each stub with *what the browser actually has* — the real clock for
 `Clock`, the browser's own `fetch` (within its CORS rules) for `Net`, a
 default-empty (but page-overridable) environment for `Env` — and an in-memory
