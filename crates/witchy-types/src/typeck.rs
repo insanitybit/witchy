@@ -2590,6 +2590,63 @@ type CallObligations = Vec<(Ty, String)>;
 type UserCallSig = (Vec<Ty>, Ty, CallObligations);
 type AnonUnionVariants = Vec<(String, Vec<Ty>)>;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum VarPlaceStep {
+    Field(String),
+    IndexConst(i64),
+    IndexDynamic,
+}
+
+#[derive(Clone, Debug)]
+struct VarPlace {
+    root: String,
+    steps: Vec<VarPlaceStep>,
+}
+
+fn var_place(expr: &Expr) -> Option<VarPlace> {
+    fn walk(expr: &Expr, steps: &mut Vec<VarPlaceStep>) -> Option<String> {
+        match expr {
+            Expr::Var(root) => Some(root.clone()),
+            Expr::Field { base, field } => {
+                let root = walk(base, steps)?;
+                steps.push(VarPlaceStep::Field(field.clone()));
+                Some(root)
+            }
+            Expr::Index { base, index } => {
+                let root = walk(base, steps)?;
+                let step = match index.as_ref() {
+                    Expr::Int(value) => VarPlaceStep::IndexConst(*value),
+                    _ => VarPlaceStep::IndexDynamic,
+                };
+                steps.push(step);
+                Some(root)
+            }
+            _ => None,
+        }
+    }
+
+    let mut steps = Vec::new();
+    let root = walk(expr, &mut steps)?;
+    Some(VarPlace { root, steps })
+}
+
+fn places_overlap(left: &VarPlace, right: &VarPlace) -> bool {
+    if left.root != right.root {
+        return false;
+    }
+    for (left, right) in left.steps.iter().zip(&right.steps) {
+        if left == right {
+            continue;
+        }
+        return match (left, right) {
+            (VarPlaceStep::Field(a), VarPlaceStep::Field(b)) => a == b,
+            (VarPlaceStep::IndexConst(a), VarPlaceStep::IndexConst(b)) => a == b,
+            _ => true,
+        };
+    }
+    true
+}
+
 struct Checker {
     /// When annotating (see `annotate`): expression identity -> inferred type,
     /// finalized against the ending substitution. Key = `&Expr as *const _`.
@@ -2619,13 +2676,6 @@ struct Checker {
     gc_cap_records: HashSet<String>,
     adt_variants: HashMap<String, Vec<String>>,
     fn_conventions: HashMap<String, Vec<Convention>>,
-    /// (RFC-0043) Functions that are mutators — `var` first param + a return of
-    /// that param's type. A mutator's *receiver* (arg 0) is exempt from the
-    /// `var`-argument mutability demand: its expression form is a pure value call
-    /// (any argument accepted), and its statement form's write-back is delivered
-    /// by the `xs = f(xs, …)` rewrite. Only a Nil-returning `var` procedure keeps
-    /// the mutable-`var`-argument obligation on that parameter.
-    fn_mutators: HashSet<String>,
     /// Per-function type parameters (name, var id), from lowercase type names in
     /// signatures. Generalized: instantiated fresh at each call site.
     fn_typarams: HashMap<String, Vec<(String, u32)>>,
@@ -4722,22 +4772,34 @@ impl Checker {
         // Enforce conventions: a `var` parameter needs a mutable variable;
         // `own` consumes its argument (use-after-move becomes an error).
         if !is_cap_op && let Some(convs) = self.fn_conventions.get(name).cloned() {
-            let is_mutator = self.fn_mutators.contains(name);
+            let mut var_places = Vec::new();
             for (i, (arg, conv)) in args.iter().zip(&convs).enumerate() {
                 match conv {
-                    // (RFC-0043) A mutator's receiver (arg 0) is a pure value
-                    // argument in expression form: any expression is accepted.
-                    Convention::Var if is_mutator && i == 0 => {}
-                    Convention::Var => match arg {
-                        Expr::Var(v) if self.is_mutable(v) == Some(true) => {}
-                        Expr::Var(v) => {
+                    Convention::Var => match var_place(arg) {
+                        Some(place) if self.is_mutable(&place.root) == Some(true) => {
+                            for (previous_index, previous) in &var_places {
+                                if places_overlap(previous, &place) {
+                                    return terr(format!(
+                                        "arguments {} and {} to `{name}` are overlapping `var` places rooted in `{}`",
+                                        previous_index + 1,
+                                        i + 1,
+                                        place.root
+                                    ));
+                                }
+                            }
+                            var_places.push((i, place));
+                        }
+                        Some(place) => {
                             return terr(format!(
-                                "argument `{v}` to `{name}` is passed to a `var` parameter, so it must be a mutable `var`"
+                                "argument `{}` to `{name}` is passed to a `var` parameter, so its root `{}` must be a mutable `var`",
+                                i + 1,
+                                place.root
                             ))
                         }
-                        _ => {
+                        None => {
                             return terr(format!(
-                                "the argument to a `var` parameter of `{name}` must be a mutable variable"
+                                "argument {} to the `var` parameter of `{name}` must be a mutable place",
+                                i + 1
                             ))
                         }
                     },
@@ -4765,18 +4827,34 @@ impl Checker {
         args: &[Expr],
         conventions: &[Convention],
     ) -> Result<(), TypeError> {
-        for (arg, convention) in args.iter().zip(conventions) {
+        let mut var_places = Vec::new();
+        for (index, (arg, convention)) in args.iter().zip(conventions).enumerate() {
             match convention {
-                Convention::Var => match arg {
-                    Expr::Var(var) if self.is_mutable(var) == Some(true) => {}
-                    Expr::Var(var) => {
+                Convention::Var => match var_place(arg) {
+                    Some(place) if self.is_mutable(&place.root) == Some(true) => {
+                        for (previous_index, previous) in &var_places {
+                            if places_overlap(previous, &place) {
+                                return terr(format!(
+                                    "arguments {} and {} to `{name}` are overlapping `var` places rooted in `{}`",
+                                    previous_index + 1,
+                                    index + 1,
+                                    place.root
+                                ));
+                            }
+                        }
+                        var_places.push((index, place));
+                    }
+                    Some(place) => {
                         return terr(format!(
-                            "argument `{var}` to `{name}` is passed to a `var` parameter, so it must be a mutable `var`"
+                            "argument {} to `{name}` is passed to a `var` parameter, so its root `{}` must be a mutable `var`",
+                            index + 1,
+                            place.root
                         ));
                     }
-                    _ => {
+                    None => {
                         return terr(format!(
-                            "the argument to a `var` parameter of `{name}` must be a mutable variable"
+                            "argument {} to the `var` parameter of `{name}` must be a mutable place",
+                            index + 1
                         ));
                     }
                 },
@@ -6817,7 +6895,6 @@ fn run_check_selected(
         fn_sigs: HashMap::new(),
         from_conversion_fns: from_conversion_fns.cloned().unwrap_or_default(),
         fn_conventions: HashMap::new(),
-        fn_mutators: HashSet::new(),
         ctor_sigs: HashMap::new(),
         ctor_typarams: HashMap::new(),
         record_fields: HashMap::new(),
@@ -6918,9 +6995,6 @@ fn run_check_selected(
                 c.fn_bounds.insert(f.name.clone(), bounds);
                 c.fn_conventions
                     .insert(f.name.clone(), f.params.iter().map(|p| p.convention).collect());
-                if f.is_mutator() {
-                    c.fn_mutators.insert(f.name.clone());
-                }
             }
             Item::Type(t) => {
                 // A type's parameters: explicit ones (`type Step(m, a):`) FIX the

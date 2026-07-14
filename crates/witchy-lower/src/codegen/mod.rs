@@ -1267,6 +1267,70 @@ impl<'types> Codegen<'types> {
         }
     }
 
+    fn closure_conventions(&self, func: &Expr) -> Vec<Convention> {
+        let Some(ty) = self.ast_type_of_expr(func) else {
+            return Vec::new();
+        };
+        match ty.unqualified() {
+            Type::Fn(_, _, conventions) => conventions.clone(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Lower closure arguments into universal slots and reserve i64 scratch
+    /// destinations for every `var` result. The type checker has already required
+    /// each `var` argument to be a mutable local; this guard keeps malformed WIR
+    /// from being emitted if lowering is invoked without that invariant.
+    fn lower_closure_args(
+        &mut self,
+        args: &[Expr],
+        conventions: &[Convention],
+    ) -> Option<(Vec<witchy_wir::wir::WirExpr>, Vec<(String, Kind, String)>)> {
+        use witchy_wir::wir::WirExpr as W;
+        let mut slots = Vec::with_capacity(args.len());
+        let mut writebacks = Vec::new();
+        for (index, arg) in args.iter().enumerate() {
+            let kind = self.kind_of(arg);
+            let value = self.lower_expr(arg)?;
+            slots.push(W::ToSlot(Box::new(value), Self::wir_kind(kind)));
+            if conventions.get(index) == Some(&Convention::Var) {
+                let Expr::Var(local) = arg else {
+                    return None;
+                };
+                if !self.locals.contains_key(local) || writebacks.len() >= SCRUT_POOL {
+                    return None;
+                }
+                writebacks.push((
+                    local.clone(),
+                    self.locals.get(local).copied().unwrap_or(kind),
+                    format!("__witchy_scrut_save_{}", writebacks.len()),
+                ));
+            }
+        }
+        Some((slots, writebacks))
+    }
+
+    fn finish_closure_multi_call(
+        &self,
+        call: witchy_wir::wir::WirNode,
+        writebacks: Vec<(String, Kind, String)>,
+        result_kind: Kind,
+    ) -> witchy_wir::wir::WirExpr {
+        use witchy_wir::wir::{WirExpr as W, WirNode as N};
+        let mut seq = vec![call];
+        for (local, kind, scratch) in writebacks {
+            seq.push(N::SetLocal {
+                local,
+                value: W::FromSlot(Box::new(W::GetLocal(scratch)), Self::wir_kind(kind)),
+            });
+        }
+        seq.push(N::Push(W::FromSlot(
+            Box::new(W::GetLocal(MATCH_TMP.to_string())),
+            Self::wir_kind(result_kind),
+        )));
+        W::Seq(seq)
+    }
+
     /// The call-return kind of a closure VALUE, when determinable: a lambda
     /// literal's body kind, a call to a `-> fn(...) -> RET` function, or another
     /// closure-bound variable. Used to track `let f = <closure>` for later `f(x)`.
@@ -1695,10 +1759,17 @@ impl<'types> Codegen<'types> {
                         || matches!(value, Expr::Call { name, .. }
                             if self.fn_conventions.get(name).is_some_and(|cs|
                                 cs.contains(&Convention::Var)));
-                    let inferred_type = needs_resolved_type
-                        .then(|| self.type_table.type_of(value))
-                        .flatten()
+                    let resolved_type = self
+                        .type_table
+                        .type_of(value)
                         .and_then(witchy_types::typeck::ty_to_ast);
+                    let inferred_type = if needs_resolved_type
+                        || matches!(resolved_type.as_ref().map(Type::unqualified), Some(Type::Fn(..)))
+                    {
+                        resolved_type
+                    } else {
+                        None
+                    };
                     let k = inferred_type
                         .as_ref()
                         .map(|ty| self.kind_for_type(ty))
@@ -2209,18 +2280,11 @@ impl<'types> Codegen<'types> {
             None => self.block_kind(renamed),
         };
         self.cur_fn_ret_kind = ret_kind;
-        // (RFC-0043) A mutator's `var` receiver (first param) is NOT a
-        // procedure-style write-back channel — its write-back is delivered by the
-        // `xs = f(xs, …)` statement rewrite, so the receiver is lowered like a plain
-        // value param (no extra move-out result). Only a Nil-returning `var`
-        // procedure uses the multi-value write-back ABI.
-        let mutator_receiver = f.is_mutator();
         self.cur_fn_var_params = f
             .params
             .iter()
-            .enumerate()
-            .filter(|(i, p)| p.convention == Convention::Var && !(*i == 0 && mutator_receiver))
-            .map(|(_, p)| p.name.clone())
+            .filter(|p| p.convention == Convention::Var)
+            .map(|p| p.name.clone())
             .collect();
         self.cur_fn_var = !self.cur_fn_var_params.is_empty();
 
@@ -2886,7 +2950,14 @@ impl<'types> Codegen<'types> {
                         // bare `return` (WIR `N::Return(Some)` carries one value).
                         seq.push(N::Push(value));
                         for name in &self.cur_fn_var_params {
-                            seq.push(N::Push(W::GetLocal(name.clone())));
+                            let var = W::GetLocal(name.clone());
+                            let var = if self.cur_fn_ret_slot {
+                                let kind = self.locals.get(name).copied().unwrap_or(Kind::I32);
+                                W::ToSlot(Box::new(var), Self::wir_kind(kind))
+                            } else {
+                                var
+                            };
+                            seq.push(N::Push(var));
                         }
                         if let Some(p) = self.cur_fn_own_param.clone() {
                             let returns_own = matches!(opt, Some(Expr::Var(v)) if *v == p)
@@ -4914,6 +4985,7 @@ impl<'types> Codegen<'types> {
                 if level >= APPLY_POOL {
                     return None;
                 }
+                let conventions = self.closure_conventions(func);
                 // (RFC-0062 tier-1) An ELIDED closure applied by name: no closure pointer to
                 // stash — thread captures (from their locals) as leading arg slots to a direct
                 // `call $__lamt{i}`.
@@ -4924,27 +4996,34 @@ impl<'types> Codegen<'types> {
                             .iter()
                             .map(|(cn, ck)| W::ToSlot(Box::new(W::GetLocal(cn.clone())), Self::wir_kind(*ck)))
                             .collect();
-                        for a in args {
-                            let ak = self.kind_of(a);
-                            let av = self.lower_expr(a)?;
-                            call_args.push(W::ToSlot(Box::new(av), Self::wir_kind(ak)));
-                        }
+                        let (arg_slots, writebacks) =
+                            self.lower_closure_args(args, &conventions)?;
+                        call_args.extend(arg_slots);
                         self.apply_level = level;
                         let recover_kind = self.apply_ret_kind(func);
-                        let call = W::Call { func: format!("__lamt{idx}"), args: call_args };
-                        return Some(W::FromSlot(Box::new(call), Self::wir_kind(recover_kind)));
+                        if writebacks.is_empty() {
+                            let call = W::Call { func: format!("__lamt{idx}"), args: call_args };
+                            return Some(W::FromSlot(Box::new(call), Self::wir_kind(recover_kind)));
+                        }
+                        let mut dests = vec![MATCH_TMP.to_string()];
+                        dests.extend(writebacks.iter().map(|(_, _, scratch)| scratch.clone()));
+                        let call = N::CallStoreMulti {
+                            func: format!("__lamt{idx}"),
+                            args: call_args,
+                            dests,
+                        };
+                        return Some(self.finish_closure_multi_call(
+                            call,
+                            writebacks,
+                            recover_kind,
+                        ));
                     }
                 }
                 let n = args.len();
                 let tmp = format!("__witchy_call_{level}");
                 let fcode = self.lower_expr(func)?;
                 self.apply_level = level + 1;
-                let mut arg_slots: Vec<W> = Vec::new();
-                for a in args {
-                    let ak = self.kind_of(a);
-                    let av = self.lower_expr(a)?;
-                    arg_slots.push(W::ToSlot(Box::new(av), Self::wir_kind(ak)));
-                }
+                let (arg_slots, writebacks) = self.lower_closure_args(args, &conventions)?;
                 self.apply_level = level;
                 self.clos_arities.insert(n);
                 let recover_kind = self.apply_ret_kind(func);
@@ -4953,12 +5032,38 @@ impl<'types> Codegen<'types> {
                 // (RFC-0034 L3) Devirtualize an apply whose callee is a single-bound,
                 // never-reassigned closure var: a direct `call $__lamw{i}` (env stays
                 // the stashed closure pointer), skipping the runtime code-index load.
+                if !writebacks.is_empty() {
+                    let mut dests = vec![MATCH_TMP.to_string()];
+                    dests.extend(writebacks.iter().map(|(_, _, scratch)| scratch.clone()));
+                    let call = match func.as_ref() {
+                        Expr::Var(fname) if self.devirt_index.contains_key(fname) => {
+                            N::CallStoreMulti {
+                                func: format!("__lamw{}", self.devirt_index[fname]),
+                                args: ci_args,
+                                dests,
+                            }
+                        }
+                        _ => N::CallIndirectStoreMulti {
+                            type_arity: n,
+                            args: ci_args,
+                            index: W::Load {
+                                ptr: Box::new(W::GetLocal(tmp.clone())),
+                                kind: witchy_wir::wir::Kind::I32,
+                                offset: 0,
+                            },
+                            dests,
+                        },
+                    };
+                    let result = self.finish_closure_multi_call(call, writebacks, recover_kind);
+                    return Some(W::Seq(vec![N::SetLocal { local: tmp, value: fcode }, N::Push(result)]));
+                }
                 let call = match func.as_ref() {
                     Expr::Var(fname) if self.devirt_index.contains_key(fname) => {
                         let idx = self.devirt_index[fname];
                         W::Call { func: format!("__lamw{idx}"), args: ci_args }
                     }
                     _ => W::CallIndirect {
+                        result_count: 1,
                         type_arity: n,
                         args: ci_args,
                         index: Box::new(W::Load { ptr: Box::new(W::GetLocal(tmp.clone())), kind: witchy_wir::wir::Kind::I32, offset: 0 }),
@@ -5938,9 +6043,24 @@ impl<'types> Codegen<'types> {
                         };
                         vec![N::Return(Some(ret_val))]
                     } else {
-                        let mut nodes = vec![N::Push(W::GetLocal(tmp.clone()))];
+                        let result = if self.cur_fn_ret_slot {
+                            W::ToSlot(
+                                Box::new(W::GetLocal(tmp.clone())),
+                                witchy_wir::wir::Kind::I32,
+                            )
+                        } else {
+                            W::GetLocal(tmp.clone())
+                        };
+                        let mut nodes = vec![N::Push(result)];
                         for name in &self.cur_fn_var_params {
-                            nodes.push(N::Push(W::GetLocal(name.clone())));
+                            let var = W::GetLocal(name.clone());
+                            let var = if self.cur_fn_ret_slot {
+                                let kind = self.locals.get(name).copied().unwrap_or(Kind::I32);
+                                W::ToSlot(Box::new(var), Self::wir_kind(kind))
+                            } else {
+                                var
+                            };
+                            nodes.push(N::Push(var));
                         }
                         if self.cur_fn_own_param.is_some() {
                             nodes.push(N::Push(W::ConstI32(0)));
@@ -5982,18 +6102,28 @@ impl<'types> Codegen<'types> {
                 // the value args, to a direct `call $__lamt{i}`. Checked BEFORE the boxed
                 // closure paths.
                 if let Some((idx, caps)) = self.thread_index.get(name).cloned() {
+                    let func_expr = Expr::Var(name.to_string());
+                    let conventions = self.closure_conventions(&func_expr);
                     let mut call_args: Vec<W> = caps
                         .iter()
                         .map(|(cn, ck)| W::ToSlot(Box::new(W::GetLocal(cn.clone())), Self::wir_kind(*ck)))
                         .collect();
-                    for a in args {
-                        let ak = self.kind_of(a);
-                        let av = self.lower_expr(a)?;
-                        call_args.push(W::ToSlot(Box::new(av), Self::wir_kind(ak)));
-                    }
+                    let (arg_slots, writebacks) =
+                        self.lower_closure_args(args, &conventions)?;
+                    call_args.extend(arg_slots);
                     let rk = self.local_fn_ret_kind.get(name).copied().unwrap_or(Kind::I32);
-                    let call = W::Call { func: format!("__lamt{idx}"), args: call_args };
-                    return Some(W::FromSlot(Box::new(call), Self::wir_kind(rk)));
+                    if writebacks.is_empty() {
+                        let call = W::Call { func: format!("__lamt{idx}"), args: call_args };
+                        return Some(W::FromSlot(Box::new(call), Self::wir_kind(rk)));
+                    }
+                    let mut dests = vec![MATCH_TMP.to_string()];
+                    dests.extend(writebacks.iter().map(|(_, _, scratch)| scratch.clone()));
+                    let call = N::CallStoreMulti {
+                        func: format!("__lamt{idx}"),
+                        args: call_args,
+                        dests,
+                    };
+                    return Some(self.finish_closure_multi_call(call, writebacks, rk));
                 }
                 // A closure-typed local `f(x)`: pass the closure pointer as the env,
                 // the i64-slot args, and `call_indirect` on the code index (the
@@ -6001,12 +6131,12 @@ impl<'types> Codegen<'types> {
                 // so no scratch stash is needed.
                 if self.locals.contains_key(name) {
                     let n = args.len();
+                    let func_expr = Expr::Var(name.to_string());
+                    let conventions = self.closure_conventions(&func_expr);
                     let mut ci_args: Vec<W> = vec![W::GetLocal(name.to_string())];
-                    for a in args {
-                        let ak = self.kind_of(a);
-                        let av = self.lower_expr(a)?;
-                        ci_args.push(W::ToSlot(Box::new(av), Self::wir_kind(ak)));
-                    }
+                    let (arg_slots, writebacks) =
+                        self.lower_closure_args(args, &conventions)?;
+                    ci_args.extend(arg_slots);
                     self.clos_arities.insert(n);
                     let rk = self.local_fn_ret_kind.get(name).copied().unwrap_or(Kind::I32);
                     // (RFC-0034 L3) Devirtualize when `name` is a single-bound, never-
@@ -6014,10 +6144,34 @@ impl<'types> Codegen<'types> {
                     // $__lamw{i}` — same env (the closure pointer) and slot args, just
                     // skipping the runtime code-index load — which also lets the
                     // Binaryen pass inline the lambda body into the caller.
+                    if !writebacks.is_empty() {
+                        let mut dests = vec![MATCH_TMP.to_string()];
+                        dests.extend(writebacks.iter().map(|(_, _, scratch)| scratch.clone()));
+                        let call = if let Some(&idx) = self.devirt_index.get(name) {
+                            N::CallStoreMulti {
+                                func: format!("__lamw{idx}"),
+                                args: ci_args,
+                                dests,
+                            }
+                        } else {
+                            N::CallIndirectStoreMulti {
+                                type_arity: n,
+                                args: ci_args,
+                                index: W::Load {
+                                    ptr: Box::new(W::GetLocal(name.to_string())),
+                                    kind: witchy_wir::wir::Kind::I32,
+                                    offset: 0,
+                                },
+                                dests,
+                            }
+                        };
+                        return Some(self.finish_closure_multi_call(call, writebacks, rk));
+                    }
                     let call = if let Some(&idx) = self.devirt_index.get(name) {
                         W::Call { func: format!("__lamw{idx}"), args: ci_args }
                     } else {
                         W::CallIndirect {
+                            result_count: 1,
                             type_arity: n,
                             args: ci_args,
                             index: Box::new(W::Load {
@@ -6235,8 +6389,12 @@ impl<'types> Codegen<'types> {
         use witchy_wir::wir::{WirExpr as W, WirFunc, WirLocal, WirNode as N, WirTy};
         let index = self.lambda_wir_funcs.len();
         let saved = self.swap_out_scope();
-        self.cur_fn_var = false;
-        self.cur_fn_var_params = Vec::new();
+        self.cur_fn_var_params = params
+            .iter()
+            .filter(|p| p.convention == Convention::Var)
+            .map(|p| p.name.clone())
+            .collect();
+        self.cur_fn_var = !self.cur_fn_var_params.is_empty();
         // Lambda params: i32 ABI placeholder + record/list types.
         for p in params {
             self.locals.insert(p.name.clone(), Kind::I32);
@@ -6410,10 +6568,18 @@ impl<'types> Codegen<'types> {
                         value: W::FromSlot(Box::new(cap_slot), Self::wir_kind(*kind)),
                     });
                 }
-                // Body, with the tail value stored into the i64 result slot.
+                // Body, with the declared result and every `var` final value
+                // stored into the closure ABI's universal i64 result slots.
                 let mut seq = seq;
                 if let Some(N::Push(v)) = seq.pop() {
                     seq.push(N::Push(W::ToSlot(Box::new(v), Self::wir_kind(block_kind))));
+                }
+                for name in &self.cur_fn_var_params {
+                    let kind = self.locals.get(name).copied().unwrap_or(Kind::I32);
+                    seq.push(N::Push(W::ToSlot(
+                        Box::new(W::GetLocal(name.clone())),
+                        Self::wir_kind(kind),
+                    )));
                 }
                 nodes.extend(seq);
                 let name = match cap_mode {
@@ -6423,7 +6589,7 @@ impl<'types> Codegen<'types> {
                 Some(WirFunc {
                     name,
                     params: func_params,
-                    ret: vec![WirTy::Int],
+                    ret: vec![WirTy::Int; 1 + self.cur_fn_var_params.len()],
                     locals,
                     body: nodes,
                     raw_body: None,

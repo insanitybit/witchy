@@ -220,24 +220,9 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
     for item in &module.items {
         match item {
             Item::Function(f) => {
-                // (RFC-0043) A mutator's `var` receiver (arg 0) does not use the
-                // multi-value write-back ABI — its write-back is the `xs = f(xs, …)`
-                // statement rewrite — so record its receiver as a plain value
-                // convention. Keep both call sites and the callee consistent.
-                let mutator_receiver = f.is_mutator();
                 cg.fn_conventions.insert(
                     f.name.clone(),
-                    f.params
-                        .iter()
-                        .enumerate()
-                        .map(|(i, p)| {
-                            if i == 0 && mutator_receiver {
-                                Convention::Let
-                            } else {
-                                p.convention
-                            }
-                        })
-                        .collect(),
+                    f.params.iter().map(|p| p.convention).collect(),
                 );
                 cg.fn_params.insert(f.name.clone(), f.params.clone());
                 let ret = f.ret.as_ref().map(|t| cg.kind_for_type(t)).unwrap_or(Kind::I32);
@@ -1340,6 +1325,12 @@ fn collect_called_funcs(seq: &[witchy_wir::wir::WirNode], out: &mut HashSet<Stri
                     expr(a, out);
                 }
             }
+            N::CallIndirectStoreMulti { args, index, .. } => {
+                for a in args {
+                    expr(a, out);
+                }
+                expr(index, out);
+            }
             N::MemoryCopy { dest, src, len } => {
                 expr(dest, out);
                 expr(src, out);
@@ -1430,6 +1421,12 @@ fn collect_called_host_imports(seq: &[witchy_wir::wir::WirNode], out: &mut HashS
                 for a in args {
                     expr(a, out);
                 }
+            }
+            N::CallIndirectStoreMulti { args, index, .. } => {
+                for a in args {
+                    expr(a, out);
+                }
+                expr(index, out);
             }
             N::MemoryCopy { dest, src, len } => {
                 expr(dest, out);
@@ -1594,6 +1591,12 @@ fn attach_diagnostic_site_expr(
                     reaches_host |= expr(arg, site);
                 }
                 reaches_host |= append_helper_diagnostic_site(func, args, site);
+            }
+            N::CallIndirectStoreMulti { args, index, .. } => {
+                for arg in args.iter_mut() {
+                    reaches_host |= expr(arg, site);
+                }
+                reaches_host |= expr(index, site);
             }
             N::MemoryCopy { dest, src, len } => {
                 reaches_host |= expr(dest, site);

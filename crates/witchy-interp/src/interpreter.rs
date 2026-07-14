@@ -254,6 +254,23 @@ enum Flow {
     Continue,
 }
 
+struct ClosureOutcome {
+    value: Value,
+    writebacks: Vec<(usize, Value)>,
+}
+
+#[derive(Clone)]
+enum PlaceProjection {
+    Field(String),
+    Index(Value),
+}
+
+#[derive(Clone)]
+struct CapturedPlace {
+    root: String,
+    projections: Vec<PlaceProjection>,
+}
+
 impl From<RuntimeError> for Flow {
     fn from(e: RuntimeError) -> Self {
         Flow::Err(e)
@@ -1138,10 +1155,190 @@ impl Interpreter {
         }
     }
 
+    fn capture_place(&mut self, expr: &Expr, env: &mut Env) -> Result<CapturedPlace, Flow> {
+        fn capture(
+            interpreter: &mut Interpreter,
+            expr: &Expr,
+            env: &mut Env,
+            projections: &mut Vec<PlaceProjection>,
+        ) -> Result<String, Flow> {
+            match expr {
+                Expr::Var(root) => Ok(root.clone()),
+                Expr::Field { base, field } => {
+                    let root = capture(interpreter, base, env, projections)?;
+                    projections.push(PlaceProjection::Field(field.clone()));
+                    Ok(root)
+                }
+                Expr::Index { base, index } => {
+                    let root = capture(interpreter, base, env, projections)?;
+                    let index = interpreter.eval(index, env)?;
+                    projections.push(PlaceProjection::Index(index));
+                    Ok(root)
+                }
+                _ => err("a `var` argument must be a mutable place"),
+            }
+        }
+
+        let mut projections = Vec::new();
+        let root = capture(self, expr, env, &mut projections)?;
+        Ok(CapturedPlace { root, projections })
+    }
+
+    fn place_field_index(&self, value: &Value, field: &str) -> Result<usize, Flow> {
+        if let Ok(index) = field.parse::<usize>() {
+            return match value {
+                Value::Tuple(items) if index < items.len() => Ok(index),
+                Value::Tuple(items) => err(format!(
+                    "tuple has no element `.{index}` (it has {})",
+                    items.len()
+                )),
+                other => err(format!("element access `.{index}` on a non-tuple value `{other}`")),
+            };
+        }
+        let Value::Ctor { name, fields } = value else {
+            return err(format!("field access `.{field}` on a non-record value `{value}`"));
+        };
+        self.record_fields
+            .get(name)
+            .and_then(|names| names.iter().position(|candidate| candidate == field))
+            .filter(|index| *index < fields.len())
+            .ok_or_else(|| Flow::from(RuntimeError { message: format!("`{name}` has no field `{field}`") }))
+    }
+
+    fn read_place_value(&self, place: &CapturedPlace, env: &Env) -> Result<Value, Flow> {
+        let mut value = env
+            .get(&place.root)
+            .cloned()
+            .ok_or_else(|| Flow::from(RuntimeError {
+                message: format!(
+                    "`var` argument root `{}` must be a local variable",
+                    place.root
+                ),
+            }))?;
+        for projection in &place.projections {
+            value = match projection {
+                PlaceProjection::Field(field) => {
+                    let index = self.place_field_index(&value, field)?;
+                    match &value {
+                        Value::Tuple(items) => items[index].clone(),
+                        Value::Ctor { fields, .. } => fields[index].clone(),
+                        _ => unreachable!("place_field_index checked the aggregate"),
+                    }
+                }
+                PlaceProjection::Index(index) => match (&value, index) {
+                    (Value::List(items), Value::Int(index))
+                    | (Value::Tuple(items), Value::Int(index))
+                        if *index >= 0 && (*index as usize) < items.len() =>
+                    {
+                        items[*index as usize].clone()
+                    }
+                    (Value::Dict(entries), key) => entries
+                        .iter()
+                        .find(|(candidate, _)| candidate == key)
+                        .map(|(_, value)| value.clone())
+                        .ok_or_else(|| Flow::from(RuntimeError {
+                            message: "dictionary key is absent".into(),
+                        }))?,
+                    (Value::List(items), Value::Int(index))
+                    | (Value::Tuple(items), Value::Int(index)) => {
+                        return err(format!(
+                            "index {index} is out of bounds for length {}",
+                            items.len()
+                        ));
+                    }
+                    (_, other) => return err(format!("invalid place index `{other}`")),
+                },
+            };
+        }
+        Ok(value)
+    }
+
+    fn store_place_value(
+        &self,
+        current: &mut Value,
+        projections: &[PlaceProjection],
+        replacement: Value,
+    ) -> Result<(), Flow> {
+        let Some((projection, rest)) = projections.split_first() else {
+            *current = replacement;
+            return Ok(());
+        };
+        match projection {
+            PlaceProjection::Field(field) => {
+                let index = self.place_field_index(current, field)?;
+                match current {
+                    Value::Tuple(items) => self.store_place_value(&mut items[index], rest, replacement),
+                    Value::Ctor { fields, .. } => {
+                        self.store_place_value(&mut fields[index], rest, replacement)
+                    }
+                    _ => unreachable!("place_field_index checked the aggregate"),
+                }
+            }
+            PlaceProjection::Index(index) => match (current, index) {
+                (Value::List(items), Value::Int(index))
+                | (Value::Tuple(items), Value::Int(index))
+                    if *index >= 0 && (*index as usize) < items.len() =>
+                {
+                    self.store_place_value(&mut items[*index as usize], rest, replacement)
+                }
+                (Value::Dict(entries), key) => {
+                    let Some((_, value)) = entries.iter_mut().find(|(candidate, _)| candidate == key)
+                    else {
+                        return err("dictionary key is absent");
+                    };
+                    self.store_place_value(value, rest, replacement)
+                }
+                (Value::List(items), Value::Int(index))
+                | (Value::Tuple(items), Value::Int(index)) => err(format!(
+                    "index {index} is out of bounds for length {}",
+                    items.len()
+                )),
+                (_, other) => err(format!("invalid place index `{other}`")),
+            },
+        }
+    }
+
+    fn commit_writebacks(
+        &self,
+        writebacks: Vec<(CapturedPlace, Value)>,
+        env: &mut Env,
+    ) -> Result<(), Flow> {
+        let mut roots: Vec<(String, Value)> = Vec::new();
+        for (place, value) in writebacks {
+            let root = if let Some((_, root)) = roots.iter_mut().find(|(name, _)| *name == place.root) {
+                root
+            } else {
+                let current = env.get(&place.root).cloned().ok_or_else(|| {
+                    Flow::from(RuntimeError {
+                        message: format!(
+                            "`var` argument root `{}` must be a local variable",
+                            place.root
+                        ),
+                    })
+                })?;
+                roots.push((place.root.clone(), current));
+                &mut roots.last_mut().expect("just pushed root").1
+            };
+            self.store_place_value(root, &place.projections, value)?;
+        }
+        for (name, value) in roots {
+            match env.assign(&name, value) {
+                Assign::Done => {}
+                Assign::Immutable => {
+                    return err(format!("`var` argument root `{name}` must be a mutable `var`"));
+                }
+                Assign::Unbound => {
+                    return err(format!("`var` argument root `{name}` must be a local variable"));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Apply a closure to already-evaluated arguments. The closure runs in its
     /// captured environment (plus a fresh scope for the parameters), and its body
     /// is a function boundary, so a `?` inside it returns from the closure.
-    fn apply_closure(&mut self, clo: Value, argvals: Vec<Value>) -> Result<Value, Flow> {
+    fn run_closure(&mut self, clo: Value, argvals: Vec<Value>) -> Result<ClosureOutcome, Flow> {
         let Value::Closure { owner, params, body, env } = clo else {
             return err("attempted to call a non-function value");
         };
@@ -1170,26 +1367,102 @@ impl Interpreter {
             self.cur_fn = prev_fn;
             self.cur_line = prev_line;
         }
-        match result {
-            Ok(v) | Err(Flow::Return(v)) => Ok(v),
-            Err(e @ Flow::Err(_)) => Err(e),
-            Err(Flow::Break | Flow::Continue) => err("`break`/`continue` outside a loop"),
+        let value = match result {
+            Ok(v) | Err(Flow::Return(v)) => v,
+            Err(e @ Flow::Err(_)) => return Err(e),
+            Err(Flow::Break | Flow::Continue) => {
+                return err("`break`/`continue` outside a loop");
+            }
+        };
+        let writebacks = params
+            .iter()
+            .enumerate()
+            .filter(|(_, param)| param.convention == Convention::Var)
+            .map(|(index, param)| {
+                let value = cenv.get(&param.name).cloned().expect("closure parameter is bound");
+                (index, value)
+            })
+            .collect();
+        Ok(ClosureOutcome { value, writebacks })
+    }
+
+    fn apply_closure(&mut self, clo: Value, argvals: Vec<Value>) -> Result<Value, Flow> {
+        let outcome = self.run_closure(clo, argvals)?;
+        if !outcome.writebacks.is_empty() {
+            return err("a `var` function value requires a mutable caller place");
         }
+        Ok(outcome.value)
+    }
+
+    fn apply_closure_call(
+        &mut self,
+        clo: Value,
+        argvals: Vec<Value>,
+        places: Vec<Option<CapturedPlace>>,
+        env: &mut Env,
+    ) -> Result<Value, Flow> {
+        let outcome = self.run_closure(clo, argvals)?;
+        let writebacks = outcome
+            .writebacks
+            .into_iter()
+            .map(|(index, value)| {
+                let place = places
+                    .get(index)
+                    .and_then(Clone::clone)
+                    .ok_or_else(|| Flow::from(RuntimeError {
+                        message: "a `var` function-value argument must be a mutable place".into(),
+                    }))?;
+                Ok((place, value))
+            })
+            .collect::<Result<Vec<_>, Flow>>()?;
+        self.commit_writebacks(writebacks, env)?;
+        Ok(outcome.value)
     }
 
     /// Evaluate a function call expression, honoring parameter conventions:
     /// `var` arguments must be mutable variables and are written back after
     /// the call returns (Hylo-style move-in / move-out).
+    fn eval_call_args(
+        &mut self,
+        args: &[Expr],
+        conventions: &[Convention],
+        env: &mut Env,
+    ) -> Result<(Vec<Value>, Vec<Option<CapturedPlace>>), Flow> {
+        let mut values = Vec::with_capacity(args.len());
+        let mut places = Vec::with_capacity(args.len());
+        for (index, arg) in args.iter().enumerate() {
+            if conventions.get(index) == Some(&Convention::Var) {
+                let place = self.capture_place(arg, env)?;
+                let value = self.read_place_value(&place, env)?;
+                values.push(value);
+                places.push(Some(place));
+            } else {
+                values.push(self.eval(arg, env)?);
+                places.push(None);
+            }
+        }
+        Ok((values, places))
+    }
+
     fn eval_call(&mut self, name: &str, args: &[Expr], env: &mut Env) -> Result<Value, Flow> {
         // Record an assertion call SITE *before* evaluating arguments — nested
         // calls in the arguments move `cur_line`, so capturing it later (e.g. once
         // we're inside the callee) would report the wrong line.
         self.note_assert_crossing(name);
         let name = witchy_syntax::cap_ops::surface_name(name);
-        let argvals = args
-            .iter()
-            .map(|a| self.eval(a, env))
-            .collect::<Result<Vec<_>, _>>()?;
+        let local_closure = matches!(env.get(name), Some(Value::Closure { .. }))
+            .then(|| env.get(name).expect("closure just matched").clone());
+        let conventions: Vec<Convention> = match local_closure.as_ref() {
+            Some(Value::Closure { params, .. }) => {
+                params.iter().map(|param| param.convention).collect()
+            }
+            _ => self
+                .functions
+                .get(name)
+                .map(|function| function.params.iter().map(|param| param.convention).collect())
+                .unwrap_or_default(),
+        };
+        let (argvals, places) = self.eval_call_args(args, &conventions, env)?;
         // `dict.update(dict, key, default, f)`: a single-lookup upsert. Handled here
         // (not in the pure builtin table) because it applies the updater closure
         // `f` to the current value — or `default` when the key is absent — which
@@ -1230,11 +1503,27 @@ impl Interpreter {
             return Ok(Value::List(out));
         }
         // A local variable holding a function value (a closure): apply it.
-        if let Some(Value::Closure { .. }) = env.get(name) {
-            let clo = env.get(name).unwrap().clone();
-            return self.apply_closure(clo, argvals);
+        if let Some(clo) = local_closure {
+            return self.apply_closure_call(clo, argvals, places, env);
         }
         if let Some(v) = self.call_builtin(name, &argvals)? {
+            let var_indices: Vec<usize> = conventions
+                .iter()
+                .enumerate()
+                .filter_map(|(index, convention)| (*convention == Convention::Var).then_some(index))
+                .collect();
+            if let [index] = var_indices.as_slice() {
+                let place = places
+                    .get(*index)
+                    .and_then(Clone::clone)
+                    .ok_or_else(|| Flow::from(RuntimeError {
+                        message: format!("`var` argument to `{name}` must be a mutable place"),
+                    }))?;
+                // Current native collection primitives return the updated receiver.
+                // The stdlib migration will split auxiliary results from this
+                // write-back channel without changing the place machinery.
+                self.commit_writebacks(vec![(place, v.clone())], env)?;
+            }
             return Ok(v);
         }
         let Some(func) = self.functions.get(name).cloned() else {
@@ -1248,28 +1537,21 @@ impl Interpreter {
             ));
         }
         let mut fenv = Env::new();
-        let mut writebacks: Vec<(String, String)> = Vec::new();
-        // (RFC-0043) A mutator's `var` *receiver* (its first param) is not a
-        // procedure-style write-back channel: its expression form is a pure value
-        // call (any argument accepted, nothing written back through the param), and
-        // its statement form's write-back is delivered by the `xs = f(xs, …)` rewrite.
-        // Only a Nil-returning `var` procedure writes back through the parameter.
-        let mutator_receiver = func.is_mutator();
+        let mut writebacks: Vec<(CapturedPlace, String)> = Vec::new();
         for (i, param) in func.params.iter().enumerate() {
             fenv.define(
                 param.name.clone(),
                 argvals[i].clone(),
                 param.convention.binds_mutable(),
             );
-            if matches!(param.convention, Convention::Var) && !(i == 0 && mutator_receiver) {
-                match &args[i] {
-                    Expr::Var(caller) => writebacks.push((caller.clone(), param.name.clone())),
-                    _ => {
-                        return err(format!(
-                            "`var` argument to `{name}` must be a mutable variable"
-                        ))
-                    }
-                }
+            if matches!(param.convention, Convention::Var) {
+                let place = places
+                    .get(i)
+                    .and_then(Clone::clone)
+                    .ok_or_else(|| Flow::from(RuntimeError {
+                        message: format!("`var` argument to `{name}` must be a mutable place"),
+                    }))?;
+                writebacks.push((place, param.name.clone()));
             }
         }
         // The callee's own `?` early-return stops here; it becomes the call's
@@ -1294,20 +1576,13 @@ impl Interpreter {
         };
         self.cur_fn = prev_fn;
         self.cur_line = prev_line;
-        for (caller, param_name) in writebacks {
-            let final_v = fenv.get(&param_name).cloned().unwrap();
-            match env.assign(&caller, final_v) {
-                Assign::Done => {}
-                Assign::Immutable => {
-                    return err(format!(
-                        "`var` argument `{caller}` must be a mutable variable (it is immutable)"
-                    ))
-                }
-                Assign::Unbound => {
-                    return err(format!("`var` argument `{caller}` must be a local variable"))
-                }
-            }
-        }
+        let writebacks = writebacks
+            .into_iter()
+            .map(|(place, param_name)| {
+                (place, fenv.get(&param_name).cloned().expect("parameter is bound"))
+            })
+            .collect();
+        self.commit_writebacks(writebacks, env)?;
         Ok(result)
     }
 
@@ -2816,11 +3091,13 @@ impl Interpreter {
             Expr::Call { name, args } => self.eval_call(name, args, env),
             Expr::Apply { func, args } => {
                 let clo = self.eval(func, env)?;
-                let argvals = args
-                    .iter()
-                    .map(|a| self.eval(a, env))
-                    .collect::<Result<Vec<_>, _>>()?;
-                self.apply_closure(clo, argvals)
+                let Value::Closure { params, .. } = &clo else {
+                    return err("attempted to call a non-function value");
+                };
+                let conventions: Vec<Convention> =
+                    params.iter().map(|param| param.convention).collect();
+                let (argvals, places) = self.eval_call_args(args, &conventions, env)?;
+                self.apply_closure_call(clo, argvals, places, env)
             }
             Expr::Ctor { name, args } => {
                 let fields = args

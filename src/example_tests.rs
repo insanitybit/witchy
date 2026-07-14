@@ -994,6 +994,16 @@
         assert_eq!(wasm_run(src), want, "compiled backend commits the extra var param on `?`");
     }
 
+    /// Function types carry conventions, so a value-returning `var` function
+    /// writes back through both a named function value and a literal lambda.
+    #[test]
+    fn rfc0087_var_function_values_write_back_on_both_backends() {
+        let src = "fn bump(var n: Int) -> Int:\n    n = n + 2\n    n * 10\n\nfn apply(f: fn(var Int) -> Int, var n: Int) -> Int:\n    f(n)\n\nfn main(console: Console):\n    var a = 1\n    let named: fn(var Int) -> Int = bump\n    let x = apply(named, a)\n    console.print(\"${a} ${x}\")\n    var b = 3\n    let literal: fn(var Int) -> Int = fn(var n: Int):\n        n = n + 4\n        n * 100\n    let y = apply(literal, b)\n    console.print(\"${b} ${y}\")\n";
+        let want = ["3 30", "7 700"];
+        assert_eq!(link_run(src), want, "interpreter function-value write-back");
+        assert_eq!(wasm_run(src), want, "compiled function-value write-back");
+    }
+
     /// (RFC-0064 Check 3, parity) A discarded non-`Nil` FREE call in statement
     /// position is the same discard error the method form already raised — a free
     /// call does not write back. `list.push(xs, 2)` as a bare statement (the

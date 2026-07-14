@@ -108,10 +108,8 @@ struct EtaSig {
     /// Includes RFC-0056 defaulted parameters: a function *value* ignores
     /// defaults, so its value form takes every positional argument.
     arity: usize,
-    /// A `var`-procedure (a `var` parameter, returns `Nil`): eta-expanding it
-    /// would bind a `let` lambda parameter where a `var` is demanded, so it is
-    /// excluded from value position with an error that names the real cause.
-    is_var_procedure: bool,
+    /// Parameter conventions copied onto the forwarding lambda.
+    conventions: Vec<Convention>,
     /// Part of this module's public API. Same-module calls may use private
     /// helpers; imported or module-qualified cross-module calls may not.
     public: bool,
@@ -664,7 +662,7 @@ pub fn link_with_user_modules_with_mode(
                     f.name.clone(),
                     EtaSig {
                         arity: f.params.len(),
-                        is_var_procedure: f.is_var_procedure(),
+                        conventions: f.params.iter().map(|param| param.convention).collect(),
                         public: f.public,
                         method_alias: false,
                         alias_target: None,
@@ -685,7 +683,11 @@ pub fn link_with_user_modules_with_mode(
                         method.name.clone(),
                         EtaSig {
                             arity: method.params.len(),
-                            is_var_procedure: method.is_var_procedure(),
+                            conventions: method
+                                .params
+                                .iter()
+                                .map(|param| param.convention)
+                                .collect(),
                             public: true,
                             method_alias: true,
                             alias_target: Some(inherent_method_symbol(im, &method.name)),
@@ -1435,19 +1437,6 @@ fn rewrite_expr(
                     .and_then(|s| s.get(&field))
                     .cloned()
                     .expect("resolve_call accepted the reference, so the function exists");
-                // A Nil-returning `var`-procedure has no value form: eta-expanding
-                // it would bind a `let` lambda parameter where a `var` is demanded
-                // (RFC-0043). Name the real cause rather than let a later pass
-                // mislead. RFC-0043 mutators (they return `self`) are fine — their
-                // value form is an ordinary pure call.
-                if sig.is_var_procedure {
-                    return lerr(format!(
-                        "`{modname}.{field}` is a `var`-procedure (it mutates its argument in \
-                         place and returns Nil), so it has no value form: an eta-expanded lambda \
-                         would bind a `let` parameter where a `var` is required. Call it directly, \
-                         or wrap it in your own `fn(var x): {modname}.{field}(x)`."
-                    ));
-                }
                 *e = eta_lambda(&qualified, sig);
                 return Ok(());
             }
@@ -1558,10 +1547,11 @@ fn eta_lambda(qualified: &str, sig: EtaSig) -> Expr {
     let names: Vec<String> = (0..arity).map(|i| format!("__eta{i}")).collect();
     let params = names
         .iter()
-        .map(|n| Param {
+        .enumerate()
+        .map(|(index, n)| Param {
             name: n.clone(),
             ty: None,
-            convention: Convention::Let,
+            convention: sig.conventions.get(index).copied().unwrap_or(Convention::Let),
             default: None,
         })
         .collect();

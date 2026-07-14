@@ -1039,10 +1039,7 @@ fn f(var a: Int, own b: Int, c: Int) -> Int:
     }
 
     #[test]
-    fn var_receiver_classifies_as_a_mutator() {
-        // (RFC-0043) A `var` first param plus a return of that param's type is a
-        // mutator; the same `var` param returning Nil (or nothing) is a procedure
-        // channel; a plain first param is neither.
+    fn var_convention_is_independent_of_return_shape() {
         let m = parse_module(
             "fn push(var xs: List(a), x: a) -> List(a):\n    xs\n\nfn bump(var n: Int):\n    n = n + 1\n\nfn map(xs: List(a), f: fn(a) -> b) -> List(b):\n    xs\n",
         )
@@ -1055,15 +1052,9 @@ fn f(var a: Int, own b: Int, c: Int) -> Int:
                 _ => None,
             })
             .collect();
-        // push: var receiver + self-typed return => mutator, not a procedure.
-        assert!(funcs[0].is_mutator(), "push is a mutator");
-        assert!(!funcs[0].is_var_procedure(), "push is not a procedure channel");
-        // bump: var param + Nil return => procedure, not a mutator.
-        assert!(!funcs[1].is_mutator(), "bump is not a mutator");
-        assert!(funcs[1].is_var_procedure(), "bump is a procedure channel");
-        // map: no var param => neither.
-        assert!(!funcs[2].is_mutator(), "map is not a mutator");
-        assert!(!funcs[2].is_var_procedure(), "map is not a procedure channel");
+        assert_eq!(funcs[0].params[0].convention, Convention::Var);
+        assert_eq!(funcs[1].params[0].convention, Convention::Var);
+        assert_eq!(funcs[2].params[0].convention, Convention::Let);
     }
 
     #[test]

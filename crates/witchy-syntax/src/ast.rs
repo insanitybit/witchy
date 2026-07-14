@@ -236,45 +236,6 @@ pub struct Function {
     pub is_async: bool,
 }
 
-impl Function {
-    /// (RFC-0043) Whether this function is a **mutator**: its first parameter has
-    /// the `var` convention *and* the function returns that parameter's declared
-    /// type. Its statement form (`xs.push(1)`) writes back the result; its
-    /// expression form (`let ys = xs.push(1)`) is a pure value call — the `var`
-    /// receiver does *not* trigger the procedure-style write-back that a
-    /// Nil-returning `var` parameter does.
-    ///
-    /// Write-back is a DECLARED property here, not inferred from a whole-program
-    /// name census: the fact lives in the signature, and resolution is per
-    /// receiver type after method resolution.
-    pub fn is_mutator(&self) -> bool {
-        let Some(first) = self.params.first() else {
-            return false;
-        };
-        if first.convention != Convention::Var {
-            return false;
-        }
-        matches!(
-            (first.ty.as_ref(), self.ret.as_ref()),
-            (Some(pt), Some(rt)) if pt.unqualified() == rt.unqualified()
-        )
-    }
-
-    /// (RFC-0043) Whether this function is a **procedure channel**: it has a `var`
-    /// parameter and returns `Nil` (or nothing). Today's `var` semantics — the
-    /// call-site argument must be a mutable `var` and the caller's variable is
-    /// written back through the parameter. Distinct from a mutator by return shape.
-    pub fn is_var_procedure(&self) -> bool {
-        if !self.params.iter().any(|p| p.convention == Convention::Var) {
-            return false;
-        }
-        match self.ret.as_ref() {
-            None => true,
-            Some(t) => matches!(t.unqualified(), Type::Named(n, _) if n == "Nil"),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct Param {
     pub name: String,

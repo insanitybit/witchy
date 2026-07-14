@@ -77,12 +77,12 @@ pub fn encode(module: &WirModule, structs: &[WirStructDef]) -> Vec<u8> {
     // against that exact layout and bake their `call_indirect (type $closN)`
     // operands as those indices. Reserving them up front (even when no visible
     // node references them) keeps a spliced `$dict_update`'s indirect call valid.
-    let mut clos_type_idx: HashMap<usize, u32> = HashMap::new();
+    let mut clos_type_idx: HashMap<(usize, usize), u32> = HashMap::new();
     for n in 0..=crate::wir::MAX_CLOS {
         let mut params = vec![Kind::I32];
         params.extend(std::iter::repeat_n(Kind::I64, n));
         let idx = intern(params, vec![Kind::I64]);
-        clos_type_idx.insert(n, idx);
+        clos_type_idx.insert((n, 1), idx);
     }
 
     // Type index for each import (in order).
@@ -105,15 +105,15 @@ pub fn encode(module: &WirModule, structs: &[WirStructDef]) -> Vec<u8> {
 
     // Any wider closure arity actually referenced by a visible `CallIndirect`
     // (beyond the reserved prelude band) interns after the import/func types.
-    let mut clos_arities: Vec<usize> = Vec::new();
+    let mut clos_signatures: Vec<(usize, usize)> = Vec::new();
     for f in &module.funcs {
-        collect_clos_arities(&f.body, &mut clos_arities);
+        collect_clos_signatures(&f.body, &mut clos_signatures);
     }
-    for &n in &clos_arities {
-        clos_type_idx.entry(n).or_insert_with(|| {
+    for &(n, result_count) in &clos_signatures {
+        clos_type_idx.entry((n, result_count)).or_insert_with(|| {
             let mut params = vec![Kind::I32];
             params.extend(std::iter::repeat_n(Kind::I64, n));
-            intern(params, vec![Kind::I64])
+            intern(params, vec![Kind::I64; result_count])
         });
     }
 
@@ -366,19 +366,23 @@ pub fn encode(module: &WirModule, structs: &[WirStructDef]) -> Vec<u8> {
     wasm.finish()
 }
 
-/// Collect the distinct closure arities referenced by `CallIndirect` nodes in a
-/// node sequence (for `$clos{N}` type-section synthesis). Walks both nodes and
-/// their nested expressions.
-fn collect_clos_arities(seq: &WirSeq, out: &mut Vec<usize>) {
-    fn push(out: &mut Vec<usize>, n: usize) {
-        if !out.contains(&n) {
-            out.push(n);
+/// Collect the distinct closure signatures referenced by indirect calls for
+/// type-section synthesis. Walks both nodes and their nested expressions.
+fn collect_clos_signatures(seq: &WirSeq, out: &mut Vec<(usize, usize)>) {
+    fn push(out: &mut Vec<(usize, usize)>, signature: (usize, usize)) {
+        if !out.contains(&signature) {
+            out.push(signature);
         }
     }
-    fn walk_expr(e: &WirExpr, out: &mut Vec<usize>) {
+    fn walk_expr(e: &WirExpr, out: &mut Vec<(usize, usize)>) {
         match e {
-            WirExpr::CallIndirect { type_arity, args, index } => {
-                push(out, *type_arity);
+            WirExpr::CallIndirect {
+                type_arity,
+                result_count,
+                args,
+                index,
+            } => {
+                push(out, (*type_arity, *result_count));
                 for a in args {
                     walk_expr(a, out);
                 }
@@ -400,7 +404,7 @@ fn collect_clos_arities(seq: &WirSeq, out: &mut Vec<usize>) {
                 }
             }
             WirExpr::Control(node) => walk_node(node, out),
-            WirExpr::Seq(nodes) => collect_clos_arities(nodes, out),
+            WirExpr::Seq(nodes) => collect_clos_signatures(nodes, out),
             WirExpr::StructNew { args, .. } => {
                 for a in args {
                     walk_expr(a, out);
@@ -418,7 +422,7 @@ fn collect_clos_arities(seq: &WirSeq, out: &mut Vec<usize>) {
             | WirExpr::RefNull(_) => {}
         }
     }
-    fn walk_node(node: &WirNode, out: &mut Vec<usize>) {
+    fn walk_node(node: &WirNode, out: &mut Vec<(usize, usize)>) {
         match node {
             WirNode::SetLocal { value, .. } | WirNode::SetGlobal { value, .. } => {
                 walk_expr(value, out)
@@ -436,6 +440,18 @@ fn collect_clos_arities(seq: &WirSeq, out: &mut Vec<usize>) {
                     walk_expr(a, out);
                 }
             }
+            WirNode::CallIndirectStoreMulti {
+                type_arity,
+                args,
+                index,
+                dests,
+            } => {
+                push(out, (*type_arity, dests.len()));
+                for a in args {
+                    walk_expr(a, out);
+                }
+                walk_expr(index, out);
+            }
             WirNode::MemoryCopy { dest, src, len } => {
                 walk_expr(dest, out);
                 walk_expr(src, out);
@@ -448,11 +464,11 @@ fn collect_clos_arities(seq: &WirSeq, out: &mut Vec<usize>) {
             }
             WirNode::If { cond, then_, els, .. } => {
                 walk_expr(cond, out);
-                collect_clos_arities(then_, out);
-                collect_clos_arities(els, out);
+                collect_clos_signatures(then_, out);
+                collect_clos_signatures(els, out);
             }
             WirNode::Block { body, .. } | WirNode::Loop { body, .. } => {
-                collect_clos_arities(body, out)
+                collect_clos_signatures(body, out)
             }
             WirNode::Br { cond: Some(c), .. } => walk_expr(c, out),
             WirNode::Drop(e) | WirNode::Do(e) | WirNode::Push(e) | WirNode::Return(Some(e)) => {
@@ -473,8 +489,8 @@ struct EncodeCtx<'a> {
     func_index: &'a HashMap<&'a str, u32>,
     import_index: &'a HashMap<&'a str, u32>,
     global_index: &'a HashMap<&'a str, u32>,
-    /// Closure arity -> `$clos{N}` type index (for `call_indirect`).
-    clos_type_idx: &'a HashMap<usize, u32>,
+    /// Closure `(arity, result count)` -> synthesized type index.
+    clos_type_idx: &'a HashMap<(usize, usize), u32>,
     /// (RFC-0005) Type-section index where GC struct types begin; a struct opcode's
     /// `struct_id` resolves to `struct_base + struct_id`. Also the boundary below
     /// which type indices are unshifted (the reserved clos band).
@@ -560,6 +576,35 @@ impl EncodeCtx<'_> {
                 for d in dests.iter().rev() {
                     let li = self.local(d);
                     func.instruction(&Instruction::LocalSet(li));
+                }
+            }
+            WirNode::CallIndirectStoreMulti {
+                type_arity,
+                args,
+                index,
+                dests,
+            } => {
+                for a in args {
+                    self.encode_expr(func, a);
+                }
+                self.encode_expr(func, index);
+                let signature = (*type_arity, dests.len());
+                let pos = *self.clos_type_idx.get(&signature).unwrap_or_else(|| {
+                    panic!(
+                        "call_indirect references unsynthesized closure signature {signature:?}"
+                    )
+                });
+                let type_index = if pos < self.struct_base {
+                    pos
+                } else {
+                    pos + self.struct_shift
+                };
+                func.instruction(&Instruction::CallIndirect {
+                    type_index,
+                    table_index: 0,
+                });
+                for d in dests.iter().rev() {
+                    func.instruction(&Instruction::LocalSet(self.local(d)));
                 }
             }
             WirNode::MemoryCopy { dest, src, len } => {
@@ -807,7 +852,12 @@ impl EncodeCtx<'_> {
                     .unwrap_or_else(|| panic!("call to unknown host import ${import}"));
                 func.instruction(&Instruction::Call(idx));
             }
-            WirExpr::CallIndirect { type_arity, args, index } => {
+            WirExpr::CallIndirect {
+                type_arity,
+                result_count,
+                args,
+                index,
+            } => {
                 // Args (env ptr then slot args) first, then the code index, then
                 // `call_indirect (type $clos{N})` on table 0 — operand order and
                 // type/table indices match codegen.
@@ -815,8 +865,11 @@ impl EncodeCtx<'_> {
                     self.encode_expr(func, a);
                 }
                 self.encode_expr(func, index);
-                let pos = *self.clos_type_idx.get(type_arity).unwrap_or_else(|| {
-                    panic!("call_indirect references unsynthesized $clos{type_arity}")
+                let signature = (*type_arity, *result_count);
+                let pos = *self.clos_type_idx.get(&signature).unwrap_or_else(|| {
+                    panic!(
+                        "call_indirect references unsynthesized closure signature {signature:?}"
+                    )
                 });
                 // Shift past the struct types for a sig outside the reserved band.
                 let type_index =

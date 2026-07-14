@@ -92,6 +92,12 @@ fn simplify_node(node: &mut WirNode, changed: &mut bool) {
                 simplify_expr(a, changed);
             }
         }
+        WirNode::CallIndirectStoreMulti { args, index, .. } => {
+            for a in args.iter_mut() {
+                simplify_expr(a, changed);
+            }
+            simplify_expr(index, changed);
+        }
         WirNode::MemoryCopy { dest, src, len } => {
             simplify_expr(dest, changed);
             simplify_expr(src, changed);
@@ -235,6 +241,9 @@ fn node_size(node: &WirNode) -> usize {
             expr_size(ptr) + expr_size(value)
         }
         WirNode::CallStoreMulti { args, .. } => args.iter().map(expr_size).sum(),
+        WirNode::CallIndirectStoreMulti { args, index, .. } => {
+            args.iter().map(expr_size).sum::<usize>() + expr_size(index)
+        }
         WirNode::MemoryCopy { dest, src, len } => {
             expr_size(dest) + expr_size(src) + expr_size(len)
         }

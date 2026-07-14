@@ -264,13 +264,14 @@ pub enum WirExpr {
     },
     /// An indirect call through table 0 (`call_indirect (type $clos{N})`), used
     /// for closures. `type_arity` is the closure arity `N` — it resolves to the
-    /// `$clos{N}` signature `(param i32) (param i64)*N (result i64)` (one i32 env
-    /// pointer, then N i64 slot args, one i64 slot result). `args` are pushed
+    /// closure signature `(param i32) (param i64)*N (result i64)*R` (one i32 env
+    /// pointer, then N i64 slot args and R i64 slot results). `args` are pushed
     /// first (the env pointer then the slot args, in order); `index` (the code
     /// index loaded from the closure record) is pushed last, matching wasm's
     /// `call_indirect` operand order.
     CallIndirect {
         type_arity: usize,
+        result_count: usize,
         args: Vec<WirExpr>,
         index: Box<WirExpr>,
     },
@@ -339,6 +340,14 @@ pub enum WirNode {
     CallStoreMulti {
         func: String,
         args: Vec<WirExpr>,
+        dests: Vec<String>,
+    },
+    /// The indirect-call counterpart of `CallStoreMulti`. The synthesized closure
+    /// signature is selected by argument arity and `dests.len()` result slots.
+    CallIndirectStoreMulti {
+        type_arity: usize,
+        args: Vec<WirExpr>,
+        index: WirExpr,
         dests: Vec<String>,
     },
     /// `memory.copy` — copy `len` bytes from `src` to `dest` (operands pushed in
@@ -513,17 +522,21 @@ pub fn to_wat(module: &WirModule) -> String {
     let mut s = String::new();
     s.push_str("(module\n");
 
-    // Closure `$clos{N}` type declarations for any `call_indirect` in the body
-    // (the WAT names a type the `call_indirect` references). One i32 env param,
-    // then N i64 slot args, one i64 slot result — matching codegen's shape.
-    let mut clos_arities: Vec<usize> = Vec::new();
+    // Closure type declarations for any `call_indirect` in the body. One i32 env
+    // param, then N i64 slot args and R i64 slot results.
+    let mut clos_signatures: Vec<(usize, usize)> = Vec::new();
     for f in &module.funcs {
-        collect_clos_arities_seq(&f.body, &mut clos_arities);
+        collect_clos_signatures_seq(&f.body, &mut clos_signatures);
     }
-    clos_arities.sort_unstable();
-    for n in &clos_arities {
-        let params = format!("(param i32) {}", "(param i64) ".repeat(*n));
-        let _ = writeln!(s, "  (type $clos{n} (func {params}(result i64)))");
+    clos_signatures.sort_unstable();
+    for &(n, r) in &clos_signatures {
+        let params = format!("(param i32) {}", "(param i64) ".repeat(n));
+        let results = "(result i64)".repeat(r);
+        let _ = writeln!(
+            s,
+            "  (type ${} (func {params}{results}))",
+            clos_type_name(n, r)
+        );
     }
 
     for imp in &module.imports {
@@ -682,6 +695,27 @@ fn print_node(s: &mut String, node: &WirNode, depth: usize) {
             }
             indent(s, depth);
             let _ = writeln!(s, "call ${func}");
+            for d in dests.iter().rev() {
+                indent(s, depth);
+                let _ = writeln!(s, "local.set ${d}");
+            }
+        }
+        WirNode::CallIndirectStoreMulti {
+            type_arity,
+            args,
+            index,
+            dests,
+        } => {
+            for a in args {
+                print_expr(s, a, depth);
+            }
+            print_expr(s, index, depth);
+            indent(s, depth);
+            let _ = writeln!(
+                s,
+                "call_indirect (type ${})",
+                clos_type_name(*type_arity, dests.len())
+            );
             for d in dests.iter().rev() {
                 indent(s, depth);
                 let _ = writeln!(s, "local.set ${d}");
@@ -908,6 +942,7 @@ fn print_expr(s: &mut String, e: &WirExpr, depth: usize) {
         }
         WirExpr::CallIndirect {
             type_arity,
+            result_count,
             args,
             index,
         } => {
@@ -917,7 +952,14 @@ fn print_expr(s: &mut String, e: &WirExpr, depth: usize) {
                 print_expr(s, a, depth);
             }
             print_expr(s, index, depth);
-            emit(s, depth, &format!("call_indirect (type $clos{type_arity})"));
+            emit(
+                s,
+                depth,
+                &format!(
+                    "call_indirect (type ${})",
+                    clos_type_name(*type_arity, *result_count)
+                ),
+            );
         }
         WirExpr::Control(node) => print_node(s, node, depth),
         WirExpr::Seq(nodes) => print_seq(s, nodes, depth),
@@ -984,19 +1026,31 @@ fn from_slot_op(kind: Kind) -> Option<&'static str> {
     }
 }
 
-/// Collect the distinct closure arities referenced by `CallIndirect` nodes in a
-/// node sequence — for the `$clos{N}` type declarations the WAT printer emits.
-/// (Mirrors the binary encoder's `collect_clos_arities`.)
-fn collect_clos_arities_seq(seq: &WirSeq, out: &mut Vec<usize>) {
-    fn push(out: &mut Vec<usize>, n: usize) {
-        if !out.contains(&n) {
-            out.push(n);
+fn clos_type_name(arity: usize, result_count: usize) -> String {
+    if result_count == 1 {
+        format!("clos{arity}")
+    } else {
+        format!("clos{arity}r{result_count}")
+    }
+}
+
+/// Collect the distinct closure signatures referenced by indirect calls for the
+/// type declarations the WAT printer emits. Mirrors the binary encoder.
+fn collect_clos_signatures_seq(seq: &WirSeq, out: &mut Vec<(usize, usize)>) {
+    fn push(out: &mut Vec<(usize, usize)>, signature: (usize, usize)) {
+        if !out.contains(&signature) {
+            out.push(signature);
         }
     }
-    fn walk_expr(e: &WirExpr, out: &mut Vec<usize>) {
+    fn walk_expr(e: &WirExpr, out: &mut Vec<(usize, usize)>) {
         match e {
-            WirExpr::CallIndirect { type_arity, args, index } => {
-                push(out, *type_arity);
+            WirExpr::CallIndirect {
+                type_arity,
+                result_count,
+                args,
+                index,
+            } => {
+                push(out, (*type_arity, *result_count));
                 for a in args {
                     walk_expr(a, out);
                 }
@@ -1018,7 +1072,7 @@ fn collect_clos_arities_seq(seq: &WirSeq, out: &mut Vec<usize>) {
                 }
             }
             WirExpr::Control(node) => walk_node(node, out),
-            WirExpr::Seq(nodes) => collect_clos_arities_seq(nodes, out),
+            WirExpr::Seq(nodes) => collect_clos_signatures_seq(nodes, out),
             WirExpr::StructNew { args, .. } => {
                 for a in args {
                     walk_expr(a, out);
@@ -1035,7 +1089,7 @@ fn collect_clos_arities_seq(seq: &WirSeq, out: &mut Vec<usize>) {
             | WirExpr::RefNull(_) => {}
         }
     }
-    fn walk_node(node: &WirNode, out: &mut Vec<usize>) {
+    fn walk_node(node: &WirNode, out: &mut Vec<(usize, usize)>) {
         match node {
             WirNode::SetLocal { value, .. } | WirNode::SetGlobal { value, .. } => {
                 walk_expr(value, out)
@@ -1053,6 +1107,18 @@ fn collect_clos_arities_seq(seq: &WirSeq, out: &mut Vec<usize>) {
                     walk_expr(a, out);
                 }
             }
+            WirNode::CallIndirectStoreMulti {
+                type_arity,
+                args,
+                index,
+                dests,
+            } => {
+                push(out, (*type_arity, dests.len()));
+                for a in args {
+                    walk_expr(a, out);
+                }
+                walk_expr(index, out);
+            }
             WirNode::MemoryCopy { dest, src, len } => {
                 walk_expr(dest, out);
                 walk_expr(src, out);
@@ -1065,11 +1131,11 @@ fn collect_clos_arities_seq(seq: &WirSeq, out: &mut Vec<usize>) {
             }
             WirNode::If { cond, then_, els, .. } => {
                 walk_expr(cond, out);
-                collect_clos_arities_seq(then_, out);
-                collect_clos_arities_seq(els, out);
+                collect_clos_signatures_seq(then_, out);
+                collect_clos_signatures_seq(els, out);
             }
             WirNode::Block { body, .. } | WirNode::Loop { body, .. } => {
-                collect_clos_arities_seq(body, out)
+                collect_clos_signatures_seq(body, out)
             }
             WirNode::Br { cond: Some(c), .. } => walk_expr(c, out),
             WirNode::Drop(e) | WirNode::Do(e) | WirNode::Push(e) | WirNode::Return(Some(e)) => {
@@ -1134,6 +1200,12 @@ pub fn heap_write_violations(module: &WirModule) -> Vec<String> {
                 for a in args {
                     expr_violates(a, hits);
                 }
+            }
+            WirNode::CallIndirectStoreMulti { args, index, .. } => {
+                for a in args {
+                    expr_violates(a, hits);
+                }
+                expr_violates(index, hits);
             }
             WirNode::MemoryCopy { dest, src, len } => {
                 expr_violates(dest, hits);

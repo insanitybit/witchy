@@ -2037,6 +2037,7 @@
         // header. `call_indirect` args = [env ptr, slot arg]; index = i32.load env.
         let call = WirExpr::CallIndirect {
             type_arity: 1,
+            result_count: 1,
             args: vec![WirExpr::ConstI32(0), WirExpr::ToSlot(Box::new(WirExpr::ConstI64(5)), Kind::I64)],
             index: Box::new(WirExpr::Load {
                 ptr: Box::new(WirExpr::ConstI32(0)),
@@ -2070,6 +2071,73 @@
             exports: vec![("run".into(), "run".into())],
         };
         assert_agrees(&m, &["105"]);
+    }
+
+    #[test]
+    fn table_call_indirect_multi_result_roundtrips() {
+        let lam0 = WirFunc {
+            name: "__lam0".into(),
+            params: vec![local("env", WirTy::Capability), local("arg", WirTy::Slot)],
+            ret: vec![WirTy::Slot, WirTy::Slot],
+            locals: vec![],
+            body: vec![
+                WirNode::Push(WirExpr::Binary {
+                    op: BinOp::Add,
+                    kind: Kind::I64,
+                    lhs: Box::new(WirExpr::GetLocal("arg".into())),
+                    rhs: Box::new(WirExpr::ConstI64(1)),
+                }),
+                WirNode::Push(WirExpr::Binary {
+                    op: BinOp::Add,
+                    kind: Kind::I64,
+                    lhs: Box::new(WirExpr::GetLocal("arg".into())),
+                    rhs: Box::new(WirExpr::ConstI64(100)),
+                }),
+                WirNode::Return(None),
+            ],
+            raw_body: None,
+        };
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![local("result", WirTy::Slot), local("writeback", WirTy::Slot)],
+            body: vec![
+                WirNode::CallIndirectStoreMulti {
+                    type_arity: 1,
+                    args: vec![WirExpr::ConstI32(0), WirExpr::ConstI64(5)],
+                    index: WirExpr::Load {
+                        ptr: Box::new(WirExpr::ConstI32(0)),
+                        kind: Kind::I32,
+                        offset: 0,
+                    },
+                    dests: vec!["result".into(), "writeback".into()],
+                },
+                WirNode::Do(WirExpr::CallHost {
+                    import: "print_int".into(),
+                    args: vec![WirExpr::GetLocal("result".into())],
+                }),
+                WirNode::Do(WirExpr::CallHost {
+                    import: "print_int".into(),
+                    args: vec![WirExpr::GetLocal("writeback".into())],
+                }),
+            ],
+            raw_body: None,
+        };
+        let m = WirModule {
+            imports: vec![WirImport {
+                name: "print_int".into(),
+                params: vec![Kind::I64],
+                results: vec![],
+            }],
+            funcs: vec![lam0, run],
+            memory_pages: 1,
+            data: vec![DataSegment { offset: 0, bytes: vec![0, 0, 0, 0] }],
+            globals: vec![],
+            table: Some(WirTable { funcs: vec!["__lam0".into()] }),
+            exports: vec![("run".into(), "run".into())],
+        };
+        assert_agrees(&m, &["6", "105"]);
     }
 
     #[test]
