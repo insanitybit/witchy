@@ -955,6 +955,45 @@
         assert_eq!(wasm_run(src), want, "compiled elided return");
     }
 
+    /// (RFC-0087 §6, criterion 2) A callee-side `?` is a structured return: every
+    /// `var` param commits its current value — partial progress on a multi-`var`
+    /// call is observable, identically, on both backends ("commit atomicity, not
+    /// rollback"). The caller-side `??` observes the committed state.
+    #[test]
+    fn rfc0087_callee_try_commits_multi_var_partial_progress_on_both_backends() {
+        let src = "fn check(amount: Int) -> Result(Int, String):\n    if amount > 20:\n        return Err(\"limit\")\n    Ok(amount)\n\nfn transfer(var from: Int, var to: Int, amount: Int) -> Result(Int, String):\n    from = from - amount\n    let approved = check(amount)?\n    to = to + approved\n    Ok(approved)\n\nfn main(console: Console):\n    var from = 100\n    var to = 0\n    let receipt = transfer(from, to, 30) ?? -1\n    console.print(\"${from}\")\n    console.print(\"${to}\")\n    console.print(\"${receipt}\")\n";
+        // The debit committed (70), the credit never ran (0), the `??` saw the Err.
+        let want = ["70", "0", "-1"];
+        assert_eq!(link_run(src), want, "interpreter commits partial progress on callee `?`");
+        assert_eq!(wasm_run(src), want, "compiled backend commits partial progress on callee `?`");
+    }
+
+    /// (RFC-0087 §6, criterion 2) `?` is an ordinary early return, not a
+    /// transaction boundary: `?`, its explicit `return Err(...)` desugaring, and a
+    /// tail `Err(...)` all commit the same final `var` values on both backends.
+    #[test]
+    fn rfc0087_try_return_and_tail_err_commit_identical_finals() {
+        let src = "fn fail_op() -> Result(Int, String):\n    Err(\"boom\")\n\nfn via_try(var n: Int) -> Result(Int, String):\n    n = n + 1\n    let v = fail_op()?\n    Ok(v)\n\nfn via_return(var n: Int) -> Result(Int, String):\n    n = n + 1\n    return Err(\"boom\")\n\nfn via_tail(var n: Int) -> Result(Int, String):\n    n = n + 1\n    Err(\"boom\")\n\nfn main(console: Console):\n    var a = 10\n    var b = 10\n    var c = 10\n    let r1 = via_try(a) ?? 0\n    let r2 = via_return(b) ?? 0\n    let r3 = via_tail(c) ?? 0\n    console.print(\"${a} ${b} ${c}\")\n    console.print(\"${r1} ${r2} ${r3}\")\n";
+        let want = ["11 11 11", "0 0 0"];
+        assert_eq!(link_run(src), want, "interpreter: three failure spellings, one write-back rule");
+        assert_eq!(wasm_run(src), want, "compiled backend: three failure spellings, one write-back rule");
+    }
+
+    /// (RFC-0087 criterion 2) The classification edge: a first `var` param whose
+    /// type equals the return type (`Result` receiver) plus an ADDITIONAL `var`
+    /// param. Whatever the receiver's transitional classification, the extra
+    /// param is a write-back channel and must commit on callee-`?` identically on
+    /// both backends — mutator classification cannot bypass the `?` matrix.
+    #[test]
+    fn rfc0087_result_receiver_mutator_extra_var_writes_back_on_try() {
+        let interp_std = |src: &str| interpreter::run_module(resolve_std_src(src), ".", Vec::new()).expect("run");
+        let src = "import list\n\nfn step(var r: Result(Int, String), var log: List(Int)) -> Result(Int, String):\n    log = list.push(log, 1)\n    let v = r?\n    log = list.push(log, v)\n    Ok(v + 1)\n\nfn main(console: Console):\n    var bad: Result(Int, String) = Err(\"nope\")\n    var log: List(Int) = []\n    let out = step(bad, log) ?? -1\n    console.print(\"${log}\")\n    console.print(\"${out}\")\n";
+        // The pre-`?` append committed ([1]); the post-`?` append never ran.
+        let want = ["[1]", "-1"];
+        assert_eq!(interp_std(src), want, "interpreter commits the extra var param on `?`");
+        assert_eq!(wasm_run(src), want, "compiled backend commits the extra var param on `?`");
+    }
+
     /// (RFC-0064 Check 3, parity) A discarded non-`Nil` FREE call in statement
     /// position is the same discard error the method form already raised — a free
     /// call does not write back. `list.push(xs, 2)` as a bare statement (the
