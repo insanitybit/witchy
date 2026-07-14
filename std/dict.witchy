@@ -17,8 +17,13 @@ pub fn new() -> Dict(k, v):
 // Insertion order of first appearance is preserved. The `d[key] = val` sugar
 // (RFC-0022) desugars to this: the shared `set_at` place-assign is retargeted to
 // `insert` once the receiver is known to be a Dict (RFC-0049).
-pub fn insert(var d: Dict(k, v), key: k, val: v) -> Dict(k, v) where k: Eq:
-    dict.insert(d, key, val)
+fn __insert(d: Dict(k, v), key: k, val: v) -> Dict(k, v) where k: Eq:
+    dict.__insert(d, key, val)
+
+pub fn insert(var d: Dict(k, v), key: k, val: v) -> Option(v) where k: Eq:
+    let previous = get(d, key)
+    d = dict.__insert(d, key, val)
+    previous
 
 // The value for `key`, or `default` when absent.
 pub fn get_or(d: Dict(k, v), key: k, default: v) -> v where k: Eq:
@@ -31,8 +36,12 @@ pub fn at(d: Dict(k, v), key: k) -> v where k: Eq:
 
 // Single-lookup upsert: apply `f` to the current value (or `default` when
 // `key` is absent) and store the result under `key`.
-pub fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) -> Dict(k, v) where k: Eq:
-    dict.update(d, key, default, f)
+fn __update(d: Dict(k, v), key: k, default: v, f: fn(v) -> v) -> Dict(k, v) where k: Eq:
+    dict.__update(d, key, default, f)
+
+pub fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) -> Nil where k: Eq:
+    d = dict.__update(d, key, default, f)
+    return
 
 // Whether `key` is present. The `_key` suffix is deliberate: a Dict contains
 // key/value pairs, so bare `contains` would be ambiguous between keys and values.
@@ -40,19 +49,24 @@ pub fn contains_key(d: Dict(k, v), key: k) -> Bool where k: Eq:
     dict.contains_key(d, key)
 
 // A new dict with `key` (and its value) removed; unchanged when absent.
-pub fn remove(var d: Dict(k, v), key: k) -> Dict(k, v) where k: Eq:
-    dict.remove(d, key)
+fn __remove(d: Dict(k, v), key: k) -> Dict(k, v) where k: Eq:
+    dict.__remove(d, key)
+
+pub fn remove(var d: Dict(k, v), key: k) -> Option(v) where k: Eq:
+    let previous = get(d, key)
+    d = dict.__remove(d, key)
+    previous
 
 // Real methods mirror the primary mutator surface while the module functions
 // remain as stable, first-class values.
 impl Dict(k, v) where k: Eq:
-    pub fn insert(var self, key: k, val: v) -> Dict(k, v):
+    pub fn insert(var self, key: k, val: v) -> Option(v):
         dict.insert(self, key, val)
 
-    pub fn update(var self, key: k, default: v, f: fn(v) -> v) -> Dict(k, v):
+    pub fn update(var self, key: k, default: v, f: fn(v) -> v) -> Nil:
         dict.update(self, key, default, f)
 
-    pub fn remove(var self, key: k) -> Dict(k, v):
+    pub fn remove(var self, key: k) -> Option(v):
         dict.remove(self, key)
 
 // The keys, in insertion order.
@@ -90,7 +104,7 @@ pub fn from_pairs(entries: List((k, v))) -> Dict(k, v) where k: Eq:
     var d = dict.new()
     for entry in entries:
         let (k, v) = entry
-        d = dict.insert(d, k, v)
+        dict.insert(d, k, v)
     d
 
 // A new Dict with every value passed through `f` (keys unchanged).
@@ -98,7 +112,7 @@ pub fn map_values(d: Dict(k, v), f: fn(v) -> w) -> Dict(k, w) where k: Eq:
     var out = dict.new()
     for entry in dict.pairs(d):
         let (k, v) = entry
-        out = dict.insert(out, k, f(v))
+        dict.insert(out, k, f(v))
     out
 
 // Keep only the entries for which `keep(key, value)` holds.
@@ -107,15 +121,15 @@ pub fn filter(d: Dict(k, v), keep: fn(k, v) -> Bool) -> Dict(k, v) where k: Eq:
     for entry in dict.pairs(d):
         let (k, v) = entry
         if keep(k, v):
-            out = dict.insert(out, k, v)
+            dict.insert(out, k, v)
     out
 
 // `a` with `b`'s entries laid over it (on a key collision, `b` wins).
-pub fn merge(var a: Dict(k, v), b: Dict(k, v)) -> Dict(k, v) where k: Eq:
+pub fn merge(a: Dict(k, v), b: Dict(k, v)) -> Dict(k, v) where k: Eq:
     var out = a
     for entry in dict.pairs(b):
         let (k, v) = entry
-        out = dict.insert(out, k, v)
+        dict.insert(out, k, v)
     out
 
 // Swap keys and values. With duplicate values, a later entry wins.
@@ -123,7 +137,7 @@ pub fn invert(d: Dict(k, v)) -> Dict(v, k) where v: Eq:
     var out = dict.new()
     for entry in dict.pairs(d):
         let (k, v) = entry
-        out = dict.insert(out, v, k)
+        dict.insert(out, v, k)
     out
 
 // The values whose keys satisfy `pred`, in the Dict's iteration order.
@@ -132,5 +146,5 @@ pub fn values_where(d: Dict(k, v), pred: fn(k) -> Bool) -> List(v):
     for entry in dict.pairs(d):
         let (k, v) = entry
         if pred(k):
-            out = list.push(out, v)
+            list.push(out, v)
     out

@@ -85,9 +85,9 @@ pub fn normalize(p: String) -> String:
             if list.length(stack) > 0 && last(stack) != "..":
                 stack = drop_last(stack)
             else if !absolute:
-                stack = list.push(stack, "..")
+                list.push(stack, "..")
         else if seg != "" && seg != ".":
-            stack = list.push(stack, seg)
+            list.push(stack, seg)
     let joined = list.join(stack, "/")
     if absolute:
         "/" + joined

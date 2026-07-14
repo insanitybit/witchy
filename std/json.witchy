@@ -162,7 +162,7 @@ fn assert_unique_object_keys(pairs: List((String, Json)), context: String):
         let (k, _v) = p
         if list.contains(seen, k):
             fail(context + ": duplicate object key `" + k + "`")
-        seen = list.push(seen, k)
+        list.push(seen, k)
 
 // Render a Float as a JSON number. `inf`/`-inf`/`NaN` are not JSON tokens; a
 // core JSON encoder must fail loudly rather than erase the numeric value as
@@ -538,7 +538,7 @@ fn parse_array(cs: List(String), i: Int, depth: Int) -> Result((Json, Int), Deco
     while true:
         let r = parse_value(cs, skip_ws(cs, j), depth + 1)?
         let (v, k) = r
-        items = list.push(items, v)
+        list.push(items, v)
         let m = skip_ws(cs, k)
         if m >= n:
             return Err(decode_error("unterminated array"))
@@ -570,7 +570,7 @@ fn parse_object(cs: List(String), i: Int, depth: Int) -> Result((Json, Int), Dec
         let (v, k2) = vr
         if pairs_contains_key(pairs, key):
             return Err(decode_error("duplicate object key `" + key + "`"))
-        pairs = list.push(pairs, (key, v))
+        list.push(pairs, (key, v))
         let m = skip_ws(cs, k2)
         if m >= n:
             return Err(decode_error("unterminated object"))
@@ -640,9 +640,9 @@ fn merge_pairs(pa: List((String, Json)), pb: List((String, Json))) -> List((Stri
     for p in pa:
         let (k, _v) = p
         if !pairs_contains_key(pb, k):
-            out = list.push(out, p)
+            list.push(out, p)
     for q in pb:
-        out = list.push(out, q)
+        list.push(out, q)
     out
 
 // The element at index `i` of a JSON array.
@@ -754,11 +754,11 @@ fn insert_by_key(sorted: List((String, Json)), item: (String, Json)) -> List((St
     for p in sorted:
         let (k, _v) = p
         if !placed && ik < k:
-            out = list.push(out, item)
+            list.push(out, item)
             placed = true
-        out = list.push(out, p)
+        list.push(out, p)
     if !placed:
-        out = list.push(out, item)
+        list.push(out, item)
     out
 
 // --- typed field accessors (get a key, then coerce) --------------------------
@@ -802,7 +802,7 @@ pub fn strings(j: Json) -> List(String):
     if let Some(items) = as_array(j):
         for it in items:
             if let Some(s) = as_string(it):
-                out = list.push(out, s)
+                list.push(out, s)
     out
 
 // The string at index `i` of a JSON array, when it is a string.
@@ -868,13 +868,13 @@ impl Reflect for Json:
 fn reflect_json_each(xs: List(Json)) -> List(Mirror):
     var out = []
     for x in xs:
-        out = list.push(out, x.reflect())
+        list.push(out, x.reflect())
     out
 
 fn reflect_json_fields(fields: List((String, Json))) -> List((String, Mirror)):
     var out = []
     for k, v in fields:
-        out = list.push(out, (k, v.reflect()))
+        list.push(out, (k, v.reflect()))
     out
 
 // Convert any reflectable value to `Json`, which also gives `Json.from(x)` and
@@ -899,13 +899,13 @@ fn mirror_to_json(m: Mirror) -> Json:
 fn mirror_each(xs: List(Mirror)) -> List(Json):
     var out = []
     for m in xs:
-        out = list.push(out, mirror_to_json(m))
+        list.push(out, mirror_to_json(m))
     out
 
 fn mirror_fields(fields: List((String, Mirror))) -> List((String, Json)):
     var out = []
     for k, m in fields:
-        out = list.push(out, (k, mirror_to_json(m)))
+        list.push(out, (k, mirror_to_json(m)))
     out
 
 // An `Option` encodes as payload-or-`null`; any other

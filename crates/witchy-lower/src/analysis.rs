@@ -118,7 +118,7 @@ impl Facts {
 /// `xs = push(xs, e)`: the appended element.
 fn self_push_elem<'a>(name: &str, value: &'a Expr) -> Option<&'a Expr> {
     if let Expr::Call { name: f, args } = value {
-        if f == "list.push" && args.len() == 2 {
+        if matches!(f.as_str(), "list.push" | "list.__push") && args.len() == 2 {
             if matches!(&args[0], Expr::Var(v) if v == name) {
                 return Some(&args[1]);
             }
@@ -130,7 +130,7 @@ fn self_push_elem<'a>(name: &str, value: &'a Expr) -> Option<&'a Expr> {
 /// `d = insert(d, k, v)`: the key and value.
 fn self_insert_args<'a>(name: &str, value: &'a Expr) -> Option<(&'a Expr, &'a Expr)> {
     if let Expr::Call { name: f, args } = value {
-        if f == "dict.insert" && args.len() == 3 {
+        if matches!(f.as_str(), "dict.insert" | "dict.__insert") && args.len() == 3 {
             if matches!(&args[0], Expr::Var(v) if v == name) {
                 return Some((&args[1], &args[2]));
             }
@@ -145,7 +145,7 @@ fn self_update_args<'a>(
     value: &'a Expr,
 ) -> Option<(&'a Expr, &'a Expr, &'a Expr)> {
     if let Expr::Call { name: f, args } = value {
-        if f == "dict.update" && args.len() == 4 {
+        if matches!(f.as_str(), "dict.update" | "dict.__update") && args.len() == 4 {
             if matches!(&args[0], Expr::Var(v) if v == name) {
                 return Some((&args[1], &args[2], &args[3]));
             }
@@ -1160,7 +1160,7 @@ fn collect_field_push_candidates(
             if matches!(base.as_ref(), Expr::Var(v) if v == name) {
                 for (f, fv) in fields {
                     if let Expr::Call { name: pn, args } = fv {
-                        if pn == "list.push"
+                        if matches!(pn.as_str(), "list.push" | "list.__push")
                             && args.len() == 2
                             && matches!(&args[0], Expr::Field { base: fb, field }
                                 if field == f
@@ -1294,7 +1294,7 @@ fn field_escapes_expr(e: &Expr, var: &str, field: &str) -> bool {
     // The one allowed occurrence: `list.push(var.field, elem)`. The receiver is the
     // permitted read; only `elem` can carry an escaping use of `var.field`.
     if let Expr::Call { name, args } = e {
-        if name == "list.push" && args.len() == 2 {
+        if matches!(name.as_str(), "list.push" | "list.__push") && args.len() == 2 {
             if let Expr::Field { base, field: f } = &args[0] {
                 if f == field && matches!(base.as_ref(), Expr::Var(v) if v == var) {
                     return field_escapes_expr(&args[1], var, field);
@@ -1542,15 +1542,15 @@ fn builtin_arg_liveness(name: &str, argc: usize) -> Option<Vec<bool>> {
         | ("dict.keys", 1)
         | ("dict.values", 1)
         | ("dict.pairs", 1)
-        | ("dict.remove", 2)
+        | ("dict.remove" | "dict.__remove", 2)
         | ("list.concat", 2) => read_all(argc),
         // get_or reads the dict and key; the DEFAULT may be returned.
         ("dict.get_or", 3) => Some(vec![false, false, true]),
         // push/insert/update store their value operands by slot. (The
         // self-assign shape is special-cased before this table is consulted.)
-        ("list.push", 2) => Some(vec![false, true]),
-        ("dict.insert", 3) => Some(vec![false, true, true]),
-        ("dict.update", 4) => Some(vec![false, true, true, true]),
+        ("list.push" | "list.__push", 2) => Some(vec![false, true]),
+        ("dict.insert" | "dict.__insert", 3) => Some(vec![false, true, true]),
+        ("dict.update" | "dict.__update", 4) => Some(vec![false, true, true, true]),
         // Output and messaging copy content out to the host.
         ("print", 2) => read_all(2),
         ("send", _) => read_all(argc),
@@ -1591,7 +1591,9 @@ pub fn fresh_heap_builtin_offset(name: &str, argc: usize) -> Option<i32> {
         // Dict results: allocated through `$rc_alloc` (so they carry the `[size]`
         // header `$rc_free` needs), with the hidden index word at `ptr-4` — i.e.
         // the rc-region start is `ptr-4`.
-        ("dict.insert", 3) | ("dict.update", 4) | ("dict.remove", 2) => Some(4),
+        ("dict.insert" | "dict.__insert", 3)
+        | ("dict.update" | "dict.__update", 4)
+        | ("dict.remove" | "dict.__remove", 2) => Some(4),
         // List / string results: the buffer pointer IS the rc-region start (offset 0).
         // These allocators (`list_push`/`list_concat`/`ascii_case`/`substr`, and
         // `trim` via `substr`) are routed through `$rc_alloc`, so their results carry
@@ -1599,7 +1601,7 @@ pub fn fresh_heap_builtin_offset(name: &str, argc: usize) -> Option<i32> {
         // `replace_helper` keeps the worst-case `ensure` + actual-bump pattern, not
         // routed) and NOT string `+` (a Binary, never a Call — handled in-place by
         // `$str_append_cap`).
-        ("list.push", 2) | ("list.concat", 2) => Some(0),
+        ("list.push" | "list.__push", 2) | ("list.concat", 2) => Some(0),
         ("string.to_upper", 1) | ("string.to_lower", 1) | ("string.trim", 1)
         | ("string.substring", 3) => Some(0),
         _ => None,

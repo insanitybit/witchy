@@ -282,7 +282,7 @@ impl FromIterator(a) for List(a):
             match next(cur):
                 Empty -> more = false
                 Item(x, rest) ->
-                    out = list.push(out, x)
+                    list.push(out, x)
                     cur = rest
         out
 
@@ -296,7 +296,7 @@ impl FromIterator((k, v)) for Dict(k, v) where k: Eq:
                 Empty -> more = false
                 Item(pair, rest) ->
                     let (key, value) = pair
-                    out = dict.insert(out, key, value)
+                    dict.insert(out, key, value)
                     cur = rest
         out
 
@@ -311,7 +311,7 @@ impl FromIterator(a) for Set(a) where a: Eq:
             match next(cur):
                 Empty -> more = false
                 Item(x, rest) ->
-                    items = list.push(items, x)
+                    list.push(items, x)
                     cur = rest
         set.from_list(items)
 

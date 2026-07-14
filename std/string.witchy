@@ -68,7 +68,7 @@ fn find(s: String, needle: String) -> Int:
     string.find(s, needle)
 
 // Replace every occurrence of `from` with `to`.
-pub fn replace(var s: String, from: String, to: String) -> String:
+pub fn replace(s: String, from: String, to: String) -> String:
     string.replace(s, from, to)
 
 // The substring from character index `start` (inclusive) to `end` (exclusive),
@@ -77,14 +77,14 @@ pub fn substring(s: String, start: Int, end: Int) -> String:
     string.substring(s, start, end)
 
 // ASCII case mapping (the portable set both backends share).
-pub fn to_upper(var s: String) -> String:
+pub fn to_upper(s: String) -> String:
     string.to_upper(s)
 
-pub fn to_lower(var s: String) -> String:
+pub fn to_lower(s: String) -> String:
     string.to_lower(s)
 
 // Strip leading and trailing ASCII whitespace.
-pub fn trim(var s: String) -> String:
+pub fn trim(s: String) -> String:
     string.trim(s)
 
 // Real methods mirror the primary string surface while the module functions
@@ -114,19 +114,19 @@ impl String:
     pub fn index_of(self, needle: String) -> Option(Int):
         string.index_of(self, needle)
 
-    pub fn replace(var self, from: String, to: String) -> String:
+    pub fn replace(self, from: String, to: String) -> String:
         string.replace(self, from, to)
 
     pub fn substring(self, start: Int, end: Int) -> String:
         string.substring(self, start, end)
 
-    pub fn to_upper(var self) -> String:
+    pub fn to_upper(self) -> String:
         string.to_upper(self)
 
-    pub fn to_lower(var self) -> String:
+    pub fn to_lower(self) -> String:
         string.to_lower(self)
 
-    pub fn trim(var self) -> String:
+    pub fn trim(self) -> String:
         string.trim(self)
 
     pub fn to_int(self) -> Int:
@@ -135,19 +135,19 @@ impl String:
     pub fn repeat(self, n: Int) -> String:
         string.repeat(self, n)
 
-    pub fn pad_left(var self, width: Int, fill: String) -> String:
+    pub fn pad_left(self, width: Int, fill: String) -> String:
         string.pad_left(self, width, fill)
 
-    pub fn pad_right(var self, width: Int, fill: String) -> String:
+    pub fn pad_right(self, width: Int, fill: String) -> String:
         string.pad_right(self, width, fill)
 
-    pub fn center(var self, width: Int, fill: String) -> String:
+    pub fn center(self, width: Int, fill: String) -> String:
         string.center(self, width, fill)
 
-    pub fn strip_prefix(var self, prefix: String) -> String:
+    pub fn strip_prefix(self, prefix: String) -> String:
         string.strip_prefix(self, prefix)
 
-    pub fn strip_suffix(var self, suffix: String) -> String:
+    pub fn strip_suffix(self, suffix: String) -> String:
         string.strip_suffix(self, suffix)
 
     pub fn char_at(self, i: Int) -> Option(String):
@@ -171,7 +171,7 @@ impl String:
     pub fn words(self) -> List(String):
         string.words(self)
 
-    pub fn replace_first(var self, from: String, to: String) -> String:
+    pub fn replace_first(self, from: String, to: String) -> String:
         string.replace_first(self, from, to)
 
     pub fn split_once_opt(self, sep: String) -> Option((String, String)):
@@ -195,10 +195,10 @@ impl String:
     pub fn lines(self) -> List(String):
         string.lines(self)
 
-    pub fn trim_start(var self) -> String:
+    pub fn trim_start(self) -> String:
         string.trim_start(self)
 
-    pub fn trim_end(var self) -> String:
+    pub fn trim_end(self) -> String:
         string.trim_end(self)
 
 // Parse a decimal integer; junk, overflow, or an empty string ABORTS the
@@ -221,7 +221,7 @@ pub fn repeat(s: String, n: Int) -> String:
 // of exactly `width` chars; `s` is returned unchanged when already that long.
 // An empty `fill` can never reach the promised width, so when padding is
 // needed it fails loudly (RFC-0044 rule 3) instead of returning a short string.
-pub fn pad_left(var s: String, width: Int, fill: String) -> String:
+pub fn pad_left(s: String, width: Int, fill: String) -> String:
     let len = string.char_count(s)
     if len >= width:
         s
@@ -233,7 +233,7 @@ pub fn pad_left(var s: String, width: Int, fill: String) -> String:
 
 // Right-pad `s` with copies of `fill` until it is `width` characters wide; an
 // empty `fill` fails loudly when padding is needed (see `pad_left`).
-pub fn pad_right(var s: String, width: Int, fill: String) -> String:
+pub fn pad_right(s: String, width: Int, fill: String) -> String:
     let len = string.char_count(s)
     if len >= width:
         s
@@ -247,7 +247,7 @@ pub fn pad_right(var s: String, width: Int, fill: String) -> String:
 // an odd remainder goes on the right. `s` is returned unchanged when already at
 // least that wide; an empty `fill` fails loudly when padding is needed (see
 // `pad_left`).
-pub fn center(var s: String, width: Int, fill: String) -> String:
+pub fn center(s: String, width: Int, fill: String) -> String:
     let len = string.char_count(s)
     if len >= width:
         s
@@ -261,7 +261,7 @@ pub fn center(var s: String, width: Int, fill: String) -> String:
 
 // Remove `prefix` from the front of `s` when present; otherwise return `s`
 // unchanged. The complement of the `starts_with` builtin.
-pub fn strip_prefix(var s: String, prefix: String) -> String:
+pub fn strip_prefix(s: String, prefix: String) -> String:
     if string.starts_with(s, prefix):
         string.substring(s, string.char_count(prefix), string.char_count(s))
     else:
@@ -269,7 +269,7 @@ pub fn strip_prefix(var s: String, prefix: String) -> String:
 
 // Remove `suffix` from the end of `s` when present; otherwise return `s`
 // unchanged. The complement of the `ends_with` builtin.
-pub fn strip_suffix(var s: String, suffix: String) -> String:
+pub fn strip_suffix(s: String, suffix: String) -> String:
     if string.ends_with(s, suffix):
         string.substring(s, 0, string.char_count(s) - string.char_count(suffix))
     else:
@@ -338,14 +338,14 @@ pub fn words(text: String) -> List(String):
     var out = []
     for w in string.split(c, " "):
         if string.length(w) > 0:
-            out = list.push(out, w)
+            list.push(out, w)
     out
 
 // Replace only the first occurrence of `from` with `to`; return `s` unchanged
 // when `from` is absent. An empty `from` matches nothing (the module-wide
 // empty-pattern rule: `count`/`index_of`/`last_index_of` treat it as absent).
 // (The `replace` builtin replaces every occurrence.)
-pub fn replace_first(var s: String, from: String, to: String) -> String:
+pub fn replace_first(s: String, from: String, to: String) -> String:
     let i = if is_empty(from): 0 - 1 else: find(s, from)
     if i < 0:
         s
@@ -470,7 +470,7 @@ fn is_space(c: String) -> Bool:
     c == " " || c == "\t" || c == "\n" || c == "\r"
 
 // Remove leading whitespace.
-pub fn trim_start(var s: String) -> String:
+pub fn trim_start(s: String) -> String:
     var i = 0
     let n = string.char_count(s)
     while i < n && is_space(char_or_empty(s, i)):
@@ -478,7 +478,7 @@ pub fn trim_start(var s: String) -> String:
     string.substring(s, i, n)
 
 // Remove trailing whitespace.
-pub fn trim_end(var s: String) -> String:
+pub fn trim_end(s: String) -> String:
     var j = string.char_count(s)
     while j > 0 && is_space(char_or_empty(s, j - 1)):
         j = j - 1

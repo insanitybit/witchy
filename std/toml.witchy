@@ -76,7 +76,7 @@ pub fn decode(text: String) -> Result(Toml, TomlDecodeError):
                 return Err(decode_error("duplicate TOML table `[" + id + "]`"))
             if let Some(conflict) = ns_prefix_collision(path, scalar_paths):
                 return Err(decode_error("`" + conflict + "` is already defined as a value, cannot redefine as a table"))
-            seen_tables = list.push(seen_tables, id)
+            list.push(seen_tables, id)
             section = path
             in_aot = false
         else if !(string.is_empty(t) || string.starts_with(t, "#")):
@@ -88,17 +88,17 @@ pub fn decode(text: String) -> Result(Toml, TomlDecodeError):
                         let id = "A" + "${aot_seq}" + "\n" + k
                         if list.contains(seen_keys, id):
                             return Err(decode_error("duplicate key `" + k + "` in `[[" + aot + "]]`"))
-                        seen_keys = list.push(seen_keys, id)
+                        list.push(seen_keys, id)
                         root = insert_into_last_aot(root, aot, k, value)
                     else:
                         let id = "S" + list.join(section, ".") + "\n" + k
                         if list.contains(seen_keys, id):
                             return Err(decode_error("duplicate key `" + k + "` in TOML"))
-                        seen_keys = list.push(seen_keys, id)
+                        list.push(seen_keys, id)
                         let full_path = if list.length(section) == 0: k else: list.join(section, ".") + "." + k
                         if list.contains(seen_tables, full_path):
                             return Err(decode_error("`" + full_path + "` is already defined as a table, cannot redefine as a value"))
-                        scalar_paths = list.push(scalar_paths, full_path)
+                        list.push(scalar_paths, full_path)
                         root = insert_kv(root, section, k, value)
                 None -> return Err(decode_error("`" + t + "` is not a TOML line (expected `key = value`, a `[section]` header, or a `#` comment)"))
     Ok(root)
@@ -115,7 +115,10 @@ fn ns_prefix_collision(path: List(String), scalars: List(String)) -> Option(Stri
 // if absent) — the effect of encountering a `[[key]]` header.
 fn append_aot_table(node: Toml, key: String) -> Toml:
     match node:
-        TomlTable(pairs) -> TomlTable(upsert(pairs, key, TomlArray(list.push(aot_array(pairs, key), TomlTable([])))))
+        TomlTable(pairs) ->
+            var tables = aot_array(pairs, key)
+            list.push(tables, TomlTable([]))
+            TomlTable(upsert(pairs, key, TomlArray(tables)))
         _ -> node
 
 // Insert `(kv_key -> value)` into the LAST table of the array-of-tables at `key`
@@ -144,11 +147,11 @@ fn update_last(arr: List(Toml), kv_key: String, value: Toml) -> List(Toml):
     for elem in arr:
         if i == last:
             if let TomlTable(pairs) = elem:
-                out = list.push(out, TomlTable(upsert(pairs, kv_key, value)))
+                list.push(out, TomlTable(upsert(pairs, kv_key, value)))
             else:
-                out = list.push(out, elem)
+                list.push(out, elem)
         else:
-            out = list.push(out, elem)
+            list.push(out, elem)
         i = i + 1
     out
 
@@ -164,7 +167,7 @@ fn header_path(name: String) -> Result(List(String), TomlDecodeError):
         if string.is_empty(s):
             return Err(decode_error("malformed TOML table header `" + name + "` (empty path segment)"))
         else:
-            out = list.push(out, unquote_key(s))
+            list.push(out, unquote_key(s))
     Ok(out)
 
 // Type a raw value string into a Toml leaf, or `Err` when the value is malformed
@@ -183,7 +186,7 @@ fn parse_value(raw: String) -> Result(Toml, TomlDecodeError):
         else:
             var elems = []
             for e in parse_array(v):
-                elems = list.push(elems, parse_value(e)?)
+                list.push(elems, parse_value(e)?)
             Ok(TomlArray(elems))
     else:
         let bare = unquote(v)
@@ -220,14 +223,15 @@ fn upsert(pairs: List((String, Toml)), key: String, value: Toml) -> List((String
     for p in pairs:
         let (k, _v) = p
         if k == key:
-            out = list.push(out, (key, value))
+            list.push(out, (key, value))
             found = true
         else:
-            out = list.push(out, p)
+            list.push(out, p)
     if found:
         out
     else:
         list.push(out, (key, value))
+        out
 
 // The existing sub-table at `head`, or a fresh empty one.
 fn subtable(pairs: List((String, Toml)), head: String) -> Toml:
@@ -246,7 +250,7 @@ fn drop_first(xs: List(String)) -> List(String):
     var i = 0
     for x in xs:
         if i > 0:
-            out = list.push(out, x)
+            list.push(out, x)
         i = i + 1
     out
 
@@ -283,7 +287,7 @@ pub fn table(text: String, section: String) -> List((String, String)):
             in_section = header_name(t) == section
         else if in_section:
             if let Some(pair) = key_value(t):
-                out = list.push(out, pair)
+                list.push(out, pair)
     out
 
 // Each `[[name]]` array-of-tables entry as its own block of body text — the lines
@@ -298,18 +302,18 @@ pub fn array_tables(text: String, name: String) -> List(String):
         let t = string.trim(line)
         if is_array_header(t) && array_header_name(t) == name:
             if collecting:
-                blocks = list.push(blocks, current)
+                list.push(blocks, current)
             current = ""
             collecting = true
         else if is_header(t):
             if collecting:
-                blocks = list.push(blocks, current)
+                list.push(blocks, current)
             current = ""
             collecting = false
         else if collecting:
             current = current + line + "\n"
     if collecting:
-        blocks = list.push(blocks, current)
+        list.push(blocks, current)
     blocks
 
 // Just the keys of `[section]` (unquoted), in file order.
@@ -317,7 +321,7 @@ pub fn keys(text: String, section: String) -> List(String):
     var out = []
     for pair in table(text, section):
         let (k, _v) = pair
-        out = list.push(out, k)
+        list.push(out, k)
     out
 
 // Read `key` from an inline table value like `{ path = "../money", version = "1" }`.
@@ -343,11 +347,12 @@ fn split_outside_quotes(s: String, sep: String) -> List(String):
             in_quotes = !in_quotes
             current = current + ch
         else if ch == sep && !in_quotes:
-            parts = list.push(parts, current)
+            list.push(parts, current)
             current = ""
         else:
             current = current + ch
     list.push(parts, current)
+    parts
 
 // (BUG-447) Split `s` at the FIRST `sep` that falls OUTSIDE double quotes,
 // returning `(before, after)` or `None` when no unquoted `sep` exists. Lets a
@@ -481,5 +486,5 @@ fn parse_array(raw: String) -> List(String):
     for part in split_outside_quotes(inner, ","):
         let t = string.trim(part)
         if !string.is_empty(t):
-            out = list.push(out, unquote(t))
+            list.push(out, unquote(t))
     out

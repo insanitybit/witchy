@@ -939,7 +939,7 @@
     #[test]
     fn rfc0087_value_returning_nonfirst_var_writes_back_on_both_backends() {
         let interp_std = |src: &str| interpreter::run_module(resolve_std_src(src), ".", Vec::new()).expect("run");
-        let src = "import list\n\nfn append_len(x: Int, var xs: List(Int)) -> Int:\n    xs = list.push(xs, x)\n    list.length(xs)\n\nfn main(console: Console):\n    var xs = [1]\n    let n = append_len(9, xs)\n    console.print(\"${xs}\")\n    console.print(\"${n}\")\n";
+        let src = "import list\n\nfn append_len(x: Int, var xs: List(Int)) -> Int:\n    list.push(xs, x)\n    list.length(xs)\n\nfn main(console: Console):\n    var xs = [1]\n    let n = append_len(9, xs)\n    console.print(\"${xs}\")\n    console.print(\"${n}\")\n";
         let want = ["[1, 9]", "2"];
         assert_eq!(interp_std(src), want, "interpreter returns and writes back");
         assert_eq!(wasm_run(src), want, "compiled backend returns and writes back");
@@ -1004,33 +1004,20 @@
         assert_eq!(wasm_run(src), want, "compiled function-value write-back");
     }
 
-    /// (RFC-0064 Check 3, parity) A discarded non-`Nil` FREE call in statement
-    /// position is the same discard error the method form already raised — a free
-    /// call does not write back. `list.push(xs, 2)` as a bare statement (the
-    /// BUG-209 headline), a user mutator called free-form, and any non-`Nil` free
-    /// call all reject at the shared gate; `let _ =` is the escape hatch.
+    /// RFC-0087: a resolved `var` call may discard its independent ordinary result
+    /// in statement position and still writes back. Non-`var`, non-`Nil` calls keep
+    /// the ordinary discarded-result error.
     #[test]
-    fn rfc0064_discarded_free_call_rejected_on_both_backends() {
-        // The discard classifier lives in the trait/method rewrite pass; that pass
-        // runs whenever the linked module "needs lowering", which every real
-        // program does once std is bundled (std is full of method calls). So link
-        // the whole set with `resolve_std_src` — the exact module both backends
-        // lower — and check it: a `check` error is refused identically by both.
+    fn rfc0087_var_free_call_may_discard_result_on_both_backends() {
         let check_err = |src: &str| typeck::check(&resolve_std_src(src)).expect_err("a discarded free call is an error").message;
-        // The BUG-209 headline: a documented std mutator called in FREE form.
         let std_mut = "import list\n\nfn main(console: Console):\n    var xs: List(Int) = []\n    list.push(xs, 2)\n    console.print(\"${xs}\")\n";
-        assert!(check_err(std_mut).contains("is discarded"), "std mutator free-call must be discarded");
-        // A user mutator called free-form: its return (the write-back) is thrown away.
-        let user_mut = "import list\n\nfn add(var xs: List(Int), x: Int) -> List(Int):\n    list.push(xs, x)\nfn main(console: Console):\n    var xs: List(Int) = []\n    add(xs, 2)\n    console.print(\"${xs}\")\n";
-        assert!(check_err(user_mut).contains("is discarded"), "user mutator free-call must be discarded");
-        // ANY non-`Nil` free call (not only mutators) whose result is discarded.
-        let non_mut = "import list\n\nfn double(n: Int) -> Int:\n    n * 2\nfn main(console: Console):\n    var xs: List(Int) = []\n    xs = list.push(xs, 1)\n    double(3)\n    console.print(\"${xs}\")\n";
+        let user_mut = "import list\n\nfn add(var xs: List(Int), x: Int) -> Int:\n    list.push(xs, x)\n    list.length(xs)\nfn main(console: Console):\n    var xs: List(Int) = []\n    add(xs, 2)\n    console.print(\"${xs}\")\n";
+        for src in [std_mut, user_mut] {
+            assert_eq!(link_run(src), ["[2]"], "interpreter commits discarded var call");
+            assert_eq!(wasm_run(src), ["[2]"], "compiled backend commits discarded var call");
+        }
+        let non_mut = "fn double(n: Int) -> Int:\n    n * 2\nfn main(console: Console):\n    double(3)\n    console.print(\"bad\")\n";
         assert!(check_err(non_mut).contains("is discarded"), "non-mutator free-call must be discarded");
-        // `let _ = …` is the explicit-discard escape; it runs identically on both.
-        let interp_std = |src: &str| interpreter::run_module(resolve_std_src(src), ".", Vec::new()).expect("run");
-        let ok = "import list\n\nfn main(console: Console):\n    var xs: List(Int) = []\n    xs.push(1)\n    let _ = list.push(xs, 2)\n    console.print(\"${xs}\")\n";
-        assert_eq!(interp_std(ok), ["[1]"], "interp accepts the explicit discard (no write-back)");
-        assert_eq!(wasm_run(ok), ["[1]"], "compiled accepts the explicit discard (no write-back)");
     }
 
     /// (BUG-341) A type error in comptime-EMITTED code must report a real, in-file
@@ -23536,7 +23523,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     fn rfc0087_former_row3_shapes_write_back_on_both_backends() {
         let non_first = "import list\n\
                          fn foo(x: Int, var xs: List(Int)) -> List(Int):\n\
-                         \x20   xs = list.push(xs, x)\n\
+                         \x20   list.push(xs, x)\n\
                          \x20   xs\n\
                          fn main(console: Console):\n\
                          \x20   var xs = [1]\n\
@@ -23567,7 +23554,7 @@ pub fn serve(console: Console, net: Net) -> Int:
     fn rfc0087_elided_var_result_writes_back_on_both_backends() {
         let elided = "import list\n\
                       fn bump(var xs: List(Int), by: Int):\n\
-                      \x20   xs = list.push(xs, by)\n\
+                      \x20   list.push(xs, by)\n\
                       \x20   list.length(xs)\n\
                       fn main(console: Console):\n\
                       \x20   var xs = [1, 2, 3]\n\
@@ -23579,47 +23566,37 @@ pub fn serve(console: Console, net: Net) -> Int:
         assert_eq!(wasm_run(elided), want, "compiled inferred return");
     }
 
-    /// (RFC-0064 Check 3) A discarded non-Nil FREE call in statement position is a
-    /// discard error too — `list.push(xs, 2)` as a statement (a free call does not
-    /// write back), and a user mutator called free-form. `let _ =` remains the
-    /// explicit-discard escape (the call runs, the receiver is untouched). The
-    /// discard error is surfaced at the shared gate, so both backends reject.
+    /// RFC-0087's discard rule depends on the resolved `var` convention, not call
+    /// syntax. Free and method calls both commit write-back when their result is
+    /// discarded explicitly or implicitly.
     #[test]
-    fn rfc0064_discarded_free_call_is_an_error() {
-        // `list.push(xs, 2)` free-form as a statement.
+    fn rfc0087_discard_rule_is_effect_based() {
         let free_std = "import list\n\
                         fn main(console: Console):\n\
                         \x20   var xs = [1, 2, 3]\n\
                         \x20   list.push(xs, 2)\n\
                         \x20   console.print(\"${xs}\")\n";
-        // A user mutator called free-form as a statement.
         let free_user = "import list\n\
-                         fn bump(var xs: List(Int), by: Int) -> List(Int):\n\
+                         fn bump(var xs: List(Int), by: Int) -> Int:\n\
                          \x20   xs.push(by)\n\
+                         \x20   list.length(xs)\n\
                          fn main(console: Console):\n\
                          \x20   var xs = [1, 2, 3]\n\
                          \x20   bump(xs, 5)\n\
                          \x20   console.print(\"${xs}\")\n";
-        for (src, method) in [(free_std, "push"), (free_user, "bump")] {
-            let linked = resolve_std_src(src);
-            let err = typeck::check(&linked)
-                .expect_err("a discarded non-Nil free call must be a compile error")
-                .to_string();
-            assert!(
-                err.contains(&format!("result of `{method}` is discarded")),
-                "the free-call discard error must name the callee, got: {err}"
-            );
+        for (src, want) in [(free_std, "[1, 2, 3, 2]"), (free_user, "[1, 2, 3, 5]")] {
+            assert_eq!(link_run(src), [want], "interpreter commits free var call");
+            assert_eq!(wasm_run(src), [want], "compiled backend commits free var call");
         }
 
-        // `let _ =` escapes: the free call runs, but does NOT write back.
         let escaped = "import list\n\
                        fn main(console: Console):\n\
                        \x20   var xs = [1, 2, 3]\n\
                        \x20   let _ = list.push(xs, 2)\n\
                        \x20   console.print(\"${xs}\")\n";
-        let want = vec!["[1, 2, 3]".to_string()];
-        assert_eq!(link_run(escaped), want, "interpreter: free call does not write back");
-        assert_eq!(wasm_run(escaped), want, "compiled: free call does not write back");
+        let want = vec!["[1, 2, 3, 2]".to_string()];
+        assert_eq!(link_run(escaped), want, "interpreter explicit discard still writes back");
+        assert_eq!(wasm_run(escaped), want, "compiled explicit discard still writes back");
     }
 
     /// (RFC-0049) `dict.set_at` is deleted; the `d[k] = v` place-assign sugar is

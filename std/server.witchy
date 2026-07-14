@@ -189,7 +189,10 @@ pub fn redirect(location: String) -> Response:
 // case-insensitive on the wire, and rendering emits the lowercase form.
 pub fn with_header(resp: Response, name: String, value: String) -> Response:
     match resp:
-        Response(code, hdrs, body) -> Response(code, list.push(hdrs, (string.to_lower(name), value)), body)
+        Response(code, hdrs, body) ->
+            var headers = hdrs
+            list.push(headers, (string.to_lower(name), value))
+            Response(code, headers, body)
 
 // Return `resp` with its status code replaced.
 pub fn with_status(resp: Response, code: Int) -> Response:
@@ -212,7 +215,10 @@ pub fn router() -> Router:
 
 pub fn route(r: Router, m: String, p: String, h: fn(Request) -> Response) -> Router:
     match r:
-        Router(routes, layers) -> Router(list.push(routes, Route(m, p, h)), layers)
+        Router(routes, layers) ->
+            var next_routes = routes
+            list.push(next_routes, Route(m, p, h))
+            Router(next_routes, layers)
 
 // The fluent surface: real METHODS on Router (`router().get(...).post(...)`),
 // each returning the extended Router.
@@ -258,7 +264,10 @@ impl Router:
     pub fn layer(self, mw: fn(fn(Request) -> Response) -> fn(Request) -> Response) -> Router:
         // Add a tower-style middleware layer wrapping the whole dispatch.
         match self:
-            Router(routes, layers) -> Router(routes, list.push(layers, mw))
+            Router(routes, layers) ->
+                var next_layers = layers
+                list.push(next_layers, mw)
+                Router(routes, next_layers)
 
 // ---- Dispatch + path matching ----
 fn dispatch(routes: List(Route)) -> fn(Request) -> Response:
@@ -321,7 +330,7 @@ fn split_path(p: String) -> List(String):
     var out = []
     for seg in string.split(p, "/"):
         if seg != "":
-            out = list.push(out, percent_decode(seg, false))
+            list.push(out, percent_decode(seg, false))
     out
 
 fn match_segs(pat: List(String), segs: List(String), acc: List((String, String))) -> Option(List((String, String))):
@@ -333,13 +342,17 @@ fn match_segs(pat: List(String), segs: List(String), acc: List((String, String))
     else:
         let ps = list.at(pat, 0)
         if string.starts_with(ps, "*"):
-            Some(list.push(acc, (string.substring(ps, 1, string.char_count(ps)), join_segs(segs))))
+            var out = acc
+            list.push(out, (string.substring(ps, 1, string.char_count(ps)), join_segs(segs)))
+            Some(out)
         else if list.length(segs) == 0:
             None
         else:
             let seg = list.at(segs, 0)
             if string.starts_with(ps, ":"):
-                match_segs(rest(pat), rest(segs), list.push(acc, (string.substring(ps, 1, string.char_count(ps)), seg)))
+                var out = acc
+                list.push(out, (string.substring(ps, 1, string.char_count(ps)), seg))
+                match_segs(rest(pat), rest(segs), out)
             else if ps == seg:
                 match_segs(rest(pat), rest(segs), acc)
             else:
@@ -349,7 +362,7 @@ fn rest(xs: List(a)) -> List(a):
     var out = []
     var i = 1
     while i < list.length(xs):
-        out = list.push(out, list.at(xs, i))
+        list.push(out, list.at(xs, i))
         i = i + 1
     out
 
@@ -387,9 +400,8 @@ fn read_headers(sock: Socket) -> List((String, String)):
         if line == "":
             done = true
         else:
-            hdrs = match parse_header_line(line):
-                Some(hv) -> list.push(hdrs, hv)
-                None -> hdrs
+            if let Some(hv) = parse_header_line(line):
+                list.push(hdrs, hv)
 
     hdrs
 
@@ -422,9 +434,8 @@ pub fn parse_request(raw: String) -> Result(Request, RequestParseError):
             var headers = []
             var i = 1
             while i < list.length(lines):
-                headers = match parse_header_line(list.at(lines, i)):
-                    Some(hv) -> list.push(headers, hv)
-                    None -> headers
+                if let Some(hv) = parse_header_line(list.at(lines, i)):
+                    list.push(headers, hv)
 
                 i = i + 1
             match framed_length(headers):
@@ -492,9 +503,9 @@ fn parse_query(q: String) -> List((String, String)):
                 if eq >= 0:
                     let k = percent_decode(string.substring(pair, 0, eq), true)
                     let v = percent_decode(string.substring(pair, eq + 1, string.char_count(pair)), true)
-                    out = list.push(out, (k, v))
+                    list.push(out, (k, v))
                 else:
-                    out = list.push(out, (percent_decode(pair, true), ""))
+                    list.push(out, (percent_decode(pair, true), ""))
         out
 
 // Percent-decode `s` (RFC 3986): each `%XX` becomes the byte it names, and — when

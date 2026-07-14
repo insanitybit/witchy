@@ -49,5 +49,5 @@ pub fn serve(init: Bytes, requests: List(Bytes), handler: fn(Bytes, Bytes) -> By
     var out = []
     for req in requests:
         state = handler(state, req)
-        out = list.push(out, state)
+        list.push(out, state)
     out

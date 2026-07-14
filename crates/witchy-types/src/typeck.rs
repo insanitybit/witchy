@@ -2120,7 +2120,8 @@ fn float_key_position(t: &Ty) -> Option<FloatKeyKind> {
 /// argument unification.
 fn dict_key_op_index(name: &str) -> Option<usize> {
     match name {
-        "dict.insert" | "dict.get_or" | "dict.at" | "dict.update" | "dict.contains_key" | "dict.remove" => {
+        "dict.insert" | "dict.__insert" | "dict.get_or" | "dict.at" | "dict.update"
+        | "dict.__update" | "dict.contains_key" | "dict.remove" | "dict.__remove" => {
             Some(1)
         }
         _ => None,
@@ -3618,7 +3619,7 @@ impl Checker {
                 let elem = self.fresh();
                 Some((vec![Ty::List(Box::new(elem.clone())), Ty::Int], elem))
             }
-            "list.push" => {
+            "list.__push" => {
                 let elem = self.fresh();
                 Some((
                     vec![Ty::List(Box::new(elem.clone())), elem.clone()],
@@ -3637,7 +3638,7 @@ impl Checker {
                 let v = self.fresh();
                 Some((vec![], Ty::Named("Dict".into(), vec![k, v])))
             }
-            "dict.insert" => {
+            "dict.__insert" => {
                 let k = self.fresh();
                 let v = self.fresh();
                 let d = Ty::Named("Dict".into(), vec![k.clone(), v.clone()]);
@@ -3658,7 +3659,7 @@ impl Checker {
             // dict.update(dict, key, default, f) -> dict: a single-lookup upsert. `f`
             // maps the current value (or `default` when the key is absent) to the
             // new value — like Go's `m[k]++` in one operation.
-            "dict.update" => {
+            "dict.__update" => {
                 let k = self.fresh();
                 let v = self.fresh();
                 let d = Ty::Named("Dict".into(), vec![k.clone(), v.clone()]);
@@ -3675,7 +3676,7 @@ impl Checker {
                 let d = Ty::Named("Dict".into(), vec![k.clone(), v]);
                 Some((vec![d, k], Ty::Bool))
             }
-            "dict.remove" => {
+            "dict.__remove" => {
                 let k = self.fresh();
                 let v = self.fresh();
                 let d = Ty::Named("Dict".into(), vec![k.clone(), v]);
@@ -7175,9 +7176,9 @@ fn pattern_dup_binding(p: &Pattern) -> Option<String> {
 pub fn intrinsic(name: &str) -> bool {
     matches!(
         name,
-        "list.push" | "list.at" | "list.length" | "list.concat"
-            | "dict.new" | "dict.insert" | "dict.get_or" | "dict.at" | "dict.contains_key" | "dict.remove"
-            | "dict.update" | "dict.keys" | "dict.values" | "dict.pairs" | "dict.length"
+        "list.__push" | "list.at" | "list.length" | "list.concat"
+            | "dict.new" | "dict.__insert" | "dict.get_or" | "dict.at" | "dict.contains_key" | "dict.__remove"
+            | "dict.__update" | "dict.keys" | "dict.values" | "dict.pairs" | "dict.length"
             | "string.split" | "string.trim" | "string.contains" | "string.starts_with"
             | "string.ends_with" | "string.replace" | "string.find" | "string.substring"
             | "string.length" | "string.char_count" | "string.chars" | "string.to_upper"

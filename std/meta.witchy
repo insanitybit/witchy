@@ -52,7 +52,7 @@ pub fn item(source: String) -> ItemSyntax:
 pub fn item_join(parts: List(String), holes: List(ExprSyntax)) -> ItemSyntax:
     var syntax_holes = []
     for hole in holes:
-        syntax_holes = list.push(syntax_holes, expr_hole(hole))
+        list.push(syntax_holes, expr_hole(hole))
     item_join_syntax(parts, syntax_holes)
 
 // Join parser-checked item quote fragments with typed syntax holes.
@@ -157,7 +157,7 @@ pub fn type_fn_with_conventions(params: List(TypeSyntax), conventions: List(Stri
             "own" -> "own "
             _ -> ""
 
-        rendered = list.push(rendered, prefix + type_syntax_source(param))
+        list.push(rendered, prefix + type_syntax_source(param))
         i = i + 1
     TypeSyntax("fn(" + list.join(rendered, ", ") + ") -> " + type_syntax_source(ret))
 
@@ -208,7 +208,7 @@ fn type_syntax_source(ty: TypeSyntax) -> String:
 fn type_syntax_sources(types: List(TypeSyntax)) -> List(String):
     var out = []
     for ty in types:
-        out = list.push(out, type_syntax_source(ty))
+        list.push(out, type_syntax_source(ty))
     out
 
 // Source-backed expression syntax. These constructors make the shape explicit
@@ -257,7 +257,7 @@ fn expr_source(expr: ExprSyntax) -> String:
 fn expr_sources(exprs: List(ExprSyntax)) -> List(String):
     var out = []
     for expr in exprs:
-        out = list.push(out, expr_source(expr))
+        list.push(out, expr_source(expr))
     out
 
 // Source-backed pattern syntax. Patterns share validated identifiers with
@@ -307,12 +307,13 @@ pub fn pattern_list(patterns: List(PatternSyntax)) -> PatternSyntax:
 
 // A list pattern with `..` or `..rest`.
 pub fn pattern_list_rest(patterns: List(PatternSyntax), rest: Option(Ident)) -> PatternSyntax:
-    let parts = pattern_sources(patterns)
+    var parts = pattern_sources(patterns)
     let tail = match rest:
         Some(name) -> ".." + ident_source(name)
         None -> ".."
 
-    PatternSyntax("[" + list.join(list.push(parts, tail), ", ") + "]")
+    list.push(parts, tail)
+    PatternSyntax("[" + list.join(parts, ", ") + "]")
 
 // An or-pattern. Every alternative must bind the same names when type-checked.
 pub fn pattern_or(patterns: List(PatternSyntax)) -> PatternSyntax:
@@ -345,7 +346,7 @@ fn pattern_source(pattern: PatternSyntax) -> String:
 fn pattern_sources(patterns: List(PatternSyntax)) -> List(String):
     var out = []
     for pattern in patterns:
-        out = list.push(out, pattern_source(pattern))
+        list.push(out, pattern_source(pattern))
     out
 
 pub fn expr_hole(expr: ExprSyntax) -> SyntaxHole:
@@ -392,7 +393,7 @@ fn match_arm_source(arm: MatchArmSyntax) -> String:
 fn match_arm_sources(arms: List(MatchArmSyntax)) -> List(String):
     var out = []
     for arm in arms:
-        out = list.push(out, match_arm_source(arm))
+        list.push(out, match_arm_source(arm))
     out
 
 // Source-backed statement and block syntax. These are still text at the
@@ -423,7 +424,7 @@ pub fn stmt_raw(source: String) -> StmtSyntax:
 pub fn stmt_join(parts: List(String), holes: List(ExprSyntax)) -> StmtSyntax:
     var syntax_holes = []
     for hole in holes:
-        syntax_holes = list.push(syntax_holes, expr_hole(hole))
+        list.push(syntax_holes, expr_hole(hole))
     stmt_join_syntax(parts, syntax_holes)
 
 // Join parser-checked statement quote fragments with typed syntax holes.
@@ -452,7 +453,7 @@ pub fn block_raw(source: String) -> BlockSyntax:
 pub fn block_join(parts: List(String), holes: List(ExprSyntax)) -> BlockSyntax:
     var syntax_holes = []
     for hole in holes:
-        syntax_holes = list.push(syntax_holes, expr_hole(hole))
+        list.push(syntax_holes, expr_hole(hole))
     block_join_syntax(parts, syntax_holes)
 
 // Join parser-checked block quote fragments with typed syntax holes.
@@ -468,9 +469,11 @@ pub fn block_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> BlockS
     BlockSyntax(out)
 
 fn block_lines(stmts: List(StmtSyntax), tail: Option(ExprSyntax)) -> List(String):
-    let lines = stmt_sources(stmts)
+    var lines = stmt_sources(stmts)
     match tail:
-        Some(expr) -> list.push(lines, expr_source(expr))
+        Some(expr) ->
+            list.push(lines, expr_source(expr))
+            lines
         None -> lines
 
 fn block_source(body: BlockSyntax) -> String:
@@ -484,13 +487,13 @@ fn stmt_source(stmt: StmtSyntax) -> String:
 fn stmt_sources(stmts: List(StmtSyntax)) -> List(String):
     var out = []
     for stmt in stmts:
-        out = list.push(out, stmt_source(stmt))
+        list.push(out, stmt_source(stmt))
     out
 
 fn indent(source: String) -> String:
     var out = []
     for line in string.split(source, "\n"):
-        out = list.push(out, "    " + line)
+        list.push(out, "    " + line)
     list.join(out, "\n")
 
 // A function parameter and function item constructors. The single-expression
@@ -505,7 +508,7 @@ fn param_source(param: ParamSyntax) -> String:
 fn param_sources(params: List(ParamSyntax)) -> List(String):
     var out = []
     for p in params:
-        out = list.push(out, param_source(p))
+        list.push(out, param_source(p))
     out
 
 pub fn function(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: ExprSyntax) -> ItemSyntax:
@@ -576,13 +579,13 @@ fn where_each(params: List(String), trait_name: String) -> String:
     else:
         var bounds = []
         for p in params:
-            bounds = list.push(bounds, p + ": " + trait_name)
+            list.push(bounds, p + ": " + trait_name)
         " where " + list.join(bounds, ", ")
 
 fn type_sources(types: List(TypeExpr)) -> List(String):
     var out = []
     for ty in types:
-        out = list.push(out, type_source(ty))
+        list.push(out, type_source(ty))
     out
 
 fn function_type_sources(types: List(TypeExpr), conventions: List(String)) -> List(String):
@@ -595,7 +598,7 @@ fn function_type_sources(types: List(TypeExpr), conventions: List(String)) -> Li
             "own" -> "own "
             _ -> ""
 
-        out = list.push(out, prefix + type_source(ty))
+        list.push(out, prefix + type_source(ty))
         i = i + 1
     out
 
@@ -628,7 +631,7 @@ fn derive_show_source(t: TypeInfo) -> String:
         _ ->
             var arms = []
             for v in t.variants:
-                arms = list.push(arms, variant_show_arm(v))
+                list.push(arms, variant_show_arm(v))
             head + "        match self:\n" + list.join(arms, "\n") + "\n"
 
 // The rendered body of a record's `show`: `"Name"` for a defensive empty-field
@@ -639,7 +642,7 @@ fn record_show_body(name: String, fields: List(FieldInfo)) -> String:
     else:
         var parts = []
         for f in fields:
-            parts = list.push(parts, "show(self." + f.name + ")")
+            list.push(parts, "show(self." + f.name + ")")
         "\"" + name + "(\" + " + list.join(parts, " + \", \" + ") + " + \")\""
 
 // One arm of a sum type's `show`: bind the variant's payloads and render them
@@ -649,8 +652,8 @@ fn variant_show_arm(v: VariantInfo) -> String:
     var parts = []
     var i = 0
     for _ft in v.field_type_exprs:
-        pats = list.push(pats, "p${i}")
-        parts = list.push(parts, "show(p${i})")
+        list.push(pats, "p${i}")
+        list.push(parts, "show(p${i})")
         i = i + 1
     var selfpat = v.name
     if list.length(pats) > 0:
@@ -680,7 +683,7 @@ fn derive_partial_eq_source(t: TypeInfo) -> String:
         _ ->
             var arms = []
             for v in t.variants:
-                arms = list.push(arms, variant_eq_arm(v))
+                list.push(arms, variant_eq_arm(v))
             head + "        match self:\n" + list.join(arms, "\n") + "\n"
 
 // The `&&`-chained field comparison of a record's `eq`, or `true` for a
@@ -691,7 +694,7 @@ fn record_eq_body(fields: List(FieldInfo)) -> String:
     else:
         var terms = []
         for f in fields:
-            terms = list.push(terms, "self." + f.name + " == other." + f.name)
+            list.push(terms, "self." + f.name + " == other." + f.name)
         list.join(terms, " && ")
 
 // One arm of a sum type's `eq`: match `other` against the same variant, compare
@@ -702,9 +705,9 @@ fn variant_eq_arm(v: VariantInfo) -> String:
     var terms = []
     var i = 0
     for _ft in v.field_type_exprs:
-        pats = list.push(pats, "p${i}")
-        opats = list.push(opats, "o${i}")
-        terms = list.push(terms, "p${i} == o${i}")
+        list.push(pats, "p${i}")
+        list.push(opats, "o${i}")
+        list.push(terms, "p${i} == o${i}")
         i = i + 1
     var selfpat = v.name
     var otherpat = v.name
@@ -740,7 +743,7 @@ fn derive_reflect_source(t: TypeInfo) -> String:
     if let TypeRecord = t.kind:
         var pairs = []
         for f in t.fields:
-            pairs = list.push(pairs, "(\"" + f.name + "\", " + reflect_call(f.type_expr, "self." + f.name) + ")")
+            list.push(pairs, "(\"" + f.name + "\", " + reflect_call(f.type_expr, "self." + f.name) + ")")
         head + "        reflect.MRecord(\"" + t.name + "\", [" + list.join(pairs, ", ") + "])\n"
     else:
         var arms = []
@@ -750,13 +753,13 @@ fn derive_reflect_source(t: TypeInfo) -> String:
             var i = 0
             for ft in v.field_type_exprs:
                 let pv = "p${i}"
-                pats = list.push(pats, pv)
-                refls = list.push(refls, reflect_call(ft, pv))
+                list.push(pats, pv)
+                list.push(refls, reflect_call(ft, pv))
                 i = i + 1
             var pat = v.name
             if list.length(pats) > 0:
                 pat = v.name + "(" + list.join(pats, ", ") + ")"
-            arms = list.push(arms, "            " + pat + " -> reflect.MVariant(\"" + t.name + "\", \"" + v.name + "\", [" + list.join(refls, ", ") + "])")
+            list.push(arms, "            " + pat + " -> reflect.MVariant(\"" + t.name + "\", \"" + v.name + "\", [" + list.join(refls, ", ") + "])")
         head + "        match self:\n" + list.join(arms, "\n") + "\n"
 
 // The lexicographic body for `derive(Ord)`: compare fields in declaration order
@@ -845,8 +848,8 @@ fn derive_deserialize_source(t: TypeInfo) -> String:
     var i = 0
     for f in t.fields:
         let local = "__field${i}"
-        lets = list.push(lets, "        let " + local + " = " + json_decode_field(f.type_expr, "__j", f.name) + "\n")
-        names = list.push(names, local)
+        list.push(lets, "        let " + local + " = " + json_decode_field(f.type_expr, "__j", f.name) + "\n")
+        list.push(names, local)
         i = i + 1
     let from_json = "    fn from_json(__j: json.Json) -> Result(Self, json.DeserializeError):\n" + list.join(lets, "") + "        Ok(" + t.name + "(" + list.join(names, ", ") + "))\n"
     // The generated body makes module-qualified calls (json.*, list.map, result.all);

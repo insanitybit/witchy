@@ -1371,7 +1371,9 @@ impl<'types> Codegen<'types> {
     /// v)` gives it from `v`; a Dict variable carries its tracked type.
     fn dict_value_valtype_of(&self, value: &Expr) -> Option<ValType> {
         match value {
-            Expr::Call { name, args } if name == "dict.insert" && args.len() == 3 => {
+            Expr::Call { name, args }
+                if matches!(name.as_str(), "dict.insert" | "dict.__insert") && args.len() == 3 =>
+            {
                 match self.val_type_of(&args[2]) {
                     ValType::Other => None,
                     vt => Some(vt),
@@ -1395,7 +1397,9 @@ impl<'types> Codegen<'types> {
     /// tracked key type), so `pairs(d)` destructures the key slot correctly.
     fn dict_key_valtype_of(&self, value: &Expr) -> Option<ValType> {
         match value {
-            Expr::Call { name, args } if name == "dict.insert" && args.len() == 3 => {
+            Expr::Call { name, args }
+                if matches!(name.as_str(), "dict.insert" | "dict.__insert") && args.len() == 3 =>
+            {
                 match self.val_type_of(&args[1]) {
                     ValType::Other => None,
                     vt => Some(vt),
@@ -3539,7 +3543,7 @@ impl<'types> Codegen<'types> {
                                         {
                                             match vexpr {
                                                 Expr::Call { name: pn, args: pa }
-                                                    if pn == "list.push" && pa.len() == 2 =>
+                                                    if matches!(pn.as_str(), "list.push" | "list.__push") && pa.len() == 2 =>
                                                 {
                                                     match &pa[0] {
                                                         Expr::Field { base, field }
@@ -7025,7 +7029,7 @@ impl<'types> Codegen<'types> {
             }
         }
         if let Expr::Call { name, args } = e {
-            if name == "dict.insert" && args.len() == 3 {
+            if matches!(name.as_str(), "dict.insert" | "dict.__insert") && args.len() == 3 {
                 return Some(EqShape::Dict(
                     Box::new(EqShape::scalar(self.val_type_of(&args[1]))?),
                     Box::new(self.eq_operand_shape(&args[2])?),
@@ -7150,7 +7154,11 @@ impl<'types> Codegen<'types> {
                     || self.local_dict_value_valtype.contains_key(v)
             }
             Expr::Call { name, .. } => {
-                matches!(name.as_str(), "dict.new" | "dict.insert" | "dict.remove" | "dict.update")
+                matches!(
+                    name.as_str(),
+                    "dict.new" | "dict.insert" | "dict.__insert" | "dict.remove"
+                        | "dict.__remove" | "dict.update" | "dict.__update"
+                )
             }
             _ => false,
         }

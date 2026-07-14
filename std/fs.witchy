@@ -43,7 +43,7 @@ pub fn collect_files(root: Dir, path: String, rel: String, ext: String) -> List(
             let child_rel = if string.is_empty(rel): entry else: rel + "/" + entry
             if root.is_dir(child):
                 for f in collect_files(root, child, child_rel, ext):
-                    out = list.push(out, f)
+                    list.push(out, f)
             else if string.ends_with(entry, ext):
-                out = list.push(out, (child_rel, root.read(child)))
+                list.push(out, (child_rel, root.read(child)))
     out

@@ -32,33 +32,40 @@ pub fn new() -> Set(a):
 pub fn from_list(xs: List(a)) -> Set(a) where a: Eq:
     var s = new()
     for x in xs:
-        s = insert(s, x)
+        insert(s, x)
     s
 
-// `s` with `x` added (a no-op if already present).
-pub fn insert(var s: Set(a), x: a) -> Set(a) where a: Eq:
+// Add `x`, returning whether it was newly inserted.
+pub fn insert(var s: Set(a), x: a) -> Bool where a: Eq:
     let items = s.items
     if list.contains(items, x):
-        s
+        false
     else:
-        Set(list.push(items, x))
+        var out = items
+        list.push(out, x)
+        s = Set(out)
+        true
 
-// `s` with `x` removed (a no-op if absent).
-pub fn remove(var s: Set(a), x: a) -> Set(a) where a: Eq:
+// Remove `x`, returning whether it was present.
+pub fn remove(var s: Set(a), x: a) -> Bool where a: Eq:
     let items = s.items
     var out = []
+    var removed = false
     for y in items:
-        if !list.contains([x], y):
-            out = list.push(out, y)
-    Set(out)
+        if !removed && y == x:
+            removed = true
+        else:
+            list.push(out, y)
+    s = Set(out)
+    removed
 
 // Real methods mirror the primary mutator surface while the module functions
 // remain as stable, first-class values.
 impl Set(a) where a: Eq:
-    pub fn insert(var self, x: a) -> Set(a):
+    pub fn insert(var self, x: a) -> Bool:
         insert(self, x)
 
-    pub fn remove(var self, x: a) -> Set(a):
+    pub fn remove(var self, x: a) -> Bool:
         remove(self, x)
 
 // Whether `x` is a member of `s`.
@@ -83,7 +90,7 @@ pub fn union(s: Set(a), t: Set(a)) -> Set(a) where a: Eq:
     let titems = t.items
     var out = s
     for x in titems:
-        out = insert(out, x)
+        insert(out, x)
     out
 
 // The members in both sets.
@@ -93,7 +100,7 @@ pub fn intersection(s: Set(a), t: Set(a)) -> Set(a) where a: Eq:
     var out = []
     for x in sitems:
         if list.contains(titems, x):
-            out = list.push(out, x)
+            list.push(out, x)
     Set(out)
 
 // The members of `s` that are not in `t`.
@@ -103,7 +110,7 @@ pub fn difference(s: Set(a), t: Set(a)) -> Set(a) where a: Eq:
     var out = []
     for x in sitems:
         if !list.contains(titems, x):
-            out = list.push(out, x)
+            list.push(out, x)
     Set(out)
 
 // The members in exactly one of the two sets.
@@ -113,10 +120,10 @@ pub fn symmetric_difference(s: Set(a), t: Set(a)) -> Set(a) where a: Eq:
     var out = []
     for x in sitems:
         if !list.contains(titems, x):
-            out = list.push(out, x)
+            list.push(out, x)
     for y in titems:
         if !list.contains(sitems, y):
-            out = list.push(out, y)
+            list.push(out, y)
     Set(out)
 
 // Whether every member of `s` is also in `t`.

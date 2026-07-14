@@ -155,7 +155,11 @@ fn spawn_all_into(children: List(Task(Nil)), i: Int, hs: List(Handle)) -> Task(L
     if i >= list.length(children):
         done(hs)
     else:
-        and_then(spawn(list.at(children, i)), fn(h): spawn_all_into(children, i + 1, list.push(hs, h)))
+        and_then(spawn(list.at(children, i)), fn(h):
+            var next = hs
+            list.push(next, h)
+            spawn_all_into(children, i + 1, next)
+        )
 
 // Join every handle in `hs` while the executor can make progress. Like `join`,
 // quiescence releases a parked join even if a child has a continuation that will
@@ -209,7 +213,10 @@ fn recv_n_into(rx: Receiver(m), n: Int, acc: List(m)) -> Task(List(m)):
     else:
         and_then(recv(rx), fn(o):
             match o:
-                Some(x) -> recv_n_into(rx, n - 1, list.push(acc, x))
+                Some(x) ->
+                    var next = acc
+                    list.push(next, x)
+                    recv_n_into(rx, n - 1, next)
                 None -> done(acc)
         )
 
@@ -244,7 +251,10 @@ fn recv_each_into(rxs: List(Receiver(m)), i: Int, acc: List(m)) -> Task(List(m))
     else:
         and_then(recv(list.at(rxs, i)), fn(o):
             match o:
-                Some(x) -> recv_each_into(rxs, i + 1, list.push(acc, x))
+                Some(x) ->
+                    var next = acc
+                    list.push(next, x)
+                    recv_each_into(rxs, i + 1, next)
                 None -> recv_each_into(rxs, i + 1, acc)
         )
 
@@ -265,7 +275,11 @@ fn par_build_into(items: List(a), i: Int, f: fn(a) -> Task(m), jobs: List(Task(N
         and_then(channel(0), fn(pair):
             let (tx, rx) = pair
             let job = and_then(f(list.at(items, i)), fn(r): send(tx, r))
-            par_build_into(items, i + 1, f, list.push(jobs, job), list.push(rxs, rx))
+            var next_jobs = jobs
+            var next_rxs = rxs
+            list.push(next_jobs, job)
+            list.push(next_rxs, rx)
+            par_build_into(items, i + 1, f, next_jobs, next_rxs)
         )
 
 // STRUCTURED parallel map (the level-1 combinator): run `f` over every item of

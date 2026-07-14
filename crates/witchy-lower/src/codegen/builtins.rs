@@ -828,7 +828,7 @@ impl Codegen<'_> {
                     Self::wir_convert(self.lower_expr(&args[2])?, ek, Kind::I64),
                 ])
             }
-            ("list.push", 2) => {
+            ("list.__push", 2) => {
                 let xk = self.kind_of(&args[1]);
                 call("list_push", vec![
                     self.lower_expr(&args[0])?,
@@ -920,7 +920,7 @@ impl Codegen<'_> {
                 witchy_wir::wir::Kind::I32,
             ),
             // --- dict family: a key-mode i32 side-operand + slot conversions ---
-            ("dict.insert", 3) => {
+            ("dict.__insert", 3) => {
                 self.uses_dict = true;
                 let mode = self.dict_key_mode_wir(&args[1])?;
                 let kk = self.kind_of(&args[1]);
@@ -971,7 +971,7 @@ impl Codegen<'_> {
                     W::ConstI32(mode as i32),
                 ])
             }
-            ("dict.remove", 2) => {
+            ("dict.__remove", 2) => {
                 self.uses_dict = true;
                 let mode = self.dict_key_mode_wir(&args[1])?;
                 let kk = self.kind_of(&args[1]);
@@ -981,7 +981,7 @@ impl Codegen<'_> {
                     W::ConstI32(mode as i32),
                 ])
             }
-            ("dict.update", 4) => {
+            ("dict.__update", 4) => {
                 self.uses_dict = true;
                 self.uses_dict_update = true;
                 self.clos_arities.insert(1);

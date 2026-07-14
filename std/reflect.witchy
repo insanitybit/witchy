@@ -70,7 +70,7 @@ impl Reflect for String:
 pub fn reflect_bytes(b: Bytes) -> Mirror:
     var out = []
     for n in bytes.to_list(b):
-        out = list.push(out, MInt(n))
+        list.push(out, MInt(n))
     MList(out)
 
 impl Reflect for Bytes:
@@ -110,7 +110,7 @@ pub fn reflect_option(o: Option(a)) -> Mirror where a: Reflect:
 pub fn reflect_list(xs: List(a)) -> Mirror where a: Reflect:
     var out = []
     for x in xs:
-        out = list.push(out, reflect(x))
+        list.push(out, reflect(x))
     MList(out)
 
 // `List` and `Option` reflect through generic impls, so `reflect(x)` (and therefore
@@ -143,7 +143,7 @@ impl Reflect for Result(a, e) where a: Reflect, e: Reflect:
 pub fn reflect_set(s: Set(a)) -> Mirror where a: Reflect:
     var out = []
     for x in set.to_list(s):
-        out = list.push(out, reflect(x))
+        list.push(out, reflect(x))
     MList(out)
 
 impl Reflect for Set(a) where a: Reflect:
@@ -162,7 +162,7 @@ pub fn reflect_dict(d: Dict(k, v)) -> Mirror where k: Reflect, v: Reflect:
     var fields = []
     for pair in dict.pairs(d):
         let (key, val) = pair
-        fields = list.push(fields, (key_string(reflect_one(key)), reflect_one(val)))
+        list.push(fields, (key_string(reflect_one(key)), reflect_one(val)))
     MRecord("Dict", fields)
 
 // The string form of a reflected key: an `MString`'s raw text (unquoted, since it
@@ -286,11 +286,11 @@ fn hex_digit(v: Int) -> String:
 fn join_rendered(xs: List(Mirror)) -> String:
     var parts = []
     for m in xs:
-        parts = list.push(parts, render(m))
+        list.push(parts, render(m))
     list.join(parts, ", ")
 
 fn render_fields(fields: List((String, Mirror))) -> String:
     var parts = []
     for k, m in fields:
-        parts = list.push(parts, k + ": " + render(m))
+        list.push(parts, k + ": " + render(m))
     list.join(parts, ", ")

@@ -37,7 +37,7 @@ pub fn uncovered(declared: List(String), demanded: List(String)) -> List(String)
     var missing = []
     for cap in demanded:
         if !any_covers(declared, cap):
-            missing = list.push(missing, cap)
+            list.push(missing, cap)
     missing
 
 // A bracket-free capability ("Net") is the full authority of its kind.
@@ -60,7 +60,7 @@ pub fn rights_of(cap: String) -> List(String):
     for part in string.split(inner, ","):
         let r = string.trim(part)
         if !string.is_empty(r):
-            out = list.push(out, r)
+            list.push(out, r)
     out
 
 fn subset(xs: List(String), ys: List(String)) -> Bool:
@@ -83,7 +83,7 @@ fn net_verbs(markers: List(String)) -> List(String):
     var out = []
     for marker in markers:
         if is_net_verb(marker):
-            out = list.push(out, marker)
+            list.push(out, marker)
     if list.length(out) == 0:
         ["Connect", "Listen"]
     else:
@@ -93,7 +93,7 @@ fn net_transports(markers: List(String)) -> List(String):
     var out = []
     for marker in markers:
         if is_net_transport(marker):
-            out = list.push(out, marker)
+            list.push(out, marker)
     if list.length(out) == 0:
         ["Tcp", "Udp", "Uds"]
     else:
@@ -103,7 +103,7 @@ fn net_unknowns(markers: List(String)) -> List(String):
     var out = []
     for marker in markers:
         if !is_net_verb(marker) && !is_net_transport(marker):
-            out = list.push(out, marker)
+            list.push(out, marker)
     out
 
 fn is_net_verb(marker: String) -> Bool:

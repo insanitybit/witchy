@@ -70,7 +70,7 @@ fn show_one(x: a) -> String where a: Show:
 fn show_each(xs: List(a)) -> List(String) where a: Show:
     var parts = []
     for x in xs:
-        parts = list.push(parts, show(x))
+        list.push(parts, show(x))
     parts
 
 // A list renders as `[a, b, c]`, each element through its own `Show` — the same
@@ -105,7 +105,7 @@ impl Show for Dict(k, v) where k: Show, v: Show:
         let vs = show_each(val_elems)
         var parts = []
         for kk, vv in list.zip(ks, vs):
-            parts = list.push(parts, kk + ": " + vv)
+            list.push(parts, kk + ": " + vv)
         "{" + list.join(parts, ", ") + "}"
 
 // A set renders as `{a, b, c}` (members in insertion order), each through its

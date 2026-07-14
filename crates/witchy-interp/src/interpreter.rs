@@ -1467,7 +1467,7 @@ impl Interpreter {
         // (not in the pure builtin table) because it applies the updater closure
         // `f` to the current value — or `default` when the key is absent — which
         // needs the interpreter. Arguments are evaluated exactly once (above).
-        if name == "dict.update" && argvals.len() == 4 {
+        if name == "dict.__update" && argvals.len() == 4 {
             let Value::Dict(entries) = &argvals[0] else {
                 return err("update expects a Dict as its first argument");
             };
@@ -1940,7 +1940,7 @@ impl Interpreter {
             },
             // Return a new list with `x` appended (lists are values, so this does
             // not mutate the original).
-            "list.push" => match args {
+            "list.__push" => match args {
                 [Value::List(items), x] => {
                     let mut out = items.clone();
                     out.push(x.clone());
@@ -1963,7 +1963,7 @@ impl Interpreter {
                 _ => err("dict_new takes no arguments"),
             },
             // Return a new dict with `k` set to `v` (replacing any existing entry).
-            "dict.insert" => match args {
+            "dict.__insert" => match args {
                 [Value::Dict(entries), k, v] => {
                     let mut out = entries.clone();
                     match out.iter_mut().find(|(ek, _)| ek == k) {
@@ -1996,7 +1996,7 @@ impl Interpreter {
                 _ => err("has expects a Dict and a key"),
             },
             // A new dict with `k` (and its value) removed; unchanged if absent.
-            "dict.remove" => match args {
+            "dict.__remove" => match args {
                 [Value::Dict(entries), k] => {
                     let out: Vec<(Value, Value)> =
                         entries.iter().filter(|(ek, _)| ek != k).cloned().collect();
@@ -2802,7 +2802,7 @@ impl Interpreter {
     ) -> Result<bool, Flow> {
         match rhs {
             Expr::Call { name: f, args }
-                if f == "list.push" && args.len() == 2
+                if f == "list.__push" && args.len() == 2
                     && matches!(&args[0], Expr::Var(v) if v == name)
                     && !expr_mentions(&args[1], name)
                     && !matches!(env.get(f), Some(Value::Closure { .. })) =>
@@ -2818,7 +2818,7 @@ impl Interpreter {
                 Ok(true)
             }
             Expr::Call { name: f, args }
-                if f == "dict.insert" && args.len() == 3
+                if f == "dict.__insert" && args.len() == 3
                     && matches!(&args[0], Expr::Var(v) if v == name)
                     && !expr_mentions(&args[1], name)
                     && !expr_mentions(&args[2], name)
@@ -2840,7 +2840,7 @@ impl Interpreter {
             }
             // `update` is matched before locals in `eval_call`, so no shadow check.
             Expr::Call { name: f, args }
-                if f == "dict.update" && args.len() == 4
+                if f == "dict.__update" && args.len() == 4
                     && matches!(&args[0], Expr::Var(v) if v == name)
                     && args[1..].iter().all(|a| !expr_mentions(a, name)) =>
             {
