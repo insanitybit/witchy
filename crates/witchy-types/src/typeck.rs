@@ -2622,6 +2622,17 @@ fn var_place(expr: &Expr) -> Option<VarPlace> {
                 steps.push(step);
                 Some(root)
             }
+            Expr::Call { name, args }
+                if matches!(name.as_str(), "list.at" | "dict.at") && args.len() == 2 =>
+            {
+                let root = walk(&args[0], steps)?;
+                let step = match &args[1] {
+                    Expr::Int(value) => VarPlaceStep::IndexConst(*value),
+                    _ => VarPlaceStep::IndexDynamic,
+                };
+                steps.push(step);
+                Some(root)
+            }
             _ => None,
         }
     }
@@ -3625,6 +3636,11 @@ impl Checker {
                     vec![Ty::List(Box::new(elem.clone())), elem.clone()],
                     Ty::List(Box::new(elem)),
                 ))
+            }
+            "list.__set_at" => {
+                let elem = self.fresh();
+                let list = Ty::List(Box::new(elem.clone()));
+                Some((vec![list.clone(), Ty::Int, elem], list))
             }
             "list.concat" => {
                 let elem = self.fresh();
@@ -7176,7 +7192,7 @@ fn pattern_dup_binding(p: &Pattern) -> Option<String> {
 pub fn intrinsic(name: &str) -> bool {
     matches!(
         name,
-        "list.__push" | "list.at" | "list.length" | "list.concat"
+        "list.__push" | "list.__set_at" | "list.at" | "list.length" | "list.concat"
             | "dict.new" | "dict.__insert" | "dict.get_or" | "dict.at" | "dict.contains_key" | "dict.__remove"
             | "dict.__update" | "dict.keys" | "dict.values" | "dict.pairs" | "dict.length"
             | "string.split" | "string.trim" | "string.contains" | "string.starts_with"

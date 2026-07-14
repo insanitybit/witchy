@@ -2732,12 +2732,11 @@ impl Ctx<'_> {
                     let mut call_args =
                         vec![std::mem::replace(receiver.as_mut(), Expr::Bool(false))];
                     call_args.append(args);
-                    // (RFC-0049) `dict` keeps `insert`, not `set_at`. The `d[k] = v`
-                    // place-assign desugar emits a bare `.set_at(k, v)` for both list
-                    // and dict; now the receiver type is known, retarget the dict
-                    // case to `dict.insert` (the list case stays `list.set_at`).
-                    let func = if module == "dict" && method == "set_at" {
-                        "dict.insert".to_string()
+                    // Place-assignment desugaring uses a private value-rebuild
+                    // operation. Dict and List keep distinct internal spellings;
+                    // their public setters are uniform `var`/`Nil` calls.
+                    let func = if module == "dict" && method == "__set_at" {
+                        "dict.__insert".to_string()
                     } else {
                         format!("{module}.{method}")
                     };

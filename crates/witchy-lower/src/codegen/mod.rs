@@ -92,6 +92,30 @@ fn call_result_tmp(kind: Kind) -> String {
     }
 }
 
+fn var_scratch(prefix: &str, index: usize, kind: Kind) -> String {
+    let suffix = match kind {
+        Kind::I32 => "i32".to_string(),
+        Kind::I64 => "i64".to_string(),
+        Kind::F64 => "f64".to_string(),
+        Kind::ExternRef => "extern".to_string(),
+        Kind::GcRef(id) => format!("gc_{id}"),
+    };
+    format!("__witchy_var_{prefix}_{suffix}_{index}")
+}
+
+#[derive(Clone)]
+enum CodegenPlace {
+    Root(String),
+    Field { base: Box<CodegenPlace>, field: String },
+    Index {
+        base: Box<CodegenPlace>,
+        coordinate: String,
+        coordinate_kind: Kind,
+        coordinate_type: ValType,
+        dict: bool,
+    },
+}
+
 /// One captured variable for a closure: (name, record-type-name,
 /// list-element-type-name, slot kind).
 type CaptureInfo = (String, Option<String>, Option<String>, Kind);
@@ -1277,58 +1301,142 @@ impl<'types> Codegen<'types> {
         }
     }
 
-    /// Lower closure arguments into universal slots and reserve i64 scratch
-    /// destinations for every `var` result. The type checker has already required
-    /// each `var` argument to be a mutable local; this guard keeps malformed WIR
-    /// from being emitted if lowering is invoked without that invariant.
+    fn closure_param_kinds(&self, func: &Expr) -> Vec<Kind> {
+        let Some(ty) = self.ast_type_of_expr(func) else {
+            return Vec::new();
+        };
+        match ty.unqualified() {
+            Type::Fn(params, _, _) => params.iter().map(|ty| self.kind_for_type(ty)).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Lower closure arguments into universal slots and capture every `var` place.
+    /// Coordinates are evaluated into typed scratch locals before the call; final
+    /// values return through universal slots and are rebuilt after the call.
     fn lower_closure_args(
         &mut self,
         args: &[Expr],
         conventions: &[Convention],
-    ) -> Option<(Vec<witchy_wir::wir::WirExpr>, Vec<(String, Kind, String)>)> {
-        use witchy_wir::wir::WirExpr as W;
+        param_kinds: &[Kind],
+    ) -> Option<(Vec<witchy_wir::wir::WirExpr>, Vec<(CodegenPlace, Kind, String)>)> {
+        use witchy_wir::wir::{WirExpr as W, WirNode as N};
         let mut slots = Vec::with_capacity(args.len());
         let mut writebacks = Vec::new();
+        let mut next_coordinate = 0;
         for (index, arg) in args.iter().enumerate() {
-            let kind = self.kind_of(arg);
-            let value = self.lower_expr(arg)?;
-            slots.push(W::ToSlot(Box::new(value), Self::wir_kind(kind)));
-            if conventions.get(index) == Some(&Convention::Var) {
-                let Expr::Var(local) = arg else {
-                    return None;
-                };
-                if !self.locals.contains_key(local) || writebacks.len() >= SCRUT_POOL {
+            let is_var = conventions.get(index) == Some(&Convention::Var);
+            let kind = if is_var {
+                param_kinds.get(index).copied().unwrap_or_else(|| self.kind_of(arg))
+            } else {
+                self.kind_of(arg)
+            };
+            let value = if is_var {
+                let mut prelude = Vec::new();
+                let place = self.capture_codegen_place(arg, &mut next_coordinate, &mut prelude)?;
+                if writebacks.len() >= SCRUT_POOL {
                     return None;
                 }
+                let mut coordinates = Vec::new();
+                Self::codegen_place_coordinates(&place, &mut coordinates);
+                for (coordinate, coordinate_kind, value_type) in &coordinates {
+                    self.locals.insert(coordinate.clone(), *coordinate_kind);
+                    self.local_val_types.insert(coordinate.clone(), *value_type);
+                }
+                let read = self.lower_codegen_place_read(&place, kind);
+                for (coordinate, _, _) in &coordinates {
+                    self.locals.remove(coordinate);
+                    self.local_val_types.remove(coordinate);
+                }
+                let read = read?;
                 writebacks.push((
-                    local.clone(),
-                    self.locals.get(local).copied().unwrap_or(kind),
+                    place,
+                    kind,
                     format!("__witchy_scrut_save_{}", writebacks.len()),
                 ));
-            }
+                if prelude.is_empty() {
+                    read
+                } else {
+                    prelude.push(N::Push(read));
+                    W::Seq(prelude)
+                }
+            } else {
+                self.lower_expr(arg)?
+            };
+            slots.push(W::ToSlot(Box::new(value), Self::wir_kind(kind)));
         }
         Some((slots, writebacks))
     }
 
     fn finish_closure_multi_call(
-        &self,
+        &mut self,
         call: witchy_wir::wir::WirNode,
-        writebacks: Vec<(String, Kind, String)>,
+        writebacks: Vec<(CodegenPlace, Kind, String)>,
         result_kind: Kind,
-    ) -> witchy_wir::wir::WirExpr {
+    ) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
         let mut seq = vec![call];
-        for (local, kind, scratch) in writebacks {
+        for (index, (_, kind, scratch)) in writebacks.iter().enumerate() {
             seq.push(N::SetLocal {
-                local,
-                value: W::FromSlot(Box::new(W::GetLocal(scratch)), Self::wir_kind(kind)),
+                local: var_scratch("result", index, *kind),
+                value: W::FromSlot(Box::new(W::GetLocal(scratch.clone())), Self::wir_kind(*kind)),
             });
+        }
+
+        let mut groups: Vec<(String, Kind, Expr)> = Vec::new();
+        let mut coordinates = Vec::new();
+        for (index, (place, value_kind, _)) in writebacks.iter().enumerate() {
+            let result = var_scratch("result", index, *value_kind);
+            let root = Self::codegen_place_root(place).to_string();
+            let root_kind = self.locals.get(&root).copied()?;
+            Self::codegen_place_coordinates(place, &mut coordinates);
+            let root_value = groups
+                .iter()
+                .find(|(candidate, _, _)| candidate == &root)
+                .map(|(_, _, value)| value.clone())
+                .unwrap_or_else(|| Expr::Var(root.clone()));
+            let update =
+                Self::codegen_place_update_from(place, Expr::Var(result.clone()), &root_value);
+            if let Some((_, _, value)) =
+                groups.iter_mut().find(|(candidate, _, _)| candidate == &root)
+            {
+                *value = update;
+            } else {
+                groups.push((root, root_kind, update));
+            }
+        }
+        coordinates.sort_by(|left, right| left.0.cmp(&right.0));
+        coordinates.dedup_by(|left, right| left.0 == right.0);
+        for (coordinate, kind, value_type) in &coordinates {
+            self.locals.insert(coordinate.clone(), *kind);
+            self.local_val_types.insert(coordinate.clone(), *value_type);
+        }
+        for (index, (_, value_kind, _)) in writebacks.iter().enumerate() {
+            self.locals
+                .insert(var_scratch("result", index, *value_kind), *value_kind);
+        }
+        let mut commits = Vec::with_capacity(groups.len());
+        for (index, (root, root_kind, update)) in groups.iter().enumerate() {
+            let root_scratch = var_scratch("root", index, *root_kind);
+            let update_w = self.lower_expr(update)?;
+            seq.push(N::SetLocal { local: root_scratch.clone(), value: update_w });
+            commits.push((root.clone(), root_scratch));
+        }
+        for (index, (_, value_kind, _)) in writebacks.iter().enumerate() {
+            self.locals.remove(&var_scratch("result", index, *value_kind));
+        }
+        for (coordinate, _, _) in &coordinates {
+            self.locals.remove(coordinate);
+            self.local_val_types.remove(coordinate);
+        }
+        for (root, scratch) in commits {
+            seq.push(N::SetLocal { local: root, value: W::GetLocal(scratch) });
         }
         seq.push(N::Push(W::FromSlot(
             Box::new(W::GetLocal(MATCH_TMP.to_string())),
             Self::wir_kind(result_kind),
         )));
-        W::Seq(seq)
+        Some(W::Seq(seq))
     }
 
     /// The call-return kind of a closure VALUE, when determinable: a lambda
@@ -2438,6 +2546,24 @@ impl<'types> Codegen<'types> {
         locals.push(WirLocal { name: MATCH_RES.into(), ty: i64t() });
         for i in 0..SCRUT_POOL {
             locals.push(WirLocal { name: format!("__witchy_scrut_save_{i}"), ty: i64t() });
+            for prefix in ["coord", "result", "root"] {
+                locals.push(WirLocal { name: var_scratch(prefix, i, Kind::I32), ty: i32t() });
+                locals.push(WirLocal { name: var_scratch(prefix, i, Kind::I64), ty: i64t() });
+                locals.push(WirLocal {
+                    name: var_scratch(prefix, i, Kind::F64),
+                    ty: WirTy::Float,
+                });
+                locals.push(WirLocal {
+                    name: var_scratch(prefix, i, Kind::ExternRef),
+                    ty: WirTy::Extern,
+                });
+                for id in 0..self.gc_structs.len() as u32 {
+                    locals.push(WirLocal {
+                        name: var_scratch(prefix, i, Kind::GcRef(id)),
+                        ty: witchy_wir::wir::WirTy::GcRef(id),
+                    });
+                }
+            }
         }
         locals.push(WirLocal { name: SECRET_TMP.into(), ty: witchy_wir::wir::WirTy::Extern });
         locals.push(WirLocal { name: SECRET_NAME_TMP.into(), ty: i32t() });
@@ -2529,6 +2655,8 @@ impl<'types> Codegen<'types> {
         } else {
             HashSet::new()
         };
+        let nested_var_roots = nested_var_place_roots(body, &self.fn_conventions);
+        self.sroa_candidates.retain(|name| !nested_var_roots.contains(name));
         // (RFC-0028) Confined slice views: elide the `list.slice` copy for a
         // read-only window over an unmutated source. Gated on the `views` lever and
         // off in forced-copy mode (so the de-opt differential exercises the copy).
@@ -4618,7 +4746,15 @@ impl<'types> Codegen<'types> {
         let mut args_w = Vec::with_capacity(args.len());
         for (i, arg) in args.iter().enumerate() {
             let ak = self.kind_of(arg);
-            let w = self.lower_expr(arg)?;
+            let w = match self.lower_expr(arg) {
+                Some(value) => value,
+                None => {
+                    if std::env::var_os("WIRDIAG").is_some() {
+                        eprintln!("WIRBAIL user-call-arg: callee={name} index={i} arg={arg:?}");
+                    }
+                    return None;
+                }
+            };
             args_w.push(match param_kinds.get(i) {
                 Some(&pk) => Self::wir_convert(w, ak, pk),
                 None => w,
@@ -4645,12 +4781,187 @@ impl<'types> Codegen<'types> {
         Some(witchy_wir::wir::WirExpr::Call { func: name.to_string(), args: args_w })
     }
 
+    fn capture_codegen_place(
+        &mut self,
+        expr: &Expr,
+        next_coordinate: &mut usize,
+        prelude: &mut witchy_wir::wir::WirSeq,
+    ) -> Option<CodegenPlace> {
+        use witchy_wir::wir::WirNode as N;
+        match expr {
+            Expr::Var(root) if self.locals.contains_key(root) => {
+                Some(CodegenPlace::Root(root.clone()))
+            }
+            Expr::Field { base, field } => Some(CodegenPlace::Field {
+                base: Box::new(self.capture_codegen_place(base, next_coordinate, prelude)?),
+                field: field.clone(),
+            }),
+            Expr::Index { base, index } => {
+                let captured_base = self.capture_codegen_place(base, next_coordinate, prelude)?;
+                if *next_coordinate >= SCRUT_POOL {
+                    return None;
+                }
+                let index_kind = self.kind_of(index);
+                let coordinate = var_scratch("coord", *next_coordinate, index_kind);
+                *next_coordinate += 1;
+                let index_value = self.lower_expr(index)?;
+                prelude.push(N::SetLocal {
+                    local: coordinate.clone(),
+                    value: index_value,
+                });
+                Some(CodegenPlace::Index {
+                    base: Box::new(captured_base),
+                    coordinate,
+                    coordinate_kind: index_kind,
+                    coordinate_type: self.val_type_of(index),
+                    dict: self.is_dict_operand(base),
+                })
+            }
+            Expr::Call { name, args }
+                if matches!(name.as_str(), "list.at" | "dict.at") && args.len() == 2 =>
+            {
+                let captured_base =
+                    self.capture_codegen_place(&args[0], next_coordinate, prelude)?;
+                if *next_coordinate >= SCRUT_POOL {
+                    return None;
+                }
+                let index_kind = self.kind_of(&args[1]);
+                let coordinate = var_scratch("coord", *next_coordinate, index_kind);
+                *next_coordinate += 1;
+                let index_value = self.lower_expr(&args[1])?;
+                prelude.push(N::SetLocal {
+                    local: coordinate.clone(),
+                    value: index_value,
+                });
+                Some(CodegenPlace::Index {
+                    base: Box::new(captured_base),
+                    coordinate,
+                    coordinate_kind: index_kind,
+                    coordinate_type: self.val_type_of(&args[1]),
+                    dict: name == "dict.at",
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn codegen_place_read(place: &CodegenPlace) -> Expr {
+        let root = Expr::Var(Self::codegen_place_root(place).to_string());
+        Self::codegen_place_read_from(place, &root)
+    }
+
+    fn codegen_place_root(place: &CodegenPlace) -> &str {
+        match place {
+            CodegenPlace::Root(root) => root,
+            CodegenPlace::Field { base, .. } | CodegenPlace::Index { base, .. } => {
+                Self::codegen_place_root(base)
+            }
+        }
+    }
+
+    fn codegen_place_read_from(place: &CodegenPlace, root: &Expr) -> Expr {
+        match place {
+            CodegenPlace::Root(_) => root.clone(),
+            CodegenPlace::Field { base, field } => Expr::Field {
+                base: Box::new(Self::codegen_place_read_from(base, root)),
+                field: field.clone(),
+            },
+            CodegenPlace::Index { base, coordinate, dict, .. } => Expr::Call {
+                name: if *dict { "dict.at" } else { "list.at" }.to_string(),
+                args: vec![
+                    Self::codegen_place_read_from(base, root),
+                    Expr::Var(coordinate.clone()),
+                ],
+            },
+        }
+    }
+
+    fn codegen_place_update_from(
+        place: &CodegenPlace,
+        replacement: Expr,
+        root: &Expr,
+    ) -> Expr {
+        match place {
+            CodegenPlace::Root(_) => replacement,
+            CodegenPlace::Field { base, field } => {
+                let updated = Expr::RecordUpdate {
+                    name: None,
+                    base: Box::new(Self::codegen_place_read_from(base, root)),
+                    fields: vec![(field.clone(), replacement)],
+                };
+                Self::codegen_place_update_from(base, updated, root)
+            }
+            CodegenPlace::Index { base, coordinate, dict, .. } => {
+                let updated = Expr::Call {
+                    name: if *dict { "dict.__insert" } else { "list.__set_at" }.to_string(),
+                    args: vec![
+                        Self::codegen_place_read_from(base, root),
+                        Expr::Var(coordinate.clone()),
+                        replacement,
+                    ],
+                };
+                Self::codegen_place_update_from(base, updated, root)
+            }
+        }
+    }
+
+    fn codegen_place_coordinates(
+        place: &CodegenPlace,
+        out: &mut Vec<(String, Kind, ValType)>,
+    ) {
+        match place {
+            CodegenPlace::Root(_) => {}
+            CodegenPlace::Field { base, .. } => Self::codegen_place_coordinates(base, out),
+            CodegenPlace::Index {
+                base,
+                coordinate,
+                coordinate_kind,
+                coordinate_type,
+                ..
+            } => {
+                Self::codegen_place_coordinates(base, out);
+                out.push((coordinate.clone(), *coordinate_kind, *coordinate_type));
+            }
+        }
+    }
+
+    fn lower_codegen_place_read(
+        &mut self,
+        place: &CodegenPlace,
+        expected: Kind,
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        use witchy_wir::wir::WirExpr as W;
+        match place {
+            CodegenPlace::Root(root) => {
+                let actual = self.locals.get(root).copied()?;
+                Some(Self::wir_convert(W::GetLocal(root.clone()), actual, expected))
+            }
+            CodegenPlace::Field { .. } => {
+                let expr = Self::codegen_place_read(place);
+                let actual = self.kind_of(&expr);
+                Some(Self::wir_convert(self.lower_expr(&expr)?, actual, expected))
+            }
+            CodegenPlace::Index { base, coordinate, dict: false, .. } => {
+                let base = self.lower_codegen_place_read(base, Kind::I32)?;
+                let value = W::Call {
+                    func: "list_at".into(),
+                    args: vec![base, W::GetLocal(coordinate.clone())],
+                };
+                Some(W::FromSlot(Box::new(value), Self::wir_kind(expected)))
+            }
+            CodegenPlace::Index { .. } => {
+                let expr = Self::codegen_place_read(place);
+                let actual = self.kind_of(&expr);
+                Some(Self::wir_convert(self.lower_expr(&expr)?, actual, expected))
+            }
+        }
+    }
+
     /// Lower an `var` user call. The callee returns `(declared, var_1, …)`;
     /// `CallStoreMulti` pops the results in reverse into `dests`, so dest[0] is a
-    /// scratch holding the declared value and the rest are the caller's var-arg
-    /// locals (written back). We then push the scratch — the call's value. Each
-    /// var arg must be a non-global local `Var` (CallStoreMulti uses `local.set`);
-    /// otherwise we defer to WAT (`None`).
+    /// scratch holding the declared value and the rest are staged var results.
+    /// Nested places rebuild into separate root scratches before any caller local
+    /// commits, preserving all-or-nothing write-back when a projection traps.
     fn lower_var_call(
         &mut self,
         name: &str,
@@ -4669,9 +4980,48 @@ impl<'types> Codegen<'types> {
             })
             .unwrap_or_default();
         let mut args_w = Vec::with_capacity(args.len());
+        let mut places = Vec::new();
+        let mut next_coordinate = 0;
         for (i, arg) in args.iter().enumerate() {
-            let ak = self.kind_of(arg);
-            let w = self.lower_expr(arg)?;
+            let is_var = convs.get(i) == Some(&Convention::Var);
+            let ak = if is_var {
+                param_kinds.get(i).copied().unwrap_or_else(|| self.kind_of(arg))
+            } else {
+                self.kind_of(arg)
+            };
+            let w = if is_var {
+                let mut prelude = Vec::new();
+                let place = self.capture_codegen_place(arg, &mut next_coordinate, &mut prelude)?;
+                let mut coordinates = Vec::new();
+                Self::codegen_place_coordinates(&place, &mut coordinates);
+                for (coordinate, kind, value_type) in &coordinates {
+                    self.locals.insert(coordinate.clone(), *kind);
+                    self.local_val_types.insert(coordinate.clone(), *value_type);
+                }
+                let read = self.lower_codegen_place_read(&place, ak);
+                for (coordinate, _, _) in &coordinates {
+                    self.locals.remove(coordinate);
+                    self.local_val_types.remove(coordinate);
+                }
+                let read = match read {
+                    Some(read) => read,
+                    None => {
+                        if std::env::var_os("WIRDIAG").is_some() {
+                            eprintln!("WIRBAIL var-place-read: callee={name} arg={arg:?}");
+                        }
+                        return None;
+                    }
+                };
+                places.push((place, ak));
+                if prelude.is_empty() {
+                    read
+                } else {
+                    prelude.push(N::Push(read));
+                    W::Seq(prelude)
+                }
+            } else {
+                self.lower_expr(arg)?
+            };
             args_w.push(match param_kinds.get(i) {
                 Some(&pk) => Self::wir_convert(w, ak, pk),
                 None => w,
@@ -4681,22 +5031,74 @@ impl<'types> Codegen<'types> {
         // arg's local. A single i32 tuple scratch is insufficient now that RFC-0087
         // admits independent scalar and reference returns from a `var` function.
         let result_tmp = call_result_tmp(result_kind);
+        if places.len() > SCRUT_POOL {
+            return None;
+        }
         let mut dests = vec![result_tmp.clone()];
-        for (i, conv) in convs.iter().enumerate() {
-            if *conv == Convention::Var {
-                match args.get(i) {
-                    Some(Expr::Var(v)) if self.locals.contains_key(v) =>
-                    {
-                        dests.push(v.clone());
-                    }
-                    _ => return None,
-                }
+        for (index, (_, kind)) in places.iter().enumerate() {
+            dests.push(var_scratch("result", index, *kind));
+        }
+        let mut seq = vec![N::CallStoreMulti { func: name.to_string(), args: args_w, dests }];
+        let mut groups: Vec<(String, Kind, Expr)> = Vec::new();
+        let mut coordinates = Vec::new();
+        for (index, (place, value_kind)) in places.iter().enumerate() {
+            let result = var_scratch("result", index, *value_kind);
+            let root = Self::codegen_place_root(place).to_string();
+            let root_kind = self.locals.get(&root).copied()?;
+            Self::codegen_place_coordinates(place, &mut coordinates);
+            let root_value = groups
+                .iter()
+                .find(|(candidate, _, _)| candidate == &root)
+                .map(|(_, _, value)| value.clone())
+                .unwrap_or_else(|| Expr::Var(root.clone()));
+            let update =
+                Self::codegen_place_update_from(place, Expr::Var(result.clone()), &root_value);
+            if let Some((_, _, value)) =
+                groups.iter_mut().find(|(candidate, _, _)| candidate == &root)
+            {
+                *value = update;
+            } else {
+                groups.push((root, root_kind, update));
             }
         }
-        Some(W::Seq(vec![
-            N::CallStoreMulti { func: name.to_string(), args: args_w, dests },
-            N::Push(W::GetLocal(result_tmp)),
-        ]))
+        coordinates.sort_by(|left, right| left.0.cmp(&right.0));
+        coordinates.dedup_by(|left, right| left.0 == right.0);
+        for (coordinate, kind, value_type) in &coordinates {
+            self.locals.insert(coordinate.clone(), *kind);
+            self.local_val_types.insert(coordinate.clone(), *value_type);
+        }
+        for (index, (_, value_kind)) in places.iter().enumerate() {
+            self.locals
+                .insert(var_scratch("result", index, *value_kind), *value_kind);
+        }
+        let mut commits = Vec::with_capacity(groups.len());
+        for (index, (root, root_kind, update)) in groups.iter().enumerate() {
+            let root_scratch = var_scratch("root", index, *root_kind);
+            let update_w = self.lower_expr(update);
+            let update_w = match update_w {
+                Some(update) => update,
+                None => {
+                    if std::env::var_os("WIRDIAG").is_some() {
+                        eprintln!("WIRBAIL var-place-update: callee={name} update={update:?}");
+                    }
+                    return None;
+                }
+            };
+            seq.push(N::SetLocal { local: root_scratch.clone(), value: update_w });
+            commits.push((root.clone(), root_scratch));
+        }
+        for (index, (_, value_kind)) in places.iter().enumerate() {
+            self.locals.remove(&var_scratch("result", index, *value_kind));
+        }
+        for (coordinate, _, _) in &coordinates {
+            self.locals.remove(coordinate);
+            self.local_val_types.remove(coordinate);
+        }
+        for (root, scratch) in commits {
+            seq.push(N::SetLocal { local: root, value: W::GetLocal(scratch) });
+        }
+        seq.push(N::Push(W::GetLocal(result_tmp)));
+        Some(W::Seq(seq))
     }
 
     /// Convert the value a lowered block leaves on the stack: a block's tail is
@@ -4990,6 +5392,7 @@ impl<'types> Codegen<'types> {
                     return None;
                 }
                 let conventions = self.closure_conventions(func);
+                let param_kinds = self.closure_param_kinds(func);
                 // (RFC-0062 tier-1) An ELIDED closure applied by name: no closure pointer to
                 // stash — thread captures (from their locals) as leading arg slots to a direct
                 // `call $__lamt{i}`.
@@ -5001,7 +5404,7 @@ impl<'types> Codegen<'types> {
                             .map(|(cn, ck)| W::ToSlot(Box::new(W::GetLocal(cn.clone())), Self::wir_kind(*ck)))
                             .collect();
                         let (arg_slots, writebacks) =
-                            self.lower_closure_args(args, &conventions)?;
+                            self.lower_closure_args(args, &conventions, &param_kinds)?;
                         call_args.extend(arg_slots);
                         self.apply_level = level;
                         let recover_kind = self.apply_ret_kind(func);
@@ -5016,18 +5419,19 @@ impl<'types> Codegen<'types> {
                             args: call_args,
                             dests,
                         };
-                        return Some(self.finish_closure_multi_call(
+                        return self.finish_closure_multi_call(
                             call,
                             writebacks,
                             recover_kind,
-                        ));
+                        );
                     }
                 }
                 let n = args.len();
                 let tmp = format!("__witchy_call_{level}");
                 let fcode = self.lower_expr(func)?;
                 self.apply_level = level + 1;
-                let (arg_slots, writebacks) = self.lower_closure_args(args, &conventions)?;
+                let (arg_slots, writebacks) =
+                    self.lower_closure_args(args, &conventions, &param_kinds)?;
                 self.apply_level = level;
                 self.clos_arities.insert(n);
                 let recover_kind = self.apply_ret_kind(func);
@@ -5058,7 +5462,7 @@ impl<'types> Codegen<'types> {
                             dests,
                         },
                     };
-                    let result = self.finish_closure_multi_call(call, writebacks, recover_kind);
+                    let result = self.finish_closure_multi_call(call, writebacks, recover_kind)?;
                     return Some(W::Seq(vec![N::SetLocal { local: tmp, value: fcode }, N::Push(result)]));
                 }
                 let call = match func.as_ref() {
@@ -6108,12 +6512,13 @@ impl<'types> Codegen<'types> {
                 if let Some((idx, caps)) = self.thread_index.get(name).cloned() {
                     let func_expr = Expr::Var(name.to_string());
                     let conventions = self.closure_conventions(&func_expr);
+                    let param_kinds = self.closure_param_kinds(&func_expr);
                     let mut call_args: Vec<W> = caps
                         .iter()
                         .map(|(cn, ck)| W::ToSlot(Box::new(W::GetLocal(cn.clone())), Self::wir_kind(*ck)))
                         .collect();
                     let (arg_slots, writebacks) =
-                        self.lower_closure_args(args, &conventions)?;
+                        self.lower_closure_args(args, &conventions, &param_kinds)?;
                     call_args.extend(arg_slots);
                     let rk = self.local_fn_ret_kind.get(name).copied().unwrap_or(Kind::I32);
                     if writebacks.is_empty() {
@@ -6127,7 +6532,7 @@ impl<'types> Codegen<'types> {
                         args: call_args,
                         dests,
                     };
-                    return Some(self.finish_closure_multi_call(call, writebacks, rk));
+                    return self.finish_closure_multi_call(call, writebacks, rk);
                 }
                 // A closure-typed local `f(x)`: pass the closure pointer as the env,
                 // the i64-slot args, and `call_indirect` on the code index (the
@@ -6137,9 +6542,10 @@ impl<'types> Codegen<'types> {
                     let n = args.len();
                     let func_expr = Expr::Var(name.to_string());
                     let conventions = self.closure_conventions(&func_expr);
+                    let param_kinds = self.closure_param_kinds(&func_expr);
                     let mut ci_args: Vec<W> = vec![W::GetLocal(name.to_string())];
                     let (arg_slots, writebacks) =
-                        self.lower_closure_args(args, &conventions)?;
+                        self.lower_closure_args(args, &conventions, &param_kinds)?;
                     ci_args.extend(arg_slots);
                     self.clos_arities.insert(n);
                     let rk = self.local_fn_ret_kind.get(name).copied().unwrap_or(Kind::I32);
@@ -6169,7 +6575,7 @@ impl<'types> Codegen<'types> {
                                 dests,
                             }
                         };
-                        return Some(self.finish_closure_multi_call(call, writebacks, rk));
+                        return self.finish_closure_multi_call(call, writebacks, rk);
                     }
                     let call = if let Some(&idx) = self.devirt_index.get(name) {
                         W::Call { func: format!("__lamw{idx}"), args: ci_args }
@@ -6524,6 +6930,30 @@ impl<'types> Codegen<'types> {
                 locals.push(WirLocal { name: MATCH_RES.into(), ty: WirTy::Int });
                 for i in 0..SCRUT_POOL {
                     locals.push(WirLocal { name: format!("__witchy_scrut_save_{i}"), ty: WirTy::Int });
+                    for prefix in ["coord", "result", "root"] {
+                        locals.push(WirLocal {
+                            name: var_scratch(prefix, i, Kind::I32),
+                            ty: i32t(),
+                        });
+                        locals.push(WirLocal {
+                            name: var_scratch(prefix, i, Kind::I64),
+                            ty: WirTy::Int,
+                        });
+                        locals.push(WirLocal {
+                            name: var_scratch(prefix, i, Kind::F64),
+                            ty: WirTy::Float,
+                        });
+                        locals.push(WirLocal {
+                            name: var_scratch(prefix, i, Kind::ExternRef),
+                            ty: WirTy::Extern,
+                        });
+                        for id in 0..self.gc_structs.len() as u32 {
+                            locals.push(WirLocal {
+                                name: var_scratch(prefix, i, Kind::GcRef(id)),
+                                ty: WirTy::GcRef(id),
+                            });
+                        }
+                    }
                 }
                 locals.push(WirLocal { name: SECRET_TMP.into(), ty: WirTy::Extern });
                 locals.push(WirLocal { name: SECRET_NAME_TMP.into(), ty: i32t() });
@@ -7726,6 +8156,162 @@ fn collect_fn_refs_block(b: &Block, out: &mut HashSet<String>) {
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
     }
+}
+
+fn nested_var_place_roots(
+    block: &Block,
+    conventions: &HashMap<String, Vec<Convention>>,
+) -> HashSet<String> {
+    fn place_root(expr: &Expr) -> Option<&str> {
+        match expr {
+            Expr::Var(root) => Some(root),
+            Expr::Field { base, .. } | Expr::Index { base, .. } => place_root(base),
+            Expr::Call { name, args }
+                if matches!(name.as_str(), "list.at" | "dict.at") && args.len() == 2 =>
+            {
+                place_root(&args[0])
+            }
+            _ => None,
+        }
+    }
+
+    fn scan_block(
+        block: &Block,
+        conventions: &HashMap<String, Vec<Convention>>,
+        roots: &mut HashSet<String>,
+    ) {
+        for stmt in &block.stmts {
+            match stmt {
+                Stmt::Let { value, .. }
+                | Stmt::Assign { value, .. }
+                | Stmt::LetPattern { value, .. }
+                | Stmt::Return(Some(value))
+                | Stmt::Expr(value)
+                | Stmt::Yield(value) => scan_expr(value, conventions, roots),
+                Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+            }
+        }
+    }
+
+    fn scan_expr(
+        expr: &Expr,
+        conventions: &HashMap<String, Vec<Convention>>,
+        roots: &mut HashSet<String>,
+    ) {
+        match expr {
+            Expr::Call { name, args } => {
+                if let Some(parameter_conventions) = conventions.get(name) {
+                    for (argument, convention) in args.iter().zip(parameter_conventions) {
+                        if *convention == Convention::Var
+                            && !matches!(argument, Expr::Var(_))
+                            && let Some(root) = place_root(argument)
+                        {
+                            roots.insert(root.to_string());
+                        }
+                    }
+                } else {
+                    // A closure-valued local is represented as `Call` after
+                    // parsing, but has no declaration entry in this map. Its
+                    // function type may carry `var`, so protect every nested
+                    // argument root from record scalar replacement.
+                    for argument in args {
+                        if !matches!(argument, Expr::Var(_))
+                            && let Some(root) = place_root(argument)
+                        {
+                            roots.insert(root.to_string());
+                        }
+                    }
+                }
+                for argument in args {
+                    scan_expr(argument, conventions, roots);
+                }
+            }
+            Expr::Apply { func, args } => {
+                scan_expr(func, conventions, roots);
+                for argument in args {
+                    // Indirect calls carry conventions in the function value's
+                    // type, which this name-only scan cannot inspect. Disqualify
+                    // any nested argument root conservatively so a later `var`
+                    // write-back cannot race a scalar-replaced record field.
+                    if !matches!(argument, Expr::Var(_))
+                        && let Some(root) = place_root(argument)
+                    {
+                        roots.insert(root.to_string());
+                    }
+                    scan_expr(argument, conventions, roots);
+                }
+            }
+            Expr::Ctor { args, .. }
+            | Expr::AnonCtor { args, .. }
+            | Expr::List(args)
+            | Expr::Tuple(args) => {
+                for argument in args {
+                    scan_expr(argument, conventions, roots);
+                }
+            }
+            Expr::Unary { expr, .. }
+            | Expr::Try(expr)
+            | Expr::As { expr, .. }
+            | Expr::Field { base: expr, .. } => scan_expr(expr, conventions, roots),
+            Expr::RecordUpdate { base, fields, .. } => {
+                scan_expr(base, conventions, roots);
+                for (_, value) in fields {
+                    scan_expr(value, conventions, roots);
+                }
+            }
+            Expr::Binary { lhs, rhs, .. }
+            | Expr::Index { base: lhs, index: rhs }
+            | Expr::Range { lo: lhs, hi: rhs, .. } => {
+                scan_expr(lhs, conventions, roots);
+                scan_expr(rhs, conventions, roots);
+            }
+            Expr::If { cond, then_block, else_block } => {
+                scan_expr(cond, conventions, roots);
+                scan_block(then_block, conventions, roots);
+                if let Some(block) = else_block {
+                    scan_block(block, conventions, roots);
+                }
+            }
+            Expr::Match { scrutinee, arms } => {
+                scan_expr(scrutinee, conventions, roots);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        scan_expr(guard, conventions, roots);
+                    }
+                    scan_expr(&arm.body, conventions, roots);
+                }
+            }
+            Expr::While { cond, body } => {
+                scan_expr(cond, conventions, roots);
+                scan_block(body, conventions, roots);
+            }
+            Expr::WhileLet { scrutinee, body, .. } => {
+                scan_expr(scrutinee, conventions, roots);
+                scan_block(body, conventions, roots);
+            }
+            Expr::For { iter, body, .. } => {
+                scan_expr(iter, conventions, roots);
+                scan_block(body, conventions, roots);
+            }
+            Expr::Lambda { body, .. } | Expr::Block(body) => {
+                scan_block(body, conventions, roots)
+            }
+            Expr::MethodCall { .. }
+            | Expr::Record { .. }
+            | Expr::LabeledCall { .. }
+            | Expr::Int(_)
+            | Expr::Duration(_)
+            | Expr::Float(_)
+            | Expr::Str(_)
+            | Expr::Bool(_)
+            | Expr::Var(_)
+            | Expr::TaggedLit { .. } => {}
+        }
+    }
+
+    let mut roots = HashSet::new();
+    scan_block(block, conventions, &mut roots);
+    roots
 }
 
 fn collect_fn_refs_expr(e: &Expr, out: &mut HashSet<String>) {

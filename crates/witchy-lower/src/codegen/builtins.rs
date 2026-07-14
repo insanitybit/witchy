@@ -835,6 +835,33 @@ impl Codegen<'_> {
                     W::ToSlot(Box::new(self.lower_expr(&args[1])?), Self::wir_kind(xk)),
                 ])
             }
+            ("list.__set_at", 3) => {
+                let ik = self.kind_of(&args[1]);
+                let vk = self.kind_of(&args[2]);
+                let checked_list = self.lower_expr(&args[0])?;
+                let checked_index =
+                    Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I64);
+                let list = self.lower_expr(&args[0])?;
+                let index = Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I32);
+                let value = self.lower_expr(&args[2])?;
+                W::Seq(vec![
+                    N::Drop(W::Call {
+                        func: "list_at".into(),
+                        args: vec![checked_list, checked_index],
+                    }),
+                    N::CallStoreMulti {
+                        func: "list_set_cap".into(),
+                        args: vec![
+                            list,
+                            index,
+                            W::ToSlot(Box::new(value), Self::wir_kind(vk)),
+                            W::ConstI32(0),
+                        ],
+                        dests: vec![TUPLE_TMP.to_string(), "__witchy_owncap".to_string()],
+                    },
+                    N::Push(W::GetLocal(TUPLE_TMP.to_string())),
+                ])
+            }
             ("list.at", 2) => {
                 let ek = self.list_elem_kind(&args[0]);
                 let ik = self.kind_of(&args[1]);

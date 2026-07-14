@@ -633,23 +633,14 @@ pub fn slice(xs: List(a), start: Int, end: Int) -> List(a):
         i = i + 1
     out
 
-// A copy of `xs` with the element at `index` replaced by `value`. An out-of-range
-// (or negative) index is a runtime error on both backends, exactly like `list.at`
-// and `xs[i]` read — a write that would silently vanish is a contract violation
-// (RFC-0044 rule 3), so it aborts rather than discarding the value. (Lists are
-// immutable, so this returns a new list rather than mutating in place.)
+// Compiler primitive used by place-assignment lowering.
+fn __set_at(xs: List(a), index: Int, value: a) -> List(a):
+    list.__set_at(xs, index, value)
+
+// Store `value` at `index`. An out-of-range (or negative) index is a runtime
+// error on both backends, symmetric with `list.at` and `xs[i]`.
 pub fn set_at(var xs: List(a), index: Int, value: a) -> Nil:
-    if index < 0 || index >= list.length(xs):
-        fail("list index ${index} out of bounds (length ${list.length(xs)})")
-    var out = []
-    var i = 0
-    for x in xs:
-        if i == index:
-            list.push(out, value)
-        else:
-            list.push(out, x)
-        i = i + 1
-    xs = out
+    xs = list.__set_at(xs, index, value)
     return
 
 // A copy of `xs` with the function `f` applied to the element at `index`. An

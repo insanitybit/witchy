@@ -677,7 +677,7 @@ fn place_assign_sugar(name: &str, value: &Expr) -> Option<String> {
     let same_var = |e: &Expr| matches!(e, Expr::Var(v) if v == name);
     match value {
         Expr::MethodCall { receiver, method, args }
-            if method == "set_at" && args.len() == 2 && same_var(receiver) =>
+            if matches!(method.as_str(), "set_at" | "__set_at") && args.len() == 2 && same_var(receiver) =>
         {
             let idx = &args[0];
             let val = &args[1];
@@ -743,7 +743,7 @@ fn for_var_sugar<'a>(idx: &str, iter: &'a Expr, body: &'a Block) -> Option<(&'a 
         return None;
     }
     let Expr::MethodCall { receiver: wr, method: wm, args: wa } = wb else { return None };
-    if wm != "set_at" || wa.len() != 2 || !matches!(wr.as_ref(), Expr::Var(v) if v == list_var) {
+    if !matches!(wm.as_str(), "set_at" | "__set_at") || wa.len() != 2 || !matches!(wr.as_ref(), Expr::Var(v) if v == list_var) {
         return None;
     }
     if !matches!(&wa[0], Expr::Var(v) if v == idx) || !matches!(&wa[1], Expr::Var(v) if v == elem) {

@@ -1004,6 +1004,63 @@
         assert_eq!(wasm_run(src), want, "compiled function-value write-back");
     }
 
+    /// Indirect calls use the same captured-place protocol as direct calls:
+    /// nested roots are rebuilt only after every returned `var` value is staged.
+    #[test]
+    fn rfc0087_function_values_write_back_nested_places_on_both_backends() {
+        let src = "import list\n\ntype State:\n    rows: List(List(Int))\n\nfn exchange(var left: Int, var right: Int) -> Int:\n    let old = left\n    left = right\n    right = old\n    left + right\n\nfn main(console: Console):\n    var state = State([[4, 9]])\n    let operation: fn(var Int, var Int) -> Int = exchange\n    let total: Int = operation(state.rows[0][0], state.rows[0][1])\n    let row = list.at(state.rows, 0)\n    console.print(\"${row} ${total}\")\n    if list.at(row, 0) == 9 && list.at(row, 1) == 4 && total == 13:\n        console.print(\"ok\")\n    else:\n        console.print(\"bad\")\n";
+        let want = ["[9, 4] 13", "ok"];
+        assert_eq!(link_run(src), want, "interpreter indirect nested write-back");
+        assert_eq!(wasm_run(src), want, "compiled indirect nested write-back");
+    }
+
+    /// Nested field/index places capture their coordinates once, stage the rebuilt
+    /// root, and commit the same result on both engines.
+    #[test]
+    fn rfc0087_nested_var_places_write_back_on_both_backends() {
+        let src = "import list\n\ntype State:\n    rows: List(List(Int))\n\nfn bump(var n: Int) -> Int:\n    n = n + 10\n    n * 2\n\nfn main(console: Console):\n    var state = State([[1, 2], [3, 4]])\n    let result: Int = bump(state.rows[0][1])\n    let updated: Int = list.at(list.at(state.rows, 0), 1)\n    if updated == 12 && result == 24:\n        console.print(\"ok\")\n    else:\n        console.print(\"bad\")\n";
+        let want = ["ok"];
+        assert_eq!(link_run(src), want, "interpreter nested place write-back");
+        assert_eq!(wasm_run(src), want, "compiled nested place write-back");
+    }
+
+    #[test]
+    fn rfc0087_disjoint_same_root_places_compose_on_both_backends() {
+        let src = "import list\n\nfn exchange(var left: Int, var right: Int) -> Int:\n    let old = left\n    left = right\n    right = old\n    left + right\n\nfn main(console: Console):\n    var xs = [4, 9]\n    let total: Int = exchange(xs[0], xs[1])\n    if list.at(xs, 0) == 9 && list.at(xs, 1) == 4 && total == 13:\n        console.print(\"ok\")\n    else:\n        console.print(\"bad\")\n";
+        let want = ["ok"];
+        assert_eq!(link_run(src), want, "interpreter composes disjoint places");
+        assert_eq!(wasm_run(src), want, "compiled backend composes disjoint places");
+    }
+
+    #[test]
+    fn rfc0087_place_coordinates_are_evaluated_once_on_both_backends() {
+        let src = "import list\n\nfn next_index(var calls: Int) -> Int:\n    calls = calls + 1\n    0\n\nfn bump(var n: Int) -> Nil:\n    n = n + 5\n    return\n\nfn main(console: Console):\n    var calls = 0\n    var rows = [[1, 2]]\n    bump(rows[next_index(calls)][1])\n    if calls == 1 && list.at(list.at(rows, 0), 1) == 7:\n        console.print(\"ok\")\n    else:\n        console.print(\"bad\")\n";
+        let want = ["ok"];
+        assert_eq!(link_run(src), want, "interpreter captures coordinates once");
+        assert_eq!(wasm_run(src), want, "compiled backend captures coordinates once");
+    }
+
+    #[test]
+    fn rfc0087_dict_element_place_writes_back_on_both_backends() {
+        let src = r#"import dict
+
+fn bump(var n: Int) -> Int:
+    n = n + 3
+    n
+
+fn main(console: Console):
+    var values = dict.from_pairs([("a", 4)])
+    let result: Int = bump(values["a"])
+    if dict.at(values, "a") == 7 && result == 7:
+        console.print("ok")
+    else:
+        console.print("bad")
+"#;
+        let want = ["ok"];
+        assert_eq!(link_run(src), want, "interpreter dict place write-back");
+        assert_eq!(wasm_run(src), want, "compiled dict place write-back");
+    }
+
     /// RFC-0087: a resolved `var` call may discard its independent ordinary result
     /// in statement position and still writes back. Non-`var`, non-`Nil` calls keep
     /// the ordinary discarded-result error.

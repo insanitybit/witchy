@@ -3292,7 +3292,7 @@ fn bin_op(t: &Tok) -> BinOp {
 
 /// Desugar an assignment whose left side is a *place* expression into a plain
 /// `Stmt::Assign` of the base variable (RFC-0022). A subscript becomes a
-/// `set_at` method call (UFCS-resolved to `list`/`dict`), a field becomes a
+/// private `__set_at` method call (UFCS-resolved to `list`/`dict`), a field becomes a
 /// `RecordUpdate`, and nested places (`g[i][j] = v`) recurse outward — every
 /// step reassigns a value, so the uniqueness pass keeps it in place. The base
 /// must bottom out at a variable.
@@ -3302,7 +3302,7 @@ pub fn desugar_place_assign(place: Expr, value: Expr) -> Result<Stmt, String> {
         Expr::Index { base, index } => {
             let new_base = Expr::MethodCall {
                 receiver: base.clone(),
-                method: "set_at".to_string(),
+                method: "__set_at".to_string(),
                 args: vec![*index, value],
             };
             desugar_place_assign(*base, new_base)

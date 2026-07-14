@@ -1175,6 +1175,14 @@ impl Interpreter {
                     projections.push(PlaceProjection::Index(index));
                     Ok(root)
                 }
+                Expr::Call { name, args }
+                    if matches!(name.as_str(), "list.at" | "dict.at") && args.len() == 2 =>
+                {
+                    let root = capture(interpreter, &args[0], env, projections)?;
+                    let index = interpreter.eval(&args[1], env)?;
+                    projections.push(PlaceProjection::Index(index));
+                    Ok(root)
+                }
                 _ => err("a `var` argument must be a mutable place"),
             }
         }
@@ -1947,6 +1955,22 @@ impl Interpreter {
                     Ok(Some(Value::List(out)))
                 }
                 _ => err("push expects a list and a value"),
+            },
+            "list.__set_at" => match args {
+                [Value::List(items), Value::Int(index), value] => {
+                    let i = *index as usize;
+                    if i >= items.len() {
+                        return err(DiagTemplate::ListIndexOob.render(
+                            *index,
+                            items.len() as i64,
+                            "",
+                        ));
+                    }
+                    let mut out = items.clone();
+                    out[i] = value.clone();
+                    Ok(Some(Value::List(out)))
+                }
+                _ => err("set_at expects a list, an Int index, and a value"),
             },
             // Return a new list that is the two given lists joined.
             "list.concat" => match args {
