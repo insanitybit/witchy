@@ -186,6 +186,14 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope]
     local start; start="$(date +%s)"
     # `set -m` puts the background job in its own process group, so a timeout
     # can kill the WHOLE cargo/nextest tree, not just the top shell.
+    #
+    # CARGO_INCREMENTAL=0 is LOAD-BEARING, not hygiene (fb05dd34 landed it
+    # without a recorded reason): ~/.cargo/config.toml sets
+    # `rustc-wrapper = sccache`, and sccache REJECTS incremental compiles —
+    # `-C incremental=…` invocations exit nonzero, so an incremental gate
+    # build fails outright (measured 2026-07-15; see
+    # scratch/gate-perf-2026-07-15.md). Do not flip this while sccache is the
+    # global wrapper.
     set -m
     ( cd "$gate_wt" && exec env CARGO_INCREMENTAL=0 NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" bash -c "$gate_cmd" ) >"$log" 2>&1 &
     local gpid=$!
