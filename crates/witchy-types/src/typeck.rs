@@ -1815,7 +1815,19 @@ fn packed_list_in_type(t: &ast::Type, packed_names: &HashSet<&str>) -> Option<St
 /// containers/tuples/functions over these caps still need typed GC/closure
 /// lowering and are rejected at boundaries.
 fn is_externref_cap(name: &str) -> bool {
-    matches!(name, "Dir" | "File" | "Net" | "Socket" | "Listener" | "Secret")
+    externref_cap_name(name).is_some()
+}
+
+fn externref_cap_name(name: &str) -> Option<&'static str> {
+    match name {
+        "Dir" => Some("Dir"),
+        "File" => Some("File"),
+        "Net" => Some("Net"),
+        "Socket" => Some("Socket"),
+        "Listener" => Some("Listener"),
+        "Secret" => Some("Secret"),
+        _ => None,
+    }
 }
 
 fn transparent_externref_brand_cap(
@@ -3362,6 +3374,10 @@ impl Checker {
             match c.resolve(t) {
                 Ty::Dir(_) => Some("Dir"),
                 Ty::File(_) => Some("File"),
+                Ty::Net(_) => Some("Net"),
+                Ty::Socket => Some("Socket"),
+                Ty::Listener => Some("Listener"),
+                Ty::Secret => Some("Secret"),
                 Ty::List(inner) => go(c, &inner, seen),
                 Ty::Tuple(items) => items.iter().find_map(|i| go(c, i, seen)),
                 Ty::Fn(params, ret, _) => params
@@ -3370,7 +3386,7 @@ impl Checker {
                     .or_else(|| go(c, &ret, seen)),
                 Ty::Named(n, args) => {
                     if let Some(cap) = c.transparent_externref_brands.get(&n) {
-                        return Some(if cap == "Dir" { "Dir" } else { "File" });
+                        return externref_cap_name(cap);
                     }
                     if let Some(hit) = args.iter().find_map(|a| go(c, a, seen)) {
                         return Some(hit);
@@ -3394,7 +3410,7 @@ impl Checker {
 
     fn ty_is_direct_externref_value(&self, t: &Ty) -> bool {
         match self.resolve(t) {
-            Ty::Dir(_) | Ty::File(_) => true,
+            Ty::Dir(_) | Ty::File(_) | Ty::Net(_) | Ty::Socket | Ty::Listener | Ty::Secret => true,
             Ty::Named(n, args) => args.is_empty() && self.transparent_externref_brands.contains_key(&n),
             _ => false,
         }
@@ -3577,7 +3593,8 @@ impl Checker {
             Ty::Named(n, args)
                 if !(is_externref_cap(&n)
                     || self.transparent_externref_brands.contains_key(&n)
-                    || args.is_empty() && self.gc_cap_records.contains(&n)) =>
+                    || args.is_empty() && self.gc_cap_records.contains(&n))
+                    && structural_type_kind(&n).is_none() =>
             {
                 if let Some(cap) = self.ty_carries_externref_cap(&Ty::Named(n.clone(), args)) {
                     return terr(format!(

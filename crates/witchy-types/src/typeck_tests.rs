@@ -1032,6 +1032,55 @@ fn load(o: Outer, name: String) -> String:
     }
 
     #[test]
+    fn every_externref_capability_is_rejected_in_a_closure_environment() {
+        let cases = [
+            ("Dir[Read]", "Dir"),
+            ("File[Read]", "File"),
+            ("Net[Connect, Tcp]", "Net"),
+            ("Socket", "Socket"),
+            ("Listener", "Listener"),
+            ("Secret", "Secret"),
+        ];
+        for (ty, label) in cases {
+            let src = format!(
+                "fn hold(x: {ty}):\n    let later = fn():\n        let captured = x\n"
+            );
+            let err = check_str(&src).expect_err("externref capture must fail at type checking");
+            assert!(
+                err.contains("closure") && err.contains(label) && err.contains("GC-struct"),
+                "{ty} produced the wrong capture diagnostic: {err}"
+            );
+        }
+
+        let branded = r#"
+capability Redis from Net[Connect, Tcp]
+
+fn hold(redis: Redis):
+    let later = fn():
+        let captured = redis
+"#;
+        let err = check_str(branded).expect_err("an externref brand must retain its capability label");
+        assert!(
+            err.contains("closure") && err.contains("`Net` capability") && !err.contains("`File` capability"),
+            "brand produced the wrong capability diagnostic: {err}"
+        );
+
+        let nested = r#"
+type Vault:
+    key: Secret
+
+fn hold(vault: Vault):
+    let later = fn():
+        let captured = vault
+"#;
+        let err = check_str(nested).expect_err("a cap-carrying record capture must fail at type checking");
+        assert!(
+            err.contains("closure") && err.contains("Secret") && err.contains("GC-struct"),
+            "nested record produced the wrong capability diagnostic: {err}"
+        );
+    }
+
+    #[test]
     fn file_capability_rights_and_narrowing() {
         // RFC-0012: `File` is a host capability `main` may receive, the leaf of the
         // Dir/File hierarchy, right-typed like `Dir`.
