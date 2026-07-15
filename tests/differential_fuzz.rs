@@ -34,12 +34,12 @@ const BIN: &str = env!("CARGO_BIN_EXE_witchy");
 
 /// Number of statement kinds the generator can emit (see `gen_program`'s match). The
 /// grammar-coverage meta-assertion requires every one of these to appear across a run.
-/// Kinds 38..=46 (RFC-0005) exercise NOMINAL CAPABILITY AGGREGATES — records, positional
+/// Kinds 38..=47 (RFC-0005) exercise NOMINAL CAPABILITY AGGREGATES — records, positional
 /// wrappers, nested records, and tagged sums that CARRY a capability (`Dir`/`Net`) — which
 /// the compiled backend now GC-lowers. They construct/pass/return/project/destructure/match
 /// the aggregate and print only deterministic scalar/String fields; the capability value
 /// itself is NEVER rendered, compared, collected, or closed over, and is never used for I/O.
-const NKINDS: u32 = 47;
+const NKINDS: u32 = 48;
 
 /// Deterministic splitmix-ish PRNG — reproducible runs (no wall clock / OS randomness).
 struct Rng(u64);
@@ -659,15 +659,37 @@ fn gen_program(seed: u64, statements: usize) -> (String, u64) {
                 // the CAPABILITY field itself to a `let` (`let dd = db.d`, which the compiled
                 // backend keeps as an externref local, never boxing it) and re-storing it into a
                 // FRESH aggregate — plus CONSTRUCTOR ARGUMENT EVALUATION ORDER: the scalars are
-                // compound expressions whose value a wrong eval order would change. (A record
-                // `let`-PATTERN destructure over a cap type is NOT generated: it currently panics
-                // in codegen — see bugs/BUG-cap-record-letpattern-destructure.md, owned by the
-                // active RFC-0005 codegen work — and generated programs must stay total.)
+                // compound expressions whose value a wrong eval order would change.
                 let a = gen_int(&mut r, 1);
                 let b = gen_pos_int(&mut r, 1);
                 format!(
                     "    let db{stmt_i} = DirBox(root, ({a} % {b}))\n    let dd{stmt_i} = db{stmt_i}.d\n    let tt{stmt_i} = db{stmt_i}.tag\n    let db2_{stmt_i} = DirBox(dd{stmt_i}, tt{stmt_i} + 1)\n    console.print(\"${{dirbox_tag(db2_{stmt_i})}}\")\n    console.print(\"${{dirbox_tag(DirBox(root, ({a} - {b})))}}\")\n"
                 )
+            }
+            47 => {
+                // (RFC-0005) A record `let`-PATTERN DESTRUCTURE over a cap-carrying type —
+                // `let DirBox(dd, tt) = db` — which binds the CAPABILITY sub-value out of the
+                // aggregate through the pattern path (distinct from `match`-arm binding and from
+                // field projection). This used to panic in codegen ("cannot box a reference-typed
+                // value into the i64 slot"); it was fixed on master (commit 7d23a349, pinned by
+                // tests/rfc0005_gc_let_pattern.rs), so the fuzzer now exercises it. Half the time
+                // the cap binder is `_` (the wildcard path), half a named binder that is then
+                // re-stored into a fresh aggregate; the scalar binder is re-read either way. The
+                // bound capability is never rendered, compared, or used for I/O.
+                let a = gen_int(&mut r, 1);
+                let b = gen_pos_int(&mut r, 1);
+                if r.below(2) == 0 {
+                    // Named cap binder: destructure, then REBUILD a fresh aggregate from the
+                    // bound capability and re-read its scalar (proves the bound ref is live).
+                    format!(
+                        "    let db{stmt_i} = DirBox(root, ({a} % {b}))\n    let DirBox(dd{stmt_i}, tt{stmt_i}) = db{stmt_i}\n    let rb{stmt_i} = DirBox(dd{stmt_i}, tt{stmt_i} + 1)\n    console.print(\"${{tt{stmt_i}}}\")\n    console.print(\"${{dirbox_tag(rb{stmt_i})}}\")\n"
+                    )
+                } else {
+                    // Wildcard cap binder: destructure discarding the capability, keep the scalar.
+                    format!(
+                        "    let db{stmt_i} = DirBox(root, ({a} % {b}))\n    let DirBox(_, tt{stmt_i}) = db{stmt_i}\n    console.print(\"${{tt{stmt_i}}}\")\n"
+                    )
+                }
             }
             _ => unreachable!("kind is sampled below NKINDS"),
         };
@@ -1048,6 +1070,8 @@ fn capability_aggregates_reach_both_backends() {
         ("mutually_recursive_cap_adt", "    console.print(\"${capeven_count(EvSucc(root, OdSucc(net, EvZero(1))))}\")\n"),
         ("qualified_narrowed_field", "    let rb = RoBox(root as Dir[Read], \"cfg\")\n    console.print(robox_name(rb))\n    console.print(rb.name)\n"),
         ("project_and_rebuild", "    let db = DirBox(root, 5)\n    let dd = db.d\n    let db2 = DirBox(dd, db.tag + 1)\n    console.print(\"${dirbox_tag(db2)}\")\n"),
+        ("let_pattern_destructure_named", "    let db = DirBox(root, 5)\n    let DirBox(dd, tt) = db\n    let rb = DirBox(dd, tt + 1)\n    console.print(\"${tt}\")\n    console.print(\"${dirbox_tag(rb)}\")\n"),
+        ("let_pattern_destructure_wildcard", "    let db = DirBox(root, 5)\n    let DirBox(_, tt) = db\n    console.print(\"${tt}\")\n"),
     ];
     // Reuse the generator's exact preamble so the control tests the SAME types/helpers the
     // random sweep uses (drift here would make the control lie). `gen_program(seed, 0)` yields
