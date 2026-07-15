@@ -10,7 +10,7 @@ related:
   - "0083 (opt-mode lifetimes - loans must end or transfer across a tail edge)"
   - "0087 (uniform var write-back - move-out is part of the callable ABI)"
   - "0089 (fully in-place functional kernels - requires constant control stack)"
-tracking: stages 1-2 are implemented; stage 3 covers specialized direct calls and scalar closure-table cycles, while capability/reference result envelopes remain gated by RFC-0005
+tracking: stages 1-2 are implemented; stage 3 covers specialized direct calls, scalar closure-table cycles, and direct capability/reference results, while indirect reference signatures remain gated by RFC-0005's typed closure ABI
 ---
 
 # RFC-0090: Guaranteed proper tail calls

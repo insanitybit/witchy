@@ -548,3 +548,14 @@ plus import/link grants rather than by guest-held authority handles. The
 remaining RFC-0005 work is the deferred Stage 4 representation for
 cap-carrying aggregates/closures and the final terminology/API cleanup around
 host-owned grant objects.
+
+**2026-07-15 implementation checkpoint.** Stage 4 aggregate storage has landed
+for non-generic nominal records, positional wrappers, tagged sums, mutually
+recursive sums, concrete tuples, and tuple aliases. These shapes use typed Wasm
+GC structs selected by the shared reference-storage classifier; construction,
+projection, pattern matching, function boundaries, and direct proper-tail
+dispatch preserve their `externref` and GC-reference fields without i64 erasure.
+The remaining representation work is the typed closure ABI and reference-safe
+closure environments, followed by the still-rejected generic containers,
+generic aggregates, and region copy-out shapes that can transitively store a
+capability.

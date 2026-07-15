@@ -570,9 +570,11 @@ participate as direct edges after specialization. A genuinely indirect scalar
 closure edge uses its exact function-table signature and runtime table index to
 select a typed state-machine bank; mixed scalar result kinds use the closure
 slot representation inside the component and recover their declared kind at its
-public boundary. Reference result envelopes retain their ordinary call boundary
-until RFC-0005 can forward them without erasure. Callable kinds that the closure
-ABI cannot represent are rejected rather than boxed into integer slots.
+public boundary. Direct self and mutual edges with reference-valued results keep
+their exact `externref` or GC-reference result kind through the loop or dispatcher.
+A genuinely indirect closure edge whose parameter or result signature contains a
+reference remains rejected until RFC-0005's typed closure ABI lands; it is never
+boxed into an integer slot.
 
 No tail-call keyword or sigil is required. Arguments still evaluate left to
 right and are rebound simultaneously (`f(b, a)` swaps correctly). A textually
