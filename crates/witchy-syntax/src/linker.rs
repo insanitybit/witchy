@@ -428,6 +428,44 @@ pub fn std_source(name: &str) -> Option<&'static str> {
 /// implementation; `crate::pipeline::link` wires it in.
 pub type ComptimeExpander = fn(&str, &mut Module, &[(String, Module)]) -> Result<(), String>;
 
+/// Process-lifetime cache of bundled std modules pulled into a link set, in
+/// their fully prepared form: parsed, records-lowered, and compile-time
+/// expanded. The expansion of a `derive`-carrying std module (json/meta/
+/// reflect/semver) runs comptime programs that recursively link — ~200ms per
+/// link that imports `semver` — and recomputes byte-identical results every
+/// time, because the inputs are process-constants: the bundled sources are
+/// compiled-in `&'static str`s, comptime programs are zero-capability and
+/// deterministic, and a std module's imports resolve std-only (user modules
+/// cannot claim reserved names). The single sibling-reading pass — tagged-
+/// literal expansion — is excluded by construction: a std source that even
+/// mentions `tag"` is never cached (see `pulled_std_cache_insert`). Keyed by
+/// the expander fn pointer so a non-standard `ComptimeExpander` gets its own
+/// entries, never another expander's output.
+static PULLED_STD_EXPANSION_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<HashMap<(usize, String), Module>>,
+> = std::sync::OnceLock::new();
+
+fn pulled_std_cache_get(expand: ComptimeExpander, name: &str) -> Option<Module> {
+    let cache = PULLED_STD_EXPANSION_CACHE.get()?;
+    let map = cache.lock().ok()?;
+    map.get(&(expand as usize, name.to_string())).cloned()
+}
+
+fn pulled_std_cache_insert(expand: ComptimeExpander, name: &str, module: &Module) {
+    // Tagged-literal expansion reads sibling modules, whose expansion state at
+    // that point depends on the link set's pull order — so a std source that
+    // even mentions `tag"` (in code, an emitted string, or a comment) is
+    // conservatively left uncached. No bundled module does today.
+    if !std_source(name).is_some_and(|s| !s.contains("tag\"")) {
+        return;
+    }
+    let cache =
+        PULLED_STD_EXPANSION_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    if let Ok(mut map) = cache.lock() {
+        map.insert((expand as usize, name.to_string()), module.clone());
+    }
+}
+
 /// Link-time policy for entry-specific privileges.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LinkMode {
@@ -655,7 +693,10 @@ pub fn link_with_user_modules_with_mode(
     // Modules pulled in by the prelude/import passes below post-date the
     // records-lowering + compile-time expansion above; index from here so we can
     // run those same passes on just the new ones (see after the pull-in loop).
+    // Indices whose module came out of the expansion cache already carry both
+    // passes and are skipped below.
     let pulled_std_start = modules.len();
+    let mut cached_pull_indices: HashSet<usize> = HashSet::new();
 
     // THE PRELUDE: the core data modules are always in the link set, so the
     // module-qualified spellings (`list.push`, `string.split`, `dict.insert`,
@@ -667,6 +708,11 @@ pub fn link_with_user_modules_with_mode(
     // shadow bundled std names, so its dependencies always resolve canonically.
     for prelude in PRELUDE_MODULES {
         if !modules.iter().any(|(n, _)| n == prelude) {
+            if let Some(m) = pulled_std_cache_get(expand, prelude) {
+                cached_pull_indices.insert(modules.len());
+                modules.push((prelude.to_string(), m));
+                continue;
+            }
             let src = std_source(prelude).ok_or_else(|| LinkError {
                 message: format!("prelude module `{prelude}` has no bundled source"),
                 location: None,
@@ -689,7 +735,10 @@ pub fn link_with_user_modules_with_mode(
         let imports = modules[i].1.imports.clone();
         for imp in imports {
             if !modules.iter().any(|(n, _)| n == &imp) {
-                if let Some(src) = std_source(&imp) {
+                if let Some(m) = pulled_std_cache_get(expand, &imp) {
+                    cached_pull_indices.insert(modules.len());
+                    modules.push((imp.clone(), m));
+                } else if let Some(src) = std_source(&imp) {
                     let m = crate::parser::parse_module(src).map_err(|e| LinkError {
                         message: format!("std module `{imp}`: {e}"),
                         location: None,
@@ -711,10 +760,16 @@ pub fn link_with_user_modules_with_mode(
     // extra in the link set. The entry modules already ran both passes above, so
     // restrict to `pulled_std_start..` to avoid re-running comptime expansion
     // (which, unlike derive desugaring, is not idempotent).
-    for (_, m) in modules[pulled_std_start..].iter_mut() {
+    for (k, (_, m)) in modules.iter_mut().enumerate().skip(pulled_std_start) {
+        if cached_pull_indices.contains(&k) {
+            continue;
+        }
         *m = crate::records::lower_lenient(m.clone()).map_err(|message| LinkError { message, location: None })?;
     }
     for k in pulled_std_start..modules.len() {
+        if cached_pull_indices.contains(&k) {
+            continue;
+        }
         let name = modules[k].0.clone();
         let siblings: Vec<(String, Module)> = modules
             .iter()
@@ -722,7 +777,19 @@ pub fn link_with_user_modules_with_mode(
             .filter(|(j, _)| *j != k)
             .map(|(_, m)| m.clone())
             .collect();
+        let imports_before =
+            (modules[k].1.imports.clone(), modules[k].1.from_imports.clone());
         expand(&name, &mut modules[k].1, &siblings).map_err(|message| LinkError { message, location: None })?;
+        // A comptime block may EMIT `import` lines, which merge into the module
+        // after the pull-in loop above has already run — a cached copy would
+        // feed them back into a later link's pull-in and pull modules this link
+        // never saw. Cache only expansions that left the import lists alone (no
+        // bundled module's expansion grows them today).
+        if imports_before.0 == modules[k].1.imports
+            && imports_before.1 == modules[k].1.from_imports
+        {
+            pulled_std_cache_insert(expand, &name, &modules[k].1);
+        }
     }
 
     // MethodCall nodes survive linking: `x.f(a)` resolves to a REAL method

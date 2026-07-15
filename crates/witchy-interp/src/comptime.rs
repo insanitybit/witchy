@@ -723,6 +723,27 @@ fn main(console: Console):
         witchy_types::typeck::check(&linked).expect("typecheck");
     }
 
+    /// The pulled-std expansion cache (linker.rs) must be TRANSPARENT: linking
+    /// the same program twice in one process — the first link populates the
+    /// cache (including for `semver`, whose `derive` runs comptime programs),
+    /// the second consumes it — must produce identical linked modules. This is
+    /// the contract that makes the cache safe: expansion of a bundled std
+    /// module is a pure function of the compiled-in std sources.
+    #[test]
+    fn repeated_links_of_a_derive_importing_program_are_identical() {
+        let src = "import semver\nimport json\n\nfn main(console: Console):\n    match semver.parse(\"1.2.3\"):\n        Ok(v) -> console.print(semver.format(v))\n        Err(e) -> console.print(\"err\")\n";
+        let link_once = || {
+            let module = witchy_syntax::parser::parse_module(src).expect("parse");
+            crate::pipeline::link(vec![("main".into(), module)], "main").expect("link")
+        };
+        let cold = link_once();
+        let warm = link_once();
+        assert_eq!(cold, warm);
+        witchy_types::typeck::check(&warm).expect("typecheck");
+        let out = crate::interpreter::run_module(warm, ".", Vec::new()).expect("run");
+        assert_eq!(out, ["1.2.3"]);
+    }
+
     #[test]
     fn mixed_source_and_typed_item_output_is_rejected() {
         fn link_error(src: &str) -> String {
