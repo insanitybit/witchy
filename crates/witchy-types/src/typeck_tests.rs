@@ -936,6 +936,20 @@ fn has_optional_id() -> Option(Bool):
         check_str("type Handle:\n    Handle(File, String)\nfn take(console: Console, h: Handle):\n    match h:\n        Handle(_, label) -> console.print(label)\n")
             .expect("a positional cap-carrying nominal aggregate GC-lowers");
 
+        check_str("type Resource:\n    Missing(String)\n    Opened(File, String)\nfn take(console: Console, r: Resource):\n    match r:\n        Missing(label) -> console.print(label)\n        Opened(_, label) -> console.print(label)\n")
+            .expect("a non-generic cap-carrying sum GC-lowers");
+
+        let err = check_str("type Bad:\n    Empty\n    Files(List(File))\nfn take(console: Console, x: Bad):\n    console.print(\"x\")\n")
+            .expect_err("a GC-lowered sum cannot hide a capability in a slot-boxed field");
+        assert!(err.contains("File") && err.contains("List"), "got: {err}");
+
+        let err = check_str("type MaybeBox(a):\n    Empty\n    Boxed(a)\nfn main(console: Console, f: File):\n    let x = Boxed(f)\n    console.print(\"x\")\n")
+            .expect_err("a generic sum instantiated with File needs monomorphized GC lowering");
+        assert!(err.contains("MaybeBox") && err.contains("File"), "got: {err}");
+
+        check_str("type Left:\n    LeftEnd\n    ToRight(Right)\ntype Right:\n    RightFile(File)\n    ToLeft(Left)\nfn take(console: Console, x: Left):\n    match x:\n        LeftEnd -> console.print(\"end\")\n        ToRight(_) -> console.print(\"right\")\n")
+            .expect("mutually recursive cap-carrying sums share the GC recursion group");
+
         let err = check_str("fn tupled(console: Console, pair: (File, Int)):\n    console.print(\"x\")\n")
             .expect_err("a File tuple element needs the GC-struct aggregate path");
         assert!(err.contains("File") && err.contains("tuple"), "got: {err}");
@@ -1039,7 +1053,7 @@ fn load(o: Outer, name: String) -> String:
     }
 
     #[test]
-    fn gc_record_entries_use_reference_storage_classifier() {
+    fn gc_aggregate_names_use_reference_storage_classifier() {
         let module = witchy_syntax::parser::parse_module(
             r#"
 type FileAlias = File[Read]
@@ -1063,9 +1077,9 @@ type Sum:
         .expect("parse aggregate storage shapes");
 
         assert_eq!(
-            gc_cap_record_entries(&module),
-            vec![("Mixed".to_string(), "Mixed".to_string())],
-            "function storage must not hide a later externref; transparent, generic, and sum shapes keep their separate representations"
+            gc_cap_aggregate_names(&module),
+            vec!["Mixed".to_string(), "Sum".to_string()],
+            "function storage must not hide a later externref; transparent and generic shapes keep their separate representations"
         );
     }
 

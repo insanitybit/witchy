@@ -1918,12 +1918,11 @@ fn nullable_externref_option_cap(
     transparent_externref_brand_field_cap(&args[0], defs, &mut HashSet::new())
 }
 
-/// (RFC-0005 stage 4) A single-variant, non-generic nominal aggregate —
-/// positional or named-field, `capability` or plain `type` alike — whose fields
-/// transitively carry a migrated externref capability. These lower to wasm GC
-/// structs; a transparent one-field capability brand remains the direct
+/// (RFC-0005 stage 4) A non-generic nominal aggregate whose variants
+/// transitively carry a migrated externref capability. These lower to one typed
+/// wasm GC struct; a transparent one-field capability brand remains the direct
 /// externref representation instead.
-fn gc_cap_record_cap(
+fn gc_cap_aggregate_cap(
     name: &str,
     defs: &HashMap<&str, &ast::TypeDef>,
     storage: &ReferenceStorageClassifier<'_>,
@@ -1932,19 +1931,18 @@ fn gc_cap_record_cap(
         return None;
     }
     let def = defs.get(name)?;
-    if !def.params.is_empty() || def.variants.len() != 1 {
+    if !def.params.is_empty() || def.variants.is_empty() {
         return None;
     }
     storage.first_externref(&ast::Type::Named(name.to_string(), Vec::new()))
 }
 
-/// (RFC-0005 stage 4) The module's GC-lowered cap-carrying record types, as
-/// `(type name, constructor name)` pairs. The representation-neutral reference
-/// fact comes from `ReferenceStorageClassifier`; this function adds only the
-/// current lowering's shape restriction. Typeck and codegen both consume these
-/// entries, so they cannot disagree (BUG-566 was codegen holding a second,
-/// shallower copy that missed nested records and ICE'd the encoder).
-pub fn gc_cap_record_entries(module: &ast::Module) -> Vec<(String, String)> {
+/// (RFC-0005 stage 4) The module's GC-lowered cap-carrying nominal aggregate
+/// names. The representation-neutral reference fact comes from
+/// `ReferenceStorageClassifier`; this function adds only the current lowering's
+/// non-generic restriction. Typeck and codegen both consume this set, so they
+/// cannot disagree about which types have a reference-safe representation.
+pub fn gc_cap_aggregate_names(module: &ast::Module) -> Vec<String> {
     let storage = ReferenceStorageClassifier::new(module);
     let type_defs: HashMap<&str, &ast::TypeDef> = module
         .items
@@ -1958,8 +1956,10 @@ pub fn gc_cap_record_entries(module: &ast::Module) -> Vec<(String, String)> {
         .items
         .iter()
         .filter_map(|item| match item {
-            Item::Type(t) if gc_cap_record_cap(&t.name, &type_defs, &storage).is_some() => {
-                t.variants.first().map(|v| (t.name.clone(), v.name.clone()))
+            Item::Type(t)
+                if gc_cap_aggregate_cap(&t.name, &type_defs, &storage).is_some() =>
+            {
+                Some(t.name.clone())
             }
             _ => None,
         })
@@ -1971,9 +1971,9 @@ pub fn gc_cap_record_entries(module: &ast::Module) -> Vec<(String, String)> {
 ///
 /// A bare capability parameter/return is fine: it stays an `externref`. Slot-boxed
 /// containers (`Option`/`Result`/`List`/`Dict`) are impossible because an externref has
-/// no i64 bit-pattern. Cap-carrying tuples/user records are also rejected until the
-/// planned GC-struct aggregate stage lands; otherwise lowering would still send their
-/// fields through `$mkN`/`ToSlot`.
+/// no i64 bit-pattern. Non-generic nominal aggregates use typed GC structs; tuples and
+/// generic aggregates remain rejected because they would still send their fields
+/// through `$mkN`/`ToSlot`.
 fn reject_cap_slot_boundary(
     t: &ast::Type,
     defs: &HashMap<&str, &ast::TypeDef>,
@@ -2027,7 +2027,7 @@ fn reject_cap_slot_boundary(
                 }
             } else if !(is_externref_cap(n)
                 || transparent_externref_brand_cap(n, defs, &mut HashSet::new()).is_some()
-                || (args.is_empty() && gc_cap_record_cap(n, defs, storage).is_some()))
+                || (args.is_empty() && gc_cap_aggregate_cap(n, defs, storage).is_some()))
             {
                 if let Some(cap) = storage.first_externref_including_function_signatures(t) {
                     return Err(TypeError {
@@ -2892,9 +2892,9 @@ struct Checker {
     /// Single-field brands whose compiled representation is the same externref
     /// as their single underlying migrated host capability.
     transparent_externref_brands: HashMap<String, String>,
-    /// Named non-generic capability records that the compiled backend lowers to
-    /// typed GC structs, so they may directly carry migrated externref caps.
-    gc_cap_records: HashSet<String>,
+    /// Named non-generic aggregates that the compiled backend lowers to typed GC
+    /// structs, so they may directly carry migrated externref capabilities.
+    gc_cap_aggregates: HashSet<String>,
     adt_variants: HashMap<String, Vec<String>>,
     fn_conventions: HashMap<String, Vec<Convention>>,
     /// Per-function type parameters (name, var id), from lowercase type names in
@@ -3573,7 +3573,7 @@ impl Checker {
             Ty::Named(n, args)
                 if !(is_externref_cap(&n)
                     || self.transparent_externref_brands.contains_key(&n)
-                    || args.is_empty() && self.gc_cap_records.contains(&n))
+                    || args.is_empty() && self.gc_cap_aggregates.contains(&n))
                     && structural_type_kind(&n).is_none() =>
             {
                 if let Some(cap) = self.ty_carries_externref_cap(&Ty::Named(n.clone(), args)) {
@@ -7323,7 +7323,7 @@ fn run_check_selected(
         record_fields: HashMap::new(),
         sealed_types: HashSet::new(),
         transparent_externref_brands: HashMap::new(),
-        gc_cap_records: HashSet::new(),
+        gc_cap_aggregates: HashSet::new(),
         adt_variants: HashMap::new(),
         fn_typarams: HashMap::new(),
         fn_bounds: HashMap::new(),
@@ -7494,8 +7494,8 @@ fn run_check_selected(
             c.transparent_externref_brands.insert(t.name.clone(), cap);
         }
     }
-    for (name, _ctor) in gc_cap_record_entries(module) {
-        c.gc_cap_records.insert(name);
+    for name in gc_cap_aggregate_names(module) {
+        c.gc_cap_aggregates.insert(name);
     }
 
     // Reject typo'd / undeclared type names in signatures before they become

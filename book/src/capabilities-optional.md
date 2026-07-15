@@ -70,15 +70,15 @@ fn main(console: Console, dir: Dir):
 `handle` can read or write, so its footprint is the union: `Dir`. The narrower
 helpers still report only what they use (`Dir[Read]` and `Dir[Write]`).
 
-A capability-carrying **nominal aggregate** — any non-generic single-variant
-`type`, with named fields or positional payloads, sealed `capability`
+A capability-carrying **nominal aggregate** — any non-generic `type`, with named
+fields, positional payloads, or multiple variants, sealed `capability`
 declaration or plain `type` alike — compiles to a typed wasm GC struct. The one
 exception is a transparent single-field capability brand, which stays a direct
-externref instead of allocating a wrapper struct. These shapes may nest in
-either direction while keeping the capability an unforgeable reference.
-Multi-variant enums, tuples, collections, and closure environments carrying
-capabilities are still intentionally rejected until their GC lowering lands;
-no capability is silently boxed into an ordinary heap slot.
+externref instead of allocating a wrapper struct. These shapes may nest and
+recurse while keeping the capability an unforgeable reference. Tuples,
+collections, and closure environments carrying capabilities are still
+intentionally rejected until their GC lowering lands; no capability is
+silently boxed into an ordinary heap slot.
 
 ## At the entry point
 

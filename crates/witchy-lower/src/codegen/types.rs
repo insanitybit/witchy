@@ -55,7 +55,7 @@ impl Codegen<'_> {
                     return valtype_kind(self.val_type_of(e));
                 }
                 if let Some(bt) = self.record_type_of(base) {
-                    if let Some(struct_id) = self.gc_record_ids.get(&bt).copied() {
+                    if let Some(struct_id) = self.gc_aggregate_ids.get(&bt).copied() {
                         if let Some(fields) = self.record_field_types.get(&bt) {
                             if let Some(names) = self.record_fields.get(&bt) {
                                 if let Some(idx) = names.iter().position(|(n, _)| n == field) {
@@ -159,7 +159,7 @@ impl Codegen<'_> {
                 Kind::ExternRef
             }
             Expr::Ctor { name, .. } => self
-                .gc_record_id_for_ctor(name)
+                .gc_layout_for_ctor(name)
                 .map(|(_, id)| Kind::GcRef(id))
                 .unwrap_or(Kind::I32),
             _ => Kind::I32, // Bool, Str, List, Ctor, Spawn

@@ -245,7 +245,7 @@ const ENV_PARAM: &str = "__witchy_env";
 ///   * `ExternRef` — migrated unforgeable capabilities (`Dir`/`File`/`Net`,
 ///     `Socket`/`Listener`, and `Secret`). These must not cross the universal
 ///     slot or linear-memory heap.
-///   * `GcRef` — a typed GC-struct reference for named cap-carrying records.
+///   * `GcRef` — a typed GC-struct reference for named cap-carrying aggregates.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     I32,
@@ -636,6 +636,14 @@ struct LoanRoot {
     bias: i32,
 }
 
+#[derive(Clone)]
+struct GcCtorLayout {
+    owner: String,
+    tag: Option<u32>,
+    field_base: u32,
+    field_types: Vec<Type>,
+}
+
 struct Codegen<'types> {
     strings: Vec<(String, u32)>,
     next_offset: u32,
@@ -676,11 +684,11 @@ struct Codegen<'types> {
     /// Constructor name -> its single underlying field type for transparent
     /// externref brands. The constructor lowers to its sole argument.
     transparent_externref_ctors: HashMap<String, Type>,
-    /// Named, non-generic cap-carrying records lowered as typed GC structs.
-    gc_record_ids: HashMap<String, u32>,
-    /// Constructor name -> owning GC-backed record type.
-    gc_record_ctors: HashMap<String, String>,
-    /// The WIR struct type declarations for `gc_record_ids`, indexed by id.
+    /// Named, non-generic cap-carrying aggregates lowered as typed GC structs.
+    gc_aggregate_ids: HashMap<String, u32>,
+    /// Constructor name -> its owner, optional sum tag, and payload field band.
+    gc_ctor_layouts: HashMap<String, GcCtorLayout>,
+    /// The WIR struct type declarations for `gc_aggregate_ids`, indexed by id.
     gc_structs: Vec<witchy_wir::wir::WirStructDef>,
     /// Constructor name -> per-field record type name (Some when that field is
     /// a record), so binding `Circle(p)` in a pattern lets `p.field` resolve.
@@ -1194,8 +1202,8 @@ impl<'types> Codegen<'types> {
             ctors: HashMap::new(),
             transparent_externref_brands: HashSet::new(),
             transparent_externref_ctors: HashMap::new(),
-            gc_record_ids: HashMap::new(),
-            gc_record_ctors: HashMap::new(),
+            gc_aggregate_ids: HashMap::new(),
+            gc_ctor_layouts: HashMap::new(),
             gc_structs: Vec::new(),
             ctor_field_records: HashMap::new(),
             mk_arities: HashSet::new(),
@@ -1366,10 +1374,11 @@ impl<'types> Codegen<'types> {
     }
 
     fn kind_for_type(&self, t: &Type) -> Kind {
+        let t = t.unqualified();
         match t {
             Type::Named(n, _) if self.transparent_externref_brands.contains(n) => Kind::ExternRef,
             Type::Named(n, args) if args.is_empty() => {
-                self.gc_record_ids
+                self.gc_aggregate_ids
                     .get(n)
                     .copied()
                     .map(Kind::GcRef)
@@ -1403,10 +1412,10 @@ impl<'types> Codegen<'types> {
         }
     }
 
-    fn gc_record_id_for_ctor(&self, name: &str) -> Option<(String, u32)> {
-        let owner = self.gc_record_ctors.get(name)?;
-        let id = self.gc_record_ids.get(owner).copied()?;
-        Some((owner.clone(), id))
+    fn gc_layout_for_ctor(&self, name: &str) -> Option<(GcCtorLayout, u32)> {
+        let layout = self.gc_ctor_layouts.get(name)?.clone();
+        let id = self.gc_aggregate_ids.get(&layout.owner).copied()?;
+        Some((layout, id))
     }
 
     /// The WASM kind a closure-valued expression returns: a function-typed
@@ -3173,6 +3182,7 @@ impl<'types> Codegen<'types> {
         let last = block.stmts.len().saturating_sub(1);
         let mut seq: witchy_wir::wir::WirSeq = Vec::with_capacity(block.stmts.len() + 1);
         let mut tail_is_value = false;
+        let tail_is_terminal = matches!(block.stmts.last(), Some(Stmt::Return(_)));
         for (i, stmt) in block.stmts.iter().enumerate() {
             // Public collection intrinsics still lower to their value-producing
             // implementation internally. In RFC-0087 statement form, feed that
@@ -4387,8 +4397,10 @@ impl<'types> Codegen<'types> {
                 }
             }
         }
-        // The block always leaves one value: the tail expression, or `i32.const 0`.
-        if !tail_is_value {
+        // A fallthrough block always leaves one value: the tail expression, or
+        // `i32.const 0`. A terminal `return` needs no synthetic value; adding an
+        // i32 after it makes reference-returning functions fail Wasm validation.
+        if !tail_is_value && !tail_is_terminal {
             seq.push(N::Push(W::ConstI32(0)));
         }
         // Facts consumption. In a WIR-collecting scope `lower_block` is invoked many
@@ -4883,22 +4895,21 @@ impl<'types> Codegen<'types> {
                 }],
             ),
             Pattern::Ctor { name, args } => {
-                let (owner, id) = self.gc_record_id_for_ctor(name)?;
+                let (layout, id) = self.gc_layout_for_ctor(name)?;
                 if id != struct_id {
                     return None;
                 }
-                let field_types = self.record_field_types.get(&owner)?.clone();
-                if field_types.len() != args.len() {
+                if layout.field_types.len() != args.len() {
                     return None;
                 }
                 let mut field_conds: Vec<W> = Vec::new();
                 let mut binds: witchy_wir::wir::WirSeq = Vec::new();
                 for (i, sub) in args.iter().enumerate() {
-                    let fty = field_types.get(i)?;
+                    let fty = layout.field_types.get(i)?;
                     let fk = self.kind_for_type(fty);
                     let field = W::StructGet {
                         struct_id,
-                        field: i as u32,
+                        field: layout.field_base + i as u32,
                         base: Box::new(value.clone()),
                     };
                     let (cond, sub_binds) = match fk {
@@ -4916,10 +4927,34 @@ impl<'types> Codegen<'types> {
                     }
                     binds.extend(sub_binds);
                 }
-                let cond = if field_conds.is_empty() {
+                let payload_cond = if field_conds.is_empty() {
                     W::ConstI32(1)
                 } else {
                     wir_and_chain(&field_conds)
+                };
+                let cond = if let Some(tag) = layout.tag {
+                    let tag_check = W::Binary {
+                        op: witchy_wir::wir::BinOp::Eq,
+                        kind: witchy_wir::wir::Kind::I32,
+                        lhs: Box::new(W::StructGet {
+                            struct_id,
+                            field: 0,
+                            base: Box::new(value.clone()),
+                        }),
+                        rhs: Box::new(W::ConstI32(tag as i32)),
+                    };
+                    if matches!(payload_cond, W::ConstI32(1)) {
+                        tag_check
+                    } else {
+                        W::Control(Box::new(N::If {
+                            cond: tag_check,
+                            then_: vec![N::Push(payload_cond)],
+                            els: vec![N::Push(W::ConstI32(0))],
+                            result: Some(witchy_wir::wir::WirTy::Bool),
+                        }))
+                    }
+                } else {
+                    payload_cond
                 };
                 (cond, binds)
             }
@@ -5584,8 +5619,10 @@ impl<'types> Codegen<'types> {
         to: Kind,
     ) -> witchy_wir::wir::WirSeq {
         if from != to {
-            if let Some(witchy_wir::wir::WirNode::Push(v)) = seq.pop() {
-                seq.push(witchy_wir::wir::WirNode::Push(Self::wir_convert(v, from, to)));
+            if let Some(witchy_wir::wir::WirNode::Push(value)) = seq.last_mut() {
+                let original =
+                    std::mem::replace(value, witchy_wir::wir::WirExpr::ConstI32(0));
+                *value = Self::wir_convert(original, from, to);
             }
         }
         seq
@@ -6304,14 +6341,36 @@ impl<'types> Codegen<'types> {
                     }
                     return self.lower_expr(&args[0]);
                 }
-                if let Some((owner, struct_id)) = self.gc_record_id_for_ctor(name) {
-                    let fields = self.record_field_types.get(&owner)?;
-                    if fields.len() != args.len() {
+                if let Some((layout, struct_id)) = self.gc_layout_for_ctor(name) {
+                    if layout.field_types.len() != args.len() {
                         return None;
                     }
-                    let mut lowered = Vec::with_capacity(args.len());
-                    for arg in args {
-                        lowered.push(self.lower_expr(arg)?);
+                    if layout.tag.is_none() {
+                        let mut lowered = Vec::with_capacity(args.len());
+                        for arg in args {
+                            lowered.push(self.lower_expr(arg)?);
+                        }
+                        return Some(W::StructNew { struct_id, args: lowered });
+                    }
+                    let zero = |kind: witchy_wir::wir::Kind| match kind {
+                        witchy_wir::wir::Kind::I32 => W::ConstI32(0),
+                        witchy_wir::wir::Kind::I64 => W::ConstI64(0),
+                        witchy_wir::wir::Kind::F64 => W::ConstF64(0.0),
+                        ref_kind @ (witchy_wir::wir::Kind::ExternRef
+                        | witchy_wir::wir::Kind::StructRef
+                        | witchy_wir::wir::Kind::GcRef(_)) => W::RefNull(ref_kind),
+                    };
+                    let mut lowered: Vec<W> = self
+                        .gc_structs
+                        .get(struct_id as usize)?
+                        .fields
+                        .iter()
+                        .copied()
+                        .map(zero)
+                        .collect();
+                    lowered[0] = W::ConstI32(layout.tag? as i32);
+                    for (i, arg) in args.iter().enumerate() {
+                        lowered[layout.field_base as usize + i] = self.lower_expr(arg)?;
                     }
                     return Some(W::StructNew { struct_id, args: lowered });
                 }
@@ -6338,7 +6397,7 @@ impl<'types> Codegen<'types> {
                 // (RFC-0005 stage 4) A GC-lowered cap-carrying record spreads via
                 // `StructNew`, reading each un-updated field from the base struct
                 // with `StructGet` — the GC analog of the linear `mk{N}` below.
-                if let Some(struct_id) = self.gc_record_ids.get(&tyname).copied() {
+                if let Some(struct_id) = self.gc_aggregate_ids.get(&tyname).copied() {
                     let (prelude, base_ref): (Option<witchy_wir::wir::WirNode>, W) =
                         if let Expr::Var(v) = base.as_ref() {
                             (None, W::GetLocal(v.clone()))
@@ -6790,7 +6849,7 @@ impl<'types> Codegen<'types> {
                     }
                 }
                 if let Some(base_ty) = self.record_type_of(base) {
-                    if let Some(struct_id) = self.gc_record_ids.get(&base_ty).copied() {
+                    if let Some(struct_id) = self.gc_aggregate_ids.get(&base_ty).copied() {
                         let names = self.record_fields.get(&base_ty)?;
                         let idx = names.iter().position(|(n, _)| n == field)?;
                         return Some(W::StructGet {

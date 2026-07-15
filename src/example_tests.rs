@@ -4923,6 +4923,12 @@ fn main(console: Console):
                 .contains("not defined on capability types"),
             "a capability nested in a tuple must be rejected too"
         );
+        let in_sum = "type Resource:\n    Missing\n    Opened(Dir[Read])\n\nfn same(a: Resource, b: Resource) -> Bool:\n    a == b\n";
+        assert!(
+            typeck::check_str(in_sum).expect_err("cap in a nominal sum must be rejected")
+                .contains("not defined on capability types"),
+            "a capability nested in a GC-lowered sum must remain non-comparable"
+        );
     }
 
     /// (RFC-0032) `vm.par_map` over `String` elements: each string is a flat
@@ -5034,6 +5040,137 @@ fn main(console: Console):
         let bin = codegen::compile_module_binary(&linked)
             .expect("compile")
             .expect("the binary path lowers plain cap-carrying records");
+        let mut rt = Runtime::batch().expect("runtime");
+        let caps = Capabilities {
+            print: true,
+            quiet: true,
+            dir_root: Some(root.clone()),
+            dir_read: true,
+            ..Default::default()
+        };
+        let mut actor = rt.spawn(&bin, caps, 64).expect("spawn");
+        actor.run().expect("run");
+        assert_eq!(actor.output(), want, "compiled WASM must agree");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// RFC-0005 Stage 4 (sum slice): a non-generic nominal sum that carries a
+    /// migrated capability uses one tagged GC struct with disjoint per-variant
+    /// field bands. Wrong-variant patterns must test the tag before touching an
+    /// inactive (possibly null) reference field. Recursive and mutually
+    /// recursive sums use the same Wasm GC recursion group.
+    #[test]
+    fn capability_sum_runs_on_tagged_gc_backend() {
+        use crate::runtime::{Capabilities, Runtime};
+        let root = std::env::temp_dir().join(format!("witchy_capsum_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        std::fs::write(root.join("greeting.txt"), "hello-sum").expect("seed");
+        let root_str = root.to_str().expect("utf8 root").to_string();
+        let src = r#"
+type Resource:
+    Missing(String)
+    Opened(Dir[Read], String)
+    Count(Int)
+    Ratio(Float)
+    Pair(String, String)
+
+type FrozenHolder:
+    FrozenHolder(frozen Resource)
+
+type Tree:
+    Empty
+    Leaf(Dir[Read], String)
+    Branch(Tree, Tree)
+
+type Outer:
+    OuterEmpty
+    OuterInner(Inner)
+
+type Inner:
+    InnerCap(Dir[Read], String)
+    InnerOuter(Outer)
+
+fn resource_label(r: Resource) -> String:
+    match r:
+        Opened(_, name) -> "opened: " + name
+        Missing(name) -> "missing: " + name
+        Count(n) -> "count: ${n}"
+        Ratio(x) -> "ratio: ${x}"
+        Pair(a, b) -> "pair: ${a}:${b}"
+
+fn keep_resource(r: Resource) -> Resource:
+    return r
+
+fn keep_qualified(r: frozen Resource) -> frozen Resource:
+    return r
+
+fn unwrap_frozen(h: FrozenHolder) -> Resource:
+    match h:
+        FrozenHolder(r) -> r
+
+fn mark(console: Console, label: String) -> String:
+    console.print(label)
+    label
+
+fn load_tree(t: Tree) -> String:
+    match t:
+        Leaf(dir, name) -> dir.read(name)
+        Branch(Leaf(_, _), _) -> "wrong branch"
+        Branch(Empty, Leaf(dir, name)) -> dir.read(name)
+        Branch(_, _) -> "other branch"
+        Empty -> "empty"
+
+fn load_tree_or(t: Tree) -> String:
+    match t:
+        Leaf(dir, name) | Branch(_, Leaf(dir, name)) -> dir.read(name)
+        _ -> "or-empty"
+
+fn load_outer(o: Outer) -> String:
+    match o:
+        OuterInner(InnerCap(dir, name)) -> dir.read(name)
+        OuterInner(InnerOuter(_)) -> "nested outer"
+        OuterEmpty -> "empty outer"
+
+fn main(console: Console, root: Dir[Read]):
+    console.print(resource_label(keep_resource(Missing("absent"))))
+    console.print(resource_label(keep_qualified(Missing("qualified"))))
+    console.print(resource_label(unwrap_frozen(FrozenHolder(Missing("field")))))
+    console.print(resource_label(Count(922337203685477580)))
+    console.print(resource_label(Pair(mark(console, "left"), mark(console, "right"))))
+    console.print(load_tree(Empty))
+    console.print(load_tree(Branch(Empty, Leaf(root, "greeting.txt"))))
+    console.print(load_tree_or(Empty))
+    console.print(load_tree_or(Branch(Empty, Leaf(root, "greeting.txt"))))
+    console.print(load_outer(OuterInner(InnerCap(root, "greeting.txt"))))
+"#;
+        let want = vec![
+            "missing: absent".to_string(),
+            "missing: qualified".to_string(),
+            "missing: field".to_string(),
+            "count: 922337203685477580".to_string(),
+            "left".to_string(),
+            "right".to_string(),
+            "pair: left:right".to_string(),
+            "empty".to_string(),
+            "hello-sum".to_string(),
+            "or-empty".to_string(),
+            "hello-sum".to_string(),
+            "hello-sum".to_string(),
+        ];
+        let linked = resolve_std_src(src);
+        assert_eq!(
+            interpreter::run_module(linked.clone(), &root_str, Vec::new()).expect("interp"),
+            want,
+            "interpreter",
+        );
+        let bin = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers cap-carrying sums");
+        let bin_again = codegen::compile_module_binary(&linked)
+            .expect("recompile")
+            .expect("the same module still lowers");
+        assert_eq!(bin_again, bin, "GC aggregate IDs and binary output must be deterministic");
         let mut rt = Runtime::batch().expect("runtime");
         let caps = Capabilities {
             print: true,

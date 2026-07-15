@@ -12,12 +12,13 @@ tracking: rfcs/0005-unforgeable-capabilities.md
 > *what* (capabilities become `externref`, not `i32`) and chooses representation
 > **(A) GC structs** for cap-carrying aggregates. This document is the *how*: the
 > concrete migration for the compiled backend, staged so each stage is reviewable
-> and — where possible — independently green. **No code ships from this document;
-> it exists for review before the ABI cut begins.**
+> and — where possible — independently green. The plan now doubles as the
+> implementation ledger: completed stages below describe shipped code, while
+> unfinished stages retain their acceptance criteria.
 >
-> Written design-first at the maintainer's request: the externref core is a
-> Size-L, all-or-nothing ABI cut that "cannot coexist with the i32 ABI", so it is
-> deliberately kept out of the autonomous loop until this plan is approved.
+> Written design-first at the maintainer's request, then updated as the staged
+> ABI migration landed. Each capability kind still moves atomically across its
+> producer, consumer, and aggregate boundaries.
 
 ## 1. What is already true (so the cut is smaller than it looks)
 
@@ -554,23 +555,31 @@ closures.
 
 ## Stage 4 progress (2026-07-13)
 
-**Records slice landed.** The GC-struct record representation proved by sealed
-`capability` records now covers plain non-generic single-variant nominal
-aggregates, including both named-field records and positional wrappers: the
-classifier (`gc_cap_record_entries`) lives in ONE home (`witchy-types`) and
-codegen consumes it, closing BUG-566 (typeck's recursive classification vs
-codegen's direct-field copy disagreed on NESTED records → checked-valid
-programs ICE'd the encoder). The slice also added the GC spread path
+**Nominal aggregate slices landed.** The GC-struct representation proved by
+sealed `capability` records now covers every non-generic nominal aggregate:
+named-field records, positional wrappers, and multi-variant sums. The
+representation-neutral `ReferenceStorageClassifier` is the semantic home and
+`gc_cap_aggregate_names` adds the current non-generic lowering boundary; typeck
+and codegen consume that same set. This closes BUG-566 (typeck's recursive
+classification vs codegen's direct-field copy disagreed on nested records →
+checked-valid programs ICE'd the encoder). The records slice also added the GC spread path
 (`T(field: v, ..base)` → `StructNew` over `StructGet`s, which place assignment
 desugars to) and excluded ref-typed records from SROA and the RFC-0033
 in-place record update (both slot-box fields; a GC record binds as one
 `GcRef` local and rebuilds by `StructNew`).
 
-Still reject-first, in the plan's order: cap-carrying multi-variant enums,
-tuples, `List`/`Dict`/`Result` containers, and closure environments —
-closures remain the hard tail (a capture is invisible in the function TYPE, so
-cap-carrying and scalar closures flowing into one `fn`-typed param force a
-uniform environment representation).
+The sum slice uses one struct layout per nominal type: an `i32` tag followed by
+disjoint per-variant field bands. Constructors zero inactive scalar fields and
+write null to inactive reference fields. Pattern lowering tests the tag before
+projecting the active band, including nested recursive references. All GC IDs
+are reserved before field kinds are materialized, so self-recursive and
+mutually-recursive sums share the encoder's one explicit recursion group.
+
+Still reject-first, in the plan's order: cap-carrying tuples,
+`List`/`Dict`/`Result` containers, and closure environments. Closures remain the
+hard tail (a capture is invisible in the function TYPE, so cap-carrying and
+scalar closures flowing into one `fn`-typed param force a uniform environment
+representation).
 
 ## Stage 4 closure continuation (2026-07-15)
 

@@ -211,12 +211,12 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
         cg.transparent_externref_brands.insert(brand);
         cg.transparent_externref_ctors.insert(ctor, field);
     }
-    // (RFC-0005 stage 4 / BUG-566) The GC-record classification lives in ONE
+    // (RFC-0005 stage 4 / BUG-566) The GC-aggregate classification lives in ONE
     // home — typeck — and codegen consumes it, so the boundary checks and the
-    // struct registration can never disagree on which records are GC-lowered.
-    let gc_records = witchy_types::typeck::gc_cap_record_entries(module);
-    let gc_record_names: HashSet<String> =
-        gc_records.iter().map(|(name, _)| name.clone()).collect();
+    // struct registration can never disagree on which values are GC-lowered.
+    let gc_aggregate_names = witchy_types::typeck::gc_cap_aggregate_names(module);
+    let gc_aggregate_name_set: HashSet<String> =
+        gc_aggregate_names.iter().cloned().collect();
     // Collect parameter conventions up front so call sites can resolve `var`
     // write-back even for forward references.
     for item in &module.items {
@@ -279,7 +279,10 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
                     cg.ctor_type_name.insert(variant.name.clone(), t.name.clone());
                     cg.ctors
                         .insert(variant.name.clone(), (tag as u32, variant.fields.len()));
-                    if gc_record_names.contains(&t.name) && variant.field_names.is_empty() {
+                    if gc_aggregate_name_set.contains(&t.name)
+                        && t.variants.len() == 1
+                        && variant.field_names.is_empty()
+                    {
                         cg.record_field_types.insert(t.name.clone(), variant.fields.clone());
                     }
                     if !variant.field_names.is_empty() {
@@ -309,34 +312,55 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
             | Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
         }
     }
-    for (name, ctor) in gc_records {
-        if cg.gc_record_ids.contains_key(&name) {
+    // Reserve every ID before materializing a field kind, so recursive and
+    // mutually-recursive aggregate references can point forward in the single
+    // Wasm GC recursion group.
+    for name in &gc_aggregate_names {
+        if cg.gc_aggregate_ids.contains_key(name) {
             continue;
         }
         let id = cg.gc_structs.len() as u32;
-        cg.gc_record_ids.insert(name.clone(), id);
-        cg.gc_record_ctors.insert(ctor, name);
+        cg.gc_aggregate_ids.insert(name.clone(), id);
         cg.gc_structs.push(witchy_wir::wir::WirStructDef { fields: Vec::new() });
     }
-    let gc_names: Vec<String> = cg.gc_record_ids.keys().cloned().collect();
-    for name in gc_names {
-        let Some(id) = cg.gc_record_ids.get(&name).copied() else {
+    for item in &module.items {
+        let Item::Type(t) = item else { continue };
+        if !gc_aggregate_name_set.contains(&t.name) {
+            continue;
+        }
+        let Some(id) = cg.gc_aggregate_ids.get(&t.name).copied() else {
             continue;
         };
-        let fields = cg
-            .record_field_types
-            .get(&name)
-            .cloned()
-            .unwrap_or_default()
-            .iter()
-            .map(|ty| Codegen::wir_kind(cg.kind_for_type(ty)))
-            .collect();
+        let tagged = t.variants.len() > 1;
+        let mut fields = if tagged {
+            vec![witchy_wir::wir::Kind::I32]
+        } else {
+            Vec::new()
+        };
+        for (tag, variant) in t.variants.iter().enumerate() {
+            let field_base = fields.len() as u32;
+            fields.extend(
+                variant
+                    .fields
+                    .iter()
+                    .map(|ty| Codegen::wir_kind(cg.kind_for_type(ty))),
+            );
+            cg.gc_ctor_layouts.insert(
+                variant.name.clone(),
+                GcCtorLayout {
+                    owner: t.name.clone(),
+                    tag: tagged.then_some(tag as u32),
+                    field_base,
+                    field_types: variant.fields.clone(),
+                },
+            );
+        }
         if let Some(slot) = cg.gc_structs.get_mut(id as usize) {
             slot.fields = fields;
         }
     }
-    // Function return kinds may have been recorded before the GC-record registry
-    // existed. Refresh them now so forward references to cap-carrying records use
+    // Function return kinds may have been recorded before the GC-aggregate registry
+    // existed. Refresh them now so forward references to cap-carrying aggregates use
     // the `(ref null $s)` ABI at call sites.
     for item in &module.items {
         if let Item::Function(f) = item {
