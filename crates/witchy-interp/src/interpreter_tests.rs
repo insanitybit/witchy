@@ -53,6 +53,71 @@
     }
 
     #[test]
+    fn every_cataloged_list_operation_has_runtime_dispatch() {
+        let module = witchy_syntax::parser::parse_module("fn main() -> Int:\n    0\n")
+            .expect("parse minimal module");
+        let mut interpreter = Interpreter::new(module);
+
+        let list = || Value::List(vec![Value::Int(1)]);
+        let some_one = || Value::Ctor {
+            name: "Some".into(),
+            fields: vec![Value::Int(1)],
+        };
+        let cases = vec![
+            (intrinsics::LIST_LENGTH, vec![list()], Value::Int(1)),
+            (intrinsics::LIST_AT, vec![list(), Value::Int(0)], Value::Int(1)),
+            (
+                intrinsics::LIST_PUSH,
+                vec![list(), Value::Int(2)],
+                Value::List(vec![Value::Int(1), Value::Int(2)]),
+            ),
+            (
+                intrinsics::LIST_SET_AT,
+                vec![list(), Value::Int(0), Value::Int(2)],
+                Value::List(vec![Value::Int(2)]),
+            ),
+            (
+                intrinsics::LIST_CONCAT,
+                vec![list(), list()],
+                Value::List(vec![Value::Int(1), Value::Int(1)]),
+            ),
+            (
+                intrinsics::LIST_POP_EXTRACT,
+                vec![list()],
+                Value::Tuple(vec![Value::List(Vec::new()), some_one()]),
+            ),
+        ];
+        for (name, args, expected) in cases {
+            let result = interpreter
+                .call_builtin(name, &args)
+                .unwrap_or_else(|error| panic!("{} failed: {}", name, error.message));
+            assert_eq!(result, Some(expected), "{} runtime semantics drifted", name);
+        }
+
+        let special = match interpreter
+            .call_interpreter_special(intrinsics::LIST_POP_EXTRACT, &[list()])
+        {
+            Ok(Some(outcome)) => outcome,
+            Ok(None) => panic!("pop special dispatch fell through"),
+            Err(_) => panic!("pop special dispatch failed"),
+        };
+        assert_eq!(special, (some_one(), vec![Value::List(Vec::new())]));
+
+        for index in [-1, 1] {
+            for (name, args) in [
+                (intrinsics::LIST_AT, vec![list(), Value::Int(index)]),
+                (
+                    intrinsics::LIST_SET_AT,
+                    vec![list(), Value::Int(index), Value::Int(2)],
+                ),
+            ] {
+                let error = interpreter.call_builtin(name, &args).expect_err("out of bounds");
+                assert!(error.message.contains("out of bounds"), "{}: {}", name, error.message);
+            }
+        }
+    }
+
+    #[test]
     fn evaluates_arithmetic_and_precedence() {
         let out = run(r#"
 fn main(console: Console):

@@ -23,6 +23,14 @@
                 );
             }
         }
+        assert_eq!(
+            intrinsics::declared_wir_helper(intrinsics::LIST_PUSH, "list_push_cap"),
+            Some("list_push_cap")
+        );
+        assert_eq!(
+            intrinsics::declared_wir_helper(intrinsics::GENERATED_LIST_PUSH, "list_push_cap"),
+            Some("list_push_cap")
+        );
     }
 
     #[test]
@@ -31,6 +39,28 @@
 
         for name in intrinsics::MATH_OPERATIONS {
             let spec = intrinsics::lookup(name).expect("cataloged math operation");
+            assert!(
+                witchy_types::typeck::intrinsic(name),
+                "{} must not compile its self-recursive std placeholder",
+                spec.name
+            );
+            for helper in spec.wir_helpers {
+                assert!(
+                    witchy_wir::wir_helpers::wir_helper(helper).is_some(),
+                    "{} names missing WIR helper {}",
+                    spec.name,
+                    helper
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn list_operation_catalog_names_live_wir_helpers() {
+        use witchy_syntax::intrinsics;
+
+        for name in intrinsics::LIST_OPERATIONS {
+            let spec = intrinsics::lookup(name).expect("cataloged list operation");
             assert!(
                 witchy_types::typeck::intrinsic(name),
                 "{} must not compile its self-recursive std placeholder",

@@ -60,6 +60,12 @@ pub enum IntrinsicId {
     MathToFloat,
     MathToInt,
     MathSqrt,
+    ListLength,
+    ListAt,
+    ListPush,
+    ListSetAt,
+    ListConcat,
+    ListPopExtract,
 }
 
 /// A representation-neutral type recipe interpreted by `witchy-types`.
@@ -91,6 +97,11 @@ pub enum IntrinsicSignature {
     IntToFloat,
     FloatToInt,
     FloatToFloat,
+    GenericListToInt,
+    GenericListIndex,
+    GenericListSetAt,
+    GenericListConcat,
+    GenericListPopExtract,
     DeclaredInSource,
 }
 
@@ -116,6 +127,7 @@ impl IntrinsicSignature {
                 | Self::StringToInt
                 | Self::StringStringToInt
                 | Self::FloatToInt
+                | Self::GenericListToInt
         )
     }
 
@@ -136,11 +148,20 @@ impl IntrinsicSignature {
     pub fn returns_float(self) -> bool {
         matches!(self, Self::IntToFloat | Self::FloatToFloat)
     }
+
+    pub fn returns_list(self) -> bool {
+        matches!(self, Self::GenericListPush | Self::GenericListSetAt | Self::GenericListConcat)
+    }
+
+    pub fn returns_list_element(self) -> bool {
+        matches!(self, Self::GenericListIndex)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IntrinsicEffect {
     Pure,
+    WriteBack,
     ControlFlow,
     Task,
     Toolchain,
@@ -279,6 +300,13 @@ pub const MATH_TO_FLOAT: &str = "math.to_float";
 pub const MATH_TO_INT: &str = "math.to_int";
 pub const MATH_SQRT: &str = "math.sqrt";
 
+pub const LIST_LENGTH: &str = "list.length";
+pub const LIST_AT: &str = "list.at";
+pub const LIST_PUSH: &str = "list.__push";
+pub const LIST_SET_AT: &str = "list.__set_at";
+pub const LIST_CONCAT: &str = "list.concat";
+pub const LIST_POP_EXTRACT: &str = "list.__pop_extract";
+
 pub const ALL: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         id: IntrinsicId::GeneratedRender,
@@ -304,7 +332,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         capability_effect: CapabilityEffect::None,
         lowering: IntrinsicLowering::Builtin,
         runtime: IntrinsicRuntime::InterpreterBuiltin,
-        wir_helpers: &["list_push"],
+        wir_helpers: &["list_push", "list_push_cap"],
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "list.push",
@@ -1075,6 +1103,96 @@ pub const ALL: &[IntrinsicSpec] = &[
         diagnostic_name: MATH_SQRT,
         private_callers: NO_PRIVATE_CALLERS,
     },
+    IntrinsicSpec {
+        id: IntrinsicId::ListLength,
+        name: LIST_LENGTH,
+        arity: 1,
+        signature: IntrinsicSignature::GenericListToInt,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["list_len_view"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: LIST_LENGTH,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::ListAt,
+        name: LIST_AT,
+        arity: 2,
+        signature: IntrinsicSignature::GenericListIndex,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["list_at", "list_at_view"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: LIST_AT,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::ListPush,
+        name: LIST_PUSH,
+        arity: 2,
+        signature: IntrinsicSignature::GenericListPush,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["list_push", "list_push_cap"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "list.push",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::ListSetAt,
+        name: LIST_SET_AT,
+        arity: 3,
+        signature: IntrinsicSignature::GenericListSetAt,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["list_at", "list_set_cap"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "list.set_at",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::ListConcat,
+        name: LIST_CONCAT,
+        arity: 2,
+        signature: IntrinsicSignature::GenericListConcat,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["list_concat"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: LIST_CONCAT,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::ListPopExtract,
+        name: LIST_POP_EXTRACT,
+        arity: 1,
+        signature: IntrinsicSignature::GenericListPopExtract,
+        effect: IntrinsicEffect::WriteBack,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["list_pop_extract"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "list.pop",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
 ];
 
 pub const ERASURE_BRIDGES: &[&str] = &[ERASE, UNERASE];
@@ -1132,8 +1250,25 @@ pub const STRING_OPERATIONS: &[&str] = &[
 
 pub const MATH_OPERATIONS: &[&str] = &[MATH_TO_FLOAT, MATH_TO_INT, MATH_SQRT];
 
+pub const LIST_OPERATIONS: &[&str] = &[
+    LIST_LENGTH,
+    LIST_AT,
+    LIST_PUSH,
+    LIST_SET_AT,
+    LIST_CONCAT,
+    LIST_POP_EXTRACT,
+];
+
 pub fn lookup(name: &str) -> Option<&'static IntrinsicSpec> {
-    ALL.iter().find(|spec| spec.name == name)
+    let canonical = if name
+        .strip_prefix(LIST_POP_EXTRACT)
+        .is_some_and(|suffix| suffix.starts_with("__"))
+    {
+        LIST_POP_EXTRACT
+    } else {
+        name
+    };
+    ALL.iter().find(|spec| spec.name == canonical)
 }
 
 pub fn arity_diagnostic(spec: &IntrinsicSpec, actual: usize) -> String {
@@ -1149,6 +1284,10 @@ pub fn sole_wir_helper(name: &str) -> Option<&'static str> {
         [helper] => Some(*helper),
         _ => None,
     }
+}
+
+pub fn declared_wir_helper(name: &str, helper: &str) -> Option<&'static str> {
+    lookup(name)?.wir_helpers.iter().copied().find(|declared| *declared == helper)
 }
 
 pub fn wir_host_call(name: &str) -> Option<WirHostCall> {
@@ -1224,6 +1363,24 @@ pub fn is_math_operation(name: &str) -> bool {
     lookup(name).is_some_and(|spec| {
         matches!(spec.id, IntrinsicId::MathToFloat | IntrinsicId::MathToInt | IntrinsicId::MathSqrt)
     })
+}
+
+pub fn is_list_operation(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| {
+        matches!(
+            spec.id,
+            IntrinsicId::ListLength
+                | IntrinsicId::ListAt
+                | IntrinsicId::ListPush
+                | IntrinsicId::ListSetAt
+                | IntrinsicId::ListConcat
+                | IntrinsicId::ListPopExtract
+        )
+    })
+}
+
+pub fn is_list_pop_extract(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::ListPopExtract)
 }
 
 pub fn private_intrinsic_callers(bare_name: &str) -> Option<&'static [&'static str]> {
@@ -1317,6 +1474,12 @@ mod tests {
             MATH_TO_FLOAT,
             MATH_TO_INT,
             MATH_SQRT,
+            LIST_LENGTH,
+            LIST_AT,
+            LIST_PUSH,
+            LIST_SET_AT,
+            LIST_CONCAT,
+            LIST_POP_EXTRACT,
         ];
         for name in names {
             assert_eq!(lookup(name).map(|spec| spec.name), Some(name));
@@ -1509,6 +1672,138 @@ mod tests {
             assert_eq!(function.params.len(), spec.arity, "arity drift for {}", spec.name);
             assert_eq!(function.params[0].ty.as_ref(), Some(param), "parameter drift for {}", spec.name);
             assert_eq!(function.ret.as_ref(), Some(result), "return drift for {}", spec.name);
+        }
+    }
+
+    #[test]
+    fn list_operation_family_has_complete_semantic_metadata() {
+        let expected: BTreeSet<_> = LIST_OPERATIONS.iter().copied().collect();
+        let actual: BTreeSet<_> = ALL
+            .iter()
+            .filter(|spec| is_list_operation(spec.name))
+            .map(|spec| spec.name)
+            .collect();
+        assert_eq!(actual, expected);
+        assert_eq!(actual.len(), 6);
+
+        for name in LIST_OPERATIONS {
+            let spec = lookup(name).expect("list operation");
+            assert_eq!(spec.capability_effect, CapabilityEffect::None);
+            assert_eq!(spec.lowering, IntrinsicLowering::Builtin);
+            assert_eq!(spec.runtime, IntrinsicRuntime::InterpreterBuiltin);
+            assert!(spec.wir_host_call.is_none());
+            assert!(!spec.dynamic_wir_helpers);
+            assert_eq!(
+                spec.effect,
+                if *name == LIST_POP_EXTRACT {
+                    IntrinsicEffect::WriteBack
+                } else {
+                    IntrinsicEffect::Pure
+                }
+            );
+        }
+
+        assert!(lookup(LIST_LENGTH).expect("list.length").signature.returns_int());
+        assert!(lookup(LIST_AT).expect("list.at").signature.returns_list_element());
+        for name in [LIST_PUSH, LIST_SET_AT, LIST_CONCAT] {
+            assert!(lookup(name).expect("list-producing operation").signature.returns_list());
+        }
+        assert_eq!(declared_wir_helper(LIST_PUSH, "list_push"), Some("list_push"));
+        assert_eq!(declared_wir_helper(LIST_PUSH, "list_push_cap"), Some("list_push_cap"));
+        assert_eq!(sole_wir_helper(LIST_CONCAT), Some("list_concat"));
+        assert_eq!(sole_wir_helper(LIST_POP_EXTRACT), Some("list_pop_extract"));
+        assert_eq!(
+            lookup("list.__pop_extract__String").map(|spec| spec.name),
+            Some(LIST_POP_EXTRACT)
+        );
+        assert_eq!(declared_wir_helper(LIST_AT, "list_at_view"), Some("list_at_view"));
+        assert_eq!(declared_wir_helper(LIST_SET_AT, "list_set_cap"), Some("list_set_cap"));
+    }
+
+    #[test]
+    fn list_source_primitive_signatures_match_catalog() {
+        use crate::ast::{Convention, Type};
+
+        fn named(name: &str) -> Type {
+            Type::Named(name.into(), Vec::new())
+        }
+
+        fn expected(signature: IntrinsicSignature) -> (Vec<Type>, Type) {
+            let elem = || named("a");
+            let list = || Type::Named("List".into(), vec![elem()]);
+            match signature {
+                IntrinsicSignature::GenericListToInt => (vec![list()], named("Int")),
+                IntrinsicSignature::GenericListIndex => (vec![list(), named("Int")], elem()),
+                IntrinsicSignature::GenericListPush => {
+                    (vec![list(), elem()], list())
+                }
+                IntrinsicSignature::GenericListSetAt => {
+                    (vec![list(), named("Int"), elem()], list())
+                }
+                IntrinsicSignature::GenericListConcat => {
+                    (vec![list(), list()], list())
+                }
+                IntrinsicSignature::GenericListPopExtract => {
+                    (vec![list()], Type::Named("Option".into(), vec![elem()]))
+                }
+                other => panic!("unexpected list signature {other:?}"),
+            }
+        }
+
+        let module = crate::parser::parse_module(include_str!("../../../std/list.witchy"))
+            .expect("parse std/list");
+        let source_primitives: BTreeSet<_> = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                crate::ast::Item::Function(function)
+                    if matches!(
+                        function.body.stmts.as_slice(),
+                        [crate::ast::Stmt::Expr(crate::ast::Expr::Call { name, .. })]
+                            if name.strip_prefix("list.") == Some(function.name.as_str())
+                    ) =>
+                {
+                    let crate::ast::Stmt::Expr(crate::ast::Expr::Call { name, .. }) =
+                        &function.body.stmts[0]
+                    else {
+                        unreachable!()
+                    };
+                    Some(name.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        let catalog_primitives: BTreeSet<_> =
+            LIST_OPERATIONS.iter().map(|name| (*name).to_string()).collect();
+        assert_eq!(
+            source_primitives, catalog_primitives,
+            "every self-recursive list primitive must have exactly one catalog row"
+        );
+        for name in LIST_OPERATIONS {
+            let spec = lookup(name).expect("list operation");
+            let bare_name = spec.name.rsplit_once('.').expect("qualified list name").1;
+            let function = module.items.iter().find_map(|item| match item {
+                crate::ast::Item::Function(function) if function.name == bare_name => {
+                    Some(function)
+                }
+                _ => None,
+            });
+            let function = function.unwrap_or_else(|| panic!("{} missing from std/list", spec.name));
+            let (params, result) = expected(spec.signature);
+            assert_eq!(function.params.len(), spec.arity, "arity drift for {}", spec.name);
+            assert_eq!(
+                function.params.iter().map(|param| param.ty.clone()).collect::<Vec<_>>(),
+                params.into_iter().map(Some).collect::<Vec<_>>(),
+                "parameter drift for {}",
+                spec.name
+            );
+            assert_eq!(function.ret.as_ref(), Some(&result), "return drift for {}", spec.name);
+            assert_eq!(
+                function.params[0].convention,
+                if *name == LIST_POP_EXTRACT { Convention::Var } else { Convention::Let },
+                "receiver convention drift for {}",
+                spec.name
+            );
         }
     }
 

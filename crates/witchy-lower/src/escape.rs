@@ -53,6 +53,7 @@ use crate::analysis::Summaries;
 // attacker-chosen collections — see the note in witchy-types/src/typeck.rs.
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 use witchy_syntax::ast::{Block, Expr, Function, Stmt};
+use witchy_syntax::intrinsics;
 
 /// Immutable locals bound to a fixed-shape aggregate (record `Ctor` or tuple)
 /// whose every use is a field/index access — so the aggregate never escapes the
@@ -372,7 +373,9 @@ fn scan_uses_expr(e: &Expr, mode: UseScan, call: CallExempt, out: &mut HashSet<S
             // View-safe reads exempt only their `Var` receiver; any other call
             // escapes its `Var` args (the generic walk marks them).
             CallExempt::ViewReads => {
-                if (name == "list.at" || name == "list.length" || is_list_slice(name))
+                if (name == intrinsics::LIST_AT
+                    || name == intrinsics::LIST_LENGTH
+                    || is_list_slice(name))
                     && matches!(args.first(), Some(Expr::Var(_)))
                 {
                     for a in &args[1..] {
@@ -621,7 +624,8 @@ fn mark_non_packed_uses(e: &Expr, out: &mut HashSet<String>) {
         Expr::Field { base, .. }
             if matches!(base.as_ref(),
                 Expr::Call { name, args }
-                    if name == "list.at" && matches!(args.first(), Some(Expr::Var(_)))) =>
+                    if name == intrinsics::LIST_AT
+                        && matches!(args.first(), Some(Expr::Var(_)))) =>
         {
             if let Expr::Call { args, .. } = base.as_ref() {
                 for a in &args[1..] {
@@ -632,7 +636,8 @@ fn mark_non_packed_uses(e: &Expr, out: &mut HashSet<String>) {
         // `list.length(xs)` is packed-safe; a bare `list.at(xs, i)` (NOT under a
         // field) is NOT — it falls to the generic arm and marks `xs`.
         Expr::Call { name, args }
-            if name == "list.length" && matches!(args.first(), Some(Expr::Var(_))) =>
+            if name == intrinsics::LIST_LENGTH
+                && matches!(args.first(), Some(Expr::Var(_))) =>
         {
             for a in &args[1..] {
                 mark_non_packed_uses(a, out);

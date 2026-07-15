@@ -1362,7 +1362,7 @@ impl Interpreter {
                     Ok(root)
                 }
                 Expr::Call { name, args }
-                    if matches!(name.as_str(), "list.at" | "dict.at") && args.len() == 2 =>
+                    if matches!(name.as_str(), intrinsics::LIST_AT | "dict.at") && args.len() == 2 =>
                 {
                     let root = capture(interpreter, &args[0], env, projections)?;
                     let index = interpreter.eval(&args[1], env)?;
@@ -1718,8 +1718,7 @@ impl Interpreter {
         // Native `var` operations have two independent result channels: the
         // ordinary source value and each final `var` value. Keep that split here
         // instead of encoding write-back into a tuple that source code must unpack.
-        if (name == "list.__pop_extract" || name.starts_with("list.__pop_extract__"))
-            && argvals.len() == 1
+        if intrinsics::is_list_pop_extract(name) && argvals.len() == 1
         {
             let Value::List(items) = &argvals[0] else {
                 return err("pop expects a list");
@@ -2250,11 +2249,11 @@ impl Interpreter {
                 },
                 other => err(format!("string_to_int expects a String, got `{other}`")),
             },
-            "list.length" => match args {
+            intrinsics::LIST_LENGTH => match args {
                 [Value::List(items)] => Ok(Some(Value::Int(items.len() as i64))),
                 _ => err("length expects a list"),
             },
-            "list.at" => match args {
+            intrinsics::LIST_AT => match args {
                 [Value::List(items), Value::Int(i)] => match items.get(*i as usize) {
                     Some(v) => Ok(Some(v.clone())),
                     None => err(DiagTemplate::ListIndexOob.render(*i, items.len() as i64, "")),
@@ -2263,7 +2262,7 @@ impl Interpreter {
             },
             // Return a new list with `x` appended (lists are values, so this does
             // not mutate the original).
-            "list.__push" | witchy_syntax::intrinsics::GENERATED_LIST_PUSH => match args {
+            intrinsics::LIST_PUSH | intrinsics::GENERATED_LIST_PUSH => match args {
                 [Value::List(items), x] => {
                     let mut out = items.clone();
                     out.push(x.clone());
@@ -2271,8 +2270,7 @@ impl Interpreter {
                 }
                 _ => err("push expects a list and a value"),
             },
-            name if name == "list.__pop_extract"
-                || name.starts_with("list.__pop_extract__") => match args {
+            name if intrinsics::is_list_pop_extract(name) => match args {
                 [Value::List(items)] => {
                     let mut out = items.clone();
                     let old = match out.pop() {
@@ -2286,7 +2284,7 @@ impl Interpreter {
                 }
                 _ => err("pop expects a list"),
             },
-            "list.__set_at" => match args {
+            intrinsics::LIST_SET_AT => match args {
                 [Value::List(items), Value::Int(index), value] => {
                     let i = *index as usize;
                     if i >= items.len() {
@@ -2303,7 +2301,7 @@ impl Interpreter {
                 _ => err("set_at expects a list, an Int index, and a value"),
             },
             // Return a new list that is the two given lists joined.
-            "list.concat" => match args {
+            intrinsics::LIST_CONCAT => match args {
                 [Value::List(a), Value::List(b)] => {
                     let mut out = a.clone();
                     out.extend(b.clone());
@@ -3196,7 +3194,7 @@ impl Interpreter {
     ) -> Result<bool, Flow> {
         match rhs {
             Expr::Call { name: f, args }
-                if matches!(f.as_str(), "list.__push" | witchy_syntax::intrinsics::GENERATED_LIST_PUSH)
+                if matches!(f.as_str(), intrinsics::LIST_PUSH | intrinsics::GENERATED_LIST_PUSH)
                     && args.len() == 2
                     && matches!(&args[0], Expr::Var(v) if v == name)
                     && !expr_mentions(&args[1], name)

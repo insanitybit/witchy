@@ -127,10 +127,14 @@ impl Codegen<'_> {
                     .is_some_and(|spec| spec.signature.returns_float()) => Kind::F64,
                 name if intrinsics::lookup(name)
                     .is_some_and(|spec| spec.signature.returns_int()) => Kind::I64,
-                "list.length" | "dict.length" | "int_to_duration"
-                | "duration_to_int" | "now" | "now_monotonic" | "rand_u64"
+                "dict.length" | "int_to_duration" | "duration_to_int" | "now"
+                | "now_monotonic" | "rand_u64"
                 => Kind::I64,
-                "list.at" => self.elem_kind_of_list_arg(e),
+                name if intrinsics::lookup(name)
+                    .is_some_and(|spec| spec.signature.returns_list_element()) =>
+                {
+                    self.elem_kind_of_list_arg(e)
+                }
                 render if witchy_syntax::ast::is_render_intrinsic(render) => Kind::I32,
                 "int_to_string" | "print" => Kind::I32,
                 // A closure-local called by name returns the universal i64 slot,
@@ -174,7 +178,7 @@ impl Codegen<'_> {
     /// width always agree.
     pub(crate) fn elem_kind_of_list_arg(&self, e: &Expr) -> Kind {
         if let Expr::Call { name, args } = e {
-            if cap_ops::surface_name(name) == "list.at" {
+            if cap_ops::surface_name(name) == intrinsics::LIST_AT {
                 if let Some(arg) = args.first() {
                     return self.list_elem_kind(arg);
                 }
@@ -325,7 +329,11 @@ impl Codegen<'_> {
                 .unwrap_or(ValType::Other),
             // `at(xs, i)` has the list's element type, so a String element
             // compares by content (`$str_eq`) rather than by pointer.
-            Expr::Call { name, args } if cap_ops::surface_name(name) == "list.at" && !args.is_empty() => {
+            Expr::Call { name, args }
+                if intrinsics::lookup(cap_ops::surface_name(name))
+                    .is_some_and(|spec| spec.signature.returns_list_element())
+                    && !args.is_empty() =>
+            {
                 self.elem_val_type_of(&args[0])
             }
             // `get_or(d, k, default)` returns the Dict's value type, which is the
@@ -360,8 +368,8 @@ impl Codegen<'_> {
                 | "crypto.sha512" | "crypto.sha3_256" | "crypto.hmac_sha256"
                 | "recv_bytes" => ValType::Str,
                 "dict.contains_key" | "exists" | "is_dir" => ValType::Bool,
-                "list.length" | "dict.length" | "int_to_duration"
-                | "duration_to_int" | "now" | "now_monotonic" | "rand_u64"
+                "dict.length" | "int_to_duration" | "duration_to_int" | "now"
+                | "now_monotonic" | "rand_u64"
                 | "crypto.__ed25519_verify_status" | "crypto.__ecdsa_p256_verify_status"
                 | "crypto.__ecdsa_p256_verify_hex_status"
                 | "crypto.__rsa_pkcs1_sha256_verify_status" => ValType::Int,
@@ -421,7 +429,7 @@ impl Codegen<'_> {
                     Some(ty.clone())
                 } else if name == "dict.get_or" {
                     args.get(2).and_then(|d| self.record_type_of(d))
-                } else if name == "list.at" {
+                } else if name == intrinsics::LIST_AT {
                     match args.first() {
                         Some(Expr::Var(v)) => self.local_list_elem.get(v).cloned(),
                         _ => None,

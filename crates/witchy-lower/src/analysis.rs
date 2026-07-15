@@ -176,7 +176,7 @@ fn self_push_elem<'a>(name: &str, value: &'a Expr) -> Option<&'a Expr> {
     if let Expr::Call { name: f, args } = value {
         if (matches!(
             f.as_str(),
-            "list.push" | "list.__push" | witchy_syntax::intrinsics::GENERATED_LIST_PUSH
+            "list.push" | intrinsics::LIST_PUSH | intrinsics::GENERATED_LIST_PUSH
         ) || f.starts_with("list.push__"))
             && args.len() == 2
         {
@@ -228,7 +228,7 @@ fn self_update_args<'a>(
 /// match that suffixed form as well as the bare name.
 fn self_set_at<'a>(name: &str, value: &'a Expr) -> Option<(&'a Expr, &'a Expr)> {
     if let Expr::Call { name: f, args } = value {
-        if (matches!(f.as_str(), "list.set_at" | "list.__set_at")
+        if (matches!(f.as_str(), "list.set_at" | intrinsics::LIST_SET_AT)
             || f.starts_with("list.set_at__"))
             && args.len() == 3
         {
@@ -1334,7 +1334,7 @@ fn collect_field_push_candidates(
             if matches!(base.as_ref(), Expr::Var(v) if v == name) {
                 for (f, fv) in fields {
                     if let Expr::Call { name: pn, args } = fv {
-                        if matches!(pn.as_str(), "list.push" | "list.__push")
+                        if matches!(pn.as_str(), "list.push" | intrinsics::LIST_PUSH)
                             && args.len() == 2
                             && matches!(&args[0], Expr::Field { base: fb, field }
                                 if field == f
@@ -1468,7 +1468,7 @@ fn field_escapes_expr(e: &Expr, var: &str, field: &str) -> bool {
     // The one allowed occurrence: `list.push(var.field, elem)`. The receiver is the
     // permitted read; only `elem` can carry an escaping use of `var.field`.
     if let Expr::Call { name, args } = e {
-        if matches!(name.as_str(), "list.push" | "list.__push") && args.len() == 2 {
+        if matches!(name.as_str(), "list.push" | intrinsics::LIST_PUSH) && args.len() == 2 {
             if let Expr::Field { base, field: f } = &args[0] {
                 if f == field && matches!(base.as_ref(), Expr::Var(v) if v == var) {
                     return field_escapes_expr(&args[1], var, field);
@@ -1702,9 +1702,7 @@ fn builtin_arg_liveness(name: &str, argc: usize) -> Option<Vec<bool>> {
     if argc == 1 && witchy_syntax::ast::is_render_intrinsic(name) {
         return read_all(1);
     }
-    if argc == 1
-        && (name == "list.__pop_extract" || name.starts_with("list.__pop_extract__"))
-    {
+    if argc == 1 && intrinsics::is_list_pop_extract(name) {
         return read_all(1);
     }
     if argc == 2
@@ -1719,11 +1717,11 @@ fn builtin_arg_liveness(name: &str, argc: usize) -> Option<Vec<bool>> {
     }
     match (name, argc) {
         // Collections: content reads and part-alias reads.
-        ("list.length", 1)
+        (intrinsics::LIST_LENGTH, 1)
         | ("dict.length", 1)
         | (intrinsics::STRING_LENGTH, 1)
         | (intrinsics::STRING_CHAR_COUNT, 1)
-        | ("list.at", 2)
+        | (intrinsics::LIST_AT, 2)
         | ("dict.at", 2)
         | ("dict.contains_key", 2)
         | (intrinsics::STRING_CONTAINS, 2)
@@ -1732,12 +1730,12 @@ fn builtin_arg_liveness(name: &str, argc: usize) -> Option<Vec<bool>> {
         | ("dict.values", 1)
         | ("dict.pairs", 1)
         | ("dict.remove" | "dict.__remove", 2)
-        | ("list.concat", 2) => read_all(argc),
+        | (intrinsics::LIST_CONCAT, 2) => read_all(argc),
         // get_or reads the dict and key; the DEFAULT may be returned.
         ("dict.get_or", 3) => Some(vec![false, false, true]),
         // push/insert/update store their value operands by slot. (The
         // self-assign shape is special-cased before this table is consulted.)
-        ("list.push" | "list.__push", 2) => Some(vec![false, true]),
+        ("list.push" | intrinsics::LIST_PUSH, 2) => Some(vec![false, true]),
         ("dict.insert" | "dict.__insert", 3) => Some(vec![false, true, true]),
         ("dict.update" | "dict.__update", 4) => Some(vec![false, true, true, true]),
         // Output and messaging copy content out to the host.
@@ -1792,7 +1790,7 @@ pub fn fresh_heap_builtin_offset(name: &str, argc: usize) -> Option<i32> {
         // `replace_helper` keeps the worst-case `ensure` + actual-bump pattern, not
         // routed) and NOT string `+` (a Binary, never a Call — handled in-place by
         // `$str_append_cap`).
-        ("list.push" | "list.__push", 2) | ("list.concat", 2) => Some(0),
+        ("list.push" | intrinsics::LIST_PUSH, 2) | (intrinsics::LIST_CONCAT, 2) => Some(0),
         (intrinsics::STRING_TO_UPPER, 1)
         | (intrinsics::STRING_TO_LOWER, 1)
         | (intrinsics::STRING_TRIM, 1)
@@ -2041,7 +2039,7 @@ fn place_drops(
         .iter()
         .filter_map(|s| match s {
             Stmt::Let { name, value: Expr::Call { name: f, args }, .. }
-                if f == "list.at" && args.len() == 2 =>
+                if f == intrinsics::LIST_AT && args.len() == 2 =>
             {
                 Some(name.as_str())
             }

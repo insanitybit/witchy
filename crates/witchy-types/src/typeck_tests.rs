@@ -2960,6 +2960,24 @@ fn main():
     }
 
     #[test]
+    fn rfc0063_list_catalog_signature_outranks_linked_placeholder() {
+        use witchy_syntax::ast::Item;
+
+        let mut module = witchy_syntax::parser::parse_module(
+            "fn shadow(xs: String) -> String:\n    xs\n\nfn main() -> Int:\n    list.length([1])\n",
+        )
+        .expect("parse catalog precedence probe");
+        let Item::Function(placeholder) = &mut module.items[0] else {
+            panic!("expected placeholder function")
+        };
+        placeholder.name = witchy_syntax::intrinsics::LIST_LENGTH.into();
+
+        check(&module).expect(
+            "the catalog recipe, not the deliberately wrong linked placeholder signature, must type list.length",
+        );
+    }
+
+    #[test]
     fn rfc0087_impl_methods_accept_var_with_auxiliary_returns() {
         check_str(
             "type Box:\n    Box(List(Int))\nimpl Box:\n    fn row3_static(var xs: List(Int), n: Int) -> Int:\n        xs = list.__push(xs, n)\n        n\n",

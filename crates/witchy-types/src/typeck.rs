@@ -2848,7 +2848,7 @@ fn var_place(expr: &Expr) -> Option<VarPlace> {
                 Some(root)
             }
             Expr::Call { name, args }
-                if matches!(name.as_str(), "list.at" | "dict.at") && args.len() == 2 =>
+                if matches!(name.as_str(), intrinsics::LIST_AT | "dict.at") && args.len() == 2 =>
             {
                 let root = walk(&args[0], steps)?;
                 let step = match &args[1] {
@@ -3844,6 +3844,31 @@ impl Checker {
             S::IntToFloat => Some((vec![Ty::Int], Ty::Float)),
             S::FloatToInt => Some((vec![Ty::Float], Ty::Int)),
             S::FloatToFloat => Some((vec![Ty::Float], Ty::Float)),
+            S::GenericListToInt => {
+                let elem = self.fresh();
+                Some((vec![Ty::List(Box::new(elem))], Ty::Int))
+            }
+            S::GenericListIndex => {
+                let elem = self.fresh();
+                Some((vec![Ty::List(Box::new(elem.clone())), Ty::Int], elem))
+            }
+            S::GenericListSetAt => {
+                let elem = self.fresh();
+                let list = Ty::List(Box::new(elem.clone()));
+                Some((vec![list.clone(), Ty::Int, elem], list))
+            }
+            S::GenericListConcat => {
+                let elem = self.fresh();
+                let list = Ty::List(Box::new(elem));
+                Some((vec![list.clone(), list.clone()], list))
+            }
+            S::GenericListPopExtract => {
+                let elem = self.fresh();
+                Some((
+                    vec![Ty::List(Box::new(elem.clone()))],
+                    Ty::Named("Option".into(), vec![elem]),
+                ))
+            }
             // These calls are checked by their dedicated frontend rule or by
             // the linked source declaration, not by the builtin signature path.
             S::TryContext | S::DeclaredInSource => None,
@@ -3884,31 +3909,6 @@ impl Checker {
             // Duration <-> Int(milliseconds) bridge for the std `duration` module.
             "int_to_duration" => Some((vec![Ty::Int], Ty::Duration)),
             "duration_to_int" => Some((vec![Ty::Duration], Ty::Int)),
-            "list.length" => {
-                let elem = self.fresh();
-                Some((vec![Ty::List(Box::new(elem))], Ty::Int))
-            }
-            "list.at" => {
-                let elem = self.fresh();
-                Some((vec![Ty::List(Box::new(elem.clone())), Ty::Int], elem))
-            }
-            "list.__push" => {
-                let elem = self.fresh();
-                Some((
-                    vec![Ty::List(Box::new(elem.clone())), elem.clone()],
-                    Ty::List(Box::new(elem)),
-                ))
-            }
-            "list.__set_at" => {
-                let elem = self.fresh();
-                let list = Ty::List(Box::new(elem.clone()));
-                Some((vec![list.clone(), Ty::Int, elem], list))
-            }
-            "list.concat" => {
-                let elem = self.fresh();
-                let list = Ty::List(Box::new(elem));
-                Some((vec![list.clone(), list.clone()], list))
-            }
             // Dict(k, v) is an ordinary parameterized Named type; these builtins
             // are generic in its key and value types.
             "dict.new" => {
@@ -5001,8 +5001,23 @@ impl Checker {
                 _ => {} // a non-function local with this name: fall through
             }
         }
-        let user_sig = (!is_cap_op).then(|| self.user_call_sig_with_bounds(name)).flatten();
-        if user_sig.is_none() {
+        // Cataloged List primitives use the catalog's type recipe even though
+        // linked std declarations remain present for source documentation and
+        // parameter conventions. This makes the catalog authoritative without
+        // losing `var` enforcement from `fn_conventions` below.
+        let catalog_sig = if !is_cap_op && intrinsics::is_list_operation(call_name) {
+            Some(
+                self.intrinsic_call_sig(call_name)
+                    .expect("cataloged List operation has a type recipe"),
+            )
+        } else {
+            None
+        };
+        let user_sig = catalog_sig
+            .is_none()
+            .then(|| (!is_cap_op).then(|| self.user_call_sig_with_bounds(name)).flatten())
+            .flatten();
+        if catalog_sig.is_none() && user_sig.is_none() {
             if !is_cap_op && let Some(msg) = bare_cap_op_error(call_name, args.len()) {
                 return terr(msg);
             }
@@ -5022,14 +5037,17 @@ impl Checker {
         if let Some(t) = self.check_try_ctx(call_name, args)? {
             return Ok(t);
         }
-        let (params, ret, call_bounds) = match user_sig {
-            Some(sig) => sig,
-            None => {
-                let Some((params, ret)) = self.call_sig(call_name) else {
-                    return self.unknown_call(call_name, args);
-                };
-                (params, ret, Vec::new())
-            }
+        let (params, ret, call_bounds) = match catalog_sig {
+            Some((params, ret)) => (params, ret, Vec::new()),
+            None => match user_sig {
+                Some(sig) => sig,
+                None => {
+                    let Some((params, ret)) = self.call_sig(call_name) else {
+                        return self.unknown_call(call_name, args);
+                    };
+                    (params, ret, Vec::new())
+                }
+            },
         };
         if params.len() != args.len() {
             let display = diagnostic_callable_name(name);
@@ -7781,10 +7799,11 @@ fn pattern_dup_binding(p: &Pattern) -> Option<String> {
 pub fn intrinsic(name: &str) -> bool {
     matches!(
         name,
-        "list.__push" | witchy_syntax::intrinsics::GENERATED_LIST_PUSH | "list.__set_at" | "list.at" | "list.length" | "list.concat"
+        witchy_syntax::intrinsics::GENERATED_LIST_PUSH
             | "dict.new" | "dict.__insert" | "dict.get_or" | "dict.at" | "dict.contains_key" | "dict.__remove"
             | "dict.__update" | "dict.keys" | "dict.values" | "dict.pairs" | "dict.length"
-    ) || witchy_syntax::intrinsics::is_string_operation(name)
+    ) || witchy_syntax::intrinsics::is_list_operation(name)
+        || witchy_syntax::intrinsics::is_string_operation(name)
         || witchy_syntax::intrinsics::is_math_operation(name)
 }
 

@@ -29,7 +29,7 @@
 // attacker-chosen collections — see the note in typeck.rs.
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 
-use witchy_syntax::{ast::*, cap_ops};
+use witchy_syntax::{ast::*, cap_ops, intrinsics};
 
 #[derive(Clone, Debug)]
 struct ImplTraitMethod {
@@ -3378,9 +3378,9 @@ fn discarded_std_var_writeback(
     }
     let place = args.first()?.clone();
     let private = if name == "list.push" || name.starts_with("list.push__") {
-        "list.__push"
+        intrinsics::LIST_PUSH
     } else if name == "list.set_at" || name.starts_with("list.set_at__") {
-        "list.__set_at"
+        intrinsics::LIST_SET_AT
     } else if name == "dict.insert" || name.starts_with("dict.insert__") {
         "dict.__insert"
     } else if name == "dict.update" || name.starts_with("dict.update__") {

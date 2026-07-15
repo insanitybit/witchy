@@ -3614,7 +3614,7 @@ pub fn desugar_range(lo: Expr, hi: Expr, inclusive: bool) -> Expr {
 /// `Expr::Index` for the formatter, and every other consumer lowers them here.
 pub fn desugar_index(base: Expr, index: Expr) -> Expr {
     Expr::Call {
-        name: "list.at".into(),
+        name: crate::intrinsics::LIST_AT.into(),
         args: vec![base, index],
     }
 }

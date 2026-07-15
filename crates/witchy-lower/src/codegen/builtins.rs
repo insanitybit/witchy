@@ -79,25 +79,27 @@ impl Codegen<'_> {
             intrinsics::sole_wir_helper(intrinsic)
                 .expect("cataloged builtin has one static WIR helper")
         };
+        let intrinsic_helper_variant = |intrinsic: &str, helper: &str| {
+            intrinsics::declared_wir_helper(intrinsic, helper)
+                .expect("cataloged builtin declares this WIR helper")
+        };
         // A void effect that yields Nil: `{inner} ... i32.const 0`.
         let nil0 = |inner: W| W::Seq(vec![N::Do(inner), N::Push(W::ConstI32(0))]);
         Some(match (name, args.len()) {
-            (name, 1)
-                if name == "list.__pop_extract"
-                    || name.starts_with("list.__pop_extract__") =>
+            (name, 1) if intrinsics::is_list_pop_extract(name) =>
             {
                 let list = self.lower_expr(&args[0])?;
                 let bias = self
                     .ast_type_of_expr(&args[0])
                     .as_ref()
                     .and_then(|ty| collection_leaf_bias(ty, "List", 0))?;
-                self.lower_extract_var("list_pop_extract", &args[0], vec![list], &[bias])?
+                self.lower_extract_var(intrinsic_helper(name), &args[0], vec![list], &[bias])?
             }
             // (RFC-0028) Confined slice view reads: lower to the zero-copy view
             // helpers, reading through the elided slice's source + bounds. Guarded
             // to active views (the `let` replaced the binding), so any other
             // `list.at`/`length` falls through to the materialized-list arms below.
-            ("list.at", 2)
+            (intrinsics::LIST_AT, 2)
                 if matches!(&args[0], Expr::Var(w) if self.view_active.contains(w)) =>
             {
                 let ek = self.list_elem_kind(&args[0]);
@@ -111,19 +113,28 @@ impl Codegen<'_> {
                     // as `$list_at`).
                     Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I64),
                 ];
-                W::FromSlot(Box::new(call("list_at_view", inner)), Self::wir_kind(ek))
+                W::FromSlot(
+                    Box::new(call(
+                        intrinsic_helper_variant(intrinsics::LIST_AT, "list_at_view"),
+                        inner,
+                    )),
+                    Self::wir_kind(ek),
+                )
             }
-            ("list.length", 1)
+            (intrinsics::LIST_LENGTH, 1)
                 if self.collect_wir
                     && matches!(&args[0], Expr::Var(w) if self.view_active.contains(w)) =>
             {
                 let Expr::Var(w) = &args[0] else { unreachable!() };
                 Self::wir_convert(
-                    call("list_len_view", vec![
-                        W::GetLocal(format!("{w}$src")),
-                        W::GetLocal(format!("{w}$lo")),
-                        W::GetLocal(format!("{w}$hi")),
-                    ]),
+                    call(
+                        intrinsic_helper_variant(intrinsics::LIST_LENGTH, "list_len_view"),
+                        vec![
+                            W::GetLocal(format!("{w}$src")),
+                            W::GetLocal(format!("{w}$lo")),
+                            W::GetLocal(format!("{w}$hi")),
+                        ],
+                    ),
                     Kind::I32,
                     Kind::I64,
                 )
@@ -264,7 +275,9 @@ impl Codegen<'_> {
             // header, widened to the Int's i64. A count is non-negative so the
             // signed `Convert` matches an unsigned `i64.extend_i32_u`. Lowers only
             // in a WIR-collecting scope.
-            ("list.length", 1) | (intrinsics::STRING_LENGTH, 1) if self.collect_wir => {
+            (intrinsics::LIST_LENGTH, 1) | (intrinsics::STRING_LENGTH, 1)
+                if self.collect_wir =>
+            {
                 let arg = self.lower_expr(&args[0])?;
                 Self::wir_convert(
                     W::Load { ptr: Box::new(arg), kind: witchy_wir::wir::Kind::I32, offset: 0 },
@@ -497,8 +510,8 @@ impl Codegen<'_> {
                 self.uses_substr = true;
                 call(intrinsic_helper(name), self.lower_args(&[&args[0]])?)
             }
-            ("list.concat", 2) => {
-                call("list_concat", self.lower_args(&[&args[0], &args[1]])?)
+            (intrinsics::LIST_CONCAT, 2) => {
+                call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
             }
             ("dict.new", 0) => {
                 self.uses_dict = true;
@@ -851,14 +864,17 @@ impl Codegen<'_> {
                     Self::wir_convert(self.lower_expr(&args[2])?, ek, Kind::I64),
                 ])
             }
-            ("list.__push" | witchy_syntax::intrinsics::GENERATED_LIST_PUSH, 2) => {
+            (intrinsics::LIST_PUSH | intrinsics::GENERATED_LIST_PUSH, 2) => {
                 let xk = self.kind_of(&args[1]);
-                call("list_push", vec![
-                    self.lower_expr(&args[0])?,
-                    W::ToSlot(Box::new(self.lower_expr(&args[1])?), Self::wir_kind(xk)),
-                ])
+                call(
+                    intrinsic_helper_variant(name, "list_push"),
+                    vec![
+                        self.lower_expr(&args[0])?,
+                        W::ToSlot(Box::new(self.lower_expr(&args[1])?), Self::wir_kind(xk)),
+                    ],
+                )
             }
-            ("list.__set_at", 3) => {
+            (intrinsics::LIST_SET_AT, 3) => {
                 let level = self.assign_level;
                 if level >= SCRUT_POOL {
                     return None;
@@ -889,11 +905,12 @@ impl Codegen<'_> {
                         value: W::ToSlot(Box::new(value), Self::wir_kind(vk)),
                     },
                     N::Drop(W::Call {
-                        func: "list_at".into(),
+                        func: intrinsic_helper_variant(intrinsics::LIST_SET_AT, "list_at").into(),
                         args: vec![W::GetLocal(list_tmp.clone()), W::GetLocal(index_tmp.clone())],
                     }),
                     N::CallStoreMulti {
-                        func: "list_set_cap".into(),
+                        func: intrinsic_helper_variant(intrinsics::LIST_SET_AT, "list_set_cap")
+                            .into(),
                         args: vec![
                             W::GetLocal(list_tmp),
                             Self::wir_convert(W::GetLocal(index_tmp), Kind::I64, Kind::I32),
@@ -905,7 +922,7 @@ impl Codegen<'_> {
                     N::Push(W::GetLocal(TUPLE_TMP.to_string())),
                 ])
             }
-            ("list.at", 2) => {
+            (intrinsics::LIST_AT, 2) => {
                 let ek = self.list_elem_kind(&args[0]);
                 let ik = self.kind_of(&args[1]);
                 // (RFC-0034 L2) Bounds-check elision: when the For lowering proved this
@@ -953,7 +970,13 @@ impl Codegen<'_> {
                         Self::wir_kind(ek),
                     )
                 } else {
-                    W::FromSlot(Box::new(call("list_at", vec![list_w, idx_w])), Self::wir_kind(ek))
+                    W::FromSlot(
+                        Box::new(call(
+                            intrinsic_helper_variant(intrinsics::LIST_AT, "list_at"),
+                            vec![list_w, idx_w],
+                        )),
+                        Self::wir_kind(ek),
+                    )
                 };
                 // (RFC-0035 step 1) The element read out of the container is now an OWNED
                 // reference sharing the object with the slot, so `$rc_dup` it — it returns the

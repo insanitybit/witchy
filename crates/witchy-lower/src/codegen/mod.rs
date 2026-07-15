@@ -1951,7 +1951,7 @@ impl<'types> Codegen<'types> {
                         .map(|s| (1, NestBottom::Scalar(*s)))
                 }),
             Expr::List(_) => self.literal_nesting(e),
-            Expr::Call { name, args } if name == "list.at" && args.len() == 2 => {
+            Expr::Call { name, args } if name == intrinsics::LIST_AT && args.len() == 2 => {
                 match self.list_nesting(&args[0]) {
                     Some((d, b)) if d >= 2 => Some((d - 1, b)),
                     _ => None,
@@ -2019,7 +2019,7 @@ impl<'types> Codegen<'types> {
             // `at(L, i)` where `L` is itself a (possibly deeply) nested list: the
             // element is a scalar exactly when the at-result is a depth-1 list.
             // Peeling via `list_nesting` handles any nesting depth.
-            Expr::Call { name, args } if name == "list.at" && args.len() == 2 => {
+            Expr::Call { name, args } if name == intrinsics::LIST_AT && args.len() == 2 => {
                 match self.list_nesting(iter) {
                     Some((1, NestBottom::Scalar(s))) => s,
                     _ => ValType::Other,
@@ -2256,7 +2256,7 @@ impl<'types> Codegen<'types> {
                         self.local_tuple_slots
                             .insert(name.clone(), items.iter().map(|e| self.val_type_of(e)).collect());
                     } else if let Expr::Call { name: fname, args } = value {
-                        if fname == "list.at" && args.len() == 2 {
+                        if fname == intrinsics::LIST_AT && args.len() == 2 {
                             // `at(list_of_tuples, i)`: the result tuple's slots are
                             // the list's element-tuple slot types.
                             if let Expr::Var(list) = &args[0] {
@@ -2365,7 +2365,7 @@ impl<'types> Codegen<'types> {
                                     .cloned()
                                     .unwrap_or_else(|| vec![ValType::Other; names.len()])
                             } else if let Expr::Call { name: fname, args } = value {
-                                if fname == "list.at" && args.len() == 2 {
+                                if fname == intrinsics::LIST_AT && args.len() == 2 {
                                     self.list_elem_tuple_slots(&args[0])
                                         .filter(|s| s.len() == names.len())
                                         .unwrap_or_else(|| vec![ValType::Other; names.len()])
@@ -3417,7 +3417,7 @@ impl<'types> Codegen<'types> {
                     // binding is never dropped (which would underflow the count → UAF).
                     if !force_copy_mode() && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::RcFloor) {
                         if let Expr::Call { name: f, args } = value {
-                            if f == "list.at"
+                            if f == intrinsics::LIST_AT
                                 && args.len() == 2
                                 && self.kind_of(value) == Kind::I32
                                 && self.list_elem_is_offset0_rc(&args[0])
@@ -4267,7 +4267,7 @@ impl<'types> Codegen<'types> {
                                         {
                                             match vexpr {
                                                 Expr::Call { name: pn, args: pa }
-                                                    if matches!(pn.as_str(), "list.push" | "list.__push") && pa.len() == 2 =>
+                                                    if matches!(pn.as_str(), "list.push" | intrinsics::LIST_PUSH) && pa.len() == 2 =>
                                                 {
                                                     match &pa[0] {
                                                         Expr::Field { base, field }
@@ -5261,7 +5261,7 @@ impl<'types> Codegen<'types> {
             && !force_copy_mode()
             && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::RcFloor)
             && match scrutinee {
-                Expr::Call { name, args } if name == "list.at" && args.len() == 2 => {
+                Expr::Call { name, args } if name == intrinsics::LIST_AT && args.len() == 2 => {
                     self.list_elem_is_offset0_rc(&args[0])
                 }
                 _ => false,
@@ -5543,7 +5543,7 @@ impl<'types> Codegen<'types> {
                 })
             }
             Expr::Call { name, args }
-                if matches!(name.as_str(), "list.at" | "dict.at") && args.len() == 2 =>
+                if matches!(name.as_str(), intrinsics::LIST_AT | "dict.at") && args.len() == 2 =>
             {
                 let captured_base =
                     self.capture_codegen_place(&args[0], next_coordinate, prelude)?;
@@ -5592,7 +5592,7 @@ impl<'types> Codegen<'types> {
                 field: field.clone(),
             },
             CodegenPlace::Index { base, coordinate, dict, .. } => Expr::Call {
-                name: if *dict { "dict.at" } else { "list.at" }.to_string(),
+                name: if *dict { "dict.at" } else { intrinsics::LIST_AT }.to_string(),
                 args: vec![
                     Self::codegen_place_read_from(base, root),
                     Expr::Var(coordinate.clone()),
@@ -5618,7 +5618,7 @@ impl<'types> Codegen<'types> {
             }
             CodegenPlace::Index { base, coordinate, dict, .. } => {
                 let updated = Expr::Call {
-                    name: if *dict { "dict.__insert" } else { "list.__set_at" }.to_string(),
+                    name: if *dict { "dict.__insert" } else { intrinsics::LIST_SET_AT }.to_string(),
                     args: vec![
                         Self::codegen_place_read_from(base, root),
                         Expr::Var(coordinate.clone()),
@@ -7092,7 +7092,7 @@ impl<'types> Codegen<'types> {
                 // boxed record uses, just flattened. One load instead of a pointer
                 // deref + a field load. Only for names the `let` actually packed.
                 if let Expr::Call { name: at, args } = base.as_ref() {
-                    if at == "list.at" && args.len() == 2 {
+                    if at == intrinsics::LIST_AT && args.len() == 2 {
                         if let Expr::Var(xs) = &args[0] {
                             if let Some(rec) = self.packed_active.get(xs).cloned() {
                                 let names = self.record_fields.get(&rec)?;
@@ -8331,7 +8331,7 @@ impl<'types> Codegen<'types> {
                 Expr::Var(root) => Some(root),
                 Expr::Field { base, .. } | Expr::Index { base, .. } => place_root(base),
                 Expr::Call { name, args }
-                    if matches!(name.as_str(), "list.at" | "dict.at") && args.len() == 2 =>
+                    if matches!(name.as_str(), intrinsics::LIST_AT | "dict.at") && args.len() == 2 =>
                 {
                     place_root(&args[0])
                 }
@@ -9230,7 +9230,7 @@ fn bounds_elide_pair(var: &str, lo: &Expr, hi: &Expr, inclusive: bool, body: &Bl
         _ => return None,
     }
     let xs = match hi {
-        Expr::Call { name, args } if name == "list.length" && args.len() == 1 => match &args[0] {
+        Expr::Call { name, args } if name == intrinsics::LIST_LENGTH && args.len() == 1 => match &args[0] {
             Expr::Var(x) => x.clone(),
             _ => return None,
         },
@@ -9265,7 +9265,7 @@ fn nested_var_place_roots(
             Expr::Var(root) => Some(root),
             Expr::Field { base, .. } | Expr::Index { base, .. } => place_root(base),
             Expr::Call { name, args }
-                if matches!(name.as_str(), "list.at" | "dict.at") && args.len() == 2 =>
+                if matches!(name.as_str(), intrinsics::LIST_AT | "dict.at") && args.len() == 2 =>
             {
                 place_root(&args[0])
             }

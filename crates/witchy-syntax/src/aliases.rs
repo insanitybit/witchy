@@ -438,9 +438,9 @@ fn resolve_in_expr(e: &mut Expr, map: &HashMap<String, Alias>) {
 pub fn moved_builtin(bare: &str) -> Option<&'static str> {
     Some(match bare {
         "push" => "list.push",
-        "at" => "list.at",
-        "length" => "list.length",
-        "concat" => "list.concat",
+        "at" => intrinsics::LIST_AT,
+        "length" => intrinsics::LIST_LENGTH,
+        "concat" => intrinsics::LIST_CONCAT,
         "dict_new" => "dict.new",
         "insert" => "dict.insert",
         "get_or" => "dict.get_or",

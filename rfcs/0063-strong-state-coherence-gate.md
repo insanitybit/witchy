@@ -137,8 +137,7 @@ catalog family or its stable names instead of maintaining separate string-name s
 Coherence tests compare the rows to `std/string.witchy`, require every declared helper to
 exist in the WIR registry, and require every primitive placeholder to be suppressed. This
 also closes the prior omission where `string.from_code` was intercepted by both backends
-but its self-recursive source declaration was not classified as an intrinsic. List, Dict,
-and the remaining public operation families are still uncataloged.
+but its self-recursive source declaration was not classified as an intrinsic.
 
 The math primitive family catalogs all three backend-crossing operations:
 `math.to_float`, `math.to_int`, and `math.sqrt`. Their rows carry exact signatures,
@@ -149,6 +148,21 @@ dispatch, lowering identity, analysis aliases, and compiled result-shape classif
 consume the catalog family or its stable names. Coherence tests require source declarations
 and helpers to exist, reject primitive-placeholder drift, and execute every row through the
 interpreter-owned dispatch path.
+
+The List primitive family catalogs its six backend-crossing operations: `list.length`,
+`list.at`, `list.__push`, `list.__set_at`, `list.concat`, and
+`list.__pop_extract`. Their rows carry generic signatures, no-capability effects,
+interpreter ownership, and every baseline/optimized/view/bounds WIR helper dependency. The five
+value transforms are pure; extraction is explicitly a write-back effect. Type checking
+derives the generic signatures from those rows, compiled result-shape classification reads
+the catalog predicates, and parser desugaring, aliases, interpreter dispatch, escape and
+uniqueness analysis, and lowering consume stable catalog names. Specialized extraction
+names resolve to the canonical operation row instead of bypassing its contract. Coherence
+tests compare every row with `std/list.witchy` (including the `var` receiver), derive the
+reverse set of primitive placeholders from source, execute exact operation results and
+write-back dispatch, require every helper to exist, and require every self-recursive
+primitive placeholder to be suppressed. Dict and the remaining public
+families are the next catalog migrations.
 
 ### 4. Typed compiler facts, not string or address shadows
 
