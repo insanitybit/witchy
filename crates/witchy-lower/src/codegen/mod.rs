@@ -1809,6 +1809,9 @@ impl<'types> Codegen<'types> {
                     self.local_types.insert(name.clone(), ty.clone());
                     self.local_val_types.insert(name.clone(), vt);
                     self.locals.insert(name.clone(), self.kind_for_type(ty));
+                    if let Type::Fn(_, ret, _) = ty.unqualified() {
+                        self.local_fn_ret_kind.insert(name.clone(), self.kind_for_type(ret));
+                    }
                 }
             }
             Pattern::Tuple(parts) => {

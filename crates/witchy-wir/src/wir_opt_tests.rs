@@ -171,7 +171,8 @@
         let mut residual_tail_calls = std::collections::HashSet::new();
         collect_function_tail_calls(&dispatcher.body, &mut residual_tail_calls);
         assert!(
-            !residual_tail_calls.contains("even") && !residual_tail_calls.contains("odd"),
+            !residual_tail_calls.contains(&TailCallee::Direct("even".into()))
+                && !residual_tail_calls.contains(&TailCallee::Direct("odd".into())),
             "guaranteed edges must contain no recursive backend call: {residual_tail_calls:?}",
         );
         for (state, wrapper) in module.funcs[..2].iter().enumerate() {
@@ -184,6 +185,154 @@
             assert_eq!(func, &dispatcher.name);
             assert!(matches!(args.first(), Some(WirExpr::ConstI32(value)) if *value == state as i32));
         }
+    }
+
+    #[test]
+    fn lowers_indirect_closure_cycle_through_typed_table_dispatch() {
+        let driver = WirFunc {
+            name: "driver".into(),
+            params: vec![
+                WirLocal { name: "env".into(), ty: WirTy::Bool },
+                WirLocal { name: "n".into(), ty: WirTy::Int },
+            ],
+            ret: vec![WirTy::Int],
+            locals: vec![],
+            body: vec![WirNode::Push(WirExpr::FromSlot(
+                Box::new(WirExpr::CallIndirect {
+                    type_arity: 1,
+                    result_count: 1,
+                    args: vec![
+                        WirExpr::GetLocal("env".into()),
+                        WirExpr::GetLocal("n".into()),
+                    ],
+                    index: Box::new(WirExpr::ConstI32(0)),
+                }),
+                Kind::I64,
+            ))],
+            raw_body: None,
+        };
+        let closure = WirFunc {
+            name: "__lamw0".into(),
+            params: vec![
+                WirLocal { name: "env".into(), ty: WirTy::Bool },
+                WirLocal { name: "n".into(), ty: WirTy::Int },
+            ],
+            ret: vec![WirTy::Int],
+            locals: vec![],
+            body: vec![WirNode::Push(WirExpr::ToSlot(
+                Box::new(WirExpr::Call {
+                    func: "driver".into(),
+                    args: vec![
+                        WirExpr::GetLocal("env".into()),
+                        WirExpr::GetLocal("n".into()),
+                    ],
+                }),
+                Kind::I64,
+            ))],
+            raw_body: None,
+        };
+        let mut module = module_with(driver);
+        module.funcs.push(closure);
+        module.table = Some(WirTable { funcs: vec!["__lamw0".into()] });
+        module.exports.push(("driver".into(), "driver".into()));
+
+        assert_eq!(lower_direct_tail_calls(&mut module), 2);
+        assert_eq!(module.funcs.len(), 3);
+        let dispatcher = &module.funcs[2];
+        assert!(
+            dispatcher
+                .locals
+                .iter()
+                .any(|local| local.name.starts_with("__witchy_tail_indirect_")),
+            "dispatcher needs typed argument/index staging for dynamic calls",
+        );
+        let mut residual = HashSet::new();
+        collect_function_tail_calls(&dispatcher.body, &mut residual);
+        assert!(!residual.contains(&TailCallee::Direct("driver".into())));
+        assert!(!residual.contains(&TailCallee::Direct("__lamw0".into())));
+        let binary = crate::wir_encode::encode(&module, &[]);
+        wasmparser::validate(&binary).expect("typed indirect dispatcher must validate");
+    }
+
+    #[test]
+    fn lowers_singleton_indirect_self_cycle() {
+        let recursive = WirFunc {
+            name: "__lamw0".into(),
+            params: vec![
+                WirLocal { name: "env".into(), ty: WirTy::Bool },
+                WirLocal { name: "n".into(), ty: WirTy::Int },
+            ],
+            ret: vec![WirTy::Int],
+            locals: vec![],
+            body: vec![WirNode::Push(WirExpr::CallIndirect {
+                type_arity: 1,
+                result_count: 1,
+                args: vec![
+                    WirExpr::GetLocal("env".into()),
+                    WirExpr::GetLocal("n".into()),
+                ],
+                index: Box::new(WirExpr::ConstI32(0)),
+            })],
+            raw_body: None,
+        };
+        let mut module = module_with(recursive);
+        module.table = Some(WirTable { funcs: vec!["__lamw0".into()] });
+
+        assert_eq!(lower_direct_tail_calls(&mut module), 1);
+        assert_eq!(module.funcs.len(), 2, "wrapper plus singleton dispatcher");
+        let binary = crate::wir_encode::encode(&module, &[]);
+        wasmparser::validate(&binary).expect("singleton dispatcher must validate");
+    }
+
+    #[test]
+    fn indirect_dispatcher_adapts_mixed_scalar_result_kinds() {
+        let driver = WirFunc {
+            name: "driver".into(),
+            params: vec![
+                WirLocal { name: "env".into(), ty: WirTy::Bool },
+                WirLocal { name: "n".into(), ty: WirTy::Int },
+            ],
+            ret: vec![WirTy::Str],
+            locals: vec![],
+            body: vec![WirNode::Push(WirExpr::FromSlot(
+                Box::new(WirExpr::CallIndirect {
+                    type_arity: 1,
+                    result_count: 1,
+                    args: vec![
+                        WirExpr::GetLocal("env".into()),
+                        WirExpr::GetLocal("n".into()),
+                    ],
+                    index: Box::new(WirExpr::ConstI32(0)),
+                }),
+                Kind::I32,
+            ))],
+            raw_body: None,
+        };
+        let closure = WirFunc {
+            name: "__lamw0".into(),
+            params: driver.params.clone(),
+            ret: vec![WirTy::Slot],
+            locals: vec![],
+            body: vec![WirNode::Push(WirExpr::ToSlot(
+                Box::new(WirExpr::Call {
+                    func: "driver".into(),
+                    args: vec![
+                        WirExpr::GetLocal("env".into()),
+                        WirExpr::GetLocal("n".into()),
+                    ],
+                }),
+                Kind::I32,
+            ))],
+            raw_body: None,
+        };
+        let mut module = module_with(driver);
+        module.funcs.push(closure);
+        module.table = Some(WirTable { funcs: vec!["__lamw0".into()] });
+
+        assert_eq!(lower_direct_tail_calls(&mut module), 2);
+        assert_eq!(module.funcs[2].ret, vec![WirTy::Slot]);
+        let binary = crate::wir_encode::encode(&module, &[]);
+        wasmparser::validate(&binary).expect("mixed scalar dispatcher must validate");
     }
 
     #[test]

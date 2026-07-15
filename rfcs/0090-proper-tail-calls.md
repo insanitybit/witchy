@@ -10,7 +10,7 @@ related:
   - "0083 (opt-mode lifetimes - loans must end or transfer across a tail edge)"
   - "0087 (uniform var write-back - move-out is part of the callable ABI)"
   - "0089 (fully in-place functional kernels - requires constant control stack)"
-tracking: stages 1-2 (direct self and mutually recursive components) are implemented; indirect calls are stage 3
+tracking: stages 1-2 are implemented; stage 3 covers specialized direct calls and scalar closure-table cycles, while capability/reference result envelopes remain gated by RFC-0005
 ---
 
 # RFC-0090: Guaranteed proper tail calls
@@ -30,8 +30,8 @@ emitting a stack-growing call.
 The implementation does not depend on WebAssembly's tail-call proposal. Direct
 self recursion lowers to parameter staging and a loop. Mutually recursive direct
 functions lower to one state machine per compatible call-graph component.
-Indirect calls use a callable trampoline until the runtime's locked-down Wasm
-feature set can admit an equivalent native instruction. Native tail calls may
+Indirect calls use a typed closure-table dispatcher until the runtime's locked-down
+Wasm feature set can admit an equivalent native instruction. Native tail calls may
 replace these lowerings only under differential and resource tests.
 
 ## Motivation
@@ -139,10 +139,20 @@ ordinary non-tail call because forwarding would leave real work in the caller.
 ### Stage 3: generics, traits, and closures
 
 Monomorphized direct calls participate after specialization. Devirtualized trait
-and closure calls use the direct machinery. Remaining indirect proper calls use
-a typed trampoline request carrying callable identity, environment, argument
-slots, result-envelope identity, and reference kinds. The trampoline loops until
-a callable produces a final result.
+and closure calls use the direct machinery. For a remaining indirect proper edge,
+the compiler adds every exact-signature target in the finite closure table to the
+recursive graph. A recursive component's dispatcher stages the closure environment
+and arguments, evaluates the table index once, and selects the destination's typed
+bank. A table target outside the recursive component remains an ordinary indirect
+exit because it cannot contribute an unbounded cycle back into that component.
+When scalar members use different Wasm result kinds, the dispatcher carries the
+component result in the closure ABI's i64 slot and each public entry wrapper
+recovers its declared kind. This removes the representation conversion from the
+recursive continuation without erasing capability or GC references.
+
+The interpreter carries the selected closure value and its captured environment
+through the same callable-boundary loop used for named functions. It does not
+recurse through a host frame to model dynamic dispatch.
 
 No capability or GC reference may be boxed into an integer slot to fit the
 trampoline. RFC-0005 representation kinds remain authoritative.
@@ -231,7 +241,7 @@ language boundary; mutual and indirect proper calls are equally observable.
 
 ## Drawbacks
 
-- SCC dispatchers and the indirect trampoline add compiler and debug-info work.
+- SCC dispatchers and indirect table selection add compiler and debug-info work.
 - Convention-bearing multi-result ABIs make fewer textually final calls proper
   than a single-result language.
 - Logical stack traces need an explicit tail-transition representation.

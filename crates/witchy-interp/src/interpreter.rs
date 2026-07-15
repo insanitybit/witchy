@@ -247,14 +247,26 @@ impl std::error::Error for RuntimeError {}
 enum Flow {
     Err(RuntimeError),
     Return(Value),
-    /// A direct proper tail call. The enclosing function boundary replaces its
-    /// logical function and parameter environment without growing the Rust stack.
-    TailCall { function: Rc<Function>, args: Vec<Value> },
+    /// A proper tail call. The enclosing callable boundary replaces its logical
+    /// function/closure and parameter environment without growing the Rust stack.
+    TailCall { callable: TailCallable, args: Vec<Value> },
     /// `break` — caught by the innermost loop, which stops.
     Break,
     /// `continue` — caught by the innermost loop, which proceeds to the next
     /// iteration.
     Continue,
+}
+
+#[derive(Clone)]
+enum TailCallable {
+    Function(Rc<Function>),
+    Closure(Value),
+}
+
+struct CallableOutcome {
+    value: Value,
+    params: Vec<Param>,
+    env: Env,
 }
 
 struct ClosureOutcome {
@@ -434,19 +446,6 @@ fn rt_at_line(e: RuntimeError, line: u32, func: &str) -> RuntimeError {
     };
     RuntimeError {
         message: format!("{where_}: {}", e.message),
-    }
-}
-
-/// Collapse a function body's `Flow` result into a plain value: a `?`-driven
-/// early `return` becomes the body's value; a real error propagates.
-fn finish(r: Result<Value, Flow>) -> Result<Value, RuntimeError> {
-    match r {
-        Ok(v) => Ok(v),
-        Err(Flow::Return(v)) => Ok(v),
-        Err(Flow::Err(e)) => Err(e),
-        Err(Flow::Break | Flow::Continue | Flow::TailCall { .. }) => {
-            Err(RuntimeError { message: "`break`/`continue` outside a loop".into() })
-        }
     }
 }
 
@@ -793,6 +792,10 @@ pub struct Interpreter {
     /// Current named function boundary, used to recognize explicit-return tail
     /// calls even when the `return` is nested in a non-tail control expression.
     tail_function: Option<Rc<Function>>,
+    /// The active tail chain has crossed a function value. Later named edges may
+    /// still close the dynamic cycle, so they trampoline without the named-only
+    /// SCC prefilter until this callable boundary returns.
+    tail_dynamic_chain: bool,
     /// Direct proper-call edges that belong to a recursive component. Acyclic
     /// tail calls retain their ordinary call boundary; recursive SCCs trampoline.
     proper_tail_edges: HashMap<String, HashSet<String>>,
@@ -1113,6 +1116,7 @@ impl Interpreter {
             depth: 0,
             depth_limit: DEFAULT_DEPTH_LIMIT,
             tail_function: None,
+            tail_dynamic_chain: false,
             proper_tail_edges,
             output: Vec::new(),
         }
@@ -1291,11 +1295,11 @@ impl Interpreter {
         })
     }
 
-    pub fn call(&mut self, name: &str, mut args: Vec<Value>) -> Result<Value, RuntimeError> {
+    pub fn call(&mut self, name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
         if let Some(v) = self.call_builtin(name, &args)? {
             return Ok(v);
         }
-        let Some(mut func) = self.functions.get(name).cloned() else {
+        let Some(func) = self.functions.get(name).cloned() else {
             return err(format!("call to unknown function `{name}`"));
         };
         if func.params.len() != args.len() {
@@ -1305,45 +1309,13 @@ impl Interpreter {
                 args.len()
             ));
         }
-        let prev_fn = std::mem::replace(&mut self.cur_fn, name.to_string());
-        let prev_line = self.cur_line;
-        self.depth += 1;
-        if self.depth > self.depth_limit {
-            self.depth -= 1;
-            return err("call stack too deep (possible infinite recursion)");
-        }
-        let prev_tail_function = self.tail_function.replace(func.clone());
-        let result = loop {
-            let mut env = Env::new();
-            for (param, value) in func.params.iter().zip(&args) {
-                env.define(
-                    param.name.clone(),
-                    value.clone(),
-                    param.convention.binds_mutable(),
-                );
+        match self.run_callable(TailCallable::Function(func), args) {
+            Ok(outcome) => Ok(outcome.value),
+            Err(Flow::Err(error)) => Err(error),
+            Err(Flow::Return(_) | Flow::TailCall { .. } | Flow::Break | Flow::Continue) => {
+                err("invalid control flow escaped a callable boundary")
             }
-            match self.eval_function_block(&func.body, &func, &mut env) {
-                Err(Flow::TailCall { function, args: next }) => {
-                    debug_assert_eq!(next.len(), function.params.len());
-                    self.cur_fn = function.name.clone();
-                    self.tail_function = Some(function.clone());
-                    func = function;
-                    args = next;
-                }
-                other => break finish(other),
-            }
-        };
-        self.depth -= 1;
-        // On success, restore the caller's complete source context. On error,
-        // keep this function and its last line so the innermost failure is
-        // reported. Restoring only the name paired caller names with callee lines
-        // after a successful nested call.
-        if result.is_ok() {
-            self.cur_fn = prev_fn;
-            self.cur_line = prev_line;
         }
-        self.tail_function = prev_tail_function;
-        result
     }
 
     /// Record the user→testing crossing: when a non-`testing` function calls a
@@ -1544,57 +1516,127 @@ impl Interpreter {
         Ok(())
     }
 
-    /// Apply a closure to already-evaluated arguments. The closure runs in its
-    /// captured environment (plus a fresh scope for the parameters), and its body
-    /// is a function boundary, so a `?` inside it returns from the closure.
-    fn run_closure(&mut self, clo: Value, argvals: Vec<Value>) -> Result<ClosureOutcome, Flow> {
-        let Value::Closure { owner, params, body, env } = clo else {
-            return err("attempted to call a non-function value");
-        };
-        if params.len() != argvals.len() {
-            return err(format!(
-                "function expects {} argument(s) but got {}",
-                params.len(),
-                argvals.len()
-            ));
-        }
-        let mut cenv = *env;
-        cenv.push();
-        for (p, v) in params.iter().zip(argvals) {
-            cenv.define(p.name.clone(), v, p.convention.binds_mutable());
-        }
+    fn run_callable(
+        &mut self,
+        mut callable: TailCallable,
+        mut argvals: Vec<Value>,
+    ) -> Result<CallableOutcome, Flow> {
         self.depth += 1;
         if self.depth > self.depth_limit {
             self.depth -= 1;
             return err("call stack too deep (possible infinite recursion)");
         }
-        let prev_fn = std::mem::replace(&mut self.cur_fn, owner);
+        let prev_fn = self.cur_fn.clone();
         let prev_line = self.cur_line;
         let prev_tail_function = self.tail_function.take();
-        let result = self.eval_block(&body, &mut cenv);
+        let prev_tail_dynamic_chain = self.tail_dynamic_chain;
+        let mut dynamic_chain = matches!(callable, TailCallable::Closure(_));
+        let result = loop {
+            let current_args = std::mem::take(&mut argvals);
+            let (function, mut env, is_closure) = match callable {
+                TailCallable::Function(function) => {
+                    if function.params.len() != current_args.len() {
+                        break err(format!(
+                            "`{}` expects {} argument(s) but got {}",
+                            function.name,
+                            function.params.len(),
+                            current_args.len()
+                        ));
+                    }
+                    let mut env = Env::new();
+                    for (param, value) in function.params.iter().zip(current_args) {
+                        env.define(
+                            param.name.clone(),
+                            value,
+                            param.convention.binds_mutable(),
+                        );
+                    }
+                    (function, env, false)
+                }
+                TailCallable::Closure(Value::Closure { owner, params, body, env }) => {
+                    if params.len() != current_args.len() {
+                        break err(format!(
+                            "function expects {} argument(s) but got {}",
+                            params.len(),
+                            current_args.len()
+                        ));
+                    }
+                    let mut env = *env;
+                    env.push();
+                    for (param, value) in params.iter().zip(current_args) {
+                        env.define(
+                            param.name.clone(),
+                            value,
+                            param.convention.binds_mutable(),
+                        );
+                    }
+                    let function = Rc::new(Function {
+                        public: false,
+                        comptime_only: false,
+                        name: owner,
+                        params,
+                        ret: None,
+                        body,
+                        bounds: Vec::new(),
+                        is_gen: false,
+                        is_async: false,
+                    });
+                    (function, env, true)
+                }
+                TailCallable::Closure(_) => break err("attempted to call a non-function value"),
+            };
+            self.cur_fn = function.name.clone();
+            self.tail_function = Some(function.clone());
+            dynamic_chain |= is_closure;
+            self.tail_dynamic_chain = dynamic_chain;
+            match self.eval_function_block(&function.body, &function, &mut env) {
+                Err(Flow::TailCall { callable: next, args: next_args }) => {
+                    callable = next;
+                    argvals = next_args;
+                }
+                Ok(value) | Err(Flow::Return(value)) => {
+                    break Ok(CallableOutcome {
+                        value,
+                        params: function.params.clone(),
+                        env,
+                    });
+                }
+                Err(error @ Flow::Err(_)) => break Err(error),
+                Err(Flow::Break | Flow::Continue) => {
+                    break err("`break`/`continue` outside a loop");
+                }
+            }
+        };
         self.tail_function = prev_tail_function;
+        self.tail_dynamic_chain = prev_tail_dynamic_chain;
         self.depth -= 1;
-        if matches!(&result, Ok(_) | Err(Flow::Return(_))) {
+        if result.is_ok() {
             self.cur_fn = prev_fn;
             self.cur_line = prev_line;
         }
-        let value = match result {
-            Ok(v) | Err(Flow::Return(v)) => v,
-            Err(e @ Flow::Err(_)) => return Err(e),
-            Err(Flow::Break | Flow::Continue | Flow::TailCall { .. }) => {
-                return err("`break`/`continue` outside a loop");
-            }
-        };
-        let writebacks = params
+        result
+    }
+
+    /// Apply a closure to already-evaluated arguments. The closure runs in its
+    /// captured environment (plus a fresh scope for the parameters), and its body
+    /// is a function boundary, so a `?` inside it returns from the closure.
+    fn run_closure(&mut self, clo: Value, argvals: Vec<Value>) -> Result<ClosureOutcome, Flow> {
+        let outcome = self.run_callable(TailCallable::Closure(clo), argvals)?;
+        let writebacks = outcome
+            .params
             .iter()
             .enumerate()
             .filter(|(_, param)| param.convention == Convention::Var)
             .map(|(index, param)| {
-                let value = cenv.get(&param.name).cloned().expect("closure parameter is bound");
+                let value = outcome
+                    .env
+                    .get(&param.name)
+                    .cloned()
+                    .expect("closure parameter is bound");
                 (index, value)
             })
             .collect();
-        Ok(ClosureOutcome { value, writebacks })
+        Ok(ClosureOutcome { value: outcome.value, writebacks })
     }
 
     fn apply_closure(&mut self, clo: Value, argvals: Vec<Value>) -> Result<Value, Flow> {
@@ -1655,6 +1697,46 @@ impl Interpreter {
         Ok((values, places))
     }
 
+    fn call_interpreter_special(
+        &mut self,
+        name: &str,
+        argvals: &[Value],
+    ) -> Result<Option<Value>, Flow> {
+        // These two operations need the interpreter to apply a function value,
+        // so they cannot live in the pure builtin table.
+        if name == "dict.__update" && argvals.len() == 4 {
+            let Value::Dict(entries) = &argvals[0] else {
+                return err("update expects a Dict as its first argument");
+            };
+            let mut out = entries.clone();
+            let key = &argvals[1];
+            let current = out
+                .iter()
+                .find(|(ek, _)| ek == key)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| argvals[2].clone());
+            let new_v = self.apply_closure(argvals[3].clone(), vec![current])?;
+            match out.iter_mut().find(|(ek, _)| ek == key) {
+                Some(slot) => slot.1 = new_v,
+                None => out.push((argvals[1].clone(), new_v)),
+            }
+            return Ok(Some(Value::Dict(out)));
+        }
+        if name == "vm.par_map" && argvals.len() == 2 {
+            let Value::List(items) = &argvals[0] else {
+                return err("par_map expects a list as its first argument");
+            };
+            let items = items.clone();
+            let f = argvals[1].clone();
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                out.push(self.apply_closure(f.clone(), vec![item])?);
+            }
+            return Ok(Some(Value::List(out)));
+        }
+        Ok(None)
+    }
+
     fn eval_call(&mut self, name: &str, args: &[Expr], env: &mut Env) -> Result<Value, Flow> {
         // Record an assertion call SITE *before* evaluating arguments — nested
         // calls in the arguments move `cur_line`, so capturing it later (e.g. once
@@ -1673,45 +1755,9 @@ impl Interpreter {
                 .map(|function| function.params.iter().map(|param| param.convention).collect())
                 .unwrap_or_default(),
         };
-        let (mut argvals, places) = self.eval_call_args(args, &conventions, env)?;
-        // `dict.update(dict, key, default, f)`: a single-lookup upsert. Handled here
-        // (not in the pure builtin table) because it applies the updater closure
-        // `f` to the current value — or `default` when the key is absent — which
-        // needs the interpreter. Arguments are evaluated exactly once (above).
-        if name == "dict.__update" && argvals.len() == 4 {
-            let Value::Dict(entries) = &argvals[0] else {
-                return err("update expects a Dict as its first argument");
-            };
-            let mut out = entries.clone();
-            let key = &argvals[1];
-            let current = out
-                .iter()
-                .find(|(ek, _)| ek == key)
-                .map(|(_, v)| v.clone())
-                .unwrap_or_else(|| argvals[2].clone());
-            let new_v = self.apply_closure(argvals[3].clone(), vec![current])?;
-            match out.iter_mut().find(|(ek, _)| ek == key) {
-                Some(slot) => slot.1 = new_v,
-                None => out.push((argvals[1].clone(), new_v)),
-            }
-            return Ok(Value::Dict(out));
-        }
-        // (RFC-0032) `vm.par_map(xs, f)`: the interpreter is the sequential oracle —
-        // apply `f` to each element in order. The compiled backend runs the same map
-        // across OS-thread VMs; because results are collected by input index and `f` is
-        // pure + capture-free, the two agree (parity by determinism). The portable
-        // reference body in `std/vm.witchy` does the same thing via `list.map`.
-        if name == "vm.par_map" && argvals.len() == 2 {
-            let Value::List(items) = &argvals[0] else {
-                return err("par_map expects a list as its first argument");
-            };
-            let items = items.clone();
-            let f = argvals[1].clone();
-            let mut out = Vec::with_capacity(items.len());
-            for item in items {
-                out.push(self.apply_closure(f.clone(), vec![item])?);
-            }
-            return Ok(Value::List(out));
+        let (argvals, places) = self.eval_call_args(args, &conventions, env)?;
+        if let Some(value) = self.call_interpreter_special(name, &argvals)? {
+            return Ok(value);
         }
         // A local variable holding a function value (a closure): apply it.
         if let Some(clo) = local_closure {
@@ -1759,52 +1805,11 @@ impl Interpreter {
                 writebacks.push((place, param.name.clone()));
             }
         }
-        // The callee's own `?` early-return stops here; it becomes the call's
-        // value rather than propagating into the caller.
-        let prev_fn = std::mem::replace(&mut self.cur_fn, name.to_string());
-        let prev_line = self.cur_line;
-        self.depth += 1;
-        if self.depth > self.depth_limit {
-            self.depth -= 1;
-            return err("call stack too deep (possible infinite recursion)");
-        }
-        let prev_tail_function = self.tail_function.replace(func.clone());
-        let mut active_func = func.clone();
-        let (result, fenv) = loop {
-            let mut fenv = Env::new();
-            for (param, value) in active_func.params.iter().zip(&argvals) {
-                fenv.define(
-                    param.name.clone(),
-                    value.clone(),
-                    param.convention.binds_mutable(),
-                );
-            }
-            match self.eval_function_block(&active_func.body, &active_func, &mut fenv) {
-                Err(Flow::TailCall { function, args: next }) => {
-                    debug_assert_eq!(next.len(), function.params.len());
-                    self.cur_fn = function.name.clone();
-                    self.tail_function = Some(function.clone());
-                    active_func = function;
-                    argvals = next;
-                }
-                Ok(value) | Err(Flow::Return(value)) => break (value, fenv),
-                // On error keep `cur_fn = name` so the innermost frame is reported.
-                Err(e @ Flow::Err(_)) => {
-                    self.depth -= 1;
-                    self.tail_function = prev_tail_function;
-                    return Err(e);
-                }
-                Err(Flow::Break | Flow::Continue) => {
-                    self.depth -= 1;
-                    self.tail_function = prev_tail_function;
-                    return err("`break`/`continue` outside a loop")
-                }
-            }
-        };
-        self.depth -= 1;
-        self.cur_fn = prev_fn;
-        self.cur_line = prev_line;
-        self.tail_function = prev_tail_function;
+        // The callee's own `?` early-return stops at this callable boundary; it
+        // becomes the call's value rather than propagating into the caller.
+        let outcome = self.run_callable(TailCallable::Function(func), argvals)?;
+        let result = outcome.value;
+        let fenv = outcome.env;
         let writebacks = writebacks
             .into_iter()
             .map(|(place, param_name)| {
@@ -3260,9 +3265,11 @@ impl Interpreter {
         let tail_target = match expr {
             Expr::Call { name, args }
                 if source_is_compatible
-                    && self.proper_tail_edges
-                        .get(&function.name)
-                        .is_some_and(|targets| targets.contains(name))
+                    && (self.tail_dynamic_chain
+                        || self
+                            .proper_tail_edges
+                            .get(&function.name)
+                            .is_some_and(|targets| targets.contains(name)))
                     && !matches!(env.get(name), Some(Value::Closure { .. })) =>
             {
                 self.functions.get(name).filter(|target| {
@@ -3272,13 +3279,23 @@ impl Interpreter {
             }
             _ => None,
         };
-        let handled_here = tail_target.is_some() || matches!(
-            expr,
-            Expr::If { .. }
-                | Expr::Match { .. }
-                | Expr::Block(_)
-                | Expr::Binary { op: BinOp::Coalesce, .. }
-        );
+        let closure_tail = source_is_compatible
+            && match expr {
+                Expr::Apply { .. } => true,
+                Expr::Call { name, .. } => {
+                    matches!(env.get(name), Some(Value::Closure { .. }))
+                }
+                _ => false,
+            };
+        let handled_here = tail_target.is_some()
+            || closure_tail
+            || matches!(
+                expr,
+                Expr::If { .. }
+                    | Expr::Match { .. }
+                    | Expr::Block(_)
+                    | Expr::Binary { op: BinOp::Coalesce, .. }
+            );
         if handled_here {
             self.steps += 1;
             if self.steps > self.step_limit {
@@ -3286,7 +3303,8 @@ impl Interpreter {
             }
         }
         match expr {
-            Expr::Call { args, .. } if tail_target.is_some() => {
+            Expr::Call { name, args } if tail_target.is_some() => {
+                self.note_assert_crossing(name);
                 let target = tail_target.expect("guarded tail-call target");
                 let conventions: Vec<_> = target
                     .params
@@ -3295,7 +3313,52 @@ impl Interpreter {
                     .collect();
                 let (values, places) = self.eval_call_args(args, &conventions, env)?;
                 debug_assert!(places.iter().all(Option::is_none));
-                Err(Flow::TailCall { function: target, args: values })
+                if let Some(value) = self.call_interpreter_special(name, &values)? {
+                    return Ok(value);
+                }
+                if let Some(value) = self.call_builtin(name, &values)? {
+                    return Ok(value);
+                }
+                Err(Flow::TailCall {
+                    callable: TailCallable::Function(target),
+                    args: values,
+                })
+            }
+            Expr::Apply { func, args } if source_is_compatible => {
+                let closure = self.eval(func, env)?;
+                let Value::Closure { params, .. } = &closure else {
+                    return err("attempted to call a non-function value");
+                };
+                let conventions: Vec<_> = params.iter().map(|param| param.convention).collect();
+                let (values, places) = self.eval_call_args(args, &conventions, env)?;
+                if params.iter().all(|param| param.convention != Convention::Var) {
+                    debug_assert!(places.iter().all(Option::is_none));
+                    Err(Flow::TailCall {
+                        callable: TailCallable::Closure(closure),
+                        args: values,
+                    })
+                } else {
+                    self.apply_closure_call(closure, values, places, env)
+                }
+            }
+            Expr::Call { name, args } if source_is_compatible => {
+                let Some(closure) = env.get(name).cloned() else {
+                    return self.eval(expr, env);
+                };
+                let Value::Closure { params, .. } = &closure else {
+                    return self.eval(expr, env);
+                };
+                let conventions: Vec<_> = params.iter().map(|param| param.convention).collect();
+                let (values, places) = self.eval_call_args(args, &conventions, env)?;
+                if params.iter().all(|param| param.convention != Convention::Var) {
+                    debug_assert!(places.iter().all(Option::is_none));
+                    Err(Flow::TailCall {
+                        callable: TailCallable::Closure(closure),
+                        args: values,
+                    })
+                } else {
+                    self.apply_closure_call(closure, values, places, env)
+                }
             }
             Expr::If { cond, then_block, else_block } => match self.eval(cond, env)? {
                 Value::Bool(true) => self.eval_function_block(then_block, function, env),

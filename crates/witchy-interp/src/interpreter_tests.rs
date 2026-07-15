@@ -1555,6 +1555,29 @@ fn main(console: Console):
     }
 
     #[test]
+    fn indirect_closure_cycle_uses_one_callable_boundary() {
+        let src = r#"
+type Bounce:
+    Bounce(fn(Bounce, Int) -> Int)
+
+fn drive(bounce: Bounce, n: Int) -> Int:
+    match bounce:
+        Bounce(f) -> f(bounce, n)
+
+fn step(bounce: Bounce, n: Int) -> Int:
+    if n == 0:
+        5000000007
+    else:
+        drive(bounce, n - 1)
+
+fn main(console: Console):
+    let bounce = Bounce(step)
+    console.print("${drive(bounce, 250000)}")
+"#;
+        assert_eq!(run(src).unwrap(), vec!["5000000007"]);
+    }
+
+    #[test]
     fn moderate_recursion_succeeds() {
         // Recursion well within the limit still works.
         let src = r#"

@@ -557,16 +557,22 @@ Parameter annotations are required; the return type may be inferred for
 non-`pub` functions. Locals are inferred (Hindley-Milner-style unification with
 an occurs check).
 
-**Direct recursive tail calls use constant control stack.** A call qualifies
+**Recursive proper tail calls use constant control stack.** A call qualifies
 when its complete result becomes the current function's result directly, with no
 caller calculation, write-back, drop, conversion, loan cleanup, or error
 inspection remaining. This includes calls in a function's final expression,
 `return`, and the selected tail branches of `if`, `match`, blocks, and `??`. It
 excludes calls inside operators, constructors, `?`, guards, conditions, and
-arguments. Self recursion lowers to a loop; directly mutually recursive functions
+arguments. Self recursion lowers to a loop; mutually recursive direct functions
 lower to a typed state machine that preserves each function's public ABI.
-Indirect proper-tail lowering is tracked by RFC-0090 and is not yet part of the
-shipped guarantee.
+Monomorphized generic calls, resolved trait calls, and devirtualized closure calls
+participate as direct edges after specialization. A genuinely indirect scalar
+closure edge uses its exact function-table signature and runtime table index to
+select a typed state-machine bank; mixed scalar result kinds use the closure
+slot representation inside the component and recover their declared kind at its
+public boundary. Reference result envelopes retain their ordinary call boundary
+until RFC-0005 can forward them without erasure. Callable kinds that the closure
+ABI cannot represent are rejected rather than boxed into integer slots.
 
 No tail-call keyword or sigil is required. Arguments still evaluate left to
 right and are rebound simultaneously (`f(b, a)` swaps correctly). A textually

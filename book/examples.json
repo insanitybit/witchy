@@ -1647,12 +1647,25 @@
       "Console"
     ],
     "output": [
-      "14"
+      "7"
     ],
     "runnable": true
   },
   {
     "block": 5,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-functions.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "14"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 6,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-functions.md",
@@ -1667,7 +1680,7 @@
     "runnable": true
   },
   {
-    "block": 6,
+    "block": 7,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-functions.md",
@@ -1682,7 +1695,7 @@
     "runnable": true
   },
   {
-    "block": 7,
+    "block": 8,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-functions.md",
@@ -1696,7 +1709,7 @@
     "runnable": true
   },
   {
-    "block": 8,
+    "block": 9,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-functions.md",
@@ -1711,7 +1724,7 @@
     "runnable": true
   },
   {
-    "block": 9,
+    "block": 10,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-functions.md",
@@ -1724,7 +1737,7 @@
     "runnable": true
   },
   {
-    "block": 10,
+    "block": 11,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-functions.md",
@@ -1738,7 +1751,7 @@
     "runnable": true
   },
   {
-    "block": 11,
+    "block": 12,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-functions.md",
@@ -1751,7 +1764,7 @@
     "runnable": true
   },
   {
-    "block": 12,
+    "block": 13,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-functions.md",
@@ -1765,7 +1778,7 @@
     "runnable": true
   },
   {
-    "block": 13,
+    "block": 14,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-functions.md",

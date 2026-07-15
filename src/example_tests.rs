@@ -10326,6 +10326,235 @@ fn main(console: Console):
         assert_eq!(run_on_wasm(src), want, "compiled WIR SCC dispatcher");
     }
 
+    /// A function parameter stays genuinely indirect: `drive` cannot know which
+    /// closure-table slot `f` carries. The dynamic edge and `step -> drive` form a
+    /// recursive component that both backends must trampoline without Wasm tail calls.
+    #[test]
+    fn proper_indirect_closure_cycle_uses_constant_stack_on_both_backends() {
+        let src = r#"
+type Bounce:
+    Bounce(fn(Bounce, Int) -> Int)
+
+fn drive(bounce: Bounce, n: Int) -> Int:
+    match bounce:
+        Bounce(f) -> f(bounce, n)
+
+fn step(bounce: Bounce, n: Int) -> Int:
+    if n == 0:
+        5000000007
+    else:
+        drive(bounce, n - 1)
+
+fn main(console: Console):
+    let bounce = Bounce(step)
+    console.print("${drive(bounce, 250001)}")
+"#;
+        let want = vec!["5000000007".to_string()];
+        assert_eq!(interp(src), want.clone(), "interpreter callable trampoline");
+        assert_eq!(run_on_wasm(src), want, "compiled typed table dispatcher");
+    }
+
+    #[test]
+    fn proper_singleton_indirect_cycle_uses_constant_stack_on_both_backends() {
+        let src = r#"
+type Bounce:
+    Bounce(fn(Bounce, Int) -> Int)
+
+fn main(console: Console):
+    let bounce = Bounce(fn(b: Bounce, n: Int) -> Int:
+        if n == 0:
+            9
+        else:
+            match b:
+                Bounce(f) -> f(b, n - 1)
+    )
+    match bounce:
+        Bounce(f) -> console.print("${f(bounce, 30001)}")
+"#;
+        let want = vec!["9".to_string()];
+        assert_eq!(interp(src), want.clone(), "interpreter singleton trampoline");
+        assert_eq!(run_on_wasm(src), want, "compiled singleton dispatcher");
+    }
+
+    #[test]
+    fn proper_dynamic_cycle_survives_multiple_named_hops_on_both_backends() {
+        let src = r#"
+type Bounce:
+    Bounce(fn(Bounce, Int) -> Int)
+
+fn first(bounce: Bounce, n: Int) -> Int:
+    second(bounce, n)
+
+fn second(bounce: Bounce, n: Int) -> Int:
+    match bounce:
+        Bounce(f) -> f(bounce, n)
+
+fn step(bounce: Bounce, n: Int) -> Int:
+    if n == 0:
+        5000000007
+    else:
+        first(bounce, n - 1)
+
+fn main(console: Console):
+    let bounce = Bounce(step)
+    console.print("${first(bounce, 30001)}")
+"#;
+        let want = vec!["5000000007".to_string()];
+        assert_eq!(interp(src), want.clone(), "interpreter dynamic chain");
+        assert_eq!(run_on_wasm(src), want, "compiled three-member dispatcher");
+    }
+
+    #[test]
+    fn proper_indirect_cycles_adapt_scalar_result_slots_on_both_backends() {
+        let src = r#"
+type StringBounce:
+    StringBounce(fn(StringBounce, Int) -> String)
+
+type BoolBounce:
+    BoolBounce(fn(BoolBounce, Int) -> Bool)
+
+type FloatBounce:
+    FloatBounce(fn(FloatBounce, Int) -> Float)
+
+fn drive_string(bounce: StringBounce, n: Int) -> String:
+    match bounce:
+        StringBounce(f) -> f(bounce, n)
+
+fn drive_bool(bounce: BoolBounce, n: Int) -> Bool:
+    match bounce:
+        BoolBounce(f) -> f(bounce, n)
+
+fn drive_float(bounce: FloatBounce, n: Int) -> Float:
+    match bounce:
+        FloatBounce(f) -> f(bounce, n)
+
+fn main(console: Console):
+    let answer = "done"
+    let strings = StringBounce(fn(b: StringBounce, n: Int) -> String:
+        if n == 0:
+            answer
+        else:
+            drive_string(b, n - 1)
+    )
+    let bools = BoolBounce(fn(b: BoolBounce, n: Int) -> Bool:
+        if n == 0:
+            true
+        else:
+            drive_bool(b, n - 1)
+    )
+    let floats = FloatBounce(fn(b: FloatBounce, n: Int) -> Float:
+        if n == 0:
+            1.5
+        else:
+            drive_float(b, n - 1)
+    )
+    console.print(drive_string(strings, 30001))
+    console.print("${drive_bool(bools, 30001)}")
+    console.print("${drive_float(floats, 30001)}")
+"#;
+        let want = vec!["done".to_string(), "true".to_string(), "1.5".to_string()];
+        assert_eq!(interp(src), want.clone(), "interpreter scalar envelopes");
+        assert_eq!(run_on_wasm(src), want, "compiled scalar slot adaptation");
+    }
+
+    #[test]
+    fn proper_indirect_dispatcher_preserves_outside_component_fallback() {
+        let src = r#"
+type Bounce:
+    Bounce(fn(Bounce, Int) -> Int)
+
+fn drive(bounce: Bounce, n: Int) -> Int:
+    match bounce:
+        Bounce(f) -> f(bounce, n)
+
+fn finish(bounce: Bounce, n: Int) -> Int:
+    99
+
+fn step(bounce: Bounce, n: Int) -> Int:
+    if n == 0:
+        drive(Bounce(finish), 0)
+    else:
+        drive(bounce, n - 1)
+
+fn main(console: Console):
+    let bounce = Bounce(step)
+    console.print("${drive(bounce, 30001)}")
+"#;
+        let want = vec!["99".to_string()];
+        assert_eq!(interp(src), want.clone(), "interpreter outside target");
+        assert_eq!(run_on_wasm(src), want, "compiled indirect fallback");
+    }
+
+    /// Tail lowering must preserve the ordinary call dispatcher. Stdlib
+    /// intrinsic declarations are recursive placeholders, not executable
+    /// recursion, including when reached from a function value.
+    #[test]
+    fn proper_tail_calls_preserve_intrinsic_dispatch_on_both_backends() {
+        let src = r#"
+import list
+import string
+import vm
+
+fn upper(s: String) -> String:
+    string.to_upper(s)
+
+fn parallel_once(xs: List(Int)) -> List(Int):
+    vm.par_map(xs, fn(n: Int): n + 1)
+
+fn invoke(f: fn(List(Int)) -> List(Int), xs: List(Int)) -> List(Int):
+    f(xs)
+
+fn main(console: Console):
+    console.print(upper("witchy"))
+    let shouted = ["a", "b"].map(fn(s: String): s.to_upper())
+    console.print(shouted.join("-"))
+    console.print("${invoke(parallel_once, [1, 2])}")
+"#;
+        let want = vec![
+            "WITCHY".to_string(),
+            "A-B".to_string(),
+            "[2, 3]".to_string(),
+        ];
+        assert_eq!(interp(src), want.clone(), "interpreter builtin dispatch");
+        assert_eq!(run_on_wasm(src), want, "compiled builtin dispatch");
+    }
+
+    /// Generic templates and bounded trait methods are specialized before WIR
+    /// proper-call lowering, so their concrete recursive edges use the same loops.
+    #[test]
+    fn specialized_generic_and_trait_tail_calls_are_proper_on_both_backends() {
+        let src = r#"
+fn keep(value: a, n: Int) -> a:
+    if n == 0:
+        value
+    else:
+        keep(value, n - 1)
+
+trait Countdown:
+    fn down(self, n: Int) -> Int
+
+type Counter:
+    value: Int
+
+impl Countdown for Counter:
+    fn down(self, n: Int) -> Int:
+        if n == 0:
+            self.value
+        else:
+            self.down(n - 1)
+
+fn bounded(value: a, n: Int) -> Int where a: Countdown:
+    value.down(n)
+
+fn main(console: Console):
+    console.print(keep("generic", 100001))
+    console.print("${bounded(Counter(11), 100001)}")
+"#;
+        let want = vec!["generic".to_string(), "11".to_string()];
+        assert_eq!(interp(src), want.clone(), "interpreter specialized trampoline");
+        assert_eq!(run_on_wasm(src), want, "compiled specialized loops");
+    }
+
     /// RFC-0087 structured returns commit every final `var` value together. A
     /// callee-side `?` is ordinary early return, so mutations completed before
     /// propagation remain visible on both the success and error paths.

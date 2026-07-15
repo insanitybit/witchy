@@ -44,14 +44,34 @@ struct TailTarget {
     params: Vec<WirLocal>,
     temps: Vec<WirLocal>,
     locals: Vec<WirLocal>,
+    result_ty: WirTy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct IndirectSig {
+    type_arity: usize,
+    result_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum TailCallee {
+    Direct(String),
+    Indirect(IndirectSig),
+}
+
+#[derive(Clone)]
+struct IndirectPlan {
+    args: Vec<WirLocal>,
+    index: WirLocal,
+    targets: Vec<(i32, TailTarget)>,
 }
 
 struct TailCtx {
     targets: HashMap<String, TailTarget>,
+    indirect: HashMap<IndirectSig, IndirectPlan>,
     source_bank: Vec<WirLocal>,
     state_local: Option<String>,
     loop_label: String,
-    result_ty: WirTy,
 }
 
 fn lower_func_self_tail_calls(func: &mut WirFunc) -> usize {
@@ -78,12 +98,13 @@ fn lower_func_self_tail_calls(func: &mut WirFunc) -> usize {
                 params: func.params.clone(),
                 temps: temps.clone(),
                 locals: func.locals.clone(),
+                result_ty: result_ty.clone(),
             },
         )]),
+        indirect: HashMap::new(),
         source_bank: func.params.iter().chain(&func.locals).cloned().collect(),
         state_local: None,
         loop_label: loop_label.clone(),
-        result_ty: result_ty.clone(),
     };
 
     let mut body = func.body.clone();
@@ -104,20 +125,38 @@ fn lower_mutual_tail_components(module: &mut WirModule) -> usize {
         .funcs
         .iter()
         .enumerate()
-        .filter(|(_, function)| function.raw_body.is_none() && function.ret.len() == 1)
+        .filter(|(_, function)| function.raw_body.is_none() && slot_adaptable_result(function))
         .map(|(index, function)| (function.name.clone(), index))
         .collect();
     let mut graph = vec![Vec::new(); function_count];
+    let mut has_indirect_tail = vec![false; function_count];
     for (index, function) in module.funcs.iter().enumerate() {
-        if function.raw_body.is_some() || function.ret.len() != 1 {
+        if function.raw_body.is_some() || !slot_adaptable_result(function) {
             continue;
         }
         let mut targets = HashSet::new();
         collect_function_tail_calls(&function.body, &mut targets);
+        has_indirect_tail[index] = targets
+            .iter()
+            .any(|target| matches!(target, TailCallee::Indirect(_)));
         let mut edges: Vec<_> = targets
             .into_iter()
-            .filter_map(|target| by_name.get(&target).copied())
-            .filter(|target| module.funcs[*target].ret == function.ret)
+            .flat_map(|target| -> Vec<usize> {
+                match target {
+                    TailCallee::Direct(target) => {
+                        by_name.get(&target).copied().into_iter().collect()
+                    }
+                    TailCallee::Indirect(signature) => module
+                        .table
+                        .iter()
+                        .flat_map(|table| table.funcs.iter())
+                        .filter_map(|target| by_name.get(target).copied())
+                        .filter(|target| {
+                            indirect_signature_matches(&module.funcs[*target], signature)
+                        })
+                        .collect(),
+                }
+            })
             .collect();
         edges.sort_unstable();
         graph[index] = edges;
@@ -126,7 +165,14 @@ fn lower_mutual_tail_components(module: &mut WirModule) -> usize {
     let components = strongly_connected_components(&graph);
     let mut dispatchers = Vec::new();
     let mut count = 0;
-    for component in components.into_iter().filter(|component| component.len() > 1) {
+    for component in components.into_iter().filter(|component| {
+        component.len() > 1
+            || component
+                .first()
+                .is_some_and(|member| {
+                    has_indirect_tail[*member] && graph[*member].contains(member)
+                })
+    }) {
         let originals: Vec<_> = component
             .iter()
             .map(|index| module.funcs[*index].clone())
@@ -136,7 +182,14 @@ fn lower_mutual_tail_components(module: &mut WirModule) -> usize {
             &dispatchers,
             &format!("__witchy_tail_scc_{}", dispatchers.len()),
         );
-        let (dispatcher, rewritten) = build_tail_dispatcher(&dispatcher_name, &originals);
+        let table_slots: HashMap<_, _> = module
+            .table
+            .iter()
+            .flat_map(|table| table.funcs.iter().enumerate())
+            .map(|(index, name)| (name.clone(), index as i32))
+            .collect();
+        let (dispatcher, rewritten) =
+            build_tail_dispatcher(&dispatcher_name, &originals, &table_slots);
         if rewritten == 0 {
             continue;
         }
@@ -213,8 +266,36 @@ fn unique_function_name(module: &WirModule, added: &[WirFunc], stem: &str) -> St
     unreachable!("the function-name suffix space is finite")
 }
 
-fn build_tail_dispatcher(name: &str, functions: &[WirFunc]) -> (WirFunc, usize) {
+fn slot_adaptable_result(function: &WirFunc) -> bool {
+    matches!(
+        function.ret.as_slice(),
+        [result] if matches!(result.kind(), Kind::I32 | Kind::I64 | Kind::F64)
+    )
+}
+
+fn indirect_signature_matches(function: &WirFunc, signature: IndirectSig) -> bool {
+    function.params.len() == signature.type_arity + 1
+        && function.params.first().is_some_and(|param| param.ty.kind() == Kind::I32)
+        && function.params[1..].iter().all(|param| param.ty.kind() == Kind::I64)
+        && function.ret.len() == signature.result_count
+        && function.ret.iter().all(|result| result.kind() == Kind::I64)
+}
+
+fn build_tail_dispatcher(
+    name: &str,
+    functions: &[WirFunc],
+    table_slots: &HashMap<String, i32>,
+) -> (WirFunc, usize) {
     let state_local = "__witchy_tail_state".to_string();
+    let first_result = functions[0].ret[0].clone();
+    let dispatcher_result = if functions
+        .iter()
+        .all(|function| function.ret[0].kind() == first_result.kind())
+    {
+        first_result
+    } else {
+        WirTy::Slot
+    };
     // `Bool` is the WIR's neutral i32 carrier; the internal tag is not exposed as
     // a Witchy Bool and may use values above one for larger components.
     let mut params = vec![WirLocal { name: state_local.clone(), ty: WirTy::Bool }];
@@ -269,9 +350,59 @@ fn build_tail_dispatcher(name: &str, functions: &[WirFunc]) -> (WirFunc, usize) 
                 params: renamed_params,
                 temps,
                 locals: renamed_locals.clone(),
+                result_ty: function.ret[0].clone(),
             },
         );
         bodies.push(body);
+    }
+
+    let mut indirect_signatures = HashSet::new();
+    for (function, body) in functions.iter().zip(&bodies) {
+        let mut callees = HashSet::new();
+        collect_function_tail_calls(body, &mut callees);
+        indirect_signatures.extend(callees.into_iter().filter_map(|callee| match callee {
+            TailCallee::Indirect(signature)
+                if function.ret.len() == signature.result_count
+                    && slot_adaptable_result(function) =>
+            {
+                Some(signature)
+            }
+            _ => None,
+        }));
+    }
+    let mut indirect_signatures: Vec<_> = indirect_signatures.into_iter().collect();
+    indirect_signatures.sort_by_key(|signature| (signature.type_arity, signature.result_count));
+    let mut indirect = HashMap::new();
+    for (plan_index, signature) in indirect_signatures.into_iter().enumerate() {
+        let args: Vec<_> = std::iter::once(WirLocal {
+            name: format!("__witchy_tail_indirect_{plan_index}_env"),
+            ty: WirTy::Bool,
+        })
+        .chain((0..signature.type_arity).map(|index| WirLocal {
+            name: format!("__witchy_tail_indirect_{plan_index}_arg_{index}"),
+            ty: WirTy::Int,
+        }))
+        .collect();
+        let index = WirLocal {
+            name: format!("__witchy_tail_indirect_{plan_index}_index"),
+            ty: WirTy::Bool,
+        };
+        let mut plan_targets: Vec<_> = functions
+            .iter()
+            .filter(|function| indirect_signature_matches(function, signature))
+            .filter_map(|function| {
+                Some((
+                    *table_slots.get(&function.name)?,
+                    targets.get(&function.name)?.clone(),
+                ))
+            })
+            .collect();
+        plan_targets.sort_by_key(|(table_index, _)| *table_index);
+        if !plan_targets.is_empty() {
+            locals.extend(args.iter().cloned());
+            locals.push(index.clone());
+            indirect.insert(signature, IndirectPlan { args, index, targets: plan_targets });
+        }
     }
 
     let loop_label = unique_dispatch_label(functions, "__witchy_tail_dispatch_loop");
@@ -280,13 +411,16 @@ fn build_tail_dispatcher(name: &str, functions: &[WirFunc]) -> (WirFunc, usize) 
         let source = targets.get(&function.name).expect("SCC member has a target bank");
         let ctx = TailCtx {
             targets: targets.clone(),
+            indirect: indirect.clone(),
             source_bank: source.params.iter().chain(&source.locals).cloned().collect(),
             state_local: Some(state_local.clone()),
             loop_label: loop_label.clone(),
-            result_ty: functions[0].ret[0].clone(),
         };
         count += rewrite_explicit_returns_seq(body, &ctx);
         count += rewrite_function_tail(body, &ctx);
+        if function.ret[0].kind() != dispatcher_result.kind() {
+            adapt_function_result_to_slot(body, function.ret[0].kind());
+        }
     }
 
     let mut selection = vec![WirNode::Unreachable];
@@ -307,7 +441,7 @@ fn build_tail_dispatcher(name: &str, functions: &[WirFunc]) -> (WirFunc, usize) 
         WirFunc {
             name: name.to_string(),
             params,
-            ret: functions[0].ret.clone(),
+            ret: vec![dispatcher_result],
             locals,
             body: vec![WirNode::Loop { label: loop_label, body: selection }, WirNode::Unreachable],
             raw_body: None,
@@ -322,6 +456,15 @@ fn tail_entry_wrapper(
     state: i32,
     functions: &[WirFunc],
 ) -> WirFunc {
+    let first_kind = functions[0].ret[0].kind();
+    let dispatcher_kind = if functions
+        .iter()
+        .all(|function| function.ret[0].kind() == first_kind)
+    {
+        first_kind
+    } else {
+        Kind::I64
+    };
     let mut args = vec![WirExpr::ConstI32(state)];
     for function in functions {
         if function.name == original.name {
@@ -330,12 +473,18 @@ fn tail_entry_wrapper(
             args.extend(function.params.iter().map(|param| default_value(&param.ty)));
         }
     }
+    let call = WirExpr::Call { func: dispatcher.to_string(), args };
+    let result = if dispatcher_kind == original.ret[0].kind() {
+        call
+    } else {
+        WirExpr::FromSlot(Box::new(call), original.ret[0].kind())
+    };
     WirFunc {
         name: original.name.clone(),
         params: original.params.clone(),
         ret: original.ret.clone(),
         locals: Vec::new(),
-        body: vec![WirNode::Push(WirExpr::Call { func: dispatcher.to_string(), args })],
+        body: vec![WirNode::Push(result)],
         raw_body: None,
     }
 }
@@ -349,7 +498,7 @@ fn default_value(ty: &WirTy) -> WirExpr {
     }
 }
 
-fn collect_function_tail_calls(seq: &WirSeq, out: &mut HashSet<String>) {
+fn collect_function_tail_calls(seq: &WirSeq, out: &mut HashSet<TailCallee>) {
     collect_explicit_return_calls_seq(seq, out);
     let Some(last) = seq.last() else { return };
     if let WirNode::Push(expr) | WirNode::Return(Some(expr)) = last {
@@ -357,7 +506,7 @@ fn collect_function_tail_calls(seq: &WirSeq, out: &mut HashSet<String>) {
     }
 }
 
-fn collect_tail_calls_seq(seq: &WirSeq, out: &mut HashSet<String>) {
+fn collect_tail_calls_seq(seq: &WirSeq, out: &mut HashSet<TailCallee>) {
     collect_explicit_return_calls_seq(seq, out);
     let Some(last) = seq.last() else { return };
     match last {
@@ -373,10 +522,21 @@ fn collect_tail_calls_seq(seq: &WirSeq, out: &mut HashSet<String>) {
     }
 }
 
-fn collect_tail_calls_expr(expr: &WirExpr, out: &mut HashSet<String>) {
+fn collect_tail_calls_expr(expr: &WirExpr, out: &mut HashSet<TailCallee>) {
     match expr {
         WirExpr::Call { func, .. } => {
-            out.insert(func.clone());
+            out.insert(TailCallee::Direct(func.clone()));
+        }
+        WirExpr::CallIndirect { type_arity, result_count, .. } => {
+            out.insert(TailCallee::Indirect(IndirectSig {
+                type_arity: *type_arity,
+                result_count: *result_count,
+            }));
+        }
+        WirExpr::ToSlot(inner, kind) | WirExpr::FromSlot(inner, kind)
+            if matches!(kind, Kind::I32 | Kind::I64 | Kind::F64) =>
+        {
+            collect_tail_calls_expr(inner, out);
         }
         WirExpr::Control(node) => match node.as_ref() {
             WirNode::If { then_, els, result: Some(_), .. } => {
@@ -393,7 +553,7 @@ fn collect_tail_calls_expr(expr: &WirExpr, out: &mut HashSet<String>) {
     }
 }
 
-fn collect_result_branch_calls(seq: &WirSeq, target: &str, out: &mut HashSet<String>) {
+fn collect_result_branch_calls(seq: &WirSeq, target: &str, out: &mut HashSet<TailCallee>) {
     collect_explicit_return_calls_seq(seq, out);
     for pair in seq.windows(2) {
         if let [WirNode::Push(expr), WirNode::Br { target: branch_target, cond: None }] = pair
@@ -416,13 +576,13 @@ fn collect_result_branch_calls(seq: &WirSeq, target: &str, out: &mut HashSet<Str
     }
 }
 
-fn collect_explicit_return_calls_seq(seq: &WirSeq, out: &mut HashSet<String>) {
+fn collect_explicit_return_calls_seq(seq: &WirSeq, out: &mut HashSet<TailCallee>) {
     for node in seq {
         collect_explicit_return_calls_node(node, out);
     }
 }
 
-fn collect_explicit_return_calls_node(node: &WirNode, out: &mut HashSet<String>) {
+fn collect_explicit_return_calls_node(node: &WirNode, out: &mut HashSet<TailCallee>) {
     match node {
         WirNode::Return(Some(expr)) => collect_tail_calls_expr(expr, out),
         WirNode::If { cond, then_, els, .. } => {
@@ -468,7 +628,7 @@ fn collect_explicit_return_calls_node(node: &WirNode, out: &mut HashSet<String>)
     }
 }
 
-fn collect_explicit_return_calls_expr(expr: &WirExpr, out: &mut HashSet<String>) {
+fn collect_explicit_return_calls_expr(expr: &WirExpr, out: &mut HashSet<TailCallee>) {
     match expr {
         WirExpr::ToSlot(inner, _) | WirExpr::FromSlot(inner, _)
         | WirExpr::Unary { arg: inner, .. } | WirExpr::Convert { arg: inner, .. }
@@ -496,6 +656,118 @@ fn collect_explicit_return_calls_expr(expr: &WirExpr, out: &mut HashSet<String>)
         WirExpr::ConstI64(_) | WirExpr::ConstF64(_) | WirExpr::ConstI32(_)
         | WirExpr::StrPtr(_) | WirExpr::MemorySize | WirExpr::GetLocal(_)
         | WirExpr::GetGlobal(_) | WirExpr::RefNull(_) => {}
+    }
+}
+
+fn adapt_function_result_to_slot(seq: &mut WirSeq, kind: Kind) {
+    adapt_explicit_returns_seq(seq, kind);
+    if let Some(WirNode::Push(value)) = seq.last_mut() {
+        wrap_to_slot(value, kind);
+    }
+}
+
+fn wrap_to_slot(value: &mut WirExpr, kind: Kind) {
+    let inner = std::mem::replace(value, WirExpr::ConstI32(0));
+    *value = WirExpr::ToSlot(Box::new(inner), kind);
+}
+
+fn adapt_explicit_returns_seq(seq: &mut WirSeq, kind: Kind) {
+    for node in seq {
+        adapt_explicit_returns_node(node, kind);
+    }
+}
+
+fn adapt_explicit_returns_node(node: &mut WirNode, kind: Kind) {
+    match node {
+        WirNode::Return(Some(value)) => {
+            adapt_explicit_returns_expr(value, kind);
+            wrap_to_slot(value, kind);
+        }
+        WirNode::If { cond, then_, els, .. } => {
+            adapt_explicit_returns_expr(cond, kind);
+            adapt_explicit_returns_seq(then_, kind);
+            adapt_explicit_returns_seq(els, kind);
+        }
+        WirNode::Block { body, .. } | WirNode::Loop { body, .. } => {
+            adapt_explicit_returns_seq(body, kind);
+        }
+        WirNode::SetLocal { value, .. }
+        | WirNode::SetGlobal { value, .. }
+        | WirNode::Drop(value)
+        | WirNode::Do(value)
+        | WirNode::Push(value) => adapt_explicit_returns_expr(value, kind),
+        WirNode::Store { ptr, value, .. }
+        | WirNode::Store8 { ptr, value, .. }
+        | WirNode::StructSet { base: ptr, value, .. } => {
+            adapt_explicit_returns_expr(ptr, kind);
+            adapt_explicit_returns_expr(value, kind);
+        }
+        WirNode::CallStoreMulti { args, .. } => {
+            for arg in args {
+                adapt_explicit_returns_expr(arg, kind);
+            }
+        }
+        WirNode::CallIndirectStoreMulti { args, index, .. } => {
+            for arg in args {
+                adapt_explicit_returns_expr(arg, kind);
+            }
+            adapt_explicit_returns_expr(index, kind);
+        }
+        WirNode::MemoryCopy { dest, src, len } => {
+            adapt_explicit_returns_expr(dest, kind);
+            adapt_explicit_returns_expr(src, kind);
+            adapt_explicit_returns_expr(len, kind);
+        }
+        WirNode::MemoryFill { dest, value, len } => {
+            adapt_explicit_returns_expr(dest, kind);
+            adapt_explicit_returns_expr(value, kind);
+            adapt_explicit_returns_expr(len, kind);
+        }
+        WirNode::Br { cond: Some(cond), .. } => adapt_explicit_returns_expr(cond, kind),
+        WirNode::Br { cond: None, .. }
+        | WirNode::Return(None)
+        | WirNode::Unreachable => {}
+    }
+}
+
+fn adapt_explicit_returns_expr(expr: &mut WirExpr, kind: Kind) {
+    match expr {
+        WirExpr::ToSlot(inner, _)
+        | WirExpr::FromSlot(inner, _)
+        | WirExpr::Unary { arg: inner, .. }
+        | WirExpr::Convert { arg: inner, .. }
+        | WirExpr::Load { ptr: inner, .. }
+        | WirExpr::Load8U { ptr: inner, .. }
+        | WirExpr::MemoryGrow(inner)
+        | WirExpr::StructGet { base: inner, .. }
+        | WirExpr::RefIsNull(inner) => adapt_explicit_returns_expr(inner, kind),
+        WirExpr::Binary { lhs, rhs, .. } => {
+            adapt_explicit_returns_expr(lhs, kind);
+            adapt_explicit_returns_expr(rhs, kind);
+        }
+        WirExpr::Call { args, .. }
+        | WirExpr::CallHost { args, .. }
+        | WirExpr::StructNew { args, .. } => {
+            for arg in args {
+                adapt_explicit_returns_expr(arg, kind);
+            }
+        }
+        WirExpr::CallIndirect { args, index, .. } => {
+            for arg in args {
+                adapt_explicit_returns_expr(arg, kind);
+            }
+            adapt_explicit_returns_expr(index, kind);
+        }
+        WirExpr::Control(node) => adapt_explicit_returns_node(node, kind),
+        WirExpr::Seq(seq) => adapt_explicit_returns_seq(seq, kind),
+        WirExpr::ConstI64(_)
+        | WirExpr::ConstF64(_)
+        | WirExpr::ConstI32(_)
+        | WirExpr::StrPtr(_)
+        | WirExpr::MemorySize
+        | WirExpr::GetLocal(_)
+        | WirExpr::GetGlobal(_)
+        | WirExpr::RefNull(_) => {}
     }
 }
 
@@ -692,48 +964,76 @@ fn rewrite_tail_value_expr(expr: &mut WirExpr, ctx: &TailCtx) -> usize {
             if ctx.targets.get(func).is_some_and(|target| args.len() == target.params.len()) => {
             let target = ctx.targets.get(func).cloned().expect("guarded tail target");
             let args = std::mem::take(args);
-            let mut body = Vec::with_capacity(args.len() * 2 + 2);
-            for (arg, temp) in args.into_iter().zip(&target.temps) {
-                body.push(WirNode::SetLocal { local: temp.name.clone(), value: arg });
-            }
-            for local in &ctx.source_bank {
-                body.push(WirNode::SetLocal {
-                    local: local.name.clone(),
-                    value: default_value(&local.ty),
-                });
-            }
-            for (param, temp) in target.params.iter().zip(&target.temps) {
-                body.push(WirNode::SetLocal {
-                    local: param.name.clone(),
-                    value: WirExpr::GetLocal(temp.name.clone()),
-                });
-            }
-            for temp in &target.temps {
-                body.push(WirNode::SetLocal {
-                    local: temp.name.clone(),
-                    value: default_value(&temp.ty),
-                });
-            }
-            for local in &target.locals {
-                body.push(WirNode::SetLocal {
-                    local: local.name.clone(),
-                    value: default_value(&local.ty),
-                });
-            }
-            if let (Some(state), Some(state_local)) = (target.state, &ctx.state_local) {
-                body.push(WirNode::SetLocal {
-                    local: state_local.clone(),
-                    value: WirExpr::ConstI32(state),
-                });
-            }
-            body.push(WirNode::Br { target: ctx.loop_label.clone(), cond: None });
-            body.push(WirNode::Unreachable);
-            *expr = WirExpr::Control(Box::new(WirNode::Block {
-                label: "__witchy_tail_escape".into(),
-                result: Some(ctx.result_ty.clone()),
-                body,
-            }));
+            *expr = tail_transition_expr(&target, args, &[], ctx);
             1
+        }
+        WirExpr::CallIndirect { type_arity, result_count, args, index }
+            if ctx.indirect.contains_key(&IndirectSig {
+                type_arity: *type_arity,
+                result_count: *result_count,
+            }) =>
+        {
+            let signature = IndirectSig {
+                type_arity: *type_arity,
+                result_count: *result_count,
+            };
+            let plan = ctx.indirect.get(&signature).cloned().expect("guarded indirect plan");
+            if args.len() != plan.args.len() {
+                return 0;
+            }
+            let staged_args = std::mem::take(args);
+            let staged_index = std::mem::replace(index, Box::new(WirExpr::ConstI32(0)));
+            let mut seq = Vec::with_capacity(plan.args.len() + 2);
+            for (arg, temp) in staged_args.into_iter().zip(&plan.args) {
+                seq.push(WirNode::SetLocal { local: temp.name.clone(), value: arg });
+            }
+            seq.push(WirNode::SetLocal {
+                local: plan.index.name.clone(),
+                value: *staged_index,
+            });
+            let fallback = WirExpr::CallIndirect {
+                type_arity: signature.type_arity,
+                result_count: signature.result_count,
+                args: plan
+                    .args
+                    .iter()
+                    .map(|temp| WirExpr::GetLocal(temp.name.clone()))
+                    .collect(),
+                index: Box::new(WirExpr::GetLocal(plan.index.name.clone())),
+            };
+            let mut choice = fallback;
+            let mut cleanup = plan.args.clone();
+            cleanup.push(plan.index.clone());
+            for (table_index, target) in plan.targets.iter().rev() {
+                let transition = tail_transition_expr(
+                    target,
+                    plan.args
+                        .iter()
+                        .map(|temp| WirExpr::GetLocal(temp.name.clone()))
+                        .collect(),
+                    &cleanup,
+                    ctx,
+                );
+                choice = WirExpr::Control(Box::new(WirNode::If {
+                    cond: WirExpr::Binary {
+                        op: crate::wir::BinOp::Eq,
+                        kind: Kind::I32,
+                        lhs: Box::new(WirExpr::GetLocal(plan.index.name.clone())),
+                        rhs: Box::new(WirExpr::ConstI32(*table_index)),
+                    },
+                    then_: vec![WirNode::Push(transition)],
+                    els: vec![WirNode::Push(choice)],
+                    result: Some(WirTy::Slot),
+                }));
+            }
+            seq.push(WirNode::Push(choice));
+            *expr = WirExpr::Seq(seq);
+            1
+        }
+        WirExpr::ToSlot(inner, kind) | WirExpr::FromSlot(inner, kind)
+            if matches!(kind, Kind::I32 | Kind::I64 | Kind::F64) =>
+        {
+            rewrite_tail_value_expr(inner, ctx)
         }
         WirExpr::Control(node) => match node.as_mut() {
             WirNode::If { then_, els, result: Some(_), .. } => {
@@ -747,6 +1047,55 @@ fn rewrite_tail_value_expr(expr: &mut WirExpr, ctx: &TailCtx) -> usize {
         WirExpr::Seq(seq) => rewrite_tail_value_seq(seq, ctx),
         _ => 0,
     }
+}
+
+fn tail_transition_expr(
+    target: &TailTarget,
+    args: Vec<WirExpr>,
+    cleanup: &[WirLocal],
+    ctx: &TailCtx,
+) -> WirExpr {
+    let mut body = Vec::with_capacity(args.len() * 2 + cleanup.len() + 2);
+    for (arg, temp) in args.into_iter().zip(&target.temps) {
+        body.push(WirNode::SetLocal { local: temp.name.clone(), value: arg });
+    }
+    for local in &ctx.source_bank {
+        body.push(WirNode::SetLocal {
+            local: local.name.clone(),
+            value: default_value(&local.ty),
+        });
+    }
+    for (param, temp) in target.params.iter().zip(&target.temps) {
+        body.push(WirNode::SetLocal {
+            local: param.name.clone(),
+            value: WirExpr::GetLocal(temp.name.clone()),
+        });
+    }
+    for temp in target.temps.iter().chain(cleanup) {
+        body.push(WirNode::SetLocal {
+            local: temp.name.clone(),
+            value: default_value(&temp.ty),
+        });
+    }
+    for local in &target.locals {
+        body.push(WirNode::SetLocal {
+            local: local.name.clone(),
+            value: default_value(&local.ty),
+        });
+    }
+    if let (Some(state), Some(state_local)) = (target.state, &ctx.state_local) {
+        body.push(WirNode::SetLocal {
+            local: state_local.clone(),
+            value: WirExpr::ConstI32(state),
+        });
+    }
+    body.push(WirNode::Br { target: ctx.loop_label.clone(), cond: None });
+    body.push(WirNode::Unreachable);
+    WirExpr::Control(Box::new(WirNode::Block {
+        label: "__witchy_tail_escape".into(),
+        result: Some(target.result_ty.clone()),
+        body,
+    }))
 }
 
 /// Match lowering leaves each selected arm as `Push(value); br $result` inside

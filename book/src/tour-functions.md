@@ -23,9 +23,9 @@ everything else is module-private.
 
 ## Recursion and proper tail calls
 
-When a function's final action is a direct recursive call, witchy runs that
-**proper tail call** without growing the control stack. This covers both self
-recursion and directly mutually recursive functions. It is a language guarantee
+When a function's final action is a recursive call, witchy runs that **proper tail
+call** without growing the control stack. This covers self recursion, mutual
+recursion, and calls through function values. It is a language guarantee
 on both backends, not an optimization hint, and it needs no special syntax:
 
 ```witchy
@@ -72,7 +72,32 @@ A recursive call does
 not qualify when the caller must still add to its result, inspect it with `?`,
 rebuild a `var` place, or perform other observable work. The guarantee bounds
 stack; it does not by itself promise zero allocation or constant running time.
-Indirect calls through function values are the next RFC-0090 stage.
+
+A function value can participate in the same bounded-stack cycle. The constructor
+keeps one closure value alive while `drive` selects it dynamically on every step:
+
+```witchy
+type Bounce:
+    Bounce(fn(Bounce, Int) -> Int)
+
+fn drive(bounce: Bounce, n: Int) -> Int:
+    match bounce:
+        Bounce(f) -> f(bounce, n)
+
+fn step(bounce: Bounce, n: Int) -> Int:
+    if n == 0:
+        7
+    else:
+        drive(bounce, n - 1)
+
+fn main(console: Console):
+    let bounce = Bounce(step)
+    console.print("${drive(bounce, 10000)}")
+```
+
+```text
+7
+```
 
 Method-call syntax, `value.method(args)`, is the idiomatic way to call the
 standard data libraries — `xs.map(f)`, `d.insert(k, v)`, `s.to_upper()` — and it
