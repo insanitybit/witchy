@@ -341,19 +341,20 @@ impl Codegen<'_> {
                 ValType::Str
             }
             Expr::Call { name, .. } => match cap_ops::surface_name(name) {
+                name if intrinsics::lookup(name)
+                    .is_some_and(|spec| spec.signature.returns_string()) => ValType::Str,
+                name if intrinsics::lookup(name)
+                    .is_some_and(|spec| spec.signature.returns_bytes()) => ValType::Bytes,
                 "string.to_upper" | "string.to_lower" | "string.trim"
                 | "string.replace" | "string.substring" | "crypto.sha256" | "crypto.sign"
                 | "crypto.public_key" | "crypto.reveal" | "read" | "read_build" | "crypto.rune_hash"
                 | "exec"
-                | "compiler.footprint"
-                | "compiler.diff" | "compiler.doc" | intrinsics::COMPILER_DOC_RESULT_JSON | "regex.match_spans" | "recv_line" | "recv_all"
+                | "regex.match_spans" | "recv_line" | "recv_all"
                 | "crypto.sha512" | "crypto.sha3_256" | "crypto.hmac_sha256"
                 | "encoding.hex_encode_bytes" | "encoding.base64_encode_bytes"
                 | "encoding.base64url_encode_bytes"
                 | "recv_bytes" => ValType::Str,
-                intrinsics::BYTES_FROM_STRING | intrinsics::BYTES_FROM_LIST
-                | intrinsics::BYTES_CONCAT | intrinsics::BYTES_SLICE
-                | "encoding.hex_decode_bytes_raw" | "encoding.base64_decode_bytes_raw"
+                "encoding.hex_decode_bytes_raw" | "encoding.base64_decode_bytes_raw"
                 | "encoding.base64url_decode_bytes_raw" => ValType::Bytes,
                 "string.starts_with" | "string.ends_with" | "string.contains" | "dict.contains_key"
                 | "exists" | "is_dir" => ValType::Bool,

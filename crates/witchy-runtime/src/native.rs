@@ -42,9 +42,9 @@ pub fn lookup(qualified: &str) -> Option<NativeFn> {
         "crypto.sha3_256" => Some(crypto::sha3_256),
         #[cfg(not(target_arch = "wasm32"))]
         "crypto.hmac_sha256" => Some(crypto::hmac_sha256),
-        "compiler.footprint" => Some(compiler::footprint),
-        "compiler.diff" => Some(compiler::diff),
-        "compiler.doc" => Some(compiler::doc),
+        intrinsics::COMPILER_FOOTPRINT => Some(compiler::footprint),
+        intrinsics::COMPILER_DIFF => Some(compiler::diff),
+        intrinsics::COMPILER_DOC => Some(compiler::doc),
         intrinsics::COMPILER_DOC_RESULT_JSON => Some(compiler::doc_result_json),
         "encoding.utf8_lossy" => Some(encoding::utf8_lossy),
         "encoding.hex_encode" => Some(encoding::hex_encode),

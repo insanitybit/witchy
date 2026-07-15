@@ -110,6 +110,13 @@ the broader operation registry:
 public builtins and std-backed operations still need catalog entries, and runtime/lowering
 hook selection must move over consumer by consumer before this RFC is fully implemented.
 
+The first public-family migration catalogs the compiler-introspection operations
+(`compiler.footprint`, `compiler.diff`, `compiler.doc`, and the private typed-result
+bridge). Their source placeholders, native registry hooks, result representation,
+compiled lowering helpers, arity, toolchain effect, and diagnostics now resolve from or
+are checked against the same catalog rows. This is the template for migrating the
+remaining operation families without one monolithic registry rewrite.
+
 ### 4. Typed compiler facts, not string or address shadows
 
 The final compiler story should not depend on shadow encodings:

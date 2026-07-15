@@ -75,6 +75,10 @@ impl Codegen<'_> {
         let call = |func: &str, a: Vec<W>| W::Call { func: func.to_string(), args: a };
         // A direct host-import call (a `_host` import is the authority surface).
         let host = |import: &str, a: Vec<W>| W::CallHost { import: import.to_string(), args: a };
+        let intrinsic_helper = |intrinsic: &str| {
+            intrinsics::sole_wir_helper(intrinsic)
+                .expect("cataloged builtin has one static WIR helper")
+        };
         // A void effect that yields Nil: `{inner} ... i32.const 0`.
         let nil0 = |inner: W| W::Seq(vec![N::Do(inner), N::Push(W::ConstI32(0))]);
         Some(match (name, args.len()) {
@@ -217,17 +221,19 @@ impl Codegen<'_> {
                 // the `Some` payload, and `None` is `ref.null extern`.
                 call("secretstore_lookup", vec![self.lower_expr(&args[1])?])
             }
-            ("compiler.footprint", 1) => {
+            (intrinsics::COMPILER_FOOTPRINT, 1) => {
                 self.uses_compiler_footprint = true;
-                call("compiler_footprint", self.lower_args(&[&args[0]])?)
+                call(intrinsic_helper(name), self.lower_args(&[&args[0]])?)
             }
-            ("compiler.diff", 2) => {
+            (intrinsics::COMPILER_DIFF, 2) => {
                 self.uses_compiler_diff = true;
-                call("compiler_diff", self.lower_args(&[&args[0], &args[1]])?)
+                call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
             }
-            ("compiler.doc", 2) => call("compiler_doc", self.lower_args(&[&args[0], &args[1]])?),
+            (intrinsics::COMPILER_DOC, 2) => {
+                call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
+            }
             (intrinsics::COMPILER_DOC_RESULT_JSON, 2) => {
-                call("compiler_doc_result_json", self.lower_args(&[&args[0], &args[1]])?)
+                call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
             }
             ("regex.match_spans", 2) => {
                 self.uses_regex_spans = true;

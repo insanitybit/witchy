@@ -3822,9 +3822,8 @@ impl Checker {
                 vec![Ty::List(Box::new(Ty::Tuple(vec![Ty::String, Ty::String])))],
                 Ty::Dir(DirRights { read: true, write: false }),
             )),
-            S::CompilerDocResultJson => {
-                Some((vec![Ty::String, Ty::String], Ty::String))
-            }
+            S::StringToString => Some((vec![Ty::String], Ty::String)),
+            S::StringStringToString => Some((vec![Ty::String, Ty::String], Ty::String)),
             // These calls are checked by their dedicated frontend rule or by
             // the linked source declaration, not by the builtin signature path.
             S::TryContext | S::DeclaredInSource => None,

@@ -25,6 +25,9 @@ pub enum IntrinsicId {
     ChannelRecv,
     ChannelSelect,
     TestingMockDir,
+    CompilerFootprint,
+    CompilerDiff,
+    CompilerDoc,
     CompilerDocResultJson,
 }
 
@@ -44,8 +47,31 @@ pub enum IntrinsicSignature {
     BytesBytesToBytes,
     BytesIntIntToBytes,
     EntriesToReadOnlyDir,
+    StringToString,
+    StringStringToString,
     DeclaredInSource,
-    CompilerDocResultJson,
+}
+
+impl IntrinsicSignature {
+    pub fn returns_string(self) -> bool {
+        matches!(
+            self,
+            Self::GenericRender
+                | Self::BytesToString
+                | Self::StringToString
+                | Self::StringStringToString
+        )
+    }
+
+    pub fn returns_bytes(self) -> bool {
+        matches!(
+            self,
+            Self::StringToBytes
+                | Self::ListIntToBytes
+                | Self::BytesBytesToBytes
+                | Self::BytesIntIntToBytes
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -124,6 +150,9 @@ pub const CHANNEL_SELECT: &str = "__channel_select";
 
 pub const TESTING_MOCK_DIR: &str = "__mock_dir";
 
+pub const COMPILER_FOOTPRINT: &str = "compiler.footprint";
+pub const COMPILER_DIFF: &str = "compiler.diff";
+pub const COMPILER_DOC: &str = "compiler.doc";
 pub const COMPILER_DOC_RESULT_JSON: &str = "compiler.__doc_result_json";
 
 pub const ALL: &[IntrinsicSpec] = &[
@@ -366,10 +395,52 @@ pub const ALL: &[IntrinsicSpec] = &[
         private_callers: TESTING_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
+        id: IntrinsicId::CompilerFootprint,
+        name: COMPILER_FOOTPRINT,
+        arity: 1,
+        signature: IntrinsicSignature::StringToString,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: &["compiler_footprint"],
+        dynamic_wir_helpers: false,
+        diagnostic_name: "compiler.footprint",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::CompilerDiff,
+        name: COMPILER_DIFF,
+        arity: 2,
+        signature: IntrinsicSignature::StringStringToString,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: &["compiler_diff"],
+        dynamic_wir_helpers: false,
+        diagnostic_name: "compiler.diff",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::CompilerDoc,
+        name: COMPILER_DOC,
+        arity: 2,
+        signature: IntrinsicSignature::StringStringToString,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: &["compiler_doc"],
+        dynamic_wir_helpers: false,
+        diagnostic_name: "compiler.doc",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
         id: IntrinsicId::CompilerDocResultJson,
         name: COMPILER_DOC_RESULT_JSON,
         arity: 2,
-        signature: IntrinsicSignature::CompilerDocResultJson,
+        signature: IntrinsicSignature::StringStringToString,
         effect: IntrinsicEffect::Toolchain,
         capability_effect: CapabilityEffect::None,
         lowering: IntrinsicLowering::Builtin,
@@ -409,6 +480,13 @@ pub fn arity_diagnostic(spec: &IntrinsicSpec, actual: usize) -> String {
         "`{}` expects {} {noun}, got {actual}",
         spec.diagnostic_name, spec.arity
     )
+}
+
+pub fn sole_wir_helper(name: &str) -> Option<&'static str> {
+    match lookup(name)?.wir_helpers {
+        [helper] => Some(*helper),
+        _ => None,
+    }
 }
 
 pub fn is_render(name: &str) -> bool {
@@ -501,6 +579,9 @@ mod tests {
             CHANNEL_RECV,
             CHANNEL_SELECT,
             TESTING_MOCK_DIR,
+            COMPILER_FOOTPRINT,
+            COMPILER_DIFF,
+            COMPILER_DOC,
             COMPILER_DOC_RESULT_JSON,
         ];
         for name in names {
@@ -518,6 +599,23 @@ mod tests {
             arity_diagnostic(from_string, 0),
             "`bytes.from_string` expects 1 argument, got 0"
         );
+    }
+
+    #[test]
+    fn compiler_operation_family_has_native_and_wir_hooks() {
+        for name in [
+            COMPILER_FOOTPRINT,
+            COMPILER_DIFF,
+            COMPILER_DOC,
+            COMPILER_DOC_RESULT_JSON,
+        ] {
+            let spec = lookup(name).expect("compiler operation");
+            assert_eq!(spec.effect, IntrinsicEffect::Toolchain);
+            assert_eq!(spec.runtime, IntrinsicRuntime::Native);
+            assert_eq!(spec.lowering, IntrinsicLowering::Builtin);
+            assert!(spec.signature.returns_string());
+            assert!(sole_wir_helper(name).is_some());
+        }
     }
 
     #[test]
@@ -540,22 +638,29 @@ mod tests {
     }
 
     #[test]
-    fn native_source_placeholder_matches_catalog_signature() {
+    fn compiler_native_source_placeholders_match_catalog_signatures() {
         let module = crate::parser::parse_module(include_str!("../../../std/compiler.witchy"))
             .expect("parse std/compiler");
-        let bare_name = COMPILER_DOC_RESULT_JSON
-            .rsplit_once('.')
-            .map_or(COMPILER_DOC_RESULT_JSON, |(_, bare)| bare);
-        let function = module.items.iter().find_map(|item| match item {
-            crate::ast::Item::Function(function)
-                if function.name == bare_name => Some(function),
-            _ => None,
-        });
-        let function = function.expect("compiler doc-result native placeholder");
         let string = crate::ast::Type::Named("String".into(), Vec::new());
-        assert_eq!(function.params.len(), lookup(COMPILER_DOC_RESULT_JSON).unwrap().arity);
-        assert!(function.params.iter().all(|param| param.ty.as_ref() == Some(&string)));
-        assert_eq!(function.ret.as_ref(), Some(&string));
+        for spec in ALL.iter().filter(|spec| {
+            spec.runtime == IntrinsicRuntime::Native && spec.name.starts_with("compiler.")
+        }) {
+            let bare_name = spec.name.rsplit_once('.').map_or(spec.name, |(_, bare)| bare);
+            let function = module.items.iter().find_map(|item| match item {
+                crate::ast::Item::Function(function) if function.name == bare_name => {
+                    Some(function)
+                }
+                _ => None,
+            });
+            let function = function.unwrap_or_else(|| panic!("{} missing from std/compiler", spec.name));
+            assert_eq!(function.params.len(), spec.arity, "arity drift for {}", spec.name);
+            assert!(
+                function.params.iter().all(|param| param.ty.as_ref() == Some(&string)),
+                "parameter type drift for {}",
+                spec.name
+            );
+            assert_eq!(function.ret.as_ref(), Some(&string), "return type drift for {}", spec.name);
+        }
     }
 
     #[test]

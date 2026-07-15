@@ -1338,7 +1338,7 @@ fn host_compiler_footprint_len(mut caller: Caller<'_, VmState>, src_ptr: i32) ->
     use crate::value::NativeValue as Value;
     let mem = memory_of(&mut caller)?;
     let src = read_wstr(mem.data(&caller), src_ptr)?;
-    let f = crate::native::lookup("compiler.footprint")
+    let f = crate::native::lookup(intrinsics::COMPILER_FOOTPRINT)
         .ok_or_else(|| Error::msg("compiler.footprint is not registered"))?;
     let json = match f(&[Value::Str(src)]).map_err(|e| Error::msg(e.message))? {
         Value::Str(s) => s,
@@ -1361,7 +1361,7 @@ fn host_compiler_diff_len(
     let mem = memory_of(&mut caller)?;
     let old_src = read_wstr(mem.data(&caller), old_ptr)?;
     let new_src = read_wstr(mem.data(&caller), new_ptr)?;
-    let f = crate::native::lookup("compiler.diff")
+    let f = crate::native::lookup(intrinsics::COMPILER_DIFF)
         .ok_or_else(|| Error::msg("compiler.diff is not registered"))?;
     let json = match f(&[Value::Str(old_src), Value::Str(new_src)]).map_err(|e| Error::msg(e.message))? {
         Value::Str(s) => s,
@@ -1402,7 +1402,7 @@ fn host_compiler_doc_len(
     let mem = memory_of(&mut caller)?;
     let name = read_wstr(mem.data(&caller), name_ptr)?;
     let src = read_wstr(mem.data(&caller), src_ptr)?;
-    let f = crate::native::lookup("compiler.doc")
+    let f = crate::native::lookup(intrinsics::COMPILER_DOC)
         .ok_or_else(|| Error::msg("compiler.doc is not registered"))?;
     let md = match f(&[Value::Str(name), Value::Str(src)]).map_err(|e| Error::msg(e.message))? {
         Value::Str(s) => s,
