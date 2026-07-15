@@ -252,11 +252,11 @@ impl Codegen<'_> {
                 call(host.helper, vec![W::ConstI32(host.selector), self.lower_expr(&args[0])?])
             }
             // `string.from_code(cp)`: the Int code point travels in the i64 ABI.
-            ("string.from_code", 1) => {
+            (intrinsics::STRING_FROM_CODE, 1) => {
                 self.uses_string_from_code = true;
                 let ak = self.kind_of(&args[0]);
                 call(
-                    "string_from_code",
+                    intrinsic_helper(name),
                     vec![Self::wir_convert(self.lower_expr(&args[0])?, ak, Kind::I64)],
                 )
             }
@@ -264,7 +264,7 @@ impl Codegen<'_> {
             // header, widened to the Int's i64. A count is non-negative so the
             // signed `Convert` matches an unsigned `i64.extend_i32_u`. Lowers only
             // in a WIR-collecting scope.
-            ("list.length", 1) | ("string.length", 1) if self.collect_wir => {
+            ("list.length", 1) | (intrinsics::STRING_LENGTH, 1) if self.collect_wir => {
                 let arg = self.lower_expr(&args[0])?;
                 Self::wir_convert(
                     W::Load { ptr: Box::new(arg), kind: witchy_wir::wir::Kind::I32, offset: 0 },
@@ -275,11 +275,11 @@ impl Codegen<'_> {
             // `string.char_count(s)` — Unicode scalars in `s`, widened to the Int's
             // i64. The `$char_count` helper reads the byte-length header itself, so
             // `s` is evaluated once (binary path only; WAT keeps its legacy arm).
-            ("string.char_count", 1) if self.collect_wir => {
+            (intrinsics::STRING_CHAR_COUNT, 1) if self.collect_wir => {
                 self.uses_byte_to_char = true;
                 let arg = self.lower_expr(&args[0])?;
                 Self::wir_convert(
-                    W::Call { func: "char_count".to_string(), args: vec![arg] },
+                    W::Call { func: intrinsic_helper(name).to_string(), args: vec![arg] },
                     Kind::I32,
                     Kind::I64,
                 )
@@ -377,29 +377,29 @@ impl Codegen<'_> {
                 }
             },
             // String helpers over the `[len][bytes]` rep — pure `{args} call $h`.
-            ("string.to_int", 1) => {
+            (intrinsics::STRING_TO_INT, 1) => {
                 self.uses_str_to_int = true;
-                call("str_to_int", self.lower_args(&[&args[0]])?)
+                call(intrinsic_helper(name), self.lower_args(&[&args[0]])?)
             }
-            ("string.starts_with", 2) => {
+            (intrinsics::STRING_STARTS_WITH, 2) => {
                 self.uses_starts_with = true;
-                call("starts_with", self.lower_args(&[&args[0], &args[1]])?)
+                call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
             }
-            ("string.ends_with", 2) => {
+            (intrinsics::STRING_ENDS_WITH, 2) => {
                 self.uses_ends_with = true;
-                call("ends_with", self.lower_args(&[&args[0], &args[1]])?)
+                call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
             }
-            ("string.split", 2) => {
+            (intrinsics::STRING_SPLIT, 2) => {
                 self.uses_split = true;
                 self.uses_substr = true;
-                call("split", self.lower_args(&[&args[0], &args[1]])?)
+                call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
             }
-            ("string.chars", 1) => {
+            (intrinsics::STRING_CHARS, 1) => {
                 self.uses_str_chars = true;
                 self.uses_byte_to_char = true;
                 self.uses_substring = true;
                 self.uses_substr = true;
-                call("str_chars", self.lower_args(&[&args[0]])?)
+                call(intrinsic_helper(name), self.lower_args(&[&args[0]])?)
             }
             // `clock.now()`: the Clock arg is type-level; the host import is the
             // authority and takes no operands.
@@ -467,35 +467,35 @@ impl Codegen<'_> {
             // Duration <-> Int(ms) is a runtime no-op (both i64) — value-neutral.
             ("int_to_duration", 1) | ("duration_to_int", 1) => return self.lower_expr(&args[0]),
             // `contains(s, sub)` == `find_byte(s, sub) != -1`.
-            ("string.contains", 2) => {
+            (intrinsics::STRING_CONTAINS, 2) => {
                 self.uses_find_byte = true;
                 let inner = self.lower_args(&[&args[0], &args[1]])?;
                 W::Binary {
                     op: witchy_wir::wir::BinOp::Ne,
                     kind: witchy_wir::wir::Kind::I32,
-                    lhs: Box::new(W::Call { func: "find_byte".to_string(), args: inner }),
+                    lhs: Box::new(W::Call { func: intrinsic_helper(name).to_string(), args: inner }),
                     rhs: Box::new(W::ConstI32(-1)),
                 }
             }
             // `index_of(s, sub)` -> Int: the i32 index, sign-extended to i64.
-            ("string.find", 2) => {
+            (intrinsics::STRING_FIND, 2) => {
                 self.uses_find_byte = true;
                 self.uses_index_of = true;
                 let inner = self.lower_args(&[&args[0], &args[1]])?;
                 W::ToSlot(
-                    Box::new(W::Call { func: "str_index_of".to_string(), args: inner }),
+                    Box::new(W::Call { func: intrinsic_helper(name).to_string(), args: inner }),
                     witchy_wir::wir::Kind::I32,
                 )
             }
             // --- guest-helper calls: `{args} call $helper` ---
-            ("string.replace", 3) => {
+            (intrinsics::STRING_REPLACE, 3) => {
                 self.uses_replace = true;
-                call("replace", self.lower_args(&[&args[0], &args[1], &args[2]])?)
+                call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1], &args[2]])?)
             }
-            ("string.trim", 1) => {
+            (intrinsics::STRING_TRIM, 1) => {
                 self.uses_trim = true;
                 self.uses_substr = true;
-                call("trim", self.lower_args(&[&args[0]])?)
+                call(intrinsic_helper(name), self.lower_args(&[&args[0]])?)
             }
             ("list.concat", 2) => {
                 call("list_concat", self.lower_args(&[&args[0], &args[1]])?)
@@ -766,12 +766,12 @@ impl Codegen<'_> {
                 call("testing_mock_dir", self.lower_args(&[&args[0]])?)
             }
             // --- calls with a pushed constant / slot conversions ---
-            ("string.to_upper", 1) | ("string.to_lower", 1) => {
+            (intrinsics::STRING_TO_UPPER, 1) | (intrinsics::STRING_TO_LOWER, 1) => {
                 self.uses_ascii_case = true;
-                let up = if name == "string.to_upper" { 1 } else { 0 };
-                call("ascii_case", vec![self.lower_expr(&args[0])?, W::ConstI32(up)])
+                let up = if name == intrinsics::STRING_TO_UPPER { 1 } else { 0 };
+                call(intrinsic_helper(name), vec![self.lower_expr(&args[0])?, W::ConstI32(up)])
             }
-            ("string.substring", 3) => {
+            (intrinsics::STRING_SUBSTRING, 3) => {
                 self.uses_substring = true;
                 self.uses_substr = true;
                 let sk = self.kind_of(&args[1]);
@@ -780,7 +780,7 @@ impl Codegen<'_> {
                 // clamps them to `[0, char_count]` before narrowing to byte offsets,
                 // exactly like the interpreter. A prior narrow-to-i32 here wrapped huge
                 // indices (near the i64 extremes), diverging from the interpreter.
-                call("str_substring", vec![
+                call(intrinsic_helper(name), vec![
                     self.lower_expr(&args[0])?,
                     Self::wir_convert(self.lower_expr(&args[1])?, sk, Kind::I64),
                     Self::wir_convert(self.lower_expr(&args[2])?, ek, Kind::I64),

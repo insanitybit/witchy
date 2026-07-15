@@ -3,6 +3,28 @@
     use std::sync::{Arc, Mutex};
     use wasmtime::{Caller, Engine, Linker, Module as WtModule, Store};
 
+    #[test]
+    fn string_operation_catalog_names_live_wir_helpers() {
+        use witchy_syntax::intrinsics;
+
+        for name in intrinsics::STRING_OPERATIONS {
+            let spec = intrinsics::lookup(name).expect("cataloged string operation");
+            assert!(
+                witchy_types::typeck::intrinsic(name),
+                "{} must not compile its self-recursive std placeholder",
+                spec.name
+            );
+            for helper in spec.wir_helpers {
+                assert!(
+                    witchy_wir::wir_helpers::wir_helper(helper).is_some(),
+                    "{} names missing WIR helper {}",
+                    spec.name,
+                    helper
+                );
+            }
+        }
+    }
+
     /// (RFC-0045) Define the always-linked, authority-free `__witchy_abort` import
     /// so a module that routes an abort through it (float ordering, list/bytes OOB,
     /// str_to_int, `fail`) instantiates in these minimal test linkers. The body

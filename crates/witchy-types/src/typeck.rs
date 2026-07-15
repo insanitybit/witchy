@@ -3824,6 +3824,23 @@ impl Checker {
             )),
             S::StringToString => Some((vec![Ty::String], Ty::String)),
             S::StringStringToString => Some((vec![Ty::String, Ty::String], Ty::String)),
+            S::StringToInt => Some((vec![Ty::String], Ty::Int)),
+            S::StringStringToInt => Some((vec![Ty::String, Ty::String], Ty::Int)),
+            S::StringStringToBool => Some((vec![Ty::String, Ty::String], Ty::Bool)),
+            S::StringToListString => {
+                Some((vec![Ty::String], Ty::List(Box::new(Ty::String))))
+            }
+            S::StringStringToListString => Some((
+                vec![Ty::String, Ty::String],
+                Ty::List(Box::new(Ty::String)),
+            )),
+            S::StringStringStringToString => {
+                Some((vec![Ty::String, Ty::String, Ty::String], Ty::String))
+            }
+            S::StringIntIntToString => {
+                Some((vec![Ty::String, Ty::Int, Ty::Int], Ty::String))
+            }
+            S::IntToString => Some((vec![Ty::Int], Ty::String)),
             // These calls are checked by their dedicated frontend rule or by
             // the linked source declaration, not by the builtin signature path.
             S::TryContext | S::DeclaredInSource => None,
@@ -3859,33 +3876,14 @@ impl Checker {
             }
             "fetch_build" => Some((vec![Ty::BuildNet, Ty::String, Ty::String], Ty::String)),
             "run_tool" => Some((vec![Ty::BuildExec, Ty::String, Ty::String], Ty::String)),
-            "string.length" => Some((vec![Ty::String], Ty::Int)),
-            "string.char_count" => Some((vec![Ty::String], Ty::Int)),
-            "string.to_upper" | "string.to_lower" | "string.trim" => Some((vec![Ty::String], Ty::String)),
             // Abort with a message (the primitive behind std/testing).
             "fail" => Some((vec![Ty::String], Ty::Nil)),
-            "string.starts_with" | "string.contains" | "string.ends_with" => {
-                Some((vec![Ty::String, Ty::String], Ty::Bool))
-            }
-            "string.find" => Some((vec![Ty::String, Ty::String], Ty::Int)),
-            "string.split" => Some((
-                vec![Ty::String, Ty::String],
-                Ty::List(Box::new(Ty::String)),
-            )),
-            // The characters of a string, each as a single-char String — built in
-            // one O(n) pass (unlike a char_at loop), so callers can index chars in
-            // O(1). The primitive behind a fast `std/string.to_chars`.
-            "string.chars" => Some((vec![Ty::String], Ty::List(Box::new(Ty::String)))),
-            "string.replace" => Some((vec![Ty::String, Ty::String, Ty::String], Ty::String)),
-            "string.substring" => Some((vec![Ty::String, Ty::Int, Ty::Int], Ty::String)),
-            "string.from_code" => Some((vec![Ty::Int], Ty::String)),
             "math.to_float" => Some((vec![Ty::Int], Ty::Float)),
             "math.to_int" => Some((vec![Ty::Float], Ty::Int)),
             // Duration <-> Int(milliseconds) bridge for the std `duration` module.
             "int_to_duration" => Some((vec![Ty::Int], Ty::Duration)),
             "duration_to_int" => Some((vec![Ty::Duration], Ty::Int)),
             "math.sqrt" => Some((vec![Ty::Float], Ty::Float)),
-            "string.to_int" => Some((vec![Ty::String], Ty::Int)),
             "list.length" => {
                 let elem = self.fresh();
                 Some((vec![Ty::List(Box::new(elem))], Ty::Int))
@@ -7786,12 +7784,8 @@ pub fn intrinsic(name: &str) -> bool {
         "list.__push" | witchy_syntax::intrinsics::GENERATED_LIST_PUSH | "list.__set_at" | "list.at" | "list.length" | "list.concat"
             | "dict.new" | "dict.__insert" | "dict.get_or" | "dict.at" | "dict.contains_key" | "dict.__remove"
             | "dict.__update" | "dict.keys" | "dict.values" | "dict.pairs" | "dict.length"
-            | "string.split" | "string.trim" | "string.contains" | "string.starts_with"
-            | "string.ends_with" | "string.replace" | "string.find" | "string.substring"
-            | "string.length" | "string.char_count" | "string.chars" | "string.to_upper"
-            | "string.to_lower" | "string.to_int"
             | "math.to_float" | "math.to_int" | "math.sqrt"
-    )
+    ) || witchy_syntax::intrinsics::is_string_operation(name)
 }
 
 

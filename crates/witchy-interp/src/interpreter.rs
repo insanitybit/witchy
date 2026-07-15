@@ -1917,10 +1917,11 @@ impl Interpreter {
     }
 
     fn call_builtin(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>, RuntimeError> {
-        if let Some(spec) = intrinsics::lookup(name)
-            && args.len() != spec.arity
-        {
-            return err(intrinsics::arity_diagnostic(spec, args.len()));
+        let catalog = intrinsics::lookup(name);
+        if let Some(spec) = catalog {
+            if args.len() != spec.arity {
+                return err(intrinsics::arity_diagnostic(spec, args.len()));
+            }
         }
         // `secret_store.get(name)` — a named lookup into the granted store. Handled
         // here (not in `native`) because a `SecretStore` is not a `NativeValue`.
@@ -2010,6 +2011,9 @@ impl Interpreter {
             let nresult = f(&nargs).map_err(|e| RuntimeError { message: e.message })?;
             return Ok(Some(native_to_value(nresult)));
         }
+        if catalog.is_some_and(|spec| spec.runtime == intrinsics::IntrinsicRuntime::Native) {
+            return err(format!("internal error: cataloged native operation `{name}` has no runtime hook"));
+        }
         let one = |args: &[Value]| -> Result<Value, RuntimeError> {
             match args {
                 [v] => Ok(v.clone()),
@@ -2038,7 +2042,7 @@ impl Interpreter {
             // unchanged, exactly as the executor's former generic `m` did.
             intrinsics::ERASE | intrinsics::UNERASE => Ok(Some(one(args)?)),
             // String stdlib.
-            "string.length" => match one(args)? {
+            intrinsics::STRING_LENGTH => match one(args)? {
                 Value::Str(s) => Ok(Some(Value::Int(s.len() as i64))),
                 other => err(format!("string_length expects a String, got `{other}`")),
             },
@@ -2099,18 +2103,18 @@ impl Interpreter {
             },
             // The number of Unicode scalars — the character count, as opposed to
             // `string_length`'s byte count (they agree for ASCII).
-            "string.char_count" => match one(args)? {
+            intrinsics::STRING_CHAR_COUNT => match one(args)? {
                 Value::Str(s) => Ok(Some(Value::Int(s.chars().count() as i64))),
                 other => err(format!("char_count expects a String, got `{other}`")),
             },
             // ASCII case mapping (a-z <-> A-Z); non-ASCII bytes are unchanged.
             // Deliberately ASCII-only so the WASM backend can match it byte-for-
             // byte (full Unicode case folding would need large tables).
-            "string.to_upper" => match one(args)? {
+            intrinsics::STRING_TO_UPPER => match one(args)? {
                 Value::Str(s) => Ok(Some(Value::Str(s.to_ascii_uppercase()))),
                 other => err(format!("to_upper expects a String, got `{other}`")),
             },
-            "string.to_lower" => match one(args)? {
+            intrinsics::STRING_TO_LOWER => match one(args)? {
                 Value::Str(s) => Ok(Some(Value::Str(s.to_ascii_lowercase()))),
                 other => err(format!("to_lower expects a String, got `{other}`")),
             },
@@ -2133,7 +2137,7 @@ impl Interpreter {
                 }
                 other => err(format!("fail expects a String message, got `{other}`")),
             },
-            "string.trim" => match one(args)? {
+            intrinsics::STRING_TRIM => match one(args)? {
                 // ASCII whitespace only — exactly the byte set the WASM `$is_ws`
                 // helper strips (space, tab, LF, VT, FF, CR). Rust's `str::trim`
                 // would additionally strip Unicode whitespace (NBSP, …), which the
@@ -2146,13 +2150,13 @@ impl Interpreter {
                 }
                 other => err(format!("trim expects a String, got `{other}`")),
             },
-            "string.starts_with" => match args {
+            intrinsics::STRING_STARTS_WITH => match args {
                 [Value::Str(s), Value::Str(prefix)] => {
                     Ok(Some(Value::Bool(s.starts_with(prefix.as_str()))))
                 }
                 _ => err("starts_with expects two Strings"),
             },
-            "string.contains" => match args {
+            intrinsics::STRING_CONTAINS => match args {
                 [Value::Str(s), Value::Str(sub)] => {
                     Ok(Some(Value::Bool(s.contains(sub.as_str()))))
                 }
@@ -2160,7 +2164,7 @@ impl Interpreter {
             },
             // Split on a separator into a list of pieces (the separator itself is
             // dropped); the empty separator yields the whole string unchanged.
-            "string.split" => match args {
+            intrinsics::STRING_SPLIT => match args {
                 [Value::Str(s), Value::Str(sep)] => {
                     let parts: Vec<Value> = if sep.is_empty() {
                         vec![Value::Str(s.clone())]
@@ -2172,26 +2176,26 @@ impl Interpreter {
                 _ => err("split expects two Strings"),
             },
             // The characters of a string, each as a single-char String (one pass).
-            "string.chars" => match one(args)? {
+            intrinsics::STRING_CHARS => match one(args)? {
                 Value::Str(s) => {
                     Ok(Some(Value::List(s.chars().map(|c| Value::Str(c.to_string())).collect())))
                 }
                 _ => err("string_chars expects a String"),
             },
-            "string.replace" => match args {
+            intrinsics::STRING_REPLACE => match args {
                 [Value::Str(s), Value::Str(from), Value::Str(to)] => {
                     Ok(Some(Value::Str(s.replace(from.as_str(), to.as_str()))))
                 }
                 _ => err("replace expects three Strings"),
             },
-            "string.ends_with" => match args {
+            intrinsics::STRING_ENDS_WITH => match args {
                 [Value::Str(s), Value::Str(suffix)] => {
                     Ok(Some(Value::Bool(s.ends_with(suffix.as_str()))))
                 }
                 _ => err("ends_with expects two Strings"),
             },
             // Char index of the first occurrence of `sub`, or -1 if absent.
-            "string.find" => match args {
+            intrinsics::STRING_FIND => match args {
                 [Value::Str(s), Value::Str(sub)] => {
                     let idx = s
                         .find(sub.as_str())
@@ -2203,7 +2207,7 @@ impl Interpreter {
             },
             // Characters in the half-open range [start, end), clamped to bounds
             // (counted by Unicode scalar, so slicing never splits a character).
-            "string.substring" => match args {
+            intrinsics::STRING_SUBSTRING => match args {
                 [Value::Str(s), Value::Int(start), Value::Int(end)] => {
                     let chars: Vec<char> = s.chars().collect();
                     let lo = (*start).max(0) as usize;
@@ -2239,7 +2243,7 @@ impl Interpreter {
                 Value::Float(x) => Ok(Some(Value::Float(x.sqrt()))),
                 other => err(format!("sqrt expects a Float, got `{other}`")),
             },
-            "string.to_int" => match one(args)? {
+            intrinsics::STRING_TO_INT => match one(args)? {
                 Value::Str(s) => match s.trim().parse::<i64>() {
                     Ok(n) => Ok(Some(Value::Int(n))),
                     Err(_) => err(DiagTemplate::ParseInt.render(0, 0, &s)),
@@ -3165,6 +3169,11 @@ impl Interpreter {
                 }
                 _ => err("close expects a Socket"),
             },
+            _ if catalog.is_some_and(|spec| {
+                spec.runtime == intrinsics::IntrinsicRuntime::InterpreterBuiltin
+            }) => err(format!(
+                "internal error: cataloged interpreter builtin `{name}` has no dispatch arm"
+            )),
             _ => Ok(None),
         }
     }

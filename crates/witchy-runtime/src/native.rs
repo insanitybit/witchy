@@ -23,6 +23,11 @@ pub type NativeFn = fn(&[Value]) -> Result<Value, RuntimeError>;
 /// Resolve a native-module function by its qualified name (`crypto.sha256`), or
 /// `None` if `qualified` is not a native-module function.
 pub fn lookup(qualified: &str) -> Option<NativeFn> {
+    if intrinsics::lookup(qualified)
+        .is_some_and(|spec| spec.runtime != intrinsics::IntrinsicRuntime::Native)
+    {
+        return None;
+    }
     match qualified {
         "crypto.sha256" => Some(crypto::sha256),
         "crypto.rune_hash" => Some(crypto::rune_hash),
@@ -61,7 +66,7 @@ pub fn lookup(qualified: &str) -> Option<NativeFn> {
         intrinsics::ENCODING_BASE64URL_DECODE_BYTES_RAW => Some(encoding::base64url_decode_bytes_raw),
         intrinsics::ENCODING_BASE64URL_TO_HEX_LOSSY => Some(encoding::base64url_to_hex_lossy),
         "regex.match_spans" => Some(regexp::match_spans),
-        "string.from_code" => Some(string::from_code),
+        intrinsics::STRING_FROM_CODE => Some(string::from_code),
         _ => None,
     }
 }
@@ -1027,14 +1032,21 @@ mod string {
 mod intrinsic_catalog_tests {
     #[test]
     fn cataloged_native_runtime_hooks_exist() {
-        for intrinsic in witchy_syntax::intrinsics::ALL.iter().filter(|intrinsic| {
-            intrinsic.runtime == witchy_syntax::intrinsics::IntrinsicRuntime::Native
-        }) {
-            assert!(
-                super::lookup(intrinsic.name).is_some(),
-                "intrinsic {} names a missing native runtime hook",
-                intrinsic.name
-            );
+        use witchy_syntax::intrinsics::IntrinsicRuntime;
+
+        for intrinsic in witchy_syntax::intrinsics::ALL {
+            match intrinsic.runtime {
+                IntrinsicRuntime::Native => assert!(
+                    super::lookup(intrinsic.name).is_some(),
+                    "intrinsic {} names a missing native runtime hook",
+                    intrinsic.name
+                ),
+                IntrinsicRuntime::InterpreterBuiltin | IntrinsicRuntime::SourceFunction => assert!(
+                    super::lookup(intrinsic.name).is_none(),
+                    "non-native intrinsic {} leaked into the native runtime registry",
+                    intrinsic.name
+                ),
+            }
         }
     }
 }

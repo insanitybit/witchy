@@ -1,6 +1,39 @@
     use super::*;
 
     #[test]
+    fn every_cataloged_string_operation_has_runtime_dispatch() {
+        let module = witchy_syntax::parser::parse_module("fn main() -> Int:\n    0\n")
+            .expect("parse minimal module");
+        let mut interpreter = Interpreter::new(module);
+
+        for name in intrinsics::STRING_OPERATIONS {
+            let args = match *name {
+                intrinsics::STRING_FROM_CODE => vec![Value::Int(65)],
+                intrinsics::STRING_REPLACE => vec![
+                    Value::Str("12".into()),
+                    Value::Str("1".into()),
+                    Value::Str("x".into()),
+                ],
+                intrinsics::STRING_SUBSTRING => {
+                    vec![Value::Str("12".into()), Value::Int(0), Value::Int(1)]
+                }
+                intrinsics::STRING_SPLIT
+                | intrinsics::STRING_CONTAINS
+                | intrinsics::STRING_STARTS_WITH
+                | intrinsics::STRING_ENDS_WITH
+                | intrinsics::STRING_FIND => {
+                    vec![Value::Str("12".into()), Value::Str("1".into())]
+                }
+                _ => vec![Value::Str("12".into())],
+            };
+            let result = interpreter
+                .call_builtin(name, &args)
+                .unwrap_or_else(|error| panic!("{} failed: {}", name, error.message));
+            assert!(result.is_some(), "{} fell through runtime dispatch", name);
+        }
+    }
+
+    #[test]
     fn evaluates_arithmetic_and_precedence() {
         let out = run(r#"
 fn main(console: Console):

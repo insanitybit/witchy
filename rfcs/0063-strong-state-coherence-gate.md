@@ -128,6 +128,18 @@ host-only `encoding.utf8_lossy` operation has no source declaration; its explici
 from its native `String -> String` contract, and `$bytes_to_string` obtains selector 7 from
 that catalog row rather than embedding it independently.
 
+The string primitive family now catalogs all fifteen backend-crossing operations,
+including exact semantic signatures, pure/no-capability effects, interpreter-versus-native
+runtime ownership, and direct WIR helper dependencies. Type checking derives every string
+primitive signature from those rows; placeholder suppression, interpreter dispatch,
+native lookup, lowering identity, and compiled result-shape classification consume the
+catalog family or its stable names instead of maintaining separate string-name sets.
+Coherence tests compare the rows to `std/string.witchy`, require every declared helper to
+exist in the WIR registry, and require every primitive placeholder to be suppressed. This
+also closes the prior omission where `string.from_code` was intercepted by both backends
+but its self-recursive source declaration was not classified as an intrinsic. List, Dict,
+math, and the remaining public operation families are still uncataloged.
+
 ### 4. Typed compiler facts, not string or address shadows
 
 The final compiler story should not depend on shadow encodings:

@@ -12,6 +12,7 @@
 //! first).
 
 use crate::ast::{collect_type_names, Block, Expr, Function, Item, MethodSig, Module, Stmt, Type};
+use crate::intrinsics;
 // foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
 use foldhash::{HashMap, HashMapExt as _, HashSet};
 
@@ -450,21 +451,21 @@ pub fn moved_builtin(bare: &str) -> Option<&'static str> {
         "values" => "dict.values",
         "pairs" => "dict.pairs",
         "size" => "dict.length",
-        "split" => "string.split",
-        "trim" => "string.trim",
-        "contains" => "string.contains",
-        "starts_with" => "string.starts_with",
-        "ends_with" => "string.ends_with",
-        "replace" => "string.replace",
+        "split" => intrinsics::STRING_SPLIT,
+        "trim" => intrinsics::STRING_TRIM,
+        "contains" => intrinsics::STRING_CONTAINS,
+        "starts_with" => intrinsics::STRING_STARTS_WITH,
+        "ends_with" => intrinsics::STRING_ENDS_WITH,
+        "replace" => intrinsics::STRING_REPLACE,
         "index_of" => "string.index_of",
-        "substring" => "string.substring",
-        "string_length" => "string.length",
-        "char_count" => "string.char_count",
-        "string_chars" => "string.chars",
-        "to_chars" => "string.chars",
-        "to_upper" => "string.to_upper",
-        "to_lower" => "string.to_lower",
-        "string_to_int" => "string.to_int",
+        "substring" => intrinsics::STRING_SUBSTRING,
+        "string_length" => intrinsics::STRING_LENGTH,
+        "char_count" => intrinsics::STRING_CHAR_COUNT,
+        "string_chars" => intrinsics::STRING_CHARS,
+        "to_chars" => intrinsics::STRING_CHARS,
+        "to_upper" => intrinsics::STRING_TO_UPPER,
+        "to_lower" => intrinsics::STRING_TO_LOWER,
+        "string_to_int" => intrinsics::STRING_TO_INT,
         "int_to_float" => "math.to_float",
         "float_to_int" => "math.to_int",
         "sqrt" => "math.sqrt",

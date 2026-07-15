@@ -123,11 +123,12 @@ impl Codegen<'_> {
                 Kind::ExternRef
             }
             Expr::Call { name, .. } => match cap_ops::surface_name(name) {
+                name if intrinsics::lookup(name)
+                    .is_some_and(|spec| spec.signature.returns_int()) => Kind::I64,
                 "math.to_float" => Kind::F64,
-                "math.to_int" | "string.length" | "string.char_count" | "string.find"
-                | "list.length" | "dict.length" | "string.to_int" | "int_to_duration"
+                "math.to_int" | "list.length" | "dict.length" | "int_to_duration"
                 | "duration_to_int" | "now" | "now_monotonic" | "rand_u64"
-                | intrinsics::BYTES_LENGTH | intrinsics::BYTES_AT => Kind::I64,
+                => Kind::I64,
                 "list.at" => self.elem_kind_of_list_arg(e),
                 render if witchy_syntax::ast::is_render_intrinsic(render) => Kind::I32,
                 "int_to_string" | "print" => Kind::I32,
@@ -345,17 +346,18 @@ impl Codegen<'_> {
                     .is_some_and(|spec| spec.signature.returns_string()) => ValType::Str,
                 name if intrinsics::lookup(name)
                     .is_some_and(|spec| spec.signature.returns_bytes()) => ValType::Bytes,
-                "string.to_upper" | "string.to_lower" | "string.trim"
-                | "string.replace" | "string.substring" | "crypto.sha256" | "crypto.sign"
+                name if intrinsics::lookup(name)
+                    .is_some_and(|spec| spec.signature.returns_bool()) => ValType::Bool,
+                name if intrinsics::lookup(name)
+                    .is_some_and(|spec| spec.signature.returns_int()) => ValType::Int,
+                "crypto.sha256" | "crypto.sign"
                 | "crypto.public_key" | "crypto.reveal" | "read" | "read_build" | "crypto.rune_hash"
                 | "exec"
                 | "regex.match_spans" | "recv_line" | "recv_all"
                 | "crypto.sha512" | "crypto.sha3_256" | "crypto.hmac_sha256"
                 | "recv_bytes" => ValType::Str,
-                "string.starts_with" | "string.ends_with" | "string.contains" | "dict.contains_key"
-                | "exists" | "is_dir" => ValType::Bool,
-                "string.length" | "string.char_count" | "string.find" | "list.length"
-                | "dict.length" | "math.to_int" | "string.to_int" | "int_to_duration"
+                "dict.contains_key" | "exists" | "is_dir" => ValType::Bool,
+                "list.length" | "dict.length" | "math.to_int" | "int_to_duration"
                 | "duration_to_int" | "now" | "now_monotonic" | "rand_u64"
                 | "crypto.__ed25519_verify_status" | "crypto.__ecdsa_p256_verify_status"
                 | "crypto.__ecdsa_p256_verify_hex_status"

@@ -1192,7 +1192,7 @@ fn host_float_to_str(mut caller: Caller<'_, VmState>, x: f64, out_ptr: i32) -> R
 /// surrogate value becomes U+FFFD, never an error.
 fn host_string_from_code(mut caller: Caller<'_, VmState>, cp: i64, out_ptr: i32) -> Result<i32> {
     use crate::value::NativeValue as Value;
-    let f = crate::native::lookup("string.from_code")
+    let f = crate::native::lookup(intrinsics::STRING_FROM_CODE)
         .ok_or_else(|| Error::msg("string.from_code is not registered"))?;
     let s = match f(&[Value::Int(cp)]).map_err(|e| Error::msg(e.message))? {
         Value::Str(s) => s,

@@ -42,6 +42,7 @@ use passes::{alpha_rename_module, flip_string_add_module, rewrite_try_ctx_module
 
 use crate::analysis::{self};
 use witchy_syntax::lambda_scan::{collect_pattern_vars, scan_lambda};
+use witchy_syntax::intrinsics;
 use witchy_wir::layout::{type_tag_of, DATA_BASE};
 // foldhash (not SipHash): all keys are compiler-internal names/ids, never
 // attacker-chosen collections — see the note in witchy-types/src/typeck.rs.
@@ -1988,8 +1989,8 @@ impl<'types> Codegen<'types> {
             // Builtins that yield `List(String)` regardless of input. (`list` is
             // the Dir directory listing.)
             Expr::Call { name, .. }
-                if name == "string.split"
-                    || name == "string.chars"
+                if name == intrinsics::STRING_SPLIT
+                    || name == intrinsics::STRING_CHARS
                     || name == "list" =>
             {
                 ValType::Str

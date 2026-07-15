@@ -33,6 +33,7 @@ use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 use witchy_syntax::ast::{
     BinOp, Block, Convention, Expr, Item, Module, Stmt, Type, TypeQual, UnOp,
 };
+use witchy_syntax::intrinsics;
 
 /// Why an accumulation site reverts to the copying path — surfaced as a
 /// check-time note and an LSP hint. Only emitted when the cost repeats (the
@@ -1720,13 +1721,13 @@ fn builtin_arg_liveness(name: &str, argc: usize) -> Option<Vec<bool>> {
         // Collections: content reads and part-alias reads.
         ("list.length", 1)
         | ("dict.length", 1)
-        | ("string.length", 1)
-        | ("string.char_count", 1)
+        | (intrinsics::STRING_LENGTH, 1)
+        | (intrinsics::STRING_CHAR_COUNT, 1)
         | ("list.at", 2)
         | ("dict.at", 2)
         | ("dict.contains_key", 2)
-        | ("string.contains", 2)
-        | ("string.find", 2)
+        | (intrinsics::STRING_CONTAINS, 2)
+        | (intrinsics::STRING_FIND, 2)
         | ("dict.keys", 1)
         | ("dict.values", 1)
         | ("dict.pairs", 1)
@@ -1744,16 +1745,16 @@ fn builtin_arg_liveness(name: &str, argc: usize) -> Option<Vec<bool>> {
         ("send", _) => read_all(argc),
         ("fail", 1) => read_all(1),
         // Strings: every operation reads content and builds fresh results.
-        ("string.to_int", 1)
-        | ("string.chars", 1)
-        | ("string.trim", 1)
-        | ("string.to_upper", 1)
-        | ("string.to_lower", 1)
-        | ("string.split", 2)
-        | ("string.starts_with", 2)
-        | ("string.ends_with", 2)
-        | ("string.substring", 3)
-        | ("string.replace", 3) => read_all(argc),
+        (intrinsics::STRING_TO_INT, 1)
+        | (intrinsics::STRING_CHARS, 1)
+        | (intrinsics::STRING_TRIM, 1)
+        | (intrinsics::STRING_TO_UPPER, 1)
+        | (intrinsics::STRING_TO_LOWER, 1)
+        | (intrinsics::STRING_SPLIT, 2)
+        | (intrinsics::STRING_STARTS_WITH, 2)
+        | (intrinsics::STRING_ENDS_WITH, 2)
+        | (intrinsics::STRING_SUBSTRING, 3)
+        | (intrinsics::STRING_REPLACE, 3) => read_all(argc),
         // Conversions never retain buffers.
         ("math.to_float", 1) | ("math.to_int", 1) | ("math.sqrt", 1) => read_all(argc),
         ("dict.new", 0) => Some(Vec::new()),
@@ -1790,8 +1791,10 @@ pub fn fresh_heap_builtin_offset(name: &str, argc: usize) -> Option<i32> {
         // routed) and NOT string `+` (a Binary, never a Call — handled in-place by
         // `$str_append_cap`).
         ("list.push" | "list.__push", 2) | ("list.concat", 2) => Some(0),
-        ("string.to_upper", 1) | ("string.to_lower", 1) | ("string.trim", 1)
-        | ("string.substring", 3) => Some(0),
+        (intrinsics::STRING_TO_UPPER, 1)
+        | (intrinsics::STRING_TO_LOWER, 1)
+        | (intrinsics::STRING_TRIM, 1)
+        | (intrinsics::STRING_SUBSTRING, 3) => Some(0),
         _ => None,
     }
 }
