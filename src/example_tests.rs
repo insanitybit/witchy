@@ -5199,6 +5199,9 @@ fn main(console: Console, root: Dir[Read]):
         std::fs::write(root.join("greeting.txt"), "hello-tuple").expect("seed");
         let root_str = root.to_str().expect("utf8 root").to_string();
         let src = r#"
+type ReadPair = (Dir[Read], String, Int)
+type LabeledPair(a) = (Dir[Read], a, Int)
+
 type Holder:
     Holder((Dir[Read], (String, Int)))
 
@@ -5208,6 +5211,12 @@ type Packet:
 
 fn keep(pair: (Dir[Read], String, Int)) -> (Dir[Read], String, Int):
     return pair
+
+fn keep_alias(pair: ReadPair) -> ReadPair:
+    pair
+
+fn keep_generic_alias(pair: LabeledPair(String)) -> LabeledPair(String):
+    pair
 
 fn read_named(dir: Dir[Read], name: String) -> String:
     dir.read(name)
@@ -5254,6 +5263,8 @@ fn main(console: Console, root: Dir[Read]):
     console.print(project(pair))
     console.print(destructure(pair))
     console.print(choose(pair))
+    console.print(project(keep_alias((root, "greeting.txt", 6))))
+    console.print(project(keep_generic_alias((root, "greeting.txt", 7))))
     console.print(qualified(keep_qualified((root, "greeting.txt"))))
     console.print(optional((Some(root), "greeting.txt")))
     console.print(optional((None, "greeting.txt")))
@@ -5266,6 +5277,8 @@ fn main(console: Console, root: Dir[Read]):
             "hello-tuple:1".to_string(),
             "hello-tuple:1".to_string(),
             "hello-tuple:1".to_string(),
+            "hello-tuple:6".to_string(),
+            "hello-tuple:7".to_string(),
             "hello-tuple".to_string(),
             "hello-tuple".to_string(),
             "none".to_string(),

@@ -80,6 +80,8 @@ tuples and nominal aggregates may nest while keeping the capability an
 unforgeable reference; nominal types may also recurse. Tuple construction,
 numeric projection, parameter and return passing, and `let`/`match`
 destructuring use that typed representation on both backends.
+Concrete and generic type aliases are expanded before representation selection,
+so an alias for one of these tuples has exactly the same GC shape and behavior.
 
 Collections, generic aggregate specializations, closure environments, and
 `region:` copy-out carrying capabilities are still intentionally rejected until

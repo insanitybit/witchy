@@ -589,8 +589,9 @@ binary output.
 The boundary remains fail-closed where no typed representation exists:
 capability tuples cannot instantiate the scalar generic ABI, enter
 `List`/`Dict`/`Result` storage, mix with a first-class function value, escape a
-`region:`, render, or compare for equality. Concrete tuple aliases are also not
-yet normalized into this direct structural path. Closures remain the hard tail
+`region:`, render, or compare for equality. Type aliases are expanded before
+type checking and representation selection, so concrete and generic aliases of
+a supported tuple use this same structural path. Closures remain the hard tail
 (a capture is invisible in the function TYPE, so cap-carrying and scalar
 closures flowing into one `fn`-typed param force a uniform environment
 representation).
