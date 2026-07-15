@@ -8,8 +8,9 @@ mode is transitive: an `opt` module may only import other `opt` modules (the
 bundled std library is exempt).
 
 **Shows:** `mode opt`, `let` heap parameters, in-place list building proven by the
-uniqueness analysis, and in-rune `test_*` functions. See
-rfcs/performance-modes.md for the full story.
+uniqueness analysis, and an `own unique` functional-in-place state kernel whose
+tail recursion is allocation-free and constant-stack. See
+rfcs/performance-modes.md and RFC-0089 for the full contracts.
 
 ## Run
 

@@ -75,7 +75,10 @@ struct TailCtx {
 }
 
 fn lower_func_self_tail_calls(func: &mut WirFunc) -> usize {
-    let [result_ty] = func.ret.as_slice() else { return 0 };
+    if func.ret.len() != 1 {
+        return lower_func_self_tail_envelope(func);
+    }
+    let result_ty = &func.ret[0];
     if func.raw_body.is_some() {
         return 0;
     }
@@ -117,6 +120,90 @@ fn lower_func_self_tail_calls(func: &mut WirFunc) -> usize {
     func.locals.extend(temps);
     func.body = vec![WirNode::Loop { label: loop_label, body }, WirNode::Unreachable];
     count
+}
+
+/// Lower the canonical ownership-token envelope emitted for an `own` aggregate
+/// tail call. Unlike arbitrary multi-result calls, this pair is forwarded
+/// unchanged: `(declared value, ownership token)` becomes the current function's
+/// complete result, so no caller-side write-back remains.
+fn lower_func_self_tail_envelope(func: &mut WirFunc) -> usize {
+    if func.raw_body.is_some()
+        || !matches!(func.ret.as_slice(), [_, token] if token.kind() == Kind::I32)
+    {
+        return 0;
+    }
+
+    let loop_label = unique_local_name(func, "__witchy_tail_loop");
+    let temps: Vec<_> = func
+        .params
+        .iter()
+        .enumerate()
+        .map(|(index, param)| WirLocal {
+            name: unique_local_name(func, &format!("__witchy_tail_arg_{index}")),
+            ty: param.ty.clone(),
+        })
+        .collect();
+    let target = TailTarget {
+        state: None,
+        params: func.params.clone(),
+        temps: temps.clone(),
+        locals: func.locals.clone(),
+        result_ty: func.ret[0].clone(),
+    };
+    let ctx = TailCtx {
+        targets: HashMap::from([(func.name.clone(), target.clone())]),
+        indirect: HashMap::new(),
+        source_bank: func.params.iter().chain(&func.locals).cloned().collect(),
+        state_local: None,
+        loop_label: loop_label.clone(),
+    };
+    let mut body = func.body.clone();
+    if !rewrite_forwarded_envelope_tail(&mut body, &func.name, &target, &ctx) {
+        return 0;
+    }
+
+    func.locals.extend(temps);
+    func.body = vec![WirNode::Loop { label: loop_label, body }, WirNode::Unreachable];
+    1
+}
+
+fn rewrite_forwarded_envelope_tail(
+    seq: &mut WirSeq,
+    function: &str,
+    target: &TailTarget,
+    ctx: &TailCtx,
+) -> bool {
+    if seq.len() < 2 {
+        return false;
+    }
+    let cap_local = match seq.last() {
+        Some(WirNode::Push(WirExpr::GetLocal(local))) => local.clone(),
+        _ => return false,
+    };
+    let value_index = seq.len() - 2;
+    let (args, value_local) = match &mut seq[value_index] {
+        WirNode::Push(WirExpr::Seq(inner)) if inner.len() == 2 => {
+            let value_local = match &inner[1] {
+                WirNode::Push(WirExpr::GetLocal(local)) => local.clone(),
+                _ => return false,
+            };
+            match &mut inner[0] {
+                WirNode::CallStoreMulti { func, args, dests }
+                    if func == function
+                        && dests.as_slice() == [value_local.clone(), cap_local.clone()]
+                        && args.len() == target.params.len() =>
+                {
+                    (std::mem::take(args), value_local)
+                }
+                _ => return false,
+            }
+        }
+        _ => return false,
+    };
+    debug_assert!(!value_local.is_empty());
+    seq.truncate(value_index);
+    seq.extend(tail_transition_nodes(target, args, &[], ctx));
+    true
 }
 
 fn lower_mutual_tail_components(module: &mut WirModule) -> usize {
@@ -1055,6 +1142,20 @@ fn tail_transition_expr(
     cleanup: &[WirLocal],
     ctx: &TailCtx,
 ) -> WirExpr {
+    let body = tail_transition_nodes(target, args, cleanup, ctx);
+    WirExpr::Control(Box::new(WirNode::Block {
+        label: "__witchy_tail_escape".into(),
+        result: Some(target.result_ty.clone()),
+        body,
+    }))
+}
+
+fn tail_transition_nodes(
+    target: &TailTarget,
+    args: Vec<WirExpr>,
+    cleanup: &[WirLocal],
+    ctx: &TailCtx,
+) -> WirSeq {
     let mut body = Vec::with_capacity(args.len() * 2 + cleanup.len() + 2);
     for (arg, temp) in args.into_iter().zip(&target.temps) {
         body.push(WirNode::SetLocal { local: temp.name.clone(), value: arg });
@@ -1091,11 +1192,7 @@ fn tail_transition_expr(
     }
     body.push(WirNode::Br { target: ctx.loop_label.clone(), cond: None });
     body.push(WirNode::Unreachable);
-    WirExpr::Control(Box::new(WirNode::Block {
-        label: "__witchy_tail_escape".into(),
-        result: Some(target.result_ty.clone()),
-        body,
-    }))
+    body
 }
 
 /// Match lowering leaves each selected arm as `Push(value); br $result` inside

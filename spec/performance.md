@@ -75,6 +75,29 @@ stats` exposes `extract_searches`,
 `extract_drops` so the no-copy and single-search claims are deterministic test
 facts rather than timing inferences.
 
+## Functional-in-place state kernels
+
+RFC-0089 strengthens the ownership and proper-tail-call machinery for a narrow
+class of `mode opt` state machines. A directly self-recursive function with one
+`own unique T` parameter and the same `unique T` result may update fields of that
+owner, do scalar computation, and tail-call itself while remaining functional at
+the call boundary. `T` has scalar stored fields and auxiliary parameters are
+scalar. Base cases explicitly return the owner and the recursive edge is the
+function's final expression.
+
+The hidden ownership token is forwarded with the result and the full envelope
+lowers to a loop. Recursive depth therefore adds no heap or control-stack work.
+`witchy stats` exposes `rc_alloc_calls`, `bump_alloc_calls`, `rc_reuse_calls`,
+`rc_free_calls`, and `region_rewind_calls`; comparing shallow and deep runs is
+the deterministic resource oracle. Fixed setup outside the kernel may allocate,
+so the contract requires equal counts as depth changes, not zero counts for the
+whole program. The interpreter remains the value oracle only.
+
+The initial checked class rejects construction, non-final recursion, replacement
+returns, calls to helpers, effects, suspension, indexed input, and region/loop
+machinery. These restrictions keep the theorem inspectable in generated WIR;
+normal mode remains copy-correct for programs outside the class.
+
 ## Phase 0 — Measure first
 
 A `bench/` suite of paired programs (witchy / Go / C#) run via `hyperfine`,

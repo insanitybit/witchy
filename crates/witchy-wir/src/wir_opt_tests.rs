@@ -120,6 +120,62 @@
     }
 
     #[test]
+    fn lowers_forwarded_ownership_envelope_to_one_loop() {
+        let recur = WirFunc {
+            name: "walk".into(),
+            params: vec![
+                WirLocal { name: "state".into(), ty: WirTy::Bool },
+                WirLocal { name: "n".into(), ty: WirTy::Int },
+                WirLocal { name: "state__cap".into(), ty: WirTy::Bool },
+            ],
+            ret: vec![WirTy::Bool, WirTy::Bool],
+            locals: vec![
+                WirLocal { name: "result".into(), ty: WirTy::Bool },
+                WirLocal { name: "result_cap".into(), ty: WirTy::Bool },
+            ],
+            body: vec![
+                WirNode::Push(WirExpr::Seq(vec![
+                    WirNode::CallStoreMulti {
+                        func: "walk".into(),
+                        args: vec![
+                            WirExpr::GetLocal("state".into()),
+                            WirExpr::Binary {
+                                op: BinOp::Sub,
+                                kind: Kind::I64,
+                                lhs: Box::new(WirExpr::GetLocal("n".into())),
+                                rhs: Box::new(WirExpr::ConstI64(1)),
+                            },
+                            WirExpr::GetLocal("state__cap".into()),
+                        ],
+                        dests: vec!["result".into(), "result_cap".into()],
+                    },
+                    WirNode::Push(WirExpr::GetLocal("result".into())),
+                ])),
+                WirNode::Push(WirExpr::GetLocal("result_cap".into())),
+            ],
+            raw_body: None,
+        };
+        let mut module = module_with(recur);
+
+        assert_eq!(lower_direct_tail_calls(&mut module), 1);
+        let function = &module.funcs[0];
+        assert_eq!(function.locals.len(), 5, "one staging local per full-envelope parameter");
+        let [WirNode::Loop { body, .. }, WirNode::Unreachable] = function.body.as_slice() else {
+            panic!("expected ownership-envelope loop, got {:?}", function.body);
+        };
+        let mut residual = std::collections::HashSet::new();
+        collect_function_tail_calls(&function.body, &mut residual);
+        assert!(
+            !residual.contains(&TailCallee::Direct("walk".into())),
+            "ownership-envelope lowering must remove every recursive backend edge: {residual:?}"
+        );
+        assert!(matches!(body.last(), Some(WirNode::Unreachable)));
+        assert!(matches!(body.get(body.len() - 2), Some(WirNode::Br { cond: None, .. })));
+        let binary = crate::wir_encode::encode(&module, &[]);
+        wasmparser::validate(&binary).expect("rewritten ownership envelope must remain valid wasm");
+    }
+
+    #[test]
     fn lowers_mutual_tail_component_to_one_dispatcher_and_abi_wrappers() {
         let member = |name: &str, target: &str| WirFunc {
             name: name.into(),

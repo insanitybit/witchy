@@ -142,6 +142,18 @@ pub fn enforce_performance_modes(linked: &ast::Module, entry_stem: &str) -> Resu
         ));
     }
 
+    for miss in analysis::module_fip_misses(linked) {
+        if !is_entry_function(&miss.function, entry_stem) {
+            continue;
+        }
+        errors.push(format!(
+            "error: in `{}` (line {}): functional-in-place contract failed — {} \
+             [mode {}]\n  keep recursion in tail position, forward the `own unique` \
+             parameter directly, mutate only its fields, and return that owner on every exit",
+            miss.function, miss.line, miss.reason, mode_names,
+        ));
+    }
+
     for item in &linked.items {
         let ast::Item::Function(function) = item else { continue };
         if !is_entry_function(&function.name, entry_stem) {
@@ -208,6 +220,30 @@ pub fn compile_source(src: &str) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod performance_mode_tests {
+    #[test]
+    fn browser_compile_enforces_fip_contracts() {
+        let error = super::compile_source(
+            r#"mode opt
+
+type State:
+    count: Int
+
+fn run(own state: unique State, n: Int) -> unique State:
+    if n == 0:
+        return state
+    let next = run(state, n - 1)
+    next
+
+fn main(console: Console):
+    console.print("${run(State(0), 2).count}")
+"#,
+        )
+        .expect_err("mode opt must reject non-tail FIP recursion");
+
+        assert!(error.contains("functional-in-place contract failed"), "{error}");
+        assert!(error.contains("not in tail position"), "{error}");
+    }
+
     #[test]
     fn browser_compile_enforces_no_copy_contracts() {
         let error = super::compile_source(

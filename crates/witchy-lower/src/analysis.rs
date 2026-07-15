@@ -30,7 +30,9 @@
 // attacker-chosen collections — see the note in witchy-types/src/typeck.rs.
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 
-use witchy_syntax::ast::{BinOp, Block, Convention, Expr, Item, Module, Stmt, Type, UnOp};
+use witchy_syntax::ast::{
+    BinOp, Block, Convention, Expr, Item, Module, Stmt, Type, TypeQual, UnOp,
+};
 
 /// Why an accumulation site reverts to the copying path — surfaced as a
 /// check-time note and an LSP hint. Only emitted when the cost repeats (the
@@ -489,7 +491,10 @@ impl Summaries {
                 .enumerate()
                 .filter(|(_, p)| {
                     p.convention == Convention::Own
-                        && matches!(&p.ty, Some(Type::Named(n, _)) if heap_types.contains(n))
+                        && matches!(
+                            p.ty.as_ref().map(Type::unqualified),
+                            Some(Type::Named(n, _)) if heap_types.contains(n)
+                        )
                 })
                 .map(|(i, _)| i)
                 .collect();
@@ -2526,6 +2531,450 @@ pub struct NoCopyMiss {
     pub reason: String,
 }
 
+/// A canonical functional-in-place kernel that cannot satisfy its static
+/// allocation-free, constant-stack contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FipMiss {
+    pub function: String,
+    pub line: u32,
+    pub reason: String,
+}
+
+struct FipChecker<'a> {
+    function: &'a str,
+    owner: &'a str,
+    owner_index: usize,
+    line: u32,
+    misses: Vec<FipMiss>,
+}
+
+impl<'a> FipChecker<'a> {
+    fn miss(&mut self, reason: impl Into<String>) {
+        let reason = reason.into();
+        if !self
+            .misses
+            .iter()
+            .any(|miss| miss.line == self.line && miss.reason == reason)
+        {
+            self.misses.push(FipMiss {
+                function: self.function.to_string(),
+                line: self.line,
+                reason,
+            });
+        }
+    }
+
+    fn block(&mut self, block: &Block, tail_value: bool) {
+        if block.region.is_some() {
+            self.miss("a `region` block performs reclamation inside the kernel");
+        }
+        for (index, stmt) in block.stmts.iter().enumerate() {
+            self.line = block.lines.get(index).copied().unwrap_or(self.line);
+            let is_tail = tail_value && index + 1 == block.stmts.len();
+            match stmt {
+                Stmt::Let { value, .. } | Stmt::LetPattern { value, .. } => {
+                    self.value(value);
+                    if is_tail {
+                        self.miss("the fallthrough path does not return the owned value");
+                    }
+                }
+                Stmt::Assign { name, value } if name == self.owner => {
+                    match value {
+                        Expr::RecordUpdate { base, fields, .. }
+                            if self.is_owner_value(base) =>
+                        {
+                            for (_, field) in fields {
+                                self.value(field);
+                            }
+                        }
+                        _ => self.miss(
+                            "the owned value may only be changed by an in-place field update",
+                        ),
+                    }
+                    if is_tail {
+                        self.miss("the fallthrough path does not return the owned value");
+                    }
+                }
+                Stmt::Assign { value, .. } => {
+                    self.value(value);
+                    if is_tail {
+                        self.miss("the fallthrough path does not return the owned value");
+                    }
+                }
+                Stmt::Return(Some(value)) => self.tail(value),
+                Stmt::Return(None) => self.miss("a return path does not return the owned value"),
+                Stmt::Expr(value) if is_tail => self.tail(value),
+                Stmt::Expr(value) => self.value(value),
+                Stmt::Yield(_) => self.miss("generators cannot be FIP kernels"),
+                Stmt::Break | Stmt::Continue => {
+                    self.miss("loop control cannot appear in an FIP kernel")
+                }
+            }
+            if matches!(stmt, Stmt::Return(_)) {
+                break;
+            }
+        }
+        if tail_value && block.stmts.is_empty() {
+            self.miss("the fallthrough path does not return the owned value");
+        }
+    }
+
+    fn tail(&mut self, expr: &Expr) {
+        match expr {
+            Expr::Var(name) if name == self.owner => {}
+            Expr::Unary { op: UnOp::Move, expr } if self.is_owner_value(expr) => {}
+            Expr::Call { name, args } if name == self.function => {
+                if args.len() <= self.owner_index || !self.is_owner_value(&args[self.owner_index]) {
+                    self.miss("the recursive edge does not forward the owned value directly");
+                }
+                for (index, arg) in args.iter().enumerate() {
+                    if index != self.owner_index {
+                        self.value(arg);
+                    }
+                }
+            }
+            Expr::If { cond, then_block, else_block } => {
+                self.value(cond);
+                self.block(then_block, true);
+                if let Some(block) = else_block {
+                    self.block(block, true);
+                } else {
+                    self.miss("a tail `if` without `else` does not return the owned value");
+                }
+            }
+            Expr::Match { scrutinee, arms } => {
+                self.value(scrutinee);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        self.value(guard);
+                    }
+                    self.line = arm.line;
+                    self.tail(&arm.body);
+                }
+            }
+            Expr::Block(block) => self.block(block, true),
+            _ => {
+                self.value(expr);
+                self.miss("a return path does not return the owned value directly");
+            }
+        }
+    }
+
+    fn value(&mut self, expr: &Expr) {
+        match expr {
+            Expr::Int(_)
+            | Expr::Float(_)
+            | Expr::Duration(_)
+            | Expr::Str(_)
+            | Expr::Bool(_) => {}
+            Expr::Var(name) if name == self.owner => {
+                self.miss("the owned value escapes outside a field read or tail return")
+            }
+            Expr::Var(_) => {}
+            Expr::Unary { op: UnOp::Await, .. } => {
+                self.miss("suspension cannot occur inside an FIP kernel")
+            }
+            Expr::Unary { expr, .. } => self.value(expr),
+            Expr::Field { base, .. } if self.is_owner_projection(base) => {}
+            Expr::Field { base, .. } => self.value(base),
+            Expr::Binary { op, lhs, rhs } => {
+                if matches!(op, BinOp::Concat | BinOp::Coalesce) {
+                    self.miss("this operator may allocate or alter control flow");
+                }
+                self.value(lhs);
+                self.value(rhs);
+            }
+            Expr::If { cond, then_block, else_block } => {
+                self.value(cond);
+                self.block(then_block, false);
+                if let Some(block) = else_block {
+                    self.block(block, false);
+                }
+            }
+            Expr::Match { scrutinee, arms } => {
+                self.value(scrutinee);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        self.value(guard);
+                    }
+                    self.line = arm.line;
+                    self.value(&arm.body);
+                }
+            }
+            Expr::Block(block) => self.block(block, false),
+            Expr::Call { name, args } if name == self.function => {
+                for arg in args {
+                    if !self.is_owner_value(arg) {
+                        self.value(arg);
+                    }
+                }
+                self.miss("the recursive call is not in tail position");
+            }
+            Expr::Call { name, args } => {
+                for arg in args {
+                    self.value(arg);
+                }
+                self.miss(format!("call to `{name}` may allocate or perform an effect"));
+            }
+            Expr::RecordUpdate { .. } => self.miss(
+                "a record update must be assigned back to the owned parameter before returning",
+            ),
+            Expr::List(items) | Expr::Tuple(items) => {
+                for item in items {
+                    self.value(item);
+                }
+                self.miss("aggregate construction allocates inside the FIP kernel")
+            }
+            Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
+                for arg in args {
+                    self.value(arg);
+                }
+                self.miss("aggregate construction allocates inside the FIP kernel")
+            }
+            Expr::Record { fields, spread, .. } => {
+                for (_, field) in fields {
+                    self.value(field);
+                }
+                if let Some(spread) = spread {
+                    self.value(spread);
+                }
+                self.miss("aggregate construction allocates inside the FIP kernel")
+            }
+            Expr::LabeledCall { args, .. } => {
+                for (_, arg) in args {
+                    self.value(arg);
+                }
+                self.miss("an unresolved or first-class call cannot satisfy the FIP contract")
+            }
+            Expr::MethodCall { receiver, args, .. } => {
+                self.value(receiver);
+                for arg in args {
+                    self.value(arg);
+                }
+                self.miss("an unresolved or first-class call cannot satisfy the FIP contract")
+            }
+            Expr::Apply { func, args } => {
+                self.value(func);
+                for arg in args {
+                    self.value(arg);
+                }
+                self.miss("an unresolved or first-class call cannot satisfy the FIP contract")
+            }
+            Expr::Lambda { .. } => self.miss("closure construction allocates inside the FIP kernel"),
+            Expr::Try(_) => self.miss("early propagation is not part of the initial FIP contract"),
+            Expr::As { expr, .. } => self.value(expr),
+            Expr::While { .. }
+            | Expr::For { .. }
+            | Expr::Range { .. }
+            | Expr::WhileLet { .. } => {
+                self.miss("loops and ranges are outside the recursive FIP kernel shape")
+            }
+            Expr::Index { .. } => self.miss("indexed access is outside the initial FIP contract"),
+            Expr::TaggedLit { .. } => {
+                self.miss("an unexpanded tagged literal cannot satisfy the FIP contract")
+            }
+        }
+    }
+
+    fn is_owner_value(&self, expr: &Expr) -> bool {
+        matches!(expr, Expr::Var(name) if name == self.owner)
+            || matches!(expr, Expr::Unary { op: UnOp::Move, expr }
+                if matches!(expr.as_ref(), Expr::Var(name) if name == self.owner))
+    }
+
+    fn is_owner_projection(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Var(name) => name == self.owner,
+            Expr::Field { base, .. } => self.is_owner_projection(base),
+            _ => false,
+        }
+    }
+}
+
+fn unique_inner(ty: &Option<Type>) -> Option<&Type> {
+    match ty.as_ref()? {
+        Type::Qualified(TypeQual::Unique, inner) => Some(inner.unqualified()),
+        _ => None,
+    }
+}
+
+fn fip_scalar_type(ty: &Type) -> bool {
+    matches!(
+        ty.unqualified(),
+        Type::Named(name, args)
+            if args.is_empty()
+                && matches!(name.as_str(), "Int" | "Float" | "Bool" | "Duration")
+    )
+}
+
+fn fip_scalar_record(module: &Module, ty: &Type) -> bool {
+    let Type::Named(name, args) = ty.unqualified() else { return false };
+    if !args.is_empty() {
+        return false;
+    }
+    module.items.iter().any(|item| {
+        matches!(item, Item::Type(def)
+            if def.name == *name
+                && matches!(def.variants.as_slice(), [variant]
+                    if !variant.field_names.is_empty()
+                        && variant.fields.iter().all(fip_scalar_type)))
+    })
+}
+
+fn fip_block_calls(block: &Block, function: &str) -> bool {
+    block.stmts.iter().any(|stmt| match stmt {
+        Stmt::Let { value, .. }
+        | Stmt::Assign { value, .. }
+        | Stmt::LetPattern { value, .. }
+        | Stmt::Yield(value)
+        | Stmt::Expr(value)
+        | Stmt::Return(Some(value)) => fip_expr_calls(value, function),
+        Stmt::Return(None) | Stmt::Break | Stmt::Continue => false,
+    })
+}
+
+fn fip_expr_calls(expr: &Expr, function: &str) -> bool {
+    match expr {
+        Expr::Call { name, args } => {
+            name == function || args.iter().any(|arg| fip_expr_calls(arg, function))
+        }
+        Expr::LabeledCall { name, args } => {
+            name == function || args.iter().any(|(_, arg)| fip_expr_calls(arg, function))
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            fip_expr_calls(receiver, function)
+                || args.iter().any(|arg| fip_expr_calls(arg, function))
+        }
+        Expr::Apply { func, args } => {
+            fip_expr_calls(func, function)
+                || args.iter().any(|arg| fip_expr_calls(arg, function))
+        }
+        Expr::List(items) | Expr::Tuple(items) => {
+            items.iter().any(|item| fip_expr_calls(item, function))
+        }
+        Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
+            args.iter().any(|arg| fip_expr_calls(arg, function))
+        }
+        Expr::Unary { expr, .. }
+        | Expr::Field { base: expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. } => fip_expr_calls(expr, function),
+        Expr::Lambda { body, .. } | Expr::Block(body) => fip_block_calls(body, function),
+        Expr::RecordUpdate { base, fields, .. } => {
+            fip_expr_calls(base, function)
+                || fields.iter().any(|(_, value)| fip_expr_calls(value, function))
+        }
+        Expr::Record { fields, spread, .. } => {
+            fields.iter().any(|(_, value)| fip_expr_calls(value, function))
+                || spread
+                    .as_deref()
+                    .is_some_and(|value| fip_expr_calls(value, function))
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            fip_expr_calls(lhs, function) || fip_expr_calls(rhs, function)
+        }
+        Expr::If { cond, then_block, else_block } => {
+            fip_expr_calls(cond, function)
+                || fip_block_calls(then_block, function)
+                || else_block
+                    .as_ref()
+                    .is_some_and(|block| fip_block_calls(block, function))
+        }
+        Expr::Match { scrutinee, arms } => {
+            fip_expr_calls(scrutinee, function)
+                || arms.iter().any(|arm| {
+                    arm.guard
+                        .as_ref()
+                        .is_some_and(|guard| fip_expr_calls(guard, function))
+                        || fip_expr_calls(&arm.body, function)
+                })
+        }
+        Expr::While { cond, body } => {
+            fip_expr_calls(cond, function) || fip_block_calls(body, function)
+        }
+        Expr::For { iter, body, .. } => {
+            fip_expr_calls(iter, function) || fip_block_calls(body, function)
+        }
+        Expr::Range { lo, hi, .. } => {
+            fip_expr_calls(lo, function) || fip_expr_calls(hi, function)
+        }
+        Expr::Index { base, index } => {
+            fip_expr_calls(base, function) || fip_expr_calls(index, function)
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            fip_expr_calls(scrutinee, function) || fip_block_calls(body, function)
+        }
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Duration(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::Var(_)
+        | Expr::TaggedLit { .. } => false,
+    }
+}
+
+/// Check the initial RFC-0089 FIP surface. A function opts in structurally: one
+/// `own unique T` parameter, a `unique T` result, and a recursive self-edge.
+/// Non-recursive consume-and-return helpers retain their ordinary meaning.
+pub fn module_fip_misses(module: &Module) -> Vec<FipMiss> {
+    let mut out = Vec::new();
+    for item in &module.items {
+        let Item::Function(function) = item else { continue };
+        let Some(result) = unique_inner(&function.ret) else { continue };
+        let owners: Vec<_> = function
+            .params
+            .iter()
+            .enumerate()
+            .filter_map(|(index, param)| {
+                (param.convention == Convention::Own)
+                    .then(|| unique_inner(&param.ty).map(|inner| (index, param, inner)))
+                    .flatten()
+            })
+            .collect();
+        let [(owner_index, owner, owner_ty)] = owners.as_slice() else { continue };
+        if *owner_ty != result {
+            continue;
+        }
+        if !fip_block_calls(&function.body, &function.name) {
+            continue;
+        }
+        let mut checker = FipChecker {
+            function: &function.name,
+            owner: &owner.name,
+            owner_index: *owner_index,
+            line: function.body.lines.first().copied().unwrap_or(0),
+            misses: Vec::new(),
+        };
+        if !fip_scalar_record(module, owner_ty) {
+            checker.miss(
+                "the initial FIP contract requires a record whose stored fields are all scalar",
+            );
+        }
+        for (index, param) in function.params.iter().enumerate() {
+            if index != *owner_index && !param.ty.as_ref().is_some_and(fip_scalar_type) {
+                checker.miss(format!(
+                    "auxiliary parameter `{}` is not scalar in the initial FIP contract",
+                    param.name
+                ));
+            }
+        }
+        checker.block(&function.body, true);
+        let canonical_tail = matches!(
+            function.body.stmts.last(),
+            Some(Stmt::Expr(Expr::Call { name, .. })) if name == &function.name
+        );
+        if !canonical_tail {
+            checker.line = function.body.lines.last().copied().unwrap_or(checker.line);
+            checker.miss(
+                "the initial FIP contract requires the recursive edge as the function's final expression",
+            );
+        }
+        out.extend(checker.misses);
+    }
+    out
+}
+
 #[derive(Debug, Clone)]
 enum NoCopyProof {
     Available,
@@ -3233,6 +3682,102 @@ pub fn module_no_copy_misses(module: &Module) -> Vec<NoCopyMiss> {
     });
     out.dedup();
     out
+}
+
+#[cfg(test)]
+mod fip_tests {
+    use super::*;
+    use witchy_syntax::parser;
+
+    fn misses(source: &str) -> Vec<FipMiss> {
+        let module = parser::parse_module(source).expect("parse");
+        witchy_types::typeck::check(&module).expect("type check");
+        module_fip_misses(&module)
+    }
+
+    const STATE: &str = "type State:\n    count: Int\n    limit: Int\n\n";
+
+    #[test]
+    fn canonical_owner_threaded_tail_kernel_satisfies_contract() {
+        let source = format!(
+            "{STATE}fn run(own state: unique State, n: Int) -> unique State:\n\
+             \x20   if n == 0:\n\
+             \x20       return state\n\
+             \x20   state.count = state.count + 1\n\
+             \x20   run(state, n - 1)\n"
+        );
+        assert!(misses(&source).is_empty());
+    }
+
+    #[test]
+    fn non_tail_recursion_and_replacement_owner_are_rejected() {
+        let non_tail = format!(
+            "{STATE}fn run(own state: unique State, n: Int) -> unique State:\n\
+             \x20   if n == 0:\n\
+             \x20       return state\n\
+             \x20   let next = run(state, n - 1)\n\
+             \x20   next\n"
+        );
+        let found = misses(&non_tail);
+        assert!(found.iter().any(|miss| miss.reason.contains("not in tail position")));
+
+        let replacement = format!(
+            "{STATE}fn run(own state: unique State, n: Int) -> unique State:\n\
+             \x20   if n == 0:\n\
+             \x20       return State(0, 0)\n\
+             \x20   run(state, n - 1)\n"
+        );
+        let found = misses(&replacement);
+        assert!(found.iter().any(|miss| miss.reason.contains("owned value directly")));
+
+        let nested_tail = format!(
+            "{STATE}fn run(own state: unique State, n: Int) -> unique State:\n\
+             \x20   if n == 0:\n\
+             \x20       state\n\
+             \x20   else:\n\
+             \x20       run(state, n - 1)\n"
+        );
+        let found = misses(&nested_tail);
+        assert!(found.iter().any(|miss| miss.reason.contains("final expression")));
+    }
+
+    #[test]
+    fn non_recursive_consume_and_return_helper_does_not_opt_in() {
+        let source = format!(
+            "{STATE}fn normalize(own state: unique State) -> unique State:\n\
+             \x20   console.print(\"not actually linked\")\n\
+             \x20   state\n"
+        );
+        let module = parser::parse_module(&source).expect("parse");
+        assert!(module_fip_misses(&module).is_empty());
+    }
+
+    #[test]
+    fn heap_fields_and_auxiliary_parameters_are_rejected() {
+        let source = "type State:\n    text: String\n\n\
+                      fn run(own state: unique State, suffix: String, n: Int) -> unique State:\n\
+                      \x20   if n == 0:\n        return state\n\
+                      \x20   state.text = suffix\n\
+                      \x20   run(state, suffix, n - 1)\n";
+        let module = parser::parse_module(source).expect("parse");
+        let found = module_fip_misses(&module);
+        assert!(found.iter().any(|miss| miss.reason.contains("stored fields")));
+        assert!(found.iter().any(|miss| miss.reason.contains("`suffix` is not scalar")));
+    }
+
+    #[test]
+    fn recursion_hidden_inside_another_expression_still_activates_contract() {
+        let source = format!(
+            "{STATE}fn pass(own state: unique State) -> unique State:\n    state\n\n\
+             fn run(own state: unique State, n: Int) -> unique State:\n\
+             \x20   if n == 0:\n        return state\n\
+             \x20   pass(run(state, n - 1))\n"
+        );
+        let found = misses(&source);
+        assert!(found.iter().any(|miss| miss.reason.contains("not in tail position")));
+        assert!(found.iter().any(|miss| miss.reason.contains("final expression")));
+        assert!(found.iter().any(|miss| miss.reason.contains("call to `pass`")));
+    }
 }
 
 #[cfg(test)]

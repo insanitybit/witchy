@@ -580,6 +580,24 @@ final `var` call is proper only when its complete move-out envelope can be
 forwarded unchanged; ordinary caller-place reconstruction is real residual
 work. The guarantee bounds stack, not heap allocation or total running time.
 
+**Functional-in-place state kernels.** In `mode opt`, a directly self-recursive
+function with exactly one `own state: unique T` parameter and result `unique T`
+opts into the FIP contract when it recurses. `T` must be a record with scalar
+stored fields, and every auxiliary parameter must be scalar. Every non-recursive
+exit must return `state` directly. Base cases use explicit returns; the recursive
+edge must be the function's final expression and pass `state` directly in the
+same parameter slot. The body may perform scalar work, read and update fields
+rooted at `state`, and branch for base-case exits. Aggregate/closure construction,
+other calls, owner escape, `?`, async or generator suspension, loops, ranges,
+indexed access, and regions are rejected.
+
+The compiled tier forwards the complete `(value, ownership-token)` result into
+one loop, so recursive depth adds no allocation, deallocation, free-list reuse,
+arena rewind, or control-stack growth. This is a checked `mode opt` resource
+contract, not a semantic restriction in normal mode and not a promise for every
+function returning `unique`. No `fip` keyword or attribute exists; the ownership
+signature, direct recursion, and `mode opt` state the contract.
+
 **Parameter conventions** (Hylo-style value semantics):
 
 | Convention | Meaning |

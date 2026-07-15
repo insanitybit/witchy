@@ -110,7 +110,8 @@ primitive, but they are not required for acceptance.
 - No hash-table representation or ordering change is proposed.
 - This RFC does not make arbitrary `var` calls automatically in-place; it
   defines the ownership substrate used by structural collection algorithms.
-- Fully in-place functional kernels remain RFC-0089 research.
+- RFC-0089's scalar-record state kernels are implemented independently; broader
+  recursive ADT constructor reuse remains outside this extraction RFC.
 - Async `var` parameters and returned borrowed views remain outside this RFC.
 
 ## Semantic contract

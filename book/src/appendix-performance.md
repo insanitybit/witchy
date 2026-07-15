@@ -60,6 +60,16 @@ annotations** — it triggers on shapes the compiler can prove unaliased:
   wraps — a `Stack`'s push is as cheap as a raw `list.push`, with no annotation
   beyond `own` on a threaded parameter. (The same uniqueness pass drives it; an
   aliased field, like an aliased variable, falls back to a copy.)
+- **Functional-in-place state kernels.** In `mode opt`, direct self recursion
+  over one `own unique` scalar-field record can carry a stronger guarantee:
+  update only that record's fields, use scalar auxiliary parameters, explicitly
+  return the owner on every base path, and pass it directly
+  to the recursive call as the function's final expression. The compiler
+  forwards both the value and its hidden
+  ownership token through one loop. Recursive depth then adds no allocation,
+  free, arena rewind, or stack growth. There is no `fip` keyword; violating the
+  shape is a source-located opt-mode error. `witchy stats` exposes the allocator
+  and reclaimer call counts used to verify the guarantee.
 - **Update and extract.** `xs.pop()`, `d.insert(k, v)`, and `d.remove(k)` carry
     the collection token through the general `var` ABI while returning the old
     leaf independently. A unique `pop` moves the leaf without a spine copy;

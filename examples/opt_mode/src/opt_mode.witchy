@@ -24,6 +24,12 @@ fn main(console: Console):
     console.print("squares: ${xs}")
     console.print("sum:     ${sum(xs)}")
 
+    // This owner-threaded recursive state machine is checked as an RFC-0089
+    // functional-in-place kernel. Ten thousand transitions add no allocator,
+    // reclaimer, arena-rewind, or control-stack work.
+    let scanned = scan(ScanState(0, 0), 10000)
+    console.print("scanned: ${scanned.offset}, checksum: ${scanned.checksum}")
+
 // `let xs` borrows the list immutably — the type checker proves `sum` never lets
 // it escape, so the caller passes a reference with no defensive copy. Drop the
 // `let` here and `mode opt` rejects the file: heap params must be explicit.
@@ -32,3 +38,14 @@ pub fn sum(let xs: List(Int)) -> Int:
     for x in xs:
         acc = acc + x
     acc
+
+type ScanState:
+    offset: Int
+    checksum: Int
+
+fn scan(own state: unique ScanState, remaining: Int) -> unique ScanState:
+    if remaining == 0:
+        return state
+    state.checksum = (state.checksum * 33 + remaining) % 65521
+    state.offset += 1
+    scan(state, remaining - 1)

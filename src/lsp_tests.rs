@@ -445,6 +445,24 @@ fn main(console: Console):
     }
 
     #[test]
+    fn mode_opt_fip_violation_names_the_recursive_shape() {
+        let bad = "mode opt\n\ntype State:\n    count: Int\n\nfn run(own state: unique State, n: Int) -> unique State:\n    if n == 0:\n        return state\n    let next = run(state, n - 1)\n    next\n\nfn main(console: Console):\n    console.print(\"${run(State(0), 2).count}\")\n";
+        let diagnostics = diags(bad);
+        assert!(
+            diagnostics.iter().any(|diagnostic| {
+                diagnostic["severity"] == json!(1)
+                    && diagnostic["message"]
+                        .as_str()
+                        .is_some_and(|message| {
+                            message.contains("functional-in-place contract failed")
+                                && message.contains("not in tail position")
+                        })
+            }),
+            "the editor must surface the FIP proof failure: {diagnostics:?}"
+        );
+    }
+
+    #[test]
     fn importing_std_resolves_without_false_errors() {
         // `string` isn't on disk next to /tmp/main.witchy, so this exercises the
         // bundled-module fallback. A clean program must stay diagnostic-free.

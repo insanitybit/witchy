@@ -394,6 +394,11 @@ fn main() -> wasmtime::Result<()> {
                 println!("region_copy_bytes {}", s.region_copy_bytes);
                 println!("rc_reused_bytes {}", s.rc_reused_bytes);
                 println!("live_cells {}", s.live_cells);
+                println!("rc_alloc_calls {}", s.rc_alloc_calls);
+                println!("bump_alloc_calls {}", s.bump_alloc_calls);
+                println!("rc_reuse_calls {}", s.rc_reuse_calls);
+                println!("rc_free_calls {}", s.rc_free_calls);
+                println!("region_rewind_calls {}", s.region_rewind_calls);
                 println!("extract_searches {}", s.extract_searches);
                 println!("extract_key_comparisons {}", s.extract_key_comparisons);
                 println!("extract_copied_bytes {}", s.extract_copied_bytes);

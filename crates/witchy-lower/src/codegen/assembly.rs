@@ -1148,6 +1148,43 @@ fn assemble_wir_module_with_structs(
                         init: GlobalInit::I64(0),
                         export: Some("__witchy_live_cells".into()),
                     },
+                    // (RFC-0089) Monotonic operation counts let FIP tests prove
+                    // that recursive depth adds no heap work.
+                    WirGlobal {
+                        name: "__witchy_rc_alloc_calls".into(),
+                        kind: WK::I64,
+                        mutable: true,
+                        init: GlobalInit::I64(0),
+                        export: Some("__witchy_rc_alloc_calls".into()),
+                    },
+                    WirGlobal {
+                        name: "__witchy_bump_alloc_calls".into(),
+                        kind: WK::I64,
+                        mutable: true,
+                        init: GlobalInit::I64(0),
+                        export: Some("__witchy_bump_alloc_calls".into()),
+                    },
+                    WirGlobal {
+                        name: "__witchy_rc_reuse_calls".into(),
+                        kind: WK::I64,
+                        mutable: true,
+                        init: GlobalInit::I64(0),
+                        export: Some("__witchy_rc_reuse_calls".into()),
+                    },
+                    WirGlobal {
+                        name: "__witchy_rc_free_calls".into(),
+                        kind: WK::I64,
+                        mutable: true,
+                        init: GlobalInit::I64(0),
+                        export: Some("__witchy_rc_free_calls".into()),
+                    },
+                    WirGlobal {
+                        name: "__witchy_region_rewind_calls".into(),
+                        kind: WK::I64,
+                        mutable: true,
+                        init: GlobalInit::I64(0),
+                        export: Some("__witchy_region_rewind_calls".into()),
+                    },
                     WirGlobal {
                         name: "__witchy_extract_active".into(),
                         kind: WK::I32,

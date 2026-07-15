@@ -597,6 +597,19 @@ fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) ->
                         ),
                     ));
                 }
+                for miss in crate::analysis::module_fip_misses(&linked) {
+                    if !crate::is_entry_function(&miss.function, &entry) {
+                        continue;
+                    }
+                    diags.push(line_diag(
+                        miss.line.saturating_sub(1),
+                        text,
+                        &format!(
+                            "functional-in-place contract failed in `{}`: {} — `mode {modes}` requires tail recursion that forwards and returns the `own unique` value",
+                            miss.function, miss.reason,
+                        ),
+                    ));
+                }
             }
 
             // Signature contract (mode files only): every ownership-relevant parameter

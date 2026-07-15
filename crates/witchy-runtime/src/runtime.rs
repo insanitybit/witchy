@@ -613,6 +613,26 @@ impl Vm {
             .and_then(|g| g.get(&mut self.store).i64())
     }
 
+    pub fn rc_alloc_calls(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_rc_alloc_calls")
+    }
+
+    pub fn bump_alloc_calls(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_bump_alloc_calls")
+    }
+
+    pub fn rc_reuse_calls(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_rc_reuse_calls")
+    }
+
+    pub fn rc_free_calls(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_rc_free_calls")
+    }
+
+    pub fn region_rewind_calls(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_region_rewind_calls")
+    }
+
     pub fn extract_searches(&mut self) -> Option<i64> {
         self.i64_counter("__witchy_extract_searches")
     }

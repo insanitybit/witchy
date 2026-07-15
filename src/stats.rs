@@ -35,6 +35,13 @@ pub struct Stats {
     /// A leak metric: bounded for a fully-reclaiming rc-floor program, growing with the
     /// input for an unbounded leak. 0 unless a `$rc_free` fired.
     pub live_cells: i64,
+    /// RFC-0089 allocator/reclaimer operation counts. For an FIP kernel these
+    /// stay fixed as only the kernel's recursive depth increases.
+    pub rc_alloc_calls: i64,
+    pub bump_alloc_calls: i64,
+    pub rc_reuse_calls: i64,
+    pub rc_free_calls: i64,
+    pub region_rewind_calls: i64,
     /// RFC-0088 semantic dictionary searches performed by fused extraction.
     pub extract_searches: i64,
     /// Key comparisons made within those searches.
@@ -69,6 +76,11 @@ pub fn compute(src: &str) -> Result<Stats, String> {
         region_copy_bytes: vm.region_copy_bytes().unwrap_or(0),
         rc_reused_bytes: vm.rc_reused_bytes().unwrap_or(0),
         live_cells: vm.live_cells().unwrap_or(0),
+        rc_alloc_calls: vm.rc_alloc_calls().unwrap_or(0),
+        bump_alloc_calls: vm.bump_alloc_calls().unwrap_or(0),
+        rc_reuse_calls: vm.rc_reuse_calls().unwrap_or(0),
+        rc_free_calls: vm.rc_free_calls().unwrap_or(0),
+        region_rewind_calls: vm.region_rewind_calls().unwrap_or(0),
         extract_searches: vm.extract_searches().unwrap_or(0),
         extract_key_comparisons: vm.extract_key_comparisons().unwrap_or(0),
         extract_copied_bytes: vm.extract_copied_bytes().unwrap_or(0),
@@ -90,6 +102,81 @@ mod tests {
     // (loop-watermark) reclaim resets the arena each iteration, so heap stays
     // CONSTANT no matter how many iterations; with it off the same program leaks.
     const SOAK: &str = "fn main(console: Console):\n    var sum = 0\n    var i = 0\n    while i < 5000:\n        let tmp = [i, i + 1, i + 2, i + 3]\n        sum = sum + list.length(tmp)\n        i = i + 1\n    console.print(\"${sum}\")\n";
+
+    fn fip_kernel(steps: usize) -> String {
+        format!(
+            "mode opt\n\n\
+             type State:\n    count: Int\n    limit: Int\n\n\
+             fn run(own state: unique State, n: Int) -> unique State:\n\
+             \x20   if n == 0:\n        return state\n\
+             \x20   state.count = state.count + 1\n\
+             \x20   run(state, n - 1)\n\n\
+             fn main(console: Console):\n\
+             \x20   let done = run(State(0, {steps}), {steps})\n\
+             \x20   console.print(\"${{done.count}}\")\n"
+        )
+    }
+
+    #[test]
+    fn fip_depth_adds_no_allocation_or_reclamation_operations() {
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let small_source = fip_kernel(8);
+        let large_source = fip_kernel(50_000);
+
+        let linked = crate::resolve_std_only(&large_source).expect("resolve FIP kernel");
+        typeck::check(&linked).expect("type-check FIP kernel");
+        assert!(
+            crate::analysis::module_fip_misses(&linked).is_empty(),
+            "the representative state machine must satisfy the static FIP contract"
+        );
+
+        let small = compute(&small_source).expect("run small FIP kernel");
+        let large = compute(&large_source).expect("run large FIP kernel");
+        opt::set_for_tests(None);
+
+        assert_eq!(small.output, ["8"]);
+        assert_eq!(large.output, ["50000"]);
+        let resources = |stats: &Stats| {
+            (
+                stats.rc_alloc_calls,
+                stats.bump_alloc_calls,
+                stats.rc_reuse_calls,
+                stats.rc_free_calls,
+                stats.region_rewind_calls,
+            )
+        };
+        assert_eq!(
+            resources(&small),
+            resources(&large),
+            "recursive depth must add no allocator, reuse, free, or rewind operations"
+        );
+        assert_eq!(small.rc_reuse_calls, 0);
+        assert_eq!(small.rc_free_calls, 0);
+        assert_eq!(small.region_rewind_calls, 0);
+        assert_eq!(
+            (small.rc_alloc_calls, small.bump_alloc_calls),
+            (4, 4),
+            "the checked workload has four fixed setup allocations and none per transition"
+        );
+    }
+
+    #[test]
+    fn no_mutation_fip_kernel_returns_its_incoming_ownership_token() {
+        const DIRECT: &str = "mode opt\n\ntype State:\n    count: Int\n\nfn main(console: Console):\n    var state = State(1)\n    state.count = 2\n    console.print(\"${state.count}\")\n";
+        const FORWARDED: &str = "mode opt\n\ntype State:\n    count: Int\n\nfn forward(own state: unique State, n: Int) -> unique State:\n    if n == 0:\n        return state\n    forward(state, n - 1)\n\nfn main(console: Console):\n    var state = forward(State(1), 50000)\n    state.count = 2\n    console.print(\"${state.count}\")\n";
+
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let direct = compute(DIRECT).expect("direct unique record update");
+        let forwarded = compute(FORWARDED).expect("forwarded FIP owner update");
+        opt::set_for_tests(None);
+
+        assert_eq!(forwarded.output, direct.output);
+        assert_eq!(
+            (forwarded.rc_alloc_calls, forwarded.bump_alloc_calls),
+            (direct.rc_alloc_calls, direct.bump_alloc_calls),
+            "returning the untouched owner must preserve its token and avoid a re-own copy"
+        );
+    }
 
     /// RFC-0030 counter assertion: the `inplace` optimization is proven to FIRE
     /// (fewer re-owns, less heap) while changing nothing observable. This is the
@@ -523,6 +610,8 @@ fn main(console: Console):
 
         assert_eq!(on.output, off.output, "the optimization must not change output");
         assert_eq!(on.output, vec!["20000".to_string()]);
+        assert_eq!(on.region_rewind_calls, 5000, "one rewind per completed iteration");
+        assert_eq!(off.region_rewind_calls, 0, "disabled region lowering emits no rewinds");
         // Bounded heap regardless of iteration count — the never-OOM floor.
         assert!(on.heap_bytes < 4096, "region reclaim must bound the soak heap: {}", on.heap_bytes);
         // ... and far below the leaking build.

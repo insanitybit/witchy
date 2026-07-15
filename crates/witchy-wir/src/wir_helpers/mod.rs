@@ -317,6 +317,18 @@ pub fn mk_helper(n: usize, checked: bool) -> WirFunc {
 /// function and fails on any other `$heap` write (the codegen watermark REWINDS,
 /// which reset `$heap` to a previously captured `__witchy_wm_*` value and never
 /// advance it, are the one shape-exempted case). Returns the old frontier.
+fn increment_counter(name: &str) -> WirNode {
+    WirNode::SetGlobal {
+        global: name.into(),
+        value: WirExpr::Binary {
+            op: BinOp::Add,
+            kind: Kind::I64,
+            lhs: Box::new(WirExpr::GetGlobal(name.into())),
+            rhs: Box::new(WirExpr::ConstI64(1)),
+        },
+    }
+}
+
 pub fn bump_alloc_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
@@ -326,6 +338,7 @@ pub fn bump_alloc_helper() -> WirFunc {
         ret: vec![WirTy::Bool],
         locals: vec![WirLocal { name: "p".into(), ty: WirTy::Bool }],
         body: vec![
+            increment_counter("__witchy_bump_alloc_calls"),
             N::Do(E::Call { func: "ensure".into(), args: vec![E::GetLocal("size".into())] }),
             N::SetLocal { local: "p".into(), value: E::GetGlobal("heap".into()) },
             N::SetGlobal {
@@ -397,6 +410,7 @@ pub fn rc_alloc_helper() -> WirFunc {
                                 }),
                             },
                         },
+                        increment_counter("__witchy_rc_reuse_calls"),
                         // (RFC-0035) a recycled block re-enters life owned by one holder:
                         // reset its refcount word (at `cur-8`) to 1. Off the RC path the
                         // word is simply never read, so this is inert there.
@@ -423,6 +437,7 @@ pub fn rc_alloc_helper() -> WirFunc {
         ret: vec![WirTy::Bool],
         locals: ["cur", "prev", "base"].iter().map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool }).collect(),
         body: vec![
+            increment_counter("__witchy_rc_alloc_calls"),
             // (RFC-0035) one more live object — both the reuse and the bump paths below return
             // a cell, so count it once here (the reuse path re-lives a cell that `$rc_free` had
             // decremented). Off the RC path no `$rc_free` runs, so it is inert bookkeeping.
@@ -530,7 +545,7 @@ pub fn rc_free_helper() -> WirFunc {
             // `$rc_alloc` object, so neither poison nor relink applies (its `[ptr-4]` is
             // not a real size header). Guarding here keeps the sanitizer honest — it
             // never poisons the static data segment.
-            body: vec![N::If {
+            body: vec![increment_counter("__witchy_rc_free_calls"), N::If {
                 cond: b(BinOp::GeU, getl("ptr"), E::GetGlobal("heap_base".into())),
                 then_: vec![
                     N::SetLocal { local: "size".into(), value: b(BinOp::And, load(b(BinOp::Sub, getl("ptr"), i32c(4)), 0), i32c(RC_SIZE_MASK)) },
@@ -570,7 +585,7 @@ pub fn rc_free_helper() -> WirFunc {
         params: vec![WirLocal { name: "ptr".into(), ty: WirTy::Bool }],
         ret: vec![],
         locals: vec![],
-        body: vec![N::If {
+        body: vec![increment_counter("__witchy_rc_free_calls"), N::If {
             cond: bin(BinOp::GeU, getl("ptr"), E::GetGlobal("heap_base".into())),
             then_: vec![
                 N::Store { ptr: getl("ptr"), value: E::GetGlobal("rc_freelist".into()), kind: Kind::I32, offset: 0 },

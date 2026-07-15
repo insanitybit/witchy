@@ -2427,7 +2427,7 @@ impl<'types> Codegen<'types> {
                     self.local_list_nesting.insert(p.name.clone(), n);
                 }
             }
-            match &p.ty {
+            match p.ty.as_ref().map(Type::unqualified) {
                 // A record-typed parameter lets `p.field` resolve.
                 Some(Type::Named(n, _)) if self.record_fields.contains_key(n) => {
                     self.local_records.insert(p.name.clone(), n.clone());
@@ -2755,9 +2755,9 @@ impl<'types> Codegen<'types> {
             ));
         }
         // own-ABI: append the returned buffer's ownership token (one i32 result).
-        // It is `$p__cap` when the function returns its own buffer AND that buffer
-        // is an in-place accumulator; otherwise 0 (the caller re-owns on its next
-        // mutation — one copy, never corruption). Mirrors `own_cap_push`.
+        // It is `$p__cap` whenever the function returns its owned parameter;
+        // mutation is not required to preserve ownership. A forwarded self call
+        // uses the cap returned by that call; every other result returns zero.
         if let Some(p) = self.cur_fn_own_param.clone() {
             ret.push(i32t());
             let returns_own = match f.body.stmts.last() {
@@ -2767,8 +2767,16 @@ impl<'types> Codegen<'types> {
                 }
                 _ => false,
             };
-            let cap = if returns_own && self.inplace_push.contains(&p) {
+            let forwards_own = matches!(f.body.stmts.last(), Some(Stmt::Expr(Expr::Call { name, args }))
+                if name == &f.name
+                    && self.summaries.own_abi(name).and_then(|index| args.get(index)).is_some_and(|arg|
+                        matches!(arg, Expr::Var(v) if v == &p)
+                            || matches!(arg, Expr::Unary { op: UnOp::Move, expr }
+                                if matches!(expr.as_ref(), Expr::Var(v) if v == &p))));
+            let cap = if returns_own {
                 witchy_wir::wir::WirExpr::GetLocal(format!("{p}__cap"))
+            } else if forwards_own {
+                witchy_wir::wir::WirExpr::GetLocal("__witchy_owncap".to_string())
             } else {
                 witchy_wir::wir::WirExpr::ConstI32(0)
             };
@@ -2788,6 +2796,9 @@ impl<'types> Codegen<'types> {
         use witchy_wir::wir::WirExpr as W;
         match expr {
             Expr::List(items) => W::ConstI32(items.len() as i32),
+            Expr::Var(name) if self.cur_fn_own_param.as_deref() == Some(name) => {
+                W::GetLocal(format!("{name}__cap"))
+            }
             Expr::Var(name) if self.inplace_push.contains(name) => {
                 W::GetLocal(format!("{name}__cap"))
             }
@@ -3427,7 +3438,7 @@ impl<'types> Codegen<'types> {
                             let returns_own = matches!(opt, Some(Expr::Var(v)) if *v == p)
                                 || matches!(opt, Some(Expr::Unary { op: UnOp::Move, expr })
                                     if matches!(expr.as_ref(), Expr::Var(v) if *v == p));
-                            let cap = if returns_own && self.inplace_push.contains(&p) {
+                            let cap = if returns_own {
                                 W::GetLocal(format!("{p}__cap"))
                             } else {
                                 W::ConstI32(0)
@@ -5123,15 +5134,20 @@ impl<'types> Codegen<'types> {
                 None => w,
             });
         }
-        if self.summaries.own_abi(name).is_some() {
+        if let Some(own_index) = self.summaries.own_abi(name) {
             // (RFC-0033 R3) The callee carries the own-ABI: a trailing i32 cap
             // PARAM and an extra i32 cap RESULT. A PLAIN call (not the
-            // `x = f(move x)` self-call that `self_own_call` threads) doesn't carry
-            // ownership, so pass cap = 0 — the callee re-owns/copies as needed —
-            // and discard the returned cap, yielding the declared value via
-            // TUPLE_TMP. Without this, a plain call to any own-ABI function bailed.
+            // `x = f(move x)` self-call that `self_own_call` threads) derives a
+            // token from the argument: tracked owners and fresh aggregates carry
+            // capacity; unknown values pass zero and safely re-own in the callee.
+            // The returned token is retained only for a declared unique result;
+            // otherwise the expression yields the declared value via TUPLE_TMP.
             use witchy_wir::wir::{WirExpr as W, WirNode as N};
-            args_w.push(W::ConstI32(0));
+            let cap = args
+                .get(own_index)
+                .map(|arg| self.owned_argument_cap(arg))
+                .unwrap_or(W::ConstI32(0));
+            args_w.push(cap);
             let mut dests = vec![TUPLE_TMP.to_string()];
             if self.fn_unique_ret.contains(name) {
                 dests.push(UNIQUE_RESULT_CAP_TMP.to_string());
@@ -5161,6 +5177,22 @@ impl<'types> Codegen<'types> {
             ]));
         }
         Some(witchy_wir::wir::WirExpr::Call { func: name.to_string(), args: args_w })
+    }
+
+    fn owned_argument_cap(&self, arg: &Expr) -> witchy_wir::wir::WirExpr {
+        use witchy_wir::wir::WirExpr as W;
+        match arg {
+            Expr::Var(name) if self.inplace_push.contains(name) => {
+                W::GetLocal(format!("{name}__cap"))
+            }
+            Expr::Var(name) if self.cur_fn_own_param.as_deref() == Some(name) => {
+                W::GetLocal(format!("{name}__cap"))
+            }
+            Expr::List(items) => W::ConstI32(items.len() as i32),
+            Expr::Ctor { .. } | Expr::AnonCtor { .. } | Expr::Record { .. } => W::ConstI32(1),
+            Expr::Unary { op: UnOp::Move, expr } => self.owned_argument_cap(expr),
+            _ => W::ConstI32(0),
+        }
     }
 
     fn capture_codegen_place(
@@ -5716,6 +5748,7 @@ impl<'types> Codegen<'types> {
                         local: MATCH_TMP.to_string(),
                         value: W::ToSlot(Box::new(tail), Self::wir_kind(body_kind)),
                     });
+                    seq.push(Self::increment_counter("__witchy_region_rewind_calls"));
                     seq.push(N::SetGlobal { global: "heap".to_string(), value: W::GetLocal(wm) });
                     // (RFC-0016) The reset reclaims every address at/above the
                     // watermark, so any RC-floor free-list entry freed inside the body
@@ -5770,6 +5803,7 @@ impl<'types> Codegen<'types> {
                     src: W::GetGlobal("rcopy_base".to_string()),
                     len: copied_len(),
                 });
+                seq.push(Self::increment_counter("__witchy_region_rewind_calls"));
                 seq.push(N::SetGlobal {
                     global: "heap".to_string(),
                     value: W::Binary {
@@ -5970,7 +6004,7 @@ impl<'types> Codegen<'types> {
                 ];
                 // reclaim per-iteration arena garbage before re-testing the cond.
                 if let Some((_, reset)) = &wm {
-                    loop_body.push(reset.clone());
+                    loop_body.extend(reset.clone());
                 }
                 loop_body.push(N::Br { target: format!("wl{id}"), cond: None });
                 let mut outer: witchy_wir::wir::WirSeq = Vec::new();
@@ -6058,7 +6092,7 @@ impl<'types> Codegen<'types> {
                 ];
                 // reclaim per-iteration arena garbage before the counter advance.
                 if let Some((_, reset)) = &wm {
-                    loop_body.push(reset.clone());
+                    loop_body.extend(reset.clone());
                 }
                 if *inclusive {
                     loop_body.push(N::Br {
@@ -6188,7 +6222,7 @@ impl<'types> Codegen<'types> {
                 let mut loop_body: witchy_wir::wir::WirSeq = vec![exit, bind, body_block];
                 // reclaim per-iteration arena garbage before advancing the index.
                 if let Some((_, reset)) = &wm {
-                    loop_body.push(reset.clone());
+                    loop_body.extend(reset.clone());
                 }
                 loop_body.push(advance);
                 loop_body.push(N::Br { target: format!("fl{id}"), cond: None });
@@ -7238,7 +7272,7 @@ impl<'types> Codegen<'types> {
             if let Some(t) = &p.ty {
                 self.local_val_types.insert(p.name.clone(), ty_to_valtype(t));
             }
-            match &p.ty {
+            match p.ty.as_ref().map(Type::unqualified) {
                 Some(Type::Named(n, _)) if self.record_fields.contains_key(n) => {
                     self.local_records.insert(p.name.clone(), n.clone());
                 }
@@ -7643,7 +7677,10 @@ impl<'types> Codegen<'types> {
     /// the pool is exhausted (then the loop simply lowers without the reset, which
     /// is still correct — just less memory-efficient). Bumps `wm_level`; the
     /// caller decrements it once the body is lowered.
-    fn loop_watermark_wir(&mut self, body: &Block) -> Option<(witchy_wir::wir::WirNode, witchy_wir::wir::WirNode)> {
+    fn loop_watermark_wir(
+        &mut self,
+        body: &Block,
+    ) -> Option<(witchy_wir::wir::WirNode, witchy_wir::wir::WirSeq)> {
         // Gated on the `region` optimization (RFC-0030): `WITCHY_OPT=-region` (or
         // `none`) drops the per-iteration reset so the loop's arena garbage leaks —
         // correct, just unbounded — which is exactly the regression the soak test
@@ -7662,11 +7699,27 @@ impl<'types> Codegen<'types> {
             local: wm.clone(),
             value: witchy_wir::wir::WirExpr::GetGlobal("heap".into()),
         };
-        let reset = witchy_wir::wir::WirNode::SetGlobal {
-            global: "heap".into(),
-            value: witchy_wir::wir::WirExpr::GetLocal(wm),
-        };
+        let reset = vec![
+            Self::increment_counter("__witchy_region_rewind_calls"),
+            witchy_wir::wir::WirNode::SetGlobal {
+                global: "heap".into(),
+                value: witchy_wir::wir::WirExpr::GetLocal(wm),
+            },
+        ];
         Some((capture, reset))
+    }
+
+    fn increment_counter(name: &str) -> witchy_wir::wir::WirNode {
+        use witchy_wir::wir::{BinOp, Kind, WirExpr as W, WirNode as N};
+        N::SetGlobal {
+            global: name.into(),
+            value: W::Binary {
+                op: BinOp::Add,
+                kind: Kind::I64,
+                lhs: Box::new(W::GetGlobal(name.into())),
+                rhs: Box::new(W::ConstI64(1)),
+            },
+        }
     }
 
     fn loop_arena_resettable(&self, body: &Block) -> bool {
