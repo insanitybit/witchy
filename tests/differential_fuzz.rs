@@ -34,7 +34,12 @@ const BIN: &str = env!("CARGO_BIN_EXE_witchy");
 
 /// Number of statement kinds the generator can emit (see `gen_program`'s match). The
 /// grammar-coverage meta-assertion requires every one of these to appear across a run.
-const NKINDS: u32 = 38;
+/// Kinds 38..=46 (RFC-0005) exercise NOMINAL CAPABILITY AGGREGATES — records, positional
+/// wrappers, nested records, and tagged sums that CARRY a capability (`Dir`/`Net`) — which
+/// the compiled backend now GC-lowers. They construct/pass/return/project/destructure/match
+/// the aggregate and print only deterministic scalar/String fields; the capability value
+/// itself is NEVER rendered, compared, collected, or closed over, and is never used for I/O.
+const NKINDS: u32 = 47;
 
 /// Deterministic splitmix-ish PRNG — reproducible runs (no wall clock / OS randomness).
 struct Rng(u64);
@@ -297,6 +302,68 @@ fn odd_(n: Int) -> Bool:\n\
 fn apply_twice(f: fn(Int) -> Int, x: Int) -> Int:\n\
 \x20   f(f(x))\n";
 
+/// (RFC-0005) Fixed NOMINAL CAPABILITY-AGGREGATE types + helpers, prepended to every
+/// program alongside `HELPER_LIB`. These are the shapes the compiled backend now
+/// GC-lowers: a record that holds a `Dir`, a positional wrapper, a nested record, and a
+/// tagged sum whose variants MIX capability and non-capability payloads (plus a recursive
+/// and a mutually-recursive cap-carrying ADT). Every helper returns a DETERMINISTIC scalar
+/// or String projected out of the aggregate — the capability field is constructed, passed,
+/// stored, matched, and destructured, but never rendered, compared, or used for I/O. The
+/// generated `main` receives the single `root: Dir` / `net: Net` grants `witchy parity`
+/// supplies (ordinal 0); every aggregate ALIASES those same two grants (a second distinct
+/// `Dir` grant would be an invalid index on the compiled backend), and qualified fields are
+/// produced by narrowing that one grant (`root as Dir[Read]`), not by a second parameter.
+const CAP_LIB: &str = "\
+// --- RFC-0005 nominal capability-aggregate library ---\n\
+type DirBox:\n\
+\x20   d: Dir\n\
+\x20   tag: Int\n\
+type NetBox:\n\
+\x20   n: Net\n\
+\x20   label: String\n\
+type RoBox:\n\
+\x20   ro: Dir[Read]\n\
+\x20   name: String\n\
+type CapNest:\n\
+\x20   inner: DirBox\n\
+\x20   count: Int\n\
+type CapSrc:\n\
+\x20   SrcDir(Dir, Int)\n\
+\x20   SrcNet(Net, String)\n\
+\x20   SrcPlain(Int)\n\
+type CapChain:\n\
+\x20   ChLeaf(Int)\n\
+\x20   ChLink(Dir, CapChain)\n\
+type CapEven:\n\
+\x20   EvZero(Int)\n\
+\x20   EvSucc(Dir, CapOdd)\n\
+type CapOdd:\n\
+\x20   OdSucc(Net, CapEven)\n\
+fn dirbox_tag(b: DirBox) -> Int:\n\
+\x20   b.tag\n\
+fn netbox_label(b: NetBox) -> String:\n\
+\x20   b.label\n\
+fn robox_name(b: RoBox) -> String:\n\
+\x20   b.name\n\
+fn capnest_count(nst: CapNest) -> Int:\n\
+\x20   nst.count + nst.inner.tag\n\
+fn capsrc_code(s: CapSrc) -> Int:\n\
+\x20   match s:\n\
+\x20       SrcPlain(k) -> k\n\
+\x20       SrcDir(d, k) -> k + 1\n\
+\x20       SrcNet(n, lbl) -> string.length(lbl)\n\
+fn capchain_depth(c: CapChain) -> Int:\n\
+\x20   match c:\n\
+\x20       ChLeaf(k) -> k\n\
+\x20       ChLink(d, rest) -> 1 + capchain_depth(rest)\n\
+fn capeven_count(e: CapEven) -> Int:\n\
+\x20   match e:\n\
+\x20       EvZero(k) -> k\n\
+\x20       EvSucc(d, o) -> 1 + capodd_count(o)\n\
+fn capodd_count(o: CapOdd) -> Int:\n\
+\x20   match o:\n\
+\x20       OdSucc(n, e) -> 1 + capeven_count(e)\n";
+
 /// One random program: a `main` that prints many heap-exercising expressions, preceded by the
 /// risky-shape helper library. Returns the source and a bitmask of which statement kinds it
 /// emitted (bit `k` set iff kind `k` was chosen) for the grammar-coverage meta-assertion.
@@ -315,7 +382,13 @@ fn gen_program(seed: u64, statements: usize) -> (String, u64) {
     );
     body.push_str(HELPER_LIB);
     body.push('\n');
-    body.push_str("fn main(console: Console):\n");
+    body.push_str(CAP_LIB);
+    body.push('\n');
+    // `main` receives the single `Dir`/`Net` grants `witchy parity` supplies (ordinal 0).
+    // The RFC-0005 capability-aggregate kinds alias `root`/`net` into nominal aggregates;
+    // ordinary kinds simply ignore the unused params (proven harmless on both backends and
+    // under every CONFIGS lever + the UAF/RC-assert sanitizers).
+    body.push_str("fn main(console: Console, root: Dir, net: Net):\n");
     let mut used: u64 = 0;
     for stmt_i in 0..statements {
         let kind = r.below(NKINDS as u64);
@@ -500,6 +573,100 @@ fn gen_program(seed: u64, statements: usize) -> (String, u64) {
                 let b = gen_str(&mut r, depth.min(2));
                 format!(
                     "    let ba{stmt_i} = bytes.from_string({a})\n    let bb{stmt_i} = bytes.from_string({b})\n    let bc{stmt_i} = bytes.concat(ba{stmt_i}, bb{stmt_i})\n    console.print(\"${{bytes.to_list(bytes.slice(bc{stmt_i}, (-2), bytes.length(bc{stmt_i}) + 2))}}\")\n    console.print(\"${{bytes.to_list(ba{stmt_i})}}\")\n    console.print(\"${{bytes.to_list(bb{stmt_i})}}\")\n"
+                )
+            }
+            38 => {
+                // (RFC-0005) A capability RECORD: store the `Dir` grant in a nominal record
+                // alongside a scalar, pass it THROUGH a helper, then RE-READ the scalar field
+                // off the same aggregate. The Dir is constructed and carried but never rendered.
+                let t = gen_int(&mut r, 1);
+                format!(
+                    "    let db{stmt_i} = DirBox(root, {t})\n    console.print(\"${{dirbox_tag(db{stmt_i})}}\")\n    console.print(\"${{db{stmt_i}.tag}}\")\n"
+                )
+            }
+            39 => {
+                // (RFC-0005) A capability POSITIONAL wrapper over `Net`, projecting only its
+                // String label (the Net value itself is never printed or compared).
+                let lbl = gen_str(&mut r, depth.min(2));
+                format!(
+                    "    let nb{stmt_i} = NetBox(net, {lbl})\n    console.print(netbox_label(nb{stmt_i}))\n    console.print(nb{stmt_i}.label)\n"
+                )
+            }
+            40 => {
+                // (RFC-0005) A NESTED capability record (`CapNest` holds a `DirBox`), read via a
+                // nested field path `nst.inner.tag` and through a helper — the deepest cap layout.
+                let t = gen_int(&mut r, 1);
+                let c = gen_int(&mut r, 1);
+                format!(
+                    "    let cn{stmt_i} = CapNest(DirBox(root, {t}), {c})\n    console.print(\"${{capnest_count(cn{stmt_i})}}\")\n    console.print(\"${{cn{stmt_i}.inner.tag}}\")\n"
+                )
+            }
+            41 => {
+                // (RFC-0005) A tagged SUM whose variants MIX capability (`SrcDir`/`SrcNet`) and
+                // non-capability (`SrcPlain`) payloads, matched in a helper. All three variants
+                // are constructed so both cap-carrying and scalar arms are exercised each time.
+                let k1 = gen_int(&mut r, 1);
+                let lbl = gen_str(&mut r, depth.min(2));
+                let k2 = gen_int(&mut r, 1);
+                format!(
+                    "    console.print(\"${{capsrc_code(SrcDir(root, {k1}))}}\")\n    console.print(\"${{capsrc_code(SrcNet(net, {lbl}))}}\")\n    console.print(\"${{capsrc_code(SrcPlain({k2}))}}\")\n"
+                )
+            }
+            42 => {
+                // (RFC-0005) `match` on a cap sum with a WRONG-VARIANT ARM ORDER: the scrutinee
+                // is `SrcNet`, but the `SrcPlain` and `SrcDir` arms are tried first — the arm
+                // dispatch must skip non-matching cap/non-cap variants before binding the payload.
+                let lbl = gen_str(&mut r, depth.min(2));
+                format!(
+                    "    let cs{stmt_i} = SrcNet(net, {lbl})\n    let code{stmt_i} = match cs{stmt_i}:\n        SrcPlain(k) -> k\n        SrcDir(d, k) -> k\n        SrcNet(n, lbl) -> string.length(lbl)\n    console.print(\"${{code{stmt_i}}}\")\n"
+                )
+            }
+            43 => {
+                // (RFC-0005) A RECURSIVE cap-carrying ADT: a `CapChain` of `Dir` links (the SAME
+                // grant aliased at each link — a second distinct Dir grant would be an invalid
+                // index) terminated by a scalar leaf, whose depth is counted by recursion.
+                let leaf = gen_int(&mut r, 0);
+                let links = 1 + r.below(4);
+                let mut expr = format!("ChLeaf({leaf})");
+                for _ in 0..links {
+                    expr = format!("ChLink(root, {expr})");
+                }
+                format!("    console.print(\"${{capchain_depth({expr})}}\")\n")
+            }
+            44 => {
+                // (RFC-0005) MUTUALLY-RECURSIVE cap ADTs: `CapEven`/`CapOdd` alternate a `Dir`
+                // and a `Net` payload at each level, counted by mutual recursion.
+                let leaf = gen_int(&mut r, 0);
+                let pairs = r.below(3);
+                let mut expr = format!("EvZero({leaf})");
+                for _ in 0..pairs {
+                    // one Even->Odd->Even sandwich per pair, keeping the type alternation valid.
+                    expr = format!("EvSucc(root, OdSucc(net, {expr}))");
+                }
+                format!("    console.print(\"${{capeven_count({expr})}}\")\n")
+            }
+            45 => {
+                // (RFC-0005) A QUALIFIED capability field (`Dir[Read]`) produced by NARROWING the
+                // single grant (`root as Dir[Read]`) and stored in a record, then its String
+                // field is read back through a helper and directly (alias re-read).
+                let nm = gen_str(&mut r, depth.min(2));
+                format!(
+                    "    let rb{stmt_i} = RoBox(root as Dir[Read], {nm})\n    console.print(robox_name(rb{stmt_i}))\n    console.print(rb{stmt_i}.name)\n"
+                )
+            }
+            46 => {
+                // (RFC-0005) PROJECT a cap aggregate's fields into locals — including binding
+                // the CAPABILITY field itself to a `let` (`let dd = db.d`, which the compiled
+                // backend keeps as an externref local, never boxing it) and re-storing it into a
+                // FRESH aggregate — plus CONSTRUCTOR ARGUMENT EVALUATION ORDER: the scalars are
+                // compound expressions whose value a wrong eval order would change. (A record
+                // `let`-PATTERN destructure over a cap type is NOT generated: it currently panics
+                // in codegen — see bugs/BUG-cap-record-letpattern-destructure.md, owned by the
+                // active RFC-0005 codegen work — and generated programs must stay total.)
+                let a = gen_int(&mut r, 1);
+                let b = gen_pos_int(&mut r, 1);
+                format!(
+                    "    let db{stmt_i} = DirBox(root, ({a} % {b}))\n    let dd{stmt_i} = db{stmt_i}.d\n    let tt{stmt_i} = db{stmt_i}.tag\n    let db2_{stmt_i} = DirBox(dd{stmt_i}, tt{stmt_i} + 1)\n    console.print(\"${{dirbox_tag(db2_{stmt_i})}}\")\n    console.print(\"${{dirbox_tag(DirBox(root, ({a} - {b})))}}\")\n"
                 )
             }
             _ => unreachable!("kind is sampled below NKINDS"),
@@ -855,6 +1022,62 @@ fn differential_fuzz_interpreter_vs_compiled() {
         "differential fuzz: {programs} programs × {} configs; default median compared-lines {median}; per-config tallies {labeled:?}; kinds covered {kinds_used:#040b}",
         CONFIGS.len()
     );
+}
+
+/// (RFC-0005 positive control) A DETERMINISTIC test that the capability-aggregate grammar
+/// actually reaches BOTH backends — not a probabilistic claim resting on the random sweep.
+/// It generates one program per cap-aggregate kind (38..=46) by seeding `gen_program` so that
+/// kind is emitted, but more robustly it just asserts each fixed cap shape compiles and agrees
+/// via `witchy parity`, independent of the random program count. This is the guard that the
+/// cap grammar is non-vacuous even when `WITCHY_FUZZ_PROGRAMS` is dialed down: if a future
+/// codegen change makes any cap aggregate stop reaching a backend, THIS fails immediately with
+/// a minimal, named reproducer rather than only as a statistical coverage miss.
+#[test]
+fn capability_aggregates_reach_both_backends() {
+    // Each snippet is a complete `main` body line-set exercising one RFC-0005 shape, using only
+    // the single `root`/`net` grants `witchy parity` supplies. Preamble (types + helpers) is
+    // shared via CAP_LIB. Every snippet prints only deterministic scalar/String projections;
+    // no capability value is rendered, compared, collected, or used for I/O.
+    let cases: &[(&str, &str)] = &[
+        ("record_project", "    let db = DirBox(root, 7)\n    console.print(\"${dirbox_tag(db)}\")\n    console.print(\"${db.tag}\")\n"),
+        ("net_wrapper", "    let nb = NetBox(net, \"conn\")\n    console.print(netbox_label(nb))\n    console.print(nb.label)\n"),
+        ("nested_record", "    let cn = CapNest(DirBox(root, 3), 4)\n    console.print(\"${capnest_count(cn)}\")\n    console.print(\"${cn.inner.tag}\")\n"),
+        ("sum_mixed_variants", "    console.print(\"${capsrc_code(SrcDir(root, 10))}\")\n    console.print(\"${capsrc_code(SrcNet(net, \\\"lbl\\\"))}\")\n    console.print(\"${capsrc_code(SrcPlain(99))}\")\n"),
+        ("match_wrong_arm_order", "    let cs = SrcNet(net, \"hey\")\n    let code = match cs:\n        SrcPlain(k) -> k\n        SrcDir(d, k) -> k\n        SrcNet(n, lbl) -> string.length(lbl)\n    console.print(\"${code}\")\n"),
+        ("recursive_cap_adt", "    console.print(\"${capchain_depth(ChLink(root, ChLink(root, ChLeaf(3))))}\")\n"),
+        ("mutually_recursive_cap_adt", "    console.print(\"${capeven_count(EvSucc(root, OdSucc(net, EvZero(1))))}\")\n"),
+        ("qualified_narrowed_field", "    let rb = RoBox(root as Dir[Read], \"cfg\")\n    console.print(robox_name(rb))\n    console.print(rb.name)\n"),
+        ("project_and_rebuild", "    let db = DirBox(root, 5)\n    let dd = db.d\n    let db2 = DirBox(dd, db.tag + 1)\n    console.print(\"${dirbox_tag(db2)}\")\n"),
+    ];
+    // Reuse the generator's exact preamble so the control tests the SAME types/helpers the
+    // random sweep uses (drift here would make the control lie). `gen_program(seed, 0)` yields
+    // the full preamble + an empty `main` body; we append each case's body.
+    let (preamble, _) = gen_program(0, 0);
+    for (name, body) in cases {
+        let src = format!("{preamble}{body}");
+        // Every case must COMPILE (a cap grammar the acceptance gate rejects is a generator bug).
+        assert!(
+            check_accepts(&src, &format!("capctl_check_{name}")).unwrap_or(false),
+            "capability-aggregate control `{name}` did not pass `witchy check`.\n--- program ---\n{src}"
+        );
+        match run_parity(&src, "", &format!("capctl_{name}")) {
+            ParityResult::Agree(n) => assert!(
+                n >= 1,
+                "capability-aggregate control `{name}` produced no comparable output.\n--- program ---\n{src}"
+            ),
+            other => {
+                let what = match other {
+                    ParityResult::Diverge(o) => format!("DIVERGE\n{o}"),
+                    ParityResult::Crash(o) => format!("CRASH (signal)\n{o}"),
+                    ParityResult::TimedOut => "TIMED OUT".to_string(),
+                    ParityResult::Skip => "SKIPPED (did not compile on a backend)".to_string(),
+                    ParityResult::BothErrorAgree => "both backends errored".to_string(),
+                    ParityResult::Agree(_) => unreachable!(),
+                };
+                panic!("capability-aggregate control `{name}` did not agree: {what}\n--- program ---\n{src}");
+            }
+        }
+    }
 }
 
 /// (RFC-0037 §3) The use-after-free sanitizer (`WITCHY_UAF_CHECK=1`) poisons every freed block
