@@ -39,12 +39,10 @@ pub enum Kind {
     /// a lifted lambda casts it back to its statically known payload struct
     /// before reading captures.
     StructRef,
-    /// (RFC-0005) A typed GC-struct reference `(ref null $s)`, where the `u32` is
-    /// the module's struct-definition index (resolved to a type-section index by
-    /// the encoder, which lays struct types after the function signatures). This
-    /// is the representation of a *cap-carrying aggregate* — a record/closure-env
-    /// that transitively holds a capability, so the `externref` stays a reference
-    /// throughout instead of decaying to an `i32` field in linear memory.
+    /// (RFC-0005) A typed concrete GC reference `(ref null $t)`, where the `u32`
+    /// is the module's GC type-definition index (structs first, then arrays).
+    /// This is the representation of a reference-carrying aggregate, so an
+    /// `externref` or nested GC reference never decays into linear memory.
     GcRef(u32),
 }
 
@@ -110,9 +108,9 @@ pub enum WirTy {
     Extern,
     /// An erased nullable GC struct reference (`structref`).
     StructRef,
-    /// (RFC-0005) A cap-carrying aggregate lowered to a GC struct, referenced by
-    /// its struct-definition index. Named capability-bearing records already use
-    /// this representation; closure payloads build on the same substrate.
+    /// (RFC-0005) A reference-carrying aggregate lowered to a concrete GC type,
+    /// referenced by its module GC-definition index. Named capability-bearing
+    /// records use structs; reference-bearing collections use arrays.
     GcRef(u32),
 }
 
@@ -135,11 +133,20 @@ impl WirTy {
 /// (RFC-0005) A GC struct type declaration for a cap-carrying aggregate. Fields
 /// are ordered; each field's `Kind` is its wasm representation (a scalar, an
 /// `externref` for a nested capability, or a `GcRef` for a nested aggregate). The
-/// encoder lays these in the type section AFTER the function signatures, so a
-/// `Kind::GcRef(i)` / struct opcode's `struct_id` resolves to `struct_base + i`.
+/// encoder lays these after the reserved scalar closure-signature band, so a
+/// `Kind::GcRef(i)` resolves to the corresponding concrete GC type index.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WirStructDef {
     pub fields: Vec<Kind>,
+}
+
+/// A mutable GC array type declaration. Arrays share the concrete GC type-index
+/// space with structs: `GcRef(structs.len() + array_id)` names array `array_id`.
+/// The element kind may itself be a reference, which is the substrate required
+/// for `List(fn(...))` once closures move to the uniform GC wrapper.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WirArrayDef {
+    pub element: Kind,
 }
 
 /// Field indices and layout for the uniform first-class closure wrapper used by
@@ -335,6 +342,25 @@ pub enum WirExpr {
         field: u32,
         base: Box<WirExpr>,
     },
+    /// Allocate an array of `len` elements, each initialized to `value`.
+    ArrayNew {
+        array_id: u32,
+        value: Box<WirExpr>,
+        len: Box<WirExpr>,
+    },
+    /// Allocate an array initialized from the fixed element sequence.
+    ArrayNewFixed {
+        array_id: u32,
+        items: Vec<WirExpr>,
+    },
+    /// Read `array[index]`. Wasm performs the bounds check and traps on failure.
+    ArrayGet {
+        array_id: u32,
+        array: Box<WirExpr>,
+        index: Box<WirExpr>,
+    },
+    /// Return an array's length as `i32`.
+    ArrayLen(Box<WirExpr>),
     /// Cast an erased `structref` to a concrete non-null GC struct reference.
     /// The compiler emits this only for the payload layout assigned to the
     /// lifted lambda, so a trap means an internal closure-layout mismatch.
@@ -451,6 +477,13 @@ pub enum WirNode {
         struct_id: u32,
         field: u32,
         base: WirExpr,
+        value: WirExpr,
+    },
+    /// Write `value` to `array[index]`. Wasm performs the bounds check.
+    ArraySet {
+        array_id: u32,
+        array: WirExpr,
+        index: WirExpr,
         value: WirExpr,
     },
 }
@@ -881,6 +914,13 @@ fn print_node(s: &mut String, node: &WirNode, depth: usize) {
             indent(s, depth);
             let _ = writeln!(s, "struct.set {struct_id} {field}");
         }
+        WirNode::ArraySet { array_id, array, index, value } => {
+            print_expr(s, array, depth);
+            print_expr(s, index, depth);
+            print_expr(s, value, depth);
+            indent(s, depth);
+            let _ = writeln!(s, "array.set {array_id}");
+        }
     }
 }
 
@@ -1023,6 +1063,26 @@ fn print_expr(s: &mut String, e: &WirExpr, depth: usize) {
             indent(s, depth);
             let _ = writeln!(s, "struct.get {struct_id} {field}");
         }
+        WirExpr::ArrayNew { array_id, value, len } => {
+            print_expr(s, value, depth);
+            print_expr(s, len, depth);
+            emit(s, depth, &format!("array.new {array_id}"));
+        }
+        WirExpr::ArrayNewFixed { array_id, items } => {
+            for item in items {
+                print_expr(s, item, depth);
+            }
+            emit(s, depth, &format!("array.new_fixed {array_id} {}", items.len()));
+        }
+        WirExpr::ArrayGet { array_id, array, index } => {
+            print_expr(s, array, depth);
+            print_expr(s, index, depth);
+            emit(s, depth, &format!("array.get {array_id}"));
+        }
+        WirExpr::ArrayLen(array) => {
+            print_expr(s, array, depth);
+            emit(s, depth, "array.len");
+        }
         WirExpr::RefCast { struct_id, value } => {
             print_expr(s, value, depth);
             emit(s, depth, &format!("ref.cast (ref {struct_id})"));
@@ -1150,8 +1210,22 @@ fn collect_clos_signatures_seq(seq: &WirSeq, out: &mut Vec<ClosureSignature>) {
                     walk_expr(a, out);
                 }
             }
+            WirExpr::ArrayNew { value, len, .. } => {
+                walk_expr(value, out);
+                walk_expr(len, out);
+            }
+            WirExpr::ArrayNewFixed { items, .. } => {
+                for item in items {
+                    walk_expr(item, out);
+                }
+            }
+            WirExpr::ArrayGet { array, index, .. } => {
+                walk_expr(array, out);
+                walk_expr(index, out);
+            }
             WirExpr::StructGet { base, .. }
             | WirExpr::RefCast { value: base, .. }
+            | WirExpr::ArrayLen(base)
             | WirExpr::RefIsNull(base) => walk_expr(base, out),
             WirExpr::ConstI64(_)
             | WirExpr::ConstF64(_)
@@ -1170,6 +1244,11 @@ fn collect_clos_signatures_seq(seq: &WirSeq, out: &mut Vec<ClosureSignature>) {
             }
             WirNode::StructSet { base, value, .. } => {
                 walk_expr(base, out);
+                walk_expr(value, out);
+            }
+            WirNode::ArraySet { array, index, value, .. } => {
+                walk_expr(array, out);
+                walk_expr(index, out);
                 walk_expr(value, out);
             }
             WirNode::Store { ptr, value, .. } | WirNode::Store8 { ptr, value, .. } => {
@@ -1266,6 +1345,11 @@ pub fn heap_write_violations(module: &WirModule) -> Vec<String> {
                 expr_violates(base, hits);
                 expr_violates(value, hits);
             }
+            WirNode::ArraySet { array, index, value, .. } => {
+                expr_violates(array, hits);
+                expr_violates(index, hits);
+                expr_violates(value, hits);
+            }
             WirNode::Store { ptr, value, .. } | WirNode::Store8 { ptr, value, .. } => {
                 expr_violates(ptr, hits);
                 expr_violates(value, hits);
@@ -1348,8 +1432,22 @@ pub fn heap_write_violations(module: &WirModule) -> Vec<String> {
                     expr_violates(a, hits);
                 }
             }
+            WirExpr::ArrayNew { value, len, .. } => {
+                expr_violates(value, hits);
+                expr_violates(len, hits);
+            }
+            WirExpr::ArrayNewFixed { items, .. } => {
+                for item in items {
+                    expr_violates(item, hits);
+                }
+            }
+            WirExpr::ArrayGet { array, index, .. } => {
+                expr_violates(array, hits);
+                expr_violates(index, hits);
+            }
             WirExpr::StructGet { base, .. }
             | WirExpr::RefCast { value: base, .. }
+            | WirExpr::ArrayLen(base)
             | WirExpr::RefIsNull(base) => expr_violates(base, hits),
             WirExpr::ConstI64(_)
             | WirExpr::ConstF64(_)

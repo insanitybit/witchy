@@ -50,6 +50,54 @@
     }
 
     #[test]
+    fn local_renamer_traverses_gc_array_operands() {
+        let mut node = WirNode::ArraySet {
+            array_id: 0,
+            array: WirExpr::ArrayGet {
+                array_id: 0,
+                array: Box::new(WirExpr::ArrayNew {
+                    array_id: 0,
+                    value: Box::new(WirExpr::GetLocal("fill".into())),
+                    len: Box::new(WirExpr::GetLocal("len".into())),
+                }),
+                index: Box::new(WirExpr::GetLocal("read_index".into())),
+            },
+            index: WirExpr::GetLocal("write_index".into()),
+            value: WirExpr::ArrayNewFixed {
+                array_id: 0,
+                items: vec![
+                    WirExpr::GetLocal("item".into()),
+                    WirExpr::ArrayLen(Box::new(WirExpr::GetLocal("measured".into()))),
+                ],
+            },
+        };
+        let renames = HashMap::from([
+            ("fill".to_string(), "new_fill".to_string()),
+            ("len".to_string(), "new_len".to_string()),
+            ("read_index".to_string(), "new_read_index".to_string()),
+            ("write_index".to_string(), "new_write_index".to_string()),
+            ("item".to_string(), "new_item".to_string()),
+            ("measured".to_string(), "new_measured".to_string()),
+        ]);
+
+        rename_node_locals(&mut node, &renames);
+
+        let rendered = format!("{node:?}");
+        for name in renames.values() {
+            assert!(
+                rendered.contains(name),
+                "missing renamed local {name}: {rendered}"
+            );
+        }
+        for name in renames.keys() {
+            assert!(
+                !rendered.contains(&format!("\"{name}\"")),
+                "stale local {name}: {rendered}"
+            );
+        }
+    }
+
+    #[test]
     fn lowers_self_tail_call_to_simultaneous_rebind_and_loop() {
         let recur = WirFunc {
             name: "count".into(),

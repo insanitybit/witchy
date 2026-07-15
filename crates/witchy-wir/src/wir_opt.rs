@@ -705,6 +705,11 @@ fn collect_explicit_return_calls_node(node: &WirNode, out: &mut HashSet<TailCall
             collect_explicit_return_calls_expr(ptr, out);
             collect_explicit_return_calls_expr(value, out);
         }
+        WirNode::ArraySet { array, index, value, .. } => {
+            collect_explicit_return_calls_expr(array, out);
+            collect_explicit_return_calls_expr(index, out);
+            collect_explicit_return_calls_expr(value, out);
+        }
         WirNode::CallStoreMulti { args, .. } => {
             for arg in args {
                 collect_explicit_return_calls_expr(arg, out);
@@ -738,6 +743,7 @@ fn collect_explicit_return_calls_expr(expr: &WirExpr, out: &mut HashSet<TailCall
         | WirExpr::Load { ptr: inner, .. } | WirExpr::Load8U { ptr: inner, .. }
         | WirExpr::MemoryGrow(inner) | WirExpr::StructGet { base: inner, .. }
         | WirExpr::RefCast { value: inner, .. }
+        | WirExpr::ArrayLen(inner)
         | WirExpr::RefIsNull(inner) => collect_explicit_return_calls_expr(inner, out),
         WirExpr::Binary { lhs, rhs, .. } => {
             collect_explicit_return_calls_expr(lhs, out);
@@ -748,6 +754,19 @@ fn collect_explicit_return_calls_expr(expr: &WirExpr, out: &mut HashSet<TailCall
             for arg in args {
                 collect_explicit_return_calls_expr(arg, out);
             }
+        }
+        WirExpr::ArrayNewFixed { items: args, .. } => {
+            for arg in args {
+                collect_explicit_return_calls_expr(arg, out);
+            }
+        }
+        WirExpr::ArrayNew { value, len, .. } => {
+            collect_explicit_return_calls_expr(value, out);
+            collect_explicit_return_calls_expr(len, out);
+        }
+        WirExpr::ArrayGet { array, index, .. } => {
+            collect_explicit_return_calls_expr(array, out);
+            collect_explicit_return_calls_expr(index, out);
         }
         WirExpr::CallIndirect { args, index, .. } => {
             for arg in args {
@@ -806,6 +825,11 @@ fn adapt_explicit_returns_node(node: &mut WirNode, kind: Kind) {
             adapt_explicit_returns_expr(ptr, kind);
             adapt_explicit_returns_expr(value, kind);
         }
+        WirNode::ArraySet { array, index, value, .. } => {
+            adapt_explicit_returns_expr(array, kind);
+            adapt_explicit_returns_expr(index, kind);
+            adapt_explicit_returns_expr(value, kind);
+        }
         WirNode::CallStoreMulti { args, .. } => {
             for arg in args {
                 adapt_explicit_returns_expr(arg, kind);
@@ -845,6 +869,7 @@ fn adapt_explicit_returns_expr(expr: &mut WirExpr, kind: Kind) {
         | WirExpr::MemoryGrow(inner)
         | WirExpr::StructGet { base: inner, .. }
         | WirExpr::RefCast { value: inner, .. }
+        | WirExpr::ArrayLen(inner)
         | WirExpr::RefIsNull(inner) => adapt_explicit_returns_expr(inner, kind),
         WirExpr::Binary { lhs, rhs, .. } => {
             adapt_explicit_returns_expr(lhs, kind);
@@ -856,6 +881,19 @@ fn adapt_explicit_returns_expr(expr: &mut WirExpr, kind: Kind) {
             for arg in args {
                 adapt_explicit_returns_expr(arg, kind);
             }
+        }
+        WirExpr::ArrayNewFixed { items: args, .. } => {
+            for arg in args {
+                adapt_explicit_returns_expr(arg, kind);
+            }
+        }
+        WirExpr::ArrayNew { value, len, .. } => {
+            adapt_explicit_returns_expr(value, kind);
+            adapt_explicit_returns_expr(len, kind);
+        }
+        WirExpr::ArrayGet { array, index, .. } => {
+            adapt_explicit_returns_expr(array, kind);
+            adapt_explicit_returns_expr(index, kind);
         }
         WirExpr::CallIndirect { args, index, .. } => {
             for arg in args {
@@ -907,6 +945,11 @@ fn rename_node_locals(node: &mut WirNode, renames: &HashMap<String, String>) {
             rename_expr_locals(ptr, renames);
             rename_expr_locals(value, renames);
         }
+        WirNode::ArraySet { array, index, value, .. } => {
+            rename_expr_locals(array, renames);
+            rename_expr_locals(index, renames);
+            rename_expr_locals(value, renames);
+        }
         WirNode::CallStoreMulti { args, dests, .. } => {
             for arg in args {
                 rename_expr_locals(arg, renames);
@@ -955,6 +998,7 @@ fn rename_expr_locals(expr: &mut WirExpr, renames: &HashMap<String, String>) {
         | WirExpr::Load { ptr: inner, .. } | WirExpr::Load8U { ptr: inner, .. }
         | WirExpr::MemoryGrow(inner) | WirExpr::StructGet { base: inner, .. }
         | WirExpr::RefCast { value: inner, .. }
+        | WirExpr::ArrayLen(inner)
         | WirExpr::RefIsNull(inner) => rename_expr_locals(inner, renames),
         WirExpr::Binary { lhs, rhs, .. } => {
             rename_expr_locals(lhs, renames);
@@ -965,6 +1009,19 @@ fn rename_expr_locals(expr: &mut WirExpr, renames: &HashMap<String, String>) {
             for arg in args {
                 rename_expr_locals(arg, renames);
             }
+        }
+        WirExpr::ArrayNewFixed { items: args, .. } => {
+            for arg in args {
+                rename_expr_locals(arg, renames);
+            }
+        }
+        WirExpr::ArrayNew { value, len, .. } => {
+            rename_expr_locals(value, renames);
+            rename_expr_locals(len, renames);
+        }
+        WirExpr::ArrayGet { array, index, .. } => {
+            rename_expr_locals(array, renames);
+            rename_expr_locals(index, renames);
         }
         WirExpr::CallIndirect { args, index, .. } => {
             for arg in args {
@@ -1282,6 +1339,11 @@ fn rewrite_explicit_returns_node(node: &mut WirNode, ctx: &TailCtx) -> usize {
         WirNode::StructSet { base, value, .. } => {
             rewrite_explicit_returns_expr(base, ctx) + rewrite_explicit_returns_expr(value, ctx)
         }
+        WirNode::ArraySet { array, index, value, .. } => {
+            rewrite_explicit_returns_expr(array, ctx)
+                + rewrite_explicit_returns_expr(index, ctx)
+                + rewrite_explicit_returns_expr(value, ctx)
+        }
         WirNode::Br { cond: Some(expr), .. }
         | WirNode::Drop(expr)
         | WirNode::Do(expr)
@@ -1301,6 +1363,7 @@ fn rewrite_explicit_returns_expr(expr: &mut WirExpr, ctx: &TailCtx) -> usize {
         | WirExpr::MemoryGrow(inner)
         | WirExpr::StructGet { base: inner, .. }
         | WirExpr::RefCast { value: inner, .. }
+        | WirExpr::ArrayLen(inner)
         | WirExpr::RefIsNull(inner) => rewrite_explicit_returns_expr(inner, ctx),
         WirExpr::Binary { lhs, rhs, .. } => {
             rewrite_explicit_returns_expr(lhs, ctx) + rewrite_explicit_returns_expr(rhs, ctx)
@@ -1309,6 +1372,17 @@ fn rewrite_explicit_returns_expr(expr: &mut WirExpr, ctx: &TailCtx) -> usize {
         | WirExpr::CallHost { args, .. }
         | WirExpr::StructNew { args, .. } => {
             args.iter_mut().map(|arg| rewrite_explicit_returns_expr(arg, ctx)).sum()
+        }
+        WirExpr::ArrayNewFixed { items: args, .. } => {
+            args.iter_mut().map(|arg| rewrite_explicit_returns_expr(arg, ctx)).sum()
+        }
+        WirExpr::ArrayNew { value, len, .. } => {
+            rewrite_explicit_returns_expr(value, ctx)
+                + rewrite_explicit_returns_expr(len, ctx)
+        }
+        WirExpr::ArrayGet { array, index, .. } => {
+            rewrite_explicit_returns_expr(array, ctx)
+                + rewrite_explicit_returns_expr(index, ctx)
         }
         WirExpr::CallIndirect { args, index, .. } => {
             args.iter_mut()
@@ -1424,6 +1498,11 @@ fn simplify_node(node: &mut WirNode, changed: &mut bool) {
             simplify_expr(base, changed);
             simplify_expr(value, changed);
         }
+        WirNode::ArraySet { array, index, value, .. } => {
+            simplify_expr(array, changed);
+            simplify_expr(index, changed);
+            simplify_expr(value, changed);
+        }
         WirNode::Br { cond: Some(c), .. } => simplify_expr(c, changed),
         WirNode::Drop(e) | WirNode::Do(e) | WirNode::Push(e) | WirNode::Return(Some(e)) => {
             simplify_expr(e, changed);
@@ -1467,8 +1546,22 @@ fn simplify_expr(expr: &mut WirExpr, changed: &mut bool) {
                 simplify_expr(a, changed);
             }
         }
+        WirExpr::ArrayNewFixed { items: args, .. } => {
+            for arg in args.iter_mut() {
+                simplify_expr(arg, changed);
+            }
+        }
+        WirExpr::ArrayNew { value, len, .. } => {
+            simplify_expr(value, changed);
+            simplify_expr(len, changed);
+        }
+        WirExpr::ArrayGet { array, index, .. } => {
+            simplify_expr(array, changed);
+            simplify_expr(index, changed);
+        }
         WirExpr::StructGet { base, .. }
         | WirExpr::RefCast { value: base, .. }
+        | WirExpr::ArrayLen(base)
         | WirExpr::RefIsNull(base) => simplify_expr(base, changed),
         WirExpr::ConstI64(_)
         | WirExpr::ConstF64(_)
@@ -1561,6 +1654,9 @@ fn node_size(node: &WirNode) -> usize {
         }
         WirNode::Block { body, .. } | WirNode::Loop { body, .. } => seq_size(body),
         WirNode::StructSet { base, value, .. } => expr_size(base) + expr_size(value),
+        WirNode::ArraySet { array, index, value, .. } => {
+            expr_size(array) + expr_size(index) + expr_size(value)
+        }
         WirNode::Br { cond: Some(c), .. } => expr_size(c),
         WirNode::Drop(e) | WirNode::Do(e) | WirNode::Push(e) | WirNode::Return(Some(e)) => {
             expr_size(e)
@@ -1588,8 +1684,12 @@ fn expr_size(expr: &WirExpr) -> usize {
         WirExpr::Control(node) => node_size(node),
         WirExpr::Seq(nodes) => seq_size(nodes),
         WirExpr::StructNew { args, .. } => args.iter().map(expr_size).sum(),
+        WirExpr::ArrayNewFixed { items, .. } => items.iter().map(expr_size).sum(),
+        WirExpr::ArrayNew { value, len, .. } => expr_size(value) + expr_size(len),
+        WirExpr::ArrayGet { array, index, .. } => expr_size(array) + expr_size(index),
         WirExpr::StructGet { base, .. }
         | WirExpr::RefCast { value: base, .. }
+        | WirExpr::ArrayLen(base)
         | WirExpr::RefIsNull(base) => expr_size(base),
         WirExpr::ConstI64(_)
         | WirExpr::ConstF64(_)

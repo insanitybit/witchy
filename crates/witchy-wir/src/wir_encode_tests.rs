@@ -2643,6 +2643,7 @@
         };
 
         let binary = encode(&module, &structs);
+        assert_eq!(binary, encode_with_gc(&module, &structs, &[]));
 
         let mut config = wasmtime::Config::new();
         config.wasm_reference_types(true);
@@ -2664,6 +2665,126 @@
         let run = inst.get_typed_func::<(), ()>(&mut store, "run").expect("run export");
         run.call(&mut store, ()).expect("run");
         assert_eq!(*out.lock().unwrap(), vec!["99".to_string()]);
+    }
+
+    /// RFC-0005 reference-storage substrate: GC arrays can hold concrete GC
+    /// references without crossing the linear-memory slot ABI. Exercise both
+    /// allocation forms plus indexed read/write and length after the optimizer
+    /// has traversed the complete array expression tree.
+    #[test]
+    fn gc_reference_array_round_trip() {
+        use crate::wir::{WirArrayDef, WirStructDef};
+
+        // GC type 0 is the payload struct, type 1 is a holder that points
+        // forward to array type 2, and type 2 is array definition 0. The
+        // forward edge requires the encoder's explicit recursion group.
+        let structs = vec![
+            WirStructDef { fields: vec![Kind::ExternRef, Kind::I64] },
+            WirStructDef { fields: vec![Kind::GcRef(2)] },
+        ];
+        let arrays = vec![WirArrayDef { element: Kind::GcRef(0) }];
+        let payload = |value| WirExpr::StructNew {
+            struct_id: 0,
+            args: vec![WirExpr::RefNull(Kind::ExternRef), WirExpr::ConstI64(value)],
+        };
+        let item = |array: &str, index| WirExpr::StructGet {
+            struct_id: 0,
+            field: 1,
+            base: Box::new(WirExpr::ArrayGet {
+                array_id: 0,
+                array: Box::new(WirExpr::GetLocal(array.into())),
+                index: Box::new(WirExpr::ConstI32(index)),
+            }),
+        };
+
+        let takes_array = WirFunc {
+            name: "takes_array".into(),
+            params: vec![local("items", WirTy::GcRef(2))],
+            ret: vec![],
+            locals: vec![],
+            body: vec![WirNode::Drop(WirExpr::ArrayLen(Box::new(
+                WirExpr::GetLocal("items".into()),
+            )))],
+            raw_body: None,
+        };
+
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![
+                local("repeated", WirTy::GcRef(2)),
+                local("fixed", WirTy::GcRef(2)),
+                local("holder", WirTy::GcRef(1)),
+            ],
+            body: vec![
+                WirNode::SetLocal {
+                    local: "repeated".into(),
+                    value: WirExpr::ArrayNew {
+                        array_id: 0,
+                        value: Box::new(WirExpr::RefNull(Kind::GcRef(0))),
+                        len: Box::new(WirExpr::ConstI32(3)),
+                    },
+                },
+                WirNode::ArraySet {
+                    array_id: 0,
+                    array: WirExpr::GetLocal("repeated".into()),
+                    index: WirExpr::ConstI32(1),
+                    value: payload(99),
+                },
+                WirNode::Do(WirExpr::CallHost {
+                    import: "print_int".into(),
+                    args: vec![item("repeated", 1)],
+                }),
+                WirNode::SetLocal {
+                    local: "holder".into(),
+                    value: WirExpr::StructNew {
+                        struct_id: 1,
+                        args: vec![WirExpr::GetLocal("repeated".into())],
+                    },
+                },
+                WirNode::Do(WirExpr::CallHost {
+                    import: "print_int".into(),
+                    args: vec![WirExpr::ToSlot(
+                        Box::new(WirExpr::ArrayLen(Box::new(WirExpr::StructGet {
+                            struct_id: 1,
+                            field: 0,
+                            base: Box::new(WirExpr::GetLocal("holder".into())),
+                        }))),
+                        Kind::I32,
+                    )],
+                }),
+                WirNode::SetLocal {
+                    local: "fixed".into(),
+                    value: WirExpr::ArrayNewFixed {
+                        array_id: 0,
+                        items: vec![payload(7), payload(8)],
+                    },
+                },
+                WirNode::Do(WirExpr::CallHost {
+                    import: "print_int".into(),
+                    args: vec![item("fixed", 0)],
+                }),
+            ],
+            raw_body: None,
+        };
+        let mut module = WirModule {
+            imports: vec![WirImport {
+                name: "print_int".into(),
+                params: vec![Kind::I64],
+                results: vec![],
+            }],
+            funcs: vec![takes_array, run],
+            memory_pages: 1,
+            data: vec![],
+            globals: vec![],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+
+        crate::wir_opt::optimize(&mut module);
+        let binary = encode_with_gc(&module, &structs, &arrays);
+        assert_eq!(run_binary(&binary), vec!["99", "3", "7"]);
     }
 
     /// RFC-0005 Stage 4 closure substrate: a uniform closure wrapper can hold

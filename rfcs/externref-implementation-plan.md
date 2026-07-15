@@ -610,3 +610,16 @@ Tests place same-arity scalar- and GC-environment functions in one table and
 validate a GC-environment indirect tail cycle. This is still source-neutral:
 production closures continue to request the scalar signature until the uniform
 wrapper migration.
+
+The next source-neutral cut adds mutable typed GC arrays to WIR. Structs and
+arrays share one concrete GC type-index band and recursion group before
+reference-bearing function signatures, so forward and cyclic aggregate edges
+remain valid. Array operations cover repeated and fixed allocation, indexed
+read/write, and length. An executable Wasmtime fixture stores GC payload structs
+containing `externref` in an array, follows a forward struct-to-array edge, passes
+the concrete array reference in a function signature, runs the optimizer over
+every operation, and validates the result. The existing
+`encode(module, structs)` entrypoint still emits no arrays, so production source
+representation remains unchanged. This is the required substrate for
+reference-bearing `List` lowering, not permission to flip closure values to the
+wrapper before ADT/tuple/list storage paths can carry references.

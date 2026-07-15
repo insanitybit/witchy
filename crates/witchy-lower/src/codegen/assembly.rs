@@ -1392,9 +1392,23 @@ fn collect_called_funcs(seq: &[witchy_wir::wir::WirNode], out: &mut HashSet<Stri
                     expr(a, out);
                 }
             }
+            E::ArrayNew { value, len, .. } => {
+                expr(value, out);
+                expr(len, out);
+            }
+            E::ArrayNewFixed { items, .. } => {
+                for item in items {
+                    expr(item, out);
+                }
+            }
+            E::ArrayGet { array, index, .. } => {
+                expr(array, out);
+                expr(index, out);
+            }
             E::StructGet { base, .. }
             | E::RefCast { value: base, .. }
-            | E::RefIsNull(base) => expr(base, out),
+            | E::RefIsNull(base)
+            | E::ArrayLen(base) => expr(base, out),
             E::ConstI64(_) | E::ConstF64(_) | E::ConstI32(_) | E::StrPtr(_) | E::MemorySize
             | E::GetLocal(_) | E::GetGlobal(_) | E::RefNull(_) => {}
         }
@@ -1436,6 +1450,11 @@ fn collect_called_funcs(seq: &[witchy_wir::wir::WirNode], out: &mut HashSet<Stri
             N::Block { body, .. } | N::Loop { body, .. } => collect_called_funcs(body, out),
             N::StructSet { base, value, .. } => {
                 expr(base, out);
+                expr(value, out);
+            }
+            N::ArraySet { array, index, value, .. } => {
+                expr(array, out);
+                expr(index, out);
                 expr(value, out);
             }
             N::Br { cond: Some(c), .. } => expr(c, out),
@@ -1492,9 +1511,23 @@ fn collect_called_host_imports(seq: &[witchy_wir::wir::WirNode], out: &mut HashS
                     expr(a, out);
                 }
             }
+            E::ArrayNew { value, len, .. } => {
+                expr(value, out);
+                expr(len, out);
+            }
+            E::ArrayNewFixed { items, .. } => {
+                for item in items {
+                    expr(item, out);
+                }
+            }
+            E::ArrayGet { array, index, .. } => {
+                expr(array, out);
+                expr(index, out);
+            }
             E::StructGet { base, .. }
             | E::RefCast { value: base, .. }
-            | E::RefIsNull(base) => expr(base, out),
+            | E::RefIsNull(base)
+            | E::ArrayLen(base) => expr(base, out),
             E::ConstI64(_) | E::ConstF64(_) | E::ConstI32(_) | E::StrPtr(_) | E::MemorySize
             | E::GetLocal(_) | E::GetGlobal(_) | E::RefNull(_) => {}
         }
@@ -1535,6 +1568,11 @@ fn collect_called_host_imports(seq: &[witchy_wir::wir::WirNode], out: &mut HashS
             N::Block { body, .. } | N::Loop { body, .. } => collect_called_host_imports(body, out),
             N::StructSet { base, value, .. } => {
                 expr(base, out);
+                expr(value, out);
+            }
+            N::ArraySet { array, index, value, .. } => {
+                expr(array, out);
+                expr(index, out);
                 expr(value, out);
             }
             N::Br { cond: Some(c), .. } => expr(c, out),
@@ -1652,9 +1690,23 @@ fn attach_diagnostic_site_expr(
                     reaches_host |= expr(arg, site);
                 }
             }
+            E::ArrayNew { value, len, .. } => {
+                reaches_host |= expr(value, site);
+                reaches_host |= expr(len, site);
+            }
+            E::ArrayNewFixed { items, .. } => {
+                for item in items {
+                    reaches_host |= expr(item, site);
+                }
+            }
+            E::ArrayGet { array, index, .. } => {
+                reaches_host |= expr(array, site);
+                reaches_host |= expr(index, site);
+            }
             E::StructGet { base, .. }
             | E::RefCast { value: base, .. }
-            | E::RefIsNull(base) => reaches_host |= expr(base, site),
+            | E::RefIsNull(base)
+            | E::ArrayLen(base) => reaches_host |= expr(base, site),
             E::ConstI64(_)
             | E::ConstF64(_)
             | E::ConstI32(_)
@@ -1713,6 +1765,11 @@ fn attach_diagnostic_site_expr(
             }
             N::StructSet { base, value, .. } => {
                 reaches_host |= expr(base, site);
+                reaches_host |= expr(value, site);
+            }
+            N::ArraySet { array, index, value, .. } => {
+                reaches_host |= expr(array, site);
+                reaches_host |= expr(index, site);
                 reaches_host |= expr(value, site);
             }
             N::Br { cond: None, .. } | N::Return(None) | N::Unreachable => {}

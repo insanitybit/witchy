@@ -10,21 +10,22 @@
 use std::collections::HashMap;
 
 use wasm_encoder::{
-    AbstractHeapType, BlockType, CodeSection, ConstExpr, DataSection, ElementSection, Elements,
-    EntityType, ExportKind, ExportSection, FieldType, Function, FunctionSection, GlobalSection,
-    GlobalType, HeapType, ImportSection, Instruction, MemArg, MemorySection, MemoryType, Module,
-    NameMap, NameSection, RefType, StorageType, TableSection, TableType, TypeSection, ValType,
+    AbstractHeapType, ArrayType, BlockType, CodeSection, CompositeInnerType, CompositeType,
+    ConstExpr, DataSection, ElementSection, Elements, EntityType, ExportKind, ExportSection,
+    FieldType, Function, FunctionSection, GlobalSection, GlobalType, HeapType, ImportSection,
+    Instruction, MemArg, MemorySection, MemoryType, Module, NameMap, NameSection, RefType,
+    StorageType, StructType, SubType, TableSection, TableType, TypeSection, ValType,
 };
 
 use crate::wir::{
     BinOp, ClosureSignature, GlobalInit, Kind, UnOp, WirExpr, WirModule, WirNode, WirSeq,
-    WirStructDef, slot_closure_signature,
+    WirArrayDef, WirStructDef, slot_closure_signature,
 };
 
-/// Map a WIR `Kind` to a wasm-encoder `ValType`. `struct_base` is the type-section
-/// index where GC struct types begin (they follow the function signatures), so a
-/// `Kind::GcRef(i)` resolves to the concrete struct type `struct_base + i`.
-fn val_type(kind: Kind, struct_base: u32) -> ValType {
+/// Map a WIR `Kind` to a wasm-encoder `ValType`. `gc_base` is the type-section
+/// index where concrete GC definitions begin, so `Kind::GcRef(i)` resolves to
+/// type `gc_base + i` (structs first, then arrays).
+fn val_type(kind: Kind, gc_base: u32) -> ValType {
     match kind {
         Kind::I32 => ValType::I32,
         Kind::I64 => ValType::I64,
@@ -38,7 +39,7 @@ fn val_type(kind: Kind, struct_base: u32) -> ValType {
         // (RFC-0005) A nullable reference to the concrete GC struct type.
         Kind::GcRef(id) => ValType::Ref(RefType {
             nullable: true,
-            heap_type: HeapType::Concrete(struct_base + id),
+            heap_type: HeapType::Concrete(gc_base + id),
         }),
     }
 }
@@ -57,11 +58,23 @@ fn load_align(kind: Kind) -> u32 {
 }
 
 /// Encode a [`WirModule`] into a wasm binary. `structs` are the module's
-/// cap-carrying GC struct definitions (RFC-0005); they are laid in the type
-/// section after the function signatures, so a `Kind::GcRef(i)` / a struct opcode's
-/// `struct_id` resolves to type index `struct_base + i`. Pass `&[]` when the module
-/// lowers no cap-carrying aggregates.
+/// cap-carrying GC struct definitions (RFC-0005); they are laid after the
+/// reserved scalar closure-signature band and before other function signatures.
+/// Pass `&[]` when the module lowers no cap-carrying aggregates.
 pub fn encode(module: &WirModule, structs: &[WirStructDef]) -> Vec<u8> {
+    encode_with_gc(module, structs, &[])
+}
+
+/// Encode a module with both GC struct and GC array declarations. Concrete
+/// [`Kind::GcRef`] indices name structs first, then arrays. Keeping `encode` as
+/// the struct-only compatibility entrypoint leaves the production lowering
+/// source-neutral until reference-bearing collections are ready to consume the
+/// array substrate.
+pub fn encode_with_gc(
+    module: &WirModule,
+    structs: &[WirStructDef],
+    arrays: &[WirArrayDef],
+) -> Vec<u8> {
     // --- Type section: collect unique (params, results) signatures ---------
     // Imports carry their param/result `Kind`s directly. Funcs derive params
     // from `params[*].ty.kind()` and results from `ret[*].kind()`. Dedup uses a
@@ -122,15 +135,16 @@ pub fn encode(module: &WirModule, structs: &[WirStructDef]) -> Vec<u8> {
     // Reason: a function type that takes a `GcRef` param references its struct by
     // type index, and GC recursion-group scoping forbids a *forward* reference
     // across singleton type defs — so the struct must precede any function type
-    // that names it. `struct_base` is that first post-clos index; the non-clos
-    // function signatures are therefore shifted up by `struct_shift = structs.len()`.
+    // that names it. `gc_base` is that first post-clos index; the non-clos
+    // function signatures are shifted up by every concrete GC definition.
     // Reserved scalar indices stay put and never take a `GcRef`.
     let clos_band = crate::wir::MAX_CLOS as u32 + 1;
-    let struct_shift = structs.len() as u32;
-    let struct_base = clos_band;
+    let gc_shift = (structs.len() + arrays.len()) as u32;
+    let gc_base = clos_band;
+    let array_base = gc_base + structs.len() as u32;
     // sig-position -> emitted type-section index.
     let type_idx = |pos: u32| -> u32 {
-        if pos < clos_band { pos } else { pos + struct_shift }
+        if pos < clos_band { pos } else { pos + gc_shift }
     };
     let split = (clos_band as usize).min(sigs.len());
 
@@ -138,25 +152,58 @@ pub fn encode(module: &WirModule, structs: &[WirStructDef]) -> Vec<u8> {
     // 1) The reserved clos band (indices `0..split`).
     for (params, results) in &sigs[..split] {
         type_section.ty().function(
-            params.iter().map(|k| val_type(*k, struct_base)),
-            results.iter().map(|k| val_type(*k, struct_base)),
+            params.iter().map(|k| val_type(*k, gc_base)),
+            results.iter().map(|k| val_type(*k, gc_base)),
         );
     }
-    // 2) Struct type defs, at indices `struct_base..struct_base + struct_shift`.
-    // Fields are mutable so `struct.set` (grantable-cap field mint, Stage 4) is
-    // legal; a `GcRef` field references another struct via the same base offset.
-    for def in structs {
-        let fields = def.fields.iter().map(|k| FieldType {
-            element_type: StorageType::Val(val_type(*k, struct_base)),
-            mutable: true,
-        });
-        type_section.ty().struct_(fields);
+    // 2) Concrete GC definitions form one recursion group. This makes every
+    // `GcRef` edge in the combined struct/array band legal, including forward
+    // references and cycles. Fields/elements are mutable for aggregate updates.
+    let gc_types: Vec<SubType> = structs
+        .iter()
+        .map(|def| {
+            let fields = def
+                .fields
+                .iter()
+                .map(|kind| FieldType {
+                    element_type: StorageType::Val(val_type(*kind, gc_base)),
+                    mutable: true,
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
+            SubType {
+                is_final: true,
+                supertype_idx: None,
+                composite_type: CompositeType {
+                    inner: CompositeInnerType::Struct(StructType { fields }),
+                    shared: false,
+                    descriptor: None,
+                    describes: None,
+                },
+            }
+        })
+        .chain(arrays.iter().map(|def| SubType {
+            is_final: true,
+            supertype_idx: None,
+            composite_type: CompositeType {
+                inner: CompositeInnerType::Array(ArrayType(FieldType {
+                    element_type: StorageType::Val(val_type(def.element, gc_base)),
+                    mutable: true,
+                })),
+                shared: false,
+                descriptor: None,
+                describes: None,
+            },
+        }))
+        .collect();
+    if !gc_types.is_empty() {
+        type_section.ty().rec(gc_types);
     }
-    // 3) The remaining function signatures, shifted past the struct types.
+    // 3) The remaining function signatures, shifted past all GC types.
     for (params, results) in &sigs[split..] {
         type_section.ty().function(
-            params.iter().map(|k| val_type(*k, struct_base)),
-            results.iter().map(|k| val_type(*k, struct_base)),
+            params.iter().map(|k| val_type(*k, gc_base)),
+            results.iter().map(|k| val_type(*k, gc_base)),
         );
     }
 
@@ -222,7 +269,7 @@ pub fn encode(module: &WirModule, structs: &[WirStructDef]) -> Vec<u8> {
             GlobalInit::I64(n) => ConstExpr::i64_const(n),
         };
         global_section.global(
-            GlobalType { val_type: val_type(g.kind, struct_base), mutable: g.mutable, shared: false },
+            GlobalType { val_type: val_type(g.kind, gc_base), mutable: g.mutable, shared: false },
             &init,
         );
     }
@@ -296,7 +343,7 @@ pub fn encode(module: &WirModule, structs: &[WirStructDef]) -> Vec<u8> {
         for l in &f.locals {
             local_index.insert(l.name.as_str(), next);
             next += 1;
-            body_local_types.push(val_type(l.ty.kind(), struct_base));
+            body_local_types.push(val_type(l.ty.kind(), gc_base));
         }
 
         let mut function = Function::new_with_locals_types(body_local_types);
@@ -306,8 +353,9 @@ pub fn encode(module: &WirModule, structs: &[WirStructDef]) -> Vec<u8> {
             import_index: &import_index,
             global_index: &global_index,
             clos_type_idx: &clos_type_idx,
-            struct_base,
-            struct_shift,
+            gc_base,
+            array_base,
+            gc_shift,
             label_stack: Vec::new(),
         };
         ctx.encode_seq(&mut function, &f.body);
@@ -410,7 +458,21 @@ fn collect_clos_signatures(seq: &WirSeq, out: &mut Vec<ClosureSignature>) {
             }
             WirExpr::StructGet { base, .. }
             | WirExpr::RefCast { value: base, .. }
+            | WirExpr::ArrayLen(base)
             | WirExpr::RefIsNull(base) => walk_expr(base, out),
+            WirExpr::ArrayNew { value, len, .. } => {
+                walk_expr(value, out);
+                walk_expr(len, out);
+            }
+            WirExpr::ArrayNewFixed { items, .. } => {
+                for item in items {
+                    walk_expr(item, out);
+                }
+            }
+            WirExpr::ArrayGet { array, index, .. } => {
+                walk_expr(array, out);
+                walk_expr(index, out);
+            }
             // Leaves: no nested closure-arity references.
             WirExpr::ConstI64(_)
             | WirExpr::ConstF64(_)
@@ -429,6 +491,11 @@ fn collect_clos_signatures(seq: &WirSeq, out: &mut Vec<ClosureSignature>) {
             }
             WirNode::StructSet { base, value, .. } => {
                 walk_expr(base, out);
+                walk_expr(value, out);
+            }
+            WirNode::ArraySet { array, index, value, .. } => {
+                walk_expr(array, out);
+                walk_expr(index, out);
                 walk_expr(value, out);
             }
             WirNode::Store { ptr, value, .. } | WirNode::Store8 { ptr, value, .. } => {
@@ -491,15 +558,17 @@ struct EncodeCtx<'a> {
     global_index: &'a HashMap<&'a str, u32>,
     /// Exact closure function type -> synthesized type index.
     clos_type_idx: &'a HashMap<ClosureSignature, u32>,
-    /// (RFC-0005) Type-section index where GC struct types begin; a struct opcode's
-    /// `struct_id` resolves to `struct_base + struct_id`. Also the boundary below
+    /// (RFC-0005) Type-section index where concrete GC types begin; a struct opcode's
+    /// `struct_id` resolves to `gc_base + struct_id`. Also the boundary below
     /// which type indices are unshifted (the reserved clos band).
-    struct_base: u32,
+    gc_base: u32,
+    /// Type-section index of array definition zero.
+    array_base: u32,
     /// (RFC-0005) How far the non-clos function-signature indices are shifted up to
-    /// make room for the struct types (`= structs.len()`). A `call_indirect` type
-    /// index at sig-position `pos` resolves to `pos` if `pos < struct_base`, else
-    /// `pos + struct_shift`.
-    struct_shift: u32,
+    /// make room for concrete GC types. A `call_indirect` type index at
+    /// sig-position `pos` resolves to `pos` if `pos < gc_base`, else
+    /// `pos + gc_shift`.
+    gc_shift: u32,
     /// Names of enclosing Block/Loop frames, innermost LAST.
     label_stack: Vec<String>,
 }
@@ -603,10 +672,10 @@ impl EncodeCtx<'_> {
                         "call_indirect references unsynthesized closure signature {signature:?}"
                     )
                 });
-                let type_index = if pos < self.struct_base {
+                let type_index = if pos < self.gc_base {
                     pos
                 } else {
-                    pos + self.struct_shift
+                    pos + self.gc_shift
                 };
                 func.instruction(&Instruction::CallIndirect {
                     type_index,
@@ -645,7 +714,7 @@ impl EncodeCtx<'_> {
             } => {
                 self.encode_expr(func, cond);
                 let bt = match result {
-                    Some(t) => BlockType::Result(val_type(t.kind(), self.struct_base)),
+                    Some(t) => BlockType::Result(val_type(t.kind(), self.gc_base)),
                     None => BlockType::Empty,
                 };
                 func.instruction(&Instruction::If(bt));
@@ -667,7 +736,7 @@ impl EncodeCtx<'_> {
                 body,
             } => {
                 let bt = match result {
-                    Some(t) => BlockType::Result(val_type(t.kind(), self.struct_base)),
+                    Some(t) => BlockType::Result(val_type(t.kind(), self.gc_base)),
                     None => BlockType::Empty,
                 };
                 func.instruction(&Instruction::Block(bt));
@@ -714,9 +783,15 @@ impl EncodeCtx<'_> {
                 self.encode_expr(func, base);
                 self.encode_expr(func, value);
                 func.instruction(&Instruction::StructSet {
-                    struct_type_index: self.struct_base + struct_id,
+                    struct_type_index: self.gc_base + struct_id,
                     field_index: *field,
                 });
+            }
+            WirNode::ArraySet { array_id, array, index, value } => {
+                self.encode_expr(func, array);
+                self.encode_expr(func, index);
+                self.encode_expr(func, value);
+                func.instruction(&Instruction::ArraySet(self.array_base + array_id));
             }
         }
     }
@@ -884,7 +959,7 @@ impl EncodeCtx<'_> {
                 });
                 // Shift past the struct types for a sig outside the reserved band.
                 let type_index =
-                    if pos < self.struct_base { pos } else { pos + self.struct_shift };
+                    if pos < self.gc_base { pos } else { pos + self.gc_shift };
                 func.instruction(&Instruction::CallIndirect { type_index, table_index: 0 });
             }
             WirExpr::Control(node) => self.encode_node(func, node),
@@ -893,19 +968,42 @@ impl EncodeCtx<'_> {
                 for a in args {
                     self.encode_expr(func, a);
                 }
-                func.instruction(&Instruction::StructNew(self.struct_base + struct_id));
+                func.instruction(&Instruction::StructNew(self.gc_base + struct_id));
             }
             WirExpr::StructGet { struct_id, field, base } => {
                 self.encode_expr(func, base);
                 func.instruction(&Instruction::StructGet {
-                    struct_type_index: self.struct_base + struct_id,
+                    struct_type_index: self.gc_base + struct_id,
                     field_index: *field,
                 });
+            }
+            WirExpr::ArrayNew { array_id, value, len } => {
+                self.encode_expr(func, value);
+                self.encode_expr(func, len);
+                func.instruction(&Instruction::ArrayNew(self.array_base + array_id));
+            }
+            WirExpr::ArrayNewFixed { array_id, items } => {
+                for item in items {
+                    self.encode_expr(func, item);
+                }
+                func.instruction(&Instruction::ArrayNewFixed {
+                    array_type_index: self.array_base + array_id,
+                    array_size: items.len() as u32,
+                });
+            }
+            WirExpr::ArrayGet { array_id, array, index } => {
+                self.encode_expr(func, array);
+                self.encode_expr(func, index);
+                func.instruction(&Instruction::ArrayGet(self.array_base + array_id));
+            }
+            WirExpr::ArrayLen(array) => {
+                self.encode_expr(func, array);
+                func.instruction(&Instruction::ArrayLen);
             }
             WirExpr::RefCast { struct_id, value } => {
                 self.encode_expr(func, value);
                 func.instruction(&Instruction::RefCastNonNull(HeapType::Concrete(
-                    self.struct_base + struct_id,
+                    self.gc_base + struct_id,
                 )));
             }
             WirExpr::RefNull(kind) => {
@@ -915,7 +1013,7 @@ impl EncodeCtx<'_> {
                         shared: false,
                         ty: AbstractHeapType::Struct,
                     },
-                    Kind::GcRef(id) => HeapType::Concrete(self.struct_base + id),
+                    Kind::GcRef(id) => HeapType::Concrete(self.gc_base + id),
                     _ => unreachable!("RefNull of a non-reference kind {kind:?}"),
                 };
                 func.instruction(&Instruction::RefNull(heap));
