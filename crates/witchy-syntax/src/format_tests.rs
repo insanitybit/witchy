@@ -451,6 +451,18 @@
     }
 
     #[test]
+    fn linked_opt_origin_markers_are_not_source_syntax() {
+        let mut parsed = crate::parser::parse_module(
+            "mode opt\n\nfn main(console: Console):\n    console.print(\"ok\")\n",
+        )
+        .expect("parse");
+        parsed.modes.push("@opt:api".into());
+        let out = module(&parsed, &[]);
+        assert!(out.starts_with("mode opt\n"), "{out}");
+        assert!(!out.contains("@opt:"), "internal linked metadata leaked: {out}");
+    }
+
+    #[test]
     fn block_body_lambdas_round_trip() {
         // A closure with a multi-statement body, and one whose body is a `match`,
         // now format as block-form lambdas and re-parse to the same AST.

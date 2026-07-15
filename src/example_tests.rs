@@ -954,6 +954,87 @@
         assert_eq!(wasm_run(src), want, "compiled backend returns and writes back");
     }
 
+    /// RFC-0083: a live view makes its owner shared in the uniqueness lattice.
+    /// Materializing the view ends the loan, but the resulting owned snapshot
+    /// must remain independent when the original owner mutates afterward.
+    #[test]
+    fn rfc0083_materialized_view_survives_owner_mutation_on_both_backends() {
+        let src = "mode opt\n\nimport list\n\nfn view(xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n\nfn materialize(xs: List(Int)) -> List(Int):\n    xs\n\nfn main(console: Console):\n    var xs = [1]\n    list.push(xs, 2)\n    let make_view = view\n    let borrowed = make_view(xs)\n    let forwarded = borrowed\n    let snapshot = materialize(forwarded)\n    list.push(xs, 3)\n    console.print(\"${snapshot}\")\n    console.print(\"${xs}\")\n";
+        let want = ["[1, 2]", "[1, 2, 3]"];
+        assert_eq!(link_run(src), want, "interpreter preserves the materialized snapshot");
+        let (compiled, reowns) = wasm_run_reowns(src);
+        assert_eq!(compiled, want, "compiled roots and re-own preserve the snapshot");
+        assert!(reowns >= 1, "opening the view must invalidate the owner's unique token");
+
+        // A transient view consumed by `.owned()` leaves no live loan or runtime
+        // root, but evaluating it still shares the owner and must invalidate the
+        // uniqueness token before the subsequent mutation.
+        let direct = "mode opt\n\nimport borrow\nimport list\n\nfn view(xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n\nfn main(console: Console):\n    var xs = [1]\n    list.push(xs, 2)\n    let snapshot = view(xs).owned()\n    list.push(xs, 3)\n    console.print(\"${snapshot}\")\n    console.print(\"${xs}\")\n";
+        assert_eq!(link_run(direct), want, "interpreter preserves a direct materialization");
+        let (compiled, reowns) = wasm_run_reowns(direct);
+        assert_eq!(compiled, want, "compiled preserves a direct materialization");
+        assert!(reowns >= 1, "transient materialization must invalidate uniqueness");
+    }
+
+    #[test]
+    fn rfc0083_view_may_not_cross_async_suspension_unmaterialized() {
+        let src = "mode opt\n\nfn view(text: let('a) String) -> View(String, 'a):\n    text\n\nasync fn bad(console: Console) -> Nil:\n    var text = \"borrowed\"\n    let w = view(text)\n    let _ = task.done(0).await\n    console.print(w)\n";
+        let err = try_link_std(src).expect_err("a borrowed view may not cross an await");
+        assert!(
+            err.contains("escapes") || err.contains("borrowed view"),
+            "diagnostic must explain the live view: {}",
+            err,
+        );
+
+        let assigned = "mode opt\n\nfn view(text: let('a) String) -> View(String, 'a):\n    text\n\nasync fn bad(console: Console) -> Nil:\n    var text = \"borrowed\"\n    var slot = \"\"\n    slot = view(text)\n    let _ = task.done(0).await\n    console.print(slot)\n";
+        let linked = try_link_std(assigned).expect("link assigned async view");
+        let err = typeck::check(&linked)
+            .expect_err("assignment may not hide a view in an async frame");
+        assert!(err.message.contains("mutable binding `slot`"), "{}", err.message);
+    }
+
+    #[test]
+    fn rfc0083_normal_caller_enforces_opt_module_loan_relation() {
+        let api = parser::parse_module(
+            "mode opt\n\npub fn view(text: let('a) String) -> View(String, 'a):\n    text\n",
+        )
+        .expect("parse opt API");
+        let main = parser::parse_module(
+            "import api\n\nfn main(console: Console):\n    var text = \"original\"\n    let w = api.view(text)\n    text = \"changed\"\n    console.print(w)\n",
+        )
+        .expect("parse normal caller");
+        let linked = crate::pipeline::link(
+            vec![("main".into(), main), ("api".into(), api)],
+            "main",
+        )
+        .expect("link modules");
+        crate::enforce_performance_modes(&linked, "main")
+            .expect("internal opt-origin metadata must not enable entry mode checks");
+        let err = typeck::check(&linked).expect_err("normal mode cannot erase an opt loan");
+        assert!(err.message.contains("reassigned"), "{}", err.message);
+        assert!(err.message.contains("view"), "{}", err.message);
+
+        let async_main = parser::parse_module(
+            "import api\n\nasync fn main(console: Console):\n    let text = \"original\"\n    let w = api.view(text)\n    let _ = task.done(0).await\n    console.print(w)\n",
+        )
+        .expect("parse async normal caller");
+        let err = crate::pipeline::link(
+            vec![
+                (
+                    "api".into(),
+                    parser::parse_module(
+                        "mode opt\n\npub fn view(text: let('a) String) -> View(String, 'a):\n    text\n",
+                    )
+                    .expect("parse opt API"),
+                ),
+                ("main".into(), async_main),
+            ],
+            "main",
+        )
+        .expect_err("an imported view may not cross async suspension");
+        assert!(err.to_string().contains("borrowed view `w` remains live across `await`"), "{err}");
+    }
+
     /// RFC-0088 baseline: update-and-extract returns the exact old leaf while
     /// committing the repaired collection. Shared snapshots remain unchanged;
     /// empty/missing operations return None. The structural helper performs the

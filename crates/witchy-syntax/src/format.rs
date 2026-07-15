@@ -211,6 +211,9 @@ fn render_module(
     // The following block (imports or the first item) supplies the blank-line
     // separator, so we emit no trailing blank here.
     for mode in &m.modes {
+        if mode.starts_with("@opt:") {
+            continue;
+        }
         s.push_str("mode ");
         s.push_str(mode);
         s.push('\n');

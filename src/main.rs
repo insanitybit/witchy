@@ -1491,7 +1491,14 @@ fn is_entry_function(name: &str, entry_stem: &str) -> bool {
 /// by the annotation, not the fixpoint. Only the entry file's own functions are
 /// judged; linked-in modules keep their own policy. See rfcs/performance-modes.md.
 fn enforce_performance_modes(linked: &ast::Module, entry_stem: &str) -> Result<(), String> {
-    let enforce = !linked.modes.is_empty();
+    let source_modes: Vec<&str> = linked
+        .modes
+        .iter()
+        .filter(|mode| !mode.starts_with('@'))
+        .map(String::as_str)
+        .collect();
+    let enforce = !source_modes.is_empty();
+    let mode_names = source_modes.join(", ");
     let mut errors = Vec::new();
 
     // Body contract: accumulators must stay on the in-place fast path.
@@ -1505,7 +1512,7 @@ fn enforce_performance_modes(linked: &ast::Module, entry_stem: &str) -> Result<(
                  iteration of this loop — it is {} [mode {}]\n  keep `{}` on the \
                  in-place path: certify helper calls with `let`/`own` so they do \
                  not alias it out, and do not share it mid-loop",
-                c.line, c.var, c.reason, linked.modes.join(", "), c.var,
+                c.line, c.var, c.reason, mode_names, c.var,
             ));
         }
     }
@@ -1527,7 +1534,7 @@ fn enforce_performance_modes(linked: &ast::Module, entry_stem: &str) -> Result<(
                              (mutated in place)",
                             f.name,
                             p.name,
-                            linked.modes.join(", "),
+                            mode_names,
                         ));
                     }
                 }

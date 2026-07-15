@@ -1,22 +1,21 @@
 ---
 rfc: 0083
 title: Opt-mode lifetimes and returnable borrowed views
-status: accepted
+status: implemented
 created: 2026-07-12
+implemented: 2026-07-14
 superseded-by:
 tracking: >
-  Phase 1 (static lifetime + loan foundation) implemented 2026-07-14: `let('a) T`
-  / `View(T, 'a)` surface (a `Qualified(TypeQual::Borrow)` type, no runtime
-  representation — erased to the owned type before both backends, parity by
-  construction); signature relations validated and carried across calls / trait
-  dispatch / function values / module boundaries; per-caller owner loans with
-  non-lexical last-use and `view.owned()` materialization (a blanket-impl `Owned`
-  trait in `std/borrow`, dispatched through the ordinary typed method path — no
-  special dispatch machinery); rejection of owner move / mutate / reassign /
-  `var`|`own` write-back / closure|task|channel escape while a view is live
-  (`crates/witchy-types/src/loans.rs`). NOT YET DONE (next phase): compiled-backend
-  owner rooting / host leases (acceptance 5) and ownership-analysis treating a live
-  loan as non-unique for in-place update/extraction (acceptance 6).
+  Static lifetime relations and owner loans landed 2026-07-14; `.owned()` landed
+  2026-07-14. The 2026-07-14 runtime phase publishes the checker’s exact
+  statement-identity loan facts to lowering, preserves relations through indirect
+  function values (rejecting erased relations/conventions), invalidates uniqueness
+  when a view opens, and emits compiled linear-memory owner roots released at last
+  use and on explicit-return / `?` paths. Mutable/aggregate, lambda, task/channel,
+  loop-edge, and async-suspension escapes are rejected; `Dynamic` is not a current
+  language type. A trapped VM is terminal rather than resumable with abandoned
+  roots. Host-backed capability leases remain a separate capability-specific
+  design, as specified below.
 related:
   - "0029 (optimization contract - missed facts copy or reject in opt mode)"
   - "0087 (uniform var write-back - active returned views block owner write-back)"
@@ -195,8 +194,11 @@ a soundness bug, not a missed optimization.
    owner's whole lexical scope.
 4. Nested owners, views returned through one wrapper function, and multiple
    shared views retain the correct root and reject the same conflicts.
-5. WIR keeps owner storage or its host lease alive until the last view use;
-   refcount, trap, and early-return tests detect premature release and leaks.
+5. WIR keeps linear-memory owner storage alive until the last view use; refcount
+   and early-return tests detect premature release and leaks. A trap makes the VM
+   terminal, so a partially unwound instance cannot resume with abandoned roots.
+   A future host-backed-view API must provide its capability-specific lease
+   separately.
 6. Ownership analysis treats an active view loan as unavailable for in-place
    update or extraction. Forced-copy and optimized executions remain value
    equivalent.
@@ -254,23 +256,49 @@ and Cyclone region typing inform this design.
 >   rejection of owner move / reassign / mutate / `var`|`own` write-back / closure
 >   & channel & task escape while a view is live. Diagnostics name the owner, the
 >   borrowing call, and the materialization remedy.
-> - **Criterion 8 (checker half):** covered by `loans_tests.rs` plus a both-backends
->   `book/` example. The *compiled-backend* half is part of the next phase.
+> - **Criterion 8:** covered by `loans_tests.rs`, lowering tests, and both-backend
+>   examples, including a normal caller of an imported opt API.
 >
-> **Deferred to the next RFC-0083 phase (NOT yet implemented):**
+> **Runtime/ownership phase (2026-07-14):**
 >
-> - **Criterion 5** — compiled WIR keeping owner storage / host leases alive to the
->   last view use (refcount/trap/early-return leak tests). Phase 1 is sound because
->   views are erased to owned values (the owner is a live local for its lexical
->   extent); true zero-copy rooting is the runtime-representation work.
-> - **Criterion 6** — ownership analysis (`witchy-lower`) treating a live loan as
->   non-unique for in-place update/extraction (RFC-0088 interaction). Needs the
->   loan facts to flow from typeck into the lowering analysis.
+> - `loans::facts` is now the single semantic pass for diagnostics and lowering.
+>   It publishes active/open/close events keyed to the exact checked statements;
+>   nested blocks are borrowed rather than cloned so statement identity is a
+>   checked invariant. Function-valued locals and function-typed parameters carry
+>   the same owner positions and conventions as direct calls; an ascription or
+>   reassignment that erases either is rejected.
+> - **Criterion 5 (linear-memory owners):** met. WIR emits a hidden refcount root
+>   after a view-producing binding and drops it after the checked last use. Return
+>   expressions are evaluated before cleanup; explicit `return` and callee-`?`
+>   paths release every active root exactly once. A trap makes its VM terminal, so
+>   host code cannot resume a partially unwound instance. Primitive/externref
+>   values need no linear-memory root, and an unresolved generic layout
+>   conservatively keeps the ordinary owner local live rather than guessing a
+>   refcount-header bias. Host-backed capability views still require their own
+>   lease-bearing API and are not part of this RFC's implemented linear-memory
+>   surface.
+> - **Criterion 6:** met. Opening a loan merges an owner kill into the existing
+>   uniqueness facts, resetting RFC-0088's capacity token. A both-backends test
+>   materializes an indirectly returned list view, mutates the owner, verifies the
+>   old snapshot, and observes the required compiled re-own.
+>
+> - **Criterion 7:** met for the current language surface. Borrowed results cannot
+>   enter mutable bindings or owned records/lists/tuples/constructors, escape via
+>   closures/tasks/channels, or remain live across async suspension and loop exits.
+>   Lambda bodies receive independent loan checking. `Dynamic` is not a current
+>   Witchy type; adding it would require an explicit materialization rule before
+>   it could store a view.
+> - Last-use facts are non-lexical within each straight-line block. Enclosing
+>   loans are conservatively live across a nested branch/loop body; this safe
+>   false-positive boundary is documented in the language spec.
+> - A projection of an already-bound view must currently be materialized before
+>   persistence; this keeps compiled rooting layout-safe until projection types
+>   are carried as first-class loan facts.
 > - Materialization initially spelled `func.owned(view)` (a generic free function);
 >   the `view.owned()` method form was deferred because a generic free function is
 >   not UFCS-callable on a concrete receiver.
 
-> 2026-07-15: `view.owned()` method spelling landed, resolving the deferred item
+> 2026-07-14: `view.owned()` method spelling landed, resolving the deferred item
 > above. It is NOT a UFCS change: `owned` is a blanket-impl trait method (`trait
 > Owned { fn owned(self) -> Self }` + `impl Owned for a` in `std/borrow`), so it
 > dispatches through the ordinary typed method path (RFC-0046) — the same shape as

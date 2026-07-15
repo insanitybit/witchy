@@ -2,13 +2,13 @@
 // `View(T, 'a)` into an owned `T`, ending the view's borrow of its owner so the
 // owner may be mutated or moved again.
 //
-// A view has no runtime representation — it is already its owned inner value — so
-// `owned` is the identity at runtime on both backends. Its role is entirely at
-// compile time: it is the escape hatch the RFC-0083 loan checker recognizes (an
-// owned result opens no loan and is the view's last use). It is a blanket impl
-// over any type, so it dispatches through the ordinary typed method path
-// (RFC-0046) with no special-case machinery — the same shape as `std/convert`'s
-// `Into`. On a non-view value it is a plain identity. (This module is named
+// A view has no value representation of its own, so `owned` is the logical
+// identity on both backends. The checked last use ends the loan; compiled
+// ownership facts have already made the owner shared, so a later mutation
+// copy-on-writes and the returned value remains an independent snapshot. It is a
+// blanket impl over any type and dispatches through the ordinary typed method
+// path (RFC-0046), with the same shape as `std/convert`'s `Into`. On a non-view
+// value it is a plain identity. (This module is named
 // `borrow`, not `own`, because `own` is the parameter-convention keyword and so
 // cannot be a module name.)
 trait Owned:

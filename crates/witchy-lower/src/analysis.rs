@@ -77,6 +77,40 @@ impl Facts {
     pub fn is_dirty(&self, stmt: &Stmt) -> bool {
         self.dirty.contains(&stmt_key(stmt))
     }
+
+    /// RFC-0083: opening a view creates a live whole alias of its owner. Merge
+    /// that checked event into the same conservative cap-kill product used for
+    /// ordinary shares, so RFC-0088 extraction cannot mutate through the alias.
+    pub fn merge_loan_kills(
+        &mut self,
+        body: &Block,
+        loans: &witchy_types::loans::LoanFacts,
+    ) {
+        fn walk(
+            facts: &mut Facts,
+            block: &Block,
+            loans: &witchy_types::loans::LoanFacts,
+        ) {
+            for stmt in &block.stmts {
+                let mut added = 0;
+                {
+                    let entry = facts.kills.entry(stmt_key(stmt)).or_default();
+                    for loan in loans.opens_after(stmt) {
+                        if facts.accumulators.contains(&loan.owner)
+                            && !entry.contains(&loan.owner)
+                        {
+                            entry.push(loan.owner.clone());
+                            added += 1;
+                        }
+                    }
+                }
+                facts.kill_entries += added;
+                each_block_in_stmt(stmt, &mut |nested| walk(facts, nested, loans));
+            }
+        }
+
+        walk(self, body, loans);
+    }
 }
 
 // ---------------------------------------------------------------------------

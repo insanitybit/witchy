@@ -248,6 +248,120 @@ fn main() -> Float:
     }
 
     #[test]
+    fn borrowed_owner_root_is_released_after_explicit_return_value_evaluation() {
+        let module = parse_module(
+            "mode opt\n\n\
+             fn view(xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n\n\
+             fn finish(xs: let('a) List(Int)) -> Int:\n    let w = view(xs)\n    return list.length(w)\n\n\
+             fn main() -> Int:\n    finish([1, 2])\n",
+        )
+        .expect("parse");
+        let wir = assemble_wir_module(&module)
+            .expect("assemble")
+            .expect("borrowed-view program lowers to WIR");
+        let wat = witchy_wir::wir::to_wat(&wir);
+        let start = wat.find("(func $finish").expect("finish function");
+        let tail = &wat[start..];
+        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
+        let finish = &tail[..end];
+
+        let eval = finish.find("local.set $__witchy_call_result_i64").expect("return evaluated");
+        let release = finish.find("call $rc_drop").expect("borrow root released");
+        let ret = finish.rfind("return").expect("explicit return");
+        assert!(finish.contains("__loan_root_w__xs"), "hidden owner root is declared: {finish}");
+        assert!(eval < release && release < ret, "evaluate, release, return ordering: {finish}");
+    }
+
+    #[test]
+    fn borrowed_owner_root_is_released_on_try_early_return() {
+        let module = parse_module(
+            "mode opt\n\n\
+             fn view(xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n\n\
+             fn fail() -> Result(Int, String):\n    Err(\"stop\")\n\n\
+             fn finish(xs: let('a) List(Int)) -> Result(Int, String):\n    let w = view(xs)\n    let n = fail()?\n    Ok(list.length(w) + n)\n\n\
+             fn main() -> Int:\n    match finish([1, 2]):\n        Ok(n) -> n\n        Err(_) -> 0\n",
+        )
+        .expect("parse");
+        let wir = assemble_wir_module(&module)
+            .expect("assemble")
+            .expect("borrowed-view try program lowers to WIR");
+        let wat = witchy_wir::wir::to_wat(&wir);
+        let start = wat.find("(func $finish").expect("finish function");
+        let tail = &wat[start..];
+        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
+        let finish = &tail[..end];
+        let drops = finish.match_indices("call $rc_drop").count();
+
+        assert_eq!(finish.match_indices("call $rc_dup").count(), 1, "one root opened: {finish}");
+        assert!(drops >= 2, "both `?` failure and success paths release the root: {finish}");
+    }
+
+    #[test]
+    fn alternative_view_origins_share_one_owner_root() {
+        let module = parse_module(
+            "mode opt\n\nfn first(xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n\nfn second(xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n\nfn count(xs: List(Int), pick: Bool) -> Int:\n    let w = if pick: first(xs) else: second(xs)\n    list.length(w)\n\nfn main() -> Int:\n    count([1], true)\n",
+        )
+        .expect("parse");
+        let wir = assemble_wir_module(&module)
+            .expect("assemble")
+            .expect("alternative view origins lower");
+        let wat = witchy_wir::wir::to_wat(&wir);
+        let start = wat.find("(func $count").expect("count function");
+        let tail = &wat[start..];
+        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
+        let count = &tail[..end];
+        assert_eq!(count.match_indices("call $rc_dup").count(), 1, "one owner root: {count}");
+        assert_eq!(count.match_indices("call $rc_drop").count(), 1, "one owner release: {count}");
+    }
+
+    #[test]
+    fn nested_dict_view_roots_the_returned_subplace_layout() {
+        let module = parse_module(
+            "mode opt\n\ntype Holder:\n    values: Dict(Int, Int)\n\nfn view(holder: let('a) Holder) -> View(Dict(Int, Int), 'a):\n    holder.values\n\nfn count(holder: Holder) -> Int:\n    let v = view(holder)\n    dict.length(v)\n\nfn main() -> Int:\n    count(Holder(dict.new()))\n",
+        )
+        .expect("parse");
+        let wir = assemble_wir_module(&module)
+            .expect("assemble")
+            .expect("nested Dict view lowers to WIR");
+        let wat = witchy_wir::wir::to_wat(&wir);
+        let start = wat.find("(func $count").expect("count function");
+        let tail = &wat[start..];
+        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
+        let count = &tail[..end];
+        let root = count.find("local.set $__loan_root_v__holder").expect("root assignment");
+        let before = &count[..root];
+        assert!(
+            before.rfind("local.get $v").is_some_and(|view| {
+                before.rfind("local.get $holder").is_none_or(|owner| view > owner)
+            }),
+            "the Dict -4 bias must apply to the returned view pointer, not Holder: {count}",
+        );
+        assert!(
+            before[root.saturating_sub(180)..].contains("i32.const 4"),
+            "the returned Dict layout, not the Holder parameter layout, selects the root bias: {count}",
+        );
+    }
+
+    #[test]
+    fn lambda_local_view_declares_and_releases_its_root() {
+        let module = parse_module(
+            "mode opt\n\nfn view(xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n\nfn main() -> Int:\n    let f = fn() -> Int:\n        let xs = [1, 2]\n        let w = view(xs)\n        list.length(w)\n    f()\n",
+        )
+        .expect("parse");
+        let wir = assemble_wir_module(&module)
+            .expect("assemble")
+            .expect("lambda-local borrowed view lowers to WIR");
+        let wat = witchy_wir::wir::to_wat(&wir);
+        let start = wat.find("(func $__lam").expect("lifted lambda");
+        let tail = &wat[start..];
+        let end = tail[1..].find("\n  (func $").map(|n| n + 1).unwrap_or(tail.len());
+        let lambda = &tail[..end];
+        assert!(lambda.contains("__loan_root_w__xs"), "lambda root local: {lambda}");
+        assert!(lambda.contains("call $rc_dup"), "lambda opens root: {lambda}");
+        assert!(lambda.contains("call $rc_drop"), "lambda closes root: {lambda}");
+    }
+
+    #[test]
     fn float_record_field_compiles() {
         // 8-byte heap slots hold an f64 field; float_to_int reads it back.
         let src = r#"

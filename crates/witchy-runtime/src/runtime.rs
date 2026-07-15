@@ -479,18 +479,29 @@ pub struct VmState {
 pub struct Vm {
     store: Store<VmState>,
     instance: wasmtime::Instance,
+    aborted: bool,
 }
 
 impl Vm {
     /// Call the VM's exported `run` function to completion.
     pub fn run(&mut self) -> Result<()> {
+        if self.aborted {
+            bail!("an aborted Witchy VM cannot be run again");
+        }
         let run = self
             .instance
             .get_typed_func::<(), ()>(&mut self.store, "run")?;
         if let Err(error) = run.call(&mut self.store, ()) {
+            // A trap does not run guest cleanup. Make that terminal: retaining the
+            // host handle is harmless, but no later call may observe a partially
+            // unwound stack or abandoned guest roots.
+            self.aborted = true;
             return Err(self.contextualize_run_error(error));
         }
-        self.heap_sweep()?;
+        if let Err(error) = self.heap_sweep() {
+            self.aborted = true;
+            return Err(error);
+        }
         if std::env::var_os("WITCHY_REGION_STATS").is_some_and(|v| v == "1") {
             if let Some(bytes) = self.region_copy_bytes() {
                 eprintln!("region copy-out: {bytes} byte(s)");
@@ -768,7 +779,7 @@ impl Runtime {
 
         // Only commit the id once the VM actually came up.
         self.next_id += 1;
-        Ok(Vm { store, instance })
+        Ok(Vm { store, instance, aborted: false })
     }
 
     /// Run a VM, but preempt it if it runs longer than `budget`. A watchdog

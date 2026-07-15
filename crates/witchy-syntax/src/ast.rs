@@ -313,8 +313,9 @@ pub enum TypeQual {
     /// `Qualified(Borrow("a"), T)`. Like the other qualifiers it is a compile-time
     /// contract with no runtime representation — codegen sees through it via the
     /// existing `Qualified` recursion, so a view lowers exactly as its owned inner
-    /// type (parity by construction; RFC-0083 keeps runtime rooting for a later
-    /// phase). The lifetime name relates a borrowed RESULT to the input it views:
+    /// type. Compiled lowering separately retains the related owner until the
+    /// view's checked last use. The lifetime name relates a borrowed RESULT to
+    /// the input it views:
     /// matching names within one signature is the output-to-input relation the
     /// checker enforces.
     Borrow(String),

@@ -19,9 +19,34 @@
           (func (export "run") (loop $l (br $l))))
     "#;
 
+    const TRAP_ON_FIRST_RUN: &str = r#"
+        (module
+          (memory (export "memory") 1)
+          (global $entered (mut i32) (i32.const 0))
+          (func (export "run")
+            (if (i32.eqz (global.get $entered))
+              (then
+                (global.set $entered (i32.const 1))
+                unreachable))))
+    "#;
+
     const GREEDY: &str = r#"
         (module (memory (export "memory") 4) (func (export "run")))
     "#;
+
+    #[test]
+    fn trapped_vm_is_terminal() {
+        let mut runtime = Runtime::new().unwrap();
+        let mut vm = runtime
+            .spawn(TRAP_ON_FIRST_RUN, Capabilities::default(), 1)
+            .unwrap();
+
+        vm.run().expect_err("the first call traps");
+        let err = vm
+            .run()
+            .expect_err("a trapped VM must not resume with abandoned roots");
+        assert!(err.to_string().contains("aborted Witchy VM cannot be run again"), "{err}");
+    }
 
     #[test]
     fn optimized_wasm_cache_envelope_rejects_corruption_and_swaps() {

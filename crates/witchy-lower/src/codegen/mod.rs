@@ -592,6 +592,13 @@ struct SavedScope {
     elide_index_list: Vec<(String, String)>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LoanRoot {
+    local: String,
+    value: String,
+    bias: i32,
+}
+
 struct Codegen<'types> {
     strings: Vec<(String, u32)>,
     next_offset: u32,
@@ -759,11 +766,19 @@ struct Codegen<'types> {
     /// The active compile unit's uniqueness facts + (kills consumed, sites
     /// seen) for the post-compile consumption check; units nest via lambdas.
     facts_stack: Vec<(analysis::Facts, usize, usize)>,
+    /// Per-unit RFC-0083 statement identities: expected facts from the checked
+    /// AST and the identities actually encountered by lowering.
+    loan_fact_stack: Vec<(HashSet<usize>, HashSet<usize>)>,
     /// (RFC-0035) Per-unit `last_use` drop points (parallel to `facts_stack`): values to
     /// `$rc_free` after their last use, consumed in `lower_block`. Empty unless `rc-floor`.
     drop_facts_stack: Vec<analysis::DropFacts>,
     /// Module-wide function summaries for the uniqueness analysis.
     summaries: analysis::Summaries,
+    /// RFC-0083's authoritative checked loan events for this exact typed AST.
+    loan_facts: witchy_types::loans::LoanFacts,
+    /// Loans active at the statement currently being lowered. `Expr::Try` uses
+    /// this to release roots before its structured early return.
+    active_loan_events: Vec<witchy_types::loans::LoanEvent>,
     /// The current function's own-ABI parameter (its ownership token is the
     /// `${name}__cap` PARAM, and the function returns an extra i32 token).
     cur_fn_own_param: Option<String>,
@@ -1120,7 +1135,10 @@ struct Codegen<'types> {
 }
 
 impl<'types> Codegen<'types> {
-    fn new(type_table: &'types witchy_types::typeck::TypeTable) -> Self {
+    fn new(
+        type_table: &'types witchy_types::typeck::TypeTable,
+        loan_facts: witchy_types::loans::LoanFacts,
+    ) -> Self {
         Self {
             strings: Vec::new(),
             next_offset: DATA_BASE,
@@ -1208,8 +1226,11 @@ impl<'types> Codegen<'types> {
             rc_owned_bindings: HashSet::new(),
             match_scrut_depth: 0,
             facts_stack: Vec::new(),
+            loan_fact_stack: Vec::new(),
             drop_facts_stack: Vec::new(),
             summaries: analysis::Summaries::empty(),
+            loan_facts,
+            active_loan_events: Vec::new(),
             cur_fn_own_param: None,
             cur_fn_has_type_vars: false,
             cur_fn_name: String::new(),
@@ -2567,6 +2588,16 @@ impl<'types> Codegen<'types> {
             let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
             locals.push(WirLocal { name: name.clone(), ty: Self::wir_ty_for_kind(k) });
         }
+        // RFC-0083 owner roots are explicit i32 rc-region pointers. They are
+        // retained after the view-producing binding and released at last use or
+        // on every structured return path.
+        let mut loan_roots = Vec::new();
+        collect_loan_roots(&f.body, &self.loan_facts, &mut loan_roots);
+        loan_roots.sort_by(|a, b| a.local.cmp(&b.local));
+        loan_roots.dedup_by(|a, b| a.local == b.local);
+        for root in loan_roots {
+            locals.push(WirLocal { name: root.local, ty: i32t() });
+        }
         // (RFC-0027) Scalar-replaced aggregates: each field lives in a `${name}$<i>`
         // i64-slot local instead of a heap object. (The plain `${name}` local from
         // the loop above is then simply unused.)
@@ -2723,11 +2754,17 @@ impl<'types> Codegen<'types> {
     /// Begin a compile unit (function/lambda body): run the
     /// uniqueness analysis and install its facts.
     fn begin_unit(&mut self, body: &Block) {
-        let facts = if force_copy_mode() {
+        let mut expected_loan_keys = HashSet::new();
+        collect_loan_event_keys(body, &self.loan_facts, &mut expected_loan_keys);
+        self.loan_fact_stack.push((expected_loan_keys, HashSet::new()));
+        let mut facts = if force_copy_mode() {
             analysis::Facts::default()
         } else {
             analysis::analyze(body, &self.summaries)
         };
+        if !force_copy_mode() {
+            facts.merge_loan_kills(body, &self.loan_facts);
+        }
         self.inplace_push = facts
             .accumulators
             .iter()
@@ -2878,6 +2915,17 @@ impl<'types> Codegen<'types> {
     /// surfaces here as a loud error, never as a lost cap kill.
     fn finish_unit(&mut self, unit: &str) -> Result<(), CodegenError> {
         self.drop_facts_stack.pop();
+        let Some((expected_loans, seen_loans)) = self.loan_fact_stack.pop() else {
+            return cerr(format!("internal: unbalanced loan-fact unit in `{unit}`"));
+        };
+        if expected_loans != seen_loans {
+            return cerr(format!(
+                "internal: loan facts for `{unit}` were not fully consumed \
+                 ({}/{} statement identities) — a compiled subtree was not the checked AST instance",
+                seen_loans.len(),
+                expected_loans.len(),
+            ));
+        }
         let Some((facts, kills, sites)) = self.facts_stack.pop() else {
             return cerr(format!("internal: unbalanced analysis unit in `{unit}`"));
         };
@@ -2918,6 +2966,72 @@ impl<'types> Codegen<'types> {
         s
     }
 
+    fn loan_root(event: &witchy_types::loans::LoanEvent) -> Option<LoanRoot> {
+        let bias = rc_leaf_bias(&event.owner_type)?;
+        if bias < 0 {
+            return None;
+        }
+        Some(LoanRoot {
+            local: format!("__loan_root_{}__{}", event.view, event.owner),
+            value: event.view.clone(),
+            bias,
+        })
+    }
+
+    fn loan_region(root: &LoanRoot) -> witchy_wir::wir::WirExpr {
+        use witchy_wir::wir::{BinOp, Kind as K, WirExpr as W};
+        if root.bias == 0 {
+            W::GetLocal(root.value.clone())
+        } else {
+            W::Binary {
+                op: BinOp::Sub,
+                kind: K::I32,
+                lhs: Box::new(W::GetLocal(root.value.clone())),
+                rhs: Box::new(W::ConstI32(root.bias)),
+            }
+        }
+    }
+
+    fn open_loan_nodes(
+        events: &[witchy_types::loans::LoanEvent],
+    ) -> witchy_wir::wir::WirSeq {
+        use witchy_wir::wir::{WirExpr as W, WirNode as N};
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        for root in events.iter().filter_map(Self::loan_root) {
+            if !seen.insert(root.local.clone()) {
+                continue;
+            }
+            let region = Self::loan_region(&root);
+            out.push(N::SetLocal {
+                local: root.local,
+                value: W::Call { func: "rc_dup".into(), args: vec![region] },
+            });
+        }
+        out
+    }
+
+    fn close_loan_nodes(
+        events: &[witchy_types::loans::LoanEvent],
+    ) -> witchy_wir::wir::WirSeq {
+        use witchy_wir::wir::{WirExpr as W, WirNode as N};
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        for root in events.iter().filter_map(Self::loan_root) {
+            if !seen.insert(root.local.clone()) {
+                continue;
+            }
+            out.push(N::Do(W::Call {
+                func: "rc_drop".into(),
+                args: vec![W::GetLocal(root.local.clone())],
+            }));
+            // Zeroing makes cleanup idempotent across a statement's normal close
+            // and any enclosing structured-return path.
+            out.push(N::SetLocal { local: root.local, value: W::ConstI32(0) });
+        }
+        out
+    }
+
     /// Lower a SIMPLE block to a `WirSeq`. Only functions without in-place/cap
     /// machinery qualify — no `inplace_push` vars, no `var` params, no own-ABI
     /// param — and only `Let`/`Expr`/`Return` statements; any other shape (the
@@ -2936,7 +3050,9 @@ impl<'types> Codegen<'types> {
     /// only on `Some` — the whole block lowered.
     fn lower_block(&mut self, block: &Block) -> Option<witchy_wir::wir::WirSeq> {
         let snap = self.facts_stack.last().map(|(_, k, s)| (*k, *s));
+        let saved_loans = std::mem::take(&mut self.active_loan_events);
         let result = self.lower_block_inner(block);
+        self.active_loan_events = saved_loans;
         if result.is_none() {
             if let (Some((k, s)), Some(top)) = (snap, self.facts_stack.last_mut()) {
                 top.1 = k;
@@ -2984,6 +3100,12 @@ impl<'types> Codegen<'types> {
             let analyzed_stmt = stmt;
             let stmt = rewritten.as_ref().unwrap_or(stmt);
             let stmt_start = seq.len();
+            self.active_loan_events = self.loan_facts.active_at(analyzed_stmt).to_vec();
+            if let Some(key) = self.loan_facts.event_key(analyzed_stmt)
+                && let Some((_, seen)) = self.loan_fact_stack.last_mut()
+            {
+                seen.insert(key);
+            }
             match stmt {
                 Stmt::Let { name, value, .. } => {
                     // (RFC-0035 step 3) If this binds a dup-eligible container read
@@ -3185,6 +3307,26 @@ impl<'types> Codegen<'types> {
                             Kind::ExternRef => W::RefNull(witchy_wir::wir::Kind::ExternRef),
                             Kind::GcRef(id) => W::RefNull(witchy_wir::wir::Kind::GcRef(id)),
                         },
+                    };
+                    let active = self.active_loan_events.clone();
+                    let cleanup = Self::close_loan_nodes(&active);
+                    let value = if cleanup.is_empty() {
+                        // Keep the direct return expression intact so recursive
+                        // calls remain visible to the WIR tail-call pass.
+                        value
+                    } else {
+                        // Evaluate the return value while every referenced view is
+                        // still rooted, then release roots before transferring
+                        // control. Cleanup must never run before this evaluation.
+                        let return_kind = if self.cur_fn_ret_slot {
+                            Kind::I64
+                        } else {
+                            self.cur_fn_ret_kind
+                        };
+                        let return_tmp = call_result_tmp(return_kind);
+                        seq.push(N::SetLocal { local: return_tmp.clone(), value });
+                        seq.extend(cleanup);
+                        W::GetLocal(return_tmp)
                     };
                     if self.cur_fn_var_params.is_empty() && self.cur_fn_own_param.is_none() {
                         seq.push(N::Return(Some(value)));
@@ -4031,6 +4173,12 @@ impl<'types> Codegen<'types> {
                 debug_assert!(attached, "detected host path must accept a source site");
                 seq.extend(stmt_seq);
                 self.uses_diagnostic_sites = true;
+            }
+            if !matches!(stmt, Stmt::Return(_)) {
+                let opens = self.loan_facts.opens_after(analyzed_stmt).to_vec();
+                let closes = self.loan_facts.closes_after(analyzed_stmt).to_vec();
+                seq.extend(Self::open_loan_nodes(&opens));
+                seq.extend(Self::close_loan_nodes(&closes));
             }
             // Reset the cap of any inplace_push var killed AFTER this statement
             // (binary path), positioned here in the seq. Read-only — the kills
@@ -6596,6 +6744,7 @@ impl<'types> Codegen<'types> {
                 // value, then each var param's current value, then the own-cap),
                 // matching `assemble_wir_func`'s tail — so the var writeback still
                 // happens on the `?` error path. Then a bare `Return(None)`.
+                let active = self.active_loan_events.clone();
                 let mut els: Vec<N> =
                     if self.cur_fn_var_params.is_empty() && self.cur_fn_own_param.is_none() {
                         // `?` early-returns the whole Err/None aggregate (an i32
@@ -6609,7 +6758,9 @@ impl<'types> Codegen<'types> {
                         } else {
                             W::GetLocal(tmp.clone())
                         };
-                        vec![N::Return(Some(ret_val))]
+                        let mut nodes = Self::close_loan_nodes(&active);
+                        nodes.push(N::Return(Some(ret_val)));
+                        nodes
                     } else {
                         let result = if self.cur_fn_ret_slot {
                             W::ToSlot(
@@ -6619,7 +6770,8 @@ impl<'types> Codegen<'types> {
                         } else {
                             W::GetLocal(tmp.clone())
                         };
-                        let mut nodes = vec![N::Push(result)];
+                        let mut nodes = Self::close_loan_nodes(&active);
+                        nodes.push(N::Push(result));
                         for name in &self.cur_fn_var_params {
                             let var = W::GetLocal(name.clone());
                             let var = if self.cur_fn_ret_slot {
@@ -7071,6 +7223,13 @@ impl<'types> Codegen<'types> {
                 for name in &lets {
                     let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
                     locals.push(WirLocal { name: name.clone(), ty: Self::wir_ty_for_kind(k) });
+                }
+                let mut loan_roots = Vec::new();
+                collect_loan_roots(body, &self.loan_facts, &mut loan_roots);
+                loan_roots.sort_by(|a, b| a.local.cmp(&b.local));
+                loan_roots.dedup_by(|a, b| a.local == b.local);
+                for root in loan_roots {
+                    locals.push(WirLocal { name: root.local, ty: i32t() });
                 }
                 let mut cap_vars: Vec<&String> = lambda_inplace.iter().collect();
                 cap_vars.sort();
@@ -8714,6 +8873,213 @@ fn view_slice_args(e: &Expr) -> Option<(&Expr, &Expr, &Expr)> {
             Some((&args[0], &args[1], &args[2]))
         }
         _ => None,
+    }
+}
+
+fn collect_loan_roots(
+    block: &Block,
+    facts: &witchy_types::loans::LoanFacts,
+    out: &mut Vec<LoanRoot>,
+) {
+    for stmt in &block.stmts {
+        out.extend(facts.opens_after(stmt).iter().filter_map(Codegen::loan_root));
+        let value = match stmt {
+            Stmt::Let { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::LetPattern { value, .. }
+            | Stmt::Return(Some(value))
+            | Stmt::Yield(value)
+            | Stmt::Expr(value) => Some(value),
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => None,
+        };
+        if let Some(value) = value {
+            collect_loan_roots_expr(value, facts, out);
+        }
+    }
+}
+
+fn collect_loan_event_keys(
+    block: &Block,
+    facts: &witchy_types::loans::LoanFacts,
+    out: &mut HashSet<usize>,
+) {
+    for stmt in &block.stmts {
+        if let Some(key) = facts.event_key(stmt) {
+            out.insert(key);
+        }
+        let value = match stmt {
+            Stmt::Let { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::LetPattern { value, .. }
+            | Stmt::Return(Some(value))
+            | Stmt::Yield(value)
+            | Stmt::Expr(value) => Some(value),
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => None,
+        };
+        if let Some(value) = value {
+            collect_loan_event_keys_expr(value, facts, out);
+        }
+    }
+}
+
+fn collect_loan_event_keys_expr(
+    expr: &Expr,
+    facts: &witchy_types::loans::LoanFacts,
+    out: &mut HashSet<usize>,
+) {
+    match expr {
+        Expr::If { cond, then_block, else_block } => {
+            collect_loan_event_keys_expr(cond, facts, out);
+            collect_loan_event_keys(then_block, facts, out);
+            if let Some(block) = else_block {
+                collect_loan_event_keys(block, facts, out);
+            }
+        }
+        Expr::While { cond, body } => {
+            collect_loan_event_keys_expr(cond, facts, out);
+            collect_loan_event_keys(body, facts, out);
+        }
+        Expr::For { iter, body, .. } => {
+            collect_loan_event_keys_expr(iter, facts, out);
+            collect_loan_event_keys(body, facts, out);
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            collect_loan_event_keys_expr(scrutinee, facts, out);
+            collect_loan_event_keys(body, facts, out);
+        }
+        Expr::Block(block) => collect_loan_event_keys(block, facts, out),
+        Expr::Match { scrutinee, arms } => {
+            collect_loan_event_keys_expr(scrutinee, facts, out);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_loan_event_keys_expr(guard, facts, out);
+                }
+                collect_loan_event_keys_expr(&arm.body, facts, out);
+            }
+        }
+        // A lambda is a separate compile unit with its own identity assertion.
+        Expr::Lambda { .. } => {}
+        Expr::List(items) | Expr::Tuple(items) => {
+            items.iter().for_each(|item| collect_loan_event_keys_expr(item, facts, out));
+        }
+        Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
+            args.iter().for_each(|arg| collect_loan_event_keys_expr(arg, facts, out));
+        }
+        Expr::LabeledCall { args, .. } => {
+            args.iter().for_each(|(_, arg)| collect_loan_event_keys_expr(arg, facts, out));
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            collect_loan_event_keys_expr(receiver, facts, out);
+            args.iter().for_each(|arg| collect_loan_event_keys_expr(arg, facts, out));
+        }
+        Expr::Apply { func, args } => {
+            collect_loan_event_keys_expr(func, facts, out);
+            args.iter().for_each(|arg| collect_loan_event_keys_expr(arg, facts, out));
+        }
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. }
+        | Expr::Field { base: expr, .. } => collect_loan_event_keys_expr(expr, facts, out),
+        Expr::Binary { lhs, rhs, .. }
+        | Expr::Index { base: lhs, index: rhs }
+        | Expr::Range { lo: lhs, hi: rhs, .. } => {
+            collect_loan_event_keys_expr(lhs, facts, out);
+            collect_loan_event_keys_expr(rhs, facts, out);
+        }
+        Expr::RecordUpdate { base, fields, .. } => {
+            collect_loan_event_keys_expr(base, facts, out);
+            fields.iter().for_each(|(_, value)| collect_loan_event_keys_expr(value, facts, out));
+        }
+        Expr::Record { fields, spread, .. } => {
+            fields.iter().for_each(|(_, value)| collect_loan_event_keys_expr(value, facts, out));
+            if let Some(spread) = spread {
+                collect_loan_event_keys_expr(spread, facts, out);
+            }
+        }
+        Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
+        | Expr::Var(_) | Expr::TaggedLit { .. } => {}
+    }
+}
+
+fn collect_loan_roots_expr(
+    expr: &Expr,
+    facts: &witchy_types::loans::LoanFacts,
+    out: &mut Vec<LoanRoot>,
+) {
+    match expr {
+        Expr::If { cond, then_block, else_block } => {
+            collect_loan_roots_expr(cond, facts, out);
+            collect_loan_roots(then_block, facts, out);
+            if let Some(block) = else_block {
+                collect_loan_roots(block, facts, out);
+            }
+        }
+        Expr::While { cond, body } => {
+            collect_loan_roots_expr(cond, facts, out);
+            collect_loan_roots(body, facts, out);
+        }
+        Expr::For { iter, body, .. } => {
+            collect_loan_roots_expr(iter, facts, out);
+            collect_loan_roots(body, facts, out);
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            collect_loan_roots_expr(scrutinee, facts, out);
+            collect_loan_roots(body, facts, out);
+        }
+        Expr::Block(block) => collect_loan_roots(block, facts, out),
+        Expr::Match { scrutinee, arms } => {
+            collect_loan_roots_expr(scrutinee, facts, out);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_loan_roots_expr(guard, facts, out);
+                }
+                collect_loan_roots_expr(&arm.body, facts, out);
+            }
+        }
+        // A lambda is a separate compile unit with its own root locals.
+        Expr::Lambda { .. } => {}
+        Expr::List(items) | Expr::Tuple(items) => {
+            items.iter().for_each(|item| collect_loan_roots_expr(item, facts, out));
+        }
+        Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
+            args.iter().for_each(|arg| collect_loan_roots_expr(arg, facts, out));
+        }
+        Expr::LabeledCall { args, .. } => {
+            args.iter().for_each(|(_, arg)| collect_loan_roots_expr(arg, facts, out));
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            collect_loan_roots_expr(receiver, facts, out);
+            args.iter().for_each(|arg| collect_loan_roots_expr(arg, facts, out));
+        }
+        Expr::Apply { func, args } => {
+            collect_loan_roots_expr(func, facts, out);
+            args.iter().for_each(|arg| collect_loan_roots_expr(arg, facts, out));
+        }
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } => {
+            collect_loan_roots_expr(expr, facts, out);
+        }
+        Expr::Field { base, .. } => collect_loan_roots_expr(base, facts, out),
+        Expr::Binary { lhs, rhs, .. }
+        | Expr::Index { base: lhs, index: rhs }
+        | Expr::Range { lo: lhs, hi: rhs, .. } => {
+            collect_loan_roots_expr(lhs, facts, out);
+            collect_loan_roots_expr(rhs, facts, out);
+        }
+        Expr::RecordUpdate { base, fields, .. } => {
+            collect_loan_roots_expr(base, facts, out);
+            fields.iter().for_each(|(_, value)| collect_loan_roots_expr(value, facts, out));
+        }
+        Expr::Record { fields, spread, .. } => {
+            fields.iter().for_each(|(_, value)| collect_loan_roots_expr(value, facts, out));
+            if let Some(spread) = spread {
+                collect_loan_roots_expr(spread, facts, out);
+            }
+        }
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Duration(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::Var(_)
+        | Expr::TaggedLit { .. } => {}
     }
 }
 

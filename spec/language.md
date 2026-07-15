@@ -686,7 +686,8 @@ aliasing. Concretely:
   `yield` (§11), because a generator re-runs its body to the next yield rather
   than capturing a continuation.
 
-**Ownership/immutability qualifiers** (`frozen`, `unique`, `local unique`) are
+**Ownership/immutability qualifiers** (`frozen`, `unique`, `local unique`, and
+borrowed `View`) are
 compile-time *contracts* on a type — distinct from the calling conventions above,
 they live on the type and propagate through it. They have no runtime
 representation (both backends lower `frozen T`/`unique T` to `T`), so they never
@@ -698,6 +699,7 @@ change observable behavior; they only let the checker enforce, and a library
 | `frozen T` | deeply immutable — sharing is safe; declaring it mutable (`var`/`own`) is a check-time error |
 | `unique T` | the sole reference — may be mutated in place and returned as `unique` |
 | `local unique T` | unique within this call only — may be mutated but **may not escape** (returning it is a check-time error) |
+| `View(T, 'a)` | a read-only view whose lifetime is tied to an input `let('a) T`; available in `mode opt` |
 
 ```witchy
 import show
@@ -717,6 +719,45 @@ These restate, as enforced contracts, guarantees witchy's value semantics alread
 provide (a shared value is never mutated in place; the uniqueness pass reuses
 buffers it proves unaliased), so they carry no separate performance cost or
 benefit — see [performance.md](performance.md).
+
+### Borrowed views
+
+A `mode opt` function may return a read-only view tied to one or more borrowed
+inputs. Every returned lifetime must be bound by an input of the same name:
+
+```witchy
+mode opt
+
+fn inspect(xs: let('a) List(Int)) -> View(List(Int), 'a):
+    xs
+```
+
+The relation is part of the function type. Direct calls, resolved trait calls,
+and indirect function values preserve it; assigning a function value to a type
+that erases or changes the owner positions or parameter conventions is a
+check-time error.
+
+Binding a returned view loans the corresponding owner until the view's final
+use. During that interval the owner may be read, but it may not be moved,
+reassigned, mutated, or passed to a `var`/`own` parameter, and the view may not
+escape through a closure, task, channel, mutable binding, or owned aggregate.
+Forwarding a bound view preserves its original owner loan. Persisting a view of
+a temporary is rejected because there is no stable owner; immediately calling
+`.owned()` on that result is allowed. A projection of an already-bound view
+must likewise be materialized before it is persisted, so the new alias cannot
+lose the projected storage layout. A live view may not cross `await`, `break`,
+or `continue`, and lambda bodies are checked as independent scopes. Last-use
+precision is statement-level within a straight-line block; an enclosing loan is
+conservatively live throughout a nested branch or loop body. Calling `.owned()`
+from `import borrow` produces an owned snapshot and is such a final use.
+
+Views have the same logical value representation as their inner type. On the
+compiled backend, lowering retains a hidden root for refcounted linear-memory
+owners until the checked final use and releases it on normal, explicit-return,
+and `?` paths. Opening the loan also invalidates the owner's uniqueness token,
+so later update/extract operations copy and re-own rather than mutating storage
+still observed by the materialized value. Host-backed views and capability
+leases require a capability-specific API and are not introduced by this rule.
 
 ## 8. Generics and traits
 
@@ -1067,7 +1108,9 @@ Unexpected failure is **loud on every backend**: out-of-bounds indexing,
 division by zero, unparseable `string.to_int`, NaN ordering, and the `fail(msg)`
 primitive all abort (a runtime error interpreted, a trap compiled). The parity
 invariant covers these too — a program that errors on one backend errors on
-both.
+both. An abort is terminal for that VM instance: it cannot be resumed after a
+partially unwound call. Structured `return` and `?` paths are not aborts and run
+their ordinary ownership cleanup.
 
 **Unwrapping with `??`.** For a quick value-or-default, `Option(T) ?? T` unwraps
 to a bare `T` (§4): `Some(x) ?? d` is `x`, `None ?? d` is `d` (with `d` evaluated

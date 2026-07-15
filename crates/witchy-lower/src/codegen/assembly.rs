@@ -545,7 +545,9 @@ fn assemble_wir_module_with_structs(
     });
     typed.rewrite_preserving_nodes(|table, module| flip_string_add_module(module, table));
     let module = typed.module();
-    let mut cg = Codegen::new(typed.table());
+    let loan_facts = witchy_types::loans::facts(module)
+        .map_err(|error| CodegenError { message: error.to_string() })?;
+    let mut cg = Codegen::new(typed.table(), loan_facts);
     cg.collect_wir = true;
     register_module_items(&mut cg, module);
     cg.eq_types = eq_types;

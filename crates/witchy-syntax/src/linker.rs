@@ -533,10 +533,90 @@ pub fn link_with_user_modules_with_mode(
 
     // Lower `async fn`/`await` to ordinary functions over `std/task` (CPS over
     // closures), also before typeck — adds `import task`/`import chan` to any
-    // async module.
+    // async module. Seed the pre-typeck lowering with linked signature facts so
+    // imported and method-returned views cannot disappear into a continuation.
+    let qualified_view_fns: HashSet<String> = modules
+        .iter()
+        .flat_map(|(module_name, module)| {
+            module.items.iter().flat_map(move |item| match item {
+                Item::Function(function) => {
+                    let mut names = Vec::new();
+                    if function.ret.as_ref().is_some_and(|ty| {
+                        matches!(ty, Type::Qualified(TypeQual::Borrow(_), _))
+                    }) {
+                        names.push(format!("{module_name}.{}", function.name));
+                    }
+                    if function.ret.as_ref().is_some_and(|ty| {
+                        matches!(
+                            ty.unqualified(),
+                            Type::Fn(_, ret, _)
+                                if matches!(ret.as_ref(), Type::Qualified(TypeQual::Borrow(_), _))
+                        )
+                    }) {
+                        names.push(format!("@callable:{module_name}.{}", function.name));
+                    }
+                    names
+                }
+                Item::Impl(definition) => definition
+                    .methods
+                    .iter()
+                    .flat_map(|method| {
+                        let mut names = Vec::new();
+                        if method.ret.as_ref().is_some_and(|ty| {
+                            matches!(ty, Type::Qualified(TypeQual::Borrow(_), _))
+                        }) {
+                            names.push(format!("@method:{}", method.name));
+                        }
+                        if method.ret.as_ref().is_some_and(|ty| {
+                            matches!(
+                                ty.unqualified(),
+                                Type::Fn(_, ret, _)
+                                    if matches!(ret.as_ref(), Type::Qualified(TypeQual::Borrow(_), _))
+                            )
+                        }) {
+                            names.push(format!("@callable-method:{}", method.name));
+                        }
+                        names
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            })
+        })
+        .collect();
     modules = modules
         .into_iter()
-        .map(|(n, m)| crate::async_lower::lower(m).map(|m| (n, m)))
+        .map(|(n, m)| {
+            let mut known = qualified_view_fns.clone();
+            for item in &m.items {
+                if let Item::Function(function) = item {
+                    if function.ret.as_ref().is_some_and(|ty| {
+                        matches!(ty, Type::Qualified(TypeQual::Borrow(_), _))
+                    }) {
+                        known.insert(function.name.clone());
+                    }
+                    if function.ret.as_ref().is_some_and(|ty| {
+                        matches!(
+                            ty.unqualified(),
+                            Type::Fn(_, ret, _)
+                                if matches!(ret.as_ref(), Type::Qualified(TypeQual::Borrow(_), _))
+                        )
+                    }) {
+                        known.insert(format!("@callable:{}", function.name));
+                    }
+                }
+            }
+            for (source, names) in &m.from_imports {
+                for name in names {
+                    if known.contains(&format!("{source}.{name}")) {
+                        known.insert(name.clone());
+                    }
+                    if known.contains(&format!("@callable:{source}.{name}")) {
+                        known.insert(format!("@callable:{name}"));
+                    }
+                }
+            }
+            crate::async_lower::lower_with_view_fns(m, &known).map(|m| (n, m))
+        })
         .collect::<Result<_, _>>()
         .map_err(|message| LinkError { message, location: None })?;
 
@@ -891,14 +971,24 @@ pub fn link_with_user_modules_with_mode(
             }
         }
     }
+    let mut linked_modes = modules
+        .iter()
+        .find(|(name, _)| name == entry)
+        .map(|(_, module)| module.modes.clone())
+        .unwrap_or_default();
+    // RFC-0083: preserve the origin of borrowed APIs when a normal entry imports
+    // an opt module. These are linked-AST metadata, never source modes; the
+    // formatter filters them and the loan checker consumes them per function.
+    linked_modes.extend(
+        modules
+            .iter()
+            .filter(|(_, module)| is_opt(module))
+            .map(|(name, _)| format!("@opt:{name}")),
+    );
     let mut module = Module {
         // The entry module's performance modes carry onto the linked module;
         // enforcement applies to the entry file's own (unqualified) functions.
-        modes: modules
-            .iter()
-            .find(|(n, _)| n == entry)
-            .map(|(_, m)| m.modes.clone())
-            .unwrap_or_default(),
+        modes: linked_modes,
         imports: Vec::new(),
         from_imports: Vec::new(),
         items,

@@ -188,3 +188,23 @@ fn main(console: Console):
 the ordinary typed method path — on a view it copies out, and on a non-view value
 it is a plain identity. Views are a `mode opt`-only tool: normal witchy keeps
 owned value semantics and never needs the syntax.
+
+The lifetime relation is part of a function value's type, not a property of its
+spelling. Calling through `let inspect = first` preserves the same loan, and an
+ascription that removes the returned-view relation is rejected. On the compiled
+backend, a hidden owner root remains live through the view's last use (including
+explicit `return` and `?` paths), and the active loan makes the owner non-unique
+to update/extract optimizations. That is why materializing and then mutating the
+owner preserves the old snapshot instead of modifying shared storage in place.
+
+A persisted view must come from a stable owner. A view of a temporary is useful
+only when immediately materialized with `.owned()`, and a borrowed result cannot
+be stored in a mutable binding or owned aggregate. Forwarding a view keeps the
+original owner loan, including through lambdas and indirect calls. A live view
+also cannot cross an `await` or a loop `break`/`continue` edge; materialize it
+first when ownership must outlive that boundary.
+
+Last-use checking is precise within a straight-line block. An enclosing live
+view is conservatively treated as live throughout a nested branch or loop body,
+so materialize before branch-local mutation when the branches cannot be proven
+disjoint.

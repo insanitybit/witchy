@@ -2,7 +2,8 @@
     //! checker (`check_str`) over a small `mode opt` program and asserts the loan
     //! rule accepts or rejects it with the documented diagnostic.
 
-    use crate::typeck::check_str;
+    use crate::{loans::facts, typeck::check_str};
+    use witchy_syntax::ast::Item;
 
     /// A borrowed-view helper plus a `main` body, as a `mode opt` module. Includes
     /// LOCAL `owned`/`send` helpers so these checker tests need no std linking
@@ -117,6 +118,16 @@
     }
 
     #[test]
+    fn rebinding_a_view_transfers_its_owner_loan() {
+        let err = check_str(&opt(
+            "    var s = \"hi\"\n    let first = borrow(s)\n    let second = first\n    s = \"x\"\n    console.print(second)\n",
+        ))
+        .expect_err("a view alias keeps the owner loan live");
+        assert!(err.contains("reassigned"), "{err}");
+        assert!(err.contains("second"), "the active alias is named: {err}");
+    }
+
+    #[test]
     fn loan_relation_propagates_through_a_wrapper() {
         // `wrapper` re-returns `inner`'s view; its OWN signature carries the
         // borrow, so a caller still loans the owner (relation survives the call).
@@ -127,6 +138,69 @@
         let err = check_str(src).expect_err("a conflict through one wrapper is still caught");
         assert!(err.contains("reassigned"), "{err}");
         assert!(err.contains("wrapper"), "the diagnostic names the borrowing call: {err}");
+
+        let rebound = "mode opt\n\nfn borrow(text: let('a) String) -> View(String, 'a):\n    text\n\nfn forward(text: let('b) String) -> View(String, 'b):\n    text\n\nfn main(console: Console):\n    var s = \"hi\"\n    let first = borrow(s)\n    let second = forward(first)\n    s = \"x\"\n    console.print(second)\n";
+        let err = check_str(rebound)
+            .expect_err("forwarding a bound view must keep the original owner loaned");
+        assert!(err.contains("owner `s` is reassigned"), "{err}");
+    }
+
+    #[test]
+    fn loan_relation_survives_a_function_value() {
+        let src = "mode opt\n\n\
+             fn borrow(text: let('a) String) -> View(String, 'a):\n    text\n\n\
+             fn main(console: Console):\n    var s = \"hi\"\n    let f = borrow\n    let w = f(s)\n    s = \"x\"\n    console.print(w)\n";
+        let err = check_str(src).expect_err("an indirect returned view still loans its owner");
+        assert!(err.contains("reassigned"), "{err}");
+        assert!(err.contains("`f`") || err.contains("`borrow`"), "{err}");
+    }
+
+    #[test]
+    fn function_type_may_not_erase_a_borrow_relation() {
+        let src = "mode opt\n\n\
+             fn borrow(text: let('a) String) -> View(String, 'a):\n    text\n\n\
+             fn main(console: Console):\n    let f: fn(String) -> String = borrow\n    console.print(f(\"hi\"))\n";
+        let err = check_str(src).expect_err("an ascription may not erase a borrow relation");
+        assert!(err.contains("erases or changes its borrow/convention relation"), "{err}");
+
+        let cast = "mode opt\n\nfn borrow(text: let('a) String) -> View(String, 'a):\n    text\n\nfn main(console: Console):\n    let f = borrow as fn(String) -> String\n    console.print(f(\"hi\"))\n";
+        let err = check_str(cast).expect_err("a cast may not erase a borrow relation");
+        assert!(err.contains("cannot ascribe") || err.contains("function cast erases"), "{err}");
+
+        let argument = "mode opt\n\nfn borrow(text: let('a) String) -> View(String, 'a):\n    text\n\nfn use(f: fn(String) -> String) -> String:\n    f(\"x\")\n\nfn main(console: Console):\n    console.print(use(borrow))\n";
+        let err = check_str(argument)
+            .expect_err("a higher-order argument may not erase a borrow relation");
+        assert!(err.contains("argument 1 passed to `use` erases"), "{err}");
+
+        let returned = "mode opt\n\nfn borrow(text: let('a) String) -> View(String, 'a):\n    text\n\nfn erase() -> fn(String) -> String:\n    borrow\n";
+        let err = check_str(returned)
+            .expect_err("a returned function value may not erase a borrow relation");
+        assert!(err.contains("returned function value erases"), "{err}");
+    }
+
+    #[test]
+    fn borrowed_function_types_require_opt_mode_and_bound_outputs() {
+        let no_opt = "fn apply(f: fn(View(String, 'a)) -> View(String, 'a), s: String) -> String:\n    f(s)\n";
+        let err = check_str(no_opt).expect_err("borrowed function type requires mode opt");
+        assert!(err.contains("mode opt"), "{err}");
+
+        let unbound = "mode opt\n\nfn bad(f: fn(String) -> View(String, 'a)) -> String:\n    \"x\"\n";
+        let err = check_str(unbound).expect_err("nested output lifetime must be bound");
+        assert!(err.contains("function parameter borrows with that lifetime"), "{err}");
+    }
+
+    #[test]
+    fn function_returned_callable_preserves_its_borrow_relation() {
+        let src = "mode opt\n\nfn borrow(xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n\nfn make() -> fn(View(List(Int), 'a)) -> View(List(Int), 'a):\n    borrow\n\nfn main(console: Console):\n    var xs = [1]\n    let f = make()\n    let w = f(xs)\n    xs = [2]\n    let n = list.length(w)\n    console.print(\"done\")\n";
+        let err = check_str(src).expect_err("a returned callable must retain its loan relation");
+        assert!(err.contains("reassigned"), "{err}");
+    }
+
+    #[test]
+    fn lambda_callable_preserves_own_convention() {
+        let src = "mode opt\n\nfn borrow(xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n\nfn main(console: Console):\n    let xs = [1]\n    let w = borrow(xs)\n    let consume = fn(own ys: List(Int)) -> Int: list.length(ys)\n    let n = consume(xs)\n    let m = list.length(w)\n    console.print(\"done\")\n";
+        let err = check_str(src).expect_err("an indirect own call may not consume a loaned owner");
+        assert!(err.contains("own") || err.contains("moved"), "{err}");
     }
 
     // --- escape rejection (acceptance 7) ------------------------------------
@@ -138,6 +212,11 @@
         ))
         .expect_err("a view captured by a closure escapes its owner");
         assert!(err.contains("escapes through a closure"), "{err}");
+
+        let local = "mode opt\n\nfn borrow(text: let('a) String) -> View(String, 'a):\n    text\n\nfn main(console: Console):\n    let f = fn():\n        var s = \"inside\"\n        let w = borrow(s)\n        s = \"mutated\"\n        console.print(w)\n    f()\n";
+        let err = check_str(local).expect_err("lambda-local loans must be checked");
+        assert!(err.contains("lambda 1 in main"), "{err}");
+        assert!(err.contains("owner `s` is reassigned"), "{err}");
     }
 
     #[test]
@@ -147,7 +226,75 @@
             "    var s = \"hi\"\n    let w = borrow(s)\n    let _ = send(s, w)\n    console.print(w)\n",
         ))
         .expect_err("a view sent through a channel escapes its owner");
-        assert!(err.contains("escapes through a closure, task, or channel"), "{err}");
+        assert!(err.contains("escapes through a task or channel"), "{err}");
+    }
+
+    #[test]
+    fn view_stored_in_owned_aggregate_or_mutable_binding_is_rejected() {
+        let aggregate = check_str(&opt(
+            "    var s = \"hi\"\n    let w = borrow(s)\n    let boxed = [w]\n    console.print(w)\n",
+        ))
+        .expect_err("an owned list may not retain a borrowed view");
+        assert!(aggregate.contains("owned aggregate"), "{aggregate}");
+
+        let direct_aggregate = check_str(&opt(
+            "    var s = \"hi\"\n    let boxed = [borrow(s)]\n    console.print(\"done\")\n",
+        ))
+        .expect_err("an aggregate may not hide a direct view result");
+        assert!(direct_aggregate.contains("stored in an owned aggregate"), "{direct_aggregate}");
+
+        let mutable = check_str(&opt(
+            "    var s = \"hi\"\n    let w = borrow(s)\n    var slot = \"\"\n    slot = w\n    console.print(w)\n",
+        ))
+        .expect_err("a mutable binding may not retain a borrowed view");
+        assert!(mutable.contains("mutable binding"), "{mutable}");
+
+        let direct = check_str(&opt(
+            "    var s = \"hi\"\n    var slot = borrow(s)\n    console.print(slot)\n",
+        ))
+        .expect_err("a mutable binding may not receive a direct view result");
+        assert!(direct.contains("mutable binding `slot`"), "{direct}");
+
+        let destructured = check_str(&opt(
+            "    var s = \"hi\"\n    let (w, n) = (borrow(s), 0)\n    s = \"changed\"\n    console.print(\"done\")\n",
+        ))
+        .expect_err("destructuring may not hide a borrowed view");
+        assert!(destructured.contains("owned aggregate"), "{destructured}");
+
+        let nested = "mode opt\n\nfn borrow(text: let('a) String) -> View(String, 'a):\n    text\n\nfn keep(xs: List(String)) -> Int:\n    list.length(xs)\n\nfn main(console: Console):\n    let text = \"hi\"\n    let n = keep([borrow(text)])\n    console.print(\"done\")\n";
+        let err = check_str(nested).expect_err("a call argument may not hide a view in an aggregate");
+        assert!(err.contains("owned aggregate"), "{err}");
+    }
+
+    #[test]
+    fn returned_view_provenance_must_match_the_function_signature() {
+        let bad = "mode opt\n\nfn borrow(text: let('a) String) -> View(String, 'a):\n    text\n\nfn hide(text: let('a) String) -> String:\n    let w = borrow(text)\n    w\n";
+        let err = check_str(bad).expect_err("an owned return may not hide a borrowed alias");
+        assert!(err.contains("does not return a view tied to that input"), "{err}");
+
+        let good = "mode opt\n\nfn borrow(text: let('a) String) -> View(String, 'a):\n    text\n\nfn forward(text: let('a) String) -> View(String, 'a):\n    let w = borrow(text)\n    w\n";
+        check_str(good).expect("a declared matching relation may forward a local view alias");
+
+        let nested = "mode opt\n\nfn borrow(text: let('a) String) -> View(String, 'a):\n    text\n\nfn hide(text: let('a) String) -> String:\n    if true:\n        let w = borrow(text)\n        w\n    else:\n        text\n";
+        let err = check_str(nested)
+            .expect_err("a nested block may not hide borrowed return provenance");
+        assert!(err.contains("does not return a view tied to that input"), "{err}");
+
+        let wrong_input = "mode opt\n\nfn wrong(a: let('a) String, b: let('b) String) -> View(String, 'a):\n    b\n";
+        let err = check_str(wrong_input)
+            .expect_err("a returned view must derive from the declared input lifetime");
+        assert!(err.contains("owner `b`"), "{err}");
+
+        let projection = "mode opt\n\ntype Holder:\n    text: List(Int)\n\nfn wrong(a: let('a) Holder, b: let('b) Holder) -> View(List(Int), 'a):\n    b.text\n";
+        let err = check_str(projection)
+            .expect_err("a returned projection must retain its root owner");
+        assert!(err.contains("owner `b`"), "{err}");
+    }
+
+    #[test]
+    fn owned_materialization_may_be_assigned() {
+        let src = "mode opt\n\nfn borrow(text: let('a) String) -> View(String, 'a):\n    text\n\nfn owned(text: String) -> String:\n    text\n\nfn main(console: Console):\n    let text = \"hi\"\n    let w = borrow(text)\n    var slot = \"\"\n    slot = owned(w)\n    console.print(slot)\n";
+        check_str(src).expect("an owned result may be stored in a mutable binding");
     }
 
     // --- regression guards for adversarial-review holes ---------------------
@@ -162,6 +309,12 @@
         ))
         .expect_err("a reassignment nested in an `if` is still a conflict");
         assert!(err.contains("reassigned"), "{err}");
+
+        let edge = check_str(&opt(
+            "    var s = \"orig\"\n    while true:\n        let w = borrow(s)\n        if true:\n            break\n        console.print(w)\n",
+        ))
+        .expect_err("a loop edge may not bypass a live view's root cleanup");
+        assert!(edge.contains("`break` would leave the borrowed view `w`"), "{edge}");
     }
 
     #[test]
@@ -200,6 +353,13 @@
              fn owned(x: String) -> String:\n    x\n\n\
              fn main(console: Console):\n    var s = \"orig\"\n    let keep = owned(borrow(s))\n    s = \"mut\"\n    console.print(keep)\n    console.print(s)\n";
         check_str(src).expect("materializing at bind time opens no loan");
+
+        let temporary = "mode opt\n\nfn borrow(text: let('a) String) -> View(String, 'a):\n    text\n\nfn main(console: Console):\n    let w = borrow(\"temporary\")\n    console.print(w)\n";
+        let err = check_str(temporary).expect_err("a persistent view needs a stable owner");
+        assert!(err.contains("borrowed view of a temporary value"), "{err}");
+
+        let materialized = "mode opt\n\nfn borrow(text: let('a) String) -> View(String, 'a):\n    text\n\nfn owned(text: String) -> String:\n    text\n\nfn main(console: Console):\n    let keep = owned(borrow(\"temporary\"))\n    console.print(keep)\n";
+        check_str(materialized).expect("a transient temporary view may be materialized immediately");
     }
 
     // --- non-view code is unaffected ----------------------------------------
@@ -213,4 +373,35 @@
              fn main(console: Console):\n    var s = \"hi\"\n    s = \"there\"\n    let t = take(move s)\n    console.print(t)\n",
         )
         .expect("code without views is unaffected by the loan checker");
+    }
+
+    #[test]
+    fn lowering_facts_open_and_close_on_exact_statements() {
+        let module = witchy_syntax::parser::parse_module(
+            "mode opt\n\n\
+             fn borrow(text: let('a) String) -> View(String, 'a):\n    text\n\n\
+             fn main(console: Console):\n    let s = \"hi\"\n    let w = borrow(s)\n    console.print(w)\n    0\n",
+        )
+        .expect("parse");
+        let loan_facts = facts(&module).expect("loan facts");
+        let main = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(f) if f.name == "main" => Some(f),
+                _ => None,
+            })
+            .expect("main");
+        let open = &main.body.stmts[1];
+        let last_use = &main.body.stmts[2];
+        let after = &main.body.stmts[3];
+
+        assert_eq!(loan_facts.opens_after(open)[0].owner, "s");
+        assert_eq!(loan_facts.opens_after(open)[0].view, "w");
+        assert_eq!(loan_facts.active_at(last_use)[0].owner, "s");
+        assert_eq!(loan_facts.closes_after(last_use)[0].view, "w");
+        assert!(loan_facts.active_at(after).is_empty());
+        let cloned = open.clone();
+        assert!(loan_facts.event_key(open).is_some());
+        assert!(loan_facts.event_key(&cloned).is_none(), "a cloned statement has no facts");
     }

@@ -47,7 +47,45 @@ use crate::ast::*;
 // foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
 use foldhash::{HashSet, HashSetExt as _};
 
-pub fn lower(mut module: Module) -> Result<Module, String> {
+pub fn lower(module: Module) -> Result<Module, String> {
+    let view_fns: HashSet<String> = module
+        .items
+        .iter()
+        .flat_map(|item| match item {
+            Item::Function(function) => {
+                let mut names = Vec::new();
+                if function.ret.as_ref().is_some_and(type_is_borrowed_view) {
+                    names.push(function.name.clone());
+                }
+                if function.ret.as_ref().is_some_and(type_is_view_callable) {
+                    names.push(format!("@callable:{}", function.name));
+                }
+                names
+            }
+            Item::Impl(definition) => definition
+                .methods
+                .iter()
+                .flat_map(|method| {
+                    let mut names = Vec::new();
+                    if method.ret.as_ref().is_some_and(type_is_borrowed_view) {
+                        names.push(format!("@method:{}", method.name));
+                    }
+                    if method.ret.as_ref().is_some_and(type_is_view_callable) {
+                        names.push(format!("@callable-method:{}", method.name));
+                    }
+                    names
+                })
+                .collect(),
+            _ => Vec::new(),
+        })
+        .collect();
+    lower_with_view_fns(module, &view_fns)
+}
+
+pub(crate) fn lower_with_view_fns(
+    mut module: Module,
+    view_fns: &HashSet<String>,
+) -> Result<Module, String> {
     if !has_async(&module) {
         return Ok(module);
     }
@@ -58,7 +96,7 @@ pub fn lower(mut module: Module) -> Result<Module, String> {
         match item {
             Item::Function(f) if f.is_async => {
                 let is_entry = f.name == "main";
-                let (entry, mut segs) = lower_async_fn(f, is_entry, &mut counter)?;
+                let (entry, mut segs) = lower_async_fn(f, is_entry, &mut counter, view_fns)?;
                 items.push(Item::Function(entry));
                 lifted.append(&mut segs);
             }
@@ -75,7 +113,13 @@ pub fn lower(mut module: Module) -> Result<Module, String> {
                 for method in std::mem::take(&mut im.methods) {
                     if method.is_async {
                         let (entry, mut segs) =
-                            lower_async_fn_with(method, false, &mut counter, Some(self_ty.clone()))?;
+                            lower_async_fn_with(
+                                method,
+                                false,
+                                &mut counter,
+                                Some(self_ty.clone()),
+                                view_fns,
+                            )?;
                         methods.push(entry);
                         lifted.append(&mut segs);
                     } else {
@@ -115,6 +159,75 @@ fn has_async(module: &Module) -> bool {
     })
 }
 
+fn type_is_borrowed_view(ty: &Type) -> bool {
+    matches!(ty, Type::Qualified(TypeQual::Borrow(_), _))
+}
+
+fn type_is_view_callable(ty: &Type) -> bool {
+    matches!(ty.unqualified(), Type::Fn(_, ret, _) if type_is_borrowed_view(ret))
+}
+
+fn callable_returns_view(value: &Expr, scope: &[Local], view_fns: &HashSet<String>) -> bool {
+    match value {
+        Expr::Var(name) => view_fns.contains(name)
+            || scope
+                .iter()
+                .rev()
+                .find(|local| local.name == *name)
+                .is_some_and(|local| local.returns_view),
+        Expr::As { ty, .. } => type_is_view_callable(ty),
+        Expr::Lambda { ret: Some(ret), .. } => type_is_borrowed_view(ret),
+        Expr::Call { name, .. } => view_fns.contains(&format!("@callable:{name}")),
+        Expr::MethodCall { method, .. } => {
+            view_fns.contains(&format!("@callable-method:{method}"))
+        }
+        _ => false,
+    }
+}
+
+fn result_is_borrowed_view(
+    value: &Expr,
+    scope: &[Local],
+    view_fns: &HashSet<String>,
+) -> bool {
+    match value {
+        Expr::Var(name) => scope
+            .iter()
+            .rev()
+            .find(|local| local.name == *name)
+            .is_some_and(|local| local.borrowed_view),
+        Expr::Call { name, .. } => view_fns.contains(name)
+            || scope
+                .iter()
+                .rev()
+                .find(|local| local.name == *name)
+                .is_some_and(|local| local.returns_view),
+        Expr::MethodCall { method, .. } => view_fns.contains(&format!("@method:{method}")),
+        Expr::Apply { func, .. } => callable_returns_view(func, scope, view_fns),
+        Expr::If { then_block, else_block, .. } => {
+            block_tail_expr(then_block)
+                .is_some_and(|tail| result_is_borrowed_view(tail, scope, view_fns))
+                || else_block
+                    .as_ref()
+                    .and_then(block_tail_expr)
+                    .is_some_and(|tail| result_is_borrowed_view(tail, scope, view_fns))
+        }
+        Expr::Match { arms, .. } => arms
+            .iter()
+            .any(|arm| result_is_borrowed_view(&arm.body, scope, view_fns)),
+        Expr::Block(block) => block_tail_expr(block)
+            .is_some_and(|tail| result_is_borrowed_view(tail, scope, view_fns)),
+        _ => false,
+    }
+}
+
+fn block_tail_expr(block: &Block) -> Option<&Expr> {
+    match block.stmts.last() {
+        Some(Stmt::Expr(expr)) => Some(expr),
+        _ => None,
+    }
+}
+
 /// An in-scope local (function parameter or `let`/`var` binding): its name, its
 /// known type (if the pre-typeck transform can derive one), and whether it is
 /// mutable. When such a local is carried across an `await` it becomes a parameter
@@ -126,6 +239,9 @@ struct Local {
     name: String,
     ty: Option<Type>,
     mutable: bool,
+    borrowed_view: bool,
+    /// This local holds a function value whose result is a borrowed view.
+    returns_view: bool,
 }
 
 /// Where a statement sequence's fall-through goes.
@@ -150,6 +266,7 @@ struct Ctx<'a> {
     fname: String,
     counter: &'a mut usize,
     segments: Vec<Function>,
+    view_fns: &'a HashSet<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -201,7 +318,13 @@ impl<'a> Ctx<'a> {
                 if let Some(inner) = as_await(value) {
                     reject_await(inner, &self.fname)?;
                     // `let x = E.await` — suspend, then continue with `x` bound.
-                    let bind = Local { name: name.clone(), ty: ty.clone(), mutable: *mutable };
+                    let bind = Local {
+                        name: name.clone(),
+                        ty: ty.clone(),
+                        mutable: *mutable,
+                        borrowed_view: ty.as_ref().is_some_and(type_is_borrowed_view),
+                        returns_view: ty.as_ref().is_some_and(type_is_view_callable),
+                    };
                     self.suspend(inner.clone(), Some(bind), cont)
                 } else {
                     reject_await(value, &self.fname)?;
@@ -210,6 +333,10 @@ impl<'a> Ctx<'a> {
                         name: name.clone(),
                         ty: ty.clone().or_else(|| derive_type(value)),
                         mutable: *mutable,
+                        borrowed_view: ty.as_ref().is_some_and(type_is_borrowed_view)
+                            || result_is_borrowed_view(value, scope, self.view_fns),
+                        returns_view: ty.as_ref().is_some_and(type_is_view_callable)
+                            || callable_returns_view(value, scope, self.view_fns),
                     });
                     let cont2 = Continuation { scope: &scope2, ..cont };
                     Ok(prefix_stmt_at(
@@ -251,7 +378,13 @@ impl<'a> Ctx<'a> {
                 pattern_binds(pattern, &mut binds);
                 let mut scope2 = scope.to_vec();
                 for b in &binds {
-                    scope2.push(Local { name: b.clone(), ty: None, mutable: false });
+                    scope2.push(Local {
+                        name: b.clone(),
+                        ty: None,
+                        mutable: false,
+                        borrowed_view: false,
+                        returns_view: false,
+                    });
                 }
                 let cont2 = Continuation { scope: &scope2, ..cont };
                 Ok(prefix_stmt_at(
@@ -361,7 +494,13 @@ impl<'a> Ctx<'a> {
         let mut cont_scope = cont.scope.to_vec();
         for a in &accs {
             // After the loop the accumulator is a fresh (mutable) local.
-            cont_scope.push(Local { name: a.name.clone(), ty: a.ty.clone(), mutable: true });
+            cont_scope.push(Local {
+                name: a.name.clone(),
+                ty: a.ty.clone(),
+                mutable: true,
+                borrowed_view: a.borrowed_view,
+                returns_view: a.returns_view,
+            });
         }
         let rebind_count = rebind.len();
         let mut cont_stmts = rebind;
@@ -377,7 +516,13 @@ impl<'a> Ctx<'a> {
             lines: cont_lines,
             region: None,
         });
-        let bind = Local { name: acc_bind, ty: None, mutable: false };
+        let bind = Local {
+            name: acc_bind,
+            ty: None,
+            mutable: false,
+            borrowed_view: false,
+            returns_view: false,
+        };
         self.lift_suspend(RawTask(loop_future), Some(bind), cont_block, cont.scope, cont.line)
     }
 
@@ -438,7 +583,13 @@ impl<'a> Ctx<'a> {
                     pattern_binds(&a.pattern, &mut binds);
                     let mut scope2 = scope.to_vec();
                     for b in &binds {
-                        scope2.push(Local { name: b.clone(), ty: None, mutable: false });
+                        scope2.push(Local {
+                            name: b.clone(),
+                            ty: None,
+                            mutable: false,
+                            borrowed_view: false,
+                            returns_view: false,
+                        });
                     }
                     new_arms.push(MatchArm {
                         line: a.line,
@@ -513,6 +664,13 @@ impl<'a> Ctx<'a> {
         // resume bind, which is passed separately).
         let bind_name = bind.as_ref().map(|b| b.name.clone());
         let carried = live_locals(&cont_expr, scope, bind_name.as_deref());
+        if let Some(view) = carried.iter().find(|local| local.borrowed_view) {
+            return Err(self.err(&format!(
+                "borrowed view `{}` remains live across `await` — materialize it with \
+                 `{}.owned()` before suspension",
+                view.name, view.name,
+            )));
+        }
 
         let seg_name = self.fresh_seg();
         let mut params: Vec<Param> = carried.iter().map(local_to_param).collect();
@@ -578,7 +736,13 @@ impl<'a> Ctx<'a> {
         reject_await(iter, &self.fname)?;
         let list_expr = for_iter_list(iter);
         let mut scope2 = scope.to_vec();
-        scope2.push(Local { name: var.to_string(), ty: None, mutable: false });
+        scope2.push(Local {
+            name: var.to_string(),
+            ty: None,
+            mutable: false,
+            borrowed_view: false,
+            returns_view: false,
+        });
         let body_future = self.go(&body.stmts, &body.lines, &scope2, &Tail::Return)?;
         let body_nil = and_then(body_future, self.fresh_tmp(), call("task.ready_unit", vec![]));
         let f = Expr::Lambda {
@@ -611,7 +775,13 @@ impl<'a> Ctx<'a> {
         if !body_folds(body, cont.scope) {
             // Drain / effect body: keep `chan.consume` (interleaving preserved).
             let mut scope2 = cont.scope.to_vec();
-            scope2.push(Local { name: var.to_string(), ty: None, mutable: false });
+            scope2.push(Local {
+                name: var.to_string(),
+                ty: None,
+                mutable: false,
+                borrowed_view: false,
+                returns_view: false,
+            });
             let body_future = self.go(&body.stmts, &body.lines, &scope2, &Tail::Return)?;
             let body_nil =
                 and_then(body_future, self.fresh_tmp(), call("task.ready_unit", vec![]));
@@ -718,7 +888,13 @@ impl<'a> Ctx<'a> {
                 // inferred from the receiver — then dispatched to a segment where a
                 // carried mutation is a real `own`-parameter reassignment.
                 let mut body_scope = carried.clone();
-                body_scope.push(Local { name: var.clone(), ty: None, mutable: false });
+                body_scope.push(Local {
+                    name: var.clone(),
+                    ty: None,
+                    mutable: false,
+                    borrowed_view: false,
+                    returns_view: false,
+                });
                 let body_expr = self.go(&body.stmts, &body.lines, &body_scope, &loop_tail)?;
                 let recv_name = self.fresh_seg();
                 let o = self.fresh_tmp();
@@ -814,8 +990,9 @@ fn lower_async_fn(
     f: Function,
     is_entry: bool,
     counter: &mut usize,
+    view_fns: &HashSet<String>,
 ) -> Result<(Function, Vec<Function>), String> {
-    lower_async_fn_with(f, is_entry, counter, None)
+    lower_async_fn_with(f, is_entry, counter, None, view_fns)
 }
 
 /// As [`lower_async_fn`], with an optional receiver type for a method's `self`
@@ -825,8 +1002,21 @@ fn lower_async_fn_with(
     is_entry: bool,
     counter: &mut usize,
     self_ty: Option<Type>,
+    view_fns: &HashSet<String>,
 ) -> Result<(Function, Vec<Function>), String> {
     let declared_ret = f.ret.clone();
+    if f.params
+        .iter()
+        .filter_map(|param| param.ty.as_ref())
+        .any(type_is_borrowed_view)
+        || declared_ret.as_ref().is_some_and(type_is_borrowed_view)
+    {
+        return Err(format!(
+            "async fn `{}` may not expose a borrowed-view parameter or result because its task \
+             can outlive the caller's loan — pass/return an owned value",
+            f.name,
+        ));
+    }
     if is_entry
         && declared_ret
             .as_ref()
@@ -841,7 +1031,12 @@ fn lower_async_fn_with(
         ));
     }
 
-    let mut ctx = Ctx { fname: f.name.clone(), counter, segments: Vec::new() };
+    let mut ctx = Ctx {
+        fname: f.name.clone(),
+        counter,
+        segments: Vec::new(),
+        view_fns,
+    };
     let scope: Vec<Local> = f
         .params
         .iter()
@@ -855,6 +1050,8 @@ fn lower_async_fn_with(
                 }
             }),
             mutable: p.convention.binds_mutable(),
+            borrowed_view: p.ty.as_ref().is_some_and(type_is_borrowed_view),
+            returns_view: p.ty.as_ref().is_some_and(type_is_view_callable),
         })
         .collect();
     let body_line = first_line(&f.body.lines);
@@ -1402,5 +1599,45 @@ mod tests {
             method.ret,
             Some(Type::Named("task.Task".to_string(), vec![int_type()])),
         );
+    }
+
+    #[test]
+    fn lowering_rejects_a_borrowed_view_live_across_await() {
+        let source = "mode opt\n\nfn view(text: let('a) String) -> View(String, 'a):\n    text\n\nasync fn bad(console: Console):\n    let text = \"x\"\n    let w = view(text)\n    let _ = task.done(0).await\n    console.print(w)\n";
+        let module = crate::parser::parse_module(source).expect("parse borrowed async body");
+        let error = lower(module).expect_err("a view cannot be carried through a segment");
+        assert!(error.contains("borrowed view `w` remains live across `await`"), "{error}");
+        assert!(error.contains("w.owned()"), "{error}");
+    }
+
+    #[test]
+    fn lowering_preserves_a_view_relation_through_a_function_value() {
+        let source = "mode opt\n\nfn view(text: let('a) String) -> View(String, 'a):\n    text\n\nasync fn bad(console: Console):\n    let text = \"x\"\n    let make_view = view\n    let w = make_view(text)\n    let _ = task.done(0).await\n    console.print(w)\n";
+        let module = crate::parser::parse_module(source).expect("parse indirect borrowed async body");
+        let error = lower(module).expect_err("an indirect view cannot cross a segment");
+        assert!(error.contains("borrowed view `w` remains live across `await`"), "{error}");
+    }
+
+    #[test]
+    fn lowering_preserves_a_view_relation_through_a_returned_function_value() {
+        let source = "mode opt\n\nfn view(text: let('a) String) -> View(String, 'a):\n    text\n\nfn make() -> fn(View(String, 'a)) -> View(String, 'a):\n    view\n\nasync fn bad(console: Console):\n    let text = \"x\"\n    let make_view = make()\n    let w = make_view(text)\n    let _ = task.done(0).await\n    console.print(w)\n";
+        let module = crate::parser::parse_module(source).expect("parse returned callable");
+        let error = lower(module).expect_err("a returned callable's view cannot cross a segment");
+        assert!(error.contains("borrowed view `w` remains live across `await`"), "{error}");
+    }
+
+    #[test]
+    fn lowering_tracks_a_view_returning_method_across_await() {
+        let source = "mode opt\n\ntype Holder:\n    text: String\n\nimpl Holder:\n    fn view(self: let('a) Holder) -> View(String, 'a):\n        self.text\n\nasync fn bad(console: Console):\n    let holder = Holder(\"x\")\n    let w = holder.view()\n    let _ = task.done(0).await\n    console.print(w)\n";
+        let module = crate::parser::parse_module(source).expect("parse method borrowed async body");
+        let error = lower(module).expect_err("a method-returned view cannot cross a segment");
+        assert!(error.contains("borrowed view `w` remains live across `await`"), "{error}");
+    }
+
+    #[test]
+    fn lowering_allows_a_view_whose_last_use_precedes_await() {
+        let source = "mode opt\n\nfn view(text: let('a) String) -> View(String, 'a):\n    text\n\nasync fn okay(console: Console):\n    let text = \"x\"\n    let w = view(text)\n    console.print(w)\n    task.done(0).await\n";
+        let module = crate::parser::parse_module(source).expect("parse borrowed async body");
+        lower(module).expect("a dead view is not carried across suspension");
     }
 }

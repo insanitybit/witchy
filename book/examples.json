@@ -346,14 +346,9 @@
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
-    "footprint": [
-      "Console"
-    ],
-    "output": [
-      "9",
-      "pear"
-    ],
-    "runnable": true
+    "footprint": [],
+    "output": [],
+    "runnable": false
   },
   {
     "block": 20,
@@ -364,7 +359,8 @@
       "Console"
     ],
     "output": [
-      "woof"
+      "9",
+      "pear"
     ],
     "runnable": true
   },
@@ -377,12 +373,25 @@
       "Console"
     ],
     "output": [
-      "WOOF"
+      "woof"
     ],
     "runnable": true
   },
   {
     "block": 22,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "WOOF"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 23,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -396,7 +405,7 @@
     "runnable": true
   },
   {
-    "block": 23,
+    "block": 24,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -409,7 +418,7 @@
     "runnable": true
   },
   {
-    "block": 24,
+    "block": 25,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -422,7 +431,7 @@
     "runnable": true
   },
   {
-    "block": 25,
+    "block": 26,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -435,7 +444,7 @@
     "runnable": true
   },
   {
-    "block": 26,
+    "block": 27,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -448,7 +457,7 @@
     "runnable": true
   },
   {
-    "block": 27,
+    "block": 28,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -462,7 +471,7 @@
     "runnable": true
   },
   {
-    "block": 28,
+    "block": 29,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -475,7 +484,7 @@
     "runnable": true
   },
   {
-    "block": 29,
+    "block": 30,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -489,7 +498,7 @@
     "runnable": true
   },
   {
-    "block": 30,
+    "block": 31,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -503,7 +512,7 @@
     "runnable": true
   },
   {
-    "block": 31,
+    "block": 32,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -516,7 +525,7 @@
     "runnable": true
   },
   {
-    "block": 32,
+    "block": 33,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -529,7 +538,7 @@
     "runnable": true
   },
   {
-    "block": 33,
+    "block": 34,
     "console_only": false,
     "expect_error": false,
     "file": "spec/language.md",
@@ -541,22 +550,11 @@
     "runnable": false
   },
   {
-    "block": 34,
+    "block": 35,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [],
-    "output": [],
-    "runnable": false
-  },
-  {
-    "block": 35,
-    "console_only": false,
-    "expect_error": false,
-    "file": "spec/language.md",
-    "footprint": [
-      "Net[Connect,Tcp]"
-    ],
     "output": [],
     "runnable": false
   },
@@ -577,6 +575,17 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
+      "Net[Connect,Tcp]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 38,
+    "console_only": false,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
       "Console",
       "Net[Connect,Listen,Tcp,Udp,Uds]"
     ],
@@ -584,7 +593,7 @@
     "runnable": false
   },
   {
-    "block": 38,
+    "block": 39,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -599,7 +608,7 @@
     "runnable": true
   },
   {
-    "block": 39,
+    "block": 40,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",

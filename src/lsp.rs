@@ -532,8 +532,14 @@ fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) ->
             // HARD gate — the same one `witchy check` enforces via
             // `enforce_performance_modes`. Mirror it here so the editor surfaces those
             // errors instead of silently accepting a program `check` rejects (BUG-165).
-            let enforce = !linked.modes.is_empty();
-            let modes = linked.modes.join(", ");
+            let source_modes: Vec<&str> = linked
+                .modes
+                .iter()
+                .filter(|mode| !mode.starts_with('@'))
+                .map(String::as_str)
+                .collect();
+            let enforce = !source_modes.is_empty();
+            let modes = source_modes.join(", ");
             let mut diags: Vec<Value> = Vec::new();
 
             // Copy-cliffs: a plain note normally (Hint, rendered unobtrusively); in a
