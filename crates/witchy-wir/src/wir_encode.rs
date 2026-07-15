@@ -16,7 +16,10 @@ use wasm_encoder::{
     NameMap, NameSection, RefType, StorageType, TableSection, TableType, TypeSection, ValType,
 };
 
-use crate::wir::{BinOp, GlobalInit, Kind, UnOp, WirExpr, WirModule, WirNode, WirSeq, WirStructDef};
+use crate::wir::{
+    BinOp, ClosureSignature, GlobalInit, Kind, UnOp, WirExpr, WirModule, WirNode, WirSeq,
+    WirStructDef, slot_closure_signature,
+};
 
 /// Map a WIR `Kind` to a wasm-encoder `ValType`. `struct_base` is the type-section
 /// index where GC struct types begin (they follow the function signatures), so a
@@ -61,9 +64,8 @@ fn load_align(kind: Kind) -> u32 {
 pub fn encode(module: &WirModule, structs: &[WirStructDef]) -> Vec<u8> {
     // --- Type section: collect unique (params, results) signatures ---------
     // Imports carry their param/result `Kind`s directly. Funcs derive params
-    // from `params[*].ty.kind()` and results from `ret[*].kind()`. `Kind` is not
-    // `Hash`, so dedup with a small linear scan over the collected signatures
-    // (the signature set is tiny — a handful per module).
+    // from `params[*].ty.kind()` and results from `ret[*].kind()`. Dedup uses a
+    // small linear scan because the signature set is tiny.
     let mut sigs: Vec<(Vec<Kind>, Vec<Kind>)> = Vec::new();
     let mut intern = |params: Vec<Kind>, results: Vec<Kind>| -> u32 {
         if let Some(idx) = sigs.iter().position(|(p, r)| *p == params && *r == results) {
@@ -75,18 +77,14 @@ pub fn encode(module: &WirModule, structs: &[WirStructDef]) -> Vec<u8> {
         }
     };
 
-    // Closure `$clos{N}` signatures (one i32 env-pointer param, N i64 slot args,
-    // one i64 slot result). `$clos0..=MAX_CLOS` are interned FIRST, so they hold
-    // type indices `0..=MAX_CLOS`: spliced prelude raw bodies were assembled
-    // against that exact layout and bake their `call_indirect (type $closN)`
-    // operands as those indices. Reserving them up front (even when no visible
-    // node references them) keeps a spliced `$dict_update`'s indirect call valid.
-    let mut clos_type_idx: HashMap<(usize, usize), u32> = HashMap::new();
+    // The legacy scalar closure signatures are interned first, preserving the
+    // stable `$clos0..=MAX_CLOS` type band. Exact typed signatures are interned
+    // below and may name GC structs.
+    let mut clos_type_idx: HashMap<ClosureSignature, u32> = HashMap::new();
     for n in 0..=crate::wir::MAX_CLOS {
-        let mut params = vec![Kind::I32];
-        params.extend(std::iter::repeat_n(Kind::I64, n));
-        let idx = intern(params, vec![Kind::I64]);
-        clos_type_idx.insert((n, 1), idx);
+        let signature = slot_closure_signature(n, 1);
+        let idx = intern(signature.params.clone(), signature.results.clone());
+        clos_type_idx.insert(signature, idx);
     }
 
     // Type index for each import (in order).
@@ -107,17 +105,15 @@ pub fn encode(module: &WirModule, structs: &[WirStructDef]) -> Vec<u8> {
         })
         .collect();
 
-    // Any wider closure arity actually referenced by a visible `CallIndirect`
-    // (beyond the reserved prelude band) interns after the import/func types.
-    let mut clos_signatures: Vec<(usize, usize)> = Vec::new();
+    // Every exact closure signature referenced by a visible `CallIndirect`
+    // interns after the import/func types unless it matches the scalar band.
+    let mut clos_signatures: Vec<ClosureSignature> = Vec::new();
     for f in &module.funcs {
         collect_clos_signatures(&f.body, &mut clos_signatures);
     }
-    for &(n, result_count) in &clos_signatures {
-        clos_type_idx.entry((n, result_count)).or_insert_with(|| {
-            let mut params = vec![Kind::I32];
-            params.extend(std::iter::repeat_n(Kind::I64, n));
-            intern(params, vec![Kind::I64; result_count])
+    for signature in clos_signatures {
+        clos_type_idx.entry(signature.clone()).or_insert_with(|| {
+            intern(signature.params.clone(), signature.results.clone())
         });
     }
 
@@ -128,8 +124,7 @@ pub fn encode(module: &WirModule, structs: &[WirStructDef]) -> Vec<u8> {
     // across singleton type defs — so the struct must precede any function type
     // that names it. `struct_base` is that first post-clos index; the non-clos
     // function signatures are therefore shifted up by `struct_shift = structs.len()`.
-    // (Reserved clos indices stay put — raw prelude bodies bake `call_indirect
-    // (type $closN)` for `N <= MAX_CLOS`, and those types never take a `GcRef`.)
+    // Reserved scalar indices stay put and never take a `GcRef`.
     let clos_band = crate::wir::MAX_CLOS as u32 + 1;
     let struct_shift = structs.len() as u32;
     let struct_base = clos_band;
@@ -372,21 +367,20 @@ pub fn encode(module: &WirModule, structs: &[WirStructDef]) -> Vec<u8> {
 
 /// Collect the distinct closure signatures referenced by indirect calls for
 /// type-section synthesis. Walks both nodes and their nested expressions.
-fn collect_clos_signatures(seq: &WirSeq, out: &mut Vec<(usize, usize)>) {
-    fn push(out: &mut Vec<(usize, usize)>, signature: (usize, usize)) {
-        if !out.contains(&signature) {
-            out.push(signature);
+fn collect_clos_signatures(seq: &WirSeq, out: &mut Vec<ClosureSignature>) {
+    fn push(out: &mut Vec<ClosureSignature>, signature: &ClosureSignature) {
+        if !out.contains(signature) {
+            out.push(signature.clone());
         }
     }
-    fn walk_expr(e: &WirExpr, out: &mut Vec<(usize, usize)>) {
+    fn walk_expr(e: &WirExpr, out: &mut Vec<ClosureSignature>) {
         match e {
             WirExpr::CallIndirect {
-                type_arity,
-                result_count,
+                signature,
                 args,
                 index,
             } => {
-                push(out, (*type_arity, *result_count));
+                push(out, signature);
                 for a in args {
                     walk_expr(a, out);
                 }
@@ -428,7 +422,7 @@ fn collect_clos_signatures(seq: &WirSeq, out: &mut Vec<(usize, usize)>) {
             | WirExpr::RefNull(_) => {}
         }
     }
-    fn walk_node(node: &WirNode, out: &mut Vec<(usize, usize)>) {
+    fn walk_node(node: &WirNode, out: &mut Vec<ClosureSignature>) {
         match node {
             WirNode::SetLocal { value, .. } | WirNode::SetGlobal { value, .. } => {
                 walk_expr(value, out)
@@ -447,12 +441,12 @@ fn collect_clos_signatures(seq: &WirSeq, out: &mut Vec<(usize, usize)>) {
                 }
             }
             WirNode::CallIndirectStoreMulti {
-                type_arity,
+                signature,
                 args,
                 index,
-                dests,
+                dests: _,
             } => {
-                push(out, (*type_arity, dests.len()));
+                push(out, signature);
                 for a in args {
                     walk_expr(a, out);
                 }
@@ -495,8 +489,8 @@ struct EncodeCtx<'a> {
     func_index: &'a HashMap<&'a str, u32>,
     import_index: &'a HashMap<&'a str, u32>,
     global_index: &'a HashMap<&'a str, u32>,
-    /// Closure `(arity, result count)` -> synthesized type index.
-    clos_type_idx: &'a HashMap<(usize, usize), u32>,
+    /// Exact closure function type -> synthesized type index.
+    clos_type_idx: &'a HashMap<ClosureSignature, u32>,
     /// (RFC-0005) Type-section index where GC struct types begin; a struct opcode's
     /// `struct_id` resolves to `struct_base + struct_id`. Also the boundary below
     /// which type indices are unshifted (the reserved clos band).
@@ -585,17 +579,26 @@ impl EncodeCtx<'_> {
                 }
             }
             WirNode::CallIndirectStoreMulti {
-                type_arity,
+                signature,
                 args,
                 index,
                 dests,
             } => {
+                assert_eq!(
+                    signature.params.len(),
+                    args.len(),
+                    "indirect call parameter signature does not match its arguments"
+                );
+                assert_eq!(
+                    signature.results.len(),
+                    dests.len(),
+                    "indirect call result signature does not match its destinations"
+                );
                 for a in args {
                     self.encode_expr(func, a);
                 }
                 self.encode_expr(func, index);
-                let signature = (*type_arity, dests.len());
-                let pos = *self.clos_type_idx.get(&signature).unwrap_or_else(|| {
+                let pos = *self.clos_type_idx.get(signature).unwrap_or_else(|| {
                     panic!(
                         "call_indirect references unsynthesized closure signature {signature:?}"
                     )
@@ -859,20 +862,22 @@ impl EncodeCtx<'_> {
                 func.instruction(&Instruction::Call(idx));
             }
             WirExpr::CallIndirect {
-                type_arity,
-                result_count,
+                signature,
                 args,
                 index,
             } => {
-                // Args (env ptr then slot args) first, then the code index, then
-                // `call_indirect (type $clos{N})` on table 0 — operand order and
-                // type/table indices match codegen.
+                // Args first, then the code index, then `call_indirect` — operand
+                // order and type/table indices match codegen.
+                assert_eq!(
+                    signature.params.len(),
+                    args.len(),
+                    "indirect call parameter signature does not match its arguments"
+                );
                 for a in args {
                     self.encode_expr(func, a);
                 }
                 self.encode_expr(func, index);
-                let signature = (*type_arity, *result_count);
-                let pos = *self.clos_type_idx.get(&signature).unwrap_or_else(|| {
+                let pos = *self.clos_type_idx.get(signature).unwrap_or_else(|| {
                     panic!(
                         "call_indirect references unsynthesized closure signature {signature:?}"
                     )

@@ -5899,7 +5899,7 @@ impl<'types> Codegen<'types> {
                             }
                         }
                         _ => N::CallIndirectStoreMulti {
-                            type_arity: n,
+                            signature: witchy_wir::wir::slot_closure_signature(n, dests.len()),
                             args: ci_args,
                             index: W::Load {
                                 ptr: Box::new(W::GetLocal(tmp.clone())),
@@ -5918,8 +5918,7 @@ impl<'types> Codegen<'types> {
                         W::Call { func: format!("__lamw{idx}"), args: ci_args }
                     }
                     _ => W::CallIndirect {
-                        result_count: 1,
-                        type_arity: n,
+                        signature: witchy_wir::wir::slot_closure_signature(n, 1),
                         args: ci_args,
                         index: Box::new(W::Load { ptr: Box::new(W::GetLocal(tmp.clone())), kind: witchy_wir::wir::Kind::I32, offset: 0 }),
                     },
@@ -7025,7 +7024,7 @@ impl<'types> Codegen<'types> {
                             }
                         } else {
                             N::CallIndirectStoreMulti {
-                                type_arity: n,
+                                signature: witchy_wir::wir::slot_closure_signature(n, dests.len()),
                                 args: ci_args,
                                 index: W::Load {
                                     ptr: Box::new(W::GetLocal(name.to_string())),
@@ -7041,8 +7040,7 @@ impl<'types> Codegen<'types> {
                         W::Call { func: format!("__lamw{idx}"), args: ci_args }
                     } else {
                         W::CallIndirect {
-                            result_count: 1,
-                            type_arity: n,
+                            signature: witchy_wir::wir::slot_closure_signature(n, 1),
                             args: ci_args,
                             index: Box::new(W::Load {
                                 ptr: Box::new(W::GetLocal(name.to_string())),

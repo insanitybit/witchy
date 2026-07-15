@@ -1,7 +1,8 @@
     use super::*;
     use crate::wir::{
-        BinOp, DataSegment, GlobalInit, Kind, UnOp, WirExpr, WirFunc, WirGlobal, WirImport,
-        WirLocal, WirModule, WirNode, WirTable, WirTy,
+        BinOp, ClosureSignature, DataSegment, GlobalInit, Kind, UnOp, WirExpr, WirFunc, WirGlobal,
+        WirImport, WirLocal, WirModule, WirNode, WirTable, WirTy, closure_wrapper_struct,
+        slot_closure_signature,
     };
     use std::sync::{Arc, Mutex};
 
@@ -2215,8 +2216,7 @@
         // The closure record at offset 0 holds the code index (0) as its i32
         // header. `call_indirect` args = [env ptr, slot arg]; index = i32.load env.
         let call = WirExpr::CallIndirect {
-            type_arity: 1,
-            result_count: 1,
+            signature: slot_closure_signature(1, 1),
             args: vec![WirExpr::ConstI32(0), WirExpr::ToSlot(Box::new(WirExpr::ConstI64(5)), Kind::I64)],
             index: Box::new(WirExpr::Load {
                 ptr: Box::new(WirExpr::ConstI32(0)),
@@ -2283,7 +2283,7 @@
             locals: vec![local("result", WirTy::Slot), local("writeback", WirTy::Slot)],
             body: vec![
                 WirNode::CallIndirectStoreMulti {
-                    type_arity: 1,
+                    signature: slot_closure_signature(1, 2),
                     args: vec![WirExpr::ConstI32(0), WirExpr::ConstI64(5)],
                     index: WirExpr::Load {
                         ptr: Box::new(WirExpr::ConstI32(0)),
@@ -2317,6 +2317,178 @@
             exports: vec![("run".into(), "run".into())],
         };
         assert_agrees(&m, &["6", "105"]);
+    }
+
+    #[test]
+    fn exact_indirect_signatures_distinguish_gc_and_linear_environments() {
+        let typed = ClosureSignature {
+            params: vec![Kind::GcRef(0), Kind::I64],
+            results: vec![Kind::I64],
+        };
+        let gc_lambda = WirFunc {
+            name: "gc_lambda".into(),
+            params: vec![local("env", WirTy::GcRef(0)), local("arg", WirTy::Int)],
+            ret: vec![WirTy::Int],
+            locals: vec![],
+            body: vec![WirNode::Push(WirExpr::Binary {
+                op: BinOp::Add,
+                kind: Kind::I64,
+                lhs: Box::new(WirExpr::GetLocal("arg".into())),
+                rhs: Box::new(WirExpr::ConstI64(1)),
+            })],
+            raw_body: None,
+        };
+        let linear_lambda = WirFunc {
+            name: "linear_lambda".into(),
+            params: vec![local("env", WirTy::Bool), local("arg", WirTy::Int)],
+            ret: vec![WirTy::Int],
+            locals: vec![],
+            body: vec![WirNode::Push(WirExpr::Binary {
+                op: BinOp::Add,
+                kind: Kind::I64,
+                lhs: Box::new(WirExpr::GetLocal("arg".into())),
+                rhs: Box::new(WirExpr::ConstI64(100)),
+            })],
+            raw_body: None,
+        };
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![local("closure", WirTy::GcRef(0))],
+            body: vec![
+                WirNode::SetLocal {
+                    local: "closure".into(),
+                    value: WirExpr::StructNew {
+                        struct_id: 0,
+                        args: vec![
+                            WirExpr::ConstI32(0),
+                            WirExpr::ConstI32(0),
+                            WirExpr::RefNull(Kind::StructRef),
+                        ],
+                    },
+                },
+                WirNode::Do(WirExpr::CallHost {
+                    import: "print_int".into(),
+                    args: vec![WirExpr::CallIndirect {
+                        signature: typed,
+                        args: vec![
+                            WirExpr::GetLocal("closure".into()),
+                            WirExpr::ConstI64(5),
+                        ],
+                        index: Box::new(WirExpr::ConstI32(0)),
+                    }],
+                }),
+                WirNode::Do(WirExpr::CallHost {
+                    import: "print_int".into(),
+                    args: vec![WirExpr::CallIndirect {
+                        signature: slot_closure_signature(1, 1),
+                        args: vec![WirExpr::ConstI32(0), WirExpr::ConstI64(5)],
+                        index: Box::new(WirExpr::ConstI32(1)),
+                    }],
+                }),
+            ],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport {
+                name: "print_int".into(),
+                params: vec![Kind::I64],
+                results: vec![],
+            }],
+            funcs: vec![gc_lambda, linear_lambda, run],
+            memory_pages: 1,
+            data: vec![],
+            globals: vec![],
+            table: Some(WirTable { funcs: vec!["gc_lambda".into(), "linear_lambda".into()] }),
+            exports: vec![("run".into(), "run".into())],
+        };
+
+        assert_eq!(run_binary(&encode(&module, &[closure_wrapper_struct()])), vec!["6", "105"]);
+    }
+
+    #[test]
+    fn typed_indirect_multi_result_preserves_reference_kinds() {
+        let lambda = WirFunc {
+            name: "lambda".into(),
+            params: vec![local("env", WirTy::GcRef(0))],
+            ret: vec![WirTy::Extern, WirTy::GcRef(0)],
+            locals: vec![],
+            body: vec![
+                WirNode::Push(WirExpr::RefNull(Kind::ExternRef)),
+                WirNode::Push(WirExpr::GetLocal("env".into())),
+                WirNode::Return(None),
+            ],
+            raw_body: None,
+        };
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![
+                local("closure", WirTy::GcRef(0)),
+                local("cap", WirTy::Extern),
+                local("returned", WirTy::GcRef(0)),
+            ],
+            body: vec![
+                WirNode::SetLocal {
+                    local: "closure".into(),
+                    value: WirExpr::StructNew {
+                        struct_id: 0,
+                        args: vec![
+                            WirExpr::ConstI32(0),
+                            WirExpr::ConstI32(0),
+                            WirExpr::RefNull(Kind::StructRef),
+                        ],
+                    },
+                },
+                WirNode::CallIndirectStoreMulti {
+                    signature: ClosureSignature {
+                        params: vec![Kind::GcRef(0)],
+                        results: vec![Kind::ExternRef, Kind::GcRef(0)],
+                    },
+                    args: vec![WirExpr::GetLocal("closure".into())],
+                    index: WirExpr::ConstI32(0),
+                    dests: vec!["cap".into(), "returned".into()],
+                },
+                WirNode::Do(WirExpr::CallHost {
+                    import: "print_int".into(),
+                    args: vec![WirExpr::Convert {
+                        from: Kind::I32,
+                        to: Kind::I64,
+                        arg: Box::new(WirExpr::RefIsNull(Box::new(WirExpr::GetLocal(
+                            "cap".into(),
+                        )))),
+                    }],
+                }),
+                WirNode::Do(WirExpr::CallHost {
+                    import: "print_int".into(),
+                    args: vec![WirExpr::Convert {
+                        from: Kind::I32,
+                        to: Kind::I64,
+                        arg: Box::new(WirExpr::RefIsNull(Box::new(WirExpr::GetLocal(
+                            "returned".into(),
+                        )))),
+                    }],
+                }),
+            ],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport {
+                name: "print_int".into(),
+                params: vec![Kind::I64],
+                results: vec![],
+            }],
+            funcs: vec![lambda, run],
+            memory_pages: 1,
+            data: vec![],
+            globals: vec![],
+            table: Some(WirTable { funcs: vec!["lambda".into()] }),
+            exports: vec![("run".into(), "run".into())],
+        };
+
+        assert_eq!(run_binary(&encode(&module, &[closure_wrapper_struct()])), vec!["1", "0"]);
     }
 
     #[test]

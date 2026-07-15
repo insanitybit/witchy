@@ -598,3 +598,15 @@ it back, and reads it. This cut changes no source acceptance. The remaining
 order is: migrate every boxed scalar closure and helper to the uniform wrapper;
 then emit per-lambda typed GC payloads and remove the capture rejection. A
 capability never enters the legacy `linear_env` or an i64 slot at any stage.
+
+The following substrate cut replaces WIR's lossy indirect-call key
+`(source arity, result count)` with an exact wasm parameter/result signature.
+The existing scalar convention remains available as a constructor and retains
+its stable reserved type band, while typed signatures can name `externref`,
+`structref`, and concrete GC structs after those structs are declared. The
+encoder checks argument and destination counts against the signature, and the
+proper-tail-call dispatcher stages each operand in a local of its exact kind.
+Tests place same-arity scalar- and GC-environment functions in one table and
+validate a GC-environment indirect tail cycle. This is still source-neutral:
+production closures continue to request the scalar signature until the uniform
+wrapper migration.

@@ -2280,8 +2280,7 @@ pub fn list_update_cap_helper() -> WirFunc {
     let call_clos = N::SetLocal {
         local: "nv".into(),
         value: E::CallIndirect {
-            result_count: 1,
-            type_arity: 1,
+            signature: slot_closure_signature(1, 1),
             args: vec![getl("clos"), E::Load { ptr: Box::new(slot("list")), kind: Kind::I64, offset: 0 }],
             index: Box::new(E::Load { ptr: Box::new(getl("clos")), kind: Kind::I32, offset: 0 }),
         },

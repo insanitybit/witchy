@@ -1043,8 +1043,7 @@ pub fn dict_update_cap_helper() -> WirFunc {
             N::SetLocal {
                 local: "new".into(),
                 value: E::CallIndirect {
-                    result_count: 1,
-                    type_arity: 1,
+                    signature: slot_closure_signature(1, 1),
                     args: vec![
                         getl("clos"),
                         E::Call {
@@ -1164,8 +1163,7 @@ pub fn dict_update_helper() -> WirFunc {
             N::SetLocal {
                 local: "new".into(),
                 value: E::CallIndirect {
-                    result_count: 1,
-                    type_arity: 1,
+                    signature: slot_closure_signature(1, 1),
                     args: vec![
                         getl("clos"),
                         E::Call {

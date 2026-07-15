@@ -25,7 +25,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::wir::{Kind, WirExpr, WirFunc, WirLocal, WirModule, WirNode, WirSeq, WirTy};
+use crate::wir::{
+    ClosureSignature, Kind, WirExpr, WirFunc, WirLocal, WirModule, WirNode, WirSeq, WirTy,
+};
 
 /// Lower recursive direct proper calls to typed state machines.
 ///
@@ -47,16 +49,10 @@ struct TailTarget {
     result_ty: WirTy,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct IndirectSig {
-    type_arity: usize,
-    result_count: usize,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum TailCallee {
     Direct(String),
-    Indirect(IndirectSig),
+    Indirect(ClosureSignature),
 }
 
 #[derive(Clone)]
@@ -68,7 +64,7 @@ struct IndirectPlan {
 
 struct TailCtx {
     targets: HashMap<String, TailTarget>,
-    indirect: HashMap<IndirectSig, IndirectPlan>,
+    indirect: HashMap<ClosureSignature, IndirectPlan>,
     source_bank: Vec<WirLocal>,
     state_local: Option<String>,
     loop_label: String,
@@ -212,13 +208,13 @@ fn lower_mutual_tail_components(module: &mut WirModule) -> usize {
         .funcs
         .iter()
         .enumerate()
-        .filter(|(_, function)| function.raw_body.is_none() && slot_adaptable_result(function))
+        .filter(|(_, function)| function.raw_body.is_none() && has_single_result(function))
         .map(|(index, function)| (function.name.clone(), index))
         .collect();
     let mut graph = vec![Vec::new(); function_count];
     let mut has_indirect_tail = vec![false; function_count];
     for (index, function) in module.funcs.iter().enumerate() {
-        if function.raw_body.is_some() || !slot_adaptable_result(function) {
+        if function.raw_body.is_some() || !has_single_result(function) {
             continue;
         }
         let mut targets = HashSet::new();
@@ -239,7 +235,7 @@ fn lower_mutual_tail_components(module: &mut WirModule) -> usize {
                         .flat_map(|table| table.funcs.iter())
                         .filter_map(|target| by_name.get(target).copied())
                         .filter(|target| {
-                            indirect_signature_matches(&module.funcs[*target], signature)
+                            indirect_signature_matches(&module.funcs[*target], &signature)
                         })
                         .collect(),
                 }
@@ -264,6 +260,9 @@ fn lower_mutual_tail_components(module: &mut WirModule) -> usize {
             .iter()
             .map(|index| module.funcs[*index].clone())
             .collect();
+        if !dispatcher_results_compatible(&originals) {
+            continue;
+        }
         let dispatcher_name = unique_function_name(
             module,
             &dispatchers,
@@ -360,12 +359,33 @@ fn slot_adaptable_result(function: &WirFunc) -> bool {
     )
 }
 
-fn indirect_signature_matches(function: &WirFunc, signature: IndirectSig) -> bool {
-    function.params.len() == signature.type_arity + 1
-        && function.params.first().is_some_and(|param| param.ty.kind() == Kind::I32)
-        && function.params[1..].iter().all(|param| param.ty.kind() == Kind::I64)
-        && function.ret.len() == signature.result_count
-        && function.ret.iter().all(|result| result.kind() == Kind::I64)
+fn has_single_result(function: &WirFunc) -> bool {
+    function.ret.len() == 1
+}
+
+fn dispatcher_results_compatible(functions: &[WirFunc]) -> bool {
+    let Some(first) = functions.first().and_then(|function| function.ret.first()) else {
+        return false;
+    };
+    functions.iter().all(|function| {
+        function.ret.first().is_some_and(|result| result.kind() == first.kind())
+    }) || functions.iter().all(slot_adaptable_result)
+}
+
+fn indirect_signature_matches(function: &WirFunc, signature: &ClosureSignature) -> bool {
+    function.params.iter().map(|param| param.ty.kind()).eq(signature.params.iter().copied())
+        && function.ret.iter().map(|result| result.kind()).eq(signature.results.iter().copied())
+}
+
+fn carrier_ty(kind: Kind) -> WirTy {
+    match kind {
+        Kind::I32 => WirTy::Bool,
+        Kind::I64 => WirTy::Int,
+        Kind::F64 => WirTy::Float,
+        Kind::ExternRef => WirTy::Extern,
+        Kind::StructRef => WirTy::StructRef,
+        Kind::GcRef(id) => WirTy::GcRef(id),
+    }
 }
 
 fn build_tail_dispatcher(
@@ -449,8 +469,7 @@ fn build_tail_dispatcher(
         collect_function_tail_calls(body, &mut callees);
         indirect_signatures.extend(callees.into_iter().filter_map(|callee| match callee {
             TailCallee::Indirect(signature)
-                if function.ret.len() == signature.result_count
-                    && slot_adaptable_result(function) =>
+                if function.ret.len() == 1 && signature.results.len() == 1 =>
             {
                 Some(signature)
             }
@@ -458,25 +477,25 @@ fn build_tail_dispatcher(
         }));
     }
     let mut indirect_signatures: Vec<_> = indirect_signatures.into_iter().collect();
-    indirect_signatures.sort_by_key(|signature| (signature.type_arity, signature.result_count));
+    indirect_signatures.sort();
     let mut indirect = HashMap::new();
     for (plan_index, signature) in indirect_signatures.into_iter().enumerate() {
-        let args: Vec<_> = std::iter::once(WirLocal {
-            name: format!("__witchy_tail_indirect_{plan_index}_env"),
-            ty: WirTy::Bool,
-        })
-        .chain((0..signature.type_arity).map(|index| WirLocal {
-            name: format!("__witchy_tail_indirect_{plan_index}_arg_{index}"),
-            ty: WirTy::Int,
-        }))
-        .collect();
+        let args: Vec<_> = signature
+            .params
+            .iter()
+            .enumerate()
+            .map(|(index, kind)| WirLocal {
+                name: format!("__witchy_tail_indirect_{plan_index}_arg_{index}"),
+                ty: carrier_ty(*kind),
+            })
+            .collect();
         let index = WirLocal {
             name: format!("__witchy_tail_indirect_{plan_index}_index"),
             ty: WirTy::Bool,
         };
         let mut plan_targets: Vec<_> = functions
             .iter()
-            .filter(|function| indirect_signature_matches(function, signature))
+            .filter(|function| indirect_signature_matches(function, &signature))
             .filter_map(|function| {
                 Some((
                     *table_slots.get(&function.name)?,
@@ -614,11 +633,8 @@ fn collect_tail_calls_expr(expr: &WirExpr, out: &mut HashSet<TailCallee>) {
         WirExpr::Call { func, .. } => {
             out.insert(TailCallee::Direct(func.clone()));
         }
-        WirExpr::CallIndirect { type_arity, result_count, .. } => {
-            out.insert(TailCallee::Indirect(IndirectSig {
-                type_arity: *type_arity,
-                result_count: *result_count,
-            }));
+        WirExpr::CallIndirect { signature, .. } => {
+            out.insert(TailCallee::Indirect(signature.clone()));
         }
         WirExpr::ToSlot(inner, kind) | WirExpr::FromSlot(inner, kind)
             if matches!(kind, Kind::I32 | Kind::I64 | Kind::F64) =>
@@ -1057,16 +1073,11 @@ fn rewrite_tail_value_expr(expr: &mut WirExpr, ctx: &TailCtx) -> usize {
             *expr = tail_transition_expr(&target, args, &[], ctx);
             1
         }
-        WirExpr::CallIndirect { type_arity, result_count, args, index }
-            if ctx.indirect.contains_key(&IndirectSig {
-                type_arity: *type_arity,
-                result_count: *result_count,
-            }) =>
+        WirExpr::CallIndirect { signature, args, index }
+            if ctx.indirect.contains_key(signature) =>
         {
-            let signature = IndirectSig {
-                type_arity: *type_arity,
-                result_count: *result_count,
-            };
+            let signature = signature.clone();
+            let result_ty = carrier_ty(signature.results[0]);
             let plan = ctx.indirect.get(&signature).cloned().expect("guarded indirect plan");
             if args.len() != plan.args.len() {
                 return 0;
@@ -1082,8 +1093,7 @@ fn rewrite_tail_value_expr(expr: &mut WirExpr, ctx: &TailCtx) -> usize {
                 value: *staged_index,
             });
             let fallback = WirExpr::CallIndirect {
-                type_arity: signature.type_arity,
-                result_count: signature.result_count,
+                signature,
                 args: plan
                     .args
                     .iter()
@@ -1113,7 +1123,7 @@ fn rewrite_tail_value_expr(expr: &mut WirExpr, ctx: &TailCtx) -> usize {
                     },
                     then_: vec![WirNode::Push(transition)],
                     els: vec![WirNode::Push(choice)],
-                    result: Some(WirTy::Slot),
+                    result: Some(result_ty.clone()),
                 }));
             }
             seq.push(WirNode::Push(choice));

@@ -60,8 +60,7 @@ fn call_trampoline_helper(name: &str, arity: usize) -> WirFunc {
         ret: vec![WirTy::Int],
         locals: vec![],
         body: vec![N::Push(E::CallIndirect {
-            result_count: 1,
-            type_arity: arity,
+            signature: slot_closure_signature(arity, 1),
             args,
             index: Box::new(E::GetLocal("idx".into())),
         })],
