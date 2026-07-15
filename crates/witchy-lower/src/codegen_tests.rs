@@ -107,6 +107,28 @@
         );
     }
 
+    #[test]
+    fn crypto_operation_catalog_names_live_wir_helpers() {
+        use witchy_syntax::intrinsics;
+
+        for name in intrinsics::CRYPTO_OPERATIONS {
+            let spec = intrinsics::lookup(name).expect("cataloged crypto operation");
+            assert!(
+                witchy_types::typeck::intrinsic(name),
+                "{} must not compile its native std placeholder",
+                spec.name
+            );
+            let helper = intrinsics::sole_wir_helper(name)
+                .expect("every crypto operation has one WIR helper");
+            assert!(
+                witchy_wir::wir_helpers::wir_helper(helper).is_some(),
+                "{} names missing WIR helper {}",
+                spec.name,
+                helper
+            );
+        }
+    }
+
     /// (RFC-0045) Define the always-linked, authority-free `__witchy_abort` import
     /// so a module that routes an abort through it (float ordering, list/bytes OOB,
     /// str_to_int, `fail`) instantiates in these minimal test linkers. The body

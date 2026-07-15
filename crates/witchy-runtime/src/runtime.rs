@@ -981,8 +981,8 @@ pub(crate) fn link_capability_imports(
     // Any granted Secret (root signing key or named SecretStore secret) can be
     // consumed by the keyed crypto helpers while bytes stay host-side.
     if caps.signing_key.is_some() || !caps.secrets.is_empty() {
-        linker.func_wrap("witchy", "crypto.sign", host_crypto_sign)?;
-        linker.func_wrap("witchy", "crypto.public_key", host_crypto_public_key)?;
+        linker.func_wrap("witchy", intrinsics::CRYPTO_SIGN, host_crypto_sign)?;
+        linker.func_wrap("witchy", intrinsics::CRYPTO_PUBLIC_KEY, host_crypto_public_key)?;
     }
     // The build-time capabilities. Like Dir, each is linked only when granted
     // — a build step compiled against `write_out` cannot even instantiate
@@ -1032,15 +1032,31 @@ pub(crate) fn link_capability_imports(
     // Native-stdlib functions are pure (no authority), so they're always
     // available — the same `crypto` module the interpreter exposes, here as a
     // host import that bridges to the shared `native` registry.
-    linker.func_wrap("witchy", "crypto.__ed25519_verify_status", host_ed25519_verify_status)?;
-    linker.func_wrap("witchy", "crypto.sha256", host_sha256)?;
-    linker.func_wrap("witchy", "crypto.__ecdsa_p256_verify_status", host_ecdsa_p256_verify_status)?;
-    linker.func_wrap("witchy", "crypto.__ecdsa_p256_verify_hex_status", host_ecdsa_p256_verify_hex_status)?;
-    linker.func_wrap("witchy", "crypto.__rsa_pkcs1_sha256_verify_status", host_rsa_pkcs1_sha256_verify_status)?;
-    linker.func_wrap("witchy", "crypto.sha512", host_sha512)?;
-    linker.func_wrap("witchy", "crypto.sha3_256", host_sha3_256)?;
-    linker.func_wrap("witchy", "crypto.hmac_sha256", host_hmac_sha256)?;
-    linker.func_wrap("witchy", "crypto.rune_hash", host_crypto_rune_hash)?;
+    linker.func_wrap(
+        "witchy",
+        intrinsics::CRYPTO_ED25519_VERIFY_STATUS,
+        host_ed25519_verify_status,
+    )?;
+    linker.func_wrap("witchy", intrinsics::CRYPTO_SHA256, host_sha256)?;
+    linker.func_wrap(
+        "witchy",
+        intrinsics::CRYPTO_ECDSA_P256_VERIFY_STATUS,
+        host_ecdsa_p256_verify_status,
+    )?;
+    linker.func_wrap(
+        "witchy",
+        intrinsics::CRYPTO_ECDSA_P256_VERIFY_HEX_STATUS,
+        host_ecdsa_p256_verify_hex_status,
+    )?;
+    linker.func_wrap(
+        "witchy",
+        intrinsics::CRYPTO_RSA_PKCS1_SHA256_VERIFY_STATUS,
+        host_rsa_pkcs1_sha256_verify_status,
+    )?;
+    linker.func_wrap("witchy", intrinsics::CRYPTO_SHA512, host_sha512)?;
+    linker.func_wrap("witchy", intrinsics::CRYPTO_SHA3_256, host_sha3_256)?;
+    linker.func_wrap("witchy", intrinsics::CRYPTO_HMAC_SHA256, host_hmac_sha256)?;
+    linker.func_wrap("witchy", intrinsics::CRYPTO_RUNE_HASH, host_crypto_rune_hash)?;
     // Resolving a named secret returns only an opaque nullable externref, so it
     // is always linkable; an ungranted store simply yields null for every name.
     linker.func_wrap("witchy", "secretstore_lookup", host_secretstore_lookup)?;
@@ -1166,8 +1182,12 @@ fn host_ed25519_verify_status(
         Value::Str(read_wstr(data, msg)?),
         Value::Str(read_wstr(data, sig)?),
     ];
-    let f = crate::native::lookup("crypto.__ed25519_verify_status")
-        .ok_or_else(|| Error::msg("crypto.__ed25519_verify_status is not registered"))?;
+    let f = crate::native::lookup(intrinsics::CRYPTO_ED25519_VERIFY_STATUS).ok_or_else(|| {
+        Error::msg(format!(
+            "{} is not registered",
+            intrinsics::CRYPTO_ED25519_VERIFY_STATUS
+        ))
+    })?;
     match f(&args).map_err(|e| Error::msg(e.message))? {
         Value::Int(n) => Ok(n),
         _ => Err(Error::msg("crypto.__ed25519_verify_status did not return an Int")),
@@ -1212,8 +1232,8 @@ fn host_sha256(mut caller: Caller<'_, VmState>, in_ptr: i32, out_ptr: i32) -> Re
     use crate::value::NativeValue as Value;
     let mem = memory_of(&mut caller)?;
     let input = read_wstr(mem.data(&caller), in_ptr)?;
-    let f = crate::native::lookup("crypto.sha256")
-        .ok_or_else(|| Error::msg("crypto.sha256 is not registered"))?;
+    let f = crate::native::lookup(intrinsics::CRYPTO_SHA256)
+        .ok_or_else(|| Error::msg(format!("{} is not registered", intrinsics::CRYPTO_SHA256)))?;
     let hex = match f(&[Value::Str(input)]).map_err(|e| Error::msg(e.message))? {
         Value::Str(s) => s,
         _ => return Err(Error::msg("crypto.sha256 did not return a String")),
@@ -1283,27 +1303,51 @@ fn host_crypto_digest(
 }
 
 fn host_ecdsa_p256_verify_status(caller: Caller<'_, VmState>, pk: i32, msg: i32, sig: i32) -> Result<i64> {
-    host_crypto_verify_status3(caller, "crypto.__ecdsa_p256_verify_status", pk, msg, sig)
+    host_crypto_verify_status3(
+        caller,
+        intrinsics::CRYPTO_ECDSA_P256_VERIFY_STATUS,
+        pk,
+        msg,
+        sig,
+    )
 }
 
 fn host_ecdsa_p256_verify_hex_status(caller: Caller<'_, VmState>, pk: i32, msg: i32, sig: i32) -> Result<i64> {
-    host_crypto_verify_status3(caller, "crypto.__ecdsa_p256_verify_hex_status", pk, msg, sig)
+    host_crypto_verify_status3(
+        caller,
+        intrinsics::CRYPTO_ECDSA_P256_VERIFY_HEX_STATUS,
+        pk,
+        msg,
+        sig,
+    )
 }
 
 fn host_rsa_pkcs1_sha256_verify_status(caller: Caller<'_, VmState>, pk: i32, msg: i32, sig: i32) -> Result<i64> {
-    host_crypto_verify_status3(caller, "crypto.__rsa_pkcs1_sha256_verify_status", pk, msg, sig)
+    host_crypto_verify_status3(
+        caller,
+        intrinsics::CRYPTO_RSA_PKCS1_SHA256_VERIFY_STATUS,
+        pk,
+        msg,
+        sig,
+    )
 }
 
 fn host_sha512(caller: Caller<'_, VmState>, in_ptr: i32, out_ptr: i32) -> Result<()> {
-    host_crypto_digest(caller, "crypto.sha512", &[in_ptr], out_ptr, 128)
+    host_crypto_digest(caller, intrinsics::CRYPTO_SHA512, &[in_ptr], out_ptr, 128)
 }
 
 fn host_sha3_256(caller: Caller<'_, VmState>, in_ptr: i32, out_ptr: i32) -> Result<()> {
-    host_crypto_digest(caller, "crypto.sha3_256", &[in_ptr], out_ptr, 64)
+    host_crypto_digest(caller, intrinsics::CRYPTO_SHA3_256, &[in_ptr], out_ptr, 64)
 }
 
 fn host_hmac_sha256(caller: Caller<'_, VmState>, key_ptr: i32, msg_ptr: i32, out_ptr: i32) -> Result<()> {
-    host_crypto_digest(caller, "crypto.hmac_sha256", &[key_ptr, msg_ptr], out_ptr, 64)
+    host_crypto_digest(
+        caller,
+        intrinsics::CRYPTO_HMAC_SHA256,
+        &[key_ptr, msg_ptr],
+        out_ptr,
+        64,
+    )
 }
 
 /// `crypto.rune_hash(paths_ptr, contents_ptr, out_data_ptr)`: read both guest
@@ -1321,8 +1365,9 @@ fn host_crypto_rune_hash(
     let paths = read_wstr_list(mem.data(&caller), paths_ptr)?;
     let contents = read_wstr_list(mem.data(&caller), contents_ptr)?;
     let to_list = |xs: Vec<String>| Value::List(xs.into_iter().map(Value::Str).collect());
-    let f = crate::native::lookup("crypto.rune_hash")
-        .ok_or_else(|| Error::msg("crypto.rune_hash is not registered"))?;
+    let f = crate::native::lookup(intrinsics::CRYPTO_RUNE_HASH).ok_or_else(|| {
+        Error::msg(format!("{} is not registered", intrinsics::CRYPTO_RUNE_HASH))
+    })?;
     let hash = match f(&[to_list(paths), to_list(contents)]).map_err(|e| Error::msg(e.message))? {
         Value::Str(s) => s,
         _ => return Err(Error::msg("crypto.rune_hash did not return a String")),
@@ -3379,8 +3424,8 @@ fn host_crypto_sign(
     let bytes = secret_material_ref(&caller, key)?.bytes;
     let mem = memory_of(&mut caller)?;
     let msg = read_wstr(mem.data(&caller), msg_ptr)?;
-    let f = crate::native::lookup("crypto.sign")
-        .ok_or_else(|| Error::msg("crypto.sign is not registered"))?;
+    let f = crate::native::lookup(intrinsics::CRYPTO_SIGN)
+        .ok_or_else(|| Error::msg(format!("{} is not registered", intrinsics::CRYPTO_SIGN)))?;
     let sig = match f(&[Value::Secret(bytes), Value::Str(msg)]).map_err(|e| Error::msg(e.message))? {
         Value::Str(s) => s,
         _ => return Err(Error::msg("crypto.sign did not return a String")),
@@ -3399,8 +3444,9 @@ fn host_crypto_public_key(
 ) -> Result<()> {
     use crate::value::NativeValue as Value;
     let bytes = secret_material_ref(&caller, key)?.bytes;
-    let f = crate::native::lookup("crypto.public_key")
-        .ok_or_else(|| Error::msg("crypto.public_key is not registered"))?;
+    let f = crate::native::lookup(intrinsics::CRYPTO_PUBLIC_KEY).ok_or_else(|| {
+        Error::msg(format!("{} is not registered", intrinsics::CRYPTO_PUBLIC_KEY))
+    })?;
     let pk = match f(&[Value::Secret(bytes)]).map_err(|e| Error::msg(e.message))? {
         Value::Str(s) => s,
         _ => return Err(Error::msg("crypto.public_key did not return a String")),
@@ -3450,8 +3496,8 @@ fn host_crypto_reveal_len(mut caller: Caller<'_, VmState>, key: Option<Rooted<Ex
     ) {
         bail!("the signing key is not revealable; use crypto.sign / crypto.public_key");
     }
-    let f = crate::native::lookup("crypto.reveal")
-        .ok_or_else(|| Error::msg("crypto.reveal is not registered"))?;
+    let f = crate::native::lookup(intrinsics::CRYPTO_REVEAL)
+        .ok_or_else(|| Error::msg(format!("{} is not registered", intrinsics::CRYPTO_REVEAL)))?;
     let s = match f(&[Value::Secret(secret.bytes)]).map_err(|e| Error::msg(e.message))? {
         Value::Str(s) => s,
         _ => return Err(Error::msg("crypto.reveal did not return a String")),

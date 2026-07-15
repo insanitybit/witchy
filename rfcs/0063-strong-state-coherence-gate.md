@@ -4,7 +4,7 @@ title: Strong-state coherence gate for a proud 0.1 release
 status: accepted
 created: 2026-07-04
 superseded-by:
-tracking: coherence gate accepted as the pre-tag bar; executed alongside RFC-0061; intrinsic-name and host-import authority catalog slices landed
+tracking: coherence gate accepted as the pre-tag bar; executed alongside RFC-0061; intrinsic-name, host-import authority, and string/math/List/Dict/crypto operation catalog slices landed
 ---
 
 # RFC-0063: Strong-state coherence gate for a proud 0.1 release
@@ -176,6 +176,19 @@ catalog identities or predicates. Coherence tests derive the reverse primitive s
 `std/dict.witchy`, compare signatures, bounds, conventions, and qualifiers, execute exact
 runtime and write-back results, and reject missing helpers or unsuppressed placeholders.
 The remaining public operation families are the next catalog migrations.
+
+The crypto primitive family catalogs all twelve backend-crossing operations:
+SHA-256/SHA-512/SHA3-256/HMAC-SHA256, the canonical rune hash, four private
+signature-verifier status hooks, and `sign`/`public_key`/`reveal`. Rows carry
+exact String/List/Secret signatures, pure effects, explicit Secret-capability
+use, native runtime ownership, and one direct WIR helper each. Type checking
+derives these signatures from the catalog and suppresses the native source
+placeholders; compiled result classification and helper selection consume the
+same rows. Native registry and Wasmtime host wiring use the stable catalog
+names, and lowering no longer maintains dead per-crypto usage flags. Coherence
+tests compare every row with `std/crypto.witchy`, require its native hook and
+WIR helper to exist, and reject operation, signature, capability-effect, or
+arity drift.
 
 ### 4. Typed compiler facts, not string or address shadows
 

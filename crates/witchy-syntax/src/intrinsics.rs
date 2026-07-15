@@ -42,6 +42,18 @@ pub enum IntrinsicId {
     EncodingBase64UrlDecodeLossy,
     EncodingBase64UrlDecodeBytesRaw,
     EncodingBase64UrlToHexLossy,
+    CryptoSha256,
+    CryptoRuneHash,
+    CryptoEd25519VerifyStatus,
+    CryptoSign,
+    CryptoPublicKey,
+    CryptoReveal,
+    CryptoEcdsaP256VerifyStatus,
+    CryptoEcdsaP256VerifyHexStatus,
+    CryptoRsaPkcs1Sha256VerifyStatus,
+    CryptoSha512,
+    CryptoSha3_256,
+    CryptoHmacSha256,
     StringLength,
     StringCharCount,
     StringChars,
@@ -105,7 +117,11 @@ pub enum IntrinsicSignature {
     StringToListString,
     StringStringToListString,
     StringStringStringToString,
+    StringStringStringToInt,
     StringIntIntToString,
+    ListStringListStringToString,
+    SecretStringToString,
+    SecretToString,
     IntToString,
     IntToFloat,
     FloatToInt,
@@ -152,6 +168,9 @@ impl IntrinsicSignature {
                 | Self::StringStringToString
                 | Self::StringStringStringToString
                 | Self::StringIntIntToString
+                | Self::ListStringListStringToString
+                | Self::SecretStringToString
+                | Self::SecretToString
                 | Self::IntToString
         )
     }
@@ -163,6 +182,7 @@ impl IntrinsicSignature {
                 | Self::BytesIntToInt
                 | Self::StringToInt
                 | Self::StringStringToInt
+                | Self::StringStringStringToInt
                 | Self::FloatToInt
                 | Self::GenericListToInt
                 | Self::GenericDictToInt
@@ -264,6 +284,7 @@ pub enum IntrinsicEffect {
 pub enum CapabilityEffect {
     None,
     ConstructsReadOnlyTestDir,
+    UsesSecret,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -372,6 +393,21 @@ pub const ENCODING_BASE64_DECODE_BYTES_RAW: &str = "encoding.base64_decode_bytes
 pub const ENCODING_BASE64URL_DECODE_LOSSY: &str = "encoding.base64url_decode_lossy";
 pub const ENCODING_BASE64URL_DECODE_BYTES_RAW: &str = "encoding.base64url_decode_bytes_raw";
 pub const ENCODING_BASE64URL_TO_HEX_LOSSY: &str = "encoding.base64url_to_hex_lossy";
+
+pub const CRYPTO_SHA256: &str = "crypto.sha256";
+pub const CRYPTO_RUNE_HASH: &str = "crypto.rune_hash";
+pub const CRYPTO_ED25519_VERIFY_STATUS: &str = "crypto.__ed25519_verify_status";
+pub const CRYPTO_SIGN: &str = "crypto.sign";
+pub const CRYPTO_PUBLIC_KEY: &str = "crypto.public_key";
+pub const CRYPTO_REVEAL: &str = "crypto.reveal";
+pub const CRYPTO_ECDSA_P256_VERIFY_STATUS: &str = "crypto.__ecdsa_p256_verify_status";
+pub const CRYPTO_ECDSA_P256_VERIFY_HEX_STATUS: &str =
+    "crypto.__ecdsa_p256_verify_hex_status";
+pub const CRYPTO_RSA_PKCS1_SHA256_VERIFY_STATUS: &str =
+    "crypto.__rsa_pkcs1_sha256_verify_status";
+pub const CRYPTO_SHA512: &str = "crypto.sha512";
+pub const CRYPTO_SHA3_256: &str = "crypto.sha3_256";
+pub const CRYPTO_HMAC_SHA256: &str = "crypto.hmac_sha256";
 
 pub const STRING_LENGTH: &str = "string.length";
 pub const STRING_CHAR_COUNT: &str = "string.char_count";
@@ -938,6 +974,186 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: encoding_host_call(6, WirHostInput::String),
         diagnostic_name: "encoding.base64url_to_hex_lossy",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::CryptoSha256,
+        name: CRYPTO_SHA256,
+        arity: 1,
+        signature: IntrinsicSignature::StringToString,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: &["crypto_sha256"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: CRYPTO_SHA256,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::CryptoRuneHash,
+        name: CRYPTO_RUNE_HASH,
+        arity: 2,
+        signature: IntrinsicSignature::ListStringListStringToString,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: &["crypto_rune_hash"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: CRYPTO_RUNE_HASH,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::CryptoEd25519VerifyStatus,
+        name: CRYPTO_ED25519_VERIFY_STATUS,
+        arity: 3,
+        signature: IntrinsicSignature::StringStringStringToInt,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: &["crypto_ed25519_verify_status"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: CRYPTO_ED25519_VERIFY_STATUS,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::CryptoSign,
+        name: CRYPTO_SIGN,
+        arity: 2,
+        signature: IntrinsicSignature::SecretStringToString,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::UsesSecret,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: &["crypto_sign"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: CRYPTO_SIGN,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::CryptoPublicKey,
+        name: CRYPTO_PUBLIC_KEY,
+        arity: 1,
+        signature: IntrinsicSignature::SecretToString,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::UsesSecret,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: &["crypto_public_key"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: CRYPTO_PUBLIC_KEY,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::CryptoReveal,
+        name: CRYPTO_REVEAL,
+        arity: 1,
+        signature: IntrinsicSignature::SecretToString,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::UsesSecret,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: &["crypto_reveal"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: CRYPTO_REVEAL,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::CryptoEcdsaP256VerifyStatus,
+        name: CRYPTO_ECDSA_P256_VERIFY_STATUS,
+        arity: 3,
+        signature: IntrinsicSignature::StringStringStringToInt,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: &["crypto_ecdsa_p256_verify_status"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: CRYPTO_ECDSA_P256_VERIFY_STATUS,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::CryptoEcdsaP256VerifyHexStatus,
+        name: CRYPTO_ECDSA_P256_VERIFY_HEX_STATUS,
+        arity: 3,
+        signature: IntrinsicSignature::StringStringStringToInt,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: &["crypto_ecdsa_p256_verify_hex_status"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: CRYPTO_ECDSA_P256_VERIFY_HEX_STATUS,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::CryptoRsaPkcs1Sha256VerifyStatus,
+        name: CRYPTO_RSA_PKCS1_SHA256_VERIFY_STATUS,
+        arity: 3,
+        signature: IntrinsicSignature::StringStringStringToInt,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: &["crypto_rsa_pkcs1_sha256_verify_status"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: CRYPTO_RSA_PKCS1_SHA256_VERIFY_STATUS,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::CryptoSha512,
+        name: CRYPTO_SHA512,
+        arity: 1,
+        signature: IntrinsicSignature::StringToString,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: &["crypto_sha512"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: CRYPTO_SHA512,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::CryptoSha3_256,
+        name: CRYPTO_SHA3_256,
+        arity: 1,
+        signature: IntrinsicSignature::StringToString,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: &["crypto_sha3_256"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: CRYPTO_SHA3_256,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::CryptoHmacSha256,
+        name: CRYPTO_HMAC_SHA256,
+        arity: 2,
+        signature: IntrinsicSignature::StringStringToString,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: &["crypto_hmac_sha256"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: CRYPTO_HMAC_SHA256,
         private_callers: NO_PRIVATE_CALLERS,
     },
     IntrinsicSpec {
@@ -1532,6 +1748,21 @@ pub const ENCODING_OPERATIONS: &[&str] = &[
     ENCODING_BASE64URL_TO_HEX_LOSSY,
 ];
 
+pub const CRYPTO_OPERATIONS: &[&str] = &[
+    CRYPTO_SHA256,
+    CRYPTO_RUNE_HASH,
+    CRYPTO_ED25519_VERIFY_STATUS,
+    CRYPTO_SIGN,
+    CRYPTO_PUBLIC_KEY,
+    CRYPTO_REVEAL,
+    CRYPTO_ECDSA_P256_VERIFY_STATUS,
+    CRYPTO_ECDSA_P256_VERIFY_HEX_STATUS,
+    CRYPTO_RSA_PKCS1_SHA256_VERIFY_STATUS,
+    CRYPTO_SHA512,
+    CRYPTO_SHA3_256,
+    CRYPTO_HMAC_SHA256,
+];
+
 pub const STRING_OPERATIONS: &[&str] = &[
     STRING_LENGTH,
     STRING_CHAR_COUNT,
@@ -1676,6 +1907,26 @@ pub fn is_string_operation(name: &str) -> bool {
     })
 }
 
+pub fn is_crypto_operation(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| {
+        matches!(
+            spec.id,
+            IntrinsicId::CryptoSha256
+                | IntrinsicId::CryptoRuneHash
+                | IntrinsicId::CryptoEd25519VerifyStatus
+                | IntrinsicId::CryptoSign
+                | IntrinsicId::CryptoPublicKey
+                | IntrinsicId::CryptoReveal
+                | IntrinsicId::CryptoEcdsaP256VerifyStatus
+                | IntrinsicId::CryptoEcdsaP256VerifyHexStatus
+                | IntrinsicId::CryptoRsaPkcs1Sha256VerifyStatus
+                | IntrinsicId::CryptoSha512
+                | IntrinsicId::CryptoSha3_256
+                | IntrinsicId::CryptoHmacSha256
+        )
+    })
+}
+
 pub fn is_math_operation(name: &str) -> bool {
     lookup(name).is_some_and(|spec| {
         matches!(spec.id, IntrinsicId::MathToFloat | IntrinsicId::MathToInt | IntrinsicId::MathSqrt)
@@ -1802,6 +2053,18 @@ mod tests {
             ENCODING_BASE64URL_DECODE_LOSSY,
             ENCODING_BASE64URL_DECODE_BYTES_RAW,
             ENCODING_BASE64URL_TO_HEX_LOSSY,
+            CRYPTO_SHA256,
+            CRYPTO_RUNE_HASH,
+            CRYPTO_ED25519_VERIFY_STATUS,
+            CRYPTO_SIGN,
+            CRYPTO_PUBLIC_KEY,
+            CRYPTO_REVEAL,
+            CRYPTO_ECDSA_P256_VERIFY_STATUS,
+            CRYPTO_ECDSA_P256_VERIFY_HEX_STATUS,
+            CRYPTO_RSA_PKCS1_SHA256_VERIFY_STATUS,
+            CRYPTO_SHA512,
+            CRYPTO_SHA3_256,
+            CRYPTO_HMAC_SHA256,
             STRING_LENGTH,
             STRING_CHAR_COUNT,
             STRING_CHARS,
@@ -1890,6 +2153,102 @@ mod tests {
             assert!(spec.signature.returns_string() || spec.signature.returns_bytes());
         }
         assert_eq!(selectors, (0..=13).collect());
+    }
+
+    #[test]
+    fn crypto_operation_family_has_complete_semantic_metadata() {
+        let expected: BTreeSet<_> = CRYPTO_OPERATIONS.iter().copied().collect();
+        let actual: BTreeSet<_> = ALL
+            .iter()
+            .filter(|spec| is_crypto_operation(spec.name))
+            .map(|spec| spec.name)
+            .collect();
+        assert_eq!(actual, expected);
+        assert_eq!(actual.len(), 12);
+
+        for name in CRYPTO_OPERATIONS {
+            let spec = lookup(name).expect("crypto operation");
+            assert_eq!(spec.effect, IntrinsicEffect::Pure);
+            assert_eq!(spec.lowering, IntrinsicLowering::Builtin);
+            assert_eq!(spec.runtime, IntrinsicRuntime::Native);
+            assert_eq!(spec.wir_helpers.len(), 1);
+            assert!(!spec.dynamic_wir_helpers);
+            assert!(spec.wir_host_call.is_none());
+            assert_eq!(
+                spec.capability_effect,
+                if matches!(*name, CRYPTO_SIGN | CRYPTO_PUBLIC_KEY | CRYPTO_REVEAL) {
+                    CapabilityEffect::UsesSecret
+                } else {
+                    CapabilityEffect::None
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn crypto_source_primitive_signatures_match_catalog() {
+        use crate::ast::{Item, Type};
+
+        fn named(name: &str) -> Type {
+            Type::Named(name.into(), Vec::new())
+        }
+
+        fn expected(signature: IntrinsicSignature) -> (Vec<Type>, Type) {
+            match signature {
+                IntrinsicSignature::StringToString => {
+                    (vec![named("String")], named("String"))
+                }
+                IntrinsicSignature::StringStringToString => (
+                    vec![named("String"), named("String")],
+                    named("String"),
+                ),
+                IntrinsicSignature::StringStringStringToInt => (
+                    vec![named("String"), named("String"), named("String")],
+                    named("Int"),
+                ),
+                IntrinsicSignature::ListStringListStringToString => (
+                    vec![
+                        Type::Named("List".into(), vec![named("String")]),
+                        Type::Named("List".into(), vec![named("String")]),
+                    ],
+                    named("String"),
+                ),
+                IntrinsicSignature::SecretStringToString => (
+                    vec![named("Secret"), named("String")],
+                    named("String"),
+                ),
+                IntrinsicSignature::SecretToString => {
+                    (vec![named("Secret")], named("String"))
+                }
+                other => panic!("unexpected crypto signature {other:?}"),
+            }
+        }
+
+        let module = crate::parser::parse_module(include_str!("../../../std/crypto.witchy"))
+            .expect("parse std/crypto");
+        for name in CRYPTO_OPERATIONS {
+            let spec = lookup(name).expect("crypto operation");
+            let bare_name = spec.name.rsplit_once('.').expect("qualified crypto name").1;
+            let function = module.items.iter().find_map(|item| match item {
+                Item::Function(function) if function.name == bare_name => Some(function),
+                _ => None,
+            });
+            let function =
+                function.unwrap_or_else(|| panic!("{} missing from std/crypto", spec.name));
+            let (params, result) = expected(spec.signature);
+            assert_eq!(function.params.len(), spec.arity, "arity drift for {}", spec.name);
+            assert_eq!(
+                function
+                    .params
+                    .iter()
+                    .map(|param| param.ty.as_ref())
+                    .collect::<Vec<_>>(),
+                params.iter().map(Some).collect::<Vec<_>>(),
+                "parameter drift for {}",
+                spec.name
+            );
+            assert_eq!(function.ret.as_ref(), Some(&result), "return drift for {}", spec.name);
+        }
     }
 
     #[test]

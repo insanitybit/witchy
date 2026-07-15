@@ -3843,9 +3843,21 @@ impl Checker {
             S::StringStringStringToString => {
                 Some((vec![Ty::String, Ty::String, Ty::String], Ty::String))
             }
+            S::StringStringStringToInt => {
+                Some((vec![Ty::String, Ty::String, Ty::String], Ty::Int))
+            }
             S::StringIntIntToString => {
                 Some((vec![Ty::String, Ty::Int, Ty::Int], Ty::String))
             }
+            S::ListStringListStringToString => Some((
+                vec![
+                    Ty::List(Box::new(Ty::String)),
+                    Ty::List(Box::new(Ty::String)),
+                ],
+                Ty::String,
+            )),
+            S::SecretStringToString => Some((vec![Ty::Secret, Ty::String], Ty::String)),
+            S::SecretToString => Some((vec![Ty::Secret], Ty::String)),
             S::IntToString => Some((vec![Ty::Int], Ty::String)),
             S::IntToFloat => Some((vec![Ty::Int], Ty::Float)),
             S::FloatToInt => Some((vec![Ty::Float], Ty::Int)),
@@ -7835,9 +7847,9 @@ fn pattern_dup_binding(p: &Pattern) -> Option<String> {
     dup
 }
 
-/// The module-qualified NATIVE INTRINSICS: declared in std as self-recursive
-/// placeholders (signatures for the checker), intercepted by name on both
-/// backends, never templated by monomorphization, never compiled as bodies.
+/// Module-qualified native primitives: declared in std as signature-bearing
+/// placeholders, intercepted by name on both backends, never templated by
+/// monomorphization, and never compiled as source bodies.
 pub fn intrinsic(name: &str) -> bool {
     matches!(
         name,
@@ -7846,6 +7858,7 @@ pub fn intrinsic(name: &str) -> bool {
         || witchy_syntax::intrinsics::is_dict_operation(name)
         || witchy_syntax::intrinsics::is_string_operation(name)
         || witchy_syntax::intrinsics::is_math_operation(name)
+        || witchy_syntax::intrinsics::is_crypto_operation(name)
 }
 
 

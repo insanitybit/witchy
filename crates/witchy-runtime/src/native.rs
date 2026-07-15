@@ -29,24 +29,28 @@ pub fn lookup(qualified: &str) -> Option<NativeFn> {
         return None;
     }
     match qualified {
-        "crypto.sha256" => Some(crypto::sha256),
-        "crypto.rune_hash" => Some(crypto::rune_hash),
-        "crypto.__ed25519_verify_status" => Some(crypto::ed25519_verify_status),
-        "crypto.sign" => Some(crypto::sign),
-        "crypto.public_key" => Some(crypto::public_key),
-        "crypto.reveal" => Some(crypto::reveal),
+        intrinsics::CRYPTO_SHA256 => Some(crypto::sha256),
+        intrinsics::CRYPTO_RUNE_HASH => Some(crypto::rune_hash),
+        intrinsics::CRYPTO_ED25519_VERIFY_STATUS => Some(crypto::ed25519_verify_status),
+        intrinsics::CRYPTO_SIGN => Some(crypto::sign),
+        intrinsics::CRYPTO_PUBLIC_KEY => Some(crypto::public_key),
+        intrinsics::CRYPTO_REVEAL => Some(crypto::reveal),
         #[cfg(not(target_arch = "wasm32"))]
-        "crypto.__ecdsa_p256_verify_status" => Some(crypto::ecdsa_p256_verify_status),
+        intrinsics::CRYPTO_ECDSA_P256_VERIFY_STATUS => Some(crypto::ecdsa_p256_verify_status),
         #[cfg(not(target_arch = "wasm32"))]
-        "crypto.__ecdsa_p256_verify_hex_status" => Some(crypto::ecdsa_p256_verify_hex_status),
+        intrinsics::CRYPTO_ECDSA_P256_VERIFY_HEX_STATUS => {
+            Some(crypto::ecdsa_p256_verify_hex_status)
+        }
         #[cfg(not(target_arch = "wasm32"))]
-        "crypto.__rsa_pkcs1_sha256_verify_status" => Some(crypto::rsa_pkcs1_sha256_verify_status),
+        intrinsics::CRYPTO_RSA_PKCS1_SHA256_VERIFY_STATUS => {
+            Some(crypto::rsa_pkcs1_sha256_verify_status)
+        }
         #[cfg(not(target_arch = "wasm32"))]
-        "crypto.sha512" => Some(crypto::sha512),
+        intrinsics::CRYPTO_SHA512 => Some(crypto::sha512),
         #[cfg(not(target_arch = "wasm32"))]
-        "crypto.sha3_256" => Some(crypto::sha3_256),
+        intrinsics::CRYPTO_SHA3_256 => Some(crypto::sha3_256),
         #[cfg(not(target_arch = "wasm32"))]
-        "crypto.hmac_sha256" => Some(crypto::hmac_sha256),
+        intrinsics::CRYPTO_HMAC_SHA256 => Some(crypto::hmac_sha256),
         intrinsics::COMPILER_FOOTPRINT => Some(compiler::footprint),
         intrinsics::COMPILER_DIFF => Some(compiler::diff),
         intrinsics::COMPILER_DOC => Some(compiler::doc),
@@ -1048,5 +1052,107 @@ mod intrinsic_catalog_tests {
                 ),
             }
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn every_crypto_catalog_row_executes_with_its_declared_result_shape() {
+        use crate::value::NativeValue as Value;
+        use witchy_syntax::intrinsics;
+
+        let call = |name: &str, args: Vec<Value>| {
+            super::lookup(name)
+                .unwrap_or_else(|| panic!("missing crypto hook {name}"))
+                (&args)
+                .unwrap_or_else(|error| panic!("{name} rejected catalog-shaped args: {error}"))
+        };
+
+        assert_eq!(
+            call(intrinsics::CRYPTO_SHA256, vec![Value::Str("abc".into())]),
+            Value::Str(
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".into()
+            )
+        );
+        assert_eq!(
+            call(
+                intrinsics::CRYPTO_RUNE_HASH,
+                vec![Value::List(vec![]), Value::List(vec![])]
+            ),
+            Value::Str(
+                "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                    .into()
+            )
+        );
+
+        let secret = Value::Secret(vec![0; 32]);
+        let message = Value::Str("catalog".into());
+        let Value::Str(public_key) = call(
+            intrinsics::CRYPTO_PUBLIC_KEY,
+            vec![secret.clone()],
+        ) else {
+            panic!("crypto.public_key must return String")
+        };
+        let Value::Str(signature) = call(
+            intrinsics::CRYPTO_SIGN,
+            vec![secret.clone(), message.clone()],
+        ) else {
+            panic!("crypto.sign must return String")
+        };
+        assert_eq!(public_key.len(), 64);
+        assert_eq!(signature.len(), 128);
+        assert_eq!(
+            call(
+                intrinsics::CRYPTO_ED25519_VERIFY_STATUS,
+                vec![Value::Str(public_key), message, Value::Str(signature)]
+            ),
+            Value::Int(1)
+        );
+        assert_eq!(
+            call(intrinsics::CRYPTO_REVEAL, vec![secret]),
+            Value::Str("\0".repeat(32))
+        );
+
+        for name in [
+            intrinsics::CRYPTO_ECDSA_P256_VERIFY_STATUS,
+            intrinsics::CRYPTO_ECDSA_P256_VERIFY_HEX_STATUS,
+            intrinsics::CRYPTO_RSA_PKCS1_SHA256_VERIFY_STATUS,
+        ] {
+            assert_eq!(
+                call(
+                    name,
+                    vec![
+                        Value::Str("00".into()),
+                        Value::Str("message".into()),
+                        Value::Str("00".into()),
+                    ]
+                ),
+                Value::Int(-1),
+                "{name} malformed-key status"
+            );
+        }
+
+        assert_eq!(
+            call(intrinsics::CRYPTO_SHA512, vec![Value::Str("abc".into())]),
+            Value::Str(concat!(
+                "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a",
+                "2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+            ).into())
+        );
+        assert_eq!(
+            call(intrinsics::CRYPTO_SHA3_256, vec![Value::Str("abc".into())]),
+            Value::Str(
+                "3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532".into()
+            )
+        );
+        assert_eq!(
+            call(
+                intrinsics::CRYPTO_HMAC_SHA256,
+                vec![Value::Str("0b".repeat(20)), Value::Str("Hi There".into())]
+            ),
+            Value::Str(
+                "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+                    .into()
+            )
+        );
     }
 }

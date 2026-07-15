@@ -139,62 +139,51 @@ impl Codegen<'_> {
                     Kind::I64,
                 )
             }
-            ("crypto.__ed25519_verify_status", 3) => {
-                self.uses_crypto_ed25519_verify = true;
-                call("crypto_ed25519_verify_status", self.lower_args(&[&args[0], &args[1], &args[2]])?)
+            (intrinsics::CRYPTO_ED25519_VERIFY_STATUS, 3) => {
+                call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1], &args[2]])?)
             }
-            ("crypto.sha256", 1) => {
-                self.uses_crypto_sha256 = true;
-                call("crypto_sha256", self.lower_args(&[&args[0]])?)
+            (intrinsics::CRYPTO_SHA256, 1) => {
+                call(intrinsic_helper(name), self.lower_args(&[&args[0]])?)
             }
-            ("crypto.sign", 2) => {
+            (intrinsics::CRYPTO_SIGN, 2) => {
                 // The Secret bytes stay host-side; the guest passes an opaque
                 // externref and the message.
-                self.uses_crypto_sign = true;
-                call("crypto_sign", self.lower_args(&[&args[0], &args[1]])?)
+                call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
             }
-            ("crypto.public_key", 1) => {
-                self.uses_crypto_public_key = true;
-                call("crypto_public_key", self.lower_args(&[&args[0]])?)
+            (intrinsics::CRYPTO_PUBLIC_KEY, 1) => {
+                call(intrinsic_helper(name), self.lower_args(&[&args[0]])?)
             }
-            ("crypto.reveal", 1) => {
+            (intrinsics::CRYPTO_REVEAL, 1) => {
                 // The Secret bytes stay host-side until this explicit reveal path;
                 // the guest passes only the opaque externref.
-                call("crypto_reveal", self.lower_args(&[&args[0]])?)
+                call(intrinsic_helper(name), self.lower_args(&[&args[0]])?)
             }
-            ("crypto.rune_hash", 2) => {
-                self.uses_crypto_rune_hash = true;
-                call("crypto_rune_hash", self.lower_args(&[&args[0], &args[1]])?)
+            (intrinsics::CRYPTO_RUNE_HASH, 2) => {
+                call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
             }
-            ("crypto.__ecdsa_p256_verify_status", 3) => {
-                self.used_crypto_ops.insert("ecdsa_p256_verify_status");
-                call("crypto_ecdsa_p256_verify_status", self.lower_args(&[&args[0], &args[1], &args[2]])?)
+            (intrinsics::CRYPTO_ECDSA_P256_VERIFY_STATUS, 3) => {
+                call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1], &args[2]])?)
             }
-            ("crypto.__rsa_pkcs1_sha256_verify_status", 3) => {
-                self.used_crypto_ops.insert("rsa_pkcs1_sha256_verify_status");
+            (intrinsics::CRYPTO_RSA_PKCS1_SHA256_VERIFY_STATUS, 3) => {
                 call(
-                    "crypto_rsa_pkcs1_sha256_verify_status",
+                    intrinsic_helper(name),
                     self.lower_args(&[&args[0], &args[1], &args[2]])?,
                 )
             }
-            ("crypto.__ecdsa_p256_verify_hex_status", 3) => {
-                self.used_crypto_ops.insert("ecdsa_p256_verify_hex_status");
+            (intrinsics::CRYPTO_ECDSA_P256_VERIFY_HEX_STATUS, 3) => {
                 call(
-                    "crypto_ecdsa_p256_verify_hex_status",
+                    intrinsic_helper(name),
                     self.lower_args(&[&args[0], &args[1], &args[2]])?,
                 )
             }
-            ("crypto.sha512", 1) => {
-                self.used_crypto_ops.insert("sha512");
-                call("crypto_sha512", self.lower_args(&[&args[0]])?)
+            (intrinsics::CRYPTO_SHA512, 1) => {
+                call(intrinsic_helper(name), self.lower_args(&[&args[0]])?)
             }
-            ("crypto.sha3_256", 1) => {
-                self.used_crypto_ops.insert("sha3_256");
-                call("crypto_sha3_256", self.lower_args(&[&args[0]])?)
+            (intrinsics::CRYPTO_SHA3_256, 1) => {
+                call(intrinsic_helper(name), self.lower_args(&[&args[0]])?)
             }
-            ("crypto.hmac_sha256", 2) => {
-                self.used_crypto_ops.insert("hmac_sha256");
-                call("crypto_hmac_sha256", self.lower_args(&[&args[0], &args[1]])?)
+            (intrinsics::CRYPTO_HMAC_SHA256, 2) => {
+                call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
             }
             ("secretstore.require", 2) => {
                 // `SecretStore.require(name)` returns the `Secret` directly (no

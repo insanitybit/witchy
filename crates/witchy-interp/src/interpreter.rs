@@ -2017,7 +2017,7 @@ impl Interpreter {
         // `Secret` / `require("signing")`) is sign-only and must not be revealed —
         // only named value-secrets are. Mirrors the WASM host (`host_crypto_reveal_len`)
         // through the one shared identity rule so the backends can't drift.
-        if name == "crypto.reveal" {
+        if name == intrinsics::CRYPTO_REVEAL {
             if let [Value::Secret(bytes, use_only)] = args {
                 // (RFC-0060) A use-only secret is consumable by handle but never revealable.
                 if *use_only {

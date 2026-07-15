@@ -368,17 +368,11 @@ impl Codegen<'_> {
                     .is_some_and(|spec| spec.signature.returns_int()) => ValType::Int,
                 name if intrinsics::lookup(name)
                     .is_some_and(|spec| spec.signature.returns_float()) => ValType::Float,
-                "crypto.sha256" | "crypto.sign"
-                | "crypto.public_key" | "crypto.reveal" | "read" | "read_build" | "crypto.rune_hash"
-                | "exec"
-                | "regex.match_spans" | "recv_line" | "recv_all"
-                | "crypto.sha512" | "crypto.sha3_256" | "crypto.hmac_sha256"
-                | "recv_bytes" => ValType::Str,
+                "read" | "read_build" | "exec" | "regex.match_spans" | "recv_line"
+                | "recv_all" | "recv_bytes" => ValType::Str,
                 "exists" | "is_dir" => ValType::Bool,
-                "int_to_duration" | "duration_to_int" | "now" | "now_monotonic" | "rand_u64"
-                | "crypto.__ed25519_verify_status" | "crypto.__ecdsa_p256_verify_status"
-                | "crypto.__ecdsa_p256_verify_hex_status"
-                | "crypto.__rsa_pkcs1_sha256_verify_status" => ValType::Int,
+                "int_to_duration" | "duration_to_int" | "now" | "now_monotonic"
+                | "rand_u64" => ValType::Int,
                 other => self.fn_ret_valtype.get(other).copied().unwrap_or(ValType::Other),
             },
             // `inner?` yields the Ok/Some payload's value type, so `to_string` of

@@ -799,12 +799,6 @@ struct Codegen<'types> {
     uses_list_drop: bool,
     /// Whether the `starts_with`/`ends_with` string helpers are needed.
     uses_starts_with: bool,
-    /// Whether the `crypto.ed25519_verify` host import is needed.
-    uses_crypto_ed25519_verify: bool,
-    /// Whether the `crypto.sha256` host import + guest helper are needed.
-    uses_crypto_sha256: bool,
-    /// Whether the `crypto.rune_hash` host import + guest helper are needed.
-    uses_crypto_rune_hash: bool,
     /// Variables in the CURRENT function eligible for in-place push
     /// (the analysis's accumulator set); each carries a shadow `${name}__cap`
     /// ownership-token local.
@@ -977,19 +971,9 @@ struct Codegen<'types> {
     /// ("connect"/"restrict" under Connect; "listen"/"accept" under Listen;
     /// socket I/O under either).
     used_net_ops: std::collections::BTreeSet<&'static str>,
-    /// The aws-lc-rs-backed crypto natives beyond the legacy set — `sha512`,
-    /// `sha3_256`, `hmac_sha256`, `ecdsa_p256_verify`, `ecdsa_p256_verify_hex`.
-    /// Each is bridged to the SAME native registry the interpreter calls, so the
-    /// backends agree; tracked as a set rather than a bool-per-op.
-    used_crypto_ops: std::collections::BTreeSet<&'static str>,
     /// Whether `main` declares an argv parameter (`args: List(String)`); the
     /// run export then builds the host-provided list via `$build_args`.
     uses_args: bool,
-    /// Whether the `crypto.sign` host import + guest helper are needed
-    /// (`Secret` capability).
-    uses_crypto_sign: bool,
-    /// Whether the `crypto.public_key` host import + guest helper are needed.
-    uses_crypto_public_key: bool,
     uses_ends_with: bool,
     /// Whether the `split` helper is needed.
     uses_split: bool,
@@ -1330,9 +1314,6 @@ impl<'types> Codegen<'types> {
             cur_fn_var_cap_params: Vec::new(),
             uses_list_drop: false,
             uses_starts_with: false,
-            uses_crypto_ed25519_verify: false,
-            uses_crypto_sha256: false,
-            uses_crypto_rune_hash: false,
             inplace_push: HashSet::new(),
             sroa_candidates: HashSet::new(),
             sroa_active: HashMap::new(),
@@ -1383,10 +1364,7 @@ impl<'types> Codegen<'types> {
             used_dir_ops: std::collections::BTreeSet::new(),
             used_build_ops: std::collections::BTreeSet::new(),
             used_net_ops: std::collections::BTreeSet::new(),
-            used_crypto_ops: std::collections::BTreeSet::new(),
             uses_args: false,
-            uses_crypto_sign: false,
-            uses_crypto_public_key: false,
             uses_dict_update: false,
             uses_ends_with: false,
             uses_split: false,
