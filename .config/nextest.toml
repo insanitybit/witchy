@@ -59,6 +59,7 @@ path = "junit.xml"
 [test-groups]
 registry-serial = { max-threads = 2 }
 perf-serial = { max-threads = 1 }
+wasm-heavy = { max-threads = 2 }
 
 # Long-running regression guards: the three at-scale perf tests (50k-element
 # programs on both backends) run 60-80s on an idle machine — under a busy gate
@@ -78,10 +79,19 @@ priority = 90
 # and the heavy differential/example-matrix tests trailed the bulk. Running
 # alone at the end wastes ~9 idle cores for the length of the longest straggler.
 # priority 90 dispatches them at the front so they overlap the parallel bulk
-# instead of extending the tail. Keep this list to tests measured >8s that also
-# sort late; re-check with the per-test timings in a merge-queue gate log.
+# instead of extending the tail. Each process also drives the multi-core Wasm
+# compiler; starting the whole set together can make every member exceed the
+# 135s timeout on a cold cache. Width 2 keeps useful overlap without the
+# compiler thundering herd. Keep this list to tests measured >8s that also sort
+# late; re-check with the per-test timings in a merge-queue gate log.
 [[profile.default.overrides]]
 filter = 'test(/^example_tests::stdlib_properties::(semver_roundtrips|path_normalize_is_idempotent|time_unix_roundtrips)$|^example_tests::wir_binary_path_runs_and_agrees_with_oracle$|^example_tests::(documentation_examples_are_valid|every_example_agrees_under_unbox|every_compilable_example_agrees_on_both_backends|every_example_agrees_under_rc_floor|examples_agree_under_rc_floor|examples_agree_under_inplace_and_forced_copy|all_examples_run_via_cli|book_examples_manifest_is_current)$|^example_tests::range_for_properties::/) | test(/differential_sweep_output_is_invariant_on_both_backends/)'
+test-group = 'wasm-heavy'
+priority = 90
+
+[[profile.ci.overrides]]
+filter = 'test(/^example_tests::stdlib_properties::(semver_roundtrips|path_normalize_is_idempotent|time_unix_roundtrips)$|^example_tests::wir_binary_path_runs_and_agrees_with_oracle$|^example_tests::(documentation_examples_are_valid|every_example_agrees_under_unbox|every_compilable_example_agrees_on_both_backends|every_example_agrees_under_rc_floor|examples_agree_under_rc_floor|examples_agree_under_inplace_and_forced_copy|all_examples_run_via_cli|book_examples_manifest_is_current)$|^example_tests::range_for_properties::/) | test(/differential_sweep_output_is_invariant_on_both_backends/)'
+test-group = 'wasm-heavy'
 priority = 90
 
 # Keyword filter: nextest can only match on names, so this must cover every
