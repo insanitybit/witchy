@@ -195,6 +195,14 @@ fn to_runnable(block: VNode(Msg)) -> VNode(Msg):
 // `main`, and its code names no non-Console capability TYPE. Types are Title-cased, so
 // builtins (`read_file`, `connect`) don't false-match; a capability appears as a `main`
 // parameter type in every real example.
+//
+// This book's cell deliberately uses the capability-DENIED host (`web/witchy-host.js`), so a
+// capability example is shown as read-only code — never a Run button that would fail to
+// instantiate. RFC-0091 adds an OPT-IN playground host (`web/witchy-runtime/witchy-runtime.mjs`)
+// that can back `Clock`/`Env`/`Dir` with browser-honest resources; a teaching embedder that
+// wires that host in (and the `browser_runnable` classification in `book/examples.json`) can
+// offer Run for those families. We keep the denied host here so the guarantee stays: no
+// affordance the book's own engine can't honor.
 fn runs_in_browser(code: String) -> Bool:
     string.contains(code, "fn main(") && !names_denied_capability(code)
 

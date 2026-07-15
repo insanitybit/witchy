@@ -40,17 +40,32 @@ sandbox, arrived at by omission rather than by a runtime check — see
 and [Capabilities](capabilities.md) for the full model.
 
 This is also why, in the runnable version of this book, a `Console`-only example
-has a **Run** button but one reaching for another authority currently does not:
-the browser host links those imports as trapping stubs, so the module can't run.
-The planned fix (see
-[RFC-0091](https://github.com/insanitybit/witchy/blob/master/rfcs/0091-browser-virtual-capabilities.md))
-is to back each stub with *what the browser actually has* — the real clock for
-`Clock`, the browser's own `fetch` (within its CORS rules) for `Net`, a
-default-empty (but page-overridable) environment for `Env` — and an in-memory
-scratch tree for `Dir`, the one capability that genuinely needs a backing. Those examples then run in the page (with
-ordinary, non-deterministic output, which is fine for a demo), while `Exec` (a
-native subprocess) and host secrets have no browser analogue and stay un-runnable
-by design.
+has a **Run** button: the book's own cell runs under a capability-*denied* host,
+so an example reaching for any other authority is shown as read-only code rather
+than a misleading button that would fail.
+
+For a *teaching* or *playground* embedder that wants those examples to run,
+[RFC-0091](https://github.com/insanitybit/witchy/blob/master/rfcs/0091-browser-virtual-capabilities.md)
+adds an **opt-in** browser host that backs each capability with *what the browser
+actually has* — the real clock for `Clock`, a default-empty (but page-supplied)
+environment for `Env`, and a confined **in-memory scratch tree** for `Dir`, the
+one capability that genuinely needs a backing. It is opt-in precisely so it is
+never an ambient widening: the default host still denies everything by omission,
+and a page enables only the families it explicitly hands over. Those examples then
+run with ordinary, non-deterministic output (fine for a demo).
+
+`Exec` (a native subprocess) and host secrets have no browser analogue and stay
+un-runnable by design. `Net` also stays denied for now, for a concrete reason
+worth stating: Witchy's host-call ABI is **synchronous** (a capability call
+returns its result inline before the guest continues), and `net.connect` is a raw
+**TCP socket** the guest reads and writes a byte at a time. The browser's only
+network primitive, `fetch`, is **asynchronous** and message-shaped, not a socket —
+and the sync escapes (a blocking `XMLHttpRequest`, or a worker with
+`SharedArrayBuffer` + `Atomics.wait`) either freeze the page or require
+re-architecting how modules are instantiated. Backing `Net` honestly therefore
+waits on an async-suspending host-call ABI (Asyncify / JSPI) plus a socket-shaped
+transport; until then, faking it would break the parity guarantee, so it is left
+denied. RFC-0091 records this as an explicit later phase.
 
 ## UI authority is a capability, too
 

@@ -9345,6 +9345,24 @@ fn yn(b: Bool) -> String:
                         let uses_workers = footprint_module.imports.iter().any(|m| m == "vm")
                             || linked.imports.iter().any(|m| m == "vm");
                         let runnable = has_main && console_only && !reads_argv && !uses_workers;
+                        // (RFC-0091) `browser_runnable`: whether the OPT-IN playground host
+                        // (`instantiate(..., { capabilities })` in web/witchy-runtime) can run
+                        // this block. That host backs exactly the browser-honest capability
+                        // families — `Console`, `Clock` (real wall/monotonic time), `Env` (an
+                        // empty/page-supplied map), and `Dir` (a per-run in-memory tree) — and
+                        // leaves `Net`/`Exec`/`Secret`/argv/workers denied by omission. This is a
+                        // SUPERSET of `runnable` (which stays Console-only + output-pinned): a
+                        // `browser_runnable`-but-not-`runnable` block has NO pinned `output`,
+                        // because its result depends on real time or on host-supplied Dir/Env
+                        // fixtures rather than a deterministic oracle run. The docs cell uses
+                        // this to offer a Run button (empty fixtures) without claiming a golden.
+                        const BROWSER_CAP_FAMILIES: &[&str] = &["Console", "Clock", "Env", "Dir"];
+                        let browser_caps_ok = fp
+                            .total
+                            .keys()
+                            .all(|k| BROWSER_CAP_FAMILIES.iter().any(|f| f == k));
+                        let browser_runnable =
+                            has_main && browser_caps_ok && !reads_argv && !uses_workers;
                         let footprint: Vec<String> = fp
                             .total
                             .iter()
@@ -9366,6 +9384,7 @@ fn yn(b: Bool) -> String:
                             "file": file.display().to_string(),
                             "block": idx + 1,
                             "runnable": runnable,
+                            "browser_runnable": browser_runnable,
                             "console_only": console_only,
                             "expect_error": false,
                             "footprint": footprint,

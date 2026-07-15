@@ -438,8 +438,485 @@ function runeHash(paths, contents) {
 }
 
 // ---------------------------------------------------------------------------
-// The instantiation entry point.
+// (RFC-0091) The OPT-IN teaching/playground capability host.
+//
+// The default `instantiate` above stays capability-DENIED (deny-by-omission).
+// A caller that explicitly passes `opts.capabilities` opts into a SUPERSET
+// import object that adds ONLY the requested families — never an ambient
+// widening. The three families the browser can honestly back are:
+//
+//   * Clock  — real browser wall/monotonic time on the existing `now`/
+//              `now_monotonic` i64 ABI (no virtualization needed).
+//   * Env    — EMPTY by default; a page may supply an immutable string map.
+//              An absent name reads back as unset (`env_len` -> -1), exactly
+//              like the native host's unset variable.
+//   * Dir    — a per-run IN-MEMORY tree. Path normalization and `..`/absolute
+//              confinement, the entry-policy guard (`dir_only`/`dir_admits`),
+//              read/write/append/list/subtree/exists/is_dir/open/create and the
+//              File handles they mint all mirror the native `Dir` semantics in
+//              crates/witchy-runtime/src/runtime.rs + crates/witchy-caps. It
+//              NEVER touches a real filesystem (no `node:fs`): the whole tree
+//              lives in JS `Map`/`Set` state scoped to this instantiation.
+//
+// `Exec`, `Secret`, raw `Net`, `mint_file` (a top-level File grant), argv and
+// compiler introspection remain DENIED BY OMISSION even under this host — they
+// are simply not built, so a module reaching them still fails to instantiate
+// with a `LinkError`. See rfcs/0091-browser-virtual-capabilities.md.
 // ---------------------------------------------------------------------------
+
+// The opt-in capability import surfaces, one frozen list per family. Adding a
+// host function to a family requires listing it here first — the same explicit
+// classification the pure `WITCHY_BROWSER_IMPORTS` list enforces, so the
+// playground host can never silently widen either.
+export const WITCHY_CLOCK_IMPORTS = Object.freeze(["now", "now_monotonic"]);
+export const WITCHY_ENV_IMPORTS = Object.freeze(["env_len", "env_fill"]);
+export const WITCHY_DIR_IMPORTS = Object.freeze([
+  // Dir capability ops (RFC-0005 externref handles) …
+  "mint_dir",
+  "dir_subdir",
+  "dir_only",
+  "dir_open",
+  "dir_create",
+  "dir_read_len",
+  "dir_list_size",
+  "dir_exists",
+  "dir_is_dir",
+  "dir_write",
+  "dir_append",
+  "dir_make_dir",
+  // … plus the File handles `dir_open`/`dir_create` mint (a Dir-derived File,
+  // NOT the top-level `mint_file` grant, which stays denied).
+  "file_read_len",
+  "file_write",
+]);
+
+// The DIR_DENY_ALL sentinel — a single NUL (U+0000), byte-identical to
+// `crates/witchy-caps/src/capabilities.rs` (`const DIR_DENY_ALL: &str = "\u{0}"`).
+// Written as an escape so this source stays plain ASCII. Produced by `dirOnly`
+// and consumed by `dirAdmits`; no legitimate `ext:`/`kind:` pattern can collide
+// with it (they all contain a `:`), so a fail-closed narrowing stays fail-closed.
+const DIR_DENY_ALL = "\u0000";
+
+// Normalize a Dir-relative path the way native `mock_normalize` /
+// `confine::resolve` do LEXICALLY: reject absolute paths and any `..`
+// component, drop `.` and empty segments, join the rest with `/`. In an
+// in-memory tree there are no symlinks, so this lexical check IS the full
+// confinement boundary (the security invariant: a `Dir` is a subtree). Throws
+// on an escape attempt, exactly as the native host traps.
+function normalizeMemPath(rel) {
+  // The reference (interpreter/native) uses Unix `std::path` semantics: only a
+  // leading `/` is absolute; backslash is an ordinary character. Match that.
+  if (rel.startsWith("/")) {
+    throw new Error(`in-memory Dir path \`${rel}\` must be relative`);
+  }
+  const out = [];
+  for (const seg of rel.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") {
+      throw new Error(`\`..\` escapes the Dir capability`);
+    }
+    out.push(seg);
+  }
+  return out.join("/");
+}
+
+// Join a Dir handle's `root` with a relative path (mirrors native `mock_join`).
+function mockJoin(root, rel) {
+  const norm = normalizeMemPath(rel);
+  if (norm === "") return root;
+  if (root === "") return norm;
+  return `${root}/${norm}`;
+}
+
+// Port of `witchy_caps::capabilities::dir_admits`: whether an entry policy
+// admits touching `name` (a directory iff `isDir`). An empty policy admits all.
+function dirAdmits(policy, name, isDir) {
+  if (policy === "") return true;
+  let hasExt = false, extOk = false, hasKind = false, kindOk = false;
+  for (const p of policy.split("\n")) {
+    if (p === DIR_DENY_ALL) return false;
+    else if (p.startsWith("ext:")) {
+      hasExt = true;
+      const ext = p.slice(4);
+      if (isDir || name.endsWith(ext)) extOk = true;
+    } else if (p.startsWith("kind:")) {
+      hasKind = true;
+      const kind = p.slice(5);
+      if ((kind === "dir") === isDir) kindOk = true;
+    }
+  }
+  return (!hasExt || extOk) && (!hasKind || kindOk);
+}
+
+// Port of `witchy_caps::capabilities::dir_only`: narrow `current` by `refine`
+// (intersect within a shared dimension, AND across dimensions; a non-empty
+// refine with no valid `dim:pattern` fails closed to DIR_DENY_ALL — BUG-257).
+function dirOnly(current, refine) {
+  if (refine === "") return current;
+  const group = (s) => {
+    const m = new Map();
+    for (const p of s.split("\n")) {
+      const idx = p.indexOf(":");
+      if (idx >= 0) {
+        const dim = p.slice(0, idx);
+        if (!m.has(dim)) m.set(dim, new Set());
+        m.get(dim).add(p);
+      }
+    }
+    return m;
+  };
+  const refi = group(refine);
+  if (refi.size === 0) return DIR_DENY_ALL;
+  if (current === "") return refine;
+  const cur = group(current);
+  const out = new Set();
+  for (const [dim, pats] of cur) {
+    if (!refi.has(dim)) for (const x of pats) out.add(x);
+  }
+  for (const [dim, rpats] of refi) {
+    const cpats = cur.get(dim);
+    if (cpats) {
+      const common = [...rpats].filter((x) => cpats.has(x));
+      if (common.length === 0) return DIR_DENY_ALL;
+      for (const x of common) out.add(x);
+    } else {
+      for (const x of rpats) out.add(x);
+    }
+  }
+  // Native collects into a BTreeSet (sorted), then joins with '\n'.
+  return [...out].sort().join("\n");
+}
+
+// A per-run in-memory filesystem: `files` maps a normalized relative path to
+// its raw bytes; `dirs` records explicitly-created (possibly empty) directory
+// paths. Directories are otherwise implicit by path prefix. Mirrors the native
+// mock backing, extended to be writable like the native Fs backing.
+function makeMemFs(filesObj) {
+  const files = new Map();
+  const dirs = new Set();
+  const recordAncestors = (path) => {
+    const parts = path.split("/");
+    parts.pop();
+    let acc = "";
+    for (const part of parts) {
+      acc = acc ? `${acc}/${part}` : part;
+      dirs.add(acc);
+    }
+  };
+  for (const [k, v] of Object.entries(filesObj || {})) {
+    const p = normalizeMemPath(k);
+    if (p === "") throw new Error("in-memory Dir entry path must name a file");
+    const bytes = typeof v === "string" ? utf8.encode(v) : new Uint8Array(v);
+    files.set(p, bytes);
+    recordAncestors(p);
+  }
+  return { files, dirs, recordAncestors };
+}
+
+function memIsDir(fs, path) {
+  if (path === "") return true;
+  if (fs.dirs.has(path)) return true;
+  const prefix = `${path}/`;
+  for (const k of fs.files.keys()) if (k.startsWith(prefix)) return true;
+  for (const d of fs.dirs) if (d.startsWith(prefix)) return true;
+  return false;
+}
+
+function memExists(fs, path) {
+  return fs.files.has(path) || memIsDir(fs, path);
+}
+
+function memList(fs, path) {
+  if (!memIsDir(fs, path)) {
+    throw new Error(`list failed for in-memory Dir \`${path}\`: not a directory`);
+  }
+  const prefix = path === "" ? "" : `${path}/`;
+  const names = new Set();
+  const firstSeg = (full) => {
+    const rest = full.slice(prefix.length);
+    if (rest === "") return null;
+    const slash = rest.indexOf("/");
+    return slash < 0 ? rest : rest.slice(0, slash);
+  };
+  for (const k of fs.files.keys()) {
+    if (k.startsWith(prefix)) {
+      const name = firstSeg(k);
+      if (name) names.add(name);
+    }
+  }
+  for (const d of fs.dirs) {
+    if (d.startsWith(prefix)) {
+      const name = firstSeg(d);
+      if (name) names.add(name);
+    }
+  }
+  return [...names].sort();
+}
+
+function memParent(path) {
+  const slash = path.lastIndexOf("/");
+  return slash < 0 ? "" : path.slice(0, slash);
+}
+
+// Writing requires the parent directory to exist, mirroring native
+// `confine::resolve_write` (which canonicalizes the parent).
+function memRequireParent(fs, path) {
+  const parent = memParent(path);
+  if (parent !== "" && !memIsDir(fs, parent)) {
+    throw new Error(`cannot access \`${parent}\`: no such directory`);
+  }
+}
+
+function memRead(fs, path) {
+  const bytes = fs.files.get(path);
+  if (bytes === undefined) {
+    throw new Error(`read failed for in-memory Dir \`${path}\`: no such file`);
+  }
+  return bytes;
+}
+
+function memWrite(fs, path, bytes) {
+  if (path === "") throw new Error("write failed: path names the Dir root, not a file");
+  memRequireParent(fs, path);
+  fs.files.set(path, bytes);
+  fs.recordAncestors(path);
+}
+
+function memAppend(fs, path, bytes) {
+  if (path === "") throw new Error("append failed: path names the Dir root, not a file");
+  memRequireParent(fs, path);
+  const existing = fs.files.get(path);
+  if (existing === undefined) {
+    fs.files.set(path, bytes);
+  } else {
+    const merged = new Uint8Array(existing.length + bytes.length);
+    merged.set(existing, 0);
+    merged.set(bytes, existing.length);
+    fs.files.set(path, merged);
+  }
+  fs.recordAncestors(path);
+}
+
+// `make_dir` is recursive (native FS uses `create_dir_all`): create every level.
+function memMakeDir(fs, path) {
+  if (path === "") return;
+  fs.dirs.add(path);
+  fs.recordAncestors(path);
+}
+
+// Normalize `opts.capabilities` into `{ clock, env, dir }`. Absent/false =>
+// that family stays DENIED (its imports are never built). `env` becomes a Map
+// (empty when enabled with no entries); `dir` becomes an array of grant specs
+// (one per `mint_dir` ordinal), each `{ fs, read, write }`.
+function normalizeCapabilities(spec) {
+  const out = { clock: false, env: null, dir: null };
+  if (!spec || typeof spec !== "object") return out;
+
+  out.clock = spec.clock === true;
+
+  if (spec.env === true) {
+    out.env = new Map();
+  } else if (spec.env && typeof spec.env === "object") {
+    out.env = new Map(Object.entries(spec.env).map(([k, v]) => [k, String(v)]));
+  }
+
+  if (spec.dir) {
+    // A single grant object, or an array of them (one per `mint_dir` ordinal).
+    const grants = Array.isArray(spec.dir) ? spec.dir : [spec.dir];
+    out.dir = grants.map((g) => {
+      const grant = g === true ? {} : (g || {});
+      return {
+        fs: makeMemFs(grant.files),
+        read: grant.read !== false, // default: readable
+        write: grant.write === true, // default: NOT writable
+      };
+    });
+  }
+
+  return out;
+}
+
+// Assert a family's implemented imports exactly match its frozen catalog — the
+// per-family analog of the pure-surface drift check, so no opt-in host silently
+// widens beyond its declared surface.
+function checkFamilyImports(family, imports, catalog) {
+  const actual = Object.keys(imports).sort();
+  const expected = [...catalog].sort();
+  if (actual.join("\0") !== expected.join("\0")) {
+    throw new Error(
+      `witchy-runtime: ${family} imports drifted from their catalog\n` +
+      `  declared: ${expected.join(", ")}\n` +
+      `  actual:   ${actual.join(", ")}`
+    );
+  }
+}
+
+// Clock: real browser wall/monotonic time on the existing i64 ABI. `now` is ms
+// since the UNIX epoch (native `SystemTime::now`), `now_monotonic` is a
+// nanosecond monotonic count (native `Instant` elapsed nanos). Both are i64, so
+// they must return BigInt.
+function makeClockImports() {
+  const monotonicNs = () => {
+    if (typeof performance !== "undefined" && typeof performance.now === "function") {
+      return BigInt(Math.round(performance.now() * 1e6));
+    }
+    return BigInt(Date.now()) * 1000000n;
+  };
+  const imports = {
+    now() { return BigInt(Date.now()); },
+    now_monotonic() { return monotonicNs(); },
+  };
+  checkFamilyImports("Clock", imports, WITCHY_CLOCK_IMPORTS);
+  return imports;
+}
+
+// Env: an immutable page-supplied string map (empty by default). A name present
+// in the map reads back its value's UTF-8 byte length; an absent name is UNSET
+// (`env_len` -> -1), byte-identical to the native host with no explicit
+// allow-list. Values are frozen at instantiation — the guest cannot mutate them.
+function makeEnvImports(envMap, { readWstrText, writeAt }) {
+  const valueBytes = (name) => {
+    if (!envMap.has(name)) return null;
+    return utf8.encode(envMap.get(name));
+  };
+  const imports = {
+    env_len(namePtr) {
+      const bytes = valueBytes(readWstrText(namePtr));
+      return bytes === null ? -1 : bytes.length;
+    },
+    env_fill(namePtr, outPtr) {
+      // A well-behaved guest only calls this after a non-negative `env_len`;
+      // an absent name writes nothing (native `unwrap_or_default` → empty).
+      const bytes = valueBytes(readWstrText(namePtr));
+      if (bytes !== null) writeAt(bytes, outPtr);
+    },
+  };
+  checkFamilyImports("Env", imports, WITCHY_ENV_IMPORTS);
+  return imports;
+}
+
+// Dir: a per-run in-memory tree with native `Dir`/`File` semantics. `grants`
+// is the array from `normalizeCapabilities` (one entry per `mint_dir` ordinal).
+// Handles are plain JS objects passed to the guest as externref (reference
+// types): a Dir handle carries `{ fs, root, policy, read, write }`; a File
+// handle `{ fs, path, read, write }`. Every path resolves through the SAME
+// lexical `..`/absolute confinement and entry-policy guard the native host
+// uses, and NOTHING here touches a real filesystem.
+function makeDirImports(grants, { readWstr, readWstrText, stagePending, stageList }) {
+  const dirGuard = (dir, name, isDir) => {
+    if (!dirAdmits(dir.policy, name, isDir)) {
+      throw new Error(`\`${name}\` is not permitted by this Dir capability's entry policy`);
+    }
+  };
+  const requireRead = (dir) => {
+    if (!dir.read) throw new Error("this Dir capability does not grant Read");
+  };
+  const requireWrite = (dir) => {
+    if (!dir.write) throw new Error("this Dir capability does not grant Write");
+  };
+
+  const imports = {
+    // `mint_dir(ordinal) -> externref`: the root Dir handle for grant `ordinal`.
+    mint_dir(ordinal) {
+      const grant = grants[ordinal];
+      if (!grant) throw new Error(`invalid Dir grant index ${ordinal}`);
+      return { kind: "dir", fs: grant.fs, root: "", policy: "", read: grant.read, write: grant.write };
+    },
+    // `dir_subdir(dir, name) -> externref`: open a child directory (a traversal;
+    // guarded as a directory entry).
+    dir_subdir(dir, namePtr) {
+      const name = readWstrText(namePtr);
+      requireRead(dir);
+      dirGuard(dir, name, true);
+      return { kind: "dir", fs: dir.fs, root: mockJoin(dir.root, name), policy: dir.policy, read: dir.read, write: dir.write };
+    },
+    // `dir_only(dir, policy) -> externref`: narrow the entry policy (never widen).
+    dir_only(dir, policyPtr) {
+      const refine = readWstrText(policyPtr);
+      requireRead(dir);
+      return { kind: "dir", fs: dir.fs, root: dir.root, policy: dirOnly(dir.policy, refine), read: dir.read, write: dir.write };
+    },
+    // `dir_open(dir, rel) -> externref`: a read-only File handle for `rel`.
+    dir_open(dir, relPtr) {
+      const rel = readWstrText(relPtr);
+      requireRead(dir);
+      dirGuard(dir, rel, false);
+      return { kind: "file", fs: dir.fs, path: mockJoin(dir.root, rel), read: true, write: false };
+    },
+    // `dir_create(dir, rel) -> externref`: a write-only File handle for `rel`.
+    dir_create(dir, relPtr) {
+      const rel = readWstrText(relPtr);
+      requireWrite(dir);
+      dirGuard(dir, rel, false);
+      return { kind: "file", fs: dir.fs, path: mockJoin(dir.root, rel), read: false, write: true };
+    },
+    // `dir_read_len(dir, rel) -> i32`: stage the file's bytes for `fill_pending`.
+    dir_read_len(dir, relPtr) {
+      const rel = readWstrText(relPtr);
+      requireRead(dir);
+      dirGuard(dir, rel, false);
+      const bytes = memRead(dir.fs, mockJoin(dir.root, rel));
+      stagePending(bytes);
+      return bytes.length;
+    },
+    // `dir_list_size(dir) -> i32`: stage the sorted child names for
+    // `write_pending_list`; return the exact byte size the guest must reserve
+    // (native layout: i32 count + count·i64 ptrs + each `[i32 len][bytes]`).
+    dir_list_size(dir) {
+      requireRead(dir);
+      const names = memList(dir.fs, dir.root);
+      stageList(names);
+      let size = 4 + 8 * names.length;
+      for (const n of names) size += 4 + utf8.encode(n).length;
+      return size;
+    },
+    dir_exists(dir, relPtr) {
+      const rel = readWstrText(relPtr);
+      requireRead(dir);
+      let path;
+      try { path = mockJoin(dir.root, rel); } catch (_e) { return 0; }
+      return memExists(dir.fs, path) ? 1 : 0;
+    },
+    dir_is_dir(dir, relPtr) {
+      const rel = readWstrText(relPtr);
+      requireRead(dir);
+      let path;
+      try { path = mockJoin(dir.root, rel); } catch (_e) { return 0; }
+      return memIsDir(dir.fs, path) ? 1 : 0;
+    },
+    dir_write(dir, relPtr, valPtr) {
+      const rel = readWstrText(relPtr);
+      requireWrite(dir);
+      dirGuard(dir, rel, false);
+      memWrite(dir.fs, mockJoin(dir.root, rel), readWstr(valPtr));
+    },
+    dir_append(dir, relPtr, valPtr) {
+      const rel = readWstrText(relPtr);
+      requireWrite(dir);
+      dirGuard(dir, rel, false);
+      memAppend(dir.fs, mockJoin(dir.root, rel), readWstr(valPtr));
+    },
+    dir_make_dir(dir, namePtr) {
+      const name = readWstrText(namePtr);
+      requireWrite(dir);
+      dirGuard(dir, name, true);
+      memMakeDir(dir.fs, mockJoin(dir.root, name));
+    },
+    // File handles minted by dir_open/dir_create.
+    file_read_len(file) {
+      if (!file.read) throw new Error("this File capability does not grant Read");
+      const bytes = memRead(file.fs, file.path);
+      stagePending(bytes);
+      return bytes.length;
+    },
+    file_write(file, valPtr) {
+      if (!file.write) throw new Error("this File capability does not grant Write");
+      memWrite(file.fs, file.path, readWstr(valPtr));
+    },
+  };
+  checkFamilyImports("Dir", imports, WITCHY_DIR_IMPORTS);
+  return imports;
+}
 
 /**
  * Instantiate a witchyc-compiled, footprint-empty WASM module under the
@@ -497,6 +974,11 @@ export async function instantiate(wasmBytes, opts = {}) {
   // drained by the matching `fill_pending`. Mirrors `VmState::pending` in
   // src/runtime.rs (read once, no time-of-check/use gap).
   let pending = null;
+  // The pending List(String): staged by `dir_list_size`, drained by
+  // `write_pending_list`. Only the opt-in Dir host stages one; the pure host
+  // leaves it null (its `write_pending_list` is a no-op). Mirrors
+  // `VmState::pending_list`.
+  let pendingList = null;
 
   // The witchy import object — PURE functions only. No `dir_*`, `net_*`,
   // `exec_run`, `now`, `env_*`, `args_size`, `secretstore_*`, `crypto_reveal_*`,
@@ -568,13 +1050,39 @@ export async function instantiate(wasmBytes, opts = {}) {
       pending = null;
       writeAt(bytes, outPtr);
     },
-    // write_pending_list lays a staged List(String) out at base_ptr. The shim
-    // never stages a list (args_size/dir_list_size are capabilities and absent),
-    // so it can only legitimately run with nothing staged — but the import must
-    // exist because a footprint-empty module that builds a list literal MAY
-    // import it. With nothing staged it is a no-op.
-    write_pending_list(_basePtr) {
-      // No pure host op stages a list here; honor the call as a no-op.
+    // write_pending_list lays a staged List(String) out at base_ptr. No PURE
+    // host op stages a list (args_size/dir_list_size are capabilities), so under
+    // the default deny-by-omission host `pendingList` is always null and this is
+    // a no-op — but the import must exist because a footprint-empty module that
+    // builds a list literal MAY import it. The opt-in Dir host's `dir_list_size`
+    // DOES stage a list; when one is staged we lay it out in the native
+    // `host_write_pending_list` layout: an i32 count, `count` i64 element
+    // pointers, then each String `[i32 len][bytes]` packed after the pointer
+    // table (read once, then cleared).
+    write_pending_list(basePtr) {
+      if (pendingList === null) return;
+      const names = pendingList;
+      pendingList = null;
+      const encoded = names.map((s) => utf8.encode(s));
+      const n = names.length;
+      const stringsStart = basePtr + 4 + 8 * n;
+      const view = dv();
+      const bytes = u8();
+      view.setInt32(basePtr, n, true);
+      let offset = 0;
+      for (let i = 0; i < n; i++) {
+        const ptr = stringsStart + offset;
+        // i64 little-endian pointer (guest pointers fit in 32 bits).
+        view.setUint32(basePtr + 4 + 8 * i, ptr >>> 0, true);
+        view.setUint32(basePtr + 4 + 8 * i + 4, 0, true);
+        offset += 4 + encoded[i].length;
+      }
+      let cursor = stringsStart;
+      for (const enc of encoded) {
+        view.setInt32(cursor, enc.length, true);
+        bytes.set(enc, cursor + 4);
+        cursor += 4 + enc.length;
+      }
     },
     // (RFC-0040) user_cap_field_len(param, field): stage the (param, field) policy
     // string of a bare grantable-capability grant for `fill_pending`, returning its
@@ -666,6 +1174,23 @@ export async function instantiate(wasmBytes, opts = {}) {
       `  actual:   ${actualHostImports.join(", ")}`
     );
   }
+
+  // (RFC-0091) Merge in the EXPLICITLY-requested capability families. The
+  // default (no `opts.capabilities`) leaves `witchy` exactly the pure surface
+  // above — deny-by-omission is preserved. Each family's imports come from a
+  // helper that also drift-checks against its frozen catalog, so an opt-in host
+  // can never silently widen either.
+  const caps = normalizeCapabilities(opts.capabilities);
+  const marshal = {
+    readWstr,
+    readWstrText,
+    writeAt,
+    stagePending: (bytes) => { pending = bytes; },
+    stageList: (names) => { pendingList = names; },
+  };
+  if (caps.clock) Object.assign(witchy, makeClockImports());
+  if (caps.env) Object.assign(witchy, makeEnvImports(caps.env, marshal));
+  if (caps.dir) Object.assign(witchy, makeDirImports(caps.dir, marshal));
 
   ({ instance } = await WebAssembly.instantiate(wasmBytes, { witchy }));
   memory = instance.exports.memory;

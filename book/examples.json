@@ -1,6 +1,7 @@
 [
   {
     "block": 1,
+    "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
     "file": "README.md",
@@ -13,6 +14,7 @@
   },
   {
     "block": 2,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "README.md",
@@ -27,6 +29,7 @@
   },
   {
     "block": 1,
+    "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
     "file": "spec/capabilities.md",
@@ -39,6 +42,7 @@
   },
   {
     "block": 2,
+    "browser_runnable": false,
     "console_only": false,
     "expect_error": false,
     "file": "spec/capabilities.md",
@@ -51,6 +55,7 @@
   },
   {
     "block": 3,
+    "browser_runnable": false,
     "console_only": true,
     "expect_error": false,
     "file": "spec/capabilities.md",
@@ -60,6 +65,7 @@
   },
   {
     "block": 4,
+    "browser_runnable": false,
     "console_only": true,
     "expect_error": false,
     "file": "spec/capabilities.md",
@@ -69,6 +75,7 @@
   },
   {
     "block": 5,
+    "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
     "file": "spec/capabilities.md",
@@ -81,6 +88,7 @@
   },
   {
     "block": 1,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -96,6 +104,7 @@
   },
   {
     "block": 2,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -111,6 +120,7 @@
   },
   {
     "block": 3,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -127,6 +137,7 @@
   },
   {
     "block": 4,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -143,6 +154,7 @@
   },
   {
     "block": 5,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -156,6 +168,7 @@
   },
   {
     "block": 6,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -170,6 +183,7 @@
   },
   {
     "block": 7,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -184,6 +198,7 @@
   },
   {
     "block": 8,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -197,6 +212,7 @@
   },
   {
     "block": 9,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -215,6 +231,7 @@
   },
   {
     "block": 10,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -230,6 +247,7 @@
   },
   {
     "block": 11,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -243,6 +261,7 @@
   },
   {
     "block": 12,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -256,6 +275,7 @@
   },
   {
     "block": 13,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -275,6 +295,7 @@
   },
   {
     "block": 14,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -289,6 +310,7 @@
   },
   {
     "block": 15,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -302,6 +324,7 @@
   },
   {
     "block": 16,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -316,6 +339,7 @@
   },
   {
     "block": 17,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -331,6 +355,7 @@
   },
   {
     "block": 18,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -344,6 +369,7 @@
   },
   {
     "block": 19,
+    "browser_runnable": false,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -353,6 +379,7 @@
   },
   {
     "block": 20,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -367,6 +394,7 @@
   },
   {
     "block": 21,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -380,6 +408,7 @@
   },
   {
     "block": 22,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -393,6 +422,7 @@
   },
   {
     "block": 23,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -407,6 +437,7 @@
   },
   {
     "block": 24,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -420,6 +451,7 @@
   },
   {
     "block": 25,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -433,6 +465,7 @@
   },
   {
     "block": 26,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -446,6 +479,7 @@
   },
   {
     "block": 27,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -459,6 +493,7 @@
   },
   {
     "block": 28,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -473,6 +508,7 @@
   },
   {
     "block": 29,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -486,6 +522,7 @@
   },
   {
     "block": 30,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -500,6 +537,7 @@
   },
   {
     "block": 31,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -514,6 +552,7 @@
   },
   {
     "block": 32,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -527,6 +566,7 @@
   },
   {
     "block": 33,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -540,6 +580,7 @@
   },
   {
     "block": 34,
+    "browser_runnable": false,
     "console_only": false,
     "expect_error": false,
     "file": "spec/language.md",
@@ -552,6 +593,7 @@
   },
   {
     "block": 35,
+    "browser_runnable": false,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -561,6 +603,7 @@
   },
   {
     "block": 36,
+    "browser_runnable": false,
     "console_only": false,
     "expect_error": false,
     "file": "spec/language.md",
@@ -572,6 +615,7 @@
   },
   {
     "block": 37,
+    "browser_runnable": false,
     "console_only": false,
     "expect_error": false,
     "file": "spec/language.md",
@@ -583,6 +627,7 @@
   },
   {
     "block": 38,
+    "browser_runnable": false,
     "console_only": false,
     "expect_error": false,
     "file": "spec/language.md",
@@ -595,6 +640,7 @@
   },
   {
     "block": 39,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -610,6 +656,7 @@
   },
   {
     "block": 40,
+    "browser_runnable": false,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
@@ -619,6 +666,7 @@
   },
   {
     "block": 1,
+    "browser_runnable": false,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/appendix-performance.md",
@@ -628,6 +676,7 @@
   },
   {
     "block": 2,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/appendix-performance.md",
@@ -641,6 +690,7 @@
   },
   {
     "block": 3,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/appendix-performance.md",
@@ -655,6 +705,7 @@
   },
   {
     "block": 4,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/appendix-performance.md",
@@ -669,6 +720,7 @@
   },
   {
     "block": 1,
+    "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/appendix-recipes.md",
@@ -681,6 +733,7 @@
   },
   {
     "block": 2,
+    "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/appendix-recipes.md",
@@ -693,6 +746,7 @@
   },
   {
     "block": 3,
+    "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/appendix-recipes.md",
@@ -705,6 +759,7 @@
   },
   {
     "block": 4,
+    "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/appendix-recipes.md",
@@ -717,6 +772,7 @@
   },
   {
     "block": 5,
+    "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/appendix-recipes.md",
@@ -729,6 +785,7 @@
   },
   {
     "block": 6,
+    "browser_runnable": false,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/appendix-recipes.md",
@@ -740,6 +797,7 @@
   },
   {
     "block": 7,
+    "browser_runnable": false,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/appendix-recipes.md",
@@ -752,6 +810,7 @@
   },
   {
     "block": 8,
+    "browser_runnable": false,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/appendix-recipes.md",
@@ -764,6 +823,7 @@
   },
   {
     "block": 9,
+    "browser_runnable": false,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/appendix-recipes.md",
@@ -776,6 +836,7 @@
   },
   {
     "block": 10,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/appendix-recipes.md",
@@ -789,6 +850,7 @@
   },
   {
     "block": 1,
+    "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/capabilities-authority.md",
@@ -801,6 +863,7 @@
   },
   {
     "block": 2,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/capabilities-authority.md",
@@ -814,6 +877,7 @@
   },
   {
     "block": 1,
+    "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/capabilities-narrowing.md",
@@ -826,6 +890,7 @@
   },
   {
     "block": 2,
+    "browser_runnable": false,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/capabilities-narrowing.md",
@@ -838,6 +903,7 @@
   },
   {
     "block": 3,
+    "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/capabilities-narrowing.md",
@@ -850,6 +916,7 @@
   },
   {
     "block": 4,
+    "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/capabilities-narrowing.md",
@@ -862,6 +929,7 @@
   },
   {
     "block": 5,
+    "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/capabilities-narrowing.md",
@@ -874,6 +942,7 @@
   },
   {
     "block": 6,
+    "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/capabilities-narrowing.md",
@@ -886,6 +955,7 @@
   },
   {
     "block": 7,
+    "browser_runnable": false,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/capabilities-narrowing.md",
@@ -898,6 +968,7 @@
   },
   {
     "block": 8,
+    "browser_runnable": false,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/capabilities-narrowing.md",
@@ -907,6 +978,7 @@
   },
   {
     "block": 9,
+    "browser_runnable": false,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/capabilities-narrowing.md",
@@ -918,6 +990,7 @@
   },
   {
     "block": 10,
+    "browser_runnable": false,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/capabilities-narrowing.md",
@@ -930,6 +1003,7 @@
   },
   {
     "block": 11,
+    "browser_runnable": false,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/capabilities-narrowing.md",
@@ -939,6 +1013,7 @@
   },
   {
     "block": 12,
+    "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/capabilities-narrowing.md",
@@ -951,6 +1026,7 @@
   },
   {
     "block": 1,
+    "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/capabilities-optional.md",
@@ -963,6 +1039,7 @@
   },
   {
     "block": 2,
+    "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/capabilities-optional.md",
@@ -975,6 +1052,7 @@
   },
   {
     "block": 3,
+    "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/capabilities-optional.md",
@@ -988,6 +1066,7 @@
   },
   {
     "block": 1,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/for-var.md",
@@ -1003,6 +1082,7 @@
   },
   {
     "block": 1,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/getting-started-hello.md",
@@ -1016,6 +1096,7 @@
   },
   {
     "block": 2,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/getting-started-hello.md",
@@ -1030,6 +1111,7 @@
   },
   {
     "block": 1,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/idioms.md",
@@ -1044,6 +1126,7 @@
   },
   {
     "block": 2,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/idioms.md",
@@ -1057,6 +1140,7 @@
   },
   {
     "block": 3,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/idioms.md",
@@ -1071,6 +1155,7 @@
   },
   {
     "block": 4,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/idioms.md",
@@ -1086,6 +1171,7 @@
   },
   {
     "block": 5,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/idioms.md",
@@ -1100,6 +1186,7 @@
   },
   {
     "block": 1,
+    "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/introduction.md",
@@ -1112,6 +1199,7 @@
   },
   {
     "block": 2,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/introduction.md",
@@ -1125,6 +1213,7 @@
   },
   {
     "block": 3,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/introduction.md",
@@ -1138,6 +1227,7 @@
   },
   {
     "block": 1,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/mutating-methods.md",
@@ -1153,6 +1243,7 @@
   },
   {
     "block": 2,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/mutating-methods.md",
@@ -1166,6 +1257,7 @@
   },
   {
     "block": 3,
+    "browser_runnable": false,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/mutating-methods.md",
@@ -1175,6 +1267,7 @@
   },
   {
     "block": 4,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/mutating-methods.md",
@@ -1188,6 +1281,7 @@
   },
   {
     "block": 1,
+    "browser_runnable": false,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/packages-build.md",
@@ -1197,6 +1291,7 @@
   },
   {
     "block": 1,
+    "browser_runnable": false,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/packages.md",
@@ -1206,6 +1301,7 @@
   },
   {
     "block": 1,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/project.md",
@@ -1221,6 +1317,7 @@
   },
   {
     "block": 2,
+    "browser_runnable": false,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/project.md",
@@ -1234,6 +1331,7 @@
   },
   {
     "block": 1,
+    "browser_runnable": false,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/testing.md",
@@ -1243,6 +1341,7 @@
   },
   {
     "block": 2,
+    "browser_runnable": false,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/testing.md",
@@ -1252,6 +1351,7 @@
   },
   {
     "block": 1,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-async.md",
@@ -1265,6 +1365,7 @@
   },
   {
     "block": 2,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-async.md",
@@ -1283,6 +1384,7 @@
   },
   {
     "block": 3,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-async.md",
@@ -1297,6 +1399,7 @@
   },
   {
     "block": 4,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-async.md",
@@ -1310,6 +1413,7 @@
   },
   {
     "block": 5,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-async.md",
@@ -1325,6 +1429,7 @@
   },
   {
     "block": 6,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-async.md",
@@ -1341,6 +1446,7 @@
   },
   {
     "block": 7,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-async.md",
@@ -1356,6 +1462,7 @@
   },
   {
     "block": 8,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-async.md",
@@ -1369,6 +1476,7 @@
   },
   {
     "block": 9,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-async.md",
@@ -1382,6 +1490,7 @@
   },
   {
     "block": 10,
+    "browser_runnable": false,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-async.md",
@@ -1391,6 +1500,7 @@
   },
   {
     "block": 1,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-comptime.md",
@@ -1404,6 +1514,7 @@
   },
   {
     "block": 2,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-comptime.md",
@@ -1417,6 +1528,7 @@
   },
   {
     "block": 1,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-data.md",
@@ -1431,6 +1543,7 @@
   },
   {
     "block": 2,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-data.md",
@@ -1445,6 +1558,7 @@
   },
   {
     "block": 3,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-data.md",
@@ -1459,6 +1573,7 @@
   },
   {
     "block": 4,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-data.md",
@@ -1474,6 +1589,7 @@
   },
   {
     "block": 5,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-data.md",
@@ -1489,6 +1605,7 @@
   },
   {
     "block": 6,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-data.md",
@@ -1504,6 +1621,7 @@
   },
   {
     "block": 7,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-data.md",
@@ -1522,6 +1640,7 @@
   },
   {
     "block": 8,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-data.md",
@@ -1538,6 +1657,7 @@
   },
   {
     "block": 9,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-data.md",
@@ -1551,6 +1671,7 @@
   },
   {
     "block": 1,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-errors.md",
@@ -1565,6 +1686,7 @@
   },
   {
     "block": 2,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-errors.md",
@@ -1578,6 +1700,7 @@
   },
   {
     "block": 3,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-errors.md",
@@ -1592,6 +1715,7 @@
   },
   {
     "block": 4,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-errors.md",
@@ -1606,6 +1730,7 @@
   },
   {
     "block": 5,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-errors.md",
@@ -1621,6 +1746,7 @@
   },
   {
     "block": 6,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-errors.md",
@@ -1635,6 +1761,7 @@
   },
   {
     "block": 7,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-errors.md",
@@ -1648,6 +1775,7 @@
   },
   {
     "block": 8,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-errors.md",
@@ -1661,6 +1789,7 @@
   },
   {
     "block": 1,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-functions.md",
@@ -1674,6 +1803,7 @@
   },
   {
     "block": 2,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-functions.md",
@@ -1687,6 +1817,7 @@
   },
   {
     "block": 3,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-functions.md",
@@ -1700,6 +1831,7 @@
   },
   {
     "block": 4,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-functions.md",
@@ -1713,6 +1845,7 @@
   },
   {
     "block": 5,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-functions.md",
@@ -1726,6 +1859,7 @@
   },
   {
     "block": 6,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-functions.md",
@@ -1741,6 +1875,7 @@
   },
   {
     "block": 7,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-functions.md",
@@ -1756,6 +1891,7 @@
   },
   {
     "block": 8,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-functions.md",
@@ -1770,6 +1906,7 @@
   },
   {
     "block": 9,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-functions.md",
@@ -1785,6 +1922,7 @@
   },
   {
     "block": 10,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-functions.md",
@@ -1798,6 +1936,7 @@
   },
   {
     "block": 11,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-functions.md",
@@ -1812,6 +1951,7 @@
   },
   {
     "block": 12,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-functions.md",
@@ -1825,6 +1965,7 @@
   },
   {
     "block": 13,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-functions.md",
@@ -1839,6 +1980,7 @@
   },
   {
     "block": 14,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-functions.md",
@@ -1852,6 +1994,7 @@
   },
   {
     "block": 1,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-generics.md",
@@ -1866,6 +2009,7 @@
   },
   {
     "block": 2,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-generics.md",
@@ -1880,6 +2024,7 @@
   },
   {
     "block": 3,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-generics.md",
@@ -1894,6 +2039,7 @@
   },
   {
     "block": 4,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-generics.md",
@@ -1909,6 +2055,7 @@
   },
   {
     "block": 5,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-generics.md",
@@ -1923,6 +2070,7 @@
   },
   {
     "block": 6,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-generics.md",
@@ -1937,6 +2085,7 @@
   },
   {
     "block": 1,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-iterators.md",
@@ -1950,6 +2099,7 @@
   },
   {
     "block": 2,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-iterators.md",
@@ -1963,6 +2113,7 @@
   },
   {
     "block": 3,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-iterators.md",
@@ -1977,6 +2128,7 @@
   },
   {
     "block": 4,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-iterators.md",
@@ -1990,6 +2142,7 @@
   },
   {
     "block": 1,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-reflection.md",
@@ -2004,6 +2157,7 @@
   },
   {
     "block": 2,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-reflection.md",
@@ -2018,6 +2172,7 @@
   },
   {
     "block": 3,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-reflection.md",
@@ -2034,6 +2189,7 @@
   },
   {
     "block": 1,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-values.md",
@@ -2051,6 +2207,7 @@
   },
   {
     "block": 2,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-values.md",
@@ -2065,6 +2222,7 @@
   },
   {
     "block": 3,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-values.md",
@@ -2081,6 +2239,7 @@
   },
   {
     "block": 4,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-values.md",
@@ -2100,6 +2259,7 @@
   },
   {
     "block": 5,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-values.md",
@@ -2115,6 +2275,7 @@
   },
   {
     "block": 6,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-values.md",
@@ -2131,6 +2292,7 @@
   },
   {
     "block": 1,
+    "browser_runnable": false,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-vm.md",
@@ -2142,6 +2304,7 @@
   },
   {
     "block": 2,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-vm.md",
@@ -2156,6 +2319,7 @@
   },
   {
     "block": 3,
+    "browser_runnable": false,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-vm.md",

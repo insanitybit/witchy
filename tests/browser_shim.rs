@@ -222,3 +222,44 @@ fn playground_examples_are_current_witchy() {
     );
     assert!(stdout.contains("PLAYGROUND-EXAMPLES OK"), "playground-examples did not report success:\n{stdout}");
 }
+
+/// RFC-0091: the OPT-IN teaching/playground capability host in `witchy-runtime.mjs`. The
+/// committed Node driver (`web/witchy-runtime/capability-host.test.mjs`) compiles REAL witchy
+/// programs and runs them under `instantiate(bytes, { capabilities })`, proving:
+///   * `Clock` reads real wall/monotonic time on the existing i64 ABI;
+///   * `Env` is empty by default and reads a page-supplied immutable map (output matching the
+///     native oracle);
+///   * `Dir` is a per-run in-memory tree whose read/write/append/list/subtree/exists/is_dir/
+///     File-handle output is byte-identical to the native interpreter run over a real fixture,
+///     and which NEVER touches a real filesystem;
+///   * a `..`/absolute path is refused by BOTH the shim and the native run (confinement parity);
+///   * `dir.only(Dir.ext(".log"))` denies a non-matching file (entry policy); and
+///   * the DEFAULT host still `LinkError`s on any Dir/Clock/Env program, and `Exec`/`Secret`/
+///     `Net` stay denied by omission EVEN under the opt-in host.
+///
+/// This is the parity + non-widening guarantee for RFC-0091 phase 1.
+#[test]
+fn browser_capability_host_runs_clock_env_dir_and_denies_the_rest() {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let driver = manifest.join("web/witchy-runtime/capability-host.test.mjs");
+    assert!(driver.exists(), "the committed capability-host test must exist at {}", driver.display());
+
+    let out = Command::new("node")
+        .arg(&driver)
+        .arg(BIN)
+        .current_dir(manifest)
+        .output()
+        .expect("spawn node capability-host test");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the capability-host test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("CAPABILITY-HOST OK"), "capability-host driver did not report success:\n{stdout}");
+}
