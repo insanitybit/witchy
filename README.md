@@ -232,7 +232,8 @@ witchy caps     <file.witchy>                 report the capability footprint (r
 witchy caps-diff <old.witchy> <new.witchy>    fail if the footprint widened on either axis
 witchy build-step <file.witchy>               run a rune's build step under confined grants
                                               ([--out <dir>] [--read <dir>] [--env K]... [--exec tool]...)
-witchy test     <file.witchy|dir>             run in-language tests
+witchy test [--integration] [--dir <root>]... [--net <addr>]... <file.witchy|dir>
+                                              run zero-grant unit tests or explicitly granted integration tests
 witchy fmt [--check] <file.witchy>            reformat (--check: verify only)
 witchy doc      <file.witchy>                 extract Markdown API docs
 witchy lsp                                    run the language server

@@ -1242,6 +1242,15 @@
     "runnable": false
   },
   {
+    "block": 2,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/testing.md",
+    "footprint": [],
+    "output": [],
+    "runnable": false
+  },
+  {
     "block": 1,
     "console_only": true,
     "expect_error": false,

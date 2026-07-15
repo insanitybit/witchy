@@ -65,7 +65,8 @@ USAGE:
     witchy check    <file.witchy>                 check + verify compiled acceptance without running
     witchy parity   <file.witchy>                 run on both backends, confirm identical output
                                                   (a verify-the-compiler tool, not a workflow step)
-    witchy test     <file.witchy|dir>             run in-language tests (zero-param `test_*` functions)
+    witchy test [--integration] [--dir <root>]... [--net <addr>]... <file.witchy|dir>
+                                                  run plain zero-grant or explicit integration tests
     witchy sandbox [--dir <root>] [--net <addr>]... <file.witchy> [args...]
                                                   compile and run in a VM granted exactly its footprint
     witchy emit-wat <file.witchy>                 print the compiled WebAssembly text (the module sandbox runs)
@@ -799,14 +800,18 @@ fn main() -> wasmtime::Result<()> {
             }
         }
     }
-    // `witchy test <file|dir>` runs in-language tests: zero-parameter `test_*`
-    // functions, passing unless they abort (std/testing's assertions).
+    // `witchy test <file|dir>` runs authority-free in-language tests. The typed
+    // parser keeps the opt-in integration grant surface in one place instead of
+    // growing another collection of positional `args().nth(..)` reads.
     if std::env::args().nth(1).as_deref() == Some("test") {
-        let Some(path) = std::env::args().nth(2) else {
-            eprintln!("usage: witchy test <file.witchy|dir>");
-            std::process::exit(1);
+        let options = match TestOptions::parse(std::env::args().skip(2)) {
+            Ok(options) => options,
+            Err(e) => {
+                eprintln!("{e}\n{TEST_USAGE}");
+                std::process::exit(1);
+            }
         };
-        match run_tests(&path) {
+        match run_tests(&options) {
             Ok(true) => return Ok(()),
             Ok(false) => std::process::exit(1),
             Err(e) => {
@@ -1619,7 +1624,7 @@ fn execute_file_exit(
     // share one runtime, so dev == deploy by construction. The interpreter is only
     // the differential oracle (`witchy parity`) and the comptime evaluator — never
     // a user-program run path.
-    run_linked_compiled(&linked, Vec::new(), Vec::new(), net_allow, args, signing_key, named_secrets, Vec::new(), false)
+    run_linked_compiled(&linked, Vec::new(), Vec::new(), net_allow, args, signing_key, named_secrets, Vec::new(), false, false)
         .map(|(lines, code)| (lines, code.unwrap_or(0)))
 }
 
@@ -1630,35 +1635,106 @@ fn execute_file_exit(
 /// A failed in-language test: its (qualified) name and the abort message.
 type TestFailure = (String, String);
 
+const TEST_USAGE: &str =
+    "usage: witchy test [--integration] [--dir <root>]... [--net <addr>]... <file.witchy|dir>";
+
+#[derive(Clone, Debug, Default)]
+struct TestGrants {
+    dir_roots: Vec<std::path::PathBuf>,
+    net_allow: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct TestOptions {
+    path: String,
+    integration: bool,
+    grants: TestGrants,
+}
+
+impl TestOptions {
+    fn parse(args: impl IntoIterator<Item = String>) -> Result<Self, String> {
+        let mut args = args.into_iter();
+        let mut path = None;
+        let mut integration = false;
+        let mut grants = TestGrants::default();
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--integration" => {
+                    if integration {
+                        return Err("`--integration` may be specified only once".to_string());
+                    }
+                    integration = true;
+                }
+                "--dir" => {
+                    let root = args
+                        .next()
+                        .ok_or_else(|| "`--dir` requires a filesystem root".to_string())?;
+                    grants.dir_roots.push(std::path::PathBuf::from(root));
+                }
+                "--net" => {
+                    let addr = args
+                        .next()
+                        .ok_or_else(|| "`--net` requires a host or host:port".to_string())?;
+                    grants.net_allow.push(addr);
+                }
+                flag if flag.starts_with('-') => {
+                    return Err(format!("unknown `witchy test` option `{flag}`"));
+                }
+                value => {
+                    if path.replace(value.to_string()).is_some() {
+                        return Err("`witchy test` accepts exactly one file or directory".to_string());
+                    }
+                }
+            }
+        }
+        let path = path.ok_or_else(|| "`witchy test` requires a file or directory".to_string())?;
+        if !integration && (!grants.dir_roots.is_empty() || !grants.net_allow.is_empty()) {
+            return Err("real `--dir`/`--net` grants require `witchy test --integration`".to_string());
+        }
+        Ok(Self { path, integration, grants })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TestRunPolicy<'a> {
+    integration: bool,
+    real_grants: bool,
+    grants: &'a TestGrants,
+}
+
 /// Rewrite the placeholder call `witchy_test_target()` in a synthesized test-driver
 /// expression to the real (linker-qualified) test name — so the parser never has to
 /// re-read `mod.fn` as a method call. The placeholder may sit anywhere in the driver
 /// body: bare (`witchy_test_target()`), or as an argument (`task.run(
 /// witchy_test_target())`, the async driver), so this recurses through calls,
 /// method calls, and unary ops.
-fn patch_test_target(expr: &mut ast::Expr, name: &str) {
+fn patch_test_target(expr: &mut ast::Expr, name: &str, params: &[ast::Param]) {
     match expr {
         ast::Expr::Call { name: n, args } => {
             if n == "witchy_test_target" {
                 *n = name.to_string();
+                *args = params
+                    .iter()
+                    .map(|param| ast::Expr::Var(param.name.clone()))
+                    .collect();
             } else {
                 for a in args {
-                    patch_test_target(a, name);
+                    patch_test_target(a, name, params);
                 }
             }
         }
         ast::Expr::MethodCall { receiver, args, .. } => {
-            patch_test_target(receiver, name);
+            patch_test_target(receiver, name, params);
             for a in args {
-                patch_test_target(a, name);
+                patch_test_target(a, name, params);
             }
         }
-        ast::Expr::Unary { expr, .. } => patch_test_target(expr, name),
+        ast::Expr::Unary { expr, .. } => patch_test_target(expr, name, params),
         _ => {}
     }
 }
 
-/// The bare names of every zero-parameter `test_*` function in the UNLOWERED source,
+/// The bare names of every `test_*` function in the UNLOWERED source,
 /// split into `(async, gen)` sets. Async lowering (`generators` too) runs during
 /// `link`, erasing `is_async`/`is_gen` and rewriting the bodies, so the linked module
 /// can no longer tell an async or generator test from a plain one — this recovers
@@ -1671,7 +1747,7 @@ fn raw_test_shapes(path: &str) -> (std::collections::HashSet<String>, std::colle
         if let Ok(module) = parser::parse_module(&src) {
             for it in &module.items {
                 if let ast::Item::Function(f) = it {
-                    if f.name.starts_with("test_") && f.params.is_empty() {
+                    if f.name.starts_with("test_") {
                         if f.is_async {
                             async_tests.insert(f.name.clone());
                         } else if f.is_gen {
@@ -1685,11 +1761,72 @@ fn raw_test_shapes(path: &str) -> (std::collections::HashSet<String>, std::colle
     (async_tests, gen_tests)
 }
 
+fn validate_integration_test_params(
+    test: &str,
+    params: &[ast::Param],
+    policy: TestRunPolicy<'_>,
+) -> Result<(), String> {
+    if !policy.integration && !params.is_empty() {
+        return Err(format!(
+            "test `{test}` declares capability parameter(s); run it with `witchy test --integration` and explicit grants"
+        ));
+    }
+    if !policy.integration {
+        return Ok(());
+    }
+
+    let mut dir_count = 0usize;
+    let mut needs_net = false;
+    for param in params {
+        let Some(ty) = param.ty.as_ref() else {
+            return Err(format!(
+                "integration test `{test}` parameter `{}` needs an explicit capability type (`Console`, `Dir`, or `Net`)",
+                param.name
+            ));
+        };
+        let ast::Type::Named(name, _) = ty.unqualified() else {
+            return Err(format!(
+                "integration test `{test}` parameter `{}` must be a `Console`, `Dir`, or `Net` capability",
+                param.name
+            ));
+        };
+        match name.as_str() {
+            "Console" => {}
+            "Dir" => dir_count += 1,
+            "Net" => needs_net = true,
+            other => {
+                return Err(format!(
+                    "integration test `{test}` parameter `{}` has unsupported capability type `{other}`; this tier currently accepts `Console`, `Dir`, and `Net`",
+                    param.name
+                ));
+            }
+        }
+    }
+
+    if !policy.real_grants && (dir_count > 0 || needs_net) {
+        return Err(format!(
+            "dependency test `{test}` requests real authority, but dependency tests receive zero real grants even under `--integration`"
+        ));
+    }
+    if policy.grants.dir_roots.len() < dir_count {
+        return Err(format!(
+            "integration test `{test}` requires {dir_count} `Dir` grant(s), but {} were provided; repeat `--dir <root>`",
+            policy.grants.dir_roots.len()
+        ));
+    }
+    if needs_net && policy.grants.net_allow.is_empty() {
+        return Err(format!(
+            "integration test `{test}` requires a `Net` grant; provide at least one `--net <addr>`"
+        ));
+    }
+    Ok(())
+}
+
 /// Discover and run the tests in an already-linked module (`stem` = the entry file's
-/// stem). Every ZERO-parameter function named `test_*` that the ENTRY file itself
-/// declares is invoked through a synthesized `main` in a fresh interpreter. A test
-/// passes by returning and fails by aborting (which `std/testing`'s assertions do,
-/// with a message). Tests take no capabilities, so a suite provably has no effects.
+/// stem). Every function named `test_*` that the ENTRY file itself declares is
+/// invoked through a synthesized `main` on compiled WASM. Plain tests take no
+/// parameters and receive no real authority; integration tests forward only their
+/// declared capability parameters under the caller's explicit grant policy.
 /// `async_tests`/`gen_tests` are the bare names of the entry file's async/gen tests
 /// (from `raw_test_shapes`, since lowering erased the AST flags). Returns
 /// `(passed, failures)` where each failure is `(name, message)`.
@@ -1698,6 +1835,7 @@ fn run_tests_in_module(
     stem: &str,
     async_tests: &std::collections::HashSet<String>,
     gen_tests: &std::collections::HashSet<String>,
+    policy: TestRunPolicy<'_>,
 ) -> Result<(Vec<String>, Vec<TestFailure>), String> {
     typeck::check(linked).map_err(|e| e.to_string())?;
     // BUG-177: a test run honors `mode opt` like `check`/`run` — a copy-cliff or a
@@ -1708,24 +1846,28 @@ fn run_tests_in_module(
     // module's `test_*` functions into `linked` too (as `othermod.test_x`); running
     // them here would DOUBLE-count them — they run again when that module's own file
     // is swept. `is_entry_function` keeps just `main` + the `{stem}.`-prefixed items.
-    let tests: Vec<(String, bool, bool)> = linked
+    let tests: Vec<(String, bool, bool, Vec<ast::Param>)> = linked
         .items
         .iter()
         .filter_map(|it| match it {
             ast::Item::Function(f)
                 if is_entry_function(&f.name, stem)
-                    && f.name.rsplit('.').next().unwrap_or(&f.name).starts_with("test_")
-                    && f.params.is_empty() =>
+                    && f.name.rsplit('.').next().unwrap_or(&f.name).starts_with("test_") =>
             {
                 let bare = f.name.rsplit('.').next().unwrap_or(&f.name);
-                Some((f.name.clone(), async_tests.contains(bare), gen_tests.contains(bare)))
+                Some((
+                    f.name.clone(),
+                    async_tests.contains(bare),
+                    gen_tests.contains(bare),
+                    f.params.clone(),
+                ))
             }
             _ => None,
         })
         .collect();
     let mut passed = Vec::new();
     let mut failed = Vec::new();
-    for (test, is_async, is_gen) in tests {
+    for (test, is_async, is_gen, params) in tests {
         // BUG-184: an async/gen test's body does NOT run when the function is merely
         // CALLED — calling an `async fn` yields a `Task` and a `gen fn` yields an
         // iterator, both discarded, so a `fail_with` inside never fires and the test
@@ -1739,6 +1881,10 @@ fn run_tests_in_module(
                 test,
                 "a `gen fn` cannot be run as a test — it yields a sequence instead of running to completion".to_string(),
             ));
+            continue;
+        }
+        if let Err(e) = validate_integration_test_params(&test, &params, policy) {
+            failed.push((test, e));
             continue;
         }
         // Synthesize a `main` (replacing any real one) that runs the test, and run it.
@@ -1757,25 +1903,42 @@ fn run_tests_in_module(
         let mut driver = parser::parse_module(driver_src).map_err(|e| e.to_string())?;
         for it in &mut driver.items {
             if let ast::Item::Function(f) = it {
+                f.params = params.clone();
                 if let Some(ast::Stmt::Expr(e)) = f.body.stmts.first_mut() {
-                    patch_test_target(e, &test);
+                    patch_test_target(e, &test, &params);
                 }
             }
         }
         m.items.extend(driver.items);
         // Run the test on the COMPILED WASM tier — the tier users ship — not the
         // interpreter oracle: a `witchy test` that passes must reflect the backend
-        // that actually runs in production. A `test_*` is nullary (no capability
-        // params), so the synthesized `main` needs no grants. A `testing.assert` /
-        // `fail_with` lowers to `__witchy_abort`, which is authority-free and always
-        // linked by the runtime. Plain tests run under zero real host capability
-        // grants; the synthesized `main` plus codegen's reachability pruning keep
-        // unused effectful production functions out of the test artifact. A module
-        // that does not lower is itself a failure: the test cannot run where it ships.
-        let outcome = match codegen::compile_module_binary(&m) {
-            Ok(Some(bytes)) => run_wasm_test_bytes(&bytes).map(|_| ()),
-            Ok(None) => Err("does not lower to the compiled backend (WASM)".to_string()),
-            Err(e) => Err(e.to_string()),
+        // that actually runs in production. A `testing.assert` / `fail_with` lowers
+        // to `__witchy_abort`, which is authority-free and always linked by the
+        // runtime. Plain tests run under zero real host capability grants;
+        // integration tests use the same explicit runtime-grant path as sandbox/run.
+        // The synthesized `main` plus codegen's reachability pruning keep unused
+        // effectful production functions out of the test artifact. A module that
+        // does not lower is itself a failure: the test cannot run where it ships.
+        let outcome = if policy.integration {
+            run_linked_compiled(
+                &m,
+                policy.grants.dir_roots.clone(),
+                Vec::new(),
+                policy.grants.net_allow.clone(),
+                Vec::new(),
+                None,
+                Vec::new(),
+                Vec::new(),
+                true,
+                true,
+            )
+            .map(|_| ())
+        } else {
+            match codegen::compile_module_binary(&m) {
+                Ok(Some(bytes)) => run_wasm_test_bytes(&bytes).map(|_| ()),
+                Ok(None) => Err("does not lower to the compiled backend (WASM)".to_string()),
+                Err(e) => Err(e.to_string()),
+            }
         };
         match outcome {
             Ok(()) => passed.push(test),
@@ -1792,7 +1955,14 @@ fn run_tests_in_module(
 fn run_tests_in_file(path: &str) -> Result<(Vec<String>, Vec<TestFailure>), String> {
     let (linked, stem) = link_file_with_mode(path, linker::LinkMode::Test)?;
     let (async_tests, gen_tests) = raw_test_shapes(path);
-    run_tests_in_module(&linked, &stem, &async_tests, &gen_tests)
+    let grants = TestGrants::default();
+    run_tests_in_module(
+        &linked,
+        &stem,
+        &async_tests,
+        &gen_tests,
+        TestRunPolicy { integration: false, real_grants: false, grants: &grants },
+    )
 }
 
 #[cfg(test)]
@@ -1944,11 +2114,135 @@ mod test_mode_link_tests {
     }
 }
 
+#[derive(Debug, Default)]
+struct TestPackageOwnership {
+    dependency_roots: Vec<std::path::PathBuf>,
+}
+
+impl TestPackageOwnership {
+    fn resolve(target: &str) -> Result<Self, String> {
+        let target = std::fs::canonicalize(target)
+            .map_err(|e| format!("cannot resolve test target `{target}`: {e}"))?;
+        let start = if target.is_dir() {
+            target.as_path()
+        } else {
+            target.parent().unwrap_or_else(|| std::path::Path::new("."))
+        };
+        let Some(package_root) = package_root_for(start) else {
+            return Ok(Self::default());
+        };
+        let mut roots = std::collections::BTreeSet::new();
+        let mut visited = std::collections::HashSet::new();
+        collect_resolved_dependency_roots(&package_root, &mut roots, &mut visited)?;
+        Ok(Self { dependency_roots: roots.into_iter().collect() })
+    }
+
+    fn owns(&self, file: &str) -> Result<bool, String> {
+        let file = std::fs::canonicalize(file)
+            .map_err(|e| format!("cannot resolve test file `{file}`: {e}"))?;
+        Ok(!self.dependency_roots.iter().any(|root| file.starts_with(root)))
+    }
+}
+
+fn package_root_for(start: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut at = Some(start);
+    while let Some(dir) = at {
+        if dir.join("witchy.toml").is_file() {
+            return std::fs::canonicalize(dir).ok();
+        }
+        at = dir.parent();
+    }
+    None
+}
+
+fn dependency_alias(name: &str) -> &str {
+    name.rsplit('/').next().unwrap_or(name)
+}
+
+fn locked_registry_aliases(package_root: &std::path::Path) -> Result<std::collections::HashSet<String>, String> {
+    let path = package_root.join("witchy.lock");
+    if !path.is_file() {
+        return Ok(std::collections::HashSet::new());
+    }
+    let source = std::fs::read_to_string(&path)
+        .map_err(|e| format!("cannot read `{}`: {e}", path.display()))?;
+    let lock: toml::Value = toml::from_str(&source)
+        .map_err(|e| format!("cannot parse `{}`: {e}", path.display()))?;
+    let mut aliases = std::collections::HashSet::new();
+    for entry in lock.get("rune").and_then(toml::Value::as_array).into_iter().flatten() {
+        if entry.get("source").and_then(toml::Value::as_str) != Some("coven") {
+            continue;
+        }
+        let alias = entry
+            .get("alias")
+            .and_then(toml::Value::as_str)
+            .or_else(|| entry.get("name").and_then(toml::Value::as_str).map(dependency_alias));
+        if let Some(alias) = alias {
+            aliases.insert(alias.to_string());
+        }
+    }
+    Ok(aliases)
+}
+
+fn resolved_dependency_dirs(package_root: &std::path::Path) -> Result<Vec<std::path::PathBuf>, String> {
+    let manifest_path = package_root.join("witchy.toml");
+    let source = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("cannot read `{}`: {e}", manifest_path.display()))?;
+    let manifest: toml::Value = toml::from_str(&source)
+        .map_err(|e| format!("cannot parse `{}`: {e}", manifest_path.display()))?;
+    let Some(dependencies) = manifest.get("dependencies").and_then(toml::Value::as_table) else {
+        return Ok(Vec::new());
+    };
+    let registry_aliases = locked_registry_aliases(package_root)?;
+    let mut dirs = Vec::new();
+    for (name, declaration) in dependencies {
+        let resolved = declaration
+            .as_table()
+            .and_then(|inline| inline.get("path"))
+            .and_then(toml::Value::as_str)
+            .map(|path| package_root.join(path))
+            .or_else(|| {
+                let alias = dependency_alias(name);
+                registry_aliases
+                    .contains(alias)
+                    .then(|| package_root.join("vendor").join(alias))
+            });
+        if let Some(dir) = resolved
+            && dir.is_dir()
+        {
+            dirs.push(
+                std::fs::canonicalize(&dir)
+                    .map_err(|e| format!("cannot resolve dependency `{}`: {e}", dir.display()))?,
+            );
+        }
+    }
+    Ok(dirs)
+}
+
+fn collect_resolved_dependency_roots(
+    package_root: &std::path::Path,
+    roots: &mut std::collections::BTreeSet<std::path::PathBuf>,
+    visited: &mut std::collections::HashSet<std::path::PathBuf>,
+) -> Result<(), String> {
+    let package_root = std::fs::canonicalize(package_root)
+        .map_err(|e| format!("cannot resolve package `{}`: {e}", package_root.display()))?;
+    if !visited.insert(package_root.clone()) {
+        return Ok(());
+    }
+    for dependency in resolved_dependency_dirs(&package_root)? {
+        roots.insert(dependency.clone());
+        collect_resolved_dependency_roots(&dependency, roots, visited)?;
+    }
+    Ok(())
+}
+
 /// `witchy test <file|dir>`: run in-language tests, print a cargo-style
 /// report, and return whether everything passed.
-fn run_tests(path: &str) -> Result<bool, String> {
+fn run_tests(options: &TestOptions) -> Result<bool, String> {
+    let path = &options.path;
     let mut files: Vec<String> = Vec::new();
     let meta = std::fs::metadata(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
+    let ownership = TestPackageOwnership::resolve(path)?;
     if meta.is_dir() {
         // Collect every `.witchy` under the directory recursively, so a rune's
         // `src/` modules (and the nested runes of a multi-rune project) are all
@@ -1992,7 +2286,21 @@ fn run_tests(path: &str) -> Result<bool, String> {
             Err(e) => return Err(e),
         };
         let (async_tests, gen_tests) = raw_test_shapes(file);
-        let (passed, failed) = match run_tests_in_module(&linked, &stem, &async_tests, &gen_tests) {
+        let owns_test = ownership.owns(file)?;
+        let no_real_grants = TestGrants::default();
+        let grants = if owns_test { &options.grants } else { &no_real_grants };
+        let policy = TestRunPolicy {
+            integration: options.integration,
+            real_grants: options.integration && owns_test,
+            grants,
+        };
+        let (passed, failed) = match run_tests_in_module(
+            &linked,
+            &stem,
+            &async_tests,
+            &gen_tests,
+            policy,
+        ) {
             Ok(r) => r,
             Err(e) => {
                 // Linked OK but broken (a type error or a `mode opt` violation): count
@@ -2292,7 +2600,8 @@ fn emit_wat_file(path: &str) -> Result<String, String> {
 /// This is the shared core of `witchy run` (dev, root at cwd) and `witchy sandbox`
 /// (strict, announced grant) — one runtime for both, so dev == deploy. `strict_dir`
 /// is the one host-policy difference: sandbox requires an explicit `--dir` (deny by
-/// omission) while dev `run` defaults a `Dir` to the cwd.
+/// omission) while dev `run` defaults a `Dir` to the cwd. `test_mocks` enables only
+/// the authority-free `testing.mock_*` host backends; it never mints a real grant.
 #[allow(clippy::too_many_arguments)]
 fn run_linked_compiled(
     linked: &ast::Module,
@@ -2304,6 +2613,7 @@ fn run_linked_compiled(
     named_secrets: Vec<runtime::SecretGrant>,
     user_cap_fields: Vec<Vec<String>>,
     strict_dir: bool,
+    test_mocks: bool,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     use crate::runtime::{Capabilities, Runtime};
     // The grant is what `main` RECEIVES — authority originates only there (witchy
@@ -2340,6 +2650,7 @@ fn run_linked_compiled(
         quiet: true,
         args,
         user_cap_fields,
+        test_mocks,
         ..Default::default()
     };
     if grant.contains_key("Clock") {
@@ -2709,7 +3020,7 @@ fn run_file_sandboxed(
         "sandboxing `{path}` \u{2014} granted exactly: {}",
         capabilities::show_caps(&grant)
     );
-    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, args, signing_key, named_secrets, Vec::new(), true)
+    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, args, signing_key, named_secrets, Vec::new(), true, false)
 }
 
 /// Resolve a `[secrets]` entry's `from = "env:VAR"` to the secret bytes the host
@@ -2878,7 +3189,7 @@ fn run_file_grants(
     }
     // Secrets reach the program by name through the `SecretStore` (`require`/`get`);
     // the bare root `Secret` (`--signing-key`) is not granted via documents here.
-    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, args, None, named_secrets, user_cap_fields, true)
+    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, args, None, named_secrets, user_cap_fields, true, false)
 }
 
 /// The `witchy.*` host functions a compiled module imports — its executable

@@ -8,9 +8,10 @@ tracking: >
   entry module under `witchy test` and remains production-strict elsewhere.
   Plain tests run with zero real host grants; unused effectful production code
   is pruned from the synthesized test artifact. `testing.mock_dir` is
-  implemented as a read-only in-memory `Dir[Read]` backend for plain tests.
-  Other mock capability backends and real integration grants remain later
-  runner/runtime features.
+  implemented as a read-only in-memory `Dir[Read]` backend for both test tiers.
+  The real-capability integration tier is implemented for explicit `Dir` and
+  `Net` grants, with manifest/lock-resolved dependency tests held at zero real
+  authority. Other mock backends and real capability kinds remain later work.
 related:
   - "0002 (user-definable capabilities — sealing is a correctness contract, not the security boundary)"
   - "0005 (unforgeable capabilities — production invariant; the VM, not the seal, is the perimeter)"
@@ -22,7 +23,7 @@ related:
 
 # RFC-0077: Test doubles in witchy
 
-> **Implementation status (2026-07-13):** the first slices are implemented:
+> **Implementation status (2026-07-15):** the runner split is implemented:
 > `witchy test` links the entry test module in test mode, allowing direct
 > construction of foreign `sealed type` values so tests can exercise malformed
 > domain data. Production `run`/`check`/`compile`/`build`/comptime paths remain
@@ -32,7 +33,12 @@ related:
 > `main` and compiled-backend reachability pruning keep unused effectful
 > production functions out of the test artifact. The first mock capability
 > backend, `testing.mock_dir`, is implemented for read-only in-memory `Dir[Read]`
-> reads/lists/subtrees/file navigation.
+> reads/lists/subtrees/file navigation in both tiers. Capability-parameterized
+> tests run only under `witchy test --integration`; repeated `--dir` and `--net`
+> flags feed the ordinary compiled runtime grant machinery. Package ownership
+> comes from resolved manifest path dependencies and pinned lockfile vendor
+> entries, so dependency tests receive zero real grants and linked functions
+> cannot widen the synthesized entrypoint's authority.
 
 ## Summary
 
@@ -154,9 +160,10 @@ also production-strict; only the entry test module gets the privilege.
 
 Orthogonal to doubling. A `test_*` may declare capability parameters and, under
 explicit `witchy test --integration [--dir …] [--net …]`, receive REAL authority
-for tests that want a real effect. In the completed runner split, plain
-`witchy test` stays zero real grant; that plain-test side is implemented for
-nullary `test_*` functions.
+for tests that want a real effect. This runner split is implemented for `Dir`
+and `Net`: plain `witchy test` stays zero real grant, parameterized tests fail
+loudly unless integration mode and all required grants are present, and test
+entrypoints execute as compiled WASM with their capability parameters forwarded.
 
 **Supply-chain boundary = whose test it is.** `witchy test <dir>` sweeps every
 `.witchy` including vendored dependencies. A **dependency's** swept tests always
@@ -232,7 +239,7 @@ without opening production.
 2. Sealed domain-data relaxation (§2, construction) + test-mode gate (§3).
    Implemented 2026-07-13 for the entry module only.
 3. Confinement split (§4) — runner work; hardens the dependency-test real-grant
-   floor explicitly.
+   floor explicitly. Implemented 2026-07-15 for explicit `Dir`/`Net` grants.
 4. Mock capability backends (§2, capabilities).
 5. Lock the `witchy test` surface with RFC-0072 goldens.
 
@@ -268,7 +275,7 @@ Resume the runtime portions only after all of these are true:
 2. Mock capabilities have explicit in-memory backends on the compiled path, with
    behavior tested against the real capability contracts.
 3. Integration tests remain an opt-in path for real authority, and dependency
-   tests cannot receive those grants.
+   tests cannot receive those grants. Implemented 2026-07-15 for `Dir`/`Net`.
 4. Negative end-to-end tests prove that a plain test cannot read cwd, inspect
    ambient environment, use randomness/time, or reach the network, and that the
    test-only linker privilege is absent from every production/build path.
