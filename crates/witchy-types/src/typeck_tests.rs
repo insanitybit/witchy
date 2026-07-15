@@ -381,6 +381,24 @@
     }
 
     #[test]
+    fn explicit_let_may_return_a_lifetime_related_view() {
+        check_str(
+            "mode opt\n\nfn view(let xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n",
+        )
+        .expect("the output lifetime makes the explicit borrow escape safe");
+
+        let unrelated = check_str(
+            "mode opt\n\nfn bad(let xs: let('a) List(Int)) -> View(List(Int), 'b):\n    xs\n",
+        )
+        .expect_err("an unrelated output lifetime must not permit the escape");
+        assert!(unrelated.contains("cannot be returned") || unrelated.contains("no parameter"), "{unrelated}");
+
+        let owned = check_str("fn bad(let xs: List(Int)) -> List(Int):\n    xs\n")
+            .expect_err("an ordinary explicit borrow still cannot escape");
+        assert!(owned.contains("cannot be returned"), "{owned}");
+    }
+
+    #[test]
     fn local_unique_cannot_be_a_return_type() {
         // (RFC-0026) `local unique` is valid only within the call — it cannot escape,
         // so it cannot be returned.
@@ -390,6 +408,32 @@
         // `unique` (returnable) is fine.
         check_str("fn f() -> unique List(Int):\n    [1, 2]\n")
             .expect("a unique return is valid");
+        check_str(
+            "fn build() -> unique List(Int):\n    [1]\n\nfn forward() -> unique List(Int):\n    build()\n",
+        )
+        .expect("a direct unique result forwards its capacity token");
+        let unproved = check_str(
+            "fn bad(xs: List(Int)) -> unique List(Int):\n    xs\n",
+        )
+        .expect_err("an arbitrary shared value cannot claim a unique result token");
+        assert!(unproved.contains("capacity-token proof"), "{unproved}");
+
+        check_str(
+            "fn choose(flag: Bool) -> unique List(Int):\n    if flag:\n        return [1]\n    return [2]\n",
+        )
+        .expect("exhaustive explicit returns each carry their own token");
+
+        let control_tail = check_str(
+            "fn choose(flag: Bool) -> unique List(Int):\n    if flag:\n        [1]\n    else:\n        [2]\n",
+        )
+        .expect_err("a control-flow tail must not receive a fabricated zero token");
+        assert!(control_tail.contains("capacity-token proof"), "{control_tail}");
+
+        let method = check_str(
+            "type Holder:\n    values: List(Int)\n\nimpl Holder:\n    fn expose(let self: Holder) -> unique List(Int):\n        self.values\n",
+        )
+        .expect_err("an impl method cannot relabel a shared field as unique");
+        assert!(method.contains("capacity-token proof"), "{method}");
     }
 
     #[test]

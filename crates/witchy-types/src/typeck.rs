@@ -2424,16 +2424,29 @@ fn check_build_signature(module: &Module) -> Result<(), TypeError> {
 /// Collect the type-parameter names (lowercase, argument-less) appearing in a
 /// type expression, in order of first appearance. Used to infer the parameters
 /// of a generic ADT from its variant field types.
-/// A `let`-borrowed parameter may not BE the function's result: every block
-/// tail and `return` expression is checked for the bare parameter (through
-/// if/match/block tails). Everything else copies by value semantics, so this
-/// is the whole escape surface — previously enforced only by the native
-/// backend's borrow checker, now a language rule.
+/// A plain `let`-borrowed parameter may not BE the function's result: every
+/// block tail and `return` expression is checked for the bare parameter
+/// (through if/match/block tails). RFC-0083's explicit lifetime relation is the
+/// one exception: `let x: let('a) T -> View(T, 'a)` deliberately returns a
+/// checked view, and the loan checker validates that relation below.
 fn borrow_escape_check(func: &Function) -> Result<(), TypeError> {
+    let returned_lifetime = func.ret.as_ref().and_then(|ty| match ty {
+        ast::Type::Qualified(ast::TypeQual::Borrow(lifetime), _) => Some(lifetime.as_str()),
+        _ => None,
+    });
     let borrowed: Vec<&str> = func
         .params
         .iter()
         .filter(|p| p.convention == Convention::Borrow)
+        .filter(|p| {
+            let input_lifetime = p.ty.as_ref().and_then(|ty| match ty {
+                ast::Type::Qualified(ast::TypeQual::Borrow(lifetime), _) => {
+                    Some(lifetime.as_str())
+                }
+                _ => None,
+            });
+            input_lifetime != returned_lifetime || returned_lifetime.is_none()
+        })
         .map(|p| p.name.as_str())
         .collect();
     if borrowed.is_empty() {
@@ -2534,6 +2547,215 @@ fn borrow_escape_check(func: &Function) -> Result<(), TypeError> {
     }
     check_result_block(&func.body, &borrowed, &func.name)?;
     scan_returns_block(&func.body, &borrowed, &func.name)
+}
+
+fn is_unique_capacity_result(ty: &ast::Type) -> bool {
+    matches!(
+        ty,
+        ast::Type::Qualified(ast::TypeQual::Unique, inner)
+            if matches!(inner.unqualified(), ast::Type::Named(name, _)
+                if matches!(name.as_str(), "List" | "Dict"))
+    )
+}
+
+/// A `unique List` / `unique Dict` result is also a compiled capacity-token
+/// promise. Keep the proof surface deliberately explicit: fresh literals/new
+/// storage and direct calls carrying the same result ABI. Broader local-flow
+/// proofs can be added without weakening this safe default.
+fn check_unique_capacity_results(module: &Module) -> Result<(), TypeError> {
+    let unique_functions: HashSet<String> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Function(function)
+                if function.ret.as_ref().is_some_and(is_unique_capacity_result) =>
+            {
+                Some(function.name.clone())
+            }
+            _ => None,
+        })
+        .collect();
+
+    fn produces_capacity(expr: &Expr, functions: &HashSet<String>) -> bool {
+        match expr {
+            Expr::List(_) => true,
+            Expr::Call { name, args } => {
+                functions.contains(name)
+                    || (args.is_empty()
+                        && (name == "dict.new"
+                            || name.starts_with("dict.new__")
+                            || name.ends_with(".dict.new")))
+            }
+            Expr::Unary { op: UnOp::Move, expr } => produces_capacity(expr, functions),
+            _ => false,
+        }
+    }
+
+    fn block_produces_capacity(block: &Block, functions: &HashSet<String>) -> bool {
+        matches!(block.stmts.last(), Some(Stmt::Expr(expr)) if produces_capacity(expr, functions))
+    }
+
+    fn expr_can_complete(expr: &Expr) -> bool {
+        match expr {
+            Expr::If { then_block, else_block: Some(else_block), .. } => {
+                block_can_complete(then_block) || block_can_complete(else_block)
+            }
+            Expr::Match { arms, .. } if !arms.is_empty() => {
+                arms.iter().any(|arm| expr_can_complete(&arm.body))
+            }
+            Expr::Block(block) => block_can_complete(block),
+            _ => true,
+        }
+    }
+
+    fn block_can_complete(block: &Block) -> bool {
+        let mut reachable = true;
+        for stmt in &block.stmts {
+            if !reachable {
+                break;
+            }
+            reachable = match stmt {
+                Stmt::Return(_) | Stmt::Break | Stmt::Continue => false,
+                Stmt::Let { value, .. }
+                | Stmt::Assign { value, .. }
+                | Stmt::LetPattern { value, .. }
+                | Stmt::Expr(value)
+                | Stmt::Yield(value) => expr_can_complete(value),
+            };
+        }
+        reachable
+    }
+
+    fn check_returns_expr(
+        expr: &Expr,
+        function: &str,
+        functions: &HashSet<String>,
+    ) -> Result<(), TypeError> {
+        match expr {
+            Expr::If { cond, then_block, else_block } => {
+                check_returns_expr(cond, function, functions)?;
+                check_returns_block(then_block, function, functions)?;
+                if let Some(block) = else_block {
+                    check_returns_block(block, function, functions)?;
+                }
+            }
+            Expr::Match { scrutinee, arms } => {
+                check_returns_expr(scrutinee, function, functions)?;
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        check_returns_expr(guard, function, functions)?;
+                    }
+                    check_returns_expr(&arm.body, function, functions)?;
+                }
+            }
+            Expr::Block(block) => check_returns_block(block, function, functions)?,
+            Expr::While { cond, body } => {
+                check_returns_expr(cond, function, functions)?;
+                check_returns_block(body, function, functions)?;
+            }
+            Expr::WhileLet { scrutinee, body, .. } => {
+                check_returns_expr(scrutinee, function, functions)?;
+                check_returns_block(body, function, functions)?;
+            }
+            Expr::For { iter, body, .. } => {
+                check_returns_expr(iter, function, functions)?;
+                check_returns_block(body, function, functions)?;
+            }
+            Expr::Call { args, .. }
+            | Expr::Ctor { args, .. }
+            | Expr::AnonCtor { args, .. }
+            | Expr::List(args)
+            | Expr::Tuple(args) => {
+                for arg in args {
+                    check_returns_expr(arg, function, functions)?;
+                }
+            }
+            Expr::LabeledCall { args, .. } => {
+                for (_, arg) in args {
+                    check_returns_expr(arg, function, functions)?;
+                }
+            }
+            Expr::MethodCall { receiver, args, .. } => {
+                check_returns_expr(receiver, function, functions)?;
+                for arg in args {
+                    check_returns_expr(arg, function, functions)?;
+                }
+            }
+            Expr::Apply { func, args } => {
+                check_returns_expr(func, function, functions)?;
+                for arg in args {
+                    check_returns_expr(arg, function, functions)?;
+                }
+            }
+            Expr::Unary { expr, .. }
+            | Expr::Try(expr)
+            | Expr::As { expr, .. }
+            | Expr::Field { base: expr, .. } => check_returns_expr(expr, function, functions)?,
+            Expr::Binary { lhs, rhs, .. }
+            | Expr::Range { lo: lhs, hi: rhs, .. }
+            | Expr::Index { base: lhs, index: rhs } => {
+                check_returns_expr(lhs, function, functions)?;
+                check_returns_expr(rhs, function, functions)?;
+            }
+            Expr::RecordUpdate { base, fields, .. } => {
+                check_returns_expr(base, function, functions)?;
+                for (_, value) in fields {
+                    check_returns_expr(value, function, functions)?;
+                }
+            }
+            Expr::Record { fields, spread, .. } => {
+                for (_, value) in fields {
+                    check_returns_expr(value, function, functions)?;
+                }
+                if let Some(spread) = spread {
+                    check_returns_expr(spread, function, functions)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn check_returns_block(
+        block: &Block,
+        function: &str,
+        functions: &HashSet<String>,
+    ) -> Result<(), TypeError> {
+        for stmt in &block.stmts {
+            match stmt {
+                Stmt::Return(Some(expr)) if !produces_capacity(expr, functions) => {
+                    return terr(format!(
+                        "in `{function}`: this `unique` collection return has no capacity-token proof — return fresh list/dict storage or the direct result of another `unique` collection function"
+                    ));
+                }
+                Stmt::Return(Some(expr))
+                | Stmt::Let { value: expr, .. }
+                | Stmt::Assign { value: expr, .. }
+                | Stmt::LetPattern { value: expr, .. }
+                | Stmt::Expr(expr)
+                | Stmt::Yield(expr) => check_returns_expr(expr, function, functions)?,
+                Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+            }
+        }
+        Ok(())
+    }
+
+    for item in &module.items {
+        let Item::Function(function) = item else { continue };
+        if !function.ret.as_ref().is_some_and(is_unique_capacity_result) {
+            continue;
+        }
+        check_returns_block(&function.body, &function.name, &unique_functions)?;
+        if block_can_complete(&function.body)
+            && !block_produces_capacity(&function.body, &unique_functions)
+        {
+            return terr(format!(
+                "in `{}`: the tail of a `unique` collection function has no capacity-token proof — return fresh list/dict storage or the direct result of another `unique` collection function",
+                function.name
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Types a region assignment may freely write through to the outer scope:
@@ -6827,6 +7049,7 @@ fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) ->
         Ok(lowered) => {
             check_unique_parameters(&lowered)?;
             run_check_with_trait_methods(&lowered, false, &trait_method_names, compiler_syntax_allowed)?;
+            check_unique_capacity_results(&lowered)?;
             // (RFC-0083) Static lifetime/loan check for borrowed views. Runs after
             // type checking (so a genuine type error is reported first) on the
             // lowered module (method calls are plain `Call`s and the borrow

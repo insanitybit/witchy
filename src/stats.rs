@@ -126,7 +126,15 @@ mod tests {
     /// cycles therefore reuse their container after the first CoW re-own.
     #[test]
     fn update_and_extract_threads_ownership_through_var_calls() {
-        const EXTRACT: &str = "fn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < 160:\n        xs.push(i)\n        i = i + 1\n    var sum = 0\n    while list.length(xs) > 0:\n        sum = sum + (xs.pop() ?? 0)\n\n    var d = dict.new()\n    i = 0\n    while i < 240:\n        let _ = d.insert(1, i)\n        i = i + 1\n    i = 0\n    while i < 160:\n        let _ = d.remove(1)\n        let _ = d.insert(1, i)\n        i = i + 1\n    console.print(\"${sum}\")\n    console.print(\"${dict.at(d, 1)}\")\n";
+        const EXTRACT: &str = "mode opt\n\nfn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < 160:\n        xs.push(i)\n        i = i + 1\n    var sum = 0\n    while list.length(xs) > 0:\n        sum = sum + (xs.pop() ?? 0)\n\n    var d = dict.new()\n    i = 0\n    while i < 240:\n        let _ = d.insert(1, i)\n        i = i + 1\n    i = 0\n    while i < 160:\n        let _ = d.remove(1)\n        let _ = d.insert(1, i)\n        i = i + 1\n    console.print(\"${sum}\")\n    console.print(\"${dict.at(d, 1)}\")\n";
+
+        let linked = crate::resolve_std_only(EXTRACT).expect("resolve opt extraction workload");
+        typeck::check(&linked).expect("type-check opt extraction workload");
+        let misses: Vec<_> = crate::analysis::module_no_copy_misses(&linked)
+            .into_iter()
+            .filter(|miss| miss.function == "main")
+            .collect();
+        assert!(misses.is_empty(), "the measured unique loops satisfy opt mode: {misses:?}");
 
         opt::set_for_tests(Some(OptSet::default_set()));
         let on = compute(EXTRACT).expect("ownership-aware extraction");
@@ -150,6 +158,84 @@ mod tests {
             on.heap_bytes,
             off.heap_bytes
         );
+    }
+
+    #[test]
+    fn discarded_var_result_does_not_overwrite_the_receiver() {
+        const BARE: &str = "fn main(console: Console):\n    var d = dict.new()\n    d.insert(1, 7)\n    d.insert(2, 9)\n    d.remove(1)\n    console.print(\"${dict.at(d, 2)}\")\n    console.print(\"${dict.length(d)}\")\n";
+
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let on = compute(BARE).expect("bare var calls with inplace on");
+        opt::set_for_tests(Some(OptSet::default_set().without(Opt::InPlace)));
+        let off = compute(BARE).expect("bare var calls with forced copy");
+        opt::set_for_tests(None);
+
+        assert_eq!(on.output, ["9", "1"]);
+        assert_eq!(off.output, on.output, "discarding Option must not replace the Dict");
+    }
+
+    #[test]
+    fn unique_result_threads_capacity_into_extraction() {
+        const UNIQUE_RESULT: &str = "mode opt\n\nimport list\n\nfn build() -> unique List(Int):\n    [1, 2, 3]\n\nfn forward() -> unique List(Int):\n    build()\n\nfn main(console: Console):\n    var xs = forward()\n    console.print(\"${xs.pop() ?? 0}\")\n    console.print(\"${xs.length()}\")\n";
+
+        let linked = crate::resolve_std_only(UNIQUE_RESULT).expect("resolve unique result");
+        typeck::check(&linked).expect("type-check unique result");
+        let misses: Vec<_> = crate::analysis::module_no_copy_misses(&linked)
+            .into_iter()
+            .filter(|miss| miss.function == "main")
+            .collect();
+        assert!(misses.is_empty(), "the result qualifier supplies the proof: {misses:?}");
+
+        let stats = compute(UNIQUE_RESULT).expect("run unique-result extraction");
+        assert_eq!(stats.output, ["3", "2"]);
+        assert_eq!(stats.extract_copied_bytes, 0, "the returned cap must prevent a copy");
+        assert_eq!(stats.reowns, 0, "the caller must receive the producer's token");
+
+        const NORMAL_INDIRECT: &str = "fn build() -> unique List(Int):\n    [1, 2]\n\nfn invoke(f: fn() -> unique List(Int)) -> List(Int):\n    f()\n\nfn main(console: Console):\n    let xs = invoke(build)\n    console.print(\"${list.length(xs)}\")\n";
+        let indirect = compute(NORMAL_INDIRECT).expect("normal-mode first-class unique result");
+        assert_eq!(indirect.output, ["2"], "discarding the hidden token preserves values");
+
+        const ASSIGNED: &str = "mode opt\n\nimport list\n\nfn build() -> unique List(Int):\n    [1, 2, 3]\n\nfn main(console: Console):\n    var xs = [0]\n    xs = build()\n    console.print(\"${xs.pop() ?? 0}\")\n";
+        let assigned = compute(ASSIGNED).expect("assigned unique-result extraction");
+        assert_eq!(assigned.output, ["3"]);
+        assert_eq!(assigned.extract_copied_bytes, 0, "assignment must preserve the returned token");
+        assert_eq!(assigned.reowns, 0);
+
+        const METHOD: &str = "mode opt\n\nimport list\n\ntype Builder:\n    seed: Int\n\nimpl Builder:\n    fn build(let self: Builder) -> unique List(Int):\n        [self.seed, 9]\n\nfn main(console: Console):\n    let builder = Builder(4)\n    var xs = builder.build()\n    console.print(\"${xs.pop() ?? 0}\")\n";
+        let method = compute(METHOD).expect("direct unique-result method extraction");
+        assert_eq!(method.output, ["9"]);
+        assert_eq!(method.extract_copied_bytes, 0);
+        assert_eq!(method.reowns, 0);
+
+        const WITH_VAR: &str = "mode opt\n\nimport list\n\nfn split(var xs: unique List(Int)) -> unique List(Int):\n    xs.push(8)\n    [1, 2]\n\nfn main(console: Console):\n    var xs = [4]\n    var ys = split(xs)\n    console.print(\"${ys.pop() ?? 0}\")\n    console.print(\"${xs.pop() ?? 0}\")\n";
+        let with_var = compute(WITH_VAR).expect("unique result plus collection var write-back");
+        assert_eq!(with_var.output, ["2", "8"]);
+        assert_eq!(with_var.extract_copied_bytes, 0);
+        assert_eq!(with_var.reowns, 0);
+    }
+
+    #[test]
+    fn unique_result_early_return_precedes_var_writeback() {
+        const EARLY: &str = "mode opt\n\nimport list\n\nfn choose(var n: Int, flag: Bool) -> unique List(Int):\n    n = n + 1\n    if flag:\n        return [1, 2, 3]\n    [4, 5]\n\nfn main(console: Console):\n    var n = 0\n    var xs = choose(n, true)\n    console.print(\"${xs.pop() ?? 0}\")\n    console.print(\"${n}\")\n";
+
+        let linked = crate::resolve_std_only(EARLY).expect("resolve early unique result");
+        typeck::check(&linked).expect("type-check early unique result");
+        let misses: Vec<_> = crate::analysis::module_no_copy_misses(&linked)
+            .into_iter()
+            .filter(|miss| miss.function == "main")
+            .collect();
+        assert!(misses.is_empty(), "the early result still carries its proof: {misses:?}");
+
+        let stats = compute(EARLY).expect("run early unique-result extraction");
+        assert_eq!(stats.output, ["3", "1"]);
+        assert_eq!(stats.extract_copied_bytes, 0);
+        assert_eq!(stats.reowns, 0);
+
+        const ALL_RETURN: &str = "mode opt\n\nimport list\n\nfn choose(flag: Bool) -> unique List(Int):\n    if flag:\n        return [1]\n    return [2, 3]\n\nfn main(console: Console):\n    var xs = choose(false)\n    console.print(\"${xs.pop() ?? 0}\")\n";
+        let all_return = compute(ALL_RETURN).expect("run exhaustive explicit unique returns");
+        assert_eq!(all_return.output, ["3"]);
+        assert_eq!(all_return.extract_copied_bytes, 0);
+        assert_eq!(all_return.reowns, 0);
     }
 
     /// Heap leaves make ownership traffic observable. The unique path moves

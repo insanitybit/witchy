@@ -51,8 +51,26 @@ call ABI:
 - empty pop and missing removal allocate, copy, retain, and drop nothing.
 
 These are ownership-dependent guarantees, not unconditional source-level
-complexities. `WITCHY_OPT=-inplace` selects the copy-correct differential
-oracle. `witchy stats` exposes `extract_searches`,
+complexities. Their public `var` receivers are typed `unique`: normal mode uses
+the copy-correct fallback when that proof misses, while `mode opt` rejects the
+call and reports the statement that aliased, moved, or loaned the owner. Fresh
+storage, a direct call returning a `unique` collection, and `var` parameters
+typed `unique` / `local unique` satisfy the contract; an active RFC-0083 loan
+never does. A direct `unique` result carries its capacity token as part of the
+compiled result ABI. Fresh list/dict tails and direct `unique` calls establish
+that token; control-flow results spell an explicit `return` on each reachable
+branch. The verifier consumes the same statement-identity capacity-token kills
+and loan facts as compiled lowering, after typed method resolution, so
+method/module spelling and discarded/used results are one contract.
+
+The first-class call ABI does not yet carry collection capacity tokens. Calling
+a function value whose `var unique` parameter promises no-copy extraction, or
+feeding its `unique` collection result into such an operation, is therefore
+rejected in `mode opt` with that ABI limitation rather than silently taking the
+normal-mode copy path.
+
+`WITCHY_OPT=-inplace` selects the copy-correct differential oracle. `witchy
+stats` exposes `extract_searches`,
 `extract_key_comparisons`, `extract_copied_bytes`, `extract_retains`, and
 `extract_drops` so the no-copy and single-search claims are deterministic test
 facts rather than timing inferences.

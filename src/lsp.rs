@@ -577,6 +577,28 @@ fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) ->
                 }
             }
 
+            if enforce {
+                for miss in crate::analysis::module_no_copy_misses(&linked) {
+                    if !crate::is_entry_function(&miss.function, &entry) {
+                        continue;
+                    }
+                    let line0 = miss.line.saturating_sub(1);
+                    let advice = if miss.reason.contains("first-class call ABI") {
+                        "call it directly so the capacity token stays in the compiled ABI, or use normal mode"
+                    } else {
+                        "keep the receiver uniquely owned and free of aliases or active loans"
+                    };
+                    diags.push(line_diag(
+                        line0,
+                        text,
+                        &format!(
+                            "`{}` cannot satisfy the no-copy `var` contract of `{}`: {} — `mode {modes}` requires a `unique` or `local unique` ownership proof; {advice}",
+                            miss.var, miss.callee, miss.reason,
+                        ),
+                    ));
+                }
+            }
+
             // Signature contract (mode files only): every ownership-relevant parameter
             // must declare its convention (`let`/`own`/`var`), so the interprocedural
             // summaries are declared facts. A bare (default) `let` is the violation.

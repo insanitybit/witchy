@@ -78,6 +78,108 @@ pub fn resolve_std_only(src: &str) -> Result<ast::Module, String> {
     pipeline::link(modules, "main").map_err(|e| e.to_string())
 }
 
+/// Whether a linked function originated in the entry file. The linker keeps the
+/// entry module's `main` unqualified and qualifies its other functions with the
+/// entry stem; linked-in modules carry a different prefix.
+pub fn is_entry_function(name: &str, entry_stem: &str) -> bool {
+    name == "main"
+        || name.starts_with("main::<")
+        || name.starts_with(&format!("{entry_stem}."))
+}
+
+/// Enforce the source file's declared performance mode after linking and type
+/// checking. This lives in the wasm-safe library so CLI, LSP, and browser
+/// compilation apply one contract.
+pub fn enforce_performance_modes(linked: &ast::Module, entry_stem: &str) -> Result<(), String> {
+    let source_modes: Vec<&str> = linked
+        .modes
+        .iter()
+        .filter(|mode| !mode.starts_with('@'))
+        .map(String::as_str)
+        .collect();
+    if source_modes.is_empty() {
+        return Ok(());
+    }
+
+    let mode_names = source_modes.join(", ");
+    let mut errors = Vec::new();
+
+    for (func, cliff) in analysis::module_cliffs(linked) {
+        if !is_entry_function(&func, entry_stem) {
+            continue;
+        }
+        errors.push(format!(
+            "error: in `{func}` (line {}): `{}` is rebuilt by copy on every \
+             iteration of this loop — it is {} [mode {}]\n  keep `{}` on the \
+             in-place path: certify helper calls with `let`/`own` so they do \
+             not alias it out, and do not share it mid-loop",
+            cliff.line, cliff.var, cliff.reason, mode_names, cliff.var,
+        ));
+    }
+
+    for miss in analysis::module_no_copy_misses(linked) {
+        if !is_entry_function(&miss.function, entry_stem) {
+            continue;
+        }
+        let advice = if miss.reason.contains("first-class call ABI") {
+            "call the function directly so its capacity token stays in the compiled ABI, or use normal mode for the copy-correct indirect call".to_string()
+        } else {
+            format!(
+                "keep `{}` uniquely owned: initialize it from fresh storage or a `var` parameter typed `unique`/`local unique`, and do not alias or loan it before this call",
+                miss.var
+            )
+        };
+        errors.push(format!(
+            "error: in `{}` (line {}): `{}` cannot satisfy the no-copy `var` \
+             contract of `{}` — {} [mode {}]\n  {}",
+            miss.function,
+            miss.line,
+            miss.var,
+            miss.callee,
+            miss.reason,
+            mode_names,
+            advice,
+        ));
+    }
+
+    for item in &linked.items {
+        let ast::Item::Function(function) = item else { continue };
+        if !is_entry_function(&function.name, entry_stem) {
+            continue;
+        }
+        for param in &function.params {
+            if param.convention == ast::Convention::Let && ownership_relevant(&param.ty) {
+                errors.push(format!(
+                    "error: in `{}`: parameter `{}` has no ownership convention — \
+                     `mode {}` requires an explicit `let` (read-only borrow), `own` \
+                     (consumed), or `var` (mutated in place)",
+                    function.name, param.name, mode_names,
+                ));
+            }
+        }
+    }
+
+    if errors.is_empty() { Ok(()) } else { Err(errors.join("\n")) }
+}
+
+/// Whether an ownership convention changes generated code for this parameter.
+/// Qualifiers refine the contract but do not hide the underlying heap type.
+pub fn ownership_relevant(ty: &Option<ast::Type>) -> bool {
+    ty.as_ref().is_some_and(ownership_relevant_type)
+}
+
+fn ownership_relevant_type(ty: &ast::Type) -> bool {
+    match ty {
+        ast::Type::Named(name, _) => {
+            !matches!(name.as_str(), "Int" | "Float" | "Bool" | "Duration")
+                && !capabilities::is_capability_type_name(name)
+        }
+        ast::Type::Tuple(_) => true,
+        ast::Type::Fn(_, _, _) => false,
+        ast::Type::Qualified(_, inner) => ownership_relevant_type(inner),
+    }
+}
+
 /// Compile a witchy program to a WebAssembly **binary** the browser's own engine
 /// can instantiate: resolve against the bundled std, type-check, codegen to WAT,
 /// then assemble with the pure-Rust `wat` crate. This is the codegen path that
@@ -89,6 +191,7 @@ pub fn resolve_std_only(src: &str) -> Result<ast::Module, String> {
 pub fn compile_source(src: &str) -> Result<Vec<u8>, String> {
     let linked = resolve_std_only(src)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
+    enforce_performance_modes(&linked, "main")?;
     // Compile through the WIR → wasm-binary pipeline (`wasmparser`/`wasm-encoder`,
     // pure Rust, so this runs on EVERY target including the browser playground).
     // A program that doesn't fully lower returns `Ok(None)` → the hard "cannot
@@ -101,6 +204,76 @@ pub fn compile_source(src: &str) -> Result<Vec<u8>, String> {
                 .to_string()
         })?;
     Ok(artifact::embed_launch_contract(bytes, &linked))
+}
+
+#[cfg(test)]
+mod performance_mode_tests {
+    #[test]
+    fn browser_compile_enforces_no_copy_contracts() {
+        let error = super::compile_source(
+            r#"mode opt
+
+import dict
+
+fn main(console: Console):
+    var d = dict.new()
+    let snapshot = d
+    d.insert("a", 2)
+    console.print("${snapshot.length()}")
+"#,
+        )
+        .expect_err("mode opt must reject an aliased no-copy receiver");
+
+        assert!(error.contains("no-copy `var` contract of `dict.insert`"), "{error}");
+        assert!(error.contains("bound to a new name"), "{error}");
+    }
+
+    #[test]
+    fn browser_compile_enforces_place_assignment_no_copy_contract() {
+        let error = super::compile_source(
+            r#"mode opt
+
+import dict
+
+fn main(console: Console):
+    var d = dict.new()
+    let snapshot = d
+    d["a"] = 2
+    console.print("${snapshot.length()}")
+"#,
+        )
+        .expect_err("place assignment must retain the discarded Dict contract");
+
+        assert!(error.contains("no-copy `var` contract of `dict.insert`"), "{error}");
+        assert!(error.contains("bound to a new name"), "{error}");
+    }
+
+    #[test]
+    fn performance_gate_includes_entry_lambdas() {
+        let linked = super::resolve_std_only(
+            r#"mode opt
+
+fn take(var xs: unique List(Int)) -> Nil:
+    return
+
+fn main() -> Int:
+    let work = fn() -> Nil:
+        var xs = [1]
+        let snapshot = xs
+        take(xs)
+        let _ = snapshot
+        return
+    work()
+    0
+"#,
+        )
+        .expect("resolve lambda program");
+        super::typeck::check(&linked).expect("type-check lambda program");
+        let error = super::enforce_performance_modes(&linked, "main")
+            .expect_err("an entry lambda is part of the entry module contract");
+        assert!(error.contains("main::<lambda>"), "{error}");
+        assert!(error.contains("bound to a new name"), "{error}");
+    }
 }
 
 /// The exact float formatting both backends share. The playground's host shim

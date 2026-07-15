@@ -82,7 +82,7 @@ impl List(a):
     pub fn update_at(var self, index: Int, f: fn(a) -> a) -> Nil:
         list.update_at(self, index, f)
 
-    pub fn pop(var self) -> Option(a):
+    pub fn pop(var self: unique List(a)) -> Option(a):
         list.pop(self)
 
     pub fn pop_front(var self) -> Option(a):
@@ -668,8 +668,10 @@ pub fn update_at(var xs: List(a), index: Int, f: fn(a) -> a) -> Nil:
 
 // Remove and return the final element. A uniquely owned non-empty list moves
 // the leaf out in O(1) without copying its spine; a shared root is copied so
-// aliases retain their old contents. An empty list returns None without copying.
-pub fn pop(var xs: List(a)) -> Option(a):
+// aliases retain their old contents in normal mode. In `mode opt`, the `unique`
+// receiver rejects a shared or loaned call site with the ownership reason. An
+// empty list returns None without copying.
+pub fn pop(var xs: unique List(a)) -> Option(a):
     list.__pop_extract(xs)
 
 pub fn pop_front(var xs: List(a)) -> Option(a):

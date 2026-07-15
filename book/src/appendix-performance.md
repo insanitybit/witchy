@@ -61,11 +61,14 @@ annotations** — it triggers on shapes the compiler can prove unaliased:
   beyond `own` on a threaded parameter. (The same uniqueness pass drives it; an
   aliased field, like an aliased variable, falls back to a copy.)
 - **Update and extract.** `xs.pop()`, `d.insert(k, v)`, and `d.remove(k)` carry
-  the collection token through the general `var` ABI while returning the old
-  leaf independently. A unique `pop` moves the leaf without a spine copy;
-  dictionary insert/remove perform one semantic lookup. Shared roots use
-  copy-on-write. The `witchy stats` extraction counters make searches, copied
-  bytes, retains, and drops directly inspectable.
+    the collection token through the general `var` ABI while returning the old
+    leaf independently. A unique `pop` moves the leaf without a spine copy;
+    dictionary insert/remove perform one semantic lookup. Shared roots use
+    copy-on-write in normal mode. Their receivers are declared `unique`, so
+    `mode opt` rejects an aliased or actively loaned owner instead of taking the
+    copy; the diagnostic points to the ownership-loss reason. The `witchy stats`
+    extraction counters make searches, copied bytes, retains, and drops directly
+    inspectable.
 - **Dict hash index.** Dicts carry a hidden open-addressing index; lookups,
   `has`, `get_or`, and upserts are O(1) while iteration order stays
   insertion order.
@@ -148,7 +151,7 @@ made, never the observable result:
 ```witchy
 mode opt
 
-fn first(text: let('a) String) -> View(String, 'a):
+fn first(let text: let('a) String) -> View(String, 'a):
     text
 
 fn main(console: Console):
@@ -173,7 +176,7 @@ mode opt
 
 import borrow
 
-fn first(text: let('a) String) -> View(String, 'a):
+fn first(let text: let('a) String) -> View(String, 'a):
     text
 
 fn main(console: Console):

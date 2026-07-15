@@ -17,7 +17,7 @@ pub fn new() -> Dict(k, v):
 // Insertion order of first appearance is preserved. The `d[key] = val` sugar
 // (RFC-0022) desugars to this: the shared `set_at` place-assign is retargeted to
 // `insert` once the receiver is known to be a Dict (RFC-0049).
-fn __insert(d: Dict(k, v), key: k, val: v) -> Dict(k, v) where k: Eq:
+fn __insert(d: unique Dict(k, v), key: k, val: v) -> Dict(k, v) where k: Eq:
     dict.__insert(d, key, val)
 
 // Select the displaced value and perform the upsert with one semantic key
@@ -29,8 +29,10 @@ fn __insert_extract(var d: Dict(k, v), key: k, val: v) -> Option(v) where k: Eq:
 // Insert `key` with `val`, returning the displaced value when the key existed.
 // The dictionary performs one semantic key search. A uniquely owned dictionary
 // preserves its hash index and updates or grows geometrically; a shared root is
-// copied before repair so aliases keep their old contents.
-pub fn insert(var d: Dict(k, v), key: k, val: v) -> Option(v) where k: Eq:
+// copied before repair so aliases keep their old contents in normal mode. The
+// `unique` receiver makes that cost a checked contract in `mode opt`: a call
+// whose dictionary was aliased or loaned is rejected with the ownership reason.
+pub fn insert(var d: unique Dict(k, v), key: k, val: v) -> Option(v) where k: Eq:
     dict.__insert_extract(d, key, val)
 
 // The value for `key`, or `default` when absent.
@@ -57,7 +59,7 @@ pub fn contains_key(d: Dict(k, v), key: k) -> Bool where k: Eq:
     dict.contains_key(d, key)
 
 // A new dict with `key` (and its value) removed; unchanged when absent.
-fn __remove(d: Dict(k, v), key: k) -> Dict(k, v) where k: Eq:
+fn __remove(d: unique Dict(k, v), key: k) -> Dict(k, v) where k: Eq:
     dict.__remove(d, key)
 
 fn __remove_extract(var d: Dict(k, v), key: k) -> Option(v) where k: Eq:
@@ -65,20 +67,22 @@ fn __remove_extract(var d: Dict(k, v), key: k) -> Option(v) where k: Eq:
 
 // Remove `key`, returning its old value when present. The dictionary performs
 // one semantic key search. Unique storage moves the old value out and repairs
-// insertion order in place; shared storage uses copy-on-write.
-pub fn remove(var d: Dict(k, v), key: k) -> Option(v) where k: Eq:
+// insertion order in place; shared storage uses copy-on-write in normal mode.
+// In `mode opt`, the `unique` receiver rejects a shared or loaned call site
+// instead of silently taking that copy.
+pub fn remove(var d: unique Dict(k, v), key: k) -> Option(v) where k: Eq:
     dict.__remove_extract(d, key)
 
 // Real methods mirror the primary mutator surface while the module functions
 // remain as stable, first-class values.
 impl Dict(k, v) where k: Eq:
-    pub fn insert(var self, key: k, val: v) -> Option(v):
+    pub fn insert(var self: unique Dict(k, v), key: k, val: v) -> Option(v):
         dict.insert(self, key, val)
 
     pub fn update(var self, key: k, default: v, f: fn(v) -> v) -> Nil:
         dict.update(self, key, default, f)
 
-    pub fn remove(var self, key: k) -> Option(v):
+    pub fn remove(var self: unique Dict(k, v), key: k) -> Option(v):
         dict.remove(self, key)
 
 // The keys, in insertion order.

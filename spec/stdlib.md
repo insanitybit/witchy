@@ -703,9 +703,9 @@ The core operations are native primitives (intercepted by both backends; the bod
 
 An empty Dict.
 
-#### `fn insert(var d: Dict(k, v), key: k, val: v) -> Option(v) where k: Eq`
+#### `fn insert(var d: unique Dict(k, v), key: k, val: v) -> Option(v) where k: Eq`
 
-Insert `key` with `val`, returning the displaced value when the key existed. The dictionary performs one semantic key search. A uniquely owned dictionary preserves its hash index and updates or grows geometrically; a shared root is copied before repair so aliases keep their old contents.
+Insert `key` with `val`, returning the displaced value when the key existed. The dictionary performs one semantic key search. A uniquely owned dictionary preserves its hash index and updates or grows geometrically; a shared root is copied before repair so aliases keep their old contents in normal mode. The `unique` receiver makes that cost a checked contract in `mode opt`: a call whose dictionary was aliased or loaned is rejected with the ownership reason.
 
 #### `fn get_or(d: Dict(k, v), key: k, default: v) -> v where k: Eq`
 
@@ -721,9 +721,9 @@ The value for `key`, or a runtime error when absent. This is the read half of th
 
 Whether `key` is present. The `_key` suffix is deliberate: a Dict contains key/value pairs, so bare `contains` would be ambiguous between keys and values.
 
-#### `fn remove(var d: Dict(k, v), key: k) -> Option(v) where k: Eq`
+#### `fn remove(var d: unique Dict(k, v), key: k) -> Option(v) where k: Eq`
 
-Remove `key`, returning its old value when present. The dictionary performs one semantic key search. Unique storage moves the old value out and repairs insertion order in place; shared storage uses copy-on-write.
+Remove `key`, returning its old value when present. The dictionary performs one semantic key search. Unique storage moves the old value out and repairs insertion order in place; shared storage uses copy-on-write in normal mode. In `mode opt`, the `unique` receiver rejects a shared or loaned call site instead of silently taking that copy.
 
 #### `fn keys(d: Dict(k, v)) -> List(k)`
 
@@ -773,13 +773,13 @@ The values whose keys satisfy `pred`, in the Dict's iteration order.
 
 #### `Dict.insert(key: k, val: v) -> Option(v)`
 
-Insert `key` with `val`, returning the displaced value when the key existed. The dictionary performs one semantic key search. A uniquely owned dictionary preserves its hash index and updates or grows geometrically; a shared root is copied before repair so aliases keep their old contents.
+Insert `key` with `val`, returning the displaced value when the key existed. The dictionary performs one semantic key search. A uniquely owned dictionary preserves its hash index and updates or grows geometrically; a shared root is copied before repair so aliases keep their old contents in normal mode. The `unique` receiver makes that cost a checked contract in `mode opt`: a call whose dictionary was aliased or loaned is rejected with the ownership reason.
 
 #### `Dict.update(key: k, default: v, f: fn(v) -> v) -> Nil`
 
 #### `Dict.remove(key: k) -> Option(v)`
 
-Remove `key`, returning its old value when present. The dictionary performs one semantic key search. Unique storage moves the old value out and repairs insertion order in place; shared storage uses copy-on-write.
+Remove `key`, returning its old value when present. The dictionary performs one semantic key search. Unique storage moves the old value out and repairs insertion order in place; shared storage uses copy-on-write in normal mode. In `mode opt`, the `unique` receiver rejects a shared or loaned call site instead of silently taking that copy.
 
 ## `duration`
 
@@ -2063,9 +2063,9 @@ Store `value` at `index`. An out-of-range (or negative) index is a runtime error
 
 A copy of `xs` with the function `f` applied to the element at `index`. An out-of-range (or negative) index is a runtime error on both backends, exactly like `list.at` — a silently discarded update is a contract violation (RFC-0044 rule 3), so it aborts rather than leaving the list unchanged.
 
-#### `fn pop(var xs: List(a)) -> Option(a)`
+#### `fn pop(var xs: unique List(a)) -> Option(a)`
 
-Remove and return the final element. A uniquely owned non-empty list moves the leaf out in O(1) without copying its spine; a shared root is copied so aliases retain their old contents. An empty list returns None without copying.
+Remove and return the final element. A uniquely owned non-empty list moves the leaf out in O(1) without copying its spine; a shared root is copied so aliases retain their old contents in normal mode. In `mode opt`, the `unique` receiver rejects a shared or loaned call site with the ownership reason. An empty list returns None without copying.
 
 #### `fn pop_front(var xs: List(a)) -> Option(a)`
 
@@ -2117,7 +2117,7 @@ A copy of `xs` with the function `f` applied to the element at `index`. An out-o
 
 #### `List.pop() -> Option(a)`
 
-Remove and return the final element. A uniquely owned non-empty list moves the leaf out in O(1) without copying its spine; a shared root is copied so aliases retain their old contents. An empty list returns None without copying.
+Remove and return the final element. A uniquely owned non-empty list moves the leaf out in O(1) without copying its spine; a shared root is copied so aliases retain their old contents in normal mode. In `mode opt`, the `unique` receiver rejects a shared or loaned call site with the ownership reason. An empty list returns None without copying.
 
 #### `List.pop_front() -> Option(a)`
 

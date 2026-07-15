@@ -389,12 +389,58 @@ fn main(console: Console):
             "an annotated parameter must be clean: {d:?}"
         );
 
+        // A type qualifier is not a calling convention: `unique T` still needs
+        // the explicit `let`/`own`/`var` protocol in a mode file.
+        let qualified = bad.replace("xs: List(Int)", "xs: unique List(Int)");
+        let d = diags(&qualified);
+        assert!(
+            d.iter().any(|x| x["message"].as_str().unwrap().contains("ownership convention")),
+            "a qualifier must not hide a missing convention: {d:?}"
+        );
+
         // The contract is opt-in: without `mode opt`, the same code is accepted.
         let no_mode = bad.replace("mode opt\n\n", "");
         let d = diags(&no_mode);
         assert!(
             !d.iter().any(|x| x["message"].as_str().unwrap().contains("ownership convention")),
             "no mode -> no ownership-convention error: {d:?}"
+        );
+    }
+
+    #[test]
+    fn mode_opt_no_copy_violation_names_the_alias_reason() {
+        let bad = "mode opt\n\nimport dict\n\nfn main(console: Console):\n    var d = dict.new()\n    let _ = d.insert(\"a\", 1)\n    let snapshot = d\n    d.insert(\"a\", 2)\n    console.print(\"${snapshot.length()}\")\n";
+        let diagnostics = diags(bad);
+        assert!(
+            diagnostics.iter().any(|diagnostic| {
+                diagnostic["severity"] == json!(1)
+                    && diagnostic["range"]["start"]["line"] == json!(8)
+                    && diagnostic["message"]
+                        .as_str()
+                        .is_some_and(|message| {
+                            message.contains("no-copy `var` contract")
+                                && message.contains("bound to a new name")
+                        })
+            }),
+            "the editor must explain the exact ownership loss: {diagnostics:?}"
+        );
+
+        let fresh = bad.replace("    let snapshot = d\n", "").replace("snapshot.length()", "d.length()");
+        let diagnostics = diags(&fresh);
+        assert!(
+            !diagnostics.iter().any(|diagnostic| diagnostic["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("no-copy `var` contract"))),
+            "a fresh owner satisfies the contract: {diagnostics:?}"
+        );
+
+        let normal = bad.replacen("mode opt\n\n", "", 1);
+        let diagnostics = diags(&normal);
+        assert!(
+            !diagnostics.iter().any(|diagnostic| diagnostic["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("no-copy `var` contract"))),
+            "normal mode keeps the copy-correct fallback: {diagnostics:?}"
         );
     }
 

@@ -715,10 +715,21 @@ fn main(console: Console):
     show.say(console, "${total(table)}")
 ```
 
-These restate, as enforced contracts, guarantees witchy's value semantics already
-provide (a shared value is never mutated in place; the uniqueness pass reuses
-buffers it proves unaliased), so they carry no separate performance cost or
-benefit — see [performance.md](performance.md).
+The qualifiers do not change values or representation, but they can strengthen
+the performance contract. For a `var` parameter typed `unique` or `local unique`,
+normal mode takes the copy-correct fallback when the caller's ownership proof is
+missing. In `mode opt`, the same miss is a compile error naming the alias, move,
+or loan that invalidated the proof. `List.pop`, `Dict.insert`, and `Dict.remove`
+use this rule for their no-container-copy guarantee. See
+[performance.md](performance.md).
+
+A direct function result typed `unique List` or `unique Dict` carries the
+producer's hidden capacity token into the receiving binding. Each reachable
+return must establish that token from fresh list/dict storage or another direct
+`unique` collection result. A control-flow tail uses explicit `return` in each
+branch so each path carries its own token. A first-class function call whose
+`var unique` parameter would require that token is currently rejected in `mode
+opt`; normal mode remains copy-correct.
 
 ### Borrowed views
 
@@ -728,7 +739,7 @@ inputs. Every returned lifetime must be bound by an input of the same name:
 ```witchy
 mode opt
 
-fn inspect(xs: let('a) List(Int)) -> View(List(Int), 'a):
+fn inspect(let xs: let('a) List(Int)) -> View(List(Int), 'a):
     xs
 ```
 

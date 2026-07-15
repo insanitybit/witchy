@@ -591,6 +591,27 @@ mod perf_mode {
             "mode opt\n\nimport list\n\nfn tag(xs: List(Int)) -> Int:\n    list.length(xs)\n\nfn main(console: Console):\n    console.print(\"${tag([1, 2, 3])}\")\n"
         ));
     }
+
+    #[test]
+    fn no_copy_var_contract_explains_alias() {
+        insta::assert_snapshot!(mode_diag(
+            "mode opt\n\nimport dict\n\nfn main(console: Console):\n    var d = dict.new()\n    let _ = d.insert(\"a\", 1)\n    let snapshot = d\n    d.insert(\"a\", 2)\n    console.print(\"${snapshot.length()}\")\n"
+        ));
+    }
+
+    #[test]
+    fn no_copy_collection_family_covers_pop_and_remove() {
+        insta::assert_snapshot!(mode_diag(
+            "mode opt\n\nimport dict\nimport list\n\nfn main(console: Console):\n    var xs = [1, 2]\n    let xs_snapshot = xs\n    let _ = xs.pop()\n    var d = dict.new()\n    let _ = d.insert(\"a\", 1)\n    let d_snapshot = d\n    let _ = d.remove(\"a\")\n    console.print(\"${xs_snapshot.length() + d_snapshot.length()}\")\n"
+        ));
+    }
+
+    #[test]
+    fn no_copy_indirect_abi_limitation_is_explicit() {
+        insta::assert_snapshot!(mode_diag(
+            "mode opt\n\nfn take(var xs: unique List(Int)) -> Nil:\n    return\n\nfn main():\n    var xs = [1]\n    let f = take\n    f(xs)\n"
+        ));
+    }
 }
 
 // ===========================================================================

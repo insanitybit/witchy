@@ -31,6 +31,7 @@ pub use witchy::grants;
 pub use witchy::interpreter;
 pub use witchy::lexer;
 pub use witchy::linker;
+pub use witchy::{enforce_performance_modes, is_entry_function, ownership_relevant};
 pub use witchy::opt;
 pub use witchy::pipeline;
 mod lsp;
@@ -1471,96 +1472,6 @@ fn linked_has_main(linked: &ast::Module) -> bool {
         .items
         .iter()
         .any(|it| matches!(it, ast::Item::Function(f) if f.name == "main"))
-}
-
-/// Whether a linked function originated in the entry file. The linker keeps the
-/// entry module's `main` unqualified and qualifies everything else as
-/// `{stem}.name`, so the entry file's functions are exactly `main` and the
-/// `{stem}.`-prefixed ones; linked-in modules carry a different prefix.
-fn is_entry_function(name: &str, entry_stem: &str) -> bool {
-    name == "main" || name.starts_with(&format!("{entry_stem}."))
-}
-
-/// Performance-mode enforcement. The uniqueness analysis flags accumulation that
-/// reverts to the copying path inside a loop (O(n²)). In an ordinary file this is
-/// still valid code, so the CLI stays silent; the LSP surfaces non-blocking
-/// advisories through its own diagnostics path. In a file that declares `mode opt`
-/// the cliff is a hard error, AND every ownership-relevant parameter must carry
-/// an explicit `let`/`own`/`var` convention — so the interprocedural summaries
-/// are declared contracts rather than inferences, and the optimization is powered
-/// by the annotation, not the fixpoint. Only the entry file's own functions are
-/// judged; linked-in modules keep their own policy. See rfcs/performance-modes.md.
-fn enforce_performance_modes(linked: &ast::Module, entry_stem: &str) -> Result<(), String> {
-    let source_modes: Vec<&str> = linked
-        .modes
-        .iter()
-        .filter(|mode| !mode.starts_with('@'))
-        .map(String::as_str)
-        .collect();
-    let enforce = !source_modes.is_empty();
-    let mode_names = source_modes.join(", ");
-    let mut errors = Vec::new();
-
-    // Body contract: accumulators must stay on the in-place fast path.
-    if enforce {
-        for (func, c) in analysis::module_cliffs(linked) {
-            if !is_entry_function(&func, entry_stem) {
-                continue;
-            }
-            errors.push(format!(
-                "error: in `{func}` (line {}): `{}` is rebuilt by copy on every \
-                 iteration of this loop — it is {} [mode {}]\n  keep `{}` on the \
-                 in-place path: certify helper calls with `let`/`own` so they do \
-                 not alias it out, and do not share it mid-loop",
-                c.line, c.var, c.reason, mode_names, c.var,
-            ));
-        }
-    }
-
-    // Signature contract (mode files only): ownership-relevant parameters must
-    // declare their convention, so the summaries are facts, not inferences.
-    if enforce {
-        for item in &linked.items {
-            if let ast::Item::Function(f) = item {
-                if !is_entry_function(&f.name, entry_stem) {
-                    continue;
-                }
-                for p in &f.params {
-                    if p.convention == ast::Convention::Let && ownership_relevant(&p.ty) {
-                        errors.push(format!(
-                            "error: in `{}`: parameter `{}` has no ownership \
-                             convention — `mode {}` requires an explicit `let` \
-                             (read-only borrow), `own` (consumed), or `var` \
-                             (mutated in place)",
-                            f.name,
-                            p.name,
-                            mode_names,
-                        ));
-                    }
-                }
-            }
-        }
-    }
-
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors.join("\n"))
-    }
-}
-
-/// Whether a parameter type is one where an ownership convention changes the
-/// generated code (a heap buffer: String/List/Dict/tuple/record/ADT). Scalars,
-/// capabilities, and function values are exempt — annotating them is noise.
-fn ownership_relevant(ty: &Option<ast::Type>) -> bool {
-    match ty {
-        Some(ast::Type::Named(n, _)) => {
-            !matches!(n.as_str(), "Int" | "Float" | "Bool" | "Duration")
-                && !witchy_caps::capabilities::is_capability_type_name(n)
-        }
-        Some(ast::Type::Tuple(_)) => true,
-        _ => false,
-    }
 }
 
 /// Read a 32-byte Ed25519 signing seed from a file holding 64 hex characters.

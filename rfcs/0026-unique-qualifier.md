@@ -178,6 +178,18 @@ written in.
 > construction. Full argument-uniqueness checking at `unique`-param call sites is a
 > future refinement. Marking implemented.
 
+> 2026-07-15: RFC-0088 implements the first measured call-site refinement. A
+> `var` parameter typed `unique` or `local unique` is now a no-copy contract:
+> normal mode retains copy-on-write, while `mode opt` rejects a missing proof with
+> alias/move/loan provenance from the same ownership facts codegen consumes.
+> `List.pop`, `Dict.insert`, and `Dict.remove` are the initial measured users.
+> Direct functions returning a `unique` collection also return the hidden
+> capacity token in their compiled ABI, so a caller can immediately satisfy one
+> of those no-copy contracts. Opt-mode checking also follows explicit `unique`
+> parameters on compiler-private structural helpers, so discarded-result
+> lowering cannot erase the public contract. General source-facing uniqueness
+> requirements on non-`var` parameters remain a separate refinement.
+
 <!--
   Once this RFC is implemented/rejected/superseded it is FROZEN.
   - To change the decision: write a NEW RFC that supersedes this one.

@@ -230,6 +230,9 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
                 if let Some(t) = &f.ret {
                     cg.fn_ret_valtype.insert(f.name.clone(), ty_to_valtype(t));
                     cg.fn_ret_ty.insert(f.name.clone(), t.clone());
+                    if type_is_unique_capacity(t) {
+                        cg.fn_unique_ret.insert(f.name.clone());
+                    }
                 }
                 // A function returning a closure (`-> fn(...) -> RET`): record the
                 // closure's return kind so a `let f = make(...)` then `f(x)` call

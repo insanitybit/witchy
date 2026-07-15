@@ -51,6 +51,10 @@ pub struct Facts {
     /// Statement identity -> accumulators whose token must be zeroed AFTER
     /// the statement (it can create a live whole-alias of their buffer).
     kills: HashMap<usize, Vec<String>>,
+    /// The first soundness reason for each kill. Codegen only needs `kills`,
+    /// while `mode opt` uses this provenance to turn a missed no-copy proof
+    /// into an actionable diagnostic.
+    kill_reasons: HashMap<usize, HashMap<String, String>>,
     /// Self-assign sites (statement identity) whose right-hand side embeds a
     /// share of the assigned variable: forced zero token.
     dirty: HashSet<usize>,
@@ -70,6 +74,13 @@ fn stmt_key(s: &Stmt) -> usize {
 impl Facts {
     pub fn kills_after(&self, stmt: &Stmt) -> &[String] {
         self.kills.get(&stmt_key(stmt)).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    pub fn kill_reason_after<'a>(&'a self, stmt: &Stmt, var: &str) -> Option<&'a str> {
+        self.kill_reasons
+            .get(&stmt_key(stmt))
+            .and_then(|reasons| reasons.get(var))
+            .map(String::as_str)
     }
 
     /// Whether a self-assign site must run with a forced zero token. A
@@ -96,11 +107,19 @@ impl Facts {
                 {
                     let entry = facts.kills.entry(stmt_key(stmt)).or_default();
                     for loan in loans.opens_after(stmt) {
-                        if facts.accumulators.contains(&loan.owner)
-                            && !entry.contains(&loan.owner)
-                        {
-                            entry.push(loan.owner.clone());
-                            added += 1;
+                        if facts.accumulators.contains(&loan.owner) {
+                            if !entry.contains(&loan.owner) {
+                                entry.push(loan.owner.clone());
+                                added += 1;
+                            }
+                            facts
+                                .kill_reasons
+                                .entry(stmt_key(stmt))
+                                .or_default()
+                                .insert(
+                                    loan.owner.clone(),
+                                    format!("loaned to view `{}` by `{}`", loan.view, loan.origin),
+                                );
                         }
                     }
                 }
@@ -170,7 +189,8 @@ fn self_push_elem<'a>(name: &str, value: &'a Expr) -> Option<&'a Expr> {
 fn self_insert_args<'a>(name: &str, value: &'a Expr) -> Option<(&'a Expr, &'a Expr)> {
     if let Expr::Call { name: f, args } = value {
         if (matches!(f.as_str(), "dict.insert" | "dict.__insert")
-            || f.starts_with("dict.insert__"))
+            || f.starts_with("dict.insert__")
+            || f.starts_with("dict.__insert__"))
             && args.len() == 3
         {
             if matches!(&args[0], Expr::Var(v) if v == name) {
@@ -275,7 +295,21 @@ pub fn self_own_call<'a>(
 }
 
 fn is_self_assign_shape(name: &str, value: &Expr, summaries: &Summaries) -> bool {
-    self_inplace_op(name, value).is_some() || self_own_call(name, value, summaries).is_some()
+    self_inplace_op(name, value).is_some()
+        || self_own_call(name, value, summaries).is_some()
+        || self_private_structural_call(name, value)
+}
+
+fn private_structural_helper(name: &str) -> bool {
+    matches!(name, "dict.__insert" | "dict.__remove")
+        || name.starts_with("dict.__insert__")
+        || name.starts_with("dict.__remove__")
+}
+
+fn self_private_structural_call(name: &str, value: &Expr) -> bool {
+    matches!(value, Expr::Call { name: callee, args }
+        if private_structural_helper(callee)
+            && matches!(args.first(), Some(Expr::Var(root)) if root == name))
 }
 
 /// The RFC-0087 statement form of an operation backed by the existing
@@ -660,7 +694,11 @@ fn collect_accumulators_expr(
             collect_accumulators_expr(expr, summaries, accs, loop_ptrs, loop_sites)
         }
         Expr::Call { name, args } => {
-            for index in summaries.var_arg_indices(name) {
+            let mut indices = summaries.var_arg_indices(name).collect::<Vec<_>>();
+            if private_structural_helper(name) && !indices.contains(&0) {
+                indices.push(0);
+            }
+            for index in indices {
                 if let Some(Expr::Var(root)) = args.get(index) {
                     accs.insert(root.clone());
                     for loop_ptr in loop_ptrs.iter() {
@@ -903,6 +941,14 @@ impl<'a> Walker<'a> {
                         }
                     }
                 }
+                for (v, reason) in &shares {
+                    self.facts
+                        .kill_reasons
+                        .entry(stmt_key(stmt))
+                        .or_default()
+                        .entry(v.clone())
+                        .or_insert_with(|| reason.clone());
+                }
                 self.facts.kill_entries += added;
                 for (v, reason) in &shares {
                     self.cliff(v, reason);
@@ -938,6 +984,12 @@ impl<'a> Walker<'a> {
                         entry.push(v.clone());
                         added += 1;
                     }
+                    self.facts
+                        .kill_reasons
+                        .entry(stmt_key(stmt))
+                        .or_default()
+                        .entry(v.clone())
+                        .or_insert_with(|| "moved out of this binding".to_string());
                 }
                 self.facts.kill_entries += added;
             }
@@ -2459,11 +2511,901 @@ mod last_use_tests {
 }
 
 // ---------------------------------------------------------------------------
-// Module-level diagnostics: every function's cliffs, for `witchy check` and
-// the LSP. Runs on the sugared AST (the shapes appear identically; the
-// method-call/index sugar only makes the scan more conservative, never less
-// sound — diagnostics carry no soundness obligation anyway).
+// Module-level diagnostics: copy cliffs and opt-mode no-copy contracts, for
+// `witchy check` and the LSP.
 // ---------------------------------------------------------------------------
+
+/// A `unique` / `local unique` `var` argument whose ownership token is not
+/// statically available at a promised no-copy call site.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoCopyMiss {
+    pub function: String,
+    pub callee: String,
+    pub var: String,
+    pub line: u32,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone)]
+enum NoCopyProof {
+    Available,
+    Unavailable(String),
+    /// A first-class callable whose listed parameters promise no-copy var
+    /// update-and-extract. The current indirect ABI does not carry capacity
+    /// tokens, so invoking one is diagnosed rather than silently copying.
+    Callable { required: Vec<usize>, unique_result: bool },
+}
+
+impl NoCopyProof {
+    fn reason(&self) -> Option<&str> {
+        match self {
+            NoCopyProof::Available => None,
+            NoCopyProof::Unavailable(reason) => Some(reason),
+            NoCopyProof::Callable { .. } => None,
+        }
+    }
+}
+
+fn no_copy_qualified(ty: &Option<Type>) -> bool {
+    ty.as_ref().is_some_and(no_copy_qualified_type)
+}
+
+fn no_copy_qualified_type(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Qualified(
+            witchy_syntax::ast::TypeQual::Unique | witchy_syntax::ast::TypeQual::LocalUnique,
+            _
+        )
+    )
+}
+
+fn callable_no_copy_contract(ty: &Option<Type>) -> Option<(Vec<usize>, bool)> {
+    let Some(Type::Fn(params, ret, conventions)) = ty.as_ref().map(Type::unqualified) else {
+        return None;
+    };
+    let required = params
+        .iter()
+        .enumerate()
+        .filter_map(|(index, param)| {
+            (conventions.get(index) == Some(&Convention::Var)
+                && no_copy_qualified_type(param))
+            .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    let unique_result = matches!(
+        ret.as_ref(),
+        Type::Qualified(witchy_syntax::ast::TypeQual::Unique, inner)
+            if matches!(inner.unqualified(), Type::Named(name, _)
+                if matches!(name.as_str(), "List" | "Dict"))
+    );
+    (!required.is_empty() || unique_result).then_some((required, unique_result))
+}
+
+fn no_copy_requirements(module: &Module) -> HashMap<String, Vec<usize>> {
+    module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Function(function) => {
+                let private_structural = private_structural_helper(&function.name);
+                let required: Vec<usize> = function
+                    .params
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, param)| {
+                        (no_copy_qualified(&param.ty)
+                            && (param.convention == Convention::Var
+                                || (private_structural && index == 0)))
+                            .then_some(index)
+                    })
+                    .collect();
+                (!required.is_empty()).then(|| (function.name.clone(), required))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn unique_capacity_results(module: &Module) -> HashSet<String> {
+    module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Function(function)
+                if function.ret.as_ref().is_some_and(|ty| {
+                    matches!(
+                        ty,
+                        Type::Qualified(witchy_syntax::ast::TypeQual::Unique, inner)
+                            if matches!(inner.unqualified(), Type::Named(name, _)
+                                if matches!(name.as_str(), "List" | "Dict"))
+                    )
+                }) =>
+            {
+                Some(function.name.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn no_copy_display_name(name: &str) -> String {
+    if name == "dict.__insert" || name.starts_with("dict.__insert__") {
+        return "dict.insert".to_string();
+    }
+    if name == "dict.__remove" || name.starts_with("dict.__remove__") {
+        return "dict.remove".to_string();
+    }
+    name.split_once("__").map_or(name, |(source, _)| source).to_string()
+}
+
+fn no_copy_fresh(expr: &Expr) -> bool {
+    match expr {
+        // A literal owns its allocation. The compiled tier initializes its
+        // capacity token from the literal length.
+        Expr::List(_) => true,
+        // The empty dictionary has no old spine to copy. Its first structural
+        // update establishes the geometric-capacity token returned by the var ABI.
+        Expr::Call { name, args }
+            if args.is_empty()
+                && (name == "dict.new"
+                    || name.starts_with("dict.new__")
+                    || name.ends_with(".dict.new")) =>
+        {
+            true
+        }
+        _ => false,
+    }
+}
+
+fn merge_no_copy_proof(left: &NoCopyProof, right: &NoCopyProof) -> NoCopyProof {
+    match (left, right) {
+        (NoCopyProof::Available, NoCopyProof::Available) => NoCopyProof::Available,
+        (
+            NoCopyProof::Callable { required: left, unique_result: left_result },
+            NoCopyProof::Callable { required: right, unique_result: right_result },
+        ) if left == right && left_result == right_result => {
+            NoCopyProof::Callable {
+                required: left.clone(),
+                unique_result: *left_result,
+            }
+        }
+        (NoCopyProof::Unavailable(reason), _) | (_, NoCopyProof::Unavailable(reason)) => {
+            NoCopyProof::Unavailable(reason.clone())
+        }
+        _ => NoCopyProof::Unavailable(
+            "control flow does not preserve one ownership-capacity contract".to_string(),
+        ),
+    }
+}
+
+fn merge_no_copy_env(
+    before: &HashMap<String, NoCopyProof>,
+    branches: &[HashMap<String, NoCopyProof>],
+) -> HashMap<String, NoCopyProof> {
+    let Some((first, rest)) = branches.split_first() else {
+        return before.clone();
+    };
+    let mut merged = before.clone();
+    for name in before.keys() {
+        let mut proof = first.get(name).unwrap_or(&before[name]).clone();
+        for branch in rest {
+            let candidate = branch.get(name).unwrap_or(&before[name]);
+            proof = merge_no_copy_proof(&proof, candidate);
+        }
+        merged.insert(name.clone(), proof);
+    }
+    merged
+}
+
+struct NoCopyWalker<'a> {
+    function: String,
+    required: &'a HashMap<String, Vec<usize>>,
+    unique_results: &'a HashSet<String>,
+    summaries: &'a Summaries,
+    facts: Facts,
+    loans: &'a witchy_types::loans::LoanFacts,
+    misses: Vec<NoCopyMiss>,
+    line: u32,
+}
+
+impl<'a> NoCopyWalker<'a> {
+    fn new(
+        function: String,
+        body: &Block,
+        required: &'a HashMap<String, Vec<usize>>,
+        unique_results: &'a HashSet<String>,
+        summaries: &'a Summaries,
+        loans: &'a witchy_types::loans::LoanFacts,
+    ) -> Self {
+        let mut facts = analyze(body, summaries);
+        facts.merge_loan_kills(body, loans);
+        Self {
+            function,
+            required,
+            unique_results,
+            summaries,
+            facts,
+            loans,
+            misses: Vec::new(),
+            line: 0,
+        }
+    }
+
+    fn walk(mut self, function: &witchy_syntax::ast::Function) -> Vec<NoCopyMiss> {
+        let own_cap_param = self.summaries.own_abi(&function.name);
+        self.walk_body(&function.params, &function.body, own_cap_param);
+        self.misses
+    }
+
+    fn walk_lambda(mut self, params: &[witchy_syntax::ast::Param], body: &Block) -> Vec<NoCopyMiss> {
+        self.walk_body(params, body, None);
+        self.misses
+    }
+
+    fn walk_body(
+        &mut self,
+        params: &[witchy_syntax::ast::Param],
+        body: &Block,
+        own_cap_param: Option<usize>,
+    ) {
+        let mut env = HashMap::new();
+        for (index, param) in params.iter().enumerate() {
+            if let Some((required, unique_result)) = callable_no_copy_contract(&param.ty) {
+                env.insert(
+                    param.name.clone(),
+                    NoCopyProof::Callable { required, unique_result },
+                );
+                continue;
+            }
+            let carries_cap = param.convention == Convention::Var
+                || (param.convention == Convention::Own && own_cap_param == Some(index));
+            let proof = if no_copy_qualified(&param.ty) && carries_cap {
+                NoCopyProof::Available
+            } else {
+                let reason = if no_copy_qualified(&param.ty) {
+                    format!(
+                        "parameter `{}` is unique, but its `{}` convention does not carry a capacity token into this function",
+                        param.name,
+                        match param.convention {
+                            Convention::Let => "default let",
+                            Convention::Borrow => "let",
+                            Convention::Own => "own",
+                            Convention::Var => "var",
+                        }
+                    )
+                } else {
+                    format!(
+                        "parameter `{}` is not declared `unique` or `local unique`",
+                        param.name
+                    )
+                };
+                NoCopyProof::Unavailable(reason)
+            };
+            env.insert(param.name.clone(), proof);
+        }
+        self.block(body, &mut env);
+    }
+
+    fn block(&mut self, block: &Block, env: &mut HashMap<String, NoCopyProof>) {
+        // Assignments to outer bindings flow out of a block, but bindings
+        // declared here do not. Remember the first shadowed value so a nested
+        // `let`/`var` cannot replace the outer binding's proof after scope exit.
+        let mut shadowed: HashMap<String, Option<NoCopyProof>> = HashMap::new();
+        for (index, stmt) in block.stmts.iter().enumerate() {
+            self.line = block.lines.get(index).copied().unwrap_or(self.line);
+            let exits_block = matches!(stmt, Stmt::Return(_) | Stmt::Break | Stmt::Continue);
+            match stmt {
+                Stmt::Let { name, value, .. } => {
+                    let proof = self.expr(value, stmt, env);
+                    shadowed.entry(name.clone()).or_insert_with(|| env.get(name).cloned());
+                    env.insert(name.clone(), proof);
+                }
+                Stmt::Assign { name, value } => {
+                    let mut proof = self.expr(value, stmt, env);
+                    if self_inplace_op(name, value).is_some()
+                        || self_own_call(name, value, self.summaries).is_some()
+                        || self_private_structural_call(name, value)
+                    {
+                        proof = NoCopyProof::Available;
+                    }
+                    env.insert(name.clone(), proof);
+                }
+                Stmt::Expr(value) => {
+                    let _ = self.expr(value, stmt, env);
+                    if let Some(root) = direct_inplace_root(value) {
+                        env.insert(root.to_string(), NoCopyProof::Available);
+                    }
+                }
+                Stmt::LetPattern { pattern, value } => {
+                    let _ = self.expr(value, stmt, env);
+                    let mut names = Vec::new();
+                    witchy_syntax::ast::pattern_binds(pattern, &mut names);
+                    for name in names {
+                        shadowed.entry(name.clone()).or_insert_with(|| env.get(&name).cloned());
+                        env.insert(
+                            name,
+                            NoCopyProof::Unavailable(
+                                "a destructured binding has no independent ownership-capacity token"
+                                    .to_string(),
+                            ),
+                        );
+                    }
+                }
+                Stmt::Return(Some(value)) | Stmt::Yield(value) => {
+                    let _ = self.expr(value, stmt, env);
+                }
+                Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+            }
+            for name in self.facts.kills_after(stmt) {
+                let reason = self
+                    .facts
+                    .kill_reason_after(stmt, name)
+                    .unwrap_or("ownership may be shared after this statement")
+                    .to_string();
+                env.insert(name.clone(), NoCopyProof::Unavailable(reason));
+            }
+            if exits_block {
+                break;
+            }
+        }
+        for (name, previous) in shadowed {
+            match previous {
+                Some(proof) => {
+                    env.insert(name, proof);
+                }
+                None => {
+                    env.remove(&name);
+                }
+            }
+        }
+    }
+
+    fn expr(
+        &mut self,
+        expr: &Expr,
+        stmt: &Stmt,
+        env: &mut HashMap<String, NoCopyProof>,
+    ) -> NoCopyProof {
+        match expr {
+            Expr::Var(name) => {
+                let required = self.required.get(name).cloned().unwrap_or_default();
+                let unique_result = self.unique_results.contains(name);
+                if !required.is_empty() || unique_result {
+                    NoCopyProof::Callable { required, unique_result }
+                } else if let Some(NoCopyProof::Callable { required, unique_result }) = env.get(name)
+                {
+                    NoCopyProof::Callable {
+                        required: required.clone(),
+                        unique_result: *unique_result,
+                    }
+                } else {
+                    NoCopyProof::Unavailable(format!("it aliases `{name}`"))
+                }
+            }
+            Expr::List(items) => {
+                for item in items {
+                    let _ = self.expr(item, stmt, env);
+                }
+                NoCopyProof::Available
+            }
+            Expr::Call { name, args } => {
+                for arg in args {
+                    let _ = self.expr(arg, stmt, env);
+                }
+                let mut indirect_unique_result = false;
+                if let Some(NoCopyProof::Callable { required, unique_result }) =
+                    env.get(name).cloned()
+                {
+                    self.record_indirect_misses(args, &required);
+                    indirect_unique_result = unique_result;
+                }
+                if let Some(indices) = self.required.get(name) {
+                    let mut rebound = Vec::new();
+                    for &index in indices {
+                        let Some(arg) = args.get(index) else { continue };
+                        let root = match arg {
+                            Expr::Var(root) => root,
+                            Expr::Field { base, .. } | Expr::Index { base, .. } => {
+                                let root = expr_root(base).unwrap_or("<computed place>");
+                                self.misses.push(NoCopyMiss {
+                                    function: self.function.clone(),
+                                    callee: no_copy_display_name(name),
+                                    var: root.to_string(),
+                                    line: self.line,
+                                    reason: "a nested place has no independent ownership-capacity token"
+                                        .to_string(),
+                                });
+                                continue;
+                            }
+                            _ => {
+                                self.misses.push(NoCopyMiss {
+                                    function: self.function.clone(),
+                                    callee: no_copy_display_name(name),
+                                    var: "<computed value>".to_string(),
+                                    line: self.line,
+                                    reason: "the argument is not a directly tracked mutable binding".to_string(),
+                                });
+                                continue;
+                            }
+                        };
+                        let active = self
+                            .loans
+                            .active_at(stmt)
+                            .iter()
+                            .find(|loan| loan.owner == *root);
+                        let reason = active.map(|loan| {
+                            format!("it is actively loaned to view `{}` by `{}`", loan.view, loan.origin)
+                        });
+                        let reason = reason.or_else(|| {
+                            env.get(root)
+                                .and_then(NoCopyProof::reason)
+                                .map(ToOwned::to_owned)
+                        }).or_else(|| {
+                            self.facts
+                                .kill_reason_after(stmt, root)
+                                .map(|reason| {
+                                    format!(
+                                        "this statement also shares the binding ({reason}); split the operations into separate statements so ownership at the call is explicit"
+                                    )
+                                })
+                        }).or_else(|| {
+                            (!env.contains_key(root)).then(|| {
+                                "the binding has no tracked ownership-capacity token".to_string()
+                            })
+                        });
+                        if let Some(reason) = reason {
+                            self.misses.push(NoCopyMiss {
+                                function: self.function.clone(),
+                                callee: no_copy_display_name(name),
+                                var: root.clone(),
+                                line: self.line,
+                                reason,
+                            });
+                        }
+                        rebound.push(root.clone());
+                    }
+                    // The checked call either updates unique storage or is rejected.
+                    // Its var write-back therefore keeps the proof available for the
+                    // next promised operation.
+                    for root in rebound {
+                        env.insert(root, NoCopyProof::Available);
+                    }
+                }
+                if indirect_unique_result {
+                    NoCopyProof::Unavailable(
+                        "the first-class call ABI does not carry a unique result's ownership-capacity token"
+                            .to_string(),
+                    )
+                } else if no_copy_fresh(expr) || self.unique_results.contains(name) {
+                    NoCopyProof::Available
+                } else {
+                    NoCopyProof::Unavailable(format!(
+                        "the result of `{name}` has no declared uniqueness proof"
+                    ))
+                }
+            }
+            Expr::Unary { op: UnOp::Move, expr } => {
+                if let Expr::Var(name) = expr.as_ref() {
+                    env.insert(
+                        name.clone(),
+                        NoCopyProof::Unavailable("it was moved out of this binding".to_string()),
+                    );
+                    NoCopyProof::Unavailable(format!(
+                        "`move {name}` transfers the value but not its hidden capacity token to a new binding"
+                    ))
+                } else {
+                    self.expr(expr, stmt, env)
+                }
+            }
+            Expr::Unary { expr, .. }
+            | Expr::Try(expr)
+            | Expr::As { expr, .. }
+            | Expr::Field { base: expr, .. } => self.expr(expr, stmt, env),
+            Expr::Tuple(items) | Expr::Ctor { args: items, .. } | Expr::AnonCtor { args: items, .. } => {
+                for item in items {
+                    let _ = self.expr(item, stmt, env);
+                }
+                NoCopyProof::Unavailable("the aggregate does not carry an ownership-capacity token".to_string())
+            }
+            Expr::Apply { func, args } => {
+                let callable = self.expr(func, stmt, env);
+                for arg in args {
+                    let _ = self.expr(arg, stmt, env);
+                }
+                if let NoCopyProof::Callable { required, unique_result } = callable {
+                    self.record_indirect_misses(args, &required);
+                    if unique_result {
+                        return NoCopyProof::Unavailable(
+                            "the first-class call ABI does not carry a unique result's ownership-capacity token"
+                                .to_string(),
+                        );
+                    }
+                }
+                NoCopyProof::Unavailable("an indirect call has no declared no-copy proof".to_string())
+            }
+            Expr::MethodCall { receiver, args, .. } => {
+                let _ = self.expr(receiver, stmt, env);
+                for arg in args {
+                    let _ = self.expr(arg, stmt, env);
+                }
+                NoCopyProof::Unavailable("unresolved method call".to_string())
+            }
+            Expr::Lambda { params, body, ret } => {
+                let name = format!("{}::<lambda>", self.function);
+                let nested = NoCopyWalker::new(
+                    name,
+                    body,
+                    self.required,
+                    self.unique_results,
+                    self.summaries,
+                    self.loans,
+                )
+                .walk_lambda(params, body);
+                self.misses.extend(nested);
+                let required = params
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, param)| {
+                        (param.convention == Convention::Var && no_copy_qualified(&param.ty))
+                            .then_some(index)
+                    })
+                    .collect::<Vec<_>>();
+                let unique_result = ret.as_ref().is_some_and(|ty| {
+                    matches!(
+                        ty,
+                        Type::Qualified(witchy_syntax::ast::TypeQual::Unique, inner)
+                            if matches!(inner.unqualified(), Type::Named(name, _)
+                                if matches!(name.as_str(), "List" | "Dict"))
+                    )
+                });
+                if required.is_empty() && !unique_result {
+                    NoCopyProof::Unavailable("a closure value is shared".to_string())
+                } else {
+                    NoCopyProof::Callable { required, unique_result }
+                }
+            }
+            Expr::If { cond, then_block, else_block } => {
+                let _ = self.expr(cond, stmt, env);
+                let before = env.clone();
+                let mut then_env = before.clone();
+                self.block(then_block, &mut then_env);
+                let mut branches = vec![then_env];
+                let mut else_env = before.clone();
+                if let Some(else_block) = else_block {
+                    self.block(else_block, &mut else_env);
+                }
+                branches.push(else_env);
+                *env = merge_no_copy_env(&before, &branches);
+                NoCopyProof::Unavailable("control-flow result has no unique token".to_string())
+            }
+            Expr::Match { scrutinee, arms } => {
+                let _ = self.expr(scrutinee, stmt, env);
+                let before = env.clone();
+                let mut branches = Vec::new();
+                for arm in arms {
+                    let mut branch = before.clone();
+                    if let Some(guard) = &arm.guard {
+                        let _ = self.expr(guard, stmt, &mut branch);
+                    }
+                    let _ = self.expr(&arm.body, stmt, &mut branch);
+                    branches.push(branch);
+                }
+                *env = merge_no_copy_env(&before, &branches);
+                NoCopyProof::Unavailable("match result has no unique token".to_string())
+            }
+            Expr::Block(block) => {
+                self.block(block, env);
+                NoCopyProof::Unavailable("block result has no unique token".to_string())
+            }
+            Expr::While { cond, body } => {
+                let _ = self.expr(cond, stmt, env);
+                self.loop_body(body, env);
+                NoCopyProof::Unavailable("loop result is not an owned container".to_string())
+            }
+            Expr::WhileLet { scrutinee, body, .. } => {
+                let _ = self.expr(scrutinee, stmt, env);
+                self.loop_body(body, env);
+                NoCopyProof::Unavailable("loop result is not an owned container".to_string())
+            }
+            Expr::For { iter, body, .. } => {
+                let _ = self.expr(iter, stmt, env);
+                self.loop_body(body, env);
+                NoCopyProof::Unavailable("loop result is not an owned container".to_string())
+            }
+            Expr::Binary { lhs, rhs, .. }
+            | Expr::Index { base: lhs, index: rhs }
+            | Expr::Range { lo: lhs, hi: rhs, .. } => {
+                let _ = self.expr(lhs, stmt, env);
+                let _ = self.expr(rhs, stmt, env);
+                NoCopyProof::Unavailable("the expression has no ownership-capacity token".to_string())
+            }
+            Expr::RecordUpdate { base, fields, .. } => {
+                let _ = self.expr(base, stmt, env);
+                for (_, value) in fields {
+                    let _ = self.expr(value, stmt, env);
+                }
+                NoCopyProof::Unavailable("record updates do not carry collection capacity".to_string())
+            }
+            Expr::Record { fields, spread, .. } => {
+                for (_, value) in fields {
+                    let _ = self.expr(value, stmt, env);
+                }
+                if let Some(spread) = spread {
+                    let _ = self.expr(spread, stmt, env);
+                }
+                NoCopyProof::Unavailable("record values do not carry collection capacity".to_string())
+            }
+            Expr::LabeledCall { .. } => {
+                unreachable!("labeled calls are resolved before performance-mode analysis")
+            }
+            Expr::Int(_)
+            | Expr::Float(_)
+            | Expr::Duration(_)
+            | Expr::Str(_)
+            | Expr::Bool(_)
+            | Expr::TaggedLit { .. } => {
+                NoCopyProof::Unavailable("the value is not an owned collection".to_string())
+            }
+        }
+    }
+
+    fn loop_body(&mut self, body: &Block, env: &mut HashMap<String, NoCopyProof>) {
+        let before = env.clone();
+        let mut first = before.clone();
+        self.block(body, &mut first);
+        let entry = merge_no_copy_env(&before, &[before.clone(), first]);
+        // The second pass checks the back-edge state: a share after a promised
+        // call in iteration one must reject that call in iteration two.
+        let mut second = entry.clone();
+        self.block(body, &mut second);
+        *env = merge_no_copy_env(&before, &[before.clone(), second]);
+    }
+
+    fn record_indirect_misses(&mut self, args: &[Expr], indices: &[usize]) {
+        for &index in indices {
+            let Some(arg) = args.get(index) else { continue };
+            let root = expr_root(arg).unwrap_or("<computed value>");
+            self.misses.push(NoCopyMiss {
+                function: self.function.clone(),
+                callee: "indirect function".to_string(),
+                var: root.to_string(),
+                line: self.line,
+                reason: "the first-class call ABI does not carry an ownership-capacity token"
+                    .to_string(),
+            });
+        }
+    }
+}
+
+fn expr_root(expr: &Expr) -> Option<&str> {
+    match expr {
+        Expr::Var(name) => Some(name),
+        Expr::Field { base, .. } | Expr::Index { base, .. } => expr_root(base),
+        _ => None,
+    }
+}
+
+/// Check every declared no-copy `var` contract against the same ownership and
+/// loan facts consumed by codegen. The caller decides whether the module's mode
+/// promotes these misses to errors.
+pub fn module_no_copy_misses(module: &Module) -> Vec<NoCopyMiss> {
+    // Method syntax is resolved only by typed trait lowering. Analyze that same
+    // ordinary-call AST so `d.insert(...)` and `dict.insert(d, ...)` consult one
+    // signature contract instead of maintaining a method-name census here.
+    let lowered = witchy_types::traits::lower(module.clone());
+    let module = &lowered;
+    let required = no_copy_requirements(module);
+    if required.is_empty() {
+        return Vec::new();
+    }
+    let summaries = Summaries::of_module(module);
+    let unique_results = unique_capacity_results(module);
+    let loans = match witchy_types::loans::facts(module) {
+        Ok(loans) => loans,
+        // Type checking reports the authoritative loan error first.
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for item in &module.items {
+        if let Item::Function(function) = item {
+            out.extend(
+                NoCopyWalker::new(
+                    function.name.clone(),
+                    &function.body,
+                    &required,
+                    &unique_results,
+                    &summaries,
+                    &loans,
+                )
+                .walk(function),
+            );
+        }
+    }
+    out.sort_by(|left, right| {
+        (&left.function, left.line, &left.callee, &left.var, &left.reason).cmp(&(
+            &right.function,
+            right.line,
+            &right.callee,
+            &right.var,
+            &right.reason,
+        ))
+    });
+    out.dedup();
+    out
+}
+
+#[cfg(test)]
+mod no_copy_tests {
+    use super::*;
+    use witchy_syntax::parser;
+
+    fn misses(source: &str) -> Vec<NoCopyMiss> {
+        let module = parser::parse_module(source).expect("parse");
+        witchy_types::typeck::check(&module).expect("type check");
+        module_no_copy_misses(&module)
+    }
+
+    fn misses_unchecked(source: &str) -> Vec<NoCopyMiss> {
+        let module = parser::parse_module(source).expect("parse");
+        module_no_copy_misses(&module)
+    }
+
+    #[test]
+    fn fresh_local_and_unique_parameter_satisfy_contract() {
+        let found = misses(
+            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\
+             \nfn forward(var xs: unique List(Int)) -> Nil:\n    take(xs)\n    return\n\
+             \nfn fresh() -> Nil:\n    var xs = [1]\n    take(xs)\n    return\n",
+        );
+        assert!(found.is_empty(), "available proofs should pass: {found:?}");
+    }
+
+    #[test]
+    fn unique_value_without_a_threaded_capacity_token_is_rejected() {
+        let found = misses(
+            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\
+             \nfn direct(own xs: unique List(Int)) -> Nil:\n    take(xs)\n    return\n\
+             \nfn rebound(own xs: unique List(Int)) -> Nil:\n    var ys = move xs\n    take(ys)\n    return\n",
+        );
+        assert_eq!(found.len(), 2, "both missing-token paths must reject: {found:?}");
+        assert!(found.iter().any(|miss| miss.reason.contains("`own` convention")), "{found:?}");
+        assert!(found.iter().any(|miss| miss.reason.contains("transfers the value")), "{found:?}");
+    }
+
+    #[test]
+    fn ordinary_inplace_mutator_can_reestablish_the_token() {
+        let found = misses_unchecked(
+            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\
+             \nfn repaired() -> Nil:\n    var xs = [1]\n    let snapshot = xs\n    list.push(xs, 2)\n    take(xs)\n    let _ = snapshot\n    return\n",
+        );
+        assert!(found.is_empty(), "the copying push re-owns before the promise: {found:?}");
+    }
+
+    #[test]
+    fn alias_reports_the_statement_that_invalidated_uniqueness() {
+        let found = misses(
+            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\
+             \nfn bad() -> Nil:\n    var xs = [1]\n    let snapshot = xs\n    take(xs)\n    return\n",
+        );
+        assert_eq!(found.len(), 1, "one aliased call: {found:?}");
+        assert_eq!(found[0].var, "xs");
+        assert_eq!(found[0].line, 7);
+        assert!(found[0].reason.contains("bound to a new name"), "{found:?}");
+    }
+
+    #[test]
+    fn loop_back_edge_catches_alias_after_first_call() {
+        let found = misses(
+            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\
+             \nfn bad() -> Nil:\n    var xs = [1]\n    var i = 0\n    while i < 2:\n        take(xs)\n        let snapshot = xs\n        i = i + 1\n    return\n",
+        );
+        assert_eq!(found.len(), 1, "second-iteration miss is deduplicated: {found:?}");
+        assert_eq!(found[0].line, 8);
+        assert!(found[0].reason.contains("bound to a new name"), "{found:?}");
+    }
+
+    #[test]
+    fn completed_loan_explains_why_the_capacity_proof_was_lost() {
+        let found = misses(
+            "mode opt\n\nfn view(xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n\
+             \nfn take(var xs: unique List(Int)) -> Nil:\n    return\n\
+             \nfn bad() -> Nil:\n    var xs = [1]\n    let w = view(xs)\n    let _ = list.length(w)\n    take(xs)\n    return\n",
+        );
+        assert_eq!(found.len(), 1, "the ended loan still invalidated the cap: {found:?}");
+        assert!(found[0].reason.contains("loaned to view `w` by `view`"), "{found:?}");
+    }
+
+    #[test]
+    fn nested_shadow_does_not_poison_the_outer_proof() {
+        let found = misses(
+            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\
+             \nfn scoped() -> Nil:\n    var xs = [1]\n    if true:\n        var xs = [2]\n        let snapshot = xs\n        take(xs)\n        let _ = snapshot\n    take(xs)\n    return\n",
+        );
+        assert_eq!(found.len(), 1, "only the aliased inner binding must reject: {found:?}");
+        assert_eq!(found[0].line, 9);
+    }
+
+    #[test]
+    fn untracked_binding_fails_closed() {
+        let found = misses_unchecked(
+            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\
+             \nfn destructured() -> Nil:\n    let (xs,) = ([1],)\n    take(xs)\n    return\n",
+        );
+        assert_eq!(found.len(), 1, "an untracked binding must not imply uniqueness: {found:?}");
+        assert!(found[0].reason.contains("destructured binding"), "{found:?}");
+    }
+
+    #[test]
+    fn indirect_no_copy_call_rejects_until_the_abi_carries_capacity() {
+        let found = misses(
+            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\
+             \nfn indirect() -> Nil:\n    var xs = [1]\n    let f = take\n    f(xs)\n    return\n",
+        );
+        assert_eq!(found.len(), 1, "the indirect ABI cannot honor the promise: {found:?}");
+        assert!(found[0].reason.contains("first-class call ABI"), "{found:?}");
+    }
+
+    #[test]
+    fn lambda_body_misses_keep_the_enclosing_function_name() {
+        let found = misses(
+            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\
+             \nfn main() -> Int:\n    let work = fn() -> Nil:\n        var xs = [1]\n        let snapshot = xs\n        take(xs)\n        let _ = snapshot\n        return\n    work()\n    0\n",
+        );
+        assert_eq!(found.len(), 1, "the lambda miss must remain visible: {found:?}");
+        assert!(found[0].function.starts_with("main::<lambda>"), "{found:?}");
+    }
+
+    #[test]
+    fn unreachable_reown_after_continue_does_not_repair_the_backedge() {
+        let found = misses_unchecked(
+            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\
+             \nfn bad() -> Nil:\n    var xs = [1]\n    let snapshot = xs\n    var i = 0\n    while i < 2:\n        take(xs)\n        i = i + 1\n        continue\n        xs = [2]\n    let _ = snapshot\n    return\n",
+        );
+        assert_eq!(found.len(), 1, "unreachable code must not repair the next iteration: {found:?}");
+        assert!(found[0].reason.contains("bound to a new name"), "{found:?}");
+    }
+
+    #[test]
+    fn exhaustive_reown_branches_restore_the_proof() {
+        let found = misses_unchecked(
+            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\
+             \nfn repaired(flag: Bool) -> Nil:\n    var xs = [1]\n    let snapshot = xs\n    if flag:\n        list.push(xs, 2)\n    else:\n        list.push(xs, 3)\n    take(xs)\n    let _ = snapshot\n    return\n",
+        );
+        assert!(found.is_empty(), "every runtime branch re-owns the list: {found:?}");
+    }
+
+    #[test]
+    fn declared_unique_result_supplies_the_next_no_copy_proof() {
+        let found = misses(
+            "fn build() -> unique List(Int):\n    [1, 2]\n\
+             \nfn take(var xs: unique List(Int)) -> Nil:\n    return\n\
+             \nfn composed() -> Nil:\n    var xs = build()\n    take(xs)\n    return\n",
+        );
+        assert!(found.is_empty(), "a unique result is a reusable ownership proof: {found:?}");
+    }
+
+    #[test]
+    fn indirect_unique_result_does_not_claim_a_token_the_abi_dropped() {
+        let found = misses(
+            "fn build() -> unique List(Int):\n    [1]\n\
+             \nfn take(var xs: unique List(Int)) -> Nil:\n    return\n\
+             \nfn indirect() -> Nil:\n    let f = build\n    var xs = f()\n    take(xs)\n    return\n",
+        );
+        assert_eq!(found.len(), 1, "the later no-copy call must reject: {found:?}");
+        assert!(found[0].reason.contains("unique result"), "{found:?}");
+    }
+
+    #[test]
+    fn same_statement_alias_cannot_precede_a_promised_call() {
+        let found = misses_unchecked(
+            "fn take(var xs: unique List(Int)) -> Nil:\n    return\n\
+             \nfn bad() -> Nil:\n    var xs = [1]\n    let pair = (xs, take(xs))\n    let _ = pair\n    return\n",
+        );
+        assert_eq!(found.len(), 1, "the tuple alias exists before the call: {found:?}");
+        assert!(found[0].reason.contains("same statement") || found[0].reason.contains("this statement"), "{found:?}");
+    }
+}
 
 pub fn module_cliffs(module: &Module) -> Vec<(String, Cliff)> {
     let summaries = Summaries::of_module(module);

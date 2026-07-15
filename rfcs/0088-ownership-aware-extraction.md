@@ -1,7 +1,7 @@
 ---
 rfc: 0088
 title: "Ownership-aware update and extraction without mandatory container copies"
-status: planned
+status: implemented
 created: 2026-07-14
 predecessors:
   - "0087 (uniform var write-back - defines the source semantics this RFC optimizes)"
@@ -10,9 +10,10 @@ related:
   - "0051 (memory-safety invariants - existing in-place paths are the performance floor)"
   - "0029 (performance-tier contract - normal mode copies; opt mode may reject)"
   - "0083 (opt-mode lifetimes - active loans prevent in-place update or extraction)"
-tracking: move-out selected; copy-correct semantics and normal-mode ownership
-  lowering are implemented, with opt-mode loan diagnostics pending RFC-0083's
-  runtime-rooting phase
+tracking: move-out selected and shipped for List.pop, Dict.insert, and
+  Dict.remove; copy-correct normal mode, single-search structural lowering,
+  ownership counters, RFC-0083 loan invalidation, and opt-mode no-copy
+  diagnostics are implemented
 ---
 
 # RFC-0088: Ownership-aware update and extraction
@@ -345,6 +346,34 @@ Every update-and-extract lowering proves:
 11. Documentation publishes complexity claims only for measured combinations
     of operation, ownership proof, key mode, and performance mode.
 
+### Implementation result
+
+The move-out design is implemented on both compiled and interpreter paths. The
+three public `var` receivers carry `unique` in their signatures. Normal mode
+retains the copy-correct fallback; `mode opt` checks that contract against the
+same statement-identity capacity-token kills and RFC-0083 loan facts consumed by
+compiled lowering. Diagnostics preserve the first ownership-loss provenance
+(alias, move, or loan), run after typed method lowering, and therefore treat
+method and module-call spellings identically. Discarding the auxiliary result
+does not bypass the contract. Exhaustive branch joins can reestablish a proof;
+loop back-edges stop at `continue`, so unreachable code cannot manufacture one.
+Lexical shadowing and lambda bodies retain their correct entry-module identity.
+
+Direct functions returning a `unique` collection carry the capacity token as a
+second compiled result, making the qualifier compose with immediate extraction.
+Every reachable return is checked after method lowering: fresh list/dict storage
+and another direct `unique` collection call establish the token, while
+control-flow tails use explicit returns so each branch emits its own token.
+The first-class call ABI does not carry that token yet, so invoking a function
+value with a no-copy `var unique` parameter, or using an indirect `unique`
+collection result at a promised site, is a hard opt-mode diagnostic rather than
+an implicit copy. Normal-mode function values remain copy-correct.
+
+The deterministic `witchy stats` gates cover semantic searches, key
+comparisons, copied bytes, retains, drops, heap bounds, forced-copy parity, and
+unique-path extraction. Diagnostic goldens cover all three operations, and the
+LSP publishes the same source-line ownership reason as `witchy check`.
+
 ## Alternatives
 
 - **Keep `get` followed by update.** This is the current copy-correct baseline,
@@ -373,7 +402,9 @@ Every update-and-extract lowering proves:
   semantically identical.
 - The one-search contract requires instrumentation in addition to ordinary
   differential and benchmark tests.
-- Useful opt-mode errors depend on facts and diagnostics not yet implemented.
+- Conservative joins may reject a no-copy site until code is restructured to
+  keep one explicit unique owner, even when a more expensive path-sensitive
+  proof could establish the same fact.
 
 ## Prior art
 

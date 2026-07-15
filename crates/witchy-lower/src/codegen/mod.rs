@@ -78,6 +78,7 @@ const CALL_RESULT_I32_TMP: &str = "__witchy_call_result_i32";
 const CALL_RESULT_I64_TMP: &str = "__witchy_call_result_i64";
 const CALL_RESULT_F64_TMP: &str = "__witchy_call_result_f64";
 const CALL_RESULT_EXTERN_TMP: &str = "__witchy_call_result_extern";
+const UNIQUE_RESULT_CAP_TMP: &str = "__witchy_unique_result_cap";
 
 fn assign_scratch(component: &str, level: usize) -> String {
     format!("__witchy_assign_{component}_{level}")
@@ -493,6 +494,15 @@ fn type_has_capacity_token(t: &Type) -> bool {
     }
 }
 
+fn type_is_unique_capacity(t: &Type) -> bool {
+    matches!(
+        t,
+        Type::Qualified(witchy_syntax::ast::TypeQual::Unique, inner)
+            if matches!(inner.unqualified(), Type::Named(name, _)
+                if matches!(name.as_str(), "List" | "Dict"))
+    )
+}
+
 /// RC-region bias for a value stored in a universal i64 collection slot.
 /// `None` is an unresolved generic shape and disables ownership-sensitive
 /// extraction; -1 is trivial/non-RC, 0 is an ordinary object base, and 4 is a
@@ -572,6 +582,7 @@ struct SavedScope {
     fn_ret_kind: HashMap<String, Kind>,
     ret: Kind,
     ret_slot: bool,
+    unique_ret: bool,
     var: bool,
     var_params: Vec<String>,
     var_cap_params: Vec<String>,
@@ -657,6 +668,9 @@ struct Codegen<'types> {
     locals: HashMap<String, Kind>,
     /// Declared return kind per function, for resolving call-result kinds.
     fn_ret: HashMap<String, Kind>,
+    /// Direct functions whose declared `unique` collection result carries a
+    /// trailing capacity token in the compiled multi-result ABI.
+    fn_unique_ret: HashSet<String>,
     /// Function name -> the return kind of the CLOSURE it returns, for a function
     /// declared `-> fn(...) -> RET`. Lets `let f = make(...)` then `f(x)` recover
     /// the closure's result at the right width.
@@ -1049,6 +1063,7 @@ struct Codegen<'types> {
     /// the universal i64 slot (the closure-result ABI) rather than narrowed to a
     /// fixed kind, so a closure returning a big `Int` keeps its 64 bits.
     cur_fn_ret_slot: bool,
+    cur_fn_unique_ret: bool,
     /// Param/local name -> the WASM kind a function-typed value returns, so a
     /// closure call `f(x)` recovers the result at the right width (an `Int`-
     /// returning closure as i64, not the generic i32).
@@ -1161,6 +1176,7 @@ impl<'types> Codegen<'types> {
             next_label: 0,
             locals: HashMap::new(),
             fn_ret: HashMap::new(),
+            fn_unique_ret: HashSet::new(),
             fn_ret_closure_kind: HashMap::new(),
             fn_ret_tuple_slots: HashMap::new(),
             fn_ret_list_elem_tuple_slots: HashMap::new(),
@@ -1199,6 +1215,7 @@ impl<'types> Codegen<'types> {
             fn_ret_list_of_fn_arg: HashMap::new(),
             cur_fn_ret_kind: Kind::I32,
             cur_fn_ret_slot: false,
+            cur_fn_unique_ret: false,
             local_fn_ret_kind: HashMap::new(),
             cur_fn_var: false,
             cur_fn_var_params: Vec::new(),
@@ -2480,6 +2497,7 @@ impl<'types> Codegen<'types> {
             None => self.block_kind(renamed),
         };
         self.cur_fn_ret_kind = ret_kind;
+        self.cur_fn_unique_ret = self.fn_unique_ret.contains(&f.name);
         self.cur_fn_var_params = f
             .params
             .iter()
@@ -2545,6 +2563,7 @@ impl<'types> Codegen<'types> {
         self.finish_unit(&f.name)?;
         self.cur_fn_own_param = None;
         self.cur_fn_var_cap_params.clear();
+        self.cur_fn_unique_ret = false;
         Ok(())
     }
 
@@ -2635,6 +2654,7 @@ impl<'types> Codegen<'types> {
             locals.push(WirLocal { name: fc.clone(), ty: i32t() });
         }
         locals.push(WirLocal { name: "__witchy_owncap".into(), ty: i32t() });
+        locals.push(WirLocal { name: UNIQUE_RESULT_CAP_TMP.into(), ty: i32t() });
         locals.push(WirLocal { name: TUPLE_TMP.into(), ty: i32t() });
         locals.push(WirLocal { name: CALL_RESULT_I32_TMP.into(), ty: i32t() });
         locals.push(WirLocal { name: CALL_RESULT_I64_TMP.into(), ty: i64t() });
@@ -2710,6 +2730,19 @@ impl<'types> Codegen<'types> {
         // caller's variables.
         let mut ret = vec![Self::wir_ty_for_kind(ret_kind)];
         let mut body = body;
+        if self.cur_fn_unique_ret {
+            ret.push(i32t());
+            let cap = f
+                .body
+                .stmts
+                .last()
+                .and_then(|stmt| match stmt {
+                    Stmt::Expr(expr) => Some(self.return_capacity_expr(expr)),
+                    _ => None,
+                })
+                .unwrap_or(witchy_wir::wir::WirExpr::ConstI32(0));
+            body.push(witchy_wir::wir::WirNode::Push(cap));
+        }
         for name in &self.cur_fn_var_params {
             let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
             ret.push(Self::wir_ty_for_kind(k));
@@ -2748,6 +2781,21 @@ impl<'types> Codegen<'types> {
             locals,
             body,
             raw_body: None,
+        }
+    }
+
+    fn return_capacity_expr(&self, expr: &Expr) -> witchy_wir::wir::WirExpr {
+        use witchy_wir::wir::WirExpr as W;
+        match expr {
+            Expr::List(items) => W::ConstI32(items.len() as i32),
+            Expr::Var(name) if self.inplace_push.contains(name) => {
+                W::GetLocal(format!("{name}__cap"))
+            }
+            Expr::Call { name, .. } if self.fn_unique_ret.contains(name) => {
+                W::GetLocal(UNIQUE_RESULT_CAP_TMP.to_string())
+            }
+            Expr::Unary { op: UnOp::Move, expr } => self.return_capacity_expr(expr),
+            _ => W::ConstI32(0),
         }
     }
 
@@ -3092,9 +3140,18 @@ impl<'types> Codegen<'types> {
             // value into the existing self-assignment machinery so the receiver
             // is written back instead of dropping the updated collection.
             let rewritten = match stmt {
-                Stmt::Expr(value) => analysis::direct_inplace_root(value).map(|root| {
-                    Stmt::Assign { name: root.to_string(), value: value.clone() }
-                }),
+                Stmt::Expr(value) => {
+                    let uniform_var_call = matches!(value, Expr::Call { name, .. }
+                        if self.fn_conventions.get(name).is_some_and(|conventions|
+                            conventions.contains(&Convention::Var)));
+                    (!uniform_var_call)
+                        .then(|| analysis::direct_inplace_root(value))
+                        .flatten()
+                        .map(|root| Stmt::Assign {
+                            name: root.to_string(),
+                            value: value.clone(),
+                        })
+                }
                 _ => None,
             };
             let analyzed_stmt = stmt;
@@ -3257,9 +3314,15 @@ impl<'types> Codegen<'types> {
                                 Expr::List(items) => items.len() as i32,
                                 _ => 0,
                             };
+                            let initial_cap = match value {
+                                Expr::Call { name, .. } if self.fn_unique_ret.contains(name) => {
+                                    W::GetLocal(UNIQUE_RESULT_CAP_TMP.to_string())
+                                }
+                                _ => W::ConstI32(initial_cap),
+                            };
                             seq.push(N::SetLocal {
                                 local: format!("{name}__cap"),
-                                value: W::ConstI32(initial_cap),
+                                value: initial_cap,
                             });
                         }
                         // (RFC-0034 L3) Record a devirtualizable closure local: `name`
@@ -3328,7 +3391,10 @@ impl<'types> Codegen<'types> {
                         seq.extend(cleanup);
                         W::GetLocal(return_tmp)
                     };
-                    if self.cur_fn_var_params.is_empty() && self.cur_fn_own_param.is_none() {
+                    if self.cur_fn_var_params.is_empty()
+                        && self.cur_fn_own_param.is_none()
+                        && !self.cur_fn_unique_ret
+                    {
                         seq.push(N::Return(Some(value)));
                     } else {
                         // An `var`/own-ABI function's early `return` must yield the
@@ -3337,6 +3403,13 @@ impl<'types> Codegen<'types> {
                         // `assemble_wir_func`'s tail ordering. Push them and use a
                         // bare `return` (WIR `N::Return(Some)` carries one value).
                         seq.push(N::Push(value));
+                        if self.cur_fn_unique_ret {
+                            let cap = opt
+                                .as_ref()
+                                .map(|expr| self.return_capacity_expr(expr))
+                                .unwrap_or_else(|| W::ConstI32(0));
+                            seq.push(N::Push(cap));
+                        }
                         for name in &self.cur_fn_var_params {
                             let var = W::GetLocal(name.clone());
                             let var = if self.cur_fn_ret_slot {
@@ -4140,16 +4213,26 @@ impl<'types> Codegen<'types> {
                         // A plain rebind replaces the allocation represented by
                         // this shadow token. Carrying the old capacity into the
                         // new value would make the next in-place write trust
-                        // storage it does not own. Fresh list literals can seed
-                        // their exact capacity; every other shape re-owns from 0.
+                        // storage it does not own. Fresh list literals seed their
+                        // exact capacity, and a direct `unique` collection result
+                        // supplies the token returned by its compiled ABI.
                         if self.collect_wir && self.inplace_push.contains(name) {
                             let cap = match value {
-                                Expr::List(items) => items.len() as i32,
-                                _ => 0,
+                                Expr::List(items) => W::ConstI32(items.len() as i32),
+                                Expr::Call { name, .. } if self.fn_unique_ret.contains(name) => {
+                                    W::GetLocal(UNIQUE_RESULT_CAP_TMP.to_string())
+                                }
+                                Expr::Unary { op: UnOp::Move, expr }
+                                    if matches!(expr.as_ref(), Expr::Call { name, .. }
+                                        if self.fn_unique_ret.contains(name)) =>
+                                {
+                                    W::GetLocal(UNIQUE_RESULT_CAP_TMP.to_string())
+                                }
+                                _ => W::ConstI32(0),
                             };
                             seq.push(N::SetLocal {
                                 local: format!("{name}__cap"),
-                                value: W::ConstI32(cap),
+                                value: cap,
                             });
                         }
                         tail_is_value = false;
@@ -5049,11 +5132,30 @@ impl<'types> Codegen<'types> {
             // TUPLE_TMP. Without this, a plain call to any own-ABI function bailed.
             use witchy_wir::wir::{WirExpr as W, WirNode as N};
             args_w.push(W::ConstI32(0));
+            let mut dests = vec![TUPLE_TMP.to_string()];
+            if self.fn_unique_ret.contains(name) {
+                dests.push(UNIQUE_RESULT_CAP_TMP.to_string());
+            }
+            dests.push("__witchy_owncap".to_string());
             return Some(W::Seq(vec![
                 N::CallStoreMulti {
                     func: name.to_string(),
                     args: args_w,
-                    dests: vec![TUPLE_TMP.to_string(), "__witchy_owncap".to_string()],
+                    dests,
+                },
+                N::Push(W::GetLocal(TUPLE_TMP.to_string())),
+            ]));
+        }
+        if self.fn_unique_ret.contains(name) {
+            use witchy_wir::wir::{WirExpr as W, WirNode as N};
+            return Some(W::Seq(vec![
+                N::CallStoreMulti {
+                    func: name.to_string(),
+                    args: args_w,
+                    dests: vec![
+                        TUPLE_TMP.to_string(),
+                        UNIQUE_RESULT_CAP_TMP.to_string(),
+                    ],
                 },
                 N::Push(W::GetLocal(TUPLE_TMP.to_string())),
             ]));
@@ -5342,6 +5444,9 @@ impl<'types> Codegen<'types> {
             return None;
         }
         let mut dests = vec![result_tmp.clone()];
+        if self.fn_unique_ret.contains(name) {
+            dests.push(UNIQUE_RESULT_CAP_TMP.to_string());
+        }
         for (index, (_, kind)) in places.iter().enumerate() {
             dests.push(var_scratch("result", index, *kind));
         }
@@ -6746,7 +6851,10 @@ impl<'types> Codegen<'types> {
                 // happens on the `?` error path. Then a bare `Return(None)`.
                 let active = self.active_loan_events.clone();
                 let mut els: Vec<N> =
-                    if self.cur_fn_var_params.is_empty() && self.cur_fn_own_param.is_none() {
+                    if self.cur_fn_var_params.is_empty()
+                        && self.cur_fn_own_param.is_none()
+                        && !self.cur_fn_unique_ret
+                    {
                         // `?` early-returns the whole Err/None aggregate (an i32
                         // pointer). Inside a closure the function returns an i64
                         // slot (the call-indirect ABI), so the value must be
@@ -6772,6 +6880,9 @@ impl<'types> Codegen<'types> {
                         };
                         let mut nodes = Self::close_loan_nodes(&active);
                         nodes.push(N::Push(result));
+                        if self.cur_fn_unique_ret {
+                            nodes.push(N::Push(W::ConstI32(0)));
+                        }
                         for name in &self.cur_fn_var_params {
                             let var = W::GetLocal(name.clone());
                             let var = if self.cur_fn_ret_slot {
@@ -7173,6 +7284,7 @@ impl<'types> Codegen<'types> {
         self.begin_unit(body);
         self.cur_fn_ret_kind = Kind::I64;
         self.cur_fn_ret_slot = true;
+        self.cur_fn_unique_ret = false;
         let saved_apply = self.apply_level;
         let saved_assign = self.assign_level;
         let saved_wm = self.wm_level;
@@ -7243,6 +7355,7 @@ impl<'types> Codegen<'types> {
                     locals.push(WirLocal { name: fc.clone(), ty: i32t() });
                 }
                 locals.push(WirLocal { name: "__witchy_owncap".into(), ty: i32t() });
+                locals.push(WirLocal { name: UNIQUE_RESULT_CAP_TMP.into(), ty: i32t() });
                 locals.push(WirLocal { name: TUPLE_TMP.into(), ty: i32t() });
                 locals.push(WirLocal { name: CALL_RESULT_I32_TMP.into(), ty: i32t() });
                 locals.push(WirLocal { name: CALL_RESULT_I64_TMP.into(), ty: WirTy::Int });
@@ -7382,6 +7495,7 @@ impl<'types> Codegen<'types> {
             fn_ret_kind: std::mem::take(&mut self.local_fn_ret_kind),
             ret: self.cur_fn_ret_kind,
             ret_slot: self.cur_fn_ret_slot,
+            unique_ret: self.cur_fn_unique_ret,
             var: self.cur_fn_var,
             var_params: std::mem::take(&mut self.cur_fn_var_params),
             var_cap_params: std::mem::take(&mut self.cur_fn_var_cap_params),
@@ -7418,6 +7532,7 @@ impl<'types> Codegen<'types> {
         self.local_fn_ret_kind = s.fn_ret_kind;
         self.cur_fn_ret_kind = s.ret;
         self.cur_fn_ret_slot = s.ret_slot;
+        self.cur_fn_unique_ret = s.unique_ret;
         self.cur_fn_var = s.var;
         self.cur_fn_var_params = s.var_params;
         self.cur_fn_var_cap_params = s.var_cap_params;
