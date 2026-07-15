@@ -36,8 +36,8 @@ fn main(console: Console):
     );
 
     let wir = codegen::assemble_wir_module(&linked)
-        .expect("assemble")
-        .expect("program supports compiled execution");
+
+        .expect_lowered("program supports compiled execution");
     let names: Vec<&str> = wir
         .funcs
         .iter()
@@ -53,8 +53,8 @@ fn main(console: Console):
     );
 
     let wasm = codegen::compile_module_binary(&linked)
-        .expect("compile")
-        .expect("program supports compiled execution");
+
+        .expect_lowered("program supports compiled execution");
     let mut runtime = Runtime::batch().expect("runtime");
     let mut actor = runtime
         .spawn(

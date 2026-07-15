@@ -7,7 +7,9 @@
 //! `module.imports`), then defined functions (index = `imports.len()` + position
 //! in `module.funcs`). Locals are params-then-body in declaration order.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::fmt;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use wasm_encoder::{
     AbstractHeapType, ArrayType, BlockType, CodeSection, CompositeInnerType, CompositeType,
@@ -21,6 +23,375 @@ use crate::wir::{
     BinOp, ClosureSignature, GlobalInit, Kind, UnOp, WirExpr, WirModule, WirNode, WirSeq,
     WirArrayDef, WirStructDef, slot_closure_signature,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncodeError {
+    pub message: String,
+}
+
+impl fmt::Display for EncodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "invalid WIR: {}", self.message)
+    }
+}
+
+impl std::error::Error for EncodeError {}
+
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else if let Some(message) = payload.downcast_ref::<&'static str>() {
+        (*message).to_string()
+    } else {
+        "encoder invariant failed without a string diagnostic".to_string()
+    }
+}
+
+struct Preflight<'a> {
+    funcs: HashSet<&'a str>,
+    imports: HashSet<&'a str>,
+    globals: HashSet<&'a str>,
+}
+
+impl Preflight<'_> {
+    fn reject(message: impl Into<String>) -> Result<(), EncodeError> {
+        Err(EncodeError { message: message.into() })
+    }
+
+    fn expr(
+        &self,
+        expr: &WirExpr,
+        locals: &HashSet<&str>,
+        labels: &mut Vec<String>,
+    ) -> Result<(), EncodeError> {
+        match expr {
+            WirExpr::ConstI64(_)
+            | WirExpr::ConstF64(_)
+            | WirExpr::ConstI32(_)
+            | WirExpr::StrPtr(_)
+            | WirExpr::MemorySize => {}
+            WirExpr::GetLocal(name) => {
+                if !locals.contains(name.as_str()) {
+                    return Self::reject(format!("unknown local ${name}"));
+                }
+            }
+            WirExpr::GetGlobal(name) => {
+                if !self.globals.contains(name.as_str()) {
+                    return Self::reject(format!("unknown global ${name}"));
+                }
+            }
+            WirExpr::ToSlot(value, kind) | WirExpr::FromSlot(value, kind) => {
+                if kind.is_ref() {
+                    return Self::reject(format!(
+                        "reference kind {kind:?} cannot cross the i64 slot boundary"
+                    ));
+                }
+                self.expr(value, locals, labels)?;
+            }
+            WirExpr::Binary { op, kind, lhs, rhs } => {
+                if !binop_supported(*op, *kind) {
+                    return Self::reject(format!(
+                        "no wasm instruction for {op:?} on {kind:?}"
+                    ));
+                }
+                self.expr(lhs, locals, labels)?;
+                self.expr(rhs, locals, labels)?;
+            }
+            WirExpr::Unary { op, kind, arg } => {
+                let valid = match op {
+                    UnOp::Neg => matches!(kind, Kind::I32 | Kind::I64 | Kind::F64),
+                    UnOp::BitNot => matches!(kind, Kind::I32 | Kind::I64),
+                    UnOp::Not => *kind == Kind::I32,
+                    UnOp::ToFloat | UnOp::Sqrt => *kind == Kind::F64,
+                    UnOp::ToInt => *kind == Kind::I64,
+                };
+                if !valid {
+                    return Self::reject(format!(
+                        "no wasm instruction for unary {op:?} on {kind:?}"
+                    ));
+                }
+                self.expr(arg, locals, labels)?;
+            }
+            WirExpr::Convert { arg, .. }
+            | WirExpr::MemoryGrow(arg)
+            | WirExpr::ArrayLen(arg)
+            | WirExpr::RefIsNull(arg) => self.expr(arg, locals, labels)?,
+            WirExpr::Load { ptr, kind, .. } => {
+                if kind.is_ref() {
+                    return Self::reject(format!(
+                        "reference kind {kind:?} cannot be loaded from linear memory"
+                    ));
+                }
+                self.expr(ptr, locals, labels)?;
+            }
+            WirExpr::Load8U { ptr, .. } => self.expr(ptr, locals, labels)?,
+            WirExpr::Call { func, args } => {
+                if !self.funcs.contains(func.as_str()) {
+                    return Self::reject(format!("call to unknown func ${func}"));
+                }
+                for arg in args {
+                    self.expr(arg, locals, labels)?;
+                }
+            }
+            WirExpr::CallHost { import, args } => {
+                if !self.imports.contains(import.as_str()) {
+                    return Self::reject(format!("call to unknown host import ${import}"));
+                }
+                for arg in args {
+                    self.expr(arg, locals, labels)?;
+                }
+            }
+            WirExpr::CallIndirect { signature, args, index } => {
+                if signature.params.len() != args.len() {
+                    return Self::reject(format!(
+                        "indirect call has {} arguments but its signature has {} parameters",
+                        args.len(),
+                        signature.params.len()
+                    ));
+                }
+                for arg in args {
+                    self.expr(arg, locals, labels)?;
+                }
+                self.expr(index, locals, labels)?;
+            }
+            WirExpr::Control(node) => self.node(node, locals, labels)?,
+            WirExpr::Seq(seq) => self.seq(seq, locals, labels)?,
+            WirExpr::StructNew { args, .. } => {
+                for arg in args {
+                    self.expr(arg, locals, labels)?;
+                }
+            }
+            WirExpr::StructGet { base, .. } | WirExpr::RefCast { value: base, .. } => {
+                self.expr(base, locals, labels)?;
+            }
+            WirExpr::ArrayNew { value, len, .. } => {
+                self.expr(value, locals, labels)?;
+                self.expr(len, locals, labels)?;
+            }
+            WirExpr::ArrayNewFixed { items, .. } => {
+                for item in items {
+                    self.expr(item, locals, labels)?;
+                }
+            }
+            WirExpr::ArrayGet { array, index, .. } => {
+                self.expr(array, locals, labels)?;
+                self.expr(index, locals, labels)?;
+            }
+            WirExpr::RefNull(kind) => {
+                if !kind.is_ref() {
+                    return Self::reject(format!("RefNull requires a reference kind, got {kind:?}"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn seq(
+        &self,
+        seq: &WirSeq,
+        locals: &HashSet<&str>,
+        labels: &mut Vec<String>,
+    ) -> Result<(), EncodeError> {
+        for node in seq {
+            self.node(node, locals, labels)?;
+        }
+        Ok(())
+    }
+
+    fn node(
+        &self,
+        node: &WirNode,
+        locals: &HashSet<&str>,
+        labels: &mut Vec<String>,
+    ) -> Result<(), EncodeError> {
+        match node {
+            WirNode::SetLocal { local, value } => {
+                if !locals.contains(local.as_str()) {
+                    return Self::reject(format!("unknown local ${local}"));
+                }
+                self.expr(value, locals, labels)?;
+            }
+            WirNode::SetGlobal { global, value } => {
+                if !self.globals.contains(global.as_str()) {
+                    return Self::reject(format!("unknown global ${global}"));
+                }
+                self.expr(value, locals, labels)?;
+            }
+            WirNode::Store { ptr, value, kind, .. } => {
+                if kind.is_ref() {
+                    return Self::reject(format!(
+                        "reference kind {kind:?} cannot be stored to linear memory"
+                    ));
+                }
+                self.expr(ptr, locals, labels)?;
+                self.expr(value, locals, labels)?;
+            }
+            WirNode::CallStoreMulti { func, args, dests } => {
+                if !self.funcs.contains(func.as_str()) {
+                    return Self::reject(format!("call to unknown func ${func}"));
+                }
+                for arg in args {
+                    self.expr(arg, locals, labels)?;
+                }
+                for dest in dests {
+                    if !locals.contains(dest.as_str()) {
+                        return Self::reject(format!("unknown local ${dest}"));
+                    }
+                }
+            }
+            WirNode::CallIndirectStoreMulti { signature, args, index, dests } => {
+                if signature.params.len() != args.len() {
+                    return Self::reject(format!(
+                        "indirect call has {} arguments but its signature has {} parameters",
+                        args.len(),
+                        signature.params.len()
+                    ));
+                }
+                if signature.results.len() != dests.len() {
+                    return Self::reject(format!(
+                        "indirect call has {} destinations but its signature has {} results",
+                        dests.len(),
+                        signature.results.len()
+                    ));
+                }
+                for arg in args {
+                    self.expr(arg, locals, labels)?;
+                }
+                self.expr(index, locals, labels)?;
+                for dest in dests {
+                    if !locals.contains(dest.as_str()) {
+                        return Self::reject(format!("unknown local ${dest}"));
+                    }
+                }
+            }
+            WirNode::MemoryCopy { dest, src, len } => {
+                self.expr(dest, locals, labels)?;
+                self.expr(src, locals, labels)?;
+                self.expr(len, locals, labels)?;
+            }
+            WirNode::MemoryFill { dest, value, len } => {
+                self.expr(dest, locals, labels)?;
+                self.expr(value, locals, labels)?;
+                self.expr(len, locals, labels)?;
+            }
+            WirNode::Store8 { ptr, value, .. } => {
+                self.expr(ptr, locals, labels)?;
+                self.expr(value, locals, labels)?;
+            }
+            WirNode::If { cond, then_, els, .. } => {
+                self.expr(cond, locals, labels)?;
+                self.seq(then_, locals, labels)?;
+                self.seq(els, locals, labels)?;
+            }
+            WirNode::Block { label, body, .. } | WirNode::Loop { label, body } => {
+                labels.push(label.clone());
+                self.seq(body, locals, labels)?;
+                labels.pop();
+            }
+            WirNode::Br { target, cond } => {
+                if !labels.contains(target) {
+                    return Self::reject(format!(
+                        "br target ${target} has no enclosing Block/Loop frame"
+                    ));
+                }
+                if let Some(cond) = cond {
+                    self.expr(cond, locals, labels)?;
+                }
+            }
+            WirNode::Drop(expr)
+            | WirNode::Do(expr)
+            | WirNode::Push(expr)
+            | WirNode::Return(Some(expr)) => self.expr(expr, locals, labels)?,
+            WirNode::Return(None) | WirNode::Unreachable => {}
+            WirNode::StructSet { base, value, .. } => {
+                self.expr(base, locals, labels)?;
+                self.expr(value, locals, labels)?;
+            }
+            WirNode::ArraySet { array, index, value, .. } => {
+                self.expr(array, locals, labels)?;
+                self.expr(index, locals, labels)?;
+                self.expr(value, locals, labels)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn binop_supported(op: BinOp, kind: Kind) -> bool {
+    match op {
+        BinOp::Add
+        | BinOp::Sub
+        | BinOp::Mul
+        | BinOp::Div
+        | BinOp::Eq
+        | BinOp::Ne
+        | BinOp::Lt
+        | BinOp::Le
+        | BinOp::Gt
+        | BinOp::Ge => matches!(kind, Kind::I32 | Kind::I64 | Kind::F64),
+        BinOp::Rem | BinOp::And | BinOp::Or | BinOp::Xor | BinOp::Shl | BinOp::Shr => {
+            matches!(kind, Kind::I32 | Kind::I64)
+        }
+        BinOp::DivU
+        | BinOp::RemU
+        | BinOp::ShrU
+        | BinOp::LtU
+        | BinOp::LeU
+        | BinOp::GtU
+        | BinOp::GeU => matches!(kind, Kind::I32 | Kind::I64),
+    }
+}
+
+fn preflight(module: &WirModule) -> Result<(), EncodeError> {
+    let mut funcs = HashSet::new();
+    for func in &module.funcs {
+        if !funcs.insert(func.name.as_str()) {
+            return Preflight::reject(format!("duplicate function name ${}", func.name));
+        }
+    }
+    let mut imports = HashSet::new();
+    for import in &module.imports {
+        if !imports.insert(import.name.as_str()) {
+            return Preflight::reject(format!("duplicate host import name ${}", import.name));
+        }
+    }
+    let mut globals = HashSet::new();
+    for global in &module.globals {
+        if !globals.insert(global.name.as_str()) {
+            return Preflight::reject(format!("duplicate global name ${}", global.name));
+        }
+    }
+    let context = Preflight { funcs, imports, globals };
+
+    for (_, func) in &module.exports {
+        if !context.funcs.contains(func.as_str()) {
+            return Preflight::reject(format!("export references unknown func ${func}"));
+        }
+    }
+    if let Some(table) = &module.table {
+        for func in &table.funcs {
+            if !context.funcs.contains(func.as_str()) {
+                return Preflight::reject(format!("elem references unknown func ${func}"));
+            }
+        }
+    }
+    for func in &module.funcs {
+        if func.raw_body.is_some() {
+            continue;
+        }
+        let mut locals = HashSet::new();
+        for local in func.params.iter().chain(&func.locals) {
+            if !locals.insert(local.name.as_str()) {
+                return Preflight::reject(format!(
+                    "duplicate local name ${} in function ${}",
+                    local.name, func.name
+                ));
+            }
+        }
+        context.seq(&func.body, &locals, &mut Vec::new())?;
+    }
+    Ok(())
+}
 
 /// Map a WIR `Kind` to a wasm-encoder `ValType`. `gc_base` is the type-section
 /// index where concrete GC definitions begin, so `Kind::GcRef(i)` resolves to
@@ -63,6 +434,24 @@ fn load_align(kind: Kind) -> u32 {
 /// Pass `&[]` when the module lowers no cap-carrying aggregates.
 pub fn encode(module: &WirModule, structs: &[WirStructDef]) -> Vec<u8> {
     encode_with_gc(module, structs, &[])
+}
+
+/// Fallible production boundary around the invariant-heavy encoder.
+///
+/// WIR builders use named locals, functions, globals, and labels. A compiler
+/// defect can leave one of those references unresolved or attempt an illegal
+/// reference/slot crossing. The historical `encode` API treats those as
+/// internal invariant panics. The structural preflight mirrors every such
+/// panic precondition so it also works on aborting wasm targets; `catch_unwind`
+/// is a final native containment net for an unforeseen encoder defect.
+pub fn try_encode(
+    module: &WirModule,
+    structs: &[WirStructDef],
+) -> Result<Vec<u8>, EncodeError> {
+    preflight(module)?;
+    catch_unwind(AssertUnwindSafe(|| encode(module, structs))).map_err(|payload| EncodeError {
+        message: panic_message(payload),
+    })
 }
 
 /// Encode a module with both GC struct and GC array declarations. Concrete

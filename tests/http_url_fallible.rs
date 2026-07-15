@@ -30,8 +30,8 @@ fn get_url_returns_connect_error_on_both_backends() {
     );
 
     let wasm = codegen::compile_module_binary(&linked)
-        .expect("compile")
-        .expect("program supports compiled execution");
+
+        .expect_lowered("program supports compiled execution");
     let mut runtime = Runtime::batch().expect("runtime");
     let mut actor = runtime
         .spawn(

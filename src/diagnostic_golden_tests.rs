@@ -100,8 +100,8 @@ fn mode_diag(src: &str) -> String {
 }
 
 /// A lowering (codegen) rejection, driving the whole front end then
-/// `compile_module_binary`; `Ok(None)` is the "does not lower" reject channel,
-/// `Err` a hard `codegen error:` diagnostic.
+/// `compile_module_binary`; unsupported lowering and hard rejection remain
+/// distinct channels even when this golden renders both as diagnostics.
 fn lower_diag(src: &str) -> String {
     let module = match parser::parse_module(src) {
         Ok(m) => m,
@@ -115,9 +115,9 @@ fn lower_diag(src: &str) -> String {
         return format!("<type error>: {e}");
     }
     match codegen::compile_module_binary(&linked) {
-        Ok(Some(_)) => "<unexpectedly compiled>".to_string(),
-        Ok(None) => "<reject: does not lower to the compiled backend>".to_string(),
-        Err(e) => e.to_string(),
+        codegen::LoweringOutcome::Lowered(_) => "<unexpectedly compiled>".to_string(),
+        codegen::LoweringOutcome::Unsupported(reason) => reason.to_string(),
+        codegen::LoweringOutcome::Rejected(error) => error.to_string(),
     }
 }
 
@@ -140,8 +140,7 @@ fn wasm_trap(src: &str) -> String {
     let linked = pipeline::link(vec![("main".into(), module)], "main").expect("link");
     typeck::check(&linked).expect("typecheck");
     let bytes = codegen::compile_module_binary(&linked)
-        .expect("compile")
-        .expect("the binary path lowers this program");
+        .expect_lowered("the binary path lowers this program");
     match crate::run_wasm_bytes(&bytes) {
         Ok(out) => format!("<ran without trapping -> {out:?}>"),
         Err(e) => e,

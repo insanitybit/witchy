@@ -47,8 +47,8 @@ fn assert_both_backends(source: &str, expected: &[&str], root: Option<&std::path
     );
 
     let wasm = codegen::compile_module_binary(&linked)
-        .expect("compile")
-        .expect("indirect tail program lowers to WIR");
+
+        .expect_lowered("indirect tail program lowers to WIR");
     let mut runtime = Runtime::batch().expect("runtime");
     let caps = Capabilities {
         print: true,

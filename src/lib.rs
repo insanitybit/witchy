@@ -206,15 +206,15 @@ pub fn compile_source(src: &str) -> Result<Vec<u8>, String> {
     enforce_performance_modes(&linked, "main")?;
     // Compile through the WIR → wasm-binary pipeline (`wasmparser`/`wasm-encoder`,
     // pure Rust, so this runs on EVERY target including the browser playground).
-    // A program that doesn't fully lower returns `Ok(None)` → the hard "cannot
-    // compile" error below; there is no WAT fallback.
-    let bytes = codegen::compile_module_binary(&linked)
-        .map_err(|e| format!("cannot compile to WASM: {e}"))?
-        .ok_or_else(|| {
-            "cannot compile to WASM: the program reached a construct the compiled backend \
-             does not support (an interpreter-only feature?)"
-                .to_string()
-        })?;
+    let bytes = match codegen::compile_module_binary(&linked) {
+        codegen::LoweringOutcome::Lowered(bytes) => bytes,
+        codegen::LoweringOutcome::Unsupported(reason) => {
+            return Err(format!("cannot compile to WASM: {reason}"));
+        }
+        codegen::LoweringOutcome::Rejected(error) => {
+            return Err(format!("cannot compile to WASM: {error}"));
+        }
+    };
     Ok(artifact::embed_launch_contract(bytes, &linked))
 }
 

@@ -38,8 +38,8 @@ fn main(console: Console, root: Dir):
     );
 
     let wasm = codegen::compile_module_binary(&linked)
-        .expect("compile")
-        .expect("capability record let pattern lowers to WIR");
+
+        .expect_lowered("capability record let pattern lowers to WIR");
     let mut runtime = Runtime::batch().expect("runtime");
     let mut actor = runtime
         .spawn(

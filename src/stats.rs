@@ -60,9 +60,11 @@ pub struct Stats {
 pub fn compute(src: &str) -> Result<Stats, String> {
     let linked = crate::resolve_std_only(src)?;
     typeck::check(&linked).map_err(|e| format!("{e:?}"))?;
-    let bytes = codegen::compile_module_binary(&linked)
-        .map_err(|e| e.message)?
-        .ok_or_else(|| "program does not fully lower to the compiled backend".to_string())?;
+    let bytes = match codegen::compile_module_binary(&linked) {
+        codegen::LoweringOutcome::Lowered(bytes) => bytes,
+        codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
+        codegen::LoweringOutcome::Rejected(error) => return Err(error.message),
+    };
     let caps = Capabilities { print: true, print_int: true, quiet: true, ..Default::default() };
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
     let mut vm = rt

@@ -83,8 +83,8 @@ fn main(console: Console, net: Net):
     );
 
     let wasm = codegen::compile_module_binary(&linked)
-        .expect("compile")
-        .expect("program supports compiled execution");
+
+        .expect_lowered("program supports compiled execution");
     let mut runtime = Runtime::batch().expect("runtime");
     let mut actor = runtime
         .spawn(

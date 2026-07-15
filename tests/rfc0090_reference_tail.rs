@@ -60,8 +60,8 @@ fn main(console: Console, root: Dir[Read]):
     );
 
     let wasm = codegen::compile_module_binary(&linked)
-        .expect("compile")
-        .expect("reference-bearing tail calls lower to WIR");
+
+        .expect_lowered("reference-bearing tail calls lower to WIR");
     let mut runtime = Runtime::batch().expect("runtime");
     let mut actor = runtime
         .spawn(

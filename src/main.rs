@@ -1265,8 +1265,7 @@ fn run_benchmarks() -> wasmtime::Result<()> {
     fn compiled_ms(src: &str, runs: u32) -> f64 {
         let module = parser::parse_module(src).expect("parse");
         let bytes = codegen::compile_module_binary(&module)
-            .expect("compile")
-            .expect("the binary path lowers this benchmark");
+            .expect_lowered("the binary path lowers this benchmark");
         let mut rt = Runtime::new().expect("runtime");
         let start = Instant::now();
         for _ in 0..runs {
@@ -1935,9 +1934,11 @@ fn run_tests_in_module(
             .map(|_| ())
         } else {
             match codegen::compile_module_binary(&m) {
-                Ok(Some(bytes)) => run_wasm_test_bytes(&bytes).map(|_| ()),
-                Ok(None) => Err("does not lower to the compiled backend (WASM)".to_string()),
-                Err(e) => Err(e.to_string()),
+                codegen::LoweringOutcome::Lowered(bytes) => {
+                    run_wasm_test_bytes(&bytes).map(|_| ())
+                }
+                codegen::LoweringOutcome::Unsupported(reason) => Err(reason.to_string()),
+                codegen::LoweringOutcome::Rejected(error) => Err(error.to_string()),
             }
         };
         match outcome {
@@ -2445,12 +2446,13 @@ fn parity_check(path: &str) -> ParityOutcome {
     }
     // Compile first (borrows `linked`), then run the interpreter (consumes it).
     let bytes = match codegen::compile_module_binary(&linked) {
-        Ok(Some(b)) => b,
-        Ok(None) => unexpected!(
-            "cannot compile to WASM: the program reached a construct the compiled backend \
-             does not support (an interpreter-only feature?)"
-        ),
-        Err(e) => unexpected!("cannot compile to WASM (an interpreter-only feature?): {e}"),
+        codegen::LoweringOutcome::Lowered(bytes) => bytes,
+        codegen::LoweringOutcome::Unsupported(reason) => {
+            unexpected!("cannot compile to WASM: {reason}")
+        }
+        codegen::LoweringOutcome::Rejected(error) => {
+            unexpected!("cannot compile to WASM: {error}")
+        }
     };
     // Run BOTH backends regardless of either failing: a program that errors on
     // one backend but produces a value on the other is itself a divergence (a
@@ -2581,15 +2583,15 @@ fn emit_wat_file(path: &str) -> Result<String, String> {
     // The WIR-as-WAT: the actual module the backend encodes and runs
     // (optimization passes included), rendered back to text for inspection —
     // a display of the real WIR, not a separately generated WAT string.
-    let mut wir = codegen::assemble_wir_module(&linked)
-        .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?
-        .ok_or_else(|| {
-            "cannot compile to WASM: the program reached a construct the compiled backend \
-             does not support (an interpreter-only feature?)"
-                .to_string()
-        })?;
-    wir_opt::lower_direct_tail_calls(&mut wir);
-    wir_opt::optimize(&mut wir);
+    let wir = match codegen::assemble_optimized_wir_module(&linked) {
+        codegen::LoweringOutcome::Lowered(wir) => wir,
+        codegen::LoweringOutcome::Unsupported(reason) => {
+            return Err(format!("cannot compile to WASM: {reason}"));
+        }
+        codegen::LoweringOutcome::Rejected(error) => {
+            return Err(format!("cannot compile to WASM: {error}"));
+        }
+    };
     Ok(wir::to_wat(&wir))
 }
 
@@ -2760,13 +2762,15 @@ fn run_linked_compiled(
 /// pipeline (`compile_module_binary`). A program that doesn't fully lower
 /// surfaces as a hard "cannot compile" error — there is no WAT fallback.
 fn compile_linked_to_wasm(linked: &ast::Module) -> Result<Vec<u8>, String> {
-    let bytes = codegen::compile_module_binary(linked)
-        .map_err(|e| format!("cannot compile to WASM (an interpreter-only feature?): {e}"))?
-        .ok_or_else(|| {
-            "cannot compile to WASM: the program reached a construct the compiled backend \
-             does not support (an interpreter-only feature?)"
-                .to_string()
-        })?;
+    let bytes = match codegen::compile_module_binary(linked) {
+        codegen::LoweringOutcome::Lowered(bytes) => bytes,
+        codegen::LoweringOutcome::Unsupported(reason) => {
+            return Err(format!("cannot compile to WASM: {reason}"));
+        }
+        codegen::LoweringOutcome::Rejected(error) => {
+            return Err(format!("cannot compile to WASM: {error}"));
+        }
+    };
     Ok(artifact::embed_launch_contract(bytes, linked))
 }
 
@@ -2848,9 +2852,11 @@ fn embedded_wasm_cached(
     let module = link()?;
     typeck::check(&module).map_err(|e| e.to_string())?;
     let wasm = match codegen::compile_module_binary(&module) {
-        Ok(Some(bytes)) => bytes,
-        Ok(None) => return Err(format!("the embedded {name} does not lower to the compiled backend")),
-        Err(e) => return Err(e.to_string()),
+        codegen::LoweringOutcome::Lowered(bytes) => bytes,
+        codegen::LoweringOutcome::Unsupported(reason) => {
+            return Err(format!("the embedded {name} {reason}"));
+        }
+        codegen::LoweringOutcome::Rejected(error) => return Err(error.to_string()),
     };
     if let Some(p) = &path {
         // Write-then-rename, pid-tagged temp: same publish discipline as the
@@ -3504,7 +3510,11 @@ fn run_build_step_compiled_with_env(
 ) -> Result<Vec<String>, String> {
     use runtime::{Capabilities, Runtime};
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("build: output dir: {e}"))?;
-    let wasm = codegen::compile_build_module(&module).map_err(|e| e.message)?;
+    let wasm = match codegen::compile_build_module(&module) {
+        codegen::LoweringOutcome::Lowered(bytes) => bytes,
+        codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
+        codegen::LoweringOutcome::Rejected(error) => return Err(error.message),
+    };
     let caps = Capabilities {
         build_out: Some(out_dir.clone()),
         build_read_roots: read_roots,

@@ -68,6 +68,59 @@ impl fmt::Display for CodegenError {
 
 impl std::error::Error for CodegenError {}
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnsupportedLowering {
+    pub message: String,
+}
+
+impl fmt::Display for UnsupportedLowering {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "unsupported lowering: {}", self.message)
+    }
+}
+
+/// The explicit result of crossing the checked-AST to WIR boundary.
+///
+/// `Unsupported` is reserved for source constructs that are valid but do not
+/// yet have a capability-correct compiled lowering. Broken compiler output and
+/// invalid input to this stage are `Rejected`, never disguised as a miss.
+/// Callers must supply the linked, lowered, type-checked module promised by the
+/// compiler pipeline; classification of an arbitrary unchecked AST is outside
+/// this contract.
+#[must_use]
+#[derive(Debug, Clone, PartialEq)]
+pub enum LoweringOutcome<T> {
+    Lowered(T),
+    Unsupported(UnsupportedLowering),
+    Rejected(CodegenError),
+}
+
+impl<T> LoweringOutcome<T> {
+    pub fn expect_lowered(self, message: &str) -> T {
+        match self {
+            Self::Lowered(value) => value,
+            Self::Unsupported(reason) => panic!("{message}: {reason}"),
+            Self::Rejected(error) => panic!("{message}: {error}"),
+        }
+    }
+
+    pub fn expect_rejected(self, message: &str) -> CodegenError {
+        match self {
+            Self::Rejected(error) => error,
+            Self::Lowered(_) => panic!("{message}: lowering succeeded"),
+            Self::Unsupported(reason) => panic!("{message}: {reason}"),
+        }
+    }
+
+    pub fn expect_unsupported(self, message: &str) -> UnsupportedLowering {
+        match self {
+            Self::Unsupported(reason) => reason,
+            Self::Lowered(_) => panic!("{message}: lowering succeeded"),
+            Self::Rejected(error) => panic!("{message}: {error}"),
+        }
+    }
+}
+
 fn cerr<T>(message: impl Into<String>) -> Result<T, CodegenError> {
     Err(CodegenError {
         message: message.into(),

@@ -136,11 +136,26 @@ The final compiler story should not depend on shadow encodings:
   strings except for diagnostics;
 - type facts should be stable across AST clones/rewrites, via stable node IDs or an
   annotated AST, not raw expression addresses;
-- lowering should use explicit outcomes such as `Lowered`, `Unsupported`, and `Reject`
+- lowering should use explicit outcomes such as `Lowered`, `Unsupported`, and `Rejected`
   instead of `Option<WirExpr>` plus comments about falling through to "legacy" behavior.
 
 This is the work that makes RFC-0018's stage boundaries feel real in the code, not just
 the docs.
+
+Implementation progress (2026-07-15): the general module-to-WIR boundaries now return
+`LoweringOutcome`: `compile_module_binary`, the pre-optimization and optimized WIR
+assemblers, and the build-step wrapper distinguish successful lowering, a checked valid
+module that reaches an unimplemented capability-correct lowering, and a hard rejection.
+Callers must supply the linked, lowered, type-checked module promised by the pipeline;
+defensive tests may pass an unchecked `Module`, but its category is outside this contract.
+The production encoder is wrapped by a fallible boundary, and every public output rejects
+encoder invariant failures or wasm validation failures instead of returning malformed
+compiler output as `Lowered`.
+All direct callers match the three outcomes, and tests independently pin outcome
+conversion, successful/rejected source modules, and malformed-WIR rejection. The internal
+expression and statement builders still use `Option<WirExpr>`/`Option<WirSeq>` as their
+local propagation mechanism; replacing those shadows with typed failure reasons is the
+remaining lowering-outcome work rather than something this slice claims to complete.
 
 ### 5. Flagship product boundary hardening
 

@@ -601,25 +601,94 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
     }
 }
 
-/// Compile a module straight to a wasm **binary** via WIR + `wir_encode::encode`.
-/// Returns `Ok(Some(bytes))` only when the whole module assembles to WIR (see
-/// `assemble_wir_module`); otherwise `Ok(None)`, which the caller treats as a
-/// hard "cannot compile" error (there is no WAT fallback). The `wir_opt`
-/// slot-elimination pass runs before encoding, and the assembled binary is
-/// wasm-validated — an assembly slip returns `Ok(None)` rather than shipping a
-/// malformed module.
-pub fn compile_module_binary(
+#[derive(Debug)]
+enum LoweringFailure {
+    Unsupported(UnsupportedLowering),
+    Rejected(CodegenError),
+}
+
+impl From<CodegenError> for LoweringFailure {
+    fn from(error: CodegenError) -> Self {
+        Self::Rejected(error)
+    }
+}
+
+fn unsupported<T>(message: impl Into<String>) -> Result<T, LoweringFailure> {
+    Err(LoweringFailure::Unsupported(UnsupportedLowering {
+        message: message.into(),
+    }))
+}
+
+fn public_outcome<T>(result: Result<T, LoweringFailure>) -> LoweringOutcome<T> {
+    match result {
+        Ok(value) => LoweringOutcome::Lowered(value),
+        Err(LoweringFailure::Unsupported(reason)) => LoweringOutcome::Unsupported(reason),
+        Err(LoweringFailure::Rejected(error)) => LoweringOutcome::Rejected(error),
+    }
+}
+
+fn encode_validated(
+    module: &witchy_wir::wir::WirModule,
+    gc_structs: &[witchy_wir::wir::WirStructDef],
+) -> Result<Vec<u8>, CodegenError> {
+    let bytes = witchy_wir::wir_encode::try_encode(module, gc_structs).map_err(|error| {
+        CodegenError {
+            message: format!("assembled WIR could not be encoded: {error}"),
+        }
+    })?;
+    wasmparser::validate(&bytes).map_err(|error| CodegenError {
+        message: format!("assembled WIR failed wasm validation: {error}"),
+    })?;
+    Ok(bytes)
+}
+
+fn validated_module_outcome(
+    module: witchy_wir::wir::WirModule,
+    gc_structs: &[witchy_wir::wir::WirStructDef],
+) -> LoweringOutcome<witchy_wir::wir::WirModule> {
+    match encode_validated(&module, gc_structs) {
+        Ok(_) => LoweringOutcome::Lowered(module),
+        Err(error) => LoweringOutcome::Rejected(error),
+    }
+}
+
+fn encoded_binary_outcome(
+    module: &witchy_wir::wir::WirModule,
+    gc_structs: &[witchy_wir::wir::WirStructDef],
+) -> LoweringOutcome<Vec<u8>> {
+    match encode_validated(module, gc_structs) {
+        Ok(bytes) => LoweringOutcome::Lowered(bytes),
+        Err(error) => LoweringOutcome::Rejected(error),
+    }
+}
+
+fn assemble_optimized_wir_with_structs(
     module: &Module,
-) -> Result<Option<Vec<u8>>, CodegenError> {
-    let Some((mut wir_module, gc_structs)) = assemble_wir_module_with_structs(module)? else {
-        return Ok(None);
-    };
+) -> Result<
+    (
+        witchy_wir::wir::WirModule,
+        Vec<witchy_wir::wir::WirStructDef>,
+    ),
+    LoweringFailure,
+> {
+    let (mut wir_module, gc_structs) = assemble_wir_module_with_structs(module)?;
     witchy_wir::wir_opt::lower_direct_tail_calls(&mut wir_module);
     witchy_wir::wir_opt::optimize(&mut wir_module);
+    Ok((wir_module, gc_structs))
+}
+
+/// Compile a module straight to a wasm **binary** via WIR + `wir_encode::encode`.
+/// The result distinguishes a valid source construct that lacks a compiled
+/// lowering from rejected input or malformed compiler output.
+pub fn compile_module_binary(module: &Module) -> LoweringOutcome<Vec<u8>> {
+    let (wir_module, gc_structs) = match assemble_optimized_wir_with_structs(module) {
+        Ok(assembled) => assembled,
+        Err(failure) => return public_outcome(Err(failure)),
+    };
     // Robustness net: if any reached `Call` names a func that didn't make it into
     // the module — an unregistered guest helper like `$string_from_code`, which
     // `assemble`'s prelude/wir-helper resolution doesn't account for — bail with
-    // `Ok(None)` rather than panic in the encoder's func-index lookup.
+    // a rejection rather than panic in the encoder's func-index lookup.
     {
         let mut defined: HashSet<String> = HashSet::new();
         for imp in &wir_module.imports {
@@ -637,35 +706,51 @@ pub fn compile_module_binary(
                 let missing: Vec<&String> = called.iter().filter(|c| !defined.contains(*c)).collect();
                 eprintln!("WIRBAIL called-undefined-func: {missing:?}");
             }
-            return Ok(None);
+            let mut missing: Vec<&String> =
+                called.iter().filter(|c| !defined.contains(*c)).collect();
+            missing.sort();
+            return LoweringOutcome::Rejected(CodegenError {
+                message: format!("assembled WIR calls undefined functions: {missing:?}"),
+            });
         }
     }
-    let bytes = witchy_wir::wir_encode::encode(&wir_module, &gc_structs);
-    // Validate before committing; a malformed assembly returns `Ok(None)`.
-    if let Err(e) = wasmparser::validate(&bytes) {
-        if std::env::var_os("WIRDIAG").is_some() {
-            eprintln!("WIRBAIL validate-failed: {e}");
+    match encoded_binary_outcome(&wir_module, &gc_structs) {
+        LoweringOutcome::Rejected(error) => {
+            if std::env::var_os("WIRDIAG").is_some() {
+                eprintln!("WIRBAIL encode-or-validate-failed: {error}");
+            }
+            LoweringOutcome::Rejected(error)
         }
-        return Ok(None);
+        outcome => outcome,
     }
-    Ok(Some(bytes))
 }
 
 /// Assemble the complete pre-optimization `WirModule` for a program — the static
 /// prelude raw-body helpers + the lowered user functions + the `run` export +
-/// imports/globals/data/table — or `Ok(None)` when any reachable function does
-/// not fully lower to WIR or the program needs something outside the static
-/// prelude. Split out from `compile_module_binary` so tests can compare the
-/// optimized vs. unoptimized encoding (the slot-elimination differential).
-pub fn assemble_wir_module(
+/// imports/globals/data/table. Split out from `compile_module_binary` so tests
+/// can compare optimized and unoptimized encoding.
+pub fn assemble_wir_module(module: &Module) -> LoweringOutcome<witchy_wir::wir::WirModule> {
+    match assemble_wir_module_with_structs(module) {
+        Ok((module, gc_structs)) => validated_module_outcome(module, &gc_structs),
+        Err(failure) => public_outcome(Err(failure)),
+    }
+}
+
+/// Assemble and optimize the exact WIR module used by the binary backend, then
+/// validate the transformed result before exposing it to diagnostic consumers
+/// such as `emit-wat`.
+pub fn assemble_optimized_wir_module(
     module: &Module,
-) -> Result<Option<witchy_wir::wir::WirModule>, CodegenError> {
-    Ok(assemble_wir_module_with_structs(module)?.map(|(module, _)| module))
+) -> LoweringOutcome<witchy_wir::wir::WirModule> {
+    match assemble_optimized_wir_with_structs(module) {
+        Ok((module, gc_structs)) => validated_module_outcome(module, &gc_structs),
+        Err(failure) => public_outcome(Err(failure)),
+    }
 }
 
 fn assemble_wir_module_with_structs(
     module: &Module,
-) -> Result<Option<(witchy_wir::wir::WirModule, Vec<witchy_wir::wir::WirStructDef>)>, CodegenError> {
+) -> Result<(witchy_wir::wir::WirModule, Vec<witchy_wir::wir::WirStructDef>), LoweringFailure> {
     use witchy_wir::wir::{
         DataSegment, GlobalInit, Kind as WK, WirExpr, WirFunc, WirGlobal, WirImport, WirModule,
         WirNode, WirTable,
@@ -701,7 +786,7 @@ fn assemble_wir_module_with_structs(
     // (RFC-0047) A custom-`PartialEq` type's `PartialEq__T__eq` may be called only
     // from a codegen-synthesized container eq helper (invisible to the AST walk), so
     // seed those impls as reachability roots — otherwise a `[CI] == [CI]` helper
-    // calls an un-emitted function and the whole module bails to `Ok(None)`.
+    // calls an un-emitted function and the whole module reports `Unsupported`.
     let custom_eq_roots: Vec<String> = cg
         .custom_eq_types
         .iter()
@@ -812,7 +897,9 @@ fn assemble_wir_module_with_structs(
     // to instantiate against.
     if !has_main && string_exports.is_empty() {
         if std::env::var_os("WIRDIAG").is_some() { eprintln!("WIRBAIL no-main"); }
-        return Ok(None);
+        return Err(LoweringFailure::Rejected(CodegenError {
+            message: "module has neither a `main` entrypoint nor a string export".into(),
+        }));
     }
 
     // Every reachable function must have fully lowered to WIR.
@@ -824,7 +911,12 @@ fn assemble_wir_module_with_structs(
                 user_order.iter().filter(|n| !cg.wir_funcs.contains_key(*n)).collect();
             eprintln!("WIRBAIL user-fn-incomplete: {missing:?}");
         }
-        return Ok(None);
+        let mut missing: Vec<&String> =
+            user_order.iter().filter(|n| !cg.wir_funcs.contains_key(*n)).collect();
+        missing.sort();
+        return unsupported(format!(
+            "reachable functions do not fully lower to WIR: {missing:?}"
+        ));
     }
     // Bail if the program needs program-specific helpers (not in the prelude) or
     // closure types beyond the reserved band. An Int/Float `main` is fine now —
@@ -843,7 +935,11 @@ fn assemble_wir_module_with_structs(
         if std::env::var_os("WIRDIAG").is_some() {
             eprintln!("WIRBAIL eq_ts_rcopy: eq={eq_all_wir} ts={ts_all_wir} rcopy={}", cg.rcopy_helpers.len());
         }
-        return Ok(None);
+        return unsupported(format!(
+            "program-specific helpers lack WIR lowering: equality={eq_all_wir}, \
+             rendering={ts_all_wir}, region-copy={}",
+            cg.rcopy_helpers.len()
+        ));
     }
     let prelude = witchy_wir::wir_prelude::prelude();
 
@@ -912,7 +1008,7 @@ fn assemble_wir_module_with_structs(
         let user_calls_abort = user_host_imports.remove("__witchy_abort");
         // A direct host call in user code (e.g. `now`, `dir.subdir`, `recv_*`)
         // needs authority the capability-minimal helper registry can't account
-        // for — give up on such programs (`Ok(None)`). (Host access that goes
+        // for — report `Unsupported` for such programs. (Host access that goes
         // THROUGH a migrated helper is fine; its imports come from import_deps.)
         let no_direct_host =
             !called.iter().any(|n| n.starts_with("host:")) && user_host_imports.is_empty();
@@ -1025,14 +1121,18 @@ fn assemble_wir_module_with_structs(
                         .imports
                         .iter()
                         .find(|p| p.name.as_str() == *iname)
-                        .expect("a helper's import_dep must be a prelude import");
-                    WirImport {
+                        .ok_or_else(|| LoweringFailure::Rejected(CodegenError {
+                            message: format!(
+                                "WIR helper references missing prelude import `{iname}`"
+                            ),
+                        }))?;
+                    Ok(WirImport {
                         name: pi.name.clone(),
                         params: pi.params.iter().copied().map(wasmty_kind).collect(),
                         results: pi.results.iter().copied().map(wasmty_kind).collect(),
-                    }
+                    })
                 })
-                .collect();
+                .collect::<Result<_, LoweringFailure>>()?;
             if custom_key_eq.is_some() {
                 resolved.remove("key_eq");
             }
@@ -1063,7 +1163,12 @@ fn assemble_wir_module_with_structs(
                 pruned_funcs.push(f.clone());
             }
             for name in &user_order {
-                pruned_funcs.push(cg.wir_funcs.get(name).expect("lowered above").clone());
+                let function = cg.wir_funcs.get(name).ok_or_else(|| {
+                    LoweringFailure::Rejected(CodegenError {
+                        message: format!("lowered WIR function `{name}` disappeared during assembly"),
+                    })
+                })?;
+                pruned_funcs.push(function.clone());
             }
             // Each `Dir` param is minted from a distinct root grant in declaration
             // order as an unforgeable externref (RFC-0005 Stage 3).
@@ -1443,7 +1548,7 @@ fn assemble_wir_module_with_structs(
                 })
                 .collect();
             let gc_structs = cg.gc_structs.clone();
-            return Ok(Some((WirModule {
+            return Ok((WirModule {
                 imports: pruned_imports,
                 funcs: pruned_funcs,
                 memory_pages: 1,
@@ -1478,18 +1583,26 @@ fn assemble_wir_module_with_structs(
                     }
                     exports
                 },
-            }, gc_structs)));
+            }, gc_structs));
         }
-    }
 
-    // Otherwise the program reaches a prelude helper not yet migrated to a
-    // WIR-native form (or directly calls a host import), so no capability-correct
-    // binary can be built yet → return `Ok(None)`. The old raw-body
-    // "all features on" splice path is RETIRED: it over-imported the full host
-    // surface (incl. authority like crypto.sign/dir/net), which a minimal program
-    // cannot instantiate under its real grant — the opposite of witchy's
-    // capability model. Coverage grows by migrating helpers into `wir_helper`.
-    Ok(None)
+        // Otherwise the program reaches a prelude helper not yet migrated to a
+        // WIR-native form or directly calls an unaccounted host import.
+        let mut direct_hosts: Vec<String> = user_host_imports.into_iter().collect();
+        direct_hosts.sort();
+        let mut unregistered: Vec<String> = called
+            .into_iter()
+            .filter(|name| {
+                helper_names.contains(name.as_str())
+                    && witchy_wir::wir_helpers::wir_helper(name).is_none()
+            })
+            .collect();
+        unregistered.sort();
+        unsupported(format!(
+            "capability-correct WIR assembly is unavailable: direct host imports={direct_hosts:?}, \
+             unregistered helpers={unregistered:?}"
+        ))
+    }
 }
 
 /// Collect every function name a `WirSeq` calls directly (`Call{func}`),
@@ -1612,7 +1725,7 @@ fn collect_called_funcs(seq: &[witchy_wir::wir::WirNode], out: &mut HashSet<Stri
 /// Collect every host import a `WirSeq` calls directly (`CallHost{import}`),
 /// recursively. Used by `assemble_wir_module` to detect direct host-authority
 /// calls in USER code (e.g. `dir.subdir`, `now`, `recv_*`) — which the pruned
-/// path can't account for, so such programs return `Ok(None)`. (Helper
+/// path can't account for, so such programs report `Unsupported`. (Helper
 /// host calls are accounted for via the registry's `import_deps` instead.)
 fn collect_called_host_imports(seq: &[witchy_wir::wir::WirNode], out: &mut HashSet<String>) {
     use witchy_wir::wir::{WirExpr as E, WirNode as N};
@@ -2083,6 +2196,142 @@ mod diagnostic_site_tests {
     }
 }
 
+#[cfg(test)]
+mod lowering_outcome_tests {
+    use super::*;
+    use witchy_wir::wir::{
+        ClosureSignature, Kind, UnOp, WirExpr, WirFunc, WirModule, WirNode, WirTable,
+    };
+
+    fn empty_function(name: &str) -> WirFunc {
+        WirFunc {
+            name: name.into(),
+            params: Vec::new(),
+            ret: Vec::new(),
+            locals: Vec::new(),
+            body: Vec::new(),
+            raw_body: None,
+        }
+    }
+
+    fn malformed_export_module() -> WirModule {
+        WirModule {
+            imports: Vec::new(),
+            funcs: Vec::new(),
+            memory_pages: 1,
+            data: Vec::new(),
+            globals: Vec::new(),
+            table: None,
+            exports: vec![("run".into(), "missing".into())],
+        }
+    }
+
+    #[test]
+    fn malformed_wir_is_rejected_by_module_and_binary_finalizers() {
+        let module = malformed_export_module();
+        let module_error = validated_module_outcome(module.clone(), &[])
+            .expect_rejected("public WIR assembly must reject malformed output");
+        assert!(module_error.message.contains("unknown func $missing"));
+
+        let binary_error = encoded_binary_outcome(&module, &[])
+            .expect_rejected("public binary assembly must reject malformed output");
+        assert!(binary_error.message.contains("unknown func $missing"));
+    }
+
+    #[test]
+    fn internal_unsupported_failure_stays_distinct_from_rejection() {
+        let outcome: LoweringOutcome<()> = public_outcome(unsupported("test coverage miss"));
+        let reason = outcome.expect_unsupported("unsupported outcome must be preserved");
+        assert_eq!(reason.message, "test coverage miss");
+    }
+
+    #[test]
+    fn reference_slot_crossing_is_rejected_before_encoder_panics() {
+        let module = WirModule {
+            imports: Vec::new(),
+            funcs: vec![WirFunc {
+                name: "run".into(),
+                params: Vec::new(),
+                ret: Vec::new(),
+                locals: Vec::new(),
+                body: vec![WirNode::Do(WirExpr::ToSlot(
+                    Box::new(WirExpr::RefNull(Kind::ExternRef)),
+                    Kind::ExternRef,
+                ))],
+                raw_body: None,
+            }],
+            memory_pages: 1,
+            data: Vec::new(),
+            globals: Vec::new(),
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        let error = encoded_binary_outcome(&module, &[])
+            .expect_rejected("reference values cannot cross the scalar slot ABI");
+        assert!(error.message.contains("cannot cross the i64 slot boundary"));
+    }
+
+    #[test]
+    fn duplicate_names_and_bad_indirect_signatures_are_rejected() {
+        let duplicate = WirModule {
+            imports: Vec::new(),
+            funcs: vec![empty_function("run"), empty_function("run")],
+            memory_pages: 1,
+            data: Vec::new(),
+            globals: Vec::new(),
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        let duplicate_error = encoded_binary_outcome(&duplicate, &[])
+            .expect_rejected("duplicate function identities must not silently retarget calls");
+        assert!(duplicate_error.message.contains("duplicate function name $run"));
+
+        let mut run = empty_function("run");
+        run.body.push(WirNode::Do(WirExpr::CallIndirect {
+            signature: ClosureSignature {
+                params: vec![Kind::I32],
+                results: Vec::new(),
+            },
+            args: Vec::new(),
+            index: Box::new(WirExpr::ConstI32(0)),
+        }));
+        let bad_indirect = WirModule {
+            imports: Vec::new(),
+            funcs: vec![run],
+            memory_pages: 1,
+            data: Vec::new(),
+            globals: Vec::new(),
+            table: Some(WirTable { funcs: Vec::new() }),
+            exports: vec![("run".into(), "run".into())],
+        };
+        let indirect_error = encoded_binary_outcome(&bad_indirect, &[])
+            .expect_rejected("indirect-call signature mismatch must not reach the encoder");
+        assert!(indirect_error.message.contains("signature has 1 parameters"));
+    }
+
+    #[test]
+    fn invalid_unary_kind_is_a_hard_rejection() {
+        let mut run = empty_function("run");
+        run.body.push(WirNode::Do(WirExpr::Unary {
+            op: UnOp::Not,
+            kind: Kind::F64,
+            arg: Box::new(WirExpr::ConstI32(0)),
+        }));
+        let module = WirModule {
+            imports: Vec::new(),
+            funcs: vec![run],
+            memory_pages: 1,
+            data: Vec::new(),
+            globals: Vec::new(),
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        let error = encoded_binary_outcome(&module, &[])
+            .expect_rejected("operator and kind mismatch must not be returned as lowered");
+        assert!(error.message.contains("unary Not on F64"));
+    }
+}
+
 /// Compile a rune's build step to a WASM binary that runs in the zero-ambient
 /// build sandbox. The `build` entrypoint is renamed to `main` so the whole
 /// `compile_module_binary` pipeline (the `run` export, marshaling, helpers) is
@@ -2091,7 +2340,7 @@ mod diagnostic_site_tests {
 /// appear in an ordinary program (so parity is untouched). The host links only
 /// `build_out_write`/`build_read_len`, confined to the granted output sandbox
 /// and read roots — nothing else exists for the guest to call.
-pub fn compile_build_module(module: &Module) -> Result<Vec<u8>, CodegenError> {
+pub fn compile_build_module(module: &Module) -> LoweringOutcome<Vec<u8>> {
     let mut m = module.clone();
     // A build module ships no `main`; promote its `build` entrypoint to `main`.
     m.items.retain(|it| !matches!(it, Item::Function(f) if f.name == "main"));
@@ -2102,7 +2351,5 @@ pub fn compile_build_module(module: &Module) -> Result<Vec<u8>, CodegenError> {
             }
         }
     }
-    compile_module_binary(&m)?.ok_or_else(|| CodegenError {
-        message: "build step uses a construct the binary backend does not support".into(),
-    })
+    compile_module_binary(&m)
 }

@@ -222,8 +222,7 @@ fn main(console: Console):
     for (configuration, options) in configurations {
         let _opt_override = OptOverride::set(options);
         let wasm = codegen::compile_module_binary(&linked)
-            .expect("compile matrix")
-            .unwrap_or_else(|| panic!("{configuration}: matrix lowers to WIR"));
+            .expect_lowered(&format!("{configuration}: matrix lowers to WIR"));
         let mut runtime = Runtime::batch().expect("runtime");
         let mut actor = runtime
             .spawn(

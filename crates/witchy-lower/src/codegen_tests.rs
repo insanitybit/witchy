@@ -52,6 +52,24 @@
     }
 
     #[test]
+    fn public_lowering_outcome_distinguishes_success_and_rejection() {
+        let lowered = parse_module("fn main() -> Int:\n    1\n").expect("parse lowered module");
+        assert!(matches!(
+            compile_module_binary(&lowered),
+            LoweringOutcome::Lowered(_)
+        ));
+
+        let rejected = parse_module("fn helper() -> Int:\n    1\n")
+            .expect("parse rejected module");
+        let error = compile_module_binary(&rejected)
+            .expect_rejected("module without an entrypoint should be rejected");
+        assert!(
+            error.message.contains("neither a `main` entrypoint nor a string export"),
+            "unexpected rejection: {error}"
+        );
+    }
+
+    #[test]
     fn build_module_is_zero_ambient() {
         // A compiled build step imports ONLY its build host functions — none of
         // the runtime authority. That's the structural zero-ambient guarantee:
@@ -60,7 +78,7 @@
             "fn build(out: BuildOut, schema: BuildRead):\n    out.write_out(\"x.witchy\", schema.read_build(\"a.proto\"))\n",
         )
         .expect("parse");
-        let wasm = compile_build_module(&module).expect("compile build module");
+        let wasm = compile_build_module(&module).expect_lowered("compile build module");
         let mut imports = Vec::new();
         let mut exports = Vec::new();
         for payload in wasmparser::Parser::new(0).parse_all(&wasm) {
@@ -96,7 +114,7 @@
             "import option\nfn build(out: BuildOut, env: BuildEnv, dl: BuildNet, cc: BuildExec):\n    let v = match env.get_build_env(\"WITCHY_BUILD_ALLOWED\"):\n        Some(x) -> x\n        None -> \"unset\"\n    out.write_out(\"x.witchy\", v + dl.fetch_build(\"127.0.0.1:9\", \"/schema\") + cc.run_tool(\"cat\", \"input\"))\n",
         )
         .expect("parse");
-        let wasm = compile_build_module(&module).expect("compile build module");
+        let wasm = compile_build_module(&module).expect_lowered("compile build module");
         let mut imports = Vec::new();
         for payload in wasmparser::Parser::new(0).parse_all(&wasm) {
             if let wasmparser::Payload::ImportSection(reader) = payload.expect("valid wasm") {
@@ -131,8 +149,7 @@
     fn run_int(src: &str) -> i64 {
         let module = parse_module(src).expect("parse");
         let bytes = compile_module_binary(&module)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let engine = Engine::default();
         let wt = WtModule::new(&engine, &bytes).expect("valid wasm");
         let captured = Arc::new(Mutex::new(None));
@@ -158,8 +175,7 @@
     fn run_float(src: &str) -> f64 {
         let module = parse_module(src).expect("parse");
         let bytes = compile_module_binary(&module)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let engine = Engine::default();
         let wt = WtModule::new(&engine, &bytes).expect("valid wasm");
         let captured = Arc::new(Mutex::new(None));
@@ -238,8 +254,7 @@ fn main() -> Float:
         )
         .expect("parse");
         let wir = assemble_wir_module(&module)
-            .expect("assemble")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let wat = witchy_wir::wir::to_wat(&wir);
         assert!(wat.contains("i64.div_s"));
         assert!(wat.contains("i64.rem_s"));
@@ -257,8 +272,7 @@ fn main() -> Float:
         )
         .expect("parse");
         let wir = assemble_wir_module(&module)
-            .expect("assemble")
-            .expect("borrowed-view program lowers to WIR");
+            .expect_lowered("borrowed-view program lowers to WIR");
         let wat = witchy_wir::wir::to_wat(&wir);
         let start = wat.find("(func $finish").expect("finish function");
         let tail = &wat[start..];
@@ -283,8 +297,7 @@ fn main() -> Float:
         )
         .expect("parse");
         let wir = assemble_wir_module(&module)
-            .expect("assemble")
-            .expect("borrowed-view try program lowers to WIR");
+            .expect_lowered("borrowed-view try program lowers to WIR");
         let wat = witchy_wir::wir::to_wat(&wir);
         let start = wat.find("(func $finish").expect("finish function");
         let tail = &wat[start..];
@@ -303,8 +316,7 @@ fn main() -> Float:
         )
         .expect("parse");
         let wir = assemble_wir_module(&module)
-            .expect("assemble")
-            .expect("alternative view origins lower");
+            .expect_lowered("alternative view origins lower");
         let wat = witchy_wir::wir::to_wat(&wir);
         let start = wat.find("(func $count").expect("count function");
         let tail = &wat[start..];
@@ -321,8 +333,7 @@ fn main() -> Float:
         )
         .expect("parse");
         let wir = assemble_wir_module(&module)
-            .expect("assemble")
-            .expect("nested Dict view lowers to WIR");
+            .expect_lowered("nested Dict view lowers to WIR");
         let wat = witchy_wir::wir::to_wat(&wir);
         let start = wat.find("(func $count").expect("count function");
         let tail = &wat[start..];
@@ -349,8 +360,7 @@ fn main() -> Float:
         )
         .expect("parse");
         let wir = assemble_wir_module(&module)
-            .expect("assemble")
-            .expect("lambda-local borrowed view lowers to WIR");
+            .expect_lowered("lambda-local borrowed view lowers to WIR");
         let wat = witchy_wir::wir::to_wat(&wir);
         let start = wat.find("(func $__lam").expect("lifted lambda");
         let tail = &wat[start..];
@@ -623,7 +633,7 @@ fn main() -> Int:
 "#;
         let module = parse_module(src).expect("parse");
         let err = compile_module_binary(&module)
-            .expect_err("should reject outer assignment");
+            .expect_rejected("should reject outer assignment");
         assert!(
             err.to_string().contains("assigns `total`"),
             "unexpected error: {err}"
@@ -678,7 +688,7 @@ fn main(init: Bytes, requests: List(Bytes)) -> List(Bytes):
             )
             .expect("link bundled std without checking types");
             let error = compile_module_binary(&module)
-                .expect_err("unchecked codegen must preserve the isolation contract");
+                .expect_rejected("unchecked codegen must preserve the isolation contract");
             let diagnostic = error.to_string();
             assert!(
                 diagnostic.contains(api)
@@ -701,7 +711,8 @@ fn main() -> Int:
     dict.get_or(d, Key(1), 0)
 "#;
         let module = parse_module(src).expect("parse");
-        let err = compile_module_binary(&module).expect_err("plain record key should not lower");
+        let err = compile_module_binary(&module)
+            .expect_rejected("plain record key should not lower");
         assert!(
             err.to_string().contains("resolved Eq compound key"),
             "unexpected diagnostic: {err}"
@@ -740,8 +751,7 @@ fn main() -> Int:
     fn run_str(src: &str) -> Vec<String> {
         let module = parse_module(src).expect("parse");
         let bytes = compile_module_binary(&module)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let (mut store, instance, captured) = instantiate_with_print(&bytes);
         instance
             .get_typed_func::<(), ()>(&mut store, "run")
@@ -1096,9 +1106,7 @@ fn main(console: Console):
         let module = parse_module(src).expect("parse");
         let compiled = compile_module_binary(&module);
         witchy_syntax::opt::set_for_tests(None);
-        let bytes = compiled
-            .expect("compile")
-            .expect("the binary path lowers this program");
+        let bytes = compiled.expect_lowered("the binary path lowers this program");
 
         let mut names: HashMap<u32, String> = HashMap::new();
         let mut called: Vec<u32> = Vec::new();
@@ -1220,8 +1228,7 @@ fn main() -> Int:
         witchy_syntax::opt::set_for_tests(Some(opt));
         let module = parse_module(src).expect("parse");
         let bytes = compile_module_binary(&module)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         witchy_syntax::opt::set_for_tests(None);
         let (mut store, instance, captured) = instantiate_with_print(&bytes);
         instance

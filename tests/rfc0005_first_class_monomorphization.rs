@@ -193,8 +193,7 @@ fn main(console: Console, root: Dir[Read]):
     for (configuration, options) in configurations {
         opt::set_for_tests(Some(options));
         let wasm = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .unwrap_or_else(|| panic!("{configuration}: generic function values lower to WIR"));
+            .expect_lowered(&format!("{configuration}: generic function values lower to WIR"));
         let mut runtime = Runtime::batch().expect("runtime");
         let mut actor = runtime
             .spawn(

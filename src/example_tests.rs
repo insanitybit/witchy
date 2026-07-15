@@ -334,8 +334,7 @@
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         assert_eq!(
             crate::run_wasm_bytes(&bytes).expect("wasm run"),
             vec!["ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"]
@@ -3202,8 +3201,8 @@ fn main(console: Console):
                 Ok(()) => {
                     let result = codegen::compile_module_binary(&linked);
                     assert!(
-                        result.is_err() || matches!(result, Ok(None)),
-                        "non-Eq dict wrapper must fail compiled verification"
+                        matches!(result, codegen::LoweringOutcome::Rejected(_)),
+                        "non-Eq dict wrapper must be a hard compiled rejection"
                     );
                 }
             }
@@ -3222,8 +3221,7 @@ fn main(console: Console):
         let linked = resolve_fs_std(accepted);
         typeck::check(&linked).expect("bounded dict wrappers type-check");
         codegen::compile_module_binary(&linked)
-            .expect("bounded dict wrappers compile")
-            .expect("bounded dict wrappers lower");
+            .expect_lowered("bounded dict wrappers lower");
     }
 
     /// (BUG-544) `Ordering` is ordinary std data: it renders through `Show`,
@@ -3277,8 +3275,7 @@ fn main(console: Console):
             let linked = resolve_std_src(src);
             typeck::check(&linked).expect("typecheck");
             let bytes = codegen::compile_module_binary(&linked)
-                .expect("compile")
-                .expect("the binary path lowers this program");
+                .expect_lowered("the binary path lowers this program");
             (linked, bytes)
         };
         let cases = [
@@ -3360,8 +3357,7 @@ fn main(console: Console):
             let linked = resolve_std_src(src);
             typeck::check(&linked).expect("typecheck");
             let bytes = codegen::compile_module_binary(&linked)
-                .expect("compile")
-                .expect("the binary path lowers this program");
+                .expect_lowered("the binary path lowers this program");
             (linked, bytes)
         };
         let cases = [
@@ -3957,8 +3953,7 @@ fn main(console: Console):
                 "{label}: {interp_err}"
             );
             let wasm = codegen::compile_module_binary(&linked)
-                .expect("duration overflow program should compile")
-                .expect("duration overflow program should lower");
+                .expect_lowered("duration overflow program should lower");
             let wasm_err = crate::run_wasm_bytes(&wasm)
                 .expect_err("WASM must abort on duration overflow")
                 .to_string();
@@ -4119,8 +4114,7 @@ fn main(console: Console):
 
         use crate::runtime::{Capabilities, Runtime};
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::new().expect("runtime");
         let mut actor = rt
             .spawn(
@@ -4147,8 +4141,7 @@ fn main(console: Console):
             let linked = resolve_std_src(src);
             typeck::check(&linked).expect("typecheck");
             let bytes = codegen::compile_module_binary(&linked)
-                .expect("compile")
-                .expect("the binary path lowers this program");
+                .expect_lowered("the binary path lowers this program");
             (linked, bytes)
         };
         // Int.MIN: `0 - 9223372036854775807 - 1`. Both backends must error.
@@ -4194,8 +4187,7 @@ fn main(console: Console):
             let linked = resolve_std_src(src);
             typeck::check(&linked).expect("typecheck");
             let bytes = codegen::compile_module_binary(&linked)
-                .expect("compile")
-                .expect("the binary path lowers this program");
+                .expect_lowered("the binary path lowers this program");
             (linked, bytes)
         };
         let nan_src = "import math\n\nfn main(console: Console):\n    console.print(\"${math.to_int(0.0 / 0.0)}\")\n";
@@ -4297,8 +4289,7 @@ fn main(console: Console):
             let linked = resolve_std_src(src);
             typeck::check(&linked).expect("typecheck");
             let bytes = codegen::compile_module_binary(&linked)
-                .expect("compile")
-                .expect("the binary path lowers this program");
+                .expect_lowered("the binary path lowers this program");
             (linked, bytes)
         };
         let oob = "import bytes\n\nfn main(console: Console):\n    let b = bytes.from_string(\"hi!\")\n    console.print(\"${bytes.at(b, 5)}\")\n";
@@ -4344,8 +4335,7 @@ fn main(console: Console):
             "interpreter must trap on a CRLF header value"
         );
         let bytes = codegen::compile_module_binary(&resolve_std_src(&crlf_value))
-            .expect("compile")
-            .expect("lowers");
+            .expect_lowered("lowers");
         assert!(crate::run_wasm_bytes(&bytes).is_err(), "WASM must trap on a CRLF header value");
 
         // A header NAME with a space (not a token) must error on both backends.
@@ -4355,8 +4345,7 @@ fn main(console: Console):
             "interpreter must trap on an invalid header name"
         );
         let bn = codegen::compile_module_binary(&resolve_std_src(&bad_name))
-            .expect("compile")
-            .expect("lowers");
+            .expect_lowered("lowers");
         assert!(crate::run_wasm_bytes(&bn).is_err(), "WASM must trap on an invalid header name");
 
         // A CR/LF in a request field (path/host/method) errors on both backends.
@@ -4366,8 +4355,7 @@ fn main(console: Console):
             "interpreter must trap on a CRLF path"
         );
         let cp = codegen::compile_module_binary(&resolve_std_src(&crlf_path))
-            .expect("compile")
-            .expect("lowers");
+            .expect_lowered("lowers");
         assert!(crate::run_wasm_bytes(&cp).is_err(), "WASM must trap on a CRLF path");
 
         // BUG-506: NUL and other non-CR/LF controls are also forbidden at this
@@ -4378,8 +4366,7 @@ fn main(console: Console):
             "interpreter must trap on a NUL header value"
         );
         let nv = codegen::compile_module_binary(&resolve_std_src(&nul_value))
-            .expect("compile")
-            .expect("lowers");
+            .expect_lowered("lowers");
         assert!(crate::run_wasm_bytes(&nv).is_err(), "WASM must trap on a NUL header value");
 
         let soh_path = prog("let soh = string.from_code(1)\n    http.check_request_field(\"request path\", \"/a\" + soh + \"b\")");
@@ -4388,8 +4375,7 @@ fn main(console: Console):
             "interpreter must trap on a SOH request field"
         );
         let sp = codegen::compile_module_binary(&resolve_std_src(&soh_path))
-            .expect("compile")
-            .expect("lowers");
+            .expect_lowered("lowers");
         assert!(crate::run_wasm_bytes(&sp).is_err(), "WASM must trap on a SOH request field");
 
         let del_value = prog("let del = string.from_code(127)\n    http.check_header(\"x-test\", \"a\" + del + \"b\")");
@@ -4398,8 +4384,7 @@ fn main(console: Console):
             "interpreter must trap on a DEL header value"
         );
         let dv = codegen::compile_module_binary(&resolve_std_src(&del_value))
-            .expect("compile")
-            .expect("lowers");
+            .expect_lowered("lowers");
         assert!(crate::run_wasm_bytes(&dv).is_err(), "WASM must trap on a DEL header value");
 
         let nul_response = server_prog(
@@ -4410,8 +4395,7 @@ fn main(console: Console):
             "interpreter must trap before rendering a response header with NUL"
         );
         let nr = codegen::compile_module_binary(&resolve_std_src(&nul_response))
-            .expect("compile")
-            .expect("lowers");
+            .expect_lowered("lowers");
         assert!(
             crate::run_wasm_bytes(&nr).is_err(),
             "WASM must trap before rendering a response header with NUL"
@@ -4881,8 +4865,7 @@ fn main(console: Console):
                 "interpreter must trap: {src}"
             );
             let bytes = codegen::compile_module_binary(&resolve_std_src(src))
-                .expect("compile")
-                .expect("lowers");
+                .expect_lowered("lowers");
             assert!(crate::run_wasm_bytes(&bytes).is_err(), "wasm must trap: {src}");
         }
     }
@@ -4988,8 +4971,7 @@ fn main(console: Console):
             "interpreter",
         );
         let bin = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers branded Dir options");
+            .expect_lowered("the binary path lowers branded Dir options");
         let mut rt = Runtime::batch().expect("runtime");
         let caps = Capabilities {
             print: true,
@@ -5038,8 +5020,7 @@ fn main(console: Console):
             "interpreter",
         );
         let bin = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers plain cap-carrying records");
+            .expect_lowered("the binary path lowers plain cap-carrying records");
         let mut rt = Runtime::batch().expect("runtime");
         let caps = Capabilities {
             print: true,
@@ -5165,11 +5146,9 @@ fn main(console: Console, root: Dir[Read]):
             "interpreter",
         );
         let bin = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers cap-carrying sums");
+            .expect_lowered("the binary path lowers cap-carrying sums");
         let bin_again = codegen::compile_module_binary(&linked)
-            .expect("recompile")
-            .expect("the same module still lowers");
+            .expect_lowered("the same module still lowers");
         assert_eq!(bin_again, bin, "GC aggregate IDs and binary output must be deterministic");
         let mut rt = Runtime::batch().expect("runtime");
         let caps = Capabilities {
@@ -5294,11 +5273,9 @@ fn main(console: Console, root: Dir[Read]):
             "interpreter",
         );
         let bin = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers cap-carrying tuples");
+            .expect_lowered("the binary path lowers cap-carrying tuples");
         let bin_again = codegen::compile_module_binary(&linked)
-            .expect("recompile")
-            .expect("the same tuple module still lowers");
+            .expect_lowered("the same tuple module still lowers");
         assert_eq!(bin_again, bin, "GC tuple IDs and binary output must be deterministic");
         let mut rt = Runtime::batch().expect("runtime");
         let caps = Capabilities {
@@ -5333,8 +5310,7 @@ fn main(console: Console, root: Dir[Read]):
             "interpreter",
         );
         let bin = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers cap-carrying records to GC structs");
+            .expect_lowered("the binary path lowers cap-carrying records to GC structs");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(
@@ -5440,8 +5416,8 @@ fn main(console: Console, root: Dir[Read]):
             assert!(interp_err.contains("policy: net port must be in 0..65535"), "{call}: {interp_err}");
 
             let wasm = codegen::compile_module_binary(&linked)
-                .expect("out-of-range NetPolicy program should compile")
-                .expect("out-of-range NetPolicy program should lower");
+
+                .expect_lowered("out-of-range NetPolicy program should lower");
             let wasm_err = crate::run_wasm_bytes(&wasm)
                 .expect_err("WASM must reject out-of-range NetPolicy port")
                 .to_string();
@@ -5531,8 +5507,7 @@ fn main(console: Console, root: Dir[Read]):
         );
         // Compiled: same grant, same refusal.
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::new().expect("runtime");
         let mut actor = rt
             .spawn(
@@ -6241,8 +6216,7 @@ fn main(console: Console):
             let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
             typeck::check(&linked).expect("typecheck");
             let bytes = codegen::compile_module_binary(&linked)
-                .expect("compile")
-                .expect("the binary path lowers this program");
+                .expect_lowered("the binary path lowers this program");
             crate::run_wasm_bytes(&bytes).expect("wasm run")
         };
         // Genuine signature verifies in both backends; a tampered message fails
@@ -6257,8 +6231,7 @@ fn main(console: Console):
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         crate::run_wasm_bytes(&bytes).expect("wasm run")
     }
 
@@ -6270,8 +6243,7 @@ fn main(console: Console):
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(
@@ -6293,8 +6265,7 @@ fn main(console: Console):
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(
@@ -7449,8 +7420,7 @@ fn main(console: Console):
             "interpreter"
         );
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(
@@ -7500,8 +7470,7 @@ fn main(console: Console):
             "interpreter must report Err for a closed-port dial"
         );
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(
@@ -8233,8 +8202,7 @@ fn yn(b: Bool) -> String:
         let run_and_count = |src: &str| -> (Vec<String>, i64) {
             let module = parser::parse_module(src).expect("parse");
             let bytes = codegen::compile_module_binary(&module)
-                .expect("compile")
-                .expect("the binary path lowers this program");
+                .expect_lowered("the binary path lowers this program");
             let mut rt = Runtime::batch().expect("rt");
             let mut actor = rt
                 .spawn(
@@ -8357,7 +8325,8 @@ fn yn(b: Bool) -> String:
         let compile = |src: &str| -> (ast::Module, Vec<u8>) {
             let linked = resolve_std_src(src);
             typeck::check(&linked).expect("typecheck");
-            let bytes = codegen::compile_module_binary(&linked).expect("compile").expect("lowers");
+            let bytes = codegen::compile_module_binary(&linked)
+                .expect_lowered("lowers");
             (linked, bytes)
         };
         for prog in [
@@ -8419,7 +8388,8 @@ fn yn(b: Bool) -> String:
         let src = "type Point:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    let p = region -> Point:\n        var acc = Point(x: 0, y: 0)\n        for i in [1, 2, 3, 4, 5]:\n            acc = Point(x: acc.x + i, y: acc.y + i * 2)\n        acc\n    console.print(\"${p.x}\")\n    console.print(\"${p.y}\")\n";
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked).expect("compile").expect("lowers");
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect_lowered("lowers");
         let mut rt = Runtime::batch().expect("rt");
         let mut actor = rt.spawn(&bytes, Capabilities { print: true, quiet: true, ..Default::default() }, 64).expect("spawn");
         actor.run().expect("run");
@@ -8652,8 +8622,8 @@ fn yn(b: Bool) -> String:
         assert!(interp_err.contains("invalid regex pattern `[`"), "{interp_err}");
 
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers regex");
+
+            .expect_lowered("the binary path lowers regex");
         let wasm_err = crate::run_wasm_bytes(&bytes)
             .expect_err("WASM must reject invalid regex syntax")
             .to_string();
@@ -9001,8 +8971,7 @@ fn yn(b: Bool) -> String:
                 .expect("interp");
         assert_eq!(interp_out[2], "verified");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(
@@ -9053,8 +9022,7 @@ fn yn(b: Bool) -> String:
         assert_eq!(interp_out[2], "got signing");
         assert_eq!(interp_out[3], "absent none");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(
@@ -9101,8 +9069,7 @@ fn yn(b: Bool) -> String:
 
         // Compiled WASM (the security boundary): also refuses.
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(
@@ -9149,8 +9116,7 @@ fn yn(b: Bool) -> String:
         // fallback would have leaked the key at handle 0; now the lookup returns -1
         // and `require` traps.
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(
@@ -9195,8 +9161,7 @@ fn yn(b: Bool) -> String:
 
         // Compiled WASM: no "missing" secret granted → must trap eagerly (not print).
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(&bytes, Capabilities { print: true, quiet: true, ..Default::default() }, 64)
@@ -9220,8 +9185,7 @@ fn yn(b: Bool) -> String:
         .expect("interp with grant");
         assert_eq!(interp_ok, vec!["reached"]);
         let ok_bytes = codegen::compile_module_binary(&ok_linked)
-            .expect("compile")
-            .expect("lowers");
+            .expect_lowered("lowers");
         let mut ok_actor = rt
             .spawn(
                 &ok_bytes,
@@ -9278,8 +9242,7 @@ fn yn(b: Bool) -> String:
                         let console_only = footprint.total.keys().all(|k| *k == "Console");
                         if has_main && console_only && !has_actor && !reads_argv {
                             let bytes = codegen::compile_module_binary(&linked)
-                                .unwrap_or_else(|e| panic!("{context} fails to compile to WASM: {e}"))
-                                .unwrap_or_else(|| panic!("{context}: the binary backend does not support a construct it uses"));
+                                .expect_lowered(&format!("{context} compiles to WASM"));
                             let interp =
                                 interpreter::run_module(linked, std::path::Path::new("."), Vec::new())
                                     .unwrap_or_else(|e| panic!("{context} fails on the interpreter: {e}"));
@@ -9474,8 +9437,7 @@ fn yn(b: Bool) -> String:
         // `fail()` lowers on the binary path: route the message through
         // `__witchy_abort`, then `unreachable`.
         let bytes = codegen::compile_module_binary(&module)
-            .expect("compile")
-            .expect("fail() lowers on the binary path");
+            .expect_lowered("fail() lowers on the binary path");
         assert!(crate::run_wasm_bytes(&bytes).is_err(), "WASM must trap on fail()");
     }
 
@@ -9519,7 +9481,8 @@ fn yn(b: Bool) -> String:
                 ierr.message
             );
             let linked = resolve_std_src(wrap_src);
-            let bytes = codegen::compile_module_binary(&linked).expect("compile").expect("binary");
+            let bytes = codegen::compile_module_binary(&linked)
+                .expect_lowered("binary");
             let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort on the huge index");
             assert_eq!(
                 cerr,
@@ -9540,8 +9503,7 @@ fn yn(b: Bool) -> String:
             // host `bail!` (root cause). It must equal the interpreter's core.
             let linked = resolve_std_src(src);
             let bytes = codegen::compile_module_binary(&linked)
-                .expect("compile")
-                .expect("the binary path lowers this program");
+                .expect_lowered("the binary path lowers this program");
             let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort");
             assert_eq!(
                 cerr,
@@ -9627,8 +9589,7 @@ fn yn(b: Bool) -> String:
                 ierr.message
             );
             let bytes = codegen::compile_module_binary(&linked)
-                .expect("compile")
-                .expect("the binary path lowers this program");
+                .expect_lowered("the binary path lowers this program");
             let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort");
             assert_eq!(
                 cerr,
@@ -9867,8 +9828,7 @@ fn main(console: Console, root: Dir):
             ierr.message
         );
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort");
         assert_eq!(cerr, format!("runtime error: {}", ierr.message), "compiled abort mismatch");
 
@@ -9892,8 +9852,7 @@ fn main(console: Console, root: Dir):
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         assert_eq!(link_run(env_src), want.clone(), "interpreter");
         assert_eq!(crate::run_wasm_bytes(&bytes).expect("wasm"), want, "compiled WASM must agree");
 
@@ -9933,8 +9892,7 @@ fn main(console: Console, root: Dir):
         assert_eq!(interp_out, want, "interpreter");
         let module = parser::parse_module(src).expect("parse");
         let bytes = codegen::compile_module_binary(&module)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(
@@ -9960,8 +9918,7 @@ fn main(console: Console, root: Dir):
             assert!(interpreter::run_in(&esc, &root).is_err(), "interp must reject `{bad}`");
             let m = parser::parse_module(&esc).expect("parse");
             let wbytes = codegen::compile_module_binary(&m)
-                .expect("compile")
-                .expect("the binary path lowers this program");
+                .expect_lowered("the binary path lowers this program");
             let mut rt = Runtime::batch().expect("runtime");
             let mut a = rt
                 .spawn(
@@ -10013,8 +9970,7 @@ fn main(console: Console, root: Dir):
             "interpreter",
         );
         let bytes = codegen::compile_module_binary(&resolve_std_src(ok_src))
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt.spawn(&bytes, caps(), 64).expect("spawn");
         actor.run().expect("run");
@@ -10027,8 +9983,7 @@ fn main(console: Console, root: Dir):
             "interp must refuse a .key",
         );
         let bbytes = codegen::compile_module_binary(&resolve_std_src(bad_src))
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt2 = Runtime::batch().expect("runtime");
         let mut a = rt2.spawn(&bbytes, caps(), 64).expect("spawn");
         assert!(a.run().is_err(), "WASM must refuse a .key");
@@ -10064,8 +10019,7 @@ fn main(console: Console, root: Dir):
                 "interp: {src}",
             );
             let bytes = codegen::compile_module_binary(&resolve_std_src(src))
-                .expect("compile")
-                .expect("the binary path lowers this program");
+                .expect_lowered("the binary path lowers this program");
             let mut rt = Runtime::batch().expect("runtime");
             let mut actor = rt.spawn(&bytes, caps(), 64).expect("spawn");
             actor.run().expect("run");
@@ -10078,8 +10032,7 @@ fn main(console: Console, root: Dir):
                 "interp should refuse: {src}",
             );
             let bytes = codegen::compile_module_binary(&resolve_std_src(src))
-                .expect("compile")
-                .expect("the binary path lowers this program");
+                .expect_lowered("the binary path lowers this program");
             let mut rt = Runtime::batch().expect("runtime");
             let mut actor = rt.spawn(&bytes, caps(), 64).expect("spawn");
             assert!(actor.run().is_err(), "wasm should refuse: {src}");
@@ -10129,8 +10082,7 @@ fn main(console: Console, root: Dir):
         assert_eq!(interp_out, want, "interpreter");
         let module = parser::parse_module(src).expect("parse");
         let bytes = codegen::compile_module_binary(&module)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(
@@ -10173,8 +10125,7 @@ fn main(console: Console, root: Dir):
         assert_eq!(interp_out, want, "interpreter");
         let module = parser::parse_module(src).expect("parse");
         let bytes = codegen::compile_module_binary(&module)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(
@@ -10199,8 +10150,7 @@ fn main(console: Console, root: Dir):
         assert!(interpreter::run_in(esc, &root).is_err(), "interp rejects `..` via open");
         let m = parser::parse_module(esc).expect("parse");
         let wbytes = codegen::compile_module_binary(&m)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let mut a = rt
             .spawn(
@@ -10243,8 +10193,7 @@ fn main(console: Console, root: Dir):
         assert_eq!(interp_out, want, "interpreter");
         let module = parser::parse_module(src).expect("parse");
         let bytes = codegen::compile_module_binary(&module)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(
@@ -10287,8 +10236,7 @@ fn main(console: Console, root: Dir):
         let interp_out = interpreter::run_in(src, &root).expect("interp");
         let module = parser::parse_module(src).expect("parse");
         let bytes = codegen::compile_module_binary(&module)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(
@@ -10318,8 +10266,7 @@ fn main(console: Console, root: Dir):
         assert!(interpreter::run_in(esc, &root).is_err(), "interp must reject escape");
         let m = parser::parse_module(esc).expect("parse");
         let wbytes = codegen::compile_module_binary(&m)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt2 = Runtime::batch().expect("runtime");
         let mut a = rt2
             .spawn(
@@ -10366,8 +10313,7 @@ fn main(console: Console, root: Dir):
 
         let module = parser::parse_module(src).expect("parse");
         let bytes = codegen::compile_module_binary(&module)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(
@@ -10419,8 +10365,7 @@ fn main(console: Console, root: Dir):
             crate::link_file_with_deps(app.to_str().unwrap(), &deps).expect("link with dep");
         crate::typeck::check(&linked).expect("typecheck");
         let bytes = crate::codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         assert!(!bytes.is_empty(), "produced a wasm binary");
 
         let _ = std::fs::remove_dir_all(&base);
@@ -10459,8 +10404,7 @@ fn main(console: Console, root: Dir):
         );
         let module = parser::parse_module(&src).expect("parse");
         let bytes = codegen::compile_module_binary(&module)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(
@@ -10487,8 +10431,7 @@ fn main(console: Console, root: Dir):
         );
         let m = parser::parse_module(bad).expect("parse");
         let wbytes = codegen::compile_module_binary(&m)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let mut a = rt
             .spawn(
@@ -10515,8 +10458,7 @@ fn main(console: Console, root: Dir):
         let listener_src = "fn main(console: Console, net: Net):\n    let l = net.listen(\"127.0.0.1:39999\")\n    console.print(\"listening\")\n";
         let m = parser::parse_module(listener_src).expect("parse");
         let wbytes = codegen::compile_module_binary(&m)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let denied = rt.spawn(
             &wbytes,
@@ -10534,8 +10476,7 @@ fn main(console: Console, root: Dir):
         let client = "fn main(console: Console, net: Net):\n    let s = net.connect(\"127.0.0.1:1\")\n    console.print(\"x\")\n";
         let m = parser::parse_module(client).expect("parse");
         let wbytes = codegen::compile_module_binary(&m)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let denied = rt.spawn(
             &wbytes,
@@ -10556,8 +10497,7 @@ fn main(console: Console, root: Dir):
         let writer = "fn main(console: Console, dir: Dir):\n    dir.write(\"x.txt\", \"data\")\n    console.print(\"wrote\")\n";
         let module = parser::parse_module(writer).expect("parse");
         let bytes = codegen::compile_module_binary(&module)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let denied = rt.spawn(
             &bytes,
@@ -10575,8 +10515,7 @@ fn main(console: Console, root: Dir):
         let reader = "fn main(console: Console, dir: Dir):\n    console.print(dir.read(\"x.txt\"))\n";
         let m = parser::parse_module(reader).expect("parse");
         let wbytes = codegen::compile_module_binary(&m)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let denied = rt.spawn(
             &wbytes,
@@ -10601,8 +10540,7 @@ fn main(console: Console, root: Dir):
             let module = parser::parse_module(src).expect("parse");
             let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
             let bytes = codegen::compile_module_binary(&linked)
-                .expect("compile")
-                .expect("the binary path lowers this program");
+                .expect_lowered("the binary path lowers this program");
             let mut rt = Runtime::batch().expect("runtime");
             let denied = rt.spawn(
                 &bytes,
@@ -10748,8 +10686,7 @@ fn main(console: Console, root: Dir):
 
         let linked = link();
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::new().expect("runtime");
         let mut actor = rt
             .spawn(&bytes, Capabilities { print: true, ..Default::default() }, 4)
@@ -10860,8 +10797,7 @@ fn main(console: Console, root: Dir):
             );
             let module = parser::parse_module(&src).expect("parse");
             let bytes = codegen::compile_module_binary(&module)
-                .expect("compile")
-                .expect("the binary path lowers this program");
+                .expect_lowered("the binary path lowers this program");
             assert!(interpreter::run(&src).is_err(), "interpreter must error on `{cmp}`");
             assert!(crate::run_wasm_bytes(&bytes).is_err(), "WASM must trap on `{cmp}`");
         }
@@ -10891,8 +10827,7 @@ fn main(console: Console, root: Dir):
             );
             let module = parser::parse_module(&src).expect("parse");
             let bytes = codegen::compile_module_binary(&module)
-                .expect("compile")
-                .expect("the binary path lowers this program");
+                .expect_lowered("the binary path lowers this program");
             assert!(interpreter::run(&src).is_err(), "interpreter must error on `{v}`");
             assert!(crate::run_wasm_bytes(&bytes).is_err(), "WASM must trap on `{v}`");
         }
@@ -10916,16 +10851,14 @@ fn main(console: Console, root: Dir):
         let oob = "fn main(console: Console):\n    let xs = [1, 2, 3]\n    console.print(\"${list.at(xs, 5)}\")\n";
         let module = parser::parse_module(oob).expect("parse");
         let bytes = codegen::compile_module_binary(&module)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         assert!(interpreter::run(oob).is_err(), "interpreter must error on OOB index");
         assert!(crate::run_wasm_bytes(&bytes).is_err(), "WASM must trap on OOB index");
         // A negative index likewise traps (it used to read backwards into the heap).
         let neg = "fn main(console: Console):\n    let xs = [1, 2, 3]\n    console.print(\"${list.at(xs, 0 - 1)}\")\n";
         let nmod = parser::parse_module(neg).expect("parse");
         let nbytes = codegen::compile_module_binary(&nmod)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         assert!(interpreter::run(neg).is_err(), "interpreter must error on negative index");
         assert!(crate::run_wasm_bytes(&nbytes).is_err(), "WASM must trap on negative index");
         // In-bounds indexing still agrees.
@@ -11272,8 +11205,7 @@ fn main(console: Console):
             "interpreter commits every var on success and callee-side ?",
         );
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers multi-var structured returns");
+            .expect_lowered("the binary path lowers multi-var structured returns");
         assert_eq!(
             crate::run_wasm_bytes(&bytes).expect("wasm run"),
             want,
@@ -11382,8 +11314,7 @@ fn main(console: Console):
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         assert_eq!(link_run(src), want.clone(), "interpreter (linked)");
         assert_eq!(crate::run_wasm_bytes(&bytes).expect("wasm run"), want, "compiled WASM must agree");
     }
@@ -11851,8 +11782,7 @@ fn yes(b: Bool) -> String:
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(
@@ -13309,8 +13239,7 @@ fn main(console: Console):
             ierr.message
         );
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort");
         assert!(cerr.contains("cannot be covered"), "compiled core mismatch: {cerr}");
 
@@ -14584,7 +14513,10 @@ fn main(console: Console):
                         codegen::set_force_copy_for_tests(None);
                         bytes
                     };
-                    if let (Ok(Some(inplace)), Ok(Some(copy))) = (compile_with(false), compile_with(true)) {
+                    if let (
+                        codegen::LoweringOutcome::Lowered(inplace),
+                        codegen::LoweringOutcome::Lowered(copy),
+                    ) = (compile_with(false), compile_with(true)) {
                         let a = crate::run_wasm_bytes(&inplace);
                         let b = crate::run_wasm_bytes(&copy);
                         if a != b {
@@ -14646,7 +14578,10 @@ fn main(console: Console):
                         opt::set_for_tests(None);
                         bytes
                     };
-                    if let (Ok(Some(def)), Ok(Some(rc))) = (compile_with_rc(false), compile_with_rc(true)) {
+                    if let (
+                        codegen::LoweringOutcome::Lowered(def),
+                        codegen::LoweringOutcome::Lowered(rc),
+                    ) = (compile_with_rc(false), compile_with_rc(true)) {
                         let a = crate::run_wasm_bytes(&def);
                         let b = crate::run_wasm_bytes(&rc);
                         if a != b {
@@ -14864,8 +14799,7 @@ fn main(console: Console):
         assert!(typeck::check_str(src).is_ok(), "{:?}", typeck::check_str(src));
         let module = parser::parse_module(src).expect("parse");
         let bytes = codegen::compile_module_binary(&module)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         Module::new(&Engine::default(), &bytes).expect("valid wasm");
     }
 
@@ -14918,7 +14852,7 @@ fn main(console: Console):
             total += 1;
             if matches!(
                 codegen::compile_module_binary(&linked),
-                Ok(Some(_))
+                codegen::LoweringOutcome::Lowered(_)
             ) {
                 ok += 1;
             } else {
@@ -14939,8 +14873,7 @@ fn main(console: Console):
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::new().expect("runtime");
         let mut actor = rt
             .spawn(
@@ -15104,8 +15037,7 @@ fn main(console: Console):
         // Takes the binary path (closures lower) AND emits all loop iterations —
         // a mis-scoped capture would drop the loop to a single pass.
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("loop + closure must lower on the binary path");
+            .expect_lowered("loop + closure must lower on the binary path");
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
         assert_eq!(link_run(src), want, "interpreter oracle");
         assert_eq!(run_on_wasm(src), want, "WAT path");
@@ -15141,8 +15073,7 @@ fn main(console: Console):
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typeck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the accumulator program takes the WIR binary path");
+            .expect_lowered("the accumulator program takes the WIR binary path");
         let (out, reowns) = binary_run_reowns(&bytes);
         assert_eq!(out, want, "binary output");
         assert!(reowns <= 2, "expected O(1) re-owns on the binary path, got {reowns}");
@@ -15162,8 +15093,7 @@ fn main(console: Console):
         assert_eq!(link_run(src), want, "interpreter oracle");
         assert_eq!(run_on_wasm(src), want, "legacy WAT path");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile_module_binary")
-            .expect("the accumulator program takes the WIR binary path");
+            .expect_lowered("the accumulator program takes the WIR binary path");
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path (in-place accumulator)");
     }
 
@@ -15182,8 +15112,7 @@ fn main(console: Console):
         typeck::check(&linked).expect("typeck");
         assert_eq!(link_run(src), want, "interpreter oracle");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile_module_binary")
-            .expect("the dict accumulator program takes the WIR binary path");
+            .expect_lowered("the dict accumulator program takes the WIR binary path");
         let (out, reowns) = binary_run_reowns(&bytes);
         assert_eq!(out, want, "binary output");
         assert!(reowns <= 2, "expected O(1) re-owns for the in-place dict insert, got {reowns}");
@@ -15202,8 +15131,7 @@ fn main(console: Console):
         typeck::check(&linked).expect("typeck");
         assert_eq!(link_run(src), want, "interpreter oracle");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile_module_binary")
-            .expect("the string builder takes the WIR binary path");
+            .expect_lowered("the string builder takes the WIR binary path");
         let (out, reowns) = binary_run_reowns(&bytes);
         assert_eq!(out, want, "binary output");
         assert!(reowns <= 2, "expected O(1) re-owns for the in-place string builder, got {reowns}");
@@ -15223,8 +15151,7 @@ fn main(console: Console):
         typeck::check(&linked).expect("typeck");
         assert_eq!(link_run(src), want, "interpreter oracle");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile_module_binary")
-            .expect("the dict.update accumulator takes the WIR binary path");
+            .expect_lowered("the dict.update accumulator takes the WIR binary path");
         let (out, reowns) = binary_run_reowns(&bytes);
         assert_eq!(out, want, "binary output");
         assert!(reowns <= 2, "expected O(1) re-owns for the in-place dict update, got {reowns}");
@@ -15243,8 +15170,7 @@ fn main(console: Console):
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typeck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile_module_binary")
-            .expect("the WIR binary path should lower a RecordUpdate with an expression base");
+            .expect_lowered("the WIR binary path should lower a RecordUpdate with an expression base");
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
         assert_eq!(link_run(src), want, "interpreter oracle");
     }
@@ -15263,8 +15189,7 @@ fn main(console: Console):
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typeck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile_module_binary")
-            .expect("the WIR binary path should lower an var fn with an early return");
+            .expect_lowered("the WIR binary path should lower an var fn with an early return");
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
         assert_eq!(link_run(src), want, "interpreter oracle");
     }
@@ -15297,8 +15222,7 @@ fn main(console: Console):
             let linked = resolve_std_src(src);
             typeck::check(&linked).expect("typecheck");
             let m = codegen::assemble_wir_module(&linked)
-                .expect("assemble")
-                .unwrap_or_else(|| panic!("expected the WIR binary path to handle:\n{src}"));
+                .expect_lowered(&format!("expected the WIR binary path to handle:\n{src}"));
             let violations = witchy_wir::wir::heap_write_violations(&m);
             assert!(
                 violations.is_empty(),
@@ -15321,8 +15245,7 @@ fn main(console: Console):
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typeck");
         let m = codegen::assemble_wir_module(&linked)
-            .expect("assemble")
-            .expect("program takes the WIR binary path");
+            .expect_lowered("program takes the WIR binary path");
         // Measurable: the pass removes redundant slot conversions.
         let mut opt_m = m.clone();
         let stats = crate::wir_opt::optimize(&mut opt_m);
@@ -15358,8 +15281,7 @@ fn main(console: Console):
             let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
             typeck::check(&linked).expect("typecheck");
             let m = codegen::assemble_wir_module(&linked)
-                .expect("assemble")
-                .unwrap_or_else(|| panic!("expected the WIR binary path to handle:\n{src}"));
+                .expect_lowered(&format!("expected the WIR binary path to handle:\n{src}"));
             let oracle = link_run(src);
             // Unoptimized encoding runs like the oracle...
             let unopt = crate::wir_encode::encode(&m, &[]);
@@ -15746,10 +15668,9 @@ fn main(console: Console):
                     let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
                     typeck::check(&linked).expect("typecheck");
                     let bytes = codegen::compile_module_binary(&linked)
-                        .expect("compile_module_binary")
-                        .unwrap_or_else(|| {
-                            panic!("expected the WIR binary path to handle this program:\n{src}")
-                        });
+                        .expect_lowered(&format!(
+                            "expected the WIR binary path to handle this program:\n{src}"
+                        ));
                     assert_eq!(&run_bytes_print_only(&bytes), want, "binary path (print-only):\n{src}");
                     assert_eq!(&link_run(src), want, "interpreter oracle:\n{src}");
                     assert_eq!(&run_on_wasm(src), want, "legacy WAT path:\n{src}");
@@ -15773,8 +15694,7 @@ fn main(console: Console):
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile_module_binary")
-            .expect("the WIR binary path should handle encoding via the host import");
+            .expect_lowered("the WIR binary path should handle encoding via the host import");
         // AST → WIR → binary runs identically to the interpreter oracle, under a
         // print-only grant (proving the pruned module imports only print+encoding,
         // and that `encoding` is host-provided regardless of the grant).
@@ -15804,8 +15724,7 @@ fn main(console: Console):
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile_module_binary")
-            .expect("the WIR binary path should structurally lower enum `==`");
+            .expect_lowered("the WIR binary path should structurally lower enum `==`");
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
         assert_eq!(link_run(src), want, "interpreter oracle");
     }
@@ -15823,8 +15742,7 @@ fn main(console: Console):
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile_module_binary")
-            .expect("the WIR binary path should render a dict");
+            .expect_lowered("the WIR binary path should render a dict");
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
         assert_eq!(link_run(src), want, "interpreter oracle");
     }
@@ -15843,8 +15761,7 @@ fn main(console: Console):
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile_module_binary")
-            .expect("the WIR binary path should lower dict.update");
+            .expect_lowered("the WIR binary path should lower dict.update");
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
         assert_eq!(link_run(src), want, "interpreter oracle");
     }
@@ -15862,8 +15779,7 @@ fn main(console: Console):
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile_module_binary")
-            .expect("the WIR binary path should compare a recursive ADT");
+            .expect_lowered("the WIR binary path should compare a recursive ADT");
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
         assert_eq!(link_run(src), want, "interpreter oracle");
     }
@@ -15882,8 +15798,7 @@ fn main(console: Console):
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile_module_binary")
-            .expect("the WIR binary path should lower the own-ABI move pipeline");
+            .expect_lowered("the WIR binary path should lower the own-ABI move pipeline");
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
         assert_eq!(link_run(src), want, "interpreter oracle");
     }
@@ -15902,8 +15817,7 @@ fn main(console: Console):
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile_module_binary")
-            .expect("the WIR binary path should lower a lambda-local accumulator");
+            .expect_lowered("the WIR binary path should lower a lambda-local accumulator");
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
         assert_eq!(link_run(src), want, "interpreter oracle");
     }
@@ -15920,8 +15834,7 @@ fn main(console: Console):
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile_module_binary")
-            .expect("the WIR binary path should lower regex via the host engine");
+            .expect_lowered("the WIR binary path should lower regex via the host engine");
         let want = link_run(src);
         assert_eq!(want[0], "true", "regex.matches sanity");
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path vs oracle");
@@ -15939,8 +15852,7 @@ fn main(console: Console):
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile_module_binary")
-            .expect("the WIR binary path should handle the crypto digests via host imports");
+            .expect_lowered("the WIR binary path should handle the crypto digests via host imports");
         let want = link_run(src);
         // SHA-256("abc") — a well-known vector — confirms the host actually wrote it.
         assert_eq!(want[0], "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
@@ -15960,8 +15872,7 @@ fn main(console: Console):
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile_module_binary")
-            .expect("the WIR binary path should handle crypto.rune_hash via the host import");
+            .expect_lowered("the WIR binary path should handle crypto.rune_hash via the host import");
         let want = link_run(src);
         assert_eq!(want.len(), 1);
         assert_eq!(want[0].len(), 71, "rune_hash digest is 71 chars");
@@ -15982,8 +15893,7 @@ fn main(console: Console):
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile_module_binary")
-            .expect("the WIR binary path should lower crypto.ecdsa_p256_verify");
+            .expect_lowered("the WIR binary path should lower crypto.ecdsa_p256_verify");
         let want = vec!["ok".to_string(), "bad".to_string()];
         assert_eq!(run_bytes_print_only(&bytes), want, "binary path");
         assert_eq!(link_run(&src), want, "interpreter oracle");
@@ -16001,8 +15911,7 @@ fn main(console: Console):
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile_module_binary")
-            .expect("the WIR binary path should handle the signing host imports");
+            .expect_lowered("the WIR binary path should handle the signing host imports");
         let caps = || Capabilities {
             print: true,
             signing_key: Some([7u8; 32]),
@@ -16031,8 +15940,7 @@ fn main(console: Console):
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile_module_binary")
-            .expect("the WIR binary path should lower crypto.ed25519_verify");
+            .expect_lowered("the WIR binary path should lower crypto.ed25519_verify");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(
@@ -16065,8 +15973,7 @@ fn main(console: Console):
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile_module_binary")
-            .expect("the WIR binary path should handle dir read via the host imports");
+            .expect_lowered("the WIR binary path should handle dir read via the host imports");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(
@@ -16097,8 +16004,7 @@ fn main(console: Console):
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile_module_binary")
-            .expect("the WIR binary path should handle dir list via the host imports");
+            .expect_lowered("the WIR binary path should handle dir list via the host imports");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(
@@ -16125,8 +16031,7 @@ fn main(console: Console):
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile_module_binary")
-            .expect("the WIR binary path should handle get_env + match");
+            .expect_lowered("the WIR binary path should handle get_env + match");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(&bytes, Capabilities { print: true, env: true, quiet: true, ..Default::default() }, crate::RUN_MEMORY_PAGES)
@@ -16150,8 +16055,7 @@ fn main(console: Console):
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile_module_binary")
-            .expect("the WIR binary path should handle an Int-returning main");
+            .expect_lowered("the WIR binary path should handle an Int-returning main");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(&bytes, Capabilities { print: true, print_int: true, quiet: true, ..Default::default() }, crate::RUN_MEMORY_PAGES)
@@ -16173,8 +16077,7 @@ fn main(console: Console):
         let linked = crate::pipeline::link(mods, entry).expect("link");
         assert!(typeck::check(&linked).is_ok(), "{:?}", typeck::check(&linked));
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::new().expect("runtime");
         let mut actor = rt
             .spawn(
@@ -16936,8 +16839,7 @@ fn main(console: Console):
             "interp must refuse a pinned dial to an IP outside the allowlist",
         );
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::new().expect("runtime");
         let mut actor = rt
             .spawn(
@@ -17306,8 +17208,7 @@ fn r(x: Result(String, encoding.EncodingError)) -> String:
         let linked = crate::pipeline::link(mods, entry).expect("link");
         assert!(typeck::check(&linked).is_ok(), "{:?}", typeck::check(&linked));
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::new().expect("runtime");
         let mut actor = rt
             .spawn(
@@ -17806,7 +17707,7 @@ fn main(console: Console):
 "#;
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("the generic Dict surface remains type-checkable");
-        let err = codegen::compile_module_binary(&linked).expect_err("should reject");
+        let err = codegen::compile_module_binary(&linked).expect_rejected("should reject");
         assert!(
             err.to_string().contains("Dict key type"),
             "unexpected error: {err}"
@@ -18498,8 +18399,7 @@ fn main() -> Int:
         use crate::runtime::{Capabilities, Runtime};
         let module = parser::parse_module(include_str!("../examples/compute/src/compute.witchy")).expect("parse");
         let bytes = codegen::compile_module_binary(&module)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::new().expect("runtime");
         let result = rt.spawn(&bytes, Capabilities::none(), 4);
         assert!(result.is_err(), "ungranted module must fail to instantiate");
@@ -22063,8 +21963,7 @@ fn main(console: Console):
         // binary path's `assemble_wir_module` runs the same `reachable_functions`
         // DCE, so inspect the assembled WIR func names directly.
         let wir = codegen::assemble_wir_module(&linked)
-            .expect("assemble")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         // The binary path monomorphizes generics, so the method implementation
         // appears as `List__map__Int__Int`; match on the generated-method prefix.
         let names: Vec<&str> = wir.funcs.iter().map(|f| f.name.as_str()).collect();
@@ -22402,8 +22301,7 @@ async fn main(console: Console):
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
         assert_eq!(interp_out, wasm_out, "async lowering diverged across backends");
         // pipeline(3): a=6, b=12, a+b=18.  double(10)=20.
@@ -22458,8 +22356,7 @@ async fn main(console: Console):
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
         assert_eq!(interp_out, wasm_out, "state-machine async lowering diverged across backends");
         // The synchronous value-returning `var` calls update a local threaded
@@ -22495,8 +22392,7 @@ async fn main(console: Console):
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
         assert_eq!(interp_out, wasm_out, "async+channel schedule diverged across backends");
         assert_eq!(interp_out, vec!["got 1", "got 2"]);
@@ -22532,8 +22428,7 @@ async fn main(console: Console):
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
         assert_eq!(interp_out, wasm_out, "for-await schedule diverged across backends");
         assert_eq!(interp_out, vec!["got 1", "got 2", "got 3"]);
@@ -22568,8 +22463,7 @@ async fn main(console: Console):
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
         assert_eq!(interp_out, wasm_out, "for-await-over-receiver diverged across backends");
         assert_eq!(interp_out, vec!["got 1", "got 4", "got 9"]);
@@ -22611,8 +22505,7 @@ async fn main(console: Console):
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
         assert_eq!(interp_out, wasm_out, "multi-actor schedule diverged across backends");
         assert_eq!(interp_out, vec!["log 100", "log 200"]);
@@ -22694,8 +22587,7 @@ async fn main(console: Console):
 
         let linked = link();
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this multi-type program");
+            .expect_lowered("the binary path lowers this multi-type program");
         let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
         assert_eq!(interp_out, wasm_out, "multi-type channels diverged across backends");
         assert_eq!(wasm_out, want, "compiled WASM");
@@ -22742,8 +22634,7 @@ async fn main(console: Console):
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
         assert_eq!(interp_out, wasm_out, "job/answer schedule diverged across backends");
         assert_eq!(interp_out, vec!["answer 9", "answer 25"]);
@@ -22779,8 +22670,7 @@ async fn main(console: Console):
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
         assert_eq!(interp_out, wasm_out, "channel schedule diverged across backends");
         assert_eq!(interp_out, vec!["got 1", "got 2", "drained"]);
@@ -22819,8 +22709,7 @@ async fn main(console: Console):
         typeck::check(&linked).expect("typecheck");
         let interp_out = interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
         assert_eq!(interp_out, wasm_out, "iter+chan diverged across backends");
         assert_eq!(interp_out, vec!["[2, 4, 6]", "recv 41", "done"]);
@@ -22844,8 +22733,7 @@ fn main(console: Console):
         typeck::check(&linked).expect("typecheck");
         let interp_out = interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
         assert_eq!(interp_out, wasm_out, "task+future diverged across backends");
         assert_eq!(interp_out, vec!["task+future coexist"]);
@@ -22878,8 +22766,7 @@ async fn main(console: Console):
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
         assert_eq!(interp_out, wasm_out, "generic-message channel diverged across backends");
         assert_eq!(interp_out, vec!["hello alice", "hello bob"]);
@@ -22924,8 +22811,7 @@ async fn main(console: Console):
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
         assert_eq!(interp_out, wasm_out, "select schedule diverged across backends");
         assert_eq!(interp_out, vec!["a 1", "a 2", "b 9", "done"]);
@@ -22955,8 +22841,7 @@ fn main(console: Console):
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
         assert_eq!(interp_out, wasm_out, "select diverged across backends");
         assert_eq!(interp_out, vec!["winner 1 20"]);
@@ -23005,8 +22890,7 @@ fn main(console: Console):
         let interp_out =
             interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let wasm_out = crate::run_wasm_bytes(&bytes).expect("wasm");
         assert_eq!(interp_out, wasm_out, "executor schedule diverged across backends");
         assert_eq!(interp_out, vec!["A 2", "B 2", "A 1", "B 1", "done [0, 0]"]);
@@ -24289,8 +24173,7 @@ pub fn serve(console: Console, net: Net) -> Int:
         typeck::check(&linked).expect("typecheck");
         let interp = interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp run");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let wasm = crate::run_wasm_bytes(&bytes).expect("wasm run");
         assert_eq!(wasm, interp, "compiled WASM must match the interpreter");
         interp
@@ -24314,8 +24197,7 @@ pub fn serve(console: Console, net: Net) -> Int:
         typeck::check(&linked).expect("typecheck");
         let interp = interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interp run");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let wasm = crate::run_wasm_bytes(&bytes).expect("wasm run");
         assert_eq!(wasm, interp, "compiled WASM must match the interpreter");
         interp
@@ -24418,8 +24300,7 @@ pub fn serve(console: Console, net: Net) -> Int:
 
         // Compiled: stage the one field host-side (declaration order).
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
             .spawn(
@@ -24558,8 +24439,7 @@ pub fn serve(console: Console, net: Net) -> Int:
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
 
         let mut exports: Vec<String> = Vec::new();
         for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
@@ -24595,8 +24475,7 @@ pub fn serve(console: Console, net: Net) -> Int:
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
-            .expect("compile")
-            .expect("the binary path lowers this program");
+            .expect_lowered("the binary path lowers this program");
         let mut exports: Vec<String> = Vec::new();
         for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
             if let wasmparser::Payload::ExportSection(s) = payload.expect("parse") {
@@ -25168,8 +25047,7 @@ pub fn serve(console: Console, net: Net) -> Int:
                 "{label} interpreter mismatch: {ierr}"
             );
             let bytes = codegen::compile_module_binary(&linked)
-                .expect("compile")
-                .unwrap_or_else(|| panic!("{label}: the binary path lowers this program"));
+                .expect_lowered(&format!("{label}: the binary path lowers this program"));
             let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort").to_string();
             assert!(
                 cerr.contains("json.encode: non-finite Float cannot be encoded as JSON"),
