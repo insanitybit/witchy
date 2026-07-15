@@ -791,6 +791,88 @@ pub fn list_at_helper() -> WirFunc {
     }
 }
 
+/// `$list_pop_extract(list) -> (list, present, old-slot)` — copy-correct
+/// structural pop. Selection and repair share the same length read; the final
+/// slot is returned separately from the repaired list so typed lowering can
+/// construct `Option(a)` without coupling this helper to source ADT layout.
+pub fn list_pop_extract_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let i64c = E::ConstI64;
+    let b = |op: BinOp, l: E, r: E| E::Binary {
+        op,
+        kind: Kind::I32,
+        lhs: Box::new(l),
+        rhs: Box::new(r),
+    };
+    WirFunc {
+        name: "list_pop_extract".into(),
+        params: vec![WirLocal { name: "list".into(), ty: WirTy::Bool }],
+        ret: vec![WirTy::Bool, WirTy::Bool, WirTy::Int],
+        locals: vec![
+            WirLocal { name: "len".into(), ty: WirTy::Bool },
+            WirLocal { name: "new".into(), ty: WirTy::Bool },
+            WirLocal { name: "present".into(), ty: WirTy::Bool },
+            WirLocal { name: "old".into(), ty: WirTy::Int },
+        ],
+        body: vec![
+            N::SetLocal {
+                local: "len".into(),
+                value: E::Load { ptr: Box::new(getl("list")), kind: Kind::I32, offset: 0 },
+            },
+            N::SetLocal { local: "present".into(), value: b(BinOp::Gt, getl("len"), i32c(0)) },
+            N::SetLocal { local: "old".into(), value: i64c(0) },
+            N::SetLocal {
+                local: "new".into(),
+                value: E::Call {
+                    func: "rc_alloc".into(),
+                    args: vec![b(
+                        BinOp::Add,
+                        i32c(4),
+                        b(BinOp::Mul, b(BinOp::Sub, getl("len"), getl("present")), i32c(8)),
+                    )],
+                },
+            },
+            N::Store {
+                ptr: getl("new"),
+                value: b(BinOp::Sub, getl("len"), getl("present")),
+                kind: Kind::I32,
+                offset: 0,
+            },
+            N::If {
+                cond: getl("present"),
+                then_: vec![
+                    N::MemoryCopy {
+                        dest: b(BinOp::Add, getl("new"), i32c(4)),
+                        src: b(BinOp::Add, getl("list"), i32c(4)),
+                        len: b(BinOp::Mul, b(BinOp::Sub, getl("len"), i32c(1)), i32c(8)),
+                    },
+                    N::SetLocal {
+                        local: "old".into(),
+                        value: E::Load {
+                            ptr: Box::new(b(
+                                BinOp::Add,
+                                b(BinOp::Add, getl("list"), i32c(4)),
+                                b(BinOp::Mul, b(BinOp::Sub, getl("len"), i32c(1)), i32c(8)),
+                            )),
+                            kind: Kind::I64,
+                            offset: 0,
+                        },
+                    },
+                ],
+                els: vec![],
+                result: None,
+            },
+            N::Push(getl("new")),
+            N::Push(getl("present")),
+            N::Push(getl("old")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// `$bytes_at(b: i32, i: i32) -> i64` — bounds-checked byte read over the flat
 /// `[i32 len][bytes…]` layout: trap on `i < 0 || i >= len`, else zero-extend the
 /// byte at `b + 4 + i`. Matches the interpreter's "bytes index out of bounds"
@@ -5280,6 +5362,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: true,
             uses_table: false,
         }),
+        "dict_insert_extract" => Some(WirHelperSpec {
+            func: dict_insert_extract_helper(),
+            helper_deps: &["rc_alloc", "dict_find"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
         "dict_get_or" => Some(WirHelperSpec {
             func: dict_get_or_helper(),
             helper_deps: &["dict_find"],
@@ -5324,6 +5413,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "list_set_cap" => Some(WirHelperSpec {
             func: list_set_cap_helper(),
+            helper_deps: &["rc_alloc"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "list_pop_extract" => Some(WirHelperSpec {
+            func: list_pop_extract_helper(),
             helper_deps: &["rc_alloc"],
             import_deps: &[],
             uses_heap: true,
@@ -5374,6 +5470,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         "dict_remove" => Some(WirHelperSpec {
             func: dict_remove_helper(),
             helper_deps: &["rc_alloc", "ensure", "key_eq"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "dict_remove_extract" => Some(WirHelperSpec {
+            func: dict_remove_extract_helper(),
+            helper_deps: &["rc_alloc", "dict_find"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,

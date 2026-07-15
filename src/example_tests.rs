@@ -954,6 +954,170 @@
         assert_eq!(wasm_run(src), want, "compiled backend returns and writes back");
     }
 
+    /// RFC-0088 baseline: update-and-extract returns the exact old leaf while
+    /// committing the repaired collection. Shared snapshots remain unchanged;
+    /// empty/missing operations return None. The structural helper performs the
+    /// selection and repair together on both engines.
+    #[test]
+    fn rfc0088_update_extract_baseline_agrees_on_both_backends() {
+        let src = r#"import dict
+import list
+
+fn main(console: Console):
+    var xs = ["a", "b"]
+    let xs_snapshot = xs
+    let popped = xs.pop()
+    match popped:
+        Some(value) -> console.print("pop=${value}")
+        None -> console.print("pop=none")
+    console.print("xs=${xs}")
+    console.print("xs_snapshot=${xs_snapshot}")
+    let _ = xs.pop()
+    let empty = xs.pop()
+    match empty:
+        Some(value) -> console.print("empty=${value}")
+        None -> console.print("empty=none")
+
+    var d = dict.from_pairs([("a", "one"), ("b", "two")])
+    let d_snapshot = d
+    let replaced = d.insert("a", "ONE")
+    let inserted = d.insert("c", "three")
+    let removed = d.remove("b")
+    let absent = d.remove("missing")
+    match replaced:
+        Some(value) -> console.print("replace=${value}")
+        None -> console.print("replace=none")
+    match inserted:
+        Some(value) -> console.print("insert=${value}")
+        None -> console.print("insert=none")
+    match removed:
+        Some(value) -> console.print("remove=${value}")
+        None -> console.print("remove=none")
+    match absent:
+        Some(value) -> console.print("absent=${value}")
+        None -> console.print("absent=none")
+    console.print("d=${dict.pairs(d)}")
+    console.print("d_snapshot=${dict.pairs(d_snapshot)}")
+"#;
+        let want = [
+            "pop=b",
+            "xs=[a]",
+            "xs_snapshot=[a, b]",
+            "empty=none",
+            "replace=one",
+            "insert=none",
+            "remove=two",
+            "absent=none",
+            "d=[(a, ONE), (c, three)]",
+            "d_snapshot=[(a, one), (b, two)]",
+        ];
+        assert_eq!(link_run(src), want, "interpreter update-and-extract");
+        assert_eq!(wasm_run(src), want, "compiled update-and-extract");
+    }
+
+    /// The ordinary result must survive nested-place reconstruction. The caller
+    /// rebuilds list/record/dictionary roots after staging the multi-result call;
+    /// those rebuilds may use tuple scratches but cannot clobber the `Option`.
+    #[test]
+    fn rfc0088_nested_place_results_survive_writeback_on_both_backends() {
+        let src = r#"import dict
+import list
+
+type Holder:
+    xs: List(Int)
+
+fn main(console: Console):
+    var rows = [[1, 2]]
+    let old = rows[0].pop()
+    var holders = [Holder([5, 6])]
+    let old2 = holders[0].xs.pop()
+    var maps = [dict.from_pairs([(1, "one")])]
+    let old3 = maps[0].insert(1, "two")
+    console.print("${old ?? -1}")
+    console.print("${old2 ?? -1}")
+    console.print("${old3 ?? "none"}")
+    console.print("${rows}")
+    console.print("${holders[0].xs}")
+    console.print("${dict.at(maps[0], 1)}")
+"#;
+        let want = ["2", "6", "one", "[[1]]", "[5]", "two"];
+        assert_eq!(link_run(src), want, "interpreter nested extraction");
+        assert_eq!(wasm_run(src), want, "compiled nested extraction");
+    }
+
+    /// Dictionary extraction uses the resolved `Eq` implementation on both
+    /// engines. Structural host-value equality would treat these keys as
+    /// different and turn replacement/removal into misses.
+    #[test]
+    fn rfc0088_custom_eq_keys_select_the_same_entry_on_both_backends() {
+        let src = r#"import dict
+import string
+
+type CI:
+    text: String
+
+impl PartialEq for CI:
+    fn eq(self, other: CI) -> Bool:
+        string.to_lower(self.text) == string.to_lower(other.text)
+
+impl Eq for CI
+
+fn main(console: Console):
+    var d = dict.from_pairs([(CI("a"), 1)])
+    d.insert(CI("A"), 2)
+    d.update(CI("a"), 0, fn(n: Int): n + 3)
+    let replaced = d.insert(CI("A"), 7)
+    let removed = d.remove(CI("a"))
+    console.print("${replaced ?? -1}")
+    console.print("${removed ?? -1}")
+    console.print("${dict.length(d)}")
+"#;
+        let want = ["5", "7", "0"];
+        assert_eq!(link_run(src), want, "interpreter custom Eq key");
+        assert_eq!(wasm_run(src), want, "compiled custom Eq key");
+    }
+
+    /// Integrated half of the one-search oracle: public result-bearing wrappers
+    /// must delegate directly to the fused structural primitive. Combined with
+    /// the WIR counter test, this catches both wrapper-level and helper-level
+    /// accidental second searches.
+    #[test]
+    fn rfc0088_public_dict_wrappers_use_fused_extract_primitives() {
+        let module = parser::parse_module(crate::bundled_module("dict").expect("bundled dict"))
+            .expect("parse dict stdlib");
+        for (public, primitive) in [
+            ("insert", "dict.__insert_extract"),
+            ("remove", "dict.__remove_extract"),
+        ] {
+            let function = module
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    ast::Item::Function(function) if function.name == public => Some(function),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("missing public dict.{public}"));
+            let [
+                ast::Stmt::LetPattern {
+                    value: ast::Expr::Call { name, .. },
+                    ..
+                },
+                ast::Stmt::Assign {
+                    name: receiver,
+                    value: ast::Expr::Var(next),
+                },
+                ast::Stmt::Expr(ast::Expr::Var(previous)),
+            ] = function.body.stmts.as_slice()
+            else {
+                panic!("dict.{public} must contain exactly one fused extraction and write-back");
+            };
+            assert_eq!(name, primitive, "dict.{public} must use its fused extraction primitive");
+            assert_eq!(receiver, "d", "dict.{public} must write back its receiver");
+            assert_eq!(next, "next", "dict.{public} must write back the extracted container");
+            assert_eq!(previous, "previous", "dict.{public} must return the extracted value");
+        }
+    }
+
     /// Return inference does not select mutation semantics. An elided result on a
     /// `var` function uses the same move-in/move-out ABI as an annotated result.
     #[test]

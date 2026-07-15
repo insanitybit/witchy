@@ -20,9 +20,15 @@ pub fn new() -> Dict(k, v):
 fn __insert(d: Dict(k, v), key: k, val: v) -> Dict(k, v) where k: Eq:
     dict.__insert(d, key, val)
 
+// Select the displaced value and perform the upsert with one semantic key
+// search. The tuple is an internal structural result; public callers keep the
+// uniform `var` ABI below.
+fn __insert_extract(d: Dict(k, v), key: k, val: v) -> (Dict(k, v), Option(v)) where k: Eq:
+    dict.__insert_extract(d, key, val)
+
 pub fn insert(var d: Dict(k, v), key: k, val: v) -> Option(v) where k: Eq:
-    let previous = get(d, key)
-    d = dict.__insert(d, key, val)
+    let (next, previous) = dict.__insert_extract(d, key, val)
+    d = next
     previous
 
 // The value for `key`, or `default` when absent.
@@ -52,9 +58,12 @@ pub fn contains_key(d: Dict(k, v), key: k) -> Bool where k: Eq:
 fn __remove(d: Dict(k, v), key: k) -> Dict(k, v) where k: Eq:
     dict.__remove(d, key)
 
+fn __remove_extract(d: Dict(k, v), key: k) -> (Dict(k, v), Option(v)) where k: Eq:
+    dict.__remove_extract(d, key)
+
 pub fn remove(var d: Dict(k, v), key: k) -> Option(v) where k: Eq:
-    let previous = get(d, key)
-    d = dict.__remove(d, key)
+    let (next, previous) = dict.__remove_extract(d, key)
+    d = next
     previous
 
 // Real methods mirror the primary mutator surface while the module functions

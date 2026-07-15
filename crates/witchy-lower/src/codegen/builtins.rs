@@ -6,6 +6,52 @@
 use super::*;
 
 impl Codegen<'_> {
+    /// Adapt a structural `(container, present, old-slot)` helper to the source
+    /// `(container, Option(old))` tuple. ADT construction remains in typed
+    /// lowering; structural helpers never encode source constructor layouts.
+    fn lower_extract_tuple(
+        &mut self,
+        helper: &str,
+        args: Vec<witchy_wir::wir::WirExpr>,
+    ) -> witchy_wir::wir::WirExpr {
+        use witchy_wir::wir::{WirExpr as W, WirNode as N, WirTy};
+        let container = var_scratch("result", 0, Kind::I32);
+        self.mk_arities.extend([0, 1, 2]);
+        W::Seq(vec![
+            N::CallStoreMulti {
+                func: helper.to_string(),
+                args,
+                dests: vec![container.clone(), TRY_TMP.to_string(), MATCH_TMP.to_string()],
+            },
+            N::SetLocal {
+                local: TUPLE_TMP.to_string(),
+                value: W::Control(Box::new(N::If {
+                    cond: W::GetLocal(TRY_TMP.to_string()),
+                    then_: vec![N::Push(W::Call {
+                        func: "mk1".into(),
+                        args: vec![W::ConstI32(0), W::GetLocal(MATCH_TMP.to_string())],
+                    })],
+                    els: vec![N::Push(W::Call {
+                        func: "mk0".into(),
+                        args: vec![W::ConstI32(1)],
+                    })],
+                    result: Some(WirTy::Bool),
+                })),
+            },
+            N::Push(W::Call {
+                func: "mk2".into(),
+                args: vec![
+                    W::ConstI32(0),
+                    W::ToSlot(Box::new(W::GetLocal(container)), witchy_wir::wir::Kind::I32),
+                    W::ToSlot(
+                        Box::new(W::GetLocal(TUPLE_TMP.to_string())),
+                        witchy_wir::wir::Kind::I32,
+                    ),
+                ],
+            }),
+        ])
+    }
+
     pub(crate) fn lower_call(&mut self, name: &str, args: &[Expr]) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::WirExpr as W;
         use witchy_wir::wir::WirNode as N;
@@ -27,6 +73,13 @@ impl Codegen<'_> {
         // A void effect that yields Nil: `{inner} ... i32.const 0`.
         let nil0 = |inner: W| W::Seq(vec![N::Do(inner), N::Push(W::ConstI32(0))]);
         Some(match (name, args.len()) {
+            (name, 1)
+                if name == "list.__pop_extract"
+                    || name.starts_with("list.__pop_extract__") =>
+            {
+                let list = self.lower_expr(&args[0])?;
+                self.lower_extract_tuple("list_pop_extract", vec![list])
+            }
             // (RFC-0028) Confined slice view reads: lower to the zero-copy view
             // helpers, reading through the elided slice's source + bounds. Guarded
             // to active views (the `let` replaced the binding), so any other
@@ -979,6 +1032,22 @@ impl Codegen<'_> {
                     W::ConstI32(mode as i32),
                 ])
             }
+            (name, 3)
+                if name == "dict.__insert_extract"
+                    || name.starts_with("dict.__insert_extract__") =>
+            {
+                self.uses_dict = true;
+                let mode = self.dict_key_mode_wir(&args[1])?;
+                let kk = self.kind_of(&args[1]);
+                let vk = self.kind_of(&args[2]);
+                let structural_args = vec![
+                    self.lower_expr(&args[0])?,
+                    W::ToSlot(Box::new(self.lower_expr(&args[1])?), Self::wir_kind(kk)),
+                    W::ToSlot(Box::new(self.lower_expr(&args[2])?), Self::wir_kind(vk)),
+                    W::ConstI32(mode as i32),
+                ];
+                self.lower_extract_tuple("dict_insert_extract", structural_args)
+            }
             ("dict.get_or", 3) => {
                 self.uses_dict = true;
                 let mode = self.dict_key_mode_wir(&args[1])?;
@@ -1027,6 +1096,20 @@ impl Codegen<'_> {
                     W::ToSlot(Box::new(self.lower_expr(&args[1])?), Self::wir_kind(kk)),
                     W::ConstI32(mode as i32),
                 ])
+            }
+            (name, 2)
+                if name == "dict.__remove_extract"
+                    || name.starts_with("dict.__remove_extract__") =>
+            {
+                self.uses_dict = true;
+                let mode = self.dict_key_mode_wir(&args[1])?;
+                let kk = self.kind_of(&args[1]);
+                let structural_args = vec![
+                    self.lower_expr(&args[0])?,
+                    W::ToSlot(Box::new(self.lower_expr(&args[1])?), Self::wir_kind(kk)),
+                    W::ConstI32(mode as i32),
+                ];
+                self.lower_extract_tuple("dict_remove_extract", structural_args)
             }
             ("dict.__update", 4) => {
                 self.uses_dict = true;

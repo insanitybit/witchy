@@ -1295,6 +1295,19 @@ impl Interpreter {
         })
     }
 
+    fn dict_key_position(
+        &mut self,
+        entries: &[(Value, Value)],
+        key: &Value,
+    ) -> Result<Option<usize>, RuntimeError> {
+        for (index, (candidate, _)) in entries.iter().enumerate() {
+            if self.values_equal(candidate, key)? {
+                return Ok(Some(index));
+            }
+        }
+        Ok(None)
+    }
+
     pub fn call(&mut self, name: &str, args: Vec<Value>) -> Result<Value, RuntimeError> {
         if let Some(v) = self.call_builtin(name, &args)? {
             return Ok(v);
@@ -1710,14 +1723,13 @@ impl Interpreter {
             };
             let mut out = entries.clone();
             let key = &argvals[1];
-            let current = out
-                .iter()
-                .find(|(ek, _)| ek == key)
-                .map(|(_, v)| v.clone())
+            let position = self.dict_key_position(&out, key)?;
+            let current = position
+                .map(|index| out[index].1.clone())
                 .unwrap_or_else(|| argvals[2].clone());
             let new_v = self.apply_closure(argvals[3].clone(), vec![current])?;
-            match out.iter_mut().find(|(ek, _)| ek == key) {
-                Some(slot) => slot.1 = new_v,
+            match position {
+                Some(index) => out[index].1 = new_v,
                 None => out.push((argvals[1].clone(), new_v)),
             }
             return Ok(Some(Value::Dict(out)));
@@ -2182,6 +2194,21 @@ impl Interpreter {
                 }
                 _ => err("push expects a list and a value"),
             },
+            name if name == "list.__pop_extract"
+                || name.starts_with("list.__pop_extract__") => match args {
+                [Value::List(items)] => {
+                    let mut out = items.clone();
+                    let old = match out.pop() {
+                        Some(value) => Value::Ctor {
+                            name: "Some".into(),
+                            fields: vec![value],
+                        },
+                        None => Value::Ctor { name: "None".into(), fields: Vec::new() },
+                    };
+                    Ok(Some(Value::Tuple(vec![Value::List(out), old])))
+                }
+                _ => err("pop expects a list"),
+            },
             "list.__set_at" => match args {
                 [Value::List(items), Value::Int(index), value] => {
                     let i = *index as usize;
@@ -2216,41 +2243,76 @@ impl Interpreter {
             "dict.__insert" => match args {
                 [Value::Dict(entries), k, v] => {
                     let mut out = entries.clone();
-                    match out.iter_mut().find(|(ek, _)| ek == k) {
-                        Some(slot) => slot.1 = v.clone(),
+                    match self.dict_key_position(&out, k)? {
+                        Some(index) => out[index].1 = v.clone(),
                         None => out.push((k.clone(), v.clone())),
                     }
                     Ok(Some(Value::Dict(out)))
                 }
                 _ => err("insert expects a Dict, a key, and a value"),
             },
+            name if name == "dict.__insert_extract"
+                || name.starts_with("dict.__insert_extract__") => match args {
+                [Value::Dict(entries), k, v] => {
+                    let mut out = entries.clone();
+                    let previous = match self.dict_key_position(&out, k)? {
+                        Some(index) => {
+                            let old = std::mem::replace(&mut out[index].1, v.clone());
+                            Value::Ctor { name: "Some".into(), fields: vec![old] }
+                        }
+                        None => {
+                            out.push((k.clone(), v.clone()));
+                            Value::Ctor { name: "None".into(), fields: Vec::new() }
+                        }
+                    };
+                    Ok(Some(Value::Tuple(vec![Value::Dict(out), previous])))
+                }
+                _ => err("insert expects a Dict, a key, and a value"),
+            },
             // Value for `k`, or `default` if absent.
             "dict.get_or" => match args {
                 [Value::Dict(entries), k, default] => {
-                    let found = entries.iter().find(|(ek, _)| ek == k);
-                    Ok(Some(found.map(|(_, v)| v.clone()).unwrap_or_else(|| default.clone())))
+                    let found = self.dict_key_position(entries, k)?;
+                    Ok(Some(found.map(|index| entries[index].1.clone()).unwrap_or_else(|| default.clone())))
                 }
                 _ => err("get_or expects a Dict, a key, and a default value"),
             },
             "dict.at" => match args {
-                [Value::Dict(entries), k] => match entries.iter().find(|(ek, _)| ek == k) {
-                    Some((_, v)) => Ok(Some(v.clone())),
+                [Value::Dict(entries), k] => match self.dict_key_position(entries, k)? {
+                    Some(index) => Ok(Some(entries[index].1.clone())),
                     None => err(DiagTemplate::DictMissing.render(0, 0, "")),
                 },
                 _ => err("at expects a Dict and a key"),
             },
             "dict.contains_key" => match args {
                 [Value::Dict(entries), k] => {
-                    Ok(Some(Value::Bool(entries.iter().any(|(ek, _)| ek == k))))
+                    Ok(Some(Value::Bool(self.dict_key_position(entries, k)?.is_some())))
                 }
                 _ => err("has expects a Dict and a key"),
             },
             // A new dict with `k` (and its value) removed; unchanged if absent.
             "dict.__remove" => match args {
                 [Value::Dict(entries), k] => {
-                    let out: Vec<(Value, Value)> =
-                        entries.iter().filter(|(ek, _)| ek != k).cloned().collect();
+                    let mut out = entries.clone();
+                    if let Some(index) = self.dict_key_position(&out, k)? {
+                        out.remove(index);
+                    }
                     Ok(Some(Value::Dict(out)))
+                }
+                _ => err("remove expects a Dict and a key"),
+            },
+            name if name == "dict.__remove_extract"
+                || name.starts_with("dict.__remove_extract__") => match args {
+                [Value::Dict(entries), k] => {
+                    let mut out = entries.clone();
+                    let previous = match self.dict_key_position(&out, k)? {
+                        Some(index) => Value::Ctor {
+                            name: "Some".into(),
+                            fields: vec![out.remove(index).1],
+                        },
+                        None => Value::Ctor { name: "None".into(), fields: Vec::new() },
+                    };
+                    Ok(Some(Value::Tuple(vec![Value::Dict(out), previous])))
                 }
                 _ => err("remove expects a Dict and a key"),
             },
@@ -3080,11 +3142,17 @@ impl Interpreter {
                 }
                 let k = self.eval(&args[1], env)?;
                 let v = self.eval(&args[2], env)?;
+                let position = {
+                    let Some((Value::Dict(entries), true)) = env.slot_mut(name) else {
+                        unreachable!("slot checked above; the arguments cannot reach it");
+                    };
+                    self.dict_key_position(entries, &k)?
+                };
                 let Some((Value::Dict(entries), true)) = env.slot_mut(name) else {
                     unreachable!("slot checked above; the arguments cannot reach it");
                 };
-                match entries.iter_mut().find(|(ek, _)| ek == &k) {
-                    Some(slot) => slot.1 = v,
+                match position {
+                    Some(index) => entries[index].1 = v,
                     None => entries.push((k, v)),
                 }
                 Ok(true)
@@ -3101,22 +3169,22 @@ impl Interpreter {
                 let k = self.eval(&args[1], env)?;
                 let dflt = self.eval(&args[2], env)?;
                 let updater = self.eval(&args[3], env)?;
-                let current = {
+                let (position, current) = {
                     let Some((Value::Dict(entries), true)) = env.slot_mut(name) else {
                         unreachable!("slot checked above; the arguments cannot reach it");
                     };
-                    entries
-                        .iter()
-                        .find(|(ek, _)| ek == &k)
-                        .map(|(_, v)| v.clone())
-                        .unwrap_or(dflt)
+                    let position = self.dict_key_position(entries, &k)?;
+                    let current = position
+                        .map(|index| entries[index].1.clone())
+                        .unwrap_or(dflt);
+                    (position, current)
                 };
                 let new_v = self.apply_closure(updater, vec![current])?;
                 let Some((Value::Dict(entries), true)) = env.slot_mut(name) else {
                     unreachable!("slot checked above; the closure cannot reach it");
                 };
-                match entries.iter_mut().find(|(ek, _)| ek == &k) {
-                    Some(slot) => slot.1 = new_v,
+                match position {
+                    Some(index) => entries[index].1 = new_v,
                     None => entries.push((k, new_v)),
                 }
                 Ok(true)

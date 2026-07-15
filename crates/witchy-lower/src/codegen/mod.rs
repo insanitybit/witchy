@@ -74,6 +74,7 @@ fn cerr<T>(message: impl Into<String>) -> Result<T, CodegenError> {
 
 /// Scratch local holding a tuple pointer while its elements are unpacked.
 const TUPLE_TMP: &str = "__witchy_tuple_tmp";
+const CALL_RESULT_I32_TMP: &str = "__witchy_call_result_i32";
 const CALL_RESULT_I64_TMP: &str = "__witchy_call_result_i64";
 const CALL_RESULT_F64_TMP: &str = "__witchy_call_result_f64";
 const CALL_RESULT_EXTERN_TMP: &str = "__witchy_call_result_extern";
@@ -88,7 +89,7 @@ fn call_result_gc_tmp(struct_id: u32) -> String {
 
 fn call_result_tmp(kind: Kind) -> String {
     match kind {
-        Kind::I32 => TUPLE_TMP.to_string(),
+        Kind::I32 => CALL_RESULT_I32_TMP.to_string(),
         Kind::I64 => CALL_RESULT_I64_TMP.to_string(),
         Kind::F64 => CALL_RESULT_F64_TMP.to_string(),
         Kind::ExternRef => CALL_RESULT_EXTERN_TMP.to_string(),
@@ -2537,6 +2538,7 @@ impl<'types> Codegen<'types> {
         }
         locals.push(WirLocal { name: "__witchy_owncap".into(), ty: i32t() });
         locals.push(WirLocal { name: TUPLE_TMP.into(), ty: i32t() });
+        locals.push(WirLocal { name: CALL_RESULT_I32_TMP.into(), ty: i32t() });
         locals.push(WirLocal { name: CALL_RESULT_I64_TMP.into(), ty: i64t() });
         locals.push(WirLocal { name: CALL_RESULT_F64_TMP.into(), ty: WirTy::Float });
         locals.push(WirLocal { name: CALL_RESULT_EXTERN_TMP.into(), ty: WirTy::Extern });
@@ -6951,6 +6953,7 @@ impl<'types> Codegen<'types> {
                 }
                 locals.push(WirLocal { name: "__witchy_owncap".into(), ty: i32t() });
                 locals.push(WirLocal { name: TUPLE_TMP.into(), ty: i32t() });
+                locals.push(WirLocal { name: CALL_RESULT_I32_TMP.into(), ty: i32t() });
                 locals.push(WirLocal { name: CALL_RESULT_I64_TMP.into(), ty: WirTy::Int });
                 locals.push(WirLocal { name: CALL_RESULT_F64_TMP.into(), ty: WirTy::Float });
                 locals.push(WirLocal { name: CALL_RESULT_EXTERN_TMP.into(), ty: WirTy::Extern });

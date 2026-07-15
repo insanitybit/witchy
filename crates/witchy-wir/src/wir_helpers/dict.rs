@@ -371,6 +371,70 @@ pub fn dict_insert_helper() -> WirFunc {
     }
 }
 
+/// `$dict_insert_extract(d, k, v, mode) -> (dict, present, old-slot)` — the
+/// copy-correct upsert baseline with exactly one semantic key search. The
+/// structural search result drives both displaced-value selection and repair.
+pub fn dict_insert_extract_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let i64c = E::ConstI64;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let entry = |base: &str, index: E| b(BinOp::Add, getl(base), b(BinOp::Mul, index, i32c(16)));
+    WirFunc {
+        name: "dict_insert_extract".into(),
+        params: vec![
+            WirLocal { name: "d".into(), ty: WirTy::Bool },
+            WirLocal { name: "k".into(), ty: WirTy::Int },
+            WirLocal { name: "v".into(), ty: WirTy::Int },
+            WirLocal { name: "mode".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool, WirTy::Bool, WirTy::Int],
+        locals: ["count", "found", "present", "new", "bytes"]
+            .iter()
+            .map(|name| WirLocal { name: (*name).into(), ty: WirTy::Bool })
+            .chain(std::iter::once(WirLocal { name: "old".into(), ty: WirTy::Int }))
+            .collect(),
+        body: vec![
+            N::SetLocal { local: "count".into(), value: E::Load { ptr: Box::new(getl("d")), kind: Kind::I32, offset: 0 } },
+            N::SetLocal { local: "found".into(), value: E::Call { func: "dict_find".into(), args: vec![getl("d"), getl("k"), getl("mode")] } },
+            N::SetLocal { local: "present".into(), value: b(BinOp::Ge, getl("found"), i32c(0)) },
+            N::SetLocal { local: "old".into(), value: i64c(0) },
+            N::If {
+                cond: getl("present"),
+                then_: vec![N::SetLocal {
+                    local: "old".into(),
+                    value: E::Load { ptr: Box::new(entry("d", getl("found"))), kind: Kind::I64, offset: 12 },
+                }],
+                els: vec![],
+                result: None,
+            },
+            N::SetLocal { local: "bytes".into(), value: b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("count"), i32c(16))) },
+            N::SetLocal {
+                local: "new".into(),
+                value: b(BinOp::Add, E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(24), b(BinOp::Mul, getl("count"), i32c(16)))] }, i32c(4)),
+            },
+            N::Store { ptr: b(BinOp::Sub, getl("new"), i32c(4)), value: i32c(0), kind: Kind::I32, offset: 0 },
+            N::MemoryCopy { dest: getl("new"), src: getl("d"), len: getl("bytes") },
+            N::If {
+                cond: getl("present"),
+                then_: vec![N::Store { ptr: entry("new", getl("found")), value: getl("v"), kind: Kind::I64, offset: 12 }],
+                els: vec![
+                    N::Store { ptr: getl("new"), value: b(BinOp::Add, getl("count"), i32c(1)), kind: Kind::I32, offset: 0 },
+                    N::Store { ptr: entry("new", getl("count")), value: getl("k"), kind: Kind::I64, offset: 4 },
+                    N::Store { ptr: entry("new", getl("count")), value: getl("v"), kind: Kind::I64, offset: 12 },
+                ],
+                result: None,
+            },
+            N::Push(getl("new")),
+            N::Push(getl("present")),
+            N::Push(getl("old")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// `$dict_insert_cap(d, k, v, mode, cap) -> (i32, i32)` — the in-place dict upsert.
 /// With owned entry slack (`cap`, the shadow-local capacity), an existing key
 /// updates its value slot in place and a new key appends an entry (count+1),
@@ -963,6 +1027,69 @@ pub fn dict_remove_helper() -> WirFunc {
             // and already advanced `$heap`, so the count-n slack stays reserved for a
             // later in-place insert — no manual bump.
             N::Push(getl("new")),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$dict_remove_extract(d, k, mode) -> (dict, present, old-slot)` — locate the
+/// entry once, return its old value, and repair insertion order by copying the
+/// two ranges around the selected index.
+pub fn dict_remove_extract_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let i64c = E::ConstI64;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let entry = |base: &str, index: E| b(BinOp::Add, getl(base), b(BinOp::Mul, index, i32c(16)));
+    WirFunc {
+        name: "dict_remove_extract".into(),
+        params: vec![
+            WirLocal { name: "d".into(), ty: WirTy::Bool },
+            WirLocal { name: "k".into(), ty: WirTy::Int },
+            WirLocal { name: "mode".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool, WirTy::Bool, WirTy::Int],
+        locals: ["count", "found", "present", "new", "prefix", "suffix"]
+            .iter()
+            .map(|name| WirLocal { name: (*name).into(), ty: WirTy::Bool })
+            .chain(std::iter::once(WirLocal { name: "old".into(), ty: WirTy::Int }))
+            .collect(),
+        body: vec![
+            N::SetLocal { local: "count".into(), value: E::Load { ptr: Box::new(getl("d")), kind: Kind::I32, offset: 0 } },
+            N::SetLocal { local: "found".into(), value: E::Call { func: "dict_find".into(), args: vec![getl("d"), getl("k"), getl("mode")] } },
+            N::SetLocal { local: "present".into(), value: b(BinOp::Ge, getl("found"), i32c(0)) },
+            N::SetLocal { local: "old".into(), value: i64c(0) },
+            N::SetLocal {
+                local: "new".into(),
+                value: b(BinOp::Add, E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(8), b(BinOp::Mul, getl("count"), i32c(16)))] }, i32c(4)),
+            },
+            N::Store { ptr: b(BinOp::Sub, getl("new"), i32c(4)), value: i32c(0), kind: Kind::I32, offset: 0 },
+            N::If {
+                cond: getl("present"),
+                then_: vec![
+                    N::SetLocal { local: "old".into(), value: E::Load { ptr: Box::new(entry("d", getl("found"))), kind: Kind::I64, offset: 12 } },
+                    N::SetLocal { local: "prefix".into(), value: b(BinOp::Mul, getl("found"), i32c(16)) },
+                    N::SetLocal { local: "suffix".into(), value: b(BinOp::Mul, b(BinOp::Sub, b(BinOp::Sub, getl("count"), getl("found")), i32c(1)), i32c(16)) },
+                    N::Store { ptr: getl("new"), value: b(BinOp::Sub, getl("count"), i32c(1)), kind: Kind::I32, offset: 0 },
+                    N::MemoryCopy { dest: b(BinOp::Add, getl("new"), i32c(4)), src: b(BinOp::Add, getl("d"), i32c(4)), len: getl("prefix") },
+                    N::MemoryCopy {
+                        dest: b(BinOp::Add, b(BinOp::Add, getl("new"), i32c(4)), getl("prefix")),
+                        src: b(BinOp::Add, entry("d", b(BinOp::Add, getl("found"), i32c(1))), i32c(4)),
+                        len: getl("suffix"),
+                    },
+                ],
+                els: vec![N::MemoryCopy {
+                    dest: getl("new"),
+                    src: getl("d"),
+                    len: b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("count"), i32c(16))),
+                }],
+                result: None,
+            },
+            N::Push(getl("new")),
+            N::Push(getl("present")),
+            N::Push(getl("old")),
         ],
         raw_body: None,
     }

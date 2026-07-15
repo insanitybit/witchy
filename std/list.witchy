@@ -31,6 +31,11 @@ pub fn at(xs: List(a), index: Int) -> a:
 fn __push(xs: List(a), x: a) -> List(a):
     list.__push(xs, x)
 
+// Remove the final element and return the repaired list plus the old leaf.
+// The native primitive performs selection and repair together.
+fn __pop_extract(xs: List(a)) -> (List(a), Option(a)):
+    list.__pop_extract(xs)
+
 // Append `x` in place.
 pub fn push(var xs: List(a), x: a) -> Nil:
     xs = list.__push(xs, x)
@@ -662,13 +667,9 @@ pub fn update_at(var xs: List(a), index: Int, f: fn(a) -> a) -> Nil:
     return
 
 pub fn pop(var xs: List(a)) -> Option(a):
-    let n = list.length(xs)
-    if n == 0:
-        None
-    else:
-        let value = list.at(xs, n - 1)
-        xs = take(xs, n - 1)
-        Some(value)
+    let (next, old) = list.__pop_extract(xs)
+    xs = next
+    old
 
 pub fn pop_front(var xs: List(a)) -> Option(a):
     if list.length(xs) == 0:

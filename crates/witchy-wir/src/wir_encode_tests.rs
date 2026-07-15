@@ -1578,6 +1578,134 @@
         assert_agrees(&module, &["111", "200", "-1", "1", "0", "2"]);
     }
 
+    /// RFC-0088's dictionary oracle counts structural search invocations, not
+    /// key comparisons. A test double for `$dict_find` returns a configured
+    /// entry position and increments `searches`; every present/missing insert
+    /// and remove must consume exactly one result.
+    #[test]
+    fn dict_extract_helpers_perform_one_semantic_search() {
+        use crate::wir_helpers::{
+            bump_alloc_helper, dict_insert_extract_helper, dict_remove_extract_helper,
+            ensure_helper, rc_alloc_helper,
+        };
+        let gl = |name: &str| WirExpr::GetLocal(name.into());
+        let gi = |name: &str| WirExpr::GetGlobal(name.into());
+        let pi = |value: WirExpr| {
+            WirNode::Do(WirExpr::CallHost { import: "print_int".into(), args: vec![value] })
+        };
+        let i32_to_i64 = |value: WirExpr| WirExpr::Convert {
+            from: Kind::I32,
+            to: Kind::I64,
+            arg: Box::new(value),
+        };
+        let find = WirFunc {
+            name: "dict_find".into(),
+            params: vec![
+                local("d", WirTy::Bool),
+                local("k", WirTy::Int),
+                local("mode", WirTy::Bool),
+            ],
+            ret: vec![WirTy::Bool],
+            locals: vec![],
+            body: vec![
+                WirNode::SetGlobal {
+                    global: "searches".into(),
+                    value: WirExpr::Binary {
+                        op: BinOp::Add,
+                        kind: Kind::I64,
+                        lhs: Box::new(gi("searches")),
+                        rhs: Box::new(WirExpr::ConstI64(1)),
+                    },
+                },
+                WirNode::Push(gi("find_result")),
+            ],
+            raw_body: None,
+        };
+        let mut body = vec![
+            // One-entry source dictionary at 2048: key=7, value=70.
+            WirNode::Store { ptr: WirExpr::ConstI32(2044), value: WirExpr::ConstI32(0), kind: Kind::I32, offset: 0 },
+            WirNode::Store { ptr: WirExpr::ConstI32(2048), value: WirExpr::ConstI32(1), kind: Kind::I32, offset: 0 },
+            WirNode::Store { ptr: WirExpr::ConstI32(2048), value: WirExpr::ConstI64(7), kind: Kind::I64, offset: 4 },
+            WirNode::Store { ptr: WirExpr::ConstI32(2048), value: WirExpr::ConstI64(70), kind: Kind::I64, offset: 12 },
+        ];
+        let mut probe = |helper: &str, find_result: i32, args: Vec<WirExpr>| {
+            body.extend([
+                WirNode::SetGlobal { global: "searches".into(), value: WirExpr::ConstI64(0) },
+                WirNode::SetGlobal { global: "find_result".into(), value: WirExpr::ConstI32(find_result) },
+                WirNode::CallStoreMulti {
+                    func: helper.into(),
+                    args,
+                    dests: vec!["out".into(), "present".into(), "old".into()],
+                },
+                pi(gi("searches")),
+                pi(i32_to_i64(gl("present"))),
+                pi(gl("old")),
+                pi(i32_to_i64(WirExpr::Load { ptr: Box::new(gl("out")), kind: Kind::I32, offset: 0 })),
+            ]);
+        };
+        probe(
+            "dict_insert_extract",
+            0,
+            vec![WirExpr::ConstI32(2048), WirExpr::ConstI64(7), WirExpr::ConstI64(71), WirExpr::ConstI32(0)],
+        );
+        probe(
+            "dict_insert_extract",
+            -1,
+            vec![WirExpr::ConstI32(2048), WirExpr::ConstI64(8), WirExpr::ConstI64(80), WirExpr::ConstI32(0)],
+        );
+        probe(
+            "dict_remove_extract",
+            0,
+            vec![WirExpr::ConstI32(2048), WirExpr::ConstI64(7), WirExpr::ConstI32(0)],
+        );
+        probe(
+            "dict_remove_extract",
+            -1,
+            vec![WirExpr::ConstI32(2048), WirExpr::ConstI64(9), WirExpr::ConstI32(0)],
+        );
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![local("out", WirTy::Bool), local("present", WirTy::Bool), local("old", WirTy::Int)],
+            body,
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport { name: "print_int".into(), params: vec![Kind::I64], results: vec![] }],
+            funcs: vec![
+                ensure_helper(false),
+                bump_alloc_helper(),
+                rc_alloc_helper(),
+                find,
+                dict_insert_extract_helper(),
+                dict_remove_extract_helper(),
+                run,
+            ],
+            memory_pages: 1,
+            data: vec![],
+            globals: vec![
+                WirGlobal { name: "heap".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(4096), export: None },
+                WirGlobal { name: "rc_freelist".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(0), export: None },
+                WirGlobal { name: "__rc_reused_bytes".into(), kind: Kind::I64, mutable: true, init: GlobalInit::I64(0), export: None },
+                WirGlobal { name: "__witchy_live_cells".into(), kind: Kind::I64, mutable: true, init: GlobalInit::I64(0), export: None },
+                WirGlobal { name: "searches".into(), kind: Kind::I64, mutable: true, init: GlobalInit::I64(0), export: None },
+                WirGlobal { name: "find_result".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(0), export: None },
+            ],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        assert_agrees(
+            &module,
+            &[
+                "1", "1", "70", "1",
+                "1", "0", "0", "2",
+                "1", "1", "70", "0",
+                "1", "0", "0", "1",
+            ],
+        );
+    }
+
     #[test]
     fn dict_keys_values_remove_int_keys() {
         use crate::wir_helpers::{
