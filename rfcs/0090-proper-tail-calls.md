@@ -10,7 +10,7 @@ related:
   - "0083 (opt-mode lifetimes - loans must end or transfer across a tail edge)"
   - "0087 (uniform var write-back - move-out is part of the callable ABI)"
   - "0089 (fully in-place functional kernels - requires constant control stack)"
-tracking: stages 1-2 are implemented; stage 3 covers specialized direct calls, scalar closure-table cycles, and direct capability/reference results, while indirect reference signatures remain gated by RFC-0005's typed closure ABI
+tracking: stages 1-2 are implemented; stage 3's genuinely-indirect proper tail calls are now complete — the typed closure ABI it was gated on landed (2026-07-15, commit cb911f8a), and a recursive cycle through a function value lowers to the portable trampoline SCC dispatcher (wasm_tail_call(false)) with exact reference-bearing signatures. Evidenced on both backends by tests/rfc0090_indirect_tail.rs: a scalar closure-table cycle at 5,000,000 transitions (constant stack), plus indirect cycles carrying an ExternRef parameter, a GcRef tuple parameter, a reference-valued result, and a mixed scalar/reference signature — none boxed through an i64 slot; simultaneous rebind across an argument swap; an out-of-component target as an ordinary indirect exit; and a near-tail residual left un-rewritten. Structural WIR proofs in wir_opt_tests.rs show the reference-carrying dispatcher retains no recursive direct-call edge (the continuation is the trampoline Loop) and stages the table index in one local (index evaluated once per transition). Still open before status can leave `planned`: RFC-0087 multi-result nested-place tail lowering (criterion 7) and async-segment / RFC-0083 loan transfer-or-end cases (criterion 9)
 ---
 
 # RFC-0090: Guaranteed proper tail calls

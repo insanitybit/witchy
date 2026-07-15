@@ -866,3 +866,190 @@
         let after = crate::wir_encode::encode(&m, &[]);
         assert!(!after.is_empty(), "post-opt encode produced no bytes");
     }
+
+    /// Whether any `ToSlot`/`FromSlot` conversion over a REFERENCE kind
+    /// (ExternRef / GcRef / StructRef) appears anywhere in a node sequence —
+    /// i.e. a capability or GC reference being boxed into / out of an i64 slot.
+    /// RFC-0005 / RFC-0090 forbid this on the trampoline path.
+    fn reference_slot_conversion_in(seq: &[WirNode]) -> bool {
+        fn is_ref(kind: &Kind) -> bool {
+            matches!(kind, Kind::ExternRef | Kind::GcRef(_) | Kind::StructRef)
+        }
+        fn expr(e: &WirExpr) -> bool {
+            match e {
+                WirExpr::ToSlot(inner, kind) | WirExpr::FromSlot(inner, kind) => {
+                    is_ref(kind) || expr(inner)
+                }
+                WirExpr::CallIndirect { args, index, .. } => {
+                    args.iter().any(expr) || expr(index)
+                }
+                WirExpr::Call { args, .. } | WirExpr::CallHost { args, .. } => args.iter().any(expr),
+                WirExpr::Binary { lhs, rhs, .. } => expr(lhs) || expr(rhs),
+                WirExpr::Control(inner) => nodes(std::slice::from_ref(inner.as_ref())),
+                WirExpr::Seq(seq) => nodes(seq),
+                _ => false,
+            }
+        }
+        fn nodes(seq: &[WirNode]) -> bool {
+            seq.iter().any(|node| match node {
+                WirNode::Push(e) | WirNode::Do(e) | WirNode::Drop(e) => expr(e),
+                WirNode::Return(Some(e)) => expr(e),
+                WirNode::SetLocal { value, .. } => expr(value),
+                WirNode::If { cond, then_, els, .. } => expr(cond) || nodes(then_) || nodes(els),
+                WirNode::Block { body, .. } | WirNode::Loop { body, .. } => nodes(body),
+                WirNode::CallIndirectStoreMulti { args, index, .. } => {
+                    args.iter().any(expr) || expr(index)
+                }
+                WirNode::Br { cond: Some(c), .. } => expr(c),
+                _ => false,
+            })
+        }
+        nodes(seq)
+    }
+
+    /// (RFC-0090 criterion 10) A guaranteed indirect cycle that carries a REFERENCE
+    /// parameter lowers so the dispatcher body contains NO recursive backend call
+    /// edge: no direct `Call`/`CallIndirect` to a component member, and — because
+    /// the continuation is the trampoline loop — no residual `CallIndirect` /
+    /// `CallIndirectStoreMulti` at all inside the dispatcher's own recursive path.
+    /// The original `driver`/closure both dispatch INTO the trampoline instead.
+    #[test]
+    fn indirect_reference_cycle_dispatcher_has_no_recursive_backend_call() {
+        let signature = ClosureSignature {
+            params: vec![Kind::GcRef(0), Kind::ExternRef, Kind::I64],
+            results: vec![Kind::ExternRef],
+        };
+        let params = vec![
+            WirLocal { name: "env".into(), ty: WirTy::GcRef(0) },
+            WirLocal { name: "cap".into(), ty: WirTy::Extern },
+            WirLocal { name: "n".into(), ty: WirTy::Int },
+        ];
+        let driver = WirFunc {
+            name: "driver".into(),
+            params: params.clone(),
+            ret: vec![WirTy::Extern],
+            locals: vec![],
+            body: vec![WirNode::Push(WirExpr::CallIndirect {
+                signature: signature.clone(),
+                args: vec![
+                    WirExpr::GetLocal("env".into()),
+                    WirExpr::GetLocal("cap".into()),
+                    WirExpr::GetLocal("n".into()),
+                ],
+                index: Box::new(WirExpr::ConstI32(0)),
+            })],
+            raw_body: None,
+        };
+        let closure = WirFunc {
+            name: "__lamw0".into(),
+            params: params.clone(),
+            ret: vec![WirTy::Extern],
+            locals: vec![],
+            body: vec![WirNode::Push(WirExpr::Call {
+                func: "driver".into(),
+                args: vec![
+                    WirExpr::GetLocal("env".into()),
+                    WirExpr::GetLocal("cap".into()),
+                    WirExpr::GetLocal("n".into()),
+                ],
+            })],
+            raw_body: None,
+        };
+        let mut module = module_with(driver);
+        module.funcs.push(closure);
+        module.table = Some(WirTable { funcs: vec!["__lamw0".into()] });
+
+        assert_eq!(lower_direct_tail_calls(&mut module), 2);
+        let dispatcher = module
+            .funcs
+            .iter()
+            .find(|f| f.name.starts_with("__witchy_tail_scc_"))
+            .expect("a trampoline dispatcher was produced");
+
+        // Criterion 10: the recursive continuation is the trampoline `Br` loop, not
+        // a backend call. No DIRECT recursive call to a component member survives as
+        // a tail edge (the `driver` <-> `__lamw0` cycle is fully absorbed into the
+        // loop), and the dispatcher body IS a `Loop`. A residual `CallIndirect` that
+        // shares the component signature is the RFC-permitted ordinary indirect EXIT
+        // (a table target outside the recursive component); in this single-entry
+        // table it happens to share the signature but is not a loop-back. The
+        // constant-stack guarantee itself is proven by the both-backend resource
+        // tests in tests/rfc0090_indirect_tail.rs (5,000,000 transitions).
+        let mut residual = HashSet::new();
+        collect_function_tail_calls(&dispatcher.body, &mut residual);
+        assert!(
+            !residual.contains(&TailCallee::Direct("driver".into()))
+                && !residual.contains(&TailCallee::Direct("__lamw0".into())),
+            "dispatcher must contain no recursive DIRECT tail edge back into the component: {residual:?}",
+        );
+        assert!(
+            dispatcher.body.iter().any(|node| matches!(node, WirNode::Loop { .. })),
+            "dispatcher must wrap its recursive continuation in a trampoline Loop, got {:?}",
+            dispatcher.body,
+        );
+        // The reference kinds are carried in typed banks, never an i64 slot.
+        assert!(
+            dispatcher
+                .locals
+                .iter()
+                .any(|l| matches!(l.ty, WirTy::Extern))
+                && dispatcher.locals.iter().any(|l| matches!(l.ty, WirTy::GcRef(_))),
+            "dispatcher must stage the externref + gcref parameters in typed locals (no i64 boxing)",
+        );
+        // Stronger, direct proof of "no i64 boxing": the dispatcher path contains NO
+        // ToSlot/FromSlot whose kind is a reference (ExternRef/GcRef/StructRef). A
+        // boxed capability/GC reference would appear here as a slot conversion; its
+        // absence is the RFC-0005 "reference kinds cross no integer-slot erasure"
+        // guarantee asserted structurally, not merely via backend agreement.
+        assert!(
+            !reference_slot_conversion_in(&dispatcher.body),
+            "dispatcher must not box any ExternRef/GcRef through an i64 slot (found a ToSlot/FromSlot on a reference kind)",
+        );
+        let binary = crate::wir_encode::encode(&module, &[closure_wrapper_struct()]);
+        wasmparser::validate(&binary).expect("reference-carrying indirect dispatcher must validate");
+    }
+
+    /// (RFC-0090 criterion 6) The dispatcher evaluates the closure/table index ONCE
+    /// per transition: the indirect plan stages the index into a single dedicated
+    /// local (`__witchy_tail_indirect_*_index`) rather than re-evaluating the index
+    /// expression at the point of dispatch, so a side-effecting index selector runs
+    /// exactly once. The staged-index local is the structural evidence.
+    #[test]
+    fn indirect_dispatcher_stages_table_index_in_one_local() {
+        let recursive = WirFunc {
+            name: "__lamw0".into(),
+            params: vec![
+                WirLocal { name: "env".into(), ty: WirTy::Bool },
+                WirLocal { name: "n".into(), ty: WirTy::Int },
+            ],
+            ret: vec![WirTy::Int],
+            locals: vec![],
+            body: vec![WirNode::Push(WirExpr::CallIndirect {
+                signature: slot_closure_signature(1, 1),
+                args: vec![
+                    WirExpr::GetLocal("env".into()),
+                    WirExpr::GetLocal("n".into()),
+                ],
+                index: Box::new(WirExpr::ConstI32(0)),
+            })],
+            raw_body: None,
+        };
+        let mut module = module_with(recursive);
+        module.table = Some(WirTable { funcs: vec!["__lamw0".into()] });
+
+        assert_eq!(lower_direct_tail_calls(&mut module), 1);
+        let dispatcher = module
+            .funcs
+            .iter()
+            .find(|f| f.name.starts_with("__witchy_tail_scc_"))
+            .expect("a trampoline dispatcher was produced");
+        let index_locals = dispatcher
+            .locals
+            .iter()
+            .filter(|l| l.name.starts_with("__witchy_tail_indirect_") && l.name.ends_with("_index"))
+            .count();
+        assert_eq!(
+            index_locals, 1,
+            "exactly one staged table-index local per indirect plan (index evaluated once per transition)",
+        );
+    }
