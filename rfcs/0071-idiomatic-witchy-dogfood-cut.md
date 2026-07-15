@@ -1,13 +1,10 @@
 ---
 rfc: 0071
 title: "Idiomatic witchy: the house style and the dogfood modernization cut"
-status: accepted
+status: implemented
 created: 2026-07-07
-# Accepted 2026-07-08 with a split: the idiom canon (§1, §3's CONTRIBUTING rule)
-# is effective immediately for all new witchy code; the mechanical sweep (§2)
-# and the fmt-gate flip remain gated on RFC-0070 D8 (fmt round-trip fidelity,
-# BUG-330/331/332) — fmt is the sweep vehicle and currently eats comments.
-tracking: quality audit 2026-07-07 (scratch/audit-2026-07-07-quality/REPORT.md, F1/F2)
+implemented: 2026-07-13
+tracking: "quality audit F1/F2; completed by 430020d7, eb12c33c, d3be4611, and 9fe5457c"
 related:
   - "0022 (place-assignment / statement-form mutators — the idiom this teaches)"
   - "0044 (std error policy — extended here from std to projects/)"
@@ -177,8 +174,16 @@ interpolation, and simple collection scans use `map`/`any`/`fold`. The sweep
 also exposed and fixed BUG-566, which had omitted `projects/docs/*` from the
 focused e2e path map and mislabeled Witchy behavior changes as prose-only.
 
-The RFC remains accepted, not implemented, until glamour receives the same pass
-and `projects/**/src/*.witchy` joins the format gate.
+The final `projects/glamour` slice landed in `430020d7`: its runtime, markdown
+renderer, and examples use statement mutators, tuple binders, and interpolation
+for presentation strings while preserving generated HTML/source as explicit
+byte assembly. The remaining PM cleanup landed in `eb12c33c`.
+
+The prevention mechanisms are also active. `d3be4611` added
+`projects/**/src/*.witchy` to the repository-wide `witchy fmt --check` gate, and
+`9fe5457c` bound contributors to the executable idiom canon in
+`CONTRIBUTING.md`. With every project slice and both enforcement surfaces in
+master, the RFC is implemented.
 
 ### Verification
 
