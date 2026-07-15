@@ -52,6 +52,7 @@ use witchy_syntax::ast::{
     collect_type_vars, BinOp, Block, Convention, Expr, Function, Item, MatchArm, Module, Param,
     Pattern, Stmt, Type, UnOp,
 };
+use witchy_types::storage::externref_cap_name;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CodegenError {
@@ -264,9 +265,7 @@ fn ty_kind(t: &Type) -> Kind {
     match t {
         Type::Named(n, _) if n == "Float" => Kind::F64,
         Type::Named(n, _) if n == "Int" || n == "Duration" => Kind::I64,
-        Type::Named(n, _)
-            if matches!(n.as_str(), "Dir" | "File" | "Net" | "Socket" | "Listener" | "Secret") =>
-        {
+        Type::Named(n, _) if externref_cap_name(n).is_some() => {
             Kind::ExternRef
         }
         _ => Kind::I32,
@@ -274,7 +273,7 @@ fn ty_kind(t: &Type) -> Kind {
 }
 
 fn is_builtin_externref_type(n: &str) -> bool {
-    matches!(n, "Dir" | "File" | "Net" | "Socket" | "Listener" | "Secret")
+    externref_cap_name(n).is_some()
 }
 
 /// A finer source-level value type than `Kind`, used where i32 alone is

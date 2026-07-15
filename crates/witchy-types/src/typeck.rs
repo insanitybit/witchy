@@ -24,6 +24,8 @@ use witchy_syntax::ast::{
 use witchy_syntax::build_entry::{build_entrypoint, is_build_capability_type};
 use witchy_syntax::{cap_ops, intrinsics};
 
+use crate::storage::externref_cap_name;
+
 /// The operations a `Dir` capability permits. Decomposing the capability by
 /// right makes the footprint distinguish read-only from writing code, and an op
 /// that needs a right it wasn't granted is a compile-time error. Bare `Dir` is
@@ -1818,16 +1820,30 @@ fn is_externref_cap(name: &str) -> bool {
     externref_cap_name(name).is_some()
 }
 
-fn externref_cap_name(name: &str) -> Option<&'static str> {
-    match name {
-        "Dir" => Some("Dir"),
-        "File" => Some("File"),
-        "Net" => Some("Net"),
-        "Socket" => Some("Socket"),
-        "Listener" => Some("Listener"),
-        "Secret" => Some("Secret"),
-        _ => None,
-    }
+/// Route every inferred capability variant through the same source-level
+/// externref set used by boundary checking and compiled lowering. Adding an
+/// existing capability kind to that set therefore updates all three paths.
+fn ty_externref_cap_name(ty: &Ty) -> Option<&'static str> {
+    let name = match ty {
+        Ty::Console => "Console",
+        Ty::Clock => "Clock",
+        Ty::Rand => "Rand",
+        Ty::Env => "Env",
+        Ty::Secret => "Secret",
+        Ty::Exec => "Exec",
+        Ty::Dir(_) => "Dir",
+        Ty::File(_) => "File",
+        Ty::Net(_) => "Net",
+        Ty::Socket => "Socket",
+        Ty::Listener => "Listener",
+        Ty::BuildOut => "BuildOut",
+        Ty::BuildRead => "BuildRead",
+        Ty::BuildEnv => "BuildEnv",
+        Ty::BuildNet => "BuildNet",
+        Ty::BuildExec => "BuildExec",
+        _ => return None,
+    };
+    externref_cap_name(name)
 }
 
 fn transparent_externref_brand_cap(
@@ -3371,13 +3387,11 @@ impl Checker {
     /// local bindings.
     fn ty_carries_externref_cap(&self, t: &Ty) -> Option<&'static str> {
         fn go(c: &Checker, t: &Ty, seen: &mut HashSet<String>) -> Option<&'static str> {
-            match c.resolve(t) {
-                Ty::Dir(_) => Some("Dir"),
-                Ty::File(_) => Some("File"),
-                Ty::Net(_) => Some("Net"),
-                Ty::Socket => Some("Socket"),
-                Ty::Listener => Some("Listener"),
-                Ty::Secret => Some("Secret"),
+            let resolved = c.resolve(t);
+            if let Some(cap) = ty_externref_cap_name(&resolved) {
+                return Some(cap);
+            }
+            match resolved {
                 Ty::List(inner) => go(c, &inner, seen),
                 Ty::Tuple(items) => items.iter().find_map(|i| go(c, i, seen)),
                 Ty::Fn(params, ret, _) => params
@@ -3402,15 +3416,22 @@ impl Checker {
                     seen.remove(&n);
                     hit
                 }
-                _ => None,
+                Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
+                | Ty::Bool | Ty::Nil | Ty::Console | Ty::Clock | Ty::Rand | Ty::Env
+                | Ty::Secret | Ty::Exec | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
+                | Ty::Socket | Ty::Listener | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv
+                | Ty::BuildNet | Ty::BuildExec | Ty::Var(_) => None,
             }
         }
         go(self, t, &mut HashSet::new())
     }
 
     fn ty_is_direct_externref_value(&self, t: &Ty) -> bool {
-        match self.resolve(t) {
-            Ty::Dir(_) | Ty::File(_) | Ty::Net(_) | Ty::Socket | Ty::Listener | Ty::Secret => true,
+        let resolved = self.resolve(t);
+        if ty_externref_cap_name(&resolved).is_some() {
+            return true;
+        }
+        match resolved {
             Ty::Named(n, args) => args.is_empty() && self.transparent_externref_brands.contains_key(&n),
             _ => false,
         }
