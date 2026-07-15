@@ -458,10 +458,18 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     # build infrastructure (Cargo.toml/lock, .cargo/, build.rs, rust-toolchain).
     # Non-parity (skip): rfcs/, bugs/, docs, scripts/, projects/ (witchy apps
     # that exercise the compiler but can't change its behavior), book/.
+    # --no-renames: with rename detection, `--name-only` reports only the
+    # POST-image path — a `git mv std/foo.witchy rfcs/bar.md` would show up as
+    # nothing but an rfcs/ file and classify as a docs-only diff while
+    # deleting code from master. Listing both sides makes the delete visible.
+    # (`grep -c … >/dev/null` instead of `grep -q`: -q exits at the first
+    # match, and under `set -o pipefail` a >64KiB $changed can then SIGPIPE
+    # the echo — status 141 — misclassifying a matching diff as non-matching.
+    # -c always reads all input.)
     local fuzz_mode="full"
     local changed
-    if changed="$(git -C "$gate_wt" diff --name-only "$base..$sha" 2>/dev/null)" && [ -n "$changed" ]; then
-        if echo "$changed" | grep -qE '^(crates/|std/|src/|examples/|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)'; then
+    if changed="$(git -C "$gate_wt" diff --name-only --no-renames "$base..$sha" 2>/dev/null)" && [ -n "$changed" ]; then
+        if echo "$changed" | grep -cE '^(crates/|std/|src/|examples/|build\.rs|Cargo\.(toml|lock)|\.cargo/|rust-toolchain)' >/dev/null; then
             fuzz_mode="reduced"
         else
             fuzz_mode="skip"
@@ -473,11 +481,14 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     # stages could only re-validate master's already-gated tree — skip them and
     # let post-merge CI's complete run be the backstop. The safe set is
     # deliberately TINY: rfcs/ (except rfcs/performance-modes.md, which
-    # example_tests::documentation_examples_are_valid scans), wiki/, and the
-    # gitignored ledgers (bugs//scratch//security-eval/, which never reach a
-    # diff anyway). Everything else — book/, spec/, README.md, std/, scripts/,
-    # .claude/, .github/, Cargo metadata — runs the full gate. Fail SAFE:
-    # errored/empty diff -> all.
+    # example_tests::public_sources_do_not_call_legacy_render_intrinsic reads —
+    # it panics if that path vanishes), wiki/ and bugs/ (tracked, but read by
+    # no test or gate stage — if a test ever starts reading them, REMOVE them
+    # from this list), and scratch//security-eval/ (gitignored). Everything
+    # else — book/, spec/, README.md, std/, scripts/, .claude/, .github/,
+    # Cargo metadata — runs the full gate. Fail SAFE: errored/empty diff ->
+    # all. The --no-renames above matters doubly here: without it a rename
+    # INTO the safe set would hide the deletion side entirely.
     # (Capture-and-test rather than `grep -qv`: an inverted quiet match is the
     # one grep construct with divergent exit semantics across implementations,
     # e.g. a ugrep-shimmed PATH — and this decision gates merges.)
@@ -487,7 +498,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         unsafe_paths="$(echo "$changed" | grep -vE '^(rfcs/|wiki/|bugs/|scratch/|security-eval/)' || true)"
     fi
     if [ -n "$changed" ] && [ -z "$unsafe_paths" ] \
-        && ! echo "$changed" | grep -qx 'rfcs/performance-modes\.md'; then
+        && ! echo "$changed" | grep -cx 'rfcs/performance-modes\.md' >/dev/null; then
         gate_scope="docs"
     fi
 

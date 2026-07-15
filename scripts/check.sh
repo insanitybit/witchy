@@ -97,7 +97,9 @@ esac
 # Gate scope (WITCHY_GATE_SCOPE, default `all`) — set by the merge-queue
 # coordinator from the batch diff (see merge-queue.sh). `docs` means every
 # changed path is documentation that NO test or gate stage reads (rfcs/ minus
-# the tested rfcs/performance-modes.md, wiki/, and the gitignored ledgers):
+# rfcs/performance-modes.md — which example_tests::
+# public_sources_do_not_call_legacy_render_intrinsic reads — wiki/, bugs/,
+# and the gitignored scratch//security-eval/):
 # such a diff cannot change any gate stage's outcome, so the heavy stages
 # would only re-validate the already-gated master tree. The default merge-gate
 # mode skips them; post-merge CI still runs the complete suite as the
@@ -194,7 +196,7 @@ if [ -n "$shard" ]; then
     exit 0
 fi
 
-# Each stage marker carries its offset from gate start (`==> [2] clippy (t+41s)`),
+# Each stage marker carries its offset from gate start (`==> [1] tests (workspace) (t+0s)`),
 # so a redirected log is enough to see what is running now (merge-queue.sh
 # status/doctor parse these markers), and each stage reports its own duration
 # on completion so slow regressions are visible per stage, not just in total.
@@ -251,26 +253,44 @@ fi
 # restructure optimizes the common all-green path.
 clippy_dir="${target_dir}-clippy"
 seed_clippy_dir() {
+    # `mkdir` is the atomic claim: exactly one concurrent run seeds; any other
+    # sees the dir and uses it as-is (a dir left partially seeded by a killed
+    # cp is safe — cargo treats missing artifacts as a cold cache, so the dir
+    # self-heals on the next run). APFS clonefile (`cp -c`) or reflink where
+    # available: seconds, ~zero disk. Where neither works, the dir stays
+    # empty — a one-time cold clippy.
     [ -d "$clippy_dir" ] && return 0
-    local tmp="$clippy_dir.seed.$$"
-    rm -rf "$tmp"
-    # APFS clonefile (`cp -c`) or reflink where available: seconds, ~zero disk.
-    # Where neither works, fall back to an empty dir — a one-time cold clippy.
-    if [ -d "$target_dir" ] && { cp -Rc "$target_dir" "$tmp" 2>/dev/null \
-            || cp -R --reflink=auto "$target_dir" "$tmp" 2>/dev/null; }; then
-        if [ ! -d "$clippy_dir" ]; then mv "$tmp" "$clippy_dir" 2>/dev/null || rm -rf "$tmp"; else rm -rf "$tmp"; fi
-    else
-        rm -rf "$tmp"
-        mkdir -p "$clippy_dir"
+    mkdir "$clippy_dir" 2>/dev/null || return 0
+    if [ -d "$target_dir" ]; then
+        cp -Rc "$target_dir/." "$clippy_dir/" 2>/dev/null \
+            || cp -R --reflink=auto "$target_dir/." "$clippy_dir/" 2>/dev/null \
+            || true
     fi
 }
 clippy_log="$(mktemp "${TMPDIR:-/tmp}/witchy-clippy-XXXXXX")"
-( seed_clippy_dir && CARGO_TARGET_DIR="$clippy_dir" cargo clippy --workspace --all-targets -- -D warnings ) >"$clippy_log" 2>&1 &
+( seed_clippy_dir && exec env CARGO_TARGET_DIR="$clippy_dir" cargo clippy --workspace --all-targets -- -D warnings ) >"$clippy_log" 2>&1 &
 clippy_pid=$!
 
 wasm_log="$(mktemp "${TMPDIR:-/tmp}/witchy-wasm-XXXXXX")"
-( "${wasm_cargo[@]}" build --lib --no-default-features --target wasm32-unknown-unknown >"$wasm_log" 2>&1 ) &
+( exec "${wasm_cargo[@]}" build --lib --no-default-features --target wasm32-unknown-unknown ) >"$wasm_log" 2>&1 &
 wasm_pid=$!
+
+# Reap the background legs on ANY exit — green, red at tests/fmt, or a failed
+# collect. The `exec` above makes each leg's recorded pid BE its cargo
+# process, so the kill reaches the build itself (its rustc children sit in
+# the surrounding process group, which the coordinator's timeout kill already
+# covers). Without this, a red foreground stage abandoned live cargo
+# processes that kept building while the coordinator rebased the next
+# candidate in the same worktree. collect_bg clears each pid after reaping
+# it: a waited-on pid may be recycled by the OS and must never be signalled.
+reap_bg() {
+    [ -n "${clippy_pid:-}" ] && kill "$clippy_pid" 2>/dev/null || true
+    [ -n "${wasm_pid:-}" ] && kill "$wasm_pid" 2>/dev/null || true
+    rm -f "${clippy_log:-}" "${wasm_log:-}"
+    return 0
+}
+trap reap_bg EXIT
+trap 'exit 143' TERM INT
 
 run "tests (workspace)"        "${test_cmd[@]}"
 run "witchy fmt (std+examples)" witchy_fmt_check
@@ -292,7 +312,9 @@ collect_bg() { # collect_bg <label> <pid> <log>
     printf '\033[1;34m    [%d] %s took %ds\033[0m\n' "$step" "$label" "$(( $(date +%s) - t_collect ))"
 }
 collect_bg "clippy (deny warnings)"   "$clippy_pid" "$clippy_log"
+clippy_pid=""
 collect_bg "wasm playground build"    "$wasm_pid"   "$wasm_log"
+wasm_pid=""
 
 run "runnable book (browser)"  validate_runnable_book
 if [ "$full" -eq 1 ]; then

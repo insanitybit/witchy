@@ -133,8 +133,10 @@ net — only its position. Standalone `check.sh` (no env set) runs `full`.
 
 **Diff-scoped gate (docs-only).** The same classification also sets
 `WITCHY_GATE_SCOPE`: when EVERY changed path in the batch diff is documentation
-no test or gate stage reads — `rfcs/` (except the tested
-`rfcs/performance-modes.md`), `wiki/`, and the gitignored ledgers — check.sh
+no test or gate stage reads — `rfcs/` (except `rfcs/performance-modes.md`,
+which `example_tests::public_sources_do_not_call_legacy_render_intrinsic`
+reads), `wiki/` and `bugs/` (tracked but read by nothing), and the gitignored
+`scratch/`/`security-eval/` — check.sh
 skips the heavy stages entirely (`scope=docs` in the gating note): such a diff
 cannot change any stage's outcome, so the suite would only re-validate the
 already-gated master tree, and post-merge CI still runs the complete suite as
