@@ -97,9 +97,9 @@
 
     #[test]
     fn materializing_with_owned_ends_the_loan() {
-        // `owned(w)` copies out, so the owner is free to mutate afterward. (Named
-        // `owned` — the loan checker treats any `owned` call on the view as the
-        // materialization that ends its loan; std spells it `func.owned`.)
+        // `owned(w)` returns an OWNED value (opens no loan) and is the view's last
+        // use, so the owner is free to mutate afterward. Detection is purely
+        // result-position, not by callee name; the std spelling is `w.owned()`.
         check_str(&opt(
             "    var s = \"hi\"\n    let w = borrow(s)\n    let keep = owned(w)\n    s = \"x\"\n    console.print(keep)\n    console.print(s)\n",
         ))
@@ -194,7 +194,7 @@
     fn materialization_does_not_open_a_loan() {
         // `owned(borrow(s))` — the OUTER call returns an owned value, so the RHS is
         // not a view and no loan opens; mutating the owner right after is fine.
-        // (`owned` here returns its argument, standing in for `func.owned`.)
+        // (`owned` here returns its argument, standing in for the std `w.owned()`.)
         let src = "mode opt\n\n\
              fn borrow(text: let('a) String) -> View(String, 'a):\n    text\n\n\
              fn owned(x: String) -> String:\n    x\n\n\

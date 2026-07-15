@@ -220,7 +220,7 @@ impl LoanCtx<'_> {
     /// `if`/`while`/`match` arm still get caught). Loans OPENED in this block are
     /// last-use scoped: dropped once the view is not mentioned again in the
     /// remaining statements of this block — a sound non-lexical window. There is no
-    /// `.owned()` special case: `func.owned(view)` returns an OWNED type (it opens
+    /// `.owned()` special case: `view.owned()` returns an OWNED type (it opens
     /// no loan) and is the view's last use, so last-use ends the loan on its own.
     fn check_block_with(&mut self, block: &Block, inherited: &[Loan]) -> Result<(), TypeError> {
         let mut local: Vec<Loan> = Vec::new();
@@ -258,12 +258,12 @@ impl LoanCtx<'_> {
 
     /// The owners a `let` right-hand side borrows — a RESULT-position analysis: a
     /// loan opens only when the value the binding receives IS a view. So
-    /// `wrapper(s)` (returns a view of `s`) borrows `s`, but `func.owned(borrow(s))`
-    /// borrows nothing — its outer call returns an OWNED value, and the transient
-    /// inner view is consumed, not bound. This is exactly why materialization opens
-    /// no loan and needs no special case. Traced through view-returning call
-    /// results (including nested owner arguments that are themselves views) and the
-    /// tails of an `if`/`match`/block.
+    /// `wrapper(s)` (returns a view of `s`) borrows `s`, but `borrow(s).owned()`
+    /// borrows nothing — the outer `owned` call returns an OWNED value, and the
+    /// transient inner view is consumed, not bound. This is exactly why
+    /// materialization opens no loan and needs no special case. Traced through
+    /// view-returning call results (including nested owner arguments that are
+    /// themselves views) and the tails of an `if`/`match`/block.
     fn borrow_sources(&self, value: &Expr) -> Vec<BorrowSource> {
         let mut out: Vec<BorrowSource> = Vec::new();
         let mut seen: Vec<(String, String)> = Vec::new();
@@ -284,7 +284,7 @@ impl LoanCtx<'_> {
             Expr::Call { name: callee, args } => {
                 let Some(sig) = self.sigs.get(callee) else { return };
                 if !sig.returns_view {
-                    return; // an owned result (e.g. `func.owned(..)`) borrows nothing
+                    return; // an owned result (e.g. `view.owned()`) borrows nothing
                 }
                 for &i in &sig.owner_params {
                     let Some(arg) = args.get(i) else { continue };
@@ -422,7 +422,7 @@ impl LoanCtx<'_> {
         terr(format!(
             "in `{}`: owner `{}` is {what} while the borrowed view `{}` (from `{}`) is still \
              live — a view keeps its owner borrowed until its last use. End the view's use \
-             first, or materialize it with `func.owned({})` before touching `{}`",
+             first, or materialize it with `{}.owned()` before touching `{}`",
             short_name(self.fn_name),
             loan.owner,
             loan.view,
@@ -436,7 +436,7 @@ impl LoanCtx<'_> {
         terr(format!(
             "in `{}`: the borrowed view `{}` (from `{}`) escapes through a closure, task, or \
              channel while it still borrows `{}` — a view cannot outlive its owner. \
-             Materialize it with `func.owned({})` first to send an owned value",
+             Materialize it with `{}.owned()` first to send an owned value",
             short_name(self.fn_name),
             loan.view,
             short_name(&loan.origin),
@@ -447,9 +447,10 @@ impl LoanCtx<'_> {
 }
 
 /// Whether a statement mentions the variable `name` anywhere (read or write).
-/// Because `func.owned(view)` returns an OWNED value (it opens no loan) and is a
-/// mention of `view`, a `let keep = func.owned(view)` is the view's last use — so
-/// last-use ending handles materialization with no name-based special case.
+/// Because `view.owned()` returns an OWNED value (its blanket `Owned` impl returns
+/// `Self`, so it opens no loan) and is a mention of `view`, a `let keep =
+/// view.owned()` is the view's last use — so last-use ending handles
+/// materialization with no name-based special case.
 fn stmt_mentions(stmt: &Stmt, name: &str) -> bool {
     let mut found = false;
     walk_stmt_exprs(stmt, &mut |e| {

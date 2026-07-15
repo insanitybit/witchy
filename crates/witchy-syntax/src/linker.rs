@@ -152,7 +152,7 @@ pub const STD_MODULES: &[&str] = &[
     "show", "http", "json", "url", "duration", "prng", "regex", "crypto", "compiler", "toml",
     "iter", "semver", "rights", "fs", "dict", "time", "encoding", "path", "testing",
     "future", "task", "chan", "webauthn", "secretstore", "reflect", "meta", "convert", "exec",
-    "policy", "jwt", "oauth", "rand", "vm", "bytes", "error",
+    "policy", "jwt", "oauth", "rand", "vm", "bytes", "error", "borrow",
 ];
 
 /// Bundled modules linked into every program and usable without an explicit
@@ -365,6 +365,7 @@ pub fn std_source(name: &str) -> Option<&'static str> {
         "result" => Some(include_str!("../../../std/result.witchy")),
         "option" => Some(include_str!("../../../std/option.witchy")),
         "func" => Some(include_str!("../../../std/func.witchy")),
+        "borrow" => Some(include_str!("../../../std/borrow.witchy")),
         "convert" => Some(include_str!("../../../std/convert.witchy")),
         "cmp" => Some(include_str!("../../../std/cmp.witchy")),
         "testing" => Some(include_str!("../../../std/testing.witchy")),

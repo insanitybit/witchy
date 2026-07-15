@@ -24,6 +24,22 @@ The numeric value of a single decimal digit as `Some`, or `None` when `c` is not
 
 True when `s` is non-empty and every character is an ASCII digit — a safe guard before `string_to_int`, which traps on non-numeric input.
 
+## `borrow`
+
+Materialization for RFC-0083 borrowed views. `value.owned()` copies a borrowed `View(T, 'a)` into an owned `T`, ending the view's borrow of its owner so the owner may be mutated or moved again.
+
+A view has no runtime representation — it is already its owned inner value — so `owned` is the identity at runtime on both backends. Its role is entirely at compile time: it is the escape hatch the RFC-0083 loan checker recognizes (an owned result opens no loan and is the view's last use). It is a blanket impl over any type, so it dispatches through the ordinary typed method path (RFC-0046) with no special-case machinery — the same shape as `std/convert`'s `Into`. On a non-view value it is a plain identity. (This module is named `borrow`, not `own`, because `own` is the parameter-convention keyword and so cannot be a module name.)
+
+#### `trait Owned`
+
+- `fn owned(self) -> Self`
+
+### Trait implementations
+
+#### `impl Owned for a`
+
+- `fn owned(self) -> Self`
+
 ## `bytes`
 
 std/bytes — immutable byte buffers.
@@ -1035,10 +1051,6 @@ The witchy standard function-combinator library. Pure and capability-free. With 
 #### `fn identity(x: a) -> a`
 
 Return the argument unchanged.
-
-#### `fn owned(x: a) -> a`
-
-Materialize a borrowed view (RFC-0083) into an owned value, ending the view's borrow of its owner. A view has no runtime representation — it is already its owned inner value — so this is the identity at runtime on both backends; its role is the source-level escape hatch that ends a loan (`text.owned()`) so the owner may be mutated or moved again. Outside `mode opt` it is a plain identity.
 
 #### `fn compose(f: fn(b) -> c, g: fn(a) -> b) -> fn(a) -> c`
 

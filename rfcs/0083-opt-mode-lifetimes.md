@@ -10,13 +10,13 @@ tracking: >
   representation — erased to the owned type before both backends, parity by
   construction); signature relations validated and carried across calls / trait
   dispatch / function values / module boundaries; per-caller owner loans with
-  non-lexical last-use and `func.owned(view)` materialization; rejection of owner
-  move / mutate / reassign / `var`|`own` write-back / closure|task|channel escape
-  while a view is live (`crates/witchy-types/src/loans.rs`). NOT YET DONE (next
-  phase): compiled-backend owner rooting / host leases (acceptance 5), ownership-
-  analysis treating a live loan as non-unique for in-place update/extraction
-  (acceptance 6), and the `view.owned()` method-call spelling (blocked on generic
-  free-function UFCS; the free-call `func.owned(view)` is the phase-1 spelling).
+  non-lexical last-use and `view.owned()` materialization (a blanket-impl `Owned`
+  trait in `std/borrow`, dispatched through the ordinary typed method path — no
+  special dispatch machinery); rejection of owner move / mutate / reassign /
+  `var`|`own` write-back / closure|task|channel escape while a view is live
+  (`crates/witchy-types/src/loans.rs`). NOT YET DONE (next phase): compiled-backend
+  owner rooting / host leases (acceptance 5) and ownership-analysis treating a live
+  loan as non-unique for in-place update/extraction (acceptance 6).
 related:
   - "0029 (optimization contract - missed facts copy or reject in opt mode)"
   - "0087 (uniform var write-back - active returned views block owner write-back)"
@@ -266,8 +266,16 @@ and Cyclone region typing inform this design.
 > - **Criterion 6** — ownership analysis (`witchy-lower`) treating a live loan as
 >   non-unique for in-place update/extraction (RFC-0088 interaction). Needs the
 >   loan facts to flow from typeck into the lowering analysis.
-> - The **`view.owned()` method spelling.** Materialization is `func.owned(view)`
->   in phase 1; the method form is blocked on generic-free-function UFCS dispatch
->   (an `x.method()` on a concrete receiver does not yet resolve to a generic free
->   function — a pre-existing limitation, not specific to views), so it is not a
->   per-method dispatch hack this RFC should add.
+> - Materialization initially spelled `func.owned(view)` (a generic free function);
+>   the `view.owned()` method form was deferred because a generic free function is
+>   not UFCS-callable on a concrete receiver.
+
+> 2026-07-15: `view.owned()` method spelling landed, resolving the deferred item
+> above. It is NOT a UFCS change: `owned` is a blanket-impl trait method (`trait
+> Owned { fn owned(self) -> Self }` + `impl Owned for a` in `std/borrow`), so it
+> dispatches through the ordinary typed method path (RFC-0046) — the same shape as
+> `std/convert`'s `Into`/`.into()` — with no new dispatch machinery and no
+> per-method special case. The loan checker needs no change: `owned` returns `Self`
+> (an owned type), so its result opens no loan and is the view's last use, which is
+> exactly what ends the borrow. The old `func.owned` free function was removed. (The
+> module is `borrow`, not `own`, because `own` is a reserved convention keyword.)

@@ -164,5 +164,27 @@ mutate the owner, pass it to a `var`/`own` parameter, or let the view escape
 through a closure, task, or channel — the checker rejects each with a diagnostic
 that names the owner, the borrowing call, and the fix. The loan ends at the
 view's last use (as above, `s` is free again on the next line) or when you
-materialize an owned copy with `func.owned(view)`. Views are a `mode opt`-only
-tool: normal witchy keeps owned value semantics and never needs the syntax.
+materialize an owned copy with `view.owned()` (from `import borrow`).
+Materializing copies out, so the owner is free immediately even though the owned
+value lives on:
+
+```witchy
+mode opt
+
+import borrow
+
+fn first(text: let('a) String) -> View(String, 'a):
+    text
+
+fn main(console: Console):
+    var s = "borrowed"
+    let kept = first(s).owned()
+    s = "the view is materialized, so the owner is free right away"
+    console.print(kept)
+    console.print(s)
+```
+
+`.owned()` is a blanket-impl trait method (`std/borrow`), so it dispatches through
+the ordinary typed method path — on a view it copies out, and on a non-view value
+it is a plain identity. Views are a `mode opt`-only tool: normal witchy keeps
+owned value semantics and never needs the syntax.
