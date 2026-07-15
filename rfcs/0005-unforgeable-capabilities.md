@@ -559,3 +559,13 @@ The remaining representation work is the typed closure ABI and reference-safe
 closure environments, followed by the still-rejected generic containers,
 generic aggregates, and region copy-out shapes that can transitively store a
 capability.
+
+**2026-07-15 typed-call checkpoint.** Concrete function values now preserve
+`externref` and concrete GC-reference kinds in parameters, results, explicit
+returns, and `var` write-backs on direct, devirtualized, threaded, and indirect
+closure-call paths. Scalar-only function values keep the established i64-slot
+ABI. Type-checker facts select the lifted signature for inferred lambdas, while
+polymorphic named functions fail closed when formed as values pending
+first-class monomorphization. This closes the function-signature half of the
+closure tail; capability-bearing capture environments, isolated callback
+adapters, and function-valued GC aggregates remain open.

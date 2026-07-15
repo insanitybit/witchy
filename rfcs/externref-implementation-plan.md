@@ -631,9 +631,25 @@ its stable reserved type band, while typed signatures can name `externref`,
 encoder checks argument and destination counts against the signature, and the
 proper-tail-call dispatcher stages each operand in a local of its exact kind.
 Tests place same-arity scalar- and GC-environment functions in one table and
-validate a GC-environment indirect tail cycle. This is still source-neutral:
-production closures continue to request the scalar signature until the uniform
-wrapper migration.
+validate a GC-environment indirect tail cycle. That substrate checkpoint was
+source-neutral; the following cut begins selecting exact signatures for source
+function values without changing their scalar closure environment.
+
+The first source-enabling signature cut now selects that exact signature for a
+function value whenever a parameter, declared result, or `var` write-back is an
+`externref` or concrete `GcRef`. Lifted bodies, direct and devirtualized calls,
+`call_indirect`, and explicit returns preserve those kinds. Checker-resolved
+signatures drive inferred lambdas, so an unannotated `fn(x): x` applied to a
+capability cannot fall back to scalar lowering. Scalar-only function values keep
+the established i64-slot ABI.
+
+This does not make environments reference-safe. Capability captures remain
+rejected until the uniform wrapper and per-lambda GC payloads land. A
+polymorphic named function cannot yet be formed as a value, even for a scalar
+instantiation: that path needs first-class monomorphization so the referenced
+body and forwarding closure share one concrete ABI. Direct generic calls remain
+supported. Isolated worker callback adapters and function-valued GC aggregates
+retain their own explicit gates.
 
 The next source-neutral cut adds mutable typed GC arrays to WIR. Structs and
 arrays share one concrete GC type-index band and recursion group before

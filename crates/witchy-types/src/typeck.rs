@@ -1994,7 +1994,7 @@ fn reject_cap_slot_boundary(
                         return Err(TypeError {
                             message: format!(
                                 "`{ctx}`: a function value whose signature carries `{cap}` cannot be \
-                                 held in a tuple in {position} until the typed closure ABI lands"
+                                 held in a tuple in {position} until function-valued GC aggregate lowering lands"
                             ),
                         });
                     }
@@ -2002,7 +2002,7 @@ fn reject_cap_slot_boundary(
                         return Err(TypeError {
                             message: format!(
                                 "`{ctx}`: a tuple carrying `{cap}` cannot also hold a function value \
-                                 in {position} until the typed closure ABI lands"
+                                 in {position} until function-valued GC aggregate lowering lands"
                             ),
                         });
                     }
@@ -2013,12 +2013,10 @@ fn reject_cap_slot_boundary(
                 .try_for_each(|a| reject_cap_slot_boundary(a, defs, storage, ctx, position))
         }
         ast::Type::Fn(args, ret, _) => {
-            // Function signatures are legal declarations even when they mention a
-            // capability: `std/vm.with_dir` deliberately exposes such a callback
-            // contract. Forming or applying that signature as a first-class value
-            // remains fail-closed in `Checker::infer` until the typed closure ABI
-            // lands. Still recurse so unsupported containers nested in the
-            // signature are diagnosed at their declaration site.
+            // Function signatures may mention capabilities: the typed closure ABI
+            // preserves direct reference parameters and results. Still recurse so
+            // unsupported containers nested in the signature are diagnosed at their
+            // declaration site.
             args.iter()
                 .try_for_each(|a| reject_cap_slot_boundary(a, defs, storage, ctx, position))?;
             reject_cap_slot_boundary(ret, defs, storage, ctx, position)
@@ -2950,8 +2948,8 @@ struct Checker {
     /// can require the enclosing function to return a matching Result/Option.
     current_ret: Option<Ty>,
     /// The callback parameter of an isolated-worker stdlib reference body. The
-    /// wrapper may invoke this parameter directly; user code still cannot form
-    /// the capability-bearing function value in the generic closure ABI.
+    /// wrapper may invoke this parameter directly; the worker adapter still has
+    /// its own capability-bearing callback boundary.
     current_isolated_callback: Option<String>,
     /// (BUG-395 / RFC-0047) The key types of the generic `Dict` key operations
     /// (`dict.insert`/`get_or`/`update`/`contains_key`/`remove`) invoked in the
@@ -3592,19 +3590,10 @@ impl Checker {
                 Ok(())
             }
             Ty::Fn(params, ret, _) => {
-                if let Some(cap) = params
+                params
                     .iter()
-                    .find_map(|p| self.ty_carries_externref_cap(p))
-                    .or_else(|| self.ty_carries_externref_cap(&ret))
-                {
-                    return terr(format!(
-                        "`{ctx}` carries a `{cap}` capability through a function value; \
-                         the current closure ABI boxes arguments as i64 slots, so cap-carrying \
-                         higher-order values require RFC-0005's typed closure/GC lowering — \
-                         pass the capability directly"
-                    ));
-                }
-                Ok(())
+                    .try_for_each(|param| self.reject_externref_cap_aggregate_ty(param, ctx))?;
+                self.reject_externref_cap_aggregate_ty(&ret, ctx)
             }
             Ty::Named(n, args)
                 if !(is_externref_cap(&n)
@@ -4917,8 +4906,8 @@ impl Checker {
                 if let Some(cap) = self.ty_carries_externref_cap(&function_ty) {
                     return terr(format!(
                         "`{call_name}` cannot yet accept function value `{function}` carrying \
-                         `{cap}`: the current closure ABI boxes arguments as i64 slots, so this \
-                         requires RFC-0005's typed closure/GC lowering"
+                         `{cap}` through the isolated callback adapter; this requires RFC-0005's \
+                         typed callback lowering"
                     ));
                 }
             }
@@ -4956,10 +4945,9 @@ impl Checker {
                             message: format!("in call to `{display}`: {}", e.message),
                         })?;
                     }
-                    // Generic function values can acquire a capability-bearing
-                    // signature only after argument inference. Recheck the
-                    // resolved type so `let f = id; f(file)` cannot reach the
-                    // slot-based closure ABI.
+                    // Generic function values can acquire unsupported aggregate
+                    // shapes only after argument inference. Recheck the resolved
+                    // type so `let f = id; f(file)` cannot bypass that boundary.
                     if self.current_isolated_callback.as_deref() != Some(name) {
                         self.reject_externref_cap_aggregate_ty(
                             &vty,
@@ -5566,6 +5554,13 @@ impl Checker {
                         .flatten()
                         .map(|(_, id)| *id)
                         .collect();
+                    if !typarams.is_empty() {
+                        return terr(format!(
+                            "polymorphic function `{name}` cannot be used as a function value \
+                             until first-class monomorphization is implemented; call it directly \
+                             or wrap the concrete call in a lambda"
+                        ));
+                    }
                     let (params, ret) = self.instantiate(&params, &ret, &typarams);
                     let conventions = self
                         .fn_conventions

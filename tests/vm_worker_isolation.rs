@@ -99,7 +99,7 @@ fn main(console: Console):
 }
 
 #[test]
-fn vm_with_dir_rejects_top_level_callbacks_until_typed_cap_closure_abi() {
+fn vm_with_dir_rejects_cap_callbacks_until_typed_callback_adapter() {
     let source = r#"
 import vm
 
@@ -114,12 +114,12 @@ fn main(console: Console):
 "#;
 
     let error = check(source)
-        .expect_err("vm.with_dir still carries Dir through the closure/function ABI");
+        .expect_err("vm.with_dir still needs a reference-aware isolated callback adapter");
     assert!(
         error.contains("vm.with_dir")
             && error.contains("Dir")
             && error.contains("function value")
-            && error.contains("typed closure/GC lowering"),
+            && error.contains("typed callback lowering"),
         "unexpected diagnostic: {error}"
     );
 }

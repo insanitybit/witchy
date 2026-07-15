@@ -1005,11 +1005,10 @@ fn has_optional_id() -> Option(Bool):
             .expect_err("an inferred capability tuple cannot fall back around a function field");
         assert!(err.contains("function value") && err.contains("File"), "got: {err}");
 
-        let err = check_str("fn id(x: (File, Int)) -> (File, Int):\n    x\nfn main(console: Console, f: File):\n    let local = id\n    let pair = local((f, 1))\n    console.print(\"x\")\n")
-            .expect_err("a capability tuple cannot cross the slot-based indirect-call ABI");
-        assert!(err.contains("function value") && err.contains("File"), "got: {err}");
+        check_str("fn id(x: (File, Int)) -> (File, Int):\n    x\nfn main(console: Console, f: File):\n    let local = id\n    let pair = local((f, 1))\n    console.print(\"x\")\n")
+            .expect("a concrete capability tuple crosses the typed indirect-call ABI");
 
-        let late_specialization_cases = [
+        let first_class_monomorphization_cases = [
             (
                 "direct capability",
                 "fn id(x: a) -> a:\n    x\nfn main(console: Console, f: File):\n    let local = id\n    let out = local(f)\n    console.print(\"x\")\n",
@@ -1027,6 +1026,41 @@ fn has_optional_id() -> Option(Bool):
                 "type Holder:\n    Holder((File, Int))\nfn id(x: a) -> a:\n    x\nfn main(console: Console, f: File):\n    let local = id\n    let out = local(Holder((f, 1)))\n    console.print(\"x\")\n",
             ),
             (
+                "immediate polymorphic function application",
+                "fn id(x: a) -> a:\n    x\nfn main(console: Console, f: File):\n    let out = (id)(f)\n    console.print(\"x\")\n",
+            ),
+            (
+                "polymorphic function passed to a concrete higher-order parameter",
+                "fn id(x: a) -> a:\n    x\nfn apply(f: fn(File) -> File, file: File) -> File:\n    f(file)\nfn main(console: Console, f: File):\n    let out = apply(id, f)\n    console.print(\"x\")\n",
+            ),
+            (
+                "scalar polymorphic function alias",
+                "fn id(x: a) -> a:\n    x\nfn main(console: Console):\n    let local = id\n    let out = local(1)\n    console.print(\"${out}\")\n",
+            ),
+            (
+                "polymorphic function assignment",
+                "fn id(x: a) -> a:\n    x\nfn main(console: Console):\n    var local = fn(x): x\n    local = id\n    console.print(\"x\")\n",
+            ),
+            (
+                "polymorphic function through a control-flow join",
+                "fn id(x: a) -> a:\n    x\nfn main(console: Console):\n    let local = if true: id else: id\n    console.print(\"x\")\n",
+            ),
+            (
+                "polymorphic function through a tuple pattern",
+                "fn id(x: a) -> a:\n    x\nfn main(console: Console):\n    let (local,) = (id,)\n    console.print(\"x\")\n",
+            ),
+        ];
+        for (shape, source) in first_class_monomorphization_cases {
+            let err = check_str(source)
+                .expect_err("polymorphic function values need first-class monomorphization");
+            assert!(
+                err.contains("polymorphic function") && err.contains("monomorphization"),
+                "unexpected {shape} diagnostic: {err}"
+            );
+        }
+
+        let inferred_lambda_cases = [
+            (
                 "inferred generic lambda",
                 "fn main(console: Console, f: File):\n    let local = fn(x): x\n    let out = local(f)\n    console.print(\"x\")\n",
             ),
@@ -1035,18 +1069,14 @@ fn has_optional_id() -> Option(Bool):
                 "fn main(console: Console, f: File):\n    let out = (fn(x): x)(f)\n    console.print(\"x\")\n",
             ),
         ];
-        for (shape, source) in late_specialization_cases {
-            let err = check_str(source)
-                .expect_err("late specialization cannot cross the slot-based closure ABI");
-            assert!(
-                err.contains("function value") && err.contains("File"),
-                "unexpected {shape} diagnostic: {err}"
-            );
+        for (shape, source) in inferred_lambda_cases {
+            check_str(source).unwrap_or_else(|err| {
+                panic!("typed closure specialization should support {shape}: {err}")
+            });
         }
 
-        let err = check_str("fn main(console: Console, f: File):\n    let local = fn(x: File) -> (File, Int): (x, 1)\n    console.print(\"x\")\n")
-            .expect_err("a lambda cannot create a capability-bearing function value");
-        assert!(err.contains("closure value") && err.contains("File"), "got: {err}");
+        check_str("fn main(console: Console, f: File):\n    let local = fn(x: File) -> (File, Int): (x, 1)\n    console.print(\"x\")\n")
+            .expect("a lambda may expose a capability through its typed signature");
 
         let err = check_str("fn main(console: Console, f: File):\n    let d = dict.__insert(dict.new(), \"cfg\", f)\n    console.print(\"x\")\n")
             .expect_err("an inferred Dict(String, File) needs the GC-struct aggregate path");
@@ -2228,7 +2258,7 @@ fn read_socket(maybe: Option(Socket)) -> String:
     }
 
     #[test]
-    fn migrated_dir_cannot_cross_slot_or_higher_order_boundaries() {
+    fn migrated_dir_respects_slot_and_typed_higher_order_boundaries() {
         let option_dir = r#"
 type Option(a):
     Some(a)
@@ -2260,9 +2290,8 @@ fn reader(dir: Dir, input: Bytes) -> Bytes:
 fn demo(dir: Dir):
     consume(reader)
 "#;
-        let err = check_str(higher_order_dir)
-            .expect_err("Dir-bearing function values cannot use the slot-based closure ABI");
-        assert!(err.contains("Dir") && err.contains("function value"), "got: {err}");
+        check_str(higher_order_dir)
+            .expect("Dir-bearing function values use the typed closure ABI");
     }
 
     #[test]

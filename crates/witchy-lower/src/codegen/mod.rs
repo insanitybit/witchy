@@ -1523,14 +1523,43 @@ impl<'types> Codegen<'types> {
         }
     }
 
-    /// Lower closure arguments into universal slots and capture every `var` place.
-    /// Coordinates are evaluated into typed scratch locals before the call; final
-    /// values return through universal slots and are rebuilt after the call.
+    fn closure_uses_typed_abi(param_kinds: &[Kind], result_kind: Kind) -> bool {
+        matches!(result_kind, Kind::ExternRef | Kind::GcRef(_))
+            || param_kinds
+                .iter()
+                .any(|kind| matches!(kind, Kind::ExternRef | Kind::GcRef(_)))
+    }
+
+    fn closure_signature(
+        arity: usize,
+        param_kinds: &[Kind],
+        result_kind: Kind,
+        writebacks: &[ClosureWriteback],
+        typed_abi: bool,
+    ) -> witchy_wir::wir::ClosureSignature {
+        if !typed_abi {
+            return witchy_wir::wir::slot_closure_signature(
+                arity,
+                1 + writebacks.len(),
+            );
+        }
+        let mut params = vec![witchy_wir::wir::Kind::I32];
+        params.extend(param_kinds.iter().copied().map(Self::wir_kind));
+        let mut results = vec![Self::wir_kind(result_kind)];
+        results.extend(writebacks.iter().map(|(_, kind, _)| Self::wir_kind(*kind)));
+        witchy_wir::wir::ClosureSignature { params, results }
+    }
+
+    /// Lower closure arguments and capture every `var` place. Scalar signatures use
+    /// universal slots; reference-bearing signatures preserve their exact WIR kinds.
+    /// Coordinates are evaluated into typed scratch locals before the call, and final
+    /// values are rebuilt after the call.
     fn lower_closure_args(
         &mut self,
         args: &[Expr],
         conventions: &[Convention],
         param_kinds: &[Kind],
+        typed_abi: bool,
     ) -> Option<LoweredClosureArgs> {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
         let mut slots = Vec::with_capacity(args.len());
@@ -1575,7 +1604,11 @@ impl<'types> Codegen<'types> {
             } else {
                 self.lower_expr(arg)?
             };
-            slots.push(W::ToSlot(Box::new(value), Self::wir_kind(kind)));
+            slots.push(if typed_abi {
+                value
+            } else {
+                W::ToSlot(Box::new(value), Self::wir_kind(kind))
+            });
         }
         Some((slots, writebacks))
     }
@@ -1585,14 +1618,20 @@ impl<'types> Codegen<'types> {
         call: witchy_wir::wir::WirNode,
         writebacks: Vec<ClosureWriteback>,
         result_kind: Kind,
+        typed_abi: bool,
     ) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
         let mut seq = vec![call];
-        for (index, (_, kind, scratch)) in writebacks.iter().enumerate() {
-            seq.push(N::SetLocal {
-                local: var_scratch("result", index, *kind),
-                value: W::FromSlot(Box::new(W::GetLocal(scratch.clone())), Self::wir_kind(*kind)),
-            });
+        if !typed_abi {
+            for (index, (_, kind, scratch)) in writebacks.iter().enumerate() {
+                seq.push(N::SetLocal {
+                    local: var_scratch("result", index, *kind),
+                    value: W::FromSlot(
+                        Box::new(W::GetLocal(scratch.clone())),
+                        Self::wir_kind(*kind),
+                    ),
+                });
+            }
         }
 
         let mut groups: Vec<(String, Kind, Expr)> = Vec::new();
@@ -1644,10 +1683,15 @@ impl<'types> Codegen<'types> {
         for (root, scratch) in commits {
             seq.push(N::SetLocal { local: root, value: W::GetLocal(scratch) });
         }
-        seq.push(N::Push(W::FromSlot(
-            Box::new(W::GetLocal(MATCH_TMP.to_string())),
-            Self::wir_kind(result_kind),
-        )));
+        let result = if typed_abi {
+            W::GetLocal(call_result_tmp(result_kind))
+        } else {
+            W::FromSlot(
+                Box::new(W::GetLocal(MATCH_TMP.to_string())),
+                Self::wir_kind(result_kind),
+            )
+        };
+        seq.push(N::Push(result));
         Some(W::Seq(seq))
     }
 
@@ -3430,7 +3474,13 @@ impl<'types> Codegen<'types> {
                         && self.closure_elide_called.contains(name)
                     {
                         if let Expr::Lambda { params, body: lbody, .. } = value {
-                            if let Some(caps) = self.lower_lambda_threaded(params, lbody) {
+                            let signature = (
+                                self.closure_param_kinds(value),
+                                self.apply_ret_kind(value),
+                            );
+                            if let Some(caps) =
+                                self.lower_lambda_threaded(params, lbody, &signature)
+                            {
                                 self.thread_index.insert(name.clone(), caps);
                                 closure_elide_done = true;
                             }
@@ -5845,7 +5895,8 @@ impl<'types> Codegen<'types> {
                     lines: vec![0],
                     region: None,
                 };
-                return self.lower_lambda(&params, &body);
+                let signature = (self.closure_param_kinds(e), self.apply_ret_kind(e));
+                return self.lower_lambda(&params, &body, &signature);
             }
             Expr::Unary { op, expr } => match op {
                 // value-neutral on WASM (value semantics): lower the operand.
@@ -6021,9 +6072,12 @@ impl<'types> Codegen<'types> {
             Expr::Match { scrutinee, arms } => return self.lower_match(scrutinee, arms),
             // A lambda lowers to its closure-object creation (`$mk{c}`); the lifted
             // body is registered as a `WirFunc` + table entry.
-            Expr::Lambda { params, body, .. } => return self.lower_lambda(params, body),
+            Expr::Lambda { params, body, .. } => {
+                let signature = (self.closure_param_kinds(e), self.apply_ret_kind(e));
+                return self.lower_lambda(params, body, &signature);
+            }
             // Call a closure value: stash the pointer, then `call_indirect` with
-            // env (the closure ptr), the i64-slot args, and the code index (the
+            // env (the closure ptr), signature-shaped args, and the code index (the
             // closure's first word).
             Expr::Apply { func, args } => {
                 // Only a WIR-collecting scope lowers `Expr::Apply`; otherwise bail
@@ -6037,6 +6091,8 @@ impl<'types> Codegen<'types> {
                 }
                 let conventions = self.closure_conventions(func);
                 let param_kinds = self.closure_param_kinds(func);
+                let recover_kind = self.apply_ret_kind(func);
+                let typed_abi = Self::closure_uses_typed_abi(&param_kinds, recover_kind);
                 // (RFC-0062 tier-1) An ELIDED closure applied by name: no closure pointer to
                 // stash — thread captures (from their locals) as leading arg slots to a direct
                 // `call $__lamt{i}`.
@@ -6048,16 +6104,29 @@ impl<'types> Codegen<'types> {
                             .map(|(cn, ck)| W::ToSlot(Box::new(W::GetLocal(cn.clone())), Self::wir_kind(*ck)))
                             .collect();
                         let (arg_slots, writebacks) =
-                            self.lower_closure_args(args, &conventions, &param_kinds)?;
+                            self.lower_closure_args(args, &conventions, &param_kinds, typed_abi)?;
                         call_args.extend(arg_slots);
                         self.apply_level = level;
-                        let recover_kind = self.apply_ret_kind(func);
                         if writebacks.is_empty() {
                             let call = W::Call { func: format!("__lamt{idx}"), args: call_args };
-                            return Some(W::FromSlot(Box::new(call), Self::wir_kind(recover_kind)));
+                            return Some(if typed_abi {
+                                call
+                            } else {
+                                W::FromSlot(Box::new(call), Self::wir_kind(recover_kind))
+                            });
                         }
-                        let mut dests = vec![MATCH_TMP.to_string()];
-                        dests.extend(writebacks.iter().map(|(_, _, scratch)| scratch.clone()));
+                        let mut dests = vec![if typed_abi {
+                            call_result_tmp(recover_kind)
+                        } else {
+                            MATCH_TMP.to_string()
+                        }];
+                        dests.extend(writebacks.iter().enumerate().map(|(index, (_, kind, scratch))| {
+                            if typed_abi {
+                                var_scratch("result", index, *kind)
+                            } else {
+                                scratch.clone()
+                            }
+                        }));
                         let call = N::CallStoreMulti {
                             func: format!("__lamt{idx}"),
                             args: call_args,
@@ -6067,6 +6136,7 @@ impl<'types> Codegen<'types> {
                             call,
                             writebacks,
                             recover_kind,
+                            typed_abi,
                         );
                     }
                 }
@@ -6075,18 +6145,34 @@ impl<'types> Codegen<'types> {
                 let fcode = self.lower_expr(func)?;
                 self.apply_level = level + 1;
                 let (arg_slots, writebacks) =
-                    self.lower_closure_args(args, &conventions, &param_kinds)?;
+                    self.lower_closure_args(args, &conventions, &param_kinds, typed_abi)?;
                 self.apply_level = level;
                 self.clos_arities.insert(n);
-                let recover_kind = self.apply_ret_kind(func);
                 let mut ci_args = vec![W::GetLocal(tmp.clone())];
                 ci_args.extend(arg_slots);
                 // (RFC-0034 L3) Devirtualize an apply whose callee is a single-bound,
                 // never-reassigned closure var: a direct `call $__lamw{i}` (env stays
                 // the stashed closure pointer), skipping the runtime code-index load.
                 if !writebacks.is_empty() {
-                    let mut dests = vec![MATCH_TMP.to_string()];
-                    dests.extend(writebacks.iter().map(|(_, _, scratch)| scratch.clone()));
+                    let mut dests = vec![if typed_abi {
+                        call_result_tmp(recover_kind)
+                    } else {
+                        MATCH_TMP.to_string()
+                    }];
+                    dests.extend(writebacks.iter().enumerate().map(|(index, (_, kind, scratch))| {
+                        if typed_abi {
+                            var_scratch("result", index, *kind)
+                        } else {
+                            scratch.clone()
+                        }
+                    }));
+                    let signature = Self::closure_signature(
+                        n,
+                        &param_kinds,
+                        recover_kind,
+                        &writebacks,
+                        typed_abi,
+                    );
                     let call = match func.as_ref() {
                         Expr::Var(fname) if self.devirt_index.contains_key(fname) => {
                             N::CallStoreMulti {
@@ -6096,7 +6182,7 @@ impl<'types> Codegen<'types> {
                             }
                         }
                         _ => N::CallIndirectStoreMulti {
-                            signature: witchy_wir::wir::slot_closure_signature(n, dests.len()),
+                            signature,
                             args: ci_args,
                             index: W::Load {
                                 ptr: Box::new(W::GetLocal(tmp.clone())),
@@ -6106,7 +6192,12 @@ impl<'types> Codegen<'types> {
                             dests,
                         },
                     };
-                    let result = self.finish_closure_multi_call(call, writebacks, recover_kind)?;
+                    let result = self.finish_closure_multi_call(
+                        call,
+                        writebacks,
+                        recover_kind,
+                        typed_abi,
+                    )?;
                     return Some(W::Seq(vec![N::SetLocal { local: tmp, value: fcode }, N::Push(result)]));
                 }
                 let call = match func.as_ref() {
@@ -6115,12 +6206,22 @@ impl<'types> Codegen<'types> {
                         W::Call { func: format!("__lamw{idx}"), args: ci_args }
                     }
                     _ => W::CallIndirect {
-                        signature: witchy_wir::wir::slot_closure_signature(n, 1),
+                        signature: Self::closure_signature(
+                            n,
+                            &param_kinds,
+                            recover_kind,
+                            &[],
+                            typed_abi,
+                        ),
                         args: ci_args,
                         index: Box::new(W::Load { ptr: Box::new(W::GetLocal(tmp.clone())), kind: witchy_wir::wir::Kind::I32, offset: 0 }),
                     },
                 };
-                let result = W::FromSlot(Box::new(call), Self::wir_kind(recover_kind));
+                let result = if typed_abi {
+                    call
+                } else {
+                    W::FromSlot(Box::new(call), Self::wir_kind(recover_kind))
+                };
                 return Some(W::Seq(vec![
                     N::SetLocal { local: tmp, value: fcode },
                     N::Push(result),
@@ -6135,7 +6236,10 @@ impl<'types> Codegen<'types> {
                 Some(eb) => {
                     let tk = self.block_kind(then_block);
                     let ek = self.block_kind(eb);
-                    let ck = promote_kind(tk, ek);
+                    // Use the type checker's kind for the whole value. A branch
+                    // ending in `return` has no stack result, so treating its
+                    // fallback block kind as a peer would erase a reference kind.
+                    let ck = self.kind_of(e);
                     let then_ = Self::convert_block_tail(self.lower_block(then_block)?, tk, ck);
                     let els = Self::convert_block_tail(self.lower_block(eb)?, ek, ck);
                     let cond = self.lower_expr(cond)?;
@@ -7221,29 +7325,44 @@ impl<'types> Codegen<'types> {
                     let func_expr = Expr::Var(name.to_string());
                     let conventions = self.closure_conventions(&func_expr);
                     let param_kinds = self.closure_param_kinds(&func_expr);
+                    let rk = self.local_fn_ret_kind.get(name).copied().unwrap_or(Kind::I32);
+                    let typed_abi = Self::closure_uses_typed_abi(&param_kinds, rk);
                     let mut call_args: Vec<W> = caps
                         .iter()
                         .map(|(cn, ck)| W::ToSlot(Box::new(W::GetLocal(cn.clone())), Self::wir_kind(*ck)))
                         .collect();
                     let (arg_slots, writebacks) =
-                        self.lower_closure_args(args, &conventions, &param_kinds)?;
+                        self.lower_closure_args(args, &conventions, &param_kinds, typed_abi)?;
                     call_args.extend(arg_slots);
-                    let rk = self.local_fn_ret_kind.get(name).copied().unwrap_or(Kind::I32);
                     if writebacks.is_empty() {
                         let call = W::Call { func: format!("__lamt{idx}"), args: call_args };
-                        return Some(W::FromSlot(Box::new(call), Self::wir_kind(rk)));
+                        return Some(if typed_abi {
+                            call
+                        } else {
+                            W::FromSlot(Box::new(call), Self::wir_kind(rk))
+                        });
                     }
-                    let mut dests = vec![MATCH_TMP.to_string()];
-                    dests.extend(writebacks.iter().map(|(_, _, scratch)| scratch.clone()));
+                    let mut dests = vec![if typed_abi {
+                        call_result_tmp(rk)
+                    } else {
+                        MATCH_TMP.to_string()
+                    }];
+                    dests.extend(writebacks.iter().enumerate().map(|(index, (_, kind, scratch))| {
+                        if typed_abi {
+                            var_scratch("result", index, *kind)
+                        } else {
+                            scratch.clone()
+                        }
+                    }));
                     let call = N::CallStoreMulti {
                         func: format!("__lamt{idx}"),
                         args: call_args,
                         dests,
                     };
-                    return self.finish_closure_multi_call(call, writebacks, rk);
+                    return self.finish_closure_multi_call(call, writebacks, rk, typed_abi);
                 }
                 // A closure-typed local `f(x)`: pass the closure pointer as the env,
-                // the i64-slot args, and `call_indirect` on the code index (the
+                // signature-shaped args, and `call_indirect` on the code index (the
                 // closure record's first word). The pointer is a bare `GetLocal`,
                 // so no scratch stash is needed.
                 if self.locals.contains_key(name) {
@@ -7251,20 +7370,38 @@ impl<'types> Codegen<'types> {
                     let func_expr = Expr::Var(name.to_string());
                     let conventions = self.closure_conventions(&func_expr);
                     let param_kinds = self.closure_param_kinds(&func_expr);
+                    let rk = self.local_fn_ret_kind.get(name).copied().unwrap_or(Kind::I32);
+                    let typed_abi = Self::closure_uses_typed_abi(&param_kinds, rk);
                     let mut ci_args: Vec<W> = vec![W::GetLocal(name.to_string())];
                     let (arg_slots, writebacks) =
-                        self.lower_closure_args(args, &conventions, &param_kinds)?;
+                        self.lower_closure_args(args, &conventions, &param_kinds, typed_abi)?;
                     ci_args.extend(arg_slots);
                     self.clos_arities.insert(n);
-                    let rk = self.local_fn_ret_kind.get(name).copied().unwrap_or(Kind::I32);
                     // (RFC-0034 L3) Devirtualize when `name` is a single-bound, never-
                     // reassigned closure local (`devirt_index`): a direct `call
-                    // $__lamw{i}` — same env (the closure pointer) and slot args, just
+                    // $__lamw{i}` — same env (the closure pointer) and args, just
                     // skipping the runtime code-index load — which also lets the
                     // Binaryen pass inline the lambda body into the caller.
                     if !writebacks.is_empty() {
-                        let mut dests = vec![MATCH_TMP.to_string()];
-                        dests.extend(writebacks.iter().map(|(_, _, scratch)| scratch.clone()));
+                        let mut dests = vec![if typed_abi {
+                            call_result_tmp(rk)
+                        } else {
+                            MATCH_TMP.to_string()
+                        }];
+                        dests.extend(writebacks.iter().enumerate().map(|(index, (_, kind, scratch))| {
+                            if typed_abi {
+                                var_scratch("result", index, *kind)
+                            } else {
+                                scratch.clone()
+                            }
+                        }));
+                        let signature = Self::closure_signature(
+                            n,
+                            &param_kinds,
+                            rk,
+                            &writebacks,
+                            typed_abi,
+                        );
                         let call = if let Some(&idx) = self.devirt_index.get(name) {
                             N::CallStoreMulti {
                                 func: format!("__lamw{idx}"),
@@ -7273,7 +7410,7 @@ impl<'types> Codegen<'types> {
                             }
                         } else {
                             N::CallIndirectStoreMulti {
-                                signature: witchy_wir::wir::slot_closure_signature(n, dests.len()),
+                                signature,
                                 args: ci_args,
                                 index: W::Load {
                                     ptr: Box::new(W::GetLocal(name.to_string())),
@@ -7283,13 +7420,24 @@ impl<'types> Codegen<'types> {
                                 dests,
                             }
                         };
-                        return self.finish_closure_multi_call(call, writebacks, rk);
+                        return self.finish_closure_multi_call(
+                            call,
+                            writebacks,
+                            rk,
+                            typed_abi,
+                        );
                     }
                     let call = if let Some(&idx) = self.devirt_index.get(name) {
                         W::Call { func: format!("__lamw{idx}"), args: ci_args }
                     } else {
                         W::CallIndirect {
-                            signature: witchy_wir::wir::slot_closure_signature(n, 1),
+                            signature: Self::closure_signature(
+                                n,
+                                &param_kinds,
+                                rk,
+                                &[],
+                                typed_abi,
+                            ),
                             args: ci_args,
                             index: Box::new(W::Load {
                                 ptr: Box::new(W::GetLocal(name.to_string())),
@@ -7298,7 +7446,11 @@ impl<'types> Codegen<'types> {
                             }),
                         }
                     };
-                    return Some(W::FromSlot(Box::new(call), Self::wir_kind(rk)));
+                    return Some(if typed_abi {
+                        call
+                    } else {
+                        W::FromSlot(Box::new(call), Self::wir_kind(rk))
+                    });
                 }
                 let has_var = self
                     .fn_conventions
@@ -7424,7 +7576,12 @@ impl<'types> Codegen<'types> {
         }
     }
 
-    fn lower_lambda(&mut self, params: &[Param], body: &Block) -> Option<witchy_wir::wir::WirExpr> {
+    fn lower_lambda(
+        &mut self,
+        params: &[Param],
+        body: &Block,
+        signature: &(Vec<Kind>, Kind),
+    ) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::WirExpr as W;
         // Only a WIR-collecting scope lowers lambdas; otherwise bail so the
         // construct is reported unsupported.
@@ -7468,7 +7625,8 @@ impl<'types> Codegen<'types> {
         let index = if let Some(&i) = self.lambda_wir_index.get(&key) {
             i
         } else {
-            let mut func = self.build_lambda_wir_func(params, body, &cap_info, CapMode::Env)?;
+            let mut func =
+                self.build_lambda_wir_func(params, body, &cap_info, CapMode::Env, signature)?;
             // `build_lambda_wir_func` names itself `__lamw{len}` from the length at
             // its START, but a NESTED lambda lowered during the build pushes to
             // `lambda_wir_funcs` and shifts the length — so the actual push index
@@ -7499,7 +7657,12 @@ impl<'types> Codegen<'types> {
     /// capture is REASSIGNED this unit (the interpreter snapshots captures at creation, so
     /// threading a mutated capture would diverge), or when the body doesn't lower. The
     /// caller has already checked `devirt_ok`/`closure_elide_called` (the escape fact).
-    fn lower_lambda_threaded(&mut self, params: &[Param], body: &Block) -> Option<ThreadedClosure> {
+    fn lower_lambda_threaded(
+        &mut self,
+        params: &[Param],
+        body: &Block,
+        signature: &(Vec<Kind>, Kind),
+    ) -> Option<ThreadedClosure> {
         if !self.collect_wir {
             return None;
         }
@@ -7525,7 +7688,13 @@ impl<'types> Codegen<'types> {
         let index = if let Some(&i) = self.lambda_threaded_index.get(&key) {
             i
         } else {
-            let mut func = self.build_lambda_wir_func(params, body, &cap_info, CapMode::Threaded)?;
+            let mut func = self.build_lambda_wir_func(
+                params,
+                body,
+                &cap_info,
+                CapMode::Threaded,
+                signature,
+            )?;
             // Rename to the real push index (a nested lambda lowered during the build may
             // have shifted the length), mirroring `lower_lambda`.
             let i = self.lambda_wir_funcs.len();
@@ -7538,11 +7707,9 @@ impl<'types> Codegen<'types> {
     }
 
     /// Build the lifted `WirFunc` for a lambda: the capture-passing prefix (per
-    /// `cap_mode`) then one i64 value param per lambda param, a prologue recovering each
-    /// value param from its slot and each capture, the lowered body, and the tail stored
-    /// back into the universal i64 result slot. `None` if the body doesn't lower. Saves
-    /// the enclosing scope on entry and restores it on exit so the lifted body lowers in
-    /// its own local environment.
+    /// `cap_mode`) then one value parameter per lambda parameter. Scalar signatures use
+    /// universal slots; reference-bearing signatures preserve exact WIR kinds. `None`
+    /// means the body does not lower. The enclosing scope is restored after lowering.
     ///
     /// (RFC-0062) `cap_mode` selects how captures reach the body:
     /// - `CapMode::Env` (tier-3, the default): an env-pointer first param `$__lamw{i}`;
@@ -7556,6 +7723,7 @@ impl<'types> Codegen<'types> {
         body: &Block,
         cap_info: &[CaptureInfo],
         cap_mode: CapMode,
+        signature: &(Vec<Kind>, Kind),
     ) -> Option<witchy_wir::wir::WirFunc> {
         use witchy_wir::wir::{WirExpr as W, WirFunc, WirLocal, WirNode as N, WirTy};
         let index = self.lambda_wir_funcs.len();
@@ -7567,7 +7735,8 @@ impl<'types> Codegen<'types> {
             .collect();
         self.cur_fn_var_cap_params.clear();
         self.cur_fn_var = !self.cur_fn_var_params.is_empty();
-        // Lambda params: i32 ABI placeholder + record/list types.
+        // Install declared parameter shape metadata. Exact runtime kinds are
+        // replaced from the checker-resolved function signature below.
         for p in params {
             self.locals.insert(p.name.clone(), Kind::I32);
             if let Some(t) = &p.ty {
@@ -7608,11 +7777,17 @@ impl<'types> Codegen<'types> {
             }
         }
         self.infer_locals(body);
+        let block_kind = signature.1;
+        let param_kinds = &signature.0;
+        for (param, kind) in params.iter().zip(param_kinds) {
+            self.locals.insert(param.name.clone(), *kind);
+        }
+        let typed_abi = Self::closure_uses_typed_abi(param_kinds, block_kind);
         let saved_inplace = std::mem::take(&mut self.inplace_push);
         let saved_own = self.cur_fn_own_param.take();
         self.begin_unit(body);
-        self.cur_fn_ret_kind = Kind::I64;
-        self.cur_fn_ret_slot = true;
+        self.cur_fn_ret_kind = if typed_abi { block_kind } else { Kind::I64 };
+        self.cur_fn_ret_slot = !typed_abi;
         self.cur_fn_unique_ret = false;
         let saved_apply = self.apply_level;
         let saved_assign = self.assign_level;
@@ -7626,7 +7801,6 @@ impl<'types> Codegen<'types> {
         // set, so the cap-shadow `${v}__cap` locals below are declared for the
         // lambda's accumulators, not the enclosing function's.
         let lambda_inplace = self.inplace_push.clone();
-        let block_kind = self.block_kind(body);
         self.apply_level = saved_apply;
         self.assign_level = saved_assign;
         self.wm_level = saved_wm;
@@ -7650,7 +7824,15 @@ impl<'types> Codegen<'types> {
                         .collect(),
                 };
                 for p in params {
-                    func_params.push(WirLocal { name: format!("__lp_{}", p.name), ty: WirTy::Int });
+                    let kind = self.locals.get(&p.name).copied().unwrap_or(Kind::I32);
+                    func_params.push(WirLocal {
+                        name: format!("__lp_{}", p.name),
+                        ty: if typed_abi {
+                            Self::wir_ty_for_kind(kind)
+                        } else {
+                            WirTy::Int
+                        },
+                    });
                 }
                 let mut locals: Vec<WirLocal> = Vec::new();
                 for p in params {
@@ -7758,7 +7940,14 @@ impl<'types> Codegen<'types> {
                     let k = self.locals.get(&p.name).copied().unwrap_or(Kind::I32);
                     nodes.push(N::SetLocal {
                         local: p.name.clone(),
-                        value: W::FromSlot(Box::new(W::GetLocal(format!("__lp_{}", p.name))), Self::wir_kind(k)),
+                        value: if typed_abi {
+                            W::GetLocal(format!("__lp_{}", p.name))
+                        } else {
+                            W::FromSlot(
+                                Box::new(W::GetLocal(format!("__lp_{}", p.name))),
+                                Self::wir_kind(k),
+                            )
+                        },
                     });
                 }
                 for (j, capture) in cap_info.iter().enumerate() {
@@ -7780,18 +7969,20 @@ impl<'types> Codegen<'types> {
                         value: W::FromSlot(Box::new(cap_slot), Self::wir_kind(capture.kind)),
                     });
                 }
-                // Body, with the declared result and every `var` final value
-                // stored into the closure ABI's universal i64 result slots.
+                // Body, with the declared result and every `var` final value emitted
+                // in the closure signature's selected representation.
                 let mut seq = seq;
-                if let Some(N::Push(v)) = seq.pop() {
+                if !typed_abi && let Some(N::Push(v)) = seq.pop() {
                     seq.push(N::Push(W::ToSlot(Box::new(v), Self::wir_kind(block_kind))));
                 }
                 for name in &self.cur_fn_var_params {
                     let kind = self.locals.get(name).copied().unwrap_or(Kind::I32);
-                    seq.push(N::Push(W::ToSlot(
-                        Box::new(W::GetLocal(name.clone())),
-                        Self::wir_kind(kind),
-                    )));
+                    let value = W::GetLocal(name.clone());
+                    seq.push(N::Push(if typed_abi {
+                        value
+                    } else {
+                        W::ToSlot(Box::new(value), Self::wir_kind(kind))
+                    }));
                 }
                 nodes.extend(seq);
                 let name = match cap_mode {
@@ -7801,7 +7992,17 @@ impl<'types> Codegen<'types> {
                 Some(WirFunc {
                     name,
                     params: func_params,
-                    ret: vec![WirTy::Int; 1 + self.cur_fn_var_params.len()],
+                    ret: if typed_abi {
+                        std::iter::once(Self::wir_ty_for_kind(block_kind))
+                            .chain(self.cur_fn_var_params.iter().map(|name| {
+                                Self::wir_ty_for_kind(
+                                    self.locals.get(name).copied().unwrap_or(Kind::I32),
+                                )
+                            }))
+                            .collect()
+                    } else {
+                        vec![WirTy::Int; 1 + self.cur_fn_var_params.len()]
+                    },
                     locals,
                     body: nodes,
                     raw_body: None,
