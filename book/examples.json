@@ -630,6 +630,20 @@
     "runnable": true
   },
   {
+    "block": 3,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/appendix-performance.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "borrowed, not copied",
+      "now the view is done, so the owner is free again"
+    ],
+    "runnable": true
+  },
+  {
     "block": 1,
     "console_only": false,
     "expect_error": false,

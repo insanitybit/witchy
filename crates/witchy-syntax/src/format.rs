@@ -1897,6 +1897,12 @@ fn decode_anon_union_type_name(name: &str) -> Option<Vec<(String, usize)>> {
 
 pub fn type_str(t: &Type) -> String {
     match t {
+        // (RFC-0083) A borrowed view canonicalizes to `View(T, 'a)`, which
+        // re-parses to the same node in every type position (idempotent). Both
+        // input (`let('a) T`) and result surfaces render this one way.
+        Type::Qualified(TypeQual::Borrow(life), inner) => {
+            format!("View({}, '{life})", type_str(inner))
+        }
         Type::Qualified(q, inner) => format!("{} {}", q.as_str(), type_str(inner)),
         Type::Named(n, args) => {
             if let Some(variants) = decode_anon_union_type_name(n) {

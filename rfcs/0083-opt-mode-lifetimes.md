@@ -1,10 +1,22 @@
 ---
 rfc: 0083
 title: Opt-mode lifetimes and returnable borrowed views
-status: proposed
+status: accepted
 created: 2026-07-12
 superseded-by:
-tracking:
+tracking: >
+  Phase 1 (static lifetime + loan foundation) implemented 2026-07-14: `let('a) T`
+  / `View(T, 'a)` surface (a `Qualified(TypeQual::Borrow)` type, no runtime
+  representation — erased to the owned type before both backends, parity by
+  construction); signature relations validated and carried across calls / trait
+  dispatch / function values / module boundaries; per-caller owner loans with
+  non-lexical last-use and `func.owned(view)` materialization; rejection of owner
+  move / mutate / reassign / `var`|`own` write-back / closure|task|channel escape
+  while a view is live (`crates/witchy-types/src/loans.rs`). NOT YET DONE (next
+  phase): compiled-backend owner rooting / host leases (acceptance 5), ownership-
+  analysis treating a live loan as non-unique for in-place update/extraction
+  (acceptance 6), and the `view.owned()` method-call spelling (blocked on generic
+  free-function UFCS; the free-call `func.owned(view)` is the phase-1 spelling).
 related:
   - "0029 (optimization contract - missed facts copy or reject in opt mode)"
   - "0087 (uniform var write-back - active returned views block owner write-back)"
@@ -220,3 +232,42 @@ a soundness bug, not a missed optimization.
 
 Rust lifetimes, Swift borrowing, Hylo access lifetimes, Vale regions, C++ views,
 and Cyclone region typing inform this design.
+
+## Implementation status
+
+> 2026-07-14: Phase 1 (static foundation) landed. What shipped, mapped to the
+> acceptance criteria above:
+>
+> - **Surface & representation.** `let('a) T` and `View(T, 'a)` parse (a `'a`
+>   lifetime token) and round-trip through `witchy fmt` (canonically as
+>   `View(T, 'a)`). A view is `Type::Qualified(TypeQual::Borrow(lifetime), inner)`
+>   — deliberately a *qualifier*, not a new `Type` variant, so it inherits every
+>   existing `Qualified` code path and has **no runtime representation**: `to_ty`
+>   erases it to the owned inner type before either backend, so a view lowers
+>   exactly as its owner and value semantics are unchanged (RFC-0029 consistency;
+>   the differential/`parity` runs and a runnable `book/` example confirm it).
+> - **Criteria 1–4, 7 (checker):** met by `crates/witchy-types/src/loans.rs` —
+>   signature validation (views are `mode opt`-only; every output lifetime must be
+>   bound by an input of the same name), an output→input relation read off the
+>   signature (so it survives direct/trait/indirect calls, function values, and
+>   module boundaries), per-caller owner loans with non-lexical last-use, and
+>   rejection of owner move / reassign / mutate / `var`|`own` write-back / closure
+>   & channel & task escape while a view is live. Diagnostics name the owner, the
+>   borrowing call, and the materialization remedy.
+> - **Criterion 8 (checker half):** covered by `loans_tests.rs` plus a both-backends
+>   `book/` example. The *compiled-backend* half is part of the next phase.
+>
+> **Deferred to the next RFC-0083 phase (NOT yet implemented):**
+>
+> - **Criterion 5** — compiled WIR keeping owner storage / host leases alive to the
+>   last view use (refcount/trap/early-return leak tests). Phase 1 is sound because
+>   views are erased to owned values (the owner is a live local for its lexical
+>   extent); true zero-copy rooting is the runtime-representation work.
+> - **Criterion 6** — ownership analysis (`witchy-lower`) treating a live loan as
+>   non-unique for in-place update/extraction (RFC-0088 interaction). Needs the
+>   loan facts to flow from typeck into the lowering analysis.
+> - The **`view.owned()` method spelling.** Materialization is `func.owned(view)`
+>   in phase 1; the method form is blocked on generic-free-function UFCS dispatch
+>   (an `x.method()` on a concrete receiver does not yet resolve to a generic free
+>   function — a pre-existing limitation, not specific to views), so it is not a
+>   per-method dispatch hack this RFC should add.

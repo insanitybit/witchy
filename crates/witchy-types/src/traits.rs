@@ -144,7 +144,7 @@ fn method_fn(
 /// not the bare head `Pair`, which would clash with a real `Pair(Int, String)`.
 fn subst_self(t: &Type, self_ty: &Type) -> Type {
     match t {
-        Type::Qualified(q, inner) => Type::Qualified(*q, Box::new(subst_self(inner, self_ty))),
+        Type::Qualified(q, inner) => Type::Qualified(q.clone(), Box::new(subst_self(inner, self_ty))),
         Type::Named(n, args) if n == "Self" && args.is_empty() => self_ty.clone(),
         Type::Named(n, args) => {
             Type::Named(n.clone(), args.iter().map(|a| subst_self(a, self_ty)).collect())
@@ -205,6 +205,9 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     // Expand type aliases and inline module-level constants first (a no-op once
     // the linker has done so, but covers single-module paths like `check_str`).
     let module = witchy_syntax::aliases::resolve(witchy_syntax::consts::inline(module));
+    // The performance modes (`mode opt`) are a whole-module fact the borrow/loan
+    // checker (RFC-0083) reads; carry them onto the rebuilt lowered module below.
+    let modes = module.modes.clone();
     let needs_lowering = module.items.iter().any(|it| {
         matches!(it, Item::Trait(_) | Item::Impl(_))
             || matches!(it, Item::Function(f) if !f.bounds.is_empty()
@@ -489,7 +492,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     let __t = mono_timing_start();
     let mut typed = crate::typeck::annotate_with_from_conversions(
         Module {
-            modes: Vec::new(),
+            modes: modes.clone(),
             imports: imports.clone(),
             from_imports: Vec::new(),
             items,
@@ -756,6 +759,11 @@ fn bare(name: &str) -> &str {
 
 fn display_type(t: &Type) -> String {
     match t {
+        // (RFC-0083) A borrowed view renders as `View(T, 'a)` in diagnostics, the
+        // same canonical spelling the formatter uses — not the bare `as_str`.
+        Type::Qualified(TypeQual::Borrow(life), inner) => {
+            format!("View({}, '{life})", display_type(inner))
+        }
         Type::Qualified(q, inner) => format!("{} {}", q.as_str(), display_type(inner)),
         Type::Named(n, args) if args.is_empty() => bare(n).to_string(),
         Type::Named(n, args) => {
@@ -806,7 +814,7 @@ fn impl_self_type(im: &ImplDef) -> Type {
 
 fn subst_trait_params(t: &Type, vars: &HashMap<String, Type>) -> Type {
     match t {
-        Type::Qualified(q, inner) => Type::Qualified(*q, Box::new(subst_trait_params(inner, vars))),
+        Type::Qualified(q, inner) => Type::Qualified(q.clone(), Box::new(subst_trait_params(inner, vars))),
         Type::Named(n, args) if args.is_empty() => {
             vars.get(n).cloned().unwrap_or_else(|| Type::Named(n.clone(), Vec::new()))
         }

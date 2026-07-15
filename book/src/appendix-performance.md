@@ -130,3 +130,33 @@ error** that names the position, never a silent fall-back to the boxed layout yo
 declared away. The flat representation is applied by the `unbox` optimization, which is on by
 default in release builds (`WITCHY_OPT=release`); the contract (and identical
 results) hold regardless of whether it fires.
+
+## Borrowed views (`mode opt`)
+
+A `mode opt` module may return a read-only **view** of a value it was given,
+instead of copying it. The parameter names a lifetime with `let('a) T` and the
+result borrows it with `View(T, 'a)`; the value is the same one at runtime (a
+view has no representation of its own), so this changes only *when* a copy is
+made, never the observable result:
+
+```witchy
+mode opt
+
+fn first(text: let('a) String) -> View(String, 'a):
+    text
+
+fn main(console: Console):
+    var s = "borrowed, not copied"
+    let view = first(s)
+    console.print(view)
+    s = "now the view is done, so the owner is free again"
+    console.print(s)
+```
+
+While a view is live, its owner is *loaned*: you may not move, reassign, or
+mutate the owner, pass it to a `var`/`own` parameter, or let the view escape
+through a closure, task, or channel — the checker rejects each with a diagnostic
+that names the owner, the borrowing call, and the fix. The loan ends at the
+view's last use (as above, `s` is free again on the next line) or when you
+materialize an owned copy with `func.owned(view)`. Views are a `mode opt`-only
+tool: normal witchy keeps owned value semantics and never needs the syntax.

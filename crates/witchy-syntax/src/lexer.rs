@@ -29,6 +29,10 @@ pub enum Tok {
     Duration(i64),
     Str(String),
     Ident(String),
+    /// A lifetime name `'a` (RFC-0083). Only meaningful in a `mode opt` type
+    /// position (`let('a) T`, `View(T, 'a)`); the checker rejects it elsewhere.
+    /// Carries the bare name without the leading quote (`'a` → `"a"`).
+    Lifetime(String),
     /// A compile-time tagged literal `tag"a${x}b"` (RFC-0006). Produced when a
     /// `"`-string immediately follows an identifier with no intervening
     /// whitespace. `parts` are the static fragments (`["a", "b"]`), `holes` are
@@ -146,6 +150,7 @@ impl fmt::Display for Tok {
             Duration(ms) => write!(f, "{ms}ms"),
             Str(s) => write!(f, "{s:?}"),
             Ident(s) => write!(f, "{s}"),
+            Lifetime(name) => write!(f, "'{name}"),
             TagLit { tag, .. } => write!(f, "{tag}\"…\""),
             Fn => write!(f, "fn"),
             Gen => write!(f, "gen"),
@@ -401,6 +406,12 @@ impl Lexer {
                 }
                 '0'..='9' => self.number()?,
                 'a'..='z' | 'A'..='Z' | '_' => self.ident_or_keyword(),
+                // `'a` is a lifetime name (RFC-0083): a quote immediately followed
+                // by an identifier start. A bare `'` (no name) falls through to the
+                // operator path, which rejects it — witchy has no char literals.
+                '\'' if self.peek2().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') => {
+                    self.lifetime()
+                }
                 _ => self.operator()?,
             };
             out.push(Token { kind, line, col });
@@ -612,6 +623,22 @@ impl Lexer {
         let value = i64::from_str_radix(&text, radix)
             .map_err(|_| self.err(format!("invalid {name} integer literal `{text}`")))?;
         Ok(Tok::Int(value))
+    }
+
+    /// Lex a lifetime name `'a` (RFC-0083). The caller has verified the next
+    /// char is an identifier start; this consumes the `'` and the name.
+    fn lifetime(&mut self) -> Tok {
+        self.bump(); // consume the leading `'`
+        let mut name = String::new();
+        while let Some(c) = self.peek() {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                name.push(c);
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        Tok::Lifetime(name)
     }
 
     fn ident_or_keyword(&mut self) -> Tok {

@@ -561,3 +561,16 @@
         assert!(!out.contains("__fv"), "synthetic counter leaked into output: {out}");
         assert_eq!(out, src, "for var must format to itself: {out}");
     }
+
+    #[test]
+    fn borrowed_views_round_trip_canonically() {
+        // (RFC-0083) Both view surfaces format to the canonical `View(T, 'a)`, which
+        // re-parses to the same node — so formatting is idempotent. The `let('a) T`
+        // spelling on a parameter canonicalizes to `View(T, 'a)`.
+        let src =
+            "mode opt\n\nfn first(text: let('a) String) -> View(String, 'a):\n    text\n";
+        let out = reformat(src).expect("view signature round-trips");
+        assert!(out.contains("text: View(String, 'a)"), "param view canonicalized: {out}");
+        assert!(out.contains("-> View(String, 'a)"), "result view survives: {out}");
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
+    }

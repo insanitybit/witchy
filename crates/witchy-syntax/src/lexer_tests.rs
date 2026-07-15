@@ -272,3 +272,23 @@
         assert!(error.message.contains("not a witchy operator"));
         assert!(error.message.contains("value.f(...)"));
     }
+
+    #[test]
+    fn lexes_lifetime_names() {
+        // (RFC-0083) `'a` is a single lifetime token carrying the bare name; a
+        // trailing type name after it lexes as an ordinary identifier.
+        assert_eq!(
+            kinds("'a String"),
+            vec![Tok::Lifetime("a".into()), Tok::Ident("String".into()), Tok::Eof],
+        );
+        // Multi-char and underscore-led names are allowed.
+        assert_eq!(kinds("'buf")[0], Tok::Lifetime("buf".into()));
+        assert_eq!(kinds("'_x")[0], Tok::Lifetime("_x".into()));
+    }
+
+    #[test]
+    fn bare_quote_without_name_is_not_a_lifetime() {
+        // A lone `'` (no identifier following) must not lex as a lifetime; witchy
+        // has no char literals, so it falls through to the operator path (an error).
+        assert!(tokenize("'").is_err(), "a bare quote is not a valid token");
+    }

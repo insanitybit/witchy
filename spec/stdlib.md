@@ -1028,6 +1028,10 @@ The witchy standard function-combinator library. Pure and capability-free. With 
 
 Return the argument unchanged.
 
+#### `fn owned(x: a) -> a`
+
+Materialize a borrowed view (RFC-0083) into an owned value, ending the view's borrow of its owner. A view has no runtime representation — it is already its owned inner value — so this is the identity at runtime on both backends; its role is the source-level escape hatch that ends a loan (`text.owned()`) so the owner may be mutated or moved again. Outside `mode opt` it is a plain identity.
+
 #### `fn compose(f: fn(b) -> c, g: fn(a) -> b) -> fn(a) -> c`
 
 `compose(f, g)` is the function `x -> f(g(x))` — apply `g`, then `f`.

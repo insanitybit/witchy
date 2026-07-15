@@ -299,6 +299,17 @@ impl Parser {
         }
     }
 
+    /// Consume a lifetime name token `'a` (RFC-0083), returning the bare name.
+    fn lifetime_name(&mut self) -> Result<String, ParseError> {
+        match self.kind().clone() {
+            Tok::Lifetime(name) => {
+                self.advance();
+                Ok(name)
+            }
+            other => Err(self.error(format!("expected a lifetime like `'a`, found `{other}`"))),
+        }
+    }
+
     // --- top level ---
 
     fn module(&mut self) -> Result<Module, ParseError> {
@@ -1087,6 +1098,22 @@ impl Parser {
         if let Some(q) = self.eat_type_qual() {
             return Ok(Type::Qualified(q, Box::new(self.ty()?)));
         }
+        // (RFC-0083) A borrowed-parameter view: `let('a) T`. The leading `let` is a
+        // TYPE constructor here (a read-only borrow carrying lifetime `'a`),
+        // distinct from the `let` parameter *convention* that may precede a
+        // parameter name. Recognized only when `let` is immediately followed by
+        // `('lifetime)`; a bare `let` is never a type.
+        if self.at(&Tok::Let)
+            && matches!(self.toks.get(self.pos + 1).map(|t| &t.kind), Some(Tok::LParen))
+            && matches!(self.toks.get(self.pos + 2).map(|t| &t.kind), Some(Tok::Lifetime(_)))
+        {
+            self.advance(); // `let`
+            self.expect(&Tok::LParen)?;
+            let life = self.lifetime_name()?;
+            self.expect(&Tok::RParen)?;
+            let inner = self.ty()?;
+            return Ok(Type::Qualified(TypeQual::Borrow(life), Box::new(inner)));
+        }
         if self.eat(&Tok::Fn) {
             // Function type: `fn(T1, var T2, own T3) -> R`.
             self.expect(&Tok::LParen)?;
@@ -1144,6 +1171,21 @@ impl Parser {
             self.advance(); // `.`
             let ty = self.ident()?;
             name = format!("{name}.{ty}");
+        }
+        // (RFC-0083) The borrowed-result surface `View(T, 'a)` — a named type whose
+        // second argument is a lifetime, which the general type-argument loop below
+        // cannot parse. Desugars to the same `Qualified(Borrow('a), T)` as
+        // `let('a) T`.
+        if name == "View"
+            && self.at(&Tok::LParen)
+            && !matches!(self.toks.get(self.pos + 1).map(|t| &t.kind), Some(Tok::RParen))
+        {
+            self.expect(&Tok::LParen)?;
+            let inner = self.ty()?;
+            self.expect(&Tok::Comma)?;
+            let life = self.lifetime_name()?;
+            self.expect(&Tok::RParen)?;
+            return Ok(Type::Qualified(TypeQual::Borrow(life), Box::new(inner)));
         }
         if self.at(&Tok::Lt) {
             // `List<Int>` is the Rust/TS spelling; witchy writes type arguments in
@@ -2453,6 +2495,14 @@ impl Parser {
                     TypeQual::Frozen => "type_frozen",
                     TypeQual::Unique => "type_unique",
                     TypeQual::LocalUnique => "type_local_unique",
+                    // (RFC-0083) There is no `meta` constructor for a borrowed view
+                    // yet; `quote type:` cannot build one. Reject with an actionable
+                    // message rather than silently dropping the lifetime.
+                    TypeQual::Borrow(_) => {
+                        return Err(self.error(
+                            "`quote type:` does not support borrowed views (`View(T, 'a)`) yet",
+                        ));
+                    }
                 };
                 Ok(self.meta_call(name, vec![self.type_syntax_expr(inner)?]))
             }

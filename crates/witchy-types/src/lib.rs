@@ -9,5 +9,6 @@
 #![allow(clippy::collapsible_if, clippy::collapsible_match, clippy::items_after_test_module)]
 #![deny(unsafe_code)]
 
+pub mod loans;
 pub mod traits;
 pub mod typeck;

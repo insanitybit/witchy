@@ -287,17 +287,20 @@ pub enum Type {
     /// parameter. An empty convention vector is tolerated only for legacy
     /// compiler-generated values and means all-default `let` parameters.
     Fn(Vec<Type>, Box<Type>, Vec<Convention>),
-    /// (RFC-0025/0026) An ownership/immutability qualifier on a type: `frozen T`,
-    /// `unique T`, `local unique T`. A compile-time CONTRACT — typeck enforces it
-    /// (a `frozen` value may not be mutated; a `unique` value must be the sole
-    /// reference) but it carries no runtime representation: both backends lower the
-    /// inner type identically, so it is invisible to codegen and parity-neutral.
-    /// Use [`Type::unqualified`] to see through it where the qualifier is irrelevant.
+    /// (RFC-0025/0026/0083) An ownership/immutability qualifier on a type:
+    /// `frozen T`, `unique T`, `local unique T`, or a borrowed view (`let('a) T` /
+    /// `View(T, 'a)`). A compile-time CONTRACT — typeck enforces it (a `frozen`
+    /// value may not be mutated; a `unique` value must be the sole reference; a
+    /// borrowed owner may not be moved/mutated while its view is live) but it
+    /// carries no runtime representation: both backends lower the inner type
+    /// identically, so it is invisible to codegen and parity-neutral. Use
+    /// [`Type::unqualified`] to see through it where the qualifier is irrelevant.
     Qualified(TypeQual, Box<Type>),
 }
 
-/// An ownership/immutability qualifier (RFC-0025 `frozen`, RFC-0026 `unique`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// An ownership/immutability qualifier (RFC-0025 `frozen`, RFC-0026 `unique`,
+/// RFC-0083 borrowed view). Not `Copy`: [`TypeQual::Borrow`] carries a lifetime name.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeQual {
     /// `frozen` — deeply immutable; sharing is safe, mutation is a check-time error.
     Frozen,
@@ -305,15 +308,37 @@ pub enum TypeQual {
     Unique,
     /// `local unique` — unique within this activation only; may not escape.
     LocalUnique,
+    /// (RFC-0083) A read-only borrowed VIEW carrying a lifetime name. Both surfaces
+    /// (`let('a) T` on a parameter, `View(T, 'a)` on a result) parse to
+    /// `Qualified(Borrow("a"), T)`. Like the other qualifiers it is a compile-time
+    /// contract with no runtime representation — codegen sees through it via the
+    /// existing `Qualified` recursion, so a view lowers exactly as its owned inner
+    /// type (parity by construction; RFC-0083 keeps runtime rooting for a later
+    /// phase). The lifetime name relates a borrowed RESULT to the input it views:
+    /// matching names within one signature is the output-to-input relation the
+    /// checker enforces.
+    Borrow(String),
 }
 
 impl TypeQual {
     /// The source keyword(s) for this qualifier — for formatting / reflection.
-    pub fn as_str(self) -> &'static str {
+    /// A [`TypeQual::Borrow`] has no single-keyword spelling (it renders as
+    /// `View(T, 'a)`, which needs the inner type); callers that can meet one
+    /// special-case it before reaching here.
+    pub fn as_str(&self) -> &'static str {
         match self {
             TypeQual::Frozen => "frozen",
             TypeQual::Unique => "unique",
             TypeQual::LocalUnique => "local unique",
+            TypeQual::Borrow(_) => "view",
+        }
+    }
+
+    /// The lifetime name if this is a borrowed view (`Some("a")` for `Borrow("a")`).
+    pub fn borrow_lifetime(&self) -> Option<&str> {
+        match self {
+            TypeQual::Borrow(life) => Some(life),
+            _ => None,
         }
     }
 }

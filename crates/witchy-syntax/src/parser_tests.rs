@@ -1186,3 +1186,47 @@ fn f(var a: Int, own b: Int, c: Int) -> Int:
         parse_module("gen fn ok() -> Iter(Int):\n    if true:\n        yield 1\n    yield 2\n")
             .expect("block-nested yield parses");
     }
+
+    #[test]
+    fn borrowed_param_and_result_views_parse() {
+        // (RFC-0083) `let('a) T` is a borrowed parameter; `View(T, 'a)` a borrowed
+        // result. Both desugar to the same `Qualified(Borrow('a), T)` node.
+        let m = parse_module(
+            "mode opt\n\nfn first(text: let('a) String) -> View(String, 'a):\n    text\n",
+        )
+        .expect("borrowed view signature parses");
+        let Item::Function(f) = &m.items[0] else { panic!("expected a function") };
+        let want = Some(Type::Qualified(
+            TypeQual::Borrow("a".into()),
+            Box::new(Type::Named("String".into(), vec![])),
+        ));
+        assert_eq!(f.params[0].ty, want, "`let('a) String` param is a borrowed view");
+        assert_eq!(f.ret, want, "`View(String, 'a)` return is a borrowed view");
+    }
+
+    #[test]
+    fn bare_let_convention_is_not_a_view() {
+        // A plain `let` parameter convention (an immutable borrow keyword) must NOT
+        // be misread as the `let('a)` view type — only `let` immediately followed
+        // by `('lifetime)` is a view.
+        let m = parse_module("fn f(let x: Int) -> Int:\n    x\n").expect("let convention parses");
+        let Item::Function(f) = &m.items[0] else { panic!("expected a function") };
+        assert_eq!(f.params[0].convention, Convention::Borrow);
+        assert_eq!(f.params[0].ty, Some(Type::Named("Int".into(), vec![])));
+    }
+
+    #[test]
+    fn view_lifetime_must_be_a_lifetime_token() {
+        // `View(T, X)` with an ordinary identifier where a lifetime belongs is a
+        // parse error — the second slot is a lifetime, not a type.
+        let err = parse_module("mode opt\n\nfn f(s: let('a) String) -> View(String, a):\n    s\n")
+            .expect_err("non-lifetime second arg rejected");
+        assert!(err.message.contains("lifetime"), "{err}");
+    }
+
+    #[test]
+    fn bare_quote_is_still_rejected() {
+        // A stray `'` with no name is not a lifetime; it must still be the old
+        // "not a witchy operator" style lex/parse failure, never a silent token.
+        assert!(parse_module("fn f() -> Int:\n    '\n").is_err());
+    }

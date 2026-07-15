@@ -108,6 +108,10 @@ pub fn type_info_expr(t: &TypeDef) -> Expr {
 fn type_expr(t: &Type) -> Expr {
     let s = |v: &str| Expr::Str(v.to_string());
     match t {
+        // (RFC-0083) Reflection reports the logical VIEWED value, not the borrow: a
+        // view reflects exactly as its owned inner type (borrow identity is
+        // unobservable, RFC-0083 §Semantic parity).
+        Type::Qualified(TypeQual::Borrow(_), inner) => type_expr(inner),
         Type::Qualified(q, inner) => Expr::Ctor {
             name: "meta.TQualified".into(),
             args: vec![s(q.as_str()), type_expr(inner)],

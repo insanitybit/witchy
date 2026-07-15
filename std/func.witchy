@@ -6,6 +6,14 @@
 pub fn identity(x: a) -> a:
     x
 
+// Materialize a borrowed view (RFC-0083) into an owned value, ending the view's
+// borrow of its owner. A view has no runtime representation — it is already its
+// owned inner value — so this is the identity at runtime on both backends; its
+// role is the source-level escape hatch that ends a loan (`text.owned()`) so the
+// owner may be mutated or moved again. Outside `mode opt` it is a plain identity.
+pub fn owned(x: a) -> a:
+    x
+
 // `compose(f, g)` is the function `x -> f(g(x))` — apply `g`, then `f`.
 pub fn compose(f: fn(b) -> c, g: fn(a) -> b) -> fn(a) -> c:
     fn(x): f(g(x))

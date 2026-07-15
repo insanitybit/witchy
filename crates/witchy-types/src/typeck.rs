@@ -6826,7 +6826,12 @@ fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) ->
     match crate::traits::lower_checked(recs.clone()) {
         Ok(lowered) => {
             check_unique_parameters(&lowered)?;
-            run_check_with_trait_methods(&lowered, false, &trait_method_names, compiler_syntax_allowed).map(|_| ())
+            run_check_with_trait_methods(&lowered, false, &trait_method_names, compiler_syntax_allowed)?;
+            // (RFC-0083) Static lifetime/loan check for borrowed views. Runs after
+            // type checking (so a genuine type error is reported first) on the
+            // lowered module (method calls are plain `Call`s and the borrow
+            // signatures survive lowering as `Qualified(Borrow, _)`).
+            crate::loans::check(&lowered)
         }
         Err(message) => {
             // (BUG-307) Mono's "cannot infer the result type" fallback fires when
