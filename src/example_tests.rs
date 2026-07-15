@@ -4998,12 +4998,12 @@ fn main(console: Console):
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// RFC-0005 Stage 4 (records slice): a PLAIN record — not a sealed
-    /// `capability` declaration — may carry a migrated capability, lowered to a
-    /// typed GC struct. Positional/named construction, spread, field access
-    /// through a NESTED record chain, `match` destructuring, and `var` place
-    /// assignment all agree between the backends, and the authority never
-    /// crosses the i64 slot. Nesting is also the BUG-566 regression: the
+    /// RFC-0005 Stage 4 (records slice): plain named-field and positional
+    /// nominal aggregates may carry a migrated capability, lowered to typed GC
+    /// structs. Construction, spread, field access through a nested record
+    /// chain, `match` destructuring, and `var` place assignment all agree between
+    /// the backends, and the authority never crosses the i64 slot. Nesting is
+    /// also the BUG-566 regression: the
     /// classifier lives in one home now, so typeck and codegen cannot disagree
     /// about which records GC-lower (the old codegen copy missed nested records
     /// and ICE'd the encoder).
@@ -5015,8 +5015,11 @@ fn main(console: Console):
         std::fs::create_dir_all(&root).expect("mkdir");
         std::fs::write(root.join("greeting.txt"), "hello-record").expect("seed");
         let root_str = root.to_str().expect("utf8 root").to_string();
-        let src = "type Inner:\n    dir: Dir[Read]\n    tag: String\n\ntype Workspace:\n    inner: Inner\n    label: String\n    count: Int\n\nfn load(w: Workspace, name: String) -> String:\n    w.inner.dir.read(name)\n\nfn relabel(w: Workspace, label: String) -> Workspace:\n    Workspace(label: label, ..w)\n\nfn main(console: Console, root: Dir[Read]):\n    let w = Workspace(Inner(root, \"t\"), \"main\", 1)\n    console.print(load(w, \"greeting.txt\"))\n    let x = relabel(w, \"alt\")\n    console.print(\"${x.label} ${x.count}\")\n    var y = Workspace(inner: Inner(root, \"u\"), label: \"named\", count: 2)\n    y.count = 40 + y.count\n    console.print(\"${y.label} ${y.count}\")\n    match y:\n        Workspace(i, lab, n) -> console.print(\"${lab} ${n} ${i.tag}\")\n";
+        let src = "type Inner:\n    dir: Dir[Read]\n    tag: String\n\ntype Workspace:\n    inner: Inner\n    label: String\n    count: Int\n\ntype RootToken:\n    RootToken(Dir[Read])\n\ntype RootHandle:\n    RootHandle(RootToken, String)\n\ntype NamedAroundPositional:\n    token: RootToken\n    name: String\n\ntype PositionalAroundNamed:\n    PositionalAroundNamed(Inner, String)\n\nfn load(w: Workspace, name: String) -> String:\n    w.inner.dir.read(name)\n\nfn load_positional(h: RootHandle) -> String:\n    match h:\n        RootHandle(RootToken(dir), name) -> dir.read(name)\n\nfn load_named_positional(h: NamedAroundPositional) -> String:\n    match h.token:\n        RootToken(dir) -> dir.read(h.name)\n\nfn load_positional_named(h: PositionalAroundNamed) -> String:\n    match h:\n        PositionalAroundNamed(inner, name) -> inner.dir.read(name)\n\nfn relabel(w: Workspace, label: String) -> Workspace:\n    Workspace(label: label, ..w)\n\nfn main(console: Console, root: Dir[Read]):\n    let w = Workspace(Inner(root, \"t\"), \"main\", 1)\n    console.print(load(w, \"greeting.txt\"))\n    console.print(load_positional(RootHandle(RootToken(root), \"greeting.txt\")))\n    console.print(load_named_positional(NamedAroundPositional(RootToken(root), \"greeting.txt\")))\n    console.print(load_positional_named(PositionalAroundNamed(Inner(root, \"v\"), \"greeting.txt\")))\n    let x = relabel(w, \"alt\")\n    console.print(\"${x.label} ${x.count}\")\n    var y = Workspace(inner: Inner(root, \"u\"), label: \"named\", count: 2)\n    y.count = 40 + y.count\n    console.print(\"${y.label} ${y.count}\")\n    match y:\n        Workspace(i, lab, n) -> console.print(\"${lab} ${n} ${i.tag}\")\n";
         let want = vec![
+            "hello-record".to_string(),
+            "hello-record".to_string(),
+            "hello-record".to_string(),
             "hello-record".to_string(),
             "alt 1".to_string(),
             "named 42".to_string(),

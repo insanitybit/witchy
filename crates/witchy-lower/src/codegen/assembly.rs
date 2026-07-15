@@ -215,6 +215,8 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
     // home — typeck — and codegen consumes it, so the boundary checks and the
     // struct registration can never disagree on which records are GC-lowered.
     let gc_records = witchy_types::typeck::gc_cap_record_entries(module);
+    let gc_record_names: HashSet<String> =
+        gc_records.iter().map(|(name, _)| name.clone()).collect();
     // Collect parameter conventions up front so call sites can resolve `var`
     // write-back even for forward references.
     for item in &module.items {
@@ -277,6 +279,9 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
                     cg.ctor_type_name.insert(variant.name.clone(), t.name.clone());
                     cg.ctors
                         .insert(variant.name.clone(), (tag as u32, variant.fields.len()));
+                    if gc_record_names.contains(&t.name) && variant.field_names.is_empty() {
+                        cg.record_field_types.insert(t.name.clone(), variant.fields.clone());
+                    }
                     if !variant.field_names.is_empty() {
                         let fields = variant
                             .field_names

@@ -929,6 +929,9 @@ fn has_optional_id() -> Option(Bool):
         check_str("type Handle:\n    f: File\nfn take(console: Console, h: Handle):\n    console.print(\"ok\")\n")
             .expect("a plain cap-carrying record GC-lowers");
 
+        check_str("type Handle:\n    Handle(File, String)\nfn take(console: Console, h: Handle):\n    match h:\n        Handle(_, label) -> console.print(label)\n")
+            .expect("a positional cap-carrying nominal aggregate GC-lowers");
+
         let err = check_str("fn tupled(console: Console, pair: (File, Int)):\n    console.print(\"x\")\n")
             .expect_err("a File tuple element needs the GC-struct aggregate path");
         assert!(err.contains("File") && err.contains("tuple"), "got: {err}");

@@ -555,7 +555,8 @@ closures.
 ## Stage 4 progress (2026-07-13)
 
 **Records slice landed.** The GC-struct record representation proved by sealed
-`capability` records now covers PLAIN single-variant named-field records: the
+`capability` records now covers plain non-generic single-variant nominal
+aggregates, including both named-field records and positional wrappers: the
 classifier (`gc_cap_record_entries`) lives in ONE home (`witchy-types`) and
 codegen consumes it, closing BUG-566 (typeck's recursive classification vs
 codegen's direct-field copy disagreed on NESTED records → checked-valid
@@ -566,8 +567,7 @@ in-place record update (both slot-box fields; a GC record binds as one
 `GcRef` local and rebuilds by `StructNew`).
 
 Still reject-first, in the plan's order: cap-carrying multi-variant enums,
-positional newtypes over caps (use the named-field form or a `capability`
-brand), tuples, `List`/`Dict`/`Result` containers, and closure environments —
+tuples, `List`/`Dict`/`Result` containers, and closure environments —
 closures remain the hard tail (a capture is invisible in the function TYPE, so
 cap-carrying and scalar closures flowing into one `fn`-typed param force a
 uniform environment representation).

@@ -1898,16 +1898,19 @@ fn nullable_externref_option_cap(
     transparent_externref_brand_field_cap(&args[0], defs, &mut HashSet::new())
 }
 
-/// (RFC-0005 stage 4) A single-variant, non-generic, named-field record —
-/// `capability` or plain `type` alike — whose fields transitively carry a
-/// migrated externref capability (directly, via a transparent brand, or via
-/// another such record). These lower to wasm GC structs on the compiled
-/// backend; everything else cap-carrying stays reject-first.
+/// (RFC-0005 stage 4) A single-variant, non-generic nominal aggregate —
+/// positional or named-field, `capability` or plain `type` alike — whose fields
+/// transitively carry a migrated externref capability. These lower to wasm GC
+/// structs; a transparent one-field capability brand remains the direct
+/// externref representation instead.
 fn gc_cap_record_cap(
     name: &str,
     defs: &HashMap<&str, &ast::TypeDef>,
     seen: &mut HashSet<String>,
 ) -> Option<String> {
+    if transparent_externref_brand_cap(name, defs, &mut HashSet::new()).is_some() {
+        return None;
+    }
     if !seen.insert(name.to_string()) {
         return None;
     }
@@ -1917,9 +1920,6 @@ fn gc_cap_record_cap(
             return None;
         }
         let variant = def.variants.first()?;
-        if variant.field_names.is_empty() {
-            return None;
-        }
         variant
             .fields
             .iter()
