@@ -3,12 +3,14 @@
 ## Build and test
 
 `./scripts/check.sh` is the green gate — **run it before every commit.** It runs
-the whole workspace through build, clippy (deny-warnings), the test suite, and
-the wasm playground build, in that order, and is the single source of truth for
-"the project is healthy". `--full` adds the from-scratch e2e acceptance test.
+the whole workspace test suite and the witchy-fmt check in the foreground while
+clippy (deny-warnings) and the wasm playground build run concurrently in the
+background (both are collected — and can fail the gate — before it goes green),
+and is the single source of truth for "the project is healthy". `--full` adds
+the from-scratch e2e acceptance test.
 
 ```sh
-./scripts/check.sh          # build + clippy + tests + wasm build
+./scripts/check.sh          # tests + fmt, with clippy + wasm build overlapped
 ./scripts/check.sh --full   # the above, plus ./scripts/e2e-full.sh
 
 # Or run one piece while iterating on it:

@@ -220,11 +220,11 @@ net — only its position. Standalone `check.sh` (no env set) runs `full`.
   human `kill`; `doctor` shows holder pid + what + elapsed + log age.
 - **Stall detection is CPU-gated, not log-only (2026-07-10).** The stall monitor
   once killed on 300s of no log output alone. But the gate legitimately goes
-  silent for minutes: stage 4 (`nextest run`) recompiles the `test` profile —
-  separate artifacts from the `dev`-profile `cargo build`/`clippy` of stages
-  1-3, so it is a full second compile — then spawns `--list` across ~17 test
-  binaries and runs the warm-caches setup script, all before the first streamed
-  `PASS`. Under CPU contention (concurrent agent builds) that silent window blew
+  silent for minutes — from t+0, since the tests stage now runs FIRST:
+  `nextest run` compiles the `test` profile (separate artifacts from the
+  `dev`-profile `cargo build`/`clippy` artifacts, so it is a full compile),
+  then spawns `--list` across ~17 test binaries and runs the warm-caches setup
+  script, all before the first streamed `PASS`. Under CPU contention (concurrent agent builds) that silent window blew
   the 300s clock and killed HEALTHY gates: over a single day, 56 of 56
   `timeout`s were this false positive, never a real hang, each burning a full
   gate's wall-clock and forcing a resubmit. Fix: the monitor now consults

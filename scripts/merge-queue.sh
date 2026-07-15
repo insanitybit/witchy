@@ -205,8 +205,9 @@ run_gate() { # run_gate <log> [fuzz-mode]
             break
         fi
         # Log silence alone is NOT a hang. The gate legitimately goes quiet for
-        # minutes: nextest recompiles the `test` profile (separate artifacts from
-        # the `dev`-profile build/clippy stages) and then enumerates+starts tests,
+        # minutes — from t+0, since tests are now the FIRST stage: nextest
+        # compiles the `test` profile (separate artifacts from the `dev`-profile
+        # build/clippy artifacts) and then enumerates+starts tests,
         # all before the first streamed `PASS` line — and under CPU contention that
         # silent window blew the 300s stall clock, killing HEALTHY gates (every
         # observed "no log output" timeout was this false positive, never a real
@@ -567,10 +568,14 @@ prewarm_gate() {
     note "idle: prewarming gate worktree at master ${m:0:9}"
     git -C "$gate_wt" rebase --abort >/dev/null 2>&1 || true
     git -C "$gate_wt" checkout --detach --quiet "$m" 2>/dev/null || { release_lock; return 0; }
-    # Warm ALL profiles the gate uses: dev (clippy+build), test (nextest), and
-    # the wasm playground target. Without this, each cold profile adds 30-130s
-    # to the gate wall-clock. The wasm build needs the rustup toolchain's std
-    # (same PATH trick as check.sh).
+    # Warm ALL profiles the gate uses: dev (build), test (nextest), the wasm
+    # playground target, and — when it exists — the separate clippy check dir
+    # (target-clippy, where check.sh's background clippy leg runs; check.sh
+    # CoW-seeds it on first use). Without this, each cold profile adds 30-130s
+    # to the gate wall-clock. The clippy warm-up uses the EXACT gate flags
+    # (`-- -D warnings`) so its fingerprints match the gate's; `|| true` keeps a
+    # master-side lint from failing the prewarm. The wasm build needs the rustup
+    # toolchain's std (same PATH trick as check.sh).
     local tc_bin=""
     if command -v rustup >/dev/null 2>&1; then
         rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
@@ -585,6 +590,9 @@ prewarm_gate() {
              else
                  cargo build --lib --no-default-features --target wasm32-unknown-unknown >/dev/null 2>&1
              fi || true; } \
+        && { [ -d target-clippy ] \
+                 && CARGO_TARGET_DIR=target-clippy cargo clippy --workspace --all-targets -- -D warnings >/dev/null 2>&1 \
+                 || true; } \
         && { [ -x scripts/warm-witchy-caches.sh ] && ./scripts/warm-witchy-caches.sh >/dev/null 2>&1 || true; } ) \
         && echo "$m" >"$qdir/prewarmed" || true
     release_lock

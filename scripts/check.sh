@@ -6,7 +6,9 @@
 #   ./scripts/check.sh --fast  the COMMIT gate: clippy + tests (minus the
 #                              load-flaky e2e), plus witchy-fmt IF any .witchy
 #                              files changed — the fast inner loop
-#   ./scripts/check.sh         build, clippy, fmt, tests, and the wasm playground build
+#   ./scripts/check.sh         the MERGE gate: tests + fmt in the foreground with
+#                              clippy and the wasm playground build overlapped in
+#                              the background (collected before the gate goes green)
 #   ./scripts/check.sh --full  the PUSH gate: also the e2e suite + from-scratch acceptance
 #
 # Shards — ONE named section, for a focused pre-queue run in your own worktree.
@@ -191,8 +193,8 @@ run() {
     printf '\033[1;34m    [%d] %s took %ds\033[0m\n' "$step" "$label" "$(( $(date +%s) - t_stage ))"
 }
 
-run "clippy (deny warnings)"   cargo clippy --workspace --all-targets -- -D warnings
 if [ "$fast" -eq 1 ]; then
+    run "clippy (deny warnings)"   cargo clippy --workspace --all-targets -- -D warnings
     # The fast commit gate: clippy checks correctness; nextest compiles+links its
     # own test binaries. No standalone build step needed.
     # Run the witchy fmt check IF any .witchy files are dirty — catches formatting
@@ -205,31 +207,69 @@ if [ "$fast" -eq 1 ]; then
     printf '\n\033[1;32mfast gate green\033[0m — run without --fast before push (fmt + wasm), --full for e2e\n'
     exit 0
 fi
-run "build (binary)"           cargo build -p witchy
-run "witchy fmt (std+examples)" witchy_fmt_check
 
-# Start wasm build in the background: it targets wasm32-unknown-unknown so it
-# shares NO artifacts with the native test suite. Overlapping them saves ~15s
-# (warm) to ~130s (cold) of wall-clock that would otherwise be serial.
+# The full gate runs three independent legs CONCURRENTLY and collects the
+# background two after the foreground one finishes:
+#   [fg] tests  — nextest builds the workspace itself, including a fresh `witchy`
+#                 binary: the integration tests name it via CARGO_BIN_EXE_witchy,
+#                 so cargo must (re)build the bin before compiling them. That
+#                 makes a standalone pre-build redundant, and the fmt check below
+#                 can run AFTER the tests against the nextest-built binary.
+#   [bg] clippy — lint artifacts (wrapper-generated rmeta) share nothing with
+#                 build/test artifacts, so clippy runs in its OWN target dir
+#                 (CoW-cloned from the main one on first use, warm thereafter)
+#                 instead of serializing ~60-75s in front of the whole gate.
+#                 Same-dir invocations would serialize on cargo's build lock.
+#   [bg] wasm   — targets wasm32-unknown-unknown, shares no native artifacts
+#                 (this leg overlapped tests before this restructure too).
+# A background-leg failure still fails the gate — it just surfaces at collect
+# time instead of up front. Queue candidates already ran a green --fast shard
+# (which keeps clippy first), so a gate-time clippy failure is rare; the
+# restructure optimizes the common all-green path.
+clippy_dir="${target_dir}-clippy"
+seed_clippy_dir() {
+    [ -d "$clippy_dir" ] && return 0
+    local tmp="$clippy_dir.seed.$$"
+    rm -rf "$tmp"
+    # APFS clonefile (`cp -c`) or reflink where available: seconds, ~zero disk.
+    # Where neither works, fall back to an empty dir — a one-time cold clippy.
+    if [ -d "$target_dir" ] && { cp -Rc "$target_dir" "$tmp" 2>/dev/null \
+            || cp -R --reflink=auto "$target_dir" "$tmp" 2>/dev/null; }; then
+        if [ ! -d "$clippy_dir" ]; then mv "$tmp" "$clippy_dir" 2>/dev/null || rm -rf "$tmp"; else rm -rf "$tmp"; fi
+    else
+        rm -rf "$tmp"
+        mkdir -p "$clippy_dir"
+    fi
+}
+clippy_log="$(mktemp "${TMPDIR:-/tmp}/witchy-clippy-XXXXXX")"
+( seed_clippy_dir && CARGO_TARGET_DIR="$clippy_dir" cargo clippy --workspace --all-targets -- -D warnings ) >"$clippy_log" 2>&1 &
+clippy_pid=$!
+
 wasm_log="$(mktemp "${TMPDIR:-/tmp}/witchy-wasm-XXXXXX")"
-wasm_pid=""
 ( "${wasm_cargo[@]}" build --lib --no-default-features --target wasm32-unknown-unknown >"$wasm_log" 2>&1 ) &
 wasm_pid=$!
 
 run "tests (workspace)"        "${test_cmd[@]}"
+run "witchy fmt (std+examples)" witchy_fmt_check
 
-# Collect the wasm build. If it failed, show its output and exit red.
-step=$((step + 1))
-t_wasm_collect=$(date +%s)
-printf '\n\033[1;34m==> [%d] wasm playground build (t+%ds)\033[0m\n' "$step" "$(( t_wasm_collect - t_start ))"
-if ! wait "$wasm_pid"; then
-    cat "$wasm_log"
-    rm -f "$wasm_log"
-    printf '\033[1;31mwasm playground build FAILED\033[0m\n'
-    exit 1
-fi
-rm -f "$wasm_log"
-printf '\033[1;34m    [%d] wasm playground build took %ds\033[0m\n' "$step" "$(( $(date +%s) - t_wasm_collect ))"
+# Collect background legs, cheapest-to-diagnose first. On failure, show the
+# leg's full output and exit red.
+collect_bg() { # collect_bg <label> <pid> <log>
+    local label="$1" pid="$2" log="$3"
+    step=$((step + 1))
+    local t_collect; t_collect=$(date +%s)
+    printf '\n\033[1;34m==> [%d] %s (t+%ds)\033[0m\n' "$step" "$label" "$(( t_collect - t_start ))"
+    if ! wait "$pid"; then
+        cat "$log"
+        rm -f "$log"
+        printf '\033[1;31m%s FAILED\033[0m\n' "$label"
+        exit 1
+    fi
+    rm -f "$log"
+    printf '\033[1;34m    [%d] %s took %ds\033[0m\n' "$step" "$label" "$(( $(date +%s) - t_collect ))"
+}
+collect_bg "clippy (deny warnings)"   "$clippy_pid" "$clippy_log"
+collect_bg "wasm playground build"    "$wasm_pid"   "$wasm_log"
 
 run "runnable book (browser)"  validate_runnable_book
 if [ "$full" -eq 1 ]; then
