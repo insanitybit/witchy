@@ -19738,6 +19738,36 @@ fn main(console: Console):
     }
 
     #[test]
+    fn captured_inferred_dict_keeps_key_and_value_widths() {
+        let src = r#"
+import dict
+
+fn call0(f: fn() -> Int) -> Int:
+    f()
+
+fn main(console: Console):
+    var d = dict.new()
+    dict.insert(d, 5000000000, 9000000000)
+    let captured = d
+    let direct = fn():
+        var total = 0
+        for (k, v) in dict.pairs(captured):
+            total = total + k + v
+        total
+    console.print("${direct()}")
+    console.print("${call0(fn():
+        var total = 0
+        for (k, v) in dict.pairs(captured):
+            total = total + k + v
+        total
+    )}")
+"#;
+        let want = vec!["14000000000", "14000000000"];
+        assert_eq!(interp(src), want, "interpreter");
+        assert_eq!(run_on_wasm(src), want, "compiled WASM");
+    }
+
+    #[test]
     fn compound_assignment_backends_agree() {
         // `x op= e` desugars to `x = x op e`; verify all five ops in both
         // backends, in a loop and a sequence.

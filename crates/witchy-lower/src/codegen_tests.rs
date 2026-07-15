@@ -462,6 +462,118 @@ fn main() -> Int:
     }
 
     #[test]
+    fn lambda_scope_swap_isolates_per_unit_state() {
+        let type_table = witchy_types::typeck::TypeTable::default();
+        let mut cg = Codegen::new(&type_table, witchy_types::loans::LoanFacts::default());
+        let outer = "outer".to_string();
+        let inner = "inner".to_string();
+
+        cg.field_caps.insert(outer.clone());
+        cg.field_push_safe.insert((outer.clone(), "items".into()));
+        cg.local_types.insert(outer.clone(), Type::Named("Int".into(), vec![]));
+        cg.local_dict_value_valtype.insert(outer.clone(), ValType::Int);
+        cg.local_dict_key_valtype.insert(outer.clone(), ValType::Str);
+        cg.local_list_elem_list_valtype.insert(outer.clone(), ValType::Bool);
+        cg.local_list_nesting.insert(outer.clone(), (2, NestBottom::Scalar(ValType::Int)));
+
+        let saved = cg.swap_out_scope();
+        assert!(cg.field_caps.is_empty());
+        assert!(cg.field_push_safe.is_empty());
+        assert!(cg.local_types.is_empty());
+        assert!(cg.local_dict_value_valtype.is_empty());
+        assert!(cg.local_dict_key_valtype.is_empty());
+        assert!(cg.local_list_elem_list_valtype.is_empty());
+        assert!(cg.local_list_nesting.is_empty());
+
+        cg.field_caps.insert(inner.clone());
+        cg.field_push_safe.insert((inner.clone(), "items".into()));
+        cg.local_types.insert(inner.clone(), Type::Named("String".into(), vec![]));
+        cg.local_dict_value_valtype.insert(inner.clone(), ValType::Str);
+        cg.local_dict_key_valtype.insert(inner.clone(), ValType::Int);
+        cg.local_list_elem_list_valtype.insert(inner.clone(), ValType::Float);
+        cg.local_list_nesting.insert(inner.clone(), (3, NestBottom::Scalar(ValType::Str)));
+        cg.restore_scope(saved);
+
+        assert!(cg.field_caps.contains(&outer) && !cg.field_caps.contains(&inner));
+        assert!(cg.field_push_safe.contains(&(outer.clone(), "items".into())));
+        assert!(!cg.field_push_safe.contains(&(inner.clone(), "items".into())));
+        assert!(cg.local_types.contains_key(&outer) && !cg.local_types.contains_key(&inner));
+        assert!(cg.local_dict_value_valtype.contains_key(&outer));
+        assert!(!cg.local_dict_value_valtype.contains_key(&inner));
+        assert!(cg.local_dict_key_valtype.contains_key(&outer));
+        assert!(!cg.local_dict_key_valtype.contains_key(&inner));
+        assert!(cg.local_list_elem_list_valtype.contains_key(&outer));
+        assert!(!cg.local_list_elem_list_valtype.contains_key(&inner));
+        assert!(cg.local_list_nesting.contains_key(&outer));
+        assert!(!cg.local_list_nesting.contains_key(&inner));
+    }
+
+    #[test]
+    fn captured_local_metadata_is_reinstalled_explicitly() {
+        let type_table = witchy_types::typeck::TypeTable::default();
+        let mut cg = Codegen::new(&type_table, witchy_types::loans::LoanFacts::default());
+        let name = "captured".to_string();
+
+        cg.locals.insert(name.clone(), Kind::I64);
+        cg.local_records.insert(name.clone(), "Record".into());
+        cg.local_list_elem.insert(name.clone(), "Element".into());
+        cg.local_payload_records.insert(name.clone(), "Payload".into());
+        cg.local_val_types.insert(name.clone(), ValType::Int);
+        cg.local_types.insert(name.clone(), Type::Named("Int".into(), vec![]));
+        cg.local_list_elem_valtype.insert(name.clone(), ValType::Float);
+        cg.local_list_elem_tuple
+            .insert(name.clone(), vec![ValType::Int, ValType::Str]);
+        cg.local_tuple_slots.insert(name.clone(), vec![ValType::Bool]);
+        cg.local_shape.insert(name.clone(), EqShape::List(Box::new(EqShape::Int)));
+        cg.local_payload_valtype.insert(name.clone(), ValType::Str);
+        cg.local_dict_value_valtype.insert(name.clone(), ValType::Int);
+        cg.local_dict_key_valtype.insert(name.clone(), ValType::Str);
+        cg.local_list_elem_list_valtype.insert(name.clone(), ValType::Bool);
+        cg.local_list_nesting
+            .insert(name.clone(), (2, NestBottom::Scalar(ValType::Int)));
+        cg.local_fn_ret_kind.insert(name.clone(), Kind::F64);
+
+        let capture = cg.capture_info(&name);
+        let _saved = cg.swap_out_scope();
+        cg.install_capture_info(&capture);
+
+        assert!(cg.locals.get(&name) == Some(&Kind::I64));
+        assert_eq!(cg.local_records.get(&name).map(String::as_str), Some("Record"));
+        assert_eq!(cg.local_list_elem.get(&name).map(String::as_str), Some("Element"));
+        assert_eq!(cg.local_payload_records.get(&name).map(String::as_str), Some("Payload"));
+        assert!(cg.local_val_types.get(&name) == Some(&ValType::Int));
+        assert_eq!(cg.local_types.get(&name), Some(&Type::Named("Int".into(), vec![])));
+        assert!(cg.local_list_elem_valtype.get(&name) == Some(&ValType::Float));
+        assert!(cg.local_list_elem_tuple.get(&name) == Some(&vec![ValType::Int, ValType::Str]));
+        assert!(cg.local_tuple_slots.get(&name) == Some(&vec![ValType::Bool]));
+        assert!(cg.local_shape.get(&name) == Some(&EqShape::List(Box::new(EqShape::Int))));
+        assert!(cg.local_payload_valtype.get(&name) == Some(&ValType::Str));
+        assert!(cg.local_dict_value_valtype.get(&name) == Some(&ValType::Int));
+        assert!(cg.local_dict_key_valtype.get(&name) == Some(&ValType::Str));
+        assert!(cg.local_list_elem_list_valtype.get(&name) == Some(&ValType::Bool));
+        assert!(
+            cg.local_list_nesting.get(&name)
+                == Some(&(2, NestBottom::Scalar(ValType::Int)))
+        );
+        assert!(cg.local_fn_ret_kind.get(&name) == Some(&Kind::F64));
+    }
+
+    #[test]
+    fn top_level_function_clears_payload_record_refinements() {
+        let module = parse_module("fn clean() -> Int:\n    0\n").expect("parse");
+        let Item::Function(function) = &module.items[0] else {
+            panic!("function item")
+        };
+        let type_table = witchy_types::typeck::TypeTable::default();
+        let mut cg = Codegen::new(&type_table, witchy_types::loans::LoanFacts::default());
+        cg.local_payload_records.insert("stale".into(), "Record".into());
+
+        cg.compile_function(function).expect("compile clean function");
+
+        assert!(!cg.local_payload_records.contains_key("stale"));
+    }
+
+    #[test]
     fn closure_captures_multiple_vars() {
         // Several captures land in distinct environment slots.
         let src = r#"

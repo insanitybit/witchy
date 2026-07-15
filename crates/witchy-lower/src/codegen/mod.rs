@@ -125,9 +125,29 @@ enum CodegenPlace {
 type ClosureWriteback = (CodegenPlace, Kind, String);
 type LoweredClosureArgs = (Vec<witchy_wir::wir::WirExpr>, Vec<ClosureWriteback>);
 
-/// One captured variable for a closure: (name, record-type-name,
-/// list-element-type-name, slot kind).
-type CaptureInfo = (String, Option<String>, Option<String>, Kind);
+/// One captured variable plus every local refinement lowering may consult in
+/// the lifted body. Capture metadata is copied deliberately; it must not arrive
+/// by leaking the enclosing function's whole local-type scope through a lambda.
+#[derive(Clone)]
+struct CaptureInfo {
+    name: String,
+    kind: Kind,
+    record: Option<String>,
+    list_elem: Option<String>,
+    payload_record: Option<String>,
+    val_type: Option<ValType>,
+    ty: Option<Type>,
+    list_elem_vt: Option<ValType>,
+    list_elem_tuple: Option<Vec<ValType>>,
+    tuple_slots: Option<Vec<ValType>>,
+    shape: Option<EqShape>,
+    payload_vt: Option<ValType>,
+    dict_value_vt: Option<ValType>,
+    dict_key_vt: Option<ValType>,
+    list_elem_list_vt: Option<ValType>,
+    list_nesting: Option<(usize, NestBottom)>,
+    fn_ret_kind: Option<Kind>,
+}
 
 /// (RFC-0062) A tier-1 elided closure: its lifted THREADED body index (a `$__lamt{i}`
 /// taking captures as leading arguments, NO env pointer) plus its ordered captures —
@@ -570,15 +590,22 @@ fn ty_list_nesting(t: &Type) -> Option<(usize, NestBottom)> {
 /// value instead of a long argument list.
 struct SavedScope {
     locals: HashMap<String, Kind>,
+    field_caps: HashSet<String>,
+    field_push_safe: HashSet<(String, String)>,
     records: HashMap<String, String>,
     list_elem: HashMap<String, String>,
     payload: HashMap<String, String>,
     val_types: HashMap<String, ValType>,
+    types: HashMap<String, Type>,
     list_elem_vt: HashMap<String, ValType>,
     list_elem_tuple: HashMap<String, Vec<ValType>>,
     tuple_slots: HashMap<String, Vec<ValType>>,
     shape: HashMap<String, EqShape>,
     payload_vt: HashMap<String, ValType>,
+    dict_value_vt: HashMap<String, ValType>,
+    dict_key_vt: HashMap<String, ValType>,
+    list_elem_list_vt: HashMap<String, ValType>,
+    list_nesting: HashMap<String, (usize, NestBottom)>,
     fn_ret_kind: HashMap<String, Kind>,
     ret: Kind,
     ret_slot: bool,
@@ -1386,11 +1413,7 @@ impl<'types> Codegen<'types> {
     /// The WASM kind a closure-valued expression returns: a function-typed
     /// variable's tracked return kind, a lambda's body kind, else i32.
     fn apply_ret_kind(&self, func: &Expr) -> Kind {
-        match func {
-            Expr::Var(f) => self.local_fn_ret_kind.get(f).copied().unwrap_or(Kind::I32),
-            Expr::Lambda { body, .. } => self.block_kind(body),
-            _ => Kind::I32,
-        }
+        self.closure_ret_kind_of(func).unwrap_or(Kind::I32)
     }
 
     fn closure_conventions(&self, func: &Expr) -> Vec<Convention> {
@@ -1545,6 +1568,11 @@ impl<'types> Codegen<'types> {
     /// literal's body kind, a call to a `-> fn(...) -> RET` function, or another
     /// closure-bound variable. Used to track `let f = <closure>` for later `f(x)`.
     fn closure_ret_kind_of(&self, value: &Expr) -> Option<Kind> {
+        if let Some(ty) = self.ast_type_of_expr(value)
+            && let Type::Fn(_, ret, _) = ty.unqualified()
+        {
+            return Some(self.kind_for_type(ret));
+        }
         match value {
             Expr::Lambda { body, .. } => Some(self.block_kind(body)),
             Expr::Call { name, .. } => self.fn_ret_closure_kind.get(name).copied(),
@@ -2396,6 +2424,7 @@ impl<'types> Codegen<'types> {
         self.field_caps.clear();
         self.local_records.clear();
         self.local_list_elem.clear();
+        self.local_payload_records.clear();
         self.local_val_types.clear();
         self.local_types.clear();
         self.local_list_elem_valtype.clear();
@@ -7103,6 +7132,78 @@ impl<'types> Codegen<'types> {
         h.finish()
     }
 
+    fn capture_info(&self, name: &str) -> CaptureInfo {
+        CaptureInfo {
+            name: name.to_string(),
+            kind: self.locals.get(name).copied().unwrap_or(Kind::I32),
+            record: self.local_records.get(name).cloned(),
+            list_elem: self.local_list_elem.get(name).cloned(),
+            payload_record: self.local_payload_records.get(name).cloned(),
+            val_type: self.local_val_types.get(name).copied(),
+            ty: self.local_types.get(name).cloned(),
+            list_elem_vt: self.local_list_elem_valtype.get(name).copied(),
+            list_elem_tuple: self.local_list_elem_tuple.get(name).cloned(),
+            tuple_slots: self.local_tuple_slots.get(name).cloned(),
+            shape: self.local_shape.get(name).cloned(),
+            payload_vt: self.local_payload_valtype.get(name).copied(),
+            dict_value_vt: self.local_dict_value_valtype.get(name).copied(),
+            dict_key_vt: self.local_dict_key_valtype.get(name).copied(),
+            list_elem_list_vt: self.local_list_elem_list_valtype.get(name).copied(),
+            list_nesting: self.local_list_nesting.get(name).cloned(),
+            fn_ret_kind: self.local_fn_ret_kind.get(name).copied(),
+        }
+    }
+
+    fn install_capture_info(&mut self, capture: &CaptureInfo) {
+        let name = capture.name.clone();
+        self.locals.insert(name.clone(), capture.kind);
+        if let Some(value) = &capture.record {
+            self.local_records.insert(name.clone(), value.clone());
+        }
+        if let Some(value) = &capture.list_elem {
+            self.local_list_elem.insert(name.clone(), value.clone());
+        }
+        if let Some(value) = &capture.payload_record {
+            self.local_payload_records.insert(name.clone(), value.clone());
+        }
+        if let Some(value) = capture.val_type {
+            self.local_val_types.insert(name.clone(), value);
+        }
+        if let Some(value) = &capture.ty {
+            self.local_types.insert(name.clone(), value.clone());
+        }
+        if let Some(value) = capture.list_elem_vt {
+            self.local_list_elem_valtype.insert(name.clone(), value);
+        }
+        if let Some(value) = &capture.list_elem_tuple {
+            self.local_list_elem_tuple.insert(name.clone(), value.clone());
+        }
+        if let Some(value) = &capture.tuple_slots {
+            self.local_tuple_slots.insert(name.clone(), value.clone());
+        }
+        if let Some(value) = &capture.shape {
+            self.local_shape.insert(name.clone(), value.clone());
+        }
+        if let Some(value) = capture.payload_vt {
+            self.local_payload_valtype.insert(name.clone(), value);
+        }
+        if let Some(value) = capture.dict_value_vt {
+            self.local_dict_value_valtype.insert(name.clone(), value);
+        }
+        if let Some(value) = capture.dict_key_vt {
+            self.local_dict_key_valtype.insert(name.clone(), value);
+        }
+        if let Some(value) = capture.list_elem_list_vt {
+            self.local_list_elem_list_valtype.insert(name.clone(), value);
+        }
+        if let Some(value) = &capture.list_nesting {
+            self.local_list_nesting.insert(name.clone(), value.clone());
+        }
+        if let Some(value) = capture.fn_ret_kind {
+            self.local_fn_ret_kind.insert(name, value);
+        }
+    }
+
     fn lower_lambda(&mut self, params: &[Param], body: &Block) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::WirExpr as W;
         // Only a WIR-collecting scope lowers lambdas; otherwise bail so the
@@ -7129,23 +7230,14 @@ impl<'types> Codegen<'types> {
             .into_iter()
             .filter(|c| self.locals.contains_key(c))
             .collect();
-        let mut cap_info: Vec<CaptureInfo> = Vec::new();
-        for c in &captures {
-            let kind = self.locals.get(c).copied().unwrap_or(Kind::I32);
-            cap_info.push((
-                c.clone(),
-                self.local_records.get(c).cloned(),
-                self.local_list_elem.get(c).cloned(),
-                kind,
-            ));
-        }
+        let cap_info: Vec<CaptureInfo> = captures.iter().map(|c| self.capture_info(c)).collect();
         // The capture slots are read at the CREATION site (current scope), before
         // any scope swap, each widened into the universal i64 env slot.
         let cap_slots: Vec<W> = cap_info
             .iter()
-            .map(|(name, _, _, kind)| {
-                let v = W::GetLocal(name.clone());
-                W::ToSlot(Box::new(v), Self::wir_kind(*kind))
+            .map(|capture| {
+                let v = W::GetLocal(capture.name.clone());
+                W::ToSlot(Box::new(v), Self::wir_kind(capture.kind))
             })
             .collect();
         let ncaps = cap_info.len();
@@ -7206,16 +7298,7 @@ impl<'types> Codegen<'types> {
         if captures.iter().any(|c| self.closure_elide_reassigned.contains(c)) {
             return None;
         }
-        let mut cap_info: Vec<CaptureInfo> = Vec::new();
-        for c in &captures {
-            let kind = self.locals.get(c).copied().unwrap_or(Kind::I32);
-            cap_info.push((
-                c.clone(),
-                self.local_records.get(c).cloned(),
-                self.local_list_elem.get(c).cloned(),
-                kind,
-            ));
-        }
+        let cap_info: Vec<CaptureInfo> = captures.iter().map(|c| self.capture_info(c)).collect();
         // Idempotent registration: an identical, same-owner elided lambda shares
         // one `$__lamt{i}`.
         let key = Self::lambda_content_key(&self.cur_fn_name, params, body);
@@ -7231,7 +7314,7 @@ impl<'types> Codegen<'types> {
             self.lambda_threaded_index.insert(key, i);
             i
         };
-        Some((index, cap_info.into_iter().map(|(n, _, _, k)| (n, k)).collect()))
+        Some((index, cap_info.into_iter().map(|c| (c.name, c.kind)).collect()))
     }
 
     /// Build the lifted `WirFunc` for a lambda: the capture-passing prefix (per
@@ -7294,14 +7377,8 @@ impl<'types> Codegen<'types> {
                 _ => {}
             }
         }
-        for (name, rec, list_elem, kind) in cap_info {
-            self.locals.insert(name.clone(), *kind);
-            if let Some(r) = rec {
-                self.local_records.insert(name.clone(), r.clone());
-            }
-            if let Some(e) = list_elem {
-                self.local_list_elem.insert(name.clone(), e.clone());
-            }
+        for capture in cap_info {
+            self.install_capture_info(capture);
         }
         for p in params {
             let k = p.ty.as_ref().map(|t| self.kind_for_type(t)).unwrap_or(Kind::I32);
@@ -7346,7 +7423,10 @@ impl<'types> Codegen<'types> {
                     CapMode::Env => vec![WirLocal { name: ENV_PARAM.into(), ty: i32t() }],
                     CapMode::Threaded => cap_info
                         .iter()
-                        .map(|(name, _, _, _)| WirLocal { name: format!("__cap_{name}"), ty: WirTy::Int })
+                        .map(|capture| WirLocal {
+                            name: format!("__cap_{}", capture.name),
+                            ty: WirTy::Int,
+                        })
                         .collect(),
                 };
                 for p in params {
@@ -7357,8 +7437,11 @@ impl<'types> Codegen<'types> {
                     let k = self.locals.get(&p.name).copied().unwrap_or(Kind::I32);
                     locals.push(WirLocal { name: p.name.clone(), ty: Self::wir_ty_for_kind(k) });
                 }
-                for (name, _, _, kind) in cap_info {
-                    locals.push(WirLocal { name: name.clone(), ty: Self::wir_ty_for_kind(*kind) });
+                for capture in cap_info {
+                    locals.push(WirLocal {
+                        name: capture.name.clone(),
+                        ty: Self::wir_ty_for_kind(capture.kind),
+                    });
                 }
                 let mut lets = Vec::new();
                 collect_let_names(body, &mut lets);
@@ -7458,7 +7541,7 @@ impl<'types> Codegen<'types> {
                         value: W::FromSlot(Box::new(W::GetLocal(format!("__lp_{}", p.name))), Self::wir_kind(k)),
                     });
                 }
-                for (j, (name, _, _, kind)) in cap_info.iter().enumerate() {
+                for (j, capture) in cap_info.iter().enumerate() {
                     let cap_slot = match cap_mode {
                         CapMode::Env => {
                             let off = (4 + 8 * j) as i32;
@@ -7470,11 +7553,11 @@ impl<'types> Codegen<'types> {
                             };
                             W::Load { ptr: Box::new(addr), kind: witchy_wir::wir::Kind::I64, offset: 0 }
                         }
-                        CapMode::Threaded => W::GetLocal(format!("__cap_{name}")),
+                        CapMode::Threaded => W::GetLocal(format!("__cap_{}", capture.name)),
                     };
                     nodes.push(N::SetLocal {
-                        local: name.clone(),
-                        value: W::FromSlot(Box::new(cap_slot), Self::wir_kind(*kind)),
+                        local: capture.name.clone(),
+                        value: W::FromSlot(Box::new(cap_slot), Self::wir_kind(capture.kind)),
                     });
                 }
                 // Body, with the declared result and every `var` final value
@@ -7515,15 +7598,22 @@ impl<'types> Codegen<'types> {
     fn swap_out_scope(&mut self) -> SavedScope {
         SavedScope {
             locals: std::mem::take(&mut self.locals),
+            field_caps: std::mem::take(&mut self.field_caps),
+            field_push_safe: std::mem::take(&mut self.field_push_safe),
             records: std::mem::take(&mut self.local_records),
             list_elem: std::mem::take(&mut self.local_list_elem),
             payload: std::mem::take(&mut self.local_payload_records),
             val_types: std::mem::take(&mut self.local_val_types),
+            types: std::mem::take(&mut self.local_types),
             list_elem_vt: std::mem::take(&mut self.local_list_elem_valtype),
             list_elem_tuple: std::mem::take(&mut self.local_list_elem_tuple),
             tuple_slots: std::mem::take(&mut self.local_tuple_slots),
             shape: std::mem::take(&mut self.local_shape),
             payload_vt: std::mem::take(&mut self.local_payload_valtype),
+            dict_value_vt: std::mem::take(&mut self.local_dict_value_valtype),
+            dict_key_vt: std::mem::take(&mut self.local_dict_key_valtype),
+            list_elem_list_vt: std::mem::take(&mut self.local_list_elem_list_valtype),
+            list_nesting: std::mem::take(&mut self.local_list_nesting),
             fn_ret_kind: std::mem::take(&mut self.local_fn_ret_kind),
             ret: self.cur_fn_ret_kind,
             ret_slot: self.cur_fn_ret_slot,
@@ -7552,15 +7642,22 @@ impl<'types> Codegen<'types> {
     /// Restore a scope previously taken by `swap_out_scope`.
     fn restore_scope(&mut self, s: SavedScope) {
         self.locals = s.locals;
+        self.field_caps = s.field_caps;
+        self.field_push_safe = s.field_push_safe;
         self.local_records = s.records;
         self.local_list_elem = s.list_elem;
         self.local_payload_records = s.payload;
         self.local_val_types = s.val_types;
+        self.local_types = s.types;
         self.local_list_elem_valtype = s.list_elem_vt;
         self.local_list_elem_tuple = s.list_elem_tuple;
         self.local_tuple_slots = s.tuple_slots;
         self.local_shape = s.shape;
         self.local_payload_valtype = s.payload_vt;
+        self.local_dict_value_valtype = s.dict_value_vt;
+        self.local_dict_key_valtype = s.dict_key_vt;
+        self.local_list_elem_list_valtype = s.list_elem_list_vt;
+        self.local_list_nesting = s.list_nesting;
         self.local_fn_ret_kind = s.fn_ret_kind;
         self.cur_fn_ret_kind = s.ret;
         self.cur_fn_ret_slot = s.ret_slot;
