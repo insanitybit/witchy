@@ -66,6 +66,19 @@ pub enum IntrinsicId {
     ListSetAt,
     ListConcat,
     ListPopExtract,
+    DictNew,
+    DictInsert,
+    DictInsertExtract,
+    DictGetOr,
+    DictAt,
+    DictUpdate,
+    DictContainsKey,
+    DictRemove,
+    DictRemoveExtract,
+    DictKeys,
+    DictValues,
+    DictPairs,
+    DictLength,
 }
 
 /// A representation-neutral type recipe interpreted by `witchy-types`.
@@ -102,8 +115,32 @@ pub enum IntrinsicSignature {
     GenericListSetAt,
     GenericListConcat,
     GenericListPopExtract,
+    GenericDictNew,
+    GenericDictInsert,
+    GenericDictInsertExtract,
+    GenericDictGetOr,
+    GenericDictIndex,
+    GenericDictUpdate,
+    GenericDictContainsKey,
+    GenericDictRemove,
+    GenericDictRemoveExtract,
+    GenericDictKeys,
+    GenericDictValues,
+    GenericDictPairs,
+    GenericDictToInt,
     DeclaredInSource,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IntrinsicTraitBound {
+    pub parameter: usize,
+    pub trait_name: &'static str,
+}
+
+const DICT_KEY_EQ_BOUND: &[IntrinsicTraitBound] = &[IntrinsicTraitBound {
+    parameter: 1,
+    trait_name: "Eq",
+}];
 
 impl IntrinsicSignature {
     pub fn returns_string(self) -> bool {
@@ -128,11 +165,12 @@ impl IntrinsicSignature {
                 | Self::StringStringToInt
                 | Self::FloatToInt
                 | Self::GenericListToInt
+                | Self::GenericDictToInt
         )
     }
 
     pub fn returns_bool(self) -> bool {
-        matches!(self, Self::StringStringToBool)
+        matches!(self, Self::StringStringToBool | Self::GenericDictContainsKey)
     }
 
     pub fn returns_bytes(self) -> bool {
@@ -150,11 +188,66 @@ impl IntrinsicSignature {
     }
 
     pub fn returns_list(self) -> bool {
-        matches!(self, Self::GenericListPush | Self::GenericListSetAt | Self::GenericListConcat)
+        matches!(
+            self,
+            Self::GenericListPush
+                | Self::GenericListSetAt
+                | Self::GenericListConcat
+                | Self::GenericDictKeys
+                | Self::GenericDictValues
+                | Self::GenericDictPairs
+        )
     }
 
     pub fn returns_list_element(self) -> bool {
         matches!(self, Self::GenericListIndex)
+    }
+
+    pub fn returns_dict(self) -> bool {
+        matches!(
+            self,
+            Self::GenericDictNew
+                | Self::GenericDictInsert
+                | Self::GenericDictUpdate
+                | Self::GenericDictRemove
+        )
+    }
+
+    pub fn returns_dict_value(self) -> bool {
+        matches!(self, Self::GenericDictGetOr | Self::GenericDictIndex)
+    }
+
+    pub fn returns_dict_keys(self) -> bool {
+        matches!(self, Self::GenericDictKeys)
+    }
+
+    pub fn returns_dict_values(self) -> bool {
+        matches!(self, Self::GenericDictValues)
+    }
+
+    pub fn returns_dict_pairs(self) -> bool {
+        matches!(self, Self::GenericDictPairs)
+    }
+
+    pub fn trait_bounds(self) -> &'static [IntrinsicTraitBound] {
+        match self {
+            Self::GenericDictInsert
+            | Self::GenericDictInsertExtract
+            | Self::GenericDictGetOr
+            | Self::GenericDictIndex
+            | Self::GenericDictUpdate
+            | Self::GenericDictContainsKey
+            | Self::GenericDictRemove
+            | Self::GenericDictRemoveExtract => DICT_KEY_EQ_BOUND,
+            _ => &[],
+        }
+    }
+
+    pub fn unique_parameters(self) -> &'static [usize] {
+        match self {
+            Self::GenericDictInsert | Self::GenericDictRemove => &[0],
+            _ => &[],
+        }
     }
 }
 
@@ -306,6 +399,20 @@ pub const LIST_PUSH: &str = "list.__push";
 pub const LIST_SET_AT: &str = "list.__set_at";
 pub const LIST_CONCAT: &str = "list.concat";
 pub const LIST_POP_EXTRACT: &str = "list.__pop_extract";
+
+pub const DICT_NEW: &str = "dict.new";
+pub const DICT_INSERT: &str = "dict.__insert";
+pub const DICT_INSERT_EXTRACT: &str = "dict.__insert_extract";
+pub const DICT_GET_OR: &str = "dict.get_or";
+pub const DICT_AT: &str = "dict.at";
+pub const DICT_UPDATE: &str = "dict.__update";
+pub const DICT_CONTAINS_KEY: &str = "dict.contains_key";
+pub const DICT_REMOVE: &str = "dict.__remove";
+pub const DICT_REMOVE_EXTRACT: &str = "dict.__remove_extract";
+pub const DICT_KEYS: &str = "dict.keys";
+pub const DICT_VALUES: &str = "dict.values";
+pub const DICT_PAIRS: &str = "dict.pairs";
+pub const DICT_LENGTH: &str = "dict.length";
 
 pub const ALL: &[IntrinsicSpec] = &[
     IntrinsicSpec {
@@ -1193,6 +1300,201 @@ pub const ALL: &[IntrinsicSpec] = &[
         diagnostic_name: "list.pop",
         private_callers: NO_PRIVATE_CALLERS,
     },
+    IntrinsicSpec {
+        id: IntrinsicId::DictNew,
+        name: DICT_NEW,
+        arity: 0,
+        signature: IntrinsicSignature::GenericDictNew,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["dict_new"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: DICT_NEW,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::DictInsert,
+        name: DICT_INSERT,
+        arity: 3,
+        signature: IntrinsicSignature::GenericDictInsert,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["dict_insert", "dict_insert_cap"],
+        dynamic_wir_helpers: true,
+        wir_host_call: None,
+        diagnostic_name: "dict.insert",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::DictInsertExtract,
+        name: DICT_INSERT_EXTRACT,
+        arity: 3,
+        signature: IntrinsicSignature::GenericDictInsertExtract,
+        effect: IntrinsicEffect::WriteBack,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["dict_insert_extract"],
+        dynamic_wir_helpers: true,
+        wir_host_call: None,
+        diagnostic_name: "dict.insert",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::DictGetOr,
+        name: DICT_GET_OR,
+        arity: 3,
+        signature: IntrinsicSignature::GenericDictGetOr,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["dict_get_or"],
+        dynamic_wir_helpers: true,
+        wir_host_call: None,
+        diagnostic_name: DICT_GET_OR,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::DictAt,
+        name: DICT_AT,
+        arity: 2,
+        signature: IntrinsicSignature::GenericDictIndex,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["dict_at"],
+        dynamic_wir_helpers: true,
+        wir_host_call: None,
+        diagnostic_name: DICT_AT,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::DictUpdate,
+        name: DICT_UPDATE,
+        arity: 4,
+        signature: IntrinsicSignature::GenericDictUpdate,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["dict_update", "dict_update_cap"],
+        dynamic_wir_helpers: true,
+        wir_host_call: None,
+        diagnostic_name: "dict.update",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::DictContainsKey,
+        name: DICT_CONTAINS_KEY,
+        arity: 2,
+        signature: IntrinsicSignature::GenericDictContainsKey,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["dict_has"],
+        dynamic_wir_helpers: true,
+        wir_host_call: None,
+        diagnostic_name: DICT_CONTAINS_KEY,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::DictRemove,
+        name: DICT_REMOVE,
+        arity: 2,
+        signature: IntrinsicSignature::GenericDictRemove,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["dict_remove"],
+        dynamic_wir_helpers: true,
+        wir_host_call: None,
+        diagnostic_name: "dict.remove",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::DictRemoveExtract,
+        name: DICT_REMOVE_EXTRACT,
+        arity: 2,
+        signature: IntrinsicSignature::GenericDictRemoveExtract,
+        effect: IntrinsicEffect::WriteBack,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["dict_remove_extract"],
+        dynamic_wir_helpers: true,
+        wir_host_call: None,
+        diagnostic_name: "dict.remove",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::DictKeys,
+        name: DICT_KEYS,
+        arity: 1,
+        signature: IntrinsicSignature::GenericDictKeys,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["dict_keys"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: DICT_KEYS,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::DictValues,
+        name: DICT_VALUES,
+        arity: 1,
+        signature: IntrinsicSignature::GenericDictValues,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["dict_values"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: DICT_VALUES,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::DictPairs,
+        name: DICT_PAIRS,
+        arity: 1,
+        signature: IntrinsicSignature::GenericDictPairs,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["dict_pairs"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: DICT_PAIRS,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::DictLength,
+        name: DICT_LENGTH,
+        arity: 1,
+        signature: IntrinsicSignature::GenericDictToInt,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: DICT_LENGTH,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
 ];
 
 pub const ERASURE_BRIDGES: &[&str] = &[ERASE, UNERASE];
@@ -1259,15 +1561,30 @@ pub const LIST_OPERATIONS: &[&str] = &[
     LIST_POP_EXTRACT,
 ];
 
+pub const DICT_OPERATIONS: &[&str] = &[
+    DICT_NEW,
+    DICT_INSERT,
+    DICT_INSERT_EXTRACT,
+    DICT_GET_OR,
+    DICT_AT,
+    DICT_UPDATE,
+    DICT_CONTAINS_KEY,
+    DICT_REMOVE,
+    DICT_REMOVE_EXTRACT,
+    DICT_KEYS,
+    DICT_VALUES,
+    DICT_PAIRS,
+    DICT_LENGTH,
+];
+
 pub fn lookup(name: &str) -> Option<&'static IntrinsicSpec> {
-    let canonical = if name
-        .strip_prefix(LIST_POP_EXTRACT)
-        .is_some_and(|suffix| suffix.starts_with("__"))
-    {
-        LIST_POP_EXTRACT
-    } else {
-        name
-    };
+    let canonical = [LIST_POP_EXTRACT, DICT_INSERT_EXTRACT, DICT_REMOVE_EXTRACT]
+        .into_iter()
+        .find(|base| {
+            name.strip_prefix(base)
+                .is_some_and(|suffix| suffix.starts_with("__"))
+        })
+        .unwrap_or(name);
     ALL.iter().find(|spec| spec.name == canonical)
 }
 
@@ -1383,6 +1700,35 @@ pub fn is_list_pop_extract(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::ListPopExtract)
 }
 
+pub fn is_dict_operation(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| {
+        matches!(
+            spec.id,
+            IntrinsicId::DictNew
+                | IntrinsicId::DictInsert
+                | IntrinsicId::DictInsertExtract
+                | IntrinsicId::DictGetOr
+                | IntrinsicId::DictAt
+                | IntrinsicId::DictUpdate
+                | IntrinsicId::DictContainsKey
+                | IntrinsicId::DictRemove
+                | IntrinsicId::DictRemoveExtract
+                | IntrinsicId::DictKeys
+                | IntrinsicId::DictValues
+                | IntrinsicId::DictPairs
+                | IntrinsicId::DictLength
+        )
+    })
+}
+
+pub fn is_dict_insert_extract(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::DictInsertExtract)
+}
+
+pub fn is_dict_remove_extract(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::DictRemoveExtract)
+}
+
 pub fn private_intrinsic_callers(bare_name: &str) -> Option<&'static [&'static str]> {
     let callers = lookup(bare_name)?.private_callers;
     (!callers.is_empty()).then_some(callers)
@@ -1480,6 +1826,19 @@ mod tests {
             LIST_SET_AT,
             LIST_CONCAT,
             LIST_POP_EXTRACT,
+            DICT_NEW,
+            DICT_INSERT,
+            DICT_INSERT_EXTRACT,
+            DICT_GET_OR,
+            DICT_AT,
+            DICT_UPDATE,
+            DICT_CONTAINS_KEY,
+            DICT_REMOVE,
+            DICT_REMOVE_EXTRACT,
+            DICT_KEYS,
+            DICT_VALUES,
+            DICT_PAIRS,
+            DICT_LENGTH,
         ];
         for name in names {
             assert_eq!(lookup(name).map(|spec| spec.name), Some(name));
@@ -1804,6 +2163,211 @@ mod tests {
                 "receiver convention drift for {}",
                 spec.name
             );
+        }
+    }
+
+    #[test]
+    fn dict_operation_family_has_complete_semantic_metadata() {
+        let expected: BTreeSet<_> = DICT_OPERATIONS.iter().copied().collect();
+        let actual: BTreeSet<_> = ALL
+            .iter()
+            .filter(|spec| is_dict_operation(spec.name))
+            .map(|spec| spec.name)
+            .collect();
+        assert_eq!(actual, expected);
+        assert_eq!(actual.len(), 13);
+
+        for name in DICT_OPERATIONS {
+            let spec = lookup(name).expect("dict operation");
+            assert_eq!(spec.capability_effect, CapabilityEffect::None);
+            assert_eq!(spec.lowering, IntrinsicLowering::Builtin);
+            assert_eq!(spec.runtime, IntrinsicRuntime::InterpreterBuiltin);
+            assert!(spec.wir_host_call.is_none());
+            assert_eq!(spec.dynamic_wir_helpers, !spec.signature.trait_bounds().is_empty());
+            assert_eq!(
+                spec.effect,
+                if matches!(*name, DICT_INSERT_EXTRACT | DICT_REMOVE_EXTRACT) {
+                    IntrinsicEffect::WriteBack
+                } else {
+                    IntrinsicEffect::Pure
+                }
+            );
+        }
+
+        assert!(lookup(DICT_LENGTH).expect("dict.length").signature.returns_int());
+        assert!(lookup(DICT_CONTAINS_KEY).expect("dict.contains_key").signature.returns_bool());
+        for name in [DICT_NEW, DICT_INSERT, DICT_UPDATE, DICT_REMOVE] {
+            assert!(lookup(name).expect("dict-producing operation").signature.returns_dict());
+        }
+        for name in [DICT_GET_OR, DICT_AT] {
+            assert!(lookup(name).expect("dict value read").signature.returns_dict_value());
+        }
+        assert_eq!(declared_wir_helper(DICT_INSERT, "dict_insert"), Some("dict_insert"));
+        assert_eq!(declared_wir_helper(DICT_INSERT, "dict_insert_cap"), Some("dict_insert_cap"));
+        assert_eq!(declared_wir_helper(DICT_UPDATE, "dict_update"), Some("dict_update"));
+        assert_eq!(declared_wir_helper(DICT_UPDATE, "dict_update_cap"), Some("dict_update_cap"));
+        assert_eq!(
+            lookup("dict.__insert_extract__String__Int").map(|spec| spec.name),
+            Some(DICT_INSERT_EXTRACT)
+        );
+        assert_eq!(
+            lookup("dict.__remove_extract__String__Int").map(|spec| spec.name),
+            Some(DICT_REMOVE_EXTRACT)
+        );
+    }
+
+    #[test]
+    fn dict_source_primitive_signatures_match_catalog() {
+        use crate::ast::{Convention, Type, TypeQual};
+
+        fn named(name: &str) -> Type {
+            Type::Named(name.into(), Vec::new())
+        }
+
+        fn expected(signature: IntrinsicSignature) -> (Vec<Type>, Type) {
+            let key = || named("k");
+            let value = || named("v");
+            let dict = || Type::Named("Dict".into(), vec![key(), value()]);
+            match signature {
+                IntrinsicSignature::GenericDictNew => (vec![], dict()),
+                IntrinsicSignature::GenericDictInsert => {
+                    (vec![dict(), key(), value()], dict())
+                }
+                IntrinsicSignature::GenericDictInsertExtract => (
+                    vec![dict(), key(), value()],
+                    Type::Named("Option".into(), vec![value()]),
+                ),
+                IntrinsicSignature::GenericDictGetOr => {
+                    (vec![dict(), key(), value()], value())
+                }
+                IntrinsicSignature::GenericDictIndex => (vec![dict(), key()], value()),
+                IntrinsicSignature::GenericDictUpdate => (
+                    vec![
+                        dict(),
+                        key(),
+                        value(),
+                        Type::Fn(
+                            vec![value()],
+                            Box::new(value()),
+                            vec![Convention::Let],
+                        ),
+                    ],
+                    dict(),
+                ),
+                IntrinsicSignature::GenericDictContainsKey => {
+                    (vec![dict(), key()], named("Bool"))
+                }
+                IntrinsicSignature::GenericDictRemove => (vec![dict(), key()], dict()),
+                IntrinsicSignature::GenericDictRemoveExtract => (
+                    vec![dict(), key()],
+                    Type::Named("Option".into(), vec![value()]),
+                ),
+                IntrinsicSignature::GenericDictKeys => (
+                    vec![dict()],
+                    Type::Named("List".into(), vec![key()]),
+                ),
+                IntrinsicSignature::GenericDictValues => (
+                    vec![dict()],
+                    Type::Named("List".into(), vec![value()]),
+                ),
+                IntrinsicSignature::GenericDictPairs => (
+                    vec![dict()],
+                    Type::Named("List".into(), vec![Type::Tuple(vec![key(), value()])]),
+                ),
+                IntrinsicSignature::GenericDictToInt => (vec![dict()], named("Int")),
+                other => panic!("unexpected dict signature {other:?}"),
+            }
+        }
+
+        let module = crate::parser::parse_module(include_str!("../../../std/dict.witchy"))
+            .expect("parse std/dict");
+        let source_primitives: BTreeSet<_> = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                crate::ast::Item::Function(function)
+                    if matches!(
+                        function.body.stmts.as_slice(),
+                        [crate::ast::Stmt::Expr(crate::ast::Expr::Call { name, .. })]
+                            if name.strip_prefix("dict.") == Some(function.name.as_str())
+                    ) =>
+                {
+                    let crate::ast::Stmt::Expr(crate::ast::Expr::Call { name, .. }) =
+                        &function.body.stmts[0]
+                    else {
+                        unreachable!()
+                    };
+                    Some(name.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        let catalog_primitives: BTreeSet<_> =
+            DICT_OPERATIONS.iter().map(|name| (*name).to_string()).collect();
+        assert_eq!(
+            source_primitives, catalog_primitives,
+            "every self-recursive dict primitive must have exactly one catalog row"
+        );
+
+        for name in DICT_OPERATIONS {
+            let spec = lookup(name).expect("dict operation");
+            let bare_name = spec.name.rsplit_once('.').expect("qualified dict name").1;
+            let function = module.items.iter().find_map(|item| match item {
+                crate::ast::Item::Function(function) if function.name == bare_name => {
+                    Some(function)
+                }
+                _ => None,
+            });
+            let function = function.unwrap_or_else(|| panic!("{} missing from std/dict", spec.name));
+            let (params, result) = expected(spec.signature);
+            assert_eq!(function.params.len(), spec.arity, "arity drift for {}", spec.name);
+            assert_eq!(
+                function
+                    .params
+                    .iter()
+                    .map(|param| param.ty.as_ref().map(Type::unqualified))
+                    .collect::<Vec<_>>(),
+                params.iter().map(Type::unqualified).map(Some).collect::<Vec<_>>(),
+                "parameter drift for {}",
+                spec.name
+            );
+            assert_eq!(function.ret.as_ref(), Some(&result), "return drift for {}", spec.name);
+            assert_eq!(
+                function.params.first().map(|param| param.convention),
+                (!function.params.is_empty()).then_some(
+                    if matches!(*name, DICT_INSERT_EXTRACT | DICT_REMOVE_EXTRACT) {
+                        Convention::Var
+                    } else {
+                        Convention::Let
+                    }
+                ),
+                "receiver convention drift for {}",
+                spec.name
+            );
+            let source_unique: Vec<_> = function
+                .params
+                .iter()
+                .enumerate()
+                .filter_map(|(index, param)| {
+                    matches!(param.ty, Some(Type::Qualified(TypeQual::Unique, _)))
+                        .then_some(index)
+                })
+                .collect();
+            assert_eq!(source_unique, spec.signature.unique_parameters());
+            let source_bounds: Vec<_> = function
+                .bounds
+                .iter()
+                .map(|(parameter, trait_name, args)| {
+                    (parameter.as_str(), trait_name.as_str(), args.as_slice())
+                })
+                .collect();
+            let expected_bounds: Vec<_> = spec
+                .signature
+                .trait_bounds()
+                .iter()
+                .map(|bound| ("k", bound.trait_name, &[][..]))
+                .collect();
+            assert_eq!(source_bounds, expected_bounds, "trait-bound drift for {}", spec.name);
         }
     }
 

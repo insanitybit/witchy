@@ -2666,7 +2666,10 @@ impl Ctx<'_> {
                 if receiver_ty.as_ref().and_then(type_owner_module_ast) == Some("dict") {
                     let base = std::mem::replace(base.as_mut(), Expr::Bool(false));
                     let index = std::mem::replace(index.as_mut(), Expr::Bool(false));
-                    *e = Expr::Call { name: "dict.at".to_string(), args: vec![base, index] };
+                    *e = Expr::Call {
+                        name: intrinsics::DICT_AT.to_string(),
+                        args: vec![base, index],
+                    };
                 }
             }
             // METHOD RESOLUTION (rfcs/language-evolution.md Phase 3):
@@ -2804,7 +2807,7 @@ impl Ctx<'_> {
                     // operation. Dict and List keep distinct internal spellings;
                     // their public setters are uniform `var`/`Nil` calls.
                     let func = if module == "dict" && method == "__set_at" {
-                        "dict.__insert".to_string()
+                        intrinsics::DICT_INSERT.to_string()
                     } else {
                         format!("{module}.{method}")
                     };
@@ -2952,7 +2955,9 @@ impl Ctx<'_> {
                 // `for x in <set>` iterates the set's members — rewrite the
                 // iterand to `dict.pairs(...)` / `set.to_list(...)` respectively.
                 let view = match iter_ty.as_ref().map(Type::unqualified) {
-                    Some(Type::Named(name, _)) if name == "Dict" => Some("dict.pairs"),
+                    Some(Type::Named(name, _)) if name == "Dict" => {
+                        Some(intrinsics::DICT_PAIRS)
+                    }
                     Some(Type::Named(name, _)) if name == "Set" => Some("set.to_list"),
                     _ => None,
                 };
@@ -3382,11 +3387,11 @@ fn discarded_std_var_writeback(
     } else if name == "list.set_at" || name.starts_with("list.set_at__") {
         intrinsics::LIST_SET_AT
     } else if name == "dict.insert" || name.starts_with("dict.insert__") {
-        "dict.__insert"
+        intrinsics::DICT_INSERT
     } else if name == "dict.update" || name.starts_with("dict.update__") {
-        "dict.__update"
+        intrinsics::DICT_UPDATE
     } else if name == "dict.remove" || name.starts_with("dict.remove__") {
-        "dict.__remove"
+        intrinsics::DICT_REMOVE
     } else {
         return None;
     };

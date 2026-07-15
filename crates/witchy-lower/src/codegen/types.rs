@@ -94,12 +94,16 @@ impl Codegen<'_> {
                 .unwrap_or(Kind::I32),
             // `get_or(d, k, default)` returns the dict's value at the default's
             // kind (the i64 value slot is recovered to it at the call site).
-            Expr::Call { name, args } if cap_ops::surface_name(name) == "dict.get_or" && args.len() == 3 => {
+            Expr::Call { name, args }
+                if cap_ops::surface_name(name) == intrinsics::DICT_GET_OR && args.len() == 3 =>
+            {
                 self.kind_of(&args[2])
             }
             // `at(d, k)` returns the dict's value slot at the value's recovered
             // kind, so `Int` dictionary reads stay i64 instead of the generic i32.
-            Expr::Call { name, args } if cap_ops::surface_name(name) == "dict.at" && args.len() == 2 => {
+            Expr::Call { name, args }
+                if cap_ops::surface_name(name) == intrinsics::DICT_AT && args.len() == 2 =>
+            {
                 self.dict_value_valtype_of(&args[0]).map(valtype_kind).unwrap_or(Kind::I32)
             }
             // (RFC-0055) `__erase`/`__unerase` are the identity on both value and
@@ -127,8 +131,7 @@ impl Codegen<'_> {
                     .is_some_and(|spec| spec.signature.returns_float()) => Kind::F64,
                 name if intrinsics::lookup(name)
                     .is_some_and(|spec| spec.signature.returns_int()) => Kind::I64,
-                "dict.length" | "int_to_duration" | "duration_to_int" | "now"
-                | "now_monotonic" | "rand_u64"
+                "int_to_duration" | "duration_to_int" | "now" | "now_monotonic" | "rand_u64"
                 => Kind::I64,
                 name if intrinsics::lookup(name)
                     .is_some_and(|spec| spec.signature.returns_list_element()) =>
@@ -339,10 +342,14 @@ impl Codegen<'_> {
             // `get_or(d, k, default)` returns the Dict's value type, which is the
             // default's type — so a `let v = get_or(d, k, 0)` (or a String default)
             // tracks `v`, and `v` can in turn be used as a Dict key.
-            Expr::Call { name, args } if cap_ops::surface_name(name) == "dict.get_or" && args.len() == 3 => {
+            Expr::Call { name, args }
+                if cap_ops::surface_name(name) == intrinsics::DICT_GET_OR && args.len() == 3 =>
+            {
                 self.val_type_of(&args[2])
             }
-            Expr::Call { name, args } if cap_ops::surface_name(name) == "dict.at" && args.len() == 2 => {
+            Expr::Call { name, args }
+                if cap_ops::surface_name(name) == intrinsics::DICT_AT && args.len() == 2 =>
+            {
                 self.dict_value_valtype_of(&args[0]).unwrap_or(ValType::Other)
             }
             Expr::Call { name, .. }
@@ -367,9 +374,8 @@ impl Codegen<'_> {
                 | "regex.match_spans" | "recv_line" | "recv_all"
                 | "crypto.sha512" | "crypto.sha3_256" | "crypto.hmac_sha256"
                 | "recv_bytes" => ValType::Str,
-                "dict.contains_key" | "exists" | "is_dir" => ValType::Bool,
-                "dict.length" | "int_to_duration" | "duration_to_int" | "now"
-                | "now_monotonic" | "rand_u64"
+                "exists" | "is_dir" => ValType::Bool,
+                "int_to_duration" | "duration_to_int" | "now" | "now_monotonic" | "rand_u64"
                 | "crypto.__ed25519_verify_status" | "crypto.__ecdsa_p256_verify_status"
                 | "crypto.__ecdsa_p256_verify_hex_status"
                 | "crypto.__rsa_pkcs1_sha256_verify_status" => ValType::Int,
@@ -427,7 +433,7 @@ impl Codegen<'_> {
             Expr::Call { name, args } => {
                 if let Some(ty) = self.fn_ret_records.get(name) {
                     Some(ty.clone())
-                } else if name == "dict.get_or" {
+                } else if name == intrinsics::DICT_GET_OR {
                     args.get(2).and_then(|d| self.record_type_of(d))
                 } else if name == intrinsics::LIST_AT {
                     match args.first() {

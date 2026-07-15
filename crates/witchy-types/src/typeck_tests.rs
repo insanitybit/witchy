@@ -2883,7 +2883,7 @@ fn main():
         ] {
             let src = format!("fn f(d: Dict(k, v), key: k, fallback: v) -> v:\n    {op}\n    fallback\n");
             let err = check_str(&src).unwrap_err();
-            assert!(err.contains("generic `Dict` key must be `Eq`"), "{op}: {err}");
+            assert!(err.contains("requires `k: Eq`"), "{op}: {err}");
         }
         // With the bound it type-checks (checked through monomorphization).
         check_str("fn f(d: Dict(k, v), key: k, fallback: v) -> v where k: Eq:\n    dict.get_or(d, key, fallback)\n")
@@ -2975,6 +2975,34 @@ fn main():
         check(&module).expect(
             "the catalog recipe, not the deliberately wrong linked placeholder signature, must type list.length",
         );
+    }
+
+    #[test]
+    fn rfc0063_dict_catalog_signature_and_bounds_are_authoritative() {
+        use witchy_syntax::ast::Item;
+
+        let mut module = witchy_syntax::parser::parse_module(
+            "fn shadow(value: String, extra: String) -> String:\n    value\n\nfn main() -> Int:\n    dict.length(dict.new())\n",
+        )
+        .expect("parse dict catalog precedence probe");
+        let Item::Function(placeholder) = &mut module.items[0] else {
+            panic!("expected placeholder function")
+        };
+        placeholder.name = witchy_syntax::intrinsics::DICT_LENGTH.into();
+        check(&module).expect(
+            "the catalog recipe, not the deliberately wrong linked placeholder signature, must type dict.length",
+        );
+
+        let missing = check_str(
+            "fn put(d: Dict(k, Int), key: k) -> Dict(k, Int):\n    dict.__insert(d, key, 1)\n",
+        )
+        .expect_err("cataloged dict key operations require Eq");
+        assert!(missing.contains("requires `k: Eq`"), "{missing}");
+
+        check_str(
+            "fn put(d: Dict(k, Int), key: k) -> Dict(k, Int) where k: Eq:\n    dict.__insert(d, key, 1)\n",
+        )
+        .expect("the cataloged Eq bound accepts an explicitly bounded key");
     }
 
     #[test]

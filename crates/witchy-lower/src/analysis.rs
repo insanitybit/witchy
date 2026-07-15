@@ -191,9 +191,11 @@ fn self_push_elem<'a>(name: &str, value: &'a Expr) -> Option<&'a Expr> {
 /// `d = insert(d, k, v)`: the key and value.
 fn self_insert_args<'a>(name: &str, value: &'a Expr) -> Option<(&'a Expr, &'a Expr)> {
     if let Expr::Call { name: f, args } = value {
-        if (matches!(f.as_str(), "dict.insert" | "dict.__insert")
+        if (matches!(f.as_str(), "dict.insert" | intrinsics::DICT_INSERT)
             || f.starts_with("dict.insert__")
-            || f.starts_with("dict.__insert__"))
+            || f
+                .strip_prefix(intrinsics::DICT_INSERT)
+                .is_some_and(|suffix| suffix.starts_with("__")))
             && args.len() == 3
         {
             if matches!(&args[0], Expr::Var(v) if v == name) {
@@ -210,7 +212,7 @@ fn self_update_args<'a>(
     value: &'a Expr,
 ) -> Option<(&'a Expr, &'a Expr, &'a Expr)> {
     if let Expr::Call { name: f, args } = value {
-        if (matches!(f.as_str(), "dict.update" | "dict.__update")
+        if (matches!(f.as_str(), "dict.update" | intrinsics::DICT_UPDATE)
             || f.starts_with("dict.update__"))
             && args.len() == 4
         {
@@ -304,9 +306,13 @@ fn is_self_assign_shape(name: &str, value: &Expr, summaries: &Summaries) -> bool
 }
 
 fn private_structural_helper(name: &str) -> bool {
-    matches!(name, "dict.__insert" | "dict.__remove")
-        || name.starts_with("dict.__insert__")
-        || name.starts_with("dict.__remove__")
+    matches!(name, intrinsics::DICT_INSERT | intrinsics::DICT_REMOVE)
+        || [intrinsics::DICT_INSERT, intrinsics::DICT_REMOVE]
+            .into_iter()
+            .any(|base| {
+                name.strip_prefix(base)
+                    .is_some_and(|suffix| suffix.starts_with("__"))
+            })
 }
 
 fn self_private_structural_call(name: &str, value: &Expr) -> bool {
@@ -1705,39 +1711,35 @@ fn builtin_arg_liveness(name: &str, argc: usize) -> Option<Vec<bool>> {
     if argc == 1 && intrinsics::is_list_pop_extract(name) {
         return read_all(1);
     }
-    if argc == 2
-        && (name == "dict.__remove_extract" || name.starts_with("dict.__remove_extract__"))
-    {
+    if argc == 2 && intrinsics::is_dict_remove_extract(name) {
         return read_all(2);
     }
-    if argc == 3
-        && (name == "dict.__insert_extract" || name.starts_with("dict.__insert_extract__"))
-    {
+    if argc == 3 && intrinsics::is_dict_insert_extract(name) {
         return Some(vec![false, true, true]);
     }
     match (name, argc) {
         // Collections: content reads and part-alias reads.
         (intrinsics::LIST_LENGTH, 1)
-        | ("dict.length", 1)
+        | (intrinsics::DICT_LENGTH, 1)
         | (intrinsics::STRING_LENGTH, 1)
         | (intrinsics::STRING_CHAR_COUNT, 1)
         | (intrinsics::LIST_AT, 2)
-        | ("dict.at", 2)
-        | ("dict.contains_key", 2)
+        | (intrinsics::DICT_AT, 2)
+        | (intrinsics::DICT_CONTAINS_KEY, 2)
         | (intrinsics::STRING_CONTAINS, 2)
         | (intrinsics::STRING_FIND, 2)
-        | ("dict.keys", 1)
-        | ("dict.values", 1)
-        | ("dict.pairs", 1)
-        | ("dict.remove" | "dict.__remove", 2)
+        | (intrinsics::DICT_KEYS, 1)
+        | (intrinsics::DICT_VALUES, 1)
+        | (intrinsics::DICT_PAIRS, 1)
+        | ("dict.remove" | intrinsics::DICT_REMOVE, 2)
         | (intrinsics::LIST_CONCAT, 2) => read_all(argc),
         // get_or reads the dict and key; the DEFAULT may be returned.
-        ("dict.get_or", 3) => Some(vec![false, false, true]),
+        (intrinsics::DICT_GET_OR, 3) => Some(vec![false, false, true]),
         // push/insert/update store their value operands by slot. (The
         // self-assign shape is special-cased before this table is consulted.)
         ("list.push" | intrinsics::LIST_PUSH, 2) => Some(vec![false, true]),
-        ("dict.insert" | "dict.__insert", 3) => Some(vec![false, true, true]),
-        ("dict.update" | "dict.__update", 4) => Some(vec![false, true, true, true]),
+        ("dict.insert" | intrinsics::DICT_INSERT, 3) => Some(vec![false, true, true]),
+        ("dict.update" | intrinsics::DICT_UPDATE, 4) => Some(vec![false, true, true, true]),
         // Output and messaging copy content out to the host.
         ("print", 2) => read_all(2),
         ("send", _) => read_all(argc),
@@ -1757,7 +1759,7 @@ fn builtin_arg_liveness(name: &str, argc: usize) -> Option<Vec<bool>> {
         (intrinsics::MATH_TO_FLOAT, 1)
         | (intrinsics::MATH_TO_INT, 1)
         | (intrinsics::MATH_SQRT, 1) => read_all(argc),
-        ("dict.new", 0) => Some(Vec::new()),
+        (intrinsics::DICT_NEW, 0) => Some(Vec::new()),
         _ => None,
     }
 }
@@ -1780,9 +1782,9 @@ pub fn fresh_heap_builtin_offset(name: &str, argc: usize) -> Option<i32> {
         // Dict results: allocated through `$rc_alloc` (so they carry the `[size]`
         // header `$rc_free` needs), with the hidden index word at `ptr-4` — i.e.
         // the rc-region start is `ptr-4`.
-        ("dict.insert" | "dict.__insert", 3)
-        | ("dict.update" | "dict.__update", 4)
-        | ("dict.remove" | "dict.__remove", 2) => Some(4),
+        ("dict.insert" | intrinsics::DICT_INSERT, 3)
+        | ("dict.update" | intrinsics::DICT_UPDATE, 4)
+        | ("dict.remove" | intrinsics::DICT_REMOVE, 2) => Some(4),
         // List / string results: the buffer pointer IS the rc-region start (offset 0).
         // These allocators (`list_push`/`list_concat`/`ascii_case`/`substr`, and
         // `trim` via `substr`) are routed through `$rc_alloc`, so their results carry
@@ -3082,10 +3084,18 @@ fn unique_capacity_results(module: &Module) -> HashSet<String> {
 }
 
 fn no_copy_display_name(name: &str) -> String {
-    if name == "dict.__insert" || name.starts_with("dict.__insert__") {
+    if name == intrinsics::DICT_INSERT
+        || name
+            .strip_prefix(intrinsics::DICT_INSERT)
+            .is_some_and(|suffix| suffix.starts_with("__"))
+    {
         return "dict.insert".to_string();
     }
-    if name == "dict.__remove" || name.starts_with("dict.__remove__") {
+    if name == intrinsics::DICT_REMOVE
+        || name
+            .strip_prefix(intrinsics::DICT_REMOVE)
+            .is_some_and(|suffix| suffix.starts_with("__"))
+    {
         return "dict.remove".to_string();
     }
     name.split_once("__").map_or(name, |(source, _)| source).to_string()
@@ -3100,8 +3110,10 @@ fn no_copy_fresh(expr: &Expr) -> bool {
         // update establishes the geometric-capacity token returned by the var ABI.
         Expr::Call { name, args }
             if args.is_empty()
-                && (name == "dict.new"
-                    || name.starts_with("dict.new__")
+                && (name == intrinsics::DICT_NEW
+                    || name
+                        .strip_prefix(intrinsics::DICT_NEW)
+                        .is_some_and(|suffix| suffix.starts_with("__"))
                     || name.ends_with(".dict.new")) =>
         {
             true

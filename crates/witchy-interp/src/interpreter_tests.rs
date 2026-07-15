@@ -118,6 +118,126 @@
     }
 
     #[test]
+    fn every_cataloged_dict_operation_has_runtime_dispatch() {
+        let module = witchy_syntax::parser::parse_module(
+            "fn inc(n: Int) -> Int:\n    n + 1\n\nfn main() -> Int:\n    0\n",
+        )
+        .expect("parse dict runtime probe");
+        let inc = module.items.iter().find_map(|item| match item {
+            witchy_syntax::ast::Item::Function(function) if function.name == "inc" => {
+                Some(Value::Closure {
+                    owner: function.name.clone(),
+                    params: function.params.clone(),
+                    body: function.body.clone(),
+                    env: Box::new(Env::new()),
+                })
+            }
+            _ => None,
+        });
+        let inc = inc.expect("inc closure");
+        let mut interpreter = Interpreter::new(module);
+        let dict = || Value::Dict(vec![(Value::Int(1), Value::Int(10))]);
+        let some_ten = || Value::Ctor {
+            name: "Some".into(),
+            fields: vec![Value::Int(10)],
+        };
+        let cases = vec![
+            (intrinsics::DICT_NEW, vec![], Value::Dict(Vec::new())),
+            (
+                intrinsics::DICT_INSERT,
+                vec![dict(), Value::Int(1), Value::Int(20)],
+                Value::Dict(vec![(Value::Int(1), Value::Int(20))]),
+            ),
+            (
+                intrinsics::DICT_INSERT_EXTRACT,
+                vec![dict(), Value::Int(1), Value::Int(20)],
+                Value::Tuple(vec![
+                    Value::Dict(vec![(Value::Int(1), Value::Int(20))]),
+                    some_ten(),
+                ]),
+            ),
+            (
+                intrinsics::DICT_GET_OR,
+                vec![dict(), Value::Int(1), Value::Int(0)],
+                Value::Int(10),
+            ),
+            (
+                intrinsics::DICT_AT,
+                vec![dict(), Value::Int(1)],
+                Value::Int(10),
+            ),
+            (
+                intrinsics::DICT_CONTAINS_KEY,
+                vec![dict(), Value::Int(1)],
+                Value::Bool(true),
+            ),
+            (
+                intrinsics::DICT_REMOVE,
+                vec![dict(), Value::Int(1)],
+                Value::Dict(Vec::new()),
+            ),
+            (
+                intrinsics::DICT_REMOVE_EXTRACT,
+                vec![dict(), Value::Int(1)],
+                Value::Tuple(vec![Value::Dict(Vec::new()), some_ten()]),
+            ),
+            (
+                intrinsics::DICT_KEYS,
+                vec![dict()],
+                Value::List(vec![Value::Int(1)]),
+            ),
+            (
+                intrinsics::DICT_VALUES,
+                vec![dict()],
+                Value::List(vec![Value::Int(10)]),
+            ),
+            (
+                intrinsics::DICT_PAIRS,
+                vec![dict()],
+                Value::List(vec![Value::Tuple(vec![Value::Int(1), Value::Int(10)])]),
+            ),
+            (intrinsics::DICT_LENGTH, vec![dict()], Value::Int(1)),
+        ];
+        for (name, args, expected) in cases {
+            let result = interpreter
+                .call_builtin(name, &args)
+                .unwrap_or_else(|error| panic!("{} failed: {}", name, error.message));
+            assert_eq!(result, Some(expected), "{} runtime semantics drifted", name);
+        }
+
+        for (name, args, expected) in [
+            (
+                intrinsics::DICT_INSERT_EXTRACT,
+                vec![dict(), Value::Int(1), Value::Int(20)],
+                (
+                    some_ten(),
+                    vec![Value::Dict(vec![(Value::Int(1), Value::Int(20))])],
+                ),
+            ),
+            (
+                intrinsics::DICT_REMOVE_EXTRACT,
+                vec![dict(), Value::Int(1)],
+                (some_ten(), vec![Value::Dict(Vec::new())]),
+            ),
+            (
+                intrinsics::DICT_UPDATE,
+                vec![dict(), Value::Int(1), Value::Int(0), inc],
+                (
+                    Value::Dict(vec![(Value::Int(1), Value::Int(11))]),
+                    Vec::new(),
+                ),
+            ),
+        ] {
+            let actual = match interpreter.call_interpreter_special(name, &args) {
+                Ok(Some(outcome)) => outcome,
+                Ok(None) => panic!("{} special dispatch fell through", name),
+                Err(_) => panic!("{} special dispatch failed", name),
+            };
+            assert_eq!(actual, expected, "{} write-back semantics drifted", name);
+        }
+    }
+
+    #[test]
     fn evaluates_arithmetic_and_precedence() {
         let out = run(r#"
 fn main(console: Console):

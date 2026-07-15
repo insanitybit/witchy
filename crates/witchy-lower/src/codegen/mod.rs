@@ -1795,7 +1795,8 @@ impl<'types> Codegen<'types> {
     fn dict_value_valtype_of(&self, value: &Expr) -> Option<ValType> {
         match value {
             Expr::Call { name, args }
-                if matches!(name.as_str(), "dict.insert" | "dict.__insert") && args.len() == 3 =>
+                if matches!(name.as_str(), "dict.insert" | intrinsics::DICT_INSERT)
+                    && args.len() == 3 =>
             {
                 match self.val_type_of(&args[2]) {
                     ValType::Other => None,
@@ -1821,7 +1822,8 @@ impl<'types> Codegen<'types> {
     fn dict_key_valtype_of(&self, value: &Expr) -> Option<ValType> {
         match value {
             Expr::Call { name, args }
-                if matches!(name.as_str(), "dict.insert" | "dict.__insert") && args.len() == 3 =>
+                if matches!(name.as_str(), "dict.insert" | intrinsics::DICT_INSERT)
+                    && args.len() == 3 =>
             {
                 match self.val_type_of(&args[1]) {
                     ValType::Other => None,
@@ -1903,7 +1905,7 @@ impl<'types> Codegen<'types> {
             },
             // `pairs(d)` yields `(key, value)` tuples; their slot types are the
             // Dict's tracked key and value types.
-            Expr::Call { name, args } if name == "dict.pairs" && args.len() == 1 => {
+            Expr::Call { name, args } if name == intrinsics::DICT_PAIRS && args.len() == 1 => {
                 if let Expr::Var(d) = &args[0] {
                     let k = self.local_dict_key_valtype.get(d).copied().unwrap_or(ValType::Other);
                     let v = self.local_dict_value_valtype.get(d).copied().unwrap_or(ValType::Other);
@@ -1997,7 +1999,7 @@ impl<'types> Codegen<'types> {
             }
             // `values(d)` yields a list of the Dict's values; carry their type so
             // `for v in values(d)` recovers an Int value as i64.
-            Expr::Call { name, args } if name == "dict.values" && args.len() == 1 => match &args[0] {
+            Expr::Call { name, args } if name == intrinsics::DICT_VALUES && args.len() == 1 => match &args[0] {
                 Expr::Var(d) => self
                     .local_dict_value_valtype
                     .get(d)
@@ -2008,7 +2010,7 @@ impl<'types> Codegen<'types> {
             // `keys(d)` yields a list of the Dict's keys; carry their type so
             // `for k in keys(d)` can in turn use `k` as a Dict key (e.g.
             // `get_or(d, k, 0)`) without the key type going unknown.
-            Expr::Call { name, args } if name == "dict.keys" && args.len() == 1 => match &args[0] {
+            Expr::Call { name, args } if name == intrinsics::DICT_KEYS && args.len() == 1 => match &args[0] {
                 Expr::Var(d) => self
                     .local_dict_key_valtype
                     .get(d)
@@ -4143,7 +4145,12 @@ impl<'types> Codegen<'types> {
                                 let vw = self.lower_expr(vexpr)?;
                                 self.uses_dict_insert_cap = true;
                                 seq.push(N::CallStoreMulti {
-                                    func: "dict_insert_cap".to_string(),
+                                    func: intrinsics::declared_wir_helper(
+                                        intrinsics::DICT_INSERT,
+                                        "dict_insert_cap",
+                                    )
+                                    .expect("dict insert catalog declares optimized helper")
+                                    .to_string(),
                                     args: vec![
                                         W::GetLocal(name.clone()),
                                         W::ToSlot(Box::new(kw), Self::wir_kind(kk)),
@@ -4179,7 +4186,12 @@ impl<'types> Codegen<'types> {
                                 self.clos_arities.insert(1);
                                 self.uses_dict_update_cap = true;
                                 seq.push(N::CallStoreMulti {
-                                    func: "dict_update_cap".to_string(),
+                                    func: intrinsics::declared_wir_helper(
+                                        intrinsics::DICT_UPDATE,
+                                        "dict_update_cap",
+                                    )
+                                    .expect("dict update catalog declares optimized helper")
+                                    .to_string(),
                                     args: vec![
                                         W::GetLocal(name.clone()),
                                         W::ToSlot(Box::new(kw), Self::wir_kind(kk)),
@@ -5543,7 +5555,8 @@ impl<'types> Codegen<'types> {
                 })
             }
             Expr::Call { name, args }
-                if matches!(name.as_str(), intrinsics::LIST_AT | "dict.at") && args.len() == 2 =>
+                if matches!(name.as_str(), intrinsics::LIST_AT | intrinsics::DICT_AT)
+                    && args.len() == 2 =>
             {
                 let captured_base =
                     self.capture_codegen_place(&args[0], next_coordinate, prelude)?;
@@ -5563,7 +5576,7 @@ impl<'types> Codegen<'types> {
                     coordinate,
                     coordinate_kind: index_kind,
                     coordinate_type: self.val_type_of(&args[1]),
-                    dict: name == "dict.at",
+                    dict: name == intrinsics::DICT_AT,
                 })
             }
             _ => None,
@@ -5592,7 +5605,7 @@ impl<'types> Codegen<'types> {
                 field: field.clone(),
             },
             CodegenPlace::Index { base, coordinate, dict, .. } => Expr::Call {
-                name: if *dict { "dict.at" } else { intrinsics::LIST_AT }.to_string(),
+                name: if *dict { intrinsics::DICT_AT } else { intrinsics::LIST_AT }.to_string(),
                 args: vec![
                     Self::codegen_place_read_from(base, root),
                     Expr::Var(coordinate.clone()),
@@ -5618,7 +5631,12 @@ impl<'types> Codegen<'types> {
             }
             CodegenPlace::Index { base, coordinate, dict, .. } => {
                 let updated = Expr::Call {
-                    name: if *dict { "dict.__insert" } else { intrinsics::LIST_SET_AT }.to_string(),
+                    name: (if *dict {
+                        intrinsics::DICT_INSERT
+                    } else {
+                        intrinsics::LIST_SET_AT
+                    })
+                    .to_string(),
                     args: vec![
                         Self::codegen_place_read_from(base, root),
                         Expr::Var(coordinate.clone()),
@@ -8331,7 +8349,8 @@ impl<'types> Codegen<'types> {
                 Expr::Var(root) => Some(root),
                 Expr::Field { base, .. } | Expr::Index { base, .. } => place_root(base),
                 Expr::Call { name, args }
-                    if matches!(name.as_str(), intrinsics::LIST_AT | "dict.at") && args.len() == 2 =>
+                    if matches!(name.as_str(), intrinsics::LIST_AT | intrinsics::DICT_AT)
+                        && args.len() == 2 =>
                 {
                     place_root(&args[0])
                 }
@@ -8557,7 +8576,9 @@ impl<'types> Codegen<'types> {
             }
         }
         if let Expr::Call { name, args } = e {
-            if matches!(name.as_str(), "dict.insert" | "dict.__insert") && args.len() == 3 {
+            if matches!(name.as_str(), "dict.insert" | intrinsics::DICT_INSERT)
+                && args.len() == 3
+            {
                 return Some(EqShape::Dict(
                     Box::new(EqShape::scalar(self.val_type_of(&args[1]))?),
                     Box::new(self.eq_operand_shape(&args[2])?),
@@ -8684,8 +8705,8 @@ impl<'types> Codegen<'types> {
             Expr::Call { name, .. } => {
                 matches!(
                     name.as_str(),
-                    "dict.new" | "dict.insert" | "dict.__insert" | "dict.remove"
-                        | "dict.__remove" | "dict.update" | "dict.__update"
+                    intrinsics::DICT_NEW | "dict.insert" | intrinsics::DICT_INSERT | "dict.remove"
+                        | intrinsics::DICT_REMOVE | "dict.update" | intrinsics::DICT_UPDATE
                 )
             }
             _ => false,
@@ -9265,7 +9286,8 @@ fn nested_var_place_roots(
             Expr::Var(root) => Some(root),
             Expr::Field { base, .. } | Expr::Index { base, .. } => place_root(base),
             Expr::Call { name, args }
-                if matches!(name.as_str(), intrinsics::LIST_AT | "dict.at") && args.len() == 2 =>
+                if matches!(name.as_str(), intrinsics::LIST_AT | intrinsics::DICT_AT)
+                    && args.len() == 2 =>
             {
                 place_root(&args[0])
             }

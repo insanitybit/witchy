@@ -513,21 +513,21 @@ impl Codegen<'_> {
             (intrinsics::LIST_CONCAT, 2) => {
                 call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
             }
-            ("dict.new", 0) => {
+            (intrinsics::DICT_NEW, 0) => {
                 self.uses_dict = true;
-                call("dict_new", vec![])
+                call(intrinsic_helper(name), vec![])
             }
-            ("dict.keys", 1) => {
+            (intrinsics::DICT_KEYS, 1) => {
                 self.uses_dict_iter = true;
-                call("dict_keys", self.lower_args(&[&args[0]])?)
+                call(intrinsic_helper(name), self.lower_args(&[&args[0]])?)
             }
-            ("dict.values", 1) => {
+            (intrinsics::DICT_VALUES, 1) => {
                 self.uses_dict_iter = true;
-                call("dict_values", self.lower_args(&[&args[0]])?)
+                call(intrinsic_helper(name), self.lower_args(&[&args[0]])?)
             }
-            ("dict.pairs", 1) => {
+            (intrinsics::DICT_PAIRS, 1) => {
                 self.uses_dict_iter = true;
-                call("dict_pairs", self.lower_args(&[&args[0]])?)
+                call(intrinsic_helper(name), self.lower_args(&[&args[0]])?)
             }
             ("read", 2) => {
                 self.used_dir_ops.insert("read");
@@ -1004,7 +1004,7 @@ impl Codegen<'_> {
                 ])
             }
             // `dict.length(d)` -> Int: the i32 count at the header, sign-extended.
-            ("dict.length", 1) => W::ToSlot(
+            (intrinsics::DICT_LENGTH, 1) => W::ToSlot(
                 Box::new(W::Load {
                     ptr: Box::new(self.lower_expr(&args[0])?),
                     kind: witchy_wir::wir::Kind::I32,
@@ -1013,21 +1013,22 @@ impl Codegen<'_> {
                 witchy_wir::wir::Kind::I32,
             ),
             // --- dict family: a key-mode i32 side-operand + slot conversions ---
-            ("dict.__insert", 3) => {
+            (intrinsics::DICT_INSERT, 3) => {
                 self.uses_dict = true;
                 let mode = self.dict_key_mode_wir(&args[1])?;
                 let kk = self.kind_of(&args[1]);
                 let vk = self.kind_of(&args[2]);
-                call("dict_insert", vec![
-                    self.lower_expr(&args[0])?,
-                    W::ToSlot(Box::new(self.lower_expr(&args[1])?), Self::wir_kind(kk)),
-                    W::ToSlot(Box::new(self.lower_expr(&args[2])?), Self::wir_kind(vk)),
-                    W::ConstI32(mode as i32),
-                ])
+                call(
+                    intrinsic_helper_variant(name, "dict_insert"),
+                    vec![
+                        self.lower_expr(&args[0])?,
+                        W::ToSlot(Box::new(self.lower_expr(&args[1])?), Self::wir_kind(kk)),
+                        W::ToSlot(Box::new(self.lower_expr(&args[2])?), Self::wir_kind(vk)),
+                        W::ConstI32(mode as i32),
+                    ],
+                )
             }
-            (name, 3)
-                if name == "dict.__insert_extract"
-                    || name.starts_with("dict.__insert_extract__") =>
+            (name, 3) if intrinsics::is_dict_insert_extract(name) =>
             {
                 self.uses_dict = true;
                 let mode = self.dict_key_mode_wir(&args[1])?;
@@ -1043,13 +1044,13 @@ impl Codegen<'_> {
                 let key_bias = collection_leaf_bias(&dict_ty, "Dict", 0)?;
                 let value_bias = collection_leaf_bias(&dict_ty, "Dict", 1)?;
                 self.lower_extract_var(
-                    "dict_insert_extract",
+                    intrinsic_helper(name),
                     &args[0],
                     structural_args,
                     &[key_bias, value_bias],
                 )?
             }
-            ("dict.get_or", 3) => {
+            (intrinsics::DICT_GET_OR, 3) => {
                 self.uses_dict = true;
                 let mode = self.dict_key_mode_wir(&args[1])?;
                 let kk = self.kind_of(&args[1]);
@@ -1060,9 +1061,9 @@ impl Codegen<'_> {
                     W::ToSlot(Box::new(self.lower_expr(&args[2])?), Self::wir_kind(dk)),
                     W::ConstI32(mode as i32),
                 ];
-                W::FromSlot(Box::new(call("dict_get_or", inner)), Self::wir_kind(dk))
+                W::FromSlot(Box::new(call(intrinsic_helper(name), inner)), Self::wir_kind(dk))
             }
-            ("dict.at", 2) => {
+            (intrinsics::DICT_AT, 2) => {
                 self.uses_dict = true;
                 let mode = self.dict_key_mode_wir(&args[1])?;
                 let kk = self.kind_of(&args[1]);
@@ -1076,31 +1077,29 @@ impl Codegen<'_> {
                     W::ToSlot(Box::new(self.lower_expr(&args[1])?), Self::wir_kind(kk)),
                     W::ConstI32(mode as i32),
                 ];
-                W::FromSlot(Box::new(call("dict_at", inner)), vk)
+                W::FromSlot(Box::new(call(intrinsic_helper(name), inner)), vk)
             }
-            ("dict.contains_key", 2) => {
+            (intrinsics::DICT_CONTAINS_KEY, 2) => {
                 self.uses_dict = true;
                 let mode = self.dict_key_mode_wir(&args[1])?;
                 let kk = self.kind_of(&args[1]);
-                call("dict_has", vec![
+                call(intrinsic_helper(name), vec![
                     self.lower_expr(&args[0])?,
                     W::ToSlot(Box::new(self.lower_expr(&args[1])?), Self::wir_kind(kk)),
                     W::ConstI32(mode as i32),
                 ])
             }
-            ("dict.__remove", 2) => {
+            (intrinsics::DICT_REMOVE, 2) => {
                 self.uses_dict = true;
                 let mode = self.dict_key_mode_wir(&args[1])?;
                 let kk = self.kind_of(&args[1]);
-                call("dict_remove", vec![
+                call(intrinsic_helper(name), vec![
                     self.lower_expr(&args[0])?,
                     W::ToSlot(Box::new(self.lower_expr(&args[1])?), Self::wir_kind(kk)),
                     W::ConstI32(mode as i32),
                 ])
             }
-            (name, 2)
-                if name == "dict.__remove_extract"
-                    || name.starts_with("dict.__remove_extract__") =>
+            (name, 2) if intrinsics::is_dict_remove_extract(name) =>
             {
                 self.uses_dict = true;
                 let mode = self.dict_key_mode_wir(&args[1])?;
@@ -1114,26 +1113,29 @@ impl Codegen<'_> {
                 let key_bias = collection_leaf_bias(&dict_ty, "Dict", 0)?;
                 let value_bias = collection_leaf_bias(&dict_ty, "Dict", 1)?;
                 self.lower_extract_var(
-                    "dict_remove_extract",
+                    intrinsic_helper(name),
                     &args[0],
                     structural_args,
                     &[key_bias, value_bias],
                 )?
             }
-            ("dict.__update", 4) => {
+            (intrinsics::DICT_UPDATE, 4) => {
                 self.uses_dict = true;
                 self.uses_dict_update = true;
                 self.clos_arities.insert(1);
                 let mode = self.dict_key_mode_wir(&args[1])?;
                 let kk = self.kind_of(&args[1]);
                 let dk = self.kind_of(&args[2]);
-                call("dict_update", vec![
-                    self.lower_expr(&args[0])?,
-                    W::ToSlot(Box::new(self.lower_expr(&args[1])?), Self::wir_kind(kk)),
-                    W::ToSlot(Box::new(self.lower_expr(&args[2])?), Self::wir_kind(dk)),
-                    W::ConstI32(mode as i32),
-                    self.lower_expr(&args[3])?,
-                ])
+                call(
+                    intrinsic_helper_variant(name, "dict_update"),
+                    vec![
+                        self.lower_expr(&args[0])?,
+                        W::ToSlot(Box::new(self.lower_expr(&args[1])?), Self::wir_kind(kk)),
+                        W::ToSlot(Box::new(self.lower_expr(&args[2])?), Self::wir_kind(dk)),
+                        W::ConstI32(mode as i32),
+                        self.lower_expr(&args[3])?,
+                    ],
+                )
             }
             _ => return None,
         })

@@ -2123,11 +2123,14 @@ fn float_key_position(t: &Ty) -> Option<FloatKeyKind> {
 /// argument unification.
 fn dict_key_op_index(name: &str) -> Option<usize> {
     match name {
-        "dict.insert" | "dict.__insert" | "dict.get_or" | "dict.at" | "dict.update"
-        | "dict.__update" | "dict.contains_key" | "dict.remove" | "dict.__remove" => {
-            Some(1)
-        }
-        _ => None,
+        "dict.insert" | "dict.update" | "dict.remove" => Some(1),
+        _ => intrinsics::lookup(name).and_then(|spec| {
+            spec.signature
+                .trait_bounds()
+                .iter()
+                .find(|bound| bound.trait_name == "Eq")
+                .map(|bound| bound.parameter)
+        }),
     }
 }
 
@@ -2585,8 +2588,10 @@ fn check_unique_capacity_results(module: &Module) -> Result<(), TypeError> {
             Expr::Call { name, args } => {
                 functions.contains(name)
                     || (args.is_empty()
-                        && (name == "dict.new"
-                            || name.starts_with("dict.new__")
+                        && (name == intrinsics::DICT_NEW
+                            || name
+                                .strip_prefix(intrinsics::DICT_NEW)
+                                .is_some_and(|suffix| suffix.starts_with("__"))
                             || name.ends_with(".dict.new")))
             }
             Expr::Unary { op: UnOp::Move, expr } => produces_capacity(expr, functions),
@@ -2848,7 +2853,8 @@ fn var_place(expr: &Expr) -> Option<VarPlace> {
                 Some(root)
             }
             Expr::Call { name, args }
-                if matches!(name.as_str(), intrinsics::LIST_AT | "dict.at") && args.len() == 2 =>
+                if matches!(name.as_str(), intrinsics::LIST_AT | intrinsics::DICT_AT)
+                    && args.len() == 2 =>
             {
                 let root = walk(&args[0], steps)?;
                 let step = match &args[1] {
@@ -3869,6 +3875,96 @@ impl Checker {
                     Ty::Named("Option".into(), vec![elem]),
                 ))
             }
+            S::GenericDictNew => {
+                let key = self.fresh();
+                let value = self.fresh();
+                Some((vec![], Ty::Named("Dict".into(), vec![key, value])))
+            }
+            S::GenericDictInsert => {
+                let key = self.fresh();
+                let value = self.fresh();
+                let dict = Ty::Named("Dict".into(), vec![key.clone(), value.clone()]);
+                Some((vec![dict.clone(), key, value], dict))
+            }
+            S::GenericDictInsertExtract => {
+                let key = self.fresh();
+                let value = self.fresh();
+                let dict = Ty::Named("Dict".into(), vec![key.clone(), value.clone()]);
+                Some((
+                    vec![dict, key, value.clone()],
+                    Ty::Named("Option".into(), vec![value]),
+                ))
+            }
+            S::GenericDictGetOr => {
+                let key = self.fresh();
+                let value = self.fresh();
+                let dict = Ty::Named("Dict".into(), vec![key.clone(), value.clone()]);
+                Some((vec![dict, key, value.clone()], value))
+            }
+            S::GenericDictIndex => {
+                let key = self.fresh();
+                let value = self.fresh();
+                let dict = Ty::Named("Dict".into(), vec![key.clone(), value.clone()]);
+                Some((vec![dict, key], value))
+            }
+            S::GenericDictUpdate => {
+                let key = self.fresh();
+                let value = self.fresh();
+                let dict = Ty::Named("Dict".into(), vec![key.clone(), value.clone()]);
+                let update = Ty::Fn(
+                    vec![value.clone()],
+                    Box::new(value.clone()),
+                    vec![Convention::Let],
+                );
+                Some((vec![dict.clone(), key, value, update], dict))
+            }
+            S::GenericDictContainsKey => {
+                let key = self.fresh();
+                let value = self.fresh();
+                let dict = Ty::Named("Dict".into(), vec![key.clone(), value]);
+                Some((vec![dict, key], Ty::Bool))
+            }
+            S::GenericDictRemove => {
+                let key = self.fresh();
+                let value = self.fresh();
+                let dict = Ty::Named("Dict".into(), vec![key.clone(), value]);
+                Some((vec![dict.clone(), key], dict))
+            }
+            S::GenericDictRemoveExtract => {
+                let key = self.fresh();
+                let value = self.fresh();
+                let dict = Ty::Named("Dict".into(), vec![key.clone(), value.clone()]);
+                Some((
+                    vec![dict, key],
+                    Ty::Named("Option".into(), vec![value]),
+                ))
+            }
+            S::GenericDictKeys => {
+                let key = self.fresh();
+                let value = self.fresh();
+                let dict = Ty::Named("Dict".into(), vec![key.clone(), value]);
+                Some((vec![dict], Ty::List(Box::new(key))))
+            }
+            S::GenericDictValues => {
+                let key = self.fresh();
+                let value = self.fresh();
+                let dict = Ty::Named("Dict".into(), vec![key, value.clone()]);
+                Some((vec![dict], Ty::List(Box::new(value))))
+            }
+            S::GenericDictPairs => {
+                let key = self.fresh();
+                let value = self.fresh();
+                let dict = Ty::Named("Dict".into(), vec![key.clone(), value.clone()]);
+                Some((
+                    vec![dict],
+                    Ty::List(Box::new(Ty::Tuple(vec![key, value]))),
+                ))
+            }
+            S::GenericDictToInt => {
+                let key = self.fresh();
+                let value = self.fresh();
+                Some((vec![Ty::Named("Dict".into(), vec![key, value])], Ty::Int))
+            }
             // These calls are checked by their dedicated frontend rule or by
             // the linked source declaration, not by the builtin signature path.
             S::TryContext | S::DeclaredInSource => None,
@@ -3909,80 +4005,6 @@ impl Checker {
             // Duration <-> Int(milliseconds) bridge for the std `duration` module.
             "int_to_duration" => Some((vec![Ty::Int], Ty::Duration)),
             "duration_to_int" => Some((vec![Ty::Duration], Ty::Int)),
-            // Dict(k, v) is an ordinary parameterized Named type; these builtins
-            // are generic in its key and value types.
-            "dict.new" => {
-                let k = self.fresh();
-                let v = self.fresh();
-                Some((vec![], Ty::Named("Dict".into(), vec![k, v])))
-            }
-            "dict.__insert" => {
-                let k = self.fresh();
-                let v = self.fresh();
-                let d = Ty::Named("Dict".into(), vec![k.clone(), v.clone()]);
-                Some((vec![d.clone(), k, v], d))
-            }
-            "dict.get_or" => {
-                let k = self.fresh();
-                let v = self.fresh();
-                let d = Ty::Named("Dict".into(), vec![k.clone(), v.clone()]);
-                Some((vec![d, k, v.clone()], v))
-            }
-            "dict.at" => {
-                let k = self.fresh();
-                let v = self.fresh();
-                let d = Ty::Named("Dict".into(), vec![k.clone(), v.clone()]);
-                Some((vec![d, k], v))
-            }
-            // dict.update(dict, key, default, f) -> dict: a single-lookup upsert. `f`
-            // maps the current value (or `default` when the key is absent) to the
-            // new value — like Go's `m[k]++` in one operation.
-            "dict.__update" => {
-                let k = self.fresh();
-                let v = self.fresh();
-                let d = Ty::Named("Dict".into(), vec![k.clone(), v.clone()]);
-                let f = Ty::Fn(
-                    vec![v.clone()],
-                    Box::new(v.clone()),
-                    vec![Convention::Let],
-                );
-                Some((vec![d.clone(), k, v, f], d))
-            }
-            "dict.contains_key" => {
-                let k = self.fresh();
-                let v = self.fresh();
-                let d = Ty::Named("Dict".into(), vec![k.clone(), v]);
-                Some((vec![d, k], Ty::Bool))
-            }
-            "dict.__remove" => {
-                let k = self.fresh();
-                let v = self.fresh();
-                let d = Ty::Named("Dict".into(), vec![k.clone(), v]);
-                Some((vec![d.clone(), k], d))
-            }
-            "dict.keys" => {
-                let k = self.fresh();
-                let v = self.fresh();
-                let d = Ty::Named("Dict".into(), vec![k.clone(), v]);
-                Some((vec![d], Ty::List(Box::new(k))))
-            }
-            "dict.values" => {
-                let k = self.fresh();
-                let v = self.fresh();
-                let d = Ty::Named("Dict".into(), vec![k, v.clone()]);
-                Some((vec![d], Ty::List(Box::new(v))))
-            }
-            "dict.pairs" => {
-                let k = self.fresh();
-                let v = self.fresh();
-                let d = Ty::Named("Dict".into(), vec![k.clone(), v.clone()]);
-                Some((vec![d], Ty::List(Box::new(Ty::Tuple(vec![k, v])))))
-            }
-            "dict.length" => {
-                let k = self.fresh();
-                let v = self.fresh();
-                Some((vec![Ty::Named("Dict".into(), vec![k, v])], Ty::Int))
-            }
             // `read`/`write`/`exists`/`subdir`/`read_only`/`write_only` are handled
             // by `check_dir_op`; `connect`/`listen`/`restrict`/`connect_only`/
             // `listen_only` by `check_net_op` (their rights are enforced per-op).
@@ -5001,23 +5023,43 @@ impl Checker {
                 _ => {} // a non-function local with this name: fall through
             }
         }
-        // Cataloged List primitives use the catalog's type recipe even though
-        // linked std declarations remain present for source documentation and
-        // parameter conventions. This makes the catalog authoritative without
-        // losing `var` enforcement from `fn_conventions` below.
-        let catalog_sig = if !is_cap_op && intrinsics::is_list_operation(call_name) {
-            Some(
-                self.intrinsic_call_sig(call_name)
-                    .expect("cataloged List operation has a type recipe"),
-            )
-        } else {
-            None
-        };
-        let user_sig = catalog_sig
+        // A concrete catalog type recipe outranks the linked std placeholder.
+        // Source declarations remain present for documentation, parameter
+        // conventions, and ownership qualifiers, while generic trait bounds
+        // travel with the catalog recipe itself.
+        let catalog_contract = (!is_cap_op)
+            .then(|| self.intrinsic_call_sig(call_name))
+            .flatten()
+            .map(|(params, ret)| {
+                let signature = intrinsics::lookup(call_name)
+                    .expect("catalog type recipe has a catalog row")
+                    .signature;
+                let bounds = signature
+                    .trait_bounds()
+                    .iter()
+                    .map(|bound| {
+                        (
+                            params
+                                .get(bound.parameter)
+                                .unwrap_or_else(|| {
+                                    panic!(
+                                        "catalog trait bound parameter {} is outside {} arguments for {call_name}",
+                                        bound.parameter,
+                                        params.len()
+                                    )
+                                })
+                                .clone(),
+                            bound.trait_name.to_string(),
+                        )
+                    })
+                    .collect();
+                (params, ret, bounds)
+            });
+        let user_sig = catalog_contract
             .is_none()
             .then(|| (!is_cap_op).then(|| self.user_call_sig_with_bounds(name)).flatten())
             .flatten();
-        if catalog_sig.is_none() && user_sig.is_none() {
+        if catalog_contract.is_none() && user_sig.is_none() {
             if !is_cap_op && let Some(msg) = bare_cap_op_error(call_name, args.len()) {
                 return terr(msg);
             }
@@ -5037,8 +5079,8 @@ impl Checker {
         if let Some(t) = self.check_try_ctx(call_name, args)? {
             return Ok(t);
         }
-        let (params, ret, call_bounds) = match catalog_sig {
-            Some((params, ret)) => (params, ret, Vec::new()),
+        let (params, ret, call_bounds) = match catalog_contract {
+            Some(contract) => contract,
             None => match user_sig {
                 Some(sig) => sig,
                 None => {
@@ -5517,7 +5559,7 @@ impl Checker {
                 let base_ty = self.infer(base)?;
                 let d = if matches!(base_ty, Ty::Named(ref name, _) if name == "Dict") {
                     Expr::Call {
-                        name: "dict.at".to_string(),
+                        name: intrinsics::DICT_AT.to_string(),
                         args: vec![(**base).clone(), (**index).clone()],
                     }
                 } else {
@@ -7800,9 +7842,8 @@ pub fn intrinsic(name: &str) -> bool {
     matches!(
         name,
         witchy_syntax::intrinsics::GENERATED_LIST_PUSH
-            | "dict.new" | "dict.__insert" | "dict.get_or" | "dict.at" | "dict.contains_key" | "dict.__remove"
-            | "dict.__update" | "dict.keys" | "dict.values" | "dict.pairs" | "dict.length"
     ) || witchy_syntax::intrinsics::is_list_operation(name)
+        || witchy_syntax::intrinsics::is_dict_operation(name)
         || witchy_syntax::intrinsics::is_string_operation(name)
         || witchy_syntax::intrinsics::is_math_operation(name)
 }

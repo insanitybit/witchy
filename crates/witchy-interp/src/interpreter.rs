@@ -1362,7 +1362,8 @@ impl Interpreter {
                     Ok(root)
                 }
                 Expr::Call { name, args }
-                    if matches!(name.as_str(), intrinsics::LIST_AT | "dict.at") && args.len() == 2 =>
+                    if matches!(name.as_str(), intrinsics::LIST_AT | intrinsics::DICT_AT)
+                        && args.len() == 2 =>
                 {
                     let root = capture(interpreter, &args[0], env, projections)?;
                     let index = interpreter.eval(&args[1], env)?;
@@ -1730,8 +1731,7 @@ impl Interpreter {
             };
             return Ok(Some((old, vec![Value::List(out)])));
         }
-        if (name == "dict.__insert_extract" || name.starts_with("dict.__insert_extract__"))
-            && argvals.len() == 3
+        if intrinsics::is_dict_insert_extract(name) && argvals.len() == 3
         {
             let Value::Dict(entries) = &argvals[0] else {
                 return err("insert expects a Dict, a key, and a value");
@@ -1749,8 +1749,7 @@ impl Interpreter {
             };
             return Ok(Some((previous, vec![Value::Dict(out)])));
         }
-        if (name == "dict.__remove_extract" || name.starts_with("dict.__remove_extract__"))
-            && argvals.len() == 2
+        if intrinsics::is_dict_remove_extract(name) && argvals.len() == 2
         {
             let Value::Dict(entries) = &argvals[0] else {
                 return err("remove expects a Dict and a key");
@@ -1767,7 +1766,7 @@ impl Interpreter {
         }
         // These two operations need the interpreter to apply a function value,
         // so they cannot live in the pure builtin table.
-        if name == "dict.__update" && argvals.len() == 4 {
+        if name == intrinsics::DICT_UPDATE && argvals.len() == 4 {
             let Value::Dict(entries) = &argvals[0] else {
                 return err("update expects a Dict as its first argument");
             };
@@ -2310,12 +2309,12 @@ impl Interpreter {
                 _ => err("concat expects two lists"),
             },
             // --- Dict: an immutable association map ---
-            "dict.new" => match args {
+            intrinsics::DICT_NEW => match args {
                 [] => Ok(Some(Value::Dict(Vec::new()))),
                 _ => err("dict_new takes no arguments"),
             },
             // Return a new dict with `k` set to `v` (replacing any existing entry).
-            "dict.__insert" => match args {
+            intrinsics::DICT_INSERT => match args {
                 [Value::Dict(entries), k, v] => {
                     let mut out = entries.clone();
                     match self.dict_key_position(&out, k)? {
@@ -2326,8 +2325,7 @@ impl Interpreter {
                 }
                 _ => err("insert expects a Dict, a key, and a value"),
             },
-            name if name == "dict.__insert_extract"
-                || name.starts_with("dict.__insert_extract__") => match args {
+            name if intrinsics::is_dict_insert_extract(name) => match args {
                 [Value::Dict(entries), k, v] => {
                     let mut out = entries.clone();
                     let previous = match self.dict_key_position(&out, k)? {
@@ -2345,28 +2343,28 @@ impl Interpreter {
                 _ => err("insert expects a Dict, a key, and a value"),
             },
             // Value for `k`, or `default` if absent.
-            "dict.get_or" => match args {
+            intrinsics::DICT_GET_OR => match args {
                 [Value::Dict(entries), k, default] => {
                     let found = self.dict_key_position(entries, k)?;
                     Ok(Some(found.map(|index| entries[index].1.clone()).unwrap_or_else(|| default.clone())))
                 }
                 _ => err("get_or expects a Dict, a key, and a default value"),
             },
-            "dict.at" => match args {
+            intrinsics::DICT_AT => match args {
                 [Value::Dict(entries), k] => match self.dict_key_position(entries, k)? {
                     Some(index) => Ok(Some(entries[index].1.clone())),
                     None => err(DiagTemplate::DictMissing.render(0, 0, "")),
                 },
                 _ => err("at expects a Dict and a key"),
             },
-            "dict.contains_key" => match args {
+            intrinsics::DICT_CONTAINS_KEY => match args {
                 [Value::Dict(entries), k] => {
                     Ok(Some(Value::Bool(self.dict_key_position(entries, k)?.is_some())))
                 }
                 _ => err("has expects a Dict and a key"),
             },
             // A new dict with `k` (and its value) removed; unchanged if absent.
-            "dict.__remove" => match args {
+            intrinsics::DICT_REMOVE => match args {
                 [Value::Dict(entries), k] => {
                     let mut out = entries.clone();
                     if let Some(index) = self.dict_key_position(&out, k)? {
@@ -2376,8 +2374,7 @@ impl Interpreter {
                 }
                 _ => err("remove expects a Dict and a key"),
             },
-            name if name == "dict.__remove_extract"
-                || name.starts_with("dict.__remove_extract__") => match args {
+            name if intrinsics::is_dict_remove_extract(name) => match args {
                 [Value::Dict(entries), k] => {
                     let mut out = entries.clone();
                     let previous = match self.dict_key_position(&out, k)? {
@@ -2391,20 +2388,20 @@ impl Interpreter {
                 }
                 _ => err("remove expects a Dict and a key"),
             },
-            "dict.keys" => match args {
+            intrinsics::DICT_KEYS => match args {
                 [Value::Dict(entries)] => {
                     Ok(Some(Value::List(entries.iter().map(|(k, _)| k.clone()).collect())))
                 }
                 _ => err("keys expects a Dict"),
             },
-            "dict.values" => match args {
+            intrinsics::DICT_VALUES => match args {
                 [Value::Dict(entries)] => {
                     Ok(Some(Value::List(entries.iter().map(|(_, v)| v.clone()).collect())))
                 }
                 _ => err("values expects a Dict"),
             },
             // Each entry as a `(key, value)` tuple, in insertion order.
-            "dict.pairs" => match args {
+            intrinsics::DICT_PAIRS => match args {
                 [Value::Dict(entries)] => Ok(Some(Value::List(
                     entries
                         .iter()
@@ -2413,7 +2410,7 @@ impl Interpreter {
                 ))),
                 _ => err("pairs expects a Dict"),
             },
-            "dict.length" => match args {
+            intrinsics::DICT_LENGTH => match args {
                 [Value::Dict(entries)] => Ok(Some(Value::Int(entries.len() as i64))),
                 _ => err("size expects a Dict"),
             },
@@ -3211,7 +3208,7 @@ impl Interpreter {
                 Ok(true)
             }
             Expr::Call { name: f, args }
-                if f == "dict.__insert" && args.len() == 3
+                if f == intrinsics::DICT_INSERT && args.len() == 3
                     && matches!(&args[0], Expr::Var(v) if v == name)
                     && !expr_mentions(&args[1], name)
                     && !expr_mentions(&args[2], name)
@@ -3239,7 +3236,7 @@ impl Interpreter {
             }
             // `update` is matched before locals in `eval_call`, so no shadow check.
             Expr::Call { name: f, args }
-                if f == "dict.__update" && args.len() == 4
+                if f == intrinsics::DICT_UPDATE && args.len() == 4
                     && matches!(&args[0], Expr::Var(v) if v == name)
                     && args[1..].iter().all(|a| !expr_mentions(a, name)) =>
             {

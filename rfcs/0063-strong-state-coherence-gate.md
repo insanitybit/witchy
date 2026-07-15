@@ -161,8 +161,21 @@ names resolve to the canonical operation row instead of bypassing its contract. 
 tests compare every row with `std/list.witchy` (including the `var` receiver), derive the
 reverse set of primitive placeholders from source, execute exact operation results and
 write-back dispatch, require every helper to exist, and require every self-recursive
-primitive placeholder to be suppressed. Dict and the remaining public
-families are the next catalog migrations.
+primitive placeholder to be suppressed.
+
+The Dict primitive family catalogs all thirteen backend-crossing operations, including
+the fused `__insert_extract` and `__remove_extract` write-back operations omitted by the
+older eleven-name suppression table. Generic key/value signatures, the eight `k: Eq`
+requirements, unique-receiver declarations, pure versus write-back effects, dynamic
+compound-key equality, and baseline/optimized WIR helper dependencies are explicit
+catalog facts. Concrete catalog recipes now outrank linked source placeholders in type
+checking for every catalog family; source remains the checked home for parameter
+conventions and ownership qualifiers. Interpreter dispatch, result-shape classification,
+place lowering, aliases, escape/uniqueness analysis, and WIR lowering consume stable
+catalog identities or predicates. Coherence tests derive the reverse primitive set from
+`std/dict.witchy`, compare signatures, bounds, conventions, and qualifiers, execute exact
+runtime and write-back results, and reject missing helpers or unsuppressed placeholders.
+The remaining public operation families are the next catalog migrations.
 
 ### 4. Typed compiler facts, not string or address shadows
 
