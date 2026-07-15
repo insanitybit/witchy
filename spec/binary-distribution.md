@@ -22,7 +22,7 @@ that compiles witchy — including the wasm32 playground build — not a strippa
 oracle-only component. The CLI/oracle-only entry points are unreferenced from the
 wasm library and dropped by `wasm-opt`, but the core evaluator stays linked.
 
-## Distribution: one artifact, two hosts
+## Distribution: two trust models
 
 The compile artifact is **`app.wasm`**: the program module, importing the
 `"witchy"` capability host and carrying a versioned `witchy.launch` custom
@@ -37,6 +37,7 @@ artifact: app.wasm     ("witchy" host imports)
 
 run it:   witchy app.wasm --dir . --net api:443        host = consumer's witchy
 browser:  app.wasm + web/witchy-host.js (loader)       host = JS (deny-by-omission)
+trusted:  target/release/app                           host = embedded Witchy runtime
 ```
 
 | Host | Provides the `witchy.*` imports + enforces grants |
@@ -59,18 +60,29 @@ browser:  app.wasm + web/witchy-host.js (loader)       host = JS (deny-by-omissi
   pure-compute JS host provides only infrastructure imports and omits every
   capability import, so a capability-using module fails to instantiate
   (deny-by-omission — see [`wasm-abi.md`](wasm-abi.md)).
+- **Trusted application executable.** `witchy --release build --target
+  trusted-exe` packages the same WASM and `witchy.launch` bytes with a native
+  launcher and a versioned, digested binding plan. The result is one ordinary
+  host-platform executable and does not need Witchy installed. Running it means
+  trusting the application, the embedded runtime, and the distributor, exactly
+  as for another native application. Its `main` receives only the resources
+  named by `[targets.trusted-exe]`: for example, a `Dir[Read]` parameter may bind
+  to launch cwd or one fixed target-machine path. Every `Dir` is still one
+  subtree root and all guest paths remain relative; absolute strings, `..`, and
+  symlink escape remain rejected. The launcher treats all argv as application
+  data and has no grant flags.
 
 The capability guarantee travels with the artifact: the host links only the
 imported families, grants are launch-time, and secret bytes and `Dir`/`Net`
 confinement go through the same `runtime.rs`/`confine.rs` as `witchy sandbox`. A
 "binary" does not trade away the security model — it is `witchy sandbox` frozen.
 
-> **No `build-exe`.** Witchy does not bundle a program plus an embedded runtime
-> into one self-contained executable. That would collapse the trust boundary: the
-> runtime that sandboxes untrusted code would be supplied by the program's author,
-> who could ship one that ignores the capability flags. The model holds only when
-> the runtime is the **consumer's** trusted `witchy`. Distribution is therefore:
-> ship the `.wasm`, and the consumer runs it with their own `witchy`.
+The two forms make different trust promises. An untrusted portable program must
+not provide the runtime claimed to confine it: ship `.wasm`, and let the consumer
+run it with their trusted Witchy host and explicit grants. A trusted application
+may provide its runtime: executing its standalone binary accepts the complete
+artifact. Capability typing remains useful inside that trusted app because its
+dependencies still receive authority only when the root passes a capability.
 
 ## Invariants
 
@@ -91,9 +103,10 @@ confinement go through the same `runtime.rs`/`confine.rs` as `witchy sandbox`. A
   for signing and TLS serving; `crypto.reveal` for revealable value secrets,
   which errors on signing keys and use-only secrets). No secret's raw bytes are
   copied into guest linear memory.
-- **No silent capability grants.** A host links only the host functions the
-  footprint declares; concrete resources (`--dir`, `--net`, `--secret`,
-  `--secret-file`, `--signing-key`) are granted at launch.
+- **No silent capability grants.** A portable host receives concrete resources
+  from consumer launch flags. A trusted executable instead resolves the exact,
+  build-checked recipes embedded for `main`; a missing, extra, incompatible, or
+  unsupported binding fails the build, never prompts or defaults at runtime.
 
 ## Out of scope
 
@@ -102,6 +115,7 @@ confinement go through the same `runtime.rs`/`confine.rs` as `witchy sandbox`. A
   runtimes (wasmtime CLI, jco, wasmCloud) with no witchy host. Witchy's
   `Dir`/`Net` grants map onto WASI's own capability model. Buys ecosystem
   portability; the distribution story above needs none of it.
-- **Runtime-only launcher.** Shipping a per-target `cwasm` plus a slim launcher is
-  additive future work; the portable artifact remains `app.wasm` plus the
-  consumer's trusted Witchy host.
+- **Slim/AOT launcher.** The first trusted-exe template reuses the native Witchy
+  launcher and canonical WASM payload. A smaller runtime-only template or
+  engine-specific AOT image is an additive optimization; portable distribution
+  remains `app.wasm` plus the consumer's trusted Witchy host.

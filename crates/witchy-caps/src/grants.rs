@@ -132,6 +132,24 @@ impl GrantDoc {
     }
 }
 
+/// Resolve the shared RFC-0013/RFC-0092 environment-backed secret provider.
+/// The declarative document or executable plan carries only `env:NAME`; secret
+/// bytes are acquired by the trusted host at launch and never serialized.
+pub fn resolve_secret_provider(from: &str) -> Result<Vec<u8>, String> {
+    if let Some(variable) = from.strip_prefix("env:") {
+        if variable.is_empty() {
+            return Err("secret resolver `env:` has an empty variable name".to_string());
+        }
+        std::env::var(variable)
+            .map(String::into_bytes)
+            .map_err(|_| format!("secret resolver `env:{variable}`: ${variable} is not set"))
+    } else {
+        Err(format!(
+            "unsupported secret resolver `{from}` (expected `env:VAR`)"
+        ))
+    }
+}
+
 /// Canonicalize a declared right string to the static name the footprint uses.
 fn right_name(s: &str) -> Option<&'static str> {
     match s {

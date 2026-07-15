@@ -44,6 +44,7 @@ pub use witchy::records;
 pub use witchy::runtime;
 pub use witchy::traits;
 pub use witchy::typeck;
+pub use witchy::trusted_exe;
 pub use witchy::value;
 pub use witchy::wir;
 pub use witchy::wir_encode;
@@ -77,6 +78,8 @@ USAGE:
     witchy doc     <file.witchy>...                generate stdlib documentation from doc-comments
     witchy compile <entry.witchy> [--dep name=path]... [--out <file.wasm>]
                                                   compile to a standalone .wasm module
+    witchy --release build --target trusted-exe [--out <file>]
+                                                  build a trusted self-contained native application
     witchy build-step <file.witchy> [--out <dir>] [--read <dir>]...
                                                   run a build-time entrypoint with declared grants
     witchy grants-check <prog.witchy> <grants.toml>
@@ -242,6 +245,24 @@ fn embedded_pm_module(name: &str) -> Option<&'static str> {
 }
 
 fn main() -> wasmtime::Result<()> {
+    // RFC-0092: a packaged application is a normal command. Detect its
+    // authenticated overlay before interpreting ANY argv as Witchy compiler or
+    // grant flags; every token after argv[0] belongs to the application.
+    let executable = std::env::current_exe().map_err(wasmtime::Error::from)?;
+    match trusted_exe::load(&executable) {
+        Ok(Some(application)) => match run_trusted_application(&application) {
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("trusted executable startup failed: {error}");
+                std::process::exit(1);
+            }
+        },
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("trusted executable startup failed: {error}");
+            std::process::exit(1);
+        }
+    }
     // (RFC-0037) `--release` / `--debug` — thin WITCHY_OPT mode selectors, usable with any
     // subcommand. `--debug` compiles with NO optimizations (maximal debuggability); `--release`
     // is the optimized shipping set (also the default when neither is given). Set the mode here,
@@ -557,6 +578,8 @@ fn main() -> wasmtime::Result<()> {
         let mut deps: std::collections::HashMap<String, std::path::PathBuf> =
             std::collections::HashMap::new();
         let mut out: Option<String> = None;
+        let mut target = "wasm".to_string();
+        let mut manifest: Option<String> = None;
         let mut argv = std::env::args().skip(2);
         while let Some(a) = argv.next() {
             match a.as_str() {
@@ -576,12 +599,32 @@ fn main() -> wasmtime::Result<()> {
                         std::process::exit(1);
                     }
                 },
+                "--target" => match argv.next() {
+                    Some(value) => target = value,
+                    None => {
+                        eprintln!("--target needs `wasm` or `trusted-exe`");
+                        std::process::exit(1);
+                    }
+                },
+                "--manifest" => match argv.next() {
+                    Some(value) => manifest = Some(value),
+                    None => {
+                        eprintln!("--manifest needs a witchy.toml path");
+                        std::process::exit(1);
+                    }
+                },
+                "--release" => {
+                    opt::configure("all").map_err(wasmtime::Error::msg)?;
+                }
+                "--debug" => {
+                    opt::configure("none").map_err(wasmtime::Error::msg)?;
+                }
                 _ if entry.is_none() => entry = Some(a),
                 _ => {}
             }
         }
         let Some(entry) = entry else {
-            eprintln!("usage: witchy compile <entry.witchy> [--dep name=path]... [--out <file.wasm>]");
+            eprintln!("usage: witchy compile <entry.witchy> [--dep name=path]... [--target wasm|trusted-exe] [--manifest witchy.toml] [--out <file>]");
             std::process::exit(1);
         };
         let result = (|| -> Result<(), String> {
@@ -589,15 +632,42 @@ fn main() -> wasmtime::Result<()> {
             typeck::check(&linked).map_err(|e| e.to_string())?;
             enforce_performance_modes(&linked, &stem)?;
             let bytes = compile_linked_to_wasm(&linked)?;
-            if let Some(f) = &out {
-                std::fs::write(f, &bytes).map_err(|e| format!("cannot write `{f}`: {e}"))?;
+            match target.as_str() {
+                "wasm" => {
+                    if manifest.is_some() {
+                        return Err("--manifest applies only to `--target trusted-exe`".into());
+                    }
+                    if let Some(f) = &out {
+                        std::fs::write(f, &bytes).map_err(|e| format!("cannot write `{f}`: {e}"))?;
+                    }
+                }
+                "trusted-exe" => {
+                    let output = out.as_ref().ok_or_else(|| {
+                        "`witchy compile --target trusted-exe` requires `--out <executable>`".to_string()
+                    })?;
+                    let manifest = manifest.as_ref().ok_or_else(|| {
+                        "`witchy compile --target trusted-exe` requires `--manifest <witchy.toml>`".to_string()
+                    })?;
+                    let source = std::fs::read_to_string(manifest)
+                        .map_err(|e| format!("cannot read trusted-exe manifest `{manifest}`: {e}"))?;
+                    let bindings = trusted_exe::build_binding_plan(&linked, &source)?;
+                    let launcher = std::env::current_exe()
+                        .map_err(|e| format!("cannot locate trusted-exe launcher template: {e}"))?;
+                    trusted_exe::package_file(
+                        &launcher,
+                        std::path::Path::new(output),
+                        &bytes,
+                        &bindings,
+                    )?;
+                }
+                other => return Err(format!("unknown compile target `{other}` (expected `wasm` or `trusted-exe`)")),
             }
             Ok(())
         })();
         match result {
             Ok(()) => {
                 match &out {
-                    Some(f) => println!("{entry}: compiled -> {f}"),
+                    Some(f) => println!("{entry}: compiled {target} -> {f}"),
                     None => println!("{entry}: ok"),
                 }
                 return Ok(());
@@ -1091,13 +1161,21 @@ fn main() -> wasmtime::Result<()> {
     // before the file/`--net` runner so they intercept first. The whole argv
     // (verb included) becomes the front-end's args. `coven-serve` intercepts
     // earlier (its own bootstrap), so it never reaches here.
-    if let Some(a1) = std::env::args().nth(1) {
+    {
+        let mut frontend_args: Vec<String> = std::env::args().skip(1).collect();
+        if matches!(frontend_args.first().map(String::as_str), Some("--release" | "--debug"))
+            && frontend_args.len() > 1
+        {
+            let mode = frontend_args.remove(0);
+            frontend_args.insert(1, mode);
+        }
+        let a1 = frontend_args.first().cloned().unwrap_or_default();
         const FRONTEND_VERBS: &[&str] = &[
             "new", "init", "add", "build", "run", "update", "list", "audit", "tree", "outdated",
             "why", "why-cap", "publish", "promote", "yank", "verify", "vendor",
         ];
         if FRONTEND_VERBS.contains(&a1.as_str()) {
-            run_embedded_pm(std::env::args().skip(1).collect());
+            run_embedded_pm(frontend_args);
         }
         // IdP test tooling (trusted-publishing key/token generation) stays a Rust
         // toolchain helper per RFC-0004 §7.
@@ -2617,7 +2695,7 @@ fn run_linked_compiled(
     strict_dir: bool,
     test_mocks: bool,
 ) -> Result<(Vec<String>, Option<i32>), String> {
-    use crate::runtime::{Capabilities, Runtime};
+    use crate::runtime::Capabilities;
     // The grant is what `main` RECEIVES — authority originates only there (witchy
     // has no ambient caps), so a linked library's public fns (a dependency's `pub fn
     // fetch(net)`, std `crypto.sign`'s `Secret`) are not entry points of THIS run
@@ -3032,13 +3110,7 @@ fn run_file_sandboxed(
 /// Resolve a `[secrets]` entry's `from = "env:VAR"` to the secret bytes the host
 /// holds. The grant document never carries the value — only where to fetch it.
 fn resolve_secret_from(from: &str) -> Result<Vec<u8>, String> {
-    if let Some(var) = from.strip_prefix("env:") {
-        std::env::var(var)
-            .map(String::into_bytes)
-            .map_err(|_| format!("grant secret resolver `env:{var}`: ${var} is not set"))
-    } else {
-        Err(format!("unsupported grant secret resolver `{from}` (expected `env:VAR`)"))
-    }
+    grants::resolve_secret_provider(from).map_err(|error| format!("grant {error}"))
 }
 
 /// `witchy sandbox --grants app.grants.toml <prog.witchy>` (RFC-0013): run a
@@ -3332,7 +3404,7 @@ fn run_wasm_module(
     named_secrets: Vec<runtime::SecretGrant>,
     strict_dir: bool,
 ) -> Result<(Vec<String>, Option<i32>), String> {
-    use crate::runtime::{Capabilities, Runtime};
+    use crate::runtime::Capabilities;
     use witchy_wir::wir_prelude::{abi_import_uses_authority, AbiImportAuthority as Authority};
 
     let needs = witchy_imports(bytes)?;
@@ -3423,6 +3495,63 @@ fn run_wasm_module(
         }
         caps.secrets.extend(named_secrets);
     }
+    run_prepared_wasm(bytes, caps)
+}
+
+/// Run the application embedded in this process with only its checked target
+/// bindings. This bypasses every consumer grant/default path: there is no cwd
+/// fallback, prompt, or interpretation of application argv as host policy.
+fn run_trusted_application(
+    application: &trusted_exe::OwnedEmbeddedApplication,
+) -> Result<i32, String> {
+    let cwd = std::env::current_dir()
+        .map_err(|error| format!("cannot determine launch working directory: {error}"))?;
+    let resolved = trusted_exe::resolve_binding_plan(
+        &application.bindings,
+        &application.wasm,
+        &cwd,
+    )?;
+    let declares = |name: &str| resolved.declared.contains_key(name);
+    let declares_right = |name: &str, right: &str| {
+        resolved.declared.get(name).is_some_and(|rights| rights.contains(right))
+    };
+    let mut roots = resolved.dir_roots;
+    let mut network_grants = resolved.net_grants;
+    let caps = runtime::Capabilities {
+        print: true,
+        print_int: true,
+        quiet: true,
+        clock: declares("Clock"),
+        rand: declares("Rand"),
+        env: declares("Env"),
+        dir_root: (!roots.is_empty()).then(|| roots.remove(0)),
+        dir_roots: roots,
+        dir_rights: resolved.dir_rights,
+        dir_read: declares_right("Dir", "Read"),
+        dir_write: declares_right("Dir", "Write"),
+        file_grants: resolved.file_grants,
+        file_rights: resolved.file_rights,
+        exec: resolved.exec,
+        exec_allow: resolved.exec_allow,
+        net_allow: (!network_grants.is_empty()).then(|| network_grants.remove(0)),
+        net_grants: network_grants,
+        net_connect: declares_right("Net", "Connect"),
+        net_listen: declares_right("Net", "Listen"),
+        args: std::env::args().skip(1).collect(),
+        secrets: resolved.secrets,
+        ..Default::default()
+    };
+    let (lines, exit) = run_prepared_wasm(&application.wasm, caps)?;
+    for line in lines {
+        println!("{line}");
+    }
+    Ok(exit.unwrap_or(0))
+}
+
+fn run_prepared_wasm(
+    bytes: &[u8],
+    caps: runtime::Capabilities,
+) -> Result<(Vec<String>, Option<i32>), String> {
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
     let mut vm = rt
         .spawn(bytes, caps, RUN_MEMORY_PAGES)

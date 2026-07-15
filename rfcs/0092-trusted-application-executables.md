@@ -1,14 +1,15 @@
 ---
 rfc: 0092
 title: Trusted application executables
-status: proposed
+status: implemented
 created: 2026-07-15
 superseded-by:
 tracking: >
-  Proposed. Add a trusted executable build target containing the Witchy runtime
-  and one compiled application. Running the resulting binary is the user's
-  trust decision, as it is for an ordinary native executable. The launcher
-  resolves build-defined bindings for the capabilities declared by `main`;
+  Implemented. `witchy build --target trusted-exe` emits a versioned,
+  digest-checked native launcher containing the ordinary compiled WASM and a
+  checked binding plan for `main`. Cwd/fixed Dir roots, fixed File paths,
+  explicit Net/Exec policy, conventional process capabilities, and named
+  SecretStore environment providers resolve through the existing runtime;
   portable `.wasm` remains consumer-hosted and explicit-grant.
 related:
   - "0004 (self-hosted CLI — the Witchy compiler is a candidate trusted application)"

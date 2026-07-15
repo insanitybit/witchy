@@ -284,6 +284,9 @@ pub struct Capabilities {
     /// `None` denies the network entirely; the verb flags below pick which
     /// operation families are linked within it.
     pub net_allow: Option<Vec<String>>,
+    /// Additional root `Net` grants, aligned after `net_allow`, for entrypoints
+    /// with several independently bound network parameters.
+    pub net_grants: Vec<Vec<String>>,
     /// The `host:port` allowlist backing a build step's `BuildNet` capability.
     /// Kept separate from runtime `Net` so precompiled modules granted network
     /// authority cannot import the build-only `fetch_build` primitive.
@@ -930,7 +933,7 @@ pub(crate) fn link_capability_imports(
     if caps.exec {
         linker.func_wrap("witchy", "exec_run", host_exec_run)?;
     }
-    let net = caps.net_allow.is_some();
+    let net = caps.net_allow.is_some() || !caps.net_grants.is_empty();
     // (RFC-0005 Stage 3) The `run` wrapper mints each root `Net` param as an
     // `externref` via `mint_net`; only reachable when a Net grant exists.
     if net {
@@ -2247,6 +2250,7 @@ fn vmstate_from_caps(
         .net_allow
         .iter()
         .cloned()
+        .chain(caps.net_grants.iter().cloned())
         .map(|allow| NetAuthority { allow })
         .collect();
     VmState {

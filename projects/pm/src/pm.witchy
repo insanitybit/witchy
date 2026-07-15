@@ -149,11 +149,65 @@ fn cmd_run(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, clock:
     else:
         run_compiler(console, runner, bin, "run", flatten_argv([target], app_args))
 
+type BuildOptions:
+    dir: String
+    target: String
+    out: String
+    mode: String
+    error: String
+
+// Parse build argv once into a typed value. Flags may precede or follow the
+// optional project directory; the compiler never has to guess from nth tokens.
+fn build_options(args: List(String)) -> BuildOptions:
+    var dir = "."
+    var target = "wasm"
+    var out = ""
+    var mode = "debug"
+    var error = ""
+    var positional = false
+    var pending = ""
+    var index = 0
+    for value in args:
+        if index == 0:
+            Nil
+        else if !string.is_empty(pending):
+            if pending == "target":
+                target = value
+            else:
+                out = value
+            pending = ""
+        else if value == "--target":
+            pending = "target"
+        else if value == "--out":
+            pending = "out"
+        else if value == "--release":
+            mode = "release"
+        else if value == "--debug":
+            mode = "debug"
+        else if string.starts_with(value, "--"):
+            error = "unknown build option `${value}`"
+        else if positional:
+            error = "build accepts at most one <file|dir>"
+        else:
+            dir = value
+            positional = true
+        index = index + 1
+    if !string.is_empty(pending):
+        error = "--${pending} needs a value"
+    BuildOptions(dir, target, out, mode, error)
+
 // build <file|dir> — compile a program (and its vendored deps) to verify it builds.
 fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, args: List(String)) -> Int:
-    let target = arg(args, 1)
-    let dir = if string.is_empty(target): "." else: target
-    if root.exists(join_path(dir, "witchy.toml")):
+    let options = build_options(args)
+    let dir = options.dir
+    if !string.is_empty(options.error):
+        console.print("usage: pm build [--target trusted-exe] [--out <path>] [--release|--debug] [<dir>]")
+        console.print(options.error)
+        1
+    else if options.target != "wasm" && options.target != "trusted-exe":
+        console.print("unknown build target `${options.target}` (expected `wasm` or `trusted-exe`)")
+        1
+    else if root.exists(join_path(dir, "witchy.toml")):
         match ensure_lock_integrity(root, dir):
             // BUG-094: refuse to link a vendored dependency whose on-disk source
             // no longer matches its signed record — before any compile.
@@ -172,15 +226,32 @@ fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, args
                                     console.print(lock_integrity_error_message(e))
                                     2
                                 Ok(deps) ->
-                                    run_compiler(console, runner, bin, "build", flatten_argv(["compile", entry], flatten_argv(deps, built.1)))
+                                    build_project_target(console, runner, root, bin, dir, entry, deps, built.1, options)
                     None ->
                         console.print("no entry source under ${join_path(dir, "src")}")
                         1
-    else if string.is_empty(target):
-        console.print("usage: pm build <file|dir>")
+    else if options.target == "trusted-exe":
+        console.print("trusted-exe builds require a project directory containing witchy.toml")
         1
     else:
-        run_compiler(console, runner, bin, "build", ["compile", target])
+        run_compiler(console, runner, bin, "build", ["compile", dir])
+
+fn build_project_target(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, entry: String, deps: List(String), build_flags: List(String), options: BuildOptions) -> Int:
+    if options.target == "trusted-exe":
+        let manifest = join_path(dir, "witchy.toml")
+        let configured = if string.is_empty(options.out): trusted_output(root, dir, options.mode) else: options.out
+        let target_flags = ["--target", "trusted-exe", "--manifest", manifest, "--out", configured, "--${options.mode}"]
+        run_compiler(console, runner, bin, "build", flatten_argv(["compile", entry], flatten_argv(deps, flatten_argv(build_flags, target_flags))))
+    else if !string.is_empty(options.out):
+        console.print("--out is supported by `build --target trusted-exe`; portable project builds remain verification-only")
+        1
+    else:
+        run_compiler(console, runner, bin, "build", flatten_argv(["compile", entry], flatten_argv(deps, build_flags)))
+
+fn trusted_output(root: Dir, dir: String, mode: String) -> String:
+    let manifest = root.read(join_path(dir, "witchy.toml"))
+    let name = field(manifest, "rune.name")
+    join_path(join_path(join_path(dir, "target"), mode), module_name(name))
 
 // Link a project's entry + vendored deps to a wasm under <dir>/target, then run
 // that wasm. Two compiler invocations: `compile --dep ... --out` (link) then a
@@ -3569,7 +3640,7 @@ fn usage(console: Console):
     console.print("  init  [name]        add a manifest to an existing directory")
     console.print("  tree  <dir>         show a rune and its dependencies")
     console.print("  run   <file|dir>    compile and run a program/project (drives the compiler)")
-    console.print("  build <file|dir>    compile a program/project to verify it builds")
+    console.print("  build [--target trusted-exe] [--out path] [file|dir]  verify or emit a trusted native app")
     console.print("  typecheck <file>    type-check a program")
     console.print("  test  <dir>         run a rune's tests")
     console.print("  fmt   <file>        format a source file")

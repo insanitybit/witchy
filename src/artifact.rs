@@ -54,6 +54,16 @@ pub fn embed_launch_contract(mut wasm: Vec<u8>, module: &ast::Module) -> Vec<u8>
 /// Read a Witchy launch contract. `None` is a legacy or external wasm module;
 /// callers must retain import-derived classification for that compatibility path.
 pub fn launch_contract(wasm: &[u8]) -> Result<Option<capabilities::CapSet>, String> {
+    launch_contract_payload(wasm)?
+        .map(decode_contract)
+        .transpose()
+}
+
+/// Return the exact encoded `witchy.launch` payload after validating that the
+/// module carries at most one section. Trusted executables digest these bytes,
+/// rather than a reconstructed capability set, so packaging cannot silently
+/// change or discard launch metadata that the runtime will consume.
+pub fn launch_contract_payload(wasm: &[u8]) -> Result<Option<&[u8]>, String> {
     let mut found = None;
     for payload in wasmparser::Parser::new(0).parse_all(wasm) {
         let payload = payload.map_err(|error| invalid_contract(&error.to_string()))?;
@@ -64,7 +74,8 @@ pub fn launch_contract(wasm: &[u8]) -> Result<Option<capabilities::CapSet>, Stri
         if found.is_some() {
             return Err(invalid_contract("duplicate section"));
         }
-        found = Some(decode_contract(section.data())?);
+        decode_contract(section.data())?;
+        found = Some(section.data());
     }
     Ok(found)
 }

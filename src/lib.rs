@@ -30,6 +30,8 @@ pub mod stats;
 // RFC-0018: footprint analysis + grant docs live in the `witchy-caps` crate.
 pub use witchy_caps::capabilities;
 pub mod artifact;
+#[cfg(feature = "native")]
+pub mod trusted_exe;
 #[cfg(test)]
 mod capabilities_tests;
 // RFC-0018: runtime values + the capability host live in `witchy-runtime`
