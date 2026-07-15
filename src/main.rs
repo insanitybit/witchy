@@ -55,6 +55,14 @@ pub use witchy::wir_prelude;
 
 
 use runtime::Runtime;
+
+fn compiler_version(version: &str, build_commit: Option<&str>) -> String {
+    match build_commit.filter(|commit| !commit.is_empty()) {
+        Some(commit) => format!("witchy {version} (commit {commit})"),
+        None => format!("witchy {version}"),
+    }
+}
+
 /// One-screen overview of the command-line interface, shown for bare `witchy`.
 fn print_usage() {
     println!(
@@ -1259,7 +1267,13 @@ fn main() -> wasmtime::Result<()> {
         match file.as_deref() {
             // Standard version flags report the compiler version (RFC-0061 §5).
             Some("--version" | "-V" | "version") => {
-                println!("witchy {}", env!("CARGO_PKG_VERSION"));
+                println!(
+                    "{}",
+                    compiler_version(
+                        env!("CARGO_PKG_VERSION"),
+                        option_env!("WITCHY_BUILD_COMMIT"),
+                    )
+                );
                 Ok(())
             }
             // Standard help flags show the usage overview.
@@ -4102,6 +4116,25 @@ fn report_grant_check(prog_path: &str, grants_path: &str) -> Result<bool, String
 /// BUG-108 / BUG-114: the global mode selector (`--release`/`--debug`) is a LEADING
 /// flag; a mode flag in the guest's argv (after the program file) must not flip the
 /// compiler's optimization mode nor be double-consumed.
+#[cfg(test)]
+mod version_tests {
+    use super::compiler_version;
+
+    #[test]
+    fn local_builds_report_the_package_version() {
+        assert_eq!(compiler_version("0.1.0", None), "witchy 0.1.0");
+        assert_eq!(compiler_version("0.1.0", Some("")), "witchy 0.1.0");
+    }
+
+    #[test]
+    fn release_builds_report_the_exact_embedded_commit() {
+        assert_eq!(
+            compiler_version("0.1.0", Some("0123456789abcdef")),
+            "witchy 0.1.0 (commit 0123456789abcdef)",
+        );
+    }
+}
+
 #[cfg(test)]
 mod cli_flag_tests {
     use super::leading_opt_mode;

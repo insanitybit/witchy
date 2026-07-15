@@ -3,7 +3,7 @@ rfc: 0061
 title: Release versioning — 0.x policy and the 0.1.0 gate
 status: accepted
 created: 2026-07-04
-tracking: the 0.1.0 gate is the active release plan; bug-drain + RFC-drain in progress 2026-07
+tracking: the 0.1.0 gate is the active release plan; tagged builds embed and verify the checked-out commit; bug-drain + RFC-drain in progress 2026-07
 ---
 
 # RFC-0061: Release versioning — 0.x policy and the 0.1.0 gate
@@ -50,6 +50,10 @@ this is early, it moves fast, releases are real checkpoints.
   per release thereafter.
 - The `witchy` binary reports the version (`--version`) sourced from
   `CARGO_PKG_VERSION`; release binaries additionally embed the tag's commit.
+  The tag workflow derives that commit from the checked-out `HEAD`, injects it
+  only into the packaged release build, and fails before packaging unless the
+  binary contains that exact commit. Native matrix builds additionally execute
+  `--version` and require the exact tag-version/commit pair.
 - Rune/registry versioning (packages already carry semver in `witchy.toml`)
   is unchanged by this RFC; this covers the language/toolchain release only.
 

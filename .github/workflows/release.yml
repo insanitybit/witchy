@@ -233,8 +233,26 @@ jobs:
       - uses: ./.github/actions/install-rust
         with:
           targets: ${{ matrix.target }}
+      - name: Record the tagged commit for binary provenance
+        run: echo "WITCHY_BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
       - name: Build release binary
         run: cargo build --release --target "$TARGET"
+      - name: Verify the binary embeds the tagged commit
+        run: |
+          binary="target/$TARGET/release/witchy"
+          if ! grep -aFq "$WITCHY_BUILD_COMMIT" "$binary"; then
+            echo "::error::release binary does not embed checked-out commit $WITCHY_BUILD_COMMIT"
+            exit 1
+          fi
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          if [ "$host" = "$TARGET" ]; then
+            expected="witchy ${GITHUB_REF_NAME#v} (commit $WITCHY_BUILD_COMMIT)"
+            actual="$("$binary" --version)"
+            if [ "$actual" != "$expected" ]; then
+              echo "::error::release provenance mismatch: expected '$expected', got '$actual'"
+              exit 1
+            fi
+          fi
       - name: Package
         run: |
           mkdir -p dist
