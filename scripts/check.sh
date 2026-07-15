@@ -203,13 +203,51 @@ fi
 # on completion so slow regressions are visible per stage, not just in total.
 step=0
 t_start=$(date +%s)
+
+# A stage can legitimately go quiet after Cargo finishes compiling and before
+# nextest completes its first test binary. Emit only a bounded number of pulses:
+# enough to bridge that startup window, but not enough to hide a true deadlock
+# from the coordinator's idle-log watchdog indefinitely.
+stage_heartbeat() { # stage_heartbeat <step> <label> <stage-start>
+    local stage_step="$1" label="$2" stage_start="$3"
+    local interval="${WITCHY_STAGE_HEARTBEAT_INTERVAL:-120}"
+    local limit="${WITCHY_STAGE_HEARTBEAT_LIMIT:-3}"
+    local pulse=0 sleep_pid=""
+    case "$interval:$limit" in
+        *[!0-9:]* | :* | *:) return 0 ;;
+    esac
+    [ "$interval" -gt 0 ] && [ "$limit" -gt 0 ] || return 0
+    trap 'kill "${sleep_pid:-}" 2>/dev/null || true; exit 0' TERM INT
+    while [ "$pulse" -lt "$limit" ]; do
+        sleep "$interval" &
+        sleep_pid=$!
+        wait "$sleep_pid" || return 0
+        sleep_pid=""
+        pulse=$((pulse + 1))
+        printf '\033[1;34m    [%d] %s still running (heartbeat %d/%d, stage+%ds)\033[0m\n' \
+            "$stage_step" "$label" "$pulse" "$limit" "$(( $(date +%s) - stage_start ))"
+    done
+    # Keep this process alive after the bounded pulses so its pid cannot be
+    # recycled before `run` kills and reaps it when the stage eventually ends.
+    sleep 2147483647 &
+    sleep_pid=$!
+    wait "$sleep_pid" || return 0
+}
+
 run() {
     step=$((step + 1))
     local t_stage; t_stage=$(date +%s)
     printf '\n\033[1;34m==> [%d] %s (t+%ds)\033[0m\n' "$step" "$1" "$(( t_stage - t_start ))"
     local label="$1"
     shift
-    "$@"
+    stage_heartbeat "$step" "$label" "$t_stage" &
+    stage_heartbeat_pid=$!
+    local command_status=0
+    "$@" || command_status=$?
+    kill "$stage_heartbeat_pid" 2>/dev/null || true
+    wait "$stage_heartbeat_pid" 2>/dev/null || true
+    stage_heartbeat_pid=""
+    [ "$command_status" -eq 0 ] || return "$command_status"
     printf '\033[1;34m    [%d] %s took %ds\033[0m\n' "$step" "$label" "$(( $(date +%s) - t_stage ))"
 }
 
@@ -254,6 +292,7 @@ launch_clippy_leg() {
 # The trap is installed before any leg launches; every guard tolerates
 # nothing-launched-yet, so modes that skip the legs exit through it safely.
 reap_bg() {
+    [ -n "${stage_heartbeat_pid:-}" ] && kill "$stage_heartbeat_pid" 2>/dev/null || true
     [ -n "${clippy_pid:-}" ] && kill "$clippy_pid" 2>/dev/null || true
     [ -n "${wasm_pid:-}" ] && kill "$wasm_pid" 2>/dev/null || true
     [ -n "${clippy_log:-}" ] && rm -f "$clippy_log" || true

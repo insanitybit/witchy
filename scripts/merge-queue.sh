@@ -20,12 +20,13 @@
 #     lock:  scripts/merge-queue.sh with-lock -- ./scripts/check.sh --fast
 #
 # Stall resistance: the gate runs in its own process group under a monitor.
-# NEXTEST_STATUS_LEVEL=pass makes nextest stream one line per finished test, so
-# a healthy gate writes constantly. Cargo incremental output is disabled for the
-# gate worktree: it is repeatedly rebased across unrelated branches, so that
-# state has little reuse value and otherwise grows without bound between gates.
-# If the log goes quiet for
-# MERGE_QUEUE_STALL_TIMEOUT seconds (default 300) or the whole gate exceeds
+# NEXTEST_STATUS_LEVEL=pass makes nextest stream each finished test, but Cargo's
+# final compile line to nextest's first result can still be quiet for minutes.
+# check.sh emits three bounded stage heartbeats across that window. Cargo
+# incremental output is disabled for the gate worktree: it is repeatedly rebased
+# across unrelated branches, so that state has little reuse value and otherwise
+# grows without bound between gates. If the log goes quiet for
+# MERGE_QUEUE_STALL_TIMEOUT seconds (default 600) or the whole gate exceeds
 # MERGE_QUEUE_GATE_TIMEOUT seconds (default 2700), the process group is killed,
 # the candidate is journaled as timed out, the lock is released, and the queue
 # moves on. Logs are always preserved under scratch/merge-queue/logs/.
@@ -86,7 +87,7 @@ lock="$qdir/gate.lock"
 gate_wt="${MERGE_QUEUE_GATE_WT:-$root/.claude/worktrees/merge-gate}"
 gate_cmd="${MERGE_QUEUE_GATE_CMD:-./scripts/check.sh}"
 gate_timeout="${MERGE_QUEUE_GATE_TIMEOUT:-2700}"
-stall_timeout="${MERGE_QUEUE_STALL_TIMEOUT:-300}"
+stall_timeout="${MERGE_QUEUE_STALL_TIMEOUT:-600}"
 
 mkdir -p "$queue_dir" "$logs"
 
@@ -230,10 +231,10 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope]
             # AND silent for far longer than any compile+enumeration takes is a
             # CPU-burning runaway (e.g. a busy-spin infinite loop in a test) — kill
             # it well before the 45-min whole-gate ceiling so it doesn't block the
-            # serialized queue that long. `busy_silence_max` = 6× the stall window
+            # serialized queue that long. `busy_silence_max` = 3× the stall window
             # (default 1800s), comfortably above a cold test-profile compile even
             # under contention, far below GATE_TIMEOUT.
-            local busy_silence_max="${MERGE_QUEUE_BUSY_SILENCE_MAX:-$((stall_timeout * 6))}"
+            local busy_silence_max="${MERGE_QUEUE_BUSY_SILENCE_MAX:-$((stall_timeout * 3))}"
             if group_is_busy "$gpid" && [ "$age" -le "$busy_silence_max" ]; then
                 continue
             fi

@@ -162,7 +162,10 @@ shards ignore the scope.
    `NEXTEST_STATUS_LEVEL=pass` for streaming. A monitor loop kills the group on
    overall timeout, or on log-stall **only when the group is also idle** (CPU
    near zero) — a silent-but-CPU-busy gate is compiling/enumerating, not hung —
-   and journals `timeout`.
+   and journals `timeout`. `check.sh` emits at most three two-minute stage
+   heartbeats to bridge nextest's legitimate compile-to-first-result silence;
+   the bounded pulses cannot mask a deadlock indefinitely. The default idle
+   window is ten minutes.
 6. Outcomes:
    - **green, solo:** if master still == base → `git merge --ff-only <sha>`,
      journal `merged`, sweep. If master moved → journal `requeued`, keep the
