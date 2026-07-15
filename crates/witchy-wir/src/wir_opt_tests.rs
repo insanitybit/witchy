@@ -33,6 +33,23 @@
     }
 
     #[test]
+    fn local_renamer_traverses_gc_environment_casts() {
+        let mut cast = WirExpr::RefCast {
+            struct_id: 1,
+            value: Box::new(WirExpr::GetLocal("old_env".into())),
+        };
+        let renames = HashMap::from([("old_env".to_string(), "new_env".to_string())]);
+
+        rename_expr_locals(&mut cast, &renames);
+
+        assert!(matches!(
+            cast,
+            WirExpr::RefCast { struct_id: 1, value }
+                if matches!(value.as_ref(), WirExpr::GetLocal(name) if name == "new_env")
+        ));
+    }
+
+    #[test]
     fn lowers_self_tail_call_to_simultaneous_rebind_and_loop() {
         let recur = WirFunc {
             name: "count".into(),

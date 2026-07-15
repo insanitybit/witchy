@@ -581,7 +581,7 @@ fn default_value(ty: &WirTy) -> WirExpr {
         Kind::I64 => WirExpr::ConstI64(0),
         Kind::F64 => WirExpr::ConstF64(0.0),
         Kind::I32 => WirExpr::ConstI32(0),
-        kind @ (Kind::ExternRef | Kind::GcRef(_)) => WirExpr::RefNull(kind),
+        kind @ (Kind::ExternRef | Kind::StructRef | Kind::GcRef(_)) => WirExpr::RefNull(kind),
     }
 }
 
@@ -721,6 +721,7 @@ fn collect_explicit_return_calls_expr(expr: &WirExpr, out: &mut HashSet<TailCall
         | WirExpr::Unary { arg: inner, .. } | WirExpr::Convert { arg: inner, .. }
         | WirExpr::Load { ptr: inner, .. } | WirExpr::Load8U { ptr: inner, .. }
         | WirExpr::MemoryGrow(inner) | WirExpr::StructGet { base: inner, .. }
+        | WirExpr::RefCast { value: inner, .. }
         | WirExpr::RefIsNull(inner) => collect_explicit_return_calls_expr(inner, out),
         WirExpr::Binary { lhs, rhs, .. } => {
             collect_explicit_return_calls_expr(lhs, out);
@@ -827,6 +828,7 @@ fn adapt_explicit_returns_expr(expr: &mut WirExpr, kind: Kind) {
         | WirExpr::Load8U { ptr: inner, .. }
         | WirExpr::MemoryGrow(inner)
         | WirExpr::StructGet { base: inner, .. }
+        | WirExpr::RefCast { value: inner, .. }
         | WirExpr::RefIsNull(inner) => adapt_explicit_returns_expr(inner, kind),
         WirExpr::Binary { lhs, rhs, .. } => {
             adapt_explicit_returns_expr(lhs, kind);
@@ -936,6 +938,7 @@ fn rename_expr_locals(expr: &mut WirExpr, renames: &HashMap<String, String>) {
         | WirExpr::Unary { arg: inner, .. } | WirExpr::Convert { arg: inner, .. }
         | WirExpr::Load { ptr: inner, .. } | WirExpr::Load8U { ptr: inner, .. }
         | WirExpr::MemoryGrow(inner) | WirExpr::StructGet { base: inner, .. }
+        | WirExpr::RefCast { value: inner, .. }
         | WirExpr::RefIsNull(inner) => rename_expr_locals(inner, renames),
         WirExpr::Binary { lhs, rhs, .. } => {
             rename_expr_locals(lhs, renames);
@@ -1287,6 +1290,7 @@ fn rewrite_explicit_returns_expr(expr: &mut WirExpr, ctx: &TailCtx) -> usize {
         | WirExpr::Load8U { ptr: inner, .. }
         | WirExpr::MemoryGrow(inner)
         | WirExpr::StructGet { base: inner, .. }
+        | WirExpr::RefCast { value: inner, .. }
         | WirExpr::RefIsNull(inner) => rewrite_explicit_returns_expr(inner, ctx),
         WirExpr::Binary { lhs, rhs, .. } => {
             rewrite_explicit_returns_expr(lhs, ctx) + rewrite_explicit_returns_expr(rhs, ctx)
@@ -1453,7 +1457,9 @@ fn simplify_expr(expr: &mut WirExpr, changed: &mut bool) {
                 simplify_expr(a, changed);
             }
         }
-        WirExpr::StructGet { base, .. } | WirExpr::RefIsNull(base) => simplify_expr(base, changed),
+        WirExpr::StructGet { base, .. }
+        | WirExpr::RefCast { value: base, .. }
+        | WirExpr::RefIsNull(base) => simplify_expr(base, changed),
         WirExpr::ConstI64(_)
         | WirExpr::ConstF64(_)
         | WirExpr::ConstI32(_)
@@ -1572,7 +1578,9 @@ fn expr_size(expr: &WirExpr) -> usize {
         WirExpr::Control(node) => node_size(node),
         WirExpr::Seq(nodes) => seq_size(nodes),
         WirExpr::StructNew { args, .. } => args.iter().map(expr_size).sum(),
-        WirExpr::StructGet { base, .. } | WirExpr::RefIsNull(base) => expr_size(base),
+        WirExpr::StructGet { base, .. }
+        | WirExpr::RefCast { value: base, .. }
+        | WirExpr::RefIsNull(base) => expr_size(base),
         WirExpr::ConstI64(_)
         | WirExpr::ConstF64(_)
         | WirExpr::ConstI32(_)

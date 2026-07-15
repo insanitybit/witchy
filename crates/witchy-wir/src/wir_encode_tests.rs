@@ -16,9 +16,12 @@
         // suite (a runaway $find_byte/$str_eq once spun a test for 70 minutes).
         let mut config = wasmtime::Config::new();
         config.consume_fuel(true);
+        config.wasm_reference_types(true);
+        config.wasm_function_references(true);
+        config.wasm_gc(true);
         let engine = wasmtime::Engine::new(&config).expect("engine");
         let m = wasmtime::Module::new(&engine, binary)
-            .unwrap_or_else(|e| panic!("encoded module invalid: {e}"));
+            .unwrap_or_else(|e| panic!("encoded module invalid: {e:#}"));
         let out: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let mut linker = wasmtime::Linker::new(&engine);
         let o = out.clone();
@@ -2489,4 +2492,157 @@
         let run = inst.get_typed_func::<(), ()>(&mut store, "run").expect("run export");
         run.call(&mut store, ()).expect("run");
         assert_eq!(*out.lock().unwrap(), vec!["99".to_string()]);
+    }
+
+    /// RFC-0005 Stage 4 closure substrate: a uniform closure wrapper can hold
+    /// either the legacy linear environment or an erased GC payload. The lifted
+    /// body recovers its statically assigned payload with `ref.cast` before
+    /// reading capability-bearing fields.
+    #[test]
+    fn closure_wrapper_erases_and_recovers_a_gc_environment() {
+        use crate::wir::{
+            CLOSURE_CODE_FIELD, CLOSURE_GC_ENV_FIELD, CLOSURE_LINEAR_ENV_FIELD, WirStructDef,
+            closure_wrapper_struct,
+        };
+
+        let structs = vec![
+            closure_wrapper_struct(),
+            WirStructDef { fields: vec![Kind::ExternRef, Kind::I64] },
+        ];
+        let wrapper = WirExpr::GetLocal("closure".into());
+        let payload = WirExpr::RefCast {
+            struct_id: 1,
+            value: Box::new(WirExpr::StructGet {
+                struct_id: 0,
+                field: CLOSURE_GC_ENV_FIELD,
+                base: Box::new(wrapper.clone()),
+            }),
+        };
+        let run = WirFunc {
+            name: "run".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![local("erased", WirTy::StructRef), local("closure", WirTy::GcRef(0))],
+            body: vec![
+                WirNode::SetLocal {
+                    local: "erased".into(),
+                    value: WirExpr::StructNew {
+                        struct_id: 1,
+                        args: vec![WirExpr::RefNull(Kind::ExternRef), WirExpr::ConstI64(42)],
+                    },
+                },
+                WirNode::SetLocal {
+                    local: "closure".into(),
+                    value: WirExpr::StructNew {
+                        struct_id: 0,
+                        args: vec![
+                            WirExpr::ConstI32(7),
+                            WirExpr::ConstI32(17),
+                            WirExpr::GetLocal("erased".into()),
+                        ],
+                    },
+                },
+                WirNode::Do(WirExpr::CallHost {
+                    import: "print_int".into(),
+                    args: vec![WirExpr::Convert {
+                        from: Kind::I32,
+                        to: Kind::I64,
+                        arg: Box::new(WirExpr::StructGet {
+                            struct_id: 0,
+                            field: CLOSURE_LINEAR_ENV_FIELD,
+                            base: Box::new(WirExpr::GetLocal("closure".into())),
+                        }),
+                    }],
+                }),
+                WirNode::Do(WirExpr::CallHost {
+                    import: "print_int".into(),
+                    args: vec![WirExpr::Convert {
+                        from: Kind::I32,
+                        to: Kind::I64,
+                        arg: Box::new(WirExpr::StructGet {
+                            struct_id: 0,
+                            field: CLOSURE_CODE_FIELD,
+                            base: Box::new(wrapper),
+                        }),
+                    }],
+                }),
+                WirNode::Do(WirExpr::CallHost {
+                    import: "print_int".into(),
+                    args: vec![WirExpr::StructGet {
+                        struct_id: 1,
+                        field: 1,
+                        base: Box::new(payload),
+                    }],
+                }),
+            ],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![WirImport {
+                name: "print_int".into(),
+                params: vec![Kind::I64],
+                results: vec![],
+            }],
+            funcs: vec![run],
+            memory_pages: 1,
+            data: vec![],
+            globals: vec![],
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+
+        assert_eq!(run_binary(&encode(&module, &structs)), vec!["17", "7", "42"]);
+    }
+
+    #[test]
+    fn gc_environment_casts_trap_on_null_or_wrong_payload() {
+        use crate::wir::WirStructDef;
+
+        let cast_func = |name: &str, value: WirExpr| WirFunc {
+            name: name.into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![],
+            body: vec![WirNode::Drop(WirExpr::RefCast {
+                struct_id: 0,
+                value: Box::new(value),
+            })],
+            raw_body: None,
+        };
+        let module = WirModule {
+            imports: vec![],
+            funcs: vec![
+                cast_func("cast_null", WirExpr::RefNull(Kind::StructRef)),
+                cast_func(
+                    "cast_wrong",
+                    WirExpr::StructNew { struct_id: 1, args: vec![WirExpr::ConstI32(0)] },
+                ),
+            ],
+            memory_pages: 1,
+            data: vec![],
+            globals: vec![],
+            table: None,
+            exports: vec![
+                ("cast_null".into(), "cast_null".into()),
+                ("cast_wrong".into(), "cast_wrong".into()),
+            ],
+        };
+        let structs = vec![
+            WirStructDef { fields: vec![Kind::I64] },
+            WirStructDef { fields: vec![Kind::I32] },
+        ];
+        let binary = encode(&module, &structs);
+        let mut config = wasmtime::Config::new();
+        config.wasm_reference_types(true);
+        config.wasm_function_references(true);
+        config.wasm_gc(true);
+        let engine = wasmtime::Engine::new(&config).expect("engine");
+        let wasm = wasmtime::Module::new(&engine, binary).expect("module validates");
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Instance::new(&mut store, &wasm, &[]).expect("instantiate");
+
+        for name in ["cast_null", "cast_wrong"] {
+            let func = instance.get_typed_func::<(), ()>(&mut store, name).expect(name);
+            assert!(func.call(&mut store, ()).is_err(), "{name} must trap");
+        }
     }

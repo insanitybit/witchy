@@ -1392,7 +1392,9 @@ fn collect_called_funcs(seq: &[witchy_wir::wir::WirNode], out: &mut HashSet<Stri
                     expr(a, out);
                 }
             }
-            E::StructGet { base, .. } | E::RefIsNull(base) => expr(base, out),
+            E::StructGet { base, .. }
+            | E::RefCast { value: base, .. }
+            | E::RefIsNull(base) => expr(base, out),
             E::ConstI64(_) | E::ConstF64(_) | E::ConstI32(_) | E::StrPtr(_) | E::MemorySize
             | E::GetLocal(_) | E::GetGlobal(_) | E::RefNull(_) => {}
         }
@@ -1490,7 +1492,9 @@ fn collect_called_host_imports(seq: &[witchy_wir::wir::WirNode], out: &mut HashS
                     expr(a, out);
                 }
             }
-            E::StructGet { base, .. } | E::RefIsNull(base) => expr(base, out),
+            E::StructGet { base, .. }
+            | E::RefCast { value: base, .. }
+            | E::RefIsNull(base) => expr(base, out),
             E::ConstI64(_) | E::ConstF64(_) | E::ConstI32(_) | E::StrPtr(_) | E::MemorySize
             | E::GetLocal(_) | E::GetGlobal(_) | E::RefNull(_) => {}
         }
@@ -1648,7 +1652,9 @@ fn attach_diagnostic_site_expr(
                     reaches_host |= expr(arg, site);
                 }
             }
-            E::StructGet { base, .. } | E::RefIsNull(base) => reaches_host |= expr(base, site),
+            E::StructGet { base, .. }
+            | E::RefCast { value: base, .. }
+            | E::RefIsNull(base) => reaches_host |= expr(base, site),
             E::ConstI64(_)
             | E::ConstF64(_)
             | E::ConstI32(_)

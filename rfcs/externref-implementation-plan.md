@@ -571,3 +571,30 @@ brand), tuples, `List`/`Dict`/`Result` containers, and closure environments —
 closures remain the hard tail (a capture is invisible in the function TYPE, so
 cap-carrying and scalar closures flowing into one `fn`-typed param force a
 uniform environment representation).
+
+## Stage 4 closure continuation (2026-07-15)
+
+The closure tail is proceeding as separately green cuts rather than one ABI
+rewrite. First, the fail-closed capture predicate was made total over all six
+migrated authority values (`Dir`, `File`, `Net`, `Socket`, `Listener`, and
+`Secret`), their transparent brands, and nested GC records. This closes the path
+where several capability kinds passed checking and reached an impossible
+`externref -> i64` encoder conversion.
+
+The next landed substrate defines one future closure-wrapper layout:
+
+```text
+Closure {
+    code_index: i32,
+    linear_env: i32,
+    gc_env: structref,
+}
+```
+
+`structref` is an erased nullable GC-struct reference. WIR now represents that
+type and a checked `ref.cast` back to a concrete `GcRef`; a Wasmtime validation
+test constructs the wrapper, erases a payload containing an `externref`, casts
+it back, and reads it. This cut changes no source acceptance. The remaining
+order is: migrate every boxed scalar closure and helper to the uniform wrapper;
+then emit per-lambda typed GC payloads and remove the capture rejection. A
+capability never enters the legacy `linear_env` or an i64 slot at any stage.

@@ -34,6 +34,11 @@ pub enum Kind {
     /// linear-memory corruption. This is the representation the capability core
     /// moves grants onto (File first; see `rfcs/externref-implementation-plan.md`).
     ExternRef,
+    /// The abstract wasm GC heap type `(ref null struct)`. This is the uniform
+    /// erased type used by the closure wrapper's optional GC environment field;
+    /// a lifted lambda casts it back to its statically known payload struct
+    /// before reading captures.
+    StructRef,
     /// (RFC-0005) A typed GC-struct reference `(ref null $s)`, where the `u32` is
     /// the module's struct-definition index (resolved to a type-section index by
     /// the encoder, which lays struct types after the function signatures). This
@@ -53,6 +58,7 @@ impl Kind {
             Kind::I64 => "i64",
             Kind::F64 => "f64",
             Kind::ExternRef => "externref",
+            Kind::StructRef => "(ref null struct)",
             Kind::GcRef(_) => "(ref null $gc)",
         }
     }
@@ -63,7 +69,7 @@ impl Kind {
     /// scalar-only path (the i64 Slot boundary is a `typeck` reject, so hitting one
     /// of those paths at runtime is a compiler bug, not a program error).
     pub fn is_ref(self) -> bool {
-        matches!(self, Kind::ExternRef | Kind::GcRef(_))
+        matches!(self, Kind::ExternRef | Kind::StructRef | Kind::GcRef(_))
     }
 }
 
@@ -85,9 +91,11 @@ pub enum WirTy {
     /// result, or host-import argument. Distinct from the legacy `Capability`
     /// (an i32 handle in linear memory), which stays until its capability's stage.
     Extern,
+    /// An erased nullable GC struct reference (`structref`).
+    StructRef,
     /// (RFC-0005) A cap-carrying aggregate lowered to a GC struct, referenced by
-    /// its struct-definition index. Unused by the current lowering (Stage 4); the
-    /// infra exists so the encoder can round-trip GC-struct modules.
+    /// its struct-definition index. Named capability-bearing records already use
+    /// this representation; closure payloads build on the same substrate.
     GcRef(u32),
 }
 
@@ -99,6 +107,7 @@ impl WirTy {
             WirTy::Float => Kind::F64,
             WirTy::Slot => Kind::I64,
             WirTy::Extern => Kind::ExternRef,
+            WirTy::StructRef => Kind::StructRef,
             WirTy::GcRef(id) => Kind::GcRef(*id),
             // Bool, Str (ptr), Nil, Capability (handle/placeholder), List (ptr).
             _ => Kind::I32,
@@ -114,6 +123,18 @@ impl WirTy {
 #[derive(Debug, Clone, PartialEq)]
 pub struct WirStructDef {
     pub fields: Vec<Kind>,
+}
+
+/// Field indices and layout for the uniform first-class closure wrapper used by
+/// RFC-0005 Stage 4. Scalar-only closures may retain their current linear
+/// environment behind `linear_env`; capability-bearing closures put a typed GC
+/// payload behind the erased `gc_env` reference.
+pub const CLOSURE_CODE_FIELD: u32 = 0;
+pub const CLOSURE_LINEAR_ENV_FIELD: u32 = 1;
+pub const CLOSURE_GC_ENV_FIELD: u32 = 2;
+
+pub fn closure_wrapper_struct() -> WirStructDef {
+    WirStructDef { fields: vec![Kind::I32, Kind::I32, Kind::StructRef] }
 }
 
 /// A binary operator, abstract over the operand `Kind` (the printer picks the
@@ -300,6 +321,13 @@ pub enum WirExpr {
         struct_id: u32,
         field: u32,
         base: Box<WirExpr>,
+    },
+    /// Cast an erased `structref` to a concrete non-null GC struct reference.
+    /// The compiler emits this only for the payload layout assigned to the
+    /// lifted lambda, so a trap means an internal closure-layout mismatch.
+    RefCast {
+        struct_id: u32,
+        value: Box<WirExpr>,
     },
     /// (RFC-0005) `ref.null` of a reference kind (`externref` or a concrete GC
     /// struct ref). The null initializer for a not-yet-populated cap slot.
@@ -975,9 +1003,14 @@ fn print_expr(s: &mut String, e: &WirExpr, depth: usize) {
             indent(s, depth);
             let _ = writeln!(s, "struct.get {struct_id} {field}");
         }
+        WirExpr::RefCast { struct_id, value } => {
+            print_expr(s, value, depth);
+            emit(s, depth, &format!("ref.cast (ref {struct_id})"));
+        }
         WirExpr::RefNull(kind) => {
             let heap = match kind {
                 Kind::ExternRef => "extern".to_string(),
+                Kind::StructRef => "struct".to_string(),
                 Kind::GcRef(id) => format!("{id}"),
                 _ => "extern".to_string(),
             };
@@ -1008,7 +1041,7 @@ fn to_slot_op(kind: Kind) -> Option<&'static str> {
         // (RFC-0005) A reference has no i64 bit-pattern, so it cannot enter the
         // universal slot. Reaching here means the i64 Slot-boundary `typeck`
         // reject (§4.4) was bypassed — a compiler bug, not a program error.
-        Kind::ExternRef | Kind::GcRef(_) => {
+        Kind::ExternRef | Kind::StructRef | Kind::GcRef(_) => {
             panic!("cannot box a reference-typed value (a capability) into the i64 slot")
         }
     }
@@ -1020,7 +1053,7 @@ fn from_slot_op(kind: Kind) -> Option<&'static str> {
         Kind::I64 => None,
         Kind::I32 => Some("i32.wrap_i64"),
         Kind::F64 => Some("f64.reinterpret_i64"),
-        Kind::ExternRef | Kind::GcRef(_) => {
+        Kind::ExternRef | Kind::StructRef | Kind::GcRef(_) => {
             panic!("cannot recover a reference-typed value (a capability) from the i64 slot")
         }
     }
@@ -1078,7 +1111,9 @@ fn collect_clos_signatures_seq(seq: &WirSeq, out: &mut Vec<(usize, usize)>) {
                     walk_expr(a, out);
                 }
             }
-            WirExpr::StructGet { base, .. } | WirExpr::RefIsNull(base) => walk_expr(base, out),
+            WirExpr::StructGet { base, .. }
+            | WirExpr::RefCast { value: base, .. }
+            | WirExpr::RefIsNull(base) => walk_expr(base, out),
             WirExpr::ConstI64(_)
             | WirExpr::ConstF64(_)
             | WirExpr::ConstI32(_)
@@ -1274,7 +1309,9 @@ pub fn heap_write_violations(module: &WirModule) -> Vec<String> {
                     expr_violates(a, hits);
                 }
             }
-            WirExpr::StructGet { base, .. } | WirExpr::RefIsNull(base) => expr_violates(base, hits),
+            WirExpr::StructGet { base, .. }
+            | WirExpr::RefCast { value: base, .. }
+            | WirExpr::RefIsNull(base) => expr_violates(base, hits),
             WirExpr::ConstI64(_)
             | WirExpr::ConstF64(_)
             | WirExpr::ConstI32(_)
