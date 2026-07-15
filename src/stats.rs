@@ -35,6 +35,16 @@ pub struct Stats {
     /// A leak metric: bounded for a fully-reclaiming rc-floor program, growing with the
     /// input for an unbounded leak. 0 unless a `$rc_free` fired.
     pub live_cells: i64,
+    /// RFC-0088 semantic dictionary searches performed by fused extraction.
+    pub extract_searches: i64,
+    /// Key comparisons made within those searches.
+    pub extract_key_comparisons: i64,
+    /// Structural bytes copied by update-and-extract helpers.
+    pub extract_copied_bytes: i64,
+    /// RC-backed leaves retained by extraction's shared-storage path.
+    pub extract_retains: i64,
+    /// RC-backed leaves released by extraction's structural repair.
+    pub extract_drops: i64,
 }
 
 /// Compile `src` (resolved against the bundled std) and run it under the active
@@ -59,6 +69,11 @@ pub fn compute(src: &str) -> Result<Stats, String> {
         region_copy_bytes: vm.region_copy_bytes().unwrap_or(0),
         rc_reused_bytes: vm.rc_reused_bytes().unwrap_or(0),
         live_cells: vm.live_cells().unwrap_or(0),
+        extract_searches: vm.extract_searches().unwrap_or(0),
+        extract_key_comparisons: vm.extract_key_comparisons().unwrap_or(0),
+        extract_copied_bytes: vm.extract_copied_bytes().unwrap_or(0),
+        extract_retains: vm.extract_retains().unwrap_or(0),
+        extract_drops: vm.extract_drops().unwrap_or(0),
     })
 }
 
@@ -103,6 +118,236 @@ mod tests {
             "forced-copy must allocate far more heap: on={} off={}",
             on.heap_bytes,
             off.heap_bytes
+        );
+    }
+
+    /// RFC-0088: result-bearing `var` calls carry the same hidden ownership
+    /// token as statement mutators. Pop, replacing insert, and remove/insert
+    /// cycles therefore reuse their container after the first CoW re-own.
+    #[test]
+    fn update_and_extract_threads_ownership_through_var_calls() {
+        const EXTRACT: &str = "fn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < 160:\n        xs.push(i)\n        i = i + 1\n    var sum = 0\n    while list.length(xs) > 0:\n        sum = sum + (xs.pop() ?? 0)\n\n    var d = dict.new()\n    i = 0\n    while i < 240:\n        let _ = d.insert(1, i)\n        i = i + 1\n    i = 0\n    while i < 160:\n        let _ = d.remove(1)\n        let _ = d.insert(1, i)\n        i = i + 1\n    console.print(\"${sum}\")\n    console.print(\"${dict.at(d, 1)}\")\n";
+
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let on = compute(EXTRACT).expect("ownership-aware extraction");
+        opt::set_for_tests(Some(OptSet::default_set().without(Opt::InPlace)));
+        let off = compute(EXTRACT).expect("forced-copy extraction");
+        opt::set_for_tests(None);
+
+        assert_eq!(on.output, off.output, "ownership lowering must preserve values");
+        assert_eq!(on.output, vec!["12720".to_string(), "159".to_string()]);
+        assert_eq!(on.extract_searches, 560, "each insert/remove performs one search");
+        assert_eq!(off.extract_searches, 560, "forced-copy keeps one search per operation");
+        assert!(
+            on.extract_copied_bytes * 20 < off.extract_copied_bytes,
+            "unique extraction must avoid full-container copies: on={} off={}",
+            on.extract_copied_bytes,
+            off.extract_copied_bytes
+        );
+        assert!(
+            off.heap_bytes > on.heap_bytes * 4,
+            "forced-copy extraction must allocate materially more: on={} off={}",
+            on.heap_bytes,
+            off.heap_bytes
+        );
+    }
+
+    /// Heap leaves make ownership traffic observable. The unique path moves
+    /// displaced values without retaining them; forced copy must retain both
+    /// the returned projection and every leaf kept by the repaired container.
+    #[test]
+    fn update_and_extract_counts_heap_leaf_ownership() {
+        const HEAP_LEAVES: &str = r#"import dict
+
+fn heap(s: String) -> String:
+    s + "!"
+
+fn main(console: Console):
+    var xs = [heap("a"), heap("b")]
+    let popped = xs.pop()
+    var d = dict.new()
+    let _ = d.insert(heap("k"), heap("old"))
+    let replaced = d.insert(heap("k"), heap("new"))
+    let removed = d.remove(heap("k"))
+    console.print("${popped ?? "none"}")
+    console.print("${replaced ?? "none"}")
+    console.print("${removed ?? "none"}")
+"#;
+
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let on = compute(HEAP_LEAVES).expect("unique heap extraction");
+        opt::set_for_tests(Some(OptSet::default_set().without(Opt::InPlace)));
+        let off = compute(HEAP_LEAVES).expect("shared heap extraction");
+        opt::set_for_tests(None);
+
+        assert_eq!(on.output, off.output, "ownership traffic must not change values");
+        assert_eq!(on.output, vec!["b!", "old!", "new!"]);
+        assert_eq!(on.extract_searches, 3);
+        assert_eq!(off.extract_searches, 3);
+        assert_eq!(on.extract_retains, 3, "only newly stored heap leaves retain");
+        assert_eq!(off.extract_retains, 9, "CoW retains returned and copied leaves");
+        assert_eq!(on.extract_drops, 1, "unique removal releases its abandoned key");
+        assert_eq!(off.extract_drops, 1, "CoW replacement balances its copied old leaf");
+        assert_eq!(on.extract_copied_bytes, 4, "only the initial empty dict re-owns");
+        assert_eq!(off.extract_copied_bytes, 32, "CoW copies list and dict structure");
+    }
+
+    /// Empty pop and missing removal are true no-op repairs: no allocation,
+    /// structural copy, retain, or drop is permitted.
+    #[test]
+    fn update_and_extract_misses_do_no_ownership_work() {
+        const MISSES: &str = r#"import dict
+
+fn main(console: Console):
+    var xs: List(String) = []
+    let popped = xs.pop()
+    var d = dict.from_pairs([("a", "one")])
+    let removed = d.remove("missing")
+    console.print("${popped ?? "none"}")
+    console.print("${removed ?? "none"}")
+    console.print("${dict.at(d, "a")}")
+"#;
+
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let stats = compute(MISSES).expect("missing extraction");
+        opt::set_for_tests(None);
+
+        assert_eq!(stats.output, vec!["none", "none", "one"]);
+        assert_eq!(stats.extract_searches, 1);
+        assert_eq!(stats.extract_copied_bytes, 0);
+        assert_eq!(stats.extract_retains, 0);
+        assert_eq!(stats.extract_drops, 0);
+    }
+
+    /// Geometric growth plus index maintenance keeps missing insertion and
+    /// replacing insertion amortized, while every call still performs exactly
+    /// one semantic search.
+    #[test]
+    fn update_and_extract_preserves_indexed_dict_growth() {
+        const INDEXED: &str = r#"import dict
+
+fn main(console: Console):
+    var d = dict.new()
+    var i = 0
+    while i < 256:
+        let _ = d.insert(i, i)
+        i = i + 1
+    i = 0
+    while i < 200:
+        let _ = d.insert(128, i)
+        i = i + 1
+    console.print("${dict.length(d)}")
+    console.print("${dict.at(d, 128)}")
+"#;
+
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let stats = compute(INDEXED).expect("indexed extraction growth");
+        opt::set_for_tests(None);
+
+        assert_eq!(stats.output, vec!["256", "199"]);
+        assert_eq!(stats.extract_searches, 456);
+        assert!(
+            stats.extract_key_comparisons < stats.extract_searches * 4,
+            "hash-index probes must stay bounded: searches={} comparisons={}",
+            stats.extract_searches,
+            stats.extract_key_comparisons
+        );
+        assert!(
+            stats.extract_copied_bytes < 16_000,
+            "geometric growth must avoid per-insert full copies: {} bytes",
+            stats.extract_copied_bytes
+        );
+    }
+
+    /// Rebinding a capacity-bearing `var` parameter replaces its allocation.
+    /// The old token must be cleared before the next append; otherwise a large
+    /// caller capacity authorizes an out-of-bounds write into the new empty list.
+    #[test]
+    fn var_collection_rebind_resets_the_capacity_token() {
+        const REBIND: &str = r#"fn reset(var xs: List(Int)) -> Nil:
+    xs = []
+    xs.push(9)
+
+fn main(console: Console):
+    var xs = []
+    var i = 0
+    while i < 64:
+        xs.push(i)
+        i = i + 1
+    reset(xs)
+    console.print("${xs}")
+"#;
+
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let stats = compute(REBIND).expect("collection var rebind");
+        opt::set_for_tests(None);
+
+        assert_eq!(stats.output, vec!["[9]"]);
+        assert_eq!(
+            stats.reowns, 2,
+            "the caller and rebound empty list must each establish ownership once"
+        );
+    }
+
+    /// Missing shared removal must leave the old hash index untouched, and a
+    /// successful unique removal must rebuild it after insertion-order repair.
+    /// Both cases keep the following lookup on the indexed path.
+    #[test]
+    fn dict_remove_preserves_shared_storage_and_indexed_followups() {
+        let pairs = (0..256)
+            .map(|i| format!("({i}, {i})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let src = format!(
+            "import dict\n\nfn main(console: Console):\n    var d = dict.from_pairs([{pairs}])\n    let snapshot = d\n    let _ = d.remove(-1)\n    let _ = d.insert(200, 900)\n    let _ = d.remove(0)\n    let _ = d.insert(199, 800)\n    console.print(\"${{dict.at(snapshot, 200)}}\")\n    console.print(\"${{dict.at(d, 200)}}\")\n    console.print(\"${{dict.at(d, 199)}}\")\n"
+        );
+
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let stats = compute(&src).expect("indexed remove followups");
+        opt::set_for_tests(None);
+
+        assert_eq!(stats.output, vec!["200", "900", "800"]);
+        assert_eq!(stats.extract_searches, 4);
+        assert!(
+            stats.extract_key_comparisons < 24,
+            "remove must not demote following lookups to a linear scan: {} comparisons",
+            stats.extract_key_comparisons
+        );
+    }
+
+    /// User equality can itself perform extraction. The instrumentation scope
+    /// is a nesting depth, so the inner search cannot disable comparison counts
+    /// for the remainder of the outer search.
+    #[test]
+    fn extraction_comparison_count_is_reentrant() {
+        const NESTED_EQ: &str = r#"import dict
+
+type Key:
+    value: Int
+
+impl PartialEq for Key:
+    fn eq(self, other: Key) -> Bool:
+        var probe = dict.from_pairs([(1, 1)])
+        let _ = probe.remove(1)
+        self.value == other.value
+
+impl Eq for Key
+
+fn main(console: Console):
+    var d = dict.from_pairs([(Key(1), 10), (Key(2), 20)])
+    let old = d.remove(Key(2))
+    console.print("${old ?? -1}")
+"#;
+
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let stats = compute(NESTED_EQ).expect("nested extraction in Eq");
+        opt::set_for_tests(None);
+
+        assert_eq!(stats.output, vec!["20"]);
+        assert_eq!(stats.extract_searches, 4);
+        assert_eq!(
+            stats.extract_key_comparisons, 5,
+            "inner extraction must preserve the outer comparison scope"
         );
     }
 

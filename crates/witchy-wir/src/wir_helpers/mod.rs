@@ -654,6 +654,198 @@ pub fn rc_dup_helper() -> WirFunc {
     }
 }
 
+/// `$leaf_dup(value, rc_bias) -> i64` — retain an RC-backed universal-slot
+/// value and return it unchanged. `rc_bias` is -1 for a trivial leaf, 0 for an
+/// ordinary RC pointer, and 4 for a Dict pointer following its hidden index.
+pub fn leaf_dup_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |name: &str| E::GetLocal(name.into());
+    let i32c = E::ConstI32;
+    let i64c = E::ConstI64;
+    let b32 = |op: BinOp, lhs: E, rhs: E| E::Binary {
+        op,
+        kind: Kind::I32,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+    };
+    let b64 = |op: BinOp, lhs: E, rhs: E| E::Binary {
+        op,
+        kind: Kind::I64,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+    };
+    let ptr = || E::Convert {
+        from: Kind::I64,
+        to: Kind::I32,
+        arg: Box::new(getl("value")),
+    };
+    WirFunc {
+        name: "leaf_dup".into(),
+        params: vec![
+            WirLocal { name: "value".into(), ty: WirTy::Int },
+            WirLocal { name: "rc_bias".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Int],
+        locals: vec![],
+        body: vec![
+            N::If {
+                cond: b32(
+                    BinOp::And,
+                    b32(BinOp::Ge, getl("rc_bias"), i32c(0)),
+                    b64(BinOp::Ne, getl("value"), i64c(0)),
+                ),
+                then_: vec![N::If {
+                    cond: b32(
+                        BinOp::GeU,
+                        b32(BinOp::Sub, ptr(), getl("rc_bias")),
+                        E::GetGlobal("heap_base".into()),
+                    ),
+                    then_: vec![
+                        N::SetGlobal {
+                            global: "__witchy_extract_retains".into(),
+                            value: E::Binary {
+                                op: BinOp::Add,
+                                kind: Kind::I64,
+                                lhs: Box::new(E::GetGlobal("__witchy_extract_retains".into())),
+                                rhs: Box::new(i64c(1)),
+                            },
+                        },
+                        N::Drop(E::Call {
+                            func: "rc_dup".into(),
+                            args: vec![b32(BinOp::Sub, ptr(), getl("rc_bias"))],
+                        }),
+                    ],
+                    els: vec![],
+                    result: None,
+                }],
+                els: vec![],
+                result: None,
+            },
+            N::Push(getl("value")),
+        ],
+        raw_body: None,
+    }
+}
+
+/// `$leaf_drop(value, rc_bias)` — release one RC-backed universal-slot value.
+/// It is the exact inverse of [`leaf_dup_helper`] for initialized leaves.
+pub fn leaf_drop_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |name: &str| E::GetLocal(name.into());
+    let i32c = E::ConstI32;
+    let i64c = E::ConstI64;
+    let b32 = |op: BinOp, lhs: E, rhs: E| E::Binary {
+        op,
+        kind: Kind::I32,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+    };
+    let b64 = |op: BinOp, lhs: E, rhs: E| E::Binary {
+        op,
+        kind: Kind::I64,
+        lhs: Box::new(lhs),
+        rhs: Box::new(rhs),
+    };
+    let ptr = || E::Convert {
+        from: Kind::I64,
+        to: Kind::I32,
+        arg: Box::new(getl("value")),
+    };
+    WirFunc {
+        name: "leaf_drop".into(),
+        params: vec![
+            WirLocal { name: "value".into(), ty: WirTy::Int },
+            WirLocal { name: "rc_bias".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![],
+        locals: vec![],
+        body: vec![N::If {
+            cond: b32(
+                BinOp::And,
+                b32(BinOp::Ge, getl("rc_bias"), i32c(0)),
+                b64(BinOp::Ne, getl("value"), i64c(0)),
+            ),
+            then_: vec![N::If {
+                cond: b32(
+                    BinOp::GeU,
+                    b32(BinOp::Sub, ptr(), getl("rc_bias")),
+                    E::GetGlobal("heap_base".into()),
+                ),
+                then_: vec![
+                    N::SetGlobal {
+                        global: "__witchy_extract_drops".into(),
+                        value: E::Binary {
+                            op: BinOp::Add,
+                            kind: Kind::I64,
+                            lhs: Box::new(E::GetGlobal("__witchy_extract_drops".into())),
+                            rhs: Box::new(i64c(1)),
+                        },
+                    },
+                    N::Do(E::Call {
+                        func: "rc_drop".into(),
+                        args: vec![b32(BinOp::Sub, ptr(), getl("rc_bias"))],
+                    }),
+                ],
+                els: vec![],
+                result: None,
+            }],
+            els: vec![],
+            result: None,
+        }],
+        raw_body: None,
+    }
+}
+
+/// `$slot_take_or_dup(addr, unique, rc_bias) -> i64` — the ownership half of
+/// structural extraction. `addr` identifies an initialized universal slot.
+/// A unique container transfers the slot (and clears it before structural
+/// repair); a shared container retains an RC-backed leaf before returning it.
+/// `rc_bias` is -1 for trivial leaves, 0 for ordinary RC pointers, and 4 for a
+/// Dict value whose exposed pointer follows its hidden index word.
+pub fn slot_take_or_dup_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |name: &str| E::GetLocal(name.into());
+    let i64c = E::ConstI64;
+    WirFunc {
+        name: "slot_take_or_dup".into(),
+        params: vec![
+            WirLocal { name: "addr".into(), ty: WirTy::Bool },
+            WirLocal { name: "unique".into(), ty: WirTy::Bool },
+            WirLocal { name: "rc_bias".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Int],
+        locals: vec![WirLocal { name: "old".into(), ty: WirTy::Int }],
+        body: vec![
+            N::SetLocal {
+                local: "old".into(),
+                value: E::Load { ptr: Box::new(getl("addr")), kind: Kind::I64, offset: 0 },
+            },
+            N::If {
+                cond: getl("unique"),
+                then_: vec![N::Store {
+                    ptr: getl("addr"),
+                    value: i64c(0),
+                    kind: Kind::I64,
+                    offset: 0,
+                }],
+                els: vec![N::SetLocal {
+                    local: "old".into(),
+                    value: E::Call {
+                        func: "leaf_dup".into(),
+                        args: vec![getl("old"), getl("rc_bias")],
+                    },
+                }],
+                result: None,
+            },
+            N::Push(getl("old")),
+        ],
+        raw_body: None,
+    }
+}
+
 /// (RFC-0035) `$rc_drop(ptr: i32)` — the Perceus drop: release one live reference to the
 /// heap object at `$rc_alloc` region `ptr` (refcount at `ptr-8`). At count 1 (the last
 /// reference) the block is returned to the free-list via `$rc_free`; otherwise the count
@@ -791,10 +983,10 @@ pub fn list_at_helper() -> WirFunc {
     }
 }
 
-/// `$list_pop_extract(list) -> (list, present, old-slot)` — copy-correct
-/// structural pop. Selection and repair share the same length read; the final
-/// slot is returned separately from the repaired list so typed lowering can
-/// construct `Option(a)` without coupling this helper to source ADT layout.
+/// `$list_pop_extract(list, cap, rc_bias) -> (list, present, old-slot, cap)`.
+/// A live ownership token repairs the list in place; zero takes the CoW path.
+/// Selection and repair share one length read, while [`slot_take_or_dup_helper`]
+/// owns transfer-versus-retain behavior for the selected leaf.
 pub fn list_pop_extract_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
@@ -809,12 +1001,18 @@ pub fn list_pop_extract_helper() -> WirFunc {
     };
     WirFunc {
         name: "list_pop_extract".into(),
-        params: vec![WirLocal { name: "list".into(), ty: WirTy::Bool }],
-        ret: vec![WirTy::Bool, WirTy::Bool, WirTy::Int],
+        params: vec![
+            WirLocal { name: "list".into(), ty: WirTy::Bool },
+            WirLocal { name: "cap".into(), ty: WirTy::Bool },
+            WirLocal { name: "rc_bias".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![WirTy::Bool, WirTy::Bool, WirTy::Int, WirTy::Bool],
         locals: vec![
             WirLocal { name: "len".into(), ty: WirTy::Bool },
             WirLocal { name: "new".into(), ty: WirTy::Bool },
             WirLocal { name: "present".into(), ty: WirTy::Bool },
+            WirLocal { name: "out_cap".into(), ty: WirTy::Bool },
+            WirLocal { name: "i".into(), ty: WirTy::Bool },
             WirLocal { name: "old".into(), ty: WirTy::Int },
         ],
         body: vec![
@@ -824,50 +1022,152 @@ pub fn list_pop_extract_helper() -> WirFunc {
             },
             N::SetLocal { local: "present".into(), value: b(BinOp::Gt, getl("len"), i32c(0)) },
             N::SetLocal { local: "old".into(), value: i64c(0) },
-            N::SetLocal {
-                local: "new".into(),
-                value: E::Call {
-                    func: "rc_alloc".into(),
-                    args: vec![b(
-                        BinOp::Add,
-                        i32c(4),
-                        b(BinOp::Mul, b(BinOp::Sub, getl("len"), getl("present")), i32c(8)),
-                    )],
-                },
-            },
-            N::Store {
-                ptr: getl("new"),
-                value: b(BinOp::Sub, getl("len"), getl("present")),
-                kind: Kind::I32,
-                offset: 0,
-            },
             N::If {
-                cond: getl("present"),
+                cond: b(BinOp::Gt, getl("cap"), i32c(0)),
                 then_: vec![
-                    N::MemoryCopy {
-                        dest: b(BinOp::Add, getl("new"), i32c(4)),
-                        src: b(BinOp::Add, getl("list"), i32c(4)),
-                        len: b(BinOp::Mul, b(BinOp::Sub, getl("len"), i32c(1)), i32c(8)),
-                    },
-                    N::SetLocal {
-                        local: "old".into(),
-                        value: E::Load {
-                            ptr: Box::new(b(
-                                BinOp::Add,
-                                b(BinOp::Add, getl("list"), i32c(4)),
-                                b(BinOp::Mul, b(BinOp::Sub, getl("len"), i32c(1)), i32c(8)),
-                            )),
-                            kind: Kind::I64,
-                            offset: 0,
-                        },
+                    N::SetLocal { local: "new".into(), value: getl("list") },
+                    N::SetLocal { local: "out_cap".into(), value: getl("cap") },
+                    N::If {
+                        cond: getl("present"),
+                        then_: vec![
+                            N::SetLocal {
+                                local: "old".into(),
+                                value: E::Call {
+                                    func: "slot_take_or_dup".into(),
+                                    args: vec![
+                                        b(
+                                            BinOp::Add,
+                                            b(BinOp::Add, getl("list"), i32c(4)),
+                                            b(BinOp::Mul, b(BinOp::Sub, getl("len"), i32c(1)), i32c(8)),
+                                        ),
+                                        i32c(1),
+                                        getl("rc_bias"),
+                                    ],
+                                },
+                            },
+                            N::Store {
+                                ptr: getl("list"),
+                                value: b(BinOp::Sub, getl("len"), i32c(1)),
+                                kind: Kind::I32,
+                                offset: 0,
+                            },
+                        ],
+                        els: vec![],
+                        result: None,
                     },
                 ],
-                els: vec![],
+                els: vec![N::If {
+                    cond: getl("present"),
+                    then_: vec![
+                        N::SetLocal {
+                            local: "new".into(),
+                            value: E::Call {
+                                func: "rc_alloc".into(),
+                                args: vec![b(
+                                    BinOp::Add,
+                                    i32c(4),
+                                    b(BinOp::Mul, b(BinOp::Sub, getl("len"), i32c(1)), i32c(8)),
+                                )],
+                            },
+                        },
+                        N::Store {
+                            ptr: getl("new"),
+                            value: b(BinOp::Sub, getl("len"), i32c(1)),
+                            kind: Kind::I32,
+                            offset: 0,
+                        },
+                        N::MemoryCopy {
+                            dest: b(BinOp::Add, getl("new"), i32c(4)),
+                            src: b(BinOp::Add, getl("list"), i32c(4)),
+                            len: b(BinOp::Mul, b(BinOp::Sub, getl("len"), i32c(1)), i32c(8)),
+                        },
+                        N::SetGlobal {
+                            global: "__witchy_extract_copied_bytes".into(),
+                            value: E::Binary {
+                                op: BinOp::Add,
+                                kind: Kind::I64,
+                                lhs: Box::new(E::GetGlobal("__witchy_extract_copied_bytes".into())),
+                                rhs: Box::new(E::Convert {
+                                    from: Kind::I32,
+                                    to: Kind::I64,
+                                    arg: Box::new(b(
+                                        BinOp::Mul,
+                                        b(BinOp::Sub, getl("len"), i32c(1)),
+                                        i32c(8),
+                                    )),
+                                }),
+                            },
+                        },
+                        N::SetLocal { local: "i".into(), value: i32c(0) },
+                        N::Block {
+                            label: "dup_done".into(),
+                            result: None,
+                            body: vec![N::Loop {
+                                label: "dup_loop".into(),
+                                body: vec![
+                                    N::Br {
+                                        target: "dup_done".into(),
+                                        cond: Some(b(
+                                            BinOp::Ge,
+                                            getl("i"),
+                                            b(BinOp::Sub, getl("len"), i32c(1)),
+                                        )),
+                                    },
+                                    N::Drop(E::Call {
+                                        func: "leaf_dup".into(),
+                                        args: vec![
+                                            E::Load {
+                                                ptr: Box::new(b(
+                                                    BinOp::Add,
+                                                    b(BinOp::Add, getl("new"), i32c(4)),
+                                                    b(BinOp::Mul, getl("i"), i32c(8)),
+                                                )),
+                                                kind: Kind::I64,
+                                                offset: 0,
+                                            },
+                                            getl("rc_bias"),
+                                        ],
+                                    }),
+                                    N::SetLocal {
+                                        local: "i".into(),
+                                        value: b(BinOp::Add, getl("i"), i32c(1)),
+                                    },
+                                    N::Br { target: "dup_loop".into(), cond: None },
+                                ],
+                            }],
+                        },
+                        N::SetLocal {
+                            local: "old".into(),
+                            value: E::Call {
+                                func: "slot_take_or_dup".into(),
+                                args: vec![
+                                    b(
+                                        BinOp::Add,
+                                        b(BinOp::Add, getl("list"), i32c(4)),
+                                        b(BinOp::Mul, b(BinOp::Sub, getl("len"), i32c(1)), i32c(8)),
+                                    ),
+                                    i32c(0),
+                                    getl("rc_bias"),
+                                ],
+                            },
+                        },
+                        N::SetLocal {
+                            local: "out_cap".into(),
+                            value: b(BinOp::Sub, getl("len"), i32c(1)),
+                        },
+                    ],
+                    els: vec![
+                        N::SetLocal { local: "new".into(), value: getl("list") },
+                        N::SetLocal { local: "out_cap".into(), value: i32c(0) },
+                    ],
+                    result: None,
+                }],
                 result: None,
             },
             N::Push(getl("new")),
             N::Push(getl("present")),
             N::Push(getl("old")),
+            N::Push(getl("out_cap")),
         ],
         raw_body: None,
     }
@@ -4506,6 +4806,27 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: true,
             uses_table: false,
         }),
+        "leaf_dup" => Some(WirHelperSpec {
+            func: leaf_dup_helper(),
+            helper_deps: &["rc_dup"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "leaf_drop" => Some(WirHelperSpec {
+            func: leaf_drop_helper(),
+            helper_deps: &["rc_drop"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
+        "slot_take_or_dup" => Some(WirHelperSpec {
+            func: slot_take_or_dup_helper(),
+            helper_deps: &["leaf_dup"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
         "rc_drop" => Some(WirHelperSpec {
             func: rc_drop_helper(),
             helper_deps: &["rc_free"],
@@ -5364,7 +5685,16 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_insert_extract" => Some(WirHelperSpec {
             func: dict_insert_extract_helper(),
-            helper_deps: &["rc_alloc", "dict_find"],
+            helper_deps: &[
+                "rc_alloc",
+                "rc_free",
+                "dict_find",
+                "dict_index_put",
+                "dict_reindex",
+                "leaf_dup",
+                "leaf_drop",
+                "slot_take_or_dup",
+            ],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
@@ -5404,6 +5734,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
+        "dict_reindex" => Some(WirHelperSpec {
+            func: dict_reindex_helper(),
+            helper_deps: &["bump_alloc", "dict_index_put"],
+            import_deps: &[],
+            uses_heap: true,
+            uses_table: false,
+        }),
         "str_append_cap" => Some(WirHelperSpec {
             func: str_append_cap_helper(),
             helper_deps: &["rc_alloc"],
@@ -5420,7 +5757,7 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "list_pop_extract" => Some(WirHelperSpec {
             func: list_pop_extract_helper(),
-            helper_deps: &["rc_alloc"],
+            helper_deps: &["rc_alloc", "leaf_dup", "slot_take_or_dup"],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,
@@ -5476,7 +5813,14 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         "dict_remove_extract" => Some(WirHelperSpec {
             func: dict_remove_extract_helper(),
-            helper_deps: &["rc_alloc", "dict_find"],
+            helper_deps: &[
+                "rc_alloc",
+                "dict_find",
+                "dict_reindex",
+                "leaf_dup",
+                "leaf_drop",
+                "slot_take_or_dup",
+            ],
             import_deps: &[],
             uses_heap: true,
             uses_table: false,

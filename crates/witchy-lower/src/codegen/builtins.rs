@@ -6,50 +6,55 @@
 use super::*;
 
 impl Codegen<'_> {
-    /// Adapt a structural `(container, present, old-slot)` helper to the source
-    /// `(container, Option(old))` tuple. ADT construction remains in typed
-    /// lowering; structural helpers never encode source constructor layouts.
-    fn lower_extract_tuple(
+    /// Adapt a structural `(container, present, old-slot)` helper to a native
+    /// `var` operation: write the repaired container back to its receiver local
+    /// and yield `Option(old)` as the independent ordinary result. ADT layout
+    /// remains in typed lowering; structural helpers only traffic in raw slots.
+    fn lower_extract_var(
         &mut self,
         helper: &str,
-        args: Vec<witchy_wir::wir::WirExpr>,
-    ) -> witchy_wir::wir::WirExpr {
+        receiver: &Expr,
+        mut args: Vec<witchy_wir::wir::WirExpr>,
+        leaf_biases: &[i32],
+    ) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::{WirExpr as W, WirNode as N, WirTy};
+        let Expr::Var(root) = receiver else { return None };
         let container = var_scratch("result", 0, Kind::I32);
-        self.mk_arities.extend([0, 1, 2]);
-        W::Seq(vec![
+        let cap_scratch = var_scratch("cap", 0, Kind::I32);
+        let tracked = self.inplace_push.contains(root);
+        args.push(if tracked {
+            W::GetLocal(format!("{root}__cap"))
+        } else {
+            W::ConstI32(0)
+        });
+        args.extend(leaf_biases.iter().copied().map(W::ConstI32));
+        self.mk_arities.extend([0, 1]);
+        let mut seq = vec![
             N::CallStoreMulti {
                 func: helper.to_string(),
                 args,
-                dests: vec![container.clone(), TRY_TMP.to_string(), MATCH_TMP.to_string()],
-            },
-            N::SetLocal {
-                local: TUPLE_TMP.to_string(),
-                value: W::Control(Box::new(N::If {
-                    cond: W::GetLocal(TRY_TMP.to_string()),
-                    then_: vec![N::Push(W::Call {
-                        func: "mk1".into(),
-                        args: vec![W::ConstI32(0), W::GetLocal(MATCH_TMP.to_string())],
-                    })],
-                    els: vec![N::Push(W::Call {
-                        func: "mk0".into(),
-                        args: vec![W::ConstI32(1)],
-                    })],
-                    result: Some(WirTy::Bool),
-                })),
-            },
-            N::Push(W::Call {
-                func: "mk2".into(),
-                args: vec![
-                    W::ConstI32(0),
-                    W::ToSlot(Box::new(W::GetLocal(container)), witchy_wir::wir::Kind::I32),
-                    W::ToSlot(
-                        Box::new(W::GetLocal(TUPLE_TMP.to_string())),
-                        witchy_wir::wir::Kind::I32,
-                    ),
+                dests: vec![
+                    container.clone(),
+                    TRY_TMP.to_string(),
+                    MATCH_TMP.to_string(),
+                    if tracked { format!("{root}__cap") } else { cap_scratch },
                 ],
-            }),
-        ])
+            },
+            N::SetLocal { local: root.clone(), value: W::GetLocal(container) },
+        ];
+        seq.push(N::Push(W::Control(Box::new(N::If {
+                cond: W::GetLocal(TRY_TMP.to_string()),
+                then_: vec![N::Push(W::Call {
+                    func: "mk1".into(),
+                    args: vec![W::ConstI32(0), W::GetLocal(MATCH_TMP.to_string())],
+                })],
+                els: vec![N::Push(W::Call {
+                    func: "mk0".into(),
+                    args: vec![W::ConstI32(1)],
+                })],
+                result: Some(WirTy::Bool),
+            }))));
+        Some(W::Seq(seq))
     }
 
     pub(crate) fn lower_call(&mut self, name: &str, args: &[Expr]) -> Option<witchy_wir::wir::WirExpr> {
@@ -78,7 +83,11 @@ impl Codegen<'_> {
                     || name.starts_with("list.__pop_extract__") =>
             {
                 let list = self.lower_expr(&args[0])?;
-                self.lower_extract_tuple("list_pop_extract", vec![list])
+                let bias = self
+                    .ast_type_of_expr(&args[0])
+                    .as_ref()
+                    .and_then(|ty| collection_leaf_bias(ty, "List", 0))?;
+                self.lower_extract_var("list_pop_extract", &args[0], vec![list], &[bias])?
             }
             // (RFC-0028) Confined slice view reads: lower to the zero-copy view
             // helpers, reading through the elided slice's source + bounds. Guarded
@@ -1046,7 +1055,15 @@ impl Codegen<'_> {
                     W::ToSlot(Box::new(self.lower_expr(&args[2])?), Self::wir_kind(vk)),
                     W::ConstI32(mode as i32),
                 ];
-                self.lower_extract_tuple("dict_insert_extract", structural_args)
+                let dict_ty = self.ast_type_of_expr(&args[0])?;
+                let key_bias = collection_leaf_bias(&dict_ty, "Dict", 0)?;
+                let value_bias = collection_leaf_bias(&dict_ty, "Dict", 1)?;
+                self.lower_extract_var(
+                    "dict_insert_extract",
+                    &args[0],
+                    structural_args,
+                    &[key_bias, value_bias],
+                )?
             }
             ("dict.get_or", 3) => {
                 self.uses_dict = true;
@@ -1109,7 +1126,15 @@ impl Codegen<'_> {
                     W::ToSlot(Box::new(self.lower_expr(&args[1])?), Self::wir_kind(kk)),
                     W::ConstI32(mode as i32),
                 ];
-                self.lower_extract_tuple("dict_remove_extract", structural_args)
+                let dict_ty = self.ast_type_of_expr(&args[0])?;
+                let key_bias = collection_leaf_bias(&dict_ty, "Dict", 0)?;
+                let value_bias = collection_leaf_bias(&dict_ty, "Dict", 1)?;
+                self.lower_extract_var(
+                    "dict_remove_extract",
+                    &args[0],
+                    structural_args,
+                    &[key_bias, value_bias],
+                )?
             }
             ("dict.__update", 4) => {
                 self.uses_dict = true;

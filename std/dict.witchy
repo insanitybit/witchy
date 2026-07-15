@@ -21,15 +21,17 @@ fn __insert(d: Dict(k, v), key: k, val: v) -> Dict(k, v) where k: Eq:
     dict.__insert(d, key, val)
 
 // Select the displaced value and perform the upsert with one semantic key
-// search. The tuple is an internal structural result; public callers keep the
-// uniform `var` ABI below.
-fn __insert_extract(d: Dict(k, v), key: k, val: v) -> (Dict(k, v), Option(v)) where k: Eq:
+// search. The ordinary result and repaired dictionary use the uniform `var`
+// ABI's independent result channels.
+fn __insert_extract(var d: Dict(k, v), key: k, val: v) -> Option(v) where k: Eq:
     dict.__insert_extract(d, key, val)
 
+// Insert `key` with `val`, returning the displaced value when the key existed.
+// The dictionary performs one semantic key search. A uniquely owned dictionary
+// preserves its hash index and updates or grows geometrically; a shared root is
+// copied before repair so aliases keep their old contents.
 pub fn insert(var d: Dict(k, v), key: k, val: v) -> Option(v) where k: Eq:
-    let (next, previous) = dict.__insert_extract(d, key, val)
-    d = next
-    previous
+    dict.__insert_extract(d, key, val)
 
 // The value for `key`, or `default` when absent.
 pub fn get_or(d: Dict(k, v), key: k, default: v) -> v where k: Eq:
@@ -58,13 +60,14 @@ pub fn contains_key(d: Dict(k, v), key: k) -> Bool where k: Eq:
 fn __remove(d: Dict(k, v), key: k) -> Dict(k, v) where k: Eq:
     dict.__remove(d, key)
 
-fn __remove_extract(d: Dict(k, v), key: k) -> (Dict(k, v), Option(v)) where k: Eq:
+fn __remove_extract(var d: Dict(k, v), key: k) -> Option(v) where k: Eq:
     dict.__remove_extract(d, key)
 
+// Remove `key`, returning its old value when present. The dictionary performs
+// one semantic key search. Unique storage moves the old value out and repairs
+// insertion order in place; shared storage uses copy-on-write.
 pub fn remove(var d: Dict(k, v), key: k) -> Option(v) where k: Eq:
-    let (next, previous) = dict.__remove_extract(d, key)
-    d = next
-    previous
+    dict.__remove_extract(d, key)
 
 // Real methods mirror the primary mutator surface while the module functions
 // remain as stable, first-class values.

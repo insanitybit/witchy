@@ -1714,7 +1714,58 @@ impl Interpreter {
         &mut self,
         name: &str,
         argvals: &[Value],
-    ) -> Result<Option<Value>, Flow> {
+    ) -> Result<Option<(Value, Vec<Value>)>, Flow> {
+        // Native `var` operations have two independent result channels: the
+        // ordinary source value and each final `var` value. Keep that split here
+        // instead of encoding write-back into a tuple that source code must unpack.
+        if (name == "list.__pop_extract" || name.starts_with("list.__pop_extract__"))
+            && argvals.len() == 1
+        {
+            let Value::List(items) = &argvals[0] else {
+                return err("pop expects a list");
+            };
+            let mut out = items.clone();
+            let old = match out.pop() {
+                Some(value) => Value::Ctor { name: "Some".into(), fields: vec![value] },
+                None => Value::Ctor { name: "None".into(), fields: Vec::new() },
+            };
+            return Ok(Some((old, vec![Value::List(out)])));
+        }
+        if (name == "dict.__insert_extract" || name.starts_with("dict.__insert_extract__"))
+            && argvals.len() == 3
+        {
+            let Value::Dict(entries) = &argvals[0] else {
+                return err("insert expects a Dict, a key, and a value");
+            };
+            let mut out = entries.clone();
+            let previous = match self.dict_key_position(&out, &argvals[1])? {
+                Some(index) => {
+                    let old = std::mem::replace(&mut out[index].1, argvals[2].clone());
+                    Value::Ctor { name: "Some".into(), fields: vec![old] }
+                }
+                None => {
+                    out.push((argvals[1].clone(), argvals[2].clone()));
+                    Value::Ctor { name: "None".into(), fields: Vec::new() }
+                }
+            };
+            return Ok(Some((previous, vec![Value::Dict(out)])));
+        }
+        if (name == "dict.__remove_extract" || name.starts_with("dict.__remove_extract__"))
+            && argvals.len() == 2
+        {
+            let Value::Dict(entries) = &argvals[0] else {
+                return err("remove expects a Dict and a key");
+            };
+            let mut out = entries.clone();
+            let previous = match self.dict_key_position(&out, &argvals[1])? {
+                Some(index) => Value::Ctor {
+                    name: "Some".into(),
+                    fields: vec![out.remove(index).1],
+                },
+                None => Value::Ctor { name: "None".into(), fields: Vec::new() },
+            };
+            return Ok(Some((previous, vec![Value::Dict(out)])));
+        }
         // These two operations need the interpreter to apply a function value,
         // so they cannot live in the pure builtin table.
         if name == "dict.__update" && argvals.len() == 4 {
@@ -1732,7 +1783,7 @@ impl Interpreter {
                 Some(index) => out[index].1 = new_v,
                 None => out.push((argvals[1].clone(), new_v)),
             }
-            return Ok(Some(Value::Dict(out)));
+            return Ok(Some((Value::Dict(out), Vec::new())));
         }
         if name == "vm.par_map" && argvals.len() == 2 {
             let Value::List(items) = &argvals[0] else {
@@ -1744,7 +1795,7 @@ impl Interpreter {
             for item in items {
                 out.push(self.apply_closure(f.clone(), vec![item])?);
             }
-            return Ok(Some(Value::List(out)));
+            return Ok(Some((Value::List(out), Vec::new())));
         }
         Ok(None)
     }
@@ -1768,7 +1819,24 @@ impl Interpreter {
                 .unwrap_or_default(),
         };
         let (argvals, places) = self.eval_call_args(args, &conventions, env)?;
-        if let Some(value) = self.call_interpreter_special(name, &argvals)? {
+        if let Some((value, var_values)) = self.call_interpreter_special(name, &argvals)? {
+            let var_places: Vec<CapturedPlace> = conventions
+                .iter()
+                .enumerate()
+                .filter_map(|(index, convention)| {
+                    (*convention == Convention::Var)
+                        .then(|| places.get(index).and_then(Clone::clone))
+                        .flatten()
+                })
+                .collect();
+            if var_places.len() != var_values.len() {
+                return err(format!(
+                    "internal: native `{name}` returned {} `var` value(s), expected {}",
+                    var_values.len(),
+                    var_places.len()
+                ));
+            }
+            self.commit_writebacks(var_places.into_iter().zip(var_values).collect(), env)?;
             return Ok(value);
         }
         // A local variable holding a function value (a closure): apply it.
@@ -3381,7 +3449,12 @@ impl Interpreter {
                     .collect();
                 let (values, places) = self.eval_call_args(args, &conventions, env)?;
                 debug_assert!(places.iter().all(Option::is_none));
-                if let Some(value) = self.call_interpreter_special(name, &values)? {
+                if let Some((value, var_values)) = self.call_interpreter_special(name, &values)? {
+                    if !var_values.is_empty() {
+                        return err(format!(
+                            "internal: tail special `{name}` produced `var` write-backs without places"
+                        ));
+                    }
                     return Ok(value);
                 }
                 if let Some(value) = self.call_builtin(name, &values)? {

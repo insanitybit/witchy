@@ -157,6 +157,20 @@ pub fn dict_find_helper() -> WirFunc {
     // key slot of entry `e`: d + 4 + e*16.
     let key_at = |e: E| E::Load { ptr: Box::new(b(BinOp::Add, getl("d"), b(BinOp::Mul, e, i32c(16)))), kind: Kind::I64, offset: 4 };
     let keq = |e: E| E::Call { func: "key_eq".into(), args: vec![key_at(e), getl("k"), getl("mode")] };
+    let comparison_bump = || N::If {
+        cond: E::GetGlobal("__witchy_extract_active".into()),
+        then_: vec![N::SetGlobal {
+            global: "__witchy_extract_key_comparisons".into(),
+            value: E::Binary {
+                op: BinOp::Add,
+                kind: Kind::I64,
+                lhs: Box::new(E::GetGlobal("__witchy_extract_key_comparisons".into())),
+                rhs: Box::new(E::ConstI64(1)),
+            },
+        }],
+        els: vec![],
+        result: None,
+    };
     let linear = N::Block {
         label: "done".into(),
         result: None,
@@ -164,6 +178,7 @@ pub fn dict_find_helper() -> WirFunc {
             label: "l".into(),
             body: vec![
                 N::Br { target: "done".into(), cond: Some(b(BinOp::Ge, getl("i"), getl("count"))) },
+                comparison_bump(),
                 N::If { cond: keq(getl("i")), then_: vec![N::Return(Some(getl("i")))], els: vec![], result: None },
                 setl("i", b(BinOp::Add, getl("i"), i32c(1))),
                 N::Br { target: "l".into(), cond: None },
@@ -180,6 +195,7 @@ pub fn dict_find_helper() -> WirFunc {
             body: vec![
                 setl("e", slot_at_h),
                 N::Br { target: "miss".into(), cond: Some(E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("e")) }) },
+                comparison_bump(),
                 N::If {
                     cond: keq(b(BinOp::Sub, getl("e"), i32c(1))),
                     then_: vec![N::Return(Some(b(BinOp::Sub, getl("e"), i32c(1))))],
@@ -284,6 +300,161 @@ pub fn dict_index_put_helper() -> WirFunc {
     }
 }
 
+/// `$dict_reindex(d, cap, mode)` — rebuild the hidden open-addressing index
+/// after a structural copy or grow. Rehashing existing entries is maintenance,
+/// not a second semantic lookup. Compound key modes keep the index disabled.
+pub fn dict_reindex_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary {
+        op,
+        kind: Kind::I32,
+        lhs: Box::new(l),
+        rhs: Box::new(r),
+    };
+    let entry = |index: E| b(BinOp::Add, getl("d"), b(BinOp::Mul, index, i32c(16)));
+    let allocate_index = || N::SetLocal {
+        local: "idx".into(),
+        value: E::Call {
+            func: "bump_alloc".into(),
+            args: vec![b(
+                BinOp::Add,
+                i32c(4),
+                b(BinOp::Mul, getl("slots"), i32c(4)),
+            )],
+        },
+    };
+    WirFunc {
+        name: "dict_reindex".into(),
+        params: vec![
+            WirLocal { name: "d".into(), ty: WirTy::Bool },
+            WirLocal { name: "cap".into(), ty: WirTy::Bool },
+            WirLocal { name: "mode".into(), ty: WirTy::Bool },
+        ],
+        ret: vec![],
+        locals: ["count", "slots", "idx", "i"]
+            .iter()
+            .map(|name| WirLocal { name: (*name).into(), ty: WirTy::Bool })
+            .collect(),
+        body: vec![
+            N::SetLocal {
+                local: "idx".into(),
+                value: E::Load {
+                    ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))),
+                    kind: Kind::I32,
+                    offset: 0,
+                },
+            },
+            N::If {
+                cond: b(
+                    BinOp::And,
+                    b(BinOp::Gt, getl("cap"), i32c(0)),
+                    b(BinOp::Le, getl("mode"), i32c(2)),
+                ),
+                then_: vec![
+                    N::SetLocal { local: "slots".into(), value: i32c(16) },
+                    N::Block {
+                        label: "size_done".into(),
+                        result: None,
+                        body: vec![N::Loop {
+                            label: "size_loop".into(),
+                            body: vec![
+                                N::Br {
+                                    target: "size_done".into(),
+                                    cond: Some(b(
+                                        BinOp::Ge,
+                                        getl("slots"),
+                                        b(BinOp::Mul, getl("cap"), i32c(2)),
+                                    )),
+                                },
+                                N::SetLocal {
+                                    local: "slots".into(),
+                                    value: b(BinOp::Mul, getl("slots"), i32c(2)),
+                                },
+                                N::Br { target: "size_loop".into(), cond: None },
+                            ],
+                        }],
+                    },
+                    N::If {
+                        cond: b(BinOp::Eq, getl("idx"), i32c(0)),
+                        then_: vec![allocate_index()],
+                        els: vec![N::If {
+                            cond: b(
+                                BinOp::Lt,
+                                E::Load {
+                                    ptr: Box::new(getl("idx")),
+                                    kind: Kind::I32,
+                                    offset: 0,
+                                },
+                                getl("slots"),
+                            ),
+                            then_: vec![allocate_index()],
+                            els: vec![],
+                            result: None,
+                        }],
+                        result: None,
+                    },
+                    N::Store { ptr: getl("idx"), value: getl("slots"), kind: Kind::I32, offset: 0 },
+                    N::MemoryFill {
+                        dest: b(BinOp::Add, getl("idx"), i32c(4)),
+                        value: i32c(0),
+                        len: b(BinOp::Mul, getl("slots"), i32c(4)),
+                    },
+                    N::Store {
+                        ptr: b(BinOp::Sub, getl("d"), i32c(4)),
+                        value: getl("idx"),
+                        kind: Kind::I32,
+                        offset: 0,
+                    },
+                    N::SetLocal {
+                        local: "count".into(),
+                        value: E::Load { ptr: Box::new(getl("d")), kind: Kind::I32, offset: 0 },
+                    },
+                    N::SetLocal { local: "i".into(), value: i32c(0) },
+                    N::Block {
+                        label: "index_done".into(),
+                        result: None,
+                        body: vec![N::Loop {
+                            label: "index_loop".into(),
+                            body: vec![
+                                N::Br {
+                                    target: "index_done".into(),
+                                    cond: Some(b(BinOp::Ge, getl("i"), getl("count"))),
+                                },
+                                N::Do(E::Call {
+                                    func: "dict_index_put".into(),
+                                    args: vec![
+                                        getl("idx"),
+                                        getl("slots"),
+                                        getl("i"),
+                                        E::Load { ptr: Box::new(entry(getl("i"))), kind: Kind::I64, offset: 4 },
+                                        getl("mode"),
+                                    ],
+                                }),
+                                N::SetLocal {
+                                    local: "i".into(),
+                                    value: b(BinOp::Add, getl("i"), i32c(1)),
+                                },
+                                N::Br { target: "index_loop".into(), cond: None },
+                            ],
+                        }],
+                    },
+                ],
+                els: vec![N::Store {
+                    ptr: b(BinOp::Sub, getl("d"), i32c(4)),
+                    value: i32c(0),
+                    kind: Kind::I32,
+                    offset: 0,
+                }],
+                result: None,
+            },
+        ],
+        raw_body: None,
+    }
+}
+
 /// `$dict_new() -> i32` — an empty dict: 8 reserved bytes holding a zero hidden
 /// word (at p-4) and a zero count (at p), with `p` returned.
 pub fn dict_new_helper() -> WirFunc {
@@ -371,9 +542,10 @@ pub fn dict_insert_helper() -> WirFunc {
     }
 }
 
-/// `$dict_insert_extract(d, k, v, mode) -> (dict, present, old-slot)` — the
-/// copy-correct upsert baseline with exactly one semantic key search. The
-/// structural search result drives both displaced-value selection and repair.
+/// `$dict_insert_extract(d, k, v, mode, cap, key_bias, value_bias)
+///     -> (dict, present, old-slot, cap)` — one semantic key search with an
+/// ownership-aware replace/append path. Leaf transfer is delegated to the
+/// generic `$slot_take_or_dup` helper.
 pub fn dict_insert_extract_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
@@ -382,6 +554,10 @@ pub fn dict_insert_extract_helper() -> WirFunc {
     let i64c = E::ConstI64;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let entry = |base: &str, index: E| b(BinOp::Add, getl(base), b(BinOp::Mul, index, i32c(16)));
+    let dup_leaf = |value: E, bias: &str| E::Call {
+        func: "leaf_dup".into(),
+        args: vec![value, getl(bias)],
+    };
     WirFunc {
         name: "dict_insert_extract".into(),
         params: vec![
@@ -389,47 +565,225 @@ pub fn dict_insert_extract_helper() -> WirFunc {
             WirLocal { name: "k".into(), ty: WirTy::Int },
             WirLocal { name: "v".into(), ty: WirTy::Int },
             WirLocal { name: "mode".into(), ty: WirTy::Bool },
+            WirLocal { name: "cap".into(), ty: WirTy::Bool },
+            WirLocal { name: "key_bias".into(), ty: WirTy::Bool },
+            WirLocal { name: "value_bias".into(), ty: WirTy::Bool },
         ],
-        ret: vec![WirTy::Bool, WirTy::Bool, WirTy::Int],
-        locals: ["count", "found", "present", "new", "bytes"]
+        ret: vec![WirTy::Bool, WirTy::Bool, WirTy::Int, WirTy::Bool],
+        locals: ["count", "found", "present", "new", "newcap", "bytes", "out_cap", "i", "idx"]
             .iter()
             .map(|name| WirLocal { name: (*name).into(), ty: WirTy::Bool })
             .chain(std::iter::once(WirLocal { name: "old".into(), ty: WirTy::Int }))
             .collect(),
         body: vec![
             N::SetLocal { local: "count".into(), value: E::Load { ptr: Box::new(getl("d")), kind: Kind::I32, offset: 0 } },
+            N::SetGlobal {
+                global: "__witchy_extract_active".into(),
+                value: b(
+                    BinOp::Add,
+                    E::GetGlobal("__witchy_extract_active".into()),
+                    i32c(1),
+                ),
+            },
+            N::SetGlobal {
+                global: "__witchy_extract_searches".into(),
+                value: E::Binary {
+                    op: BinOp::Add,
+                    kind: Kind::I64,
+                    lhs: Box::new(E::GetGlobal("__witchy_extract_searches".into())),
+                    rhs: Box::new(i64c(1)),
+                },
+            },
             N::SetLocal { local: "found".into(), value: E::Call { func: "dict_find".into(), args: vec![getl("d"), getl("k"), getl("mode")] } },
+            N::SetGlobal {
+                global: "__witchy_extract_active".into(),
+                value: b(
+                    BinOp::Sub,
+                    E::GetGlobal("__witchy_extract_active".into()),
+                    i32c(1),
+                ),
+            },
             N::SetLocal { local: "present".into(), value: b(BinOp::Ge, getl("found"), i32c(0)) },
             N::SetLocal { local: "old".into(), value: i64c(0) },
-            N::If {
-                cond: getl("present"),
-                then_: vec![N::SetLocal {
-                    local: "old".into(),
-                    value: E::Load { ptr: Box::new(entry("d", getl("found"))), kind: Kind::I64, offset: 12 },
-                }],
-                els: vec![],
-                result: None,
-            },
             N::SetLocal { local: "bytes".into(), value: b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("count"), i32c(16))) },
-            N::SetLocal {
-                local: "new".into(),
-                value: b(BinOp::Add, E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(24), b(BinOp::Mul, getl("count"), i32c(16)))] }, i32c(4)),
-            },
-            N::Store { ptr: b(BinOp::Sub, getl("new"), i32c(4)), value: i32c(0), kind: Kind::I32, offset: 0 },
-            N::MemoryCopy { dest: getl("new"), src: getl("d"), len: getl("bytes") },
             N::If {
-                cond: getl("present"),
-                then_: vec![N::Store { ptr: entry("new", getl("found")), value: getl("v"), kind: Kind::I64, offset: 12 }],
+                cond: b(BinOp::Gt, getl("cap"), i32c(0)),
+                then_: vec![
+                    N::SetLocal { local: "new".into(), value: getl("d") },
+                    N::SetLocal { local: "out_cap".into(), value: getl("cap") },
+                    N::If {
+                        cond: getl("present"),
+                        then_: vec![
+                            N::SetLocal {
+                                local: "old".into(),
+                                value: E::Call {
+                                    func: "slot_take_or_dup".into(),
+                                    args: vec![
+                                        b(BinOp::Add, entry("d", getl("found")), i32c(12)),
+                                        i32c(1),
+                                        getl("value_bias"),
+                                    ],
+                                },
+                            },
+                            N::Store {
+                                ptr: entry("d", getl("found")),
+                                value: dup_leaf(getl("v"), "value_bias"),
+                                kind: Kind::I64,
+                                offset: 12,
+                            },
+                        ],
+                        els: vec![N::If {
+                            cond: b(BinOp::Gt, getl("cap"), getl("count")),
+                            then_: vec![
+                                N::Store { ptr: getl("d"), value: b(BinOp::Add, getl("count"), i32c(1)), kind: Kind::I32, offset: 0 },
+                                N::Store { ptr: entry("d", getl("count")), value: dup_leaf(getl("k"), "key_bias"), kind: Kind::I64, offset: 4 },
+                                N::Store { ptr: entry("d", getl("count")), value: dup_leaf(getl("v"), "value_bias"), kind: Kind::I64, offset: 12 },
+                                N::SetLocal {
+                                    local: "idx".into(),
+                                    value: E::Load {
+                                        ptr: Box::new(b(BinOp::Sub, getl("d"), i32c(4))),
+                                        kind: Kind::I32,
+                                        offset: 0,
+                                    },
+                                },
+                                N::If {
+                                    cond: b(
+                                        BinOp::And,
+                                        b(BinOp::Ne, getl("idx"), i32c(0)),
+                                        b(BinOp::Le, getl("mode"), i32c(2)),
+                                    ),
+                                    then_: vec![N::Do(E::Call {
+                                        func: "dict_index_put".into(),
+                                        args: vec![
+                                            getl("idx"),
+                                            E::Load { ptr: Box::new(getl("idx")), kind: Kind::I32, offset: 0 },
+                                            getl("count"),
+                                            getl("k"),
+                                            getl("mode"),
+                                        ],
+                                    })],
+                                    els: vec![],
+                                    result: None,
+                                },
+                            ],
+                            els: vec![
+                                N::SetLocal {
+                                    local: "newcap".into(),
+                                    value: b(BinOp::Mul, b(BinOp::Add, getl("count"), i32c(1)), i32c(2)),
+                                },
+                                N::If {
+                                    cond: b(BinOp::Lt, getl("newcap"), i32c(8)),
+                                    then_: vec![N::SetLocal { local: "newcap".into(), value: i32c(8) }],
+                                    els: vec![],
+                                    result: None,
+                                },
+                                N::SetLocal {
+                                    local: "new".into(),
+                                    value: b(BinOp::Add, E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(8), b(BinOp::Mul, getl("newcap"), i32c(16)))] }, i32c(4)),
+                                },
+                                N::Store { ptr: b(BinOp::Sub, getl("new"), i32c(4)), value: i32c(0), kind: Kind::I32, offset: 0 },
+                                N::MemoryCopy { dest: getl("new"), src: getl("d"), len: getl("bytes") },
+                                N::SetGlobal {
+                                    global: "__witchy_extract_copied_bytes".into(),
+                                    value: E::Binary {
+                                        op: BinOp::Add,
+                                        kind: Kind::I64,
+                                        lhs: Box::new(E::GetGlobal("__witchy_extract_copied_bytes".into())),
+                                        rhs: Box::new(E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(getl("bytes")) }),
+                                    },
+                                },
+                                N::Store { ptr: getl("new"), value: b(BinOp::Add, getl("count"), i32c(1)), kind: Kind::I32, offset: 0 },
+                                N::Store { ptr: entry("new", getl("count")), value: dup_leaf(getl("k"), "key_bias"), kind: Kind::I64, offset: 4 },
+                                N::Store { ptr: entry("new", getl("count")), value: dup_leaf(getl("v"), "value_bias"), kind: Kind::I64, offset: 12 },
+                                N::SetLocal { local: "out_cap".into(), value: getl("newcap") },
+                                N::Do(E::Call { func: "dict_reindex".into(), args: vec![getl("new"), getl("newcap"), getl("mode")] }),
+                                N::Do(E::Call { func: "rc_free".into(), args: vec![b(BinOp::Sub, getl("d"), i32c(4))] }),
+                            ],
+                            result: None,
+                        }],
+                        result: None,
+                    },
+                ],
                 els: vec![
-                    N::Store { ptr: getl("new"), value: b(BinOp::Add, getl("count"), i32c(1)), kind: Kind::I32, offset: 0 },
-                    N::Store { ptr: entry("new", getl("count")), value: getl("k"), kind: Kind::I64, offset: 4 },
-                    N::Store { ptr: entry("new", getl("count")), value: getl("v"), kind: Kind::I64, offset: 12 },
+                    N::SetLocal {
+                        local: "newcap".into(),
+                        value: b(BinOp::Mul, b(BinOp::Add, getl("count"), i32c(1)), i32c(2)),
+                    },
+                    N::If {
+                        cond: b(BinOp::Lt, getl("newcap"), i32c(8)),
+                        then_: vec![N::SetLocal { local: "newcap".into(), value: i32c(8) }],
+                        els: vec![],
+                        result: None,
+                    },
+                    N::SetLocal {
+                        local: "new".into(),
+                        value: b(BinOp::Add, E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(8), b(BinOp::Mul, getl("newcap"), i32c(16)))] }, i32c(4)),
+                    },
+                    N::Store { ptr: b(BinOp::Sub, getl("new"), i32c(4)), value: i32c(0), kind: Kind::I32, offset: 0 },
+                    N::MemoryCopy { dest: getl("new"), src: getl("d"), len: getl("bytes") },
+                    N::SetGlobal {
+                        global: "__witchy_extract_copied_bytes".into(),
+                        value: E::Binary {
+                            op: BinOp::Add,
+                            kind: Kind::I64,
+                            lhs: Box::new(E::GetGlobal("__witchy_extract_copied_bytes".into())),
+                            rhs: Box::new(E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(getl("bytes")) }),
+                        },
+                    },
+                    N::SetLocal { local: "i".into(), value: i32c(0) },
+                    N::Block {
+                        label: "dup_done".into(),
+                        result: None,
+                        body: vec![N::Loop {
+                            label: "dup_loop".into(),
+                            body: vec![
+                                N::Br { target: "dup_done".into(), cond: Some(b(BinOp::Ge, getl("i"), getl("count"))) },
+                                N::Drop(dup_leaf(E::Load { ptr: Box::new(entry("new", getl("i"))), kind: Kind::I64, offset: 4 }, "key_bias")),
+                                N::Drop(dup_leaf(E::Load { ptr: Box::new(entry("new", getl("i"))), kind: Kind::I64, offset: 12 }, "value_bias")),
+                                N::SetLocal { local: "i".into(), value: b(BinOp::Add, getl("i"), i32c(1)) },
+                                N::Br { target: "dup_loop".into(), cond: None },
+                            ],
+                        }],
+                    },
+                    N::SetLocal { local: "out_cap".into(), value: getl("newcap") },
+                    N::If {
+                        cond: getl("present"),
+                        then_: vec![
+                            N::SetLocal {
+                                local: "old".into(),
+                                value: E::Call {
+                                    func: "slot_take_or_dup".into(),
+                                    args: vec![
+                                        b(BinOp::Add, entry("d", getl("found")), i32c(12)),
+                                        i32c(0),
+                                        getl("value_bias"),
+                                    ],
+                                },
+                            },
+                            N::Do(E::Call {
+                                func: "leaf_drop".into(),
+                                args: vec![
+                                    E::Load { ptr: Box::new(entry("new", getl("found"))), kind: Kind::I64, offset: 12 },
+                                    getl("value_bias"),
+                                ],
+                            }),
+                            N::Store { ptr: entry("new", getl("found")), value: dup_leaf(getl("v"), "value_bias"), kind: Kind::I64, offset: 12 },
+                        ],
+                        els: vec![
+                            N::Store { ptr: getl("new"), value: b(BinOp::Add, getl("count"), i32c(1)), kind: Kind::I32, offset: 0 },
+                            N::Store { ptr: entry("new", getl("count")), value: dup_leaf(getl("k"), "key_bias"), kind: Kind::I64, offset: 4 },
+                            N::Store { ptr: entry("new", getl("count")), value: dup_leaf(getl("v"), "value_bias"), kind: Kind::I64, offset: 12 },
+                        ],
+                        result: None,
+                    },
+                    N::Do(E::Call { func: "dict_reindex".into(), args: vec![getl("new"), getl("newcap"), getl("mode")] }),
                 ],
                 result: None,
             },
             N::Push(getl("new")),
             N::Push(getl("present")),
             N::Push(getl("old")),
+            N::Push(getl("out_cap")),
         ],
         raw_body: None,
     }
@@ -1032,9 +1386,9 @@ pub fn dict_remove_helper() -> WirFunc {
     }
 }
 
-/// `$dict_remove_extract(d, k, mode) -> (dict, present, old-slot)` — locate the
-/// entry once, return its old value, and repair insertion order by copying the
-/// two ranges around the selected index.
+/// `$dict_remove_extract(d, k, mode, cap, key_bias, value_bias)
+///     -> (dict, present, old-slot, cap)` — locate once, transfer or retain the
+/// old value through `$slot_take_or_dup`, and repair insertion order.
 pub fn dict_remove_extract_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
@@ -1043,53 +1397,193 @@ pub fn dict_remove_extract_helper() -> WirFunc {
     let i64c = E::ConstI64;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     let entry = |base: &str, index: E| b(BinOp::Add, getl(base), b(BinOp::Mul, index, i32c(16)));
+    let dup_leaf = |value: E, bias: &str| E::Call {
+        func: "leaf_dup".into(),
+        args: vec![value, getl(bias)],
+    };
     WirFunc {
         name: "dict_remove_extract".into(),
         params: vec![
             WirLocal { name: "d".into(), ty: WirTy::Bool },
             WirLocal { name: "k".into(), ty: WirTy::Int },
             WirLocal { name: "mode".into(), ty: WirTy::Bool },
+            WirLocal { name: "cap".into(), ty: WirTy::Bool },
+            WirLocal { name: "key_bias".into(), ty: WirTy::Bool },
+            WirLocal { name: "value_bias".into(), ty: WirTy::Bool },
         ],
-        ret: vec![WirTy::Bool, WirTy::Bool, WirTy::Int],
-        locals: ["count", "found", "present", "new", "prefix", "suffix"]
+        ret: vec![WirTy::Bool, WirTy::Bool, WirTy::Int, WirTy::Bool],
+        locals: ["count", "found", "present", "new", "prefix", "suffix", "out_cap", "i"]
             .iter()
             .map(|name| WirLocal { name: (*name).into(), ty: WirTy::Bool })
             .chain(std::iter::once(WirLocal { name: "old".into(), ty: WirTy::Int }))
             .collect(),
         body: vec![
             N::SetLocal { local: "count".into(), value: E::Load { ptr: Box::new(getl("d")), kind: Kind::I32, offset: 0 } },
+            N::SetGlobal {
+                global: "__witchy_extract_active".into(),
+                value: b(
+                    BinOp::Add,
+                    E::GetGlobal("__witchy_extract_active".into()),
+                    i32c(1),
+                ),
+            },
+            N::SetGlobal {
+                global: "__witchy_extract_searches".into(),
+                value: E::Binary {
+                    op: BinOp::Add,
+                    kind: Kind::I64,
+                    lhs: Box::new(E::GetGlobal("__witchy_extract_searches".into())),
+                    rhs: Box::new(i64c(1)),
+                },
+            },
             N::SetLocal { local: "found".into(), value: E::Call { func: "dict_find".into(), args: vec![getl("d"), getl("k"), getl("mode")] } },
+            N::SetGlobal {
+                global: "__witchy_extract_active".into(),
+                value: b(
+                    BinOp::Sub,
+                    E::GetGlobal("__witchy_extract_active".into()),
+                    i32c(1),
+                ),
+            },
             N::SetLocal { local: "present".into(), value: b(BinOp::Ge, getl("found"), i32c(0)) },
             N::SetLocal { local: "old".into(), value: i64c(0) },
-            N::SetLocal {
-                local: "new".into(),
-                value: b(BinOp::Add, E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(8), b(BinOp::Mul, getl("count"), i32c(16)))] }, i32c(4)),
-            },
-            N::Store { ptr: b(BinOp::Sub, getl("new"), i32c(4)), value: i32c(0), kind: Kind::I32, offset: 0 },
             N::If {
-                cond: getl("present"),
+                cond: b(BinOp::Gt, getl("cap"), i32c(0)),
                 then_: vec![
-                    N::SetLocal { local: "old".into(), value: E::Load { ptr: Box::new(entry("d", getl("found"))), kind: Kind::I64, offset: 12 } },
-                    N::SetLocal { local: "prefix".into(), value: b(BinOp::Mul, getl("found"), i32c(16)) },
-                    N::SetLocal { local: "suffix".into(), value: b(BinOp::Mul, b(BinOp::Sub, b(BinOp::Sub, getl("count"), getl("found")), i32c(1)), i32c(16)) },
-                    N::Store { ptr: getl("new"), value: b(BinOp::Sub, getl("count"), i32c(1)), kind: Kind::I32, offset: 0 },
-                    N::MemoryCopy { dest: b(BinOp::Add, getl("new"), i32c(4)), src: b(BinOp::Add, getl("d"), i32c(4)), len: getl("prefix") },
-                    N::MemoryCopy {
-                        dest: b(BinOp::Add, b(BinOp::Add, getl("new"), i32c(4)), getl("prefix")),
-                        src: b(BinOp::Add, entry("d", b(BinOp::Add, getl("found"), i32c(1))), i32c(4)),
-                        len: getl("suffix"),
+                    N::SetLocal { local: "new".into(), value: getl("d") },
+                    N::SetLocal { local: "out_cap".into(), value: getl("cap") },
+                    N::If {
+                        cond: getl("present"),
+                        then_: vec![
+                            N::SetLocal {
+                                local: "old".into(),
+                                value: E::Call {
+                                    func: "slot_take_or_dup".into(),
+                                    args: vec![
+                                        b(BinOp::Add, entry("d", getl("found")), i32c(12)),
+                                        i32c(1),
+                                        getl("value_bias"),
+                                    ],
+                                },
+                            },
+                            N::Do(E::Call {
+                                func: "leaf_drop".into(),
+                                args: vec![
+                                    E::Load { ptr: Box::new(entry("d", getl("found"))), kind: Kind::I64, offset: 4 },
+                                    getl("key_bias"),
+                                ],
+                            }),
+                            N::Store { ptr: entry("d", getl("found")), value: i64c(0), kind: Kind::I64, offset: 4 },
+                            N::SetLocal { local: "suffix".into(), value: b(BinOp::Mul, b(BinOp::Sub, b(BinOp::Sub, getl("count"), getl("found")), i32c(1)), i32c(16)) },
+                            N::MemoryCopy {
+                                dest: b(BinOp::Add, entry("d", getl("found")), i32c(4)),
+                                src: b(BinOp::Add, entry("d", b(BinOp::Add, getl("found"), i32c(1))), i32c(4)),
+                                len: getl("suffix"),
+                            },
+                            N::Store {
+                                ptr: entry("d", b(BinOp::Sub, getl("count"), i32c(1))),
+                                value: i64c(0),
+                                kind: Kind::I64,
+                                offset: 4,
+                            },
+                            N::Store {
+                                ptr: entry("d", b(BinOp::Sub, getl("count"), i32c(1))),
+                                value: i64c(0),
+                                kind: Kind::I64,
+                                offset: 12,
+                            },
+                            N::Store { ptr: getl("d"), value: b(BinOp::Sub, getl("count"), i32c(1)), kind: Kind::I32, offset: 0 },
+                        ],
+                        els: vec![],
+                        result: None,
                     },
                 ],
-                els: vec![N::MemoryCopy {
-                    dest: getl("new"),
-                    src: getl("d"),
-                    len: b(BinOp::Add, i32c(4), b(BinOp::Mul, getl("count"), i32c(16))),
+                els: vec![N::If {
+                    cond: getl("present"),
+                    then_: vec![
+                        N::SetLocal {
+                            local: "new".into(),
+                            value: b(BinOp::Add, E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, i32c(8), b(BinOp::Mul, getl("count"), i32c(16)))] }, i32c(4)),
+                        },
+                        N::Store { ptr: b(BinOp::Sub, getl("new"), i32c(4)), value: i32c(0), kind: Kind::I32, offset: 0 },
+                        N::SetLocal {
+                            local: "old".into(),
+                            value: E::Call {
+                                func: "slot_take_or_dup".into(),
+                                args: vec![
+                                    b(BinOp::Add, entry("d", getl("found")), i32c(12)),
+                                    i32c(0),
+                                    getl("value_bias"),
+                                ],
+                            },
+                        },
+                        N::SetLocal { local: "prefix".into(), value: b(BinOp::Mul, getl("found"), i32c(16)) },
+                        N::SetLocal { local: "suffix".into(), value: b(BinOp::Mul, b(BinOp::Sub, b(BinOp::Sub, getl("count"), getl("found")), i32c(1)), i32c(16)) },
+                        N::Store { ptr: getl("new"), value: b(BinOp::Sub, getl("count"), i32c(1)), kind: Kind::I32, offset: 0 },
+                        N::MemoryCopy { dest: b(BinOp::Add, getl("new"), i32c(4)), src: b(BinOp::Add, getl("d"), i32c(4)), len: getl("prefix") },
+                        N::MemoryCopy {
+                            dest: b(BinOp::Add, b(BinOp::Add, getl("new"), i32c(4)), getl("prefix")),
+                            src: b(BinOp::Add, entry("d", b(BinOp::Add, getl("found"), i32c(1))), i32c(4)),
+                            len: getl("suffix"),
+                        },
+                        N::SetGlobal {
+                            global: "__witchy_extract_copied_bytes".into(),
+                            value: E::Binary {
+                                op: BinOp::Add,
+                                kind: Kind::I64,
+                                lhs: Box::new(E::GetGlobal("__witchy_extract_copied_bytes".into())),
+                                rhs: Box::new(E::Convert {
+                                    from: Kind::I32,
+                                    to: Kind::I64,
+                                    arg: Box::new(b(BinOp::Add, getl("prefix"), getl("suffix"))),
+                                }),
+                            },
+                        },
+                        N::SetLocal { local: "i".into(), value: i32c(0) },
+                        N::Block {
+                            label: "dup_done".into(),
+                            result: None,
+                            body: vec![N::Loop {
+                                label: "dup_loop".into(),
+                                body: vec![
+                                    N::Br {
+                                        target: "dup_done".into(),
+                                        cond: Some(b(
+                                            BinOp::Ge,
+                                            getl("i"),
+                                            b(BinOp::Sub, getl("count"), i32c(1)),
+                                        )),
+                                    },
+                                    N::Drop(dup_leaf(E::Load { ptr: Box::new(entry("new", getl("i"))), kind: Kind::I64, offset: 4 }, "key_bias")),
+                                    N::Drop(dup_leaf(E::Load { ptr: Box::new(entry("new", getl("i"))), kind: Kind::I64, offset: 12 }, "value_bias")),
+                                    N::SetLocal { local: "i".into(), value: b(BinOp::Add, getl("i"), i32c(1)) },
+                                    N::Br { target: "dup_loop".into(), cond: None },
+                                ],
+                            }],
+                        },
+                        N::SetLocal { local: "out_cap".into(), value: getl("count") },
+                    ],
+                    els: vec![
+                        N::SetLocal { local: "new".into(), value: getl("d") },
+                        N::SetLocal { local: "out_cap".into(), value: i32c(0) },
+                    ],
+                    result: None,
                 }],
+                result: None,
+            },
+            N::If {
+                cond: getl("present"),
+                then_: vec![N::Do(E::Call {
+                    func: "dict_reindex".into(),
+                    args: vec![getl("new"), getl("out_cap"), getl("mode")],
+                })],
+                els: vec![],
                 result: None,
             },
             N::Push(getl("new")),
             N::Push(getl("present")),
             N::Push(getl("old")),
+            N::Push(getl("out_cap")),
         ],
         raw_body: None,
     }

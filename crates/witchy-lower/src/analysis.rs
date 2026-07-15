@@ -440,6 +440,19 @@ impl Summaries {
         self.fns.get(name).and_then(|f| f.own_abi)
     }
 
+    /// Parameter positions written back through the uniform `var` ABI. This is
+    /// the operation-independent ownership hook: callers can attach tokens from
+    /// conventions without recognizing a source method name.
+    pub fn var_arg_indices(&self, name: &str) -> impl Iterator<Item = usize> + '_ {
+        self.fns
+            .get(name)
+            .into_iter()
+            .flat_map(|info| info.convs.iter().enumerate())
+            .filter_map(|(index, convention)| {
+                (*convention == Convention::Var).then_some(index)
+            })
+    }
+
     /// Is the value passed in argument position `idx` of a call to `name`
     /// LIVE after the call (a whole-alias the caller can observe)?
     fn arg_live(&self, name: &str, idx: usize) -> bool {
@@ -612,8 +625,20 @@ fn collect_accumulators_expr(
         | Expr::Field { base: expr, .. } => {
             collect_accumulators_expr(expr, summaries, accs, loop_ptrs, loop_sites)
         }
-        Expr::Call { args, .. }
-        | Expr::Ctor { args, .. }
+        Expr::Call { name, args } => {
+            for index in summaries.var_arg_indices(name) {
+                if let Some(Expr::Var(root)) = args.get(index) {
+                    accs.insert(root.clone());
+                    for loop_ptr in loop_ptrs.iter() {
+                        loop_sites.entry(*loop_ptr).or_default().insert(root.clone());
+                    }
+                }
+            }
+            for arg in args {
+                collect_accumulators_expr(arg, summaries, accs, loop_ptrs, loop_sites);
+            }
+        }
+        Expr::Ctor { args, .. }
         | Expr::AnonCtor { args, .. }
         | Expr::List(args)
         | Expr::Tuple(args) => {
@@ -1584,6 +1609,21 @@ fn builtin_arg_liveness(name: &str, argc: usize) -> Option<Vec<bool>> {
     let read_all = |n: usize| Some(vec![false; n]);
     if argc == 1 && witchy_syntax::ast::is_render_intrinsic(name) {
         return read_all(1);
+    }
+    if argc == 1
+        && (name == "list.__pop_extract" || name.starts_with("list.__pop_extract__"))
+    {
+        return read_all(1);
+    }
+    if argc == 2
+        && (name == "dict.__remove_extract" || name.starts_with("dict.__remove_extract__"))
+    {
+        return read_all(2);
+    }
+    if argc == 3
+        && (name == "dict.__insert_extract" || name.starts_with("dict.__insert_extract__"))
+    {
+        return Some(vec![false, true, true]);
     }
     match (name, argc) {
         // Collections: content reads and part-alias reads.

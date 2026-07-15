@@ -1150,6 +1150,19 @@
     "runnable": false
   },
   {
+    "block": 4,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/mutating-methods.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "36 37"
+    ],
+    "runnable": true
+  },
+  {
     "block": 1,
     "console_only": true,
     "expect_error": false,

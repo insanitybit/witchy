@@ -1097,25 +1097,129 @@ fn main(console: Console):
                     _ => None,
                 })
                 .unwrap_or_else(|| panic!("missing public dict.{public}"));
-            let [
-                ast::Stmt::LetPattern {
-                    value: ast::Expr::Call { name, .. },
-                    ..
-                },
-                ast::Stmt::Assign {
-                    name: receiver,
-                    value: ast::Expr::Var(next),
-                },
-                ast::Stmt::Expr(ast::Expr::Var(previous)),
-            ] = function.body.stmts.as_slice()
+            let [ast::Stmt::Expr(ast::Expr::Call { name, .. })] =
+                function.body.stmts.as_slice()
             else {
-                panic!("dict.{public} must contain exactly one fused extraction and write-back");
+                panic!("dict.{public} must contain exactly one fused `var` extraction");
             };
             assert_eq!(name, primitive, "dict.{public} must use its fused extraction primitive");
-            assert_eq!(receiver, "d", "dict.{public} must write back its receiver");
-            assert_eq!(next, "next", "dict.{public} must write back the extracted container");
-            assert_eq!(previous, "previous", "dict.{public} must return the extracted value");
         }
+    }
+
+    /// Capacity tokens are an optimization detail of the convention-bearing
+    /// `var` ABI. Function values and structured early returns must preserve the
+    /// same source envelope even when they conservatively take the CoW path.
+    #[test]
+    fn rfc0088_heap_var_function_values_and_early_returns_agree() {
+        let src = r#"import dict
+
+fn replace(var d: Dict(Int, Int), value: Int, stop: Bool) -> Option(Int):
+    let old = d.insert(1, value)
+    if stop:
+        return old
+    old
+
+fn apply(
+    f: fn(var Dict(Int, Int), Int, Bool) -> Option(Int),
+    var d: Dict(Int, Int),
+    value: Int,
+    stop: Bool,
+) -> Option(Int):
+    f(d, value, stop)
+
+fn main(console: Console):
+    var d = dict.from_pairs([(1, 10)])
+    let f: fn(var Dict(Int, Int), Int, Bool) -> Option(Int) = replace
+    let first = apply(f, d, 20, true)
+    let second = apply(f, d, 30, false)
+    console.print("${first ?? -1}")
+    console.print("${second ?? -1}")
+    console.print("${dict.at(d, 1)}")
+"#;
+        let want = ["10", "20", "30"];
+        assert_eq!(link_run(src), want, "interpreter heap-var function value");
+        assert_eq!(wasm_run(src), want, "compiled heap-var function value");
+    }
+
+    /// Shared record and ADT leaves exercise the descriptor path beyond scalar,
+    /// string, and nested-container slots. Snapshots must retain their old leaf
+    /// while the repaired root and ordinary result remain independently live.
+    #[test]
+    fn rfc0088_record_and_adt_leaves_survive_shared_extraction() {
+        let src = r#"import dict
+
+type Box:
+    value: String
+
+type Payload:
+    Text(String)
+    Count(Int)
+
+fn payload_text(value: Payload) -> String:
+    match value:
+        Text(text) -> text
+        Count(n) -> "${n}"
+
+fn main(console: Console):
+    var boxes = [Box("a"), Box("b")]
+    let boxes_snapshot = boxes
+    let popped = boxes.pop()
+
+    var payloads = dict.from_pairs([("key", Text("old"))])
+    let payloads_snapshot = payloads
+    let replaced = payloads.insert("key", Count(7))
+    let removed = payloads.remove("key")
+
+    match popped:
+        Some(value) -> console.print(value.value)
+        None -> console.print("none")
+    match replaced:
+        Some(value) -> console.print(payload_text(value))
+        None -> console.print("none")
+    match removed:
+        Some(value) -> console.print(payload_text(value))
+        None -> console.print("none")
+    console.print("${boxes_snapshot[1].value}")
+    console.print(payload_text(dict.at(payloads_snapshot, "key")))
+    console.print("${dict.length(payloads)}")
+"#;
+        let want = ["b", "old", "7", "b", "old", "0"];
+        assert_eq!(link_run(src), want, "interpreter record/ADT extraction");
+        assert_eq!(wasm_run(src), want, "compiled record/ADT extraction");
+    }
+
+    /// Nested List and Dict leaves cover both RC layouts: ordinary object-base
+    /// pointers and Dict's four-byte hidden-index bias.
+    #[test]
+    fn rfc0088_nested_container_leaves_survive_shared_extraction() {
+        let src = r#"import dict
+
+fn main(console: Console):
+    var rows = [[1], [2, 3]]
+    let rows_snapshot = rows
+    let row = rows.pop()
+
+    var inner = dict.from_pairs([("a", 1)])
+    var outer = dict.from_pairs([("key", inner)])
+    let outer_snapshot = outer
+    inner.insert("b", 2)
+    let replaced = outer.insert("key", inner)
+    let removed = outer.remove("key")
+
+    console.print("${row ?? []}")
+    console.print("${rows_snapshot[1]}")
+    match replaced:
+        Some(value) -> console.print("${dict.length(value)}")
+        None -> console.print("none")
+    match removed:
+        Some(value) -> console.print("${dict.at(value, "b")}")
+        None -> console.print("none")
+    console.print("${dict.at(dict.at(outer_snapshot, "key"), "a")}")
+    console.print("${dict.length(outer)}")
+"#;
+        let want = ["[2, 3]", "[2, 3]", "1", "2", "1", "0"];
+        assert_eq!(link_run(src), want, "interpreter nested-container extraction");
+        assert_eq!(wasm_run(src), want, "compiled nested-container extraction");
     }
 
     /// Return inference does not select mutation semantics. An elided result on a

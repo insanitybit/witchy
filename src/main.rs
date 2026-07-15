@@ -393,6 +393,11 @@ fn main() -> wasmtime::Result<()> {
                 println!("region_copy_bytes {}", s.region_copy_bytes);
                 println!("rc_reused_bytes {}", s.rc_reused_bytes);
                 println!("live_cells {}", s.live_cells);
+                println!("extract_searches {}", s.extract_searches);
+                println!("extract_key_comparisons {}", s.extract_key_comparisons);
+                println!("extract_copied_bytes {}", s.extract_copied_bytes);
+                println!("extract_retains {}", s.extract_retains);
+                println!("extract_drops {}", s.extract_drops);
             }
             Err(e) => {
                 eprintln!("witchy stats: {e}");

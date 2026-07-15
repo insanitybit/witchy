@@ -1143,6 +1143,48 @@ fn assemble_wir_module_with_structs(
                         init: GlobalInit::I64(0),
                         export: Some("__witchy_live_cells".into()),
                     },
+                    WirGlobal {
+                        name: "__witchy_extract_active".into(),
+                        kind: WK::I32,
+                        mutable: true,
+                        init: GlobalInit::I32(0),
+                        export: None,
+                    },
+                    WirGlobal {
+                        name: "__witchy_extract_searches".into(),
+                        kind: WK::I64,
+                        mutable: true,
+                        init: GlobalInit::I64(0),
+                        export: Some("__witchy_extract_searches".into()),
+                    },
+                    WirGlobal {
+                        name: "__witchy_extract_key_comparisons".into(),
+                        kind: WK::I64,
+                        mutable: true,
+                        init: GlobalInit::I64(0),
+                        export: Some("__witchy_extract_key_comparisons".into()),
+                    },
+                    WirGlobal {
+                        name: "__witchy_extract_copied_bytes".into(),
+                        kind: WK::I64,
+                        mutable: true,
+                        init: GlobalInit::I64(0),
+                        export: Some("__witchy_extract_copied_bytes".into()),
+                    },
+                    WirGlobal {
+                        name: "__witchy_extract_retains".into(),
+                        kind: WK::I64,
+                        mutable: true,
+                        init: GlobalInit::I64(0),
+                        export: Some("__witchy_extract_retains".into()),
+                    },
+                    WirGlobal {
+                        name: "__witchy_extract_drops".into(),
+                        kind: WK::I64,
+                        mutable: true,
+                        init: GlobalInit::I64(0),
+                        export: Some("__witchy_extract_drops".into()),
+                    },
                 ]
             } else {
                 Vec::new()

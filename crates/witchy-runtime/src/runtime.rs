@@ -596,6 +596,32 @@ impl Vm {
             .and_then(|g| g.get(&mut self.store).i64())
     }
 
+    fn i64_counter(&mut self, name: &str) -> Option<i64> {
+        self.instance
+            .get_global(&mut self.store, name)
+            .and_then(|g| g.get(&mut self.store).i64())
+    }
+
+    pub fn extract_searches(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_extract_searches")
+    }
+
+    pub fn extract_key_comparisons(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_extract_key_comparisons")
+    }
+
+    pub fn extract_copied_bytes(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_extract_copied_bytes")
+    }
+
+    pub fn extract_retains(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_extract_retains")
+    }
+
+    pub fn extract_drops(&mut self) -> Option<i64> {
+        self.i64_counter("__witchy_extract_drops")
+    }
+
     /// (RFC-0030) The final value of the `$heap` bump-pointer (exported as
     /// `__heap`): the live heap frontier in bytes at program end. With no
     /// region/watermark reclaim this is the peak. For a fixed program the delta

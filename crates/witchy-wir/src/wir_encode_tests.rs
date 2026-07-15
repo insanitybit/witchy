@@ -169,10 +169,25 @@
                 ("rc_freelist", Kind::I32, GlobalInit::I32(0)),
                 ("__rc_reused_bytes", Kind::I64, GlobalInit::I64(0)),
                 ("__witchy_live_cells", Kind::I64, GlobalInit::I64(0)),
+                ("__witchy_extract_active", Kind::I32, GlobalInit::I32(0)),
+                ("__witchy_extract_searches", Kind::I64, GlobalInit::I64(0)),
+                ("__witchy_extract_key_comparisons", Kind::I64, GlobalInit::I64(0)),
+                ("__witchy_extract_copied_bytes", Kind::I64, GlobalInit::I64(0)),
+                ("__witchy_extract_retains", Kind::I64, GlobalInit::I64(0)),
+                ("__witchy_extract_drops", Kind::I64, GlobalInit::I64(0)),
             ] {
                 if !m.globals.iter().any(|g| g.name == name) {
                     m.globals.push(WirGlobal { name: name.into(), kind, mutable: true, init, export: None });
                 }
+            }
+            if !m.globals.iter().any(|g| g.name == "heap_base") {
+                m.globals.push(WirGlobal {
+                    name: "heap_base".into(),
+                    kind: Kind::I32,
+                    mutable: false,
+                    init: GlobalInit::I32(1024),
+                    export: None,
+                });
             }
         }
         m
@@ -1585,8 +1600,10 @@
     #[test]
     fn dict_extract_helpers_perform_one_semantic_search() {
         use crate::wir_helpers::{
-            bump_alloc_helper, dict_insert_extract_helper, dict_remove_extract_helper,
-            ensure_helper, rc_alloc_helper,
+            bump_alloc_helper, dict_hash_helper, dict_index_put_helper,
+            dict_insert_extract_helper, dict_reindex_helper, dict_remove_extract_helper,
+            ensure_helper, leaf_drop_helper, leaf_dup_helper, rc_alloc_helper, rc_drop_helper,
+            rc_dup_helper, rc_free_helper, slot_take_or_dup_helper,
         };
         let gl = |name: &str| WirExpr::GetLocal(name.into());
         let gi = |name: &str| WirExpr::GetGlobal(name.into());
@@ -1635,7 +1652,7 @@
                 WirNode::CallStoreMulti {
                     func: helper.into(),
                     args,
-                    dests: vec!["out".into(), "present".into(), "old".into()],
+                    dests: vec!["out".into(), "present".into(), "old".into(), "cap".into()],
                 },
                 pi(gi("searches")),
                 pi(i32_to_i64(gl("present"))),
@@ -1646,28 +1663,33 @@
         probe(
             "dict_insert_extract",
             0,
-            vec![WirExpr::ConstI32(2048), WirExpr::ConstI64(7), WirExpr::ConstI64(71), WirExpr::ConstI32(0)],
+            vec![WirExpr::ConstI32(2048), WirExpr::ConstI64(7), WirExpr::ConstI64(71), WirExpr::ConstI32(0), WirExpr::ConstI32(0), WirExpr::ConstI32(-1), WirExpr::ConstI32(-1)],
         );
         probe(
             "dict_insert_extract",
             -1,
-            vec![WirExpr::ConstI32(2048), WirExpr::ConstI64(8), WirExpr::ConstI64(80), WirExpr::ConstI32(0)],
+            vec![WirExpr::ConstI32(2048), WirExpr::ConstI64(8), WirExpr::ConstI64(80), WirExpr::ConstI32(0), WirExpr::ConstI32(0), WirExpr::ConstI32(-1), WirExpr::ConstI32(-1)],
         );
         probe(
             "dict_remove_extract",
             0,
-            vec![WirExpr::ConstI32(2048), WirExpr::ConstI64(7), WirExpr::ConstI32(0)],
+            vec![WirExpr::ConstI32(2048), WirExpr::ConstI64(7), WirExpr::ConstI32(0), WirExpr::ConstI32(0), WirExpr::ConstI32(-1), WirExpr::ConstI32(-1)],
         );
         probe(
             "dict_remove_extract",
             -1,
-            vec![WirExpr::ConstI32(2048), WirExpr::ConstI64(9), WirExpr::ConstI32(0)],
+            vec![WirExpr::ConstI32(2048), WirExpr::ConstI64(9), WirExpr::ConstI32(0), WirExpr::ConstI32(0), WirExpr::ConstI32(-1), WirExpr::ConstI32(-1)],
         );
         let run = WirFunc {
             name: "run".into(),
             params: vec![],
             ret: vec![],
-            locals: vec![local("out", WirTy::Bool), local("present", WirTy::Bool), local("old", WirTy::Int)],
+            locals: vec![
+                local("out", WirTy::Bool),
+                local("present", WirTy::Bool),
+                local("old", WirTy::Int),
+                local("cap", WirTy::Bool),
+            ],
             body,
             raw_body: None,
         };
@@ -1677,6 +1699,15 @@
                 ensure_helper(false),
                 bump_alloc_helper(),
                 rc_alloc_helper(),
+                rc_free_helper(),
+                rc_dup_helper(),
+                rc_drop_helper(),
+                leaf_dup_helper(),
+                leaf_drop_helper(),
+                slot_take_or_dup_helper(),
+                dict_hash_helper(),
+                dict_index_put_helper(),
+                dict_reindex_helper(),
                 find,
                 dict_insert_extract_helper(),
                 dict_remove_extract_helper(),
@@ -1689,6 +1720,13 @@
                 WirGlobal { name: "rc_freelist".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(0), export: None },
                 WirGlobal { name: "__rc_reused_bytes".into(), kind: Kind::I64, mutable: true, init: GlobalInit::I64(0), export: None },
                 WirGlobal { name: "__witchy_live_cells".into(), kind: Kind::I64, mutable: true, init: GlobalInit::I64(0), export: None },
+                WirGlobal { name: "__witchy_extract_active".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(0), export: None },
+                WirGlobal { name: "__witchy_extract_searches".into(), kind: Kind::I64, mutable: true, init: GlobalInit::I64(0), export: None },
+                WirGlobal { name: "__witchy_extract_key_comparisons".into(), kind: Kind::I64, mutable: true, init: GlobalInit::I64(0), export: None },
+                WirGlobal { name: "__witchy_extract_copied_bytes".into(), kind: Kind::I64, mutable: true, init: GlobalInit::I64(0), export: None },
+                WirGlobal { name: "__witchy_extract_retains".into(), kind: Kind::I64, mutable: true, init: GlobalInit::I64(0), export: None },
+                WirGlobal { name: "__witchy_extract_drops".into(), kind: Kind::I64, mutable: true, init: GlobalInit::I64(0), export: None },
+                WirGlobal { name: "heap_base".into(), kind: Kind::I32, mutable: false, init: GlobalInit::I32(2048), export: None },
                 WirGlobal { name: "searches".into(), kind: Kind::I64, mutable: true, init: GlobalInit::I64(0), export: None },
                 WirGlobal { name: "find_result".into(), kind: Kind::I32, mutable: true, init: GlobalInit::I32(0), export: None },
             ],

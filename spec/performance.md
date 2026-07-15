@@ -33,6 +33,30 @@ expressed with index-arena handles rather than shared pointers, so even cyclic
 *structure* is just integers reclaimed with its arena. The two-tier contract
 over this model is [RFC-0029](../rfcs/0029-performance-tier-contract.md).
 
+## Ownership-aware update and extraction
+
+`List.pop`, `Dict.insert`, and `Dict.remove` return an ordinary `Option` while
+also writing their final container back through `var`. Their compiled lowering
+threads a hidden ownership/capacity token through the same convention-bearing
+call ABI:
+
+- a proven-unique `List.pop` moves the final leaf out and decrements the length
+  without copying the list spine;
+- `Dict.insert` and `Dict.remove` perform one semantic key search and reuse that
+  result for the ordinary return and structural repair;
+- unique dictionary replacement preserves the hash index, while insertion
+  grows capacity geometrically and reindexes only as structural maintenance;
+- a shared or unknown root takes a copy-on-write path, retaining the returned
+  and copied heap leaves needed to keep every alias valid;
+- empty pop and missing removal allocate, copy, retain, and drop nothing.
+
+These are ownership-dependent guarantees, not unconditional source-level
+complexities. `WITCHY_OPT=-inplace` selects the copy-correct differential
+oracle. `witchy stats` exposes `extract_searches`,
+`extract_key_comparisons`, `extract_copied_bytes`, `extract_retains`, and
+`extract_drops` so the no-copy and single-search claims are deterministic test
+facts rather than timing inferences.
+
 ## Phase 0 — Measure first
 
 A `bench/` suite of paired programs (witchy / Go / C#) run via `hyperfine`,

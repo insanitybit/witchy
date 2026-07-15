@@ -483,6 +483,53 @@ fn ty_to_valtype(t: &Type) -> ValType {
     }
 }
 
+/// Collection values whose hidden ownership token carries reusable capacity.
+/// This is derived from static parameter types, never from an operation name.
+fn type_has_capacity_token(t: &Type) -> bool {
+    match t {
+        Type::Named(name, _) => matches!(name.as_str(), "List" | "Dict" | "String" | "Bytes"),
+        Type::Qualified(_, inner) => type_has_capacity_token(inner),
+        _ => false,
+    }
+}
+
+/// RC-region bias for a value stored in a universal i64 collection slot.
+/// `None` is an unresolved generic shape and disables ownership-sensitive
+/// extraction; -1 is trivial/non-RC, 0 is an ordinary object base, and 4 is a
+/// Dict pointer following its hidden index word.
+fn rc_leaf_bias(t: &Type) -> Option<i32> {
+    match t {
+        Type::Qualified(_, inner) => rc_leaf_bias(inner),
+        Type::Tuple(_) => Some(0),
+        Type::Fn(_, _, _) => Some(-1),
+        Type::Named(name, args)
+            if args.is_empty()
+                && !name.contains('.')
+                && name.chars().next().is_some_and(char::is_lowercase) =>
+        {
+            None
+        }
+        Type::Named(name, _) if name == "Dict" => Some(4),
+        Type::Named(name, _)
+            if matches!(
+                name.as_str(),
+                "Int" | "Duration" | "Bool" | "Float" | "Nil" | "Console" | "Rand"
+            ) || is_builtin_externref_type(name) =>
+        {
+            Some(-1)
+        }
+        Type::Named(_, _) => Some(0),
+    }
+}
+
+fn collection_leaf_bias(t: &Type, collection: &str, index: usize) -> Option<i32> {
+    match t {
+        Type::Qualified(_, inner) => collection_leaf_bias(inner, collection, index),
+        Type::Named(name, args) if name == collection => args.get(index).and_then(rc_leaf_bias),
+        _ => None,
+    }
+}
+
 /// `(depth, scalar)` for a (possibly nested) `List(...)` type over a scalar
 /// element — `List(Int)` is `(1, Int)`, `List(List(Int))` is `(2, Int)`. `None`
 /// for non-list or non-scalar-bottomed types. Lets a `List(List(Int))` parameter
@@ -527,6 +574,7 @@ struct SavedScope {
     ret_slot: bool,
     var: bool,
     var_params: Vec<String>,
+    var_cap_params: Vec<String>,
     sroa_candidates: HashSet<String>,
     sroa_active: HashMap<String, usize>,
     view_candidates: HashSet<String>,
@@ -996,6 +1044,9 @@ struct Codegen<'types> {
     /// early `return`/`?` must push these (after the primary result) so the
     /// multi-result epilogue is reproduced on every exit path.
     cur_fn_var_params: Vec<String>,
+    /// Capacity-bearing `var` params whose ownership token is threaded as an
+    /// additional ABI input/result. A zero token is the conservative CoW path.
+    cur_fn_var_cap_params: Vec<String>,
     /// Generated per-shape structural-equality helper functions, keyed by
     /// `EqShape::id` so each shape is emitted once. A `BTreeMap` keeps emission
     /// order deterministic.
@@ -1133,6 +1184,7 @@ impl<'types> Codegen<'types> {
             local_fn_ret_kind: HashMap::new(),
             cur_fn_var: false,
             cur_fn_var_params: Vec::new(),
+            cur_fn_var_cap_params: Vec::new(),
             uses_list_drop: false,
             uses_starts_with: false,
             uses_crypto_ed25519_verify: false,
@@ -2413,6 +2465,15 @@ impl<'types> Codegen<'types> {
             .filter(|p| p.convention == Convention::Var)
             .map(|p| p.name.clone())
             .collect();
+        self.cur_fn_var_cap_params = f
+            .params
+            .iter()
+            .filter(|p| {
+                p.convention == Convention::Var
+                    && p.ty.as_ref().is_some_and(type_has_capacity_token)
+            })
+            .map(|p| p.name.clone())
+            .collect();
         self.cur_fn_var = !self.cur_fn_var_params.is_empty();
 
         self.begin_unit(renamed);
@@ -2462,6 +2523,7 @@ impl<'types> Codegen<'types> {
         }
         self.finish_unit(&f.name)?;
         self.cur_fn_own_param = None;
+        self.cur_fn_var_cap_params.clear();
         Ok(())
     }
 
@@ -2491,6 +2553,9 @@ impl<'types> Codegen<'types> {
         // EXTRA trailing i32 param (mirroring the WAT header's `$p__cap`), so it
         // is a param here, NOT a local (skipped in the cap-slot loop below).
         if let Some(p) = &self.cur_fn_own_param {
+            params.push(WirLocal { name: format!("{p}__cap"), ty: i32t() });
+        }
+        for p in &self.cur_fn_var_cap_params {
             params.push(WirLocal { name: format!("{p}__cap"), ty: i32t() });
         }
         let mut locals: Vec<WirLocal> = Vec::new();
@@ -2526,7 +2591,9 @@ impl<'types> Codegen<'types> {
         let mut cap_vars: Vec<&String> = self.inplace_push.iter().collect();
         cap_vars.sort();
         for v in cap_vars {
-            if Some(v.as_str()) != self.cur_fn_own_param.as_deref() {
+            if Some(v.as_str()) != self.cur_fn_own_param.as_deref()
+                && !self.cur_fn_var_cap_params.contains(v)
+            {
                 locals.push(WirLocal { name: format!("{v}__cap"), ty: i32t() });
             }
         }
@@ -2566,7 +2633,7 @@ impl<'types> Codegen<'types> {
             locals.push(WirLocal { name: assign_scratch("list", i), ty: i32t() });
             locals.push(WirLocal { name: assign_scratch("index", i), ty: i64t() });
             locals.push(WirLocal { name: assign_scratch("value", i), ty: i64t() });
-            for prefix in ["coord", "result", "root"] {
+            for prefix in ["coord", "result", "root", "cap"] {
                 locals.push(WirLocal { name: var_scratch(prefix, i, Kind::I32), ty: i32t() });
                 locals.push(WirLocal { name: var_scratch(prefix, i, Kind::I64), ty: i64t() });
                 locals.push(WirLocal {
@@ -2617,6 +2684,12 @@ impl<'types> Codegen<'types> {
             ret.push(Self::wir_ty_for_kind(k));
             body.push(witchy_wir::wir::WirNode::Push(witchy_wir::wir::WirExpr::GetLocal(name.clone())));
         }
+        for name in &self.cur_fn_var_cap_params {
+            ret.push(i32t());
+            body.push(witchy_wir::wir::WirNode::Push(
+                witchy_wir::wir::WirExpr::GetLocal(format!("{name}__cap")),
+            ));
+        }
         // own-ABI: append the returned buffer's ownership token (one i32 result).
         // It is `$p__cap` when the function returns its own buffer AND that buffer
         // is an in-place accumulator; otherwise 0 (the caller re-owns on its next
@@ -2660,6 +2733,9 @@ impl<'types> Codegen<'types> {
             .iter()
             .cloned()
             .collect();
+        if !force_copy_mode() {
+            self.inplace_push.extend(self.cur_fn_var_cap_params.iter().cloned());
+        }
         // (RFC-0033 R2) `(var, field)` pairs whose list buffer is never aliased and may
         // be grown in place. Consumed only inside the in-place RecordUpdate arm, which is
         // itself gated on the InPlace opt, so no separate de-opt lever is needed.
@@ -3050,12 +3126,18 @@ impl<'types> Codegen<'types> {
                     if !packed_done && !view_done && !sroa_done && !closure_elide_done {
                         let v = self.lower_expr(value)?;
                         seq.push(N::SetLocal { local: name.clone(), value: v });
-                        // An accumulator binding starts with a zero ownership token
-                        // (the first push re-owns).
+                        // A fresh non-empty list literal is already uniquely owned
+                        // with exactly its current length as capacity. Other
+                        // accumulator bindings start at zero and re-own on their
+                        // first structural update.
                         if self.collect_wir && self.inplace_push.contains(name) {
+                            let initial_cap = match value {
+                                Expr::List(items) => items.len() as i32,
+                                _ => 0,
+                            };
                             seq.push(N::SetLocal {
                                 local: format!("{name}__cap"),
-                                value: W::ConstI32(0),
+                                value: W::ConstI32(initial_cap),
                             });
                         }
                         // (RFC-0034 L3) Record a devirtualizable closure local: `name`
@@ -3122,6 +3204,9 @@ impl<'types> Codegen<'types> {
                                 var
                             };
                             seq.push(N::Push(var));
+                        }
+                        for name in &self.cur_fn_var_cap_params {
+                            seq.push(N::Push(W::GetLocal(format!("{name}__cap"))));
                         }
                         if let Some(p) = self.cur_fn_own_param.clone() {
                             let returns_own = matches!(opt, Some(Expr::Var(v)) if *v == p)
@@ -3910,6 +3995,21 @@ impl<'types> Codegen<'types> {
                             local: name.clone(),
                             value: Self::wir_convert(v, vk, target),
                         });
+                        // A plain rebind replaces the allocation represented by
+                        // this shadow token. Carrying the old capacity into the
+                        // new value would make the next in-place write trust
+                        // storage it does not own. Fresh list literals can seed
+                        // their exact capacity; every other shape re-owns from 0.
+                        if self.collect_wir && self.inplace_push.contains(name) {
+                            let cap = match value {
+                                Expr::List(items) => items.len() as i32,
+                                _ => 0,
+                            };
+                            seq.push(N::SetLocal {
+                                local: format!("{name}__cap"),
+                                value: W::ConstI32(cap),
+                            });
+                        }
                         tail_is_value = false;
                     }
                 }
@@ -5059,6 +5159,33 @@ impl<'types> Codegen<'types> {
                 None => w,
             });
         }
+        let cap_param_indices: Vec<usize> = self
+            .fn_params
+            .get(name)
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .filter_map(|(index, param)| {
+                (convs.get(index) == Some(&Convention::Var)
+                    && param.ty.as_ref().is_some_and(type_has_capacity_token))
+                .then_some(index)
+            })
+            .collect();
+        let mut cap_dests = Vec::with_capacity(cap_param_indices.len());
+        for (ordinal, index) in cap_param_indices.iter().copied().enumerate() {
+            let tracked_root = match args.get(index) {
+                Some(Expr::Var(root)) if self.inplace_push.contains(root) => Some(root),
+                _ => None,
+            };
+            args_w.push(match tracked_root {
+                Some(root) => W::GetLocal(format!("{root}__cap")),
+                None => W::ConstI32(0),
+            });
+            cap_dests.push(match tracked_root {
+                Some(root) => format!("{root}__cap"),
+                None => var_scratch("cap", ordinal, Kind::I32),
+            });
+        }
         // dest[0] = a kind-correct scratch for the declared return; then each var
         // arg's local. A single i32 tuple scratch is insufficient now that RFC-0087
         // admits independent scalar and reference returns from a `var` function.
@@ -5070,6 +5197,7 @@ impl<'types> Codegen<'types> {
         for (index, (_, kind)) in places.iter().enumerate() {
             dests.push(var_scratch("result", index, *kind));
         }
+        dests.extend(cap_dests);
         let mut seq = vec![N::CallStoreMulti { func: name.to_string(), args: args_w, dests }];
         let mut groups: Vec<(String, Kind, Expr)> = Vec::new();
         let mut coordinates = Vec::new();
@@ -6502,6 +6630,9 @@ impl<'types> Codegen<'types> {
                             };
                             nodes.push(N::Push(var));
                         }
+                        for name in &self.cur_fn_var_cap_params {
+                            nodes.push(N::Push(W::GetLocal(format!("{name}__cap"))));
+                        }
                         if self.cur_fn_own_param.is_some() {
                             nodes.push(N::Push(W::ConstI32(0)));
                         }
@@ -6836,6 +6967,7 @@ impl<'types> Codegen<'types> {
             .filter(|p| p.convention == Convention::Var)
             .map(|p| p.name.clone())
             .collect();
+        self.cur_fn_var_cap_params.clear();
         self.cur_fn_var = !self.cur_fn_var_params.is_empty();
         // Lambda params: i32 ABI placeholder + record/list types.
         for p in params {
@@ -6969,7 +7101,7 @@ impl<'types> Codegen<'types> {
                     locals.push(WirLocal { name: assign_scratch("list", i), ty: i32t() });
                     locals.push(WirLocal { name: assign_scratch("index", i), ty: WirTy::Int });
                     locals.push(WirLocal { name: assign_scratch("value", i), ty: WirTy::Int });
-                    for prefix in ["coord", "result", "root"] {
+                    for prefix in ["coord", "result", "root", "cap"] {
                         locals.push(WirLocal {
                             name: var_scratch(prefix, i, Kind::I32),
                             ty: i32t(),
@@ -7093,6 +7225,7 @@ impl<'types> Codegen<'types> {
             ret_slot: self.cur_fn_ret_slot,
             var: self.cur_fn_var,
             var_params: std::mem::take(&mut self.cur_fn_var_params),
+            var_cap_params: std::mem::take(&mut self.cur_fn_var_cap_params),
             sroa_candidates: std::mem::take(&mut self.sroa_candidates),
             sroa_active: std::mem::take(&mut self.sroa_active),
             view_candidates: std::mem::take(&mut self.view_candidates),
@@ -7128,6 +7261,7 @@ impl<'types> Codegen<'types> {
         self.cur_fn_ret_slot = s.ret_slot;
         self.cur_fn_var = s.var;
         self.cur_fn_var_params = s.var_params;
+        self.cur_fn_var_cap_params = s.var_cap_params;
         self.sroa_candidates = s.sroa_candidates;
         self.sroa_active = s.sroa_active;
         self.view_candidates = s.view_candidates;

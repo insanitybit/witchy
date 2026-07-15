@@ -1,7 +1,7 @@
 ---
 rfc: 0088
 title: "Ownership-aware update and extraction without mandatory container copies"
-status: proposed
+status: planned
 created: 2026-07-14
 predecessors:
   - "0087 (uniform var write-back - defines the source semantics this RFC optimizes)"
@@ -10,7 +10,9 @@ related:
   - "0051 (memory-safety invariants - existing in-place paths are the performance floor)"
   - "0029 (performance-tier contract - normal mode copies; opt mode may reject)"
   - "0083 (opt-mode lifetimes - active loans prevent in-place update or extraction)"
-tracking: prototype and instrumented dictionary-probe report required before acceptance
+tracking: move-out selected; copy-correct semantics and normal-mode ownership
+  lowering are implemented, with opt-mode loan diagnostics pending RFC-0083's
+  runtime-rooting phase
 ---
 
 # RFC-0088: Ownership-aware update and extraction
@@ -178,6 +180,53 @@ to add a fourth structural algorithm. The smaller mechanism that centralizes
 ownership without obscuring structural logic becomes normative in a revision
 of this proposed RFC.
 
+### Prototype result: select move-out
+
+The implemented prototype selects the low-level move-out boundary. Its generic
+ownership vocabulary is three WIR helpers:
+
+- `leaf_dup(value, rc_bias)` retains an initialized heap leaf;
+- `leaf_drop(value, rc_bias)` releases an abandoned heap leaf;
+- `slot_take_or_dup(addr, unique, rc_bias)` transfers and clears a unique slot,
+  or retains a shared slot before returning it.
+
+`rc_bias` is the compact layout descriptor required at this layer: `-1` for a
+trivial leaf, `0` for an ordinary RC object, and `4` for a `Dict` pointer after
+its hidden index word. Typed lowering supplies it from the resolved leaf type.
+An unresolved generic layout does not guess; it stays on the copy-correct source
+path. The ownership helpers contain no method names or container-kind switch.
+
+The descriptor-driven candidate was expanded to the WIR operands needed by all
+three operations. Besides the leaf descriptor it required an action tag,
+selected-slot address, up to two copy segments, source and destination metadata,
+length/capacity repair, and dictionary index repair. `List.pop` left most fields
+unused; dictionary insertion still needed its own search, geometric growth, and
+rehash loops outside the operation. Moving those loops inside would merely
+relocate a List/Dict switch. Keeping them outside reduced the candidate to
+`slot_take_or_dup` plus the same structural WIR, so the larger opcode provided no
+additional invariant and was rejected.
+
+The retained structural helpers are `list_pop_extract`,
+`dict_insert_extract`, and `dict_remove_extract`; `dict_reindex` is shared
+dictionary maintenance, not an ownership decision. This is three generic
+ownership helpers plus the inherently distinct structural algorithms, with no
+new `*_cap` method family or source-name recognizer.
+
+Deterministic prototype evidence is exported through `witchy stats`:
+
+| Gate | Optimized result | Forced-copy result |
+|---|---:|---:|
+| 160 pushes then 160 pops; 240 replacements; 160 remove/insert cycles | same output, less than 1/4 heap | same output, more than 4x heap |
+| heap-leaf pop/insert/remove sequence | 3 retains, 1 drop, 4 copied bytes | 9 retains, 1 drop, 32 copied bytes |
+| empty pop plus missing remove | 1 dictionary search; 0 copied bytes, retains, or drops | same semantics |
+| 256 inserts plus 200 replacements | 456 semantic searches; bounded hash comparisons; under 16 KiB copied | copy oracle exercised separately |
+
+The heap-leaf row proves that a displaced value on the unique path has no
+avoidable retain/drop pair. The indexed row proves that one semantic lookup does
+not hide linear growth or index invalidation: insertion grows geometrically,
+replacement preserves an owned index, and resize rehashing is counted separately
+from semantic search.
+
 ### Dictionary single-search contract
 
 The dictionary structural layer returns a search result that includes at least
@@ -257,7 +306,7 @@ Every update-and-extract lowering proves:
    including scalar and heap-valued leaves, forced-copy, and aliasing tests.
 4. Apply each candidate to `Dict.remove`; reject a design that needs hidden
    method-name or container-kind dispatch in the ownership layer.
-5. Select and specify the lower-level primitive using the prototype report.
+5. Select the move-out primitive specified in the prototype report above.
 6. Land the normal-mode unique and copy-on-write paths for all three operations.
 7. Enable opt-mode no-copy diagnostics only after ownership explanations and
    view-loan facts are available.

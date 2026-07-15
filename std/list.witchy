@@ -31,9 +31,9 @@ pub fn at(xs: List(a), index: Int) -> a:
 fn __push(xs: List(a), x: a) -> List(a):
     list.__push(xs, x)
 
-// Remove the final element and return the repaired list plus the old leaf.
-// The native primitive performs selection and repair together.
-fn __pop_extract(xs: List(a)) -> (List(a), Option(a)):
+// Remove the final element and return its old leaf. The repaired list travels
+// through the same `var` write-back channel as every public mutator.
+fn __pop_extract(var xs: List(a)) -> Option(a):
     list.__pop_extract(xs)
 
 // Append `x` in place.
@@ -666,10 +666,11 @@ pub fn update_at(var xs: List(a), index: Int, f: fn(a) -> a) -> Nil:
     xs = out
     return
 
+// Remove and return the final element. A uniquely owned non-empty list moves
+// the leaf out in O(1) without copying its spine; a shared root is copied so
+// aliases retain their old contents. An empty list returns None without copying.
 pub fn pop(var xs: List(a)) -> Option(a):
-    let (next, old) = list.__pop_extract(xs)
-    xs = next
-    old
+    list.__pop_extract(xs)
 
 pub fn pop_front(var xs: List(a)) -> Option(a):
     if list.length(xs) == 0:
