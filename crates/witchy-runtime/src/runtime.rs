@@ -1467,33 +1467,15 @@ fn host_regex_match_spans_len(
 /// reserves a sufficient buffer (`2*len + slack`) beforehand.
 fn host_encoding(mut caller: Caller<'_, VmState>, op: i32, in_ptr: i32, out_ptr: i32) -> Result<i32> {
     use crate::value::NativeValue as Value;
-    enum Input {
-        String,
-        Bytes,
-        LossyString,
-    }
-    let (name, input) = match op {
-        0 => ("encoding.hex_encode", Input::String),
-        1 => ("encoding.hex_decode_lossy", Input::String),
-        2 => ("encoding.base64_encode", Input::String),
-        3 => ("encoding.base64_decode_lossy", Input::String),
-        4 => ("encoding.hex_to_base64url_lossy", Input::String),
-        5 => ("encoding.base64url_decode_lossy", Input::String),
-        6 => ("encoding.base64url_to_hex_lossy", Input::String),
-        7 => ("encoding.utf8_lossy", Input::LossyString),
-        8 => ("encoding.hex_encode_bytes", Input::Bytes),
-        9 => ("encoding.base64_encode_bytes", Input::Bytes),
-        10 => ("encoding.base64url_encode_bytes", Input::Bytes),
-        11 => ("encoding.hex_decode_bytes_raw", Input::String),
-        12 => ("encoding.base64_decode_bytes_raw", Input::String),
-        13 => ("encoding.base64url_decode_bytes_raw", Input::String),
-        _ => return Err(Error::msg(format!("unknown encoding op {op}"))),
-    };
+    let spec = intrinsics::lookup_wir_host_selector("encoding", op)
+        .ok_or_else(|| Error::msg(format!("unknown encoding op {op}")))?;
+    let input = spec.wir_host_call.expect("selector lookup returns a host call").input;
+    let name = spec.name;
     let mem = memory_of(&mut caller)?;
     let arg = match input {
-        Input::String => Value::Str(read_wstr(mem.data(&caller), in_ptr)?),
-        Input::Bytes => Value::Bytes(read_wbytes(mem.data(&caller), in_ptr)?),
-        Input::LossyString => {
+        intrinsics::WirHostInput::String => Value::Str(read_wstr(mem.data(&caller), in_ptr)?),
+        intrinsics::WirHostInput::Bytes => Value::Bytes(read_wbytes(mem.data(&caller), in_ptr)?),
+        intrinsics::WirHostInput::LossyUtf8Bytes => {
             Value::Str(String::from_utf8_lossy(&read_wbytes(mem.data(&caller), in_ptr)?).into_owned())
         }
     };

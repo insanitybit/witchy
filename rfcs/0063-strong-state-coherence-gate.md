@@ -117,6 +117,17 @@ compiled lowering helpers, arity, toolchain effect, and diagnostics now resolve 
 are checked against the same catalog rows. This is the template for migrating the
 remaining operation families without one monolithic registry rewrite.
 
+The encoding family is the first selector-based host family to use the same model. Its
+fourteen native operations now catalog their exact semantic signature, pure effect, shared
+`encoding` WIR helper, numeric selector, and host input representation. Compiled lowering
+and runtime host dispatch resolve the same selector row, result representation derives
+from the catalog signature, and tests reject selector collisions, drift in the thirteen
+`std/encoding.witchy` declarations, missing native hooks, or a missing WIR helper. The
+host-only `encoding.utf8_lossy` operation has no source declaration; its explicit
+`LossyUtf8Bytes` host input records the one representation bridge that cannot be inferred
+from its native `String -> String` contract, and `$bytes_to_string` obtains selector 7 from
+that catalog row rather than embedding it independently.
+
 ### 4. Typed compiler facts, not string or address shadows
 
 The final compiler story should not depend on shadow encodings:

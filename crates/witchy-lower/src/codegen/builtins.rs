@@ -239,62 +239,17 @@ impl Codegen<'_> {
                 self.uses_regex_spans = true;
                 call("regex_match_spans", self.lower_args(&[&args[0], &args[1]])?)
             }
-            // The `encoding` transforms share one `$encoding` helper, selected by an
-            // i32 op pushed *before* the argument. The `*_lossy` decoders are the raw
-            // byte-level primitives; the public `encoding.*decode` wrappers (pure
-            // witchy in `std/encoding.witchy`) validate the alphabet and return
-            // `Result`, so they lower as ordinary function calls, not intercepts.
-            ("encoding.hex_encode", 1) => {
+            // Encoding transforms share one selector-based WIR helper. The catalog
+            // owns both the helper and selector so codegen cannot drift from the
+            // runtime host dispatch table.
+            (name, actual_arity) if intrinsics::lookup(name).is_some_and(|spec| {
+                spec.arity == actual_arity
+                    && spec.arity == 1
+                    && spec.wir_host_call.is_some_and(|host| host.helper == "encoding")
+            }) => {
+                let host = intrinsics::wir_host_call(name).expect("guarded encoding host call");
                 self.uses_encoding = true;
-                call("encoding", vec![W::ConstI32(0), self.lower_expr(&args[0])?])
-            }
-            ("encoding.hex_encode_bytes", 1) => {
-                self.uses_encoding = true;
-                call("encoding", vec![W::ConstI32(8), self.lower_expr(&args[0])?])
-            }
-            ("encoding.hex_decode_lossy", 1) => {
-                self.uses_encoding = true;
-                call("encoding", vec![W::ConstI32(1), self.lower_expr(&args[0])?])
-            }
-            ("encoding.hex_decode_bytes_raw", 1) => {
-                self.uses_encoding = true;
-                call("encoding", vec![W::ConstI32(11), self.lower_expr(&args[0])?])
-            }
-            ("encoding.base64_encode", 1) => {
-                self.uses_encoding = true;
-                call("encoding", vec![W::ConstI32(2), self.lower_expr(&args[0])?])
-            }
-            ("encoding.base64_encode_bytes", 1) => {
-                self.uses_encoding = true;
-                call("encoding", vec![W::ConstI32(9), self.lower_expr(&args[0])?])
-            }
-            ("encoding.base64url_encode_bytes", 1) => {
-                self.uses_encoding = true;
-                call("encoding", vec![W::ConstI32(10), self.lower_expr(&args[0])?])
-            }
-            ("encoding.base64_decode_lossy", 1) => {
-                self.uses_encoding = true;
-                call("encoding", vec![W::ConstI32(3), self.lower_expr(&args[0])?])
-            }
-            ("encoding.base64_decode_bytes_raw", 1) => {
-                self.uses_encoding = true;
-                call("encoding", vec![W::ConstI32(12), self.lower_expr(&args[0])?])
-            }
-            ("encoding.hex_to_base64url_lossy", 1) => {
-                self.uses_encoding = true;
-                call("encoding", vec![W::ConstI32(4), self.lower_expr(&args[0])?])
-            }
-            ("encoding.base64url_decode_lossy", 1) => {
-                self.uses_encoding = true;
-                call("encoding", vec![W::ConstI32(5), self.lower_expr(&args[0])?])
-            }
-            ("encoding.base64url_decode_bytes_raw", 1) => {
-                self.uses_encoding = true;
-                call("encoding", vec![W::ConstI32(13), self.lower_expr(&args[0])?])
-            }
-            ("encoding.base64url_to_hex_lossy", 1) => {
-                self.uses_encoding = true;
-                call("encoding", vec![W::ConstI32(6), self.lower_expr(&args[0])?])
+                call(host.helper, vec![W::ConstI32(host.selector), self.lower_expr(&args[0])?])
             }
             // `string.from_code(cp)`: the Int code point travels in the i64 ABI.
             ("string.from_code", 1) => {

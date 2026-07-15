@@ -29,6 +29,20 @@ pub enum IntrinsicId {
     CompilerDiff,
     CompilerDoc,
     CompilerDocResultJson,
+    EncodingUtf8Lossy,
+    EncodingHexEncode,
+    EncodingHexEncodeBytes,
+    EncodingHexDecodeLossy,
+    EncodingHexDecodeBytesRaw,
+    EncodingBase64Encode,
+    EncodingBase64EncodeBytes,
+    EncodingBase64UrlEncodeBytes,
+    EncodingHexToBase64UrlLossy,
+    EncodingBase64DecodeLossy,
+    EncodingBase64DecodeBytesRaw,
+    EncodingBase64UrlDecodeLossy,
+    EncodingBase64UrlDecodeBytesRaw,
+    EncodingBase64UrlToHexLossy,
 }
 
 /// A representation-neutral type recipe interpreted by `witchy-types`.
@@ -103,6 +117,24 @@ pub enum IntrinsicRuntime {
     Native,
 }
 
+/// The flat-buffer representation a selected WIR host helper must decode.
+/// This is separate from the source signature because representation bridges
+/// such as lossy UTF-8 receive raw bytes at the host boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WirHostInput {
+    String,
+    Bytes,
+    LossyUtf8Bytes,
+}
+
+/// A selector-based call through one shared WIR helper.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WirHostCall {
+    pub helper: &'static str,
+    pub selector: i32,
+    pub input: WirHostInput,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IntrinsicSpec {
     pub id: IntrinsicId,
@@ -117,6 +149,8 @@ pub struct IntrinsicSpec {
     pub wir_helpers: &'static [&'static str],
     /// The operation may additionally synthesize a shape-specific helper.
     pub dynamic_wir_helpers: bool,
+    /// Selector metadata when multiple operations share one WIR host helper.
+    pub wir_host_call: Option<WirHostCall>,
     pub diagnostic_name: &'static str,
     pub private_callers: &'static [&'static str],
 }
@@ -126,6 +160,11 @@ const NO_PRIVATE_CALLERS: &[&str] = &[];
 const MESSAGE_BRIDGE_CALLERS: &[&str] = &["chan", "task"];
 const BYTES_BRIDGE_CALLERS: &[&str] = &["bytes"];
 const TESTING_BRIDGE_CALLERS: &[&str] = &["testing"];
+const ENCODING_HELPERS: &[&str] = &["encoding"];
+
+const fn encoding_host_call(selector: i32, input: WirHostInput) -> Option<WirHostCall> {
+    Some(WirHostCall { helper: "encoding", selector, input })
+}
 
 pub const GENERATED_RENDER: &str = "@render";
 pub const GENERATED_LIST_PUSH: &str = "@list_push";
@@ -155,6 +194,21 @@ pub const COMPILER_DIFF: &str = "compiler.diff";
 pub const COMPILER_DOC: &str = "compiler.doc";
 pub const COMPILER_DOC_RESULT_JSON: &str = "compiler.__doc_result_json";
 
+pub const ENCODING_UTF8_LOSSY: &str = "encoding.utf8_lossy";
+pub const ENCODING_HEX_ENCODE: &str = "encoding.hex_encode";
+pub const ENCODING_HEX_ENCODE_BYTES: &str = "encoding.hex_encode_bytes";
+pub const ENCODING_HEX_DECODE_LOSSY: &str = "encoding.hex_decode_lossy";
+pub const ENCODING_HEX_DECODE_BYTES_RAW: &str = "encoding.hex_decode_bytes_raw";
+pub const ENCODING_BASE64_ENCODE: &str = "encoding.base64_encode";
+pub const ENCODING_BASE64_ENCODE_BYTES: &str = "encoding.base64_encode_bytes";
+pub const ENCODING_BASE64URL_ENCODE_BYTES: &str = "encoding.base64url_encode_bytes";
+pub const ENCODING_HEX_TO_BASE64URL_LOSSY: &str = "encoding.hex_to_base64url_lossy";
+pub const ENCODING_BASE64_DECODE_LOSSY: &str = "encoding.base64_decode_lossy";
+pub const ENCODING_BASE64_DECODE_BYTES_RAW: &str = "encoding.base64_decode_bytes_raw";
+pub const ENCODING_BASE64URL_DECODE_LOSSY: &str = "encoding.base64url_decode_lossy";
+pub const ENCODING_BASE64URL_DECODE_BYTES_RAW: &str = "encoding.base64url_decode_bytes_raw";
+pub const ENCODING_BASE64URL_TO_HEX_LOSSY: &str = "encoding.base64url_to_hex_lossy";
+
 pub const ALL: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         id: IntrinsicId::GeneratedRender,
@@ -167,6 +221,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         runtime: IntrinsicRuntime::InterpreterBuiltin,
         wir_helpers: &["int_to_string", "float_to_str", "concat"],
         dynamic_wir_helpers: true,
+        wir_host_call: None,
         diagnostic_name: "string interpolation",
         private_callers: NO_PRIVATE_CALLERS,
     },
@@ -181,6 +236,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         runtime: IntrinsicRuntime::InterpreterBuiltin,
         wir_helpers: &["list_push"],
         dynamic_wir_helpers: false,
+        wir_host_call: None,
         diagnostic_name: "list.push",
         private_callers: NO_PRIVATE_CALLERS,
     },
@@ -195,6 +251,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         runtime: IntrinsicRuntime::InterpreterBuiltin,
         wir_helpers: NO_HELPERS,
         dynamic_wir_helpers: false,
+        wir_host_call: None,
         diagnostic_name: "? context",
         private_callers: NO_PRIVATE_CALLERS,
     },
@@ -209,6 +266,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         runtime: IntrinsicRuntime::InterpreterBuiltin,
         wir_helpers: NO_HELPERS,
         dynamic_wir_helpers: false,
+        wir_host_call: None,
         diagnostic_name: "message erasure",
         private_callers: MESSAGE_BRIDGE_CALLERS,
     },
@@ -223,6 +281,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         runtime: IntrinsicRuntime::InterpreterBuiltin,
         wir_helpers: NO_HELPERS,
         dynamic_wir_helpers: false,
+        wir_host_call: None,
         diagnostic_name: "message recovery",
         private_callers: MESSAGE_BRIDGE_CALLERS,
     },
@@ -237,6 +296,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         runtime: IntrinsicRuntime::InterpreterBuiltin,
         wir_helpers: NO_HELPERS,
         dynamic_wir_helpers: false,
+        wir_host_call: None,
         diagnostic_name: "bytes.from_string",
         private_callers: BYTES_BRIDGE_CALLERS,
     },
@@ -251,6 +311,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         runtime: IntrinsicRuntime::InterpreterBuiltin,
         wir_helpers: &["bytes_from_list"],
         dynamic_wir_helpers: false,
+        wir_host_call: None,
         diagnostic_name: "bytes.from_list",
         private_callers: BYTES_BRIDGE_CALLERS,
     },
@@ -265,6 +326,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         runtime: IntrinsicRuntime::InterpreterBuiltin,
         wir_helpers: &["bytes_to_string"],
         dynamic_wir_helpers: false,
+        wir_host_call: None,
         diagnostic_name: "bytes.to_string",
         private_callers: BYTES_BRIDGE_CALLERS,
     },
@@ -279,6 +341,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         runtime: IntrinsicRuntime::InterpreterBuiltin,
         wir_helpers: NO_HELPERS,
         dynamic_wir_helpers: false,
+        wir_host_call: None,
         diagnostic_name: "bytes.length",
         private_callers: BYTES_BRIDGE_CALLERS,
     },
@@ -293,6 +356,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         runtime: IntrinsicRuntime::InterpreterBuiltin,
         wir_helpers: &["bytes_at"],
         dynamic_wir_helpers: false,
+        wir_host_call: None,
         diagnostic_name: "bytes.at",
         private_callers: BYTES_BRIDGE_CALLERS,
     },
@@ -307,6 +371,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         runtime: IntrinsicRuntime::InterpreterBuiltin,
         wir_helpers: &["concat"],
         dynamic_wir_helpers: false,
+        wir_host_call: None,
         diagnostic_name: "bytes.concat",
         private_callers: BYTES_BRIDGE_CALLERS,
     },
@@ -321,6 +386,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         runtime: IntrinsicRuntime::InterpreterBuiltin,
         wir_helpers: &["bytes_slice"],
         dynamic_wir_helpers: false,
+        wir_host_call: None,
         diagnostic_name: "bytes.slice",
         private_callers: BYTES_BRIDGE_CALLERS,
     },
@@ -335,6 +401,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         runtime: IntrinsicRuntime::SourceFunction,
         wir_helpers: NO_HELPERS,
         dynamic_wir_helpers: false,
+        wir_host_call: None,
         diagnostic_name: "channel open",
         private_callers: MESSAGE_BRIDGE_CALLERS,
     },
@@ -349,6 +416,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         runtime: IntrinsicRuntime::SourceFunction,
         wir_helpers: NO_HELPERS,
         dynamic_wir_helpers: false,
+        wir_host_call: None,
         diagnostic_name: "channel send",
         private_callers: MESSAGE_BRIDGE_CALLERS,
     },
@@ -363,6 +431,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         runtime: IntrinsicRuntime::SourceFunction,
         wir_helpers: NO_HELPERS,
         dynamic_wir_helpers: false,
+        wir_host_call: None,
         diagnostic_name: "channel receive",
         private_callers: MESSAGE_BRIDGE_CALLERS,
     },
@@ -377,6 +446,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         runtime: IntrinsicRuntime::SourceFunction,
         wir_helpers: NO_HELPERS,
         dynamic_wir_helpers: false,
+        wir_host_call: None,
         diagnostic_name: "channel select",
         private_callers: MESSAGE_BRIDGE_CALLERS,
     },
@@ -391,6 +461,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         runtime: IntrinsicRuntime::InterpreterBuiltin,
         wir_helpers: &["testing_mock_dir"],
         dynamic_wir_helpers: false,
+        wir_host_call: None,
         diagnostic_name: "testing.mock_dir",
         private_callers: TESTING_BRIDGE_CALLERS,
     },
@@ -405,6 +476,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         runtime: IntrinsicRuntime::Native,
         wir_helpers: &["compiler_footprint"],
         dynamic_wir_helpers: false,
+        wir_host_call: None,
         diagnostic_name: "compiler.footprint",
         private_callers: NO_PRIVATE_CALLERS,
     },
@@ -419,6 +491,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         runtime: IntrinsicRuntime::Native,
         wir_helpers: &["compiler_diff"],
         dynamic_wir_helpers: false,
+        wir_host_call: None,
         diagnostic_name: "compiler.diff",
         private_callers: NO_PRIVATE_CALLERS,
     },
@@ -433,6 +506,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         runtime: IntrinsicRuntime::Native,
         wir_helpers: &["compiler_doc"],
         dynamic_wir_helpers: false,
+        wir_host_call: None,
         diagnostic_name: "compiler.doc",
         private_callers: NO_PRIVATE_CALLERS,
     },
@@ -447,7 +521,218 @@ pub const ALL: &[IntrinsicSpec] = &[
         runtime: IntrinsicRuntime::Native,
         wir_helpers: &["compiler_doc_result_json"],
         dynamic_wir_helpers: false,
+        wir_host_call: None,
         diagnostic_name: "compiler doc result encoding",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::EncodingUtf8Lossy,
+        name: ENCODING_UTF8_LOSSY,
+        arity: 1,
+        signature: IntrinsicSignature::StringToString,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: ENCODING_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: encoding_host_call(7, WirHostInput::LossyUtf8Bytes),
+        diagnostic_name: "lossy UTF-8 decode",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::EncodingHexEncode,
+        name: ENCODING_HEX_ENCODE,
+        arity: 1,
+        signature: IntrinsicSignature::StringToString,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: ENCODING_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: encoding_host_call(0, WirHostInput::String),
+        diagnostic_name: "encoding.hex_encode",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::EncodingHexEncodeBytes,
+        name: ENCODING_HEX_ENCODE_BYTES,
+        arity: 1,
+        signature: IntrinsicSignature::BytesToString,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: ENCODING_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: encoding_host_call(8, WirHostInput::Bytes),
+        diagnostic_name: "encoding.hex_encode_bytes",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::EncodingHexDecodeLossy,
+        name: ENCODING_HEX_DECODE_LOSSY,
+        arity: 1,
+        signature: IntrinsicSignature::StringToString,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: ENCODING_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: encoding_host_call(1, WirHostInput::String),
+        diagnostic_name: "encoding.hex_decode_lossy",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::EncodingHexDecodeBytesRaw,
+        name: ENCODING_HEX_DECODE_BYTES_RAW,
+        arity: 1,
+        signature: IntrinsicSignature::StringToBytes,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: ENCODING_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: encoding_host_call(11, WirHostInput::String),
+        diagnostic_name: "encoding.hex_decode_bytes_raw",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::EncodingBase64Encode,
+        name: ENCODING_BASE64_ENCODE,
+        arity: 1,
+        signature: IntrinsicSignature::StringToString,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: ENCODING_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: encoding_host_call(2, WirHostInput::String),
+        diagnostic_name: "encoding.base64_encode",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::EncodingBase64EncodeBytes,
+        name: ENCODING_BASE64_ENCODE_BYTES,
+        arity: 1,
+        signature: IntrinsicSignature::BytesToString,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: ENCODING_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: encoding_host_call(9, WirHostInput::Bytes),
+        diagnostic_name: "encoding.base64_encode_bytes",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::EncodingBase64UrlEncodeBytes,
+        name: ENCODING_BASE64URL_ENCODE_BYTES,
+        arity: 1,
+        signature: IntrinsicSignature::BytesToString,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: ENCODING_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: encoding_host_call(10, WirHostInput::Bytes),
+        diagnostic_name: "encoding.base64url_encode_bytes",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::EncodingHexToBase64UrlLossy,
+        name: ENCODING_HEX_TO_BASE64URL_LOSSY,
+        arity: 1,
+        signature: IntrinsicSignature::StringToString,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: ENCODING_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: encoding_host_call(4, WirHostInput::String),
+        diagnostic_name: "encoding.hex_to_base64url_lossy",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::EncodingBase64DecodeLossy,
+        name: ENCODING_BASE64_DECODE_LOSSY,
+        arity: 1,
+        signature: IntrinsicSignature::StringToString,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: ENCODING_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: encoding_host_call(3, WirHostInput::String),
+        diagnostic_name: "encoding.base64_decode_lossy",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::EncodingBase64DecodeBytesRaw,
+        name: ENCODING_BASE64_DECODE_BYTES_RAW,
+        arity: 1,
+        signature: IntrinsicSignature::StringToBytes,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: ENCODING_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: encoding_host_call(12, WirHostInput::String),
+        diagnostic_name: "encoding.base64_decode_bytes_raw",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::EncodingBase64UrlDecodeLossy,
+        name: ENCODING_BASE64URL_DECODE_LOSSY,
+        arity: 1,
+        signature: IntrinsicSignature::StringToString,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: ENCODING_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: encoding_host_call(5, WirHostInput::String),
+        diagnostic_name: "encoding.base64url_decode_lossy",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::EncodingBase64UrlDecodeBytesRaw,
+        name: ENCODING_BASE64URL_DECODE_BYTES_RAW,
+        arity: 1,
+        signature: IntrinsicSignature::StringToBytes,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: ENCODING_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: encoding_host_call(13, WirHostInput::String),
+        diagnostic_name: "encoding.base64url_decode_bytes_raw",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::EncodingBase64UrlToHexLossy,
+        name: ENCODING_BASE64URL_TO_HEX_LOSSY,
+        arity: 1,
+        signature: IntrinsicSignature::StringToString,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: ENCODING_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: encoding_host_call(6, WirHostInput::String),
+        diagnostic_name: "encoding.base64url_to_hex_lossy",
         private_callers: NO_PRIVATE_CALLERS,
     },
 ];
@@ -470,6 +755,23 @@ pub const CHANNEL_BRIDGES: &[&str] = &[
     CHANNEL_SELECT,
 ];
 
+pub const ENCODING_OPERATIONS: &[&str] = &[
+    ENCODING_UTF8_LOSSY,
+    ENCODING_HEX_ENCODE,
+    ENCODING_HEX_ENCODE_BYTES,
+    ENCODING_HEX_DECODE_LOSSY,
+    ENCODING_HEX_DECODE_BYTES_RAW,
+    ENCODING_BASE64_ENCODE,
+    ENCODING_BASE64_ENCODE_BYTES,
+    ENCODING_BASE64URL_ENCODE_BYTES,
+    ENCODING_HEX_TO_BASE64URL_LOSSY,
+    ENCODING_BASE64_DECODE_LOSSY,
+    ENCODING_BASE64_DECODE_BYTES_RAW,
+    ENCODING_BASE64URL_DECODE_LOSSY,
+    ENCODING_BASE64URL_DECODE_BYTES_RAW,
+    ENCODING_BASE64URL_TO_HEX_LOSSY,
+];
+
 pub fn lookup(name: &str) -> Option<&'static IntrinsicSpec> {
     ALL.iter().find(|spec| spec.name == name)
 }
@@ -487,6 +789,17 @@ pub fn sole_wir_helper(name: &str) -> Option<&'static str> {
         [helper] => Some(*helper),
         _ => None,
     }
+}
+
+pub fn wir_host_call(name: &str) -> Option<WirHostCall> {
+    lookup(name)?.wir_host_call
+}
+
+pub fn lookup_wir_host_selector(helper: &str, selector: i32) -> Option<&'static IntrinsicSpec> {
+    ALL.iter().find(|spec| {
+        spec.wir_host_call
+            .is_some_and(|call| call.helper == helper && call.selector == selector)
+    })
 }
 
 pub fn is_render(name: &str) -> bool {
@@ -583,6 +896,20 @@ mod tests {
             COMPILER_DIFF,
             COMPILER_DOC,
             COMPILER_DOC_RESULT_JSON,
+            ENCODING_UTF8_LOSSY,
+            ENCODING_HEX_ENCODE,
+            ENCODING_HEX_ENCODE_BYTES,
+            ENCODING_HEX_DECODE_LOSSY,
+            ENCODING_HEX_DECODE_BYTES_RAW,
+            ENCODING_BASE64_ENCODE,
+            ENCODING_BASE64_ENCODE_BYTES,
+            ENCODING_BASE64URL_ENCODE_BYTES,
+            ENCODING_HEX_TO_BASE64URL_LOSSY,
+            ENCODING_BASE64_DECODE_LOSSY,
+            ENCODING_BASE64_DECODE_BYTES_RAW,
+            ENCODING_BASE64URL_DECODE_LOSSY,
+            ENCODING_BASE64URL_DECODE_BYTES_RAW,
+            ENCODING_BASE64URL_TO_HEX_LOSSY,
         ];
         for name in names {
             assert_eq!(lookup(name).map(|spec| spec.name), Some(name));
@@ -616,6 +943,24 @@ mod tests {
             assert!(spec.signature.returns_string());
             assert!(sole_wir_helper(name).is_some());
         }
+    }
+
+    #[test]
+    fn encoding_operation_family_has_unique_host_selectors() {
+        let mut selectors = BTreeSet::new();
+        for name in ENCODING_OPERATIONS {
+            let spec = lookup(name).expect("encoding operation");
+            assert_eq!(spec.effect, IntrinsicEffect::Pure);
+            assert_eq!(spec.runtime, IntrinsicRuntime::Native);
+            assert_eq!(spec.lowering, IntrinsicLowering::Builtin);
+            assert_eq!(spec.arity, 1);
+            let call = spec.wir_host_call.expect("encoding WIR host call");
+            assert_eq!(call.helper, "encoding");
+            assert!(selectors.insert(call.selector), "duplicate encoding selector {}", call.selector);
+            assert_eq!(lookup_wir_host_selector(call.helper, call.selector), Some(spec));
+            assert!(spec.signature.returns_string() || spec.signature.returns_bytes());
+        }
+        assert_eq!(selectors, (0..=13).collect());
     }
 
     #[test]
@@ -660,6 +1005,35 @@ mod tests {
                 spec.name
             );
             assert_eq!(function.ret.as_ref(), Some(&string), "return type drift for {}", spec.name);
+        }
+    }
+
+    #[test]
+    fn encoding_native_source_signatures_match_catalog() {
+        let module = crate::parser::parse_module(include_str!("../../../std/encoding.witchy"))
+            .expect("parse std/encoding");
+        let string = crate::ast::Type::Named("String".into(), Vec::new());
+        let bytes = crate::ast::Type::Named("Bytes".into(), Vec::new());
+        for spec in ALL.iter().filter(|spec| {
+            spec.runtime == IntrinsicRuntime::Native
+                && spec.name.starts_with("encoding.")
+                && spec.name != ENCODING_UTF8_LOSSY
+        }) {
+            let bare_name = spec.name.rsplit_once('.').map_or(spec.name, |(_, bare)| bare);
+            let function = module.items.iter().find_map(|item| match item {
+                crate::ast::Item::Function(function) if function.name == bare_name => Some(function),
+                _ => None,
+            });
+            let function = function.unwrap_or_else(|| panic!("{} missing from std/encoding", spec.name));
+            let (param, result) = match spec.signature {
+                IntrinsicSignature::StringToString => (&string, &string),
+                IntrinsicSignature::StringToBytes => (&string, &bytes),
+                IntrinsicSignature::BytesToString => (&bytes, &string),
+                other => panic!("unexpected encoding signature {other:?} for {}", spec.name),
+            };
+            assert_eq!(function.params.len(), spec.arity, "arity drift for {}", spec.name);
+            assert_eq!(function.params[0].ty.as_ref(), Some(param), "parameter drift for {}", spec.name);
+            assert_eq!(function.ret.as_ref(), Some(result), "return drift for {}", spec.name);
         }
     }
 

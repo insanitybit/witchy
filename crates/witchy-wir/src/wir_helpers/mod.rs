@@ -2956,6 +2956,11 @@ pub fn bytes_slice_helper() -> WirFunc {
 pub fn bytes_to_string_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
+    let host = witchy_syntax::intrinsics::wir_host_call(
+        witchy_syntax::intrinsics::ENCODING_UTF8_LOSSY,
+    )
+    .expect("lossy UTF-8 encoding host call is cataloged");
+    debug_assert_eq!(host.helper, "encoding");
     let getl = |n: &str| E::GetLocal(n.into());
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
@@ -2980,8 +2985,12 @@ pub fn bytes_to_string_helper() -> WirFunc {
             N::SetLocal {
                 local: "n".into(),
                 value: E::CallHost {
-                    import: "encoding".into(),
-                    args: vec![i32c(7), getl("b"), b(BinOp::Add, getl("res"), i32c(4))],
+                    import: host.helper.into(),
+                    args: vec![
+                        i32c(host.selector),
+                        getl("b"),
+                        b(BinOp::Add, getl("res"), i32c(4)),
+                    ],
                 },
             },
             N::Store { ptr: getl("res"), value: getl("n"), kind: Kind::I32, offset: 0 },
