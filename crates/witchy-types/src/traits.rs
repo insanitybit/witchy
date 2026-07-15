@@ -582,14 +582,14 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
         // concrete specializations the previous round generated, unlocking the
         // bounded calls inside them (a generic helper's `iter.collect` resolves
         // only once the helper itself is specialized to a concrete type). Two
-        // rounds resolve every known case — one to specialize the helper, one to
-        // type its result and resolve its inner bounded call — and the loop stops
-        // as soon as a round generates nothing new. Every round is a whole-module,
-        // deterministic pass, so both backends reach the same fixpoint. The memo
-        // persists across rounds so a specialization is never generated twice.
-        const MONO_ROUNDS: usize = 4;
+        // loop stops only when a round generates nothing new. Every round is a
+        // whole-module, deterministic pass, so both backends reach the same
+        // fixpoint. The memo persists across rounds so a specialization is never
+        // generated twice. The generous safety limit diagnoses polymorphic
+        // specialization recursion rather than silently shipping a partial pass.
+        const MAX_MONO_ROUNDS: usize = 256;
         let mut memo: HashMap<(String, Vec<String>), String> = HashMap::new();
-        for round in 0..MONO_ROUNDS {
+        for round in 0..MAX_MONO_ROUNDS {
             let fn_sigs = build_fn_sigs(&typed.module().items);
             let ctor_infos = build_ctor_infos(&typed.module().items);
             let record_fields = build_record_fields(&typed.module().items);
@@ -653,7 +653,10 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                     __t.elapsed()
                 );
             }
-            if round + 1 == MONO_ROUNDS {
+            if round + 1 == MAX_MONO_ROUNDS {
+                mono_diags.push(format!(
+                    "monomorphization did not converge after {MAX_MONO_ROUNDS} rounds"
+                ));
                 break;
             }
         }
@@ -3662,114 +3665,157 @@ fn signature_type_vars(f: &Function) -> Vec<String> {
     out
 }
 
-/// Collect the names of every free (`Expr::Call`) function this block calls,
-/// recursively — used to discover which generic helpers transitively reach a
-/// bounded template (and so themselves need monomorphization).
-fn collect_call_names(b: &Block, out: &mut HashSet<String>) {
-    fn walk(e: &Expr, out: &mut HashSet<String>) {
+/// Collect every free function call or value reference in `f`, recursively.
+/// Lexical bindings are excluded so a local callback named like a bounded
+/// template does not make its enclosing generic spuriously no-fallback.
+fn collect_function_refs(f: &Function, out: &mut HashSet<String>) {
+    fn walk_block(b: &Block, locals: &mut HashSet<String>, out: &mut HashSet<String>) {
+        for st in &b.stmts {
+            match st {
+                Stmt::Let { name, value, .. } => {
+                    walk(value, locals, out);
+                    locals.insert(name.clone());
+                }
+                Stmt::LetPattern { pattern, value } => {
+                    walk(value, locals, out);
+                    let mut names = Vec::new();
+                    pattern_binds(pattern, &mut names);
+                    locals.extend(names);
+                }
+                Stmt::Assign { value, .. }
+                | Stmt::Return(Some(value))
+                | Stmt::Expr(value)
+                | Stmt::Yield(value) => walk(value, locals, out),
+                Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+            }
+        }
+    }
+
+    fn nested_block(b: &Block, locals: &HashSet<String>, out: &mut HashSet<String>) {
+        let mut nested = locals.clone();
+        walk_block(b, &mut nested, out);
+    }
+
+    fn walk(e: &Expr, locals: &HashSet<String>, out: &mut HashSet<String>) {
         match e {
             Expr::Call { name, args } => {
-                out.insert(name.clone());
+                if !locals.contains(name) {
+                    out.insert(name.clone());
+                }
                 for a in args {
-                    walk(a, out);
+                    walk(a, locals, out);
                 }
             }
             Expr::LabeledCall { name, args } => {
-                out.insert(name.clone());
+                if !locals.contains(name) {
+                    out.insert(name.clone());
+                }
                 for (_, a) in args {
-                    walk(a, out);
+                    walk(a, locals, out);
                 }
             }
             Expr::Apply { func, args } => {
-                walk(func, out);
+                walk(func, locals, out);
                 for a in args {
-                    walk(a, out);
+                    walk(a, locals, out);
                 }
             }
             Expr::MethodCall { receiver, args, .. } => {
-                walk(receiver, out);
+                walk(receiver, locals, out);
                 for a in args {
-                    walk(a, out);
+                    walk(a, locals, out);
                 }
             }
             Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. }
             | Expr::List(args) | Expr::Tuple(args) => {
                 for a in args {
-                    walk(a, out);
+                    walk(a, locals, out);
                 }
             }
             Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. }
-            | Expr::Field { base: expr, .. } => walk(expr, out),
+            | Expr::Field { base: expr, .. } => walk(expr, locals, out),
             Expr::Binary { lhs, rhs, .. } => {
-                walk(lhs, out);
-                walk(rhs, out);
+                walk(lhs, locals, out);
+                walk(rhs, locals, out);
             }
             Expr::Range { lo, hi, .. } => {
-                walk(lo, out);
-                walk(hi, out);
+                walk(lo, locals, out);
+                walk(hi, locals, out);
             }
             Expr::Index { base, index } => {
-                walk(base, out);
-                walk(index, out);
+                walk(base, locals, out);
+                walk(index, locals, out);
             }
             Expr::Record { fields, spread, .. } => {
                 for (_, v) in fields {
-                    walk(v, out);
+                    walk(v, locals, out);
                 }
                 if let Some(sp) = spread {
-                    walk(sp, out);
+                    walk(sp, locals, out);
                 }
             }
             Expr::RecordUpdate { name: _, base, fields } => {
-                walk(base, out);
+                walk(base, locals, out);
                 for (_, v) in fields {
-                    walk(v, out);
+                    walk(v, locals, out);
                 }
             }
             Expr::If { cond, then_block, else_block } => {
-                walk(cond, out);
-                collect_call_names(then_block, out);
+                walk(cond, locals, out);
+                nested_block(then_block, locals, out);
                 if let Some(b) = else_block {
-                    collect_call_names(b, out);
+                    nested_block(b, locals, out);
                 }
             }
             Expr::Match { scrutinee, arms } => {
-                walk(scrutinee, out);
+                walk(scrutinee, locals, out);
                 for a in arms {
+                    let mut arm_locals = locals.clone();
+                    let mut names = Vec::new();
+                    pattern_binds(&a.pattern, &mut names);
+                    arm_locals.extend(names);
                     if let Some(g) = &a.guard {
-                        walk(g, out);
+                        walk(g, &arm_locals, out);
                     }
-                    walk(&a.body, out);
+                    walk(&a.body, &arm_locals, out);
                 }
             }
             Expr::While { cond, body } => {
-                walk(cond, out);
-                collect_call_names(body, out);
+                walk(cond, locals, out);
+                nested_block(body, locals, out);
             }
-            Expr::WhileLet { scrutinee, body, .. } => {
-                walk(scrutinee, out);
-                collect_call_names(body, out);
+            Expr::WhileLet { pattern, scrutinee, body } => {
+                walk(scrutinee, locals, out);
+                let mut body_locals = locals.clone();
+                let mut names = Vec::new();
+                pattern_binds(pattern, &mut names);
+                body_locals.extend(names);
+                walk_block(body, &mut body_locals, out);
             }
-            Expr::For { iter, body, .. } => {
-                walk(iter, out);
-                collect_call_names(body, out);
+            Expr::For { var, iter, body } => {
+                walk(iter, locals, out);
+                let mut body_locals = locals.clone();
+                body_locals.insert(var.clone());
+                walk_block(body, &mut body_locals, out);
             }
-            Expr::Lambda { body, .. } | Expr::Block(body) => collect_call_names(body, out),
+            Expr::Lambda { params, body, .. } => {
+                let mut lambda_locals = locals.clone();
+                lambda_locals.extend(params.iter().map(|p| p.name.clone()));
+                walk_block(body, &mut lambda_locals, out);
+            }
+            Expr::Block(body) => nested_block(body, locals, out),
+            Expr::Var(name) => {
+                if !locals.contains(name) {
+                    out.insert(name.clone());
+                }
+            }
             Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_)
-            | Expr::Bool(_) | Expr::Var(_) | Expr::TaggedLit { .. } => {}
+            | Expr::Bool(_) | Expr::TaggedLit { .. } => {}
         }
     }
-    for st in &b.stmts {
-        match st {
-            Stmt::Let { value, .. }
-            | Stmt::Assign { value, .. }
-            | Stmt::LetPattern { value, .. }
-            | Stmt::Return(Some(value))
-            | Stmt::Expr(value)
-            | Stmt::Yield(value) => walk(value, out),
-            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
-        }
-    }
+
+    let mut locals = f.params.iter().map(|p| p.name.clone()).collect();
+    walk_block(&f.body, &mut locals, out);
 }
 
 /// The set of function names that must be monomorphized WITHOUT a generic
@@ -3800,7 +3846,7 @@ fn no_fallback_template_names(items: &[Item]) -> HashSet<String> {
                     continue;
                 }
                 let mut calls = HashSet::new();
-                collect_call_names(&f.body, &mut calls);
+                collect_function_refs(f, &mut calls);
                 if calls.iter().any(|n| names.contains(n)) {
                     names.insert(f.name.clone());
                     added = true;
@@ -4473,6 +4519,47 @@ impl Mono<'_> {
             .collect()
     }
 
+    fn resolve_function_value_type_args(
+        &self,
+        template: &Function,
+        actual: &Type,
+    ) -> Option<Vec<Type>> {
+        let Type::Fn(actual_params, actual_ret, actual_conventions) = actual.unqualified() else {
+            return None;
+        };
+        if template.params.len() != actual_params.len()
+            || template
+                .params
+                .iter()
+                .map(|param| param.convention)
+                .ne(actual_conventions.iter().copied())
+        {
+            return None;
+        }
+        let mut bindings = HashMap::new();
+        for (param, actual_param) in template.params.iter().zip(actual_params) {
+            if let Some(pattern) = &param.ty
+                && !bind_ast_type_vars(pattern, actual_param, &mut bindings)
+            {
+                return None;
+            }
+        }
+        if let Some(ret) = &template.ret
+            && !bind_ast_type_vars(ret, actual_ret, &mut bindings)
+        {
+            return None;
+        }
+        type_var_list(template)
+            .into_iter()
+            .map(|var| {
+                let ty = bindings.get(&var)?.clone();
+                let mut unresolved = Vec::new();
+                collect_type_vars(&ty, &mut unresolved);
+                unresolved.is_empty().then_some(ty)
+            })
+            .collect()
+    }
+
     fn specialize(&mut self, name: &str, type_args: Vec<Type>) -> String {
         let type_keys = type_args
             .iter()
@@ -4697,7 +4784,9 @@ impl Mono<'_> {
                 for a in args.iter_mut() {
                     self.walk_expr(a, scope);
                 }
-                self.refine_var_call_args(name, args, scope);
+                if !scope.is_local(name) {
+                    self.refine_var_call_args(name, args, scope);
+                }
                 // (RFC-0053) Interpolation desugars to the internal render intrinsic,
                 // the structural fallback. At this point monomorphization has concrete
                 // type evidence for `x`, so values whose public display model is `Show`
@@ -4712,7 +4801,9 @@ impl Mono<'_> {
                         }
                     }
                 }
-                if let Some(template) = self.templates.get(name.as_str()).cloned() {
+                if !scope.is_local(name)
+                    && let Some(template) = self.templates.get(name.as_str()).cloned()
+                {
                     match self.resolve_type_args(&template, args, scope, result_ty.as_ref()) {
                         Some(type_args) => {
                             let subst: HashMap<String, Type> = type_var_list(&template)
@@ -4879,7 +4970,22 @@ impl Mono<'_> {
                 self.walk_block(b, &mut block_scope);
                 merge_refined_outer_ast_types(scope, &block_scope);
             }
-            Expr::Var(_) | Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::TaggedLit { .. } => {}
+            Expr::Var(name) => {
+                if scope.is_local(name) {
+                    return;
+                }
+                let original = name.clone();
+                let Some(template) = self.templates.get(&original).cloned() else { return };
+                let Some(actual) = result_ty.as_ref() else { return };
+                let Some(type_args) = self.resolve_function_value_type_args(&template, actual) else {
+                    return;
+                };
+                if std::env::var_os("WITCHY_DEBUG_MONO").is_some() {
+                    eprintln!("mono: function value `{original}` -> {type_args:?}");
+                }
+                *name = self.specialize(&original, type_args);
+            }
+            Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::TaggedLit { .. } => {}
         }
     }
 }

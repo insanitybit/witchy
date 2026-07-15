@@ -439,3 +439,16 @@ trait method) is never renamed to the impl. Regression test on both backends.
 free-then-reuse false-hit hole at its source. Stable node identity remains the
 architectural long-term fix (it does not fit monomorphization, which needs cloned
 nodes to have FRESH identity).
+
+**2026-07-15 first-class function-value follow-up.** `Mono` now specializes a
+bare generic template reference from that expression node's concrete `Type::Fn`
+fact. Structural binding recovers every signature type argument, then the
+existing specialization and fixpoint machinery clones, substitutes, dispatches,
+and re-annotates the body. One rewrite therefore covers aliases, higher-order
+arguments, assignments, joins, pattern bindings, and bounded generics without a
+function-value shape table. Lexically bound names are excluded before template
+lookup. Free function-value references also participate in no-fallback
+dependency analysis, so a generic wrapper returning a bounded function is
+specialized rather than retaining an invalid generic body. The re-annotation
+loop now stops at actual convergence; its safety limit reports a compile error
+instead of leaving a partially specialized module.

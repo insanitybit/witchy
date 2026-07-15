@@ -5554,13 +5554,6 @@ impl Checker {
                         .flatten()
                         .map(|(_, id)| *id)
                         .collect();
-                    if !typarams.is_empty() {
-                        return terr(format!(
-                            "polymorphic function `{name}` cannot be used as a function value \
-                             until first-class monomorphization is implemented; call it directly \
-                             or wrap the concrete call in a lambda"
-                        ));
-                    }
                     let (params, ret) = self.instantiate(&params, &ret, &typarams);
                     let conventions = self
                         .fn_conventions
@@ -7282,6 +7275,7 @@ impl TypedModule {
 /// consumes. None where no surface form exists (free variables).
 pub fn ty_to_ast(t: &Ty) -> Option<witchy_syntax::ast::Type> {
     use witchy_syntax::ast::Type as T;
+    let marker = |name: &str| T::Named(name.to_string(), Vec::new());
     Some(match t {
         Ty::Int => T::Named("Int".into(), Vec::new()),
         Ty::Float => T::Named("Float".into(), Vec::new()),
@@ -7297,9 +7291,64 @@ pub fn ty_to_ast(t: &Ty) -> Option<witchy_syntax::ast::Type> {
         Ty::Env => T::Named("Env".into(), Vec::new()),
         Ty::Secret => T::Named("Secret".into(), Vec::new()),
         Ty::Exec => T::Named("Exec".into(), Vec::new()),
-        Ty::Dir(_) => T::Named("Dir".into(), Vec::new()),
-        Ty::File(_) => T::Named("File".into(), Vec::new()),
-        Ty::Net(_) => T::Named("Net".into(), Vec::new()),
+        Ty::Dir(rights) => {
+            if !rights.read && !rights.write {
+                return None;
+            }
+            let mut args = Vec::new();
+            if *rights != DirRights::full() {
+                if rights.read {
+                    args.push(marker("Read"));
+                }
+                if rights.write {
+                    args.push(marker("Write"));
+                }
+            }
+            T::Named("Dir".into(), args)
+        }
+        Ty::File(rights) => {
+            if !rights.read && !rights.write {
+                return None;
+            }
+            let mut args = Vec::new();
+            if *rights != FileRights::full() {
+                if rights.read {
+                    args.push(marker("Read"));
+                }
+                if rights.write {
+                    args.push(marker("Write"));
+                }
+            }
+            T::Named("File".into(), args)
+        }
+        Ty::Net(rights) => {
+            if (!rights.connect && !rights.listen)
+                || (!rights.tcp && !rights.udp && !rights.uds)
+            {
+                return None;
+            }
+            let mut args = Vec::new();
+            if !rights.verbs_full() {
+                if rights.connect {
+                    args.push(marker("Connect"));
+                }
+                if rights.listen {
+                    args.push(marker("Listen"));
+                }
+            }
+            if !rights.transports_full() {
+                if rights.tcp {
+                    args.push(marker("Tcp"));
+                }
+                if rights.udp {
+                    args.push(marker("Udp"));
+                }
+                if rights.uds {
+                    args.push(marker("Uds"));
+                }
+            }
+            T::Named("Net".into(), args)
+        }
         Ty::Socket => T::Named("Socket".into(), Vec::new()),
         Ty::Listener => T::Named("Listener".into(), Vec::new()),
         Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv | Ty::BuildNet | Ty::BuildExec => {

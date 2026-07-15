@@ -1987,6 +1987,11 @@ impl<'types> Codegen<'types> {
                 } else if let Some((1, NestBottom::Scalar(s))) = self.local_list_nesting.get(v) {
                     // A nested-list var that is now a depth-1 list of a scalar.
                     *s
+                } else if let Some(Type::Named(name, args)) =
+                    self.local_types.get(v).map(Type::unqualified)
+                    && name == "List"
+                {
+                    args.first().map(ty_to_valtype).unwrap_or(ValType::Other)
                 } else {
                     ValType::Other
                 }
@@ -2142,7 +2147,7 @@ impl<'types> Codegen<'types> {
                     let inferred_type = if needs_resolved_type
                         || matches!(resolved_type.as_ref().map(Type::unqualified), Some(Type::Fn(..)))
                     {
-                        resolved_type
+                        resolved_type.clone()
                     } else {
                         None
                     };
@@ -2156,7 +2161,14 @@ impl<'types> Codegen<'types> {
                         .map(ty_to_valtype)
                         .unwrap_or_else(|| self.val_type_of(value));
                     self.local_val_types.insert(name.clone(), vt);
-                    if let Some(t) = inferred_type {
+                    // Preserve the full checker-resolved type even when the
+                    // legacy scalar-kind inference remains authoritative for
+                    // this binding's ABI. Later generic operations need the
+                    // arguments (`List(Int)`, `Iter(Int)`, ...) rather than only
+                    // the container's i32 runtime kind. In particular, a value
+                    // returned through a local function call must not make a
+                    // subsequent `list.at` fall back to an i32 element.
+                    if let Some(t) = resolved_type {
                         self.local_types.insert(name.clone(), t);
                     }
                     let evt = self.elem_val_type_of(value);

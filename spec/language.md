@@ -651,17 +651,21 @@ function's, so closures can short-circuit on errors just like named functions.
 Function values preserve the concrete runtime kinds in their signatures. A
 direct capability reference or concrete GC aggregate may therefore cross an
 indirect call as a parameter, result, or `var` write-back without being boxed
-into an integer slot. This applies to named non-generic functions, annotated
-lambdas, and lambdas whose concrete signature is inferred at their use site.
-Scalar-only function values retain the universal scalar ABI.
+into an integer slot. This applies to named functions, annotated lambdas, and
+lambdas whose concrete signature is inferred at their use site. A named
+polymorphic function is monomorphized from each concrete use-site function type
+before compiled closure lowering. Aliases, higher-order arguments, assignments,
+control-flow joins, and pattern bindings all use that rule; parameter
+conventions and generic bounds are preserved. Result-only type variables can be
+fixed by the expected function type, and a generic function may return another
+generic or bounded function value; specialization follows those references to a
+fixpoint. Unannotated parameters that do not carry a type variable do not block
+specialization. Scalar-only function values retain the universal scalar ABI.
 
 The closure environment is a separate boundary. Capturing a value that carries
 a capability is currently a check-time error; pass it as a parameter instead.
-A polymorphic named function cannot currently be formed as a value; call it
-directly or wrap a concrete call in a lambda. First-class monomorphization must
-clone the referenced body before that restriction can be removed. Function
-values stored inside capability-bearing aggregates and capability callbacks
-crossing an isolated worker adapter remain rejected for the same
+Function values stored inside capability-bearing aggregates and capability
+callbacks crossing an isolated worker adapter remain rejected for the same
 representation-first reason.
 
 ```witchy
@@ -671,9 +675,14 @@ fn apply(f: fn(Int) -> Int, x: Int) -> Int:
 fn adder(by: Int) -> fn(Int) -> Int:
     fn(n: Int): n + by
 
+fn identity(x: a) -> a:
+    x
+
 fn main(console: Console):
     let add10 = adder(10)
     console.print("${apply(add10, 5)}")
+    let same_int = identity
+    console.print("${same_int(5000000000)}")
 ```
 
 **Keyword arguments and default parameters.** A direct call to a free or

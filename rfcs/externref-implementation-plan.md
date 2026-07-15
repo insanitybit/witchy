@@ -644,12 +644,16 @@ capability cannot fall back to scalar lowering. Scalar-only function values keep
 the established i64-slot ABI.
 
 This does not make environments reference-safe. Capability captures remain
-rejected until the uniform wrapper and per-lambda GC payloads land. A
-polymorphic named function cannot yet be formed as a value, even for a scalar
-instantiation: that path needs first-class monomorphization so the referenced
-body and forwarding closure share one concrete ABI. Direct generic calls remain
-supported. Isolated worker callback adapters and function-valued GC aggregates
-retain their own explicit gates.
+rejected until the uniform wrapper and per-lambda GC payloads land. Named
+polymorphic functions now use first-class monomorphization: the checker-resolved
+function type specializes the referenced body before forwarding-closure
+construction, including capability rights, concrete GC aggregates, bounds, and
+`var` write-backs. This includes result-only type variables, function references
+returned through generic wrappers, and unannotated non-generic parameters;
+specialization runs to convergence and rejects non-convergence loudly. Direct
+generic calls remain supported. Isolated worker
+callback adapters and function-valued GC aggregates retain their own explicit
+gates.
 
 The next source-neutral cut adds mutable typed GC arrays to WIR. Structs and
 arrays share one concrete GC type-index band and recursion group before

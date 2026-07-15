@@ -555,17 +555,26 @@ recursive sums, concrete tuples, and tuple aliases. These shapes use typed Wasm
 GC structs selected by the shared reference-storage classifier; construction,
 projection, pattern matching, function boundaries, and direct proper-tail
 dispatch preserve their `externref` and GC-reference fields without i64 erasure.
-The remaining representation work is the typed closure ABI and reference-safe
-closure environments, followed by the still-rejected generic containers,
-generic aggregates, and region copy-out shapes that can transitively store a
-capability.
+The typed closure ABI has since landed. The remaining representation work is
+reference-safe closure environments, followed by the still-rejected generic
+containers, generic aggregates, and region copy-out shapes that can
+transitively store a capability.
 
 **2026-07-15 typed-call checkpoint.** Concrete function values now preserve
 `externref` and concrete GC-reference kinds in parameters, results, explicit
 returns, and `var` write-backs on direct, devirtualized, threaded, and indirect
 closure-call paths. Scalar-only function values keep the established i64-slot
-ABI. Type-checker facts select the lifted signature for inferred lambdas, while
-polymorphic named functions fail closed when formed as values pending
-first-class monomorphization. This closes the function-signature half of the
-closure tail; capability-bearing capture environments, isolated callback
-adapters, and function-valued GC aggregates remain open.
+ABI. Type-checker facts select the lifted signature for inferred lambdas.
+
+**2026-07-15 first-class monomorphization checkpoint.** A named polymorphic
+function formed as a value is now cloned at each concrete function type before
+WASM closure lowering. The rewrite is structural and use-site typed, so aliases,
+higher-order arguments, assignments, joins, pattern bindings, bounded generics,
+capability rights, and `var` conventions all select the same concrete body and
+closure ABI. Specialization re-annotates until no new concrete body is produced;
+an explicit safety limit is a loud compile error, never a partial fallback.
+Function-value dependencies through generic wrappers participate in that
+fixpoint, and unannotated non-generic parameters do not block signature matching.
+This closes the function-signature half of the closure tail;
+capability-bearing capture environments, isolated callback adapters, and
+function-valued GC aggregates remain open.

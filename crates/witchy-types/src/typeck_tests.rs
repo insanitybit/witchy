@@ -1051,12 +1051,8 @@ fn has_optional_id() -> Option(Bool):
             ),
         ];
         for (shape, source) in first_class_monomorphization_cases {
-            let err = check_str(source)
-                .expect_err("polymorphic function values need first-class monomorphization");
-            assert!(
-                err.contains("polymorphic function") && err.contains("monomorphization"),
-                "unexpected {shape} diagnostic: {err}"
-            );
+            check_str(source)
+                .unwrap_or_else(|err| panic!("{shape} should instantiate a fresh function value: {err}"));
         }
 
         let inferred_lambda_cases = [
@@ -2571,6 +2567,64 @@ fn main():
         let err = check_str("fn main(console: Console, d: Dir[Read]):\n    let full = d as Dir\n    console.print(\"no\")\n")
             .expect_err("`as` cannot re-widen Dir[Read] to full Dir");
         assert!(err.contains("can only drop rights"), "got: {err}");
+    }
+
+    #[test]
+    fn resolved_capability_types_preserve_rights_when_converted_to_ast() {
+        let named = |name: &str| ast::Type::Named(name.to_string(), Vec::new());
+        assert_eq!(
+            ty_to_ast(&Ty::Dir(DirRights { read: true, write: false })),
+            Some(ast::Type::Named("Dir".into(), vec![named("Read")]))
+        );
+        assert_eq!(
+            ty_to_ast(&Ty::File(FileRights { read: false, write: true })),
+            Some(ast::Type::Named("File".into(), vec![named("Write")]))
+        );
+        assert_eq!(
+            ty_to_ast(&Ty::Net(NetRights {
+                connect: true,
+                listen: false,
+                tcp: true,
+                udp: false,
+                uds: false,
+            })),
+            Some(ast::Type::Named(
+                "Net".into(),
+                vec![named("Connect"), named("Tcp")],
+            ))
+        );
+        assert_eq!(
+            ty_to_ast(&Ty::Dir(DirRights::full())),
+            Some(named("Dir")),
+        );
+        assert_eq!(
+            ty_to_ast(&Ty::Dir(DirRights { read: false, write: false })),
+            None,
+        );
+        assert_eq!(
+            ty_to_ast(&Ty::File(FileRights { read: false, write: false })),
+            None,
+        );
+        assert_eq!(
+            ty_to_ast(&Ty::Net(NetRights {
+                connect: false,
+                listen: false,
+                tcp: true,
+                udp: false,
+                uds: false,
+            })),
+            None,
+        );
+        assert_eq!(
+            ty_to_ast(&Ty::Net(NetRights {
+                connect: true,
+                listen: false,
+                tcp: false,
+                udp: false,
+                uds: false,
+            })),
+            None,
+        );
     }
 
     // (BUG-009 / RFC-0011 + RFC-0005 hardening #4) Policy narrowing preserves the
