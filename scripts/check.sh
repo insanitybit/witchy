@@ -94,6 +94,23 @@ case "$gate_fuzz" in
     *) echo "check.sh: unknown WITCHY_GATE_FUZZ='$gate_fuzz' (want full|reduced|skip)" >&2; exit 2 ;;
 esac
 
+# Gate scope (WITCHY_GATE_SCOPE, default `all`) — set by the merge-queue
+# coordinator from the batch diff (see merge-queue.sh). `docs` means every
+# changed path is documentation that NO test or gate stage reads (rfcs/ minus
+# the tested rfcs/performance-modes.md, wiki/, and the gitignored ledgers):
+# such a diff cannot change any gate stage's outcome, so the heavy stages
+# would only re-validate the already-gated master tree. The default merge-gate
+# mode skips them; post-merge CI still runs the complete suite as the
+# backstop. --fast, --full, and the shards ignore the scope entirely (force
+# `all`): they are human/agent-invoked runs whose point is to execute their
+# section.
+gate_scope="${WITCHY_GATE_SCOPE:-all}"
+case "$gate_scope" in
+    all | docs) ;;
+    *) echo "check.sh: unknown WITCHY_GATE_SCOPE='$gate_scope' (want all|docs)" >&2; exit 2 ;;
+esac
+if [ "$full" -eq 1 ] || [ "$fast" -eq 1 ]; then gate_scope="all"; fi
+
 # Prefer nextest (the project's runner); fall back to plain `cargo test`.
 # By default, exclude the load-flaky e2e binary (coven/glamour publish tests)
 # from the merge gate. It runs explicitly via `--e2e` and as part of `--full`.
@@ -205,6 +222,12 @@ if [ "$fast" -eq 1 ]; then
     fi
     run "tests (workspace, minus e2e)" "${test_cmd[@]}"
     printf '\n\033[1;32mfast gate green\033[0m — run without --fast before push (fmt + wasm), --full for e2e\n'
+    exit 0
+fi
+
+if [ "$gate_scope" = "docs" ]; then
+    run "docs-only scope — heavy stages skipped" true
+    printf '\n\033[1;32mall green\033[0m — WITCHY_GATE_SCOPE=docs: the batch diff touches only untested documentation; tests/clippy/fmt/wasm/book skipped (post-merge CI runs the full suite)\n'
     exit 0
 fi
 

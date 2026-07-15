@@ -131,6 +131,18 @@ under the checked heap still runs post-merge on CI (`ci.yml`) and in `check.sh
 --full`, so reduced/skip lowers *pre-merge* cost without removing the regression
 net — only its position. Standalone `check.sh` (no env set) runs `full`.
 
+**Diff-scoped gate (docs-only).** The same classification also sets
+`WITCHY_GATE_SCOPE`: when EVERY changed path in the batch diff is documentation
+no test or gate stage reads — `rfcs/` (except the tested
+`rfcs/performance-modes.md`), `wiki/`, and the gitignored ledgers — check.sh
+skips the heavy stages entirely (`scope=docs` in the gating note): such a diff
+cannot change any stage's outcome, so the suite would only re-validate the
+already-gated master tree, and post-merge CI still runs the complete suite as
+the backstop. Anything else (`book/`, `spec/`, `README.md`, `scripts/`,
+`.claude/`, `.github/`, Cargo metadata, …) runs the full gate; empty/errored
+diffs fail safe to `all`. Standalone `check.sh`, `--fast`, `--full`, and the
+shards ignore the scope.
+
 ## The gate lifecycle, step by step (process_one)
 
 1. Read queue head. Branch deleted → journal `dropped`, consume, next.

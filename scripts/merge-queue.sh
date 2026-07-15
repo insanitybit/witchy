@@ -179,14 +179,15 @@ group_is_busy() { # group_is_busy <pgid>
 # Run the gate in its own process group with a stall/overall-timeout monitor.
 # Sets gate_result to "green", "red", or "timeout: <why>". Never returns nonzero.
 gate_result=""
-run_gate() { # run_gate <log> [fuzz-mode]
+run_gate() { # run_gate <log> [fuzz-mode] [gate-scope]
     local log="$1"
     local fuzz_mode="${2:-full}"
+    local gate_scope="${3:-all}"
     local start; start="$(date +%s)"
     # `set -m` puts the background job in its own process group, so a timeout
     # can kill the WHOLE cargo/nextest tree, not just the top shell.
     set -m
-    ( cd "$gate_wt" && exec env CARGO_INCREMENTAL=0 NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_FUZZ=$fuzz_mode" bash -c "$gate_cmd" ) >"$log" 2>&1 &
+    ( cd "$gate_wt" && exec env CARGO_INCREMENTAL=0 NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" bash -c "$gate_cmd" ) >"$log" 2>&1 &
     local gpid=$!
     set +m
     local why=""
@@ -459,10 +460,33 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         fi
     fi
 
+    # Gate scope from the same diff (see check.sh's WITCHY_GATE_SCOPE): if EVERY
+    # changed path is documentation that no test or gate stage reads, the heavy
+    # stages could only re-validate master's already-gated tree — skip them and
+    # let post-merge CI's complete run be the backstop. The safe set is
+    # deliberately TINY: rfcs/ (except rfcs/performance-modes.md, which
+    # example_tests::documentation_examples_are_valid scans), wiki/, and the
+    # gitignored ledgers (bugs//scratch//security-eval/, which never reach a
+    # diff anyway). Everything else — book/, spec/, README.md, std/, scripts/,
+    # .claude/, .github/, Cargo metadata — runs the full gate. Fail SAFE:
+    # errored/empty diff -> all.
+    # (Capture-and-test rather than `grep -qv`: an inverted quiet match is the
+    # one grep construct with divergent exit semantics across implementations,
+    # e.g. a ugrep-shimmed PATH — and this decision gates merges.)
+    local gate_scope="all"
+    local unsafe_paths=""
+    if [ -n "$changed" ]; then
+        unsafe_paths="$(echo "$changed" | grep -vE '^(rfcs/|wiki/|bugs/|scratch/|security-eval/)' || true)"
+    fi
+    if [ -n "$changed" ] && [ -z "$unsafe_paths" ] \
+        && ! echo "$changed" | grep -qx 'rfcs/performance-modes\.md'; then
+        gate_scope="docs"
+    fi
+
     local log; log="$logs/$(date +%Y%m%d-%H%M%S)-$(echo "$branch" | tr '/' '~').log"
     echo "$log" >"$lock/log"
-    note "gating $branch (rebased to $sha on $base; fuzz=$fuzz_mode); log: $log"
-    run_gate "$log" "$fuzz_mode"
+    note "gating $branch (rebased to $sha on $base; fuzz=$fuzz_mode; scope=$gate_scope); log: $log"
+    run_gate "$log" "$fuzz_mode" "$gate_scope"
     release_lock
     local took=$(( $(date +%s) - t0 ))
 
