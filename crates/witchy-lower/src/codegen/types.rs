@@ -124,9 +124,10 @@ impl Codegen<'_> {
             }
             Expr::Call { name, .. } => match cap_ops::surface_name(name) {
                 name if intrinsics::lookup(name)
+                    .is_some_and(|spec| spec.signature.returns_float()) => Kind::F64,
+                name if intrinsics::lookup(name)
                     .is_some_and(|spec| spec.signature.returns_int()) => Kind::I64,
-                "math.to_float" => Kind::F64,
-                "math.to_int" | "list.length" | "dict.length" | "int_to_duration"
+                "list.length" | "dict.length" | "int_to_duration"
                 | "duration_to_int" | "now" | "now_monotonic" | "rand_u64"
                 => Kind::I64,
                 "list.at" => self.elem_kind_of_list_arg(e),
@@ -350,6 +351,8 @@ impl Codegen<'_> {
                     .is_some_and(|spec| spec.signature.returns_bool()) => ValType::Bool,
                 name if intrinsics::lookup(name)
                     .is_some_and(|spec| spec.signature.returns_int()) => ValType::Int,
+                name if intrinsics::lookup(name)
+                    .is_some_and(|spec| spec.signature.returns_float()) => ValType::Float,
                 "crypto.sha256" | "crypto.sign"
                 | "crypto.public_key" | "crypto.reveal" | "read" | "read_build" | "crypto.rune_hash"
                 | "exec"
@@ -357,12 +360,11 @@ impl Codegen<'_> {
                 | "crypto.sha512" | "crypto.sha3_256" | "crypto.hmac_sha256"
                 | "recv_bytes" => ValType::Str,
                 "dict.contains_key" | "exists" | "is_dir" => ValType::Bool,
-                "list.length" | "dict.length" | "math.to_int" | "int_to_duration"
+                "list.length" | "dict.length" | "int_to_duration"
                 | "duration_to_int" | "now" | "now_monotonic" | "rand_u64"
                 | "crypto.__ed25519_verify_status" | "crypto.__ecdsa_p256_verify_status"
                 | "crypto.__ecdsa_p256_verify_hex_status"
                 | "crypto.__rsa_pkcs1_sha256_verify_status" => ValType::Int,
-                "math.to_float" | "math.sqrt" => ValType::Float,
                 other => self.fn_ret_valtype.get(other).copied().unwrap_or(ValType::Other),
             },
             // `inner?` yields the Ok/Some payload's value type, so `to_string` of

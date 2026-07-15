@@ -57,6 +57,9 @@ pub enum IntrinsicId {
     StringToLower,
     StringTrim,
     StringToInt,
+    MathToFloat,
+    MathToInt,
+    MathSqrt,
 }
 
 /// A representation-neutral type recipe interpreted by `witchy-types`.
@@ -85,6 +88,9 @@ pub enum IntrinsicSignature {
     StringStringStringToString,
     StringIntIntToString,
     IntToString,
+    IntToFloat,
+    FloatToInt,
+    FloatToFloat,
     DeclaredInSource,
 }
 
@@ -103,7 +109,14 @@ impl IntrinsicSignature {
     }
 
     pub fn returns_int(self) -> bool {
-        matches!(self, Self::BytesToInt | Self::BytesIntToInt | Self::StringToInt | Self::StringStringToInt)
+        matches!(
+            self,
+            Self::BytesToInt
+                | Self::BytesIntToInt
+                | Self::StringToInt
+                | Self::StringStringToInt
+                | Self::FloatToInt
+        )
     }
 
     pub fn returns_bool(self) -> bool {
@@ -118,6 +131,10 @@ impl IntrinsicSignature {
                 | Self::BytesBytesToBytes
                 | Self::BytesIntIntToBytes
         )
+    }
+
+    pub fn returns_float(self) -> bool {
+        matches!(self, Self::IntToFloat | Self::FloatToFloat)
     }
 }
 
@@ -257,6 +274,10 @@ pub const STRING_TO_UPPER: &str = "string.to_upper";
 pub const STRING_TO_LOWER: &str = "string.to_lower";
 pub const STRING_TRIM: &str = "string.trim";
 pub const STRING_TO_INT: &str = "string.to_int";
+
+pub const MATH_TO_FLOAT: &str = "math.to_float";
+pub const MATH_TO_INT: &str = "math.to_int";
+pub const MATH_SQRT: &str = "math.sqrt";
 
 pub const ALL: &[IntrinsicSpec] = &[
     IntrinsicSpec {
@@ -1009,6 +1030,51 @@ pub const ALL: &[IntrinsicSpec] = &[
         diagnostic_name: STRING_TO_INT,
         private_callers: NO_PRIVATE_CALLERS,
     },
+    IntrinsicSpec {
+        id: IntrinsicId::MathToFloat,
+        name: MATH_TO_FLOAT,
+        arity: 1,
+        signature: IntrinsicSignature::IntToFloat,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: MATH_TO_FLOAT,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MathToInt,
+        name: MATH_TO_INT,
+        arity: 1,
+        signature: IntrinsicSignature::FloatToInt,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["float_to_int"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: MATH_TO_INT,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MathSqrt,
+        name: MATH_SQRT,
+        arity: 1,
+        signature: IntrinsicSignature::FloatToFloat,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: MATH_SQRT,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
 ];
 
 pub const ERASURE_BRIDGES: &[&str] = &[ERASE, UNERASE];
@@ -1063,6 +1129,8 @@ pub const STRING_OPERATIONS: &[&str] = &[
     STRING_TRIM,
     STRING_TO_INT,
 ];
+
+pub const MATH_OPERATIONS: &[&str] = &[MATH_TO_FLOAT, MATH_TO_INT, MATH_SQRT];
 
 pub fn lookup(name: &str) -> Option<&'static IntrinsicSpec> {
     ALL.iter().find(|spec| spec.name == name)
@@ -1149,6 +1217,12 @@ pub fn is_string_operation(name: &str) -> bool {
                 | IntrinsicId::StringTrim
                 | IntrinsicId::StringToInt
         )
+    })
+}
+
+pub fn is_math_operation(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| {
+        matches!(spec.id, IntrinsicId::MathToFloat | IntrinsicId::MathToInt | IntrinsicId::MathSqrt)
     })
 }
 
@@ -1240,6 +1314,9 @@ mod tests {
             STRING_TO_LOWER,
             STRING_TRIM,
             STRING_TO_INT,
+            MATH_TO_FLOAT,
+            MATH_TO_INT,
+            MATH_SQRT,
         ];
         for name in names {
             assert_eq!(lookup(name).map(|spec| spec.name), Some(name));
@@ -1376,6 +1453,62 @@ mod tests {
                 spec.name
             );
             assert_eq!(function.ret.as_ref(), Some(&result), "return drift for {}", spec.name);
+        }
+    }
+
+    #[test]
+    fn math_operation_family_has_complete_semantic_metadata() {
+        let expected: BTreeSet<_> = MATH_OPERATIONS.iter().copied().collect();
+        let actual: BTreeSet<_> = ALL
+            .iter()
+            .filter(|spec| is_math_operation(spec.name))
+            .map(|spec| spec.name)
+            .collect();
+        assert_eq!(actual, expected);
+        assert_eq!(actual.len(), 3);
+
+        for name in MATH_OPERATIONS {
+            let spec = lookup(name).expect("math operation");
+            assert_eq!(spec.arity, 1);
+            assert_eq!(spec.effect, IntrinsicEffect::Pure);
+            assert_eq!(spec.capability_effect, CapabilityEffect::None);
+            assert_eq!(spec.lowering, IntrinsicLowering::Builtin);
+            assert_eq!(spec.runtime, IntrinsicRuntime::InterpreterBuiltin);
+            assert!(spec.wir_host_call.is_none());
+            assert!(!spec.dynamic_wir_helpers);
+        }
+        assert_eq!(sole_wir_helper(MATH_TO_INT), Some("float_to_int"));
+        assert!(lookup(MATH_TO_FLOAT).expect("math.to_float").wir_helpers.is_empty());
+        assert!(lookup(MATH_SQRT).expect("math.sqrt").wir_helpers.is_empty());
+    }
+
+    #[test]
+    fn math_source_primitive_signatures_match_catalog() {
+        use crate::ast::Type;
+
+        let module = crate::parser::parse_module(include_str!("../../../std/math.witchy"))
+            .expect("parse std/math");
+        let int = Type::Named("Int".into(), Vec::new());
+        let float = Type::Named("Float".into(), Vec::new());
+        for name in MATH_OPERATIONS {
+            let spec = lookup(name).expect("math operation");
+            let bare_name = spec.name.rsplit_once('.').expect("qualified math name").1;
+            let function = module.items.iter().find_map(|item| match item {
+                crate::ast::Item::Function(function) if function.name == bare_name => {
+                    Some(function)
+                }
+                _ => None,
+            });
+            let function = function.unwrap_or_else(|| panic!("{} missing from std/math", spec.name));
+            let (param, result) = match spec.signature {
+                IntrinsicSignature::IntToFloat => (&int, &float),
+                IntrinsicSignature::FloatToInt => (&float, &int),
+                IntrinsicSignature::FloatToFloat => (&float, &float),
+                other => panic!("unexpected math signature {other:?}"),
+            };
+            assert_eq!(function.params.len(), spec.arity, "arity drift for {}", spec.name);
+            assert_eq!(function.params[0].ty.as_ref(), Some(param), "parameter drift for {}", spec.name);
+            assert_eq!(function.ret.as_ref(), Some(result), "return drift for {}", spec.name);
         }
     }
 

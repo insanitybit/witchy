@@ -2224,11 +2224,11 @@ impl Interpreter {
                 _ => err("substring expects a String and two Int indices"),
             },
             // Conversions.
-            "math.to_float" => match one(args)? {
+            intrinsics::MATH_TO_FLOAT => match one(args)? {
                 Value::Int(n) => Ok(Some(Value::Float(n as f64))),
                 other => err(format!("int_to_float expects an Int, got `{other}`")),
             },
-            "math.to_int" => match one(args)? {
+            intrinsics::MATH_TO_INT => match one(args)? {
                 Value::Float(x) if x.is_nan() => err(DiagTemplate::NanToInt.render(0, 0, "")),
                 Value::Float(x) => Ok(Some(Value::Int(x as i64))),
                 other => err(format!("float_to_int expects a Float, got `{other}`")),
@@ -2239,7 +2239,7 @@ impl Interpreter {
                 Value::Int(n) => Ok(Some(Value::Int(n))),
                 other => err(format!("{name} expects an Int/Duration, got `{other}`")),
             },
-            "math.sqrt" => match one(args)? {
+            intrinsics::MATH_SQRT => match one(args)? {
                 Value::Float(x) => Ok(Some(Value::Float(x.sqrt()))),
                 other => err(format!("sqrt expects a Float, got `{other}`")),
             },

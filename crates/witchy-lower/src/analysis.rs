@@ -1756,7 +1756,9 @@ fn builtin_arg_liveness(name: &str, argc: usize) -> Option<Vec<bool>> {
         | (intrinsics::STRING_SUBSTRING, 3)
         | (intrinsics::STRING_REPLACE, 3) => read_all(argc),
         // Conversions never retain buffers.
-        ("math.to_float", 1) | ("math.to_int", 1) | ("math.sqrt", 1) => read_all(argc),
+        (intrinsics::MATH_TO_FLOAT, 1)
+        | (intrinsics::MATH_TO_INT, 1)
+        | (intrinsics::MATH_SQRT, 1) => read_all(argc),
         ("dict.new", 0) => Some(Vec::new()),
         _ => None,
     }

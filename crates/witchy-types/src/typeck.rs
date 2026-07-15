@@ -3841,6 +3841,9 @@ impl Checker {
                 Some((vec![Ty::String, Ty::Int, Ty::Int], Ty::String))
             }
             S::IntToString => Some((vec![Ty::Int], Ty::String)),
+            S::IntToFloat => Some((vec![Ty::Int], Ty::Float)),
+            S::FloatToInt => Some((vec![Ty::Float], Ty::Int)),
+            S::FloatToFloat => Some((vec![Ty::Float], Ty::Float)),
             // These calls are checked by their dedicated frontend rule or by
             // the linked source declaration, not by the builtin signature path.
             S::TryContext | S::DeclaredInSource => None,
@@ -3878,12 +3881,9 @@ impl Checker {
             "run_tool" => Some((vec![Ty::BuildExec, Ty::String, Ty::String], Ty::String)),
             // Abort with a message (the primitive behind std/testing).
             "fail" => Some((vec![Ty::String], Ty::Nil)),
-            "math.to_float" => Some((vec![Ty::Int], Ty::Float)),
-            "math.to_int" => Some((vec![Ty::Float], Ty::Int)),
             // Duration <-> Int(milliseconds) bridge for the std `duration` module.
             "int_to_duration" => Some((vec![Ty::Int], Ty::Duration)),
             "duration_to_int" => Some((vec![Ty::Duration], Ty::Int)),
-            "math.sqrt" => Some((vec![Ty::Float], Ty::Float)),
             "list.length" => {
                 let elem = self.fresh();
                 Some((vec![Ty::List(Box::new(elem))], Ty::Int))
@@ -7784,8 +7784,8 @@ pub fn intrinsic(name: &str) -> bool {
         "list.__push" | witchy_syntax::intrinsics::GENERATED_LIST_PUSH | "list.__set_at" | "list.at" | "list.length" | "list.concat"
             | "dict.new" | "dict.__insert" | "dict.get_or" | "dict.at" | "dict.contains_key" | "dict.__remove"
             | "dict.__update" | "dict.keys" | "dict.values" | "dict.pairs" | "dict.length"
-            | "math.to_float" | "math.to_int" | "math.sqrt"
     ) || witchy_syntax::intrinsics::is_string_operation(name)
+        || witchy_syntax::intrinsics::is_math_operation(name)
 }
 
 

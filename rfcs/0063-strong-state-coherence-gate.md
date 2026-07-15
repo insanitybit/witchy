@@ -138,7 +138,17 @@ Coherence tests compare the rows to `std/string.witchy`, require every declared 
 exist in the WIR registry, and require every primitive placeholder to be suppressed. This
 also closes the prior omission where `string.from_code` was intercepted by both backends
 but its self-recursive source declaration was not classified as an intrinsic. List, Dict,
-math, and the remaining public operation families are still uncataloged.
+and the remaining public operation families are still uncataloged.
+
+The math primitive family catalogs all three backend-crossing operations:
+`math.to_float`, `math.to_int`, and `math.sqrt`. Their rows carry exact signatures,
+pure/no-capability effects, interpreter ownership, and the direct `float_to_int` WIR
+helper dependency; `math.to_float` and `math.sqrt` remain typed inline operations with no
+helper. Type checking derives the three signatures from those rows, while interpreter
+dispatch, lowering identity, analysis aliases, and compiled result-shape classification
+consume the catalog family or its stable names. Coherence tests require source declarations
+and helpers to exist, reject primitive-placeholder drift, and execute every row through the
+interpreter-owned dispatch path.
 
 ### 4. Typed compiler facts, not string or address shadows
 

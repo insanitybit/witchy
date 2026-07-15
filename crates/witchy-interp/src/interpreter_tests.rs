@@ -34,6 +34,25 @@
     }
 
     #[test]
+    fn every_cataloged_math_operation_has_runtime_dispatch() {
+        let module = witchy_syntax::parser::parse_module("fn main() -> Int:\n    0\n")
+            .expect("parse minimal module");
+        let mut interpreter = Interpreter::new(module);
+
+        for name in intrinsics::MATH_OPERATIONS {
+            let args = match *name {
+                intrinsics::MATH_TO_FLOAT => vec![Value::Int(4)],
+                intrinsics::MATH_TO_INT | intrinsics::MATH_SQRT => vec![Value::Float(4.0)],
+                _ => unreachable!("uncataloged math operation"),
+            };
+            let result = interpreter
+                .call_builtin(name, &args)
+                .unwrap_or_else(|error| panic!("{} failed: {}", name, error.message));
+            assert!(result.is_some(), "{} fell through runtime dispatch", name);
+        }
+    }
+
+    #[test]
     fn evaluates_arithmetic_and_precedence() {
         let out = run(r#"
 fn main(console: Console):

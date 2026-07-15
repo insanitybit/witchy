@@ -287,16 +287,16 @@ impl Codegen<'_> {
             // Int <-> Float numeric conversions and `sqrt`, lowered only in a
             // WIR-collecting scope. `to_int` keeps saturating finite/inf behavior
             // but routes NaN through the shared runtime-abort diagnostic.
-            ("math.to_float", 1) if self.collect_wir => {
+            (intrinsics::MATH_TO_FLOAT, 1) if self.collect_wir => {
                 let ak = self.kind_of(&args[0]);
                 let arg = Self::wir_convert(self.lower_expr(&args[0])?, ak, Kind::I64);
                 W::Unary { op: witchy_wir::wir::UnOp::ToFloat, kind: witchy_wir::wir::Kind::F64, arg: Box::new(arg) }
             }
-            ("math.to_int", 1) if self.collect_wir => {
+            (intrinsics::MATH_TO_INT, 1) if self.collect_wir => {
                 let arg = self.lower_expr(&args[0])?;
-                W::Call { func: "float_to_int".to_string(), args: vec![arg] }
+                W::Call { func: intrinsic_helper(name).to_string(), args: vec![arg] }
             }
-            ("math.sqrt", 1) if self.collect_wir => {
+            (intrinsics::MATH_SQRT, 1) if self.collect_wir => {
                 let arg = self.lower_expr(&args[0])?;
                 W::Unary { op: witchy_wir::wir::UnOp::Sqrt, kind: witchy_wir::wir::Kind::F64, arg: Box::new(arg) }
             }

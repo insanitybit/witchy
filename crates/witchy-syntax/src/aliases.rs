@@ -466,9 +466,9 @@ pub fn moved_builtin(bare: &str) -> Option<&'static str> {
         "to_upper" => intrinsics::STRING_TO_UPPER,
         "to_lower" => intrinsics::STRING_TO_LOWER,
         "string_to_int" => intrinsics::STRING_TO_INT,
-        "int_to_float" => "math.to_float",
-        "float_to_int" => "math.to_int",
-        "sqrt" => "math.sqrt",
+        "int_to_float" => intrinsics::MATH_TO_FLOAT,
+        "float_to_int" => intrinsics::MATH_TO_INT,
+        "sqrt" => intrinsics::MATH_SQRT,
         _ => return None,
     })
 }
