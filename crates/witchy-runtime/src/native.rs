@@ -1022,3 +1022,19 @@ mod string {
         Ok(Value::Str(ch.to_string()))
     }
 }
+
+#[cfg(test)]
+mod intrinsic_catalog_tests {
+    #[test]
+    fn cataloged_native_runtime_hooks_exist() {
+        for intrinsic in witchy_syntax::intrinsics::ALL.iter().filter(|intrinsic| {
+            intrinsic.runtime == witchy_syntax::intrinsics::IntrinsicRuntime::Native
+        }) {
+            assert!(
+                super::lookup(intrinsic.name).is_some(),
+                "intrinsic {} names a missing native runtime hook",
+                intrinsic.name
+            );
+        }
+    }
+}

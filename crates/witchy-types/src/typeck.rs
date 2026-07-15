@@ -3785,7 +3785,62 @@ impl Checker {
         terr(format!("call to unknown function `{name}`{hint}"))
     }
 
+    fn intrinsic_call_sig(&mut self, name: &str) -> Option<(Vec<Ty>, Ty)> {
+        use witchy_syntax::intrinsics::IntrinsicSignature as S;
+
+        let spec = intrinsics::lookup(name)?;
+        let signature = match spec.signature {
+            S::GenericRender => {
+                let a = self.fresh();
+                Some((vec![a], Ty::String))
+            }
+            S::GenericListPush => {
+                let elem = self.fresh();
+                Some((
+                    vec![Ty::List(Box::new(elem.clone())), elem.clone()],
+                    Ty::List(Box::new(elem)),
+                ))
+            }
+            S::GenericToMessage => {
+                let m = self.fresh();
+                Some((vec![m], Ty::Msg))
+            }
+            S::MessageToGeneric => {
+                let m = self.fresh();
+                Some((vec![Ty::Msg], m))
+            }
+            S::StringToBytes => Some((vec![Ty::String], Ty::Bytes)),
+            S::ListIntToBytes => Some((vec![Ty::List(Box::new(Ty::Int))], Ty::Bytes)),
+            S::BytesToString => Some((vec![Ty::Bytes], Ty::String)),
+            S::BytesToInt => Some((vec![Ty::Bytes], Ty::Int)),
+            S::BytesIntToInt => Some((vec![Ty::Bytes, Ty::Int], Ty::Int)),
+            S::BytesBytesToBytes => Some((vec![Ty::Bytes, Ty::Bytes], Ty::Bytes)),
+            S::BytesIntIntToBytes => {
+                Some((vec![Ty::Bytes, Ty::Int, Ty::Int], Ty::Bytes))
+            }
+            S::EntriesToReadOnlyDir => Some((
+                vec![Ty::List(Box::new(Ty::Tuple(vec![Ty::String, Ty::String])))],
+                Ty::Dir(DirRights { read: true, write: false }),
+            )),
+            S::CompilerDocResultJson => {
+                Some((vec![Ty::String, Ty::String], Ty::String))
+            }
+            // These calls are checked by their dedicated frontend rule or by
+            // the linked source declaration, not by the builtin signature path.
+            S::TryContext | S::DeclaredInSource => None,
+        };
+        debug_assert!(
+            signature.as_ref().is_none_or(|(params, _)| params.len() == spec.arity),
+            "intrinsic catalog arity disagrees with the type recipe for {}",
+            spec.name
+        );
+        signature
+    }
+
     fn call_sig(&mut self, name: &str) -> Option<(Vec<Ty>, Ty)> {
+        if let Some(signature) = self.intrinsic_call_sig(name) {
+            return Some(signature);
+        }
         match name {
             "print" => Some((vec![Ty::Console, Ty::String], Ty::Nil)),
             "now" => Some((vec![Ty::Clock], Ty::Int)),
@@ -3807,36 +3862,6 @@ impl Checker {
             "run_tool" => Some((vec![Ty::BuildExec, Ty::String, Ty::String], Ty::String)),
             "string.length" => Some((vec![Ty::String], Ty::Int)),
             "string.char_count" => Some((vec![Ty::String], Ty::Int)),
-            // (Bytes) Primitive intrinsics behind the `std/bytes` surface. `Bytes` and
-            // `String` share the flat `[len][bytes]` layout, so the representation-level
-            // ops are identity/reuse on the compiled backend.
-            intrinsics::BYTES_FROM_STRING => Some((vec![Ty::String], Ty::Bytes)),
-            intrinsics::BYTES_FROM_LIST => Some((vec![Ty::List(Box::new(Ty::Int))], Ty::Bytes)),
-            intrinsics::BYTES_TO_STRING => Some((vec![Ty::Bytes], Ty::String)),
-            intrinsics::TESTING_MOCK_DIR => Some((
-                vec![Ty::List(Box::new(Ty::Tuple(vec![Ty::String, Ty::String])))],
-                Ty::Dir(DirRights { read: true, write: false }),
-            )),
-            // (RFC-0055) The channel-endpoint erasure bridge. `__erase` casts any
-            // typed message to the executor's opaque `__Msg`; `__unerase` recovers
-            // it at the endpoint's type. Representationally the identity on both
-            // backends (a message already rides the universal slot); the pairing of
-            // a `Sender(m)`/`Receiver(m)` to one channel id is what makes every
-            // `__unerase` see a value erased at the same `m`. Deliberately NOT
-            // inferable end-to-end — `__unerase`'s result type `m` is a fresh var
-            // fixed only by its use site — and confined to `std/chan`/`std/task`.
-            intrinsics::ERASE => {
-                let m = self.fresh();
-                Some((vec![m], Ty::Msg))
-            }
-            intrinsics::UNERASE => {
-                let m = self.fresh();
-                Some((vec![Ty::Msg], m))
-            }
-            intrinsics::BYTES_LENGTH => Some((vec![Ty::Bytes], Ty::Int)),
-            intrinsics::BYTES_AT => Some((vec![Ty::Bytes, Ty::Int], Ty::Int)),
-            intrinsics::BYTES_CONCAT => Some((vec![Ty::Bytes, Ty::Bytes], Ty::Bytes)),
-            intrinsics::BYTES_SLICE => Some((vec![Ty::Bytes, Ty::Int, Ty::Int], Ty::Bytes)),
             "string.to_upper" | "string.to_lower" | "string.trim" => Some((vec![Ty::String], Ty::String)),
             // Abort with a message (the primitive behind std/testing).
             "fail" => Some((vec![Ty::String], Ty::Nil)),
@@ -3862,10 +3887,6 @@ impl Checker {
             "duration_to_int" => Some((vec![Ty::Duration], Ty::Int)),
             "math.sqrt" => Some((vec![Ty::Float], Ty::Float)),
             "string.to_int" => Some((vec![Ty::String], Ty::Int)),
-            name if ast::is_render_intrinsic(name) => {
-                let a = self.fresh();
-                Some((vec![a], Ty::String))
-            }
             "list.length" => {
                 let elem = self.fresh();
                 Some((vec![Ty::List(Box::new(elem))], Ty::Int))
@@ -3874,7 +3895,7 @@ impl Checker {
                 let elem = self.fresh();
                 Some((vec![Ty::List(Box::new(elem.clone())), Ty::Int], elem))
             }
-            "list.__push" | witchy_syntax::intrinsics::GENERATED_LIST_PUSH => {
+            "list.__push" => {
                 let elem = self.fresh();
                 Some((
                     vec![Ty::List(Box::new(elem.clone())), elem.clone()],
@@ -4079,7 +4100,10 @@ impl Checker {
         if name != intrinsics::TRY_CONTEXT {
             return Ok(None);
         }
-        if args.len() != 2 {
+        let arity = intrinsics::lookup(name)
+            .expect("try-context intrinsic is cataloged")
+            .arity;
+        if args.len() != arity {
             return terr(format!("`? \"msg\"` expects (value, message) but got {}", args.len()));
         }
         let mty = self.infer(&args[1])?;

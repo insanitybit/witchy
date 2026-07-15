@@ -1917,6 +1917,11 @@ impl Interpreter {
     }
 
     fn call_builtin(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>, RuntimeError> {
+        if let Some(spec) = intrinsics::lookup(name)
+            && args.len() != spec.arity
+        {
+            return err(intrinsics::arity_diagnostic(spec, args.len()));
+        }
         // `secret_store.get(name)` — a named lookup into the granted store. Handled
         // here (not in `native`) because a `SecretStore` is not a `NativeValue`.
         if name == "secretstore.get" {

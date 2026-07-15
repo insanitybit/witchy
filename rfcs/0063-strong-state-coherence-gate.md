@@ -98,9 +98,17 @@ Implementation progress (2026-07-12): the first slice centralizes compiler/priva
 intrinsic identities and std-bridge owner allowlists in `witchy-syntax::intrinsics`.
 Parser desugaring, formatter re-sugaring, linker privacy checks, type signatures,
 interpreter dispatch, lowering, and runtime/native lookup now consume those shared names.
-This deliberately does not complete the broader operation registry; arity, signature,
-purity/effect, WIR helper, and diagnostic metadata still need to move into cataloged
-facts before this RFC is fully implemented.
+The next slice turns those identities into a representation-neutral catalog carrying
+exact arity, a type-signature recipe, semantic effect class, capability effect, lowering
+class, WIR helper dependencies, diagnostic name, and private callers. Type checking now
+derives private intrinsic signatures from those recipes. The interpreter rejects arity
+drift through the cataloged diagnostic contract when dispatch reaches a private builtin;
+type checking checks the same arity through the cataloged signature. Coherence tests
+reject source-placeholder signature drift, missing native hooks, source-function arity
+drift, and references to absent static WIR helpers. This deliberately does not complete
+the broader operation registry:
+public builtins and std-backed operations still need catalog entries, and runtime/lowering
+hook selection must move over consumer by consumer before this RFC is fully implemented.
 
 ### 4. Typed compiler facts, not string or address shadows
 

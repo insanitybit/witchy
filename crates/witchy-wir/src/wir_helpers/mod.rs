@@ -5925,3 +5925,22 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }
     }
 }
+
+#[cfg(test)]
+mod intrinsic_catalog_tests {
+    use super::*;
+
+    #[test]
+    fn cataloged_static_wir_helpers_exist() {
+        for intrinsic in witchy_syntax::intrinsics::ALL {
+            for helper in intrinsic.wir_helpers {
+                assert!(
+                    wir_helper(helper).is_some(),
+                    "intrinsic {} names missing WIR helper {}",
+                    intrinsic.name,
+                    helper
+                );
+            }
+        }
+    }
+}
