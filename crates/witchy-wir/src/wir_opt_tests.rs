@@ -224,9 +224,21 @@
 
         assert_eq!(lower_direct_tail_calls(&mut module), 1);
         let function = &module.funcs[0];
-        assert_eq!(function.locals.len(), 5, "one staging local per full-envelope parameter");
-        let [WirNode::Loop { body, .. }, WirNode::Unreachable] = function.body.as_slice() else {
-            panic!("expected ownership-envelope loop, got {:?}", function.body);
+        assert_eq!(
+            function.locals.len(),
+            6,
+            "three argument staging locals plus the declared-result exit local"
+        );
+        let [WirNode::Block { body: exit_body, .. }, WirNode::Push(_), WirNode::Push(_)] =
+            function.body.as_slice()
+        else {
+            panic!(
+                "expected an ownership-envelope loop and result epilogue, got {:?}",
+                function.body
+            );
+        };
+        let [WirNode::Loop { body, .. }, WirNode::Unreachable] = exit_body.as_slice() else {
+            panic!("expected a loop inside the resultless exit block, got {exit_body:?}");
         };
         let mut residual = std::collections::HashSet::new();
         collect_function_tail_calls(&function.body, &mut residual);
@@ -234,8 +246,7 @@
             !residual.contains(&TailCallee::Direct("walk".into())),
             "ownership-envelope lowering must remove every recursive backend edge: {residual:?}"
         );
-        assert!(matches!(body.last(), Some(WirNode::Unreachable)));
-        assert!(matches!(body.get(body.len() - 2), Some(WirNode::Br { cond: None, .. })));
+        assert!(matches!(body.last(), Some(WirNode::Br { cond: None, .. })));
         let binary = crate::wir_encode::encode(&module, &[]);
         wasmparser::validate(&binary).expect("rewritten ownership envelope must remain valid wasm");
     }

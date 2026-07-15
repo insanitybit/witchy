@@ -31,11 +31,13 @@ use crate::wir::{
 
 /// Lower recursive direct proper calls to typed state machines.
 ///
-/// This is a semantic lowering, not an optional optimization. Multi-result
-/// functions are left alone because their caller-side write-back/ownership
-/// envelope is real residual work and is not yet a proper tail edge.
+/// This is a semantic lowering, not an optional optimization. A multi-result
+/// call participates only when local provenance proves that its complete
+/// write-back/ownership envelope forwards unchanged; reconstruction remains
+/// real caller-side work.
 pub fn lower_direct_tail_calls(module: &mut WirModule) -> usize {
-    let mut count = lower_mutual_tail_components(module);
+    let mut count = lower_mutual_envelope_components(module);
+    count += lower_mutual_tail_components(module);
     count += module.funcs.iter_mut().map(lower_func_self_tail_calls).sum::<usize>();
     count
 }
@@ -118,16 +120,21 @@ fn lower_func_self_tail_calls(func: &mut WirFunc) -> usize {
     count
 }
 
-/// Lower the canonical ownership-token envelope emitted for an `own` aggregate
-/// tail call. Unlike arbitrary multi-result calls, this pair is forwarded
-/// unchanged: `(declared value, ownership token)` becomes the current function's
-/// complete result, so no caller-side write-back remains.
+/// Lower a self call whose complete multi-result envelope is forwarded unchanged.
+/// This covers ownership tokens and RFC-0087 `var` write-backs. The recognizer
+/// follows only local-to-local copies from `CallStoreMulti` destinations to the
+/// function epilogue; a computed reconstruction therefore remains non-tail.
 fn lower_func_self_tail_envelope(func: &mut WirFunc) -> usize {
-    if func.raw_body.is_some()
-        || !matches!(func.ret.as_slice(), [_, token] if token.kind() == Kind::I32)
-    {
+    if func.raw_body.is_some() || func.ret.len() < 2 {
         return 0;
     }
+
+    let envelope_len = func.ret.len() - 1;
+    if func.body.len() <= envelope_len {
+        return 0;
+    }
+    let envelope_start = func.body.len() - envelope_len;
+    let Some(envelope_locals) = forwarded_envelope_locals(func) else { return 0 };
 
     let loop_label = unique_local_name(func, "__witchy_tail_loop");
     let temps: Vec<_> = func
@@ -154,52 +161,705 @@ fn lower_func_self_tail_envelope(func: &mut WirFunc) -> usize {
         loop_label: loop_label.clone(),
     };
     let mut body = func.body.clone();
-    if !rewrite_forwarded_envelope_tail(&mut body, &func.name, &target, &ctx) {
+    let primary_index = envelope_start - 1;
+    let has_normal_tail = matches!(
+        body[primary_index],
+        WirNode::Push(_) | WirNode::Return(Some(_))
+    );
+    let normal_count = match &mut body[primary_index] {
+        WirNode::Push(expr) | WirNode::Return(Some(expr)) => {
+            rewrite_forwarded_envelope_expr(expr, &func.name, &envelope_locals, &target, &ctx)
+        }
+        _ => 0,
+    };
+    let normal_exit = if has_normal_tail {
+        let result_local = WirLocal {
+            name: unique_local_name(func, "__witchy_tail_result"),
+            ty: func.ret[0].clone(),
+        };
+        let result_value =
+            match std::mem::replace(&mut body[primary_index], WirNode::Unreachable) {
+                WirNode::Push(value) | WirNode::Return(Some(value)) => value,
+                _ => unreachable!("the envelope primary was checked above"),
+            };
+        body[primary_index] = WirNode::SetLocal {
+            local: result_local.name.clone(),
+            value: result_value,
+        };
+        body.truncate(envelope_start);
+        let exit_label = unique_label(func, "__witchy_tail_exit");
+        body.push(WirNode::Br { target: exit_label.clone(), cond: None });
+        Some((result_local, exit_label))
+    } else {
+        body.truncate(envelope_start);
+        None
+    };
+
+    let count = normal_count
+        + rewrite_forwarded_envelope_returns_seq(
+            &mut body,
+            &func.name,
+            &envelope_locals,
+            &target,
+            &ctx,
+        );
+    if count == 0 {
         return 0;
     }
 
     func.locals.extend(temps);
-    func.body = vec![WirNode::Loop { label: loop_label, body }, WirNode::Unreachable];
-    1
+    if let Some((result_local, exit_label)) = normal_exit {
+        func.locals.push(result_local.clone());
+        let mut final_body = vec![WirNode::Block {
+            label: exit_label,
+            result: None,
+            body: vec![WirNode::Loop { label: loop_label, body }, WirNode::Unreachable],
+        }];
+        final_body.push(WirNode::Push(WirExpr::GetLocal(result_local.name)));
+        final_body.extend(
+            envelope_locals
+                .into_iter()
+                .map(|local| WirNode::Push(WirExpr::GetLocal(local))),
+        );
+        func.body = final_body;
+    } else {
+        func.body = vec![WirNode::Loop { label: loop_label, body }, WirNode::Unreachable];
+    }
+    count
 }
 
-fn rewrite_forwarded_envelope_tail(
+fn forwarded_envelope_locals(func: &WirFunc) -> Option<Vec<String>> {
+    let envelope_len = func.ret.len().checked_sub(1)?;
+    if envelope_len == 0 || func.body.len() <= envelope_len {
+        return None;
+    }
+    let envelope_start = func.body.len() - envelope_len;
+    func.body[envelope_start..]
+        .iter()
+        .zip(&func.ret[1..])
+        .map(|(node, result)| {
+            let WirNode::Push(WirExpr::GetLocal(local)) = node else { return None };
+            let local_ty = func
+                .params
+                .iter()
+                .chain(&func.locals)
+                .find(|candidate| candidate.name == *local)
+                .map(|candidate| candidate.ty.kind())?;
+            (local_ty == result.kind()).then(|| local.clone())
+        })
+        .collect()
+}
+
+fn rewrite_forwarded_envelope_returns_seq(
     seq: &mut WirSeq,
     function: &str,
+    envelope_locals: &[String],
     target: &TailTarget,
     ctx: &TailCtx,
-) -> bool {
-    if seq.len() < 2 {
-        return false;
+) -> usize {
+    let mut count = seq
+        .iter_mut()
+        .map(|node| {
+            rewrite_forwarded_envelope_returns_node(
+                node,
+                function,
+                envelope_locals,
+                target,
+                ctx,
+            )
+        })
+        .sum();
+
+    let mut index = 0;
+    while index < seq.len() {
+        if !matches!(seq[index], WirNode::Return(None))
+            || index < envelope_locals.len() + 1
+        {
+            index += 1;
+            continue;
+        }
+        let value_index = index - envelope_locals.len() - 1;
+        let outputs_match = seq[value_index + 1..index]
+            .iter()
+            .zip(envelope_locals)
+            .all(|(node, expected)| {
+                matches!(node, WirNode::Push(WirExpr::GetLocal(local)) if local == expected)
+            });
+        if !outputs_match {
+            index += 1;
+            continue;
+        }
+        let args = match &seq[value_index] {
+            WirNode::Push(WirExpr::Seq(inner)) => forwarded_envelope_args(
+                inner,
+                function,
+                envelope_locals,
+                target.params.len(),
+            ),
+            _ => None,
+        };
+        let Some(args) = args else {
+            index += 1;
+            continue;
+        };
+        let transition = tail_transition_nodes(target, args, &[], ctx);
+        let transition_len = transition.len();
+        seq.splice(value_index..=index, transition);
+        count += 1;
+        index = value_index + transition_len;
     }
-    let cap_local = match seq.last() {
-        Some(WirNode::Push(WirExpr::GetLocal(local))) => local.clone(),
-        _ => return false,
-    };
-    let value_index = seq.len() - 2;
-    let (args, value_local) = match &mut seq[value_index] {
-        WirNode::Push(WirExpr::Seq(inner)) if inner.len() == 2 => {
-            let value_local = match &inner[1] {
-                WirNode::Push(WirExpr::GetLocal(local)) => local.clone(),
-                _ => return false,
-            };
-            match &mut inner[0] {
-                WirNode::CallStoreMulti { func, args, dests }
-                    if func == function
-                        && dests.as_slice() == [value_local.clone(), cap_local.clone()]
-                        && args.len() == target.params.len() =>
-                {
-                    (std::mem::take(args), value_local)
-                }
-                _ => return false,
+    count
+}
+
+fn rewrite_forwarded_envelope_returns_node(
+    node: &mut WirNode,
+    function: &str,
+    envelope_locals: &[String],
+    target: &TailTarget,
+    ctx: &TailCtx,
+) -> usize {
+    match node {
+        WirNode::If { then_, els, .. } => {
+            rewrite_forwarded_envelope_returns_seq(
+                then_,
+                function,
+                envelope_locals,
+                target,
+                ctx,
+            ) + rewrite_forwarded_envelope_returns_seq(
+                els,
+                function,
+                envelope_locals,
+                target,
+                ctx,
+            )
+        }
+        WirNode::Block { body, .. } | WirNode::Loop { body, .. } => {
+            rewrite_forwarded_envelope_returns_seq(
+                body,
+                function,
+                envelope_locals,
+                target,
+                ctx,
+            )
+        }
+        WirNode::SetLocal { value, .. }
+        | WirNode::SetGlobal { value, .. }
+        | WirNode::Drop(value)
+        | WirNode::Do(value)
+        | WirNode::Push(value)
+        | WirNode::Return(Some(value)) => rewrite_forwarded_envelope_returns_expr(
+            value,
+            function,
+            envelope_locals,
+            target,
+            ctx,
+        ),
+        _ => 0,
+    }
+}
+
+fn rewrite_forwarded_envelope_returns_expr(
+    expr: &mut WirExpr,
+    function: &str,
+    envelope_locals: &[String],
+    target: &TailTarget,
+    ctx: &TailCtx,
+) -> usize {
+    match expr {
+        WirExpr::Control(node) => rewrite_forwarded_envelope_returns_node(
+            node,
+            function,
+            envelope_locals,
+            target,
+            ctx,
+        ),
+        WirExpr::Seq(seq) => rewrite_forwarded_envelope_returns_seq(
+            seq,
+            function,
+            envelope_locals,
+            target,
+            ctx,
+        ),
+        _ => 0,
+    }
+}
+
+fn rewrite_forwarded_envelope_expr(
+    expr: &mut WirExpr,
+    function: &str,
+    envelope_locals: &[String],
+    target: &TailTarget,
+    ctx: &TailCtx,
+) -> usize {
+    match expr {
+        WirExpr::Seq(seq) => {
+            if let Some(args) = forwarded_envelope_args(
+                seq,
+                function,
+                envelope_locals,
+                target.params.len(),
+            ) {
+                *expr = tail_transition_expr(target, args, &[], ctx);
+                1
+            } else {
+                rewrite_forwarded_envelope_seq(seq, function, envelope_locals, target, ctx)
             }
         }
-        _ => return false,
+        WirExpr::Control(node) => match node.as_mut() {
+            WirNode::If { then_, els, result: Some(_), .. } => {
+                rewrite_forwarded_envelope_seq(
+                    then_,
+                    function,
+                    envelope_locals,
+                    target,
+                    ctx,
+                ) + rewrite_forwarded_envelope_seq(
+                    els,
+                    function,
+                    envelope_locals,
+                    target,
+                    ctx,
+                )
+            }
+            WirNode::Block { body, result: Some(_), .. } => {
+                rewrite_forwarded_envelope_seq(
+                    body,
+                    function,
+                    envelope_locals,
+                    target,
+                    ctx,
+                )
+            }
+            _ => 0,
+        },
+        _ => 0,
+    }
+}
+
+fn rewrite_forwarded_envelope_seq(
+    seq: &mut WirSeq,
+    function: &str,
+    envelope_locals: &[String],
+    target: &TailTarget,
+    ctx: &TailCtx,
+) -> usize {
+    let Some(value_index) = seq.iter().rposition(|node| matches!(node, WirNode::Push(_))) else {
+        return 0;
     };
-    debug_assert!(!value_local.is_empty());
-    seq.truncate(value_index);
-    seq.extend(tail_transition_nodes(target, args, &[], ctx));
-    true
+    if !seq[value_index + 1..]
+        .iter()
+        .all(|node| discardable_tail_reset(node, envelope_locals, ctx))
+    {
+        return 0;
+    }
+
+    let args = match &seq[value_index] {
+        WirNode::Push(WirExpr::Seq(inner)) => forwarded_envelope_args(
+            inner,
+            function,
+            envelope_locals,
+            target.params.len(),
+        ),
+        _ => None,
+    };
+    if let Some(args) = args {
+        seq.truncate(value_index);
+        seq.extend(tail_transition_nodes(target, args, &[], ctx));
+        return 1;
+    }
+
+    match &mut seq[value_index] {
+        WirNode::Push(expr) => {
+            rewrite_forwarded_envelope_expr(expr, function, envelope_locals, target, ctx)
+        }
+        _ => 0,
+    }
+}
+
+fn forwarded_envelope_args(
+    seq: &WirSeq,
+    function: &str,
+    envelope_locals: &[String],
+    parameter_count: usize,
+) -> Option<Vec<WirExpr>> {
+    let WirNode::CallStoreMulti { func, args, dests } = seq.first()? else { return None };
+    if func != function
+        || args.len() != parameter_count
+        || dests.len() != envelope_locals.len() + 1
+    {
+        return None;
+    }
+
+    let mut origins: HashMap<String, usize> = dests
+        .iter()
+        .enumerate()
+        .map(|(index, local)| (local.clone(), index))
+        .collect();
+    for (index, node) in seq[1..].iter().enumerate() {
+        let is_last = index + 2 == seq.len();
+        match node {
+            WirNode::SetLocal { local, value: WirExpr::GetLocal(source) } => {
+                let origin = origins.get(source).copied();
+                origins.remove(local);
+                if let Some(origin) = origin {
+                    origins.insert(local.clone(), origin);
+                }
+            }
+            WirNode::Push(WirExpr::GetLocal(local))
+                if is_last && origins.get(local) == Some(&0) => {}
+            _ => return None,
+        }
+    }
+    if envelope_locals
+        .iter()
+        .enumerate()
+        .all(|(index, local)| origins.get(local) == Some(&(index + 1)))
+    {
+        Some(args.clone())
+    } else {
+        None
+    }
+}
+
+fn discardable_tail_reset(node: &WirNode, envelope_locals: &[String], ctx: &TailCtx) -> bool {
+    let WirNode::SetLocal { local, value } = node else { return false };
+    !envelope_locals.contains(local)
+        && ctx.source_bank.iter().any(|candidate| candidate.name == *local)
+        && match value {
+            WirExpr::ConstI32(0) | WirExpr::ConstI64(0) => true,
+            WirExpr::ConstF64(value) => *value == 0.0,
+            _ => false,
+        }
+}
+
+/// Form SCCs only from multi-result edges whose destination provenance reaches
+/// every source epilogue local unchanged.
+fn lower_mutual_envelope_components(module: &mut WirModule) -> usize {
+    let function_count = module.funcs.len();
+    let candidates: Vec<_> = module
+        .funcs
+        .iter()
+        .enumerate()
+        .filter(|(_, function)| {
+            function.raw_body.is_none() && forwarded_envelope_locals(function).is_some()
+        })
+        .map(|(index, _)| index)
+        .collect();
+    let mut graph = vec![Vec::new(); function_count];
+    for &source in &candidates {
+        for &target in &candidates {
+            if module.funcs[source].ret == module.funcs[target].ret
+                && has_forwarded_envelope_edge(&module.funcs[source], &module.funcs[target])
+            {
+                graph[source].push(target);
+            }
+        }
+    }
+
+    let components = strongly_connected_components(&graph);
+    let mut dispatchers = Vec::new();
+    let mut count = 0;
+    for component in components.into_iter().filter(|component| component.len() > 1) {
+        let originals: Vec<_> = component
+            .iter()
+            .map(|index| module.funcs[*index].clone())
+            .collect();
+        if originals
+            .windows(2)
+            .any(|pair| pair[0].ret != pair[1].ret)
+        {
+            continue;
+        }
+        let dispatcher_name = unique_function_name(
+            module,
+            &dispatchers,
+            &format!("__witchy_tail_envelope_scc_{}", dispatchers.len()),
+        );
+        let (dispatcher, rewritten) =
+            build_envelope_dispatcher(&dispatcher_name, &originals);
+        if rewritten == 0 {
+            continue;
+        }
+        for ((index, original), state) in component.iter().zip(&originals).zip(0i32..) {
+            module.funcs[*index] =
+                envelope_entry_wrapper(original, &dispatcher_name, state, &originals);
+        }
+        dispatchers.push(dispatcher);
+        count += rewritten;
+    }
+    module.funcs.extend(dispatchers);
+    count
+}
+
+fn has_forwarded_envelope_edge(source: &WirFunc, target: &WirFunc) -> bool {
+    let Some(envelope_locals) = forwarded_envelope_locals(source) else { return false };
+    let envelope_start = source.body.len() - envelope_locals.len();
+    let mut body = source.body.clone();
+    let temps: Vec<_> = target
+        .params
+        .iter()
+        .enumerate()
+        .map(|(index, param)| WirLocal {
+            name: format!("__witchy_tail_probe_{index}"),
+            ty: param.ty.clone(),
+        })
+        .collect();
+    let tail_target = TailTarget {
+        state: None,
+        params: target.params.clone(),
+        temps,
+        locals: target.locals.clone(),
+        result_ty: target.ret[0].clone(),
+    };
+    let ctx = TailCtx {
+        targets: HashMap::from([(target.name.clone(), tail_target.clone())]),
+        indirect: HashMap::new(),
+        source_bank: source.params.iter().chain(&source.locals).cloned().collect(),
+        state_local: None,
+        loop_label: "__witchy_tail_probe_loop".into(),
+    };
+    let primary_index = envelope_start - 1;
+    let normal = match &mut body[primary_index] {
+        WirNode::Push(expr) | WirNode::Return(Some(expr)) => rewrite_forwarded_envelope_expr(
+            expr,
+            &target.name,
+            &envelope_locals,
+            &tail_target,
+            &ctx,
+        ),
+        _ => 0,
+    };
+    normal
+        + rewrite_forwarded_envelope_returns_seq(
+            &mut body,
+            &target.name,
+            &envelope_locals,
+            &tail_target,
+            &ctx,
+        )
+        > 0
+}
+
+/// Build a resultless loop/exit region, then re-emit the shared typed envelope
+/// after the region. Explicit multi-value returns can leave the dispatcher
+/// directly; fallthrough exits stage their values in `result_locals` first.
+fn build_envelope_dispatcher(name: &str, functions: &[WirFunc]) -> (WirFunc, usize) {
+    let state_local = "__witchy_tail_state".to_string();
+    let mut params = vec![WirLocal { name: state_local.clone(), ty: WirTy::Bool }];
+    let mut locals = Vec::new();
+    let mut bodies = Vec::new();
+    let mut envelopes = HashMap::new();
+    let mut targets = HashMap::new();
+
+    for (state, function) in (0i32..).zip(functions) {
+        let renamed_params: Vec<_> = function
+            .params
+            .iter()
+            .enumerate()
+            .map(|(index, param)| WirLocal {
+                name: format!("__witchy_tail_p_{state}_{index}"),
+                ty: param.ty.clone(),
+            })
+            .collect();
+        let renamed_locals: Vec<_> = function
+            .locals
+            .iter()
+            .enumerate()
+            .map(|(index, local)| WirLocal {
+                name: format!("__witchy_tail_l_{state}_{index}"),
+                ty: local.ty.clone(),
+            })
+            .collect();
+        let temps: Vec<_> = function
+            .params
+            .iter()
+            .enumerate()
+            .map(|(index, param)| WirLocal {
+                name: format!("__witchy_tail_arg_{state}_{index}"),
+                ty: param.ty.clone(),
+            })
+            .collect();
+        let renames: HashMap<_, _> = function
+            .params
+            .iter()
+            .zip(&renamed_params)
+            .chain(function.locals.iter().zip(&renamed_locals))
+            .map(|(old, new)| (old.name.clone(), new.name.clone()))
+            .collect();
+        let mut body = function.body.clone();
+        rename_seq_locals(&mut body, &renames);
+        let envelope: Vec<String> = forwarded_envelope_locals(function)
+            .expect("dispatcher member has a complete envelope")
+            .into_iter()
+            .map(|local| renames.get(&local).cloned().unwrap_or(local))
+            .collect();
+        envelopes.insert(function.name.clone(), envelope);
+        params.extend(renamed_params.clone());
+        locals.extend(renamed_locals.clone());
+        locals.extend(temps.clone());
+        targets.insert(
+            function.name.clone(),
+            TailTarget {
+                state: Some(state),
+                params: renamed_params,
+                temps,
+                locals: renamed_locals.clone(),
+                result_ty: function.ret[0].clone(),
+            },
+        );
+        bodies.push(body);
+    }
+
+    let result_locals: Vec<_> = functions[0]
+        .ret
+        .iter()
+        .enumerate()
+        .map(|(index, ty)| WirLocal {
+            name: format!("__witchy_tail_result_{index}"),
+            ty: ty.clone(),
+        })
+        .collect();
+    locals.extend(result_locals.clone());
+    let loop_label = unique_dispatch_label(functions, "__witchy_tail_dispatch_loop");
+    let exit_label = unique_dispatch_label(functions, "__witchy_tail_dispatch_exit");
+    let mut count = 0;
+
+    for (function, body) in functions.iter().zip(&mut bodies) {
+        let envelope = envelopes
+            .get(&function.name)
+            .expect("dispatcher member has renamed envelope");
+        let envelope_start = body.len() - envelope.len();
+        let primary_index = envelope_start - 1;
+        let source = targets.get(&function.name).expect("dispatcher source bank");
+        let ctx = TailCtx {
+            targets: targets.clone(),
+            indirect: HashMap::new(),
+            source_bank: source.params.iter().chain(&source.locals).cloned().collect(),
+            state_local: Some(state_local.clone()),
+            loop_label: loop_label.clone(),
+        };
+        for (target_name, target) in &targets {
+            count += match &mut body[primary_index] {
+                WirNode::Push(expr) | WirNode::Return(Some(expr)) => {
+                    rewrite_forwarded_envelope_expr(
+                        expr,
+                        target_name,
+                        envelope,
+                        target,
+                        &ctx,
+                    )
+                }
+                _ => 0,
+            };
+        }
+        body[primary_index] = match std::mem::replace(
+            &mut body[primary_index],
+            WirNode::Unreachable,
+        ) {
+            WirNode::Push(value) | WirNode::Return(Some(value)) => WirNode::SetLocal {
+                local: result_locals[0].name.clone(),
+                value,
+            },
+            other => other,
+        };
+        body.truncate(envelope_start);
+        for (result, source_local) in result_locals[1..].iter().zip(envelope) {
+            body.push(WirNode::SetLocal {
+                local: result.name.clone(),
+                value: WirExpr::GetLocal(source_local.clone()),
+            });
+        }
+        body.push(WirNode::Br { target: exit_label.clone(), cond: None });
+        for (target_name, target) in &targets {
+            count += rewrite_forwarded_envelope_returns_seq(
+                body,
+                target_name,
+                envelope,
+                target,
+                &ctx,
+            );
+        }
+    }
+
+    let mut selection = vec![WirNode::Unreachable];
+    for (state, body) in bodies.into_iter().enumerate().rev() {
+        selection = vec![WirNode::If {
+            cond: WirExpr::Binary {
+                op: crate::wir::BinOp::Eq,
+                kind: Kind::I32,
+                lhs: Box::new(WirExpr::GetLocal(state_local.clone())),
+                rhs: Box::new(WirExpr::ConstI32(state as i32)),
+            },
+            then_: body,
+            els: selection,
+            result: None,
+        }];
+    }
+    let mut body = vec![WirNode::Block {
+        label: exit_label,
+        result: None,
+        body: vec![WirNode::Loop { label: loop_label, body: selection }, WirNode::Unreachable],
+    }];
+    body.extend(
+        result_locals
+            .iter()
+            .map(|local| WirNode::Push(WirExpr::GetLocal(local.name.clone()))),
+    );
+    (
+        WirFunc {
+            name: name.to_string(),
+            params,
+            ret: functions[0].ret.clone(),
+            locals,
+            body,
+            raw_body: None,
+        },
+        count,
+    )
+}
+
+fn envelope_entry_wrapper(
+    original: &WirFunc,
+    dispatcher: &str,
+    state: i32,
+    functions: &[WirFunc],
+) -> WirFunc {
+    let mut args = vec![WirExpr::ConstI32(state)];
+    for function in functions {
+        if function.name == original.name {
+            args.extend(original.params.iter().map(|param| WirExpr::GetLocal(param.name.clone())));
+        } else {
+            args.extend(function.params.iter().map(|param| default_value(&param.ty)));
+        }
+    }
+    let locals: Vec<_> = original
+        .ret
+        .iter()
+        .enumerate()
+        .map(|(index, ty)| WirLocal {
+            name: format!("__witchy_tail_wrapper_result_{index}"),
+            ty: ty.clone(),
+        })
+        .collect();
+    let mut body = vec![WirNode::CallStoreMulti {
+        func: dispatcher.to_string(),
+        args,
+        dests: locals.iter().map(|local| local.name.clone()).collect(),
+    }];
+    body.extend(
+        locals
+            .iter()
+            .map(|local| WirNode::Push(WirExpr::GetLocal(local.name.clone()))),
+    );
+    WirFunc {
+        name: original.name.clone(),
+        params: original.params.clone(),
+        ret: original.ret.clone(),
+        locals,
+        body,
+        raw_body: None,
+    }
 }
 
 fn lower_mutual_tail_components(module: &mut WirModule) -> usize {
@@ -1084,6 +1744,21 @@ fn unique_local_name(func: &WirFunc, stem: &str) -> String {
         }
     }
     unreachable!("the local-name suffix space is finite")
+}
+
+fn unique_label(func: &WirFunc, stem: &str) -> String {
+    let mut labels = HashSet::new();
+    collect_labels(&func.body, &mut labels);
+    if !labels.contains(stem) {
+        return stem.to_string();
+    }
+    for suffix in 1usize.. {
+        let candidate = format!("{stem}_{suffix}");
+        if !labels.contains(&candidate) {
+            return candidate;
+        }
+    }
+    unreachable!("the label-name suffix space is finite")
 }
 
 fn rewrite_function_tail(seq: &mut WirSeq, ctx: &TailCtx) -> usize {

@@ -1,8 +1,9 @@
 ---
 rfc: 0090
 title: "Guaranteed proper tail calls and callable ABI convergence"
-status: planned
+status: implemented
 created: 2026-07-14
+implemented: 2026-07-15
 related:
   - "0005 (unforgeable capabilities - callable representations must retain capability kinds)"
   - "0029 (performance-tier contract - opt mode may require resource proofs)"
@@ -10,7 +11,7 @@ related:
   - "0083 (opt-mode lifetimes - loans must end or transfer across a tail edge)"
   - "0087 (uniform var write-back - move-out is part of the callable ABI)"
   - "0089 (fully in-place functional kernels - requires constant control stack)"
-tracking: stages 1-2 are implemented; stage 3's genuinely-indirect proper tail calls are now complete — the typed closure ABI it was gated on landed (2026-07-15, commit cb911f8a), and a recursive cycle through a function value lowers to the portable trampoline SCC dispatcher (wasm_tail_call(false)) with exact reference-bearing signatures. Evidenced on both backends by tests/rfc0090_indirect_tail.rs: a scalar closure-table cycle at 5,000,000 transitions (constant stack), plus indirect cycles carrying an ExternRef parameter, a GcRef tuple parameter, a reference-valued result, and a mixed scalar/reference signature — none boxed through an i64 slot; simultaneous rebind across an argument swap; an out-of-component target as an ordinary indirect exit; and a near-tail residual left un-rewritten. Structural WIR proofs in wir_opt_tests.rs show the reference-carrying dispatcher retains no recursive direct-call edge (the continuation is the trampoline Loop) and stages the table index in one local (index evaluated once per transition). Criterion 9 is complete in tests/rfc0090_async_loan_tail.rs: an async loop's generated segment cycle becomes a portable loop with no recursive backend edge, suspension remains resumable state, ended loans permit a tail edge, live post-call loans prevent one, and returned-view obligations transfer through mutual tail edges on both backends. Still open before status can leave `planned`: RFC-0087 multi-result nested-place tail lowering (criterion 7)
+tracking: stages 1-3 are implemented. The typed closure ABI landed in commit cb911f8a; tests/rfc0090_indirect_tail.rs and structural WIR tests cover exact scalar and reference-bearing indirect signatures, simultaneous rebind, out-of-component exits, and near-tail residual work. Criterion 7 is complete in tests/rfc0090_var_tail_envelope.rs: one and multiple RFC-0087 write-backs, capacity tokens, and explicit returns forward through constant-stack self loops or ABI-compatible mutual dispatchers on both backends, while nested-place reconstruction remains non-tail. Criterion 9 is complete in tests/rfc0090_async_loan_tail.rs: generated async segment cycles use the portable loop, suspension remains resumable state, ended loans permit a tail edge, live post-call loans prevent one, and returned-view obligations transfer through mutual tail edges. The spec and book state the bounded-control-stack guarantee and its allocation limits.
 ---
 
 # RFC-0090: Guaranteed proper tail calls

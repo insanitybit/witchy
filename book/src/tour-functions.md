@@ -72,6 +72,10 @@ A recursive call does
 not qualify when the caller must still add to its result, inspect it with `?`,
 rebuild a `var` place, or perform other observable work. The guarantee bounds
 stack; it does not by itself promise zero allocation or constant running time.
+A recursive `var` call does qualify when each write-back returns through the
+same parameter root in the same order; an indexed or field place still requires
+caller-side reconstruction and therefore remains non-tail.
+ABI-compatible mutually recursive `var` functions use the same forwarding rule.
 
 A function value can participate in the same bounded-stack cycle. The constructor
 keeps one closure value alive while `drive` selects it dynamically on every step:

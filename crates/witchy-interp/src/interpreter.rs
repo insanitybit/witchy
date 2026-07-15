@@ -825,20 +825,16 @@ pub const COMPTIME_STEP_LIMIT: u64 = 500_000_000;
 fn recursive_tail_edges(
     functions: &HashMap<String, Rc<Function>>,
 ) -> HashMap<String, HashSet<String>> {
-    let compatible: HashSet<_> = functions
-        .values()
-        .filter(|function| {
-            function.params.iter().all(|param| param.convention != Convention::Var)
-        })
-        .map(|function| function.name.clone())
-        .collect();
     let graph: HashMap<_, Vec<_>> = functions
         .values()
-        .filter(|function| compatible.contains(&function.name))
         .map(|function| {
             let mut targets = HashSet::new();
             collect_tail_callees_block(&function.body, &mut targets);
-            targets.retain(|target| compatible.contains(target));
+            targets.retain(|target| {
+                functions.get(target).is_some_and(|target| {
+                    direct_tail_abis_are_compatible(function, target)
+                })
+            });
             (function.name.clone(), targets.into_iter().collect())
         })
         .collect();
@@ -860,6 +856,38 @@ fn recursive_tail_edges(
         }
     }
     recursive
+}
+
+fn direct_tail_abis_are_compatible(source: &Function, target: &Function) -> bool {
+    let source_has_var = source.params.iter().any(|param| param.convention == Convention::Var);
+    if !source_has_var {
+        return target.params.iter().all(|param| param.convention != Convention::Var);
+    }
+    source.ret == target.ret
+        && source.params.len() == target.params.len()
+        && source.params.iter().zip(&target.params).all(|(source, target)| {
+            source.convention == target.convention && source.ty == target.ty
+        })
+}
+
+fn direct_tail_envelope_is_forwarded(
+    source: &Function,
+    target: &Function,
+    args: &[Expr],
+) -> bool {
+    let source_has_var = source.params.iter().any(|param| param.convention == Convention::Var);
+    if !source_has_var {
+        return target.params.iter().all(|param| param.convention != Convention::Var);
+    }
+    direct_tail_abis_are_compatible(source, target)
+        && source.params.len() == args.len()
+        && source.params.iter().zip(&target.params).zip(args).all(
+            |((source_param, target_param), arg)| {
+                source_param.convention == target_param.convention
+                    && (source_param.convention != Convention::Var
+                        || matches!(arg, Expr::Var(name) if name == &source_param.name))
+            },
+        )
 }
 
 fn collect_tail_callees_block(block: &Block, out: &mut HashSet<String>) {
@@ -1871,7 +1899,7 @@ impl Interpreter {
                 argvals.len()
             ));
         }
-        let mut writebacks: Vec<(CapturedPlace, String)> = Vec::new();
+        let mut writebacks: Vec<CapturedPlace> = Vec::new();
         for (i, param) in func.params.iter().enumerate() {
             if matches!(param.convention, Convention::Var) {
                 let place = places
@@ -1880,7 +1908,7 @@ impl Interpreter {
                     .ok_or_else(|| Flow::from(RuntimeError {
                         message: format!("`var` argument to `{name}` must be a mutable place"),
                     }))?;
-                writebacks.push((place, param.name.clone()));
+                writebacks.push(place);
             }
         }
         // The callee's own `?` early-return stops at this callable boundary; it
@@ -1888,13 +1916,20 @@ impl Interpreter {
         let outcome = self.run_callable(TailCallable::Function(func), argvals)?;
         let result = outcome.value;
         let fenv = outcome.env;
-        let writebacks = writebacks
-            .into_iter()
-            .map(|(place, param_name)| {
-                (place, fenv.get(&param_name).cloned().expect("parameter is bound"))
+        let var_values: Vec<_> = outcome
+            .params
+            .iter()
+            .filter(|param| param.convention == Convention::Var)
+            .map(|param| {
+                fenv.get(&param.name)
+                    .cloned()
+                    .expect("terminal var parameter is bound")
             })
             .collect();
-        self.commit_writebacks(writebacks, env)?;
+        if writebacks.len() != var_values.len() {
+            return err("internal: a tail call changed the var write-back envelope");
+        }
+        self.commit_writebacks(writebacks.into_iter().zip(var_values).collect(), env)?;
         Ok(result)
     }
 
@@ -3403,14 +3438,13 @@ impl Interpreter {
         function: &Function,
         env: &mut Env,
     ) -> Result<Value, Flow> {
-        let source_is_compatible = function
+        let source_has_no_var = function
             .params
             .iter()
             .all(|param| param.convention != Convention::Var);
         let tail_target = match expr {
             Expr::Call { name, args }
-                if source_is_compatible
-                    && (self.tail_dynamic_chain
+                if (self.tail_dynamic_chain
                         || self
                             .proper_tail_edges
                             .get(&function.name)
@@ -3419,12 +3453,12 @@ impl Interpreter {
             {
                 self.functions.get(name).filter(|target| {
                     target.params.len() == args.len()
-                        && target.params.iter().all(|param| param.convention != Convention::Var)
+                        && direct_tail_envelope_is_forwarded(function, target, args)
                 }).cloned()
             }
             _ => None,
         };
-        let closure_tail = source_is_compatible
+        let closure_tail = source_has_no_var
             && match expr {
                 Expr::Apply { .. } => true,
                 Expr::Call { name, .. } => {
@@ -3457,7 +3491,11 @@ impl Interpreter {
                     .map(|param| param.convention)
                     .collect();
                 let (values, places) = self.eval_call_args(args, &conventions, env)?;
-                debug_assert!(places.iter().all(Option::is_none));
+                debug_assert!(
+                    target.params.iter().zip(&places).all(|(param, place)| {
+                        (param.convention == Convention::Var) == place.is_some()
+                    })
+                );
                 if let Some((value, var_values)) = self.call_interpreter_special(name, &values)? {
                     if !var_values.is_empty() {
                         return err(format!(
@@ -3474,7 +3512,7 @@ impl Interpreter {
                     args: values,
                 })
             }
-            Expr::Apply { func, args } if source_is_compatible => {
+            Expr::Apply { func, args } if source_has_no_var => {
                 let closure = self.eval(func, env)?;
                 let Value::Closure { params, .. } = &closure else {
                     return err("attempted to call a non-function value");
@@ -3491,7 +3529,7 @@ impl Interpreter {
                     self.apply_closure_call(closure, values, places, env)
                 }
             }
-            Expr::Call { name, args } if source_is_compatible => {
+            Expr::Call { name, args } if source_has_no_var => {
                 let Some(closure) = env.get(name).cloned() else {
                     return self.eval(expr, env);
                 };
