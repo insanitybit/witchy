@@ -82,16 +82,20 @@ Migrated capability values compile to opaque `externref`s, not integer slots:
 authority objects whose paths, allowlists, streams, listeners, and secret bytes
 never enter guest memory unless an explicit API such as `crypto.reveal` returns
 data. Code cannot mint or widen them, and corrupted linear memory cannot forge
-one. Because ordinary collections, tuples, and function captures still use i64
-slots, migrated capabilities may cross only boundaries with a typed reference
+one. Because ordinary collections and function captures still use i64 slots,
+migrated capabilities may cross only boundaries with a typed reference
 representation: directly, as nullable `Option(cap)` where the ABI carries a
 null externref, as transparent single-field capability brands represented by a
-direct externref, or inside any other non-generic nominal
-aggregate lowered to a Wasm GC struct. This category includes sealed
-capabilities, plain named-field records, positional wrappers, and multi-variant
-sums. A sum stores its tag and each variant's payload in disjoint typed field
-bands, with inactive reference fields null; mixed and recursive nesting stays
-reference-typed.
+direct externref, inside a fully concrete structural tuple, or inside any other
+non-generic nominal aggregate lowered to a Wasm GC struct. The nominal category
+includes sealed capabilities, plain named-field records, positional wrappers,
+and multi-variant sums. Capability tuples are interned by their recursively
+typed field shape; qualifiers do not change that shape, and tuples may nest in
+other tuples or nominal GC aggregates. A sum stores its tag and each variant's
+payload in disjoint typed field bands, with inactive reference fields null;
+mixed and recursive nesting stays reference-typed. Generic, collection,
+closure-environment, and region-copy-out storage of references remains rejected
+until each boundary has a typed representation.
 `Console`/`Clock`/`Rand`/`Env`/`Exec`/`SecretStore` and build capabilities are
 zero-representation authorities: type checking requires the source value, while
 the linked host import and launch grant carry the runtime authority.

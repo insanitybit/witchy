@@ -46,6 +46,7 @@ use witchy_wir::layout::{type_tag_of, DATA_BASE};
 // foldhash (not SipHash): all keys are compiler-internal names/ids, never
 // attacker-chosen collections — see the note in witchy-types/src/typeck.rs.
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
+use std::collections::BTreeMap;
 use std::fmt;
 
 use witchy_syntax::ast::{
@@ -644,6 +645,22 @@ struct GcCtorLayout {
     field_types: Vec<Type>,
 }
 
+/// A stable, representation-only key for an element of a GC-lowered tuple.
+/// Nominal references use names rather than assigned numeric IDs so tuple IDs
+/// can be sorted and reserved deterministically before layouts are materialized.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum GcFieldShape {
+    I32,
+    I64,
+    F64,
+    ExternRef,
+    Nominal(String),
+    Tuple(GcTupleShape),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct GcTupleShape(Vec<GcFieldShape>);
+
 struct Codegen<'types> {
     strings: Vec<(String, u32)>,
     next_offset: u32,
@@ -686,6 +703,8 @@ struct Codegen<'types> {
     transparent_externref_ctors: HashMap<String, Type>,
     /// Named, non-generic cap-carrying aggregates lowered as typed GC structs.
     gc_aggregate_ids: HashMap<String, u32>,
+    /// Fully concrete cap-carrying tuple layouts, interned by representation.
+    gc_tuple_ids: HashMap<GcTupleShape, u32>,
     /// Constructor name -> its owner, optional sum tag, and payload field band.
     gc_ctor_layouts: HashMap<String, GcCtorLayout>,
     /// The WIR struct type declarations for `gc_aggregate_ids`, indexed by id.
@@ -1203,6 +1222,7 @@ impl<'types> Codegen<'types> {
             transparent_externref_brands: HashSet::new(),
             transparent_externref_ctors: HashMap::new(),
             gc_aggregate_ids: HashMap::new(),
+            gc_tuple_ids: HashMap::new(),
             gc_ctor_layouts: HashMap::new(),
             gc_structs: Vec::new(),
             ctor_field_records: HashMap::new(),
@@ -1376,6 +1396,11 @@ impl<'types> Codegen<'types> {
     fn kind_for_type(&self, t: &Type) -> Kind {
         let t = t.unqualified();
         match t {
+            Type::Tuple(_) => self
+                .gc_tuple_shape(t)
+                .and_then(|shape| self.gc_tuple_ids.get(&shape).copied())
+                .map(Kind::GcRef)
+                .unwrap_or(Kind::I32),
             Type::Named(n, _) if self.transparent_externref_brands.contains(n) => Kind::ExternRef,
             Type::Named(n, args) if args.is_empty() => {
                 self.gc_aggregate_ids
@@ -1391,6 +1416,60 @@ impl<'types> Codegen<'types> {
             }
             _ => ty_kind(t),
         }
+    }
+
+    fn gc_tuple_shape(&self, ty: &Type) -> Option<GcTupleShape> {
+        let Type::Tuple(items) = ty.unqualified() else {
+            return None;
+        };
+        if type_has_var(ty) {
+            return None;
+        }
+        let fields: Vec<GcFieldShape> =
+            items.iter().map(|item| self.gc_field_shape(item)).collect::<Option<_>>()?;
+        fields
+            .iter()
+            .any(|field| {
+                matches!(
+                    field,
+                    GcFieldShape::ExternRef
+                        | GcFieldShape::Nominal(_)
+                        | GcFieldShape::Tuple(_)
+                )
+            })
+            .then_some(GcTupleShape(fields))
+    }
+
+    fn gc_field_shape(&self, ty: &Type) -> Option<GcFieldShape> {
+        let ty = ty.unqualified();
+        Some(match ty {
+            Type::Fn(_, _, _) => return None,
+            Type::Tuple(_) => self
+                .gc_tuple_shape(ty)
+                .map(GcFieldShape::Tuple)
+                .unwrap_or(GcFieldShape::I32),
+            Type::Named(_, _) if self.type_is_direct_externref(ty) => {
+                GcFieldShape::ExternRef
+            }
+            Type::Named(name, args)
+                if name == "Option"
+                    && args.len() == 1
+                    && self.type_is_direct_externref(&args[0]) =>
+            {
+                GcFieldShape::ExternRef
+            }
+            Type::Named(name, args)
+                if args.is_empty() && self.gc_aggregate_ids.contains_key(name) =>
+            {
+                GcFieldShape::Nominal(name.clone())
+            }
+            _ => match ty_kind(ty) {
+                Kind::I64 => GcFieldShape::I64,
+                Kind::F64 => GcFieldShape::F64,
+                Kind::I32 => GcFieldShape::I32,
+                Kind::ExternRef | Kind::GcRef(_) => return None,
+            },
+        })
     }
 
     fn type_is_direct_externref(&self, t: &Type) -> bool {
@@ -2205,6 +2284,12 @@ impl<'types> Codegen<'types> {
                                     }
                                 }
                             }
+                            // The legacy slot table classifies reference fields as
+                            // `Other`/i32. Re-apply the checked tuple type so a
+                            // GC-tuple destructure declares externref and nested
+                            // GC-ref locals at their real Wasm kinds.
+                            let pat_ty = self.ast_type_of_expr(value);
+                            self.bind_pattern_value_types(pattern, pat_ty.as_ref());
                             self.infer_locals_expr(value);
                             continue;
                         }
@@ -3499,13 +3584,27 @@ impl<'types> Codegen<'types> {
                 Stmt::LetPattern { pattern, value } => {
                     let vk = self.kind_of(value);
                     let v = self.lower_expr(value)?;
-                    seq.push(N::SetLocal {
-                        local: MATCH_TMP.to_string(),
-                        value: W::ToSlot(Box::new(v), Self::wir_kind(vk)),
-                    });
                     let pat_ty = self.ast_type_of_expr(value);
-                    let (_cond, binds) =
-                        self.lower_pattern(&W::GetLocal(MATCH_TMP.to_string()), pattern, pat_ty.as_ref())?;
+                    let (_cond, binds) = if let Kind::GcRef(struct_id) = vk {
+                        let local = match_gc_tmp(struct_id);
+                        seq.push(N::SetLocal { local: local.clone(), value: v });
+                        self.lower_gc_struct_pattern(
+                            &W::GetLocal(local),
+                            pattern,
+                            struct_id,
+                            pat_ty.as_ref(),
+                        )?
+                    } else {
+                        seq.push(N::SetLocal {
+                            local: MATCH_TMP.to_string(),
+                            value: W::ToSlot(Box::new(v), Self::wir_kind(vk)),
+                        });
+                        self.lower_pattern(
+                            &W::GetLocal(MATCH_TMP.to_string()),
+                            pattern,
+                            pat_ty.as_ref(),
+                        )?
+                    };
                     seq.extend(binds);
                     tail_is_value = false;
                 }
@@ -4878,11 +4977,59 @@ impl<'types> Codegen<'types> {
         })
     }
 
+    fn lower_gc_field_patterns(
+        &mut self,
+        value: &witchy_wir::wir::WirExpr,
+        args: &[Pattern],
+        field_types: &[Type],
+        struct_id: u32,
+        field_base: u32,
+    ) -> Option<(witchy_wir::wir::WirExpr, witchy_wir::wir::WirSeq)> {
+        use witchy_wir::wir::WirExpr as W;
+        if field_types.len() != args.len() {
+            return None;
+        }
+        let mut field_conds: Vec<W> = Vec::new();
+        let mut binds: witchy_wir::wir::WirSeq = Vec::new();
+        for (i, sub) in args.iter().enumerate() {
+            let field_ty = field_types.get(i)?;
+            let field_kind = self.kind_for_type(field_ty);
+            let field = W::StructGet {
+                struct_id,
+                field: field_base + i as u32,
+                base: Box::new(value.clone()),
+            };
+            let (cond, sub_binds) = match field_kind {
+                Kind::ExternRef => {
+                    self.lower_externref_pattern(&field, sub, Some(field_ty))?
+                }
+                Kind::GcRef(nested) => {
+                    self.lower_gc_struct_pattern(&field, sub, nested, Some(field_ty))?
+                }
+                _ => {
+                    let slot = W::ToSlot(Box::new(field), Self::wir_kind(field_kind));
+                    self.lower_pattern(&slot, sub, Some(field_ty))?
+                }
+            };
+            if !matches!(cond, W::ConstI32(1)) {
+                field_conds.push(cond);
+            }
+            binds.extend(sub_binds);
+        }
+        let cond = if field_conds.is_empty() {
+            W::ConstI32(1)
+        } else {
+            wir_and_chain(&field_conds)
+        };
+        Some((cond, binds))
+    }
+
     fn lower_gc_struct_pattern(
         &mut self,
         value: &witchy_wir::wir::WirExpr,
         pat: &Pattern,
         struct_id: u32,
+        expected: Option<&Type>,
     ) -> Option<(witchy_wir::wir::WirExpr, witchy_wir::wir::WirSeq)> {
         use witchy_wir::wir::{WirExpr as W, WirNode as N};
         Some(match pat {
@@ -4894,44 +5041,28 @@ impl<'types> Codegen<'types> {
                     value: value.clone(),
                 }],
             ),
+            Pattern::Tuple(args) => {
+                let Type::Tuple(field_types) = expected?.unqualified() else {
+                    return None;
+                };
+                let shape = self.gc_tuple_shape(expected?)?;
+                if self.gc_tuple_ids.get(&shape).copied()? != struct_id {
+                    return None;
+                }
+                self.lower_gc_field_patterns(value, args, field_types, struct_id, 0)?
+            }
             Pattern::Ctor { name, args } => {
                 let (layout, id) = self.gc_layout_for_ctor(name)?;
                 if id != struct_id {
                     return None;
                 }
-                if layout.field_types.len() != args.len() {
-                    return None;
-                }
-                let mut field_conds: Vec<W> = Vec::new();
-                let mut binds: witchy_wir::wir::WirSeq = Vec::new();
-                for (i, sub) in args.iter().enumerate() {
-                    let fty = layout.field_types.get(i)?;
-                    let fk = self.kind_for_type(fty);
-                    let field = W::StructGet {
-                        struct_id,
-                        field: layout.field_base + i as u32,
-                        base: Box::new(value.clone()),
-                    };
-                    let (cond, sub_binds) = match fk {
-                        Kind::ExternRef => self.lower_externref_pattern(&field, sub, Some(fty))?,
-                        Kind::GcRef(nested) => {
-                            self.lower_gc_struct_pattern(&field, sub, nested)?
-                        }
-                        _ => {
-                            let slot = W::ToSlot(Box::new(field), Self::wir_kind(fk));
-                            self.lower_pattern(&slot, sub, Some(fty))?
-                        }
-                    };
-                    if !matches!(cond, W::ConstI32(1)) {
-                        field_conds.push(cond);
-                    }
-                    binds.extend(sub_binds);
-                }
-                let payload_cond = if field_conds.is_empty() {
-                    W::ConstI32(1)
-                } else {
-                    wir_and_chain(&field_conds)
-                };
+                let (payload_cond, binds) = self.lower_gc_field_patterns(
+                    value,
+                    args,
+                    &layout.field_types,
+                    struct_id,
+                    layout.field_base,
+                )?;
                 let cond = if let Some(tag) = layout.tag {
                     let tag_check = W::Binary {
                         op: witchy_wir::wir::BinOp::Eq,
@@ -4963,7 +5094,7 @@ impl<'types> Codegen<'types> {
                 let mut binds: witchy_wir::wir::WirSeq = Vec::new();
                 for alt in alts {
                     let (c, b) =
-                        self.lower_gc_struct_pattern(value, alt, struct_id)?;
+                        self.lower_gc_struct_pattern(value, alt, struct_id, expected)?;
                     if !b.is_empty() {
                         binds.push(N::If {
                             cond: c.clone(),
@@ -5008,6 +5139,7 @@ impl<'types> Codegen<'types> {
         // into a PER-DEPTH save slot; beyond SCRUT_POOL the drop is skipped (a sound leak).
         let depth = self.match_scrut_depth;
         let drop_scrut = scrut_kind == Kind::I32
+            && !matches!(result_kind, Kind::ExternRef | Kind::GcRef(_))
             && depth < SCRUT_POOL
             && self.wm_level == 0
             && !force_copy_mode()
@@ -5045,7 +5177,7 @@ impl<'types> Codegen<'types> {
             let (cond, binds) = match if scrut_kind == Kind::ExternRef {
                 self.lower_externref_pattern(&value, &arm.pattern, scrut_ty.as_ref())
             } else if let Kind::GcRef(id) = scrut_kind {
-                self.lower_gc_struct_pattern(&value, &arm.pattern, id)
+                self.lower_gc_struct_pattern(&value, &arm.pattern, id, scrut_ty.as_ref())
             } else {
                 self.lower_pattern(&value, &arm.pattern, scrut_ty.as_ref())
             } {
@@ -6305,10 +6437,23 @@ impl<'types> Codegen<'types> {
                 outer.push(N::Push(W::ConstI32(0)));
                 W::Seq(outer)
             },
-            // Aggregate literals: a list is `[len][elems..]`, a tuple is
-            // `[0][elems..]`, a constructor is `[tag][fields..]` — all via `$mkN`.
+            // Aggregate literals: ordinary tuples retain the linear-memory
+            // `$mkN` layout. A concrete cap-carrying tuple uses its interned GC
+            // struct, so no reference field crosses the universal i64 slot.
             Expr::List(items) => return self.lower_aggregate(items.len() as i32, items, 0),
-            Expr::Tuple(items) => return self.lower_aggregate(0, items, 0),
+            Expr::Tuple(items) => {
+                if let Some(ty) = self.ast_type_of_expr(e)
+                    && let Some(shape) = self.gc_tuple_shape(&ty)
+                    && let Some(struct_id) = self.gc_tuple_ids.get(&shape).copied()
+                {
+                    let mut lowered = Vec::with_capacity(items.len());
+                    for item in items {
+                        lowered.push(self.lower_expr(item)?);
+                    }
+                    return Some(W::StructNew { struct_id, args: lowered });
+                }
+                return self.lower_aggregate(0, items, 0);
+            }
             Expr::AnonCtor { tag, args } => {
                 let ty = self
                     .type_table
@@ -6754,6 +6899,23 @@ impl<'types> Codegen<'types> {
             // legacy emission is `base; i32.const off; i32.add; i64.load;
             // from_slot(k)` — reproduced as `FromSlot(Load{Add(base, off)}, k)`.
             Expr::Field { base, field } => {
+                if let Ok(index) = field.parse::<usize>()
+                    && let Some(ty) = self.ast_type_of_expr(base)
+                    && let Some(shape) = self.gc_tuple_shape(&ty)
+                    && let Some(struct_id) = self.gc_tuple_ids.get(&shape).copied()
+                {
+                    let Type::Tuple(items) = ty.unqualified() else {
+                        return None;
+                    };
+                    if index >= items.len() {
+                        return None;
+                    }
+                    return Some(W::StructGet {
+                        struct_id,
+                        field: index as u32,
+                        base: Box::new(self.lower_expr(base)?),
+                    });
+                }
                 // (RFC-0027 packed) `list.at(xs, i).field` on a packed record-list
                 // reads the inline slot directly — element `i`, field `j` lives at
                 // `xs + 4 + (i*nfields + j)*8`, the same per-field i64-slot rep a

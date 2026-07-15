@@ -75,6 +75,102 @@ fn strip_compiler_syntax_items_for_runtime(mut module: Module) -> Module {
     module
 }
 
+fn collect_gc_tuple_type(
+    cg: &Codegen<'_>,
+    ty: &Type,
+    layouts: &mut BTreeMap<GcTupleShape, Vec<Type>>,
+) {
+    match ty {
+        Type::Qualified(_, inner) => collect_gc_tuple_type(cg, inner, layouts),
+        Type::Tuple(items) => {
+            for item in items {
+                collect_gc_tuple_type(cg, item, layouts);
+            }
+            if let Some(shape) = cg.gc_tuple_shape(ty) {
+                layouts.entry(shape).or_insert_with(|| items.clone());
+            }
+        }
+        Type::Named(_, args) => {
+            for arg in args {
+                collect_gc_tuple_type(cg, arg, layouts);
+            }
+        }
+        Type::Fn(params, ret, _) => {
+            for param in params {
+                collect_gc_tuple_type(cg, param, layouts);
+            }
+            collect_gc_tuple_type(cg, ret, layouts);
+        }
+    }
+}
+
+fn collect_gc_tuple_expr(
+    cg: &Codegen<'_>,
+    expr: &Expr,
+    layouts: &mut BTreeMap<GcTupleShape, Vec<Type>>,
+) {
+    if let Some(ty) = cg.ast_type_of_expr(expr) {
+        collect_gc_tuple_type(cg, &ty, layouts);
+    }
+    crate::escape::for_each_immediate_subexpr(expr, &mut |child| {
+        collect_gc_tuple_expr(cg, child, layouts);
+    });
+}
+
+fn collect_gc_tuple_block(
+    cg: &Codegen<'_>,
+    block: &Block,
+    layouts: &mut BTreeMap<GcTupleShape, Vec<Type>>,
+) {
+    for stmt in &block.stmts {
+        let expr = match stmt {
+            Stmt::Let { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::LetPattern { value, .. }
+            | Stmt::Yield(value)
+            | Stmt::Expr(value) => Some(value),
+            Stmt::Return(value) => value.as_ref(),
+            Stmt::Break | Stmt::Continue => None,
+        };
+        if let Some(expr) = expr {
+            collect_gc_tuple_expr(cg, expr, layouts);
+        }
+    }
+}
+
+fn collect_gc_tuple_layouts(
+    cg: &Codegen<'_>,
+    module: &Module,
+) -> BTreeMap<GcTupleShape, Vec<Type>> {
+    let mut layouts = BTreeMap::new();
+    for item in &module.items {
+        match item {
+            Item::Function(function) => {
+                for param in &function.params {
+                    if let Some(ty) = &param.ty {
+                        collect_gc_tuple_type(cg, ty, &mut layouts);
+                    }
+                }
+                if let Some(ret) = &function.ret {
+                    collect_gc_tuple_type(cg, ret, &mut layouts);
+                }
+                collect_gc_tuple_block(cg, &function.body, &mut layouts);
+            }
+            Item::Type(def) => {
+                for field in def.variants.iter().flat_map(|variant| &variant.fields) {
+                    collect_gc_tuple_type(cg, field, &mut layouts);
+                }
+            }
+            Item::TypeAlias { ty, .. } => collect_gc_tuple_type(cg, ty, &mut layouts),
+            Item::Trait(_)
+            | Item::Impl(_)
+            | Item::Const { .. }
+            | Item::Comptime(_) => {}
+        }
+    }
+    layouts
+}
+
 /// (RFC-0040) If `f` is a cap-gated string export (`export_*(cap, String)`), the
 /// leading grantable capability's `(type name, field count)`.
 fn export_cap_of<'a>(f: &'a Function, module: &'a Module) -> Option<(&'a str, usize)> {
@@ -217,6 +313,20 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
     let gc_aggregate_names = witchy_types::typeck::gc_cap_aggregate_names(module);
     let gc_aggregate_name_set: HashSet<String> =
         gc_aggregate_names.iter().cloned().collect();
+    // Preserve nominal IDs in declaration order. Tuple layouts append in a
+    // stable representation order, so adding a tuple cannot renumber an
+    // existing nominal type.
+    for name in &gc_aggregate_names {
+        let id = cg.gc_structs.len() as u32;
+        cg.gc_aggregate_ids.insert(name.clone(), id);
+        cg.gc_structs.push(witchy_wir::wir::WirStructDef { fields: Vec::new() });
+    }
+    let gc_tuple_layouts = collect_gc_tuple_layouts(cg, module);
+    for shape in gc_tuple_layouts.keys() {
+        let id = cg.gc_structs.len() as u32;
+        cg.gc_tuple_ids.insert(shape.clone(), id);
+        cg.gc_structs.push(witchy_wir::wir::WirStructDef { fields: Vec::new() });
+    }
     // Collect parameter conventions up front so call sites can resolve `var`
     // write-back even for forward references.
     for item in &module.items {
@@ -312,17 +422,8 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
             | Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
         }
     }
-    // Reserve every ID before materializing a field kind, so recursive and
-    // mutually-recursive aggregate references can point forward in the single
-    // Wasm GC recursion group.
-    for name in &gc_aggregate_names {
-        if cg.gc_aggregate_ids.contains_key(name) {
-            continue;
-        }
-        let id = cg.gc_structs.len() as u32;
-        cg.gc_aggregate_ids.insert(name.clone(), id);
-        cg.gc_structs.push(witchy_wir::wir::WirStructDef { fields: Vec::new() });
-    }
+    // Every nominal and tuple ID is reserved before materializing a field kind,
+    // so recursive references can point forward in the single Wasm GC group.
     for item in &module.items {
         let Item::Type(t) = item else { continue };
         if !gc_aggregate_name_set.contains(&t.name) {
@@ -357,6 +458,18 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
         }
         if let Some(slot) = cg.gc_structs.get_mut(id as usize) {
             slot.fields = fields;
+        }
+    }
+    for (shape, fields) in &gc_tuple_layouts {
+        let Some(id) = cg.gc_tuple_ids.get(shape).copied() else {
+            continue;
+        };
+        let field_kinds = fields
+            .iter()
+            .map(|ty| Codegen::wir_kind(cg.kind_for_type(ty)))
+            .collect();
+        if let Some(slot) = cg.gc_structs.get_mut(id as usize) {
+            slot.fields = field_kinds;
         }
     }
     // Function return kinds may have been recorded before the GC-aggregate registry

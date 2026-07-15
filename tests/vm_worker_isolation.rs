@@ -66,10 +66,15 @@ fn main(console: Console):
 
     for (api, source) in cases {
         let error = check(source).expect_err("an indirect callback must not weaken isolation");
+        let rejected_at_capability_function_binding = api == "vm.with_dir"
+            && error.contains("Dir")
+            && error.contains("function value")
+            && error.contains("typed closure/GC lowering");
         assert!(
-            error.contains(api)
-                && error.contains("bare top-level function")
-                && error.contains("isolated worker-VM boundary"),
+            rejected_at_capability_function_binding
+                || (error.contains(api)
+                    && error.contains("bare top-level function")
+                    && error.contains("isolated worker-VM boundary")),
             "unexpected diagnostic for {api}: {error}"
         );
     }

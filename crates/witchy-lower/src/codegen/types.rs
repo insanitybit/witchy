@@ -227,6 +227,9 @@ impl Codegen<'_> {
     /// String / List / Tuple / closure / a user record or ADT; false for Dict (rc region at
     /// `ptr-4`), scalars, and bare type variables (uniform-ABI-instantiable as a Dict).
     pub(crate) fn type_is_offset0_rc(&self, ty: &Type) -> bool {
+        if matches!(self.kind_for_type(ty), Kind::ExternRef | Kind::GcRef(_)) {
+            return false;
+        }
         let inner = match ty {
             Type::Qualified(_, inner) => inner.as_ref(),
             other => other,

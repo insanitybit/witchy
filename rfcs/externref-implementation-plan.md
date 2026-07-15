@@ -575,10 +575,24 @@ projecting the active band, including nested recursive references. All GC IDs
 are reserved before field kinds are materialized, so self-recursive and
 mutually-recursive sums share the encoder's one explicit recursion group.
 
-Still reject-first, in the plan's order: cap-carrying tuples,
-`List`/`Dict`/`Result` containers, and closure environments. Closures remain the
-hard tail (a capture is invisible in the function TYPE, so cap-carrying and
-scalar closures flowing into one `fn`-typed param force a uniform environment
+**Concrete structural tuple slice implemented.** A direct, fully concrete tuple
+that transitively carries an externref capability is interned as a typed GC
+struct by a deterministic recursive field-shape key. Nominal IDs retain module
+declaration order; tuple IDs append in sorted shape order, and every ID is
+reserved before nominal or tuple fields are materialized. Construction,
+numeric projection, direct parameter/result ABI, qualifiers, `let` and `match`
+patterns, nested tuples, and tuples nested in nominal records/sums use the same
+reference-typed path on the compiled backend. The interpreter remains the
+semantic oracle and differential tests cover all of those shapes plus stable
+binary output.
+
+The boundary remains fail-closed where no typed representation exists:
+capability tuples cannot instantiate the scalar generic ABI, enter
+`List`/`Dict`/`Result` storage, mix with a first-class function value, escape a
+`region:`, render, or compare for equality. Concrete tuple aliases are also not
+yet normalized into this direct structural path. Closures remain the hard tail
+(a capture is invisible in the function TYPE, so cap-carrying and scalar
+closures flowing into one `fn`-typed param force a uniform environment
 representation).
 
 ## Stage 4 closure continuation (2026-07-15)

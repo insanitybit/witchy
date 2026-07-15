@@ -70,15 +70,22 @@ fn main(console: Console, dir: Dir):
 `handle` can read or write, so its footprint is the union: `Dir`. The narrower
 helpers still report only what they use (`Dir[Read]` and `Dir[Write]`).
 
-A capability-carrying **nominal aggregate** — any non-generic `type`, with named
-fields, positional payloads, or multiple variants, sealed `capability`
-declaration or plain `type` alike — compiles to a typed wasm GC struct. The one
-exception is a transparent single-field capability brand, which stays a direct
-externref instead of allocating a wrapper struct. These shapes may nest and
-recurse while keeping the capability an unforgeable reference. Tuples,
-collections, and closure environments carrying capabilities are still
-intentionally rejected until their GC lowering lands; no capability is
-silently boxed into an ordinary heap slot.
+A capability-carrying **aggregate** compiles to a typed wasm GC struct when its
+layout is concrete. This includes a direct structural tuple such as
+`(Dir[Read], String)`, plus any non-generic `type` with named fields, positional
+payloads, or multiple variants, sealed `capability` declaration or plain `type`
+alike. The one exception is a transparent single-field capability brand, which
+stays a direct externref instead of allocating a wrapper struct. Concrete
+tuples and nominal aggregates may nest while keeping the capability an
+unforgeable reference; nominal types may also recurse. Tuple construction,
+numeric projection, parameter and return passing, and `let`/`match`
+destructuring use that typed representation on both backends.
+
+Collections, generic aggregate specializations, closure environments, and
+`region:` copy-out carrying capabilities are still intentionally rejected until
+their reference-aware lowering lands. Capability aggregates also cannot be
+rendered or compared for equality: authority is not printable data or identity.
+No capability is silently boxed into an ordinary heap slot.
 
 ## At the entry point
 

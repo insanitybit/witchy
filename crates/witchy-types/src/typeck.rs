@@ -1971,9 +1971,9 @@ pub fn gc_cap_aggregate_names(module: &ast::Module) -> Vec<String> {
 ///
 /// A bare capability parameter/return is fine: it stays an `externref`. Slot-boxed
 /// containers (`Option`/`Result`/`List`/`Dict`) are impossible because an externref has
-/// no i64 bit-pattern. Non-generic nominal aggregates use typed GC structs; tuples and
-/// generic aggregates remain rejected because they would still send their fields
-/// through `$mkN`/`ToSlot`.
+/// no i64 bit-pattern. Non-generic nominal aggregates and fully concrete tuples use
+/// typed GC structs; generic aggregates remain rejected because their representation
+/// is not fixed before specialization.
 fn reject_cap_slot_boundary(
     t: &ast::Type,
     defs: &HashMap<&str, &ast::TypeDef>,
@@ -1986,21 +1986,39 @@ fn reject_cap_slot_boundary(
             reject_cap_slot_boundary(inner, defs, storage, ctx, position)
         }
         ast::Type::Tuple(items) => {
-            if let Some(cap) = items.iter().find_map(|a| {
-                storage.first_externref_including_function_signatures(a)
-            }) {
-                return Err(TypeError {
-                    message: format!(
-                        "`{ctx}`: a `{cap}` capability cannot be held in a tuple in {position} until \
-                         RFC-0005's GC-struct aggregate lowering lands — pass it directly"
-                    ),
-                });
+            for item in items {
+                if matches!(item.unqualified(), ast::Type::Fn(_, _, _)) {
+                    if let Some(cap) =
+                        storage.first_externref_including_function_signatures(item)
+                    {
+                        return Err(TypeError {
+                            message: format!(
+                                "`{ctx}`: a function value whose signature carries `{cap}` cannot be \
+                                 held in a tuple in {position} until the typed closure ABI lands"
+                            ),
+                        });
+                    }
+                    if let Some(cap) = storage.first_externref(t) {
+                        return Err(TypeError {
+                            message: format!(
+                                "`{ctx}`: a tuple carrying `{cap}` cannot also hold a function value \
+                                 in {position} until the typed closure ABI lands"
+                            ),
+                        });
+                    }
+                }
             }
             items
                 .iter()
                 .try_for_each(|a| reject_cap_slot_boundary(a, defs, storage, ctx, position))
         }
         ast::Type::Fn(args, ret, _) => {
+            // Function signatures are legal declarations even when they mention a
+            // capability: `std/vm.with_dir` deliberately exposes such a callback
+            // contract. Forming or applying that signature as a first-class value
+            // remains fail-closed in `Checker::infer` until the typed closure ABI
+            // lands. Still recurse so unsupported containers nested in the
+            // signature are diagnosed at their declaration site.
             args.iter()
                 .try_for_each(|a| reject_cap_slot_boundary(a, defs, storage, ctx, position))?;
             reject_cap_slot_boundary(ret, defs, storage, ctx, position)
@@ -2931,6 +2949,10 @@ struct Checker {
     /// The declared return type of the function currently being checked, so `?`
     /// can require the enclosing function to return a matching Result/Option.
     current_ret: Option<Ty>,
+    /// The callback parameter of an isolated-worker stdlib reference body. The
+    /// wrapper may invoke this parameter directly; user code still cannot form
+    /// the capability-bearing function value in the generic closure ABI.
+    current_isolated_callback: Option<String>,
     /// (BUG-395 / RFC-0047) The key types of the generic `Dict` key operations
     /// (`dict.insert`/`get_or`/`update`/`contains_key`/`remove`) invoked in the
     /// body currently being checked, with the source line. A dict key is hashed and
@@ -3368,10 +3390,19 @@ impl Checker {
                         return None;
                     }
                     let fields = c.record_fields.get(&n).map(|(_, fields)| fields.clone());
-                    let hit = fields
+                    let mut hit = fields
                         .into_iter()
                         .flatten()
                         .find_map(|(_, field)| go(c, &field, seen));
+                    if hit.is_none()
+                        && let Some(variants) = c.adt_variants.get(&n)
+                    {
+                        hit = variants.iter().find_map(|variant| {
+                            c.ctor_sigs.get(variant).and_then(|(payloads, _)| {
+                                payloads.iter().find_map(|payload| go(c, payload, seen))
+                            })
+                        });
+                    }
                     seen.remove(&n);
                     hit
                 }
@@ -3531,14 +3562,19 @@ impl Checker {
                 Ok(())
             }
             Ty::Tuple(items) => {
-                if let Some(cap) = items.iter().find_map(|i| self.ty_carries_externref_cap(i)) {
+                if items
+                    .iter()
+                    .any(|item| matches!(self.resolve(item), Ty::Fn(_, _, _)))
+                    && let Some(cap) = self.ty_carries_externref_cap(t)
+                {
                     return terr(format!(
-                        "`{ctx}` builds a tuple containing a `{cap}` capability; \
-                         cap-carrying tuples require RFC-0005's GC-struct aggregate lowering — \
-                         pass the capability directly"
+                        "`{ctx}` builds a tuple that mixes a function value with capability \
+                         `{cap}`; this requires the typed closure ABI"
                     ));
                 }
-                Ok(())
+                items
+                    .iter()
+                    .try_for_each(|item| self.reject_externref_cap_aggregate_ty(item, ctx))
             }
             Ty::Named(n, args)
                 if n == "Option" && args.len() == 1 && self.ty_is_direct_externref_value(&args[0]) =>
@@ -4576,6 +4612,19 @@ impl Checker {
             self.region_locals.pop();
         }
         let ty = result?;
+        let resolved = self.resolve(&ty);
+        let is_gc_aggregate = matches!(&resolved, Ty::Tuple(_))
+            || matches!(&resolved, Ty::Named(name, args)
+                if args.is_empty() && self.gc_cap_aggregates.contains(name));
+        if is_region
+            && is_gc_aggregate
+            && let Some(cap) = self.ty_carries_externref_cap(&ty)
+        {
+            return terr(format!(
+                "a `region` value cannot be a GC aggregate carrying capability `{cap}` until \
+                 region copy-out understands GC references"
+            ));
+        }
         if let Some(ann) = &block.region {
             if let Some(want) = &ann.ty {
                 let want_ty = self.to_ty(want);
@@ -4856,6 +4905,23 @@ impl Checker {
             if !is_bare_top_level {
                 return terr(diagnostic);
             }
+            if let Expr::Var(function) = callback
+                && let Some((params, ret)) = self.fn_sigs.get(function).cloned()
+            {
+                let conventions = self
+                    .fn_conventions
+                    .get(function)
+                    .cloned()
+                    .unwrap_or_else(|| vec![Convention::Let; params.len()]);
+                let function_ty = Ty::Fn(params, Box::new(ret), conventions);
+                if let Some(cap) = self.ty_carries_externref_cap(&function_ty) {
+                    return terr(format!(
+                        "`{call_name}` cannot yet accept function value `{function}` carrying \
+                         `{cap}`: the current closure ABI boxes arguments as i64 slots, so this \
+                         requires RFC-0005's typed closure/GC lowering"
+                    ));
+                }
+            }
         }
         // A local binding (parameter or `let`) holding a function value:
         // apply it. Handles both an explicit `fn(..)->..` type and an as
@@ -4863,6 +4929,12 @@ impl Checker {
         if !is_cap_op && let Some(vty) = self.lookup(name) {
             match self.resolve(&vty) {
                 Ty::Fn(param_tys, ret, conventions) => {
+                    if self.current_isolated_callback.as_deref() != Some(name) {
+                        self.reject_externref_cap_aggregate_ty(
+                            &vty,
+                            &format!("function value `{name}`"),
+                        )?;
+                    }
                     if param_tys.len() != args.len() {
                         let display = diagnostic_callable_name(name);
                         return terr(format!(
@@ -4884,6 +4956,16 @@ impl Checker {
                             message: format!("in call to `{display}`: {}", e.message),
                         })?;
                     }
+                    // Generic function values can acquire a capability-bearing
+                    // signature only after argument inference. Recheck the
+                    // resolved type so `let f = id; f(file)` cannot reach the
+                    // slot-based closure ABI.
+                    if self.current_isolated_callback.as_deref() != Some(name) {
+                        self.reject_externref_cap_aggregate_ty(
+                            &vty,
+                            &format!("function value `{name}`"),
+                        )?;
+                    }
                     self.enforce_function_value_conventions(name, args, &conventions)?;
                     return Ok(*ret);
                 }
@@ -4900,6 +4982,10 @@ impl Checker {
                             Box::new(ret.clone()),
                             vec![Convention::Let; args.len()],
                         ),
+                    )?;
+                    self.reject_externref_cap_aggregate_ty(
+                        &vty,
+                        &format!("function value `{name}`"),
                     )?;
                     return Ok(ret);
                 }
@@ -4984,6 +5070,21 @@ impl Checker {
                          its result instead",
                     );
                 }
+                if let Some(cap) = self.ty_carries_externref_cap(&at) {
+                    return terr(format!(
+                        "cannot render a value carrying capability `{cap}` with `\"${{…}}\"` — \
+                         capabilities are authority, not printable data"
+                    ));
+                }
+            }
+            if ty_has_var(param_ty)
+                && let Some(cap) = self.ty_carries_externref_cap(&at)
+            {
+                return terr(format!(
+                    "argument to `{display}` instantiates a generic parameter with a value \
+                     carrying `{cap}`; capability-bearing generics require a typed \
+                     specialization ABI"
+                ));
             }
             self.reject_externref_cap_aggregate_ty(&at, &format!("argument to `{display}`"))?;
             self.coerce_arg(param_ty, &at)
@@ -5471,7 +5572,12 @@ impl Checker {
                         .get(name)
                         .cloned()
                         .unwrap_or_else(|| vec![Convention::Let; params.len()]);
-                    return Ok(Ty::Fn(params, Box::new(ret), conventions));
+                    let function_ty = Ty::Fn(params, Box::new(ret), conventions);
+                    self.reject_externref_cap_aggregate_ty(
+                        &function_ty,
+                        &format!("function value `{name}`"),
+                    )?;
+                    return Ok(function_ty);
                 }
                 if self.trait_method_names.contains(name) {
                     return terr(format!(
@@ -5542,7 +5648,9 @@ impl Checker {
                 self.current_ret = saved_ret;
                 self.pop();
                 let conventions = params.iter().map(|p| p.convention).collect();
-                Ok(Ty::Fn(param_tys, Box::new(lambda_ret), conventions))
+                let function_ty = Ty::Fn(param_tys, Box::new(lambda_ret), conventions);
+                self.reject_externref_cap_aggregate_ty(&function_ty, "closure value")?;
+                Ok(function_ty)
             }
             Expr::Call { name, args } => self.infer_call(name, args, None),
             Expr::Apply { func, args } => {
@@ -5550,6 +5658,7 @@ impl Checker {
                 // it with `fn(argtys) -> r` and yield `r`.
                 let fty = self.infer(func)?;
                 if let Ty::Fn(param_tys, ret, conventions) = self.resolve(&fty) {
+                    self.reject_externref_cap_aggregate_ty(&fty, "function value")?;
                     if param_tys.len() != args.len() {
                         return terr(format!(
                             "function application expects {} argument(s) but got {}",
@@ -5563,6 +5672,7 @@ impl Checker {
                             message: format!("in function application: {}", e.message),
                         })?;
                     }
+                    self.reject_externref_cap_aggregate_ty(&fty, "function value")?;
                     self.enforce_function_value_conventions(
                         "function value",
                         args,
@@ -5586,6 +5696,7 @@ impl Checker {
                     .map_err(|e| TypeError {
                         message: format!("in function application: {}", e.message),
                     })?;
+                self.reject_externref_cap_aggregate_ty(&fty, "function value")?;
                 Ok(ret)
             }
             Expr::Ctor { name, args } => {
@@ -6869,6 +6980,12 @@ impl Checker {
         self.scopes = vec![HashMap::new()];
         self.consumed.clear();
         self.current_ret = Some(ret.clone());
+        self.current_isolated_callback = isolated_vm_callback_contract(
+            &func.name,
+            func.params.len(),
+        )
+        .and_then(|(index, _)| func.params.get(index))
+        .map(|param| param.name.clone());
         // (BUG-308) Make this function's type parameters visible to `to_ty` so body
         // ascriptions resolve `a` to the signature's parameter var.
         self.current_typarams = self
@@ -7336,6 +7453,7 @@ fn run_check_selected(
         consumed: HashSet::new(),
         region_locals: Vec::new(),
         current_ret: None,
+        current_isolated_callback: None,
         dict_key_ops: Vec::new(),
         cur_line: 0,
         cur_module: String::new(),

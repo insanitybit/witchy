@@ -950,9 +950,14 @@ fn has_optional_id() -> Option(Bool):
         check_str("type Left:\n    LeftEnd\n    ToRight(Right)\ntype Right:\n    RightFile(File)\n    ToLeft(Left)\nfn take(console: Console, x: Left):\n    match x:\n        LeftEnd -> console.print(\"end\")\n        ToRight(_) -> console.print(\"right\")\n")
             .expect("mutually recursive cap-carrying sums share the GC recursion group");
 
-        let err = check_str("fn tupled(console: Console, pair: (File, Int)):\n    console.print(\"x\")\n")
-            .expect_err("a File tuple element needs the GC-struct aggregate path");
-        assert!(err.contains("File") && err.contains("tuple"), "got: {err}");
+        check_str("fn tupled(console: Console, pair: (File, Int)):\n    console.print(\"x\")\n")
+            .expect("a concrete File tuple uses typed GC-struct storage");
+
+        check_str("fn keep(pair: (frozen File, Int)) -> (frozen File, Int):\n    pair\n")
+            .expect("qualifiers preserve a concrete capability tuple's GC shape");
+
+        check_str("fn maybe(pair: (Option(File), Int)) -> (Option(File), Int):\n    pair\n")
+            .expect("a nullable direct externref remains reference-typed in a tuple");
 
         let err = check_str("fn main(console: Console, f: File[Read]):\n    let read_later = fn() -> String: f.read()\n    console.print(\"x\")\n")
             .expect_err("a closure capture of File needs the GC-struct aggregate path");
@@ -965,13 +970,87 @@ fn has_optional_id() -> Option(Bool):
             .expect_err("an inferred List(File) literal needs the GC-struct aggregate path");
         assert!(err.contains("List") && err.contains("File"), "got: {err}");
 
-        let err = check_str("fn main(console: Console, f: File):\n    let pair = (f, 1)\n    console.print(\"x\")\n")
-            .expect_err("an inferred tuple carrying File needs the GC-struct aggregate path");
-        assert!(err.contains("tuple") && err.contains("File"), "got: {err}");
+        check_str("fn main(console: Console, f: File):\n    let pair = (f, 1)\n    console.print(\"x\")\n")
+            .expect("an inferred concrete File tuple uses typed GC-struct storage");
+
+        let err = check_str("fn id(x: a) -> a:\n    x\nfn main(console: Console, f: File):\n    let pair = id((f, 1))\n    console.print(\"x\")\n")
+            .expect_err("a capability tuple cannot instantiate the scalar generic ABI");
+        assert!(err.contains("generic") && err.contains("File"), "got: {err}");
+
+        let err = check_str("fn collect(console: Console, xs: List((File, Int))):\n    console.print(\"x\")\n")
+            .expect_err("a List still cannot slot-box a capability tuple");
+        assert!(err.contains("List") && err.contains("File"), "got: {err}");
+
+        let err = check_str("fn main(console: Console, f: File):\n    console.print(\"${(f, 1)}\")\n")
+            .expect_err("rendering a capability tuple must remain forbidden");
+        assert!(err.contains("render") && err.contains("File"), "got: {err}");
+
+        let err = check_str("fn main(console: Console, f: File):\n    let pair = region -> (File, Int):\n        (f, 1)\n    console.print(\"x\")\n")
+            .expect_err("region copy-out cannot yet preserve a GC tuple reference");
+        assert!(err.contains("region") && err.contains("File"), "got: {err}");
+
+        let err = check_str("type Holder:\n    Holder(File, String)\nfn main(console: Console, f: File):\n    let holder = region -> Holder:\n        Holder(f, \"x\")\n    console.print(\"x\")\n")
+            .expect_err("region copy-out cannot hide a GC tuple in a nominal aggregate");
+        assert!(err.contains("region") && err.contains("File"), "got: {err}");
+
+        let err = check_str("fn callbacks(console: Console, pair: (File, fn(File) -> String)):\n    console.print(\"x\")\n")
+            .expect_err("a capability-bearing function signature remains unsupported in a tuple");
+        assert!(err.contains("function value") && err.contains("File"), "got: {err}");
+
+        let err = check_str("fn callbacks(console: Console, pair: (fn(File) -> String, Int)):\n    console.print(\"x\")\n")
+            .expect_err("a tuple cannot hide a capability-bearing closure signature");
+        assert!(err.contains("function value") && err.contains("File"), "got: {err}");
+
+        let err = check_str("fn callback(x: Int) -> Int:\n    x\nfn main(console: Console, f: File):\n    let pair = (f, callback)\n    console.print(\"x\")\n")
+            .expect_err("an inferred capability tuple cannot fall back around a function field");
+        assert!(err.contains("function value") && err.contains("File"), "got: {err}");
+
+        let err = check_str("fn id(x: (File, Int)) -> (File, Int):\n    x\nfn main(console: Console, f: File):\n    let local = id\n    let pair = local((f, 1))\n    console.print(\"x\")\n")
+            .expect_err("a capability tuple cannot cross the slot-based indirect-call ABI");
+        assert!(err.contains("function value") && err.contains("File"), "got: {err}");
+
+        let late_specialization_cases = [
+            (
+                "direct capability",
+                "fn id(x: a) -> a:\n    x\nfn main(console: Console, f: File):\n    let local = id\n    let out = local(f)\n    console.print(\"x\")\n",
+            ),
+            (
+                "nullable capability",
+                "fn id(x: a) -> a:\n    x\nfn main(console: Console, f: File):\n    let local = id\n    let out = local(Some(f))\n    console.print(\"x\")\n",
+            ),
+            (
+                "qualified capability tuple",
+                "fn id(x: a) -> a:\n    x\nfn main(console: Console, f: File):\n    let pair: (frozen File, Int) = (f, 1)\n    let local = id\n    let out = local(pair)\n    console.print(\"x\")\n",
+            ),
+            (
+                "nested nominal capability aggregate",
+                "type Holder:\n    Holder((File, Int))\nfn id(x: a) -> a:\n    x\nfn main(console: Console, f: File):\n    let local = id\n    let out = local(Holder((f, 1)))\n    console.print(\"x\")\n",
+            ),
+            (
+                "inferred generic lambda",
+                "fn main(console: Console, f: File):\n    let local = fn(x): x\n    let out = local(f)\n    console.print(\"x\")\n",
+            ),
+            (
+                "immediately applied generic lambda",
+                "fn main(console: Console, f: File):\n    let out = (fn(x): x)(f)\n    console.print(\"x\")\n",
+            ),
+        ];
+        for (shape, source) in late_specialization_cases {
+            let err = check_str(source)
+                .expect_err("late specialization cannot cross the slot-based closure ABI");
+            assert!(
+                err.contains("function value") && err.contains("File"),
+                "unexpected {shape} diagnostic: {err}"
+            );
+        }
+
+        let err = check_str("fn main(console: Console, f: File):\n    let local = fn(x: File) -> (File, Int): (x, 1)\n    console.print(\"x\")\n")
+            .expect_err("a lambda cannot create a capability-bearing function value");
+        assert!(err.contains("closure value") && err.contains("File"), "got: {err}");
 
         let err = check_str("fn main(console: Console, f: File):\n    let d = dict.__insert(dict.new(), \"cfg\", f)\n    console.print(\"x\")\n")
             .expect_err("an inferred Dict(String, File) needs the GC-struct aggregate path");
-        assert!(err.contains("Dict") && err.contains("File"), "got: {err}");
+        assert!(err.contains("generic") && err.contains("File"), "got: {err}");
 
         let err = check_str("type Box(a):\n    Box(a)\nfn main(console: Console, f: File):\n    let b = Box(f)\n    console.print(\"x\")\n")
             .expect_err("a generic user aggregate instantiated with File needs the GC-struct aggregate path");

@@ -5185,6 +5185,122 @@ fn main(console: Console, root: Dir[Read]):
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// RFC-0005 Stage 4 (tuple slice): a fully concrete tuple that transitively
+    /// carries a migrated capability uses a deterministic typed GC-struct
+    /// layout. This covers the direct ABI, numeric projection, `let` and
+    /// `match` patterns, nested tuples, and tuples stored inside nominal GC
+    /// aggregates without ever routing the authority through an i64 slot.
+    #[test]
+    fn capability_tuple_runs_on_gc_backend() {
+        use crate::runtime::{Capabilities, Runtime};
+        let root = std::env::temp_dir().join(format!("witchy_captuple_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        std::fs::write(root.join("greeting.txt"), "hello-tuple").expect("seed");
+        let root_str = root.to_str().expect("utf8 root").to_string();
+        let src = r#"
+type Holder:
+    Holder((Dir[Read], (String, Int)))
+
+type Packet:
+    Empty
+    Packed((Dir[Read], (String, Int)))
+
+fn keep(pair: (Dir[Read], String, Int)) -> (Dir[Read], String, Int):
+    return pair
+
+fn read_named(dir: Dir[Read], name: String) -> String:
+    dir.read(name)
+
+fn project(pair: (Dir[Read], String, Int)) -> String:
+    read_named(pair.0, pair.1) + ":${pair.2}"
+
+fn destructure(pair: (Dir[Read], String, Int)) -> String:
+    let (dir, name, count) = pair
+    dir.read(name) + ":${count}"
+
+fn choose(pair: (Dir[Read], String, Int)) -> String:
+    match pair:
+        (dir, name, count) -> dir.read(name) + ":${count}"
+
+fn keep_qualified(pair: (frozen Dir[Read], String)) -> (frozen Dir[Read], String):
+    pair
+
+fn qualified(pair: (frozen Dir[Read], String)) -> String:
+    let (dir, name) = pair
+    dir.read(name)
+
+fn optional(pair: (Option(Dir[Read]), String)) -> String:
+    match pair:
+        (Some(dir), name) -> dir.read(name)
+        (None, _) -> "none"
+
+fn select(root: Dir[Read], labels: List(String)) -> (Dir[Read], String, Int):
+    match list.at(labels, 0):
+        "first" -> (root, "greeting.txt", 4)
+        _ -> (root, "greeting.txt", 5)
+
+fn nested(holder: Holder) -> String:
+    match holder:
+        Holder((dir, (name, count))) -> dir.read(name) + ":${count}"
+
+fn packed(packet: Packet) -> String:
+    match packet:
+        Packed((dir, (name, count))) -> dir.read(name) + ":${count}"
+        Empty -> "empty"
+
+fn main(console: Console, root: Dir[Read]):
+    let pair = keep((root, "greeting.txt", 1))
+    console.print(project(pair))
+    console.print(destructure(pair))
+    console.print(choose(pair))
+    console.print(qualified(keep_qualified((root, "greeting.txt"))))
+    console.print(optional((Some(root), "greeting.txt")))
+    console.print(optional((None, "greeting.txt")))
+    console.print(project(select(root, ["first"])))
+    console.print(nested(Holder((root, ("greeting.txt", 2)))))
+    console.print(packed(Empty))
+    console.print(packed(Packed((root, ("greeting.txt", 3)))))
+"#;
+        let want = vec![
+            "hello-tuple:1".to_string(),
+            "hello-tuple:1".to_string(),
+            "hello-tuple:1".to_string(),
+            "hello-tuple".to_string(),
+            "hello-tuple".to_string(),
+            "none".to_string(),
+            "hello-tuple:4".to_string(),
+            "hello-tuple:2".to_string(),
+            "empty".to_string(),
+            "hello-tuple:3".to_string(),
+        ];
+        let linked = resolve_std_src(src);
+        assert_eq!(
+            interpreter::run_module(linked.clone(), &root_str, Vec::new()).expect("interp"),
+            want,
+            "interpreter",
+        );
+        let bin = codegen::compile_module_binary(&linked)
+            .expect("compile")
+            .expect("the binary path lowers cap-carrying tuples");
+        let bin_again = codegen::compile_module_binary(&linked)
+            .expect("recompile")
+            .expect("the same tuple module still lowers");
+        assert_eq!(bin_again, bin, "GC tuple IDs and binary output must be deterministic");
+        let mut rt = Runtime::batch().expect("runtime");
+        let caps = Capabilities {
+            print: true,
+            quiet: true,
+            dir_root: Some(root.clone()),
+            dir_read: true,
+            ..Default::default()
+        };
+        let mut actor = rt.spawn(&bin, caps, 64).expect("spawn");
+        actor.run().expect("run");
+        assert_eq!(actor.output(), want, "compiled WASM must agree");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// RFC-0005 Stage 3: a named sealed capability record can carry a migrated
     /// `Net` externref alongside ordinary data. The compiled backend lowers the
     /// record to a typed GC struct, so the carried authority never passes through
