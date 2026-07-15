@@ -910,6 +910,10 @@ fn has_optional_id() -> Option(Bool):
             .expect_err("List(File) stores externref elements");
         assert!(err.contains("File") && err.contains("List"), "got: {err}");
 
+        let err = check_str("fn callbacks(console: Console, xs: List(fn(File[Read]) -> String)):\n    console.print(\"x\")\n")
+            .expect_err("the scalar closure ABI cannot hide an externref parameter in a container");
+        assert!(err.contains("File") && err.contains("List"), "got: {err}");
+
         // Result(File, String) — the Ok payload is slot-boxed.
         let err = check_str("fn open(console: Console, r: Result(File, String)):\n    console.print(\"x\")\n")
             .expect_err("Result(File, _) slot-boxes an externref");
@@ -1032,6 +1036,37 @@ fn load(o: Outer, name: String) -> String:
         let err = check_str("type W:\n    dir: Dir[Read]\n    label: String\n\nfn f(console: Console, w: W):\n    let g = fn() -> String: w.label\n    console.print(g())\n")
             .expect_err("a closure capturing a cap-carrying record still needs the typed closure path");
         assert!(err.contains("closure") && err.contains("Dir"), "got: {err}");
+    }
+
+    #[test]
+    fn gc_record_entries_use_reference_storage_classifier() {
+        let module = witchy_syntax::parser::parse_module(
+            r#"
+type FileAlias = File[Read]
+
+type Mixed:
+    Mixed(fn(Int) -> Int, FileAlias)
+
+type FunctionOnly:
+    FunctionOnly(fn(Int) -> Int)
+
+capability Branded from File[Read]
+
+type Generic(a):
+    Generic(a)
+
+type Sum:
+    HasFile(File[Read])
+    Empty
+"#,
+        )
+        .expect("parse aggregate storage shapes");
+
+        assert_eq!(
+            gc_cap_record_entries(&module),
+            vec![("Mixed".to_string(), "Mixed".to_string())],
+            "function storage must not hide a later externref; transparent, generic, and sum shapes keep their separate representations"
+        );
     }
 
     #[test]

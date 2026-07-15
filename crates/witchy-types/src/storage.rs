@@ -29,6 +29,13 @@ pub fn externref_cap_name(name: &str) -> Option<&'static str> {
 
 type StoredParamSummaries<'a> = HashMap<&'a str, HashSet<String>>;
 
+#[derive(Clone, Copy)]
+enum FunctionTraversal {
+    AsReference,
+    IgnoreSignature,
+    InspectSignature,
+}
+
 /// Resolves module-local aliases and ADTs while classifying concrete types.
 /// A positive result means that storing the value solely in linear-memory
 /// scalar slots would erase a Wasm reference.
@@ -59,7 +66,47 @@ impl<'a> ReferenceStorageClassifier<'a> {
     }
 
     pub fn first_reference(&self, ty: &Type) -> Option<ReferenceLeaf> {
-        self.classify(ty, &HashMap::new(), &mut HashSet::new())
+        self.classify(
+            ty,
+            &HashMap::new(),
+            &mut HashSet::new(),
+            FunctionTraversal::AsReference,
+        )
+    }
+
+    /// The first migrated host capability stored by `ty`, ignoring function
+    /// values. Current Stage 4 aggregate eligibility needs this narrower query:
+    /// scalar closure values still have their legacy representation, while an
+    /// `externref` can never cross an i64 slot.
+    pub fn first_externref(&self, ty: &Type) -> Option<&'static str> {
+        match self.classify(
+            ty,
+            &HashMap::new(),
+            &mut HashSet::new(),
+            FunctionTraversal::IgnoreSignature,
+        ) {
+            Some(ReferenceLeaf::ExternRef(cap)) => Some(cap),
+            Some(ReferenceLeaf::Function) | None => None,
+        }
+    }
+
+    /// The first migrated capability appearing in either stored data or a
+    /// nested function signature. Production closures still use a scalar call
+    /// convention, so type checking needs this broader query until their typed
+    /// indirect ABI migration is complete.
+    pub fn first_externref_including_function_signatures(
+        &self,
+        ty: &Type,
+    ) -> Option<&'static str> {
+        match self.classify(
+            ty,
+            &HashMap::new(),
+            &mut HashSet::new(),
+            FunctionTraversal::InspectSignature,
+        ) {
+            Some(ReferenceLeaf::ExternRef(cap)) => Some(cap),
+            Some(ReferenceLeaf::Function) | None => None,
+        }
     }
 
     pub fn requires_reference_storage(&self, ty: &Type) -> bool {
@@ -71,23 +118,51 @@ impl<'a> ReferenceStorageClassifier<'a> {
         ty: &Type,
         bindings: &HashMap<String, Type>,
         seen: &mut HashSet<String>,
+        functions: FunctionTraversal,
     ) -> Option<ReferenceLeaf> {
         match ty {
-            Type::Qualified(_, inner) => self.classify(inner, bindings, seen),
+            Type::Qualified(_, inner) => self.classify(inner, bindings, seen, functions),
             Type::Tuple(items) => {
-                items.iter().find_map(|item| self.classify(item, bindings, seen))
+                items
+                    .iter()
+                    .find_map(|item| self.classify(item, bindings, seen, functions))
             }
             // A first-class function value is itself a reference regardless of
             // the scalar/reference shapes in its signature.
-            Type::Fn(_, _, _) => Some(ReferenceLeaf::Function),
+            Type::Fn(params, ret, _) => match functions {
+                FunctionTraversal::AsReference => Some(ReferenceLeaf::Function),
+                FunctionTraversal::IgnoreSignature => None,
+                FunctionTraversal::InspectSignature => params
+                    .iter()
+                    .chain(std::iter::once(ret.as_ref()))
+                    .find_map(|item| self.classify(item, bindings, seen, functions)),
+            },
             Type::Named(name, args) => {
                 if args.is_empty()
                     && let Some(bound) = bindings.get(name)
                 {
-                    return self.classify(bound, bindings, seen);
+                    let key = format!("binding:{name}");
+                    if !seen.insert(key.clone()) {
+                        return None;
+                    }
+                    let hit = self.classify(bound, bindings, seen, functions);
+                    seen.remove(&key);
+                    return hit;
                 }
                 if let Some(cap) = externref_cap_name(name) {
                     return Some(ReferenceLeaf::ExternRef(cap));
+                }
+                // The current generic and closure ABIs treat every explicit type
+                // argument as a representation dependency, even when a local ADT
+                // does not store that parameter. Keep this broader query aligned
+                // with the inferred-type boundary checker; `first_externref`
+                // remains the precise storage query.
+                if matches!(functions, FunctionTraversal::InspectSignature)
+                    && let Some(hit) = args
+                        .iter()
+                        .find_map(|arg| self.classify(arg, bindings, seen, functions))
+                {
+                    return Some(hit);
                 }
 
                 if let Some((params, target)) = self.aliases.get(name.as_str()) {
@@ -99,10 +174,11 @@ impl<'a> ReferenceStorageClassifier<'a> {
                             self.alias_stored_params.get(name.as_str()),
                             bindings,
                             seen,
+                            functions,
                         );
                     }
                     let nested = bind(params, args, bindings);
-                    let hit = self.classify(target, &nested, seen);
+                    let hit = self.classify(target, &nested, seen, functions);
                     seen.remove(&key);
                     return hit;
                 }
@@ -117,6 +193,7 @@ impl<'a> ReferenceStorageClassifier<'a> {
                             self.def_stored_params.get(name.as_str()),
                             bindings,
                             seen,
+                            functions,
                         );
                     }
                     let nested = bind(&params, args, bindings);
@@ -124,7 +201,9 @@ impl<'a> ReferenceStorageClassifier<'a> {
                         .variants
                         .iter()
                         .flat_map(|variant| variant.fields.iter())
-                        .find_map(|field| self.classify(field, &nested, seen));
+                        .find_map(|field| {
+                            self.classify(field, &nested, seen, functions)
+                        });
                     seen.remove(&key);
                     return hit;
                 }
@@ -132,7 +211,9 @@ impl<'a> ReferenceStorageClassifier<'a> {
                 // Built-in containers have no local TypeDef. Their runtime
                 // payloads preserve each type argument, so any reference-bearing
                 // argument makes the whole value reference-bearing.
-                args.iter().find_map(|arg| self.classify(arg, bindings, seen))
+                args
+                    .iter()
+                    .find_map(|arg| self.classify(arg, bindings, seen, functions))
             }
         }
     }
@@ -144,13 +225,14 @@ impl<'a> ReferenceStorageClassifier<'a> {
         relevant: Option<&HashSet<String>>,
         bindings: &HashMap<String, Type>,
         seen: &mut HashSet<String>,
+        functions: FunctionTraversal,
     ) -> Option<ReferenceLeaf> {
         let relevant = relevant?;
         params
             .iter()
             .zip(args)
             .filter(|(param, _)| relevant.contains(param.as_str()))
-            .find_map(|(_, arg)| self.classify(arg, bindings, seen))
+            .find_map(|(_, arg)| self.classify(arg, bindings, seen, functions))
     }
 }
 
@@ -464,6 +546,23 @@ type RecursivePhantom(a):
     Done
 
 type Callback = fn(Int) -> Int
+type CapabilityCallback = fn(File[Read]) -> Nil
+
+type Mixed:
+    Mixed(Callback, Dir[Read])
+
+type MixedAlias = (Callback, File[Read])
+
+type RecursiveMixed(a):
+    MoreMixed(RecursiveMixed(List(a)))
+    EndMixed(Callback, Net[Connect])
+
+type Step:
+    Empty
+    Item(a, Iter(a))
+
+type Iter:
+    Iter(fn() -> Step(a))
 
 fn direct(x: Dir[Read]) -> Nil:
     nil
@@ -503,6 +602,27 @@ fn phantom(x: Phantom(fn(Int) -> Int)) -> Nil:
 
 fn plain(x: List((Int, String))) -> Nil:
     nil
+
+fn mixed(x: Mixed) -> Nil:
+    nil
+
+fn mixed_alias(x: MixedAlias) -> Nil:
+    nil
+
+fn recursive_mixed(x: RecursiveMixed(Int)) -> Nil:
+    nil
+
+fn capability_callback(x: List(CapabilityCallback)) -> Nil:
+    nil
+
+fn enumerate(x: Iter((Int, a))) -> Nil:
+    nil
+
+fn enumerate_cap(x: Iter((File[Read], a))) -> Nil:
+    nil
+
+fn phantom_cap(x: Phantom(File[Read])) -> Nil:
+    nil
 "#,
         )
         .expect("parse storage shapes");
@@ -532,5 +652,44 @@ fn plain(x: List((Int, String))) -> Nil:
         assert!(!classifier.requires_reference_storage(param(&module, "phantom")));
         assert!(!classifier.requires_reference_storage(param(&module, "recursive_phantom")));
         assert!(!classifier.requires_reference_storage(param(&module, "plain")));
+        for (name, cap) in [
+            ("mixed", "Dir"),
+            ("mixed_alias", "File"),
+            ("recursive_mixed", "Net"),
+        ] {
+            assert_eq!(
+                classifier.first_reference(param(&module, name)),
+                Some(ReferenceLeaf::Function),
+                "the general query preserves source field order for {name}"
+            );
+            assert_eq!(classifier.first_externref(param(&module, name)), Some(cap), "{name}");
+        }
+        assert_eq!(classifier.first_externref(param(&module, "callable")), None);
+        assert_eq!(classifier.first_externref(param(&module, "capability_callback")), None);
+        assert_eq!(
+            classifier.first_externref_including_function_signatures(
+                param(&module, "capability_callback")
+            ),
+            Some("File")
+        );
+        assert_eq!(classifier.first_reference(param(&module, "enumerate")), Some(ReferenceLeaf::Function));
+        assert_eq!(classifier.first_externref(param(&module, "enumerate")), None);
+        assert_eq!(
+            classifier.first_externref_including_function_signatures(param(&module, "enumerate")),
+            None
+        );
+        assert_eq!(
+            classifier.first_externref_including_function_signatures(
+                param(&module, "enumerate_cap")
+            ),
+            Some("File")
+        );
+        assert_eq!(classifier.first_externref(param(&module, "phantom_cap")), None);
+        assert_eq!(
+            classifier.first_externref_including_function_signatures(
+                param(&module, "phantom_cap")
+            ),
+            Some("File")
+        );
     }
 }

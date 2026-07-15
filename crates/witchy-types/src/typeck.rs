@@ -24,7 +24,7 @@ use witchy_syntax::ast::{
 use witchy_syntax::build_entry::{build_entrypoint, is_build_capability_type};
 use witchy_syntax::{cap_ops, intrinsics};
 
-use crate::storage::externref_cap_name;
+use crate::storage::{externref_cap_name, ReferenceStorageClassifier};
 
 /// The operations a `Dir` capability permits. Decomposing the capability by
 /// right makes the footprint distinguish read-only from writing code, and an op
@@ -1326,8 +1326,9 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
         .filter_map(|name| builtin_type_arity(name).map(|arity| (*name, arity)))
         .collect();
     let mut packed_names: HashSet<&str> = HashSet::new();
-    // (RFC-0005) User `type`/`capability` declarations, so `carries_externref_cap`
-    // can resolve whether a `Named` type transitively holds a migrated capability.
+    // (RFC-0005) User `type`/`capability` declarations used by the stage-specific
+    // representation checks. The transitive reference fact itself comes from
+    // `ReferenceStorageClassifier` below.
     let mut type_defs: HashMap<&str, &ast::TypeDef> = HashMap::new();
     for item in &module.items {
         if let Item::Type(t) = item {
@@ -1339,6 +1340,7 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
             }
         }
     }
+    let reference_storage = ReferenceStorageClassifier::new(module);
     for item in &module.items {
         let in_ctx = |e: TypeError, ctx: &str| TypeError {
             message: format!("in `{}`: {}", ctx.rsplit('.').next().unwrap_or(ctx), e.message),
@@ -1519,14 +1521,26 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                         validate_type_model(t, &known, &arities, &type_defs)
                             .map_err(|e| in_ctx(e, &f.name))?;
                         reject_packed_list_boundary(t, &packed_names, &f.name, "a parameter")?;
-                        reject_cap_slot_boundary(t, &type_defs, &f.name, "a parameter")?;
+                        reject_cap_slot_boundary(
+                            t,
+                            &type_defs,
+                            &reference_storage,
+                            &f.name,
+                            "a parameter",
+                        )?;
                     }
                 }
                 if let Some(t) = &f.ret {
                     validate_type_model(t, &known, &arities, &type_defs)
                         .map_err(|e| in_ctx(e, &f.name))?;
                     reject_packed_list_boundary(t, &packed_names, &f.name, "a return type")?;
-                    reject_cap_slot_boundary(t, &type_defs, &f.name, "a return type")?;
+                    reject_cap_slot_boundary(
+                        t,
+                        &type_defs,
+                        &reference_storage,
+                        &f.name,
+                        "a return type",
+                    )?;
                     // (RFC-0026) `local unique` is valid only WITHIN the call — it may
                     // not escape — so it cannot be a return type (a return escapes).
                     if is_local_unique_type(t) {
@@ -1618,7 +1632,13 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                         validate_type_model(field, &known, &arities, &type_defs)
                             .map_err(|e| in_ctx(e, &t.name))?;
                         reject_packed_list_boundary(field, &packed_names, &t.name, "a field")?;
-                        reject_cap_slot_boundary(field, &type_defs, &t.name, "a field")?;
+                        reject_cap_slot_boundary(
+                            field,
+                            &type_defs,
+                            &reference_storage,
+                            &t.name,
+                            "a field",
+                        )?;
                     }
                 }
                 // (RFC-0027) A `packed` type's every field must be packable — a
@@ -1906,51 +1926,26 @@ fn nullable_externref_option_cap(
 fn gc_cap_record_cap(
     name: &str,
     defs: &HashMap<&str, &ast::TypeDef>,
-    seen: &mut HashSet<String>,
-) -> Option<String> {
+    storage: &ReferenceStorageClassifier<'_>,
+) -> Option<&'static str> {
     if transparent_externref_brand_cap(name, defs, &mut HashSet::new()).is_some() {
         return None;
     }
-    if !seen.insert(name.to_string()) {
+    let def = defs.get(name)?;
+    if !def.params.is_empty() || def.variants.len() != 1 {
         return None;
     }
-    let out = (|| {
-        let def = defs.get(name)?;
-        if !def.params.is_empty() || def.variants.len() != 1 {
-            return None;
-        }
-        let variant = def.variants.first()?;
-        variant
-            .fields
-            .iter()
-            .find_map(|field| gc_cap_record_field_cap(field, defs, seen))
-    })();
-    seen.remove(name);
-    out
-}
-
-fn gc_cap_record_field_cap(
-    t: &ast::Type,
-    defs: &HashMap<&str, &ast::TypeDef>,
-    seen: &mut HashSet<String>,
-) -> Option<String> {
-    match t {
-        ast::Type::Qualified(_, inner) => gc_cap_record_field_cap(inner, defs, seen),
-        ast::Type::Named(n, _) if is_externref_cap(n) => Some(n.clone()),
-        ast::Type::Named(n, args) if args.is_empty() => {
-            transparent_externref_brand_cap(n, defs, &mut HashSet::new())
-                .or_else(|| gc_cap_record_cap(n, defs, seen))
-        }
-        ast::Type::Named(_, _) | ast::Type::Tuple(_) | ast::Type::Fn(_, _, _) => None,
-    }
+    storage.first_externref(&ast::Type::Named(name.to_string(), Vec::new()))
 }
 
 /// (RFC-0005 stage 4) The module's GC-lowered cap-carrying record types, as
-/// `(type name, constructor name)` pairs. This is THE home of the
-/// classification: typeck's boundary checks and codegen's struct registration
-/// both consume it, so they cannot disagree (BUG-566 was codegen holding a
-/// second, shallower copy that missed nested records and ICE'd the encoder).
+/// `(type name, constructor name)` pairs. The representation-neutral reference
+/// fact comes from `ReferenceStorageClassifier`; this function adds only the
+/// current lowering's shape restriction. Typeck and codegen both consume these
+/// entries, so they cannot disagree (BUG-566 was codegen holding a second,
+/// shallower copy that missed nested records and ICE'd the encoder).
 pub fn gc_cap_record_entries(module: &ast::Module) -> Vec<(String, String)> {
+    let storage = ReferenceStorageClassifier::new(module);
     let type_defs: HashMap<&str, &ast::TypeDef> = module
         .items
         .iter()
@@ -1963,59 +1958,12 @@ pub fn gc_cap_record_entries(module: &ast::Module) -> Vec<(String, String)> {
         .items
         .iter()
         .filter_map(|item| match item {
-            Item::Type(t)
-                if gc_cap_record_cap(&t.name, &type_defs, &mut HashSet::new()).is_some() =>
-            {
+            Item::Type(t) if gc_cap_record_cap(&t.name, &type_defs, &storage).is_some() => {
                 t.variants.first().map(|v| (t.name.clone(), v.name.clone()))
             }
             _ => None,
         })
         .collect()
-}
-
-/// (RFC-0005 §3) The `carries_cap` classification, scoped to the migrated
-/// `externref` subset (`is_externref_cap`): the name of the first such capability
-/// that `t` transitively carries, or `None`. Recurses through user `type`/
-/// `capability` declarations (`defs`) with a cycle guard (`seen`), and through
-/// tuples, function types, and type arguments. These are exactly the caps that
-/// have no i64 bit-pattern, so they cannot round-trip the universal slot.
-fn carries_externref_cap(
-    t: &ast::Type,
-    defs: &HashMap<&str, &ast::TypeDef>,
-    seen: &mut HashSet<String>,
-) -> Option<String> {
-    match t {
-        ast::Type::Qualified(_, inner) => carries_externref_cap(inner, defs, seen),
-        ast::Type::Tuple(items) => items.iter().find_map(|a| carries_externref_cap(a, defs, seen)),
-        ast::Type::Fn(args, ret, _) => args
-            .iter()
-            .find_map(|a| carries_externref_cap(a, defs, seen))
-            .or_else(|| carries_externref_cap(ret, defs, seen)),
-        ast::Type::Named(n, args) => {
-            if is_externref_cap(n) {
-                return Some(n.clone());
-            }
-            if let Some(cap) = transparent_externref_brand_cap(n, defs, seen) {
-                return Some(cap);
-            }
-            if let Some(hit) = args.iter().find_map(|a| carries_externref_cap(a, defs, seen)) {
-                return Some(hit);
-            }
-            // A user `type`/`capability`: scan its variants' field types. `seen`
-            // guards recursive/mutually-recursive declarations and is kept
-            // monotonic (a shared declaration is only worth scanning once).
-            if let Some(def) = defs.get(n.as_str()) {
-                if seen.insert(n.clone()) {
-                    return def
-                        .variants
-                        .iter()
-                        .flat_map(|v| v.fields.iter())
-                        .find_map(|f| carries_externref_cap(f, defs, seen));
-                }
-            }
-            None
-        }
-    }
 }
 
 /// (RFC-0005 §4.4/§7) Reject `t` when it would carry a migrated externref capability
@@ -2029,13 +1977,18 @@ fn carries_externref_cap(
 fn reject_cap_slot_boundary(
     t: &ast::Type,
     defs: &HashMap<&str, &ast::TypeDef>,
+    storage: &ReferenceStorageClassifier<'_>,
     ctx: &str,
     position: &str,
 ) -> Result<(), TypeError> {
     match t {
-        ast::Type::Qualified(_, inner) => reject_cap_slot_boundary(inner, defs, ctx, position),
+        ast::Type::Qualified(_, inner) => {
+            reject_cap_slot_boundary(inner, defs, storage, ctx, position)
+        }
         ast::Type::Tuple(items) => {
-            if let Some(cap) = items.iter().find_map(|a| carries_externref_cap(a, defs, &mut HashSet::new())) {
+            if let Some(cap) = items.iter().find_map(|a| {
+                storage.first_externref_including_function_signatures(a)
+            }) {
                 return Err(TypeError {
                     message: format!(
                         "`{ctx}`: a `{cap}` capability cannot be held in a tuple in {position} until \
@@ -2043,11 +1996,14 @@ fn reject_cap_slot_boundary(
                     ),
                 });
             }
-            items.iter().try_for_each(|a| reject_cap_slot_boundary(a, defs, ctx, position))
+            items
+                .iter()
+                .try_for_each(|a| reject_cap_slot_boundary(a, defs, storage, ctx, position))
         }
         ast::Type::Fn(args, ret, _) => {
-            args.iter().try_for_each(|a| reject_cap_slot_boundary(a, defs, ctx, position))?;
-            reject_cap_slot_boundary(ret, defs, ctx, position)
+            args.iter()
+                .try_for_each(|a| reject_cap_slot_boundary(a, defs, storage, ctx, position))?;
+            reject_cap_slot_boundary(ret, defs, storage, ctx, position)
         }
         ast::Type::Named(n, args) => {
             if n == "Option"
@@ -2058,7 +2014,9 @@ fn reject_cap_slot_boundary(
             }
             if matches!(n.as_str(), "Option" | "Result" | "List" | "Dict") {
                 for a in args {
-                    if let Some(cap) = carries_externref_cap(a, defs, &mut HashSet::new()) {
+                    if let Some(cap) =
+                        storage.first_externref_including_function_signatures(a)
+                    {
                         return Err(TypeError {
                             message: format!(
                                 "`{ctx}`: a `{cap}` capability cannot be wrapped in `{n}` in {position} — \
@@ -2069,9 +2027,9 @@ fn reject_cap_slot_boundary(
                 }
             } else if !(is_externref_cap(n)
                 || transparent_externref_brand_cap(n, defs, &mut HashSet::new()).is_some()
-                || (args.is_empty() && gc_cap_record_cap(n, defs, &mut HashSet::new()).is_some()))
+                || (args.is_empty() && gc_cap_record_cap(n, defs, storage).is_some()))
             {
-                if let Some(cap) = carries_externref_cap(t, defs, &mut HashSet::new()) {
+                if let Some(cap) = storage.first_externref_including_function_signatures(t) {
                     return Err(TypeError {
                         message: format!(
                             "`{ctx}`: `{n}` carries a `{cap}` capability in {position}, but cap-carrying \
@@ -2081,7 +2039,8 @@ fn reject_cap_slot_boundary(
                 }
             }
             // Recurse into arguments for a nested container (`List(Option(File))`).
-            args.iter().try_for_each(|a| reject_cap_slot_boundary(a, defs, ctx, position))
+            args.iter()
+                .try_for_each(|a| reject_cap_slot_boundary(a, defs, storage, ctx, position))
         }
     }
 }
