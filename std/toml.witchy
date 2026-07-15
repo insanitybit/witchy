@@ -103,6 +103,112 @@ pub fn decode(text: String) -> Result(Toml, TomlDecodeError):
                 None -> return Err(decode_error("`" + t + "` is not a TOML line (expected `key = value`, a `[section]` header, or a `#` comment)"))
     Ok(root)
 
+// --- structured navigation over a decoded `Toml` -----------------------------
+//
+// These read a value ALREADY produced by `decode`, so there is exactly one TOML
+// grammar behind them (unlike the lenient string-query `get`/`get_array` below,
+// which re-scan raw text). They distinguish the three ways a lookup can fail —
+// a MISSING key, a value of the WRONG kind, and (inherited from `decode`) a
+// MALFORMED document — so a trust boundary like a lockfile reader can fail closed
+// with a precise message instead of silently falling back to an empty/default set.
+
+// The value stored at `key` in a `TomlTable`, or `None` when the key is absent or
+// the node is not a table. Preserves the decoded declaration order (first match).
+pub fn table_field(node: Toml, key: String) -> Option(Toml):
+    match node:
+        TomlTable(pairs) ->
+            var found = None
+            var have = false
+            for pair in pairs:
+                let (k, v) = pair
+                if k == key && !have:
+                    found = Some(v)
+                    have = true
+            found
+        _ -> None
+
+// The `String` a `Toml` leaf holds, or `Err(context)` when it is a different kind
+// (`TomlInt`/`TomlBool`/`TomlArray`/`TomlTable`). `context` names the field so the
+// caller's message points at the offending entry.
+pub fn as_string(node: Toml, context: String) -> Result(String, TomlDecodeError):
+    match node:
+        TomlString(s) -> Ok(s)
+        _ -> Err(decode_error(context + " is not a string (found " + kind_name(node) + ")"))
+
+// The elements of a `TomlArray`, or `Err(context)` when the value is not an array.
+pub fn as_array(node: Toml, context: String) -> Result(List(Toml), TomlDecodeError):
+    match node:
+        TomlArray(xs) -> Ok(xs)
+        _ -> Err(decode_error(context + " is not an array (found " + kind_name(node) + ")"))
+
+// The pairs of a `TomlTable`, or `Err(context)` when the value is not a table.
+pub fn as_table(node: Toml, context: String) -> Result(List((String, Toml)), TomlDecodeError):
+    match node:
+        TomlTable(pairs) -> Ok(pairs)
+        _ -> Err(decode_error(context + " is not a table (found " + kind_name(node) + ")"))
+
+// The `[[key]]` array-of-tables entries of a document node, in declaration order,
+// with every repeated entry kept distinct. `Ok([])` when `key` is absent (a
+// lockfile with no dependencies is well-formed); `Err` when `key` is present but
+// not an array, or an element is not a table (a corrupted array-of-tables). This
+// is how a `witchy.lock`'s `[[rune]]` entries are enumerated through the one
+// structured parser.
+pub fn array_of_tables(node: Toml, key: String) -> Result(List(Toml), TomlDecodeError):
+    match table_field(node, key):
+        None -> Ok([])
+        Some(value) ->
+            let xs = as_array(value, "`[[" + key + "]]`")?
+            var out = []
+            for elem in xs:
+                let _pairs = as_table(elem, "an entry of `[[" + key + "]]`")?
+                list.push(out, elem)
+            Ok(out)
+
+// A required string field of a decoded table `entry`: `Err` when the field is
+// absent, empty, or the wrong TOML kind — the three failure classes kept distinct
+// (BUG-373). `label` names the entry kind for the message (e.g. "a registry
+// [[rune]] entry").
+pub fn required_string(entry: Toml, field: String, label: String) -> Result(String, TomlDecodeError):
+    match table_field(entry, field):
+        None -> Err(decode_error(label + " has no `" + field + "` field"))
+        Some(value) ->
+            let s = as_string(value, label + "'s `" + field + "` field")?
+            if string.is_empty(s):
+                Err(decode_error(label + " has an empty `" + field + "` field"))
+            else:
+                Ok(s)
+
+// An optional string field of a decoded table `entry`: `Ok(None)` when absent,
+// `Ok(Some(s))` when a string, `Err` when present but the wrong kind.
+pub fn optional_string(entry: Toml, field: String) -> Result(Option(String), TomlDecodeError):
+    match table_field(entry, field):
+        None -> Ok(None)
+        Some(value) ->
+            let s = as_string(value, "`" + field + "`")?
+            Ok(Some(s))
+
+// The string elements of an array-valued field of a decoded table `entry`:
+// `Ok([])` when absent; `Err` when the field is not an array, or an element is not
+// a string. Used to read a `[[rune]]` capability array (`runtime_footprint`).
+pub fn string_array_field(entry: Toml, field: String) -> Result(List(String), TomlDecodeError):
+    match table_field(entry, field):
+        None -> Ok([])
+        Some(value) ->
+            let xs = as_array(value, "`" + field + "`")?
+            var out = []
+            for elem in xs:
+                list.push(out, as_string(elem, "an element of `" + field + "`")?)
+            Ok(out)
+
+// The kind of a `Toml` value, for wrong-kind diagnostics.
+fn kind_name(node: Toml) -> String:
+    match node:
+        TomlString(_) -> "a string"
+        TomlInt(_) -> "an integer"
+        TomlBool(_) -> "a boolean"
+        TomlArray(_) -> "an array"
+        TomlTable(_) -> "a table"
+
 fn ns_prefix_collision(path: List(String), scalars: List(String)) -> Option(String):
     var prefix = ""
     for seg in path:
@@ -289,32 +395,6 @@ pub fn table(text: String, section: String) -> List((String, String)):
             if let Some(pair) = key_value(t):
                 list.push(out, pair)
     out
-
-// Each `[[name]]` array-of-tables entry as its own block of body text — the lines
-// after one `[[name]]` header up to the next header. Feed a block to `get` /
-// `get_array` to read its fields. Use this to walk a `witchy.lock`'s `[[rune]]`
-// entries, which `table`/`get` (single-table) cannot enumerate.
-pub fn array_tables(text: String, name: String) -> List(String):
-    var blocks = []
-    var current = ""
-    var collecting = false
-    for line in string.lines(text):
-        let t = string.trim(line)
-        if is_array_header(t) && array_header_name(t) == name:
-            if collecting:
-                list.push(blocks, current)
-            current = ""
-            collecting = true
-        else if is_header(t):
-            if collecting:
-                list.push(blocks, current)
-            current = ""
-            collecting = false
-        else if collecting:
-            current = current + line + "\n"
-    if collecting:
-        list.push(blocks, current)
-    blocks
 
 // Just the keys of `[section]` (unquoted), in file order.
 pub fn keys(text: String, section: String) -> List(String):

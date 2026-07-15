@@ -167,7 +167,12 @@ fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, args
                         if built.0 != 0:
                             built.0
                         else:
-                            run_compiler(console, runner, bin, "build", flatten_argv(["compile", entry], flatten_argv(dep_flags(root, dir), built.1)))
+                            match dep_flags(root, dir):
+                                Err(e) ->
+                                    console.print(lock_integrity_error_message(e))
+                                    2
+                                Ok(deps) ->
+                                    run_compiler(console, runner, bin, "build", flatten_argv(["compile", entry], flatten_argv(deps, built.1)))
                     None ->
                         console.print("no entry source under ${join_path(dir, "src")}")
                         1
@@ -245,11 +250,26 @@ fn verify_lock_integrity(root: Dir, dir: String) -> Result(Nil, LockIntegrityErr
         Err(LockMissing)
     else:
         let lock = root.read(lockpath)
-        let path_bad = hash_mismatches(root, dir, lock)
+        let path_bad = hash_mismatches(root, dir, lock)?
         if list.length(path_bad) > 0:
             Err(LockPathHashMismatch(path_bad))
         else:
             verify_registry_lock_entries(root, dir, lock)
+
+// The `[[rune]]` entries of a lockfile, decoded through the ONE structured TOML
+// parser (`toml.decode` + `toml.array_of_tables`). A malformed lockfile — or a
+// `rune` value that is not an array-of-tables — is an explicit
+// `LockEntryMalformed`, never a silently-empty dependency set (BUG-373): this is
+// the single lockfile boundary every reader below shares, so dependency
+// resolution, capability baselines, hash verification, `update`, and `why` all
+// consume the same decoded model.
+fn lock_rune_entries(lock: String) -> Result(List(Toml), LockIntegrityError):
+    match toml.decode(lock):
+        Err(e) -> Err(LockEntryMalformed(toml.decode_error_message(e)))
+        Ok(doc) ->
+            match toml.array_of_tables(doc, "rune"):
+                Err(e) -> Err(LockEntryMalformed(toml.decode_error_message(e)))
+                Ok(entries) -> Ok(entries)
 
 fn verify_registry_lock_entries(root: Dir, dir: String, lock: String) -> Result(Nil, LockIntegrityError):
     let rootpub = match pinned_registry_trust(lock):
@@ -258,14 +278,14 @@ fn verify_registry_lock_entries(root: Dir, dir: String, lock: String) -> Result(
         Ok(Some(trust)) -> trust.1
 
     var aliases = []
-    for block in toml.array_tables(lock, "rune"):
-        match toml.get(block, "source"):
+    for entry in lock_rune_entries(lock)?:
+        match entry_source(entry):
             Some(source) ->
                 if source == "coven":
-                    let name = required_lock_field(block, "name")?
-                    let version = required_lock_field(block, "version")?
-                    let hash = required_lock_field(block, "hash")?
-                    let alias = entry_alias(block)
+                    let name = required_lock_field(entry, "name")?
+                    let version = required_lock_field(entry, "version")?
+                    let hash = required_lock_field(entry, "hash")?
+                    let alias = entry_alias(entry)
                     if string.is_empty(alias):
                         return Err(LockEntryMalformed("registry entry `${name}` has no local alias"))
                     else if aliases.contains(alias):
@@ -297,7 +317,7 @@ fn verify_registry_lock_entries(root: Dir, dir: String, lock: String) -> Result(
                     else if rune_hash(root, rune_dir) != hash:
                         return Err(LockSourceHashMismatch(alias))
                 else if string.starts_with(source, "path:"):
-                    let name = required_lock_field(block, "name")?
+                    let name = required_lock_field(entry, "name")?
                     if !is_locked_path_dependency(root, dir, name):
                         return Err(LockEntryMalformed("path entry `${name}` is not in the manifest dependency closure"))
                 else:
@@ -311,14 +331,21 @@ fn is_locked_path_dependency(root: Dir, dir: String, name: String) -> Bool:
             return true
     false
 
-fn required_lock_field(block: String, field: String) -> Result(String, LockIntegrityError):
-    match toml.get(block, field):
-        None -> Err(LockEntryMalformed("a registry [[rune]] entry has no `${field}` field"))
-        Some(value) ->
-            if string.is_empty(value):
-                Err(LockEntryMalformed("a registry [[rune]] entry has an empty `${field}` field"))
-            else:
-                Ok(value)
+// A required string field of a decoded `[[rune]]` entry. Delegates to the
+// structured `toml.required_string`, which distinguishes a MISSING field, an
+// EMPTY field, and a WRONG-KIND value (e.g. `name = 42`) — all mapped to
+// `LockEntryMalformed` so lock verification fails closed with a precise message.
+fn required_lock_field(entry: Toml, field: String) -> Result(String, LockIntegrityError):
+    match toml.required_string(entry, field, "a registry [[rune]] entry"):
+        Err(e) -> Err(LockEntryMalformed(toml.decode_error_message(e)))
+        Ok(value) -> Ok(value)
+
+// The `source` field of a decoded `[[rune]]` entry, or None when absent. A
+// wrong-kind `source` reads as None (treated as a missing source by the caller).
+fn entry_source(entry: Toml) -> Option(String):
+    match toml.optional_string(entry, "source"):
+        Ok(s) -> s
+        Err(_) -> None
 
 type LockIntegrityError:
     LockMissing
@@ -362,7 +389,17 @@ fn compile_then_run(console: Console, runner: Exec, root: Dir, bin: Dir, dir: St
     if !root.exists(outdir):
         root.make_dir(outdir)
     let wasm = join_path(outdir, "app.wasm")
-    let deps = flatten_argv(dep_flags(root, dir), build_flags)
+    match dep_flags(root, dir):
+        Err(e) ->
+            console.print(lock_integrity_error_message(e))
+            2
+        Ok(dep_argv) ->
+            compile_then_run_deps(console, runner, root, bin, dir, entry, wasm, flatten_argv(dep_argv, build_flags), app_args)
+
+// The tail of `compile_then_run` once the lockfile `--dep` flags are resolved:
+// compile the entry + deps to `wasm`, then sandbox-run it. Split out so the
+// lockfile-decode `Result` is handled once at the boundary above.
+fn compile_then_run_deps(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, entry: String, wasm: String, deps: List(String), app_args: List(String)) -> Int:
     let argv = flatten_argv(["compile", entry], flatten_argv(deps, ["--out", wasm]))
     let built = exec.run_args(runner, bin, "witchy", argv)
     if built.0 != 0:
@@ -430,39 +467,41 @@ fn project_entry(root: Dir, dir: String) -> Option(String):
 // resolved from its manifest's `path =`, relative to the depending rune's dir, so
 // a sibling-library workspace builds without vendoring. Path wins when both are
 // present (the manifest is the source of truth for a path dep).
-fn dep_flags(root: Dir, dir: String) -> List(String):
+fn dep_flags(root: Dir, dir: String) -> Result(List(String), LockIntegrityError):
     collect_deps(root, dir, [])
 
 // Accumulate `--dep` flags for the rune at `dir` and, recursively, the path
 // dependencies it declares — skipping any already present so the graph is walked
-// once per rune (cycles and diamonds both terminate).
-fn collect_deps(root: Dir, dir: String, flags: List(String)) -> List(String):
+// once per rune (cycles and diamonds both terminate). A malformed lockfile is an
+// explicit error (BUG-373), never a silently-incomplete `--dep` set that would
+// mis-resolve imports.
+fn collect_deps(root: Dir, dir: String, flags: List(String)) -> Result(List(String), LockIntegrityError):
     var acc = flags
     if root.exists(join_path(dir, "witchy.toml")):
         let manifest = root.read(join_path(dir, "witchy.toml"))
         for pair in toml.table(manifest, "dependencies"):
-            acc = push_path_dep(root, dir, acc, pair)
+            acc = push_path_dep(root, dir, acc, pair)?
     let lockpath = join_path(dir, "witchy.lock")
     if root.exists(lockpath):
         let lock = root.read(lockpath)
-        for block in toml.array_tables(lock, "rune"):
+        for entry in lock_rune_entries(lock)?:
             // The import key is the local alias (basename), distinct from the lock's
             // registry identity `name` (BUG-099). Old-format locks have no `alias`,
             // so fall back to the basename of `name`.
-            let alias = entry_alias(block)
-            if entry_is_registry(block) && !string.is_empty(alias) && !has_dep(acc, alias):
+            let alias = entry_alias(entry)
+            if entry_is_registry(entry) && !string.is_empty(alias) && !has_dep(acc, alias):
                 if let Some(src) = vendored_module(root, dir, alias):
                     acc = dep_flag(acc, alias, src)
-    acc
+    Ok(acc)
 
 // Append a `--dep <name>=<path>` for a manifest path dependency (no-op otherwise),
 // then recurse into that dependency's own directory so its transitive path deps
 // are collected too. Already-resolved names are skipped (the diamond's shared base
 // resolves once).
-fn push_path_dep(root: Dir, dir: String, flags: List(String), pair: (String, String)) -> List(String):
+fn push_path_dep(root: Dir, dir: String, flags: List(String), pair: (String, String)) -> Result(List(String), LockIntegrityError):
     let (name, inline) = pair
     if has_dep(flags, name):
-        flags
+        Ok(flags)
     else:
         match toml.inline_get(inline, "path"):
             // BUG-415: a declared path dependency whose `src/` has no
@@ -476,8 +515,8 @@ fn push_path_dep(root: Dir, dir: String, flags: List(String), pair: (String, Str
                 match module_in_src(root, dep_dir):
                     Some(src) -> collect_deps(root, dep_dir, dep_flag(flags, name, src))
                     None ->
-                        dep_flag(flags, name, conventional_entry(dep_dir, name))
-            None -> flags
+                        Ok(dep_flag(flags, name, conventional_entry(dep_dir, name)))
+            None -> Ok(flags)
 
 fn dep_flag(flags: List(String), name: String, src: String) -> List(String):
     var out = flags
@@ -575,20 +614,25 @@ fn cmd_drive(console: Console, runner: Exec, bin: Dir, verb: String, argv: List(
 // Returns (exit_code, extra_dep_flags): a nonzero code aborts the build; the flags
 // are `--dep <module>=<path>` per generated file, joined into the compile.
 fn build_step_flags(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String) -> (Int, List(String)):
-    var code = 0
-    var flags = []
-    for name, depdir in dep_dirs(root, dir):
-        if has_build_step(root, depdir):
-            let outcome = run_one_build_step(console, runner, root, bin, dir, name, depdir)
-            if outcome.0 != 0:
-                code = outcome.0
-            else:
-                flags = flatten_argv(flags, outcome.1)
-    (code, flags)
+    match dep_dirs(root, dir):
+        Err(e) ->
+            console.print("BLOCK: cannot read witchy.lock — ${lock_integrity_error_message(e)}")
+            (1, [])
+        Ok(deps) ->
+            var code = 0
+            var flags = []
+            for name, depdir in deps:
+                if has_build_step(root, depdir):
+                    let outcome = run_one_build_step(console, runner, root, bin, dir, name, depdir)
+                    if outcome.0 != 0:
+                        code = outcome.0
+                    else:
+                        flags = flatten_argv(flags, outcome.1)
+            (code, flags)
 
 // Each dependency as (name, dir): the consumer's path dependencies (resolved
 // relative to the project) and its vendored registry dependencies (`vendor/<name>`).
-fn dep_dirs(root: Dir, dir: String) -> List((String, String)):
+fn dep_dirs(root: Dir, dir: String) -> Result(List((String, String)), LockIntegrityError):
     var out = []
     if root.exists(join_path(dir, "witchy.toml")):
         let manifest = root.read(join_path(dir, "witchy.toml"))
@@ -605,21 +649,23 @@ fn dep_dirs(root: Dir, dir: String) -> List((String, String)):
             // run its build step) when it carries provenance (coven.json) AND is
             // pinned in witchy.lock. A stray directory dropped under vendor/, or an
             // unpinned partial add, must not have its build step executed.
-            if root.exists(join_path(rune_dir, "coven.json")) && locked_registry_alias(lock, name):
+            if root.exists(join_path(rune_dir, "coven.json")) && locked_registry_alias(lock, name)?:
                 out.push((name, rune_dir))
-    out
+    Ok(out)
 
 // Whether the lock records a `[[rune]]` whose local import alias is `alias` — the
-// gate for a vendored dependency to count as resolved (BUG-095).
-fn locked_registry_alias(lock: String, alias: String) -> Bool:
+// gate for a vendored dependency to count as resolved (BUG-095). A malformed
+// lockfile is an explicit error (BUG-373), never a silent `false` that would
+// treat a vendored, pinned dependency as unresolved.
+fn locked_registry_alias(lock: String, alias: String) -> Result(Bool, LockIntegrityError):
     var found = false
-    for block in toml.array_tables(lock, "rune"):
-        if entry_is_registry(block) && entry_alias(block) == alias:
+    for entry in lock_rune_entries(lock)?:
+        if entry_is_registry(entry) && entry_alias(entry) == alias:
             found = true
-    found
+    Ok(found)
 
-fn entry_is_registry(block: String) -> Bool:
-    match toml.get(block, "source"):
+fn entry_is_registry(entry: Toml) -> Bool:
+    match entry_source(entry):
         Some(source) -> source == "coven"
         None -> false
 
@@ -1732,38 +1778,48 @@ impl From(RegistryRootKeyError) for String:
 // manifest entries — a tampered (or unpinned) transitive dep is caught too. A
 // closure member absent from the lock recomputes to a hash that can't match the
 // "(absent)" sentinel, so it is reported.
-fn hash_mismatches(root: Dir, dir: String, lock: String) -> List(String):
+fn hash_mismatches(root: Dir, dir: String, lock: String) -> Result(List(String), LockIntegrityError):
     var bad = []
     for name, dep_dir in path_closure(root, dir):
-        if rune_hash(root, dep_dir) != locked_hash(lock, name):
+        if rune_hash(root, dep_dir) != locked_hash(lock, name)?:
             bad.push(name)
-    bad
+    Ok(bad)
 
-// The `hash` field of the `[[rune]]` entry named `name`, or "(absent)".
-fn locked_hash(lock: String, name: String) -> String:
+// The `hash` field of the `[[rune]]` entry named `name`, or "(absent)". A
+// malformed lockfile is an explicit error (BUG-373), never a silent "(absent)"
+// that would let hash verification pass on a corrupted lock.
+fn locked_hash(lock: String, name: String) -> Result(String, LockIntegrityError):
     var found = "(absent)"
-    for block in toml.array_tables(lock, "rune"):
-        if entry_name(block) == name:
-            found = entry_hash(block)
-    found
+    for entry in lock_rune_entries(lock)?:
+        if entry_name(entry) == name:
+            found = entry_hash(entry)
+    Ok(found)
 
-fn entry_name(block: String) -> String:
-    match toml.get(block, "name"):
-        Some(n) -> n
-        None -> ""
+fn entry_name(entry: Toml) -> String:
+    optional_lock_string(entry, "name", "")
 
 // The local import alias (basename) of a `[[rune]]` lock entry: the explicit
 // `alias` field written by `pm add` (BUG-099), or — for older locks / path
 // entries that carry no `alias` — the basename of the registry `name`.
-fn entry_alias(block: String) -> String:
-    match toml.get(block, "alias"):
-        Some(a) -> a
-        None -> basename(entry_name(block))
+fn entry_alias(entry: Toml) -> String:
+    let alias = optional_lock_string(entry, "alias", "")
+    if string.is_empty(alias):
+        basename(entry_name(entry))
+    else:
+        alias
 
-fn entry_hash(block: String) -> String:
-    match toml.get(block, "hash"):
-        Some(h) -> h
-        None -> "(no-hash)"
+// A best-effort string field of a decoded `[[rune]]` entry for the advisory
+// (non-verifying) readers: the value when present and a string, else `fallback`.
+// A wrong-kind value reads as the fallback — these readers cannot fail, and the
+// verifying path (`required_lock_field`) is where a wrong kind becomes an error.
+fn optional_lock_string(entry: Toml, field: String, fallback: String) -> String:
+    match toml.optional_string(entry, field):
+        Ok(Some(s)) -> s
+        Ok(None) -> fallback
+        Err(_) -> fallback
+
+fn entry_hash(entry: Toml) -> String:
+    optional_lock_string(entry, "hash", "(no-hash)")
 
 // --- gate: block any dependency that demands new authority -------------------
 // The supply-chain gate (§10), rights-aware. It recomputes the footprint the
@@ -1781,12 +1837,17 @@ fn cmd_gate(console: Console, root: Dir, args: List(String)) -> Int:
         1
     else:
         let lock = root.read(join_path(dir, "witchy.lock"))
-        let baseline = union_all(lock_baseline(lock), args_from(args, 2))
-        match resolution_footprint(root, dir):
+        match lock_baseline(lock):
             Err(e) ->
-                console.print("BLOCK: cannot inspect dependency authority: ${footprint_error_message(e)}")
+                console.print("BLOCK: cannot read witchy.lock — ${lock_integrity_error_message(e)}")
                 2
-            Ok(demanded) -> report_gate(console, root, dir, rights.uncovered(baseline, demanded))
+            Ok(recorded) ->
+                let baseline = union_all(recorded, args_from(args, 2))
+                match resolution_footprint(root, dir):
+                    Err(e) ->
+                        console.print("BLOCK: cannot inspect dependency authority: ${footprint_error_message(e)}")
+                        2
+                    Ok(demanded) -> report_gate(console, root, dir, rights.uncovered(baseline, demanded))
 
 fn report_gate(console: Console, root: Dir, dir: String, widened: List(String)) -> Int:
     if list.length(widened) == 0:
@@ -1802,13 +1863,20 @@ fn report_gate(console: Console, root: Dir, dir: String, widened: List(String)) 
         2
 
 // The capabilities the lockfile already records (union of every [[rune]] entry's
-// runtime_footprint) — the baseline the gate diffs a new resolution against.
-fn lock_baseline(lock: String) -> List(String):
+// runtime_footprint) — the baseline the gate diffs a new resolution against. A
+// malformed lockfile is an explicit error (BUG-373), never a silently-empty
+// baseline: an empty baseline would make the gate treat EVERY demanded capability
+// as new authority (or, worse, mask a corrupted lock), so the gate must fail
+// closed with the parse error instead.
+fn lock_baseline(lock: String) -> Result(List(String), LockIntegrityError):
     var out = []
-    for block in toml.array_tables(lock, "rune"):
-        for cap in toml.get_array(block, "runtime_footprint"):
-            out = add_unique(out, cap)
-    out
+    for entry in lock_rune_entries(lock)?:
+        match toml.string_array_field(entry, "runtime_footprint"):
+            Err(e) -> return Err(LockEntryMalformed(toml.decode_error_message(e)))
+            Ok(caps) ->
+                for cap in caps:
+                    out = add_unique(out, cap)
+    Ok(out)
 
 // The aggregate authority the current dependency sources demand. BUG-080: the whole
 // transitive path-dep closure (not just direct entries), each dep's footprint being
@@ -2312,13 +2380,18 @@ fn add_pkg_gated(console: Console, net: Net, root: Dir, host: String, port: Int,
             console.print("${name}: ${version_resolve_error_message(e)}")
             1
         Ok(chosen) ->
-            let baseline = union_all(project_baseline(root), allowed)
-            match verified_incoming_footprint(net, root, host, port, name, chosen):
+            match project_baseline(root):
                 Err(e) ->
-                    console.print("BLOCK: cannot verify the registry record for ${name}@${chosen} — ${record_footprint_error_message(e)}")
+                    console.print("BLOCK: cannot read witchy.lock — ${lock_integrity_error_message(e)}")
                     2
-                Ok(incoming) ->
-                    add_pkg_gate_widen(console, net, root, host, port, name, req, cooldown, baseline, rights.uncovered(baseline, incoming))
+                Ok(recorded) ->
+                    let baseline = union_all(recorded, allowed)
+                    match verified_incoming_footprint(net, root, host, port, name, chosen):
+                        Err(e) ->
+                            console.print("BLOCK: cannot verify the registry record for ${name}@${chosen} — ${record_footprint_error_message(e)}")
+                            2
+                        Ok(incoming) ->
+                            add_pkg_gate_widen(console, net, root, host, port, name, req, cooldown, baseline, rights.uncovered(baseline, incoming))
 
 fn add_pkg_gate_widen(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, req: String, cooldown: (Int, Int, Bool), baseline: List(String), widened: List(String)) -> Int:
     if list.length(widened) > 0:
@@ -2351,14 +2424,14 @@ fn add_pkg_gate_widen(console: Console, net: Net, root: Dir, host: String, port:
 // caps (from witchy.toml, if any) plus every capability the lockfile already
 // records for a vendored dependency — the baseline a new direct `add` diffs
 // against, so adding a same-or-narrower rune is silent and a widening one gates.
-fn project_baseline(root: Dir) -> List(String):
+fn project_baseline(root: Dir) -> Result(List(String), LockIntegrityError):
     var out = []
     if root.exists("witchy.toml"):
         for c in declared_caps(root.read("witchy.toml")):
             out = add_unique(out, c)
     if root.exists("witchy.lock"):
-        out = union_all(out, lock_baseline(root.read("witchy.lock")))
-    out
+        out = union_all(out, lock_baseline(root.read("witchy.lock"))?)
+    Ok(out)
 
 // Split `<pkg>[@<ver>]` into a (name, requirement); an absent `@<ver>` resolves to
 // `*` (the latest released version). A leading-`@` namespace is not split.

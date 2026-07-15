@@ -4227,6 +4227,38 @@ A decoded TOML value (`toml.decode`), the structured counterpart of the string-q
 
 Parse a whole TOML document into a `Toml` tree (always a `TomlTable`). Supports top-level keys, `[section]` and dotted `[a.b]` tables, `#` comments, and `string`/`int`/`bool`/array values. Genuinely fallible (RFC-0044 rule 2): a non-blank, non-comment line that is neither a `[section]` header nor a `key = value` pair is structurally malformed, so decoding returns `Err` naming the offending line.
 
+#### `fn table_field(node: Toml, key: String) -> Option(Toml)`
+
+The value stored at `key` in a `TomlTable`, or `None` when the key is absent or the node is not a table. Preserves the decoded declaration order (first match).
+
+#### `fn as_string(node: Toml, context: String) -> Result(String, TomlDecodeError)`
+
+The `String` a `Toml` leaf holds, or `Err(context)` when it is a different kind (`TomlInt`/`TomlBool`/`TomlArray`/`TomlTable`). `context` names the field so the caller's message points at the offending entry.
+
+#### `fn as_array(node: Toml, context: String) -> Result(List(Toml), TomlDecodeError)`
+
+The elements of a `TomlArray`, or `Err(context)` when the value is not an array.
+
+#### `fn as_table(node: Toml, context: String) -> Result(List((String, Toml)), TomlDecodeError)`
+
+The pairs of a `TomlTable`, or `Err(context)` when the value is not a table.
+
+#### `fn array_of_tables(node: Toml, key: String) -> Result(List(Toml), TomlDecodeError)`
+
+The `[[key]]` array-of-tables entries of a document node, in declaration order, with every repeated entry kept distinct. `Ok([])` when `key` is absent (a lockfile with no dependencies is well-formed); `Err` when `key` is present but not an array, or an element is not a table (a corrupted array-of-tables). This is how a `witchy.lock`'s `[[rune]]` entries are enumerated through the one structured parser.
+
+#### `fn required_string(entry: Toml, field: String, label: String) -> Result(String, TomlDecodeError)`
+
+A required string field of a decoded table `entry`: `Err` when the field is absent, empty, or the wrong TOML kind — the three failure classes kept distinct (BUG-373). `label` names the entry kind for the message (e.g. "a registry [[rune]] entry").
+
+#### `fn optional_string(entry: Toml, field: String) -> Result(Option(String), TomlDecodeError)`
+
+An optional string field of a decoded table `entry`: `Ok(None)` when absent, `Ok(Some(s))` when a string, `Err` when present but the wrong kind.
+
+#### `fn string_array_field(entry: Toml, field: String) -> Result(List(String), TomlDecodeError)`
+
+The string elements of an array-valued field of a decoded table `entry`: `Ok([])` when absent; `Err` when the field is not an array, or an element is not a string. Used to read a `[[rune]]` capability array (`runtime_footprint`).
+
 #### `fn get(text: String, path: String) -> Option(String)`
 
 The string value of `path` (e.g. "rune.name"), or None if absent. Surrounding double quotes are stripped.
@@ -4240,10 +4272,6 @@ LENIENT BY DESIGN (RFC-0044): an absent path and a malformed/empty array both re
 #### `fn table(text: String, section: String) -> List((String, String))`
 
 Every `key = value` pair defined directly under `[section]`, in file order. Keys are unquoted (`"acme/money"` -> `acme/money`); values are raw (trimmed, still quoted/inline) — feed an inline-table value to `inline_get`. Use this to enumerate a table whose keys you don't know ahead of time, like `[dependencies]`.
-
-#### `fn array_tables(text: String, name: String) -> List(String)`
-
-Each `[[name]]` array-of-tables entry as its own block of body text — the lines after one `[[name]]` header up to the next header. Feed a block to `get` / `get_array` to read its fields. Use this to walk a `witchy.lock`'s `[[rune]]` entries, which `table`/`get` (single-table) cannot enumerate.
 
 #### `fn keys(text: String, section: String) -> List(String)`
 

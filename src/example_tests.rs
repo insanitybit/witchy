@@ -7762,9 +7762,10 @@ fn opt(o: Option(String)) -> String:
     }
 
     /// `toml.table`/`keys`/`inline_get` enumerate a table whose keys aren't known
-    /// ahead of time (`[dependencies]`, whose values are inline tables), and
-    /// `array_tables` walks a `[[rune]]` array-of-tables (a `witchy.lock`) — the
-    /// manifest+lock shapes a self-hosted package manager reads but `get` cannot.
+    /// ahead of time (`[dependencies]`, whose values are inline tables), and the
+    /// structured `toml.decode` + `array_of_tables`/`table_field`/`as_string` walk
+    /// a `[[rune]]` array-of-tables (a `witchy.lock`) through the ONE strict parser
+    /// (BUG-373) — the manifest+lock shapes a self-hosted package manager reads.
     #[test]
     fn toml_module_enumerates_tables_and_arrays() {
         let src = r#"import toml
@@ -7776,10 +7777,27 @@ fn main(console: Console):
     console.print(opt(toml.inline_get("{ path = \"../money\" }", "path")))
     console.print(opt(toml.inline_get("{ path = \"../util\", version = \"1.2\" }", "version")))
     let lock = "[[rune]]\nname = \"money\"\nhash = \"sha256:aa\"\n\n[[rune]]\nname = \"util\"\nhash = \"sha256:bb\"\n"
-    var names = []
-    for block in toml.array_tables(lock, "rune"):
-        list.push(names, opt(toml.get(block, "name")) + "=" + opt(toml.get(block, "hash")))
-    console.print(list.join(names, "|"))
+    console.print(rune_summary(lock))
+
+fn rune_summary(lock: String) -> String:
+    match toml.decode(lock):
+        Err(e) -> "decode error: " + toml.decode_error_message(e)
+        Ok(doc) ->
+            match toml.array_of_tables(doc, "rune"):
+                Err(e) -> "aot error: " + toml.decode_error_message(e)
+                Ok(entries) ->
+                    var names = []
+                    for entry in entries:
+                        list.push(names, field(entry, "name") + "=" + field(entry, "hash"))
+                    list.join(names, "|")
+
+fn field(entry: toml.Toml, key: String) -> String:
+    match toml.table_field(entry, key):
+        None -> "(none)"
+        Some(v) ->
+            match toml.as_string(v, key):
+                Ok(s) -> s
+                Err(e) -> "(bad:" + toml.decode_error_message(e) + ")"
 
 fn opt(o: Option(String)) -> String:
     match o:
@@ -7793,6 +7811,72 @@ fn opt(o: Option(String)) -> String:
                 "../money",
                 "1.2",
                 "money=sha256:aa|util=sha256:bb"
+            ]
+        );
+    }
+
+    /// (BUG-373) The lockfile `[[rune]]` grammar has exactly ONE parser now:
+    /// `toml.decode` + the structured navigation helpers. This exercises the four
+    /// contract points the migration must uphold, on BOTH backends:
+    ///   - two `[[rune]]` entries stay DISTINCT and in DECLARATION ORDER;
+    ///   - a capability array (`runtime_footprint`) is read from the structured
+    ///     table via `string_array_field`;
+    ///   - a WRONG-TYPED field (`name = 42`) FAILS CLOSED with a kind error rather
+    ///     than reading as empty/default;
+    ///   - the entry a "verifier" checks and the entry a "resolver" enumerates are
+    ///     the SAME decoded model (name+hash+caps agree entry-for-entry).
+    #[test]
+    fn structured_lockfile_is_the_single_rune_parser() {
+        let src = r#"import toml
+import string
+
+fn main(console: Console):
+    // Two [[rune]] entries; the second repeats the `name` key shape and carries a
+    // capability array. Order and repetition must be preserved.
+    let lock = "[[rune]]\nname = \"money\"\nhash = \"h-money\"\nruntime_footprint = [\"Console\"]\n\n[[rune]]\nname = \"ledger\"\nhash = \"h-ledger\"\nruntime_footprint = [\"Console\", \"Dir[Read]\"]\n"
+    match toml.decode(lock):
+        Err(e) -> console.print("decode: " + toml.decode_error_message(e))
+        Ok(doc) ->
+            match toml.array_of_tables(doc, "rune"):
+                Err(e) -> console.print("aot: " + toml.decode_error_message(e))
+                Ok(entries) ->
+                    console.print("count=${list.length(entries)}")
+                    // distinct + ordered: name and hash per entry, in file order.
+                    for entry in entries:
+                        let name = req(entry, "name")
+                        let hash = req(entry, "hash")
+                        let caps = caps_of(entry)
+                        console.print(name + "@" + hash + " caps=[" + caps + "]")
+    // wrong-typed field fails closed (not read as empty).
+    let bad = "[[rune]]\nname = 42\n"
+    match toml.decode(bad):
+        Err(e) -> console.print("decode: " + toml.decode_error_message(e))
+        Ok(doc) ->
+            match toml.array_of_tables(doc, "rune"):
+                Err(e) -> console.print("aot: " + toml.decode_error_message(e))
+                Ok(entries) ->
+                    for entry in entries:
+                        match toml.required_string(entry, "name", "a [[rune]]"):
+                            Ok(s) -> console.print("wrongly accepted: " + s)
+                            Err(e) -> console.print("fail-closed: " + toml.decode_error_message(e))
+
+fn req(entry: toml.Toml, key: String) -> String:
+    match toml.required_string(entry, key, "a [[rune]]"):
+        Ok(s) -> s
+        Err(e) -> "(err:" + toml.decode_error_message(e) + ")"
+
+fn caps_of(entry: toml.Toml) -> String:
+    match toml.string_array_field(entry, "runtime_footprint"):
+        Ok(cs) -> list.join(cs, ",")
+        Err(e) -> "(err:" + toml.decode_error_message(e) + ")"
+"#;
+        assert_eq!(
+            link_run(src),
+            vec![
+                "count=2",
+                "money@h-money caps=[Console]",
+                "ledger@h-ledger caps=[Console,Dir[Read]]",
+                "fail-closed: a [[rune]]'s `name` field is not a string (found an integer)",
             ]
         );
     }
