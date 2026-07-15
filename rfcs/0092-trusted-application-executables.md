@@ -34,11 +34,10 @@ application's compiled WASM. It runs on a machine without Witchy installed and
 does not require Witchy capability flags.
 
 At build time, the application author binds each resource-bearing capability
-parameter of `main` to a process resource recipe. A `Dir[Read]` can mean the
-launch working directory, the filesystem namespace visible to the process, or a
-fixed subtree. The launcher resolves those recipes when the executable starts.
-If `main` does not declare `Net`, the compiled application receives no network
-capability.
+parameter of `main` to a process resource recipe. A `Dir[Read]` can be rooted at
+the launch working directory or at a configured path. Each recipe resolves to
+exactly one directory subtree when the executable starts. If `main` does not
+declare `Net`, the compiled application receives no network capability.
 
 Running this artifact means trusting the whole executable: application,
 embedded runtime, and distributor. That is the same decision a user makes when
@@ -222,7 +221,7 @@ source parameter name. Illustrative `witchy.toml` syntax is:
 ```toml
 [targets.trusted-exe.dirs]
 project = { from = "cwd" }
-filesystem = { from = "ambient" }
+filesystem = { from = "path", path = "/" }
 ```
 
 This is target packaging policy, not a change to the source capability type.
@@ -238,27 +237,43 @@ shipped grant document only as a request for the consumer to approve; this
 target may embed an approved recipe because the consumer trusts the complete
 binary.
 
-The initial directory providers are:
+The initial directory bindings are:
 
 | Binding | Runtime meaning |
 |---|---|
-| `{ from = "cwd" }` | scope is the process working directory at launch |
-| `{ from = "ambient" }` | scope is the filesystem namespace visible to the process; relative paths start at cwd |
-| `{ from = "path", path = "..." }` | scope is a fixed path resolved on the target machine at launch |
+| `{ from = "cwd" }` | root is the process working directory at launch |
+| `{ from = "path", path = "..." }` | root is the configured path, resolved on the target machine at launch |
 
-`cwd` is the appropriate choice for a project-local tool. `ambient` is the
-appropriate choice for a general file utility such as `ripgrep`, because its
-ordinary CLI must accept both relative and absolute user paths. `path` supports
-applications intentionally confined to a known data or configuration root; a
-relative path is resolved from launch cwd, not from the machine that built the
-executable.
+`cwd` is appropriate for a project-local tool. `path` supports an application
+intentionally rooted at a known data directory, configuration directory, or
+filesystem root. A relative configured path is resolved from launch cwd, not
+from the machine that built the executable. On POSIX,
+`{ from = "path", path = "/" }` explicitly selects `/`.
 
-On POSIX, `{ from = "path", path = "/" }` explicitly selects `/`. `ambient` is
-the portable spelling for the whole process-visible filesystem namespace,
-including Windows drive and UNC roots and any outer OS/container confinement.
+Every binding produces an ordinary Witchy `Dir` with exactly one subtree root.
+It does not introduce a second working base or a different path grammar. Guest
+operations remain relative to that root and continue to reject absolute paths,
+`..`, and symlink escape. To reach the OS path `/tmp/x` through a `Dir` rooted
+at `/`, the application supplies the Dir-relative path `tmp/x`; the absolute
+guest string `/tmp/x` remains invalid.
+
+A POSIX file utility that accepts both cwd-relative and absolute CLI arguments
+can bind two explicit roots:
+
+```toml
+[targets.trusted-exe.dirs]
+cwd = { from = "cwd" }
+root = { from = "path", path = "/" }
+```
+
+Its `main` uses `cwd` for relative arguments and, after ordinary application
+path parsing removes the leading root separator, uses `root` for absolute
+arguments. The launcher does not inspect argv or silently combine the two roots.
+Other target platforms declare the concrete roots their application supports;
+a future portable OS-path abstraction would be a separate design.
 
 The rights come only from the parameter type. The binding does not restate them:
-`project: Dir[Read]` remains unable to write under every provider. Any `subtree`,
+`project: Dir[Read]` remains unable to write under every binding. Any `subtree`,
 `only`, or other attenuation creates a normal narrower capability. None of this
 changes sandbox-granted `Dir` behavior.
 
@@ -286,7 +301,7 @@ Capabilities with one conventional process binding need no manifest entry:
 | `SecretStore` | an empty store, or named providers from target configuration |
 
 `Net` and `Exec` also require explicit target bindings because an author may
-choose unrestricted ambient access or a narrower compiled-in policy. `Exec`
+choose unrestricted OS-visible access or a narrower compiled-in policy. `Exec`
 still does not name programs by itself; as in the existing standard library,
 the root also needs a compatible bound `Dir[Read]`.
 
@@ -304,22 +319,22 @@ convenience or reintroduce required launch flags.
 A trusted search tool could declare:
 
 ```witchy
-fn main(console: Console, files: Dir[Read], args: List[String]) -> Int:
-    // Parse argv and pass `files` only to helpers that need it.
+fn main(console: Console, cwd: Dir[Read], root: Dir[Read], args: List[String]) -> Int:
+    // Route relative/absolute argv paths, then pass only the selected Dir onward.
     0
 ```
 
 The end user runs `wrg` without grants. Inside the application, a pure regex
-library receives no capability, a walker receives `Dir[Read]` only when the root
+library receives no capability, a walker receives `Dir[Read]` only when the app
 passes it, and no dependency can recover `Net`, write, `Exec`, or secrets.
 
-The trusted root may deliberately pass its full ambient capability to a
+The trusted root may deliberately pass its full root capability to a
 dependency. That is allowed: the user trusts the root application's decisions.
-Witchy makes the delegation explicit and reviewable instead of ambient to every
-linked function.
+Witchy makes the delegation explicit and reviewable instead of implicitly
+available to every linked function.
 
 Dependency build steps remain governed by existing build-only grants. Producing
-a trusted final executable does not give dependency build code ambient access
+a trusted final executable does not give dependency build code real access
 to the developer's machine.
 
 ## Distribution
@@ -350,7 +365,7 @@ Rust-built executable remains the bootstrap equivalent.
 Trusting the compiler's root does not widen programs it handles. Comptime keeps
 its budget and capability rules, dependency build steps keep separate build
 grants, and `witchy sandbox` children keep only their explicit grants. A child
-module must never inherit the compiler process's ambient `Dir`, `Env`, `Net`,
+module must never inherit the compiler process's bound `Dir`, `Env`, `Net`,
 `Exec`, or secrets.
 
 The compiler is a trusted broker, not an excuse to collapse nested boundaries.
@@ -439,17 +454,18 @@ The RFC is implemented when:
    portable compiled backend.
 3. Argv, cwd, environment, standard streams, exit status, traps, and signals
    behave like a normal command with no reserved Witchy grant flags.
-4. A `cwd`-bound `Dir[Read]` rejects paths outside launch cwd; an
-   `ambient`-bound search fixture reads relative and absolute OS-visible paths;
-   neither can write.
+4. A `cwd`-bound `Dir[Read]` rejects paths outside launch cwd. A POSIX search
+   fixture separately bound to cwd and `/` accepts relative and absolute
+   application arguments by routing them to Dir-relative paths; neither
+   capability accepts an absolute guest path, escapes its root, or writes.
 5. A root without `Net`, `Exec`, write, secrets, or another capability family
    cannot call that operation through the Witchy runtime.
 6. A linked dependency's broader footprint does not widen the entrypoint grant,
    and it receives a real capability only when the root passes one.
 7. Dependency build steps and sandboxed child programs inherit none of the
-   trusted root's ambient authority.
+   trusted root's real authority.
 8. Missing, extra, duplicate, or type-incompatible target bindings, and root
-   parameters with no supported provider, fail during the build with actionable
+   parameters with no supported binding, fail during the build with actionable
    diagnostics rather than prompting at runtime or being omitted.
 9. The same source emitted as portable WASM still requires a consumer-controlled
    host and explicit real-resource grants.
