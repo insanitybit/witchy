@@ -164,7 +164,8 @@ and the publish e2e is load-flaky), and never merge to master while a full gate
 is running (it invalidates that gate). The coordinator enforces both:
 
 - **In your worktree, run only a focused shard**: `./scripts/check.sh --fast`
-  (build+clippy+tests minus e2e), or one of `--e2e` / `--examples` / `--wasm`
+  (tests minus e2e, with clippy overlapped in the background — a lint failure
+  surfaces at the collect stage after tests), or one of `--e2e` / `--examples` / `--wasm`
   for the section your change touches. A green shard qualifies you for the
   queue; it does not replace the full gate.
 - **When your branch is ready**: `./scripts/merge-queue.sh submit <branch>`.

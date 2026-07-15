@@ -3,9 +3,10 @@
 # before you commit, and before you push. Steps are ordered cheap-to-expensive so
 # a failure surfaces as early as possible.
 #
-#   ./scripts/check.sh --fast  the COMMIT gate: clippy + tests (minus the
-#                              load-flaky e2e), plus witchy-fmt IF any .witchy
-#                              files changed — the fast inner loop
+#   ./scripts/check.sh --fast  the COMMIT gate: tests (minus the load-flaky
+#                              e2e) with clippy overlapped in the background,
+#                              plus witchy-fmt IF any .witchy files changed —
+#                              the fast inner loop
 #   ./scripts/check.sh         the MERGE gate: tests + fmt in the foreground with
 #                              clippy and the wasm playground build overlapped in
 #                              the background (collected before the gate goes green)
@@ -212,17 +213,89 @@ run() {
     printf '\033[1;34m    [%d] %s took %ds\033[0m\n' "$step" "$label" "$(( $(date +%s) - t_stage ))"
 }
 
+# Clippy runs as a BACKGROUND leg in both the fast and the full gate: lint
+# artifacts (wrapper-generated rmeta) share nothing with build/test artifacts,
+# so it checks in its OWN target dir (CoW-cloned from the main one on first
+# use, warm thereafter) instead of serializing ~60-75s (warm; minutes under
+# contention) in front of the tests. Same-dir invocations would serialize on
+# cargo's build lock. A leg failure still fails the gate — it just surfaces at
+# collect time, after tests, instead of up front; compile errors still fail
+# fast via nextest's own build.
+clippy_dir="${target_dir}-clippy"
+seed_clippy_dir() {
+    # `mkdir` is the atomic claim: exactly one concurrent run seeds; any other
+    # sees the dir and uses it as-is (a dir left partially seeded by a killed
+    # cp is safe — cargo treats missing artifacts as a cold cache, so the dir
+    # self-heals on the next run). APFS clonefile (`cp -c`) or reflink where
+    # available: seconds, ~zero disk. Where neither works, the dir stays
+    # empty — a one-time cold clippy.
+    [ -d "$clippy_dir" ] && return 0
+    mkdir "$clippy_dir" 2>/dev/null || return 0
+    if [ -d "$target_dir" ]; then
+        cp -Rc "$target_dir/." "$clippy_dir/" 2>/dev/null \
+            || cp -R --reflink=auto "$target_dir/." "$clippy_dir/" 2>/dev/null \
+            || true
+    fi
+}
+launch_clippy_leg() {
+    clippy_log="$(mktemp "${TMPDIR:-/tmp}/witchy-clippy-XXXXXX")"
+    ( seed_clippy_dir && exec env CARGO_TARGET_DIR="$clippy_dir" cargo clippy --workspace --all-targets -- -D warnings ) >"$clippy_log" 2>&1 &
+    clippy_pid=$!
+}
+
+# Reap the background legs on ANY exit — green, red at tests/fmt, or a failed
+# collect. `exec` in each leg makes its recorded pid BE its cargo process, so
+# the kill reaches the build itself (its rustc children sit in the
+# surrounding process group, which the coordinator's timeout kill already
+# covers). Without this, a red foreground stage abandoned live cargo
+# processes that kept building while the coordinator rebased the next
+# candidate in the same worktree. collect_bg clears each pid after reaping
+# it: a waited-on pid may be recycled by the OS and must never be signalled.
+# The trap is installed before any leg launches; every guard tolerates
+# nothing-launched-yet, so modes that skip the legs exit through it safely.
+reap_bg() {
+    [ -n "${clippy_pid:-}" ] && kill "$clippy_pid" 2>/dev/null || true
+    [ -n "${wasm_pid:-}" ] && kill "$wasm_pid" 2>/dev/null || true
+    [ -n "${clippy_log:-}" ] && rm -f "$clippy_log" || true
+    [ -n "${wasm_log:-}" ] && rm -f "$wasm_log" || true
+    return 0
+}
+trap reap_bg EXIT
+trap 'exit 143' TERM INT
+
+# Collect a background leg, cheapest-to-diagnose first. On failure, show the
+# leg's full output and exit red.
+collect_bg() { # collect_bg <label> <pid> <log>
+    local label="$1" pid="$2" log="$3"
+    step=$((step + 1))
+    local t_collect; t_collect=$(date +%s)
+    printf '\n\033[1;34m==> [%d] %s (t+%ds)\033[0m\n' "$step" "$label" "$(( t_collect - t_start ))"
+    if ! wait "$pid"; then
+        cat "$log"
+        rm -f "$log"
+        printf '\033[1;31m%s FAILED\033[0m\n' "$label"
+        exit 1
+    fi
+    rm -f "$log"
+    printf '\033[1;34m    [%d] %s took %ds\033[0m\n' "$step" "$label" "$(( $(date +%s) - t_collect ))"
+}
+
 if [ "$fast" -eq 1 ]; then
-    run "clippy (deny warnings)"   cargo clippy --workspace --all-targets -- -D warnings
-    # The fast commit gate: clippy checks correctness; nextest compiles+links its
-    # own test binaries. No standalone build step needed.
+    # The fast commit gate: tests in the foreground, clippy overlapped behind
+    # them (collected — and able to fail the gate — before green). nextest
+    # compiles+links its own test binaries, so no standalone build step.
+    launch_clippy_leg
     # Run the witchy fmt check IF any .witchy files are dirty — catches formatting
     # mistakes without the cost of always building the binary + sweeping 200 files.
+    # (This build is FOREGROUND in the MAIN target dir — no clippy-leg overlap
+    # concerns; nextest below reuses its artifacts.)
     if git diff --name-only HEAD 2>/dev/null | grep -q '\.witchy$'; then
         run "build (binary)"           cargo build -p witchy
         run "witchy fmt (changed .witchy files)" witchy_fmt_check
     fi
     run "tests (workspace, minus e2e)" "${test_cmd[@]}"
+    collect_bg "clippy (deny warnings)" "$clippy_pid" "$clippy_log"
+    clippy_pid=""
     printf '\n\033[1;32mfast gate green\033[0m — run without --fast before push (fmt + wasm), --full for e2e\n'
     exit 0
 fi
@@ -240,77 +313,21 @@ fi
 #                 so cargo must (re)build the bin before compiling them. That
 #                 makes a standalone pre-build redundant, and the fmt check below
 #                 can run AFTER the tests against the nextest-built binary.
-#   [bg] clippy — lint artifacts (wrapper-generated rmeta) share nothing with
-#                 build/test artifacts, so clippy runs in its OWN target dir
-#                 (CoW-cloned from the main one on first use, warm thereafter)
-#                 instead of serializing ~60-75s in front of the whole gate.
-#                 Same-dir invocations would serialize on cargo's build lock.
+#   [bg] clippy — see launch_clippy_leg above (own CoW-cloned target dir).
 #   [bg] wasm   — targets wasm32-unknown-unknown, shares no native artifacts
 #                 (this leg overlapped tests before this restructure too).
 # A background-leg failure still fails the gate — it just surfaces at collect
-# time instead of up front. Queue candidates already ran a green --fast shard
-# (which keeps clippy first), so a gate-time clippy failure is rare; the
-# restructure optimizes the common all-green path.
-clippy_dir="${target_dir}-clippy"
-seed_clippy_dir() {
-    # `mkdir` is the atomic claim: exactly one concurrent run seeds; any other
-    # sees the dir and uses it as-is (a dir left partially seeded by a killed
-    # cp is safe — cargo treats missing artifacts as a cold cache, so the dir
-    # self-heals on the next run). APFS clonefile (`cp -c`) or reflink where
-    # available: seconds, ~zero disk. Where neither works, the dir stays
-    # empty — a one-time cold clippy.
-    [ -d "$clippy_dir" ] && return 0
-    mkdir "$clippy_dir" 2>/dev/null || return 0
-    if [ -d "$target_dir" ]; then
-        cp -Rc "$target_dir/." "$clippy_dir/" 2>/dev/null \
-            || cp -R --reflink=auto "$target_dir/." "$clippy_dir/" 2>/dev/null \
-            || true
-    fi
-}
-clippy_log="$(mktemp "${TMPDIR:-/tmp}/witchy-clippy-XXXXXX")"
-( seed_clippy_dir && exec env CARGO_TARGET_DIR="$clippy_dir" cargo clippy --workspace --all-targets -- -D warnings ) >"$clippy_log" 2>&1 &
-clippy_pid=$!
+# time instead of up front; the restructure optimizes the common all-green
+# path.
+launch_clippy_leg
 
 wasm_log="$(mktemp "${TMPDIR:-/tmp}/witchy-wasm-XXXXXX")"
 ( exec "${wasm_cargo[@]}" build --lib --no-default-features --target wasm32-unknown-unknown ) >"$wasm_log" 2>&1 &
 wasm_pid=$!
 
-# Reap the background legs on ANY exit — green, red at tests/fmt, or a failed
-# collect. The `exec` above makes each leg's recorded pid BE its cargo
-# process, so the kill reaches the build itself (its rustc children sit in
-# the surrounding process group, which the coordinator's timeout kill already
-# covers). Without this, a red foreground stage abandoned live cargo
-# processes that kept building while the coordinator rebased the next
-# candidate in the same worktree. collect_bg clears each pid after reaping
-# it: a waited-on pid may be recycled by the OS and must never be signalled.
-reap_bg() {
-    [ -n "${clippy_pid:-}" ] && kill "$clippy_pid" 2>/dev/null || true
-    [ -n "${wasm_pid:-}" ] && kill "$wasm_pid" 2>/dev/null || true
-    rm -f "${clippy_log:-}" "${wasm_log:-}"
-    return 0
-}
-trap reap_bg EXIT
-trap 'exit 143' TERM INT
-
 run "tests (workspace)"        "${test_cmd[@]}"
 run "witchy fmt (std+examples)" witchy_fmt_check
 
-# Collect background legs, cheapest-to-diagnose first. On failure, show the
-# leg's full output and exit red.
-collect_bg() { # collect_bg <label> <pid> <log>
-    local label="$1" pid="$2" log="$3"
-    step=$((step + 1))
-    local t_collect; t_collect=$(date +%s)
-    printf '\n\033[1;34m==> [%d] %s (t+%ds)\033[0m\n' "$step" "$label" "$(( t_collect - t_start ))"
-    if ! wait "$pid"; then
-        cat "$log"
-        rm -f "$log"
-        printf '\033[1;31m%s FAILED\033[0m\n' "$label"
-        exit 1
-    fi
-    rm -f "$log"
-    printf '\033[1;34m    [%d] %s took %ds\033[0m\n' "$step" "$label" "$(( $(date +%s) - t_collect ))"
-}
 collect_bg "clippy (deny warnings)"   "$clippy_pid" "$clippy_log"
 clippy_pid=""
 collect_bg "wasm playground build"    "$wasm_pid"   "$wasm_log"
