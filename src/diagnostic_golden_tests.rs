@@ -478,6 +478,42 @@ mod typecheck {
             "type Widget:\n    n: Int\n\nfn main(console: Console):\n    let a = Widget(n: 1)\n    let b = Widget(n: 2)\n    if a < b: console.print(\"lt\") else: console.print(\"ge\")\n"
         ));
     }
+
+    // A plain (non-method) function invoked through method syntax. The receiver's
+    // real type must be named — a record used to leak the `Bool(false)` rewrite
+    // placeholder ("no method `describe` on `Bool`") — and the message names the
+    // direct-call fix, the same on a record and on a built-in receiver.
+    #[test]
+    fn plain_function_as_method_on_record_names_the_type() {
+        insta::assert_snapshot!(type_diag(
+            "type Point:\n    x: Int\n    y: Int\n\nfn describe(p: Point) -> Int:\n    p.x\n\nfn main(console: Console):\n    let p = Point(1, 2)\n    console.print(\"${p.describe()}\")\n"
+        ));
+    }
+
+    #[test]
+    fn plain_function_as_method_on_builtin_receiver() {
+        insta::assert_snapshot!(type_diag(
+            "fn describe(s: String) -> Int:\n    string.length(s)\n\nfn main(console: Console):\n    let s = \"hi\"\n    console.print(\"${s.describe()}\")\n"
+        ));
+    }
+
+    #[test]
+    fn imported_module_function_as_method_on_builtin() {
+        insta::assert_snapshot!(type_diag(
+            "import func\n\nfn main(console: Console):\n    let s = \"hi\"\n    console.print(s.identity())\n"
+        ));
+    }
+
+    // A same-named function that could NOT accept this receiver (`map` exists for
+    // List/Option but the receiver is a user `Point`) must NOT get the confident
+    // "`map` is a plain function, call it directly" message — it falls back to the
+    // generic "no method" wording, since `map(point)` would not resolve either.
+    #[test]
+    fn unrelated_same_name_collision_uses_generic_message() {
+        insta::assert_snapshot!(type_diag(
+            "import list\n\ntype Point:\n    x: Int\n\nfn main(console: Console):\n    let p = Point(1)\n    console.print(\"${p.map(fn(v): v)}\")\n"
+        ));
+    }
 }
 
 // ===========================================================================

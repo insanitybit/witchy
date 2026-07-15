@@ -2085,6 +2085,41 @@ impl Ctx<'_> {
             .or_else(|| cap_op_result_type(e, &|a| self.type_ast(a, scope)))
     }
 
+    /// Whether some free function named `method` (in a module OTHER than the
+    /// receiver's `owner`) could actually accept `receiver_ty` as its first
+    /// argument — i.e. the user wrote `value.plain_fn()` for a plain function that
+    /// a direct `plain_fn(value)` call would resolve. RFC-0050 does not make such a
+    /// function a method, so this drives the unified "call it directly" diagnostic
+    /// rather than a doomed `owner.method` call that only fails later as "unknown
+    /// function". Requiring first-parameter applicability keeps the "is a plain
+    /// function" claim honest: an unrelated collision (`list.map` when the receiver
+    /// is a `Point`) does NOT match, so it falls back to the generic message.
+    /// A generic first parameter (a bare type variable) accepts any receiver.
+    fn applicable_free_fn_named_outside(&self, method: &str, owner: &str, receiver_ty: &Type) -> bool {
+        let recv_head = type_head_key(receiver_ty);
+        self.free_fns.iter().any(|name| {
+            if name.contains("__") {
+                return false;
+            }
+            let Some((module, m)) = name.rsplit_once('.') else { return false };
+            if m != method || module == owner {
+                return false;
+            }
+            let Some((params, _, _)) = self.fn_sigs.get(name) else { return false };
+            match params.first() {
+                // Declared first parameter: accepts the receiver when its head type
+                // matches, or when it is a generic type variable (accepts anything).
+                Some(Some(first)) => {
+                    type_variable_name(first).is_some() || type_head_key(first) == recv_head
+                }
+                // Unannotated first parameter accepts any argument.
+                Some(None) => true,
+                // A zero-parameter function cannot take a receiver.
+                None => false,
+            }
+        })
+    }
+
     fn refine_var_call_args(&self, name: &str, args: &[Expr], scope: &mut Scope<Type>) {
         let Some((params, _, conventions)) = self.fn_sigs.get(name) else { return };
         let mut bindings = HashMap::new();
@@ -2762,9 +2797,6 @@ impl Ctx<'_> {
                 // builtin types still use a small declaration table until they
                 // acquire ordinary source declarations.
                 if let Some(module) = receiver_ty.as_ref().and_then(type_owner_module_ast) {
-                    let mut call_args =
-                        vec![std::mem::replace(receiver.as_mut(), Expr::Bool(false))];
-                    call_args.append(args);
                     // Place-assignment desugaring uses a private value-rebuild
                     // operation. Dict and List keep distinct internal spellings;
                     // their public setters are uniform `var`/`Nil` calls.
@@ -2773,9 +2805,32 @@ impl Ctx<'_> {
                     } else {
                         format!("{module}.{method}")
                     };
-                    if receiver_ty.as_ref().is_some_and(is_ambient_owned_ast_type)
-                        || self.owner_methods.contains(&func)
+                    // The owner-module function genuinely exists (a real ambient
+                    // method like `d.human()`, or a declared owner method). When it
+                    // does NOT — and a plain user function of this name exists — the
+                    // user is calling a plain function through method syntax, which
+                    // RFC-0050 does not permit; fall through to the unified "no
+                    // method" diagnostic below instead of committing to a
+                    // `string.foo` call that only fails later as "unknown function".
+                    let owner_fn_exists =
+                        self.owner_methods.contains(&func) || self.fn_sigs.contains_key(&func);
+                    let shadowed_by_free_fn = !owner_fn_exists
+                        && receiver_ty.as_ref().is_some_and(|ty| {
+                            self.applicable_free_fn_named_outside(method, module, ty)
+                        });
+                    // Only commit — moving the receiver and args into the lowered
+                    // call — once resolution actually succeeds. Swapping the receiver
+                    // out (with the `Bool(false)` placeholder) BEFORE this guard left
+                    // a corrupted `MethodCall` behind on the failure path, so a later
+                    // mono round re-resolved it against `Bool` and the "no method"
+                    // error named `Bool` instead of the real receiver type.
+                    if (receiver_ty.as_ref().is_some_and(is_ambient_owned_ast_type)
+                        || self.owner_methods.contains(&func))
+                        && !shadowed_by_free_fn
                     {
+                        let mut call_args =
+                            vec![std::mem::replace(receiver.as_mut(), Expr::Bool(false))];
+                        call_args.append(args);
                         *e = Expr::Call { name: func, args: call_args };
                         return;
                     }
@@ -2795,12 +2850,39 @@ impl Ctx<'_> {
                     *e = Expr::Call { name: cap_ops::call_name(method), args: call_args };
                     return;
                 }
+                let owner_module = receiver_ty.as_ref().and_then(type_owner_module_ast);
                 match receiver_ty {
+                    // A free function of this name that could ACCEPT this receiver
+                    // exists somewhere other than the receiver's owner module: the
+                    // user wrote `value.{method}(…)` for a plain function, which
+                    // RFC-0050 does not make a method (methods come from `impl`
+                    // blocks or the type's OWN module). Name the direct-call fix.
+                    // (Requiring first-parameter applicability keeps the claim
+                    // honest — an unrelated same-name collision falls to the
+                    // generic message below.)
+                    Some(ty)
+                        if self.applicable_free_fn_named_outside(
+                            method,
+                            owner_module.unwrap_or_default(),
+                            &ty,
+                        ) =>
+                    {
+                        // NOTE: the phrase "methods come from `impl` blocks" is a
+                        // pinned diagnostic contract (example_tests.rs); keep it
+                        // verbatim here and in the generic arm below.
+                        self.missing_impls.borrow_mut().push(format!(
+                            "no method `{method}` on `{}` — `{method}` is a plain function, \
+                             not a method; methods come from `impl` blocks or the type's own \
+                             module, so call it directly as `{method}(value, …)` (or \
+                             module-qualified if it lives in an imported module)",
+                            bare(&type_key(ty.unqualified())),
+                        ))
+                    }
                     Some(ty) => self.missing_impls.borrow_mut().push(format!(
                         "no method `{method}` on `{}` — methods come from `impl` blocks; \
                          a plain function is called as `{method}(value, …)` (or module-qualified, \
                          e.g. `list.{method}(value, …)`)",
-                        type_key(ty.unqualified()),
+                        bare(&type_key(ty.unqualified())),
                     )),
                     // `json.stringify(x)` with no `import json` parses as a method
                     // call on the bare name `json`; if that name is actually a std

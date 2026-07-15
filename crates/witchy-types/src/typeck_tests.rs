@@ -2740,3 +2740,25 @@ fn main():
         ))
         .expect("a `Nil`-returning free call statement is fine");
     }
+
+    #[test]
+    fn plain_function_called_as_method_on_record_names_the_real_type() {
+        // A private receiver-first free function called through method syntax on a
+        // user record must name the RECEIVER's type, not the `Bool(false)`
+        // placeholder the resolver swaps in on a successful rewrite. Before the
+        // owner-UFCS branch was made commit-only-on-success, this reported
+        // "no method `describe` on `Bool`".
+        let err = check_str(
+            "type Point:\n    x: Int\n    y: Int\n\n\
+             fn describe(p: Point) -> Int:\n    p.x\n\n\
+             fn main(console: Console):\n    let p = Point(1, 2)\n    let n = p.describe()\n    console.print(\"${n}\")\n",
+        )
+        .expect_err("a plain function is not a method");
+        assert!(err.contains("on `Point`"), "must name the receiver type Point: {err}");
+        assert!(!err.contains("`Bool`"), "must not leak the Bool placeholder: {err}");
+    }
+
+    // The builtin-receiver diagnostic and the "real owner-module method still
+    // resolves" control both need the std library linked (String/Duration methods
+    // live there), which `check_str` does not do. They are pinned on the real,
+    // std-linked path by a runnable `book/` example instead.
