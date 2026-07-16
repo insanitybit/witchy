@@ -208,6 +208,19 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope]
     local gpid=$!
     set +m
     local why=""
+    # Liveness is measured from the last NON-heartbeat log write, NOT the file
+    # mtime. check.sh emits a "still running (heartbeat …)" pulse every 120s so a
+    # human tailing the log sees progress — but those synthetic writes must not
+    # count as gate liveness. If they did (the old `stat -f %m` mtime signal),
+    # a deadlocked/idle process tree would look fresh for the ENTIRE heartbeat
+    # window: mtime never aged past stall_timeout, so the stall branch was never
+    # entered and group_is_busy (the idle-vs-busy CPU test below) was never even
+    # consulted until the pulses stopped. Observed 20260716-085448: 8 pulses ×
+    # 120s = 16 min of a wedged tree before the watchdog began counting at all.
+    # real_sig = count of log lines with heartbeat pulses removed; it only grows
+    # on genuine output, so a change means real progress → reset the clock.
+    local last_real_sig=""
+    local last_real_time="$start"
     while :; do
         if ! kill -0 "$gpid" 2>/dev/null; then
             if wait "$gpid"; then gate_result="green"; else gate_result="red"; fi
@@ -216,23 +229,31 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope]
         sleep 10
         local t; t="$(date +%s)"
         local elapsed=$((t - start))
-        local mtime; mtime="$(stat -f %m "$log" 2>/dev/null || echo "$t")"
-        local age=$((t - mtime))
+        # grep -c prints the count AND exits 1 when it is zero, so `|| echo 0`
+        # would append a second value — use `|| true` and let the printed 0
+        # stand (empty only if the log does not exist yet, which compares fine).
+        local real_sig; real_sig="$(grep -vcF 'still running (heartbeat' "$log" 2>/dev/null || true)"
+        if [ "$real_sig" != "$last_real_sig" ]; then
+            last_real_sig="$real_sig"
+            last_real_time="$t"
+        fi
+        local age=$((t - last_real_time))
         if [ "$elapsed" -gt "$gate_timeout" ]; then
             why="gate exceeded ${gate_timeout}s (MERGE_QUEUE_GATE_TIMEOUT)"
             break
         fi
-        # Log silence alone is NOT a hang. The gate legitimately goes quiet for
-        # minutes — from t+0, since tests are now the FIRST stage: nextest
-        # compiles the `test` profile (separate artifacts from the `dev`-profile
-        # build/clippy artifacts) and then enumerates+starts tests,
+        # Real-output silence alone is NOT a hang. The gate legitimately goes
+        # quiet for minutes — from t+0, since tests are now the FIRST stage:
+        # nextest compiles the `test` profile (separate artifacts from the
+        # `dev`-profile build/clippy artifacts) and then enumerates+starts tests,
         # all before the first streamed `PASS` line — and under CPU contention that
         # silent window blew the 300s stall clock, killing HEALTHY gates (every
         # observed "no log output" timeout was this false positive, never a real
         # hang; the whole-gate limit above already backstops a true wedge). So
         # gate liveness on CPU, not log writes: a process group burning CPU is
         # compiling/testing; only silence WITH no CPU is a genuine stall. A real
-        # hang (deadlock/blocked syscall) consumes no CPU, so it still trips.
+        # hang (deadlock/blocked syscall) consumes no CPU, so it still trips —
+        # and now trips promptly, because heartbeats no longer keep `age` low.
         if [ "$age" -gt "$stall_timeout" ]; then
             # A busy group that has been silent for a NORMAL compile-window length
             # is fine (this is the false-positive fix). But a group that is busy
