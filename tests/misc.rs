@@ -22,3 +22,19 @@ mod sealed_task_handles;
 mod spec_freshness;
 #[path = "misc/url_components.rs"]
 mod url_components;
+#[path = "misc/async_contract.rs"]
+mod async_contract;
+#[path = "misc/policy_sealing.rs"]
+mod policy_sealing;
+#[path = "misc/rfc0063_bytes_catalog.rs"]
+mod rfc0063_bytes_catalog;
+#[path = "misc/rfc0077_integration_grants.rs"]
+mod rfc0077_integration_grants;
+#[path = "misc/rfc0087_uniform_var.rs"]
+mod rfc0087_uniform_var;
+#[path = "misc/rfc0089_fip_contract.rs"]
+mod rfc0089_fip_contract;
+#[path = "misc/rfc0094_persistent_std_cache.rs"]
+mod rfc0094_persistent_std_cache;
+#[path = "misc/typed_errors.rs"]
+mod typed_errors;

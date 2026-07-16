@@ -15,7 +15,7 @@ fn cache_root() -> PathBuf {
 fn run_child(root: &Path, dump: &Path) {
     let output = Command::new(std::env::current_exe().expect("current test executable"))
         .arg("--exact")
-        .arg("persistent_cache_child_populates_semver")
+        .arg("rfc0094_persistent_std_cache::persistent_cache_child_populates_semver")
         .arg("--nocapture")
         .env(CHILD_ENV, "1")
         .env(CACHE_DIR_ENV, root)
