@@ -642,7 +642,7 @@ fn f():
     }
 
     #[test]
-    fn quote_type_holes_lower_to_meta_type_join() {
+    fn quote_type_holes_keep_a_compiler_owned_template() {
         let m = parse_module(r#"
 fn f(ok: meta.TypeSyntax, err: meta.TypeSyntax):
     quote type:
@@ -651,18 +651,24 @@ fn f(ok: meta.TypeSyntax, err: meta.TypeSyntax):
         let Item::Function(f) = &m.items[0] else {
             panic!("expected function");
         };
-        let expected = Expr::Call {
-            name: "meta.type_join".into(),
-            args: vec![
-                Expr::List(vec![
-                    Expr::Str("Result(".into()),
-                    Expr::Str(", List(".into()),
-                    Expr::Str("))".into()),
-                ]),
-                Expr::List(vec![Expr::Var("ok".into()), Expr::Var("err".into())]),
-            ],
+        assert_eq!(m.compiler_type_syntax.len(), 1);
+        let Stmt::Expr(Expr::Call { name, args }) = &f.body.stmts[0] else {
+            panic!("expected compiler-owned type-hole call");
         };
-        assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);
+        assert_eq!(name, crate::intrinsics::COMPILER_QUOTE_TYPE_HOLES);
+        let [Expr::Str(handle), Expr::List(parts), Expr::List(holes)] = args.as_slice() else {
+            panic!("expected type handle, parts, and holes");
+        };
+        assert_eq!(handle, &m.compiler_type_syntax[0].handle);
+        assert_eq!(
+            parts,
+            &vec![
+                Expr::Str("Result(".into()),
+                Expr::Str(", List(".into()),
+                Expr::Str("))".into()),
+            ]
+        );
+        assert_eq!(holes, &vec![Expr::Var("ok".into()), Expr::Var("err".into())]);
     }
 
     #[test]

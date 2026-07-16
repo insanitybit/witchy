@@ -495,6 +495,48 @@ fn compiler_expr_holes(
         .collect()
 }
 
+fn compiler_type_holes(
+    values: &[Value],
+    compiler_type_syntax: &HashMap<String, Type>,
+) -> Result<Vec<Type>, RuntimeError> {
+    fn tail(name: &str) -> &str {
+        name.rsplit_once('.').map_or(name, |(_, tail)| tail)
+    }
+
+    values
+        .iter()
+        .map(|value| {
+            let Value::Ctor { name, fields } = value else {
+                return err("compiler-owned type hole was not meta.TypeSyntax");
+            };
+            match tail(name) {
+                "CompilerTypeSyntax" => {
+                    let [Value::Str(handle), Value::Str(_source)] = fields.as_slice() else {
+                        return err("CompilerTypeSyntax carried an invalid payload");
+                    };
+                    compiler_type_syntax
+                        .get(handle)
+                        .cloned()
+                        .ok_or_else(|| RuntimeError {
+                            message: "compiler-owned type referenced an invalid syntax handle"
+                                .into(),
+                        })
+                }
+                "TypeSyntax" => {
+                    let [Value::Str(source)] = fields.as_slice() else {
+                        return err("TypeSyntax carried an invalid source payload");
+                    };
+                    witchy_syntax::syntax_holes::parse_type_payload(source)
+                        .map_err(|message| RuntimeError { message })
+                }
+                other => err(format!(
+                    "compiler-owned type hole carried `{other}`, expected TypeSyntax"
+                )),
+            }
+        })
+        .collect()
+}
+
 fn mock_normalize(rel: &str) -> Result<String, RuntimeError> {
     let path = Path::new(rel);
     if path.is_absolute() {
@@ -2440,6 +2482,53 @@ impl Interpreter {
                         err("compiler-owned type quotation referenced an invalid syntax handle")
                     }
                     _ => err("compiler-owned type quotation expects a type handle"),
+                }
+            }
+            name if name == intrinsics::COMPILER_QUOTE_TYPE_HOLES => {
+                if self.fresh_ident_scope.is_none() {
+                    return err(
+                        "compiler-owned type quotation is available only during compile-time expansion",
+                    );
+                }
+                match args {
+                    [Value::Str(handle), Value::List(parts), Value::List(holes)]
+                        if parts.len() == holes.len() + 1
+                            && parts.iter().all(|part| matches!(part, Value::Str(_))) =>
+                    {
+                        let template = self
+                            .compiler_type_syntax
+                            .get(handle)
+                            .cloned()
+                            .ok_or_else(|| RuntimeError {
+                                message: "compiler-owned type quotation referenced an invalid syntax handle"
+                                    .into(),
+                            })?;
+                        let holes = compiler_type_holes(holes, &self.compiler_type_syntax)?;
+                        let ty = witchy_syntax::syntax_holes::instantiate_type(&template, holes)
+                            .map_err(|message| RuntimeError { message })?;
+                        let source = witchy_syntax::format::type_str(&ty);
+                        let instance_handle =
+                            format!("{handle}\0compiler-owned-type-instance\0{source}");
+                        if let Some(existing) = self.compiler_type_syntax.get(&instance_handle) {
+                            if existing != &ty {
+                                return err(
+                                    "compiler-owned type instance handle collided with a different AST",
+                                );
+                            }
+                        } else {
+                            self.compiler_type_syntax.insert(instance_handle.clone(), ty);
+                        }
+                        Ok(Some(Value::Ctor {
+                            name: "meta.CompilerTypeSyntax".into(),
+                            fields: vec![Value::Str(instance_handle), Value::Str(source)],
+                        }))
+                    }
+                    [Value::Str(_), Value::List(_), Value::List(_)] => err(
+                        "compiler-owned type quotation referenced an invalid syntax handle or hole plan",
+                    ),
+                    _ => err(
+                        "compiler-owned type quotation expects a type handle and typed holes",
+                    ),
                 }
             }
             name if name == intrinsics::COMPILER_QUOTE_PATTERN => {

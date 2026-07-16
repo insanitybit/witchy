@@ -168,6 +168,25 @@
     }
 
     #[test]
+    fn compiler_owned_type_holes_round_trip_through_formatting() {
+        let src = "comptime fn wrap(inner: meta.TypeSyntax) -> meta.TypeSyntax:\n    quote type:\n        List(${inner})\n";
+        let out = reformat(src).expect("compiler-owned type holes round-trip");
+        assert!(out.starts_with("import meta\n"), "{out}");
+        assert!(out.contains("meta.type_join([\"List(\", \")\"], [inner])"), "{out}");
+        let reparsed = crate::parser::parse_module(&out).expect("formatted type holes parse");
+        assert_eq!(reparsed.compiler_type_syntax.len(), 1);
+        let crate::ast::Item::Function(wrap) = &reparsed.items[0] else {
+            panic!("expected helper function");
+        };
+        let crate::ast::Stmt::Expr(crate::ast::Expr::Call { name, .. }) = &wrap.body.stmts[0]
+        else {
+            panic!("expected compiler-owned type-hole call");
+        };
+        assert_eq!(name, crate::intrinsics::COMPILER_QUOTE_TYPE_HOLES);
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
+    }
+
+    #[test]
     fn compiler_owned_pattern_quotes_round_trip_through_formatting() {
         let src = "comptime fn make() -> meta.PatternSyntax:\n    quote pattern:\n        [1 | 2, ..rest]\n";
         let out = reformat(src).expect("compiler-owned pattern quote round-trips");

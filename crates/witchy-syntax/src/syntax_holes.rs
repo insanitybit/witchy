@@ -87,6 +87,14 @@ pub fn instantiate_expr(template: &Expr, holes: Vec<Expr>) -> Result<Expr, Strin
     Ok(expr)
 }
 
+pub fn instantiate_type(template: &Type, holes: Vec<Type>) -> Result<Type, String> {
+    let mut holes = holes.into_iter().map(Some).collect::<Vec<_>>();
+    let mut ty = template.clone();
+    substitute_type(&mut ty, &mut holes)?;
+    ensure_consumed("type", &holes)?;
+    Ok(ty)
+}
+
 fn indent(source: &str, spaces: usize) -> String {
     let prefix = " ".repeat(spaces);
     source
@@ -457,5 +465,16 @@ mod tests {
         let expr = instantiate_expr(&template, vec![Expr::Int(40)])
             .expect("substitute expression hole");
         assert_eq!(crate::format::expr_str(&expr), "40 + 2");
+    }
+
+    #[test]
+    fn substitutes_type_holes_without_reparsing() {
+        let template = Type::Named(
+            "List".into(),
+            vec![Type::Named(format!("{QUOTE_TYPE_HOLE_PREFIX}0"), Vec::new())],
+        );
+        let hole = Type::Named("Int".into(), Vec::new());
+        let ty = instantiate_type(&template, vec![hole.clone()]).expect("substitute type hole");
+        assert_eq!(ty, Type::Named("List".into(), vec![hole]));
     }
 }

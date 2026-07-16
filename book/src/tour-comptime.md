@@ -77,9 +77,11 @@ and reparsing the enclosing expression. A source-backed compatibility hole may
 still parse its own payload. Existing `meta.expr_*` builders project canonical
 source, and values composed through those builders remain on the compatibility
 path until their structural forms land.
-Hole-free `quote type:` values work the same way: a direct type hole receives
-the parsed type node, including anonymous structural types and borrowed views,
-while `meta.type_*` builders may still compose through canonical source.
+`quote type:` values work the same way, including typed holes. The enclosing
+type template remains compiler-owned, so nested anonymous structural types and
+borrowed views are substituted as nodes. A source-backed compatibility hole may
+parse its own payload; general `meta.type_*` builder composition still projects
+canonical source.
 Hole-free `quote pattern:` values also retain their parsed node through direct
 item holes; `meta.pattern_*` remains the compatibility construction API.
 Hole-free `quote stmt:` and `quote block:` values retain their body AST too.
@@ -101,6 +103,33 @@ comptime:
 
 fn main(console: Console):
     console.print("${identity(42)}")
+```
+
+```text
+42
+```
+
+Type templates also substitute structurally. Here the inner `Int` comes from a
+compatibility builder, the anonymous record and `List` wrapper remain owned
+types, and the generated function receives the final type without reparsing the
+enclosing templates:
+
+```witchy
+import meta
+
+comptime:
+    let int = meta.type_named(meta.ident("Int"), [])
+    let row = quote type:
+        .{value: ${int}}
+    let rows = quote type:
+        List(${row})
+    emit_item(quote item:
+        pub fn sum_first(values: ${rows}) -> Int:
+            values.at(0).value
+    )
+
+fn main(console: Console):
+    console.print("${sum_first([.{value: 42}])}")
 ```
 
 ```text

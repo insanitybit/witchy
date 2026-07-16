@@ -1665,11 +1665,8 @@ impl Parser {
                                 {
                                     owned
                                 } else if name == "meta.type_join"
-                                    && let [Expr::List(parts), Expr::List(holes)] = args.as_slice()
-                                    && holes.is_empty()
-                                    && let [Expr::Str(source)] = parts.as_slice()
                                     && let Some(owned) =
-                                        self.compiler_owned_type_literal(source, member_line)
+                                        self.compiler_owned_type_join(&args, member_line)
                                 {
                                     owned
                                 } else if name == "meta.pattern_join"
@@ -2312,15 +2309,72 @@ impl Parser {
                 self.anon_records.push(fields);
             }
         }
+        let handle = self.register_type_syntax(ty, source, definition_line);
+        Some(Expr::Call {
+            name: crate::intrinsics::COMPILER_QUOTE_TYPE.into(),
+            args: vec![Expr::Str(handle), Expr::Str(source.to_string())],
+        })
+    }
+
+    fn register_type_syntax(
+        &mut self,
+        ty: Type,
+        source: &str,
+        definition_line: u32,
+    ) -> String {
         let handle = self.compiler_syntax_handle("type", source);
         self.compiler_type_syntax.push(CompilerTypeSyntax {
             handle: handle.clone(),
             ty,
             definition_line,
         });
+        handle
+    }
+
+    fn compiler_owned_type_join(
+        &mut self,
+        args: &[Expr],
+        definition_line: u32,
+    ) -> Option<Expr> {
+        let [Expr::List(parts), Expr::List(holes)] = args else {
+            return None;
+        };
+        if parts.len() != holes.len() + 1 {
+            return None;
+        }
+        if holes.is_empty() {
+            let [Expr::Str(source)] = parts.as_slice() else {
+                return None;
+            };
+            return self.compiler_owned_type_literal(source, definition_line);
+        }
+        let mut source = String::new();
+        for (index, part) in parts.iter().enumerate() {
+            let Expr::Str(part) = part else {
+                return None;
+            };
+            source.push_str(part);
+            if index < holes.len() {
+                source.push_str(&format!("{QUOTE_TYPE_HOLE_PREFIX}{index}"));
+            }
+        }
+        let owned = self.compiler_owned_type_literal(&source, definition_line)?;
+        let Expr::Call { name, args: owned_args } = owned else {
+            return None;
+        };
+        if name != crate::intrinsics::COMPILER_QUOTE_TYPE {
+            return None;
+        }
+        let [Expr::Str(handle), Expr::Str(_)] = owned_args.as_slice() else {
+            return None;
+        };
         Some(Expr::Call {
-            name: crate::intrinsics::COMPILER_QUOTE_TYPE.into(),
-            args: vec![Expr::Str(handle), Expr::Str(source.to_string())],
+            name: crate::intrinsics::COMPILER_QUOTE_TYPE_HOLES.into(),
+            args: vec![
+                Expr::Str(handle.clone()),
+                Expr::List(parts.clone()),
+                Expr::List(holes.clone()),
+            ],
         })
     }
 
@@ -2475,12 +2529,7 @@ impl Parser {
     ) -> Result<Expr, ParseError> {
         if holes.is_empty() {
             let source = crate::format::type_str(&quoted);
-            let handle = self.compiler_syntax_handle("type", &source);
-            self.compiler_type_syntax.push(CompilerTypeSyntax {
-                handle: handle.clone(),
-                ty: quoted,
-                definition_line,
-            });
+            let handle = self.register_type_syntax(quoted, &source, definition_line);
             return Ok(Expr::Call {
                 name: crate::intrinsics::COMPILER_QUOTE_TYPE.into(),
                 args: vec![Expr::Str(handle), Expr::Str(source)],
@@ -2488,7 +2537,11 @@ impl Parser {
         }
         let source = crate::format::type_str(&quoted);
         let parts = self.quote_hole_parts(&source, QUOTE_TYPE_HOLE_PREFIX, holes.len(), "type")?;
-        Ok(self.meta_call("type_join", vec![Expr::List(parts), Expr::List(holes)]))
+        let handle = self.register_type_syntax(quoted, &source, definition_line);
+        Ok(Expr::Call {
+            name: crate::intrinsics::COMPILER_QUOTE_TYPE_HOLES.into(),
+            args: vec![Expr::Str(handle), Expr::List(parts), Expr::List(holes)],
+        })
     }
 
     fn pattern_syntax_expr_with_holes(
