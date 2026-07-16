@@ -121,3 +121,83 @@ fn daemon_enters_an_independent_process_group() {
         "coordinator {pid} ignored process-group termination"
     );
 }
+
+#[test]
+fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let temp = TempDir::new();
+    let state = temp.path().join("state");
+    let logs = state.join("logs");
+    fs::create_dir_all(&logs).expect("create report fixture logs");
+
+    let green_log = logs.join("green.log");
+    fs::write(
+        &green_log,
+        "    Finished `test` profile [unoptimized] target(s) in 20s\n\
+         Starting 100 tests across 10 binaries\n\
+         Summary [ 30.000s] 100 tests run: 100 passed\n\
+         [1] tests (workspace) took 70s\n\
+         [2] witchy fmt (std+examples) took 2s\n",
+    )
+    .expect("write green fixture log");
+    let timeout_log = logs.join("timeout.log");
+    fs::write(&timeout_log, "[1] tests (workspace) still running\n")
+        .expect("write timeout fixture log");
+    let red_log = logs.join("red.log");
+    fs::write(&red_log, "error: test run failed\n").expect("write red fixture log");
+
+    let journal = format!(
+        concat!(
+            "{{\"ts\":\"2026-07-16T00:00:00Z\",\"event\":\"submitted\",\"branch\":\"a\"}}\n",
+            "{{\"ts\":\"2026-07-16T00:00:10Z\",\"event\":\"submitted\",\"branch\":\"b\"}}\n",
+            "{{\"ts\":\"2026-07-16T00:01:40Z\",\"event\":\"merged\",\"branch\":\"a\",\"elapsed_s\":\"90\",\"batch\":\"2\",\"log\":{green:?}}}\n",
+            "{{\"ts\":\"2026-07-16T00:01:40Z\",\"event\":\"merged\",\"branch\":\"b\",\"elapsed_s\":\"90\",\"batch\":\"2\",\"log\":{green:?}}}\n",
+            "{{\"ts\":\"2026-07-16T00:03:20Z\",\"event\":\"submitted\",\"branch\":\"c\"}}\n",
+            "{{\"ts\":\"2026-07-16T00:04:20Z\",\"event\":\"timeout\",\"branch\":\"c\",\"elapsed_s\":\"60\",\"log\":{timeout:?}}}\n",
+            "{{\"ts\":\"2026-07-16T00:05:00Z\",\"event\":\"submitted\",\"branch\":\"d\"}}\n",
+            "{{\"ts\":\"2026-07-16T00:05:40Z\",\"event\":\"red\",\"branch\":\"d\",\"elapsed_s\":\"40\",\"log\":{red:?}}}\n"
+        ),
+        green = green_log.to_string_lossy(),
+        timeout = timeout_log.to_string_lossy(),
+        red = red_log.to_string_lossy(),
+    );
+    fs::write(state.join("journal.jsonl"), journal).expect("write report fixture journal");
+
+    let before = fs::read_to_string(state.join("journal.jsonl")).expect("read journal before");
+    let report_path = temp.path().join("report.json");
+    let error_path = temp.path().join("report.stderr");
+    let report_file = fs::File::create(&report_path).expect("create report output");
+    let error_file = fs::File::create(&error_path).expect("create report stderr");
+    let status = Command::new("bash")
+        .arg(root.join("scripts/gate-report.sh"))
+        .args(["--state-dir", state.to_str().unwrap(), "--since", "all", "--json"])
+        .stdout(Stdio::from(report_file))
+        .stderr(Stdio::from(error_file))
+        .status()
+        .expect("run gate report");
+    assert!(
+        status.success(),
+        "gate report failed: {}",
+        fs::read_to_string(error_path).expect("read report stderr")
+    );
+    let report: serde_json::Value = serde_json::from_slice(
+        &fs::read(report_path).expect("read report output"),
+    )
+    .expect("gate report emits JSON");
+
+    assert_eq!(report["throughput"]["merged_branches"], 2);
+    assert_eq!(report["throughput"]["green_gates"], 1);
+    assert_eq!(report["throughput"]["failed_attempts"], 2);
+    assert_eq!(report["throughput"]["branches_per_green_gate"], 2.0);
+    assert_eq!(report["throughput"]["batched_gates"], 1);
+    assert_eq!(report["gate_s"]["p50"], 60);
+    assert_eq!(report["gate_s"]["p90"], 90);
+    assert_eq!(report["phases_s"]["compile"]["p50"], 20);
+    assert_eq!(report["phases_s"]["discovery_estimate"]["p50"], 20);
+    assert_eq!(report["phases_s"]["execution"]["p50"], 30.0);
+    assert_eq!(report["phases_s"]["test_stage"]["p50"], 70);
+    assert_eq!(report["phases_s"]["auxiliary"]["p50"], 2);
+
+    let after = fs::read_to_string(state.join("journal.jsonl")).expect("read journal after");
+    assert_eq!(before, after, "reporting must not mutate queue state");
+}
