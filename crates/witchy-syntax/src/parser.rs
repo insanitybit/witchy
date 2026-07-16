@@ -132,6 +132,9 @@ struct Parser {
     /// Hole-free item quotations stay as parsed AST. The expression receives
     /// only an opaque handle through an unspellable compiler intrinsic.
     compiler_item_syntax: Vec<CompilerItemSyntax>,
+    /// Hole-free expression quotations retain their parsed AST behind the same
+    /// kind of compiler-only handle.
+    compiler_expr_syntax: Vec<CompilerExprSyntax>,
     /// Positive while parsing the literal body of `quote expr:`. `${...}` holes
     /// are syntax splices there; everywhere else they are rejected at parse time.
     quote_expr_hole_depth: u32,
@@ -193,6 +196,7 @@ impl Parser {
             anon_records: Vec::new(),
             needs_meta_import: false,
             compiler_item_syntax: Vec::new(),
+            compiler_expr_syntax: Vec::new(),
             quote_expr_hole_depth: 0,
             quote_type_hole_depth: 0,
             quote_type_holes: Vec::new(),
@@ -402,6 +406,7 @@ impl Parser {
             import_lines,
             item_lines,
             compiler_item_syntax: std::mem::take(&mut self.compiler_item_syntax),
+            compiler_expr_syntax: std::mem::take(&mut self.compiler_expr_syntax),
         })
     }
 
@@ -1630,6 +1635,12 @@ impl Parser {
                                         self.compiler_owned_item_join(&args, member_line)
                                 {
                                     owned
+                                } else if name == "meta.expr_raw"
+                                    && let [Expr::Str(source)] = args.as_slice()
+                                    && let Some(owned) =
+                                        self.compiler_owned_expr_literal(source, member_line)
+                                {
+                                    owned
                                 } else {
                                     Expr::Call { name, args }
                                 }
@@ -1905,6 +1916,11 @@ impl Parser {
         self.advance(); // `quote`
         self.advance(); // category
         self.expect(&Tok::LBrace)?;
+        // Quotation itself imports `meta`; make that parse context effective
+        // immediately so a quoted `meta.f()` and later expressions classify it
+        // as a qualified call exactly as the final Module import says they do.
+        self.needs_meta_import = true;
+        self.imports.insert("meta".to_string());
         if category == "block" {
             let type_base = self.quote_type_holes.len();
             let pattern_base = self.quote_pattern_holes.len();
@@ -1926,7 +1942,6 @@ impl Parser {
             let quoted = quoted?;
             let type_holes = self.quote_type_holes.split_off(type_base);
             let pattern_holes = self.quote_pattern_holes.split_off(pattern_base);
-            self.needs_meta_import = true;
             return self.block_syntax_expr_with_holes(quoted, type_holes, pattern_holes);
         }
         let quoted = match category.as_str() {
@@ -1935,7 +1950,7 @@ impl Parser {
                 let quoted = self.expr(0);
                 self.quote_expr_hole_depth -= 1;
                 let quoted = quoted?;
-                self.quote_expr_syntax_expr(quoted)?
+                self.quote_expr_syntax_expr(quoted, quote_line)?
             }
             "type" => {
                 let base = self.quote_type_holes.len();
@@ -2025,7 +2040,6 @@ impl Parser {
             }
         };
         self.expect(&Tok::RBrace)?;
-        self.needs_meta_import = true;
         Ok(quoted)
     }
 
@@ -2082,15 +2096,81 @@ impl Parser {
         Ok(Pattern::Var(format!("{QUOTE_PATTERN_HOLE_PREFIX}{idx}")))
     }
 
-    fn quote_expr_syntax_expr(&self, mut quoted: Expr) -> Result<Expr, ParseError> {
+    fn quote_expr_syntax_expr(
+        &mut self,
+        mut quoted: Expr,
+        definition_line: u32,
+    ) -> Result<Expr, ParseError> {
         let mut holes = Vec::new();
         Self::collect_quote_expr_holes(&mut quoted, &mut holes);
         let source = crate::format::expr_str(&quoted);
         if holes.is_empty() {
-            return Ok(self.meta_call("expr_raw", vec![Expr::Str(source)]));
+            return Ok(self.compiler_owned_expr(quoted, source, definition_line));
         }
         let parts = self.quote_hole_parts(&source, QUOTE_EXPR_HOLE_PREFIX, holes.len(), "expression")?;
         Ok(self.meta_call("expr_join", vec![Expr::List(parts), Expr::List(holes)]))
+    }
+
+    fn compiler_owned_expr(
+        &mut self,
+        quoted: Expr,
+        source: String,
+        definition_line: u32,
+    ) -> Expr {
+        let handle = self.compiler_syntax_handle("expr", &source);
+        self.compiler_expr_syntax.push(CompilerExprSyntax {
+            handle: handle.clone(),
+            expr: quoted,
+            definition_line,
+        });
+        Expr::Call {
+            name: crate::intrinsics::COMPILER_QUOTE_EXPR.into(),
+            args: vec![Expr::Str(handle), Expr::Str(source)],
+        }
+    }
+
+    fn compiler_owned_expr_literal(
+        &mut self,
+        source: &str,
+        definition_line: u32,
+    ) -> Option<Expr> {
+        let mut wrapper = String::new();
+        let mut imports: Vec<&str> = self.imports.iter().map(String::as_str).collect();
+        imports.sort_unstable();
+        for import in imports {
+            wrapper.push_str("import ");
+            wrapper.push_str(import);
+            wrapper.push('\n');
+        }
+        wrapper.push_str("fn __witchy_expr_syntax_payload():\n");
+        for line in source.lines() {
+            wrapper.push_str("    ");
+            wrapper.push_str(line);
+            wrapper.push('\n');
+        }
+        // Parse without `parse_module`'s synthetic anonymous-record insertion;
+        // merge those shapes into the enclosing parser instead. This lets a
+        // formatted `meta.expr_raw(".{x: 1}")` reconstruct the same owned AST
+        // and causes the enclosing module to emit the required structural type.
+        let tokens = tokenize(&wrapper).ok()?;
+        let tokens = crate::lexer::apply_layout(tokens);
+        let mut payload_parser = Parser::new(tokens);
+        let mut parsed = payload_parser.module().ok()?;
+        let [Item::Function(function)] = parsed.items.as_slice() else {
+            return None;
+        };
+        let [Stmt::Expr(expr)] = function.body.stmts.as_slice() else {
+            return None;
+        };
+        let expr = expr.clone();
+        for fields in payload_parser.anon_records {
+            if !self.anon_records.contains(&fields) {
+                self.anon_records.push(fields);
+            }
+        }
+        self.compiler_item_syntax.append(&mut parsed.compiler_item_syntax);
+        self.compiler_expr_syntax.append(&mut parsed.compiler_expr_syntax);
+        Some(self.compiler_owned_expr(expr, source.to_string(), definition_line))
     }
 
     fn quote_hole_parts(
@@ -2197,15 +2277,29 @@ impl Parser {
 
     fn register_item_syntax(&mut self, quoted: Item, definition_line: u32) -> (String, String) {
         let source = Self::item_source(quoted.clone());
-        // The canonical source is a collision-free identity and works in the
-        // browser parser, where the native cache's BLAKE3 dependency is absent.
-        let handle = format!("witchy-compiler-item-syntax-v1\0{source}");
+        let handle = self.compiler_syntax_handle("item", &source);
         self.compiler_item_syntax.push(CompilerItemSyntax {
             handle: handle.clone(),
             item: quoted,
             definition_line,
         });
         (handle, source)
+    }
+
+    fn compiler_syntax_handle(&self, category: &str, source: &str) -> String {
+        // Imports affect whether `x.y()` is a qualified call or a method call,
+        // so source alone is not an AST identity. Length-prefix the sorted parse
+        // context to keep handles deterministic and collision-free without a
+        // native-only hashing dependency in the browser parser.
+        let mut imports: Vec<&str> = self.imports.iter().map(String::as_str).collect();
+        imports.sort_unstable();
+        let mut handle = format!("witchy-compiler-{category}-syntax-v2\0");
+        for import in imports {
+            handle.push_str(&format!("{}:{import}", import.len()));
+        }
+        handle.push('\0');
+        handle.push_str(source);
+        handle
     }
 
     fn compiler_owned_item_literal(
@@ -2318,6 +2412,7 @@ impl Parser {
             import_lines: Vec::new(),
             item_lines: vec![1],
             compiler_item_syntax: Vec::new(),
+            compiler_expr_syntax: Vec::new(),
         };
         crate::format::module(&module, &[])
     }

@@ -345,6 +345,7 @@ fn err<T, E: From<RuntimeError>>(message: impl Into<String>) -> Result<T, E> {
 
 fn compiler_item_holes(
     values: &[Value],
+    compiler_expr_syntax: &HashMap<String, Expr>,
 ) -> Result<Vec<witchy_syntax::syntax_holes::ItemSyntaxHole>, RuntimeError> {
     use witchy_syntax::syntax_holes::{
         ItemSyntaxHole, parse_expr_payload, parse_pattern_payload, parse_type_payload,
@@ -377,9 +378,24 @@ fn compiler_item_holes(
                 return err("compiler-owned item hole carried an invalid payload");
             };
             match tail(name) {
-                "ExprHole" => parse_expr_payload(source(syntax, "ExprSyntax")?)
-                    .map(ItemSyntaxHole::Expr)
-                    .map_err(|message| RuntimeError { message }),
+                "ExprHole" => match syntax {
+                    Value::Ctor { name, fields } if tail(name) == "CompilerExprSyntax" => {
+                        let [Value::Str(handle), Value::Str(_source)] = fields.as_slice() else {
+                            return err("CompilerExprSyntax carried an invalid payload");
+                        };
+                        compiler_expr_syntax
+                            .get(handle)
+                            .cloned()
+                            .map(ItemSyntaxHole::Expr)
+                            .ok_or_else(|| RuntimeError {
+                                message: "compiler-owned expression referenced an invalid syntax handle"
+                                    .into(),
+                            })
+                    }
+                    _ => parse_expr_payload(source(syntax, "ExprSyntax")?)
+                        .map(ItemSyntaxHole::Expr)
+                        .map_err(|message| RuntimeError { message }),
+                },
                 "TypeHole" => parse_type_payload(source(syntax, "TypeSyntax")?)
                     .map(ItemSyntaxHole::Type)
                     .map_err(|message| RuntimeError { message }),
@@ -872,6 +888,7 @@ pub struct Interpreter {
     fresh_ident_scope: Option<String>,
     fresh_ident_counter: u64,
     compiler_item_syntax: HashMap<String, Item>,
+    compiler_expr_syntax: HashMap<String, Expr>,
     comptime_item_output: Vec<PositionedComptimeItem>,
     /// Evaluation-step counter and ceiling. Unlike the runtime's epoch
     /// preemption, the tree-walker can't be interrupted, so a `while true {}`
@@ -1201,6 +1218,11 @@ impl Interpreter {
             .into_iter()
             .map(|syntax| (syntax.handle, syntax.item))
             .collect();
+        let compiler_expr_syntax = module
+            .compiler_expr_syntax
+            .into_iter()
+            .map(|syntax| (syntax.handle, syntax.expr))
+            .collect();
         let mut functions = HashMap::new();
         let mut record_fields = HashMap::new();
         let mut ctor_type_name: HashMap<String, String> = HashMap::new();
@@ -1260,6 +1282,7 @@ impl Interpreter {
             fresh_ident_scope: None,
             fresh_ident_counter: 0,
             compiler_item_syntax,
+            compiler_expr_syntax,
             comptime_item_output: Vec::new(),
             steps: 0,
             step_limit: DEFAULT_STEP_LIMIT,
@@ -2213,6 +2236,27 @@ impl Interpreter {
                 Value::Str(hint) => Ok(Some(Value::Str(self.next_fresh_ident(&hint)?))),
                 other => err(format!("meta.fresh expects a String hint, got `{other}`")),
             },
+            name if name == intrinsics::COMPILER_QUOTE_EXPR => {
+                if self.fresh_ident_scope.is_none() {
+                    return err(
+                        "compiler-owned expression quotation is available only during compile-time expansion",
+                    );
+                }
+                match args {
+                    [Value::Str(handle), Value::Str(source)]
+                        if self.compiler_expr_syntax.contains_key(handle) =>
+                    {
+                        Ok(Some(Value::Ctor {
+                            name: "meta.CompilerExprSyntax".into(),
+                            fields: vec![Value::Str(handle.clone()), Value::Str(source.clone())],
+                        }))
+                    }
+                    [Value::Str(_), Value::Str(_)] => {
+                        err("compiler-owned expression quotation referenced an invalid syntax handle")
+                    }
+                    _ => err("compiler-owned expression quotation expects an expression handle"),
+                }
+            }
             name if name == intrinsics::COMPILER_QUOTE_ITEM => {
                 if self.fresh_ident_scope.is_none() {
                     return err(
@@ -2293,7 +2337,7 @@ impl Interpreter {
                                 message: "compiler-owned item emission referenced an invalid syntax handle"
                                     .into(),
                             })?;
-                        let holes = compiler_item_holes(holes)?;
+                        let holes = compiler_item_holes(holes, &self.compiler_expr_syntax)?;
                         let item = witchy_syntax::syntax_holes::instantiate_item(template, holes)
                             .map_err(|message| RuntimeError { message })?;
                         ComptimeItemEmission::Syntax(Box::new(item))

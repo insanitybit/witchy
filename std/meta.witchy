@@ -19,8 +19,13 @@ sealed type ItemSyntax:
 sealed type TypeSyntax:
     TypeSyntax(String)
 
+// Hole-free `quote expr:` and literal `meta.expr_raw("...")` values retain a
+// compiler-owned expression AST. The second constructor is compiler-internal;
+// existing builders deliberately project its canonical source when composing a
+// new compatibility value.
 sealed type ExprSyntax:
     ExprSyntax(String)
+    CompilerExprSyntax(String, String)
 
 sealed type PatternSyntax:
     PatternSyntax(String)
@@ -268,6 +273,7 @@ pub fn expr_join(parts: List(String), holes: List(ExprSyntax)) -> ExprSyntax:
 fn expr_source(expr: ExprSyntax) -> String:
     match expr:
         ExprSyntax(source) -> source
+        CompilerExprSyntax(_, source) -> source
 
 fn expr_sources(exprs: List(ExprSyntax)) -> List(String):
     var out = []

@@ -49,6 +49,10 @@ pub struct Module {
     /// RFC-0080's expander consumes their opaque handles and appends the
     /// original AST directly.
     pub compiler_item_syntax: Vec<CompilerItemSyntax>,
+    /// Compiler-owned expression payloads referenced by unspellable calls in
+    /// compile-time code. Canonical source is a compatibility projection; the
+    /// stored AST is authoritative.
+    pub compiler_expr_syntax: Vec<CompilerExprSyntax>,
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
@@ -92,6 +96,14 @@ pub struct CompilerItemSyntax {
     /// Source line of the quote in its defining module. The first structural
     /// slice retains it for expansion diagnostics; the emitted item is still
     /// stamped to its invocation block for today's primary diagnostic.
+    pub definition_line: u32,
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompilerExprSyntax {
+    pub handle: String,
+    pub expr: Expr,
     pub definition_line: u32,
 }
 

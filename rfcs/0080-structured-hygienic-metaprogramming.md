@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed syntax wrappers/builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, and compiler-owned item syntax with structural typed holes landed; definition/call-site origin hygiene and compiler-owned expression/pattern/type syntax trees remain proposed"
+tracking: "source-backed syntax wrappers/builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned item syntax with structural typed holes, and compiler-owned hole-free expression payloads landed; definition/call-site origin hygiene and compiler-owned pattern/type syntax trees remain proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -306,12 +306,24 @@ The first source-compatible slice is implemented:
   holes)` plans are promoted to the same representation, and formatting prints
   that public typed form and reconstructs the compiler table on parse. Hole
   payload syntax remains source-backed until the expression/type/pattern slices.
+- The twenty-fifth slice gives hole-free `quote expr:` and literal
+  `meta.expr_raw("...")` a module-owned expression AST and deterministic private
+  handle. The sealed syntax value carries an internal AST identity plus canonical
+  source projection. A direct expression hole retrieves the AST, including
+  anonymous-record expressions that the compatibility payload parser cannot
+  represent alone. Existing `meta.expr_*` builders project source and return a
+  compatibility value, preserving their API while structural builders remain
+  future work. Typed tags also project source in this slice; compiler-owned tag
+  output transport is a separate vertical cut. Formatting prints
+  `meta.expr_raw("...")` and promotes literal payloads back where independently
+  parseable. Expression quotes containing holes remain source-backed.
 
 This is intentionally not the full RFC. Whole items and their typed hole
-placement are now compiler-owned, while expression/type/pattern/statement/block
+placement plus direct hole-free expression payloads are now compiler-owned,
+while composed/hole-bearing expression, type, pattern, statement, and block
 syntax payloads remain source-backed;
 definition-site/call-site identifier origins and compiler-owned
-expression/pattern/type syntax trees remain future work. The value is the
+pattern/type syntax trees remain future work. The value is the
 migration seam: future work can move the
 payload behind these wrappers from parsed source to structured compiler nodes
 without changing the comptime append/merge path again.

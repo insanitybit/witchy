@@ -12,7 +12,7 @@ comptime fn generated_item() -> meta.ItemSyntax:
     let binding = quote pattern:
         value
     let seed = quote expr:
-        40
+        .{value: 40}.value
     let tail = quote expr:
         2
     quote item:
@@ -31,6 +31,11 @@ fn main(console: Console):
 fn mixed_item_holes_expand_as_ast_and_run_on_both_backends() {
     let parsed = parser::parse_module(SOURCE).expect("parse structural item-hole program");
     assert_eq!(parsed.compiler_item_syntax.len(), 1, "quote owns one item template");
+    assert_eq!(
+        parsed.compiler_expr_syntax.len(),
+        2,
+        "both hole-free expression quotes retain compiler-owned AST"
+    );
     let template = &parsed.compiler_item_syntax[0];
     let ast::Item::Function(generated) = &template.item else {
         panic!("expected a compiler-owned function template");

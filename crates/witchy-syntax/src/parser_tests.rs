@@ -450,7 +450,7 @@ fn f(x: Int):
     }
 
     #[test]
-    fn quote_expr_lowers_to_meta_expr_raw_and_imports_meta() {
+    fn quote_expr_lowers_to_compiler_owned_expr_and_imports_meta() {
         let m = parse_module(r#"
 fn f():
     quote expr:
@@ -461,14 +461,49 @@ fn f():
             panic!("expected function");
         };
         let Stmt::Expr(Expr::Call { name, args }) = &f.body.stmts[0] else {
-            panic!("expected lowered meta.expr_raw call, got {:?}", f.body.stmts[0]);
+            panic!("expected compiler-owned expression call, got {:?}", f.body.stmts[0]);
         };
-        assert_eq!(name, "meta.expr_raw");
-        assert_eq!(args, &[Expr::Str("40 + 1 * 2".to_string())]);
+        assert_eq!(name, crate::intrinsics::COMPILER_QUOTE_EXPR);
+        let [Expr::Str(handle), Expr::Str(source)] = args.as_slice() else {
+            panic!("expected expression handle and compatibility source");
+        };
+        assert_eq!(source, "40 + 1 * 2");
+        let [syntax] = m.compiler_expr_syntax.as_slice() else {
+            panic!("expected one compiler-owned expression payload");
+        };
+        assert_eq!(handle, &syntax.handle);
+        assert!(matches!(syntax.expr, Expr::Binary { .. }));
+        assert_eq!(syntax.definition_line, 3);
 
         let err = parse_module("fn f():\n    quote module:\n        1\n")
             .expect_err("module quotation is not implemented");
         assert!(err.message.contains("`quote module:` is not implemented yet"), "{err}");
+    }
+
+    #[test]
+    fn compiler_owned_syntax_handles_include_parse_context() {
+        let method = parse_module(r#"
+fn f(x: X):
+    quote expr:
+        x.run()
+"#).expect("parse method-call quotation");
+        let qualified = parse_module(r#"
+import x
+
+fn f():
+    quote expr:
+        x.run()
+"#).expect("parse qualified-call quotation");
+
+        let [method_syntax] = method.compiler_expr_syntax.as_slice() else {
+            panic!("expected method-call syntax payload");
+        };
+        let [qualified_syntax] = qualified.compiler_expr_syntax.as_slice() else {
+            panic!("expected qualified-call syntax payload");
+        };
+        assert!(matches!(method_syntax.expr, Expr::MethodCall { .. }));
+        assert!(matches!(qualified_syntax.expr, Expr::Call { .. }));
+        assert_ne!(method_syntax.handle, qualified_syntax.handle);
     }
 
     #[test]

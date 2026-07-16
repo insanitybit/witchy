@@ -2249,7 +2249,10 @@ RFC-0080's typed boundary for whole generated items. `quote item:` and literal w
 
 #### `sealed type ExprSyntax`
 
+Hole-free `quote expr:` and literal `meta.expr_raw("...")` values retain a compiler-owned expression AST. The second constructor is compiler-internal; existing builders deliberately project its canonical source when composing a new compatibility value.
+
 - `ExprSyntax(String)`
+- `CompilerExprSyntax(String, String)`
 
 #### `sealed type PatternSyntax`
 

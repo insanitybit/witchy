@@ -109,6 +109,38 @@
     }
 
     #[test]
+    fn compiler_owned_expression_quotes_round_trip_through_formatting() {
+        let src = "comptime fn make() -> meta.ExprSyntax:\n    quote expr:\n        40 + 2\n";
+        let out = reformat(src).expect("compiler-owned expression quote round-trips");
+        assert!(out.starts_with("import meta\n"), "{out}");
+        assert!(out.contains("meta.expr_raw(\"40 + 2\")"), "{out}");
+        let reparsed = crate::parser::parse_module(&out).expect("formatted expression parses");
+        assert_eq!(reparsed.compiler_expr_syntax.len(), 1);
+        let crate::ast::Item::Function(make) = &reparsed.items[0] else {
+            panic!("expected helper function");
+        };
+        let crate::ast::Stmt::Expr(crate::ast::Expr::Call { name, .. }) = &make.body.stmts[0] else {
+            panic!("expected compiler-owned expression call");
+        };
+        assert_eq!(name, crate::intrinsics::COMPILER_QUOTE_EXPR);
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
+    }
+
+    #[test]
+    fn compiler_owned_anonymous_expression_round_trips_through_formatting() {
+        let src = "comptime fn make() -> meta.ExprSyntax:\n    quote expr:\n        .{value: 40}.value\n";
+        let out = reformat(src).expect("anonymous compiler-owned expression quote round-trips");
+        assert!(out.contains("meta.expr_raw(\".{value: 40}.value\")"), "{out}");
+        assert!(!out.contains("__anon"), "{out}");
+        let reparsed = crate::parser::parse_module(&out).expect("formatted expression parses");
+        assert_eq!(reparsed.compiler_expr_syntax.len(), 1);
+        assert!(reparsed.items.iter().any(|item| {
+            matches!(item, crate::ast::Item::Type(ty) if ty.name.starts_with("__anon"))
+        }));
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
+    }
+
+    #[test]
     fn anonymous_record_types_round_trip_through_formatting() {
         // RFC-0078 makes the structural record tier denotable in type position.
         // Formatting must print the source-level shape, not the synthetic
@@ -234,6 +266,7 @@
             import_lines: vec![],
             item_lines: vec![],
             compiler_item_syntax: vec![],
+            compiler_expr_syntax: vec![],
         };
         let printed = module(&m, &[]);
         // The printed form parses, but to a DIFFERENT program (`let x = 0`);

@@ -38,7 +38,8 @@
 //! pass; typeck, the interpreter, and both codegen backends panic on it.
 
 use witchy_syntax::ast::{
-    Block, CompilerItemSyntax, Expr, Function, Item, MatchArm, Module, Param, Pattern, Stmt, Type,
+    Block, CompilerExprSyntax, CompilerItemSyntax, Expr, Function, Item, MatchArm, Module, Param,
+    Pattern, Stmt, Type,
 };
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -87,6 +88,7 @@ pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) ->
         siblings.iter().map(|(n, m)| (n.as_str(), m)).collect();
     let mut items = module.items.clone();
     let mut compiler_item_syntax = module.compiler_item_syntax.clone();
+    let mut compiler_expr_syntax = module.compiler_expr_syntax.clone();
     let mut std_imports: Vec<String> = Vec::new();
     let mut std_from_imports: Vec<(String, Vec<String>)> = Vec::new();
     merge_std_from_imports(&mut std_from_imports, &module.from_imports);
@@ -107,6 +109,7 @@ pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) ->
             merge_std_from_imports(&mut std_from_imports, &m.from_imports);
             items.extend(m.items.iter().cloned());
             compiler_item_syntax.extend(m.compiler_item_syntax.iter().cloned());
+            compiler_expr_syntax.extend(m.compiler_expr_syntax.iter().cloned());
             frontier.extend(m.imports.iter().cloned());
         }
     }
@@ -130,6 +133,7 @@ pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) ->
         from_imports: std_from_imports,
         qualifiers,
         compiler_item_syntax,
+        compiler_expr_syntax,
         fresh_invocation: Cell::new(0),
     };
     // Expand tagged literals in EVERY expression-bearing item position, not just
@@ -172,6 +176,7 @@ struct Context {
     /// `glamour.text(…)` parses as a qualified call, not a method call.
     qualifiers: Vec<String>,
     compiler_item_syntax: Vec<CompilerItemSyntax>,
+    compiler_expr_syntax: Vec<CompilerExprSyntax>,
     /// Stable traversal ordinal used to give each tagged-literal evaluator an
     /// independent RFC-0080 fresh-name namespace.
     fresh_invocation: Cell<u64>,
@@ -474,18 +479,32 @@ fn expand_one(
         }),
         TagOutput::ExprSyntax => Stmt::Expr(Expr::Match {
             scrutinee: Box::new(tag_call),
-            arms: vec![MatchArm {
-                line: 0,
-                pattern: Pattern::Ctor {
-                    name: "ExprSyntax".into(),
-                    args: vec![Pattern::Var("source".into())],
+            arms: vec![
+                MatchArm {
+                    line: 0,
+                    pattern: Pattern::Ctor {
+                        name: "ExprSyntax".into(),
+                        args: vec![Pattern::Var("source".into())],
+                    },
+                    guard: None,
+                    body: Expr::Call {
+                        name: "emit".into(),
+                        args: vec![Expr::Var("source".into())],
+                    },
                 },
-                guard: None,
-                body: Expr::Call {
-                    name: "emit".into(),
-                    args: vec![Expr::Var("source".into())],
+                MatchArm {
+                    line: 0,
+                    pattern: Pattern::Ctor {
+                        name: "CompilerExprSyntax".into(),
+                        args: vec![Pattern::Wildcard, Pattern::Var("source".into())],
+                    },
+                    guard: None,
+                    body: Expr::Call {
+                        name: "emit".into(),
+                        args: vec![Expr::Var("source".into())],
+                    },
                 },
-            }],
+            ],
         }),
     };
     let main = Function {
@@ -560,6 +579,7 @@ fn expand_one(
         import_lines: Vec::new(),
         item_lines: Vec::new(),
         compiler_item_syntax: ctx.compiler_item_syntax.clone(),
+        compiler_expr_syntax: ctx.compiler_expr_syntax.clone(),
     };
     let linked = crate::pipeline::link(vec![("comptime".into(), prog)], "comptime")
         .map_err(|e| format!("{}: {e}", where_()))?;

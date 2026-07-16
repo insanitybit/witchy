@@ -71,6 +71,10 @@ with the same human-readable hint cannot capture it.
 not rendered and reparsed. Typed holes replace exact expression, type, or pattern
 nodes in that item AST. The hole payload values and dynamic builders remain the
 compatibility path while the rest of the syntax tree becomes structural.
+Hole-free `quote expr:` values also retain their parsed AST when passed directly
+through an item hole. Existing `meta.expr_*` builders can consume them by
+projecting canonical source; the newly composed value remains a compatibility
+value until structural expression builders land.
 
 ```witchy
 import meta

@@ -1267,6 +1267,11 @@ fn expr(e: &Expr) -> String {
             {
                 return format!("meta.item_join_syntax({}, {})", expr(parts), expr(holes));
             }
+            if name == crate::intrinsics::COMPILER_QUOTE_EXPR
+                && let [Expr::Str(_handle), Expr::Str(source)] = args.as_slice()
+            {
+                return format!("meta.expr_raw({})", string_lit(source));
+            }
             // `to_string`/`int_to_string` were retired in favor of string
             // interpolation, whose only surface spelling is `"${x}"`; rewrite a
             // single-argument render call to that form (unless the module defines
@@ -2049,8 +2054,14 @@ fn canon_module(m: &mut Module) {
     m.imports.dedup();
     m.from_imports.sort();
     for syntax in &mut m.compiler_item_syntax {
+        syntax.handle.clear();
         syntax.definition_line = 0;
         canon_item(&mut syntax.item);
+    }
+    for syntax in &mut m.compiler_expr_syntax {
+        syntax.handle.clear();
+        syntax.definition_line = 0;
+        canon_expr(&mut syntax.expr);
     }
     for it in &mut m.items {
         canon_item(it);
@@ -2097,6 +2108,19 @@ fn canon_stmt(s: &mut Stmt) {
 
 fn canon_expr(e: &mut Expr) {
     if let Expr::Call { name, args } = e {
+        // Compiler syntax handles are opaque lookup keys, not source semantics.
+        // Formatting reconstructs them from canonical source and parse context;
+        // implicit imports may become explicit, so compare the authoritative
+        // payload tables and projections while ignoring the key bytes.
+        if matches!(
+            name.as_str(),
+            crate::intrinsics::COMPILER_QUOTE_ITEM
+                | crate::intrinsics::COMPILER_QUOTE_ITEM_HOLES
+                | crate::intrinsics::COMPILER_QUOTE_EXPR
+        ) && let Some(Expr::Str(handle)) = args.first_mut()
+        {
+            handle.clear();
+        }
         // The printer re-sugars interpolation to `"${x}"`, which reparses through
         // the generated render intrinsic. Normalize render calls before checking
         // parse/format stability.
