@@ -126,10 +126,10 @@ nextest only inside serialized gates), `MERGE_QUEUE_BATCH_MAX` (5),
 present and an older coordinator has not exported `NEXTEST_TEST_THREADS`; this
 keeps the candidate that introduces the queue knob capable of gating itself.
 On macOS, `.config/nextest.toml` additionally routes test discovery through
-`scripts/nextest-list-wrapper.sh`. The wrapper serializes only the `--list`
-binary launches with a lock unique to `NEXTEST_RUN_ID` (or the shared nextest
-parent PID on older versions); normal test execution still uses the bounded
-parallel scheduler.
+`scripts/nextest-list-wrapper.sh`. The wrapper bounds only the `--list` binary
+launches to four slots, keyed by `NEXTEST_RUN_ID` (or the shared nextest parent
+PID on older versions); normal test execution still uses the bounded parallel
+scheduler. `WITCHY_NEXTEST_LIST_JOBS` permits local retuning.
 
 **Diff-scoped fuzzing.** The differential fuzzer is the gate's single biggest
 test (~57s, a fixed-seed parity regression suite). `process_one` classifies the

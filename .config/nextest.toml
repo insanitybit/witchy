@@ -19,14 +19,14 @@ command = "scripts/warm-witchy-caches.sh"
 slow-timeout = { period = "150s", terminate-after = 1 }
 
 # macOS can wedge dyld when nextest discovers the workspace's ~100 MB test
-# binaries at CPU-count concurrency. Serialize only the list phase there; test
+# binaries at CPU-count concurrency. Bound only the list phase there; test
 # execution retains the profile's normal scheduling and test groups.
-[scripts.wrapper.serial-list]
+[scripts.wrapper.bounded-list]
 command = ["/bin/bash", "scripts/nextest-list-wrapper.sh"]
 
 [[profile.default.scripts]]
 platform = "cfg(target_os = \"macos\")"
-list-wrapper = "serial-list"
+list-wrapper = "bounded-list"
 
 [profile.default]
 # Surface every failure in one run rather than stopping at the first.
