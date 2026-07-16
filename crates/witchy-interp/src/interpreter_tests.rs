@@ -140,9 +140,11 @@
         let inc = module.items.iter().find_map(|item| match item {
             witchy_syntax::ast::Item::Function(function) if function.name == "inc" => {
                 Some(Value::Closure {
-                    owner: function.name.clone(),
-                    params: function.params.clone(),
-                    body: function.body.clone(),
+                    function: closure_function(
+                        function.name.clone(),
+                        function.params.clone(),
+                        function.body.clone(),
+                    ),
                     env: Box::new(Env::new()),
                 })
             }

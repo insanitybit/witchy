@@ -94,13 +94,17 @@ pub enum Value {
     /// A listening server socket — a handle into the interpreter's listener
     /// table. Obtained from `net.listen(addr)`; `accept` blocks for a `Socket`.
     Listener(usize),
-    /// A first-class function (closure): its source owner, parameters, body,
-    /// and the environment captured where it was defined. `owner` keeps a
-    /// runtime error's function name paired with the body line that produced it.
+    /// A first-class function (closure): a synthetic `Function` (its `name` is
+    /// the source owner, keeping a runtime error's function name paired with
+    /// the body line that produced it) plus the environment captured where it
+    /// was defined. The `Function` is `Rc`'d and built ONCE at closure
+    /// creation — cloning a function value (every higher-order call site does)
+    /// is a refcount bump, not an AST copy. It is normalized (`ret: None`,
+    /// no bounds/flags) exactly like the wrapper `run_callable` used to build
+    /// per application, so tail-ABI classification over `tail_function` sees
+    /// byte-identical signatures.
     Closure {
-        owner: String,
-        params: Vec<Param>,
-        body: Block,
+        function: Rc<Function>,
         env: Box<Env>,
     },
     /// An immutable associative map, kept as insertion-ordered key/value pairs
@@ -207,7 +211,9 @@ impl fmt::Display for Value {
             Value::Socket(id) => write!(f, "<socket #{id}>"),
             Value::Listener(id) => write!(f, "<listener #{id}>"),
             Value::Build(_) => write!(f, "<build capability>"),
-            Value::Closure { params, .. } => write!(f, "<function/{}>", params.len()),
+            Value::Closure { function, .. } => {
+                write!(f, "<function/{}>", function.params.len())
+            }
             Value::Dict(entries) => {
                 write!(f, "{{")?;
                 for (i, (k, v)) in entries.iter().enumerate() {
@@ -265,8 +271,27 @@ enum TailCallable {
 
 struct CallableOutcome {
     value: Value,
-    params: Vec<Param>,
+    function: Rc<Function>,
     env: Env,
+}
+
+/// The normalized synthetic `Function` a closure value carries: the shape
+/// `run_callable` historically rebuilt per application (`ret: None`, no
+/// bounds/flags, `public: false`). Built once at closure CREATION so
+/// application and tail-classification see the identical struct with zero
+/// per-call AST copies.
+fn closure_function(owner: String, params: Vec<Param>, body: Block) -> Rc<Function> {
+    Rc::new(Function {
+        public: false,
+        comptime_only: false,
+        name: owner,
+        params,
+        ret: None,
+        body,
+        bounds: Vec::new(),
+        is_gen: false,
+        is_async: false,
+    })
 }
 
 struct ClosureOutcome {
@@ -717,6 +742,11 @@ pub struct Interpreter {
     // `Rc` so a call clones a pointer, not the whole function AST (this is the
     // hot path for recursion).
     functions: HashMap<String, Rc<Function>>,
+    /// Memoized bare-function closure values (`Expr::Var` on a top-level
+    /// function name). The function table is immutable for a run, so the
+    /// wrapped value is too; re-evaluating the name clones Rcs instead of
+    /// re-copying the function's AST.
+    fn_values: HashMap<String, Value>,
     /// Host directory the root `Dir` capability is rooted at (handle 0 / the
     /// first `Dir` parameter of `main`).
     root: PathBuf,
@@ -1160,6 +1190,7 @@ impl Interpreter {
             assert_site: None,
             depth: 0,
             depth_limit: DEFAULT_DEPTH_LIMIT,
+            fn_values: HashMap::new(),
             tail_function: None,
             tail_dynamic_chain: false,
             proper_tail_edges,
@@ -1612,34 +1643,23 @@ impl Interpreter {
                     }
                     (function, env, false)
                 }
-                TailCallable::Closure(Value::Closure { owner, params, body, env }) => {
-                    if params.len() != current_args.len() {
+                TailCallable::Closure(Value::Closure { function, env }) => {
+                    if function.params.len() != current_args.len() {
                         break err(format!(
                             "function expects {} argument(s) but got {}",
-                            params.len(),
+                            function.params.len(),
                             current_args.len()
                         ));
                     }
                     let mut env = *env;
                     env.push();
-                    for (param, value) in params.iter().zip(current_args) {
+                    for (param, value) in function.params.iter().zip(current_args) {
                         env.define(
                             param.name.clone(),
                             value,
                             param.convention.binds_mutable(),
                         );
                     }
-                    let function = Rc::new(Function {
-                        public: false,
-                        comptime_only: false,
-                        name: owner,
-                        params,
-                        ret: None,
-                        body,
-                        bounds: Vec::new(),
-                        is_gen: false,
-                        is_async: false,
-                    });
                     (function, env, true)
                 }
                 TailCallable::Closure(_) => break err("attempted to call a non-function value"),
@@ -1654,11 +1674,7 @@ impl Interpreter {
                     argvals = next_args;
                 }
                 Ok(value) | Err(Flow::Return(value)) => {
-                    break Ok(CallableOutcome {
-                        value,
-                        params: function.params.clone(),
-                        env,
-                    });
+                    break Ok(CallableOutcome { value, function, env });
                 }
                 Err(error @ Flow::Err(_)) => break Err(error),
                 Err(Flow::Break | Flow::Continue) => {
@@ -1682,6 +1698,7 @@ impl Interpreter {
     fn run_closure(&mut self, clo: Value, argvals: Vec<Value>) -> Result<ClosureOutcome, Flow> {
         let outcome = self.run_callable(TailCallable::Closure(clo), argvals)?;
         let writebacks = outcome
+            .function
             .params
             .iter()
             .enumerate()
@@ -1737,20 +1754,29 @@ impl Interpreter {
     fn eval_call_args(
         &mut self,
         args: &[Expr],
-        conventions: &[Convention],
+        params: &[Param],
         env: &mut Env,
     ) -> Result<(Vec<Value>, Vec<Option<CapturedPlace>>), Flow> {
         let mut values = Vec::with_capacity(args.len());
-        let mut places = Vec::with_capacity(args.len());
+        // The overwhelmingly common call has no `var` parameter; leave `places`
+        // unallocated then (`Vec::new` doesn't allocate, and every consumer
+        // reads it through `.get(i)`, where absent == None).
+        let any_var = params
+            .iter()
+            .take(args.len())
+            .any(|param| param.convention == Convention::Var);
+        let mut places = if any_var { Vec::with_capacity(args.len()) } else { Vec::new() };
         for (index, arg) in args.iter().enumerate() {
-            if conventions.get(index) == Some(&Convention::Var) {
+            if params.get(index).map(|param| param.convention) == Some(Convention::Var) {
                 let place = self.capture_place(arg, env)?;
                 let value = self.read_place_value(&place, env)?;
                 values.push(value);
                 places.push(Some(place));
             } else {
                 values.push(self.eval(arg, env)?);
-                places.push(None);
+                if any_var {
+                    places.push(None);
+                }
             }
         }
         Ok((values, places))
@@ -1851,23 +1877,26 @@ impl Interpreter {
         let name = witchy_syntax::cap_ops::surface_name(name);
         let local_closure = matches!(env.get(name), Some(Value::Closure { .. }))
             .then(|| env.get(name).expect("closure just matched").clone());
-        let conventions: Vec<Convention> = match local_closure.as_ref() {
-            Some(Value::Closure { params, .. }) => {
-                params.iter().map(|param| param.convention).collect()
-            }
-            _ => self
-                .functions
-                .get(name)
-                .map(|function| function.params.iter().map(|param| param.convention).collect())
-                .unwrap_or_default(),
-        };
-        let (argvals, places) = self.eval_call_args(args, &conventions, env)?;
+        // ONE table lookup for the whole call (an Rc clone): it feeds the
+        // parameter-convention slice here and is the callee at the end —
+        // no per-call Vec<Convention> collect, no second lookup.
+        let callee = self.functions.get(name).cloned();
+        let closure_fn = local_closure.as_ref().and_then(|value| match value {
+            Value::Closure { function, .. } => Some(function.clone()),
+            _ => None,
+        });
+        let params: &[Param] = closure_fn
+            .as_ref()
+            .or(callee.as_ref())
+            .map(|function| function.params.as_slice())
+            .unwrap_or(&[]);
+        let (argvals, places) = self.eval_call_args(args, params, env)?;
         if let Some((value, var_values)) = self.call_interpreter_special(name, &argvals)? {
-            let var_places: Vec<CapturedPlace> = conventions
+            let var_places: Vec<CapturedPlace> = params
                 .iter()
                 .enumerate()
-                .filter_map(|(index, convention)| {
-                    (*convention == Convention::Var)
+                .filter_map(|(index, param)| {
+                    (param.convention == Convention::Var)
                         .then(|| places.get(index).and_then(Clone::clone))
                         .flatten()
                 })
@@ -1887,10 +1916,12 @@ impl Interpreter {
             return self.apply_closure_call(clo, argvals, places, env);
         }
         if let Some(v) = self.call_builtin(name, &argvals)? {
-            let var_indices: Vec<usize> = conventions
+            let var_indices: Vec<usize> = params
                 .iter()
                 .enumerate()
-                .filter_map(|(index, convention)| (*convention == Convention::Var).then_some(index))
+                .filter_map(|(index, param)| {
+                    (param.convention == Convention::Var).then_some(index)
+                })
                 .collect();
             if let [index] = var_indices.as_slice() {
                 let place = places
@@ -1906,7 +1937,7 @@ impl Interpreter {
             }
             return Ok(v);
         }
-        let Some(func) = self.functions.get(name).cloned() else {
+        let Some(func) = callee else {
             return err(format!("call to unknown function `{name}`"));
         };
         if func.params.len() != argvals.len() {
@@ -1934,6 +1965,7 @@ impl Interpreter {
         let result = outcome.value;
         let fenv = outcome.env;
         let var_values: Vec<_> = outcome
+            .function
             .params
             .iter()
             .filter(|param| param.convention == Convention::Var)
@@ -3521,12 +3553,7 @@ impl Interpreter {
             Expr::Call { name, args } if tail_target.is_some() => {
                 self.note_assert_crossing(name);
                 let target = tail_target.expect("guarded tail-call target");
-                let conventions: Vec<_> = target
-                    .params
-                    .iter()
-                    .map(|param| param.convention)
-                    .collect();
-                let (values, places) = self.eval_call_args(args, &conventions, env)?;
+                let (values, places) = self.eval_call_args(args, &target.params, env)?;
                 debug_assert!(
                     target.params.iter().zip(&places).all(|(param, place)| {
                         (param.convention == Convention::Var) == place.is_some()
@@ -3550,12 +3577,12 @@ impl Interpreter {
             }
             Expr::Apply { func, args } if source_has_no_var => {
                 let closure = self.eval(func, env)?;
-                let Value::Closure { params, .. } = &closure else {
+                let Value::Closure { function, .. } = &closure else {
                     return err("attempted to call a non-function value");
                 };
-                let conventions: Vec<_> = params.iter().map(|param| param.convention).collect();
-                let (values, places) = self.eval_call_args(args, &conventions, env)?;
-                if params.iter().all(|param| param.convention != Convention::Var) {
+                let function = function.clone();
+                let (values, places) = self.eval_call_args(args, &function.params, env)?;
+                if function.params.iter().all(|param| param.convention != Convention::Var) {
                     debug_assert!(places.iter().all(Option::is_none));
                     Err(Flow::TailCall {
                         callable: TailCallable::Closure(closure),
@@ -3569,12 +3596,12 @@ impl Interpreter {
                 let Some(closure) = env.get(name).cloned() else {
                     return self.eval(expr, env);
                 };
-                let Value::Closure { params, .. } = &closure else {
+                let Value::Closure { function, .. } = &closure else {
                     return self.eval(expr, env);
                 };
-                let conventions: Vec<_> = params.iter().map(|param| param.convention).collect();
-                let (values, places) = self.eval_call_args(args, &conventions, env)?;
-                if params.iter().all(|param| param.convention != Convention::Var) {
+                let function = function.clone();
+                let (values, places) = self.eval_call_args(args, &function.params, env)?;
+                if function.params.iter().all(|param| param.convention != Convention::Var) {
                     debug_assert!(places.iter().all(Option::is_none));
                     Err(Flow::TailCall {
                         callable: TailCallable::Closure(closure),
@@ -3793,25 +3820,37 @@ impl Interpreter {
                     // A bare top-level function name is a first-class function
                     // value: wrap it as a closure over an empty environment
                     // (top-level functions are closed; nested calls resolve
-                    // through the global function table at apply time).
-                    Some(func) => Ok(Value::Closure {
-                        owner: name.clone(),
-                        params: func.params.clone(),
-                        body: func.body.clone(),
-                        env: Box::new(Env::new()),
-                    }),
+                    // through the global function table at apply time). The
+                    // wrap is memoized per name — the function table is
+                    // immutable for the run, and re-evaluating a function name
+                    // (every higher-order loop transition does) must not
+                    // re-copy its AST.
+                    Some(func) => {
+                        if let Some(value) = self.fn_values.get(name) {
+                            return Ok(value.clone());
+                        }
+                        let value = Value::Closure {
+                            function: closure_function(
+                                name.clone(),
+                                func.params.clone(),
+                                func.body.clone(),
+                            ),
+                            env: Box::new(Env::new()),
+                        };
+                        self.fn_values.insert(name.clone(), value.clone());
+                        Ok(value)
+                    }
                     None => err(format!("unbound variable `{name}`")),
                 },
             },
             Expr::Call { name, args } => self.eval_call(name, args, env),
             Expr::Apply { func, args } => {
                 let clo = self.eval(func, env)?;
-                let Value::Closure { params, .. } = &clo else {
+                let Value::Closure { function, .. } = &clo else {
                     return err("attempted to call a non-function value");
                 };
-                let conventions: Vec<Convention> =
-                    params.iter().map(|param| param.convention).collect();
-                let (argvals, places) = self.eval_call_args(args, &conventions, env)?;
+                let function = function.clone();
+                let (argvals, places) = self.eval_call_args(args, &function.params, env)?;
                 self.apply_closure_call(clo, argvals, places, env)
             }
             Expr::Ctor { name, args } => {
@@ -3864,9 +3903,11 @@ impl Interpreter {
                     }
                 });
                 Ok(Value::Closure {
-                    owner: self.cur_fn.clone(),
-                    params: params.clone(),
-                    body: body.clone(),
+                    function: closure_function(
+                        self.cur_fn.clone(),
+                        params.clone(),
+                        body.clone(),
+                    ),
                     env: Box::new(env.capture(&mentioned)),
                 })
             }
