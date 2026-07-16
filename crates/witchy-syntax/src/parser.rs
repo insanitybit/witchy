@@ -135,6 +135,9 @@ struct Parser {
     /// Hole-free expression quotations retain their parsed AST behind the same
     /// kind of compiler-only handle.
     compiler_expr_syntax: Vec<CompilerExprSyntax>,
+    /// Hole-free type quotations retain their parsed AST behind a compiler-only
+    /// handle. Source-backed builders remain the compatibility representation.
+    compiler_type_syntax: Vec<CompilerTypeSyntax>,
     /// Positive while parsing the literal body of `quote expr:`. `${...}` holes
     /// are syntax splices there; everywhere else they are rejected at parse time.
     quote_expr_hole_depth: u32,
@@ -197,6 +200,7 @@ impl Parser {
             needs_meta_import: false,
             compiler_item_syntax: Vec::new(),
             compiler_expr_syntax: Vec::new(),
+            compiler_type_syntax: Vec::new(),
             quote_expr_hole_depth: 0,
             quote_type_hole_depth: 0,
             quote_type_holes: Vec::new(),
@@ -407,6 +411,7 @@ impl Parser {
             item_lines,
             compiler_item_syntax: std::mem::take(&mut self.compiler_item_syntax),
             compiler_expr_syntax: std::mem::take(&mut self.compiler_expr_syntax),
+            compiler_type_syntax: std::mem::take(&mut self.compiler_type_syntax),
         })
     }
 
@@ -1641,6 +1646,14 @@ impl Parser {
                                         self.compiler_owned_expr_literal(source, member_line)
                                 {
                                     owned
+                                } else if name == "meta.type_join"
+                                    && let [Expr::List(parts), Expr::List(holes)] = args.as_slice()
+                                    && holes.is_empty()
+                                    && let [Expr::Str(source)] = parts.as_slice()
+                                    && let Some(owned) =
+                                        self.compiler_owned_type_literal(source, member_line)
+                                {
+                                    owned
                                 } else {
                                     Expr::Call { name, args }
                                 }
@@ -1964,7 +1977,7 @@ impl Parser {
                 }
                 let quoted = quoted?;
                 let holes = self.quote_type_holes.split_off(base);
-                self.type_syntax_expr_with_holes(quoted, holes)?
+                self.type_syntax_expr_with_holes(quoted, holes, quote_line)?
             }
             "pattern" => {
                 let base = self.quote_pattern_holes.len();
@@ -2170,7 +2183,39 @@ impl Parser {
         }
         self.compiler_item_syntax.append(&mut parsed.compiler_item_syntax);
         self.compiler_expr_syntax.append(&mut parsed.compiler_expr_syntax);
+        self.compiler_type_syntax.append(&mut parsed.compiler_type_syntax);
         Some(self.compiler_owned_expr(expr, source.to_string(), definition_line))
+    }
+
+    fn compiler_owned_type_literal(
+        &mut self,
+        source: &str,
+        definition_line: u32,
+    ) -> Option<Expr> {
+        let wrapper = format!("type TypeSyntaxPayload = {source}\n");
+        let tokens = tokenize(&wrapper).ok()?;
+        let tokens = crate::lexer::apply_layout(tokens);
+        let mut payload_parser = Parser::new(tokens);
+        let parsed = payload_parser.module().ok()?;
+        let [Item::TypeAlias { ty, .. }] = parsed.items.as_slice() else {
+            return None;
+        };
+        let ty = ty.clone();
+        for fields in payload_parser.anon_records {
+            if !self.anon_records.contains(&fields) {
+                self.anon_records.push(fields);
+            }
+        }
+        let handle = self.compiler_syntax_handle("type", source);
+        self.compiler_type_syntax.push(CompilerTypeSyntax {
+            handle: handle.clone(),
+            ty,
+            definition_line,
+        });
+        Some(Expr::Call {
+            name: crate::intrinsics::COMPILER_QUOTE_TYPE.into(),
+            args: vec![Expr::Str(handle), Expr::Str(source.to_string())],
+        })
     }
 
     fn quote_hole_parts(
@@ -2199,12 +2244,23 @@ impl Parser {
     }
 
     fn type_syntax_expr_with_holes(
-        &self,
+        &mut self,
         quoted: Type,
         holes: Vec<Expr>,
+        definition_line: u32,
     ) -> Result<Expr, ParseError> {
         if holes.is_empty() {
-            return self.type_syntax_expr(&quoted);
+            let source = crate::format::type_str(&quoted);
+            let handle = self.compiler_syntax_handle("type", &source);
+            self.compiler_type_syntax.push(CompilerTypeSyntax {
+                handle: handle.clone(),
+                ty: quoted,
+                definition_line,
+            });
+            return Ok(Expr::Call {
+                name: crate::intrinsics::COMPILER_QUOTE_TYPE.into(),
+                args: vec![Expr::Str(handle), Expr::Str(source)],
+            });
         }
         let source = crate::format::type_str(&quoted);
         let parts = self.quote_hole_parts(&source, QUOTE_TYPE_HOLE_PREFIX, holes.len(), "type")?;
@@ -2413,6 +2469,7 @@ impl Parser {
             item_lines: vec![1],
             compiler_item_syntax: Vec::new(),
             compiler_expr_syntax: Vec::new(),
+            compiler_type_syntax: Vec::new(),
         };
         crate::format::module(&module, &[])
     }
@@ -2653,87 +2710,6 @@ impl Parser {
 
     fn meta_ident(&self, name: &str) -> Expr {
         self.meta_call("ident", vec![Expr::Str(name.to_string())])
-    }
-
-    fn type_syntax_expr(&self, ty: &Type) -> Result<Expr, ParseError> {
-        match ty {
-            Type::Named(name, args) => {
-                if name.starts_with("__anon") || name.starts_with("__union") {
-                    return Err(self.error(
-                        "`quote type:` does not support anonymous record or union types yet; \
-                         use a named type for now",
-                    ));
-                }
-                let rendered_args = self.type_syntax_exprs(args)?;
-                if matches!(name.as_str(), "Dir" | "File" | "Net") && !args.is_empty() {
-                    return Ok(self.meta_call(
-                        "type_capability",
-                        vec![self.meta_ident(name), Expr::List(rendered_args)],
-                    ));
-                }
-                if let Some((module, type_name)) = name.split_once('.') {
-                    Ok(self.meta_call(
-                        "type_qualified",
-                        vec![
-                            self.meta_ident(module),
-                            self.meta_ident(type_name),
-                            Expr::List(rendered_args),
-                        ],
-                    ))
-                } else {
-                    Ok(self.meta_call(
-                        "type_named",
-                        vec![self.meta_ident(name), Expr::List(rendered_args)],
-                    ))
-                }
-            }
-            Type::Tuple(types) => Ok(self.meta_call("type_tuple", vec![
-                Expr::List(self.type_syntax_exprs(types)?),
-            ])),
-            Type::Fn(params, ret, conventions) => Ok(self.meta_call(
-                "type_fn_with_conventions",
-                vec![
-                    Expr::List(self.type_syntax_exprs(params)?),
-                    Expr::List(
-                        conventions
-                            .iter()
-                            .map(|convention| {
-                                Expr::Str(
-                                    match convention {
-                                        Convention::Let => "value",
-                                        Convention::Borrow => "borrow",
-                                        Convention::Var => "var",
-                                        Convention::Own => "own",
-                                    }
-                                    .to_string(),
-                                )
-                            })
-                            .collect(),
-                    ),
-                    self.type_syntax_expr(ret)?,
-                ],
-            )),
-            Type::Qualified(qual, inner) => {
-                let name = match qual {
-                    TypeQual::Frozen => "type_frozen",
-                    TypeQual::Unique => "type_unique",
-                    TypeQual::LocalUnique => "type_local_unique",
-                    // (RFC-0083) There is no `meta` constructor for a borrowed view
-                    // yet; `quote type:` cannot build one. Reject with an actionable
-                    // message rather than silently dropping the lifetime.
-                    TypeQual::Borrow(_) => {
-                        return Err(self.error(
-                            "`quote type:` does not support borrowed views (`View(T, 'a)`) yet",
-                        ));
-                    }
-                };
-                Ok(self.meta_call(name, vec![self.type_syntax_expr(inner)?]))
-            }
-        }
-    }
-
-    fn type_syntax_exprs(&self, types: &[Type]) -> Result<Vec<Expr>, ParseError> {
-        types.iter().map(|ty| self.type_syntax_expr(ty)).collect()
     }
 
     fn pattern_syntax_expr(&self, pattern: &Pattern) -> Expr {

@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed syntax wrappers/builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned item syntax with structural typed holes, compiler-owned hole-free expression payloads, and direct AST transport for typed tags landed; definition/call-site origin hygiene and compiler-owned pattern/type syntax trees remain proposed"
+tracking: "source-backed syntax wrappers/builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned item syntax with structural typed holes, compiler-owned hole-free expression and type payloads, and direct AST transport for typed tags landed; definition/call-site origin hygiene and compiler-owned pattern syntax trees remain proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -324,13 +324,21 @@ The first source-compatible slice is implemented:
   parsed with the tag's qualifier context; a legacy `String` tag is unchanged.
   Missing, duplicate, cross-category, or mixed source/typed emissions fail
   loudly. Both runtime backends continue to consume only the expanded AST.
+- The twenty-seventh slice gives hole-free `quote type:` a module-owned `Type`
+  AST and deterministic private handle. Direct type holes retrieve that node
+  without reparsing, including anonymous record/union types and RFC-0083
+  borrowed views that the former builder lowering rejected. Existing
+  `meta.type_*` builders project canonical source and remain compatible.
+  Formatting uses a literal zero-hole `meta.type_join` plan and the parser
+  promotes that spelling back to the same owned representation, so no public
+  raw type-string constructor is added.
 
 This is intentionally not the full RFC. Whole items and their typed hole
 placement plus direct hole-free expression payloads are now compiler-owned,
-while composed/hole-bearing expression, type, pattern, statement, and block
-syntax payloads remain source-backed;
+while composed/hole-bearing expression and type payloads plus pattern,
+statement, and block syntax remain source-backed;
 definition-site/call-site identifier origins and compiler-owned
-pattern/type syntax trees remain future work. The value is the
+pattern syntax trees remain future work. The value is the
 migration seam: future work can move the
 payload behind these wrappers from parsed source to structured compiler nodes
 without changing the comptime append/merge path again.

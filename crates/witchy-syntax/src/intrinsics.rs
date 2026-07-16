@@ -12,6 +12,7 @@ pub enum IntrinsicId {
     CompilerQuoteItem,
     CompilerQuoteItemHoles,
     CompilerQuoteExpr,
+    CompilerQuoteType,
     CompilerEmitItem,
     CompilerEmitExpr,
     TryContext,
@@ -108,6 +109,7 @@ pub enum IntrinsicSignature {
     CompilerQuoteItem,
     CompilerQuoteItemHoles,
     CompilerQuoteExpr,
+    CompilerQuoteType,
     CompilerEmitItem,
     CompilerEmitExpr,
     TryContext,
@@ -369,6 +371,7 @@ pub const GENERATED_LIST_PUSH: &str = "@list_push";
 pub const COMPILER_QUOTE_ITEM: &str = "@quote_item";
 pub const COMPILER_QUOTE_ITEM_HOLES: &str = "@quote_item_holes";
 pub const COMPILER_QUOTE_EXPR: &str = "@quote_expr";
+pub const COMPILER_QUOTE_TYPE: &str = "@quote_type";
 pub const COMPILER_EMIT_ITEM: &str = "@emit_item";
 pub const COMPILER_EMIT_EXPR: &str = "@emit_expr";
 pub const RETIRED_SOURCE_RENDER: &str = "__render";
@@ -546,6 +549,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "compiler-owned expression quotation",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::CompilerQuoteType,
+        name: COMPILER_QUOTE_TYPE,
+        arity: 2,
+        signature: IntrinsicSignature::CompilerQuoteType,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "compiler-owned type quotation",
         private_callers: NO_PRIVATE_CALLERS,
     },
     IntrinsicSpec {
@@ -2209,6 +2227,7 @@ mod tests {
             COMPILER_QUOTE_ITEM,
             COMPILER_QUOTE_ITEM_HOLES,
             COMPILER_QUOTE_EXPR,
+            COMPILER_QUOTE_TYPE,
             COMPILER_EMIT_ITEM,
             COMPILER_EMIT_EXPR,
             TRY_CONTEXT,

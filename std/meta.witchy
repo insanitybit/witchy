@@ -16,8 +16,12 @@
 sealed type ItemSyntax:
     ItemSyntax(String)
 
+// Hole-free `quote type:` values retain a compiler-owned type AST. The
+// internal constructor carries its opaque identity plus canonical source so
+// existing builders can compose it through the compatibility path.
 sealed type TypeSyntax:
     TypeSyntax(String)
+    CompilerTypeSyntax(String, String)
 
 // Hole-free `quote expr:` and literal `meta.expr_raw("...")` values retain a
 // compiler-owned expression AST. The second constructor is compiler-internal;
@@ -224,6 +228,7 @@ pub fn type_join(parts: List(String), holes: List(TypeSyntax)) -> TypeSyntax:
 fn type_syntax_source(ty: TypeSyntax) -> String:
     match ty:
         TypeSyntax(source) -> source
+        CompilerTypeSyntax(_, source) -> source
 
 fn type_syntax_sources(types: List(TypeSyntax)) -> List(String):
     var out = []

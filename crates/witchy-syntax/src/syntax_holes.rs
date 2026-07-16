@@ -423,6 +423,7 @@ mod tests {
             item_lines: vec![0],
             compiler_item_syntax: Vec::new(),
             compiler_expr_syntax: Vec::new(),
+            compiler_type_syntax: Vec::new(),
         }, &[]);
         assert!(source.contains("x: Int"), "{source}");
         assert!(source.contains("1 -> 7"), "{source}");

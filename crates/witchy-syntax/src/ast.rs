@@ -53,6 +53,10 @@ pub struct Module {
     /// compile-time code. Canonical source is a compatibility projection; the
     /// stored AST is authoritative.
     pub compiler_expr_syntax: Vec<CompilerExprSyntax>,
+    /// Compiler-owned type payloads referenced by unspellable calls in
+    /// compile-time code. Canonical source remains available to source-backed
+    /// builders, but direct syntax holes consume the stored type AST.
+    pub compiler_type_syntax: Vec<CompilerTypeSyntax>,
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
@@ -104,6 +108,14 @@ pub struct CompilerItemSyntax {
 pub struct CompilerExprSyntax {
     pub handle: String,
     pub expr: Expr,
+    pub definition_line: u32,
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompilerTypeSyntax {
+    pub handle: String,
+    pub ty: Type,
     pub definition_line: u32,
 }
 

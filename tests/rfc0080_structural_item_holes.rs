@@ -32,6 +32,11 @@ fn mixed_item_holes_expand_as_ast_and_run_on_both_backends() {
     let parsed = parser::parse_module(SOURCE).expect("parse structural item-hole program");
     assert_eq!(parsed.compiler_item_syntax.len(), 1, "quote owns one item template");
     assert_eq!(
+        parsed.compiler_type_syntax.len(),
+        1,
+        "the hole-free type quote retains compiler-owned AST"
+    );
+    assert_eq!(
         parsed.compiler_expr_syntax.len(),
         2,
         "both hole-free expression quotes retain compiler-owned AST"
@@ -58,6 +63,7 @@ fn mixed_item_holes_expand_as_ast_and_run_on_both_backends() {
         .expect("expand and link structural item-hole program");
     typeck::check(&linked).expect("typecheck structurally expanded item");
     assert!(linked.compiler_item_syntax.is_empty(), "runtime module drops syntax payloads");
+    assert!(linked.compiler_type_syntax.is_empty(), "runtime module drops type payloads");
     assert!(linked.items.iter().any(
         |item| matches!(item, ast::Item::Function(function) if function.name.ends_with("generated"))
     ));

@@ -2245,7 +2245,10 @@ RFC-0080's typed boundary for whole generated items. `quote item:` and literal w
 
 #### `sealed type TypeSyntax`
 
+Hole-free `quote type:` values retain a compiler-owned type AST. The internal constructor carries its opaque identity plus canonical source so existing builders can compose it through the compatibility path.
+
 - `TypeSyntax(String)`
+- `CompilerTypeSyntax(String, String)`
 
 #### `sealed type ExprSyntax`
 

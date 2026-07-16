@@ -2054,8 +2054,8 @@ fn main(console: Console):
         );
     }
 
-    /// RFC-0080 type quotation lowers to structured `TypeSyntax` builders instead
-    /// of adding a public raw type-string constructor.
+    /// RFC-0080 type quotation retains compiler-owned type AST while existing
+    /// builders consume its canonical projection without a public raw constructor.
     #[test]
     fn quote_type_builds_typed_typesyntax_on_both_backends() {
         let src = r#"

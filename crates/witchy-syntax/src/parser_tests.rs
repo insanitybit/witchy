@@ -557,18 +557,7 @@ fn f():
     }
 
     #[test]
-    fn quote_type_lowers_to_structured_meta_builders() {
-        fn ident(name: &str) -> Expr {
-            Expr::Call { name: "meta.ident".into(), args: vec![Expr::Str(name.into())] }
-        }
-
-        fn named(name: &str, args: Vec<Expr>) -> Expr {
-            Expr::Call {
-                name: "meta.type_named".into(),
-                args: vec![ident(name), Expr::List(args)],
-            }
-        }
-
+    fn quote_type_lowers_to_compiler_owned_type() {
         let m = parse_module(r#"
 fn f():
     quote type:
@@ -578,27 +567,44 @@ fn f():
         let Item::Function(f) = &m.items[0] else {
             panic!("expected function");
         };
-        let expected = Expr::Call {
-            name: "meta.type_fn_with_conventions".into(),
-            args: vec![
-                Expr::List(vec![
-                    named("List", vec![named("Int", vec![])]),
-                    Expr::Call {
-                        name: "meta.type_qualified".into(),
-                        args: vec![ident("json"), ident("Json"), Expr::List(vec![])],
-                    },
-                ]),
-                Expr::List(vec![Expr::Str("value".into()), Expr::Str("value".into())]),
-                Expr::Call {
-                    name: "meta.type_unique".into(),
-                    args: vec![Expr::Call {
-                        name: "meta.type_capability".into(),
-                        args: vec![ident("File"), Expr::List(vec![named("Read", vec![])])],
-                    }],
-                },
-            ],
+        let [Stmt::Expr(Expr::Call { name, args })] = f.body.stmts.as_slice() else {
+            panic!("expected compiler-owned type call");
         };
-        assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);
+        assert_eq!(name, crate::intrinsics::COMPILER_QUOTE_TYPE);
+        let [Expr::Str(handle), Expr::Str(source)] = args.as_slice() else {
+            panic!("expected type handle and compatibility source");
+        };
+        assert_eq!(source, "fn(List(Int), json.Json) -> unique File[Read]");
+        let [syntax] = m.compiler_type_syntax.as_slice() else {
+            panic!("expected one compiler-owned type payload");
+        };
+        assert_eq!(handle, &syntax.handle);
+        assert!(matches!(syntax.ty, Type::Fn(..)));
+        assert_eq!(syntax.definition_line, 3);
+    }
+
+    #[test]
+    fn quote_type_owns_structural_and_borrowed_types() {
+        let records = parse_module("fn f():\n    quote type:\n        .{x: Int, y: String}\n")
+            .expect("anonymous record type quote should parse");
+        let [record] = records.compiler_type_syntax.as_slice() else {
+            panic!("expected one record type payload");
+        };
+        assert!(matches!(&record.ty, Type::Named(name, _) if name.starts_with("__anon")));
+
+        let unions = parse_module("fn f():\n    quote type:\n        .[Ready | Failed(String)]\n")
+            .expect("anonymous union type quote should parse");
+        let [union] = unions.compiler_type_syntax.as_slice() else {
+            panic!("expected one union type payload");
+        };
+        assert!(matches!(&union.ty, Type::Named(name, _) if name.starts_with("__union")));
+
+        let views = parse_module("fn f():\n    quote type:\n        View(Int, 'a)\n")
+            .expect("borrowed view type quote should parse");
+        let [view] = views.compiler_type_syntax.as_slice() else {
+            panic!("expected one borrowed type payload");
+        };
+        assert!(matches!(view.ty, Type::Qualified(TypeQual::Borrow(_), _)));
     }
 
     #[test]

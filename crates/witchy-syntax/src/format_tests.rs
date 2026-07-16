@@ -127,6 +127,30 @@
     }
 
     #[test]
+    fn compiler_owned_type_quotes_round_trip_through_formatting() {
+        let src = "comptime fn make() -> meta.TypeSyntax:\n    quote type:\n        .{value: Int}\n";
+        let out = reformat(src).expect("compiler-owned type quote round-trips");
+        assert!(out.starts_with("import meta\n"), "{out}");
+        assert!(out.contains("meta.type_join([\".{value: Int}\"], [])"), "{out}");
+        assert!(!out.contains("__anon"), "{out}");
+        let reparsed = crate::parser::parse_module(&out).expect("formatted type parses");
+        assert_eq!(reparsed.compiler_type_syntax.len(), 1);
+        let make = reparsed
+            .items
+            .iter()
+            .find_map(|item| match item {
+                crate::ast::Item::Function(function) if function.name == "make" => Some(function),
+                _ => None,
+            })
+            .expect("expected helper function");
+        let crate::ast::Stmt::Expr(crate::ast::Expr::Call { name, .. }) = &make.body.stmts[0] else {
+            panic!("expected compiler-owned type call");
+        };
+        assert_eq!(name, crate::intrinsics::COMPILER_QUOTE_TYPE);
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
+    }
+
+    #[test]
     fn compiler_owned_anonymous_expression_round_trips_through_formatting() {
         let src = "comptime fn make() -> meta.ExprSyntax:\n    quote expr:\n        .{value: 40}.value\n";
         let out = reformat(src).expect("anonymous compiler-owned expression quote round-trips");
@@ -267,6 +291,7 @@
             item_lines: vec![],
             compiler_item_syntax: vec![],
             compiler_expr_syntax: vec![],
+            compiler_type_syntax: vec![],
         };
         let printed = module(&m, &[]);
         // The printed form parses, but to a DIFFERENT program (`let x = 0`);

@@ -3823,6 +3823,10 @@ impl Checker {
                 vec![Ty::String, Ty::String],
                 Ty::Named("meta.ExprSyntax".into(), Vec::new()),
             )),
+            S::CompilerQuoteType => Some((
+                vec![Ty::String, Ty::String],
+                Ty::Named("meta.TypeSyntax".into(), Vec::new()),
+            )),
             S::CompilerEmitItem => Some((
                 vec![Ty::Named("meta.ItemSyntax".into(), Vec::new())],
                 Ty::Nil,
