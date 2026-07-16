@@ -2239,7 +2239,7 @@ This is COMPILE-TIME structure (field names + declared type expressions), distin
 
 #### `sealed type ItemSyntax`
 
-RFC-0080's typed boundary for whole generated items. Hole-free `quote item:` and literal whole-item `meta.item("...")` values are compiler-owned AST; dynamic strings, builders, and hole-bearing quotes retain this source-backed compatibility representation while the structured syntax API grows.
+RFC-0080's typed boundary for whole generated items. `quote item:` and literal whole-item `meta.item("...")` values retain compiler-owned item AST. For an item quote with holes, the compiler substitutes typed expression, type, and pattern nodes into that AST; those hole payload types and dynamic item builders retain their source-backed compatibility representation for now.
 
 - `ItemSyntax(String)`
 

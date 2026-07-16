@@ -92,6 +92,23 @@
     }
 
     #[test]
+    fn compiler_owned_item_holes_round_trip_through_formatting() {
+        let src = "import meta\n\ncomptime fn make(ty: TypeSyntax, value: ExprSyntax) -> ItemSyntax:\n    quote item:\n        pub fn generated() -> ${ty}:\n            ${value}\n";
+        let out = reformat(src).expect("compiler-owned item holes round-trip");
+        assert!(out.contains("meta.item_join_syntax("), "{out}");
+        let reparsed = crate::parser::parse_module(&out).expect("formatted item holes parse");
+        assert_eq!(reparsed.compiler_item_syntax.len(), 1);
+        let crate::ast::Item::Function(make) = &reparsed.items[0] else {
+            panic!("expected helper function");
+        };
+        let crate::ast::Stmt::Expr(crate::ast::Expr::Call { name, .. }) = &make.body.stmts[0] else {
+            panic!("expected compiler-owned call");
+        };
+        assert_eq!(name, crate::intrinsics::COMPILER_QUOTE_ITEM_HOLES);
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
+    }
+
+    #[test]
     fn anonymous_record_types_round_trip_through_formatting() {
         // RFC-0078 makes the structural record tier denotable in type position.
         // Formatting must print the source-level shape, not the synthetic

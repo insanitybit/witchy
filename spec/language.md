@@ -993,10 +993,12 @@ deterministic by construction. Legacy `emit(line)` output, and direct
 `console.print(line)` for compatibility, are parsed as witchy source and
 **appended** to the module before type checking and footprint analysis.
 `emit_item(item)` is the typed RFC-0080 migration channel for
-`meta.ItemSyntax`. Hole-free `quote item:` and a literal whole-item
+`meta.ItemSyntax`. `quote item:` and a literal whole-item
 `meta.item("...")` are stored as compiler-owned item AST and appended without
-formatting or reparsing. Dynamically constructed `meta.item(source)`, builders,
-and hole-bearing item quotes remain on the source-backed compatibility path. A
+formatting or reparsing. A hole-bearing item keeps that AST and replaces its
+exact expression, type, and pattern placeholder nodes with the typed hole
+payloads. Those payload syntax values, dynamically constructed
+`meta.item(source)`, and item builders remain source-backed compatibility paths. A
 single `comptime:` block may use the legacy source channel or the typed item
 channel, but not both.
 Compiler syntax values such as `meta.ItemSyntax`, `meta.TypeSyntax`,
@@ -1020,10 +1022,9 @@ names remain future work.
 and `quote item:` are the first quotation forms. They parse the indented
 expression, type, pattern, statement, block, or single item immediately and
 produce `meta.ExprSyntax`, `meta.TypeSyntax`, `meta.PatternSyntax`,
-`meta.StmtSyntax`, `meta.BlockSyntax`, or `meta.ItemSyntax`. A hole-free item
-quote uses the compiler-owned item channel described above; the other quote
-categories and hole-bearing item quotes are source-backed in this migration
-stage. Inside `quote expr:`,
+`meta.StmtSyntax`, `meta.BlockSyntax`, or `meta.ItemSyntax`. Item quotes use the
+compiler-owned item channel described above; the other quote categories remain
+source-backed in this migration stage. Inside `quote expr:`,
 `${hole}` splices a `meta.ExprSyntax`; inside `quote type:` and
 `quote pattern:`, `${hole}` splices a `meta.TypeSyntax` or `meta.PatternSyntax`;
 inside `quote stmt:` and `quote block:`, `${hole}` splices a
@@ -1031,7 +1032,9 @@ inside `quote stmt:` and `quote block:`, `${hole}` splices a
 type, or pattern positions. `quote item:` accepts the same expression, type,
 and pattern holes anywhere those grammar positions occur inside the quoted
 item. Holes are typed by the surrounding `comptime`/tag generator, not by
-runtime interpolation.
+runtime interpolation. Item-hole placement is structural; the expression, type,
+and pattern syntax values supplied to those positions remain source-backed until
+their compiler-owned payload slices land.
 `quote type:` covers named/generic, module-qualified, tuple, function,
 ownership-qualified, and capability-right types; anonymous structural type
 quotation and hygiene remain future work.

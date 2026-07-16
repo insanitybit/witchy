@@ -50,9 +50,9 @@ fn reserved_source_identifier(name: &str) -> bool {
 }
 
 const QUOTE_EXPR_HOLE_INTRINSIC: &str = "@quote_expr_hole";
-const QUOTE_EXPR_HOLE_PREFIX: &str = "__witchy_quote_expr_hole_";
-const QUOTE_TYPE_HOLE_PREFIX: &str = "__witchy_quote_type_hole_";
-const QUOTE_PATTERN_HOLE_PREFIX: &str = "__witchy_quote_pattern_hole_";
+pub(crate) const QUOTE_EXPR_HOLE_PREFIX: &str = "__witchy_quote_expr_hole_";
+pub(crate) const QUOTE_TYPE_HOLE_PREFIX: &str = "__witchy_quote_type_hole_";
+pub(crate) const QUOTE_PATTERN_HOLE_PREFIX: &str = "__witchy_quote_pattern_hole_";
 
 pub fn parse_module(src: &str) -> Result<Module, ParseError> {
     let tokens = tokenize(src).map_err(|e| ParseError {
@@ -1625,6 +1625,11 @@ impl Parser {
                                         self.compiler_owned_item_literal(source, member_line)
                                 {
                                     owned
+                                } else if name == "meta.item_join_syntax"
+                                    && let Some(owned) =
+                                        self.compiler_owned_item_join(&args, member_line)
+                                {
+                                    owned
                                 } else {
                                     Expr::Call { name, args }
                                 }
@@ -2183,6 +2188,14 @@ impl Parser {
     }
 
     fn item_syntax_expr(&mut self, quoted: Item, definition_line: u32) -> Expr {
+        let (handle, source) = self.register_item_syntax(quoted, definition_line);
+        Expr::Call {
+            name: crate::intrinsics::COMPILER_QUOTE_ITEM.into(),
+            args: vec![Expr::Str(handle), Expr::Str(source)],
+        }
+    }
+
+    fn register_item_syntax(&mut self, quoted: Item, definition_line: u32) -> (String, String) {
         let source = Self::item_source(quoted.clone());
         // The canonical source is a collision-free identity and works in the
         // browser parser, where the native cache's BLAKE3 dependency is absent.
@@ -2192,10 +2205,7 @@ impl Parser {
             item: quoted,
             definition_line,
         });
-        Expr::Call {
-            name: crate::intrinsics::COMPILER_QUOTE_ITEM.into(),
-            args: vec![Expr::Str(handle), Expr::Str(source)],
-        }
+        (handle, source)
     }
 
     fn compiler_owned_item_literal(
@@ -2216,6 +2226,67 @@ impl Parser {
         Some(self.item_syntax_expr(parsed.items.remove(0), definition_line))
     }
 
+    fn compiler_owned_item_join(&mut self, args: &[Expr], definition_line: u32) -> Option<Expr> {
+        let [Expr::List(parts), Expr::List(holes)] = args else {
+            return None;
+        };
+        if parts.len() != holes.len() + 1 {
+            return None;
+        }
+        let mut expr_index = 0;
+        let mut type_index = 0;
+        let mut pattern_index = 0;
+        let mut source = String::new();
+        for (index, part) in parts.iter().enumerate() {
+            let Expr::Str(part) = part else {
+                return None;
+            };
+            source.push_str(part);
+            let Some(hole) = holes.get(index) else {
+                continue;
+            };
+            let Expr::Call { name, args } = hole else {
+                return None;
+            };
+            if args.len() != 1 {
+                return None;
+            }
+            let marker = match name.as_str() {
+                "meta.expr_hole" => {
+                    let marker = format!("{QUOTE_EXPR_HOLE_PREFIX}{expr_index}");
+                    expr_index += 1;
+                    marker
+                }
+                "meta.type_hole" => {
+                    let marker = format!("{QUOTE_TYPE_HOLE_PREFIX}{type_index}");
+                    type_index += 1;
+                    marker
+                }
+                "meta.pattern_hole" => {
+                    let marker = format!("{QUOTE_PATTERN_HOLE_PREFIX}{pattern_index}");
+                    pattern_index += 1;
+                    marker
+                }
+                _ => return None,
+            };
+            source.push_str(&marker);
+        }
+        let mut parsed = parse_module(&source).ok()?;
+        if !parsed.modes.is_empty()
+            || !parsed.imports.is_empty()
+            || !parsed.from_imports.is_empty()
+            || parsed.items.len() != 1
+        {
+            return None;
+        }
+        self.compiler_item_syntax.append(&mut parsed.compiler_item_syntax);
+        let (handle, _) = self.register_item_syntax(parsed.items.remove(0), definition_line);
+        Some(Expr::Call {
+            name: crate::intrinsics::COMPILER_QUOTE_ITEM_HOLES.into(),
+            args: vec![Expr::Str(handle), Expr::List(parts.clone()), Expr::List(holes.clone())],
+        })
+    }
+
     fn item_syntax_expr_with_holes(
         &mut self,
         mut quoted: Item,
@@ -2228,10 +2299,14 @@ impl Parser {
         if expr_holes.is_empty() && type_holes.is_empty() && pattern_holes.is_empty() {
             return Ok(self.item_syntax_expr(quoted, definition_line));
         }
-        let source = Self::item_source(quoted);
+        let source = Self::item_source(quoted.clone());
         let (parts, holes) =
             self.quote_mixed_hole_parts(&source, expr_holes, type_holes, pattern_holes, "item")?;
-        Ok(self.meta_call("item_join_syntax", vec![Expr::List(parts), Expr::List(holes)]))
+        let (handle, _) = self.register_item_syntax(quoted, definition_line);
+        Ok(Expr::Call {
+            name: crate::intrinsics::COMPILER_QUOTE_ITEM_HOLES.into(),
+            args: vec![Expr::Str(handle), Expr::List(parts), Expr::List(holes)],
+        })
     }
 
     fn item_source(item: Item) -> String {

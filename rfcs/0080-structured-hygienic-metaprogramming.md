@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed syntax wrappers/builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, and compiler-owned hole-free item syntax landed; definition/call-site origin hygiene and compiler-owned expression/pattern/type syntax trees remain proposed"
+tracking: "source-backed syntax wrappers/builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, and compiler-owned item syntax with structural typed holes landed; definition/call-site origin hygiene and compiler-owned expression/pattern/type syntax trees remain proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -297,10 +297,19 @@ The first source-compatible slice is implemented:
   item builders, and item quotations containing holes retain the compatibility
   source path. `witchy fmt` prints the canonical `meta.item("...")` spelling,
   which the parser promotes back to the same compiler-owned node.
+- The twenty-fourth slice keeps hole-bearing `quote item:` on that same
+  compiler-owned item channel. The parser stores one item AST containing exact
+  expression, type, and pattern placeholder nodes. The compile-time evaluator
+  unwraps each typed `SyntaxHole`, parses only its still-compatible payload, and
+  substitutes that node into a clone of the item template; it never assembles or
+  reparses the enclosing declaration. Literal `meta.item_join_syntax(parts,
+  holes)` plans are promoted to the same representation, and formatting prints
+  that public typed form and reconstructs the compiler table on parse. Hole
+  payload syntax remains source-backed until the expression/type/pattern slices.
 
-This is intentionally not the full RFC. Hole-free whole items are now
-compiler-owned, while expression/type/pattern/statement/block syntax and
-hole-bearing item quotation remain source-backed;
+This is intentionally not the full RFC. Whole items and their typed hole
+placement are now compiler-owned, while expression/type/pattern/statement/block
+syntax payloads remain source-backed;
 definition-site/call-site identifier origins and compiler-owned
 expression/pattern/type syntax trees remain future work. The value is the
 migration seam: future work can move the

@@ -882,18 +882,27 @@ fn f(ty: meta.TypeSyntax, value: meta.ExprSyntax, pat: meta.PatternSyntax, tail:
         let Item::Function(f) = &m.items[0] else {
             panic!("expected function");
         };
-        let expected = Expr::Call {
-            name: "meta.item_join_syntax".into(),
-            args: vec![
-                Expr::List(vec![
+        let Stmt::Expr(Expr::Call { name, args }) = &f.body.stmts[0] else {
+            panic!("expected compiler-owned item-hole call, got {:?}", f.body.stmts[0]);
+        };
+        assert_eq!(name, crate::intrinsics::COMPILER_QUOTE_ITEM_HOLES);
+        let [Expr::Str(handle), parts, holes] = args.as_slice() else {
+            panic!("expected handle, source parts, and typed holes, got {args:?}");
+        };
+        assert_eq!(
+            parts,
+            &Expr::List(vec![
                     Expr::Str("pub fn generated(x: ".into()),
                     Expr::Str(") -> ".into()),
                     Expr::Str(":\n    let ".into()),
                     Expr::Str(" = ".into()),
                     Expr::Str("\n    x + ".into()),
                     Expr::Str("\n".into()),
-                ]),
-                Expr::List(vec![
+                ])
+        );
+        assert_eq!(
+            holes,
+            &Expr::List(vec![
                     Expr::Call {
                         name: "meta.type_hole".into(),
                         args: vec![Expr::Var("ty".into())],
@@ -914,10 +923,16 @@ fn f(ty: meta.TypeSyntax, value: meta.ExprSyntax, pat: meta.PatternSyntax, tail:
                         name: "meta.expr_hole".into(),
                         args: vec![Expr::Var("tail".into())],
                     },
-                ]),
-            ],
+                ])
+        );
+        let [syntax] = m.compiler_item_syntax.as_slice() else {
+            panic!("expected one compiler-owned item template");
         };
-        assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);
+        assert_eq!(handle, &syntax.handle);
+        let Item::Function(generated) = &syntax.item else {
+            panic!("expected generated function template");
+        };
+        assert_eq!(generated.name, "generated");
     }
 
     #[test]

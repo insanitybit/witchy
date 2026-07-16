@@ -1262,6 +1262,11 @@ fn expr(e: &Expr) -> String {
             {
                 return format!("meta.item({})", string_lit(source));
             }
+            if name == crate::intrinsics::COMPILER_QUOTE_ITEM_HOLES
+                && let [Expr::Str(_handle), parts, holes] = args.as_slice()
+            {
+                return format!("meta.item_join_syntax({}, {})", expr(parts), expr(holes));
+            }
             // `to_string`/`int_to_string` were retired in favor of string
             // interpolation, whose only surface spelling is `"${x}"`; rewrite a
             // single-argument render call to that form (unless the module defines

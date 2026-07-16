@@ -343,6 +343,55 @@ fn err<T, E: From<RuntimeError>>(message: impl Into<String>) -> Result<T, E> {
     }))
 }
 
+fn compiler_item_holes(
+    values: &[Value],
+) -> Result<Vec<witchy_syntax::syntax_holes::ItemSyntaxHole>, RuntimeError> {
+    use witchy_syntax::syntax_holes::{
+        ItemSyntaxHole, parse_expr_payload, parse_pattern_payload, parse_type_payload,
+    };
+
+    fn tail(name: &str) -> &str {
+        name.rsplit_once('.').map_or(name, |(_, tail)| tail)
+    }
+
+    fn source<'a>(value: &'a Value, expected: &str) -> Result<&'a str, RuntimeError> {
+        let Value::Ctor { name, fields } = value else {
+            return err(format!("{expected} hole carried a non-syntax value"));
+        };
+        if tail(name) != expected {
+            return err(format!("{expected} hole carried `{}`", tail(name)));
+        }
+        let [Value::Str(source)] = fields.as_slice() else {
+            return err(format!("{expected} carried an invalid source payload"));
+        };
+        Ok(source)
+    }
+
+    values
+        .iter()
+        .map(|value| {
+            let Value::Ctor { name, fields } = value else {
+                return err("compiler-owned item hole was not a meta.SyntaxHole");
+            };
+            let [syntax] = fields.as_slice() else {
+                return err("compiler-owned item hole carried an invalid payload");
+            };
+            match tail(name) {
+                "ExprHole" => parse_expr_payload(source(syntax, "ExprSyntax")?)
+                    .map(ItemSyntaxHole::Expr)
+                    .map_err(|message| RuntimeError { message }),
+                "TypeHole" => parse_type_payload(source(syntax, "TypeSyntax")?)
+                    .map(ItemSyntaxHole::Type)
+                    .map_err(|message| RuntimeError { message }),
+                "PatternHole" => parse_pattern_payload(source(syntax, "PatternSyntax")?)
+                    .map(ItemSyntaxHole::Pattern)
+                    .map_err(|message| RuntimeError { message }),
+                other => err(format!("compiler-owned item hole had unknown category `{other}`")),
+            }
+        })
+        .collect()
+}
+
 fn mock_normalize(rel: &str) -> Result<String, RuntimeError> {
     let path = Path::new(rel);
     if path.is_absolute() {
@@ -2185,6 +2234,29 @@ impl Interpreter {
                     _ => err("compiler-owned item quotation expects an item handle"),
                 }
             }
+            name if name == intrinsics::COMPILER_QUOTE_ITEM_HOLES => {
+                if self.fresh_ident_scope.is_none() {
+                    return err(
+                        "compiler-owned item quotation is available only during compile-time expansion",
+                    );
+                }
+                match args {
+                    [Value::Str(handle), Value::List(parts), Value::List(holes)]
+                        if self.compiler_item_syntax.contains_key(handle)
+                            && parts.len() == holes.len() + 1
+                            && parts.iter().all(|part| matches!(part, Value::Str(_))) =>
+                    {
+                        Ok(Some(Value::Ctor {
+                            name: OWNED_ITEM_SYNTAX_CTOR.into(),
+                            fields: vec![Value::Str(handle.clone()), Value::List(holes.clone())],
+                        }))
+                    }
+                    [Value::Str(_), Value::List(_), Value::List(_)] => {
+                        err("compiler-owned item quotation referenced an invalid syntax handle or hole plan")
+                    }
+                    _ => err("compiler-owned item quotation expects an item handle and typed holes"),
+                }
+            }
             name if name == intrinsics::COMPILER_EMIT_ITEM => {
                 if self.fresh_ident_scope.is_none() {
                     return err("item emission is available only during compile-time expansion");
@@ -2205,6 +2277,25 @@ impl Interpreter {
                                 message: "compiler-owned item emission referenced an invalid syntax handle"
                                     .into(),
                             })?;
+                        ComptimeItemEmission::Syntax(Box::new(item))
+                    }
+                    Value::Ctor { name, fields }
+                        if name == OWNED_ITEM_SYNTAX_CTOR
+                            && matches!(fields.as_slice(), [Value::Str(_), Value::List(_)]) =>
+                    {
+                        let [Value::Str(handle), Value::List(holes)] = fields.as_slice() else {
+                            unreachable!()
+                        };
+                        let template = self
+                            .compiler_item_syntax
+                            .get(handle)
+                            .ok_or_else(|| RuntimeError {
+                                message: "compiler-owned item emission referenced an invalid syntax handle"
+                                    .into(),
+                            })?;
+                        let holes = compiler_item_holes(holes)?;
+                        let item = witchy_syntax::syntax_holes::instantiate_item(template, holes)
+                            .map_err(|message| RuntimeError { message })?;
                         ComptimeItemEmission::Syntax(Box::new(item))
                     }
                     Value::Ctor { name, fields }

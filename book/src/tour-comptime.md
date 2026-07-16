@@ -67,10 +67,10 @@ is appended. `meta.fresh(hint)` creates a deterministic compiler-owned identifie
 for a generated binding; user source cannot spell its reserved name, so a local
 with the same human-readable hint cannot capture it.
 
-A hole-free `quote item:` remains compiler-owned syntax from parsing through
-append; it is not rendered and reparsed. Dynamic builders and quotes with holes
-remain the compatibility path while the rest of the syntax tree becomes
-structural.
+`quote item:` remains compiler-owned syntax from parsing through append; it is
+not rendered and reparsed. Typed holes replace exact expression, type, or pattern
+nodes in that item AST. The hole payload values and dynamic builders remain the
+compatibility path while the rest of the syntax tree becomes structural.
 
 ```witchy
 import meta

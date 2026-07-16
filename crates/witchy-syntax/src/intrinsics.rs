@@ -10,6 +10,7 @@ pub enum IntrinsicId {
     GeneratedRender,
     GeneratedListPush,
     CompilerQuoteItem,
+    CompilerQuoteItemHoles,
     CompilerEmitItem,
     TryContext,
     Erase,
@@ -103,6 +104,7 @@ pub enum IntrinsicSignature {
     GenericRender,
     GenericListPush,
     CompilerQuoteItem,
+    CompilerQuoteItemHoles,
     CompilerEmitItem,
     TryContext,
     GenericToMessage,
@@ -361,6 +363,7 @@ const fn encoding_host_call(selector: i32, input: WirHostInput) -> Option<WirHos
 pub const GENERATED_RENDER: &str = "@render";
 pub const GENERATED_LIST_PUSH: &str = "@list_push";
 pub const COMPILER_QUOTE_ITEM: &str = "@quote_item";
+pub const COMPILER_QUOTE_ITEM_HOLES: &str = "@quote_item_holes";
 pub const COMPILER_EMIT_ITEM: &str = "@emit_item";
 pub const RETIRED_SOURCE_RENDER: &str = "__render";
 pub const TRY_CONTEXT: &str = "__try_ctx";
@@ -507,6 +510,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "compiler-owned item quotation",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::CompilerQuoteItemHoles,
+        name: COMPILER_QUOTE_ITEM_HOLES,
+        arity: 3,
+        signature: IntrinsicSignature::CompilerQuoteItemHoles,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "compiler-owned item quotation with holes",
         private_callers: NO_PRIVATE_CALLERS,
     },
     IntrinsicSpec {
@@ -2153,6 +2171,7 @@ mod tests {
             GENERATED_RENDER,
             GENERATED_LIST_PUSH,
             COMPILER_QUOTE_ITEM,
+            COMPILER_QUOTE_ITEM_HOLES,
             COMPILER_EMIT_ITEM,
             TRY_CONTEXT,
             ERASE,

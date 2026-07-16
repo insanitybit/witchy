@@ -3811,6 +3811,14 @@ impl Checker {
                 vec![Ty::String, Ty::String],
                 Ty::Named("meta.ItemSyntax".into(), Vec::new()),
             )),
+            S::CompilerQuoteItemHoles => Some((
+                vec![
+                    Ty::String,
+                    Ty::List(Box::new(Ty::String)),
+                    Ty::List(Box::new(Ty::Named("meta.SyntaxHole".into(), Vec::new()))),
+                ],
+                Ty::Named("meta.ItemSyntax".into(), Vec::new()),
+            )),
             S::CompilerEmitItem => Some((
                 vec![Ty::Named("meta.ItemSyntax".into(), Vec::new())],
                 Ty::Nil,
