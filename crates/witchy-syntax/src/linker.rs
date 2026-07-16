@@ -1321,14 +1321,29 @@ fn expansion_sibling(runtime: &Module, source: &Module) -> Module {
             _ => None,
         })
         .collect();
-    sibling.items.extend(source.items.iter().filter_map(|item| match item {
-        Item::Function(function)
-            if function.comptime_only && !existing.contains(&function.name) =>
-        {
-            Some(Item::Function(function.clone()))
+    let restored = source
+        .items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| match item {
+            Item::Function(function)
+                if function.comptime_only && !existing.contains(&function.name) =>
+            {
+                Some((
+                    Item::Function(function.clone()),
+                    source.item_lines.get(index).copied().unwrap_or(0),
+                ))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if !restored.is_empty() {
+        sibling.item_lines.resize(sibling.items.len(), 0);
+        for (item, line) in restored {
+            sibling.items.push(item);
+            sibling.item_lines.push(line);
         }
-        _ => None,
-    }));
+    }
 
     if sibling.compiler_item_syntax.is_empty() {
         sibling.compiler_item_syntax = source.compiler_item_syntax.clone();

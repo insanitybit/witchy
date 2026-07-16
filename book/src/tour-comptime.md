@@ -248,7 +248,9 @@ the literal's holes keep their invocation-site context. Use
 an expression reference from the invocation scope. That reference remains a
 compiler-owned node through structural quotation; it is not encoded as generated
 source. Imported tags remain available during expansion and are removed before
-runtime type checking.
+runtime type checking. If a direct tag expansion fails, its diagnostic names the
+literal's invocation line and the tag function's defining module and line, so an
+imported generator does not collapse to an unlocated generated-source error.
 
 ```witchy
 fn answer_value() -> Int:

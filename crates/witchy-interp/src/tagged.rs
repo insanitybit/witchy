@@ -92,7 +92,12 @@ pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) ->
     let mut compiler_item_syntax = module.compiler_item_syntax.clone();
     let mut compiler_expr_syntax = module.compiler_expr_syntax.clone();
     let mut tag_origins = HashMap::new();
-    record_tag_origins(&mut tag_origins, name, &module.items);
+    record_tag_origins(
+        &mut tag_origins,
+        name,
+        &module.items,
+        &module.item_lines,
+    );
     let mut compiler_type_syntax = module.compiler_type_syntax.clone();
     let mut compiler_pattern_syntax = module.compiler_pattern_syntax.clone();
     let mut compiler_stmt_syntax = module.compiler_stmt_syntax.clone();
@@ -117,7 +122,7 @@ pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) ->
             merge_std_from_imports(&mut std_from_imports, &m.from_imports);
             items.extend(m.items.iter().cloned());
             compiler_item_syntax.extend(m.compiler_item_syntax.iter().cloned());
-            record_tag_origins(&mut tag_origins, &imp, &m.items);
+            record_tag_origins(&mut tag_origins, &imp, &m.items, &m.item_lines);
             compiler_expr_syntax.extend(m.compiler_expr_syntax.iter().cloned());
             compiler_type_syntax.extend(m.compiler_type_syntax.iter().cloned());
             compiler_pattern_syntax.extend(m.compiler_pattern_syntax.iter().cloned());
@@ -198,7 +203,7 @@ struct Context {
     qualifiers: Vec<String>,
     compiler_item_syntax: Vec<CompilerItemSyntax>,
     compiler_expr_syntax: Vec<CompilerExprSyntax>,
-    tag_origins: HashMap<String, String>,
+    tag_origins: HashMap<String, TagOrigin>,
     compiler_type_syntax: Vec<CompilerTypeSyntax>,
     compiler_pattern_syntax: Vec<CompilerPatternSyntax>,
     compiler_stmt_syntax: Vec<CompilerStmtSyntax>,
@@ -209,17 +214,54 @@ struct Context {
     fresh_invocation: Cell<u64>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TagOrigin {
+    module: String,
+    definition_line: u32,
+}
+
 fn record_tag_origins(
-    origins: &mut HashMap<String, String>,
+    origins: &mut HashMap<String, TagOrigin>,
     module: &str,
     items: &[Item],
+    item_lines: &[u32],
 ) {
-    for item in items {
+    for (index, item) in items.iter().enumerate() {
         if let Item::Function(function) = item {
+            let definition_line = item_lines
+                .get(index)
+                .copied()
+                .filter(|line| *line != u32::MAX)
+                .unwrap_or(0);
             origins
                 .entry(function.name.clone())
-                .or_insert_with(|| module.to_string());
+                .or_insert_with(|| TagOrigin {
+                    module: module.to_string(),
+                    definition_line,
+                });
         }
+    }
+}
+
+fn expansion_site(ctx: &Context, tag: &str, invocation_line: u32) -> String {
+    let invocation = if invocation_line == 0 {
+        format!("module `{}`: tagged literal `{tag}`", ctx.name)
+    } else {
+        format!(
+            "module `{}`: tagged literal `{tag}` at invocation line {invocation_line}",
+            ctx.name
+        )
+    };
+    let Some(origin) = ctx.tag_origins.get(tag) else {
+        return invocation;
+    };
+    if origin.definition_line == 0 {
+        format!("{invocation} (defined in module `{}`)", origin.module)
+    } else {
+        format!(
+            "{invocation} (defined in module `{}` at line {})",
+            origin.module, origin.definition_line
+        )
     }
 }
 
@@ -237,16 +279,24 @@ fn walk_expr_depth(expr: &mut Expr, ctx: &Context, depth: u32) -> Result<(), Str
     if let Expr::TaggedLit { tag, parts, holes, hole_spans, line } = expr {
         if depth >= MAX_TAG_DEPTH {
             return Err(format!(
-                "module `{}`: tagged literal `{tag}` (line {line}) expanded past the \
+                "{} expanded past the \
                  depth limit ({MAX_TAG_DEPTH}) — a tag is emitting tags without terminating",
-                ctx.name
+                expansion_site(ctx, tag, *line)
             ));
         }
+        let invocation_line = *line;
         let tag = std::mem::take(tag);
         let parts = std::mem::take(parts);
         let holes = std::mem::take(holes);
         let hole_spans = std::mem::take(hole_spans);
-        let mut spliced = expand_one(ctx, &tag, &parts, &holes, &hole_spans)?;
+        let mut spliced = expand_one(
+            ctx,
+            &tag,
+            &parts,
+            &holes,
+            &hole_spans,
+            invocation_line,
+        )?;
         // The spliced source may itself contain a tagged literal — expand it too.
         // (Substitution has already replaced the markers with the real holes, so a
         // nested tag inside a hole is a normal `TaggedLit` this recursion handles.)
@@ -461,8 +511,9 @@ fn expand_one(
     parts: &[String],
     holes: &[String],
     hole_spans: &[(u32, u32)],
+    invocation_line: u32,
 ) -> Result<Expr, String> {
-    let where_ = || format!("module `{}`: tagged literal `{tag}`", ctx.name);
+    let where_ = || expansion_site(ctx, tag, invocation_line);
     let invocation = ctx.fresh_invocation.get();
     let next_invocation = invocation
         .checked_add(1)
@@ -655,7 +706,7 @@ fn expand_one(
             }
             match expr_output.pop().expect("one expression emission") {
                 crate::interpreter::ComptimeExprEmission::Syntax(expr) => {
-                    let definition_module = ctx
+                    let definition_origin = ctx
                         .tag_origins
                         .get(tag)
                         .ok_or_else(|| {
@@ -667,7 +718,7 @@ fn expand_one(
                     let mut expr = *expr;
                     witchy_syntax::linker::mark_definition_site_expr(
                         &mut expr,
-                        definition_module,
+                        &definition_origin.module,
                         &ctx.definition_modules,
                     )
                     .map_err(|error| format!("{}: {error}", where_()))?;

@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed compatibility builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned item/expression/type/pattern/statement/block quotations with structural typed holes, direct AST transport for typed tags, definition-site direct-function resolution, and explicit meta.call_site expression references landed; general constructor/type/item origins, spans, and expansion diagnostics remain proposed"
+tracking: "source-backed compatibility builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned item/expression/type/pattern/statement/block quotations with structural typed holes, direct AST transport for typed tags, definition-site direct-function resolution, explicit meta.call_site expression references, and direct tagged-expansion diagnostics carrying invocation plus definition module/line landed; general constructor/type/item origins and per-node span/hole ancestry remain proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -406,6 +406,14 @@ The first source-compatible slice is implemented:
   definition-site marker reaches type checking. Other `Ident` consumers still use
   their compatibility spelling, so constructor, type, pattern, field, and item
   origins remain later slices rather than silently claiming general hygiene.
+- The thirty-sixth slice makes direct tagged-expansion failures carry both ends
+  of their provenance. Local and imported typed or legacy tags report the
+  consumer module and tagged-literal invocation line plus the defining module
+  and function line. Link, type-check, evaluator, generated-source parse, typed
+  emission, and hole-substitution failures all pass through that one expansion
+  trace. This does not yet attach a full span/ancestry object to every generated
+  AST node; nested-node diagnostics and LSP generated-symbol navigation remain
+  later tooling slices.
 
 This is intentionally not the full RFC. Every quotation category and its typed
 hole placement is now compiler-owned. General `meta.*` builder composition may
@@ -413,7 +421,8 @@ still project canonical source, and current body builders use that compatibility
 surface when constructing an item. Compiler-owned typed tag expressions preserve
 definition-site direct function references, and
 `meta.expr_name(meta.call_site("name"))` explicitly selects invocation-site
-resolution. General constructor,
+resolution. Direct tagged-expansion failures preserve the invocation and
+definition module/line pair. General constructor,
 type, pattern, field, and item origins remain future work. The value is the
 migration seam: future work can move the
 payload behind these wrappers from parsed source to structured compiler nodes

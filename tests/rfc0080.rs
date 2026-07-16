@@ -6,6 +6,8 @@
 //! resolves bare `mod` names against `tests/`, not the subdir.
 #[path = "rfc0080/fresh_ident.rs"]
 mod fresh_ident;
+#[path = "rfc0080/expansion_diagnostics.rs"]
+mod expansion_diagnostics;
 #[path = "rfc0080/owned_body_syntax.rs"]
 mod owned_body_syntax;
 #[path = "rfc0080/owned_expr_syntax.rs"]
