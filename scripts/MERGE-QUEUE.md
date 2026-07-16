@@ -32,7 +32,7 @@ coordinator process serializes full gates and owns all merges to master.
 
 ```
 agent worktree                    main worktree
-  focused shard green   ────►  scratch/merge-queue/queue/<epoch>-<branch>.json
+  focused shard green   ────►  state/merge-queue/queue/<epoch>-<branch>.json
                                      │  (FIFO by filename sort)
                                coordinator daemon (merge-queue.sh run)
                                      │ takes queue head
@@ -45,10 +45,16 @@ agent worktree                    main worktree
                      red/timeout → journal, drop (or split batch), continue
 ```
 
-All state is under `scratch/merge-queue/` **in the MAIN worktree** (each git
-worktree has its own gitignored `scratch/`, so state written elsewhere is
+All state is under `state/merge-queue/` **in the MAIN worktree** (each git
+worktree has its own gitignored `state/`, so state written elsewhere is
 invisible — the script resolves the main worktree itself via
 `git worktree list`):
+
+`scratch/merge-queue` is a compatibility symlink after the one-time
+`migrate-state` cutover. Older agents and absolute log paths already stored in
+the journal therefore resolve to the same files; it is never a second queue.
+The sibling `state/agents/` directory is reserved for optional local diagnostics
+and handoff notes. It is observational, not a locking or file-ownership system.
 
 - `queue/*.json` — one pending submission per file. **Queue order = filename
   sort order.** Files are named `<epoch>-<branch-with-slashes-as-~>.json`;
@@ -71,6 +77,10 @@ invisible — the script resolves the main worktree itself via
   `run` loop writes it (a `run --once` clobbering it caused a
   two-coordinators incident; both modes now refuse to start beside a live
   daemon).
+- `coordinator.lock/` — lifetime singleton for the persistent loop. Atomic
+  creation closes the PID-file startup race; the owner exits if it loses the
+  lock, and a new owner conservatively reaps idle pre-fix sibling loops without
+  touching the PID-file keeper or gate-lock holder (BUG-580).
 - `coordinator.log` — daemon stdout/stderr. `daemon` creates a new session
   (`setsid -f` on systems that provide it, POSIX::setsid via system Perl on
   macOS) so terminal or tool-host process-group cleanup cannot orphan a gate.
@@ -89,6 +99,9 @@ merge-queue.sh wait <branch> [secs]              block until terminal journal ev
                                                  (default 3600s); prints it as JSON;
                                                  exit 0 iff merged. submit && wait
                                                  is the standard agent pattern.
+merge-queue.sh migrate-state                     one-time guarded cutover to state/
+                                                 (requires empty queue, stopped
+                                                 coordinator, and free gate lock)
 merge-queue.sh run [--once]                      coordinator loop (--once drains and
                                                  exits; refuses beside a live daemon)
 merge-queue.sh daemon                            start a new-session coordinator (survives
@@ -118,8 +131,11 @@ compiling/testing, not hung, so silence alone never kills it; see the stall
 note below), `MERGE_QUEUE_BUSY_SILENCE_MAX` (3× stall = 1800s: the ceiling on
 silence even for a *busy* group, so a CPU-burning runaway is reclaimed here
 rather than at GATE_TIMEOUT), `MERGE_QUEUE_BATCH_MAX` (5),
+`WITCHY_STATE_DIR` (override the canonical local state root),
 `MERGE_QUEUE_STATE_DIR` +
 `MERGE_QUEUE_GATE_WT` (isolated state for TESTING the coordinator itself),
+`MERGE_QUEUE_TEST_ROOT` + `MERGE_QUEUE_ALLOW_TEST_ROOT=1` (explicitly gated
+throwaway repository root for migration fixtures),
 `MERGE_QUEUE_ALLOW_MERGE=1` (test mode still merges — see Testing below).
 `check.sh` raises the bounded stage-heartbeat count from three to eight
 two-minute pulses whenever `WITCHY_GATE_SCOPE` is present, enough for measured
@@ -224,8 +240,8 @@ shards ignore the scope.
 5. **Agents' branch refs belong to agents.** The coordinator gates SHAs,
    detached; it never rewrites a submitted branch (except the pre-batching
    solo path where branch == merged sha exactly).
-6. **State lives in the MAIN worktree's scratch/merge-queue.** Never
-   per-worktree.
+6. **State lives in the MAIN worktree's state/merge-queue.** Never
+   per-worktree. The scratch path is compatibility only.
 7. **Sweep only removes what the JOURNAL says this queue merged** and only
    clean trees. Ahead-count alone cannot distinguish a fresh agent worktree
    from a merged one — that heuristic almost deleted a working agent's
@@ -237,6 +253,11 @@ shards ignore the scope.
   doctor reported NO COORDINATOR while a healthy daemon ran → operators
   started a second daemon → two coordinators raced the queue. Only the
   persistent loop writes the pid now; both modes refuse to double-start.
+- **Coordinator lifetime singleton (BUG-580):** `coordinator.pid` alone was
+  blind to displaced siblings and had a read/write race. `coordinator.lock/`
+  is now atomically owned for the whole loop; concurrent daemon starts elect
+  one winner, and PPID inspection is advisory so a sandbox-denied `ps` cannot
+  kill the winner or `doctor`.
 - **Test-mode merge guard:** `MERGE_QUEUE_STATE_DIR` isolates queue state but
   NOT the merge target. A harness test once fast-forwarded the REAL master
   with a test commit (caught, rewound — and the rewind itself briefly
@@ -317,7 +338,7 @@ you didn't drop a real commit that landed meanwhile.
 | Symptom | Action |
 |---|---|
 | doctor: coordinator NOT RUNNING | `./scripts/merge-queue.sh daemon` — state is on disk; nothing is lost between coordinators |
-| lock held, holder pid dead | next acquirer steals it automatically; or `rm -rf scratch/merge-queue/gate.lock` if nothing will acquire soon |
+| lock held, holder pid dead | next acquirer steals it automatically; or `rm -rf state/merge-queue/gate.lock` if nothing will acquire soon |
 | lock held, holder alive but gate silent | expected during the `test`-profile compile / test enumeration; the monitor now kills only after 300s of silence WITH an idle process group (a busy group is compiling, not hung). If it is genuinely wedged AND idle it self-kills; a spinning runaway is caught by `GATE_TIMEOUT`. Only `kill <holder>` by hand if both clocks are somehow not progressing. |
 | journal says `blocked` | gate was GREEN: `git merge --ff-only <sha from journal>` in the main worktree, then `merge-queue.sh resolve <branch>` |
 | branch red repeatedly, uniform ~32s e2e failures | environmental (server readiness under load), not the branch: check what else is hammering the machine, resubmit |

@@ -86,7 +86,7 @@ fn created_path(output: &Output) -> PathBuf {
 fn worktree_create_never_reuses_a_merged_branch_name() {
     let repo = TempRepo::new();
     let root = repo.path();
-    let journal = root.join("scratch/merge-queue/journal.jsonl");
+    let journal = root.join("state/merge-queue/journal.jsonl");
     fs::create_dir_all(journal.parent().expect("journal parent")).expect("create journal parent");
     fs::write(
         &journal,

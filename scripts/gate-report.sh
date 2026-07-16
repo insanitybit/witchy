@@ -9,7 +9,8 @@ set -euo pipefail
 
 here="$(cd "$(dirname "$0")/.." && pwd)"
 root="$(git -C "$here" worktree list --porcelain | head -1 | sed 's/^worktree //')"
-state_dir="$root/scratch/merge-queue"
+. "$here/scripts/state-paths.sh"
+state_dir="$(witchy_merge_queue_state_dir "$root")"
 since="24h"
 json=0
 

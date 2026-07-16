@@ -50,7 +50,12 @@ load-flaky under overlap) and a merge landing mid-gate invalidates that gate.
   rebases it onto latest master in a warm worktree, runs the single serialized
   full gate, and fast-forwards master on green (re-gating if master moved).
   Watch the outcome with `./scripts/merge-queue.sh status` or
-  `scratch/merge-queue/journal.jsonl`; gate logs are in `scratch/merge-queue/logs/`.
+  `state/merge-queue/journal.jsonl`; gate logs are in `state/merge-queue/logs/`.
+  After the one-time cutover, `scratch/merge-queue` remains a compatibility
+  symlink so older agents and historical journal log paths continue to work.
+  `state/agents/` may hold local diagnostics and handoff notes, but it is not
+  an ownership protocol or a lock; live status and explicit file ownership in
+  agent updates remain authoritative.
 - While a gate is live (`status` shows `gate_lock`), your builds compete with
   it for CPU — the slow-gate outliers (5-10× normal) are exactly gates that
   overlapped agent builds. Run long builds/tests at reduced priority so the
@@ -59,7 +64,7 @@ load-flaky under overlap) and a merge landing mid-gate invalidates that gate.
   until the gate finishes; build/clippy/`--fast` are fine anytime.
 - If `submit` or `./scripts/merge-queue.sh doctor` says NO COORDINATOR RUNNING,
   start the detached one: `./scripts/merge-queue.sh daemon` (survives your
-  session; log in `scratch/merge-queue/coordinator.log`).
+  session; log in `state/merge-queue/coordinator.log`).
 - `./scripts/worktree-status.sh` is the dashboard of all worktrees/branches
   (dirty, ahead/behind, queued, merged-and-removable). Report-only.
 - Worktrees hold multi-GB `target/` dirs, so clean up after merge: the
@@ -69,4 +74,3 @@ load-flaky under overlap) and a merge landing mid-gate invalidates that gate.
   `git worktree remove <path>` once you're done with them.
 - If you genuinely need a heavyweight suite yourself, share the lock:
   `./scripts/merge-queue.sh with-lock -- <cmd>`.
-

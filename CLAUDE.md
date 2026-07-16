@@ -177,5 +177,8 @@ is running (it invalidates that gate). The coordinator enforces both:
 - **Any ad-hoc heavyweight suite** (a manual full `check.sh`, `--full`, e2e)
   should share the same lock: `./scripts/merge-queue.sh with-lock -- <cmd>`.
 - Queue, journal (`journal.jsonl`), gate logs, and lock all live under
-  gitignored `scratch/merge-queue/`; `./scripts/merge-queue.sh status` prints
-  the machine-readable state.
+  gitignored `state/merge-queue/`; `./scripts/merge-queue.sh status` prints
+  the machine-readable state. `scratch/merge-queue` is retained as a legacy
+  symlink after migration, not as a second source of truth. Optional local
+  agent diagnostics and handoff notes belong under `state/agents/`; they are
+  observational only and must not be treated as file ownership or a lock.

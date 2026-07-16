@@ -68,6 +68,11 @@ fn run_status(repo: &Path, args: &[&str]) -> Output {
     let script = repo.join("scripts/worktree-status.sh");
     fs::create_dir_all(script.parent().expect("script parent")).expect("create scripts dir");
     fs::copy(source, &script).expect("copy worktree-status script");
+    fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/state-paths.sh"),
+        repo.join("scripts/state-paths.sh"),
+    )
+    .expect("copy state path resolver");
     Command::new("bash")
         .arg(script)
         .args(args)
@@ -183,7 +188,7 @@ fn worktree_pruning_requires_a_merge_journal_record() {
             "master",
         ],
     );
-    let journal = root.join("scratch/merge-queue/journal.jsonl");
+    let journal = root.join("state/merge-queue/journal.jsonl");
     fs::create_dir_all(journal.parent().expect("journal parent")).expect("create journal parent");
     fs::write(
         journal,
@@ -229,7 +234,7 @@ fn journaled_patch_equivalent_worktree_can_be_pruned_without_deleting_its_branch
         root,
         &["worktree", "add", "--quiet", worktree.to_str().expect("worktree path"), "equivalent-worktree"],
     );
-    let journal = root.join("scratch/merge-queue/journal.jsonl");
+    let journal = root.join("state/merge-queue/journal.jsonl");
     fs::create_dir_all(journal.parent().expect("journal parent")).expect("create journal parent");
     fs::write(
         journal,

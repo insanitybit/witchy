@@ -27,8 +27,10 @@ done
 
 here="$(cd "$(dirname "$0")/.." && pwd)"
 root="$(git -C "$here" worktree list --porcelain | head -1 | sed 's/^worktree //')"
-queue_dir="$root/scratch/merge-queue/queue"
-journal="$root/scratch/merge-queue/journal.jsonl"
+. "$here/scripts/state-paths.sh"
+merge_queue_state="$(witchy_merge_queue_state_dir "$root")"
+queue_dir="$merge_queue_state/queue"
+journal="$merge_queue_state/journal.jsonl"
 master_sha="$(git -C "$root" rev-parse master)"
 
 queued_branches=""

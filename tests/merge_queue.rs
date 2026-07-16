@@ -417,6 +417,151 @@ fn doctor_treats_denied_process_inspection_as_advisory() {
     );
 }
 
+fn resolve_merge_queue_state(root: &Path, envs: &[(&str, &Path)]) -> PathBuf {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut command = Command::new("bash");
+    command
+        .args([
+            "-c",
+            ". \"$1\"; witchy_merge_queue_state_dir \"$2\"",
+            "state-path-test",
+        ])
+        .arg(repo.join("scripts/state-paths.sh"))
+        .arg(root);
+    for (name, value) in envs {
+        command.env(name, value);
+    }
+    let output = command.output().expect("resolve merge queue state path");
+    assert!(output.status.success());
+    PathBuf::from(String::from_utf8(output.stdout).expect("state path is utf8").trim())
+}
+
+#[test]
+fn state_path_prefers_fresh_canonical_layout_and_preserves_legacy_until_cutover() {
+    let temp = TempDir::new();
+    let root = temp.path().join("root");
+    fs::create_dir(&root).expect("create fake repository root");
+
+    assert_eq!(
+        resolve_merge_queue_state(&root, &[]),
+        root.join("state/merge-queue"),
+    );
+    fs::create_dir_all(root.join("scratch/merge-queue")).expect("create legacy state");
+    assert_eq!(
+        resolve_merge_queue_state(&root, &[]),
+        root.join("scratch/merge-queue"),
+    );
+    fs::remove_dir_all(root.join("scratch/merge-queue")).expect("remove legacy fixture");
+    fs::create_dir_all(root.join("state/merge-queue")).expect("create canonical state");
+    std::os::unix::fs::symlink(
+        "../state/merge-queue",
+        root.join("scratch/merge-queue"),
+    )
+    .expect("create legacy compatibility link");
+    assert_eq!(
+        resolve_merge_queue_state(&root, &[]),
+        root.join("state/merge-queue"),
+    );
+
+    fs::remove_file(root.join("scratch/merge-queue")).expect("remove compatibility link");
+    std::os::unix::fs::symlink("../wrong-queue", root.join("scratch/merge-queue"))
+        .expect("create invalid legacy link");
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let invalid = Command::new("bash")
+        .args([
+            "-c",
+            ". \"$1\"; witchy_merge_queue_state_dir \"$2\"",
+            "state-path-test",
+        ])
+        .arg(repo.join("scripts/state-paths.sh"))
+        .arg(&root)
+        .output()
+        .expect("reject invalid legacy link");
+    assert!(!invalid.status.success());
+    fs::remove_file(root.join("scratch/merge-queue")).expect("remove invalid legacy link");
+
+    let custom_root = temp.path().join("custom-state");
+    assert_eq!(
+        resolve_merge_queue_state(&root, &[("WITCHY_STATE_DIR", &custom_root)]),
+        custom_root.join("merge-queue"),
+    );
+    let exact = temp.path().join("exact-queue");
+    assert_eq!(
+        resolve_merge_queue_state(&root, &[("MERGE_QUEUE_STATE_DIR", &exact)]),
+        exact,
+    );
+}
+
+#[test]
+fn migrate_state_requires_a_drained_queue_and_leaves_legacy_compatibility() {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let temp = TempDir::new();
+    let root = temp.path().join("root");
+    let legacy = root.join("scratch/merge-queue");
+    let queue = legacy.join("queue");
+    fs::create_dir_all(&queue).expect("create legacy queue");
+    fs::create_dir_all(legacy.join("logs")).expect("create legacy logs");
+    fs::write(
+        legacy.join("journal.jsonl"),
+        "{\"ts\":\"2026-07-16T00:00:00Z\",\"event\":\"submitted\",\"branch\":\"old\"}\n",
+    )
+    .expect("write legacy journal");
+    fs::write(legacy.join("logs/old.log"), "old gate log\n").expect("write old log");
+
+    let ungated = Command::new(repo.join("scripts/merge-queue.sh"))
+        .arg("migrate-state")
+        .env("MERGE_QUEUE_TEST_ROOT", &root)
+        .output()
+        .expect("reject ungated test root");
+    assert!(!ungated.status.success(), "test root bypassed its explicit guard");
+
+    let run_migration = || {
+        Command::new(repo.join("scripts/merge-queue.sh"))
+            .arg("migrate-state")
+            .env("MERGE_QUEUE_TEST_ROOT", &root)
+            .env("MERGE_QUEUE_ALLOW_TEST_ROOT", "1")
+            .output()
+            .expect("run isolated state migration")
+    };
+
+    fs::write(queue.join("pending.json"), "{}\n").expect("write pending queue item");
+    let refused = run_migration();
+    assert!(!refused.status.success(), "migration ignored a non-empty queue");
+    assert!(legacy.is_dir());
+    assert!(!root.join("state/merge-queue").exists());
+    fs::remove_file(queue.join("pending.json")).expect("drain fixture queue");
+
+    let migrated = run_migration();
+    assert!(
+        migrated.status.success(),
+        "migration failed: {}",
+        String::from_utf8_lossy(&migrated.stderr),
+    );
+    assert_eq!(
+        fs::read_link(&legacy).expect("legacy path is a symlink"),
+        PathBuf::from("../state/merge-queue"),
+    );
+    assert_eq!(
+        fs::read_to_string(legacy.join("logs/old.log")).expect("read log through legacy link"),
+        "old gate log\n",
+    );
+    let journal = fs::read_to_string(root.join("state/merge-queue/journal.jsonl"))
+        .expect("read migrated journal");
+    assert!(journal.contains("\"branch\":\"old\""));
+    assert!(journal.contains("\"event\":\"state_migrated\""));
+    assert!(root.join("state/agents").is_dir());
+    assert!(root.join("state/README.txt").is_file());
+    assert!(!root.join("state/merge-queue/gate.lock").exists());
+    assert!(!root.join("state/merge-queue/coordinator.lock").exists());
+    assert!(!root.join("state/merge-queue/coordinator.pid").exists());
+
+    let repeated = run_migration();
+    assert!(repeated.status.success(), "completed migration is not idempotent");
+    let journal = fs::read_to_string(root.join("state/merge-queue/journal.jsonl"))
+        .expect("read journal after repeated migration");
+    assert_eq!(journal.matches("\"event\":\"state_migrated\"").count(), 1);
+}
+
 #[test]
 fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

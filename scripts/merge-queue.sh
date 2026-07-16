@@ -30,10 +30,10 @@
 # MERGE_QUEUE_STALL_TIMEOUT seconds (default 600) or the whole gate exceeds
 # MERGE_QUEUE_GATE_TIMEOUT seconds (default 2700), the process group is killed,
 # the candidate is journaled as timed out, the lock is released, and the queue
-# moves on. Logs are always preserved under scratch/merge-queue/logs/.
+# moves on. Logs are always preserved under state/merge-queue/logs/.
 #
-# State is machine-readable and lives under gitignored scratch/merge-queue/
-# IN THE MAIN WORKTREE (each worktree has its own scratch/, so state written
+# State is machine-readable and lives under gitignored state/merge-queue/
+# IN THE MAIN WORKTREE (each worktree has its own state/, so state written
 # elsewhere would be invisible to the coordinator):
 #   queue/*.json    one pending submission per file (FIFO by filename)
 #   journal.jsonl   append-only events: submitted/merged/already_merged/red/
@@ -62,8 +62,9 @@
 #   scripts/merge-queue.sh run [--once]             coordinator loop (--once: drain and exit)
 #   scripts/merge-queue.sh daemon                   start the coordinator in a detached session,
 #                                                   surviving the launching session; log →
-#                                                   scratch/merge-queue/coordinator.log; stop
+#                                                   state/merge-queue/coordinator.log; stop
 #                                                   with: kill $(cat .../coordinator.pid)
+#   scripts/merge-queue.sh migrate-state            one-time guarded scratch/ → state/ cutover
 #   scripts/merge-queue.sh with-lock -- <cmd...>    run any command under the gate lock
 #   scripts/merge-queue.sh sweep                    remove worktrees whose branch this
 #                                                   queue MERGED (journal-verified) and
@@ -82,8 +83,17 @@ set -euo pipefail
 # is invoked from. MERGE_QUEUE_STATE_DIR / MERGE_QUEUE_GATE_WT exist so tests
 # can run against throwaway state without touching the live queue.
 here="$(cd "$(dirname "$0")/.." && pwd)"
-root="$(git -C "$here" worktree list --porcelain | head -1 | sed 's/^worktree //')"
-qdir="${MERGE_QUEUE_STATE_DIR:-$root/scratch/merge-queue}"
+if [ -n "${MERGE_QUEUE_TEST_ROOT:-}" ]; then
+    [ "${MERGE_QUEUE_ALLOW_TEST_ROOT:-0}" = 1 ] || {
+        printf 'merge-queue: MERGE_QUEUE_TEST_ROOT requires MERGE_QUEUE_ALLOW_TEST_ROOT=1\n' >&2
+        exit 2
+    }
+    root="$MERGE_QUEUE_TEST_ROOT"
+else
+    root="$(git -C "$here" worktree list --porcelain | head -1 | sed 's/^worktree //')"
+fi
+. "$here/scripts/state-paths.sh"
+qdir="$(witchy_merge_queue_state_dir "$root")"
 queue_dir="$qdir/queue"
 journal="$qdir/journal.jsonl"
 logs="$qdir/logs"
@@ -154,6 +164,13 @@ record() { # record <event> <branch> [key value]...
 holding_lock=0
 holding_coordinator_lock=0
 coordinator_owner_shell_pid=""
+migration_marker_active=0
+release_migration_marker() {
+    if [ "$migration_marker_active" -eq 1 ]; then
+        rm -f "$root/scratch/merge-queue/migrating" "$root/state/merge-queue/migrating"
+    fi
+    migration_marker_active=0
+}
 release_lock() { if [ "$holding_lock" -eq 1 ]; then rm -rf "$lock"; fi; holding_lock=0; }
 coordinator_lock_owned() {
     [ "$holding_coordinator_lock" -eq 1 ] \
@@ -171,6 +188,7 @@ release_coordinator_lock() {
     holding_coordinator_lock=0
 }
 cleanup() {
+    release_migration_marker
     release_lock
     release_coordinator_lock
 }
@@ -400,6 +418,10 @@ cmd_submit() {
     [ "${1:-}" = "--front" ] && { front=1; shift; }
     local branch="${1:?usage: merge-queue.sh submit [--front] <branch> [note]}"
     local msg="${2:-}"
+    if [ -f "$qdir/migrating" ]; then
+        note "state migration is in progress; retry submit after it completes"
+        exit 1
+    fi
     git -C "$root" rev-parse --verify --quiet "refs/heads/$branch" >/dev/null \
         || { note "no local branch '$branch'"; exit 2; }
     # Submit-time conflict pre-check (instant, in-memory): a branch that cannot
@@ -823,6 +845,10 @@ prewarm_gate() {
 cmd_run() {
     local once=0
     [ "${1:-}" = "--once" ] && once=1
+    if [ -f "$qdir/migrating" ]; then
+        note "state migration is in progress; refusing to start a coordinator"
+        exit 1
+    fi
     # Only the PERSISTENT loop owns coordinator.pid. An ad-hoc `run --once`
     # used to clobber it, then exit — leaving a dead pid in the file, so
     # doctor/submit reported NO COORDINATOR while the real daemon was alive,
@@ -1044,6 +1070,107 @@ cmd_daemon() {
     fi
 }
 
+# One-time production cutover from scratch/merge-queue to state/merge-queue.
+# The legacy path becomes a relative symlink, so old agents and absolute paths
+# already stored in journal.jsonl keep working. Both singleton locks are held
+# across the move; coordinator.pid also names this process so pre-fix daemons
+# refuse to start during the compatibility window.
+cmd_migrate_state() {
+    if [ -n "${MERGE_QUEUE_STATE_DIR:-}" ] || [ -n "${WITCHY_STATE_DIR:-}" ]; then
+        note "migrate-state only operates on the repository's default production state"
+        return 2
+    fi
+    local legacy="$root/scratch/merge-queue"
+    local state_root="$root/state"
+    local target="$state_root/merge-queue"
+    local link_target="../state/merge-queue"
+
+    if [ -L "$legacy" ]; then
+        if [ -d "$target" ] && [ "$legacy" -ef "$target" ]; then
+            note "state already migrated: $target (legacy symlink present)"
+            return 0
+        fi
+        note "refusing: legacy symlink does not resolve to canonical state: $legacy"
+        return 1
+    fi
+    [ "$qdir" = "$legacy" ] || { note "refusing: active state is $qdir, expected legacy $legacy"; return 1; }
+    [ -d "$legacy" ] || { note "refusing: legacy state directory is absent: $legacy"; return 1; }
+    [ ! -e "$target" ] || { note "refusing: target already exists without a completed legacy symlink: $target"; return 1; }
+    local cpid; cpid="$(coordinator_pid 2>/dev/null || true)"
+    [ -z "$cpid" ] || { note "refusing: coordinator pid $cpid is still running; drain the queue and stop it first"; return 1; }
+    if ls "$queue_dir"/*.json >/dev/null 2>&1; then
+        note "refusing: queue is not drained"
+        return 1
+    fi
+    [ ! -d "$lock" ] || { note "refusing: gate lock is still held"; return 1; }
+
+    acquire_coordinator_lock || { note "refusing: coordinator singleton is held"; return 1; }
+    echo "$$" >"$qdir/coordinator.pid"
+    acquire_lock "state migration: scratch/merge-queue -> state/merge-queue"
+    migration_marker_active=1
+    : >"$qdir/migrating"
+    if ls "$queue_dir"/*.json >/dev/null 2>&1; then
+        note "refusing: queue changed while acquiring migration locks"
+        rm -f "$qdir/migrating"
+        return 1
+    fi
+
+    mkdir -p "$state_root"
+    local compat_tmp="$root/scratch/.merge-queue-compat-$$"
+    if ! ln -s "$link_target" "$compat_tmp"; then
+        note "could not prepare the legacy compatibility symlink"
+        return 1
+    fi
+    if ! mv "$legacy" "$target"; then
+        rm -f "$compat_tmp"
+        note "state move failed; legacy directory remains authoritative"
+        return 1
+    fi
+    # All held locks and the marker moved with the directory. Point cleanup and
+    # subsequent journal writes at their new real location before attempting
+    # the compatibility symlink, so even a failed symlink install cannot leave
+    # an invisible live lock behind in state/.
+    qdir="$target"
+    queue_dir="$qdir/queue"
+    journal="$qdir/journal.jsonl"
+    logs="$qdir/logs"
+    lock="$qdir/gate.lock"
+    coordinator_lock="$qdir/coordinator.lock"
+    if ! mv "$compat_tmp" "$legacy"; then
+        note "legacy symlink install failed after the move"
+        if [ ! -e "$legacy" ] && [ ! -L "$legacy" ]; then
+            if mv "$target" "$legacy"; then
+                qdir="$legacy"
+                queue_dir="$qdir/queue"
+                journal="$qdir/journal.jsonl"
+                logs="$qdir/logs"
+                lock="$qdir/gate.lock"
+                coordinator_lock="$qdir/coordinator.lock"
+            else
+                note "ERROR: rollback failed; state remains at $target"
+            fi
+        else
+            note "ERROR: legacy path was recreated concurrently; canonical state remains at $target"
+        fi
+        return 1
+    fi
+
+    mkdir -p "$state_root/agents"
+    if [ ! -f "$state_root/README.txt" ]; then
+        printf '%s\n' \
+            'Witchy local operational state (gitignored).' \
+            'merge-queue/ contains queue, journal, logs, locks, and coordinator data.' \
+            'agents/ is available for local agent handoffs and ongoing-work metadata.' \
+            >"$state_root/README.txt"
+    fi
+    release_migration_marker
+    record state_migrated "" from "$legacy" to "$target" compatibility_symlink "$legacy"
+    release_lock
+    release_coordinator_lock
+    note "migrated operational state to $target"
+    note "legacy compatibility: $legacy -> $link_target"
+}
+
 cmd_with_lock() {
     [ "${1:-}" = "--" ] && shift
     [ "$#" -ge 1 ] || { note "usage: merge-queue.sh with-lock -- <cmd...>"; exit 2; }
@@ -1060,11 +1187,12 @@ case "${1:-}" in
     doctor)    cmd_doctor ;;
     run)       shift; cmd_run "$@" ;;
     daemon)    cmd_daemon ;;
+    migrate-state) cmd_migrate_state ;;
     wait)      shift; cmd_wait "$@" ;;
     stats)     cmd_stats ;;
     resolve)   shift; cmd_resolve "$@" ;;
     sweep)     shift; cmd_sweep "$@" ;;
     with-lock) shift; cmd_with_lock "$@" ;;
     -h | --help | "") sed -n '2,68p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) note "unknown subcommand '${1}' (try submit, status, doctor, run, daemon, sweep, with-lock)"; exit 2 ;;
+    *) note "unknown subcommand '${1}' (try submit, status, doctor, run, daemon, migrate-state, sweep, with-lock)"; exit 2 ;;
 esac

@@ -47,7 +47,7 @@ gate — the coordinator runs that once, serialized.
 
 If it says `coordinator : NOT RUNNING`, start the detached daemon:
 `./scripts/merge-queue.sh daemon` — it survives your session ending
-(log: `scratch/merge-queue/coordinator.log`). `submit` also warns about this,
+(log: `state/merge-queue/coordinator.log`). `submit` also warns about this,
 and warns when your diff overlaps another queued branch's files (advisory:
 expect a semantic rebase if the earlier branch merges first).
 

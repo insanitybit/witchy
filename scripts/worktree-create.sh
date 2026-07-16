@@ -13,6 +13,8 @@ set -u
 
 root="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
 cd "$root" || exit 1
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+. "$script_dir/state-paths.sh"
 
 # Accept name from: (1) positional arg, (2) JSON on stdin (hook protocol), (3) generate one.
 name="${1:-}"
@@ -24,7 +26,7 @@ fi
 dest="$root/.claude/worktrees/$name"
 base_branch="worktree-$name"
 branch="$base_branch"
-journal="$root/scratch/merge-queue/journal.jsonl"
+journal="$(witchy_merge_queue_state_dir "$root")/journal.jsonl"
 
 if [ -e "$dest" ]; then
     echo "worktree-create: $dest already exists" >&2
