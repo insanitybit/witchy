@@ -1096,9 +1096,14 @@ calls and separate comptime blocks or tagged-literal invocations produce distinc
 names in the source-reserved `__` namespace, so a handwritten binding cannot
 capture them. When a typed tag returns a compiler-owned expression, direct
 function calls and references written in that expression resolve in the tag's
-defining module; generated lexical bindings still shadow normally. General
-identifier origins, constructor/type origins, and explicit `meta.call_site`
-identifiers remain future work.
+defining module; generated lexical bindings still shadow normally.
+`meta.call_site(name)` is the explicit escape for an expression reference that
+must resolve in the syntax consumer's scope. Passing it to `meta.expr_name`
+creates a compiler-owned expression node, so structural quotation and typed-tag
+transport preserve the invocation-site origin without a forgeable source
+spelling. General constructor, type, pattern, field, and item origins remain
+future work; other compatibility builders currently consume only the validated
+identifier spelling.
 `quote expr:`, `quote type:`, `quote pattern:`, `quote stmt:`, `quote block:`,
 and `quote item:` are the first quotation forms. They parse the indented
 expression, type, pattern, statement, block, or single item immediately and
@@ -1181,7 +1186,8 @@ Because a tag emits *code*, interpolation holes are typed **by position** (the
 substituted expression is type-checked normally) and there is no runtime string
 parser. Hole expressions resolve at the **call site** (hygiene), while direct
 functions written in compiler-owned typed output resolve at the **definition
-site**. A type error
+site**. A generator can opt one expression reference back into invocation-site
+resolution with `meta.expr_name(meta.call_site("name"))`. A type error
 in a hole points back **into the literal** at that `${…}`, not at generated code.
 The `html` tag in the `glamour` rune uses this: a `${userInput}` in text position
 becomes a `text(…)` **node**, never markup, so it is XSS-immune by construction.

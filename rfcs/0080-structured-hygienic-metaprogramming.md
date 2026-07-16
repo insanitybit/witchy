@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed compatibility builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned item/expression/type/pattern/statement/block quotations with structural typed holes, direct AST transport for typed tags, and definition-site direct-function resolution for compiler-owned typed tag output landed; general identifier origins, spans, diagnostics, and meta.call_site remain proposed"
+tracking: "source-backed compatibility builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned item/expression/type/pattern/statement/block quotations with structural typed holes, direct AST transport for typed tags, definition-site direct-function resolution, and explicit meta.call_site expression references landed; general constructor/type/item origins, spans, and expansion diagnostics remain proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -394,14 +394,26 @@ The first source-compatible slice is implemented:
   representation on parse/format round-trip. Current body builders may still
   project canonical source when constructing an item; the quotation payload
   itself is no longer assembled or reparsed.
+- The thirty-fifth slice adds the explicit invocation-site escape for expression
+  references. `meta.call_site(name)` validates the identifier and carries a
+  distinct `Ident` origin; `meta.expr_name` converts that value directly into a
+  compiler-owned `Expr` node rather than rendering a reserved source spelling.
+  Definition-site marking deliberately preserves the opaque origin through typed
+  tag expansion, and the consumer link resolves it against the invocation's
+  lexical bindings and functions. Both direct function-value references and
+  calls formed by structural quotation are covered, and neither the call-site nor
+  definition-site marker reaches type checking. Other `Ident` consumers still use
+  their compatibility spelling, so constructor, type, pattern, field, and item
+  origins remain later slices rather than silently claiming general hygiene.
 
 This is intentionally not the full RFC. Every quotation category and its typed
 hole placement is now compiler-owned. General `meta.*` builder composition may
 still project canonical source, and current body builders use that compatibility
-surface when constructing an item. Compiler-owned typed tag
-expressions now preserve definition-site direct function references, but
-general identifier origins and explicit call-site identifiers remain future
-work. The value is the
+surface when constructing an item. Compiler-owned typed tag expressions preserve
+definition-site direct function references, and
+`meta.expr_name(meta.call_site("name"))` explicitly selects invocation-site
+resolution. General constructor,
+type, pattern, field, and item origins remain future work. The value is the
 migration seam: future work can move the
 payload behind these wrappers from parsed source to structured compiler nodes
 without changing the comptime append/merge path again.

@@ -2295,6 +2295,7 @@ Hole-free `quote block:` values retain compiler-owned block AST.
 #### `sealed type Ident`
 
 - `Ident(String)`
+- `CallSiteIdent(String)`
 
 #### `type TypeExpr`
 
@@ -2347,6 +2348,10 @@ Join parser-checked item quote fragments with typed syntax holes.
 
 A validated Witchy identifier. This rejects keywords, `_`, non-ASCII source spelling, and compiler-reserved `__` names before generated source is parsed.
 
+#### `fn call_site(name: String) -> Ident`
+
+An explicit invocation-site reference. The compiler retains this origin in ExprSyntax instead of rendering a source identifier for the defining module to capture.
+
 #### `fn fresh(hint: String) -> Ident`
 
 A deterministic compiler-owned binding name. The returned identifier cannot collide with source names because its spelling lives in the reserved `__` namespace; repeated calls, blocks, and tagged-literal invocations are distinct.
@@ -2393,7 +2398,7 @@ Join parser-checked type quote fragments with typed type holes.
 
 #### `fn expr_name(name: Ident) -> ExprSyntax`
 
-Source-backed expression syntax. These constructors make the shape explicit while quotation/hygienic identifiers are still pending.
+Expression syntax builders. Ordinary names retain the compatibility payload; call-site names become compiler-owned nodes so their origin cannot be forged or lost before linking.
 
 #### `fn expr_call(callee: ExprSyntax, args: List(ExprSyntax)) -> ExprSyntax`
 

@@ -243,8 +243,12 @@ including structurally substituted expression templates, stay as compiler-owned
 AST through this boundary; compatibility builders still project source until
 their structural forms land. Direct function calls
 written in compiler-owned typed output resolve where the tag is defined, while
-the literal's holes keep their invocation-site context. Imported tags remain
-available during expansion and are removed before runtime type checking.
+the literal's holes keep their invocation-site context. Use
+`meta.expr_name(meta.call_site("name"))` when generated code deliberately needs
+an expression reference from the invocation scope. That reference remains a
+compiler-owned node through structural quotation; it is not encoded as generated
+source. Imported tags remain available during expansion and are removed before
+runtime type checking.
 
 ```witchy
 fn answer_value() -> Int:
@@ -254,14 +258,21 @@ comptime fn answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     quote expr:
         answer_value() + 2
 
+comptime fn caller_answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+    let target = meta.expr_name(meta.call_site("answer_value"))
+    quote expr:
+        ${target}()
+
 fn main(console: Console):
     let answer_value = fn() -> Int:
         0
     console.print("${answer"ignored"}")
+    console.print("${caller_answer"ignored"}")
 ```
 
 ```text
 42
+0
 ```
 
 ```witchy
