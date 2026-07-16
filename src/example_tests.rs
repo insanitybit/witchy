@@ -2004,15 +2004,16 @@ fn main(console: Console):
         );
     }
 
-    /// RFC-0080 expression quotation: `quote expr:` parses the quoted
-    /// expression immediately and produces a typed `meta.ExprSyntax` through the
-    /// same sealed source-backed channel as `meta.expr_raw`.
+    /// RFC-0080 expression quotation: a typed tag returning a hole-free quote
+    /// emits the compiler-owned expression AST directly. The anonymous record
+    /// keeps the structural payload nontrivial while both runtime backends consume
+    /// the same already-expanded tree.
     #[test]
     fn quote_expr_builds_typed_exprsyntax_on_both_backends() {
         let src = r#"
 comptime fn answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     quote expr:
-        40 + 2
+        .{value: 40}.value + 2
 
 fn main(console: Console):
     console.print("${answer"ignored"}")

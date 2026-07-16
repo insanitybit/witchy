@@ -13,6 +13,7 @@ pub enum IntrinsicId {
     CompilerQuoteItemHoles,
     CompilerQuoteExpr,
     CompilerEmitItem,
+    CompilerEmitExpr,
     TryContext,
     Erase,
     Unerase,
@@ -108,6 +109,7 @@ pub enum IntrinsicSignature {
     CompilerQuoteItemHoles,
     CompilerQuoteExpr,
     CompilerEmitItem,
+    CompilerEmitExpr,
     TryContext,
     GenericToMessage,
     MessageToGeneric,
@@ -368,6 +370,7 @@ pub const COMPILER_QUOTE_ITEM: &str = "@quote_item";
 pub const COMPILER_QUOTE_ITEM_HOLES: &str = "@quote_item_holes";
 pub const COMPILER_QUOTE_EXPR: &str = "@quote_expr";
 pub const COMPILER_EMIT_ITEM: &str = "@emit_item";
+pub const COMPILER_EMIT_EXPR: &str = "@emit_expr";
 pub const RETIRED_SOURCE_RENDER: &str = "__render";
 pub const TRY_CONTEXT: &str = "__try_ctx";
 
@@ -558,6 +561,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "compiler-owned item emission",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::CompilerEmitExpr,
+        name: COMPILER_EMIT_EXPR,
+        arity: 1,
+        signature: IntrinsicSignature::CompilerEmitExpr,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "compiler-owned expression emission",
         private_callers: NO_PRIVATE_CALLERS,
     },
     IntrinsicSpec {
@@ -2192,6 +2210,7 @@ mod tests {
             COMPILER_QUOTE_ITEM_HOLES,
             COMPILER_QUOTE_EXPR,
             COMPILER_EMIT_ITEM,
+            COMPILER_EMIT_EXPR,
             TRY_CONTEXT,
             ERASE,
             UNERASE,

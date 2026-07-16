@@ -3827,6 +3827,10 @@ impl Checker {
                 vec![Ty::Named("meta.ItemSyntax".into(), Vec::new())],
                 Ty::Nil,
             )),
+            S::CompilerEmitExpr => Some((
+                vec![Ty::Named("meta.ExprSyntax".into(), Vec::new())],
+                Ty::Nil,
+            )),
             S::GenericToMessage => {
                 let m = self.fresh();
                 Some((vec![m], Ty::Msg))

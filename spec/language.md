@@ -1007,9 +1007,10 @@ Compiler syntax values such as `meta.ItemSyntax`, `meta.TypeSyntax`,
 functions, fields, aliases, and expressions cannot store or return them.
 Hole-free `quote expr:` and literal `meta.expr_raw("...")` retain a
 compiler-owned expression AST plus a canonical source projection. Direct item
-holes consume that AST without reparsing. Existing `meta.expr_*` builders and
-typed tagged-literal output project the canonical source for compatibility;
-the composed or tag-emitted expression remains source-backed in this stage.
+holes and typed tagged-literal output consume that AST without reparsing.
+Existing `meta.expr_*` builders project canonical source for compatibility; a
+composed expression remains source-backed in this stage and a typed tag carrying
+a composed value uses the explicit parse fallback.
 Top-level `comptime fn` declarations are helpers for this expansion phase. They
 may mention compile-time-only syntax types, may be called from `comptime:`,
 custom-derive, or tagged-literal expansion, and are stripped before the runtime
@@ -1086,13 +1087,14 @@ comptime fn tag(parts: List(String), holes: List(String)) -> meta.ExprSyntax
 with `parts` = the static fragments and `holes` = an **opaque marker** per hole —
 a token the tag *places* where that hole's value belongs (the tag does not read
 the hole's source). A legacy string tag returns witchy **expression source**; a
-typed tag returns `meta.ExprSyntax`, whose source payload remains sealed behind
-the compiler boundary. The compiler parses that generated expression and
-**substitutes** the real hole expression — parsed once at the call site, carrying
-its source position — at each marker, then splices the result over the literal
-before type checking. So both backends compile the same AST, the tag runs once in
-the compiler, and a hole's marker may be placed zero, once, or many times. The tag
-is local or imported; only the items reachable from it run at expansion time.
+typed tag returns `meta.ExprSyntax`. A compiler-owned expression transfers its AST
+through the expansion event directly; source-backed compatibility values retain
+the generated-expression parse. The compiler then **substitutes** the real hole
+expression — parsed once at the call site, carrying its source position — at each
+marker and splices the result over the literal before type checking. So both
+backends compile the same AST, the tag runs once in the compiler, and a hole's
+marker may be placed zero, once, or many times. The tag is local or imported;
+only the items reachable from it run at expansion time.
 
 Because a tag emits *code*, interpolation holes are typed **by position** (the
 substituted expression is type-checked normally) and there is no runtime string

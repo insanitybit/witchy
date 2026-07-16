@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed syntax wrappers/builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned item syntax with structural typed holes, and compiler-owned hole-free expression payloads landed; definition/call-site origin hygiene and compiler-owned pattern/type syntax trees remain proposed"
+tracking: "source-backed syntax wrappers/builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned item syntax with structural typed holes, compiler-owned hole-free expression payloads, and direct AST transport for typed tags landed; definition/call-site origin hygiene and compiler-owned pattern/type syntax trees remain proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -313,10 +313,17 @@ The first source-compatible slice is implemented:
   anonymous-record expressions that the compatibility payload parser cannot
   represent alone. Existing `meta.expr_*` builders project source and return a
   compatibility value, preserving their API while structural builders remain
-  future work. Typed tags also project source in this slice; compiler-owned tag
-  output transport is a separate vertical cut. Formatting prints
+  future work. Formatting prints
   `meta.expr_raw("...")` and promotes literal payloads back where independently
   parseable. Expression quotes containing holes remain source-backed.
+- The twenty-sixth slice gives typed tagged literals a compiler-owned expression
+  event on the same interpreter expansion channel as typed item emission. A tag
+  returning a hole-free quoted expression transfers the stored AST directly,
+  after which RFC-0006 substitutes call-site hole nodes as before. A composed
+  source-backed `ExprSyntax` is carried as an explicit compatibility event and
+  parsed with the tag's qualifier context; a legacy `String` tag is unchanged.
+  Missing, duplicate, cross-category, or mixed source/typed emissions fail
+  loudly. Both runtime backends continue to consume only the expanded AST.
 
 This is intentionally not the full RFC. Whole items and their typed hole
 placement plus direct hole-free expression payloads are now compiler-owned,

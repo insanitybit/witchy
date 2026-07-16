@@ -75,6 +75,10 @@ Hole-free `quote expr:` values also retain their parsed AST when passed directly
 through an item hole. Existing `meta.expr_*` builders can consume them by
 projecting canonical source; the newly composed value remains a compatibility
 value until structural expression builders land.
+When a typed tagged-literal generator returns one of these compiler-owned values,
+the expansion engine transfers the expression AST directly. A composed
+source-backed `ExprSyntax` and a legacy `String` tag retain the explicit parse
+fallback.
 
 ```witchy
 import meta
@@ -109,6 +113,10 @@ The tag *places* each marker where that hole's value belongs and returns witchy
 **expression source**; the compiler parses it and substitutes the real hole
 expression — resolved at the call site — at each marker, then splices the result
 in before type-checking.
+
+A typed generator may instead return `meta.ExprSyntax`. Hole-free `quote expr:`
+results stay as compiler-owned AST through this boundary; compatibility builders
+still project source until their structural forms land.
 
 ```witchy
 import list

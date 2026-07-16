@@ -126,6 +126,18 @@ pub(crate) enum ComptimeItemEmission {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub(crate) enum ComptimeExprEmission {
+    Source(String),
+    Syntax(Box<Expr>),
+}
+
+pub(crate) struct ComptimeOutputs {
+    pub output: Vec<String>,
+    pub items: Vec<PositionedComptimeItem>,
+    pub exprs: Vec<ComptimeExprEmission>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PositionedComptimeItem {
     pub output_position: usize,
     pub emission: ComptimeItemEmission,
@@ -135,6 +147,7 @@ struct InterpreterOutcome {
     output: Vec<String>,
     exit_code: i32,
     comptime_items: Vec<PositionedComptimeItem>,
+    comptime_exprs: Vec<ComptimeExprEmission>,
 }
 
 /// A build-time capability instance, carrying the attenuated grant the build
@@ -890,6 +903,7 @@ pub struct Interpreter {
     compiler_item_syntax: HashMap<String, Item>,
     compiler_expr_syntax: HashMap<String, Expr>,
     comptime_item_output: Vec<PositionedComptimeItem>,
+    comptime_expr_output: Vec<ComptimeExprEmission>,
     /// Evaluation-step counter and ceiling. Unlike the runtime's epoch
     /// preemption, the tree-walker can't be interrupted, so a `while true {}`
     /// would hang the host — this bounds total work and errors out instead.
@@ -1284,6 +1298,7 @@ impl Interpreter {
             compiler_item_syntax,
             compiler_expr_syntax,
             comptime_item_output: Vec::new(),
+            comptime_expr_output: Vec::new(),
             steps: 0,
             step_limit: DEFAULT_STEP_LIMIT,
             cur_line: 0,
@@ -2357,6 +2372,42 @@ impl Interpreter {
                     output_position: self.output.len(),
                     emission,
                 });
+                Ok(Some(Value::Nil))
+            }
+            name if name == intrinsics::COMPILER_EMIT_EXPR => {
+                if self.fresh_ident_scope.is_none() {
+                    return err("expression emission is available only during compile-time expansion");
+                }
+                let emission = match one(args)? {
+                    Value::Ctor { name, fields }
+                        if name.rsplit_once('.').map_or(name.as_str(), |(_, tail)| tail)
+                            == "CompilerExprSyntax" =>
+                    {
+                        let [Value::Str(handle), Value::Str(_source)] = fields.as_slice() else {
+                            return err("CompilerExprSyntax carried an invalid payload");
+                        };
+                        let expr = self
+                            .compiler_expr_syntax
+                            .get(handle)
+                            .cloned()
+                            .ok_or_else(|| RuntimeError {
+                                message: "compiler-owned expression emission referenced an invalid syntax handle"
+                                    .into(),
+                            })?;
+                        ComptimeExprEmission::Syntax(Box::new(expr))
+                    }
+                    Value::Ctor { name, fields }
+                        if name.rsplit_once('.').map_or(name.as_str(), |(_, tail)| tail)
+                            == "ExprSyntax" =>
+                    {
+                        let [Value::Str(source)] = fields.as_slice() else {
+                            return err("ExprSyntax carried an invalid source payload");
+                        };
+                        ComptimeExprEmission::Source(source.clone())
+                    }
+                    _ => return err("expression emission expects meta.ExprSyntax"),
+                };
+                self.comptime_expr_output.push(emission);
                 Ok(Some(Value::Nil))
             }
             // Pure builtins need no capability.
@@ -4616,13 +4667,37 @@ pub(crate) fn run_comptime_module_budgeted_in_scope(
     step_limit: u64,
     fresh_ident_scope: Option<String>,
 ) -> Result<(Vec<String>, Vec<PositionedComptimeItem>), RuntimeError> {
+    run_comptime_module_outputs_budgeted_in_scope(
+        module,
+        root,
+        step_limit,
+        fresh_ident_scope,
+    )
+    .and_then(|outputs| {
+        if !outputs.exprs.is_empty() {
+            return err("expression output is valid only during tagged-literal expansion");
+        }
+        Ok((outputs.output, outputs.items))
+    })
+}
+
+pub(crate) fn run_comptime_module_outputs_budgeted_in_scope(
+    module: Module,
+    root: impl AsRef<Path>,
+    step_limit: u64,
+    fresh_ident_scope: Option<String>,
+) -> Result<ComptimeOutputs, RuntimeError> {
     let module = witchy_syntax::records::lower(module).map_err(|message| RuntimeError { message })?;
     let module = witchy_types::traits::lower(module);
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
         run_module_inner_limited(module, root, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, Vec::new(), UserCapGrants::new(), step_limit, fresh_ident_scope)
     })
-    .map(|outcome| (outcome.output, outcome.comptime_items))
+    .map(|outcome| ComptimeOutputs {
+        output: outcome.output,
+        items: outcome.comptime_items,
+        exprs: outcome.comptime_exprs,
+    })
 }
 
 /// Run with direct `File` grants (RFC-0012): the i-th `File` parameter of `main`
@@ -4918,6 +4993,7 @@ fn run_module_inner_limited(
         output: interp.output,
         exit_code,
         comptime_items: interp.comptime_item_output,
+        comptime_exprs: interp.comptime_expr_output,
     })
 }
 

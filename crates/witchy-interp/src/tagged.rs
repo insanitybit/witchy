@@ -31,15 +31,16 @@
 //!
 //! This is RFC-0006's hygiene + hole-precise-diagnostics, delivered by one change.
 //!
-//! This extends the existing `comptime` "source in, items out" model: the tag
-//! runs once, in the compiler, on the reference interpreter, and both backends
-//! then compile the same expanded AST — so parity is free, exactly like
-//! `comptime`/`derive`. `Expr::TaggedLit` is therefore UNREACHABLE after this
-//! pass; typeck, the interpreter, and both codegen backends panic on it.
+//! Typed RFC-0080 tags emit an expression event through the same interpreter
+//! expansion channel as `comptime` item events. A compiler-owned quotation
+//! transfers its AST directly; compatibility `ExprSyntax` and legacy `String`
+//! results retain the explicit source-parse fallback. Both runtime backends then
+//! compile the same expanded AST. `Expr::TaggedLit` is therefore UNREACHABLE
+//! after this pass; typeck, the interpreter, and both codegen backends panic on it.
 
 use witchy_syntax::ast::{
     Block, CompilerExprSyntax, CompilerItemSyntax, Expr, Function, Item, MatchArm, Module, Param,
-    Pattern, Stmt, Type,
+    Stmt, Type,
 };
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -445,10 +446,9 @@ fn expand_one(
     //     let emit = fn(line): console.print(line)
     //     emit(<tag>([parts...], [markers...]))
     //
-    // or, for typed RFC-0080 tags:
-    //
-    //     match <tag>([parts...], [markers...]):
-    //         ExprSyntax(source) -> emit(source)
+    // Typed RFC-0080 tags send their sealed value through a compiler-only
+    // expression event. Compiler-owned syntax transfers its AST directly;
+    // source-backed compatibility values are classified by the interpreter.
     let emit_closure = Stmt::Let {
         ty: None,
         name: "emit".into(),
@@ -477,34 +477,9 @@ fn expand_one(
             name: "emit".into(),
             args: vec![tag_call],
         }),
-        TagOutput::ExprSyntax => Stmt::Expr(Expr::Match {
-            scrutinee: Box::new(tag_call),
-            arms: vec![
-                MatchArm {
-                    line: 0,
-                    pattern: Pattern::Ctor {
-                        name: "ExprSyntax".into(),
-                        args: vec![Pattern::Var("source".into())],
-                    },
-                    guard: None,
-                    body: Expr::Call {
-                        name: "emit".into(),
-                        args: vec![Expr::Var("source".into())],
-                    },
-                },
-                MatchArm {
-                    line: 0,
-                    pattern: Pattern::Ctor {
-                        name: "CompilerExprSyntax".into(),
-                        args: vec![Pattern::Wildcard, Pattern::Var("source".into())],
-                    },
-                    guard: None,
-                    body: Expr::Call {
-                        name: "emit".into(),
-                        args: vec![Expr::Var("source".into())],
-                    },
-                },
-            ],
+        TagOutput::ExprSyntax => Stmt::Expr(Expr::Call {
+            name: witchy_syntax::intrinsics::COMPILER_EMIT_EXPR.into(),
+            args: vec![tag_call],
         }),
     };
     let main = Function {
@@ -584,7 +559,11 @@ fn expand_one(
     let linked = crate::pipeline::link(vec![("comptime".into(), prog)], "comptime")
         .map_err(|e| format!("{}: {e}", where_()))?;
     witchy_types::typeck::check_comptime(&linked).map_err(|e| format!("{}: {e}", where_()))?;
-    let lines = crate::interpreter::run_module_budgeted_in_scope(
+    let crate::interpreter::ComptimeOutputs {
+        output: lines,
+        items: item_output,
+        exprs: mut expr_output,
+    } = crate::interpreter::run_comptime_module_outputs_budgeted_in_scope(
         linked,
         ".",
         crate::interpreter::COMPTIME_STEP_LIMIT,
@@ -596,13 +575,46 @@ fn expand_one(
         )),
     )
     .map_err(|e| format!("{}: {e}", where_()))?;
-    let src = lines.join("\n");
-
-    // Parse the generated source as an expression. The tag emits QUALIFIED
-    // constructors (`glamour.text(…)`), so the throwaway parse must know the
-    // qualifier module names — else `glamour.text(…)` parses as a UFCS method call.
-    let mut e = parse_generated_splice_expr(&src, &ctx.qualifiers)
-        .map_err(|e| format!("{}: generated source: {e}\n--- generated ---\n{src}", where_()))?;
+    if !item_output.is_empty() {
+        return Err(format!("{}: a tagged literal may emit one expression, not items", where_()));
+    }
+    let parse_source = |src: String| {
+        // Source compatibility still parses with the tag module qualifiers so
+        // `glamour.text(...)` remains a qualified call rather than UFCS.
+        parse_generated_splice_expr(&src, &ctx.qualifiers).map_err(|error| {
+            format!("{}: generated source: {error}\n--- generated ---\n{src}", where_())
+        })
+    };
+    let mut e = match output {
+        TagOutput::SourceString => {
+            if !expr_output.is_empty() {
+                return Err(format!(
+                    "{}: a source-returning tag produced a typed expression event",
+                    where_()
+                ));
+            }
+            parse_source(lines.join("\n"))?
+        }
+        TagOutput::ExprSyntax => {
+            if !lines.is_empty() {
+                return Err(format!(
+                    "{}: a typed tag produced unexpected source output",
+                    where_()
+                ));
+            }
+            if expr_output.len() != 1 {
+                return Err(format!(
+                    "{}: a typed tag must emit exactly one expression, emitted {}",
+                    where_(),
+                    expr_output.len()
+                ));
+            }
+            match expr_output.pop().expect("one expression emission") {
+                crate::interpreter::ComptimeExprEmission::Syntax(expr) => *expr,
+                crate::interpreter::ComptimeExprEmission::Source(source) => parse_source(source)?,
+            }
+        }
+    };
 
     // Parse each hole's ORIGINAL source ONCE, into an expression carrying the
     // author's own AST (resolved at the CALL site), wrapped in a one-statement
