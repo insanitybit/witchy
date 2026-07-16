@@ -71,7 +71,9 @@ invisible — the script resolves the main worktree itself via
   `run` loop writes it (a `run --once` clobbering it caused a
   two-coordinators incident; both modes now refuse to start beside a live
   daemon).
-- `coordinator.log` — daemon stdout/stderr (`daemon` = nohup + disown).
+- `coordinator.log` — daemon stdout/stderr. `daemon` creates a new session
+  (`setsid -f` on systems that provide it, POSIX::setsid via system Perl on
+  macOS) so terminal or tool-host process-group cleanup cannot orphan a gate.
 - `prewarmed` — master sha the gate worktree was last idle-prewarmed to.
 
 ## Command reference
@@ -89,7 +91,7 @@ merge-queue.sh wait <branch> [secs]              block until terminal journal ev
                                                  is the standard agent pattern.
 merge-queue.sh run [--once]                      coordinator loop (--once drains and
                                                  exits; refuses beside a live daemon)
-merge-queue.sh daemon                            start detached coordinator (survives
+merge-queue.sh daemon                            start a new-session coordinator (survives
                                                  the launching session)
 merge-queue.sh status                            JSON: queue, in-flight gate (branch,
                                                  stage, elapsed, log age), recent journal

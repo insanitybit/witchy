@@ -56,7 +56,7 @@
 #   scripts/merge-queue.sh doctor                   human health check: coordinator alive?
 #                                                   lock stale? current stage? log fresh?
 #   scripts/merge-queue.sh run [--once]             coordinator loop (--once: drain and exit)
-#   scripts/merge-queue.sh daemon                   start the coordinator DETACHED (nohup),
+#   scripts/merge-queue.sh daemon                   start the coordinator in a detached session,
 #                                                   surviving the launching session; log →
 #                                                   scratch/merge-queue/coordinator.log; stop
 #                                                   with: kill $(cat .../coordinator.pid)
@@ -793,9 +793,32 @@ cmd_daemon() {
         note "coordinator already running (pid $cpid); nothing to do"
         return 0
     fi
-    # nohup + setsid-style detach: survives the launching terminal/session.
-    nohup "$root/scripts/merge-queue.sh" run >>"$qdir/coordinator.log" 2>&1 </dev/null &
-    disown
+    # `nohup` ignores SIGHUP but does NOT leave the launcher's process group.
+    # Terminal/tool supervisors commonly terminate that whole group, which used
+    # to orphan an in-flight gate with no coordinator left to merge it. Establish
+    # a real session boundary before execing the persistent loop.
+    if command -v setsid >/dev/null 2>&1; then
+        # util-linux `-f` also works when an interactive shell made the launcher
+        # a process-group leader (a group leader cannot call setsid directly).
+        nohup setsid -f "$root/scripts/merge-queue.sh" run \
+            >>"$qdir/coordinator.log" 2>&1 </dev/null &
+    elif command -v perl >/dev/null 2>&1; then
+        # macOS has no setsid(1), but its system Perl exposes POSIX::setsid.
+        # Fork once so the child cannot be a process-group leader, then replace
+        # it with the coordinator. All descriptors are already detached below.
+        nohup perl -MPOSIX -e '
+            my $pid = fork();
+            defined $pid or die "fork: $!\n";
+            exit 0 if $pid;
+            defined POSIX::setsid() or die "setsid: $!\n";
+            exec @ARGV;
+            die "exec: $!\n";
+        ' "$root/scripts/merge-queue.sh" run >>"$qdir/coordinator.log" 2>&1 </dev/null &
+    else
+        note "daemon requires setsid(1) or Perl POSIX::setsid to detach safely"
+        return 1
+    fi
+    disown || true
     sleep 1
     cpid="$(cat "$qdir/coordinator.pid" 2>/dev/null || true)"
     if [ -n "$cpid" ] && kill -0 "$cpid" 2>/dev/null; then
