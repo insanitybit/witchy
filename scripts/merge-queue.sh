@@ -22,7 +22,8 @@
 # Stall resistance: the gate runs in its own process group under a monitor.
 # NEXTEST_STATUS_LEVEL=pass makes nextest stream each finished test, but Cargo's
 # final compile line to nextest's first result can still be quiet for minutes.
-# check.sh emits three bounded stage heartbeats across that window. Cargo
+# check.sh emits bounded stage heartbeats across that window (eight in the
+# serialized gate). Cargo
 # incremental output is disabled for the gate worktree: it is repeatedly rebased
 # across unrelated branches, so that state has little reuse value and otherwise
 # grows without bound between gates. If the log goes quiet for

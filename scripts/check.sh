@@ -39,6 +39,12 @@ cd "$(dirname "$0")/.."
 if [ -n "${WITCHY_GATE_SCOPE+x}" ] && [ -z "${NEXTEST_TEST_THREADS+x}" ]; then
     export NEXTEST_TEST_THREADS="${MERGE_QUEUE_NEXTEST_THREADS:-4}"
 fi
+if [ -n "${WITCHY_GATE_SCOPE+x}" ] && [ -z "${WITCHY_STAGE_HEARTBEAT_LIMIT+x}" ]; then
+    # Four-wide macOS test discovery is healthy but can take longer than the
+    # three-pulse standalone startup window. Keep it bounded while extending
+    # the serialized gate's observable-progress window to sixteen minutes.
+    export WITCHY_STAGE_HEARTBEAT_LIMIT=8
+fi
 if [ -n "${NEXTEST_TEST_THREADS+x}" ]; then
     case "$NEXTEST_TEST_THREADS" in
         '' | *[!0-9]* | 0)
@@ -224,7 +230,8 @@ t_start=$(date +%s)
 # A stage can legitimately go quiet after Cargo finishes compiling and before
 # nextest completes its first test binary. Emit only a bounded number of pulses:
 # enough to bridge that startup window, but not enough to hide a true deadlock
-# from the coordinator's idle-log watchdog indefinitely.
+# from the coordinator's idle-log watchdog indefinitely. Standalone runs default
+# to three; the serialized gate exports eight for bounded macOS list discovery.
 stage_heartbeat() { # stage_heartbeat <step> <label> <stage-start>
     local stage_step="$1" label="$2" stage_start="$3"
     local interval="${WITCHY_STAGE_HEARTBEAT_INTERVAL:-120}"

@@ -125,6 +125,9 @@ nextest only inside serialized gates), `MERGE_QUEUE_BATCH_MAX` (5),
 `check.sh` also applies the four-thread default whenever `WITCHY_GATE_SCOPE` is
 present and an older coordinator has not exported `NEXTEST_TEST_THREADS`; this
 keeps the candidate that introduces the queue knob capable of gating itself.
+The same serialized-gate detection raises the bounded stage-heartbeat count
+from three to eight two-minute pulses, enough for measured four-wide macOS
+discovery without making the watchdog unbounded.
 On macOS, `.config/nextest.toml` additionally routes test discovery through
 `scripts/nextest-list-wrapper.sh`. The wrapper bounds only the `--list` binary
 launches to four slots, keyed by `NEXTEST_RUN_ID` (or the shared nextest parent
@@ -176,10 +179,10 @@ shards ignore the scope.
    checks retain nextest's normal concurrency. A monitor loop kills the group on
    overall timeout, or on log-stall **only when the group is also idle** (CPU
    near zero) — a silent-but-CPU-busy gate is compiling/enumerating, not hung —
-   and journals `timeout`. `check.sh` emits at most three two-minute stage
-   heartbeats to bridge nextest's legitimate compile-to-first-result silence;
-   the bounded pulses cannot mask a deadlock indefinitely. The default idle
-   window is ten minutes.
+   and journals `timeout`. `check.sh` emits three two-minute stage heartbeats for
+   standalone runs and eight in the serialized gate to bridge nextest's
+   legitimate compile-to-first-result silence; the bounded pulses cannot mask a
+   deadlock indefinitely. The default idle window is ten minutes.
 6. Outcomes:
    - **green, solo:** if master still == base → `git merge --ff-only <sha>`,
      journal `merged`, sweep. If master moved → journal `requeued`, keep the
