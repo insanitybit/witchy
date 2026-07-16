@@ -1006,8 +1006,12 @@ module is linked and type-checked. Runtime code cannot call them.
 `std/meta` also exposes source-backed syntax builders such as `ident`,
 `type_named`, `expr_call`, `pattern_anon_ctor`, `match_arm`, `stmt_let`,
 `block`, `param`, and `function_block`; they make generated item structure
-typed at the API boundary and validate identifier spelling while full quotation
-and hygienic identifier origins remain future work.
+typed at the API boundary and validate identifier spelling. `meta.fresh(hint)`
+returns a deterministic compiler-owned `Ident` for generated bindings. Repeated
+calls and separate comptime blocks or tagged-literal invocations produce distinct
+names in the source-reserved `__` namespace, so a handwritten binding cannot
+capture them. Definition-site/call-site resolution contexts for ordinary quoted
+names remain future work.
 `quote expr:`, `quote type:`, `quote pattern:`, `quote stmt:`, `quote block:`,
 and `quote item:` are the first quotation forms. They parse the indented
 expression, type, pattern, statement, block, or single item immediately and

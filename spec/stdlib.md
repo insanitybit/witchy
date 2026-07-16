@@ -2332,6 +2332,10 @@ Join parser-checked item quote fragments with typed syntax holes.
 
 A validated Witchy identifier. This rejects keywords, `_`, non-ASCII source spelling, and compiler-reserved `__` names before generated source is parsed.
 
+#### `fn fresh(hint: String) -> Ident`
+
+A deterministic compiler-owned binding name. The returned identifier cannot collide with source names because its spelling lives in the reserved `__` namespace; repeated calls, blocks, and tagged-literal invocations are distinct.
+
 #### `fn is_identifier(name: String) -> Bool`
 
 #### `fn type_named(name: Ident, args: List(TypeSyntax)) -> TypeSyntax`

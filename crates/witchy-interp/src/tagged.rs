@@ -38,6 +38,7 @@
 //! pass; typeck, the interpreter, and both codegen backends panic on it.
 
 use witchy_syntax::ast::{Block, Expr, Function, Item, MatchArm, Module, Param, Pattern, Stmt, Type};
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
 /// A tag may emit a tag (re-expansion); cap the nesting so a self-referential or
@@ -124,6 +125,7 @@ pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) ->
         imports: std_imports,
         from_imports: std_from_imports,
         qualifiers,
+        fresh_invocation: Cell::new(0),
     };
     // Expand tagged literals in EVERY expression-bearing item position, not just
     // free-function bodies (BUG-181): an inherent/trait `impl` method body, a
@@ -164,6 +166,9 @@ struct Context {
     /// its transitive imports). Seeded as `import` lines in the throwaway parse so
     /// `glamour.text(…)` parses as a qualified call, not a method call.
     qualifiers: Vec<String>,
+    /// Stable traversal ordinal used to give each tagged-literal evaluator an
+    /// independent RFC-0080 fresh-name namespace.
+    fresh_invocation: Cell<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -406,6 +411,11 @@ fn expand_one(
     hole_spans: &[(u32, u32)],
 ) -> Result<Expr, String> {
     let where_ = || format!("module `{}`: tagged literal `{tag}`", ctx.name);
+    let invocation = ctx.fresh_invocation.get();
+    let next_invocation = invocation
+        .checked_add(1)
+        .ok_or_else(|| format!("{}: fresh identifier invocation counter overflowed", where_()))?;
+    ctx.fresh_invocation.set(next_invocation);
     let str_list = |xs: &[String]| Expr::List(xs.iter().map(|x| Expr::Str(x.clone())).collect());
 
     // The tag receives an OPAQUE MARKER per hole, NOT the hole's source: it places
@@ -547,10 +557,16 @@ fn expand_one(
     let linked = crate::pipeline::link(vec![("comptime".into(), prog)], "comptime")
         .map_err(|e| format!("{}: {e}", where_()))?;
     witchy_types::typeck::check_comptime(&linked).map_err(|e| format!("{}: {e}", where_()))?;
-    let lines = crate::interpreter::run_module_budgeted(
+    let lines = crate::interpreter::run_module_budgeted_in_scope(
         linked,
         ".",
         crate::interpreter::COMPTIME_STEP_LIMIT,
+        Some(format!(
+            "tag:{}:{}:{}:{tag}:{invocation}",
+            ctx.name.len(),
+            ctx.name,
+            tag.len()
+        )),
     )
     .map_err(|e| format!("{}: {e}", where_()))?;
     let src = lines.join("\n");

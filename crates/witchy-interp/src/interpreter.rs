@@ -767,6 +767,11 @@ pub struct Interpreter {
     /// A derived (structural) impl is NOT here, so its containers keep the fast
     /// structural compare — behavior-identical to before.
     custom_eq_types: std::collections::HashSet<String>,
+    /// Deterministic namespace and sequence for RFC-0080 `meta.fresh`. They are
+    /// present only in a compile-time evaluator; ordinary runtime interpreters
+    /// reject the compiler-private hook instead of minting generated names.
+    fresh_ident_scope: Option<String>,
+    fresh_ident_counter: u64,
     /// Evaluation-step counter and ceiling. Unlike the runtime's epoch
     /// preemption, the tree-walker can't be interrupted, so a `while true {}`
     /// would hang the host — this bounds total work and errors out instead.
@@ -806,6 +811,16 @@ pub struct Interpreter {
 /// thread can hold (debug frames are large), but far deeper than any reasonable
 /// program recurses.
 const DEFAULT_DEPTH_LIMIT: u32 = 25_000;
+
+fn encode_fresh_scope(scope: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(scope.len().saturating_mul(2));
+    for byte in scope.bytes() {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
+}
 
 /// Default ceiling on evaluation steps for one program run. High enough that no
 /// realistic program reaches it, low enough that an infinite loop fails in
@@ -1136,6 +1151,8 @@ impl Interpreter {
             record_fields,
             ctor_type_name,
             custom_eq_types,
+            fresh_ident_scope: None,
+            fresh_ident_counter: 0,
             steps: 0,
             step_limit: DEFAULT_STEP_LIMIT,
             cur_line: 0,
@@ -1949,6 +1966,21 @@ impl Interpreter {
         v as i64
     }
 
+    fn next_fresh_ident(&mut self, hint: &str) -> Result<String, RuntimeError> {
+        let Some(scope) = self.fresh_ident_scope.as_deref() else {
+            return err("meta.fresh is available only during compile-time expansion");
+        };
+        let ordinal = self.fresh_ident_counter;
+        self.fresh_ident_counter = self
+            .fresh_ident_counter
+            .checked_add(1)
+            .ok_or_else(|| RuntimeError { message: "meta.fresh identifier counter overflowed".into() })?;
+        Ok(format!(
+            "__witchy_fresh_{}_{ordinal}_{hint}",
+            encode_fresh_scope(scope)
+        ))
+    }
+
     fn call_builtin(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>, RuntimeError> {
         let catalog = intrinsics::lookup(name);
         if let Some(spec) = catalog {
@@ -2066,6 +2098,10 @@ impl Interpreter {
                 }
                 [_, _] => err("print requires a Console capability as its first argument"),
                 _ => err("print expects a Console capability and a message: console.print(msg)"),
+            },
+            name if intrinsics::is_meta_fresh_ident(name) => match one(args)? {
+                Value::Str(hint) => Ok(Some(Value::Str(self.next_fresh_ident(&hint)?))),
+                other => err(format!("meta.fresh expects a String hint, got `{other}`")),
             },
             // Pure builtins need no capability.
             name if is_render_intrinsic(name) => Ok(Some(Value::Str(self.render_value(&one(args)?)))),
@@ -4296,11 +4332,20 @@ pub fn run_module_budgeted(
     root: impl AsRef<Path>,
     step_limit: u64,
 ) -> Result<Vec<String>, RuntimeError> {
+    run_module_budgeted_in_scope(module, root, step_limit, None)
+}
+
+pub(crate) fn run_module_budgeted_in_scope(
+    module: Module,
+    root: impl AsRef<Path>,
+    step_limit: u64,
+    fresh_ident_scope: Option<String>,
+) -> Result<Vec<String>, RuntimeError> {
     let module = witchy_syntax::records::lower(module).map_err(|message| RuntimeError { message })?;
     let module = witchy_types::traits::lower(module);
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
-        run_module_inner_limited(module, root, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, Vec::new(), UserCapGrants::new(), step_limit)
+        run_module_inner_limited(module, root, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, Vec::new(), UserCapGrants::new(), step_limit, fresh_ident_scope)
     })
     .map(|(output, _)| output)
 }
@@ -4316,7 +4361,7 @@ pub fn run_module_files(
     let module = witchy_types::traits::lower(module);
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
-        run_module_inner_limited(module, root, Vec::new(), file_grants, Vec::new(), Vec::new(), None, Vec::new(), UserCapGrants::new(), DEFAULT_STEP_LIMIT)
+        run_module_inner_limited(module, root, Vec::new(), file_grants, Vec::new(), Vec::new(), None, Vec::new(), UserCapGrants::new(), DEFAULT_STEP_LIMIT, None)
     })
     .map(|(output, _)| output)
 }
@@ -4392,6 +4437,7 @@ pub fn run_module_exit_secrets(
             named_secrets,
             UserCapGrants::new(),
             DEFAULT_STEP_LIMIT,
+            None,
         )
     })
 }
@@ -4481,7 +4527,7 @@ pub fn run_module_user_caps(
     let module = witchy_types::traits::lower(module);
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
-        run_module_inner_limited(module, root, Vec::new(), file_grants, net_allow, args, None, Vec::new(), user_caps, DEFAULT_STEP_LIMIT)
+        run_module_inner_limited(module, root, Vec::new(), file_grants, net_allow, args, None, Vec::new(), user_caps, DEFAULT_STEP_LIMIT, None)
     })
     .map(|(output, _)| output)
 }
@@ -4494,7 +4540,7 @@ fn run_module_inner(
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
 ) -> Result<(Vec<String>, i32), RuntimeError> {
-    run_module_inner_limited(module, root, dir_roots, Vec::new(), net_allow, args, signing_key, Vec::new(), UserCapGrants::new(), DEFAULT_STEP_LIMIT)
+    run_module_inner_limited(module, root, dir_roots, Vec::new(), net_allow, args, signing_key, Vec::new(), UserCapGrants::new(), DEFAULT_STEP_LIMIT, None)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4509,9 +4555,11 @@ fn run_module_inner_limited(
     named_secrets: Vec<(String, Vec<u8>, bool)>,
     user_caps: UserCapGrants,
     step_limit: u64,
+    fresh_ident_scope: Option<String>,
 ) -> Result<(Vec<String>, i32), RuntimeError> {
     let mut interp = Interpreter::new(module);
     interp.step_limit = step_limit;
+    interp.fresh_ident_scope = fresh_ident_scope;
     interp.root = root;
     interp.dir_roots = dir_roots;
     interp.file_grants = file_grants;

@@ -59,6 +59,31 @@ strings. Declaration shape is a `meta.TypeKind`: `TypeRecord`, `TypeSum`, or
 source, `meta.type_source(expr)` renders that structured value back to source
 text.
 
+## Typed generation and fresh names
+
+For structured generators, prefer `emit_item(meta.ItemSyntax)` to raw `emit`
+lines. The `meta` builders validate syntax categories before the generated item
+is appended. `meta.fresh(hint)` creates a deterministic compiler-owned identifier
+for a generated binding; user source cannot spell its reserved name, so a local
+with the same human-readable hint cannot capture it.
+
+```witchy
+import meta
+
+comptime:
+    let int = quote type:
+        Int
+    let value = meta.fresh("value")
+    emit_item(meta.function(true, meta.ident("identity"), [meta.param(value, int)], Some(int), meta.expr_name(value)))
+
+fn main(console: Console):
+    console.print("${identity(42)}")
+```
+
+```text
+42
+```
+
 ## Tagged literals: `comptime` in expression position
 
 A string literal written *immediately after an identifier* — `tag"…"` — is a

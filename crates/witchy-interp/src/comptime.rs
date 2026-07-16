@@ -217,10 +217,11 @@ fn expand_with_item_limit(
             .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
         witchy_types::typeck::check_comptime(&linked)
             .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
-        let lines = crate::interpreter::run_module_budgeted(
+        let lines = crate::interpreter::run_module_budgeted_in_scope(
             linked,
             ".",
             crate::interpreter::COMPTIME_STEP_LIMIT,
+            Some(format!("comptime:{}:{name}:{expanded}", name.len())),
         )
             .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
         let src = decode_comptime_output(lines)

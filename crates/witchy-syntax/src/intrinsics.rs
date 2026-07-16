@@ -24,6 +24,7 @@ pub enum IntrinsicId {
     ChannelRecv,
     ChannelSelect,
     TestingMockDir,
+    MetaFreshIdent,
     CompilerFootprint,
     CompilerDiff,
     CompilerDoc,
@@ -346,6 +347,7 @@ const NO_PRIVATE_CALLERS: &[&str] = &[];
 const MESSAGE_BRIDGE_CALLERS: &[&str] = &["chan", "task"];
 const BYTES_BRIDGE_CALLERS: &[&str] = &["bytes"];
 const TESTING_BRIDGE_CALLERS: &[&str] = &["testing"];
+const META_BRIDGE_CALLERS: &[&str] = &["meta"];
 const ENCODING_HELPERS: &[&str] = &["encoding"];
 
 const fn encoding_host_call(selector: i32, input: WirHostInput) -> Option<WirHostCall> {
@@ -374,6 +376,7 @@ pub const CHANNEL_RECV: &str = "__channel_recv";
 pub const CHANNEL_SELECT: &str = "__channel_select";
 
 pub const TESTING_MOCK_DIR: &str = "__mock_dir";
+pub const META_FRESH_IDENT: &str = "__meta_fresh_ident";
 
 pub const COMPILER_FOOTPRINT: &str = "compiler.footprint";
 pub const COMPILER_DIFF: &str = "compiler.diff";
@@ -708,6 +711,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         wir_host_call: None,
         diagnostic_name: "testing.mock_dir",
         private_callers: TESTING_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaFreshIdent,
+        name: META_FRESH_IDENT,
+        arity: 1,
+        signature: IntrinsicSignature::StringToString,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.fresh",
+        private_callers: META_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
         id: IntrinsicId::CompilerFootprint,
@@ -1830,10 +1848,9 @@ pub const DICT_OPERATIONS: &[&str] = &[
 
 // The interpreter consults `lookup` on EVERY call expression (a user-function
 // call is a whole-table miss), and typeck/lowering query it per expression —
-// a linear scan of 86 string compares was ~30% of interpreter CPU on
-// call-dense programs. One map, built on first use. No spec name contains
-// `__`, so the map-first order below cannot shadow the suffix
-// canonicalization; first-wins on duplicates mirrors the old `find`.
+// a linear scan of the catalog was ~30% of interpreter CPU on call-dense
+// programs. One map, built on first use; first-wins on duplicates mirrors the
+// old `find`.
 static LOOKUP_TABLE: std::sync::OnceLock<foldhash::HashMap<&'static str, &'static IntrinsicSpec>> =
     std::sync::OnceLock::new();
 
@@ -1851,13 +1868,18 @@ pub fn lookup(name: &str) -> Option<&'static IntrinsicSpec> {
     }
     // A synthesized monomorphized variant (`<base>__<suffix>`) resolves to its
     // base spec.
-    let canonical = [LIST_POP_EXTRACT, DICT_INSERT_EXTRACT, DICT_REMOVE_EXTRACT]
+    if let Some(canonical) = [LIST_POP_EXTRACT, DICT_INSERT_EXTRACT, DICT_REMOVE_EXTRACT]
         .into_iter()
         .find(|base| {
             name.strip_prefix(base)
                 .is_some_and(|suffix| suffix.starts_with("__"))
-        })?;
-    table.get(canonical).copied()
+        })
+    {
+        return table.get(canonical).copied();
+    }
+    let (owner, bare) = name.rsplit_once('.')?;
+    let spec = table.get(bare).copied()?;
+    spec.private_callers.contains(&owner).then_some(spec)
 }
 
 pub fn arity_diagnostic(spec: &IntrinsicSpec, actual: usize) -> String {
@@ -2025,6 +2047,10 @@ pub fn is_dict_remove_extract(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::DictRemoveExtract)
 }
 
+pub fn is_meta_fresh_ident(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaFreshIdent)
+}
+
 pub fn private_intrinsic_callers(bare_name: &str) -> Option<&'static [&'static str]> {
     let callers = lookup(bare_name)?.private_callers;
     (!callers.is_empty()).then_some(callers)
@@ -2058,6 +2084,9 @@ mod tests {
             private_intrinsic_callers(TESTING_MOCK_DIR),
             Some(TESTING_BRIDGE_CALLERS)
         );
+        assert_eq!(private_intrinsic_callers(META_FRESH_IDENT), Some(META_BRIDGE_CALLERS));
+        assert_eq!(lookup("meta.__meta_fresh_ident"), lookup(META_FRESH_IDENT));
+        assert_eq!(lookup("other.__meta_fresh_ident"), None);
     }
 
     #[test]
@@ -2080,6 +2109,7 @@ mod tests {
             CHANNEL_RECV,
             CHANNEL_SELECT,
             TESTING_MOCK_DIR,
+            META_FRESH_IDENT,
             COMPILER_FOOTPRINT,
             COMPILER_DIFF,
             COMPILER_DOC,

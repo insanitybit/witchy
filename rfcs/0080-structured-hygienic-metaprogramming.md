@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed syntax wrappers/builders with validated identifiers, comptime emit_item/fn helpers, typed custom derives, typed tagged-literal ExprSyntax returns, parser-backed expression/type/pattern/statement/block/item quotation, expression/type/pattern plus statement/block mixed quote holes, and witchy expand landed; hygiene/full syntax API remains proposed"
+tracking: "source-backed syntax wrappers/builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, and deterministic compiler-owned meta.fresh identifiers landed; definition/call-site origin hygiene and compiler-owned syntax trees remain proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -279,11 +279,19 @@ The first source-compatible slice is implemented:
   `comptime:` and tagged-literal expansion pass used before linking, and prints
   only the expanded entry module as canonical source. It is deliberately not a
   full linked dump and does not type-check or compile the program.
+- The twenty-second slice adds `meta.fresh(hint) -> Ident`. The compiler gives
+  each comptime block and tagged-literal invocation a deterministic namespace,
+  then allocates monotonically within it. The rendered identifier uses the
+  source-reserved `__` namespace, so repeated calls are distinct, identical
+  source rebuilds are stable, and handwritten bindings cannot capture a fresh
+  generated binding. This is the first concrete hygiene guarantee; ordinary
+  quoted identifiers are not yet definition-site/call-site syntax objects.
 
 This is intentionally not the full RFC. The payload is still source-backed and
 expression/type/pattern/statement/block/item quotation plus
 expression/type/pattern holes plus mixed statement/block/item holes exist;
-identifier hygiene and compiler-owned expression/pattern/type syntax trees
-remain future work. The value is the migration seam: future work can move the
+definition-site/call-site identifier origins and compiler-owned
+expression/pattern/type syntax trees remain future work. The value is the
+migration seam: future work can move the
 payload behind these wrappers from parsed source to structured compiler nodes
 without changing the comptime append/merge path again.

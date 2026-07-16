@@ -74,6 +74,19 @@ pub fn ident(name: String) -> Ident:
         fail("meta.ident: invalid identifier `" + name + "`")
     Ident(name)
 
+// A deterministic compiler-owned binding name. The returned identifier cannot
+// collide with source names because its spelling lives in the reserved `__`
+// namespace; repeated calls, blocks, and tagged-literal invocations are distinct.
+pub fn fresh(hint: String) -> Ident:
+    if !is_identifier(hint):
+        fail("meta.fresh: invalid identifier hint `" + hint + "`")
+    Ident(__meta_fresh_ident(hint))
+
+// Interpreter-owned compile-time hook. Runtime modules cannot mention Ident,
+// and the linker limits this private intrinsic to std/meta.
+fn __meta_fresh_ident(hint: String) -> String:
+    __meta_fresh_ident(hint)
+
 pub fn is_identifier(name: String) -> Bool:
     let n = string.char_count(name)
     if n == 0 || name == "_" || is_keyword(name) || string.contains(name, "__"):
