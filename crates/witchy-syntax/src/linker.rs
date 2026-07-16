@@ -125,6 +125,14 @@ type BareFnImports = HashMap<String, HashMap<String, String>>;
 /// this spelling; the ordinary link rewrite consumes it before type checking.
 const DEFINITION_SITE_PREFIX: &str = "@definition_site:";
 
+/// Compiler-only marker for a name that must be resolved in the syntax
+/// consumer's context. It is created directly as AST, never parsed from source.
+const CALL_SITE_PREFIX: &str = "@call_site:";
+
+pub fn call_site_expr(name: &str) -> Expr {
+    Expr::Var(format!("{CALL_SITE_PREFIX}{name}"))
+}
+
 /// The per-function facts eta-expansion consumes (RFC-0050 Part 2).
 #[derive(Clone)]
 struct EtaSig {
@@ -1941,6 +1949,12 @@ fn rewrite_expr(
         // to it; qualify it like a call — unless it is shadowed by a local of the
         // same name (a parameter, `let`, loop variable, or pattern binding).
         Expr::Var(name) => {
+            if let Some(target) = call_site_target(name).map(str::to_owned) {
+                if context.definition_site {
+                    return Ok(());
+                }
+                *name = target;
+            }
             if let Some(resolved) = definition_site_target(name, fns, m, line)? {
                 *name = resolved;
             } else if !bound.contains(name.as_str())
@@ -2433,6 +2447,12 @@ fn resolve_call(
         entry,
         definition_site: _,
     } = *context;
+    if let Some(target) = call_site_target(name) {
+        if context.definition_site {
+            return Ok(name.to_string());
+        }
+        return resolve_call(target, context, line);
+    }
     if let Some(resolved) = definition_site_target(name, fns, m, line)? {
         check_test_only_call(&resolved, m, mode, entry, line)?;
         return Ok(resolved);
@@ -2503,6 +2523,10 @@ fn resolve_call(
     // Not a function here and not a builtin: a local binding being applied (e.g.
     // a lambda parameter). Leave it unqualified; the type checker decides.
     Ok(name.to_string())
+}
+
+fn call_site_target(name: &str) -> Option<&str> {
+    name.strip_prefix(CALL_SITE_PREFIX)
 }
 
 fn definition_site_target(

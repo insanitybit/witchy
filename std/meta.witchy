@@ -60,6 +60,7 @@ sealed type ParamSyntax:
 
 sealed type Ident:
     Ident(String)
+    CallSiteIdent(String)
 
 // A dynamic source-backed item wrapper. A literal whole-item argument is
 // recognized by the parser and promoted to compiler-owned item syntax.
@@ -92,6 +93,14 @@ pub fn ident(name: String) -> Ident:
         fail("meta.ident: invalid identifier `" + name + "`")
     Ident(name)
 
+// An explicit invocation-site reference. The compiler retains this origin in
+// ExprSyntax instead of rendering a source identifier for the defining module
+// to capture.
+pub fn call_site(name: String) -> Ident:
+    if !is_identifier(name):
+        fail("meta.call_site: invalid identifier `" + name + "`")
+    CallSiteIdent(name)
+
 // A deterministic compiler-owned binding name. The returned identifier cannot
 // collide with source names because its spelling lives in the reserved `__`
 // namespace; repeated calls, blocks, and tagged-literal invocations are distinct.
@@ -121,6 +130,17 @@ pub fn is_identifier(name: String) -> Bool:
 fn ident_source(id: Ident) -> String:
     match id:
         Ident(source) -> source
+        CallSiteIdent(source) -> source
+
+fn expr_ident(id: Ident) -> ExprSyntax:
+    match id:
+        Ident(source) -> ExprSyntax(source)
+        CallSiteIdent(source) -> __meta_call_site_expr(source)
+
+// Interpreter-owned compile-time hook. It creates a compiler-owned expression
+// node carrying call-site origin; no source spelling can mint that origin.
+fn __meta_call_site_expr(name: String) -> ExprSyntax:
+    __meta_call_site_expr(name)
 
 fn is_ident_start(c: String) -> Bool:
     c == "_" || "a" <= c && c <= "z" || "A" <= c && c <= "Z"
@@ -243,10 +263,11 @@ fn type_syntax_sources(types: List(TypeSyntax)) -> List(String):
         list.push(out, type_syntax_source(ty))
     out
 
-// Source-backed expression syntax. These constructors make the shape explicit
-// while quotation/hygienic identifiers are still pending.
+// Expression syntax builders. Ordinary names retain the compatibility payload;
+// call-site names become compiler-owned nodes so their origin cannot be forged
+// or lost before linking.
 pub fn expr_name(name: Ident) -> ExprSyntax:
-    ExprSyntax(ident_source(name))
+    expr_ident(name)
 
 pub fn expr_call(callee: ExprSyntax, args: List(ExprSyntax)) -> ExprSyntax:
     ExprSyntax(expr_source(callee) + "(" + list.join(expr_sources(args), ", ") + ")")

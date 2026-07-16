@@ -39,6 +39,7 @@ pub enum IntrinsicId {
     ChannelSelect,
     TestingMockDir,
     MetaFreshIdent,
+    MetaCallSiteExpr,
     CompilerFootprint,
     CompilerDiff,
     CompilerDoc,
@@ -420,6 +421,7 @@ pub const CHANNEL_SELECT: &str = "__channel_select";
 
 pub const TESTING_MOCK_DIR: &str = "__mock_dir";
 pub const META_FRESH_IDENT: &str = "__meta_fresh_ident";
+pub const META_CALL_SITE_EXPR: &str = "__meta_call_site_expr";
 
 pub const COMPILER_FOOTPRINT: &str = "compiler.footprint";
 pub const COMPILER_DIFF: &str = "compiler.diff";
@@ -978,6 +980,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "meta.fresh",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaCallSiteExpr,
+        name: META_CALL_SITE_EXPR,
+        arity: 1,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.call_site",
         private_callers: META_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
@@ -2322,6 +2339,10 @@ pub fn is_meta_fresh_ident(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaFreshIdent)
 }
 
+pub fn is_meta_call_site_expr(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaCallSiteExpr)
+}
+
 pub fn private_intrinsic_callers(bare_name: &str) -> Option<&'static [&'static str]> {
     if canonical_operation_name(bare_name) != bare_name {
         return None;
@@ -2359,7 +2380,9 @@ mod tests {
             Some(TESTING_BRIDGE_CALLERS)
         );
         assert_eq!(private_intrinsic_callers(META_FRESH_IDENT), Some(META_BRIDGE_CALLERS));
+        assert_eq!(private_intrinsic_callers(META_CALL_SITE_EXPR), Some(META_BRIDGE_CALLERS));
         assert_eq!(lookup("meta.__meta_fresh_ident"), lookup(META_FRESH_IDENT));
+        assert_eq!(lookup("meta.__meta_call_site_expr"), lookup(META_CALL_SITE_EXPR));
         assert_eq!(lookup("other.__meta_fresh_ident"), None);
     }
 
@@ -2394,6 +2417,7 @@ mod tests {
             CHANNEL_SELECT,
             TESTING_MOCK_DIR,
             META_FRESH_IDENT,
+            META_CALL_SITE_EXPR,
             COMPILER_FOOTPRINT,
             COMPILER_DIFF,
             COMPILER_DOC,

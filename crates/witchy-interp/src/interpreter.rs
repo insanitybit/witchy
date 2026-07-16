@@ -2736,6 +2736,31 @@ impl Interpreter {
                 Value::Str(hint) => Ok(Some(Value::str(self.next_fresh_ident(hint.as_str())?))),
                 other => err(format!("meta.fresh expects a String hint, got `{other}`")),
             },
+            name if intrinsics::is_meta_call_site_expr(name) => match one(args)? {
+                Value::Str(name) => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.call_site is available only during compile-time expansion",
+                        );
+                    }
+                    let expr = witchy_syntax::linker::call_site_expr(&name);
+                    let handle = format!("\0compiler-call-site-expression\0{name}");
+                    if let Some(existing) = self.compiler_expr_syntax.get(&handle) {
+                        if existing != &expr {
+                            return err(
+                                "compiler call-site expression handle collided with a different AST",
+                            );
+                        }
+                    } else {
+                        self.compiler_expr_syntax.insert(handle.clone(), expr);
+                    }
+                    Ok(Some(Value::Ctor {
+                        name: "meta.CompilerExprSyntax".into(),
+                        fields: vec![Value::Str(handle), Value::Str(name)],
+                    }))
+                }
+                other => err(format!("meta.call_site expects a String name, got `{other}`")),
+            },
             name if name == intrinsics::COMPILER_QUOTE_EXPR => {
                 if self.fresh_ident_scope.is_none() {
                     return err(

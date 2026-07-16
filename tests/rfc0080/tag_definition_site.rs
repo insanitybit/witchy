@@ -9,6 +9,9 @@ import meta
 fn hidden() -> Int:
     40
 
+fn selected() -> Int:
+    0
+
 comptime fn answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     quote expr:
         hidden() + 2
@@ -16,6 +19,14 @@ comptime fn answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
 comptime fn lexical(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     quote expr:
         (fn(hidden: Int): hidden + 1)(41)
+
+comptime fn call_selected(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+    let selected = meta.expr_name(meta.call_site("selected"))
+    quote expr:
+        ${selected}()
+
+comptime fn reference_selected(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+    meta.expr_name(meta.call_site("selected"))
 
 "#;
 
@@ -28,8 +39,13 @@ fn hidden() -> Int:
 fn main(console: Console):
     let hidden = fn() -> Int:
         1
+    let selected = fn() -> Int:
+        42
     console.print("${answer"ignored"}")
     console.print("${lexical"ignored"}")
+    console.print("${call_selected"ignored"}")
+    let selected_fn = reference_selected"ignored"
+    console.print("${selected_fn()}")
 "#;
 
 fn linked() -> ast::Module {
@@ -47,7 +63,12 @@ fn linked() -> ast::Module {
 #[test]
 fn typed_tag_names_resolve_at_definition_site_on_both_backends() {
     let linked = linked();
-    let expected = vec!["42".to_string(), "42".to_string()];
+    let expected = vec![
+        "42".to_string(),
+        "42".to_string(),
+        "42".to_string(),
+        "42".to_string(),
+    ];
 
     assert_eq!(
         interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interpret"),
@@ -72,5 +93,6 @@ fn definition_site_markers_are_consumed_before_typechecking() {
     let linked = linked();
     let rendered = format!("{linked:?}");
     assert!(!rendered.contains("@definition_site:"), "{rendered}");
+    assert!(!rendered.contains("@call_site:"), "{rendered}");
     assert!(rendered.contains("tag_library.hidden"), "{rendered}");
 }
