@@ -259,15 +259,14 @@ comptime fn answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
         answer_value() + 2
 
 comptime fn caller_answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
-    let target = meta.expr_name(meta.call_site("answer_value"))
-    quote expr:
-        ${target}()
+    meta.expr_name(meta.call_site("answer_value"))
 
 fn main(console: Console):
     let answer_value = fn() -> Int:
         0
     console.print("${answer"ignored"}")
-    console.print("${caller_answer"ignored"}")
+    let caller_answer_value = caller_answer"ignored"
+    console.print("${caller_answer_value()}")
 ```
 
 ```text
