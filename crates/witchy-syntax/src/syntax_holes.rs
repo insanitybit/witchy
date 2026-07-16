@@ -79,6 +79,14 @@ pub fn instantiate_item(template: &Item, holes: Vec<ItemSyntaxHole>) -> Result<I
     Ok(item)
 }
 
+pub fn instantiate_expr(template: &Expr, holes: Vec<Expr>) -> Result<Expr, String> {
+    let mut holes = holes.into_iter().map(Some).collect::<Vec<_>>();
+    let mut expr = template.clone();
+    substitute_expr(&mut expr, &mut holes, &mut [], &mut [])?;
+    ensure_consumed("expression", &holes)?;
+    Ok(expr)
+}
+
 fn indent(source: &str, spaces: usize) -> String {
     let prefix = " ".repeat(spaces);
     source
@@ -90,7 +98,7 @@ fn indent(source: &str, spaces: usize) -> String {
 
 fn ensure_consumed<T>(category: &str, slots: &[Option<T>]) -> Result<(), String> {
     if let Some(index) = slots.iter().position(Option::is_some) {
-        Err(format!("compiler-owned item did not contain {category} hole {index}"))
+        Err(format!("compiler-owned syntax did not contain {category} hole {index}"))
     } else {
         Ok(())
     }
@@ -104,7 +112,7 @@ fn take_hole<T>(slots: &mut [Option<T>], index: usize, category: &str) -> Result
     slots
         .get_mut(index)
         .and_then(Option::take)
-        .ok_or_else(|| format!("compiler-owned item referenced invalid or repeated {category} hole {index}"))
+        .ok_or_else(|| format!("compiler-owned syntax referenced invalid or repeated {category} hole {index}"))
 }
 
 fn substitute_item(
@@ -437,5 +445,17 @@ mod tests {
         assert!(parse_expr_payload("1\n2").is_err());
         assert!(parse_type_payload("Int\nfn injected():\n    0").is_err());
         assert!(parse_pattern_payload("_ -> 1\n        _").is_err());
+    }
+
+    #[test]
+    fn substitutes_expression_holes_without_reparsing() {
+        let template = Expr::Binary {
+            op: crate::ast::BinOp::Add,
+            lhs: Box::new(Expr::Var(format!("{QUOTE_EXPR_HOLE_PREFIX}0"))),
+            rhs: Box::new(Expr::Int(2)),
+        };
+        let expr = instantiate_expr(&template, vec![Expr::Int(40)])
+            .expect("substitute expression hole");
+        assert_eq!(crate::format::expr_str(&expr), "40 + 2");
     }
 }

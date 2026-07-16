@@ -453,6 +453,48 @@ fn compiler_item_holes(
         .collect()
 }
 
+fn compiler_expr_holes(
+    values: &[Value],
+    compiler_expr_syntax: &HashMap<String, Expr>,
+) -> Result<Vec<Expr>, RuntimeError> {
+    fn tail(name: &str) -> &str {
+        name.rsplit_once('.').map_or(name, |(_, tail)| tail)
+    }
+
+    values
+        .iter()
+        .map(|value| {
+            let Value::Ctor { name, fields } = value else {
+                return err("compiler-owned expression hole was not meta.ExprSyntax");
+            };
+            match tail(name) {
+                "CompilerExprSyntax" => {
+                    let [Value::Str(handle), Value::Str(_source)] = fields.as_slice() else {
+                        return err("CompilerExprSyntax carried an invalid payload");
+                    };
+                    compiler_expr_syntax
+                        .get(handle)
+                        .cloned()
+                        .ok_or_else(|| RuntimeError {
+                            message: "compiler-owned expression referenced an invalid syntax handle"
+                                .into(),
+                        })
+                }
+                "ExprSyntax" => {
+                    let [Value::Str(source)] = fields.as_slice() else {
+                        return err("ExprSyntax carried an invalid source payload");
+                    };
+                    witchy_syntax::syntax_holes::parse_expr_payload(source)
+                        .map_err(|message| RuntimeError { message })
+                }
+                other => err(format!(
+                    "compiler-owned expression hole carried `{other}`, expected ExprSyntax"
+                )),
+            }
+        })
+        .collect()
+}
+
 fn mock_normalize(rel: &str) -> Result<String, RuntimeError> {
     let path = Path::new(rel);
     if path.is_absolute() {
@@ -2330,6 +2372,53 @@ impl Interpreter {
                         err("compiler-owned expression quotation referenced an invalid syntax handle")
                     }
                     _ => err("compiler-owned expression quotation expects an expression handle"),
+                }
+            }
+            name if name == intrinsics::COMPILER_QUOTE_EXPR_HOLES => {
+                if self.fresh_ident_scope.is_none() {
+                    return err(
+                        "compiler-owned expression quotation is available only during compile-time expansion",
+                    );
+                }
+                match args {
+                    [Value::Str(handle), Value::List(parts), Value::List(holes)]
+                        if parts.len() == holes.len() + 1
+                            && parts.iter().all(|part| matches!(part, Value::Str(_))) =>
+                    {
+                        let template = self
+                            .compiler_expr_syntax
+                            .get(handle)
+                            .cloned()
+                            .ok_or_else(|| RuntimeError {
+                                message: "compiler-owned expression quotation referenced an invalid syntax handle"
+                                    .into(),
+                            })?;
+                        let holes = compiler_expr_holes(holes, &self.compiler_expr_syntax)?;
+                        let expr = witchy_syntax::syntax_holes::instantiate_expr(&template, holes)
+                            .map_err(|message| RuntimeError { message })?;
+                        let source = witchy_syntax::format::expr_str(&expr);
+                        let instance_handle =
+                            format!("{handle}\0compiler-owned-expression-instance\0{source}");
+                        if let Some(existing) = self.compiler_expr_syntax.get(&instance_handle) {
+                            if existing != &expr {
+                                return err(
+                                    "compiler-owned expression instance handle collided with a different AST",
+                                );
+                            }
+                        } else {
+                            self.compiler_expr_syntax.insert(instance_handle.clone(), expr);
+                        }
+                        Ok(Some(Value::Ctor {
+                            name: "meta.CompilerExprSyntax".into(),
+                            fields: vec![Value::Str(instance_handle), Value::Str(source)],
+                        }))
+                    }
+                    [Value::Str(_), Value::List(_), Value::List(_)] => err(
+                        "compiler-owned expression quotation referenced an invalid syntax handle or hole plan",
+                    ),
+                    _ => err(
+                        "compiler-owned expression quotation expects an expression handle and typed holes",
+                    ),
                 }
             }
             name if name == intrinsics::COMPILER_QUOTE_TYPE => {

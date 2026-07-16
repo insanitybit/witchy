@@ -1659,6 +1659,11 @@ impl Parser {
                                         self.compiler_owned_expr_literal(source, member_line)
                                 {
                                     owned
+                                } else if name == "meta.expr_join"
+                                    && let Some(owned) =
+                                        self.compiler_owned_expr_join(&args, member_line)
+                                {
+                                    owned
                                 } else if name == "meta.type_join"
                                     && let [Expr::List(parts), Expr::List(holes)] = args.as_slice()
                                     && holes.is_empty()
@@ -2164,7 +2169,11 @@ impl Parser {
             return Ok(self.compiler_owned_expr(quoted, source, definition_line));
         }
         let parts = self.quote_hole_parts(&source, QUOTE_EXPR_HOLE_PREFIX, holes.len(), "expression")?;
-        Ok(self.meta_call("expr_join", vec![Expr::List(parts), Expr::List(holes)]))
+        let (handle, _) = self.register_expr_syntax(quoted, source, definition_line);
+        Ok(Expr::Call {
+            name: crate::intrinsics::COMPILER_QUOTE_EXPR_HOLES.into(),
+            args: vec![Expr::Str(handle), Expr::List(parts), Expr::List(holes)],
+        })
     }
 
     fn compiler_owned_expr(
@@ -2173,16 +2182,26 @@ impl Parser {
         source: String,
         definition_line: u32,
     ) -> Expr {
+        let (handle, source) = self.register_expr_syntax(quoted, source, definition_line);
+        Expr::Call {
+            name: crate::intrinsics::COMPILER_QUOTE_EXPR.into(),
+            args: vec![Expr::Str(handle), Expr::Str(source)],
+        }
+    }
+
+    fn register_expr_syntax(
+        &mut self,
+        quoted: Expr,
+        source: String,
+        definition_line: u32,
+    ) -> (String, String) {
         let handle = self.compiler_syntax_handle("expr", &source);
         self.compiler_expr_syntax.push(CompilerExprSyntax {
             handle: handle.clone(),
             expr: quoted,
             definition_line,
         });
-        Expr::Call {
-            name: crate::intrinsics::COMPILER_QUOTE_EXPR.into(),
-            args: vec![Expr::Str(handle), Expr::Str(source)],
-        }
+        (handle, source)
     }
 
     fn compiler_owned_expr_literal(
@@ -2231,6 +2250,47 @@ impl Parser {
         self.compiler_stmt_syntax.append(&mut parsed.compiler_stmt_syntax);
         self.compiler_block_syntax.append(&mut parsed.compiler_block_syntax);
         Some(self.compiler_owned_expr(expr, source.to_string(), definition_line))
+    }
+
+    fn compiler_owned_expr_join(
+        &mut self,
+        args: &[Expr],
+        definition_line: u32,
+    ) -> Option<Expr> {
+        let [Expr::List(parts), Expr::List(holes)] = args else {
+            return None;
+        };
+        if parts.len() != holes.len() + 1 {
+            return None;
+        }
+        let mut source = String::new();
+        for (index, part) in parts.iter().enumerate() {
+            let Expr::Str(part) = part else {
+                return None;
+            };
+            source.push_str(part);
+            if index < holes.len() {
+                source.push_str(&format!("{QUOTE_EXPR_HOLE_PREFIX}{index}"));
+            }
+        }
+        let owned = self.compiler_owned_expr_literal(&source, definition_line)?;
+        let Expr::Call { name, args: owned_args } = owned else {
+            return None;
+        };
+        if name != crate::intrinsics::COMPILER_QUOTE_EXPR {
+            return None;
+        }
+        let [Expr::Str(handle), Expr::Str(_)] = owned_args.as_slice() else {
+            return None;
+        };
+        Some(Expr::Call {
+            name: crate::intrinsics::COMPILER_QUOTE_EXPR_HOLES.into(),
+            args: vec![
+                Expr::Str(handle.clone()),
+                Expr::List(parts.clone()),
+                Expr::List(holes.clone()),
+            ],
+        })
     }
 
     fn compiler_owned_type_literal(

@@ -127,6 +127,23 @@
     }
 
     #[test]
+    fn compiler_owned_expression_holes_round_trip_through_formatting() {
+        let src = "comptime fn make(x: meta.ExprSyntax) -> meta.ExprSyntax:\n    quote expr:\n        ${x} + 2\n";
+        let out = reformat(src).expect("compiler-owned expression holes round-trip");
+        assert!(out.contains("meta.expr_join([\"\", \" + 2\"], [x])"), "{out}");
+        let reparsed = crate::parser::parse_module(&out).expect("formatted expression holes parse");
+        assert_eq!(reparsed.compiler_expr_syntax.len(), 1);
+        let crate::ast::Item::Function(make) = &reparsed.items[0] else {
+            panic!("expected helper function");
+        };
+        let crate::ast::Stmt::Expr(crate::ast::Expr::Call { name, .. }) = &make.body.stmts[0] else {
+            panic!("expected compiler-owned expression-hole call");
+        };
+        assert_eq!(name, crate::intrinsics::COMPILER_QUOTE_EXPR_HOLES);
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
+    }
+
+    #[test]
     fn compiler_owned_type_quotes_round_trip_through_formatting() {
         let src = "comptime fn make() -> meta.TypeSyntax:\n    quote type:\n        .{value: Int}\n";
         let out = reformat(src).expect("compiler-owned type quote round-trips");

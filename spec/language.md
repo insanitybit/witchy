@@ -1005,12 +1005,17 @@ Compiler syntax values such as `meta.ItemSyntax`, `meta.TypeSyntax`,
 `meta.ExprSyntax`, `meta.PatternSyntax`, `meta.StmtSyntax`, `meta.BlockSyntax`,
 `meta.MatchArmSyntax`, and `meta.Ident` are compile-time-only: runtime
 functions, fields, aliases, and expressions cannot store or return them.
-Hole-free `quote expr:` and literal `meta.expr_raw("...")` retain a
-compiler-owned expression AST plus a canonical source projection. Direct item
-holes and typed tagged-literal output consume that AST without reparsing.
-Existing `meta.expr_*` builders project canonical source for compatibility; a
-composed expression remains source-backed in this stage and a typed tag carrying
-a composed value uses the explicit parse fallback.
+`quote expr:` retains a compiler-owned expression AST plus a canonical source
+projection. When the quote contains holes, the compiler stores an expression
+template and structurally replaces its exact hole nodes. A compiler-owned hole
+transfers its AST directly; a source-backed compatibility hole parses only its
+own payload, never the enclosing expression. Literal `meta.expr_raw("...")` and
+literal `meta.expr_join(parts, holes)` plans are promoted to the same owned
+representation when parsed. Direct item holes and typed tagged-literal output
+consume the resulting AST without reparsing. Other `meta.expr_*` builders
+project canonical source for compatibility; their composed values remain
+source-backed in this stage and a typed tag carrying one uses the explicit parse
+fallback.
 Hole-free `quote type:` values likewise retain a compiler-owned type AST.
 Direct item holes consume that AST without reparsing, including anonymous
 record/union types and borrowed views. Existing `meta.type_*` builders project
@@ -1048,8 +1053,10 @@ and `quote item:` are the first quotation forms. They parse the indented
 expression, type, pattern, statement, block, or single item immediately and
 produce `meta.ExprSyntax`, `meta.TypeSyntax`, `meta.PatternSyntax`,
 `meta.StmtSyntax`, `meta.BlockSyntax`, or `meta.ItemSyntax`. Every hole-free
-quote category uses the compiler-owned channels described above; quotes with
-holes stay source-backed in this migration stage. Inside `quote expr:`,
+quote category uses the compiler-owned channels described above. Hole-bearing
+item and expression quotations are structural; hole-bearing type, pattern,
+statement, and block quotations remain source-backed in this migration stage.
+Inside `quote expr:`,
 `${hole}` splices a `meta.ExprSyntax`; inside `quote type:` and
 `quote pattern:`, `${hole}` splices a `meta.TypeSyntax` or `meta.PatternSyntax`;
 inside `quote stmt:` and `quote block:`, `${hole}` splices a
@@ -1058,8 +1065,10 @@ type, or pattern positions. `quote item:` accepts the same expression, type,
 and pattern holes anywhere those grammar positions occur inside the quoted
 item. Holes are typed by the surrounding `comptime`/tag generator, not by
 runtime interpolation. Item-hole placement is structural. Directly supplied
-compiler-owned expression, type, and pattern values retain their AST; composed
-values remain source-backed until their structural slices land.
+compiler-owned expression, type, and pattern values retain their AST. An
+expression quote also retains its enclosing template AST across hole
+substitution; values composed by other compatibility builders remain
+source-backed until their structural slices land.
 `quote type:` covers named, generic, module-qualified, tuple, function,
 ownership-qualified, capability-right, anonymous structural, and borrowed-view
 types.

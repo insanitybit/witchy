@@ -12,6 +12,7 @@ pub enum IntrinsicId {
     CompilerQuoteItem,
     CompilerQuoteItemHoles,
     CompilerQuoteExpr,
+    CompilerQuoteExprHoles,
     CompilerQuoteType,
     CompilerQuotePattern,
     CompilerQuoteStmt,
@@ -112,6 +113,7 @@ pub enum IntrinsicSignature {
     CompilerQuoteItem,
     CompilerQuoteItemHoles,
     CompilerQuoteExpr,
+    CompilerQuoteExprHoles,
     CompilerQuoteType,
     CompilerQuotePattern,
     CompilerQuoteStmt,
@@ -377,6 +379,7 @@ pub const GENERATED_LIST_PUSH: &str = "@list_push";
 pub const COMPILER_QUOTE_ITEM: &str = "@quote_item";
 pub const COMPILER_QUOTE_ITEM_HOLES: &str = "@quote_item_holes";
 pub const COMPILER_QUOTE_EXPR: &str = "@quote_expr";
+pub const COMPILER_QUOTE_EXPR_HOLES: &str = "@quote_expr_holes";
 pub const COMPILER_QUOTE_TYPE: &str = "@quote_type";
 pub const COMPILER_QUOTE_PATTERN: &str = "@quote_pattern";
 pub const COMPILER_QUOTE_STMT: &str = "@quote_stmt";
@@ -558,6 +561,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "compiler-owned expression quotation",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::CompilerQuoteExprHoles,
+        name: COMPILER_QUOTE_EXPR_HOLES,
+        arity: 3,
+        signature: IntrinsicSignature::CompilerQuoteExprHoles,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "compiler-owned expression quotation with holes",
         private_callers: NO_PRIVATE_CALLERS,
     },
     IntrinsicSpec {
@@ -2281,6 +2299,7 @@ mod tests {
             COMPILER_QUOTE_ITEM,
             COMPILER_QUOTE_ITEM_HOLES,
             COMPILER_QUOTE_EXPR,
+            COMPILER_QUOTE_EXPR_HOLES,
             COMPILER_QUOTE_TYPE,
             COMPILER_QUOTE_PATTERN,
             COMPILER_QUOTE_STMT,

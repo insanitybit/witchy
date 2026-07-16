@@ -71,10 +71,12 @@ with the same human-readable hint cannot capture it.
 not rendered and reparsed. Typed holes replace exact expression, type, or pattern
 nodes in that item AST. The hole payload values and dynamic builders remain the
 compatibility path while the rest of the syntax tree becomes structural.
-Hole-free `quote expr:` values also retain their parsed AST when passed directly
-through an item hole. Existing `meta.expr_*` builders can consume them by
-projecting canonical source; the newly composed value remains a compatibility
-value until structural expression builders land.
+`quote expr:` values retain their parsed AST, including when they contain typed
+holes. The compiler substitutes each hole node structurally instead of joining
+and reparsing the enclosing expression. A source-backed compatibility hole may
+still parse its own payload. Existing `meta.expr_*` builders project canonical
+source, and values composed through those builders remain on the compatibility
+path until their structural forms land.
 Hole-free `quote type:` values work the same way: a direct type hole receives
 the parsed type node, including anonymous structural types and borrowed views,
 while `meta.type_*` builders may still compose through canonical source.
@@ -105,6 +107,31 @@ fn main(console: Console):
 42
 ```
 
+Expression templates can contain syntax that is not independently parseable as
+a builder payload. The nested quote below preserves the anonymous-record AST
+through both substitutions:
+
+```witchy
+import meta
+
+comptime:
+    let record = quote expr:
+        .{value: 40}
+    let body = quote expr:
+        ${record}.value + 2
+    emit_item(quote item:
+        pub fn generated() -> Int:
+            ${body}
+    )
+
+fn main(console: Console):
+    console.print("${generated()}")
+```
+
+```text
+42
+```
+
 ## Tagged literals: `comptime` in expression position
 
 A string literal written *immediately after an identifier* — `tag"…"` — is a
@@ -122,9 +149,10 @@ The tag *places* each marker where that hole's value belongs and returns witchy
 expression — resolved at the call site — at each marker, then splices the result
 in before type-checking.
 
-A typed generator may instead return `meta.ExprSyntax`. Hole-free `quote expr:`
-results stay as compiler-owned AST through this boundary; compatibility builders
-still project source until their structural forms land. Direct function calls
+A typed generator may instead return `meta.ExprSyntax`. `quote expr:` results,
+including structurally substituted expression templates, stay as compiler-owned
+AST through this boundary; compatibility builders still project source until
+their structural forms land. Direct function calls
 written in compiler-owned typed output resolve where the tag is defined, while
 the literal's holes keep their invocation-site context. Imported tags remain
 available during expansion and are removed before runtime type checking.

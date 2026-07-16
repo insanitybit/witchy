@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed compatibility builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned hole-free item/expression/type/pattern/statement/block payloads with structural item holes, direct AST transport for typed tags, and definition-site direct-function resolution for compiler-owned typed tag output landed; general identifier origins and meta.call_site remain proposed"
+tracking: "source-backed compatibility builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned hole-free item/expression/type/pattern/statement/block payloads with structural item and expression holes, direct AST transport for typed tags, and definition-site direct-function resolution for compiler-owned typed tag output landed; general identifier origins and meta.call_site remain proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -315,7 +315,8 @@ The first source-compatible slice is implemented:
   compatibility value, preserving their API while structural builders remain
   future work. Formatting prints
   `meta.expr_raw("...")` and promotes literal payloads back where independently
-  parseable. Expression quotes containing holes remain source-backed.
+  parseable. At this slice, expression quotes containing holes remain
+  source-backed.
 - The twenty-sixth slice gives typed tagged literals a compiler-owned expression
   event on the same interpreter expansion channel as typed item emission. A tag
   returning a hole-free quoted expression transfers the stored AST directly,
@@ -354,12 +355,24 @@ The first source-compatible slice is implemented:
   `meta.call_site` escape remain later origin-model slices. The linker preserves
   imported compile-time tag functions plus their syntax tables in sibling
   expansion snapshots, while each module's runtime result remains stripped.
+- The thirty-first slice moves hole-bearing `quote expr:` onto a compiler-owned
+  expression-template channel. The parser stores one `Expr` AST containing
+  exact expression-hole nodes, and the compile-time evaluator substitutes each
+  typed `ExprSyntax` into a clone of that template. A compiler-owned hole is
+  transferred as an AST; a compatibility hole parses only its own payload. The
+  enclosing expression is never assembled or reparsed. Literal
+  `meta.expr_join(parts, holes)` plans are promoted to the same representation
+  when parsed, so formatting retains the public typed spelling while restoring
+  the owned template. General `meta.expr_*` builder composition and
+  hole-bearing type, pattern, statement, and block quotations remain on their
+  compatibility paths.
 
-This is intentionally not the full RFC. Whole items and their typed hole
-placement plus all hole-free syntax payloads are now compiler-owned, while
-composed and hole-bearing syntax payloads remain source-backed. Compiler-owned
-typed tag expressions now preserve definition-site direct function references,
-but general identifier origins and explicit call-site identifiers remain future
+This is intentionally not the full RFC. Whole items, expression templates, and
+their typed hole placement plus all hole-free syntax payloads are now
+compiler-owned. Other composed syntax and hole-bearing type, pattern,
+statement, and block payloads remain source-backed. Compiler-owned typed tag
+expressions now preserve definition-site direct function references, but
+general identifier origins and explicit call-site identifiers remain future
 work. The value is the
 migration seam: future work can move the
 payload behind these wrappers from parsed source to structured compiler nodes

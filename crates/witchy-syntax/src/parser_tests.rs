@@ -507,7 +507,7 @@ fn f():
     }
 
     #[test]
-    fn quote_expr_holes_lower_to_meta_expr_join() {
+    fn quote_expr_holes_keep_a_compiler_owned_template() {
         let m = parse_module(r#"
 fn f(x: meta.ExprSyntax, y: meta.ExprSyntax):
     quote expr:
@@ -518,11 +518,16 @@ fn f(x: meta.ExprSyntax, y: meta.ExprSyntax):
             panic!("expected function");
         };
         let Stmt::Expr(Expr::Call { name, args }) = &f.body.stmts[0] else {
-            panic!("expected lowered meta.expr_join call, got {:?}", f.body.stmts[0]);
+            panic!("expected compiler-owned expression-hole call, got {:?}", f.body.stmts[0]);
         };
-        assert_eq!(name, "meta.expr_join");
+        assert_eq!(name, crate::intrinsics::COMPILER_QUOTE_EXPR_HOLES);
+        assert_eq!(m.compiler_expr_syntax.len(), 1);
+        let Expr::Str(handle) = &args[0] else {
+            panic!("expected expression syntax handle");
+        };
+        assert_eq!(handle, &m.compiler_expr_syntax[0].handle);
         assert_eq!(
-            args,
+            &args[1..],
             &[
                 Expr::List(vec![
                     Expr::Str("add(".to_string()),
