@@ -1828,15 +1828,36 @@ pub const DICT_OPERATIONS: &[&str] = &[
     DICT_LENGTH,
 ];
 
+// The interpreter consults `lookup` on EVERY call expression (a user-function
+// call is a whole-table miss), and typeck/lowering query it per expression —
+// a linear scan of 86 string compares was ~30% of interpreter CPU on
+// call-dense programs. One map, built on first use. No spec name contains
+// `__`, so the map-first order below cannot shadow the suffix
+// canonicalization; first-wins on duplicates mirrors the old `find`.
+static LOOKUP_TABLE: std::sync::OnceLock<foldhash::HashMap<&'static str, &'static IntrinsicSpec>> =
+    std::sync::OnceLock::new();
+
 pub fn lookup(name: &str) -> Option<&'static IntrinsicSpec> {
+    let table = LOOKUP_TABLE.get_or_init(|| {
+        use foldhash::HashMapExt as _;
+        let mut table = foldhash::HashMap::with_capacity(ALL.len());
+        for spec in ALL {
+            table.entry(spec.name).or_insert(spec);
+        }
+        table
+    });
+    if let Some(spec) = table.get(name) {
+        return Some(*spec);
+    }
+    // A synthesized monomorphized variant (`<base>__<suffix>`) resolves to its
+    // base spec.
     let canonical = [LIST_POP_EXTRACT, DICT_INSERT_EXTRACT, DICT_REMOVE_EXTRACT]
         .into_iter()
         .find(|base| {
             name.strip_prefix(base)
                 .is_some_and(|suffix| suffix.starts_with("__"))
-        })
-        .unwrap_or(name);
-    ALL.iter().find(|spec| spec.name == canonical)
+        })?;
+    table.get(canonical).copied()
 }
 
 pub fn arity_diagnostic(spec: &IntrinsicSpec, actual: usize) -> String {

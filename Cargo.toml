@@ -137,18 +137,24 @@ split-debuginfo = "unpacked"
 # Tests run these crates hard (tree-walking interpreter, witchy->WASM lowering,
 # wasmtime host glue); unoptimized they dominate suite time. Opt just the hot
 # stage crates; the root crate and everything else keeps fast unopt compiles.
+# Level 2 (was 1): −23% interpreter CPU on call-dense differential tests
+# (rfc0090 5M-transition cycles, measured min-of-3 user time) for ~15s more on
+# a cold stage-crate build. A `package."*"` opt-2 override for external deps
+# was measured too and bought nothing further — cranelift is NOT the wasm-test
+# bottleneck — so deps stay unoptimized for cheap cold builds (CI has no
+# sccache).
 [profile.dev.package.witchy-interp]
-opt-level = 1
+opt-level = 2
 [profile.dev.package.witchy-runtime]
-opt-level = 1
+opt-level = 2
 [profile.dev.package.witchy-lower]
-opt-level = 1
+opt-level = 2
 [profile.dev.package.witchy-wir]
-opt-level = 1
+opt-level = 2
 [profile.dev.package.witchy-types]
-opt-level = 1
+opt-level = 2
 [profile.dev.package.witchy-syntax]
-opt-level = 1
+opt-level = 2
 # foldhash backs the compiler crates' HashMaps; unoptimized it LOSES to std's
 # precompiled SipHash (~2% more instructions on a pm-front-end compile), with
 # this override it wins. Tiny crate — no build-time cost.
