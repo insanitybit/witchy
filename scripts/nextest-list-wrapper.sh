@@ -5,9 +5,10 @@ set -euo pipefail
 
 [ "$#" -gt 0 ] || { echo "nextest-list-wrapper: missing test binary" >&2; exit 2; }
 
-# NEXTEST_RUN_ID is shared by every list process in one run and unique across
-# runs, so a killed gate cannot leave a lock that blocks a later gate.
-lock="${TMPDIR:-/tmp}/witchy-nextest-list-${NEXTEST_RUN_ID:-$$}.lock"
+# New nextest versions expose one NEXTEST_RUN_ID to every list process. Older
+# versions do not, but all wrappers still share the nextest runner as PPID.
+# Either key is per-run, so a killed gate cannot block a later gate.
+lock="${TMPDIR:-/tmp}/witchy-nextest-list-${NEXTEST_RUN_ID:-$PPID}.lock"
 while ! mkdir "$lock" 2>/dev/null; do
     sleep 0.05
 done

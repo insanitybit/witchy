@@ -127,8 +127,9 @@ present and an older coordinator has not exported `NEXTEST_TEST_THREADS`; this
 keeps the candidate that introduces the queue knob capable of gating itself.
 On macOS, `.config/nextest.toml` additionally routes test discovery through
 `scripts/nextest-list-wrapper.sh`. The wrapper serializes only the `--list`
-binary launches with a lock unique to `NEXTEST_RUN_ID`; normal test execution
-still uses the bounded parallel scheduler.
+binary launches with a lock unique to `NEXTEST_RUN_ID` (or the shared nextest
+parent PID on older versions); normal test execution still uses the bounded
+parallel scheduler.
 
 **Diff-scoped fuzzing.** The differential fuzzer is the gate's single biggest
 test (~57s, a fixed-seed parity regression suite). `process_one` classifies the
