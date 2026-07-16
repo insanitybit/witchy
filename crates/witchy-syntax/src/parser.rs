@@ -138,6 +138,9 @@ struct Parser {
     /// Hole-free type quotations retain their parsed AST behind a compiler-only
     /// handle. Source-backed builders remain the compatibility representation.
     compiler_type_syntax: Vec<CompilerTypeSyntax>,
+    /// Hole-free pattern quotations retain their parsed AST behind a
+    /// compiler-only handle.
+    compiler_pattern_syntax: Vec<CompilerPatternSyntax>,
     /// Positive while parsing the literal body of `quote expr:`. `${...}` holes
     /// are syntax splices there; everywhere else they are rejected at parse time.
     quote_expr_hole_depth: u32,
@@ -201,6 +204,7 @@ impl Parser {
             compiler_item_syntax: Vec::new(),
             compiler_expr_syntax: Vec::new(),
             compiler_type_syntax: Vec::new(),
+            compiler_pattern_syntax: Vec::new(),
             quote_expr_hole_depth: 0,
             quote_type_hole_depth: 0,
             quote_type_holes: Vec::new(),
@@ -412,6 +416,7 @@ impl Parser {
             compiler_item_syntax: std::mem::take(&mut self.compiler_item_syntax),
             compiler_expr_syntax: std::mem::take(&mut self.compiler_expr_syntax),
             compiler_type_syntax: std::mem::take(&mut self.compiler_type_syntax),
+            compiler_pattern_syntax: std::mem::take(&mut self.compiler_pattern_syntax),
         })
     }
 
@@ -1654,6 +1659,14 @@ impl Parser {
                                         self.compiler_owned_type_literal(source, member_line)
                                 {
                                     owned
+                                } else if name == "meta.pattern_join"
+                                    && let [Expr::List(parts), Expr::List(holes)] = args.as_slice()
+                                    && holes.is_empty()
+                                    && let [Expr::Str(source)] = parts.as_slice()
+                                    && let Some(owned) =
+                                        self.compiler_owned_pattern_literal(source, member_line)
+                                {
+                                    owned
                                 } else {
                                     Expr::Call { name, args }
                                 }
@@ -1991,7 +2004,7 @@ impl Parser {
                 }
                 let quoted = quoted?;
                 let holes = self.quote_pattern_holes.split_off(base);
-                self.pattern_syntax_expr_with_holes(quoted, holes)?
+                self.pattern_syntax_expr_with_holes(quoted, holes, quote_line)?
             }
             "stmt" => {
                 let type_base = self.quote_type_holes.len();
@@ -2184,6 +2197,7 @@ impl Parser {
         self.compiler_item_syntax.append(&mut parsed.compiler_item_syntax);
         self.compiler_expr_syntax.append(&mut parsed.compiler_expr_syntax);
         self.compiler_type_syntax.append(&mut parsed.compiler_type_syntax);
+        self.compiler_pattern_syntax.append(&mut parsed.compiler_pattern_syntax);
         Some(self.compiler_owned_expr(expr, source.to_string(), definition_line))
     }
 
@@ -2214,6 +2228,38 @@ impl Parser {
         });
         Some(Expr::Call {
             name: crate::intrinsics::COMPILER_QUOTE_TYPE.into(),
+            args: vec![Expr::Str(handle), Expr::Str(source.to_string())],
+        })
+    }
+
+    fn compiler_owned_pattern_literal(
+        &mut self,
+        source: &str,
+        definition_line: u32,
+    ) -> Option<Expr> {
+        let wrapper = format!("fn pattern_syntax_payload(value: Int):\n    match value:\n        {source} -> 1\n        _ -> 0\n");
+        let tokens = tokenize(&wrapper).ok()?;
+        let tokens = crate::lexer::apply_layout(tokens);
+        let mut payload_parser = Parser::new(tokens);
+        let parsed = payload_parser.module().ok()?;
+        let [Item::Function(function)] = parsed.items.as_slice() else {
+            return None;
+        };
+        let [Stmt::Expr(Expr::Match { arms, .. })] = function.body.stmts.as_slice() else {
+            return None;
+        };
+        let [arm, _fallback] = arms.as_slice() else {
+            return None;
+        };
+        let pattern = arm.pattern.clone();
+        let handle = self.compiler_syntax_handle("pattern", source);
+        self.compiler_pattern_syntax.push(CompilerPatternSyntax {
+            handle: handle.clone(),
+            pattern,
+            definition_line,
+        });
+        Some(Expr::Call {
+            name: crate::intrinsics::COMPILER_QUOTE_PATTERN.into(),
             args: vec![Expr::Str(handle), Expr::Str(source.to_string())],
         })
     }
@@ -2268,12 +2314,23 @@ impl Parser {
     }
 
     fn pattern_syntax_expr_with_holes(
-        &self,
+        &mut self,
         quoted: Pattern,
         holes: Vec<Expr>,
+        definition_line: u32,
     ) -> Result<Expr, ParseError> {
         if holes.is_empty() {
-            return Ok(self.pattern_syntax_expr(&quoted));
+            let source = crate::format::pattern_str(&quoted);
+            let handle = self.compiler_syntax_handle("pattern", &source);
+            self.compiler_pattern_syntax.push(CompilerPatternSyntax {
+                handle: handle.clone(),
+                pattern: quoted,
+                definition_line,
+            });
+            return Ok(Expr::Call {
+                name: crate::intrinsics::COMPILER_QUOTE_PATTERN.into(),
+                args: vec![Expr::Str(handle), Expr::Str(source)],
+            });
         }
         let source = crate::format::pattern_str(&quoted);
         let parts =
@@ -2470,6 +2527,7 @@ impl Parser {
             compiler_item_syntax: Vec::new(),
             compiler_expr_syntax: Vec::new(),
             compiler_type_syntax: Vec::new(),
+            compiler_pattern_syntax: Vec::new(),
         };
         crate::format::module(&module, &[])
     }
@@ -2706,67 +2764,6 @@ impl Parser {
 
     fn meta_call(&self, name: &str, args: Vec<Expr>) -> Expr {
         Expr::Call { name: format!("meta.{name}"), args }
-    }
-
-    fn meta_ident(&self, name: &str) -> Expr {
-        self.meta_call("ident", vec![Expr::Str(name.to_string())])
-    }
-
-    fn pattern_syntax_expr(&self, pattern: &Pattern) -> Expr {
-        match pattern {
-            Pattern::Wildcard => self.meta_call("pattern_wildcard", vec![]),
-            Pattern::Var(name) => self.meta_call("pattern_var", vec![self.meta_ident(name)]),
-            Pattern::Int(n) => self.meta_call("pattern_int", vec![Expr::Int(*n)]),
-            Pattern::Str(s) => self.meta_call("pattern_str", vec![Expr::Str(s.clone())]),
-            Pattern::Bool(b) => self.meta_call("pattern_bool", vec![Expr::Bool(*b)]),
-            Pattern::Ctor { name, args } => {
-                let rendered_args = Expr::List(self.pattern_syntax_exprs(args));
-                if let Some((module, ctor)) = name.split_once('.') {
-                    self.meta_call(
-                        "pattern_qualified_ctor",
-                        vec![self.meta_ident(module), self.meta_ident(ctor), rendered_args],
-                    )
-                } else {
-                    self.meta_call("pattern_ctor", vec![self.meta_ident(name), rendered_args])
-                }
-            }
-            Pattern::AnonCtor { tag, args } => self.meta_call(
-                "pattern_anon_ctor",
-                vec![self.meta_ident(tag), Expr::List(self.pattern_syntax_exprs(args))],
-            ),
-            Pattern::Tuple(patterns) => self.meta_call("pattern_tuple", vec![
-                Expr::List(self.pattern_syntax_exprs(patterns)),
-            ]),
-            Pattern::List { elems, rest } => {
-                let elems = Expr::List(self.pattern_syntax_exprs(elems));
-                match rest {
-                    None => self.meta_call("pattern_list", vec![elems]),
-                    Some(name) => self.meta_call(
-                        "pattern_list_rest",
-                        vec![elems, self.optional_meta_ident(name.as_ref())],
-                    ),
-                }
-            }
-            Pattern::Duration(ms) => self.meta_call("pattern_duration_ms", vec![Expr::Int(*ms)]),
-            Pattern::IntRange { lo, hi, inclusive } => self.meta_call(
-                "pattern_range",
-                vec![Expr::Int(*lo), Expr::Int(*hi), Expr::Bool(*inclusive)],
-            ),
-            Pattern::Or(alts) => self.meta_call("pattern_or", vec![
-                Expr::List(self.pattern_syntax_exprs(alts)),
-            ]),
-        }
-    }
-
-    fn pattern_syntax_exprs(&self, patterns: &[Pattern]) -> Vec<Expr> {
-        patterns.iter().map(|pattern| self.pattern_syntax_expr(pattern)).collect()
-    }
-
-    fn optional_meta_ident(&self, name: Option<&String>) -> Expr {
-        match name {
-            Some(name) => Expr::Ctor { name: "Some".to_string(), args: vec![self.meta_ident(name)] },
-            None => Expr::Ctor { name: "None".to_string(), args: vec![] },
-        }
     }
 
     /// Resolve a bare name into a variable, call, constructor, or a qualified

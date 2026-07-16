@@ -57,6 +57,10 @@ pub struct Module {
     /// compile-time code. Canonical source remains available to source-backed
     /// builders, but direct syntax holes consume the stored type AST.
     pub compiler_type_syntax: Vec<CompilerTypeSyntax>,
+    /// Compiler-owned pattern payloads referenced by unspellable calls in
+    /// compile-time code. Direct syntax holes consume these nodes without
+    /// reparsing their canonical source projection.
+    pub compiler_pattern_syntax: Vec<CompilerPatternSyntax>,
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
@@ -116,6 +120,14 @@ pub struct CompilerExprSyntax {
 pub struct CompilerTypeSyntax {
     pub handle: String,
     pub ty: Type,
+    pub definition_line: u32,
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompilerPatternSyntax {
+    pub handle: String,
+    pub pattern: Pattern,
     pub definition_line: u32,
 }
 

@@ -416,6 +416,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     let compiler_item_syntax = module.compiler_item_syntax;
     let compiler_expr_syntax = module.compiler_expr_syntax;
     let compiler_type_syntax = module.compiler_type_syntax;
+    let compiler_pattern_syntax = module.compiler_pattern_syntax;
     let mut items: Vec<Item> = module
         .items
         .into_iter()
@@ -504,6 +505,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             compiler_item_syntax: compiler_item_syntax.clone(),
             compiler_expr_syntax: compiler_expr_syntax.clone(),
             compiler_type_syntax: compiler_type_syntax.clone(),
+            compiler_pattern_syntax: compiler_pattern_syntax.clone(),
         },
         &from_conversion_fns,
     );
@@ -534,6 +536,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             compiler_item_syntax: typed.module().compiler_item_syntax.clone(),
             compiler_expr_syntax: typed.module().compiler_expr_syntax.clone(),
             compiler_type_syntax: typed.module().compiler_type_syntax.clone(),
+            compiler_pattern_syntax: typed.module().compiler_pattern_syntax.clone(),
         };
         crate::typeck::check_selected_lowered(&probe, &no_fallback, &from_conversion_fns)
             .err()

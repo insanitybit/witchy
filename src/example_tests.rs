@@ -2078,8 +2078,8 @@ fn main(console: Console):
         );
     }
 
-    /// RFC-0080 pattern quotation lowers to structured `PatternSyntax` builders,
-    /// so generated match arms no longer need hand-rendered pattern strings.
+    /// RFC-0080 pattern quotation retains compiler-owned pattern AST while
+    /// builders remain the compatibility path for composed match arms.
     #[test]
     fn quote_pattern_builds_typed_patternsyntax_on_both_backends() {
         let src = r#"

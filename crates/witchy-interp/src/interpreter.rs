@@ -360,6 +360,7 @@ fn compiler_item_holes(
     values: &[Value],
     compiler_expr_syntax: &HashMap<String, Expr>,
     compiler_type_syntax: &HashMap<String, Type>,
+    compiler_pattern_syntax: &HashMap<String, Pattern>,
 ) -> Result<Vec<witchy_syntax::syntax_holes::ItemSyntaxHole>, RuntimeError> {
     use witchy_syntax::syntax_holes::{
         ItemSyntaxHole, parse_expr_payload, parse_pattern_payload, parse_type_payload,
@@ -428,9 +429,24 @@ fn compiler_item_holes(
                         .map(ItemSyntaxHole::Type)
                         .map_err(|message| RuntimeError { message }),
                 },
-                "PatternHole" => parse_pattern_payload(source(syntax, "PatternSyntax")?)
-                    .map(ItemSyntaxHole::Pattern)
-                    .map_err(|message| RuntimeError { message }),
+                "PatternHole" => match syntax {
+                    Value::Ctor { name, fields } if tail(name) == "CompilerPatternSyntax" => {
+                        let [Value::Str(handle), Value::Str(_source)] = fields.as_slice() else {
+                            return err("CompilerPatternSyntax carried an invalid payload");
+                        };
+                        compiler_pattern_syntax
+                            .get(handle)
+                            .cloned()
+                            .map(ItemSyntaxHole::Pattern)
+                            .ok_or_else(|| RuntimeError {
+                                message: "compiler-owned pattern referenced an invalid syntax handle"
+                                    .into(),
+                            })
+                    }
+                    _ => parse_pattern_payload(source(syntax, "PatternSyntax")?)
+                        .map(ItemSyntaxHole::Pattern)
+                        .map_err(|message| RuntimeError { message }),
+                },
                 other => err(format!("compiler-owned item hole had unknown category `{other}`")),
             }
         })
@@ -919,6 +935,7 @@ pub struct Interpreter {
     compiler_item_syntax: HashMap<String, Item>,
     compiler_expr_syntax: HashMap<String, Expr>,
     compiler_type_syntax: HashMap<String, Type>,
+    compiler_pattern_syntax: HashMap<String, Pattern>,
     comptime_item_output: Vec<PositionedComptimeItem>,
     comptime_expr_output: Vec<ComptimeExprEmission>,
     /// Evaluation-step counter and ceiling. Unlike the runtime's epoch
@@ -1259,6 +1276,11 @@ impl Interpreter {
             .into_iter()
             .map(|syntax| (syntax.handle, syntax.ty))
             .collect();
+        let compiler_pattern_syntax = module
+            .compiler_pattern_syntax
+            .into_iter()
+            .map(|syntax| (syntax.handle, syntax.pattern))
+            .collect();
         let mut functions = HashMap::new();
         let mut record_fields = HashMap::new();
         let mut ctor_type_name: HashMap<String, String> = HashMap::new();
@@ -1320,6 +1342,7 @@ impl Interpreter {
             compiler_item_syntax,
             compiler_expr_syntax,
             compiler_type_syntax,
+            compiler_pattern_syntax,
             comptime_item_output: Vec::new(),
             comptime_expr_output: Vec::new(),
             steps: 0,
@@ -2316,6 +2339,27 @@ impl Interpreter {
                     _ => err("compiler-owned type quotation expects a type handle"),
                 }
             }
+            name if name == intrinsics::COMPILER_QUOTE_PATTERN => {
+                if self.fresh_ident_scope.is_none() {
+                    return err(
+                        "compiler-owned pattern quotation is available only during compile-time expansion",
+                    );
+                }
+                match args {
+                    [Value::Str(handle), Value::Str(source)]
+                        if self.compiler_pattern_syntax.contains_key(handle) =>
+                    {
+                        Ok(Some(Value::Ctor {
+                            name: "meta.CompilerPatternSyntax".into(),
+                            fields: vec![Value::Str(handle.clone()), Value::Str(source.clone())],
+                        }))
+                    }
+                    [Value::Str(_), Value::Str(_)] => {
+                        err("compiler-owned pattern quotation referenced an invalid syntax handle")
+                    }
+                    _ => err("compiler-owned pattern quotation expects a pattern handle"),
+                }
+            }
             name if name == intrinsics::COMPILER_QUOTE_ITEM => {
                 if self.fresh_ident_scope.is_none() {
                     return err(
@@ -2400,6 +2444,7 @@ impl Interpreter {
                             holes,
                             &self.compiler_expr_syntax,
                             &self.compiler_type_syntax,
+                            &self.compiler_pattern_syntax,
                         )?;
                         let item = witchy_syntax::syntax_holes::instantiate_item(template, holes)
                             .map_err(|message| RuntimeError { message })?;

@@ -202,6 +202,7 @@ fn expand_with_item_limit(
             compiler_item_syntax: module.compiler_item_syntax.clone(),
             compiler_expr_syntax: module.compiler_expr_syntax.clone(),
             compiler_type_syntax: module.compiler_type_syntax.clone(),
+            compiler_pattern_syntax: module.compiler_pattern_syntax.clone(),
         };
         let linked = crate::pipeline::link(vec![("comptime".into(), prog)], "comptime")
             .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
@@ -336,6 +337,7 @@ fn append_unstamped_module(into: &mut Module, mut from: Module) {
     into.compiler_item_syntax.append(&mut from.compiler_item_syntax);
     into.compiler_expr_syntax.append(&mut from.compiler_expr_syntax);
     into.compiler_type_syntax.append(&mut from.compiler_type_syntax);
+    into.compiler_pattern_syntax.append(&mut from.compiler_pattern_syntax);
 }
 
 fn reachable_local_items(items: &[Item], root: &Block) -> Vec<Item> {
@@ -382,6 +384,7 @@ fn merge_emitted_module(module: &mut Module, emitted: Module, block_line: u32) {
     module.compiler_item_syntax.extend(emitted.compiler_item_syntax);
     module.compiler_expr_syntax.extend(emitted.compiler_expr_syntax);
     module.compiler_type_syntax.extend(emitted.compiler_type_syntax);
+    module.compiler_pattern_syntax.extend(emitted.compiler_pattern_syntax);
     let n = emitted.items.len();
     for mut item in emitted.items {
         // The emitted items were parsed from a standalone blob, so every line
@@ -591,6 +594,7 @@ pub fn expand_compile_time(
         module.compiler_item_syntax.clear();
         module.compiler_expr_syntax.clear();
         module.compiler_type_syntax.clear();
+        module.compiler_pattern_syntax.clear();
     }
     Ok(())
 }

@@ -31,8 +31,11 @@ sealed type ExprSyntax:
     ExprSyntax(String)
     CompilerExprSyntax(String, String)
 
+// Hole-free `quote pattern:` values retain compiler-owned pattern AST. Existing
+// builders project canonical source when composing compatibility values.
 sealed type PatternSyntax:
     PatternSyntax(String)
+    CompilerPatternSyntax(String, String)
 
 sealed type SyntaxHole:
     ExprHole(ExprSyntax)
@@ -368,6 +371,7 @@ fn pattern_with_head(head: String, args: List(PatternSyntax)) -> PatternSyntax:
 fn pattern_source(pattern: PatternSyntax) -> String:
     match pattern:
         PatternSyntax(source) -> source
+        CompilerPatternSyntax(_, source) -> source
 
 fn pattern_sources(patterns: List(PatternSyntax)) -> List(String):
     var out = []

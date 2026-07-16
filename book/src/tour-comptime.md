@@ -78,6 +78,8 @@ value until structural expression builders land.
 Hole-free `quote type:` values work the same way: a direct type hole receives
 the parsed type node, including anonymous structural types and borrowed views,
 while `meta.type_*` builders may still compose through canonical source.
+Hole-free `quote pattern:` values also retain their parsed node through direct
+item holes; `meta.pattern_*` remains the compatibility construction API.
 When a typed tagged-literal generator returns one of these compiler-owned values,
 the expansion engine transfers the expression AST directly. A composed
 source-backed `ExprSyntax` and a legacy `String` tag retain the explicit parse

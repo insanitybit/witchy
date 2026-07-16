@@ -1017,6 +1017,10 @@ record/union types and borrowed views. Existing `meta.type_*` builders project
 canonical source and remain the compatibility construction path; formatting
 uses a literal no-hole `meta.type_join` plan, which the parser promotes back to
 the owned representation.
+Hole-free `quote pattern:` values retain a compiler-owned pattern AST as well.
+Direct item holes consume it without reparsing. Existing `meta.pattern_*`
+builders project canonical source; formatting uses a literal no-hole
+`meta.pattern_join` plan that reparses to the owned representation.
 Top-level `comptime fn` declarations are helpers for this expansion phase. They
 may mention compile-time-only syntax types, may be called from `comptime:`,
 custom-derive, or tagged-literal expansion, and are stripped before the runtime
@@ -1035,9 +1039,9 @@ and `quote item:` are the first quotation forms. They parse the indented
 expression, type, pattern, statement, block, or single item immediately and
 produce `meta.ExprSyntax`, `meta.TypeSyntax`, `meta.PatternSyntax`,
 `meta.StmtSyntax`, `meta.BlockSyntax`, or `meta.ItemSyntax`. Item quotes plus
-hole-free expression and type quotes use the compiler-owned channels described
-above; quotes with holes and the remaining categories stay source-backed in
-this migration stage. Inside `quote expr:`,
+hole-free expression, type, and pattern quotes use the compiler-owned channels
+described above; quotes with holes and the remaining categories stay
+source-backed in this migration stage. Inside `quote expr:`,
 `${hole}` splices a `meta.ExprSyntax`; inside `quote type:` and
 `quote pattern:`, `${hole}` splices a `meta.TypeSyntax` or `meta.PatternSyntax`;
 inside `quote stmt:` and `quote block:`, `${hole}` splices a
@@ -1046,8 +1050,8 @@ type, or pattern positions. `quote item:` accepts the same expression, type,
 and pattern holes anywhere those grammar positions occur inside the quoted
 item. Holes are typed by the surrounding `comptime`/tag generator, not by
 runtime interpolation. Item-hole placement is structural. Directly supplied
-compiler-owned expression and type values retain their AST; composed values and
-pattern syntax remain source-backed until their structural slices land.
+compiler-owned expression, type, and pattern values retain their AST; composed
+values remain source-backed until their structural slices land.
 `quote type:` covers named, generic, module-qualified, tuple, function,
 ownership-qualified, capability-right, anonymous structural, and borrowed-view
 types.

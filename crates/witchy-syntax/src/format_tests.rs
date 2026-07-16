@@ -151,6 +151,24 @@
     }
 
     #[test]
+    fn compiler_owned_pattern_quotes_round_trip_through_formatting() {
+        let src = "comptime fn make() -> meta.PatternSyntax:\n    quote pattern:\n        [1 | 2, ..rest]\n";
+        let out = reformat(src).expect("compiler-owned pattern quote round-trips");
+        assert!(out.starts_with("import meta\n"), "{out}");
+        assert!(out.contains("meta.pattern_join([\"[1 | 2, ..rest]\"], [])"), "{out}");
+        let reparsed = crate::parser::parse_module(&out).expect("formatted pattern parses");
+        assert_eq!(reparsed.compiler_pattern_syntax.len(), 1);
+        let crate::ast::Item::Function(make) = &reparsed.items[0] else {
+            panic!("expected helper function");
+        };
+        let crate::ast::Stmt::Expr(crate::ast::Expr::Call { name, .. }) = &make.body.stmts[0] else {
+            panic!("expected compiler-owned pattern call");
+        };
+        assert_eq!(name, crate::intrinsics::COMPILER_QUOTE_PATTERN);
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
+    }
+
+    #[test]
     fn compiler_owned_anonymous_expression_round_trips_through_formatting() {
         let src = "comptime fn make() -> meta.ExprSyntax:\n    quote expr:\n        .{value: 40}.value\n";
         let out = reformat(src).expect("anonymous compiler-owned expression quote round-trips");
@@ -292,6 +310,7 @@
             compiler_item_syntax: vec![],
             compiler_expr_syntax: vec![],
             compiler_type_syntax: vec![],
+            compiler_pattern_syntax: vec![],
         };
         let printed = module(&m, &[]);
         // The printed form parses, but to a DIFFERENT program (`let x = 0`);

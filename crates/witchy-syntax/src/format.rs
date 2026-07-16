@@ -1277,6 +1277,11 @@ fn expr(e: &Expr) -> String {
             {
                 return format!("meta.type_join([{}], [])", string_lit(source));
             }
+            if name == crate::intrinsics::COMPILER_QUOTE_PATTERN
+                && let [Expr::Str(_handle), Expr::Str(source)] = args.as_slice()
+            {
+                return format!("meta.pattern_join([{}], [])", string_lit(source));
+            }
             // `to_string`/`int_to_string` were retired in favor of string
             // interpolation, whose only surface spelling is `"${x}"`; rewrite a
             // single-argument render call to that form (unless the module defines
@@ -2072,6 +2077,10 @@ fn canon_module(m: &mut Module) {
         syntax.handle.clear();
         syntax.definition_line = 0;
     }
+    for syntax in &mut m.compiler_pattern_syntax {
+        syntax.handle.clear();
+        syntax.definition_line = 0;
+    }
     for it in &mut m.items {
         canon_item(it);
     }
@@ -2127,6 +2136,7 @@ fn canon_expr(e: &mut Expr) {
                 | crate::intrinsics::COMPILER_QUOTE_ITEM_HOLES
                 | crate::intrinsics::COMPILER_QUOTE_EXPR
                 | crate::intrinsics::COMPILER_QUOTE_TYPE
+                | crate::intrinsics::COMPILER_QUOTE_PATTERN
         ) && let Some(Expr::Str(handle)) = args.first_mut()
         {
             handle.clear();

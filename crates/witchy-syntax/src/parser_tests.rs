@@ -661,15 +661,7 @@ fn f(ok: meta.TypeSyntax, err: meta.TypeSyntax):
     }
 
     #[test]
-    fn quote_pattern_lowers_to_structured_meta_builders() {
-        fn ident(name: &str) -> Expr {
-            Expr::Call { name: "meta.ident".into(), args: vec![Expr::Str(name.into())] }
-        }
-
-        fn call(name: &str, args: Vec<Expr>) -> Expr {
-            Expr::Call { name: format!("meta.{name}"), args }
-        }
-
+    fn quote_pattern_lowers_to_compiler_owned_pattern() {
         let m = parse_module(r#"
 fn f():
     quote pattern:
@@ -679,14 +671,20 @@ fn f():
         let Item::Function(f) = &m.items[0] else {
             panic!("expected function");
         };
-        let expected = call("pattern_list_rest", vec![
-            Expr::List(vec![call("pattern_or", vec![Expr::List(vec![
-                call("pattern_int", vec![Expr::Int(1)]),
-                call("pattern_int", vec![Expr::Int(2)]),
-            ])])]),
-            Expr::Ctor { name: "Some".into(), args: vec![ident("rest")] },
-        ]);
-        assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);
+        let [Stmt::Expr(Expr::Call { name, args })] = f.body.stmts.as_slice() else {
+            panic!("expected compiler-owned pattern call");
+        };
+        assert_eq!(name, crate::intrinsics::COMPILER_QUOTE_PATTERN);
+        let [Expr::Str(handle), Expr::Str(source)] = args.as_slice() else {
+            panic!("expected pattern handle and compatibility source");
+        };
+        assert_eq!(source, "[1 | 2, ..rest]");
+        let [syntax] = m.compiler_pattern_syntax.as_slice() else {
+            panic!("expected one compiler-owned pattern payload");
+        };
+        assert_eq!(handle, &syntax.handle);
+        assert!(matches!(syntax.pattern, Pattern::List { .. }));
+        assert_eq!(syntax.definition_line, 3);
     }
 
     #[test]

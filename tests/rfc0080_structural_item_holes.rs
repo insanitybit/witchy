@@ -37,6 +37,11 @@ fn mixed_item_holes_expand_as_ast_and_run_on_both_backends() {
         "the hole-free type quote retains compiler-owned AST"
     );
     assert_eq!(
+        parsed.compiler_pattern_syntax.len(),
+        1,
+        "the hole-free pattern quote retains compiler-owned AST"
+    );
+    assert_eq!(
         parsed.compiler_expr_syntax.len(),
         2,
         "both hole-free expression quotes retain compiler-owned AST"
@@ -64,6 +69,7 @@ fn mixed_item_holes_expand_as_ast_and_run_on_both_backends() {
     typeck::check(&linked).expect("typecheck structurally expanded item");
     assert!(linked.compiler_item_syntax.is_empty(), "runtime module drops syntax payloads");
     assert!(linked.compiler_type_syntax.is_empty(), "runtime module drops type payloads");
+    assert!(linked.compiler_pattern_syntax.is_empty(), "runtime module drops pattern payloads");
     assert!(linked.items.iter().any(
         |item| matches!(item, ast::Item::Function(function) if function.name.ends_with("generated"))
     ));

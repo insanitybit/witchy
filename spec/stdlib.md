@@ -2259,7 +2259,10 @@ Hole-free `quote expr:` and literal `meta.expr_raw("...")` values retain a compi
 
 #### `sealed type PatternSyntax`
 
+Hole-free `quote pattern:` values retain compiler-owned pattern AST. Existing builders project canonical source when composing compatibility values.
+
 - `PatternSyntax(String)`
+- `CompilerPatternSyntax(String, String)`
 
 #### `sealed type SyntaxHole`
 
