@@ -89,20 +89,12 @@ gate_wt="${MERGE_QUEUE_GATE_WT:-$root/.claude/worktrees/merge-gate}"
 gate_cmd="${MERGE_QUEUE_GATE_CMD:-./scripts/check.sh}"
 gate_timeout="${MERGE_QUEUE_GATE_TIMEOUT:-2700}"
 stall_timeout="${MERGE_QUEUE_STALL_TIMEOUT:-600}"
-nextest_threads="${MERGE_QUEUE_NEXTEST_THREADS:-4}"
 
 mkdir -p "$queue_dir" "$logs"
 
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 note() { printf 'merge-queue: %s\n' "$*" >&2; }
 strip_ansi() { sed "s/$(printf '\033')\[[0-9;]*m//g"; }
-
-case "$nextest_threads" in
-    '' | *[!0-9]* | 0)
-        note "MERGE_QUEUE_NEXTEST_THREADS must be a positive integer"
-        exit 2
-        ;;
-esac
 
 # The last `==> [N] stage (t+Ns)` marker in a gate log = the stage running now.
 current_stage() { { strip_ansi <"$1" 2>/dev/null || true; } | { grep -E '^==> \[' || true; } | tail -1 | sed 's/^==> //'; }
@@ -205,13 +197,14 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope]
     # scratch/gate-perf-2026-07-15.md). Do not flip this while sccache is the
     # global wrapper.
     set -m
-    # Bound nextest's process fan-out in the serialized gate. On the macOS gate
-    # host, the default CPU-count width can launch roughly twenty 100 MB test
-    # binaries during discovery; two measured runs then parked every child in
-    # dyld long enough to trip the idle watchdog. Four keeps useful test
-    # parallelism without turning loader pressure into a false timeout. A local
-    # operator can retune it without changing standalone check.sh behavior.
-    ( cd "$gate_wt" && exec env CARGO_INCREMENTAL=0 NEXTEST_STATUS_LEVEL=pass "NEXTEST_TEST_THREADS=$nextest_threads" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" bash -c "$gate_cmd" ) >"$log" 2>&1 &
+    # Test execution runs at nextest's normal width. The macOS dyld stall that
+    # once motivated NEXTEST_TEST_THREADS=4 here was a DISCOVERY problem —
+    # CPU-count concurrent cold first-execs of ~100 MB --list binaries — and is
+    # solved at the source by scripts/nextest-list-wrapper.sh
+    # (.config/nextest.toml); by run time every binary is loader-warm. Bounding
+    # execution as well doubled gate wall-clock (measured 2026-07-16: ~20.6 min
+    # at width 4 vs the historical 8-10 min).
+    ( cd "$gate_wt" && exec env CARGO_INCREMENTAL=0 NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" bash -c "$gate_cmd" ) >"$log" 2>&1 &
     local gpid=$!
     set +m
     local why=""
