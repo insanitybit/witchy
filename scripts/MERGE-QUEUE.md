@@ -112,15 +112,19 @@ merge-queue.sh sweep                             remove worktrees whose branch t
 ```
 
 Environment knobs: `MERGE_QUEUE_GATE_CMD` (default `./scripts/check.sh`),
-`MERGE_QUEUE_GATE_TIMEOUT` (2700s), `MERGE_QUEUE_STALL_TIMEOUT` (300s of no log
+`MERGE_QUEUE_GATE_TIMEOUT` (2700s), `MERGE_QUEUE_STALL_TIMEOUT` (600s of no log
 output **while the gate's process group is idle** — a group still burning CPU is
 compiling/testing, not hung, so silence alone never kills it; see the stall
-note below), `MERGE_QUEUE_BUSY_SILENCE_MAX` (6× stall = 1800s: the ceiling on
+note below), `MERGE_QUEUE_BUSY_SILENCE_MAX` (3× stall = 1800s: the ceiling on
 silence even for a *busy* group, so a CPU-burning runaway is reclaimed here
-rather than at GATE_TIMEOUT), `MERGE_QUEUE_BATCH_MAX` (5),
+rather than at GATE_TIMEOUT), `MERGE_QUEUE_NEXTEST_THREADS` (4, exported to
+nextest only inside serialized gates), `MERGE_QUEUE_BATCH_MAX` (5),
 `MERGE_QUEUE_STATE_DIR` +
 `MERGE_QUEUE_GATE_WT` (isolated state for TESTING the coordinator itself),
 `MERGE_QUEUE_ALLOW_MERGE=1` (test mode still merges — see Testing below).
+`check.sh` also applies the four-thread default whenever `WITCHY_GATE_SCOPE` is
+present and an older coordinator has not exported `NEXTEST_TEST_THREADS`; this
+keeps the candidate that introduces the queue knob capable of gating itself.
 
 **Diff-scoped fuzzing.** The differential fuzzer is the gate's single biggest
 test (~57s, a fixed-seed parity regression suite). `process_one` classifies the
@@ -161,7 +165,10 @@ shards ignore the scope.
    rebase excludes. Members carrying a `.nobatch` marker (from a previous
    red batch) are skipped, and a head with `.nobatch` gates strictly alone.
 5. Run the gate: own process group (`set -m`), stdout to the log,
-   `NEXTEST_STATUS_LEVEL=pass` for streaming. A monitor loop kills the group on
+   `NEXTEST_STATUS_LEVEL=pass` for streaming, and
+   `NEXTEST_TEST_THREADS=${MERGE_QUEUE_NEXTEST_THREADS:-4}` to bound discovery
+   and execution process pressure on the macOS gate host. Standalone focused
+   checks retain nextest's normal concurrency. A monitor loop kills the group on
    overall timeout, or on log-stall **only when the group is also idle** (CPU
    near zero) — a silent-but-CPU-busy gate is compiling/enumerating, not hung —
    and journals `timeout`. `check.sh` emits at most three two-minute stage

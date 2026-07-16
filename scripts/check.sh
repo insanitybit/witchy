@@ -31,6 +31,23 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# The merge coordinator marks serialized gates with WITCHY_GATE_SCOPE. Bound
+# nextest there even when an older coordinator is gating a candidate that first
+# introduces the corresponding queue-side environment knob. Standalone and
+# focused runs retain nextest's normal CPU-count width unless their caller sets
+# NEXTEST_TEST_THREADS explicitly.
+if [ -n "${WITCHY_GATE_SCOPE+x}" ] && [ -z "${NEXTEST_TEST_THREADS+x}" ]; then
+    export NEXTEST_TEST_THREADS="${MERGE_QUEUE_NEXTEST_THREADS:-4}"
+fi
+if [ -n "${NEXTEST_TEST_THREADS+x}" ]; then
+    case "$NEXTEST_TEST_THREADS" in
+        '' | *[!0-9]* | 0)
+            echo "check.sh: NEXTEST_TEST_THREADS must be a positive integer" >&2
+            exit 2
+            ;;
+    esac
+fi
+
 full=0
 fast=0
 shard=""
