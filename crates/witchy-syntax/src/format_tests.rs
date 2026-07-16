@@ -169,6 +169,27 @@
     }
 
     #[test]
+    fn compiler_owned_body_quotes_round_trip_through_formatting() {
+        let src = "comptime fn statement() -> meta.StmtSyntax:\n    quote stmt:\n        let x = 40\n\ncomptime fn body() -> meta.BlockSyntax:\n    quote block:\n        let x = 40\n        x + 2\n";
+        let out = reformat(src).expect("compiler-owned body quotes round-trip");
+        assert!(out.contains("meta.stmt_raw(\"let x = 40\")"), "{out}");
+        assert!(out.contains("meta.block_raw(\"let x = 40\\nx + 2\")"), "{out}");
+        let reparsed = crate::parser::parse_module(&out).expect("formatted bodies parse");
+        assert_eq!(reparsed.compiler_stmt_syntax.len(), 1);
+        assert_eq!(reparsed.compiler_block_syntax.len(), 1);
+        let mut intrinsic_names = reparsed.items.iter().filter_map(|item| match item {
+            crate::ast::Item::Function(function) => match function.body.stmts.as_slice() {
+                [crate::ast::Stmt::Expr(crate::ast::Expr::Call { name, .. })] => Some(name.as_str()),
+                _ => None,
+            },
+            _ => None,
+        });
+        assert_eq!(intrinsic_names.next(), Some(crate::intrinsics::COMPILER_QUOTE_STMT));
+        assert_eq!(intrinsic_names.next(), Some(crate::intrinsics::COMPILER_QUOTE_BLOCK));
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
+    }
+
+    #[test]
     fn compiler_owned_anonymous_expression_round_trips_through_formatting() {
         let src = "comptime fn make() -> meta.ExprSyntax:\n    quote expr:\n        .{value: 40}.value\n";
         let out = reformat(src).expect("anonymous compiler-owned expression quote round-trips");
@@ -311,6 +332,8 @@
             compiler_expr_syntax: vec![],
             compiler_type_syntax: vec![],
             compiler_pattern_syntax: vec![],
+            compiler_stmt_syntax: vec![],
+            compiler_block_syntax: vec![],
         };
         let printed = module(&m, &[]);
         // The printed form parses, but to a DIFFERENT program (`let x = 0`);

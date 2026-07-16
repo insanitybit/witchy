@@ -2272,11 +2272,17 @@ Hole-free `quote pattern:` values retain compiler-owned pattern AST. Existing bu
 
 #### `sealed type StmtSyntax`
 
+Hole-free `quote stmt:` values retain compiler-owned statement AST.
+
 - `StmtSyntax(String)`
+- `CompilerStmtSyntax(String, String)`
 
 #### `sealed type BlockSyntax`
 
+Hole-free `quote block:` values retain compiler-owned block AST.
+
 - `BlockSyntax(String)`
+- `CompilerBlockSyntax(String, String)`
 
 #### `sealed type MatchArmSyntax`
 

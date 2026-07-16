@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed syntax wrappers/builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned item syntax with structural typed holes, compiler-owned hole-free expression/type/pattern payloads, and direct AST transport for typed tags landed; definition/call-site origin hygiene remains proposed"
+tracking: "source-backed compatibility builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned hole-free item/expression/type/pattern/statement/block payloads with structural item holes, and direct AST transport for typed tags landed; definition/call-site origin hygiene remains proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -337,12 +337,17 @@ The first source-compatible slice is implemented:
   that node without reparsing. Existing `meta.pattern_*` builders continue to
   project canonical source, while formatting uses a literal zero-hole
   `meta.pattern_join` plan that the parser promotes back to owned syntax.
+- The twenty-ninth slice gives hole-free `quote stmt:` and `quote block:`
+  module-owned `Stmt` and `Block` AST plus deterministic private handles.
+  Existing body builders project canonical source, preserving
+  `meta.function_block` compatibility. Formatting emits literal
+  `meta.stmt_raw` / `meta.block_raw` projections that the parser promotes back
+  to the owned nodes when they contain one valid statement or block.
 
 This is intentionally not the full RFC. Whole items and their typed hole
-placement plus direct hole-free expression payloads are now compiler-owned,
-while composed/hole-bearing expression, type, and pattern payloads plus
-statement and block syntax remain source-backed; definition-site/call-site
-identifier origins remain future work. The value is the
+placement plus all hole-free syntax payloads are now compiler-owned, while
+composed and hole-bearing syntax payloads remain source-backed;
+definition-site/call-site identifier origins remain future work. The value is the
 migration seam: future work can move the
 payload behind these wrappers from parsed source to structured compiler nodes
 without changing the comptime append/merge path again.

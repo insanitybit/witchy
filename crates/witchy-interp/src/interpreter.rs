@@ -936,6 +936,8 @@ pub struct Interpreter {
     compiler_expr_syntax: HashMap<String, Expr>,
     compiler_type_syntax: HashMap<String, Type>,
     compiler_pattern_syntax: HashMap<String, Pattern>,
+    compiler_stmt_syntax: HashMap<String, Stmt>,
+    compiler_block_syntax: HashMap<String, Block>,
     comptime_item_output: Vec<PositionedComptimeItem>,
     comptime_expr_output: Vec<ComptimeExprEmission>,
     /// Evaluation-step counter and ceiling. Unlike the runtime's epoch
@@ -1281,6 +1283,16 @@ impl Interpreter {
             .into_iter()
             .map(|syntax| (syntax.handle, syntax.pattern))
             .collect();
+        let compiler_stmt_syntax = module
+            .compiler_stmt_syntax
+            .into_iter()
+            .map(|syntax| (syntax.handle, syntax.stmt))
+            .collect();
+        let compiler_block_syntax = module
+            .compiler_block_syntax
+            .into_iter()
+            .map(|syntax| (syntax.handle, syntax.block))
+            .collect();
         let mut functions = HashMap::new();
         let mut record_fields = HashMap::new();
         let mut ctor_type_name: HashMap<String, String> = HashMap::new();
@@ -1343,6 +1355,8 @@ impl Interpreter {
             compiler_expr_syntax,
             compiler_type_syntax,
             compiler_pattern_syntax,
+            compiler_stmt_syntax,
+            compiler_block_syntax,
             comptime_item_output: Vec::new(),
             comptime_expr_output: Vec::new(),
             steps: 0,
@@ -2358,6 +2372,48 @@ impl Interpreter {
                         err("compiler-owned pattern quotation referenced an invalid syntax handle")
                     }
                     _ => err("compiler-owned pattern quotation expects a pattern handle"),
+                }
+            }
+            name if name == intrinsics::COMPILER_QUOTE_STMT => {
+                if self.fresh_ident_scope.is_none() {
+                    return err(
+                        "compiler-owned statement quotation is available only during compile-time expansion",
+                    );
+                }
+                match args {
+                    [Value::Str(handle), Value::Str(source)]
+                        if self.compiler_stmt_syntax.contains_key(handle) =>
+                    {
+                        Ok(Some(Value::Ctor {
+                            name: "meta.CompilerStmtSyntax".into(),
+                            fields: vec![Value::Str(handle.clone()), Value::Str(source.clone())],
+                        }))
+                    }
+                    [Value::Str(_), Value::Str(_)] => {
+                        err("compiler-owned statement quotation referenced an invalid syntax handle")
+                    }
+                    _ => err("compiler-owned statement quotation expects a statement handle"),
+                }
+            }
+            name if name == intrinsics::COMPILER_QUOTE_BLOCK => {
+                if self.fresh_ident_scope.is_none() {
+                    return err(
+                        "compiler-owned block quotation is available only during compile-time expansion",
+                    );
+                }
+                match args {
+                    [Value::Str(handle), Value::Str(source)]
+                        if self.compiler_block_syntax.contains_key(handle) =>
+                    {
+                        Ok(Some(Value::Ctor {
+                            name: "meta.CompilerBlockSyntax".into(),
+                            fields: vec![Value::Str(handle.clone()), Value::Str(source.clone())],
+                        }))
+                    }
+                    [Value::Str(_), Value::Str(_)] => {
+                        err("compiler-owned block quotation referenced an invalid syntax handle")
+                    }
+                    _ => err("compiler-owned block quotation expects a block handle"),
                 }
             }
             name if name == intrinsics::COMPILER_QUOTE_ITEM => {

@@ -42,11 +42,15 @@ sealed type SyntaxHole:
     TypeHole(TypeSyntax)
     PatternHole(PatternSyntax)
 
+// Hole-free `quote stmt:` values retain compiler-owned statement AST.
 sealed type StmtSyntax:
     StmtSyntax(String)
+    CompilerStmtSyntax(String, String)
 
+// Hole-free `quote block:` values retain compiler-owned block AST.
 sealed type BlockSyntax:
     BlockSyntax(String)
+    CompilerBlockSyntax(String, String)
 
 sealed type MatchArmSyntax:
     MatchArmSyntax(String)
@@ -509,10 +513,12 @@ fn block_lines(stmts: List(StmtSyntax), tail: Option(ExprSyntax)) -> List(String
 fn block_source(body: BlockSyntax) -> String:
     match body:
         BlockSyntax(source) -> source
+        CompilerBlockSyntax(_, source) -> source
 
 fn stmt_source(stmt: StmtSyntax) -> String:
     match stmt:
         StmtSyntax(source) -> source
+        CompilerStmtSyntax(_, source) -> source
 
 fn stmt_sources(stmts: List(StmtSyntax)) -> List(String):
     var out = []

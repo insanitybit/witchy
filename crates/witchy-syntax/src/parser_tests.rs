@@ -708,7 +708,7 @@ fn f(payload: meta.PatternSyntax):
     }
 
     #[test]
-    fn quote_stmt_lowers_to_meta_stmt_raw_with_canonical_source() {
+    fn quote_stmt_lowers_to_compiler_owned_statement() {
         let m = parse_module(r#"
 fn f():
     quote stmt:
@@ -717,11 +717,20 @@ fn f():
         let Item::Function(f) = &m.items[0] else {
             panic!("expected function");
         };
-        let expected = Expr::Call {
-            name: "meta.stmt_raw".into(),
-            args: vec![Expr::Str("let x: Int = 5".into())],
+        let [Stmt::Expr(Expr::Call { name, args })] = f.body.stmts.as_slice() else {
+            panic!("expected compiler-owned statement call");
         };
-        assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);
+        assert_eq!(name, crate::intrinsics::COMPILER_QUOTE_STMT);
+        let [Expr::Str(handle), Expr::Str(source)] = args.as_slice() else {
+            panic!("expected statement handle and compatibility source");
+        };
+        assert_eq!(source, "let x: Int = 5");
+        let [syntax] = m.compiler_stmt_syntax.as_slice() else {
+            panic!("expected one compiler-owned statement payload");
+        };
+        assert_eq!(handle, &syntax.handle);
+        assert!(matches!(syntax.stmt, Stmt::Let { .. }));
+        assert_eq!(syntax.definition_line, 3);
     }
 
     #[test]
@@ -781,7 +790,7 @@ fn f(ty: meta.TypeSyntax, value: meta.ExprSyntax):
     }
 
     #[test]
-    fn quote_block_lowers_to_meta_block_raw_with_canonical_source() {
+    fn quote_block_lowers_to_compiler_owned_block() {
         let m = parse_module(r#"
 fn f():
     quote block:
@@ -791,11 +800,20 @@ fn f():
         let Item::Function(f) = &m.items[0] else {
             panic!("expected function");
         };
-        let expected = Expr::Call {
-            name: "meta.block_raw".into(),
-            args: vec![Expr::Str("let x = 5\nx + 1".into())],
+        let [Stmt::Expr(Expr::Call { name, args })] = f.body.stmts.as_slice() else {
+            panic!("expected compiler-owned block call");
         };
-        assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);
+        assert_eq!(name, crate::intrinsics::COMPILER_QUOTE_BLOCK);
+        let [Expr::Str(handle), Expr::Str(source)] = args.as_slice() else {
+            panic!("expected block handle and compatibility source");
+        };
+        assert_eq!(source, "let x = 5\nx + 1");
+        let [syntax] = m.compiler_block_syntax.as_slice() else {
+            panic!("expected one compiler-owned block payload");
+        };
+        assert_eq!(handle, &syntax.handle);
+        assert_eq!(syntax.block.stmts.len(), 2);
+        assert_eq!(syntax.definition_line, 3);
     }
 
     #[test]

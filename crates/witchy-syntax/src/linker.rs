@@ -1214,6 +1214,14 @@ pub fn link_with_user_modules_with_mode(
         .iter()
         .flat_map(|(_, module)| module.compiler_pattern_syntax.iter().cloned())
         .collect();
+    let compiler_stmt_syntax = modules
+        .iter()
+        .flat_map(|(_, module)| module.compiler_stmt_syntax.iter().cloned())
+        .collect();
+    let compiler_block_syntax = modules
+        .iter()
+        .flat_map(|(_, module)| module.compiler_block_syntax.iter().cloned())
+        .collect();
     let mut module = Module {
         // The entry module's performance modes carry onto the linked module;
         // enforcement applies to the entry file's own (unqualified) functions.
@@ -1227,6 +1235,8 @@ pub fn link_with_user_modules_with_mode(
         compiler_expr_syntax,
         compiler_type_syntax,
         compiler_pattern_syntax,
+        compiler_stmt_syntax,
+        compiler_block_syntax,
     };
     resolve_methods(&mut module);
     // (RFC-0042) Fix up residual bare constructor PATTERNS — a plain `import iter`

@@ -141,6 +141,10 @@ struct Parser {
     /// Hole-free pattern quotations retain their parsed AST behind a
     /// compiler-only handle.
     compiler_pattern_syntax: Vec<CompilerPatternSyntax>,
+    /// Hole-free statement and block quotations retain parsed body AST behind
+    /// compiler-only handles.
+    compiler_stmt_syntax: Vec<CompilerStmtSyntax>,
+    compiler_block_syntax: Vec<CompilerBlockSyntax>,
     /// Positive while parsing the literal body of `quote expr:`. `${...}` holes
     /// are syntax splices there; everywhere else they are rejected at parse time.
     quote_expr_hole_depth: u32,
@@ -205,6 +209,8 @@ impl Parser {
             compiler_expr_syntax: Vec::new(),
             compiler_type_syntax: Vec::new(),
             compiler_pattern_syntax: Vec::new(),
+            compiler_stmt_syntax: Vec::new(),
+            compiler_block_syntax: Vec::new(),
             quote_expr_hole_depth: 0,
             quote_type_hole_depth: 0,
             quote_type_holes: Vec::new(),
@@ -417,6 +423,8 @@ impl Parser {
             compiler_expr_syntax: std::mem::take(&mut self.compiler_expr_syntax),
             compiler_type_syntax: std::mem::take(&mut self.compiler_type_syntax),
             compiler_pattern_syntax: std::mem::take(&mut self.compiler_pattern_syntax),
+            compiler_stmt_syntax: std::mem::take(&mut self.compiler_stmt_syntax),
+            compiler_block_syntax: std::mem::take(&mut self.compiler_block_syntax),
         })
     }
 
@@ -1667,6 +1675,18 @@ impl Parser {
                                         self.compiler_owned_pattern_literal(source, member_line)
                                 {
                                     owned
+                                } else if name == "meta.stmt_raw"
+                                    && let [Expr::Str(source)] = args.as_slice()
+                                    && let Some(owned) =
+                                        self.compiler_owned_stmt_literal(source, member_line)
+                                {
+                                    owned
+                                } else if name == "meta.block_raw"
+                                    && let [Expr::Str(source)] = args.as_slice()
+                                    && let Some(owned) =
+                                        self.compiler_owned_block_literal(source, member_line)
+                                {
+                                    owned
                                 } else {
                                     Expr::Call { name, args }
                                 }
@@ -1968,7 +1988,12 @@ impl Parser {
             let quoted = quoted?;
             let type_holes = self.quote_type_holes.split_off(type_base);
             let pattern_holes = self.quote_pattern_holes.split_off(pattern_base);
-            return self.block_syntax_expr_with_holes(quoted, type_holes, pattern_holes);
+            return self.block_syntax_expr_with_holes(
+                quoted,
+                type_holes,
+                pattern_holes,
+                quote_line,
+            );
         }
         let quoted = match category.as_str() {
             "expr" => {
@@ -2027,7 +2052,12 @@ impl Parser {
                 let quoted = quoted?;
                 let type_holes = self.quote_type_holes.split_off(type_base);
                 let pattern_holes = self.quote_pattern_holes.split_off(pattern_base);
-                self.stmt_syntax_expr_with_holes(quoted, type_holes, pattern_holes)?
+                self.stmt_syntax_expr_with_holes(
+                    quoted,
+                    type_holes,
+                    pattern_holes,
+                    quote_line,
+                )?
             }
             "item" => {
                 let type_base = self.quote_type_holes.len();
@@ -2198,6 +2228,8 @@ impl Parser {
         self.compiler_expr_syntax.append(&mut parsed.compiler_expr_syntax);
         self.compiler_type_syntax.append(&mut parsed.compiler_type_syntax);
         self.compiler_pattern_syntax.append(&mut parsed.compiler_pattern_syntax);
+        self.compiler_stmt_syntax.append(&mut parsed.compiler_stmt_syntax);
+        self.compiler_block_syntax.append(&mut parsed.compiler_block_syntax);
         Some(self.compiler_owned_expr(expr, source.to_string(), definition_line))
     }
 
@@ -2262,6 +2294,92 @@ impl Parser {
             name: crate::intrinsics::COMPILER_QUOTE_PATTERN.into(),
             args: vec![Expr::Str(handle), Expr::Str(source.to_string())],
         })
+    }
+
+    fn compiler_owned_stmt_literal(
+        &mut self,
+        source: &str,
+        definition_line: u32,
+    ) -> Option<Expr> {
+        let mut wrapper = "fn stmt_syntax_payload():\n".to_string();
+        Self::push_indented_source(&mut wrapper, source);
+        wrapper.push_str("    0\n");
+        let (parsed, payload_parser) = Self::parse_payload_module(&wrapper)?;
+        let [Item::Function(function)] = parsed.items.as_slice() else {
+            return None;
+        };
+        let [stmt, Stmt::Expr(Expr::Int(0))] = function.body.stmts.as_slice() else {
+            return None;
+        };
+        let stmt = stmt.clone();
+        self.merge_payload_parser(parsed, payload_parser);
+        let source = crate::format::stmt_str(&stmt);
+        let handle = self.compiler_syntax_handle("stmt", &source);
+        self.compiler_stmt_syntax.push(CompilerStmtSyntax {
+            handle: handle.clone(),
+            stmt,
+            definition_line,
+        });
+        Some(Expr::Call {
+            name: crate::intrinsics::COMPILER_QUOTE_STMT.into(),
+            args: vec![Expr::Str(handle), Expr::Str(source)],
+        })
+    }
+
+    fn compiler_owned_block_literal(
+        &mut self,
+        source: &str,
+        definition_line: u32,
+    ) -> Option<Expr> {
+        let mut wrapper = "fn block_syntax_payload():\n".to_string();
+        Self::push_indented_source(&mut wrapper, source);
+        let (parsed, payload_parser) = Self::parse_payload_module(&wrapper)?;
+        let [Item::Function(function)] = parsed.items.as_slice() else {
+            return None;
+        };
+        let block = function.body.clone();
+        self.merge_payload_parser(parsed, payload_parser);
+        let source = crate::format::block_str(&block);
+        let handle = self.compiler_syntax_handle("block", &source);
+        self.compiler_block_syntax.push(CompilerBlockSyntax {
+            handle: handle.clone(),
+            block,
+            definition_line,
+        });
+        Some(Expr::Call {
+            name: crate::intrinsics::COMPILER_QUOTE_BLOCK.into(),
+            args: vec![Expr::Str(handle), Expr::Str(source)],
+        })
+    }
+
+    fn push_indented_source(wrapper: &mut String, source: &str) {
+        for line in source.lines() {
+            wrapper.push_str("    ");
+            wrapper.push_str(line);
+            wrapper.push('\n');
+        }
+    }
+
+    fn parse_payload_module(source: &str) -> Option<(Module, Parser)> {
+        let tokens = tokenize(source).ok()?;
+        let tokens = crate::lexer::apply_layout(tokens);
+        let mut parser = Parser::new(tokens);
+        let module = parser.module().ok()?;
+        Some((module, parser))
+    }
+
+    fn merge_payload_parser(&mut self, mut parsed: Module, payload_parser: Parser) {
+        for fields in payload_parser.anon_records {
+            if !self.anon_records.contains(&fields) {
+                self.anon_records.push(fields);
+            }
+        }
+        self.compiler_item_syntax.append(&mut parsed.compiler_item_syntax);
+        self.compiler_expr_syntax.append(&mut parsed.compiler_expr_syntax);
+        self.compiler_type_syntax.append(&mut parsed.compiler_type_syntax);
+        self.compiler_pattern_syntax.append(&mut parsed.compiler_pattern_syntax);
+        self.compiler_stmt_syntax.append(&mut parsed.compiler_stmt_syntax);
+        self.compiler_block_syntax.append(&mut parsed.compiler_block_syntax);
     }
 
     fn quote_hole_parts(
@@ -2338,24 +2456,27 @@ impl Parser {
         Ok(self.meta_call("pattern_join", vec![Expr::List(parts), Expr::List(holes)]))
     }
 
-    fn stmt_syntax_expr(&self, quoted: &Stmt) -> Expr {
-        self.meta_call("stmt_raw", vec![Expr::Str(crate::format::stmt_str(quoted))])
-    }
-
-    fn block_syntax_expr(&self, quoted: &Block) -> Expr {
-        self.meta_call("block_raw", vec![Expr::Str(crate::format::block_str(quoted))])
-    }
-
     fn stmt_syntax_expr_with_holes(
-        &self,
+        &mut self,
         mut quoted: Stmt,
         type_holes: Vec<Expr>,
         pattern_holes: Vec<Expr>,
+        definition_line: u32,
     ) -> Result<Expr, ParseError> {
         let mut expr_holes = Vec::new();
         Self::collect_quote_expr_holes_stmt(&mut quoted, &mut expr_holes);
         if expr_holes.is_empty() && type_holes.is_empty() && pattern_holes.is_empty() {
-            return Ok(self.stmt_syntax_expr(&quoted));
+            let source = crate::format::stmt_str(&quoted);
+            let handle = self.compiler_syntax_handle("stmt", &source);
+            self.compiler_stmt_syntax.push(CompilerStmtSyntax {
+                handle: handle.clone(),
+                stmt: quoted,
+                definition_line,
+            });
+            return Ok(Expr::Call {
+                name: crate::intrinsics::COMPILER_QUOTE_STMT.into(),
+                args: vec![Expr::Str(handle), Expr::Str(source)],
+            });
         }
         let source = crate::format::stmt_str(&quoted);
         let (parts, holes) =
@@ -2364,15 +2485,26 @@ impl Parser {
     }
 
     fn block_syntax_expr_with_holes(
-        &self,
+        &mut self,
         mut quoted: Block,
         type_holes: Vec<Expr>,
         pattern_holes: Vec<Expr>,
+        definition_line: u32,
     ) -> Result<Expr, ParseError> {
         let mut expr_holes = Vec::new();
         Self::collect_quote_expr_holes_block(&mut quoted, &mut expr_holes);
         if expr_holes.is_empty() && type_holes.is_empty() && pattern_holes.is_empty() {
-            return Ok(self.block_syntax_expr(&quoted));
+            let source = crate::format::block_str(&quoted);
+            let handle = self.compiler_syntax_handle("block", &source);
+            self.compiler_block_syntax.push(CompilerBlockSyntax {
+                handle: handle.clone(),
+                block: quoted,
+                definition_line,
+            });
+            return Ok(Expr::Call {
+                name: crate::intrinsics::COMPILER_QUOTE_BLOCK.into(),
+                args: vec![Expr::Str(handle), Expr::Str(source)],
+            });
         }
         let source = crate::format::block_str(&quoted);
         let (parts, holes) =
@@ -2528,6 +2660,8 @@ impl Parser {
             compiler_expr_syntax: Vec::new(),
             compiler_type_syntax: Vec::new(),
             compiler_pattern_syntax: Vec::new(),
+            compiler_stmt_syntax: Vec::new(),
+            compiler_block_syntax: Vec::new(),
         };
         crate::format::module(&module, &[])
     }

@@ -425,6 +425,8 @@ mod tests {
             compiler_expr_syntax: Vec::new(),
             compiler_type_syntax: Vec::new(),
             compiler_pattern_syntax: Vec::new(),
+            compiler_stmt_syntax: Vec::new(),
+            compiler_block_syntax: Vec::new(),
         }, &[]);
         assert!(source.contains("x: Int"), "{source}");
         assert!(source.contains("1 -> 7"), "{source}");

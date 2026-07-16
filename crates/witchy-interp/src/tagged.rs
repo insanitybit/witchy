@@ -39,8 +39,9 @@
 //! after this pass; typeck, the interpreter, and both codegen backends panic on it.
 
 use witchy_syntax::ast::{
-    Block, CompilerExprSyntax, CompilerItemSyntax, CompilerPatternSyntax, CompilerTypeSyntax, Expr,
-    Function, Item, MatchArm, Module, Param, Stmt, Type,
+    Block, CompilerBlockSyntax, CompilerExprSyntax, CompilerItemSyntax, CompilerPatternSyntax,
+    CompilerStmtSyntax, CompilerTypeSyntax, Expr, Function, Item, MatchArm, Module, Param, Stmt,
+    Type,
 };
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -92,6 +93,8 @@ pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) ->
     let mut compiler_expr_syntax = module.compiler_expr_syntax.clone();
     let mut compiler_type_syntax = module.compiler_type_syntax.clone();
     let mut compiler_pattern_syntax = module.compiler_pattern_syntax.clone();
+    let mut compiler_stmt_syntax = module.compiler_stmt_syntax.clone();
+    let mut compiler_block_syntax = module.compiler_block_syntax.clone();
     let mut std_imports: Vec<String> = Vec::new();
     let mut std_from_imports: Vec<(String, Vec<String>)> = Vec::new();
     merge_std_from_imports(&mut std_from_imports, &module.from_imports);
@@ -115,6 +118,8 @@ pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) ->
             compiler_expr_syntax.extend(m.compiler_expr_syntax.iter().cloned());
             compiler_type_syntax.extend(m.compiler_type_syntax.iter().cloned());
             compiler_pattern_syntax.extend(m.compiler_pattern_syntax.iter().cloned());
+            compiler_stmt_syntax.extend(m.compiler_stmt_syntax.iter().cloned());
+            compiler_block_syntax.extend(m.compiler_block_syntax.iter().cloned());
             frontier.extend(m.imports.iter().cloned());
         }
     }
@@ -141,6 +146,8 @@ pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) ->
         compiler_expr_syntax,
         compiler_type_syntax,
         compiler_pattern_syntax,
+        compiler_stmt_syntax,
+        compiler_block_syntax,
         fresh_invocation: Cell::new(0),
     };
     // Expand tagged literals in EVERY expression-bearing item position, not just
@@ -186,6 +193,8 @@ struct Context {
     compiler_expr_syntax: Vec<CompilerExprSyntax>,
     compiler_type_syntax: Vec<CompilerTypeSyntax>,
     compiler_pattern_syntax: Vec<CompilerPatternSyntax>,
+    compiler_stmt_syntax: Vec<CompilerStmtSyntax>,
+    compiler_block_syntax: Vec<CompilerBlockSyntax>,
     /// Stable traversal ordinal used to give each tagged-literal evaluator an
     /// independent RFC-0080 fresh-name namespace.
     fresh_invocation: Cell<u64>,
@@ -565,6 +574,8 @@ fn expand_one(
         compiler_expr_syntax: ctx.compiler_expr_syntax.clone(),
         compiler_type_syntax: ctx.compiler_type_syntax.clone(),
         compiler_pattern_syntax: ctx.compiler_pattern_syntax.clone(),
+        compiler_stmt_syntax: ctx.compiler_stmt_syntax.clone(),
+        compiler_block_syntax: ctx.compiler_block_syntax.clone(),
     };
     let linked = crate::pipeline::link(vec![("comptime".into(), prog)], "comptime")
         .map_err(|e| format!("{}: {e}", where_()))?;

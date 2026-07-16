@@ -80,6 +80,9 @@ the parsed type node, including anonymous structural types and borrowed views,
 while `meta.type_*` builders may still compose through canonical source.
 Hole-free `quote pattern:` values also retain their parsed node through direct
 item holes; `meta.pattern_*` remains the compatibility construction API.
+Hole-free `quote stmt:` and `quote block:` values retain their body AST too.
+The existing body builders consume their canonical projection, so generators
+can migrate without changing the `meta.function_block` surface.
 When a typed tagged-literal generator returns one of these compiler-owned values,
 the expansion engine transfers the expression AST directly. A composed
 source-backed `ExprSyntax` and a legacy `String` tag retain the explicit parse

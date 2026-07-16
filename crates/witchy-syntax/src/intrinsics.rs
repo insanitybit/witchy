@@ -14,6 +14,8 @@ pub enum IntrinsicId {
     CompilerQuoteExpr,
     CompilerQuoteType,
     CompilerQuotePattern,
+    CompilerQuoteStmt,
+    CompilerQuoteBlock,
     CompilerEmitItem,
     CompilerEmitExpr,
     TryContext,
@@ -112,6 +114,8 @@ pub enum IntrinsicSignature {
     CompilerQuoteExpr,
     CompilerQuoteType,
     CompilerQuotePattern,
+    CompilerQuoteStmt,
+    CompilerQuoteBlock,
     CompilerEmitItem,
     CompilerEmitExpr,
     TryContext,
@@ -375,6 +379,8 @@ pub const COMPILER_QUOTE_ITEM_HOLES: &str = "@quote_item_holes";
 pub const COMPILER_QUOTE_EXPR: &str = "@quote_expr";
 pub const COMPILER_QUOTE_TYPE: &str = "@quote_type";
 pub const COMPILER_QUOTE_PATTERN: &str = "@quote_pattern";
+pub const COMPILER_QUOTE_STMT: &str = "@quote_stmt";
+pub const COMPILER_QUOTE_BLOCK: &str = "@quote_block";
 pub const COMPILER_EMIT_ITEM: &str = "@emit_item";
 pub const COMPILER_EMIT_EXPR: &str = "@emit_expr";
 pub const RETIRED_SOURCE_RENDER: &str = "__render";
@@ -582,6 +588,36 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "compiler-owned pattern quotation",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::CompilerQuoteStmt,
+        name: COMPILER_QUOTE_STMT,
+        arity: 2,
+        signature: IntrinsicSignature::CompilerQuoteStmt,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "compiler-owned statement quotation",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::CompilerQuoteBlock,
+        name: COMPILER_QUOTE_BLOCK,
+        arity: 2,
+        signature: IntrinsicSignature::CompilerQuoteBlock,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "compiler-owned block quotation",
         private_callers: NO_PRIVATE_CALLERS,
     },
     IntrinsicSpec {
@@ -2247,6 +2283,8 @@ mod tests {
             COMPILER_QUOTE_EXPR,
             COMPILER_QUOTE_TYPE,
             COMPILER_QUOTE_PATTERN,
+            COMPILER_QUOTE_STMT,
+            COMPILER_QUOTE_BLOCK,
             COMPILER_EMIT_ITEM,
             COMPILER_EMIT_EXPR,
             TRY_CONTEXT,

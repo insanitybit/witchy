@@ -1021,6 +1021,10 @@ Hole-free `quote pattern:` values retain a compiler-owned pattern AST as well.
 Direct item holes consume it without reparsing. Existing `meta.pattern_*`
 builders project canonical source; formatting uses a literal no-hole
 `meta.pattern_join` plan that reparses to the owned representation.
+Hole-free `quote stmt:` and `quote block:` values retain compiler-owned body
+AST. Existing statement/block builders project canonical source for
+compatibility, and literal `meta.stmt_raw` / `meta.block_raw` calls are promoted
+back to owned syntax when they contain one parser-valid body.
 Top-level `comptime fn` declarations are helpers for this expansion phase. They
 may mention compile-time-only syntax types, may be called from `comptime:`,
 custom-derive, or tagged-literal expansion, and are stripped before the runtime
@@ -1038,10 +1042,9 @@ names remain future work.
 and `quote item:` are the first quotation forms. They parse the indented
 expression, type, pattern, statement, block, or single item immediately and
 produce `meta.ExprSyntax`, `meta.TypeSyntax`, `meta.PatternSyntax`,
-`meta.StmtSyntax`, `meta.BlockSyntax`, or `meta.ItemSyntax`. Item quotes plus
-hole-free expression, type, and pattern quotes use the compiler-owned channels
-described above; quotes with holes and the remaining categories stay
-source-backed in this migration stage. Inside `quote expr:`,
+`meta.StmtSyntax`, `meta.BlockSyntax`, or `meta.ItemSyntax`. Every hole-free
+quote category uses the compiler-owned channels described above; quotes with
+holes stay source-backed in this migration stage. Inside `quote expr:`,
 `${hole}` splices a `meta.ExprSyntax`; inside `quote type:` and
 `quote pattern:`, `${hole}` splices a `meta.TypeSyntax` or `meta.PatternSyntax`;
 inside `quote stmt:` and `quote block:`, `${hole}` splices a
