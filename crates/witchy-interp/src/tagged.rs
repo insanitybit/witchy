@@ -37,7 +37,9 @@
 //! `comptime`/`derive`. `Expr::TaggedLit` is therefore UNREACHABLE after this
 //! pass; typeck, the interpreter, and both codegen backends panic on it.
 
-use witchy_syntax::ast::{Block, Expr, Function, Item, MatchArm, Module, Param, Pattern, Stmt, Type};
+use witchy_syntax::ast::{
+    Block, CompilerItemSyntax, Expr, Function, Item, MatchArm, Module, Param, Pattern, Stmt, Type,
+};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
@@ -84,6 +86,7 @@ pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) ->
     let by_name: HashMap<&str, &Module> =
         siblings.iter().map(|(n, m)| (n.as_str(), m)).collect();
     let mut items = module.items.clone();
+    let mut compiler_item_syntax = module.compiler_item_syntax.clone();
     let mut std_imports: Vec<String> = Vec::new();
     let mut std_from_imports: Vec<(String, Vec<String>)> = Vec::new();
     merge_std_from_imports(&mut std_from_imports, &module.from_imports);
@@ -103,6 +106,7 @@ pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) ->
         if let Some(m) = by_name.get(imp.as_str()) {
             merge_std_from_imports(&mut std_from_imports, &m.from_imports);
             items.extend(m.items.iter().cloned());
+            compiler_item_syntax.extend(m.compiler_item_syntax.iter().cloned());
             frontier.extend(m.imports.iter().cloned());
         }
     }
@@ -125,6 +129,7 @@ pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) ->
         imports: std_imports,
         from_imports: std_from_imports,
         qualifiers,
+        compiler_item_syntax,
         fresh_invocation: Cell::new(0),
     };
     // Expand tagged literals in EVERY expression-bearing item position, not just
@@ -166,6 +171,7 @@ struct Context {
     /// its transitive imports). Seeded as `import` lines in the throwaway parse so
     /// `glamour.text(…)` parses as a qualified call, not a method call.
     qualifiers: Vec<String>,
+    compiler_item_syntax: Vec<CompilerItemSyntax>,
     /// Stable traversal ordinal used to give each tagged-literal evaluator an
     /// independent RFC-0080 fresh-name namespace.
     fresh_invocation: Cell<u64>,
@@ -553,6 +559,7 @@ fn expand_one(
         items,
         import_lines: Vec::new(),
         item_lines: Vec::new(),
+        compiler_item_syntax: ctx.compiler_item_syntax.clone(),
     };
     let linked = crate::pipeline::link(vec![("comptime".into(), prog)], "comptime")
         .map_err(|e| format!("{}: {e}", where_()))?;

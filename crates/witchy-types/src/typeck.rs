@@ -3807,6 +3807,14 @@ impl Checker {
                     Ty::List(Box::new(elem)),
                 ))
             }
+            S::CompilerQuoteItem => Some((
+                vec![Ty::String, Ty::String],
+                Ty::Named("meta.ItemSyntax".into(), Vec::new()),
+            )),
+            S::CompilerEmitItem => Some((
+                vec![Ty::Named("meta.ItemSyntax".into(), Vec::new())],
+                Ty::Nil,
+            )),
             S::GenericToMessage => {
                 let m = self.fresh();
                 Some((vec![m], Ty::Msg))

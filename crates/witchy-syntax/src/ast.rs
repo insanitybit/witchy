@@ -44,6 +44,11 @@ pub struct Module {
     /// (e.g. after linking, or when impl merging changed the item count).
     pub import_lines: Vec<u32>,
     pub item_lines: Vec<u32>,
+    /// Compiler-owned syntax payloads referenced by unspellable calls inside
+    /// compile-time code. These nodes are never part of the runtime module;
+    /// RFC-0080's expander consumes their opaque handles and appends the
+    /// original AST directly.
+    pub compiler_item_syntax: Vec<CompilerItemSyntax>,
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
@@ -74,6 +79,20 @@ pub enum Item {
     /// Phase 5). Expanded by `crate::comptime` during linking, so later
     /// stages never see this variant.
     Comptime(Block),
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompilerItemSyntax {
+    /// Deterministic opaque identity used by compiler-generated calls. It is a
+    /// versioned canonical identity of the parsed item, never source-spellable
+    /// as a call because the receiving intrinsic itself is unspellable.
+    pub handle: String,
+    pub item: Item,
+    /// Source line of the quote in its defining module. The first structural
+    /// slice retains it for expansion diagnostics; the emitted item is still
+    /// stamped to its invocation block for today's primary diagnostic.
+    pub definition_line: u32,
 }
 
 /// A trait declaration: named method signatures (no bodies). The receiver is the

@@ -413,6 +413,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
 
     // Keep everything that isn't a trait/impl, then append the lowered methods.
     let imports = module.imports;
+    let compiler_item_syntax = module.compiler_item_syntax;
     let mut items: Vec<Item> = module
         .items
         .into_iter()
@@ -498,6 +499,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             items,
             import_lines: Vec::new(),
             item_lines: Vec::new(),
+            compiler_item_syntax: compiler_item_syntax.clone(),
         },
         &from_conversion_fns,
     );
@@ -525,6 +527,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             items: typed.module().items.clone(),
             import_lines: Vec::new(),
             item_lines: Vec::new(),
+            compiler_item_syntax: typed.module().compiler_item_syntax.clone(),
         };
         crate::typeck::check_selected_lowered(&probe, &no_fallback, &from_conversion_fns)
             .err()

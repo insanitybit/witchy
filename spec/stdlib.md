@@ -2239,7 +2239,7 @@ This is COMPILE-TIME structure (field names + declared type expressions), distin
 
 #### `sealed type ItemSyntax`
 
-RFC-0080 first slice: a typed boundary for whole generated items. The compiler still stores the payload as source while the structured syntax API grows, but comptime code can hand `emit_item` an `ItemSyntax` instead of printing raw text.
+RFC-0080's typed boundary for whole generated items. Hole-free `quote item:` and literal whole-item `meta.item("...")` values are compiler-owned AST; dynamic strings, builders, and hole-bearing quotes retain this source-backed compatibility representation while the structured syntax API grows.
 
 - `ItemSyntax(String)`
 
@@ -2318,7 +2318,7 @@ A type's structure. `fields` is populated for records and `variants` for sums; b
 
 #### `fn item(source: String) -> ItemSyntax`
 
-A source-backed item wrapper. This is the migration bridge from today's source-emitting generators toward structured constructors and quotation.
+A dynamic source-backed item wrapper. A literal whole-item argument is recognized by the parser and promoted to compiler-owned item syntax.
 
 #### `fn item_join(parts: List(String), holes: List(ExprSyntax)) -> ItemSyntax`
 

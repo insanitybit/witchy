@@ -1253,6 +1253,15 @@ fn expr(e: &Expr) -> String {
         Expr::List(xs) => format!("[{}]", comma(xs)),
         Expr::Tuple(xs) => format!("({})", comma(xs)),
         Expr::Call { name, args } => {
+            // Hole-free RFC-0080 item quotation carries the parsed item in the
+            // module's compiler syntax table. Print its canonical source through
+            // the existing `meta.item` surface; the parser recognizes a literal
+            // whole-item payload and reconstructs the same compiler-owned node.
+            if name == crate::intrinsics::COMPILER_QUOTE_ITEM
+                && let [Expr::Str(_handle), Expr::Str(source)] = args.as_slice()
+            {
+                return format!("meta.item({})", string_lit(source));
+            }
             // `to_string`/`int_to_string` were retired in favor of string
             // interpolation, whose only surface spelling is `"${x}"`; rewrite a
             // single-argument render call to that form (unless the module defines
@@ -2034,6 +2043,10 @@ fn canon_module(m: &mut Module) {
     m.imports.sort();
     m.imports.dedup();
     m.from_imports.sort();
+    for syntax in &mut m.compiler_item_syntax {
+        syntax.definition_line = 0;
+        canon_item(&mut syntax.item);
+    }
     for it in &mut m.items {
         canon_item(it);
     }

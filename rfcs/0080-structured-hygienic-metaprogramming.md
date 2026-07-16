@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed syntax wrappers/builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, and deterministic compiler-owned meta.fresh identifiers landed; definition/call-site origin hygiene and compiler-owned syntax trees remain proposed"
+tracking: "source-backed syntax wrappers/builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, and compiler-owned hole-free item syntax landed; definition/call-site origin hygiene and compiler-owned expression/pattern/type syntax trees remain proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -286,10 +286,21 @@ The first source-compatible slice is implemented:
   source rebuilds are stable, and handwritten bindings cannot capture a fresh
   generated binding. This is the first concrete hygiene guarantee; ordinary
   quoted identifiers are not yet definition-site/call-site syntax objects.
+- The twenty-third slice moves hole-free `quote item:` and literal whole-item
+  `meta.item("...")` values off the source payload. The parser stores the
+  original `Item` in a module-owned syntax table and emits an unspellable,
+  deterministic handle. The compile-time evaluator forwards that opaque value,
+  and `emit_item` returns the original node to the expander in an ordered typed
+  event stream, so append no longer formats or reparses it. The table is
+  target-neutral in-memory AST, including in the browser compiler; it does not
+  depend on the native-only persistent-cache serializer. Dynamic item strings,
+  item builders, and item quotations containing holes retain the compatibility
+  source path. `witchy fmt` prints the canonical `meta.item("...")` spelling,
+  which the parser promotes back to the same compiler-owned node.
 
-This is intentionally not the full RFC. The payload is still source-backed and
-expression/type/pattern/statement/block/item quotation plus
-expression/type/pattern holes plus mixed statement/block/item holes exist;
+This is intentionally not the full RFC. Hole-free whole items are now
+compiler-owned, while expression/type/pattern/statement/block syntax and
+hole-bearing item quotation remain source-backed;
 definition-site/call-site identifier origins and compiler-owned
 expression/pattern/type syntax trees remain future work. The value is the
 migration seam: future work can move the

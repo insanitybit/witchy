@@ -129,6 +129,9 @@ struct Parser {
     /// constructor, so the parser also makes the implied `meta` module available
     /// to the linker.
     needs_meta_import: bool,
+    /// Hole-free item quotations stay as parsed AST. The expression receives
+    /// only an opaque handle through an unspellable compiler intrinsic.
+    compiler_item_syntax: Vec<CompilerItemSyntax>,
     /// Positive while parsing the literal body of `quote expr:`. `${...}` holes
     /// are syntax splices there; everywhere else they are rejected at parse time.
     quote_expr_hole_depth: u32,
@@ -189,6 +192,7 @@ impl Parser {
             in_gen: false,
             anon_records: Vec::new(),
             needs_meta_import: false,
+            compiler_item_syntax: Vec::new(),
             quote_expr_hole_depth: 0,
             quote_type_hole_depth: 0,
             quote_type_holes: Vec::new(),
@@ -397,6 +401,7 @@ impl Parser {
             items,
             import_lines,
             item_lines,
+            compiler_item_syntax: std::mem::take(&mut self.compiler_item_syntax),
         })
     }
 
@@ -1591,6 +1596,7 @@ impl Parser {
                     e = Expr::Unary { op: UnOp::Await, expr: Box::new(e) };
                     continue;
                 }
+                let member_line = self.cur().line;
                 let member = self.ident()?;
                 if self.at(&Tok::LParen) {
                     if let Expr::Var(module) = &e {
@@ -1612,7 +1618,16 @@ impl Parser {
                             e = if args.iter().any(|(l, _)| l.is_some()) {
                                 Expr::LabeledCall { name, args }
                             } else {
-                                Expr::Call { name, args: unlabel(args) }
+                                let args = unlabel(args);
+                                if name == "meta.item"
+                                    && let [Expr::Str(source)] = args.as_slice()
+                                    && let Some(owned) =
+                                        self.compiler_owned_item_literal(source, member_line)
+                                {
+                                    owned
+                                } else {
+                                    Expr::Call { name, args }
+                                }
                             };
                         }
                         // `receiver.method(args)` — UFCS method call: sugar for
@@ -1881,6 +1896,7 @@ impl Parser {
                  `quote block:`, or `quote item:`",
             ));
         };
+        let quote_line = self.cur().line;
         self.advance(); // `quote`
         self.advance(); // category
         self.expect(&Tok::LBrace)?;
@@ -1988,7 +2004,12 @@ impl Parser {
                 let quoted = quoted?;
                 let type_holes = self.quote_type_holes.split_off(type_base);
                 let pattern_holes = self.quote_pattern_holes.split_off(pattern_base);
-                self.item_syntax_expr_with_holes(quoted, type_holes, pattern_holes)?
+                self.item_syntax_expr_with_holes(
+                    quoted,
+                    type_holes,
+                    pattern_holes,
+                    quote_line,
+                )?
             }
             _ => {
                 return Err(self.error(format!(
@@ -2161,20 +2182,51 @@ impl Parser {
         Ok(self.meta_call("block_join_syntax", vec![Expr::List(parts), Expr::List(holes)]))
     }
 
-    fn item_syntax_expr(&self, quoted: Item) -> Expr {
-        self.meta_call("item", vec![Expr::Str(Self::item_source(quoted))])
+    fn item_syntax_expr(&mut self, quoted: Item, definition_line: u32) -> Expr {
+        let source = Self::item_source(quoted.clone());
+        // The canonical source is a collision-free identity and works in the
+        // browser parser, where the native cache's BLAKE3 dependency is absent.
+        let handle = format!("witchy-compiler-item-syntax-v1\0{source}");
+        self.compiler_item_syntax.push(CompilerItemSyntax {
+            handle: handle.clone(),
+            item: quoted,
+            definition_line,
+        });
+        Expr::Call {
+            name: crate::intrinsics::COMPILER_QUOTE_ITEM.into(),
+            args: vec![Expr::Str(handle), Expr::Str(source)],
+        }
+    }
+
+    fn compiler_owned_item_literal(
+        &mut self,
+        source: &str,
+        definition_line: u32,
+    ) -> Option<Expr> {
+        let mut parsed = parse_module(source).ok()?;
+        if !parsed.modes.is_empty()
+            || !parsed.imports.is_empty()
+            || !parsed.from_imports.is_empty()
+            || parsed.items.len() != 1
+        {
+            return None;
+        }
+        self.compiler_item_syntax
+            .append(&mut parsed.compiler_item_syntax);
+        Some(self.item_syntax_expr(parsed.items.remove(0), definition_line))
     }
 
     fn item_syntax_expr_with_holes(
-        &self,
+        &mut self,
         mut quoted: Item,
         type_holes: Vec<Expr>,
         pattern_holes: Vec<Expr>,
+        definition_line: u32,
     ) -> Result<Expr, ParseError> {
         let mut expr_holes = Vec::new();
         Self::collect_quote_expr_holes_item(&mut quoted, &mut expr_holes);
         if expr_holes.is_empty() && type_holes.is_empty() && pattern_holes.is_empty() {
-            return Ok(self.item_syntax_expr(quoted));
+            return Ok(self.item_syntax_expr(quoted, definition_line));
         }
         let source = Self::item_source(quoted);
         let (parts, holes) =
@@ -2190,6 +2242,7 @@ impl Parser {
             items: vec![item],
             import_lines: Vec::new(),
             item_lines: vec![1],
+            compiler_item_syntax: Vec::new(),
         };
         crate::format::module(&module, &[])
     }

@@ -1198,6 +1198,10 @@ pub fn link_with_user_modules_with_mode(
             .filter(|(_, module)| is_opt(module))
             .map(|(name, _)| format!("@opt:{name}")),
     );
+    let compiler_item_syntax = modules
+        .iter()
+        .flat_map(|(_, module)| module.compiler_item_syntax.iter().cloned())
+        .collect();
     let mut module = Module {
         // The entry module's performance modes carry onto the linked module;
         // enforcement applies to the entry file's own (unqualified) functions.
@@ -1207,6 +1211,7 @@ pub fn link_with_user_modules_with_mode(
         items,
         import_lines: Vec::new(),
         item_lines: Vec::new(),
+        compiler_item_syntax,
     };
     resolve_methods(&mut module);
     // (RFC-0042) Fix up residual bare constructor PATTERNS — a plain `import iter`

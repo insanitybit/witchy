@@ -839,7 +839,7 @@ fn f(ty: meta.TypeSyntax, value: meta.ExprSyntax, pat: meta.PatternSyntax, tail:
     }
 
     #[test]
-    fn quote_item_lowers_to_meta_item_with_canonical_source() {
+    fn quote_item_lowers_to_compiler_owned_item_handle() {
         let m = parse_module(r#"
 fn f():
     quote item:
@@ -851,10 +851,23 @@ fn f():
             panic!("expected function");
         };
         let Stmt::Expr(Expr::Call { name, args }) = &f.body.stmts[0] else {
-            panic!("expected lowered meta.item call, got {:?}", f.body.stmts[0]);
+            panic!("expected compiler-owned item call, got {:?}", f.body.stmts[0]);
         };
-        assert_eq!(name, "meta.item");
-        assert_eq!(args, &[Expr::Str("pub fn generated() -> Int:\n    99\n".to_string())]);
+        assert_eq!(name, crate::intrinsics::COMPILER_QUOTE_ITEM);
+        let [Expr::Str(handle), Expr::Str(canonical_source)] = args.as_slice() else {
+            panic!("expected an opaque item handle and formatter source, got {args:?}");
+        };
+        let [syntax] = m.compiler_item_syntax.as_slice() else {
+            panic!("expected one compiler-owned item payload");
+        };
+        assert_eq!(handle, &syntax.handle);
+        assert_eq!(canonical_source, "pub fn generated() -> Int:\n    99\n");
+        assert_eq!(syntax.definition_line, 3);
+        let Item::Function(generated) = &syntax.item else {
+            panic!("expected quoted function payload");
+        };
+        assert_eq!(generated.name, "generated");
+        assert_eq!(generated.body.stmts, [Stmt::Expr(Expr::Int(99))]);
     }
 
     #[test]

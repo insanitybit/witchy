@@ -16,14 +16,13 @@
 //! "printed source in, items out".
 
 use witchy_syntax::ast::{
-    BinOp, Block, Expr, Function, ImplOrigin, Item, MatchArm, Module, Param, Pattern, Stmt, Type,
+    BinOp, Block, Expr, Function, ImplOrigin, Item, Module, Param, Stmt, Type,
 };
 
 const MAX_COMPTIME_BLOCKS: usize = 256;
 // Per module, after generated `gen`/`async` helpers are lowered into real items.
 const MAX_COMPTIME_GENERATED_ITEMS: usize = 4096;
 const SOURCE_OUTPUT_MARKER: &str = "\u{1e}witchy:comptime:source:";
-const ITEM_OUTPUT_MARKER: &str = "\u{1e}witchy:comptime:item:";
 
 /// Expand every `comptime:` block in `module` (consuming the items), running
 /// each and appending the items its output parses to. `name` is the module's
@@ -68,9 +67,9 @@ fn expand_with_item_limit(
         // The block becomes `fn main(console: Console)` of a synthetic program
         // carrying the enclosing module's imports. `emit(line)` is the legacy
         // source emit channel; `emit_item(meta.ItemSyntax)` is the typed
-        // RFC-0080 migration boundary. They still share the interpreter's
-        // console capture, but hidden markers let the host reject mixed channel
-        // use before parsing generated source. Direct `console.print(...)`
+        // RFC-0080 migration boundary. `emit_item` calls an unspellable compiler
+        // operation so a compiler-owned item can remain AST all the way back to
+        // this expander. Direct `console.print(...)`
         // remains legacy source output for compatibility. Linked recursively
         // (a comptime block cannot itself contain `comptime` — it is an item,
         // not a statement).
@@ -88,22 +87,10 @@ fn expand_with_item_limit(
                         default: None,
                     }],
                     body: Block {
-                        stmts: vec![witchy_syntax::ast::Stmt::Expr(
-                            witchy_syntax::ast::Expr::Match {
-                                scrutinee: Box::new(witchy_syntax::ast::Expr::Var(
-                                    "syntax_value".into(),
-                                )),
-                                arms: vec![MatchArm {
-                                    line: 0,
-                                    pattern: Pattern::Ctor {
-                                        name: "ItemSyntax".into(),
-                                        args: vec![Pattern::Var("source".into())],
-                                    },
-                                    guard: None,
-                                    body: marked_console_print(ITEM_OUTPUT_MARKER, "source"),
-                                }],
-                            },
-                        )],
+                        stmts: vec![witchy_syntax::ast::Stmt::Expr(Expr::Call {
+                            name: witchy_syntax::intrinsics::COMPILER_EMIT_ITEM.into(),
+                            args: vec![Expr::Var("syntax_value".into())],
+                        })],
                         lines: vec![0],
                         region: None,
                     },
@@ -212,26 +199,21 @@ fn expand_with_item_limit(
             items: prog_items,
             import_lines: Vec::new(),
             item_lines: Vec::new(),
+            compiler_item_syntax: module.compiler_item_syntax.clone(),
         };
         let linked = crate::pipeline::link(vec![("comptime".into(), prog)], "comptime")
             .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
         witchy_types::typeck::check_comptime(&linked)
             .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
-        let lines = crate::interpreter::run_module_budgeted_in_scope(
+        let (lines, item_output) = crate::interpreter::run_comptime_module_budgeted_in_scope(
             linked,
             ".",
             crate::interpreter::COMPTIME_STEP_LIMIT,
             Some(format!("comptime:{}:{name}:{expanded}", name.len())),
         )
             .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
-        let src = decode_comptime_output(lines)
+        let emitted = decode_comptime_output(lines, item_output)
             .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
-        let emitted = witchy_syntax::parser::parse_module(&src).map_err(|e| {
-            format!(
-                "module `{name}`: comptime block emitted source that does not \
-                 parse: {e}\n--- emitted ---\n{src}"
-            )
-        })?;
         let items_before_merge = module.items.len();
         merge_emitted_module(module, emitted, block_line);
         let normalized = normalize_generated_module(module.clone())
@@ -276,30 +258,80 @@ fn marked_console_print(marker: &str, value_name: &str) -> Expr {
     }
 }
 
-fn decode_comptime_output(lines: Vec<String>) -> Result<String, String> {
-    let mut payloads = Vec::new();
-    let mut saw_source = false;
-    let mut saw_item = false;
-    for line in lines {
-        if let Some(payload) = line.strip_prefix(ITEM_OUTPUT_MARKER) {
-            saw_item = true;
-            payloads.push(payload.to_string());
-        } else if let Some(payload) = line.strip_prefix(SOURCE_OUTPUT_MARKER) {
-            saw_source = true;
-            payloads.push(payload.to_string());
-        } else {
-            saw_source = true;
-            payloads.push(line);
-        }
-    }
-    if saw_source && saw_item {
+fn decode_comptime_output(
+    lines: Vec<String>,
+    item_output: Vec<crate::interpreter::PositionedComptimeItem>,
+) -> Result<Module, String> {
+    if !lines.is_empty() && !item_output.is_empty() {
         return Err(
             "mixed legacy source output (`emit`/`console.print`) with typed item output \
              (`emit_item`); use one output channel per `comptime:` block"
                 .into(),
         );
     }
-    Ok(payloads.join("\n"))
+    if item_output.is_empty() {
+        let src = lines
+            .into_iter()
+            .map(|line| {
+                line.strip_prefix(SOURCE_OUTPUT_MARKER)
+                    .unwrap_or(&line)
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        return witchy_syntax::parser::parse_module(&src).map_err(|e| {
+            format!(
+                "comptime block emitted source that does not parse: {e}\n--- emitted ---\n{src}"
+            )
+        });
+    }
+
+    let mut emitted = witchy_syntax::parser::parse_module("")
+        .expect("the empty module is always valid Witchy");
+    let mut source_batch = Vec::new();
+    for positioned in item_output {
+        if positioned.output_position != 0 {
+            return Err("internal: typed comptime output lost its source ordering".into());
+        }
+        match positioned.emission {
+            crate::interpreter::ComptimeItemEmission::Source(source) => {
+                source_batch.push(source);
+            }
+            crate::interpreter::ComptimeItemEmission::Syntax(item) => {
+                append_item_source_batch(&mut emitted, &mut source_batch)?;
+                emitted.items.push(*item);
+                emitted.item_lines.push(0);
+            }
+        }
+    }
+    append_item_source_batch(&mut emitted, &mut source_batch)?;
+    Ok(emitted)
+}
+
+fn append_item_source_batch(into: &mut Module, source_batch: &mut Vec<String>) -> Result<(), String> {
+    if source_batch.is_empty() {
+        return Ok(());
+    }
+    let source = std::mem::take(source_batch).join("\n");
+    let parsed = witchy_syntax::parser::parse_module(&source).map_err(|e| {
+        format!(
+            "emit_item received source that does not parse: {e}\n--- emitted item source ---\n{source}"
+        )
+    })?;
+    append_unstamped_module(into, parsed);
+    Ok(())
+}
+
+fn append_unstamped_module(into: &mut Module, mut from: Module) {
+    for import in from.imports {
+        if !into.imports.contains(&import) {
+            into.imports.push(import);
+        }
+    }
+    merge_from_imports(&mut into.from_imports, from.from_imports);
+    into.items.append(&mut from.items);
+    into.item_lines.append(&mut from.item_lines);
+    into.compiler_item_syntax.append(&mut from.compiler_item_syntax);
 }
 
 fn reachable_local_items(items: &[Item], root: &Block) -> Vec<Item> {
@@ -343,6 +375,7 @@ fn merge_emitted_module(module: &mut Module, emitted: Module, block_line: u32) {
         }
     }
     merge_from_imports(&mut module.from_imports, emitted.from_imports);
+    module.compiler_item_syntax.extend(emitted.compiler_item_syntax);
     let n = emitted.items.len();
     for mut item in emitted.items {
         // The emitted items were parsed from a standalone blob, so every line
@@ -545,6 +578,11 @@ pub fn expand_compile_time(
     crate::tagged::expand(name, module, siblings)?;
     if name != "comptime" {
         strip_comptime_only_functions(module);
+        // All compiler-owned handles have either been emitted or were confined
+        // to stripped compile-time helpers. Runtime type checking/codegen never
+        // need the payload table, and persistent expanded-module caches should
+        // not retain it.
+        module.compiler_item_syntax.clear();
     }
     Ok(())
 }
@@ -777,6 +815,26 @@ fn main(console: Console):
 "#;
         let err = link_error(via_console_print);
         assert!(err.contains("mixed legacy source output"), "got: {err}");
+    }
+
+    #[test]
+    fn adjacent_compatibility_item_fragments_still_parse_as_one_batch() {
+        let src = r#"
+comptime:
+    let head = "fn split_item() -> Int:"
+    let body = "    2"
+    emit_item(item(head))
+    emit_item(item(body))
+
+fn main(console: Console):
+    console.print("${split_item()}")
+"#;
+        let module = witchy_syntax::parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main")
+            .expect("adjacent compatibility item fragments remain supported");
+        witchy_types::typeck::check(&linked).expect("typecheck");
+        let out = crate::interpreter::run_module(linked, ".", Vec::new()).expect("run");
+        assert_eq!(out, ["2"]);
     }
 
     #[test]

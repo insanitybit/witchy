@@ -9,6 +9,8 @@
 pub enum IntrinsicId {
     GeneratedRender,
     GeneratedListPush,
+    CompilerQuoteItem,
+    CompilerEmitItem,
     TryContext,
     Erase,
     Unerase,
@@ -100,6 +102,8 @@ pub enum IntrinsicId {
 pub enum IntrinsicSignature {
     GenericRender,
     GenericListPush,
+    CompilerQuoteItem,
+    CompilerEmitItem,
     TryContext,
     GenericToMessage,
     MessageToGeneric,
@@ -356,6 +360,8 @@ const fn encoding_host_call(selector: i32, input: WirHostInput) -> Option<WirHos
 
 pub const GENERATED_RENDER: &str = "@render";
 pub const GENERATED_LIST_PUSH: &str = "@list_push";
+pub const COMPILER_QUOTE_ITEM: &str = "@quote_item";
+pub const COMPILER_EMIT_ITEM: &str = "@emit_item";
 pub const RETIRED_SOURCE_RENDER: &str = "__render";
 pub const TRY_CONTEXT: &str = "__try_ctx";
 
@@ -486,6 +492,36 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "list.push",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::CompilerQuoteItem,
+        name: COMPILER_QUOTE_ITEM,
+        arity: 2,
+        signature: IntrinsicSignature::CompilerQuoteItem,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "compiler-owned item quotation",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::CompilerEmitItem,
+        name: COMPILER_EMIT_ITEM,
+        arity: 1,
+        signature: IntrinsicSignature::CompilerEmitItem,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "compiler-owned item emission",
         private_callers: NO_PRIVATE_CALLERS,
     },
     IntrinsicSpec {
@@ -2116,6 +2152,8 @@ mod tests {
         let names = [
             GENERATED_RENDER,
             GENERATED_LIST_PUSH,
+            COMPILER_QUOTE_ITEM,
+            COMPILER_EMIT_ITEM,
             TRY_CONTEXT,
             ERASE,
             UNERASE,
@@ -3026,6 +3064,8 @@ mod tests {
     fn generated_frontend_intrinsics_are_not_std_bridges() {
         assert_eq!(private_intrinsic_callers(GENERATED_RENDER), None);
         assert_eq!(private_intrinsic_callers(GENERATED_LIST_PUSH), None);
+        assert_eq!(private_intrinsic_callers(COMPILER_QUOTE_ITEM), None);
+        assert_eq!(private_intrinsic_callers(COMPILER_EMIT_ITEM), None);
         assert_eq!(private_intrinsic_callers(RETIRED_SOURCE_RENDER), None);
         assert_eq!(private_intrinsic_callers(TRY_CONTEXT), None);
         assert_eq!(private_intrinsic_callers(COMPILER_DOC_RESULT_JSON), None);

@@ -993,8 +993,12 @@ deterministic by construction. Legacy `emit(line)` output, and direct
 `console.print(line)` for compatibility, are parsed as witchy source and
 **appended** to the module before type checking and footprint analysis.
 `emit_item(item)` is the typed RFC-0080 migration channel for
-`meta.ItemSyntax`. A single `comptime:` block may use the legacy source
-channel or the typed item channel, but not both.
+`meta.ItemSyntax`. Hole-free `quote item:` and a literal whole-item
+`meta.item("...")` are stored as compiler-owned item AST and appended without
+formatting or reparsing. Dynamically constructed `meta.item(source)`, builders,
+and hole-bearing item quotes remain on the source-backed compatibility path. A
+single `comptime:` block may use the legacy source channel or the typed item
+channel, but not both.
 Compiler syntax values such as `meta.ItemSyntax`, `meta.TypeSyntax`,
 `meta.ExprSyntax`, `meta.PatternSyntax`, `meta.StmtSyntax`, `meta.BlockSyntax`,
 `meta.MatchArmSyntax`, and `meta.Ident` are compile-time-only: runtime
@@ -1003,7 +1007,7 @@ Top-level `comptime fn` declarations are helpers for this expansion phase. They
 may mention compile-time-only syntax types, may be called from `comptime:`,
 custom-derive, or tagged-literal expansion, and are stripped before the runtime
 module is linked and type-checked. Runtime code cannot call them.
-`std/meta` also exposes source-backed syntax builders such as `ident`,
+`std/meta` also exposes compatibility source-backed syntax builders such as `ident`,
 `type_named`, `expr_call`, `pattern_anon_ctor`, `match_arm`, `stmt_let`,
 `block`, `param`, and `function_block`; they make generated item structure
 typed at the API boundary and validate identifier spelling. `meta.fresh(hint)`
@@ -1016,8 +1020,10 @@ names remain future work.
 and `quote item:` are the first quotation forms. They parse the indented
 expression, type, pattern, statement, block, or single item immediately and
 produce `meta.ExprSyntax`, `meta.TypeSyntax`, `meta.PatternSyntax`,
-`meta.StmtSyntax`, `meta.BlockSyntax`, or `meta.ItemSyntax` through the same
-sealed source-backed channel as the `std/meta` builders. Inside `quote expr:`,
+`meta.StmtSyntax`, `meta.BlockSyntax`, or `meta.ItemSyntax`. A hole-free item
+quote uses the compiler-owned item channel described above; the other quote
+categories and hole-bearing item quotes are source-backed in this migration
+stage. Inside `quote expr:`,
 `${hole}` splices a `meta.ExprSyntax`; inside `quote type:` and
 `quote pattern:`, `${hole}` splices a `meta.TypeSyntax` or `meta.PatternSyntax`;
 inside `quote stmt:` and `quote block:`, `${hole}` splices a

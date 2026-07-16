@@ -82,6 +82,16 @@
     }
 
     #[test]
+    fn compiler_owned_item_quotes_round_trip_through_formatting() {
+        let src = "import meta\n\ncomptime fn make() -> ItemSyntax:\n    quote item:\n        pub fn generated() -> Int:\n            1\n\ncomptime:\n    emit_item(make())\n";
+        let out = reformat(src).expect("compiler-owned item quote round-trips");
+        assert!(out.contains("meta.item(\"pub fn generated()"), "{out}");
+        let reparsed = crate::parser::parse_module(&out).expect("formatted quote parses");
+        assert_eq!(reparsed.compiler_item_syntax.len(), 1);
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
+    }
+
+    #[test]
     fn anonymous_record_types_round_trip_through_formatting() {
         // RFC-0078 makes the structural record tier denotable in type position.
         // Formatting must print the source-level shape, not the synthetic
@@ -206,6 +216,7 @@
             })],
             import_lines: vec![],
             item_lines: vec![],
+            compiler_item_syntax: vec![],
         };
         let printed = module(&m, &[]);
         // The printed form parses, but to a DIFFERENT program (`let x = 0`);

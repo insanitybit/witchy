@@ -117,6 +117,26 @@ pub enum Value {
     Nil,
 }
 
+const OWNED_ITEM_SYNTAX_CTOR: &str = "@owned_item_syntax";
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum ComptimeItemEmission {
+    Source(String),
+    Syntax(Box<Item>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PositionedComptimeItem {
+    pub output_position: usize,
+    pub emission: ComptimeItemEmission,
+}
+
+struct InterpreterOutcome {
+    output: Vec<String>,
+    exit_code: i32,
+    comptime_items: Vec<PositionedComptimeItem>,
+}
+
 /// A build-time capability instance, carrying the attenuated grant the build
 /// driver minted it with. Kind-only in the type system; the specifics live here.
 #[derive(Debug, Clone, PartialEq)]
@@ -802,6 +822,8 @@ pub struct Interpreter {
     /// reject the compiler-private hook instead of minting generated names.
     fresh_ident_scope: Option<String>,
     fresh_ident_counter: u64,
+    compiler_item_syntax: HashMap<String, Item>,
+    comptime_item_output: Vec<PositionedComptimeItem>,
     /// Evaluation-step counter and ceiling. Unlike the runtime's epoch
     /// preemption, the tree-walker can't be interrupted, so a `while true {}`
     /// would hang the host — this bounds total work and errors out instead.
@@ -1125,6 +1147,11 @@ impl Interpreter {
     }
 
     pub fn new(module: Module) -> Self {
+        let compiler_item_syntax = module
+            .compiler_item_syntax
+            .into_iter()
+            .map(|syntax| (syntax.handle, syntax.item))
+            .collect();
         let mut functions = HashMap::new();
         let mut record_fields = HashMap::new();
         let mut ctor_type_name: HashMap<String, String> = HashMap::new();
@@ -1183,6 +1210,8 @@ impl Interpreter {
             custom_eq_types,
             fresh_ident_scope: None,
             fresh_ident_counter: 0,
+            compiler_item_syntax,
+            comptime_item_output: Vec::new(),
             steps: 0,
             step_limit: DEFAULT_STEP_LIMIT,
             cur_line: 0,
@@ -2135,6 +2164,66 @@ impl Interpreter {
                 Value::Str(hint) => Ok(Some(Value::Str(self.next_fresh_ident(&hint)?))),
                 other => err(format!("meta.fresh expects a String hint, got `{other}`")),
             },
+            name if name == intrinsics::COMPILER_QUOTE_ITEM => {
+                if self.fresh_ident_scope.is_none() {
+                    return err(
+                        "compiler-owned item quotation is available only during compile-time expansion",
+                    );
+                }
+                match args {
+                    [Value::Str(handle), Value::Str(_source)]
+                        if self.compiler_item_syntax.contains_key(handle) =>
+                    {
+                        Ok(Some(Value::Ctor {
+                            name: OWNED_ITEM_SYNTAX_CTOR.into(),
+                            fields: vec![Value::Str(handle.clone())],
+                        }))
+                    }
+                    [Value::Str(_), Value::Str(_)] => {
+                        err("compiler-owned item quotation referenced an invalid syntax handle")
+                    }
+                    _ => err("compiler-owned item quotation expects an item handle"),
+                }
+            }
+            name if name == intrinsics::COMPILER_EMIT_ITEM => {
+                if self.fresh_ident_scope.is_none() {
+                    return err("item emission is available only during compile-time expansion");
+                }
+                let emission = match one(args)? {
+                    Value::Ctor { name, fields }
+                        if name == OWNED_ITEM_SYNTAX_CTOR
+                            && matches!(fields.as_slice(), [Value::Str(_)]) =>
+                    {
+                        let [Value::Str(handle)] = fields.as_slice() else {
+                            unreachable!()
+                        };
+                        let item = self
+                            .compiler_item_syntax
+                            .get(handle)
+                            .cloned()
+                            .ok_or_else(|| RuntimeError {
+                                message: "compiler-owned item emission referenced an invalid syntax handle"
+                                    .into(),
+                            })?;
+                        ComptimeItemEmission::Syntax(Box::new(item))
+                    }
+                    Value::Ctor { name, fields }
+                        if name.rsplit_once('.').map_or(name.as_str(), |(_, tail)| tail)
+                            == "ItemSyntax" =>
+                    {
+                        let [Value::Str(source)] = fields.as_slice() else {
+                            return err("ItemSyntax carried an invalid source payload");
+                        };
+                        ComptimeItemEmission::Source(source.clone())
+                    }
+                    _ => return err("emit_item expects meta.ItemSyntax"),
+                };
+                self.comptime_item_output.push(PositionedComptimeItem {
+                    output_position: self.output.len(),
+                    emission,
+                });
+                Ok(Some(Value::Nil))
+            }
             // Pure builtins need no capability.
             name if is_render_intrinsic(name) => Ok(Some(Value::Str(self.render_value(&one(args)?)))),
             // (RFC-0055) Channel message erasure. `Value` is uniform, so erasing a
@@ -4382,13 +4471,23 @@ pub(crate) fn run_module_budgeted_in_scope(
     step_limit: u64,
     fresh_ident_scope: Option<String>,
 ) -> Result<Vec<String>, RuntimeError> {
+    run_comptime_module_budgeted_in_scope(module, root, step_limit, fresh_ident_scope)
+        .map(|(output, _)| output)
+}
+
+pub(crate) fn run_comptime_module_budgeted_in_scope(
+    module: Module,
+    root: impl AsRef<Path>,
+    step_limit: u64,
+    fresh_ident_scope: Option<String>,
+) -> Result<(Vec<String>, Vec<PositionedComptimeItem>), RuntimeError> {
     let module = witchy_syntax::records::lower(module).map_err(|message| RuntimeError { message })?;
     let module = witchy_types::traits::lower(module);
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
         run_module_inner_limited(module, root, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, Vec::new(), UserCapGrants::new(), step_limit, fresh_ident_scope)
     })
-    .map(|(output, _)| output)
+    .map(|outcome| (outcome.output, outcome.comptime_items))
 }
 
 /// Run with direct `File` grants (RFC-0012): the i-th `File` parameter of `main`
@@ -4404,7 +4503,7 @@ pub fn run_module_files(
     run_on_deep_stack(move || {
         run_module_inner_limited(module, root, Vec::new(), file_grants, Vec::new(), Vec::new(), None, Vec::new(), UserCapGrants::new(), DEFAULT_STEP_LIMIT, None)
     })
-    .map(|(output, _)| output)
+    .map(|outcome| outcome.output)
 }
 
 /// Like [`run_module`], but also hands command-line `args` to a `main` that
@@ -4448,6 +4547,7 @@ pub fn run_module_exit(
     let module = witchy_types::traits::lower(module);
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || run_module_inner(module, root, Vec::new(), net_allow, args, signing_key))
+        .map(|outcome| (outcome.output, outcome.exit_code))
 }
 
 /// Like [`run_module_exit`], but also grants NAMED secrets to a `main` that binds
@@ -4481,6 +4581,7 @@ pub fn run_module_exit_secrets(
             None,
         )
     })
+    .map(|outcome| (outcome.output, outcome.exit_code))
 }
 
 /// Like [`run_module_exit`], but grants several `Dir` capabilities: `roots[0]`
@@ -4499,6 +4600,7 @@ pub fn run_module_exit_dirs(
     let mut roots = roots;
     let root = if roots.is_empty() { PathBuf::from(".") } else { roots.remove(0) };
     run_on_deep_stack(move || run_module_inner(module, root, roots, net_allow, args, signing_key))
+        .map(|outcome| (outcome.output, outcome.exit_code))
 }
 
 /// Parse and run `src` with several `Dir` grants (the multi-`Dir` analog of
@@ -4515,9 +4617,9 @@ pub fn run_in_dirs(src: &str, roots: &[PathBuf]) -> Result<Vec<String>, RuntimeE
 /// recursion well before this stack is exhausted. `join` contains any panic, so
 /// even an unforeseen one becomes a graceful error rather than aborting the host.
 #[cfg(not(target_arch = "wasm32"))]
-fn run_on_deep_stack(
-    f: impl FnOnce() -> Result<(Vec<String>, i32), RuntimeError> + Send + 'static,
-) -> Result<(Vec<String>, i32), RuntimeError> {
+fn run_on_deep_stack<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, RuntimeError> + Send + 'static,
+) -> Result<T, RuntimeError> {
     let handle = std::thread::Builder::new()
         .stack_size(4 * 1024 * 1024 * 1024)
         .spawn(f)
@@ -4536,9 +4638,9 @@ fn run_on_deep_stack(
 /// run the evaluator inline. The host stack is small, so very deep recursion can
 /// trap the module — `depth_limit` still guards the common cases.
 #[cfg(target_arch = "wasm32")]
-fn run_on_deep_stack(
-    f: impl FnOnce() -> Result<(Vec<String>, i32), RuntimeError>,
-) -> Result<(Vec<String>, i32), RuntimeError> {
+fn run_on_deep_stack<T>(
+    f: impl FnOnce() -> Result<T, RuntimeError>,
+) -> Result<T, RuntimeError> {
     f()
 }
 
@@ -4570,7 +4672,7 @@ pub fn run_module_user_caps(
     run_on_deep_stack(move || {
         run_module_inner_limited(module, root, Vec::new(), file_grants, net_allow, args, None, Vec::new(), user_caps, DEFAULT_STEP_LIMIT, None)
     })
-    .map(|(output, _)| output)
+    .map(|outcome| outcome.output)
 }
 
 fn run_module_inner(
@@ -4580,7 +4682,7 @@ fn run_module_inner(
     net_allow: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
-) -> Result<(Vec<String>, i32), RuntimeError> {
+) -> Result<InterpreterOutcome, RuntimeError> {
     run_module_inner_limited(module, root, dir_roots, Vec::new(), net_allow, args, signing_key, Vec::new(), UserCapGrants::new(), DEFAULT_STEP_LIMIT, None)
 }
 
@@ -4597,7 +4699,7 @@ fn run_module_inner_limited(
     user_caps: UserCapGrants,
     step_limit: u64,
     fresh_ident_scope: Option<String>,
-) -> Result<(Vec<String>, i32), RuntimeError> {
+) -> Result<InterpreterOutcome, RuntimeError> {
     let mut interp = Interpreter::new(module);
     interp.step_limit = step_limit;
     interp.fresh_ident_scope = fresh_ident_scope;
@@ -4677,7 +4779,11 @@ fn run_module_inner_limited(
     if interp.output.is_empty() && !matches!(ret, Value::Nil | Value::Int(_)) {
         interp.output.push(format!("{ret}"));
     }
-    Ok((interp.output, exit_code))
+    Ok(InterpreterOutcome {
+        output: interp.output,
+        exit_code,
+        comptime_items: interp.comptime_item_output,
+    })
 }
 
 /// The attenuated grants a build step runs under: a confined output directory
