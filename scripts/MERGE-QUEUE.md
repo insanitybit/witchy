@@ -117,22 +117,19 @@ output **while the gate's process group is idle** — a group still burning CPU 
 compiling/testing, not hung, so silence alone never kills it; see the stall
 note below), `MERGE_QUEUE_BUSY_SILENCE_MAX` (3× stall = 1800s: the ceiling on
 silence even for a *busy* group, so a CPU-burning runaway is reclaimed here
-rather than at GATE_TIMEOUT), `MERGE_QUEUE_NEXTEST_THREADS` (4, exported to
-nextest only inside serialized gates), `MERGE_QUEUE_BATCH_MAX` (5),
+rather than at GATE_TIMEOUT), `MERGE_QUEUE_BATCH_MAX` (5),
 `MERGE_QUEUE_STATE_DIR` +
 `MERGE_QUEUE_GATE_WT` (isolated state for TESTING the coordinator itself),
 `MERGE_QUEUE_ALLOW_MERGE=1` (test mode still merges — see Testing below).
-`check.sh` also applies the four-thread default whenever `WITCHY_GATE_SCOPE` is
-present and an older coordinator has not exported `NEXTEST_TEST_THREADS`; this
-keeps the candidate that introduces the queue knob capable of gating itself.
-The same serialized-gate detection raises the bounded stage-heartbeat count
-from three to eight two-minute pulses, enough for measured four-wide macOS
-discovery without making the watchdog unbounded.
-On macOS, `.config/nextest.toml` additionally routes test discovery through
+`check.sh` raises the bounded stage-heartbeat count from three to eight
+two-minute pulses whenever `WITCHY_GATE_SCOPE` is present, enough for measured
+four-wide macOS discovery without making the watchdog unbounded.
+On macOS, `.config/nextest.toml` routes test discovery through
 `scripts/nextest-list-wrapper.sh`. The wrapper bounds only the `--list` binary
 launches to four slots, keyed by `NEXTEST_RUN_ID` (or the shared nextest parent
-PID on older versions); normal test execution still uses the bounded parallel
-scheduler. `WITCHY_NEXTEST_LIST_JOBS` permits local retuning.
+PID on older versions); test execution runs at nextest's normal width — the
+dyld stall was a cold-first-exec problem, and the list phase leaves every
+binary loader-warm. `WITCHY_NEXTEST_LIST_JOBS` permits local retuning.
 
 **Diff-scoped fuzzing.** The differential fuzzer is the gate's single biggest
 test (~57s, a fixed-seed parity regression suite). `process_one` classifies the
@@ -173,10 +170,9 @@ shards ignore the scope.
    rebase excludes. Members carrying a `.nobatch` marker (from a previous
    red batch) are skipped, and a head with `.nobatch` gates strictly alone.
 5. Run the gate: own process group (`set -m`), stdout to the log,
-   `NEXTEST_STATUS_LEVEL=pass` for streaming, and
-   `NEXTEST_TEST_THREADS=${MERGE_QUEUE_NEXTEST_THREADS:-4}` to bound discovery
-   and execution process pressure on the macOS gate host. Standalone focused
-   checks retain nextest's normal concurrency. A monitor loop kills the group on
+   `NEXTEST_STATUS_LEVEL=pass` for streaming. Discovery pressure on the macOS
+   gate host is bounded by the nextest list wrapper (see above); execution
+   runs at nextest's normal concurrency. A monitor loop kills the group on
    overall timeout, or on log-stall **only when the group is also idle** (CPU
    near zero) — a silent-but-CPU-busy gate is compiling/enumerating, not hung —
    and journals `timeout`. `check.sh` emits three two-minute stage heartbeats for
