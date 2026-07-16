@@ -53,8 +53,9 @@ phases="$tmp/phases.jsonl"
 attempts="$tmp/attempts.tsv"
 
 # Journaled batch members share a log. Parse every terminal attempt log once.
-# Existing logs do not carry fully structured phase events, so discovery is the
-# honest residual: test-stage wall time minus Cargo compile and test execution.
+# Historical logs do not carry fully structured phase events, so discovery is
+# the honest residual: test-stage wall time minus Cargo compile and execution.
+# New logs carry WITCHY_TIMING records; exact stage values take precedence.
 jq -r --argjson cutoff "$cutoff" '
     select((.event=="merged" or .event=="red" or .event=="timeout" or .event=="batch_red")
            and .log != null and .elapsed_s != null
@@ -67,6 +68,7 @@ jq -r --argjson cutoff "$cutoff" '
 LC_ALL=C awk -v meta="$attempts" '
         function reset_values() {
             compile=discovery=execution=test_stage=auxiliary=tests=binaries=""
+            exact_tests=exact_fmt=exact_clippy=exact_wasm=exact_book=""
         }
         function duration(s, parts, n, i, value, total) {
             total=0
@@ -100,13 +102,24 @@ LC_ALL=C awk -v meta="$attempts" '
                 if (auxiliary == "") auxiliary=0
                 auxiliary += value
             }
+            if (line ~ /^WITCHY_TIMING \{/ && line ~ /"status":"green"/) {
+                value=line; sub(/^.*"name":"/, "", value); sub(/".*$/, "", value)
+                timing_name=value
+                value=line; sub(/^.*"elapsed_s":/, "", value); sub(/[,}].*$/, "", value)
+                if (timing_name ~ /^tests \(workspace/) exact_tests=value
+                else if (timing_name ~ /^witchy fmt /) exact_fmt=value
+                else if (timing_name == "clippy (deny warnings)") exact_clippy=value
+                else if (timing_name == "wasm playground build") exact_wasm=value
+                else if (timing_name == "runnable book (browser)") exact_book=value
+            }
         }
         function emit(logfile, outcome, elapsed) {
+            if (exact_tests != "") test_stage=exact_tests
             if (test_stage != "" && compile != "" && execution != "") {
                 discovery=test_stage-compile-execution
                 if (discovery < 0) discovery=0
             }
-            printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n", logfile, outcome, elapsed, compile, discovery, execution, test_stage, auxiliary, tests, binaries
+            printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n", logfile, outcome, elapsed, compile, discovery, execution, test_stage, auxiliary, tests, binaries, exact_tests, exact_fmt, exact_clippy, exact_wasm, exact_book
         }
         BEGIN {
             while ((getline row < meta) > 0) {
@@ -130,7 +143,9 @@ LC_ALL=C awk -v meta="$attempts" '
            compile_s:($f[3]|number_or_null), discovery_estimate_s:($f[4]|number_or_null),
            execution_s:($f[5]|number_or_null), test_stage_s:($f[6]|number_or_null),
            auxiliary_s:($f[7]|number_or_null), tests:($f[8]|number_or_null),
-           binaries:($f[9]|number_or_null)}' >"$phases"
+           binaries:($f[9]|number_or_null), exact_tests_s:($f[10]|number_or_null),
+           fmt_s:($f[11]|number_or_null), clippy_s:($f[12]|number_or_null),
+           wasm_s:($f[13]|number_or_null), book_s:($f[14]|number_or_null)}' >"$phases"
 
 generated="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 report="$tmp/report.json"
@@ -176,6 +191,11 @@ jq -sn \
                   execution:($phases|map(.execution_s)|distribution),
                   test_stage:($phases|map(.test_stage_s)|distribution),
                   auxiliary:($phases|map(.auxiliary_s)|distribution)},
+        structured_phases_s:{tests:($phases|map(.exact_tests_s)|distribution),
+                             fmt:($phases|map(.fmt_s)|distribution),
+                             clippy:($phases|map(.clippy_s)|distribution),
+                             wasm:($phases|map(.wasm_s)|distribution),
+                             book:($phases|map(.book_s)|distribution)},
         suite:{tests:($phases|map(.tests)|distribution), binaries:($phases|map(.binaries)|distribution)}
       }
 ' >"$report"
@@ -207,6 +227,13 @@ jq -r '
     "  test execution (n=\(.phases_s.execution.count)):         \(value(.phases_s.execution.p50; "s")) / \(value(.phases_s.execution.p90; "s"))",
     "  full test stage (n=\(.phases_s.test_stage.count)):        \(value(.phases_s.test_stage.p50; "s")) / \(value(.phases_s.test_stage.p90; "s"))",
     "  auxiliary stages (n=\(.phases_s.auxiliary.count)):       \(value(.phases_s.auxiliary.p50; "s")) / \(value(.phases_s.auxiliary.p90; "s"))",
+    "",
+    "Structured stage duration (p50 / p90; exact where instrumented)",
+    "  tests (n=\(.structured_phases_s.tests.count)):   \(value(.structured_phases_s.tests.p50; "s")) / \(value(.structured_phases_s.tests.p90; "s"))",
+    "  fmt (n=\(.structured_phases_s.fmt.count)):     \(value(.structured_phases_s.fmt.p50; "s")) / \(value(.structured_phases_s.fmt.p90; "s"))",
+    "  clippy (n=\(.structured_phases_s.clippy.count)):  \(value(.structured_phases_s.clippy.p50; "s")) / \(value(.structured_phases_s.clippy.p90; "s"))",
+    "  wasm (n=\(.structured_phases_s.wasm.count)):    \(value(.structured_phases_s.wasm.p50; "s")) / \(value(.structured_phases_s.wasm.p90; "s"))",
+    "  book (n=\(.structured_phases_s.book.count)):    \(value(.structured_phases_s.book.p50; "s")) / \(value(.structured_phases_s.book.p90; "s"))",
     "",
     "Outcomes",
     "  red / timeout / batch-red: \(.outcomes.red) / \(.outcomes.timeout) / \(.outcomes.batch_red)",

@@ -1,4 +1,5 @@
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -137,7 +138,10 @@ fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
          Starting 100 tests across 10 binaries\n\
          Summary [ 30.000s] 100 tests run: 100 passed\n\
          [1] tests (workspace) took 70s\n\
-         [2] witchy fmt (std+examples) took 2s\n",
+         [2] witchy fmt (std+examples) took 2s\n\
+         WITCHY_TIMING {\"schema\":1,\"kind\":\"foreground\",\"step\":1,\"name\":\"tests (workspace)\",\"status\":\"green\",\"started_epoch\":10,\"finished_epoch\":81,\"elapsed_s\":71,\"gate_elapsed_s\":71}\n\
+         WITCHY_TIMING {\"schema\":1,\"kind\":\"foreground\",\"step\":2,\"name\":\"witchy fmt (std+examples)\",\"status\":\"green\",\"started_epoch\":81,\"finished_epoch\":84,\"elapsed_s\":3,\"gate_elapsed_s\":74}\n\
+         WITCHY_TIMING {\"schema\":1,\"kind\":\"background\",\"step\":3,\"name\":\"clippy (deny warnings)\",\"status\":\"green\",\"started_epoch\":10,\"finished_epoch\":60,\"elapsed_s\":50,\"gate_elapsed_s\":50}\n",
     )
     .expect("write green fixture log");
     let timeout_log = logs.join("timeout.log");
@@ -193,11 +197,115 @@ fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
     assert_eq!(report["gate_s"]["p50"], 60);
     assert_eq!(report["gate_s"]["p90"], 90);
     assert_eq!(report["phases_s"]["compile"]["p50"], 20);
-    assert_eq!(report["phases_s"]["discovery_estimate"]["p50"], 20);
+    assert_eq!(report["phases_s"]["discovery_estimate"]["p50"], 21);
     assert_eq!(report["phases_s"]["execution"]["p50"], 30.0);
-    assert_eq!(report["phases_s"]["test_stage"]["p50"], 70);
+    assert_eq!(report["phases_s"]["test_stage"]["p50"], 71);
     assert_eq!(report["phases_s"]["auxiliary"]["p50"], 2);
+    assert_eq!(report["structured_phases_s"]["tests"]["p50"], 71);
+    assert_eq!(report["structured_phases_s"]["fmt"]["p50"], 3);
+    assert_eq!(report["structured_phases_s"]["clippy"]["p50"], 50);
 
     let after = fs::read_to_string(state.join("journal.jsonl")).expect("read journal after");
     assert_eq!(before, after, "reporting must not mutate queue state");
+}
+
+#[test]
+fn fast_gate_emits_structured_foreground_and_background_timings() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let temp = TempDir::new();
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).expect("create fake tool directory");
+
+    let tool = bin.join("cargo");
+    fs::write(
+        &tool,
+        "#!/bin/sh\n\
+         if [ \"$1\" = clippy ]; then\n\
+           if [ -n \"${FAKE_CLIPPY_PID_FILE:-}\" ]; then printf '%s\\n' \"$$\" >\"$FAKE_CLIPPY_PID_FILE\"; sleep 30; exit 0; fi\n\
+           sleep 1; exit 0\n\
+         fi\n\
+         if [ \"$1\" = nextest ] && [ \"$2\" = run ] && [ \"${FAKE_CARGO_FAIL_NEXTEST:-}\" != 1 ]; then sleep 3; exit 0; fi\n\
+         if [ \"${FAKE_CARGO_FAIL_NEXTEST:-}\" = 1 ] && [ \"$1\" = nextest ] && [ \"$2\" = run ]; then\n\
+           sleep 1; exit 7\n\
+         fi\n\
+         exit 0\n",
+    )
+    .expect("write fake cargo");
+    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).expect("chmod fake cargo");
+    let git = bin.join("git");
+    fs::write(&git, "#!/bin/sh\nexit 0\n").expect("write fake git");
+    fs::set_permissions(&git, fs::Permissions::from_mode(0o755)).expect("chmod fake git");
+    let rustup = bin.join("rustup");
+    fs::write(
+        &rustup,
+        "#!/bin/sh\nif [ \"$1\" = which ]; then echo /usr/bin/true; fi\nexit 0\n",
+    )
+    .expect("write fake rustup");
+    fs::set_permissions(&rustup, fs::Permissions::from_mode(0o755))
+        .expect("chmod fake rustup");
+
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+    let output = Command::new("bash")
+        .arg(root.join("scripts/check.sh"))
+        .arg("--fast")
+        .env("PATH", path)
+        .env("CARGO_TARGET_DIR", temp.path().join("target"))
+        .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
+        .output()
+        .expect("run fast gate with fake tools");
+    assert!(
+        output.status.success(),
+        "fake fast gate failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout).expect("check output is utf8");
+    let timings: Vec<serde_json::Value> = stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("WITCHY_TIMING "))
+        .map(|json| serde_json::from_str(json).expect("timing record is JSON"))
+        .collect();
+    assert_eq!(timings.len(), 2, "expected test and clippy timings: {stdout}");
+    assert_eq!(timings[0]["kind"], "foreground");
+    assert_eq!(timings[0]["name"], "tests (workspace, minus e2e)");
+    assert_eq!(timings[0]["status"], "green");
+    assert!(timings[0]["elapsed_s"].as_u64().unwrap() >= 3);
+    assert_eq!(timings[1]["kind"], "background");
+    assert_eq!(timings[1]["name"], "clippy (deny warnings)");
+    assert_eq!(timings[1]["status"], "green");
+    assert!(
+        timings[1]["elapsed_s"].as_u64().unwrap() <= 2,
+        "background timing included time spent waiting for foreground collection: {stdout}",
+    );
+
+    let clippy_pid_file = temp.path().join("red-clippy.pid");
+    let failed = Command::new("bash")
+        .arg(root.join("scripts/check.sh"))
+        .arg("--fast")
+        .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default()))
+        .env("CARGO_TARGET_DIR", temp.path().join("target-red"))
+        .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
+        .env("FAKE_CARGO_FAIL_NEXTEST", "1")
+        .env("FAKE_CLIPPY_PID_FILE", &clippy_pid_file)
+        .output()
+        .expect("run red fast gate with fake tools");
+    assert_eq!(failed.status.code(), Some(7));
+    let clippy_pid = fs::read_to_string(&clippy_pid_file)
+        .expect("red clippy leg recorded its pid")
+        .trim()
+        .parse::<i32>()
+        .expect("parse red clippy pid");
+    assert!(
+        !process_is_alive(clippy_pid),
+        "foreground failure orphaned background clippy pid {clippy_pid}",
+    );
+    let stdout = String::from_utf8(failed.stdout).expect("red check output is utf8");
+    let timing = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("WITCHY_TIMING "))
+        .map(|json| serde_json::from_str::<serde_json::Value>(json).expect("red timing is JSON"))
+        .expect("red foreground timing was emitted");
+    assert_eq!(timing["kind"], "foreground");
+    assert_eq!(timing["name"], "tests (workspace, minus e2e)");
+    assert_eq!(timing["status"], "red");
 }

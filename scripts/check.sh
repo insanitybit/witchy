@@ -248,6 +248,18 @@ fi
 step=0
 t_start=$(date +%s)
 
+# Machine-readable timing rides in the ordinary gate log so observability adds
+# no lock, sidecar writer, or coordinator failure mode. Labels are internal
+# constants (never user input), which keeps this Bash-3.2-compatible emitter
+# dependency-free. Older reports ignore the prefix; gate-report.sh prefers it
+# when present and falls back to the human markers above for historical logs.
+emit_timing() { # emit_timing <kind> <step> <label> <status> <started> <finished>
+    local kind="$1" timing_step="$2" label="$3" status="$4" started="$5" finished="$6"
+    printf 'WITCHY_TIMING {"schema":1,"kind":"%s","step":%d,"name":"%s","status":"%s","started_epoch":%d,"finished_epoch":%d,"elapsed_s":%d,"gate_elapsed_s":%d}\n' \
+        "$kind" "$timing_step" "$label" "$status" "$started" "$finished" \
+        "$(( finished - started ))" "$(( finished - t_start ))"
+}
+
 # A stage can legitimately go quiet after Cargo finishes compiling and before
 # nextest completes its first test binary. Emit only a bounded number of pulses:
 # enough to bridge that startup window, but not enough to hide a true deadlock
@@ -309,8 +321,12 @@ run() {
     kill "$stage_heartbeat_pid" 2>/dev/null || true
     wait "$stage_heartbeat_pid" 2>/dev/null || true
     stage_heartbeat_pid=""
+    local t_finished; t_finished=$(date +%s)
+    local stage_status="green"
+    [ "$command_status" -eq 0 ] || stage_status="red"
+    emit_timing foreground "$step" "$label" "$stage_status" "$t_stage" "$t_finished"
     [ "$command_status" -eq 0 ] || return "$command_status"
-    printf '\033[1;34m    [%d] %s took %ds\033[0m\n' "$step" "$label" "$(( $(date +%s) - t_stage ))"
+    printf '\033[1;34m    [%d] %s took %ds\033[0m\n' "$step" "$label" "$(( t_finished - t_stage ))"
 }
 
 # Clippy runs as a BACKGROUND leg in both the fast and the full gate: lint
@@ -339,15 +355,32 @@ seed_clippy_dir() {
 }
 launch_clippy_leg() {
     clippy_log="$(mktemp "${TMPDIR:-/tmp}/witchy-clippy-XXXXXX")"
-    ( seed_clippy_dir && exec env CARGO_TARGET_DIR="$clippy_dir" cargo clippy --workspace --all-targets -- -D warnings ) >"$clippy_log" 2>&1 &
+    clippy_started=$(date +%s)
+    ( seed_clippy_dir && background_leg env CARGO_TARGET_DIR="$clippy_dir" cargo clippy --workspace --all-targets -- -D warnings ) >"$clippy_log" 2>&1 &
     clippy_pid=$!
 }
 
+# Preserve the command's real finish time without a sidecar file. The marker is
+# written into the leg's existing private log and stripped before diagnostics;
+# collect_bg turns it into the ordinary WITCHY_TIMING record. The wrapper owns
+# and forwards TERM/INT to the command so reap_bg retains the old `exec` safety:
+# abandoning a red foreground stage cannot orphan cargo behind the next gate.
+background_leg() { # background_leg <command...>
+    local child="" command_status=0 finished
+    trap 'kill "${child:-}" 2>/dev/null || true; wait "${child:-}" 2>/dev/null || true; exit 143' TERM INT
+    "$@" &
+    child=$!
+    wait "$child" || command_status=$?
+    trap - TERM INT
+    finished=$(date +%s)
+    printf 'WITCHY_BG_FINISHED %d\n' "$finished"
+    return "$command_status"
+}
+
 # Reap the background legs on ANY exit — green, red at tests/fmt, or a failed
-# collect. `exec` in each leg makes its recorded pid BE its cargo process, so
-# the kill reaches the build itself (its rustc children sit in the
-# surrounding process group, which the coordinator's timeout kill already
-# covers). Without this, a red foreground stage abandoned live cargo
+# collect. background_leg forwards the signal to its cargo child (rustc
+# children sit in the surrounding process group, which the coordinator's
+# timeout kill already covers). Without this, a red foreground stage abandoned live cargo
 # processes that kept building while the coordinator rebased the next
 # candidate in the same worktree. collect_bg clears each pid after reaping
 # it: a waited-on pid may be recycled by the OS and must never be signalled.
@@ -366,19 +399,26 @@ trap 'exit 143' TERM INT
 
 # Collect a background leg, cheapest-to-diagnose first. On failure, show the
 # leg's full output and exit red.
-collect_bg() { # collect_bg <label> <pid> <log>
-    local label="$1" pid="$2" log="$3"
+collect_bg() { # collect_bg <label> <pid> <log> <started>
+    local label="$1" pid="$2" log="$3" started="$4"
     step=$((step + 1))
     local t_collect; t_collect=$(date +%s)
     printf '\n\033[1;34m==> [%d] %s (t+%ds)\033[0m\n' "$step" "$label" "$(( t_collect - t_start ))"
-    if ! wait "$pid"; then
-        cat "$log"
+    local command_status=0
+    wait "$pid" || command_status=$?
+    local t_finished
+    t_finished=$(sed -n 's/^WITCHY_BG_FINISHED \([0-9][0-9]*\)$/\1/p' "$log" | tail -1)
+    case "$t_finished" in '' | *[!0-9]*) t_finished=$(date +%s) ;; esac
+    if [ "$command_status" -ne 0 ]; then
+        emit_timing background "$step" "$label" red "$started" "$t_finished"
+        sed '/^WITCHY_BG_FINISHED [0-9][0-9]*$/d' "$log"
         rm -f "$log"
         printf '\033[1;31m%s FAILED\033[0m\n' "$label"
         exit 1
     fi
+    emit_timing background "$step" "$label" green "$started" "$t_finished"
     rm -f "$log"
-    printf '\033[1;34m    [%d] %s took %ds\033[0m\n' "$step" "$label" "$(( $(date +%s) - t_collect ))"
+    printf '\033[1;34m    [%d] %s took %ds\033[0m\n' "$step" "$label" "$(( t_finished - started ))"
 }
 
 if [ "$fast" -eq 1 ]; then
@@ -395,7 +435,7 @@ if [ "$fast" -eq 1 ]; then
         run "witchy fmt (changed .witchy files)" witchy_fmt_check
     fi
     run "tests (workspace, minus e2e)" "${test_cmd[@]}"
-    collect_bg "clippy (deny warnings)" "$clippy_pid" "$clippy_log"
+    collect_bg "clippy (deny warnings)" "$clippy_pid" "$clippy_log" "$clippy_started"
     clippy_pid=""
     printf '\n\033[1;32mfast gate green\033[0m — run without --fast before push (fmt + wasm), --full for e2e\n'
     exit 0
@@ -423,15 +463,16 @@ fi
 launch_clippy_leg
 
 wasm_log="$(mktemp "${TMPDIR:-/tmp}/witchy-wasm-XXXXXX")"
-( exec "${wasm_cargo[@]}" build --lib --no-default-features --target wasm32-unknown-unknown ) >"$wasm_log" 2>&1 &
+wasm_started=$(date +%s)
+( background_leg "${wasm_cargo[@]}" build --lib --no-default-features --target wasm32-unknown-unknown ) >"$wasm_log" 2>&1 &
 wasm_pid=$!
 
 run "tests (workspace)"        "${test_cmd[@]}"
 run "witchy fmt (std+examples)" witchy_fmt_check
 
-collect_bg "clippy (deny warnings)"   "$clippy_pid" "$clippy_log"
+collect_bg "clippy (deny warnings)"   "$clippy_pid" "$clippy_log" "$clippy_started"
 clippy_pid=""
-collect_bg "wasm playground build"    "$wasm_pid"   "$wasm_log"
+collect_bg "wasm playground build"    "$wasm_pid"   "$wasm_log" "$wasm_started"
 wasm_pid=""
 
 run "runnable book (browser)"  validate_runnable_book
