@@ -14,9 +14,17 @@
 //! component and lowers the whole cycle to one portable trampoline loop
 //! (`wasm_tail_call(false)` stays configured; no `return_call` is emitted).
 //!
-//! These are RESOURCE + PARITY tests: the transition counts (5,000,000) would
-//! overflow either backend's control stack if the indirect edge were not lowered
-//! to constant stack, so a green run is itself the constant-stack proof. Kind
+//! These are RESOURCE + PARITY tests: the transition count (250,000) is ~30x
+//! the MEASURED depth at which a non-tail cycle exhausts the compiled backend's
+//! call stack (traps between 6,000 and 8,000 frames; probed 2026-07-16 with the
+//! same cycle shape made non-tail via `k(n) + 0`), so a green compiled run is
+//! itself the constant-stack proof with a wide margin. The interpreter leg
+//! proves RESULT PARITY at the same depth; it cannot fail by overflow at any
+//! practical count (its call frames are heap-allocated — measured fine at 500k
+//! non-tail frames), so interp constant-stack behavior is proven by the
+//! dedicated witchy-interp unit tests (deep_self_tail_recursion_*), not here.
+//! 5,000,000 was the original count; it bought no additional proof strength and
+//! cost ~30-50s of CPU per test per gate. Kind
 //! preservation is proven by the programs being well-typed and WASM-validating with
 //! ExternRef / GC-reference parameters and results that never pass through an i64
 //! slot (a boxed reference would fail validation or diverge).
@@ -58,7 +66,7 @@ fn assert_both_backends(source: &str, expected: &[&str], root: Option<&std::path
         ..Default::default()
     };
     // Cap linear memory at the CLI's `RUN_MEMORY_PAGES` (16384 = 1 GiB max, grown
-    // on demand). A proper tail cycle is constant-STACK, but 5,000,000 transitions
+    // on demand). A proper tail cycle is constant-STACK, but 250,000 transitions
     // still churn per-iteration heap for the reference/tuple cases, so the small
     // 64-page cap the 300k-iteration reference test uses is not enough headroom.
     let mut actor = runtime.spawn(&wasm, caps, 16384).expect("spawn");
@@ -79,11 +87,11 @@ fn seed_root(tag: &str) -> std::path::PathBuf {
     root
 }
 
-// (1) A scalar closure-table cycle performs at least 5,000,000 transitions on both
+// (1) A scalar closure-table cycle performs at least 250,000 transitions on both
 // backends. `driver` tail-calls the function value `k`; `bump -> make -> driver`
 // closes the cycle through the table, so the recursive edge is genuinely indirect.
 #[test]
-fn scalar_indirect_cycle_runs_five_million_transitions() {
+fn scalar_indirect_cycle_is_constant_stack_at_scale() {
     let source = r#"
 fn driver(k: fn(Int) -> Int, n: Int) -> Int:
     if n <= 0:
@@ -98,13 +106,13 @@ fn bump(n: Int) -> Int:
     make(n)
 
 fn main(console: Console):
-    console.print("${driver(bump, 5000000)}")
+    console.print("${driver(bump, 250000)}")
 "#;
     assert_both_backends(source, &["0"], None);
 }
 
 // (2) An indirect cycle carries an ExternRef parameter (a `Dir[Read]` capability)
-// without integer-slot boxing. The capability crosses the indirect edge 5M times;
+// without integer-slot boxing. The capability crosses the indirect edge 250k times;
 // a boxed externref would fail WASM validation or diverge.
 #[test]
 fn externref_parameter_survives_indirect_cycle() {
@@ -126,14 +134,14 @@ fn bump(dir: Dir[Read], n: Int) -> String:
     make(dir, n)
 
 fn main(console: Console, root: Dir[Read]):
-    console.print(driver(bump, root, 5000000))
+    console.print(driver(bump, root, 250000))
 "#;
     assert_both_backends(source, &["indirect-tail"], Some(&root));
     let _ = std::fs::remove_dir_all(&root);
 }
 
 // (3) An indirect cycle carries a concrete GC-reference tuple (a
-// `(Dir[Read], String)` aggregate) through the dispatcher, 5M transitions.
+// `(Dir[Read], String)` aggregate) through the dispatcher, 250k transitions.
 #[test]
 fn gc_reference_tuple_parameter_survives_indirect_cycle() {
     let root = seed_root("gctuple");
@@ -154,7 +162,7 @@ fn bump(pair: (Dir[Read], String), n: Int) -> String:
     make(pair, n)
 
 fn main(console: Console, root: Dir[Read]):
-    console.print(driver(bump, (root, "value.txt"), 5000000))
+    console.print(driver(bump, (root, "value.txt"), 250000))
 "#;
     assert_both_backends(source, &["indirect-tail"], Some(&root));
     let _ = std::fs::remove_dir_all(&root);
@@ -162,7 +170,7 @@ fn main(console: Console, root: Dir[Read]):
 
 // (4) A reference-valued RESULT survives the indirect dispatcher unchanged: the
 // cycle threads a `(Dir[Read], String)` aggregate as both parameter AND result,
-// returning it after 5M indirect transitions, then projects its String field.
+// returning it after 250k indirect transitions, then projects its String field.
 #[test]
 fn reference_valued_result_survives_indirect_dispatcher() {
     let root = seed_root("refresult");
@@ -184,7 +192,7 @@ fn label(pair: (Dir[Read], String)) -> String:
         (_dir, name) -> name
 
 fn main(console: Console, root: Dir[Read]):
-    let out = driver(bump, (root, "kept"), 5000000)
+    let out = driver(bump, (root, "kept"), 250000)
     console.print(label(out))
 "#;
     assert_both_backends(source, &["kept"], Some(&root));
@@ -213,7 +221,7 @@ fn bump(dir: Dir[Read], n: Int, name: String) -> String:
     make(dir, n, name)
 
 fn main(console: Console, root: Dir[Read]):
-    console.print(driver(bump, root, 5000000, "value.txt"))
+    console.print(driver(bump, root, 250000, "value.txt"))
 "#;
     assert_both_backends(source, &["indirect-tail"], Some(&root));
     let _ = std::fs::remove_dir_all(&root);
@@ -240,9 +248,10 @@ fn bump(a: Int, b: Int, n: Int) -> Int:
     make(a, b, n)
 
 fn main(console: Console):
-    console.print("${driver(bump, 7, 3, 5000000)}")
+    console.print("${driver(bump, 7, 3, 250000)}")
 "#;
-    // 5,000,000 is even, so the (a, b) swap count is even and a=7,b=3 at the base:
+    // 250,000 is even (as was the original 5,000,000), so the (a, b) swap count is
+    // even and a=7,b=3 at the base:
     // 7 - 3 = 4. A non-simultaneous rebind would corrupt one side and diverge.
     assert_both_backends(source, &["4"], None);
 }
@@ -270,7 +279,7 @@ fn finish(n: Int) -> Int:
     n + 42
 
 fn main(console: Console):
-    console.print("${driver(bump, finish, 5000000)}")
+    console.print("${driver(bump, finish, 250000)}")
 "#;
     // Cycle runs to n <= 0 through `bump`, then the out-of-component `finish(0)`
     // exits with 0 + 42 = 42.
