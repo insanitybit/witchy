@@ -78,6 +78,10 @@ fn daemon_enters_an_independent_process_group() {
         .env("MERGE_QUEUE_STATE_DIR", &state)
         .env("MERGE_QUEUE_GATE_WT", &gate_worktree)
         .env("MERGE_QUEUE_GATE_CMD", "true")
+        .env(
+            "MERGE_QUEUE_COORDINATOR_SCRIPT",
+            root.join("scripts/merge-queue.sh"),
+        )
         .output()
         .expect("start isolated coordinator daemon");
     assert!(
@@ -120,6 +124,101 @@ fn daemon_enters_an_independent_process_group() {
     assert!(
         !process_is_alive(pid),
         "coordinator {pid} ignored process-group termination"
+    );
+}
+
+#[test]
+fn concurrent_daemon_starts_create_exactly_one_coordinator() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let temp = TempDir::new();
+    let state = temp.path().join("state");
+    let gate_worktree = temp.path().join("unused-gate-worktree");
+
+    let mut starters = Vec::new();
+    for _ in 0..8 {
+        starters.push(
+            Command::new(root.join("scripts/merge-queue.sh"))
+                .arg("daemon")
+                .env("MERGE_QUEUE_STATE_DIR", &state)
+                .env("MERGE_QUEUE_GATE_WT", &gate_worktree)
+                .env("MERGE_QUEUE_GATE_CMD", "true")
+                .env(
+                    "MERGE_QUEUE_COORDINATOR_SCRIPT",
+                    root.join("scripts/merge-queue.sh"),
+                )
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("race coordinator daemon start"),
+        );
+    }
+    for mut starter in starters {
+        assert!(starter.wait().expect("wait for daemon starter").success());
+    }
+
+    let pid: i32 = fs::read_to_string(state.join("coordinator.pid"))
+        .expect("read winning coordinator pid")
+        .trim()
+        .parse()
+        .expect("parse winning coordinator pid");
+    let guard = ProcessGroupGuard(pid);
+    assert!(process_is_alive(pid), "winning coordinator is not alive");
+    assert_eq!(
+        fs::read_to_string(state.join("coordinator.lock/pid"))
+            .expect("read singleton lock owner")
+            .trim(),
+        pid.to_string(),
+    );
+    let log = fs::read_to_string(state.join("coordinator.log"))
+        .expect("read concurrent-start coordinator log");
+    assert_eq!(
+        log.matches("coordinator up (pid ").count(),
+        1,
+        "more than one persistent loop started:\n{log}",
+    );
+
+    drop(guard);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while process_is_alive(pid) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(!process_is_alive(pid), "winning coordinator ignored termination");
+}
+
+#[test]
+fn doctor_treats_denied_process_inspection_as_advisory() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let temp = TempDir::new();
+    let state = temp.path().join("state");
+    let bin = temp.path().join("bin");
+    fs::create_dir_all(&state).expect("create isolated coordinator state");
+    fs::create_dir(&bin).expect("create fake tool directory");
+    fs::write(
+        state.join("coordinator.pid"),
+        format!("{}\n", std::process::id()),
+    )
+    .expect("write live coordinator pid fixture");
+    let ps = bin.join("ps");
+    fs::write(&ps, "#!/bin/sh\nexit 126\n").expect("write denied ps fixture");
+    fs::set_permissions(&ps, fs::Permissions::from_mode(0o755)).expect("chmod fake ps");
+
+    let output = Command::new(root.join("scripts/merge-queue.sh"))
+        .arg("doctor")
+        .env("MERGE_QUEUE_STATE_DIR", &state)
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default()),
+        )
+        .output()
+        .expect("run doctor with denied process inspection");
+    assert!(
+        output.status.success(),
+        "doctor made advisory ps failure fatal: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("coordinator : RUNNING"),
+        "doctor lost coordinator health output",
     );
 }
 

@@ -40,6 +40,7 @@
 #                   requeued/blocked/dropped (red+timeout carry the log path)
 #   logs/           full gate output per attempt (check.sh stage markers carry
 #                   t+<seconds> offsets, so per-stage timing is in every log)
+#   coordinator.lock/ lifetime singleton for the persistent coordinator loop
 #   gate.lock/      the lock: pid + what + branch + log + started epoch
 #                   (stale locks — dead pid — are stolen)
 #
@@ -85,8 +86,10 @@ queue_dir="$qdir/queue"
 journal="$qdir/journal.jsonl"
 logs="$qdir/logs"
 lock="$qdir/gate.lock"
+coordinator_lock="$qdir/coordinator.lock"
 gate_wt="${MERGE_QUEUE_GATE_WT:-$root/.claude/worktrees/merge-gate}"
 gate_cmd="${MERGE_QUEUE_GATE_CMD:-./scripts/check.sh}"
+coordinator_script="${MERGE_QUEUE_COORDINATOR_SCRIPT:-$root/scripts/merge-queue.sh}"
 gate_timeout="${MERGE_QUEUE_GATE_TIMEOUT:-2700}"
 stall_timeout="${MERGE_QUEUE_STALL_TIMEOUT:-600}"
 
@@ -147,8 +150,96 @@ record() { # record <event> <branch> [key value]...
 }
 
 holding_lock=0
+holding_coordinator_lock=0
+coordinator_owner_shell_pid=""
 release_lock() { if [ "$holding_lock" -eq 1 ]; then rm -rf "$lock"; fi; holding_lock=0; }
-trap release_lock EXIT
+coordinator_lock_owned() {
+    [ "$holding_coordinator_lock" -eq 1 ] \
+        && [ "${BASHPID:-$$}" = "$coordinator_owner_shell_pid" ] \
+        && [ "$(cat "$coordinator_lock/pid" 2>/dev/null || true)" = "$$" ]
+}
+release_coordinator_lock() {
+    if coordinator_lock_owned; then
+        rm -rf "$coordinator_lock"
+    fi
+    if [ "${BASHPID:-$$}" = "$coordinator_owner_shell_pid" ] \
+        && [ "$(cat "$qdir/coordinator.pid" 2>/dev/null || true)" = "$$" ]; then
+        rm -f "$qdir/coordinator.pid"
+    fi
+    holding_coordinator_lock=0
+}
+cleanup() {
+    release_lock
+    release_coordinator_lock
+}
+trap cleanup EXIT
+
+# coordinator.lock is the lifetime singleton, while coordinator.pid remains the
+# operator-facing pointer. Atomic mkdir closes the read-then-write race that let
+# two starts both pass the old PID-file guard. A lock left by SIGKILL is stolen
+# only after its recorded owner is proven dead (EPERM still counts as alive via
+# pid_is_alive, matching the gate-lock safety rule).
+acquire_coordinator_lock() {
+    while ! mkdir "$coordinator_lock" 2>/dev/null; do
+        local owner; owner="$(cat "$coordinator_lock/pid" 2>/dev/null || true)"
+        if [ -z "$owner" ]; then
+            # Another starter may be between mkdir and writing pid. Give it one
+            # second; rmdir succeeds only if the directory is still empty, so
+            # this also safely recovers a process killed in that tiny window.
+            sleep 1
+            owner="$(cat "$coordinator_lock/pid" 2>/dev/null || true)"
+            if [ -z "$owner" ] && rmdir "$coordinator_lock" 2>/dev/null; then
+                continue
+            fi
+        fi
+        if [ -n "$owner" ] && ! pid_is_alive "$owner"; then
+            note "stealing stale coordinator lock (pid $owner is gone)"
+            rm -rf "$coordinator_lock"
+            continue
+        fi
+        return 1
+    done
+    echo "$$" >"$coordinator_lock/pid"
+    holding_coordinator_lock=1
+    coordinator_owner_shell_pid="${BASHPID:-$$}"
+}
+
+coordinator_pid() {
+    local pid
+    pid="$(cat "$coordinator_lock/pid" 2>/dev/null || true)"
+    if [ -n "$pid" ] && pid_is_alive "$pid"; then echo "$pid"; return 0; fi
+    pid="$(cat "$qdir/coordinator.pid" 2>/dev/null || true)"
+    if [ -n "$pid" ] && pid_is_alive "$pid"; then echo "$pid"; return 0; fi
+    return 1
+}
+
+# Legacy versions had no lifetime lock, so an unnamed detached loop can still
+# be alive when the first fixed coordinator starts. Reap only sleeping siblings
+# whose command names this exact repository script, and never the PID-file
+# keeper or gate-lock holder. Custom MERGE_QUEUE_STATE_DIR instances are skipped
+# so an isolated test/dev queue can never be mistaken for the production queue.
+coordinator_siblings() {
+    [ -z "${MERGE_QUEUE_STATE_DIR:-}" ] || return 0
+    ps -axo pid=,state=,command= 2>/dev/null | awk \
+        -v self="$$" -v needle="$coordinator_script run" '
+            $1 != self && $2 ~ /^[SI]/ && index($0, needle) { print $1 }
+        ' || true
+}
+reap_orphan_coordinators() {
+    local keeper="$1" gate_pid candidate
+    gate_pid="$(cat "$lock/pid" 2>/dev/null || true)"
+    while IFS= read -r candidate; do
+        [ -n "$candidate" ] || continue
+        [ "$candidate" != "$keeper" ] || continue
+        [ "$candidate" != "$gate_pid" ] || continue
+        pid_is_alive "$candidate" || continue
+        if kill -TERM "$candidate" 2>/dev/null; then
+            note "reaped idle orphan coordinator pid $candidate (BUG-580)"
+        else
+            note "WARNING: found orphan coordinator pid $candidate but could not signal it"
+        fi
+    done < <(coordinator_siblings)
+}
 
 acquire_lock() { # acquire_lock <description> [branch] [log]
     local waited=0
@@ -351,8 +442,8 @@ cmd_submit() {
         >"$queue_dir/$fname"
     record submitted "$branch" by "${USER:-unknown}"
     note "queued $branch ($fname)"
-    local cpid; cpid="$(cat "$qdir/coordinator.pid" 2>/dev/null || true)"
-    if [ -n "$cpid" ] && pid_is_alive "$cpid"; then
+    local cpid; cpid="$(coordinator_pid 2>/dev/null || true)"
+    if [ -n "$cpid" ]; then
         note "coordinator (pid $cpid) will gate + merge it"
     else
         note "NO COORDINATOR RUNNING — your submission will sit until one starts:"
@@ -393,8 +484,8 @@ cmd_status() {
 
 cmd_doctor() {
     echo "merge-queue doctor — $(now)"
-    local cpid; cpid="$(cat "$qdir/coordinator.pid" 2>/dev/null || true)"
-    if [ -n "$cpid" ] && pid_is_alive "$cpid"; then
+    local cpid; cpid="$(coordinator_pid 2>/dev/null || true)"
+    if [ -n "$cpid" ]; then
         echo "coordinator : RUNNING (pid $cpid)"
         # Durability check: a coordinator started as `run` from an interactive or
         # tool-host session dies when that session's process group is reaped,
@@ -403,7 +494,7 @@ cmd_doctor() {
         # A `daemon`-started coordinator is reparented to init (ppid 1) via
         # setsid and survives. Warn when it is NOT detached so an operator can
         # migrate it (kill + `daemon`) at the next idle moment.
-        local cppid; cppid="$(ps -o ppid= -p "$cpid" 2>/dev/null | tr -d ' ')"
+        local cppid; cppid="$(ps -o ppid= -p "$cpid" 2>/dev/null | tr -d ' ' || true)"
         if [ -n "$cppid" ] && [ "$cppid" != 1 ]; then
             echo "  WARNING   : session-bound (ppid $cppid ≠ 1) — dies with its launching session and orphans the gate."
             echo "              Migrate when idle: kill $cpid && ./scripts/merge-queue.sh daemon"
@@ -709,8 +800,8 @@ cmd_run() {
     # doctor/submit reported NO COORDINATOR while the real daemon was alive,
     # and the natural reaction (start another daemon) produced TWO coordinators
     # racing the queue. --once also refuses to run alongside a live daemon.
-    local cpid; cpid="$(cat "$qdir/coordinator.pid" 2>/dev/null || true)"
-    if [ -n "$cpid" ] && [ "$cpid" != "$$" ] && pid_is_alive "$cpid"; then
+    local cpid; cpid="$(coordinator_pid 2>/dev/null || true)"
+    if [ -n "$cpid" ] && [ "$cpid" != "$$" ]; then
         if [ "$once" -eq 1 ]; then
             note "a persistent coordinator (pid $cpid) is already running — it will drain the queue; not starting a --once run"
             exit 0
@@ -718,9 +809,29 @@ cmd_run() {
         note "a coordinator is already running (pid $cpid); refusing to start a second"
         exit 1
     fi
-    [ "$once" -eq 0 ] && echo "$$" >"$qdir/coordinator.pid"
+    if ! acquire_coordinator_lock; then
+        cpid="$(cat "$coordinator_lock/pid" 2>/dev/null || true)"
+        if [ "$once" -eq 1 ]; then
+            note "a coordinator (pid ${cpid:-?}) won the startup race — it will drain the queue; not starting a --once run"
+            exit 0
+        fi
+        note "a coordinator (pid ${cpid:-?}) won the startup race; refusing to start a second"
+        exit 1
+    fi
+    if [ "$once" -eq 0 ]; then
+        echo "$$" >"$qdir/coordinator.pid"
+        reap_orphan_coordinators "$$"
+        local cppid; cppid="$(ps -o ppid= -p "$$" 2>/dev/null | tr -d ' ' || true)"
+        if [ -n "$cppid" ] && [ "$cppid" != 1 ]; then
+            note "WARNING: persistent 'run' is session-bound (ppid $cppid); use './scripts/merge-queue.sh daemon' for a durable coordinator"
+        fi
+    fi
     note "coordinator up (pid $$, gate: '$gate_cmd', timeouts: ${gate_timeout}s total / ${stall_timeout}s stall); state: $qdir"
     while :; do
+        if ! coordinator_lock_owned; then
+            note "lost coordinator singleton ownership; exiting instead of becoming an unnamed sibling"
+            return 1
+        fi
         local f
         f="$(ls -1 "$queue_dir" 2>/dev/null | sort | head -1 || true)"
         if [ -z "$f" ]; then
@@ -847,8 +958,8 @@ cmd_resolve() {
 }
 
 cmd_daemon() {
-    local cpid; cpid="$(cat "$qdir/coordinator.pid" 2>/dev/null || true)"
-    if [ -n "$cpid" ] && pid_is_alive "$cpid"; then
+    local cpid; cpid="$(coordinator_pid 2>/dev/null || true)"
+    if [ -n "$cpid" ]; then
         note "coordinator already running (pid $cpid); nothing to do"
         return 0
     fi
@@ -859,7 +970,7 @@ cmd_daemon() {
     if command -v setsid >/dev/null 2>&1; then
         # util-linux `-f` also works when an interactive shell made the launcher
         # a process-group leader (a group leader cannot call setsid directly).
-        nohup setsid -f "$root/scripts/merge-queue.sh" run \
+        nohup setsid -f "$coordinator_script" run \
             >>"$qdir/coordinator.log" 2>&1 </dev/null &
     elif command -v perl >/dev/null 2>&1; then
         # macOS has no setsid(1), but its system Perl exposes POSIX::setsid.
@@ -872,15 +983,25 @@ cmd_daemon() {
             defined POSIX::setsid() or die "setsid: $!\n";
             exec @ARGV;
             die "exec: $!\n";
-        ' "$root/scripts/merge-queue.sh" run >>"$qdir/coordinator.log" 2>&1 </dev/null &
+        ' "$coordinator_script" run >>"$qdir/coordinator.log" 2>&1 </dev/null &
     else
         note "daemon requires setsid(1) or Perl POSIX::setsid to detach safely"
         return 1
     fi
     disown || true
-    sleep 1
-    cpid="$(cat "$qdir/coordinator.pid" 2>/dev/null || true)"
-    if [ -n "$cpid" ] && pid_is_alive "$cpid"; then
+    # Concurrent daemon callers may all fork before the winning child publishes
+    # coordinator.pid. Give that child a bounded window instead of reporting a
+    # false startup failure after one fixed sleep; the singleton lock still
+    # decides which child wins.
+    local waited=0
+    cpid=""
+    while [ "$waited" -lt 5 ]; do
+        sleep 1
+        cpid="$(coordinator_pid 2>/dev/null || true)"
+        [ -n "$cpid" ] && break
+        waited=$((waited + 1))
+    done
+    if [ -n "$cpid" ]; then
         note "coordinator daemon started (pid $cpid); log: $qdir/coordinator.log; stop: kill $cpid"
     else
         note "daemon failed to start — see $qdir/coordinator.log"
