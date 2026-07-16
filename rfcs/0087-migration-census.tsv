@@ -1,0 +1,40 @@
+path	line	category	callee	parameter	root
+benchmarks/dict_count.witchy	5	auxiliary-result-discard	dict.insert	-	-
+examples/dice/src/dice.witchy	16	expression-position-mutator	prng.Rng__next_below	-	-
+examples/maze/src/maze.witchy	84	auxiliary-result-discard	dict.insert	-	-
+examples/wordcount/src/wordcount.witchy	10	auxiliary-result-discard	dict.insert	-	-
+std/dict.witchy	21	auxiliary-result-discard	dict.insert	-	-
+std/dict.witchy	27	auxiliary-result-discard	dict.__insert_extract	-	-
+std/dict.witchy	63	auxiliary-result-discard	dict.remove	-	-
+std/dict.witchy	66	auxiliary-result-discard	dict.__remove_extract	-	-
+std/list.witchy	37	auxiliary-result-discard	list.__pop_extract	-	-
+std/list.witchy	675	auxiliary-result-discard	list.__pop_extract	-	-
+std/prng.witchy	71	expression-position-mutator	prng.next_below	-	-
+std/prng.witchy	56	expression-position-mutator	prng.next	-	-
+std/prng.witchy	60	expression-position-mutator	prng.next	-	-
+std/prng.witchy	84	auxiliary-result-discard	prng.choice	-	-
+std/prng.witchy	75	auxiliary-result-discard	prng.next	-	-
+std/prng.witchy	78	auxiliary-result-discard	prng.next_below	-	-
+std/prng.witchy	81	auxiliary-result-discard	prng.next_bool	-	-
+book/src/mutating-methods.md#block-1	7	expression-position-mutator	main.take_last	-	-
+book/src/mutating-methods.md#block-1	2	auxiliary-result-discard	list.pop	-	-
+book/src/mutating-methods.md#block-4	3	expression-position-mutator	dict.insert__String__Int	-	-
+book/src/mutating-methods.md#block-4	4	expression-position-mutator	dict.insert__String__Int	-	-
+book/src/mutating-methods.md#block-4	5	expression-position-mutator	dict.remove__String__Int	-	-
+spec/language.md#block-15	7	expression-position-mutator	main.bump	-	-
+
+witchy-files	271
+markdown-blocks	170
+checked	439
+rejected	2
+var-declarations	25
+resolved-var-calls	471
+mechanical-self-reassignment	0
+expression-position-mutator	9
+immutable-var-argument	0
+temporary-var-argument	0
+auxiliary-result-discard	14
+
+compiler-rejections
+projects/coven/src/coven.witchy: type error: `Coven.route_rootpub`, line 267: a closure cannot capture `self` because it carries a `Dir` capability; cap-carrying closure environments require RFC-0005's GC-struct aggregate lowering — pass the capability directly
+projects/coven-web/src/coven_web.witchy: type error: `coven_web.h_index_html`, line 129: a closure cannot capture `assets` because it carries a `Dir` capability; cap-carrying closure environments require RFC-0005's GC-struct aggregate lowering — pass the capability directly

@@ -10,6 +10,7 @@
 #![deny(unsafe_code)]
 
 pub mod loans;
+pub mod migration;
 pub mod storage;
 pub mod traits;
 pub mod typeck;

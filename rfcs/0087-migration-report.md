@@ -1,9 +1,11 @@
 # RFC-0087 migration report
 
-Date: 2026-07-14
+Date: 2026-07-16
 
-Baseline: `fa1ac5c8` (convention-bearing function types, before the uniform
-write-back runtime and source cut)
+Historical source-cut baseline: `fa1ac5c8` (convention-bearing function types,
+before the uniform write-back runtime and source cut).
+
+Current verification baseline: canonical `master` at `e68a0ed5`.
 
 This report records the one-cut migration required by RFC-0087. Source-text
 counts are useful sizing evidence, but the acceptance authority is resolution
@@ -73,43 +75,65 @@ their resolved declaration performs `var` write-back.
 
 ## Type-resolved verification
 
-The executable corpus gate links the real standard library and compiles or runs
-all book examples, standalone examples, and nested example projects on the
-interpreter and compiled backend. The post-cut run covers 930 cases. Focused
-RFC-0087 tests additionally resolve free calls, method calls, generic calls,
-trait dispatch, indirect function values, nested field/index places,
-caller-side and callee-side `?`, `??`, auxiliary-result discard, and locals live
-across the shipped async segment lowering. A generated-`Reflect` regression
-also proves that a uniform `var` call refines an initially empty generic
-container from its value argument, replacing the type evidence the old
-self-assignment shape supplied incidentally.
+`cargo run --bin rfc0087-census -- .` is the durable compiler census. It parses,
+links, lowers methods/traits to their exact callee declarations, reads `var`
+conventions from those declarations, and type-checks 271 Witchy sources plus
+170 Witchy blocks from the README, spec, and book. Its complete stable output is
+checked in at [`0087-migration-census.tsv`](0087-migration-census.tsv) and
+freshness-tested by `tests/rfc0087_migration_census.rs`.
 
-This compiler pass is the final accounting for affected calls: an old
-self-returning use cannot type-check against the new declarations, and a
-misclassified derived-copy or temporary use fails the writable-place check.
+The current resolved totals are 25 entry-source `var` declarations and 471
+lowered `var` call instances inspected. The obsolete migration-error classes
+are empty: zero mechanical self-reassignments, zero immutable arguments passed
+to `var`, and zero temporary `var` arguments. Nine expression-position calls
+are intentional uses of the independent result (PRNG steps, extraction, and
+the teaching examples), and 14 statement-position calls intentionally discard
+an auxiliary result. The snapshot lists every such judgment by source line and
+resolved callee; no regex or method-name allowlist contributes to the counts.
+
+Two top-level project entries fail before RFC-0087 checking on the already-known
+RFC-0005 representation boundary: `projects/coven/src/coven.witchy` and
+`projects/coven-web/src/coven_web.witchy` capture a `Dir`-carrying value in a
+closure. The exact compiler diagnostics are retained in the snapshot as
+externally owned evidence. The census still lowers and classifies their direct
+`var` calls, and neither contains an RFC-0087 migration-error finding. This
+slice does not modify representation or closure-ABI files.
+
+The executable corpus gate separately links the real standard library and
+compiles or runs book examples, standalone examples, and nested example
+projects on the interpreter and compiled backend. Focused RFC-0087 tests also
+resolve free calls, method calls, generic calls, trait dispatch, indirect
+function values, nested field/index places, caller-side and callee-side `?`,
+`??`, auxiliary-result discard, and locals live across the shipped async
+segment lowering.
 
 ## Performance gate
 
-Three kernel-clock samples after one warmup were compared on the same machine.
-Lower is better.
+Current master carries the dedicated seven-kernel
+[`rfc0087_inplace_gate.sh`](../benchmarks/rfc0087_inplace_gate.sh) and frozen
+reference used by
+[`0087-performance-report.md`](0087-performance-report.md). It compares the
+shipping optimized configuration with the supported `WITCHY_OPT=-inplace`
+forced-copy oracle for `word_count`, `dict_count`, `list_sum`, `knucleotide`,
+`list_index`, `binary_trees`, and `expr_eval`.
 
-| Benchmark | Baseline ns | Post-cut ns | Change |
-| --- | ---: | ---: | ---: |
-| `list_index` | 4,847,792 | 4,890,292 | +0.88% |
-| `binary_trees` | 62,850,625 | 62,741,667 | -0.17% |
-| `expr_eval` | 12,004,542 | 11,993,916 | -0.09% |
+The locked best-of-three evidence proves that all optimized kernels complete,
+the four memory-cliff kernels fail only under forced-copy, the three numeric
+kernels retain a material in-place advantage, and their optimized timings pass
+the RFC-0051 5% non-regression threshold. The harness, reference, and report
+landed through the serialized full gate in batch commit `5974a032`; no
+per-operation fast path or new `*_cap` helper was added.
 
-All three remain inside RFC-0051's 5% per-benchmark threshold. The former
-memory-cliff kernels `word_count`, `dict_count`, `list_sum`, and `knucleotide`
-all complete under the post-cut implementation. The write-back lowering is
-therefore keyed into the existing ownership/in-place machinery rather than
-silently falling back to whole-buffer copies.
+## Current validation contract
 
-## Final validation
+The checked-in census is not a prose-only claim. Its integration test reruns
+the complete repository scan and requires byte-for-byte equality with
+`0087-migration-census.tsv`. `scripts/test-for-paths.sh` selects the fast
+workspace shard for this Rust-backed tool, so the slice must also pass current
+workspace tests and clippy before queue submission. The merge coordinator then
+runs the serialized full gate before landing.
 
-The implementation closeout passed the 1,836-test fast workspace shard with
-clippy warnings denied, the 930-case executable example shard, the WASM shard
-with 107 runnable book blocks agreeing, all six nested example workspace E2E
-tests, std/project Witchy format checks, and web runtime JavaScript syntax
-checks. The three path-dependency locks affected by the source migration were
-regenerated and verified by those workspace E2E tests.
+The two retained RFC-0005 representation-boundary rejections are explicit
+snapshot rows, not skipped files. All 439 corpus entries are parsed and linked
+far enough to classify their resolved `var` calls, and every RFC-0087
+migration-error category is required to remain at zero.
