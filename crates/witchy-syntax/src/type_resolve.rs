@@ -19,9 +19,12 @@
 //! Ambient names stay bare: the primitives, the host capabilities, and the
 //! prelude types `Option`/`Result` (and their `Some`/`None`/`Ok`/`Err`) — these
 //! are load-bearing language surface, not ordinary library types.
+//! Trait declarations and references use the same declaration identity model:
+//! non-ambient traits become `module.Trait`, while the comparison hierarchy and
+//! prelude `Show` remain ambient language surface.
 
 // foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
-use foldhash::{HashMap, HashMapExt as _, HashSet};
+use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 
 use crate::ast::*;
 use crate::linker::LinkError;
@@ -68,12 +71,27 @@ const AMBIENT_TYPES: &[&str] = &[
 const AMBIENT_CTORS: &[&str] =
     &["Some", "None", "Ok", "Err", "Less", "Equal", "Greater", "NetPolicy", "DirPolicy"];
 
+/// Traits available without an import. The owner is retained so a qualified
+/// spelling such as `show.Show` or `cmp.Ord` resolves to the same ambient
+/// identity, while a user module cannot redeclare the name.
+const AMBIENT_TRAITS: &[(&str, &str)] = &[
+    ("PartialEq", "cmp"),
+    ("Eq", "cmp"),
+    ("PartialOrd", "cmp"),
+    ("Ord", "cmp"),
+    ("Show", "show"),
+];
+
 fn is_ambient_type(name: &str) -> bool {
     AMBIENT_TYPES.contains(&name)
 }
 
 fn is_ambient_ctor(name: &str) -> bool {
     AMBIENT_CTORS.contains(&name)
+}
+
+fn is_ambient_trait(name: &str) -> bool {
+    AMBIENT_TRAITS.iter().any(|(trait_name, _)| *trait_name == name)
 }
 
 /// Whether an ambient declaration comes from its one canonical std owner.
@@ -88,6 +106,13 @@ fn ambient_declaration_allowed(home: &str, user_module: bool, t: &TypeDef) -> bo
         _ => return false,
     };
     home == canonical_owner && !user_module
+}
+
+fn ambient_trait_declaration_allowed(home: &str, user_module: bool, name: &str) -> bool {
+    AMBIENT_TRAITS
+        .iter()
+        .any(|(trait_name, owner)| *trait_name == name && *owner == home)
+        && !user_module
 }
 
 /// Compiler-synthesized type heads that name no module and stay bare: the
@@ -129,6 +154,8 @@ struct ModTypes {
 /// and its exported function names (to validate `from X import <function>`).
 struct World {
     types: HashMap<String, ModTypes>,
+    /// Non-ambient trait declarations by module.
+    traits: HashMap<String, HashSet<String>>,
     /// All functions declared by a module. Used for same-module collision checks.
     fns: HashMap<String, HashSet<String>>,
     /// Public functions exported by a module. Used for cross-module imports.
@@ -138,16 +165,21 @@ struct World {
     /// `Ordering` is ambient) — but recorded so the qualified spelling `cmp.Ordering`
     /// resolves to the same bare ambient name instead of a false "no such type".
     ambient: HashMap<String, HashSet<String>>,
+    /// module -> ambient trait declarations (`cmp.Ord`, `show.Show`).
+    ambient_traits: HashMap<String, HashSet<String>>,
 }
 
 impl World {
     fn build(modules: &[(String, Module)]) -> World {
         let mut types: HashMap<String, ModTypes> = HashMap::new();
+        let mut traits: HashMap<String, HashSet<String>> = HashMap::new();
         let mut fns: HashMap<String, HashSet<String>> = HashMap::new();
         let mut pub_fns: HashMap<String, HashSet<String>> = HashMap::new();
         let mut ambient: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut ambient_traits: HashMap<String, HashSet<String>> = HashMap::new();
         for (name, m) in modules {
             let mt = types.entry(name.clone()).or_default();
+            let trset = traits.entry(name.clone()).or_default();
             let fset = fns.entry(name.clone()).or_default();
             let pub_fset = pub_fns.entry(name.clone()).or_default();
             for item in &m.items {
@@ -171,11 +203,20 @@ impl World {
                             pub_fset.insert(f.name.clone());
                         }
                     }
+                    Item::Trait(tr) if is_ambient_trait(&tr.name) => {
+                        ambient_traits
+                            .entry(name.clone())
+                            .or_default()
+                            .insert(tr.name.clone());
+                    }
+                    Item::Trait(tr) => {
+                        trset.insert(tr.name.clone());
+                    }
                     _ => {}
                 }
             }
         }
-        World { types, fns, pub_fns, ambient }
+        World { types, traits, fns, pub_fns, ambient, ambient_traits }
     }
 
     /// Whether `module` declares a type spelled (bare) `ty`.
@@ -187,9 +228,17 @@ impl World {
         self.pub_fns.get(module).is_some_and(|fns| fns.contains(name))
     }
 
+    fn module_has_trait(&self, module: &str, name: &str) -> bool {
+        self.traits.get(module).is_some_and(|traits| traits.contains(name))
+    }
+
     /// Whether `module` declares the ambient-named type `ty` (e.g. `cmp`/`Ordering`).
     fn module_declares_ambient(&self, module: &str, ty: &str) -> bool {
         self.ambient.get(module).is_some_and(|s| s.contains(ty))
+    }
+
+    fn module_declares_ambient_trait(&self, module: &str, name: &str) -> bool {
+        self.ambient_traits.get(module).is_some_and(|traits| traits.contains(name))
     }
 
     /// Modules that declare a TYPE named (bare) `name`, sorted — for the
@@ -197,6 +246,17 @@ impl World {
     fn type_exporters(&self, name: &str) -> Vec<String> {
         let mut v: Vec<String> =
             self.types.iter().filter(|(_, mt)| mt.types.contains(name)).map(|(m, _)| m.clone()).collect();
+        v.sort();
+        v
+    }
+
+    fn trait_exporters(&self, name: &str) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .traits
+            .iter()
+            .filter(|(_, traits)| traits.contains(name))
+            .map(|(module, _)| module.clone())
+            .collect();
         v.sort();
         v
     }
@@ -243,6 +303,10 @@ struct Scope<'a> {
     type_map: HashMap<String, String>,
     /// bare constructor name -> canonical (`home.C` or `srcmod.C`).
     ctor_map: HashMap<String, String>,
+    /// bare trait name -> canonical (`home.Trait` or `srcmod.Trait`).
+    trait_map: HashMap<String, String>,
+    /// Bare trait names exported by multiple imported modules.
+    ambiguous_traits: HashMap<String, Vec<String>>,
 }
 
 /// Canonicalize every type and constructor reference in `modules`, in place.
@@ -287,6 +351,8 @@ impl<'a> Scope<'a> {
     ) -> Result<Scope<'a>, LinkError> {
         let mut type_map: HashMap<String, String> = HashMap::new();
         let mut ctor_map: HashMap<String, String> = HashMap::new();
+        let mut trait_map: HashMap<String, String> = HashMap::new();
+        let mut fixed_traits: HashSet<String> = HashSet::new();
         // The module's own declarations.
         if let Some(mt) = world.types.get(home) {
             for t in &mt.types {
@@ -296,6 +362,12 @@ impl<'a> Scope<'a> {
                 ctor_map.insert(c.clone(), format!("{home}.{c}"));
             }
         }
+        if let Some(traits) = world.traits.get(home) {
+            for tr in traits {
+                trait_map.insert(tr.clone(), format!("{home}.{tr}"));
+                fixed_traits.insert(tr.clone());
+            }
+        }
         // `from X import Y, Z` — each listed name is bound unqualified. Two
         // unqualified bindings of one name (a second from-import, or a from-import
         // shadowing a local type) are a loud error at the second import site.
@@ -303,6 +375,11 @@ impl<'a> Scope<'a> {
         if let Some(mt) = world.types.get(home) {
             for t in &mt.types {
                 unqual.insert(t.clone(), format!("a local type `{t}`"));
+            }
+        }
+        if let Some(traits) = world.traits.get(home) {
+            for tr in traits {
+                unqual.insert(tr.clone(), format!("a local trait `{tr}`"));
             }
         }
         // A local `fn` is an unqualified binding too, so a `from X import <fn>`
@@ -322,18 +399,19 @@ impl<'a> Scope<'a> {
                 // ambient types are kept out of the module type map, so the
                 // export check below would otherwise fire the false "exports no
                 // type or function" message (BUG-291).
-                if is_ambient_type(name) || is_ambient_ctor(name) {
+                if is_ambient_type(name) || is_ambient_ctor(name) || is_ambient_trait(name) {
                     return lerr(format!(
                         "`from {srcmod} import {name}` collides with the ambient prelude name \
                          `{name}` — it is already in scope everywhere; drop the import"
                     ));
                 }
                 let brought_type = world.module_has_type(srcmod, name);
+                let brought_trait = world.module_has_trait(srcmod, name);
                 let brought_fn = world.module_has_public_fn(srcmod, name);
-                if !brought_type && !brought_fn {
+                if !brought_type && !brought_trait && !brought_fn {
                     return lerr(format!(
                         "`from {srcmod} import {name}`: module `{srcmod}` exports no type or \
-                         function named `{name}`"
+                         function named `{name}`, and no trait named `{name}`"
                     ));
                 }
                 if let Some(prev) = unqual.get(name.as_str()) {
@@ -355,12 +433,65 @@ impl<'a> Scope<'a> {
                         }
                     }
                 }
+                if brought_trait {
+                    trait_map.insert(name.clone(), format!("{srcmod}.{name}"));
+                    fixed_traits.insert(name.clone());
+                }
                 // A from-imported FUNCTION needs no type/ctor entry; the linker
                 // owns direct-call resolution for explicit `from X import f`
                 // bindings.
             }
         }
-        Ok(Scope { home, user_module, imports, world, type_map, ctor_map })
+
+        // Plain imports make trait names available bare, matching the existing
+        // trait surface. Unlike the old flat namespace, two imported modules
+        // exporting the same spelling are an explicit ambiguity; callers can
+        // use `module.Trait` to select one.
+        let mut imported_traits: HashMap<String, Vec<String>> = HashMap::new();
+        for module in imports
+            .iter()
+            .map(String::as_str)
+            .chain(crate::linker::PRELUDE_MODULES.iter().copied())
+        {
+            if module == home {
+                continue;
+            }
+            if let Some(traits) = world.traits.get(module) {
+                for tr in traits {
+                    if !fixed_traits.contains(tr) {
+                        imported_traits
+                            .entry(tr.clone())
+                            .or_default()
+                            .push(module.to_string());
+                    }
+                }
+            }
+        }
+        let mut ambiguous_traits = HashMap::new();
+        for (name, mut modules) in imported_traits {
+            modules.sort();
+            modules.dedup();
+            match modules.as_slice() {
+                [only] => {
+                    trait_map.insert(name.clone(), format!("{only}.{name}"));
+                }
+                [] => {}
+                _ => {
+                    ambiguous_traits.insert(name, modules);
+                }
+            }
+        }
+
+        Ok(Scope {
+            home,
+            user_module,
+            imports,
+            world,
+            type_map,
+            ctor_map,
+            trait_map,
+            ambiguous_traits,
+        })
     }
 
     /// Whether `module` is referenceable here (imported, or a prelude module).
@@ -429,6 +560,66 @@ impl<'a> Scope<'a> {
         }
     }
 
+    fn resolve_trait_name(&self, name: &str) -> Result<String, LinkError> {
+        if let Some((module, trait_name)) = name.split_once('.') {
+            if module != self.home && !self.in_scope(module) {
+                return lerr(format!(
+                    "trait `{name}`: module `{module}` is not imported (add `import {module}`)"
+                ));
+            }
+            if is_ambient_trait(trait_name)
+                && self.world.module_declares_ambient_trait(module, trait_name)
+            {
+                return Ok(trait_name.to_string());
+            }
+            if !self.world.module_has_trait(module, trait_name) {
+                return lerr(format!("module `{module}` has no trait `{trait_name}`"));
+            }
+            return Ok(name.to_string());
+        }
+        if is_ambient_trait(name) {
+            return Ok(name.to_string());
+        }
+        if let Some(canonical) = self.trait_map.get(name) {
+            return Ok(canonical.clone());
+        }
+        if let Some(modules) = self.ambiguous_traits.get(name) {
+            let choices = modules
+                .iter()
+                .map(|module| format!("`{module}.{name}`"))
+                .collect::<Vec<_>>();
+            return lerr(format!(
+                "ambiguous trait `{name}` in module `{}` — qualify it as {}",
+                self.home,
+                choices.join(" or ")
+            ));
+        }
+        match self.world.trait_exporters(name).as_slice() {
+            [] => lerr(format!(
+                "unknown trait `{name}` (in module `{}`) — it is not declared here and no \
+                 in-scope module exports it",
+                self.home
+            )),
+            [module] => lerr(format!(
+                "unknown trait `{name}` (in module `{}`) — qualify it (`{module}.{name}`) or \
+                 import `{module}`",
+                self.home
+            )),
+            many => {
+                let choices = many
+                    .iter()
+                    .map(|module| format!("`{module}.{name}`"))
+                    .collect::<Vec<_>>();
+                lerr(format!(
+                    "unknown trait `{name}` (in module `{}`) — it is exported by several \
+                     modules; qualify it as {}",
+                    self.home,
+                    choices.join(" or ")
+                ))
+            }
+        }
+    }
+
     fn resolve_type(&self, ty: &mut Type) -> Result<(), LinkError> {
         match ty {
             Type::Qualified(_, inner) => self.resolve_type(inner),
@@ -437,11 +628,13 @@ impl<'a> Scope<'a> {
                 ps.iter_mut().try_for_each(|p| self.resolve_type(p))?;
                 self.resolve_type(r)
             }
-            // (RFC-0081) A `dyn` head is a TRAIT name: traits are never
-            // module-qualified (one flat namespace, arity-checked in typeck),
-            // so only the type ARGUMENTS canonicalize. Identical instantiations
-            // written in different modules therefore resolve to one identity.
-            Type::Dyn(_, args) => args.iter_mut().try_for_each(|a| self.resolve_type(a)),
+            Type::Dyn(name, args) => {
+                for arg in args {
+                    self.resolve_type(arg)?;
+                }
+                *name = self.resolve_trait_name(name)?;
+                Ok(())
+            }
             Type::Named(name, args) => {
                 // `Dir[Read]` / `File[Write]` / `Net[Connect]` carry capability
                 // RIGHTS in their arguments, not types — leave them untouched.
@@ -657,11 +850,32 @@ impl<'a> Scope<'a> {
                 }
                 Item::Function(f) => self.rewrite_function(f)?,
                 Item::Trait(tr) => {
+                    if is_ambient_trait(&tr.name) {
+                        if !ambient_trait_declaration_allowed(
+                            self.home,
+                            self.user_module,
+                            &tr.name,
+                        ) {
+                            return lerr(format!(
+                                "trait `{name}` shadows the ambient built-in name `{name}` — \
+                                 rename it",
+                                name = tr.name
+                            ));
+                        }
+                    } else {
+                        tr.name = format!("{}.{}", self.home, tr.name);
+                    }
+                    for supertrait in &mut tr.supertraits {
+                        *supertrait = self.resolve_trait_name(supertrait)?;
+                    }
                     for ms in &mut tr.methods {
                         self.rewrite_methodsig(ms)?;
                     }
                 }
                 Item::Impl(im) => {
+                    if let Some(trait_name) = &mut im.trait_name {
+                        *trait_name = self.resolve_trait_name(trait_name)?;
+                    }
                     im.type_name = self.resolve_type_name(&im.type_name)?;
                     for t in &mut im.target_args {
                         self.resolve_type(t)?;
@@ -719,7 +933,8 @@ impl<'a> Scope<'a> {
 
     /// A `where`-clause's trait type-arguments are written-type positions.
     fn resolve_bounds(&self, bounds: &mut [(String, String, Vec<Type>)]) -> Result<(), LinkError> {
-        for (_, _, trait_args) in bounds.iter_mut() {
+        for (_, trait_name, trait_args) in bounds.iter_mut() {
+            *trait_name = self.resolve_trait_name(trait_name)?;
             for t in trait_args {
                 self.resolve_type(t)?;
             }
@@ -1051,11 +1266,16 @@ mod tests {
     /// Run the per-module type/constructor resolution over a set of `(name, src)`
     /// modules — the linker's `type_resolve::resolve` step in isolation.
     fn resolve_src(mods: &[(&str, &str)]) -> Result<(), LinkError> {
+        resolved_src(mods).map(|_| ())
+    }
+
+    fn resolved_src(mods: &[(&str, &str)]) -> Result<Vec<(String, Module)>, LinkError> {
         let mut modules: Vec<(String, Module)> = mods
             .iter()
             .map(|(n, s)| (n.to_string(), parse_module(s).expect("parse")))
             .collect();
-        resolve(&mut modules)
+        resolve(&mut modules)?;
+        Ok(modules)
     }
 
     #[test]
@@ -1100,9 +1320,156 @@ mod tests {
         ])
         .unwrap_err();
         assert!(
-            err.message.contains("module `lib` exports no type or function named `hidden`"),
+            err.message
+                .contains("module `lib` exports no type or function named `hidden`"),
             "{}",
             err.message
+        );
+    }
+
+    #[test]
+    fn trait_declarations_and_references_get_module_identity() {
+        let modules = resolved_src(&[(
+            "render",
+            "trait Base:\n    fn base(let self) -> Int\n\n\
+             trait Render: Base:\n    fn render(let self) -> String\n\n\
+             type Box:\n    Box(Int)\n\n\
+             impl Render for Box:\n    fn render(let self) -> String:\n        \"box\"\n\n\
+             pub fn hold(x: dyn Render) -> dyn Render:\n    x\n\n\
+             pub fn bounded(x: a) -> a where a: Render:\n    x\n",
+        )])
+        .expect("resolve trait identities");
+        let module = &modules[0].1;
+
+        let base = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Trait(tr) if tr.name.ends_with("Base") => Some(tr),
+                _ => None,
+            })
+            .expect("Base trait");
+        assert_eq!(base.name, "render.Base");
+
+        let render = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Trait(tr) if tr.name.ends_with("Render") => Some(tr),
+                _ => None,
+            })
+            .expect("Render trait");
+        assert_eq!(render.name, "render.Render");
+        assert_eq!(render.supertraits, ["render.Base"]);
+
+        let implementation = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Impl(im) => Some(im),
+                _ => None,
+            })
+            .expect("trait impl");
+        assert_eq!(implementation.trait_name.as_deref(), Some("render.Render"));
+
+        let hold = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "hold" => Some(function),
+                _ => None,
+            })
+            .expect("hold function");
+        assert_eq!(
+            hold.params[0].ty,
+            Some(Type::Dyn("render.Render".into(), Vec::new()))
+        );
+        assert_eq!(
+            hold.ret,
+            Some(Type::Dyn("render.Render".into(), Vec::new()))
+        );
+
+        let bounded = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "bounded" => Some(function),
+                _ => None,
+            })
+            .expect("bounded function");
+        assert_eq!(bounded.bounds[0].1, "render.Render");
+    }
+
+    #[test]
+    fn same_spelled_imported_traits_require_qualification() {
+        let err = resolve_src(&[
+            ("left", "trait Render:\n    fn render(let self) -> String\n"),
+            ("right", "trait Render:\n    fn render(let self) -> String\n"),
+            (
+                "main",
+                "import left\nimport right\n\nfn use(x: dyn Render) -> Int:\n    0\n",
+            ),
+        ])
+        .expect_err("bare same-spelled imported traits are ambiguous");
+        assert!(
+            err.message.contains("ambiguous trait `Render`")
+                && err.message.contains("`left.Render`")
+                && err.message.contains("`right.Render`"),
+            "{}",
+            err.message
+        );
+
+        let modules = resolved_src(&[
+            ("left", "trait Render:\n    fn render(let self) -> String\n"),
+            ("right", "trait Render:\n    fn render(let self) -> String\n"),
+            (
+                "main",
+                "import left\nimport right\n\n\
+                 fn choose(x: dyn left.Render, y: dyn right.Render) -> dyn left.Render:\n    x\n",
+            ),
+        ])
+        .expect("qualified traits remain distinct");
+        let choose = modules[2]
+            .1
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "choose" => Some(function),
+                _ => None,
+            })
+            .expect("choose function");
+        assert_eq!(
+            choose.params[0].ty,
+            Some(Type::Dyn("left.Render".into(), Vec::new()))
+        );
+        assert_eq!(
+            choose.params[1].ty,
+            Some(Type::Dyn("right.Render".into(), Vec::new()))
+        );
+    }
+
+    #[test]
+    fn from_imported_trait_gets_the_exporting_identity() {
+        let modules = resolved_src(&[
+            ("render", "trait Render:\n    fn render(let self) -> String\n"),
+            (
+                "main",
+                "from render import Render\n\nfn use(x: dyn Render) -> Int:\n    0\n",
+            ),
+        ])
+        .expect("from-imported trait resolves");
+        let use_fn = modules[1]
+            .1
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "use" => Some(function),
+                _ => None,
+            })
+            .expect("use function");
+        assert_eq!(
+            use_fn.params[0].ty,
+            Some(Type::Dyn("render.Render".into(), Vec::new()))
         );
     }
 

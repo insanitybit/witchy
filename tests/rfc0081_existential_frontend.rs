@@ -6,12 +6,19 @@
 
 use std::collections::HashSet;
 
+use witchy::runtime::{Capabilities, Runtime};
+
 fn check(source: &str) -> Result<(), String> {
     let linked = witchy::resolve_std_only(source)?;
     witchy::typeck::check(&linked).map_err(|error| error.to_string())
 }
 
 fn link_and_check(modules: Vec<(&str, &str)>) -> Result<(), String> {
+    let linked = link_modules(modules)?;
+    witchy::typeck::check(&linked).map_err(|error| error.to_string())
+}
+
+fn link_modules(modules: Vec<(&str, &str)>) -> Result<witchy::ast::Module, String> {
     let user_modules: HashSet<String> =
         modules.iter().map(|(name, _)| name.to_string()).collect();
     let parsed = modules
@@ -22,9 +29,8 @@ fn link_and_check(modules: Vec<(&str, &str)>) -> Result<(), String> {
             (name.to_string(), module)
         })
         .collect();
-    let linked = witchy::pipeline::link_with_user_modules(parsed, "main", &user_modules)
-        .map_err(|error| error.message)?;
-    witchy::typeck::check(&linked).map_err(|error| error.to_string())
+    witchy::pipeline::link_with_user_modules(parsed, "main", &user_modules)
+        .map_err(|error| error.message)
 }
 
 /// The canonical feature-stage diagnostic, as rendered through
@@ -45,7 +51,7 @@ fn stage_gate(canonical: &str) -> String {
 /// in its canonical form.
 #[test]
 fn rfc0081_dyn_identity_is_stable_across_aliases_and_modules() {
-    let err = link_and_check(vec![
+    let modules = vec![
         (
             "render",
             "trait Render:\n    fn render(let self) -> String\n",
@@ -62,9 +68,139 @@ fn rfc0081_dyn_identity_is_stable_across_aliases_and_modules() {
              fn take(x: dyn Render) -> dyn Render:\n    boxed.wrap(x)\n\n\
              fn main(console: Console):\n    console.print(\"hi\")\n",
         ),
-    ])
+    ];
+    let linked = link_modules(modules.clone()).expect("link existential identities");
+    let render_trait = linked
+        .items
+        .iter()
+        .find_map(|item| match item {
+            witchy::ast::Item::Trait(tr) if tr.name.ends_with("Render") => Some(tr),
+            _ => None,
+        })
+        .expect("linked Render trait");
+    assert_eq!(render_trait.name, "render.Render");
+    for function_name in ["boxed.wrap", "main.take"] {
+        let function = linked
+            .items
+            .iter()
+            .find_map(|item| match item {
+                witchy::ast::Item::Function(function) if function.name == function_name => {
+                    Some(function)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("linked function `{function_name}`"));
+        let witchy::ast::Type::Dyn(name, _) =
+            function.params[0].ty.as_ref().expect("dyn parameter")
+        else {
+            panic!("expected dyn parameter on `{function_name}`");
+        };
+        assert_eq!(name, "render.Render");
+    }
+
+    let err = link_and_check(modules)
     .expect_err("dyn programs are staged until the witness slice lands");
     assert_eq!(err, stage_gate("dyn Render"));
+}
+
+#[test]
+fn rfc0081_same_spelled_traits_have_distinct_linked_identity() {
+    let linked = link_modules(vec![
+        (
+            "left",
+            "trait Render:\n    fn render(let self) -> String\n\n\
+             pub fn hold(x: dyn Render) -> dyn Render:\n    x\n",
+        ),
+        (
+            "right",
+            "trait Render:\n    fn render(let self) -> String\n\n\
+             pub fn hold(x: dyn Render) -> dyn Render:\n    x\n",
+        ),
+        (
+            "main",
+            "import left\nimport right\n\n\
+             fn main(console: Console):\n    console.print(\"hi\")\n",
+        ),
+    ])
+    .expect("same-spelled trait declarations link");
+
+    let trait_names: HashSet<&str> = linked
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            witchy::ast::Item::Trait(tr) => Some(tr.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(trait_names.contains("left.Render"), "{trait_names:?}");
+    assert!(trait_names.contains("right.Render"), "{trait_names:?}");
+
+    for (function_name, expected_trait) in
+        [("left.hold", "left.Render"), ("right.hold", "right.Render")]
+    {
+        let function = linked
+            .items
+            .iter()
+            .find_map(|item| match item {
+                witchy::ast::Item::Function(function) if function.name == function_name => {
+                    Some(function)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("linked function `{function_name}`"));
+        let witchy::ast::Type::Dyn(name, _) =
+            function.params[0].ty.as_ref().expect("dyn parameter")
+        else {
+            panic!("expected dyn parameter on `{function_name}`");
+        };
+        assert_eq!(name, expected_trait);
+    }
+}
+
+#[test]
+fn rfc0081_same_spelled_traits_dispatch_independently_on_both_backends() {
+    let linked = link_modules(vec![
+        (
+            "left",
+            "trait Render:\n    fn render(let self) -> String\n\n\
+             impl Render for Int:\n    fn render(let self) -> String:\n        \"left\"\n\n\
+             pub fn show(x: a) -> String where a: Render:\n    x.render()\n",
+        ),
+        (
+            "right",
+            "trait Render:\n    fn render(let self) -> String\n\n\
+             impl Render for Int:\n    fn render(let self) -> String:\n        \"right\"\n\n\
+             pub fn show(x: a) -> String where a: Render:\n    x.render()\n",
+        ),
+        (
+            "main",
+            "import left\nimport right\n\n\
+             fn main(console: Console):\n\
+             \x20   console.print(left.show(1))\n\
+             \x20   console.print(right.show(1))\n",
+        ),
+    ])
+    .expect("same-spelled trait program links");
+    witchy::typeck::check(&linked).expect("same-spelled trait program checks");
+    let expected = vec!["left".to_string(), "right".to_string()];
+    assert_eq!(
+        witchy::interpreter::run_module(linked.clone(), ".", Vec::new())
+            .expect("interpret same-spelled traits"),
+        expected
+    );
+
+    let wasm = witchy::codegen::compile_module_binary(&linked)
+        .expect_lowered("compile same-spelled traits");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut actor = runtime
+        .spawn(
+            &wasm,
+            Capabilities { print: true, quiet: true, ..Default::default() },
+            64,
+        )
+        .expect("spawn");
+    actor.run().expect("run compiled same-spelled traits");
+    assert_eq!(actor.output(), expected);
 }
 
 /// (b) Equivalent trait arguments give the same identity: `type P =

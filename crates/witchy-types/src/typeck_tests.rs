@@ -241,6 +241,26 @@
     }
 
     #[test]
+    fn compiler_generated_structural_impls_accept_resolved_trait_identity() {
+        let record_reflect = ast::ImplDef {
+            origin: ast::ImplOrigin::CompilerGenerated,
+            trait_name: Some("reflect.Reflect".into()),
+            trait_args: Vec::new(),
+            type_name: "__anon123".into(),
+            target_args: Vec::new(),
+            bounds: Vec::new(),
+            methods: Vec::new(),
+        };
+        assert!(is_compiler_generated_structural_impl(&record_reflect));
+
+        let source_lookalike = ast::ImplDef {
+            origin: ast::ImplOrigin::Source,
+            ..record_reflect
+        };
+        assert!(!is_compiler_generated_structural_impl(&source_lookalike));
+    }
+
+    #[test]
     fn packed_type_requires_packable_fields() {
         // (RFC-0027) scalars (and nested packed types) are packable.
         assert!(check_str(

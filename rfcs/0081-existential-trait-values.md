@@ -4,7 +4,7 @@ title: Existential trait values and dynamic dispatch
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "slice 1 (type identity and safety) implemented: dyn Trait(args…) parses/formats in every type position, resolved existential identity (Ty::Dyn) is stable across aliases/imports/modules, the six existential-safety rules and transitive capability-payload rejection are enforced, and every dyn-mentioning program fails with one feature-stage diagnostic before either backend lowers (no construction/dispatch yet). Reflection metadata uses a placeholder opaque meta.TNamed head until the witness slice adds meta.TDyn. Slices 2-5 (witness substrate, owned values and dispatch, receiver completion, authority/tooling closure) remain unimplemented"
+tracking: "slice 1 (type identity and safety) implemented: dyn Trait(args…) and dyn module.Trait(args…) parse/format in every type position; non-ambient trait declarations, impl heads, bounds, supertraits, and existential heads resolve to one module-qualified declaration identity; same-spelled imported traits require qualification; aliases and imports preserve identity; the six existential-safety rules and transitive capability-payload rejection are enforced; and every dyn-mentioning program fails with one feature-stage diagnostic before either backend lowers (no construction/dispatch yet). Reflection metadata uses a placeholder opaque meta.TNamed head until the witness slice adds meta.TDyn. Slices 2-5 (witness substrate, owned values and dispatch, receiver completion, authority/tooling closure) remain unimplemented"
 related:
   - "0005 (capability-safe aggregate representation and typed callable ABI)"
   - "0038 (grantable capabilities and transitive authority checks)"
@@ -113,6 +113,15 @@ It is not represented as a guessed type name or as `Dynamic`. Aliases normalize
 to this identity through the existing structural type-resolution path. Two
 modules referring to the same resolved trait instantiation get the same
 existential type.
+
+Non-ambient trait declarations receive the same module-qualified identity as
+nominal types. Resolution rewrites trait declarations, supertraits, impl heads,
+generic bounds, and `dyn` heads before modules merge. A bare trait name from one
+import resolves to that declaration; the same spelling from multiple imports is
+an ambiguity error, and `dyn module.Trait` selects explicitly. Two modules may
+therefore declare unrelated traits with the same source spelling without
+collapsing their existential identities. The ambient comparison traits and
+prelude `Show` retain their bare language identities.
 
 Construction requires a coherent linked `impl Trait(args...) for T`. The
 conversion records that exact impl as a witness. No runtime lookup by string,
@@ -256,8 +265,10 @@ fail with a precise feature-stage diagnostic rather than reach one backend only.
 
 RFC-0081 is implemented only when all of the following are true:
 
-1. `dyn Trait(args...)` parses and formats in every type position, with stable
-   resolved identity across aliases and modules.
+1. `dyn Trait(args...)` and `dyn module.Trait(args...)` parse and format in every
+   type position. Identity is stable across aliases and imports; distinct
+   same-spelled declarations in different modules do not unify, and ambiguous
+   bare references fail with module-qualified alternatives.
 2. Concrete-to-dyn coercion occurs only at specified expected-type sites or an
    explicit `as dyn Trait`; inference does not erase concrete types implicitly.
 3. Existential-safety diagnostics cover receiver-less methods, unresolved type

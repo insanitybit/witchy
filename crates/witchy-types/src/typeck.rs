@@ -1263,7 +1263,11 @@ fn is_compiler_generated_structural_impl(im: &ast::ImplDef) -> bool {
     if im.origin != ImplOrigin::CompilerGenerated {
         return false;
     }
-    match im.trait_name.as_deref() {
+    match im
+        .trait_name
+        .as_deref()
+        .map(|name| name.rsplit('.').next().unwrap_or(name))
+    {
         Some("Reflect") if is_anon_record_synthetic_name(&im.type_name) => true,
         Some("Show" | "Reflect" | "PartialEq")
             if anon_union_synthetic_variants(&im.type_name).is_some() => true,
@@ -1734,21 +1738,20 @@ fn check_trait_names(module: &Module) -> Result<(), TypeError> {
     for item in &module.items {
         if let Item::Trait(tr) = item {
             arities.insert(tr.name.as_str(), tr.typarams.len());
-            arities.insert(bare(&tr.name), tr.typarams.len());
         }
     }
 
-    let trait_arity = |name: &str| arities.get(name).or_else(|| arities.get(bare(name))).copied();
-    let validate_trait_use = |trait_name: &str, arg_count: usize, context: String| -> Result<(), TypeError> {
-        match trait_arity(trait_name) {
-            Some(expected) if expected == arg_count => Ok(()),
-            Some(expected) => terr(format!(
-                "trait `{}` expects {expected} type argument(s) but got {arg_count} in {context}",
-                bare(trait_name)
-            )),
-            None => terr(format!("unknown trait `{}` in {context}", bare(trait_name))),
-        }
-    };
+    let validate_trait_use =
+        |trait_name: &str, arg_count: usize, context: String| -> Result<(), TypeError> {
+            match arities.get(trait_name).copied() {
+                Some(expected) if expected == arg_count => Ok(()),
+                Some(expected) => terr(format!(
+                    "trait `{}` expects {expected} type argument(s) but got {arg_count} in {context}",
+                    bare(trait_name)
+                )),
+                None => terr(format!("unknown trait `{}` in {context}", bare(trait_name))),
+            }
+        };
 
     for item in &module.items {
         match item {
@@ -1839,7 +1842,6 @@ fn check_existential_types(items: &[Item]) -> Result<Option<String>, TypeError> 
     for item in items {
         if let Item::Trait(tr) = item {
             traits.insert(tr.name.as_str(), tr);
-            traits.insert(existential_bare(&tr.name), tr);
         }
     }
     let mut check = ExistentialCheck { traits, first: None };
@@ -1907,7 +1909,7 @@ fn type_mentions_self(t: &ast::Type) -> bool {
 }
 
 struct ExistentialCheck<'a> {
-    /// Declared traits, keyed by both linked (qualified) and bare names.
+    /// Declared traits, keyed by resolved declaration identity.
     traits: HashMap<&'a str, &'a ast::TraitDef>,
     /// Canonical rendering of the first `dyn` occurrence (feature-stage gate).
     first: Option<String>,
@@ -2086,31 +2088,40 @@ impl<'a> ExistentialCheck<'a> {
 
     fn check_dyn(
         &mut self,
-        whole: &ast::Type,
+        _whole: &ast::Type,
         name: &str,
         args: &[ast::Type],
     ) -> Result<(), TypeError> {
-        let rendered = witchy_syntax::format::type_str(whole);
+        let display_name = existential_bare(name);
+        let args_rendered = if args.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "({})",
+                args.iter()
+                    .map(witchy_syntax::format::type_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        let rendered = format!("dyn {display_name}{args_rendered}");
         if self.first.is_none() {
             self.first = Some(rendered.clone());
         }
-        let Some(tr) = self
-            .traits
-            .get(name)
-            .or_else(|| self.traits.get(existential_bare(name)))
-            .copied()
-        else {
+        let Some(tr) = self.traits.get(name).copied() else {
             // The ambient built-in comparison traits exist without a local
             // declaration; every one of them is Self-binary, which the RFC
             // calls out explicitly as existential-unsafe.
-            if AMBIENT_TRAIT_NAMES.contains(&name) {
-                return terr(ambient_dyn_unsafe_msg(name));
+            if AMBIENT_TRAIT_NAMES.contains(&display_name) {
+                return terr(ambient_dyn_unsafe_msg(display_name));
             }
-            return terr(format!("unknown trait `{name}` in `dyn {name}`"));
+            return terr(format!(
+                "unknown trait `{display_name}` in `dyn {display_name}`"
+            ));
         };
         if tr.typarams.len() != args.len() {
             return terr(format!(
-                "trait `{name}` expects {} type argument(s) but got {} in `{rendered}`",
+                "trait `{display_name}` expects {} type argument(s) but got {} in `{rendered}`",
                 tr.typarams.len(),
                 args.len()
             ));
@@ -2130,7 +2141,7 @@ impl<'a> ExistentialCheck<'a> {
         self.collect_safety_violations(tr, &mut seen, &mut violations);
         if !violations.is_empty() {
             return terr(format!(
-                "trait `{name}` is not existential-safe as `dyn {name}`: {}",
+                "trait `{display_name}` is not existential-safe as `dyn {display_name}`: {}",
                 violations.join("; ")
             ));
         }
@@ -2153,11 +2164,7 @@ impl<'a> ExistentialCheck<'a> {
             method_safety_violations(&tr.typarams, method, out);
         }
         for supertrait in &tr.supertraits {
-            match self
-                .traits
-                .get(supertrait.as_str())
-                .or_else(|| self.traits.get(existential_bare(supertrait)))
-            {
+            match self.traits.get(supertrait.as_str()) {
                 Some(sup) => self.collect_safety_violations(sup, seen, out),
                 None => {
                     // An ambient built-in supertrait contributes Self-binary
@@ -6763,8 +6770,9 @@ impl Checker {
                 if let Ty::Dyn(dyn_name, _) = &target {
                     let resolved_src = self.resolve(&src);
                     if let Some(cap) = self.ty_carries_capability(&resolved_src) {
+                        let display_name = existential_bare(dyn_name);
                         return terr(format!(
-                            "`as dyn {dyn_name}`: the concrete payload type `{resolved_src}` \
+                            "`as dyn {display_name}`: the concrete payload type `{resolved_src}` \
                              carries a `{cap}` capability — capability-carrying existential \
                              payloads are rejected (RFC-0081); pass the capability explicitly \
                              in method signatures instead"

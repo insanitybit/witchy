@@ -1423,18 +1423,18 @@ fn f(var a: Int, own b: Int, c: Int) -> Int:
     }
 
     #[test]
-    fn dyn_with_module_qualified_head_is_a_precise_parse_error() {
-        let err = parse_module("fn f(x: dyn render.Widget) -> Int:\n    1\n");
-        // lowercase head does not trigger dyn; uppercase + dot does:
-        let err2 = parse_module("fn f(x: dyn Render.Widget) -> Int:\n    1\n")
-            .expect_err("dotted trait head rejected");
-        assert!(
-            err2.message.contains("never module-qualified"),
-            "got: {}",
-            err2.message
+    fn dyn_trait_head_may_be_module_qualified() {
+        let module = parse_module("fn f(x: dyn render.Widget) -> Int:\n    1\n")
+            .expect("qualified dyn trait head parses");
+        let Item::Function(function) = &module.items[0] else { panic!("expected function") };
+        assert_eq!(
+            function.params[0].ty,
+            Some(Type::Dyn("render.Widget".into(), Vec::new()))
         );
-        // and the lowercase form fails as an ordinary parse error, not a dyn one.
-        assert!(err.is_err() || err.is_ok());
+
+        // An uppercase first segment is a bare trait, not a module qualifier.
+        parse_module("fn f(x: dyn Render.Widget) -> Int:\n    1\n")
+            .expect_err("uppercase pseudo-module remains malformed");
     }
 
     #[test]

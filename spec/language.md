@@ -902,15 +902,20 @@ and then fails with one feature-stage diagnostic before either backend lowers
 it. No `dyn` value can be constructed or dispatched yet.
 
 - `dyn` is contextual and only in type position: it must be followed by an
-  uppercase trait name, so a bare `dyn` remains an ordinary type variable. The
-  head is a bare trait name (trait names are never module-qualified); only the
-  trait arguments are types. It parses in every type position — parameters,
-  returns, aliases, generic arguments, tuples, function types, `let`
-  annotations, and the explicit `value as dyn Trait` cast. Erasure is explicit:
-  inference never silently replaces a concrete type with an existential.
-- Identity is the resolved trait plus its fully substituted arguments. Aliases
-  (`type Boxed = dyn Render`), imports, and equivalent spellings in different
-  modules normalize to the same identity.
+  uppercase trait name or a lowercase module plus uppercase trait name, so a
+  bare `dyn` remains an ordinary type variable. Both `dyn Render` and
+  `dyn render.Render` parse in every type position — parameters, returns,
+  aliases, generic arguments, tuples, function types, `let` annotations, and
+  the explicit `value as dyn Trait` cast. Erasure is explicit: inference never
+  silently replaces a concrete type with an existential.
+- Identity is the resolved trait declaration plus its fully substituted
+  arguments. Non-ambient trait declarations, supertraits, impl heads, bounds,
+  and `dyn` heads resolve to `module.Trait` before modules merge. Aliases and
+  imports that name the same declaration normalize to one identity. Unrelated
+  same-spelled traits in different modules remain distinct; a bare reference
+  imported from both modules is an error that names the `module.Trait`
+  alternatives. The comparison traits and preluded `Show` retain their ambient
+  bare identities.
 - A trait must be existential-safe to be used as `dyn Trait`: every method has
   a receiver, introduces no method-local type parameters, does not return bare
   `Self`, mentions `Self` nowhere but the receiver, and does not return a

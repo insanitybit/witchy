@@ -572,9 +572,8 @@ impl Parser {
     /// `impl Trait for Type { <fn ...> }` (trait impl), or the inherent form
     /// `impl Type { <fn ...> }` (no `for`) whose methods belong to no trait but
     /// still dispatch by receiver type.
-    /// Consume a trailing `.Type` on a module-qualified type head (`set.Set`),
-    /// forming the canonical dotted name. Only a lowercase segment followed by an
-    /// uppercase one qualifies — a trait name (`FromIterator`) is never dotted.
+    /// Consume a trailing uppercase declaration name on a module-qualified head
+    /// (`set.Set`, `render.Render`), forming the canonical dotted name.
     fn maybe_qualify_head(&mut self, name: String) -> Result<String, ParseError> {
         if self.at(&Tok::Dot)
             && name.chars().next().is_some_and(|c| c.is_lowercase())
@@ -1142,25 +1141,27 @@ impl Parser {
             let inner = self.ty()?;
             return Ok(Type::Qualified(TypeQual::Borrow(life), Box::new(inner)));
         }
-        // (RFC-0081) An existential trait type: `dyn Render`, `dyn Convert(Int)`.
-        // Contextual — `dyn` is an ordinary identifier unless FOLLOWED BY an
-        // uppercase (trait) name, so a bare `dyn` stays a usable type variable
-        // exactly like `frozen`. The head is a BARE trait name: trait names are
-        // never module-qualified, and only the trait ARGUMENTS are types.
-        if self.at_ident("dyn")
-            && matches!(
+        // (RFC-0081) An existential trait type: `dyn Render`,
+        // `dyn render.Render`, `dyn Convert(Int)`. Contextual — `dyn` is an
+        // ordinary identifier unless followed by a bare uppercase trait name or
+        // a lowercase module plus uppercase trait name.
+        let dyn_head = matches!(
+            self.toks.get(self.pos + 1).map(|t| &t.kind),
+            Some(Tok::Ident(n)) if n.chars().next().is_some_and(char::is_uppercase)
+        ) || matches!(
+            (
                 self.toks.get(self.pos + 1).map(|t| &t.kind),
-                Some(Tok::Ident(n)) if n.chars().next().is_some_and(char::is_uppercase)
-            )
-        {
+                self.toks.get(self.pos + 2).map(|t| &t.kind),
+                self.toks.get(self.pos + 3).map(|t| &t.kind),
+            ),
+            (Some(Tok::Ident(module)), Some(Tok::Dot), Some(Tok::Ident(trait_name)))
+                if module.chars().next().is_some_and(char::is_lowercase)
+                    && trait_name.chars().next().is_some_and(char::is_uppercase)
+        );
+        if self.at_ident("dyn") && dyn_head {
             self.advance(); // `dyn`
             let name = self.ident()?;
-            if self.at(&Tok::Dot) {
-                return Err(self.error(format!(
-                    "`dyn {name}.…`: a `dyn` head is a bare trait name — trait names are \
-                     never module-qualified"
-                )));
-            }
+            let name = self.maybe_qualify_head(name)?;
             let mut args = Vec::new();
             if self.eat(&Tok::LParen) {
                 while !self.at(&Tok::RParen) {

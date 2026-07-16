@@ -795,10 +795,11 @@
 
     #[test]
     fn dyn_trait_types_round_trip_canonically() {
-        let src = "type Boxed = dyn Render\n\nfn page(parts: List(dyn Render), c: dyn Convert(Int, String)) -> dyn Render:\n    let first = head(parts) as dyn Render\n    first\n\nfn head(parts: List(dyn Render)) -> dyn Render:\n    parts[0]\n";
+        let src = "type Boxed = dyn Render\n\nfn page(parts: List(dyn Render), c: dyn Convert(Int, String), external: dyn render.Render) -> dyn Render:\n    let first = head(parts) as dyn Render\n    first\n\nfn head(parts: List(dyn Render)) -> dyn Render:\n    parts[0]\n";
         let out = reformat(src).expect("dyn signatures reformat");
         assert!(out.contains("parts: List(dyn Render)"), "generic arg survives: {out}");
         assert!(out.contains("c: dyn Convert(Int, String)"), "trait args survive: {out}");
+        assert!(out.contains("external: dyn render.Render"), "qualified head survives: {out}");
         assert!(out.contains("-> dyn Render"), "return survives: {out}");
         assert!(out.contains("as dyn Render"), "explicit cast survives: {out}");
         assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");

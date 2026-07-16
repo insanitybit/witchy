@@ -57,6 +57,14 @@ fn mangle(trait_name: Option<&str>, trait_args: &[Type], type_name: &str, method
     }
 }
 
+fn is_standard_trait_identity(name: &str, module: &str, trait_name: &str) -> bool {
+    name == trait_name
+        || name
+            .strip_prefix(module)
+            .and_then(|rest| rest.strip_prefix('.'))
+            == Some(trait_name)
+}
+
 fn push_trait_impl(
     table: &mut TraitImplTable,
     trait_name: &str,
@@ -387,7 +395,9 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     // rewriting below.
     let from_conversion_fns = trait_impl_table
         .iter()
-        .filter(|((trait_name, method, _), _)| trait_name == "From" && method == "from")
+        .filter(|((trait_name, method, _), _)| {
+            is_standard_trait_identity(trait_name, "convert", "From") && method == "from"
+        })
         .flat_map(|(_, methods)| methods.iter().map(|method| method.mangled.clone()))
         .collect::<HashSet<_>>();
 
@@ -1036,9 +1046,11 @@ fn synthesize_anon_union_impls(
         .collect();
     let reflect_runtime = has_function(items, "reflect.reflect_one")
         && has_variant(items, "reflect.MVariant");
-    let has_show = trait_declares_method(trait_method_list, "Show", "show");
-    let has_reflect = trait_declares_method(trait_method_list, "Reflect", "reflect");
-    let has_partial_eq = trait_declares_method(trait_method_list, "PartialEq", "eq");
+    let show_trait = trait_identity_with_method(trait_method_list, "show", "Show", "show");
+    let reflect_trait =
+        trait_identity_with_method(trait_method_list, "reflect", "Reflect", "reflect");
+    let partial_eq_trait =
+        trait_identity_with_method(trait_method_list, "cmp", "PartialEq", "eq");
     let mut heads: Vec<(String, usize)> = heads.into_iter().collect();
     heads.sort_by(|a, b| a.0.cmp(&b.0));
 
@@ -1047,34 +1059,54 @@ fn synthesize_anon_union_impls(
         let Some(variants) = crate::typeck::anon_union_synthetic_variants(&name) else {
             continue;
         };
-        if has_show
-            && !existing.contains(&("Show".to_string(), name.clone()))
+        if let Some(trait_name) = &show_trait
+            && !existing.contains(&(trait_name.clone(), name.clone()))
         {
-            impls.push(anon_union_show_impl(&name, &variants, arity));
+            impls.push(anon_union_show_impl(
+                &name,
+                &variants,
+                arity,
+                trait_name,
+            ));
         }
         if reflect_runtime
-            && has_reflect
-            && !existing.contains(&("Reflect".to_string(), name.clone()))
+            && let Some(trait_name) = &reflect_trait
+            && !existing.contains(&(trait_name.clone(), name.clone()))
         {
-            impls.push(anon_union_reflect_impl(&name, &variants, arity));
+            impls.push(anon_union_reflect_impl(
+                &name,
+                &variants,
+                arity,
+                trait_name,
+            ));
         }
-        if has_partial_eq
-            && !existing.contains(&("PartialEq".to_string(), name.clone()))
+        if let Some(trait_name) = &partial_eq_trait
+            && !existing.contains(&(trait_name.clone(), name.clone()))
         {
-            impls.push(anon_union_partial_eq_impl(&name, &variants, arity));
+            impls.push(anon_union_partial_eq_impl(
+                &name,
+                &variants,
+                arity,
+                trait_name,
+            ));
         }
     }
     impls
 }
 
-fn trait_declares_method(
+fn trait_identity_with_method(
     trait_method_list: &HashMap<String, Vec<MethodSig>>,
+    module: &str,
     trait_name: &str,
     method_name: &str,
-) -> bool {
+) -> Option<String> {
     trait_method_list
-        .get(trait_name)
-        .is_some_and(|methods| methods.iter().any(|method| method.name == method_name))
+        .iter()
+        .find(|(name, methods)| {
+            is_standard_trait_identity(name, module, trait_name)
+                && methods.iter().any(|method| method.name == method_name)
+        })
+        .map(|(name, _)| name.clone())
 }
 
 fn collect_anon_union_heads(items: &[Item], out: &mut HashMap<String, usize>) {
@@ -1329,14 +1361,19 @@ fn has_variant(items: &[Item], name: &str) -> bool {
     })
 }
 
-fn anon_union_show_impl(name: &str, variants: &[(String, usize)], arity: usize) -> ImplDef {
+fn anon_union_show_impl(
+    name: &str,
+    variants: &[(String, usize)],
+    arity: usize,
+    trait_name: &str,
+) -> ImplDef {
     ImplDef {
         origin: ImplOrigin::CompilerGenerated,
-        trait_name: Some("Show".to_string()),
+        trait_name: Some(trait_name.to_string()),
         trait_args: Vec::new(),
         type_name: name.to_string(),
         target_args: anon_union_target_args(arity),
-        bounds: anon_union_bounds(arity, "Show"),
+        bounds: anon_union_bounds(arity, trait_name),
         methods: vec![Function {
             public: true,
             comptime_only: false,
@@ -1354,14 +1391,19 @@ fn anon_union_show_impl(name: &str, variants: &[(String, usize)], arity: usize) 
     }
 }
 
-fn anon_union_reflect_impl(name: &str, variants: &[(String, usize)], arity: usize) -> ImplDef {
+fn anon_union_reflect_impl(
+    name: &str,
+    variants: &[(String, usize)],
+    arity: usize,
+    trait_name: &str,
+) -> ImplDef {
     ImplDef {
         origin: ImplOrigin::CompilerGenerated,
-        trait_name: Some("Reflect".to_string()),
+        trait_name: Some(trait_name.to_string()),
         trait_args: Vec::new(),
         type_name: name.to_string(),
         target_args: anon_union_target_args(arity),
-        bounds: anon_union_bounds(arity, "Reflect"),
+        bounds: anon_union_bounds(arity, trait_name),
         methods: vec![Function {
             public: true,
             comptime_only: false,
@@ -1379,14 +1421,19 @@ fn anon_union_reflect_impl(name: &str, variants: &[(String, usize)], arity: usiz
     }
 }
 
-fn anon_union_partial_eq_impl(name: &str, variants: &[(String, usize)], arity: usize) -> ImplDef {
+fn anon_union_partial_eq_impl(
+    name: &str,
+    variants: &[(String, usize)],
+    arity: usize,
+    trait_name: &str,
+) -> ImplDef {
     ImplDef {
         origin: ImplOrigin::CompilerGenerated,
-        trait_name: Some("PartialEq".to_string()),
+        trait_name: Some(trait_name.to_string()),
         trait_args: Vec::new(),
         type_name: name.to_string(),
         target_args: anon_union_target_args(arity),
-        bounds: anon_union_bounds(arity, "PartialEq"),
+        bounds: anon_union_bounds(arity, trait_name),
         methods: vec![Function {
             public: true,
             comptime_only: false,
