@@ -129,7 +129,10 @@ On macOS, `.config/nextest.toml` routes test discovery through
 launches to four slots, keyed by `NEXTEST_RUN_ID` (or the shared nextest parent
 PID on older versions); test execution runs at nextest's normal width — the
 dyld stall was a cold-first-exec problem, and the list phase leaves every
-binary loader-warm. `WITCHY_NEXTEST_LIST_JOBS` permits local retuning.
+binary loader-warm. Slots are atomic PID symlinks: a crashed owner is reclaimed,
+while an EPERM result from `kill -0` is treated as a live sandboxed process.
+There is no time-based fail-open that can turn slow healthy discovery back into
+an unbounded loader herd. `WITCHY_NEXTEST_LIST_JOBS` permits local retuning.
 
 **Diff-scoped fuzzing.** The differential fuzzer is the gate's single biggest
 test (~57s, a fixed-seed parity regression suite). `process_one` classifies the

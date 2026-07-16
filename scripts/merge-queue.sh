@@ -96,6 +96,25 @@ now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 note() { printf 'merge-queue: %s\n' "$*" >&2; }
 strip_ansi() { sed "s/$(printf '\033')\[[0-9;]*m//g"; }
 
+# Managed sandboxes can deny signalling a live process with EPERM. Every
+# coordinator/lock decision must distinguish that from a missing PID; otherwise
+# agents spawn duplicate coordinators and steal live gate locks.
+pid_is_alive() {
+    local pid="${1:-}" error
+    case "$pid" in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+    if error="$(kill -0 "$pid" 2>&1)"; then
+        return 0
+    fi
+    case "$error" in
+        *"Operation not permitted"* | *"operation not permitted"* | *"not permitted"*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
 # The last `==> [N] stage (t+Ns)` marker in a gate log = the stage running now.
 current_stage() { { strip_ansi <"$1" 2>/dev/null || true; } | { grep -E '^==> \[' || true; } | tail -1 | sed 's/^==> //'; }
 # All markers, one line: "[1] build (t+0s);[2] clippy (t+41s);..."
@@ -135,7 +154,7 @@ acquire_lock() { # acquire_lock <description> [branch] [log]
     local waited=0
     while ! mkdir "$lock" 2>/dev/null; do
         local pid; pid="$(cat "$lock/pid" 2>/dev/null || true)"
-        if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+        if [ -n "$pid" ] && ! pid_is_alive "$pid"; then
             note "stealing stale gate lock (pid $pid is gone)"
             rm -rf "$lock"
             continue
@@ -221,7 +240,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope]
     local last_real_sig=""
     local last_real_time="$start"
     while :; do
-        if ! kill -0 "$gpid" 2>/dev/null; then
+        if ! pid_is_alive "$gpid"; then
             if wait "$gpid"; then gate_result="green"; else gate_result="red"; fi
             return 0
         fi
@@ -333,7 +352,7 @@ cmd_submit() {
     record submitted "$branch" by "${USER:-unknown}"
     note "queued $branch ($fname)"
     local cpid; cpid="$(cat "$qdir/coordinator.pid" 2>/dev/null || true)"
-    if [ -n "$cpid" ] && kill -0 "$cpid" 2>/dev/null; then
+    if [ -n "$cpid" ] && pid_is_alive "$cpid"; then
         note "coordinator (pid $cpid) will gate + merge it"
     else
         note "NO COORDINATOR RUNNING — your submission will sit until one starts:"
@@ -375,7 +394,7 @@ cmd_status() {
 cmd_doctor() {
     echo "merge-queue doctor — $(now)"
     local cpid; cpid="$(cat "$qdir/coordinator.pid" 2>/dev/null || true)"
-    if [ -n "$cpid" ] && kill -0 "$cpid" 2>/dev/null; then
+    if [ -n "$cpid" ] && pid_is_alive "$cpid"; then
         echo "coordinator : RUNNING (pid $cpid)"
     else
         echo "coordinator : NOT RUNNING${cpid:+ (last pid $cpid is dead)} — start: ./scripts/merge-queue.sh run"
@@ -389,7 +408,7 @@ cmd_doctor() {
     if [ -d "$lock" ]; then
         inflight_vars
         local health="ALIVE"
-        if [ -z "$lk_pid" ] || ! kill -0 "$lk_pid" 2>/dev/null; then health="STALE (holder dead — next acquire steals it)"; fi
+        if [ -z "$lk_pid" ] || ! pid_is_alive "$lk_pid"; then health="STALE (holder dead — next acquire steals it)"; fi
         echo "gate lock   : held by pid ${lk_pid:-?} — $health"
         echo "  what      : ${lk_what:-?}"
         if [ -n "$lk_branch" ]; then echo "  branch    : $lk_branch"; fi
@@ -679,7 +698,7 @@ cmd_run() {
     # and the natural reaction (start another daemon) produced TWO coordinators
     # racing the queue. --once also refuses to run alongside a live daemon.
     local cpid; cpid="$(cat "$qdir/coordinator.pid" 2>/dev/null || true)"
-    if [ -n "$cpid" ] && [ "$cpid" != "$$" ] && kill -0 "$cpid" 2>/dev/null; then
+    if [ -n "$cpid" ] && [ "$cpid" != "$$" ] && pid_is_alive "$cpid"; then
         if [ "$once" -eq 1 ]; then
             note "a persistent coordinator (pid $cpid) is already running — it will drain the queue; not starting a --once run"
             exit 0
@@ -817,7 +836,7 @@ cmd_resolve() {
 
 cmd_daemon() {
     local cpid; cpid="$(cat "$qdir/coordinator.pid" 2>/dev/null || true)"
-    if [ -n "$cpid" ] && kill -0 "$cpid" 2>/dev/null; then
+    if [ -n "$cpid" ] && pid_is_alive "$cpid"; then
         note "coordinator already running (pid $cpid); nothing to do"
         return 0
     fi
@@ -849,7 +868,7 @@ cmd_daemon() {
     disown || true
     sleep 1
     cpid="$(cat "$qdir/coordinator.pid" 2>/dev/null || true)"
-    if [ -n "$cpid" ] && kill -0 "$cpid" 2>/dev/null; then
+    if [ -n "$cpid" ] && pid_is_alive "$cpid"; then
         note "coordinator daemon started (pid $cpid); log: $qdir/coordinator.log; stop: kill $cpid"
     else
         note "daemon failed to start — see $qdir/coordinator.log"
