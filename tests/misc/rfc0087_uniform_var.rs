@@ -116,6 +116,29 @@ fn main(console: Console):
 }
 
 #[test]
+fn dict_place_assignment_uses_language_key_equality() {
+    let source = r#"
+import cmp
+import dict
+
+type Key derive(Eq):
+    id: Int
+    cache: Int
+
+impl PartialEq for Key:
+    fn eq(self, other: Key) -> Bool:
+        self.id == other.id
+
+fn main(console: Console):
+    var values: Dict(Key, Int) = dict.new()
+    values[Key(1, 10)] = 1
+    values[Key(1, 20)] = 2
+    console.print("${values.length()} ${values.get_or(Key(1, 30), 0)}")
+"#;
+    assert_both_backends(source, &["1 2"]);
+}
+
+#[test]
 fn source_order_coordinates_and_same_root_snapshots_are_stable() {
     let source = r#"
 import list
@@ -300,6 +323,49 @@ fn main(console: Console):
     assert_eq!(compiled, format!("runtime error: {interpreted}"));
     assert!(interpreted.ends_with("boom after local mutation"), "{interpreted}");
     assert_source_facing(&interpreted);
+}
+
+#[test]
+fn stale_assignment_projection_uses_ordinary_bounds_behavior() {
+    let source = r#"
+fn shrink(var values: List(Int)) -> Int:
+    let _ = values.pop()
+    9
+
+fn main(console: Console):
+    var values = [1]
+    values[0] = shrink(values)
+    console.print("unreachable")
+"#;
+    let module = linked(source);
+    let interpreted = interpreter::run_module(module.clone(), ".", Vec::new())
+        .map_err(|error| error.message);
+    let compiled = compiled_result(&module);
+    assert!(
+        interpreted.is_err() && compiled.is_err(),
+        "stale captured projection must fail through the ordinary bounds rule; \
+         interpreter={interpreted:?}, compiled={compiled:?}",
+    );
+    let interpreted = interpreted.unwrap_err();
+    let compiled = compiled.unwrap_err();
+    assert_eq!(compiled, format!("runtime error: {interpreted}"));
+    assert!(
+        interpreted.contains("index 0") && interpreted.contains("length 0"),
+        "stale captured projection must report the invalid current coordinate: {interpreted}",
+    );
+    assert_source_facing(&interpreted);
+
+    let nested = r#"
+fn extend(var values: List(List(Int))) -> Int:
+    values.push([30])
+    9
+
+fn main(console: Console):
+    var values = [[1]]
+    values[0][0] = extend(values)
+    console.print("${values}")
+"#;
+    assert_both_backends(nested, &["[[9], [30]]"]);
 }
 
 #[test]

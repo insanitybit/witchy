@@ -382,6 +382,101 @@ struct CapturedPlace {
     projections: Vec<PlaceProjection>,
 }
 
+enum AssignmentProjection<'a> {
+    Field(&'a str),
+    Index { access: &'static str, expression: &'a Expr },
+}
+
+struct AssignmentPlan<'a> {
+    projections: Vec<AssignmentProjection<'a>>,
+    replacement: &'a Expr,
+}
+
+// Surface place assignments are desugared before either backend sees them:
+// `root[i].field = value` becomes a root assignment built from private
+// set-at/record-update expressions. Recover only that structural spine so the
+// interpreter can mirror compiled lowering: capture coordinates, evaluate the
+// replacement, then apply it to the current root.
+fn expression_reads_assignment_place(
+    expression: &Expr,
+    root: &str,
+    projections: &[AssignmentProjection<'_>],
+) -> bool {
+    let Some((projection, prefix)) = projections.split_last() else {
+        return matches!(expression, Expr::Var(name) if name == root);
+    };
+    match (projection, expression) {
+        (AssignmentProjection::Field(expected), Expr::Field { base, field }) => {
+            field == expected
+                && expression_reads_assignment_place(base, root, prefix)
+        }
+        (
+            AssignmentProjection::Index { access, expression: expected },
+            Expr::Call { name, args },
+        ) => {
+            name == access
+                && args.len() == 2
+                && args[1] == **expected
+                && expression_reads_assignment_place(&args[0], root, prefix)
+        }
+        _ => false,
+    }
+}
+
+fn desugared_assignment_plan<'a>(
+    root: &str,
+    expression: &'a Expr,
+) -> Option<AssignmentPlan<'a>> {
+    fn decode<'a>(
+        root: &str,
+        expression: &'a Expr,
+        projections: &mut Vec<AssignmentProjection<'a>>,
+    ) -> Option<&'a Expr> {
+        match expression {
+            Expr::Call { name, args }
+                if args.len() == 3
+                    && matches!(
+                        name.as_str(),
+                        intrinsics::LIST_SET_AT | intrinsics::DICT_INSERT
+                    )
+                    && expression_reads_assignment_place(
+                        &args[0],
+                        root,
+                        projections,
+                    ) =>
+            {
+                let access = if name == intrinsics::LIST_SET_AT {
+                    intrinsics::LIST_AT
+                } else {
+                    intrinsics::DICT_AT
+                };
+                projections.push(AssignmentProjection::Index {
+                    access,
+                    expression: &args[1],
+                });
+                decode(root, &args[2], projections).or(Some(&args[2]))
+            }
+            Expr::RecordUpdate { name: None, base, fields }
+                if fields.len() == 1
+                    && expression_reads_assignment_place(
+                        base,
+                        root,
+                        projections,
+                    ) =>
+            {
+                let (field, value) = &fields[0];
+                projections.push(AssignmentProjection::Field(field));
+                decode(root, value, projections).or(Some(value))
+            }
+            _ => None,
+        }
+    }
+
+    let mut projections = Vec::new();
+    let replacement = decode(root, expression, &mut projections)?;
+    Some(AssignmentPlan { projections, replacement })
+}
+
 impl From<RuntimeError> for Flow {
     fn from(e: RuntimeError) -> Self {
         Flow::Err(e)
@@ -1926,10 +2021,29 @@ impl Interpreter {
     }
 
     fn store_place_value(
-        &self,
+        &mut self,
         current: &mut Value,
         projections: &[PlaceProjection],
         replacement: Value,
+    ) -> Result<(), Flow> {
+        self.store_place_value_inner(current, projections, replacement, false)
+    }
+
+    fn store_assignment_place_value(
+        &mut self,
+        current: &mut Value,
+        projections: &[PlaceProjection],
+        replacement: Value,
+    ) -> Result<(), Flow> {
+        self.store_place_value_inner(current, projections, replacement, true)
+    }
+
+    fn store_place_value_inner(
+        &mut self,
+        current: &mut Value,
+        projections: &[PlaceProjection],
+        replacement: Value,
+        insert_missing_dict_leaf: bool,
     ) -> Result<(), Flow> {
         let Some((projection, rest)) = projections.split_first() else {
             *current = replacement;
@@ -1939,29 +2053,67 @@ impl Interpreter {
             PlaceProjection::Field(field) => {
                 let index = self.place_field_index(current, field)?;
                 match current {
-                    Value::Tuple(items) => self.store_place_value(&mut Rc::make_mut(items)[index], rest, replacement),
-                    Value::Ctor { fields, .. } => {
-                        self.store_place_value(&mut Rc::make_mut(fields)[index], rest, replacement)
-                    }
+                    Value::Tuple(items) => self.store_place_value_inner(
+                        &mut Rc::make_mut(items)[index],
+                        rest,
+                        replacement,
+                        insert_missing_dict_leaf,
+                    ),
+                    Value::Ctor { fields, .. } => self.store_place_value_inner(
+                        &mut Rc::make_mut(fields)[index],
+                        rest,
+                        replacement,
+                        insert_missing_dict_leaf,
+                    ),
                     _ => unreachable!("place_field_index checked the aggregate"),
                 }
             }
             PlaceProjection::Index(index) => match (current, index) {
                 (Value::List(items), Value::Int(index))
-                | (Value::Tuple(items), Value::Int(index))
                     if *index >= 0 && (*index as usize) < items.len() =>
                 {
-                    self.store_place_value(&mut Rc::make_mut(items)[*index as usize], rest, replacement)
+                    self.store_place_value_inner(
+                        &mut Rc::make_mut(items)[*index as usize],
+                        rest,
+                        replacement,
+                        insert_missing_dict_leaf,
+                    )
+                }
+                (Value::Tuple(items), Value::Int(index))
+                    if *index >= 0 && (*index as usize) < items.len() =>
+                {
+                    self.store_place_value_inner(
+                        &mut Rc::make_mut(items)[*index as usize],
+                        rest,
+                        replacement,
+                        insert_missing_dict_leaf,
+                    )
                 }
                 (Value::Dict(entries), key) => {
-                    let Some((_, value)) = Rc::make_mut(entries).iter_mut().find(|(candidate, _)| candidate == key)
-                    else {
-                        return err("dictionary key is absent");
-                    };
-                    self.store_place_value(value, rest, replacement)
+                    let position = self.dict_key_position(entries, key)?;
+                    let entries = Rc::make_mut(entries);
+                    if let Some(index) = position {
+                        self.store_place_value_inner(
+                            &mut entries[index].1,
+                            rest,
+                            replacement,
+                            insert_missing_dict_leaf,
+                        )
+                    } else if insert_missing_dict_leaf && rest.is_empty() {
+                        entries.push((key.clone(), replacement));
+                        Ok(())
+                    } else {
+                        err("dictionary key is absent")
+                    }
                 }
-                (Value::List(items), Value::Int(index))
-                | (Value::Tuple(items), Value::Int(index)) => err(format!(
+                (Value::List(items), Value::Int(index)) => err(
+                    DiagTemplate::ListIndexOob.render(
+                        *index,
+                        items.len() as i64,
+                        "",
+                    ),
+                ),
+                (Value::Tuple(items), Value::Int(index)) => err(format!(
                     "index {index} is out of bounds for length {}",
                     items.len()
                 )),
@@ -1970,8 +2122,50 @@ impl Interpreter {
         }
     }
 
+    fn try_desugared_place_assign(
+        &mut self,
+        name: &str,
+        expression: &Expr,
+        env: &mut Env,
+    ) -> Result<bool, Flow> {
+        let Some(plan) = desugared_assignment_plan(name, expression) else {
+            return Ok(false);
+        };
+        let mut projections = Vec::with_capacity(plan.projections.len());
+        for projection in plan.projections {
+            projections.push(match projection {
+                AssignmentProjection::Field(field) => {
+                    PlaceProjection::Field(field.to_string())
+                }
+                AssignmentProjection::Index { expression, .. } => {
+                    PlaceProjection::Index(self.eval(expression, env)?)
+                }
+            });
+        }
+        let replacement = self.eval(plan.replacement, env)?;
+        let mut current = env.get(name).cloned().ok_or_else(|| {
+            Flow::from(RuntimeError {
+                message: format!("cannot assign to unbound variable `{name}`"),
+            })
+        })?;
+        self.store_assignment_place_value(
+            &mut current,
+            &projections,
+            replacement,
+        )?;
+        match env.assign(name, current) {
+            Assign::Done => Ok(true),
+            Assign::Immutable => err(format!(
+                "cannot assign to `{name}`: it is immutable (declared with `let`)"
+            )),
+            Assign::Unbound => {
+                err(format!("cannot assign to unbound variable `{name}`"))
+            }
+        }
+    }
+
     fn commit_writebacks(
-        &self,
+        &mut self,
         writebacks: Vec<(CapturedPlace, Value)>,
         env: &mut Env,
     ) -> Result<(), Flow> {
@@ -4363,7 +4557,9 @@ impl Interpreter {
                     Ok(Value::Nil)
                 }
                 Stmt::Assign { name, value } => {
-                    if !self.try_inplace_assign(name, value, env)? {
+                    if !self.try_inplace_assign(name, value, env)?
+                        && !self.try_desugared_place_assign(name, value, env)?
+                    {
                         let value = self.eval(value, env)?;
                         match env.assign(name, value) {
                             Assign::Done => {}
@@ -4599,7 +4795,9 @@ impl Interpreter {
                     result = Value::Nil;
                 }
                 Stmt::Assign { name, value } => {
-                    if !self.try_inplace_assign(name, value, env)? {
+                    if !self.try_inplace_assign(name, value, env)?
+                        && !self.try_desugared_place_assign(name, value, env)?
+                    {
                         let v = self.eval(value, env)?;
                         match env.assign(name, v) {
                             Assign::Done => {}
