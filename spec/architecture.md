@@ -183,13 +183,13 @@ Tracked honestly rather than hidden:
   constructor literals). A payload codegen cannot resolve — e.g. through an
   unspecialized generic function, or a *recursive* generic ADT — stays a loud
   compile error, never a silent pointer compare.
-- Concurrency is monomorphic over one message type per program, because the
-  channel buffers are typed `List(m)`: heterogeneous channels would need type
-  erasure, so union several shapes into a sum type. Spawned tasks return `Nil`
-  and report results over channels (the Go model); a typed `JoinHandle(T)`
-  would likewise need erasure. `await` is supported in loop bodies, including
-  `while` bodies that carry mutable locals across the await; it is still not
-  supported in loop/branch conditions or match scrutinees. See
+- Spawned tasks return `Nil` and report results over channels (the Go model):
+  there is no typed `JoinHandle(T)` — one would force a native runtime and
+  break the byte-identical executor, so the structured forms (`chan.scope`,
+  `chan.gather`, `chan.par_map`) cover the join-with-result shapes. `await`
+  is supported in loop bodies, including `while` bodies that carry mutable
+  locals across the await; it is still not supported in loop/branch
+  conditions or match scrutinees. See
   [concurrency-design.md](../rfcs/concurrency-design.md).
 - The LSP has diagnostics, completion, and hover — no go-to-definition or
   rename yet.
