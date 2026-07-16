@@ -2,7 +2,7 @@
 
 Audit date: 2026-07-16
 
-Baseline: local canonical `master` at `3d48c580`
+Baseline: local canonical `master` at `5974a032`
 
 Statuses:
 
@@ -17,10 +17,9 @@ Statuses:
 
 | Owner/worktree | Current files relevant to this audit |
 | --- | --- |
-| `worktree-perf-round4` | `crates/witchy-interp/src/interpreter.rs`, interpreter tests, Cargo metadata |
 | `impl/rfc0081-existential-frontend` | `crates/witchy-types/src/typeck.rs`, compiled lowering/codegen, parser/linker/type representation, `spec/language.md` |
 | `impl/rfc0050-container-method-surface` | `src/example_tests.rs`, `std/list.witchy`, `std/dict.witchy`, `std/set.witchy` |
-| `fix/gate-nextest-concurrency` | merge-queue/nextest gate behavior; explicitly outside this goal |
+| gate-liveness worktrees | merge-queue/nextest gate behavior; explicitly outside this goal |
 | RFC-0080 worktrees | metaprogramming frontend and docs; explicitly outside this goal |
 
 ## RFC-0087 acceptance criteria
@@ -38,12 +37,12 @@ Statuses:
 | 9 | **PROVEN** | Async/gen `var` parameters reject; synchronous `var` calls work on mutable locals across the shipped async segment seam and between generator yields on both backends. |
 | 10 | **PROVEN** | Bare resolved-`var` calls discard auxiliary results and commit; non-`var` non-`Nil` calls reject; explicit discard remains legal. |
 | 11 | **PROVEN** | Current differential coverage includes zero/one/multiple `var`s, generic and alias-equal returns, same-typed auxiliary results, caller/callee `?`, and `??`. |
-| 12 | **MISSING** | Corpus compilation shows the migrated tree type-checks, but there is no stable compiler-produced classification/count report proving every obsolete call-site class is zero. |
+| 12 | **MISSING** | Current master lacks the durable report. The isolated slice `d6b1ff4c` now produces and snapshot-tests a type-resolved census over 271 Witchy files and 169 README/spec/book blocks: mechanical self-reassignment, immutable `var` arguments, and temporary `var` arguments are all zero; it is not counted as current-master evidence until landed. |
 | 13 | **PROVEN** | Current `spec/language.md` states the convention, exclusivity, function-type identity, and evaluation order; generated stdlib freshness is enforced. Further wording edits are currently owned by RFC-0081. |
 | 14 | **PROVEN** | RFC-0088 stats/differential tests provide extraction aliasing, refcount, heap, one-search, forced-copy, and no-copy evidence without adding a new `*_cap` family. |
-| 15 | **MISSING** | The 2026-07-14 report records three timings and four completion claims, but no focused current-master harness compares all seven named kernels under optimized versus `WITCHY_OPT=-inplace` execution. |
-| 16 | **MISSING** | `rfcs/0087-migration-report.md` is checked in, but its call-site counts came from a review plus corpus success, not a durable compiler/type-resolved census with stable classifications. |
-| 17 | **MISSING** | RFC/status/changelog/release text has not yet been re-audited against the gaps above; both RFC-0087 and RFC-0088 are already marked implemented despite missing migration/performance gates and the failure below. |
+| 15 | **PROVEN** | Current master carries the seven-kernel optimized-versus-`WITCHY_OPT=-inplace` harness, checked-in reference, and `rfcs/0087-performance-report.md`. Locked best-of-three runs prove all four optimized memory-cliff kernels complete while forced-copy traps, and measure 2.669×/1.385×/1.333× firing ratios for `list_index`/`binary_trees`/`expr_eval`; a separate default-policy reference check passes within RFC-0051's 5% threshold. The evidence landed through the full merge gate in batch commit `5974a032`. |
+| 16 | **MISSING** | Current master still has review-derived counts. Slice `d6b1ff4c` adds the compiler/type-resolved stable census and freshness test, but it is not current-master evidence until landed. |
+| 17 | **MISSING** | Slice `e808e3db` reopens both RFC statuses, corrects the RFC-0070/RFC-0026 release claims, and makes RFC-0087 the explicit sole home for the RFC-0088 semantic amendments. It intentionally remains unlanded until the ledger it links and the underlying evidence slices are available. |
 
 ## RFC-0088 amendment disposition
 
@@ -69,11 +68,23 @@ Observed:
 - Compiled Wasm:
   ``Err("runtime error: `main`, line 8: list index 0 out of bounds (length 0)")``
 
+Root cause:
+
+- Parser place lowering represents the assignment as a root reassignment whose
+  private `__set_at` receiver is evaluated before the RHS.
+- The interpreter therefore retains the pre-RHS aggregate value, applies the
+  captured index to that snapshot, and overwrites the current root after
+  `shrink(values)` commits.
+- Compiled lowering instead carries a place plan: it evaluates coordinates
+  once, evaluates the RHS, reloads the current root, and performs the final
+  bounds-checked store.
+- The minimal interpreter repair must recover the lowered nested place plan,
+  evaluate every coordinate once in source order, and apply it to the
+  post-RHS root. The Rc-container interpreter work has landed, so this repair
+  is no longer externally owned.
+
 Owners:
 
-- Interpreter fix surface:
-  `worktree-perf-round4` currently modifies
-  `crates/witchy-interp/src/interpreter.rs`.
 - Compiled/type surfaces:
   `impl/rfc0081-existential-frontend` currently modifies
   `crates/witchy-lower/src/codegen/mod.rs`,
@@ -82,5 +93,5 @@ Owners:
 
 The failing differential test
 `stale_assignment_projection_uses_ordinary_bounds_behavior` remains committed
-on the blocked branch `test/rfc0087-conformance-matrix` at `5f0f97ff`. It is
+on the follow-up branch `test/rfc0087-conformance-matrix`. It is
 intentionally absent from the green, mergeable conformance-evidence branch.
