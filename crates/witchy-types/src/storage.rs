@@ -127,6 +127,11 @@ impl<'a> ReferenceStorageClassifier<'a> {
                     .iter()
                     .find_map(|item| self.classify(item, bindings, seen, functions))
             }
+            Type::Dyn(_, args) => {
+                args
+                    .iter()
+                    .find_map(|arg| self.classify(arg, bindings, seen, functions))
+            }
             // A first-class function value is itself a reference regardless of
             // the scalar/reference shapes in its signature.
             Type::Fn(params, ret, _) => match functions {
@@ -249,6 +254,10 @@ fn substitute(
         Type::Tuple(items) => {
             Type::Tuple(items.iter().map(|item| substitute(item, bindings, resolving)).collect())
         }
+        Type::Dyn(name, args) => Type::Dyn(
+            name.clone(),
+            args.iter().map(|arg| substitute(arg, bindings, resolving)).collect(),
+        ),
         Type::Fn(params, ret, conventions) => Type::Fn(
             params.iter().map(|param| substitute(param, bindings, resolving)).collect(),
             Box::new(substitute(ret, bindings, resolving)),
@@ -373,6 +382,12 @@ fn storage_dependencies<'a>(
                 storage_dependencies(item, defs, aliases, def_summaries, alias_summaries)
             })
             .collect(),
+        Type::Dyn(_, args) => args
+            .iter()
+            .flat_map(|arg| {
+                storage_dependencies(arg, defs, aliases, def_summaries, alias_summaries)
+            })
+            .collect(),
         // A function value's storage does not depend on its signature types.
         Type::Fn(_, _, _) => HashSet::new(),
         Type::Named(name, args) => {
@@ -454,6 +469,11 @@ fn collect_implicit_params(ty: &Type, out: &mut Vec<String>) {
         Type::Tuple(items) => {
             for item in items {
                 collect_implicit_params(item, out);
+            }
+        }
+        Type::Dyn(_, args) => {
+            for arg in args {
+                collect_implicit_params(arg, out);
             }
         }
         Type::Fn(params, ret, _) => {

@@ -197,6 +197,16 @@ fn resolve_type(ty: &mut Type, map: &HashMap<String, Alias>) -> bool {
             changed |= resolve_type(ret, map);
             changed
         }
+        // (RFC-0081) The head is a trait name — aliases bind TYPE names, so only
+        // the trait arguments expand. (`type R = dyn Render` itself resolves via
+        // the ordinary `Named` alias lookup at R's use sites.)
+        Type::Dyn(_, args) => {
+            let mut changed = false;
+            for a in args {
+                changed |= resolve_type(a, map);
+            }
+            changed
+        }
     }
 }
 
@@ -229,6 +239,13 @@ fn substitute_alias_params(ty: &mut Type, subst: &HashMap<String, Type>) -> bool
                 changed |= substitute_alias_params(p, subst);
             }
             changed |= substitute_alias_params(ret, subst);
+            changed
+        }
+        Type::Dyn(_, args) => {
+            let mut changed = false;
+            for a in args {
+                changed |= substitute_alias_params(a, subst);
+            }
             changed
         }
     }

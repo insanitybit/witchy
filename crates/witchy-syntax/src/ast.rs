@@ -385,6 +385,15 @@ pub enum Type {
     /// identically, so it is invisible to codegen and parity-neutral. Use
     /// [`Type::unqualified`] to see through it where the qualifier is irrelevant.
     Qualified(TypeQual, Box<Type>),
+    /// (RFC-0081) An existential trait type: `dyn Render` / `dyn Convert(Int)`.
+    /// The head is the BARE trait name (trait names are never module-qualified;
+    /// only the type ARGUMENTS resolve through aliasing/qualification), and the
+    /// arguments fix every trait type parameter. Identity is the resolved trait
+    /// plus the fully substituted arguments — never a guessed type name. Until
+    /// RFC-0081's witness/runtime slice lands, programs mentioning `dyn` types
+    /// check (identity, existential safety, capability-payload rejection) and
+    /// then fail with one feature-stage diagnostic before either backend lowers.
+    Dyn(String, Vec<Type>),
 }
 
 /// An ownership/immutability qualifier (RFC-0025 `frozen`, RFC-0026 `unique`,
@@ -823,6 +832,13 @@ pub fn collect_type_names<S: Extend<String>>(t: &Type, out: &mut S) {
             }
             collect_type_names(ret, out);
         }
+        // The `dyn` head is a TRAIT name, not a type name; only the trait
+        // arguments contain types.
+        Type::Dyn(_, args) => {
+            for a in args {
+                collect_type_names(a, out);
+            }
+        }
     }
 }
 
@@ -898,6 +914,11 @@ pub fn collect_type_vars(t: &Type, out: &mut Vec<String>) {
                 collect_type_vars(p, out);
             }
             collect_type_vars(ret, out);
+        }
+        Type::Dyn(_, args) => {
+            for a in args {
+                collect_type_vars(a, out);
+            }
         }
     }
 }

@@ -262,6 +262,16 @@ pub enum Ty {
     /// A user-declared type, possibly with type arguments: `Option(Int)`,
     /// `Result(String, Error)`. Non-generic types carry an empty argument list.
     Named(String, Vec<Ty>),
+    /// (RFC-0081) A first-class existential identity: the RESOLVED bare trait
+    /// name plus its fully substituted type arguments (`dyn Render`,
+    /// `dyn Convert(Int)`). Never a guessed type name: the head comes from the
+    /// checked `ast::Type::Dyn` whose trait was validated against the module's
+    /// trait declarations, and the arguments recurse through the ordinary type
+    /// resolution, so aliases and cross-module uses of the same instantiation
+    /// share one identity. Two existentials unify only on the same head, same
+    /// arity, and pairwise-unifying arguments — `dyn Sub` never unifies with
+    /// `dyn Super` in this slice.
+    Dyn(String, Vec<Ty>),
     /// A function type: parameter types, return type, and parameter conventions.
     Fn(Vec<Ty>, Box<Ty>, Vec<Convention>),
     Var(u32),
@@ -307,6 +317,22 @@ impl fmt::Display for Ty {
             }
             Ty::Named(n, args) => {
                 write!(f, "{n}")?;
+                if !args.is_empty() {
+                    write!(f, "(")?;
+                    for (i, t) in args.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{t}")?;
+                    }
+                    write!(f, ")")?;
+                }
+                Ok(())
+            }
+            // (RFC-0081) Canonical existential rendering, matching the
+            // formatter: `dyn Render`, `dyn Convert(Int)`.
+            Ty::Dyn(n, args) => {
+                write!(f, "dyn {n}")?;
                 if !args.is_empty() {
                     write!(f, "(")?;
                     for (i, t) in args.iter().enumerate() {
@@ -996,6 +1022,11 @@ fn validate_type(
 ) -> Result<(), TypeError> {
     match t {
         ast::Type::Qualified(_, inner) => validate_type(inner, known, arities),
+        // (RFC-0081) The dyn head is a trait name validated by its own pass;
+        // only the type arguments are ordinary types.
+        ast::Type::Dyn(_, args) => {
+            args.iter().try_for_each(|a| validate_type(a, known, arities))
+        }
         ast::Type::Tuple(ts) => ts.iter().try_for_each(|x| validate_type(x, known, arities)),
         ast::Type::Fn(params, ret, _) => {
             params.iter().try_for_each(|p| validate_type(p, known, arities))?;
@@ -1106,6 +1137,7 @@ fn compiler_syntax_in_ast_type(t: &ast::Type) -> Option<&'static str> {
             .iter()
             .chain(std::iter::once(ret.as_ref()))
             .find_map(compiler_syntax_in_ast_type),
+        ast::Type::Dyn(_, args) => args.iter().find_map(compiler_syntax_in_ast_type),
         ast::Type::Named(name, args) => {
             compiler_syntax_type_name(name).or_else(|| args.iter().find_map(compiler_syntax_in_ast_type))
         }
@@ -1246,6 +1278,9 @@ fn authority_taint_type(
 ) -> Option<String> {
     match ty {
         ast::Type::Qualified(_, inner) => authority_taint_type(inner, defs, seen),
+        // (RFC-0081) A dyn value is never itself a capability; only its type
+        // arguments can carry taint.
+        ast::Type::Dyn(_, args) => args.iter().find_map(|a| authority_taint_type(a, defs, seen)),
         ast::Type::Tuple(items) => items.iter().find_map(|t| authority_taint_type(t, defs, seen)),
         ast::Type::Fn(params, ret, _) => params
             .iter()
@@ -1282,6 +1317,9 @@ fn reject_structural_authority_type(
 ) -> Result<(), TypeError> {
     match ty {
         ast::Type::Qualified(_, inner) => reject_structural_authority_type(inner, defs),
+        ast::Type::Dyn(_, args) => {
+            args.iter().try_for_each(|arg| reject_structural_authority_type(arg, defs))
+        }
         ast::Type::Tuple(items) => {
             items.iter().try_for_each(|item| reject_structural_authority_type(item, defs))
         }
@@ -1768,6 +1806,450 @@ fn check_trait_names(module: &Module) -> Result<(), TypeError> {
     Ok(())
 }
 
+/// (RFC-0081 slice 1) The feature-stage diagnostic every `dyn`-mentioning
+/// program fails with until the witness/runtime slice lands. One canonical
+/// string from every path (the end-of-`check` gate and the dyn-receiver
+/// method-call intercepts in `crate::traits` and the checker), so no backend
+/// is ever reached with a `dyn` type.
+pub(crate) fn existential_stage_error(canonical_dyn: &str) -> TypeError {
+    TypeError {
+        message: format!(
+            "`{canonical_dyn}`: existential values cannot be constructed or dispatched yet — \
+             RFC-0081's witness/runtime slice has not landed; the frontend contract \
+             (parsing, identity, existential safety) is checked"
+        ),
+    }
+}
+
+/// (RFC-0081 slice 1) Validate every `dyn Trait(args…)` occurrence in the
+/// module — in function/method signatures, record/sum fields, type-alias
+/// right-hand sides, where-clause trait arguments, and body type positions
+/// (`let` annotations, `as` targets, lambda parameter/return types) — against
+/// the frontend contract: the trait must exist, its arity must match, every
+/// trait type parameter must be fixed by a concrete type, the trait must be
+/// existential-safe, and borrowed existentials are excluded in v1.
+///
+/// Returns the canonical rendering (`dyn Render`, `dyn Convert(Int)`) of the
+/// FIRST `dyn` occurrence when any exists (`None` for dyn-free modules); the
+/// caller uses it for the feature-stage gate once the rest of `check`
+/// succeeds. Runs right after `check_trait_names`, before trait lowering, so
+/// `Item::Trait` declarations are still present.
+fn check_existential_types(items: &[Item]) -> Result<Option<String>, TypeError> {
+    let mut traits: HashMap<&str, &ast::TraitDef> = HashMap::new();
+    for item in items {
+        if let Item::Trait(tr) = item {
+            traits.insert(tr.name.as_str(), tr);
+            traits.insert(existential_bare(&tr.name), tr);
+        }
+    }
+    let mut check = ExistentialCheck { traits, first: None };
+    for item in items {
+        match item {
+            Item::Function(f) => check.visit_function(f)?,
+            Item::Type(t) => {
+                for variant in &t.variants {
+                    for field in &variant.fields {
+                        check.visit_type(field)?;
+                    }
+                }
+            }
+            Item::Trait(tr) => {
+                for method in &tr.methods {
+                    for param in &method.params {
+                        if let Some(ty) = &param.ty {
+                            check.visit_type(ty)?;
+                        }
+                    }
+                    if let Some(ret) = &method.ret {
+                        check.visit_type(ret)?;
+                    }
+                    if let Some(default) = &method.default {
+                        check.visit_block(default)?;
+                    }
+                }
+            }
+            Item::Impl(im) => {
+                for arg in im.trait_args.iter().chain(&im.target_args) {
+                    check.visit_type(arg)?;
+                }
+                for (_, _, trait_args) in &im.bounds {
+                    for arg in trait_args {
+                        check.visit_type(arg)?;
+                    }
+                }
+                for method in &im.methods {
+                    check.visit_function(method)?;
+                }
+            }
+            Item::TypeAlias { ty, .. } => check.visit_type(ty)?,
+            Item::Const { value, .. } => check.visit_expr(value)?,
+            Item::Comptime(block) => check.visit_block(block)?,
+        }
+    }
+    Ok(check.first)
+}
+
+fn existential_bare(name: &str) -> &str {
+    name.rsplit('.').next().unwrap_or(name)
+}
+
+/// Whether `Self` appears anywhere in `t` (any nesting depth).
+fn type_mentions_self(t: &ast::Type) -> bool {
+    match t {
+        ast::Type::Named(n, args) => n == "Self" || args.iter().any(type_mentions_self),
+        ast::Type::Dyn(_, args) => args.iter().any(type_mentions_self),
+        ast::Type::Tuple(items) => items.iter().any(type_mentions_self),
+        ast::Type::Fn(params, ret, _) => {
+            params.iter().any(type_mentions_self) || type_mentions_self(ret)
+        }
+        ast::Type::Qualified(_, inner) => type_mentions_self(inner),
+    }
+}
+
+struct ExistentialCheck<'a> {
+    /// Declared traits, keyed by both linked (qualified) and bare names.
+    traits: HashMap<&'a str, &'a ast::TraitDef>,
+    /// Canonical rendering of the first `dyn` occurrence (feature-stage gate).
+    first: Option<String>,
+}
+
+impl<'a> ExistentialCheck<'a> {
+    fn visit_function(&mut self, f: &ast::Function) -> Result<(), TypeError> {
+        for p in &f.params {
+            if let Some(ty) = &p.ty {
+                self.visit_type(ty)?;
+            }
+        }
+        if let Some(ret) = &f.ret {
+            self.visit_type(ret)?;
+        }
+        for (_, _, trait_args) in &f.bounds {
+            for arg in trait_args {
+                self.visit_type(arg)?;
+            }
+        }
+        self.visit_block(&f.body)
+    }
+
+    fn visit_block(&mut self, block: &Block) -> Result<(), TypeError> {
+        if let Some(region) = &block.region {
+            if let Some(ty) = &region.ty {
+                self.visit_type(ty)?;
+            }
+        }
+        block.stmts.iter().try_for_each(|stmt| self.visit_stmt(stmt))
+    }
+
+    fn visit_stmt(&mut self, stmt: &Stmt) -> Result<(), TypeError> {
+        match stmt {
+            Stmt::Let { ty, value, .. } => {
+                if let Some(ty) = ty {
+                    self.visit_type(ty)?;
+                }
+                self.visit_expr(value)
+            }
+            Stmt::Assign { value, .. }
+            | Stmt::LetPattern { value, .. }
+            | Stmt::Return(Some(value))
+            | Stmt::Yield(value)
+            | Stmt::Expr(value) => self.visit_expr(value),
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => Ok(()),
+        }
+    }
+
+    fn visit_expr(&mut self, expr: &Expr) -> Result<(), TypeError> {
+        match expr {
+            Expr::Int(_)
+            | Expr::Float(_)
+            | Expr::Duration(_)
+            | Expr::Str(_)
+            | Expr::Bool(_)
+            | Expr::Var(_)
+            | Expr::TaggedLit { .. } => Ok(()),
+            Expr::List(values) | Expr::Tuple(values) => {
+                values.iter().try_for_each(|value| self.visit_expr(value))
+            }
+            Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
+                args.iter().try_for_each(|arg| self.visit_expr(arg))
+            }
+            Expr::LabeledCall { args, .. } => {
+                args.iter().try_for_each(|(_, arg)| self.visit_expr(arg))
+            }
+            Expr::MethodCall { receiver, args, .. } => {
+                self.visit_expr(receiver)?;
+                args.iter().try_for_each(|arg| self.visit_expr(arg))
+            }
+            Expr::Apply { func, args } => {
+                self.visit_expr(func)?;
+                args.iter().try_for_each(|arg| self.visit_expr(arg))
+            }
+            Expr::Unary { expr, .. } | Expr::Field { base: expr, .. } | Expr::Try(expr) => {
+                self.visit_expr(expr)
+            }
+            Expr::As { expr, ty } => {
+                self.visit_expr(expr)?;
+                self.visit_type(ty)
+            }
+            Expr::Lambda { params, body, ret } => {
+                for param in params {
+                    if let Some(ty) = &param.ty {
+                        self.visit_type(ty)?;
+                    }
+                }
+                if let Some(ret) = ret {
+                    self.visit_type(ret)?;
+                }
+                self.visit_block(body)
+            }
+            Expr::RecordUpdate { base, fields, .. } => {
+                self.visit_expr(base)?;
+                fields.iter().try_for_each(|(_, value)| self.visit_expr(value))
+            }
+            Expr::Record { fields, spread, .. } => {
+                fields.iter().try_for_each(|(_, value)| self.visit_expr(value))?;
+                if let Some(base) = spread {
+                    self.visit_expr(base)?;
+                }
+                Ok(())
+            }
+            Expr::Binary { lhs, rhs, .. } | Expr::Range { lo: lhs, hi: rhs, .. } => {
+                self.visit_expr(lhs)?;
+                self.visit_expr(rhs)
+            }
+            Expr::If { cond, then_block, else_block } => {
+                self.visit_expr(cond)?;
+                self.visit_block(then_block)?;
+                if let Some(block) = else_block {
+                    self.visit_block(block)?;
+                }
+                Ok(())
+            }
+            Expr::Match { scrutinee, arms } => {
+                self.visit_expr(scrutinee)?;
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        self.visit_expr(guard)?;
+                    }
+                    self.visit_expr(&arm.body)?;
+                }
+                Ok(())
+            }
+            Expr::Block(block) => self.visit_block(block),
+            Expr::While { cond, body } => {
+                self.visit_expr(cond)?;
+                self.visit_block(body)
+            }
+            Expr::For { iter, body, .. } => {
+                self.visit_expr(iter)?;
+                self.visit_block(body)
+            }
+            Expr::Index { base, index } => {
+                self.visit_expr(base)?;
+                self.visit_expr(index)
+            }
+            Expr::WhileLet { scrutinee, body, .. } => {
+                self.visit_expr(scrutinee)?;
+                self.visit_block(body)
+            }
+        }
+    }
+
+    /// The one chokepoint every `ast::Type` in the module flows through.
+    fn visit_type(&mut self, t: &ast::Type) -> Result<(), TypeError> {
+        match t {
+            // (v1 exclusion) A dyn directly wrapped in a borrow. `frozen` /
+            // `unique` wrapping stays legal (the Qualified arm below).
+            ast::Type::Qualified(ast::TypeQual::Borrow(_), inner)
+                if matches!(inner.unqualified(), ast::Type::Dyn(..)) =>
+            {
+                let ast::Type::Dyn(name, _) = inner.unqualified() else {
+                    unreachable!("guard matched Dyn");
+                };
+                terr(format!(
+                    "borrowed existential values (`View(dyn {name}, 'a)` / `let('a) dyn {name}`) \
+                     are excluded from RFC-0081 v1"
+                ))
+            }
+            ast::Type::Qualified(_, inner) => self.visit_type(inner),
+            ast::Type::Tuple(items) => items.iter().try_for_each(|i| self.visit_type(i)),
+            ast::Type::Fn(params, ret, _) => {
+                params.iter().try_for_each(|p| self.visit_type(p))?;
+                self.visit_type(ret)
+            }
+            ast::Type::Named(_, args) => args.iter().try_for_each(|a| self.visit_type(a)),
+            ast::Type::Dyn(name, args) => {
+                self.check_dyn(t, name, args)?;
+                args.iter().try_for_each(|a| self.visit_type(a))
+            }
+        }
+    }
+
+    fn check_dyn(
+        &mut self,
+        whole: &ast::Type,
+        name: &str,
+        args: &[ast::Type],
+    ) -> Result<(), TypeError> {
+        let rendered = witchy_syntax::format::type_str(whole);
+        if self.first.is_none() {
+            self.first = Some(rendered.clone());
+        }
+        let Some(tr) = self
+            .traits
+            .get(name)
+            .or_else(|| self.traits.get(existential_bare(name)))
+            .copied()
+        else {
+            // The ambient built-in comparison traits exist without a local
+            // declaration; every one of them is Self-binary, which the RFC
+            // calls out explicitly as existential-unsafe.
+            if AMBIENT_TRAIT_NAMES.contains(&name) {
+                return terr(ambient_dyn_unsafe_msg(name));
+            }
+            return terr(format!("unknown trait `{name}` in `dyn {name}`"));
+        };
+        if tr.typarams.len() != args.len() {
+            return terr(format!(
+                "trait `{name}` expects {} type argument(s) but got {} in `{rendered}`",
+                tr.typarams.len(),
+                args.len()
+            ));
+        }
+        for arg in args {
+            let mut vars = Vec::new();
+            ast::collect_type_vars(arg, &mut vars);
+            if let Some(var) = vars.first() {
+                return terr(format!(
+                    "`{rendered}`: every trait type parameter must be fixed by a concrete \
+                     type — `{var}` is an unresolved type parameter"
+                ));
+            }
+        }
+        let mut violations: Vec<String> = Vec::new();
+        let mut seen: HashSet<&str> = HashSet::new();
+        self.collect_safety_violations(tr, &mut seen, &mut violations);
+        if !violations.is_empty() {
+            return terr(format!(
+                "trait `{name}` is not existential-safe as `dyn {name}`: {}",
+                violations.join("; ")
+            ));
+        }
+        Ok(())
+    }
+
+    /// Collect every existential-safety violation over the trait's own methods
+    /// AND its transitive supertraits' methods (the whole callable surface of
+    /// `dyn Trait`), so the one diagnostic names every blocking method.
+    fn collect_safety_violations(
+        &self,
+        tr: &'a ast::TraitDef,
+        seen: &mut HashSet<&'a str>,
+        out: &mut Vec<String>,
+    ) {
+        if !seen.insert(tr.name.as_str()) {
+            return;
+        }
+        for method in &tr.methods {
+            method_safety_violations(&tr.typarams, method, out);
+        }
+        for supertrait in &tr.supertraits {
+            match self
+                .traits
+                .get(supertrait.as_str())
+                .or_else(|| self.traits.get(existential_bare(supertrait)))
+            {
+                Some(sup) => self.collect_safety_violations(sup, seen, out),
+                None => {
+                    // An ambient built-in supertrait contributes Self-binary
+                    // comparison methods to the callable surface. Any other
+                    // unresolved name was already rejected by
+                    // `check_trait_names`.
+                    let bare = existential_bare(supertrait);
+                    if AMBIENT_TRAIT_NAMES.contains(&bare) && seen.insert(bare) {
+                        out.push(format!(
+                            "supertrait `{bare}`'s methods take a second `Self` parameter — \
+                             `Self` may appear only in receiver position"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The rule-6 diagnostic for `dyn PartialEq` / `dyn Eq` / `dyn PartialOrd` /
+/// `dyn Ord`: the ambient comparison traits are Self-binary by construction.
+fn ambient_dyn_unsafe_msg(name: &str) -> String {
+    format!(
+        "trait `{name}` is not existential-safe as `dyn {name}`: its methods take a \
+         second `Self` parameter — `Self` may appear only in receiver position"
+    )
+}
+
+/// Check one trait method against the RFC-0081 existential-safety rules,
+/// appending one entry per violated rule.
+fn method_safety_violations(
+    trait_typarams: &[String],
+    method: &ast::MethodSig,
+    out: &mut Vec<String>,
+) {
+    // Rule 1: the method must have a receiver (first parameter named `self`).
+    let has_receiver = method.params.first().is_some_and(|p| p.name == "self");
+    if !has_receiver {
+        out.push(format!("method `{}` has no receiver", method.name));
+    }
+    let value_params = if has_receiver { &method.params[1..] } else { &method.params[..] };
+
+    // Rule 2: no method-local type parameters — every type variable in the
+    // non-receiver parameters and the return must be one of the trait's own.
+    let mut vars = Vec::new();
+    for p in value_params {
+        if let Some(ty) = &p.ty {
+            ast::collect_type_vars(ty, &mut vars);
+        }
+    }
+    if let Some(ret) = &method.ret {
+        ast::collect_type_vars(ret, &mut vars);
+    }
+    for var in vars {
+        if !trait_typarams.contains(&var) {
+            out.push(format!(
+                "method `{}` introduces method-local type parameter `{var}`",
+                method.name
+            ));
+        }
+    }
+
+    // Rule 3: the return type must not be bare `Self` (the hidden concrete
+    // type cannot be reconstructed as the static result).
+    let bare_self_ret = matches!(
+        method.ret.as_ref().map(|r| r.unqualified()),
+        Some(ast::Type::Named(n, a)) if n == "Self" && a.is_empty()
+    );
+    if bare_self_ret {
+        out.push(format!("method `{}` returns bare `Self`", method.name));
+    }
+
+    // Rule 4: `Self` appears nowhere except the receiver — not in non-receiver
+    // parameters, not nested in the return (bare returns are rule 3's).
+    let self_in_params = value_params
+        .iter()
+        .any(|p| p.ty.as_ref().is_some_and(type_mentions_self));
+    let self_nested_in_ret =
+        !bare_self_ret && method.ret.as_ref().is_some_and(type_mentions_self);
+    if self_in_params || self_nested_in_ret {
+        out.push(format!("method `{}` mentions `Self` outside the receiver", method.name));
+    }
+
+    // Rule 5 (v1): no result borrowed from the hidden receiver.
+    if matches!(method.ret, Some(ast::Type::Qualified(ast::TypeQual::Borrow(_), _))) {
+        out.push(format!(
+            "method `{}` returns a result borrowed from the hidden receiver",
+            method.name
+        ));
+    }
+}
+
 /// (RFC-0027) Whether `t` is a packable field type for a `packed` layout: a
 /// statically-fixed-size scalar (`Int`/`Float`/`Bool`/`Duration`) or another
 /// `packed` type. Variable-size types (`String`, `List`, non-packed records, sum
@@ -1820,6 +2302,7 @@ fn packed_list_in_type(t: &ast::Type, packed_names: &HashSet<&str>) -> Option<St
             }
             args.iter().find_map(|a| packed_list_in_type(a, packed_names))
         }
+        ast::Type::Dyn(_, args) => args.iter().find_map(|a| packed_list_in_type(a, packed_names)),
         ast::Type::Tuple(items) => items.iter().find_map(|a| packed_list_in_type(a, packed_names)),
         ast::Type::Fn(args, ret, _) => args
             .iter()
@@ -1901,7 +2384,9 @@ fn transparent_externref_brand_field_cap(
         ast::Type::Qualified(_, inner) => transparent_externref_brand_field_cap(inner, defs, seen),
         ast::Type::Named(n, args) if args.is_empty() => transparent_externref_brand_cap(n, defs, seen),
         ast::Type::Named(n, _) if is_externref_cap(n) => Some(n.clone()),
-        ast::Type::Named(_, _) | ast::Type::Tuple(_) | ast::Type::Fn(_, _, _) => None,
+        // (RFC-0081) A dyn type is never a transparent externref brand.
+        ast::Type::Named(_, _) | ast::Type::Dyn(_, _) | ast::Type::Tuple(_)
+        | ast::Type::Fn(_, _, _) => None,
     }
 }
 
@@ -1984,6 +2469,12 @@ fn reject_cap_slot_boundary(
     match t {
         ast::Type::Qualified(_, inner) => {
             reject_cap_slot_boundary(inner, defs, storage, ctx, position)
+        }
+        // (RFC-0081) A dyn value is not itself a capability slot; only its type
+        // arguments need checking.
+        ast::Type::Dyn(_, args) => {
+            args.iter()
+                .try_for_each(|a| reject_cap_slot_boundary(a, defs, storage, ctx, position))
         }
         ast::Type::Tuple(items) => {
             for item in items {
@@ -2348,6 +2839,8 @@ fn type_host_taint<'a>(
             args.iter().find_map(|a| type_host_taint(a, types, seen))
         }
         ast::Type::Qualified(_, inner) => type_host_taint(inner, types, seen),
+        // (RFC-0081) A dyn value is never itself a capability; scan args only.
+        ast::Type::Dyn(_, args) => args.iter().find_map(|a| type_host_taint(a, types, seen)),
         ast::Type::Tuple(ts) => ts.iter().find_map(|t| type_host_taint(t, types, seen)),
         ast::Type::Fn(params, ret, _) => params
             .iter()
@@ -2780,6 +3273,11 @@ fn collect_type_params(t: &ast::Type, acc: &mut Vec<String>) {
                 collect_type_params(x, acc);
             }
         }
+        ast::Type::Dyn(_, args) => {
+            for a in args {
+                collect_type_params(a, acc);
+            }
+        }
         ast::Type::Fn(params, ret, _) => {
             for p in params {
                 collect_type_params(p, acc);
@@ -3175,6 +3673,15 @@ impl Checker {
                     conventions.clone(),
                 );
             }
+            // (RFC-0081) A first-class existential identity: the bare trait
+            // name plus its argument types (which recurse through ordinary
+            // resolution, so aliases normalize to the same identity).
+            ast::Type::Dyn(name, args) => {
+                return Ty::Dyn(
+                    name.clone(),
+                    args.iter().map(|a| self.to_ty(a)).collect(),
+                );
+            }
         };
         if let Some(t) = self.named_builtin(name, args, &mut |c, a| c.to_ty(a)) {
             return t;
@@ -3208,6 +3715,13 @@ impl Checker {
                 params.iter().map(|t| self.to_ty_generic(t, vars)).collect(),
                 Box::new(self.to_ty_generic(ret, vars)),
                 conventions.clone(),
+            ),
+            // (RFC-0081) First-class existential identity; arguments recurse so
+            // a signature's generic vars inside `dyn T(a)` stay shared (the
+            // existential validation pass separately rejects unresolved args).
+            ast::Type::Dyn(name, args) => Ty::Dyn(
+                name.clone(),
+                args.iter().map(|a| self.to_ty_generic(a, vars)).collect(),
             ),
             ast::Type::Named(name, args) => {
                 if let Some(t) =
@@ -3286,6 +3800,9 @@ impl Checker {
             Ty::Named(n, args) => {
                 Ty::Named(n, args.iter().map(|x| self.subst_vars(x, map)).collect())
             }
+            Ty::Dyn(n, args) => {
+                Ty::Dyn(n, args.iter().map(|x| self.subst_vars(x, map)).collect())
+            }
             Ty::Fn(params, ret, conventions) => Ty::Fn(
                 params.iter().map(|x| self.subst_vars(x, map)).collect(),
                 Box::new(self.subst_vars(&ret, map)),
@@ -3304,6 +3821,7 @@ impl Checker {
             Ty::List(e) => Ty::List(Box::new(self.resolve(e))),
             Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| self.resolve(t)).collect()),
             Ty::Named(n, args) => Ty::Named(n.clone(), args.iter().map(|t| self.resolve(t)).collect()),
+            Ty::Dyn(n, args) => Ty::Dyn(n.clone(), args.iter().map(|t| self.resolve(t)).collect()),
             Ty::Fn(params, ret, conventions) => Ty::Fn(
                 params.iter().map(|t| self.resolve(t)).collect(),
                 Box::new(self.resolve(ret)),
@@ -3383,6 +3901,10 @@ impl Checker {
                     .iter()
                     .find_map(|p| go(c, p, seen))
                     .or_else(|| go(c, &ret, seen)),
+                // (RFC-0081) An existential VALUE never leaks a capability —
+                // capability-carrying payloads are rejected at construction —
+                // so only its type arguments need checking.
+                Ty::Dyn(_, args) => args.iter().find_map(|a| go(c, a, seen)),
                 Ty::Named(n, args) => {
                     if let Some(cap) = c.transparent_externref_brands.get(&n) {
                         return externref_cap_name(cap);
@@ -3415,6 +3937,91 @@ impl Checker {
                 | Ty::Secret | Ty::Exec | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
                 | Ty::Socket | Ty::Listener | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv
                 | Ty::BuildNet | Ty::BuildExec | Ty::Var(_) => None,
+            }
+        }
+        go(self, t, &mut HashSet::new())
+    }
+
+    /// (RFC-0081) The first capability of ANY kind carried by `t`, transitively:
+    /// the full direct capability set (every variant `ty_externref_cap_name`
+    /// matches on, whether or not it has migrated to externref, plus the
+    /// `SecretStore` root), recursing through lists, tuples, function types,
+    /// generic arguments, record fields, and ADT variant payloads exactly like
+    /// `ty_carries_externref_cap`. Used to reject capability-carrying
+    /// existential payloads at `as dyn Trait` — v1 has no authority envelope,
+    /// so a payload capability would hide authority behind the existential.
+    fn ty_carries_capability(&self, t: &Ty) -> Option<&'static str> {
+        fn direct(ty: &Ty) -> Option<&'static str> {
+            Some(match ty {
+                Ty::Console => "Console",
+                Ty::Clock => "Clock",
+                Ty::Rand => "Rand",
+                Ty::Env => "Env",
+                Ty::Secret => "Secret",
+                Ty::Exec => "Exec",
+                Ty::Dir(_) => "Dir",
+                Ty::File(_) => "File",
+                Ty::Net(_) => "Net",
+                Ty::Socket => "Socket",
+                Ty::Listener => "Listener",
+                Ty::BuildOut => "BuildOut",
+                Ty::BuildRead => "BuildRead",
+                Ty::BuildEnv => "BuildEnv",
+                Ty::BuildNet => "BuildNet",
+                Ty::BuildExec => "BuildExec",
+                Ty::Named(n, _) if n == "SecretStore" => "SecretStore",
+                _ => return None,
+            })
+        }
+        fn go(c: &Checker, t: &Ty, seen: &mut HashSet<String>) -> Option<&'static str> {
+            let resolved = c.resolve(t);
+            if let Some(cap) = direct(&resolved) {
+                return Some(cap);
+            }
+            match resolved {
+                Ty::List(inner) => go(c, &inner, seen),
+                Ty::Tuple(items) => items.iter().find_map(|i| go(c, i, seen)),
+                Ty::Fn(params, ret, _) => params
+                    .iter()
+                    .find_map(|p| go(c, p, seen))
+                    .or_else(|| go(c, &ret, seen)),
+                // A nested existential's payload was itself cap-checked at its
+                // own construction; only its type arguments remain.
+                Ty::Dyn(_, args) => args.iter().find_map(|a| go(c, a, seen)),
+                Ty::Named(n, args) => {
+                    if let Some(cap) = c.transparent_externref_brands.get(&n) {
+                        return externref_cap_name(cap);
+                    }
+                    if let Some(hit) = args.iter().find_map(|a| go(c, a, seen)) {
+                        return Some(hit);
+                    }
+                    if !seen.insert(n.clone()) {
+                        return None;
+                    }
+                    let fields = c.record_fields.get(&n).map(|(_, fields)| fields.clone());
+                    let mut hit = fields
+                        .into_iter()
+                        .flatten()
+                        .find_map(|(_, field)| go(c, &field, seen));
+                    if hit.is_none()
+                        && let Some(variants) = c.adt_variants.get(&n)
+                    {
+                        hit = variants.iter().find_map(|variant| {
+                            c.ctor_sigs.get(variant).and_then(|(payloads, _)| {
+                                payloads.iter().find_map(|payload| go(c, payload, seen))
+                            })
+                        });
+                    }
+                    seen.remove(&n);
+                    hit
+                }
+                Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
+                | Ty::Bool | Ty::Nil | Ty::Var(_) => None,
+                // Direct capabilities were handled by `direct` above.
+                Ty::Console | Ty::Clock | Ty::Rand | Ty::Env | Ty::Secret | Ty::Exec
+                | Ty::Dir(_) | Ty::File(_) | Ty::Net(_) | Ty::Socket | Ty::Listener
+                | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv | Ty::BuildNet
+                | Ty::BuildExec => None,
             }
         }
         go(self, t, &mut HashSet::new())
@@ -3459,6 +4066,9 @@ impl Checker {
                 .iter()
                 .chain(std::iter::once(ret.as_ref()))
                 .find_map(|item| self.ty_authority_taint(item, seen)),
+            // (RFC-0081) An existential value never carries authority (payload
+            // capabilities are rejected at construction); check its args only.
+            Ty::Dyn(_, args) => args.iter().find_map(|arg| self.ty_authority_taint(arg, seen)),
             Ty::Named(name, args) => {
                 if name == "SecretStore" || self.sealed_types.contains(&name) {
                     return Some(name);
@@ -3492,6 +4102,9 @@ impl Checker {
     fn reject_structural_authority_ty(&self, t: &Ty, ctx: &str) -> Result<(), TypeError> {
         match self.resolve(t) {
             Ty::List(inner) => self.reject_structural_authority_ty(&inner, ctx),
+            Ty::Dyn(_, args) => {
+                args.iter().try_for_each(|arg| self.reject_structural_authority_ty(arg, ctx))
+            }
             Ty::Tuple(items) => {
                 items.iter().try_for_each(|item| self.reject_structural_authority_ty(item, ctx))
             }
@@ -3524,6 +4137,7 @@ impl Checker {
     fn compiler_syntax_ty(&self, t: &Ty) -> Option<&'static str> {
         match self.resolve(t) {
             Ty::List(inner) => self.compiler_syntax_ty(&inner),
+            Ty::Dyn(_, args) => args.iter().find_map(|arg| self.compiler_syntax_ty(arg)),
             Ty::Tuple(items) => items.iter().find_map(|item| self.compiler_syntax_ty(item)),
             Ty::Fn(params, ret, _) => params
                 .iter()
@@ -3649,6 +4263,17 @@ impl Checker {
                 }
                 Ok(())
             }
+            // (RFC-0081) Two existentials unify only on the same trait head,
+            // the same arity, and pairwise-unifying arguments. Mismatched heads
+            // fall through to the ordinary mismatch error: `dyn Sub` never
+            // unifies with `dyn Super` in this slice (supertrait upcasts are
+            // the witness slice's directed coercion, not unification).
+            (Ty::Dyn(x, xa), Ty::Dyn(y, ya)) if x == y && xa.len() == ya.len() => {
+                for (p, q) in xa.iter().zip(ya) {
+                    self.unify(p, q)?;
+                }
+                Ok(())
+            }
             (Ty::Fn(xp, xr, xc), Ty::Fn(yp, yr, yc))
                 if xp.len() == yp.len() && xc == yc =>
             {
@@ -3669,7 +4294,7 @@ impl Checker {
             Ty::Var(y) => x == y,
             Ty::List(inner) => self.occurs(x, &inner),
             Ty::Tuple(items) => items.iter().any(|i| self.occurs(x, i)),
-            Ty::Named(_, args) => args.iter().any(|a| self.occurs(x, a)),
+            Ty::Named(_, args) | Ty::Dyn(_, args) => args.iter().any(|a| self.occurs(x, a)),
             Ty::Fn(params, ret, _) => {
                 params.iter().any(|p| self.occurs(x, p)) || self.occurs(x, &ret)
             }
@@ -5662,7 +6287,16 @@ impl Checker {
             Expr::MethodCall { receiver, method, .. } => {
                 // Trait lowering resolves every method call (impl, trait
                 // bound, or static); one that survives is unresolvable.
-                self.infer(receiver)?;
+                let receiver_ty = self.infer(receiver)?;
+                // (RFC-0081 slice 1) A method call on an existential receiver
+                // is the witness slice's runtime dispatch — not a resolution
+                // failure. Trait lowering deliberately leaves dyn receivers
+                // alone (`nominal_type_name` returns None for `Type::Dyn`), so
+                // they all funnel here; emit the one canonical feature-stage
+                // diagnostic instead of a misleading "cannot resolve" error.
+                if let dyn_ty @ Ty::Dyn(_, _) = self.resolve(&receiver_ty) {
+                    return Err(existential_stage_error(&dyn_ty.to_string()));
+                }
                 terr(format!(
                     "cannot resolve the method call `.{method}(…)` — methods come from \
                      `impl` blocks; a plain function is called as `{method}(value, …)`"
@@ -6099,6 +6733,25 @@ impl Checker {
             Expr::As { expr, ty } => {
                 let src = self.infer(expr)?;
                 let target = self.to_ty(ty);
+                // (RFC-0081) Explicit erasure `value as dyn Trait` is a legal
+                // cast form of its own — NOT capability narrowing, so
+                // `check_narrow` is skipped — with one authority rule: the
+                // concrete payload must not carry any capability, directly or
+                // nested (v1 has no authority envelope). `to_ty` lowers
+                // `Qualified` to the inner type, so a qualified dyn target is
+                // already `Ty::Dyn` here.
+                if let Ty::Dyn(dyn_name, _) = &target {
+                    let resolved_src = self.resolve(&src);
+                    if let Some(cap) = self.ty_carries_capability(&resolved_src) {
+                        return terr(format!(
+                            "`as dyn {dyn_name}`: the concrete payload type `{resolved_src}` \
+                             carries a `{cap}` capability — capability-carrying existential \
+                             payloads are rejected (RFC-0081); pass the capability explicitly \
+                             in method signatures instead"
+                        ));
+                    }
+                    return Ok(target);
+                }
                 self.check_narrow(&src, &target)?;
                 Ok(target)
             }
@@ -7314,6 +7967,11 @@ fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) ->
         check_compiler_syntax_declarations(&recs)?;
     }
     check_trait_names(&recs)?;
+    // (RFC-0081 slice 1) Validate every `dyn Trait` occurrence (identity,
+    // existential safety, v1 exclusions) while trait declarations are still
+    // present. The returned first occurrence drives the feature-stage gate
+    // after the rest of the check succeeds.
+    let first_dyn = check_existential_types(&recs.items)?;
     let trait_method_names = collect_trait_method_names(&recs);
 
     // Trait/impl declarations are desugared to ordinary functions first, so the
@@ -7329,7 +7987,15 @@ fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) ->
             // type checking (so a genuine type error is reported first) on the
             // lowered module (method calls are plain `Call`s and the borrow
             // signatures survive lowering as `Qualified(Borrow, _)`).
-            crate::loans::check(&lowered)
+            crate::loans::check(&lowered)?;
+            // (RFC-0081 slice 1) Feature-stage gate, deliberately LAST: a
+            // program mentioning `dyn` fails with the one canonical staging
+            // diagnostic only after every specific contract above passed, so
+            // neither backend ever lowers an existential type.
+            if let Some(canonical) = first_dyn {
+                return Err(existential_stage_error(&canonical));
+            }
+            Ok(())
         }
         Err(message) => {
             // (BUG-307) Mono's "cannot infer the result type" fallback fires when
@@ -7535,6 +8201,11 @@ pub fn ty_to_ast(t: &Ty) -> Option<witchy_syntax::ast::Type> {
             n.clone(),
             args.iter().map(ty_to_ast).collect::<Option<Vec<_>>>()?,
         ),
+        // (RFC-0081) The existential surface form: `dyn Render(args…)`.
+        Ty::Dyn(n, args) => T::Dyn(
+            n.clone(),
+            args.iter().map(ty_to_ast).collect::<Option<Vec<_>>>()?,
+        ),
         Ty::Fn(params, ret, conventions) => T::Fn(
             params.iter().map(ty_to_ast).collect::<Option<Vec<_>>>()?,
             Box::new(ty_to_ast(ret)?),
@@ -7549,7 +8220,7 @@ fn ty_has_var(t: &Ty) -> bool {
         Ty::Var(_) => true,
         Ty::List(e) => ty_has_var(e),
         Ty::Tuple(ts) => ts.iter().any(ty_has_var),
-        Ty::Named(_, args) => args.iter().any(ty_has_var),
+        Ty::Named(_, args) | Ty::Dyn(_, args) => args.iter().any(ty_has_var),
         Ty::Fn(ps, r, _) => ps.iter().any(ty_has_var) || ty_has_var(r),
         _ => false,
     }

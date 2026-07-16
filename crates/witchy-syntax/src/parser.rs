@@ -1142,6 +1142,43 @@ impl Parser {
             let inner = self.ty()?;
             return Ok(Type::Qualified(TypeQual::Borrow(life), Box::new(inner)));
         }
+        // (RFC-0081) An existential trait type: `dyn Render`, `dyn Convert(Int)`.
+        // Contextual — `dyn` is an ordinary identifier unless FOLLOWED BY an
+        // uppercase (trait) name, so a bare `dyn` stays a usable type variable
+        // exactly like `frozen`. The head is a BARE trait name: trait names are
+        // never module-qualified, and only the trait ARGUMENTS are types.
+        if self.at_ident("dyn")
+            && matches!(
+                self.toks.get(self.pos + 1).map(|t| &t.kind),
+                Some(Tok::Ident(n)) if n.chars().next().is_some_and(char::is_uppercase)
+            )
+        {
+            self.advance(); // `dyn`
+            let name = self.ident()?;
+            if self.at(&Tok::Dot) {
+                return Err(self.error(format!(
+                    "`dyn {name}.…`: a `dyn` head is a bare trait name — trait names are \
+                     never module-qualified"
+                )));
+            }
+            let mut args = Vec::new();
+            if self.eat(&Tok::LParen) {
+                while !self.at(&Tok::RParen) {
+                    args.push(self.ty()?);
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&Tok::RParen)?;
+                if args.is_empty() {
+                    return Err(self.error(format!(
+                        "`dyn {name}()`: an empty trait-argument list is malformed — write \
+                         `dyn {name}` for a trait without type parameters"
+                    )));
+                }
+            }
+            return Ok(Type::Dyn(name, args));
+        }
         if self.eat(&Tok::Fn) {
             // Function type: `fn(T1, var T2, own T3) -> R`.
             self.expect(&Tok::LParen)?;

@@ -437,6 +437,11 @@ impl<'a> Scope<'a> {
                 ps.iter_mut().try_for_each(|p| self.resolve_type(p))?;
                 self.resolve_type(r)
             }
+            // (RFC-0081) A `dyn` head is a TRAIT name: traits are never
+            // module-qualified (one flat namespace, arity-checked in typeck),
+            // so only the type ARGUMENTS canonicalize. Identical instantiations
+            // written in different modules therefore resolve to one identity.
+            Type::Dyn(_, args) => args.iter_mut().try_for_each(|a| self.resolve_type(a)),
             Type::Named(name, args) => {
                 // `Dir[Read]` / `File[Write]` / `Net[Connect]` carry capability
                 // RIGHTS in their arguments, not types — leave them untouched.

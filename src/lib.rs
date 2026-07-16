@@ -189,6 +189,8 @@ fn ownership_relevant_type(ty: &ast::Type) -> bool {
                 && !capabilities::is_capability_type_name(name)
         }
         ast::Type::Tuple(_) => true,
+        // (RFC-0081) A dyn value is a heap value, so its convention matters.
+        ast::Type::Dyn(_, _) => true,
         ast::Type::Fn(_, _, _) => false,
         ast::Type::Qualified(_, inner) => ownership_relevant_type(inner),
     }

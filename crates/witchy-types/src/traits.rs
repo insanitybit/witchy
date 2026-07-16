@@ -149,6 +149,10 @@ fn subst_self(t: &Type, self_ty: &Type) -> Type {
         Type::Named(n, args) => {
             Type::Named(n.clone(), args.iter().map(|a| subst_self(a, self_ty)).collect())
         }
+        // (RFC-0081) The dyn head is a trait name, never `Self`; substitute in args only.
+        Type::Dyn(n, args) => {
+            Type::Dyn(n.clone(), args.iter().map(|a| subst_self(a, self_ty)).collect())
+        }
         Type::Tuple(ts) => Type::Tuple(ts.iter().map(|a| subst_self(a, self_ty)).collect()),
         Type::Fn(ps, r, conventions) => Type::Fn(
             ps.iter().map(|a| subst_self(a, self_ty)).collect(),
@@ -794,6 +798,14 @@ fn display_type(t: &Type) -> String {
                 args.iter().map(display_type).collect::<Vec<_>>().join(", ")
             )
         }
+        Type::Dyn(n, args) if args.is_empty() => format!("dyn {n}"),
+        Type::Dyn(n, args) => {
+            format!(
+                "dyn {}({})",
+                n,
+                args.iter().map(display_type).collect::<Vec<_>>().join(", ")
+            )
+        }
         Type::Tuple(ts) => {
             format!("({})", ts.iter().map(display_type).collect::<Vec<_>>().join(", "))
         }
@@ -841,6 +853,10 @@ fn subst_trait_params(t: &Type, vars: &HashMap<String, Type>) -> Type {
         }
         Type::Named(n, args) => {
             Type::Named(n.clone(), args.iter().map(|a| subst_trait_params(a, vars)).collect())
+        }
+        // (RFC-0081) The dyn head is a trait name, never a type variable; substitute in args only.
+        Type::Dyn(n, args) => {
+            Type::Dyn(n.clone(), args.iter().map(|a| subst_trait_params(a, vars)).collect())
         }
         Type::Tuple(ts) => Type::Tuple(ts.iter().map(|a| subst_trait_params(a, vars)).collect()),
         Type::Fn(ps, r, conventions) => Type::Fn(
@@ -1138,6 +1154,11 @@ fn collect_anon_union_heads_type(ty: &Type, out: &mut HashMap<String, usize>) {
         Type::Tuple(items) => {
             for item in items {
                 collect_anon_union_heads_type(item, out);
+            }
+        }
+        Type::Dyn(_, args) => {
+            for arg in args {
+                collect_anon_union_heads_type(arg, out);
             }
         }
         Type::Fn(params, ret, _) => {
@@ -1643,6 +1664,7 @@ fn refine_ast_scope_type(scope: &mut Scope<Type>, name: &str, refined: &Type) {
     };
     let carries_arguments = match refined.unqualified() {
         Type::Named(_, args) => !args.is_empty(),
+        Type::Dyn(_, args) => !args.is_empty(),
         Type::Tuple(_) | Type::Fn(_, _, _) => true,
         Type::Qualified(_, _) => unreachable!("unqualified strips qualifiers"),
     };
@@ -2876,6 +2898,21 @@ impl Ctx<'_> {
                 }
                 let owner_module = receiver_ty.as_ref().and_then(type_owner_module_ast);
                 match receiver_ty {
+                    // (RFC-0081 slice 1) A method call on an existential
+                    // receiver is the witness slice's dynamic dispatch, not a
+                    // resolution failure: `nominal_type_name` deliberately
+                    // returns None for `Type::Dyn`, so every dyn receiver
+                    // funnels here. Emit the one canonical feature-stage
+                    // diagnostic instead of a misleading "no method on
+                    // `dyn Render`" error.
+                    Some(ty) if matches!(ty.unqualified(), Type::Dyn(..)) => {
+                        self.missing_impls.borrow_mut().push(
+                            crate::typeck::existential_stage_error(
+                                &witchy_syntax::format::type_str(ty.unqualified()),
+                            )
+                            .message,
+                        )
+                    }
                     // A free function of this name that could ACCEPT this receiver
                     // exists somewhere other than the receiver's owner module: the
                     // user wrote `value.{method}(…)` for a plain function, which
@@ -3036,6 +3073,9 @@ impl Ctx<'_> {
 fn nominal_type_name(ty: &Type) -> Option<&str> {
     match ty.unqualified() {
         Type::Named(name, _) => Some(name),
+        // (RFC-0081) A dyn type's head is a trait name, not a nominal type name;
+        // it must never enter impl lookup by name.
+        Type::Dyn(..) => None,
         Type::Tuple(_) | Type::Fn(_, _, _) => None,
         Type::Qualified(_, _) => unreachable!("unqualified strips qualifiers"),
     }
@@ -3220,6 +3260,18 @@ fn type_key(t: &Type) -> String {
         match part {
             Part::Ty(Type::Qualified(_, inner)) => stack.push(Part::Ty(inner)),
             Part::Ty(Type::Named(name, args)) => {
+                key.push_str(name);
+                if !args.is_empty() {
+                    key.push('<');
+                    stack.push(Part::Char('>'));
+                    push_items(&mut stack, args);
+                }
+            }
+            // (RFC-0081) The `dyn ` prefix keeps the key distinct: `dyn Render`
+            // can never collide with a type named `Render` (type names cannot
+            // contain spaces).
+            Part::Ty(Type::Dyn(name, args)) => {
+                key.push_str("dyn ");
                 key.push_str(name);
                 if !args.is_empty() {
                     key.push('<');
@@ -3900,6 +3952,8 @@ fn type_head_key(ty: &Type) -> Option<String> {
     match ty.unqualified() {
         Type::Named(name, _) => Some(name.clone()),
         Type::Tuple(items) => Some(format!("Tuple{}", items.len())),
+        // (RFC-0081) A dyn head is a trait name, not a nominal head key.
+        Type::Dyn(..) => None,
         Type::Fn(_, _, _) => None,
         Type::Qualified(_, _) => unreachable!("unqualified strips qualifiers"),
     }

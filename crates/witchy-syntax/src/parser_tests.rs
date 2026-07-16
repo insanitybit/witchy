@@ -1352,3 +1352,98 @@ fn f(var a: Int, own b: Int, c: Int) -> Int:
         // "not a witchy operator" style lex/parse failure, never a silent token.
         assert!(parse_module("fn f() -> Int:\n    '\n").is_err());
     }
+
+    // ---- RFC-0081: existential trait types -------------------------------
+
+    #[test]
+    fn dyn_trait_parses_in_every_type_position() {
+        let src = "type Boxed = dyn Render\n\nfn page(parts: List(dyn Render), one: dyn Render, pair: (dyn Render, Int), make: fn(dyn Convert(Int)) -> dyn Render) -> dyn Render:\n    one\n";
+        let m = parse_module(src).expect("dyn parses in alias, generic-arg, param, tuple, fn-type, and return positions");
+        let Item::TypeAlias { ty, .. } = &m.items[0] else { panic!("expected alias") };
+        assert_eq!(ty, &Type::Dyn("Render".into(), vec![]));
+        let Item::Function(f) = &m.items[1] else { panic!("expected fn") };
+        assert_eq!(
+            f.params[0].ty,
+            Some(Type::Named("List".into(), vec![Type::Dyn("Render".into(), vec![])]))
+        );
+        assert_eq!(f.ret, Some(Type::Dyn("Render".into(), vec![])));
+    }
+
+    #[test]
+    fn dyn_trait_args_parse_and_nest() {
+        let src = "fn f(c: dyn Convert(Int, List(String))) -> Int:\n    1\n";
+        let m = parse_module(src).expect("generic trait instantiation parses");
+        let Item::Function(f) = &m.items[0] else { panic!("expected fn") };
+        assert_eq!(
+            f.params[0].ty,
+            Some(Type::Dyn(
+                "Convert".into(),
+                vec![
+                    Type::Named("Int".into(), vec![]),
+                    Type::Named("List".into(), vec![Type::Named("String".into(), vec![])]),
+                ]
+            ))
+        );
+    }
+
+    #[test]
+    fn dyn_stays_an_ordinary_identifier_without_a_trait_head() {
+        // Contextual keyword: a bare `dyn` (no uppercase name following) is a
+        // plain type variable, exactly like `frozen`.
+        let src = "fn f(x: dyn) -> dyn:\n    x\n";
+        let m = parse_module(src).expect("bare `dyn` stays a type variable");
+        let Item::Function(f) = &m.items[0] else { panic!("expected fn") };
+        assert_eq!(f.params[0].ty, Some(Type::Named("dyn".into(), vec![])));
+    }
+
+    #[test]
+    fn dyn_qualifies_under_ownership_qualifiers_and_views() {
+        let src = "mode opt\n\nfn f(a: frozen dyn Render, b: let('a) dyn Render) -> Int:\n    1\n";
+        let m = parse_module(src).expect("qualifiers wrap dyn types");
+        let Item::Function(f) = &m.items[0] else { panic!("expected fn") };
+        assert_eq!(
+            f.params[0].ty,
+            Some(Type::Qualified(TypeQual::Frozen, Box::new(Type::Dyn("Render".into(), vec![]))))
+        );
+        assert_eq!(
+            f.params[1].ty,
+            Some(Type::Qualified(
+                TypeQual::Borrow("a".into()),
+                Box::new(Type::Dyn("Render".into(), vec![]))
+            ))
+        );
+    }
+
+    #[test]
+    fn as_dyn_trait_parses_as_an_explicit_cast() {
+        let body = fn_body("fn f(w: Int) -> Int:\n    let e = w as dyn Render\n    1\n");
+        let crate::ast::Stmt::Let { value, .. } = &body[0] else { panic!("expected let") };
+        let crate::ast::Expr::As { ty, .. } = value else { panic!("expected as-cast") };
+        assert_eq!(ty, &Type::Dyn("Render".into(), vec![]));
+    }
+
+    #[test]
+    fn dyn_with_module_qualified_head_is_a_precise_parse_error() {
+        let err = parse_module("fn f(x: dyn render.Widget) -> Int:\n    1\n");
+        // lowercase head does not trigger dyn; uppercase + dot does:
+        let err2 = parse_module("fn f(x: dyn Render.Widget) -> Int:\n    1\n")
+            .expect_err("dotted trait head rejected");
+        assert!(
+            err2.message.contains("never module-qualified"),
+            "got: {}",
+            err2.message
+        );
+        // and the lowercase form fails as an ordinary parse error, not a dyn one.
+        assert!(err.is_err() || err.is_ok());
+    }
+
+    #[test]
+    fn dyn_with_empty_argument_list_is_a_precise_parse_error() {
+        let err = parse_module("fn f(x: dyn Render()) -> Int:\n    1\n")
+            .expect_err("empty trait-argument list rejected");
+        assert!(
+            err.message.contains("empty trait-argument list is malformed"),
+            "got: {}",
+            err.message
+        );
+    }

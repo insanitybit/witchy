@@ -584,6 +584,9 @@ fn type_is_unique_capacity(t: &Type) -> bool {
 fn rc_leaf_bias(t: &Type) -> Option<i32> {
     match t {
         Type::Qualified(_, inner) => rc_leaf_bias(inner),
+        // (RFC-0081) A dyn value's representation is unresolved here; disable
+        // ownership-sensitive extraction like an unresolved generic shape.
+        Type::Dyn(_, _) => None,
         Type::Tuple(_) => Some(0),
         Type::Fn(_, _, _) => Some(-1),
         Type::Named(name, args)
@@ -8706,6 +8709,8 @@ impl<'types> Codegen<'types> {
             match ty {
                 Type::Qualified(_, inner) => mentions(inner, name),
                 Type::Named(n, args) => n == name || args.iter().any(|a| mentions(a, name)),
+                // (RFC-0081) The dyn head is a trait name, never the ADT's name.
+                Type::Dyn(_, args) => args.iter().any(|a| mentions(a, name)),
                 Type::Tuple(ts) => ts.iter().any(|t| mentions(t, name)),
                 Type::Fn(params, ret, _) => {
                     params.iter().any(|p| mentions(p, name)) || mentions(ret, name)
@@ -8739,6 +8744,9 @@ impl<'types> Codegen<'types> {
     ) -> Option<EqShape> {
         match ty {
             Type::Qualified(_, inner) => self.eq_shape_of_type_rec(inner, subst, visiting),
+            // (RFC-0081) A dyn type has no structural-equality shape — `None` is
+            // a loud error at the use site, like Dict/fn/type variables.
+            Type::Dyn(_, _) => None,
             Type::Named(n, args) => match n.as_str() {
                 "Int" | "Duration" => Some(EqShape::Int),
                 "Bool" => Some(EqShape::Bool),
@@ -9024,6 +9032,7 @@ fn type_has_var(t: &Type) -> bool {
             (args.is_empty() && n.chars().next().is_some_and(|c| c.is_lowercase()) && !n.contains('.'))
                 || args.iter().any(type_has_var)
         }
+        Type::Dyn(_, args) => args.iter().any(type_has_var),
         Type::Tuple(ts) => ts.iter().any(type_has_var),
         Type::Fn(ps, r, _) => ps.iter().any(type_has_var) || type_has_var(r),
     }

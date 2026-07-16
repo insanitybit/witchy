@@ -2789,6 +2789,17 @@ fn check_reserved_type(
     generated_anon_types: &HashSet<&str>,
 ) -> Result<(), LinkError> {
     match ty {
+        // (RFC-0081; mechanical arm only — this file is owned by another lane)
+        // The head is a trait name: apply the same reserved-identifier check as
+        // `Named`, then walk the trait arguments.
+        Type::Dyn(name, args) => {
+            if is_reserved_user_identifier(name) {
+                return reserved_name_error(module_name, "trait", name);
+            }
+            for arg in args {
+                check_reserved_type(module_name, arg, generated_anon_types)?;
+            }
+        }
         Type::Named(name, args) => {
             // Anonymous record type-position syntax is parsed into the same
             // shape-keyed synthetic generic record names that value-position

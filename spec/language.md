@@ -892,6 +892,49 @@ composes with an explicit `where` clause. The std library uses it for
 module is preluded; `from show import say` is needed only when you want the bare
 `say(...)` spelling.
 
+### Existential trait types — `dyn Trait` (RFC-0081, frontend only)
+
+`dyn Render` / `dyn Convert(Int)` is an existential trait type: a value whose
+concrete type is hidden behind a trait's callable surface. The frontend
+contract is implemented; the runtime is not — a program that mentions a `dyn`
+type parses, formats, and type-checks (identity, existential safety, authority)
+and then fails with one feature-stage diagnostic before either backend lowers
+it. No `dyn` value can be constructed or dispatched yet.
+
+- `dyn` is contextual and only in type position: it must be followed by an
+  uppercase trait name, so a bare `dyn` remains an ordinary type variable. The
+  head is a bare trait name (trait names are never module-qualified); only the
+  trait arguments are types. It parses in every type position — parameters,
+  returns, aliases, generic arguments, tuples, function types, `let`
+  annotations, and the explicit `value as dyn Trait` cast. Erasure is explicit:
+  inference never silently replaces a concrete type with an existential.
+- Identity is the resolved trait plus its fully substituted arguments. Aliases
+  (`type Boxed = dyn Render`), imports, and equivalent spellings in different
+  modules normalize to the same identity.
+- A trait must be existential-safe to be used as `dyn Trait`: every method has
+  a receiver, introduces no method-local type parameters, does not return bare
+  `Self`, mentions `Self` nowhere but the receiver, and does not return a
+  result borrowed from the hidden receiver; every trait type parameter must be
+  fixed by concrete arguments. One unsafe method blocks the trait, and the
+  diagnostic names every blocking method and rule (`dyn PartialEq` is rejected:
+  its second `Self` parameter violates the `Self`-position rule).
+- Capability-carrying payloads are rejected transitively (records, sums,
+  tuples, containers): `value as dyn Trait` where the concrete type contains a
+  `Dir`/`File`/`Net`/… fails at check time. Borrowed existentials
+  (`View(dyn T, 'a)`) are excluded from v1.
+
+Example (not runnable until RFC-0081's witness/runtime slice lands):
+
+```sh
+trait Render:
+    fn render(let self, context: Context) -> Result(String, RenderError)
+
+fn page(parts: List(dyn Render)) -> Int:   # parses + checks, then:
+# error: `dyn Render`: existential values cannot be constructed or dispatched
+# yet — RFC-0081's witness/runtime slice has not landed; the frontend contract
+# (parsing, identity, existential safety) is checked
+```
+
 ### Deriving the standard traits
 
 `derive(...)` generates trait impls for a type. The generated code is appended to

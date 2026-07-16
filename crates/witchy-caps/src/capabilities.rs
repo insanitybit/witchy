@@ -79,6 +79,8 @@ fn build_caps_in(ty: &Type, out: &mut CapSet) {
                 build_caps_in(a, out);
             }
         }
+        // (RFC-0081) A dyn value is never itself a capability; scan args only.
+        Type::Dyn(_, args) => args.iter().for_each(|a| build_caps_in(a, out)),
         Type::Tuple(ts) => ts.iter().for_each(|t| build_caps_in(t, out)),
         Type::Fn(params, ret, _) => {
             params.iter().for_each(|p| build_caps_in(p, out));
@@ -502,6 +504,13 @@ fn caps_in(ty: &Type, taint: &HashMap<String, CapSet>, out: &mut CapSet) {
             if let Some(caps) = taint.get(name) {
                 merge_into(out, caps);
             }
+            for a in args {
+                caps_in(a, taint, out);
+            }
+        }
+        // (RFC-0081) A dyn value is never itself a capability, and its head is a
+        // trait name (never a taint-map key); scan args only.
+        Type::Dyn(_, args) => {
             for a in args {
                 caps_in(a, taint, out);
             }

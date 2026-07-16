@@ -4,7 +4,7 @@ title: Existential trait values and dynamic dispatch
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "implementation contract specified; parser, checker, interpreter, WIR, Wasm lowering, migrations, and docs remain unimplemented"
+tracking: "slice 1 (type identity and safety) implemented: dyn Trait(args…) parses/formats in every type position, resolved existential identity (Ty::Dyn) is stable across aliases/imports/modules, the six existential-safety rules and transitive capability-payload rejection are enforced, and every dyn-mentioning program fails with one feature-stage diagnostic before either backend lowers (no construction/dispatch yet). Reflection metadata uses a placeholder opaque meta.TNamed head until the witness slice adds meta.TDyn. Slices 2-5 (witness substrate, owned values and dispatch, receiver completion, authority/tooling closure) remain unimplemented"
 related:
   - "0005 (capability-safe aggregate representation and typed callable ABI)"
   - "0038 (grantable capabilities and transitive authority checks)"

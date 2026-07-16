@@ -120,6 +120,15 @@ fn type_expr(t: &Type) -> Expr {
             name: "meta.TNamed".into(),
             args: vec![s(n), Expr::List(args.iter().map(type_expr).collect())],
         },
+        // (RFC-0081) Placeholder: reflect the canonical rendering as an opaque
+        // named head with NO argument list, until the witness/runtime slice adds
+        // a structured `meta.TDyn` (std/meta.witchy belongs to another lane).
+        // Unobservable from runnable programs — dyn-carrying modules fail the
+        // typeck feature gate before either backend lowers them.
+        Type::Dyn(..) => Expr::Ctor {
+            name: "meta.TNamed".into(),
+            args: vec![s(&crate::format::type_str(t)), Expr::List(Vec::new())],
+        },
         Type::Tuple(ts) => Expr::Ctor {
             name: "meta.TTuple".into(),
             args: vec![Expr::List(ts.iter().map(type_expr).collect())],

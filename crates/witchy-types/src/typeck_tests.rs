@@ -3133,3 +3133,365 @@ fn main():
     // resolves" control both need the std library linked (String/Duration methods
     // live there), which `check_str` does not do. They are pinned on the real,
     // std-linked path by a runnable `book/` example instead.
+
+    // ------------------------------------------------------------------
+    // RFC-0081 slice 1: existential trait values — frontend contract.
+    // ------------------------------------------------------------------
+
+    /// The one canonical feature-stage diagnostic (see
+    /// `existential_stage_error`); every fully valid `dyn` program must fail
+    /// with EXACTLY this string, from every path. `check_str` stringifies
+    /// through `Display for TypeError`, hence the `type error: ` prefix here.
+    fn rfc0081_stage_gate(canonical: &str) -> String {
+        format!(
+            "type error: `{canonical}`: existential values cannot be constructed or \
+             dispatched yet — RFC-0081's witness/runtime slice has not landed; the \
+             frontend contract (parsing, identity, existential safety) is checked"
+        )
+    }
+
+    #[test]
+    fn rfc0081_valid_dyn_signature_fails_with_exactly_the_feature_stage_gate() {
+        // Everything about this program is valid under the slice-1 contract:
+        // the trait exists, is existential-safe, the arity matches, and no
+        // v1 exclusion applies. Equality (not contains) proves every specific
+        // check passed and only the staging gate fired — LAST.
+        let err = check_str(
+            "trait Render:\n    fn render(let self) -> String\n\n\
+             fn describe(part: dyn Render) -> String:\n    \"static\"\n\n\
+             fn main(console: Console):\n    console.print(\"hi\")\n",
+        )
+        .expect_err("dyn programs are staged until the witness slice lands");
+        assert_eq!(err, rfc0081_stage_gate("dyn Render"));
+    }
+
+    #[test]
+    fn rfc0081_stage_gate_renders_trait_arguments_canonically() {
+        let err = check_str(
+            "trait Convert(t):\n    fn convert(let self) -> t\n\n\
+             fn f(x: dyn Convert(Int)) -> Int:\n    1\n\n\
+             fn main(console: Console):\n    console.print(\"hi\")\n",
+        )
+        .expect_err("dyn programs are staged");
+        assert_eq!(err, rfc0081_stage_gate("dyn Convert(Int)"));
+    }
+
+    #[test]
+    fn rfc0081_unknown_trait_in_dyn() {
+        let err = check_str(
+            "fn f(x: dyn Render) -> Int:\n    1\n\n\
+             fn main(console: Console):\n    console.print(\"hi\")\n",
+        )
+        .expect_err("dyn over an undeclared trait");
+        assert!(err.contains("unknown trait `Render` in `dyn Render`"), "{err}");
+    }
+
+    #[test]
+    fn rfc0081_trait_arity_mismatch_in_dyn() {
+        let err = check_str(
+            "trait Convert(t):\n    fn convert(let self) -> t\n\n\
+             fn f(x: dyn Convert(Int, String)) -> Int:\n    1\n\n\
+             fn main(console: Console):\n    console.print(\"hi\")\n",
+        )
+        .expect_err("dyn with the wrong trait arity");
+        assert!(
+            err.contains(
+                "trait `Convert` expects 1 type argument(s) but got 2 in `dyn Convert(Int, String)`"
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rfc0081_unresolved_trait_type_parameter_in_dyn() {
+        let err = check_str(
+            "trait Convert(t):\n    fn convert(let self) -> t\n\n\
+             fn f(x: dyn Convert(a)) -> Int:\n    1\n\n\
+             fn main(console: Console):\n    console.print(\"hi\")\n",
+        )
+        .expect_err("a dyn trait argument must be concrete");
+        assert!(
+            err.contains(
+                "`dyn Convert(a)`: every trait type parameter must be fixed by a concrete \
+                 type — `a` is an unresolved type parameter"
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rfc0081_safety_rule_1_receiverless_method() {
+        let err = check_str(
+            "trait Maker:\n    fn make() -> Int\n\n\
+             fn f(x: dyn Maker) -> Int:\n    1\n\n\
+             fn main(console: Console):\n    console.print(\"hi\")\n",
+        )
+        .expect_err("a receiver-less associated fn blocks dyn use");
+        assert!(
+            err.contains("trait `Maker` is not existential-safe as `dyn Maker`")
+                && err.contains("method `make` has no receiver"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rfc0081_safety_rule_2_method_local_type_parameter() {
+        let err = check_str(
+            "trait Picker:\n    fn pick(let self, x: b) -> Int\n\n\
+             fn f(x: dyn Picker) -> Int:\n    1\n\n\
+             fn main(console: Console):\n    console.print(\"hi\")\n",
+        )
+        .expect_err("a method-local type parameter blocks dyn use");
+        assert!(
+            err.contains("trait `Picker` is not existential-safe as `dyn Picker`")
+                && err.contains("method `pick` introduces method-local type parameter `b`"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rfc0081_safety_rule_3_bare_self_return() {
+        let err = check_str(
+            "trait Cloner:\n    fn duplicate(let self) -> Self\n\n\
+             fn f(x: dyn Cloner) -> Int:\n    1\n\n\
+             fn main(console: Console):\n    console.print(\"hi\")\n",
+        )
+        .expect_err("a bare `Self` return blocks dyn use");
+        assert!(
+            err.contains("trait `Cloner` is not existential-safe as `dyn Cloner`")
+                && err.contains("method `duplicate` returns bare `Self`"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rfc0081_safety_rule_4_self_outside_receiver() {
+        // A `Self`-typed non-receiver parameter…
+        let err = check_str(
+            "trait Merger:\n    fn merge(let self, other: Self) -> Int\n\n\
+             fn f(x: dyn Merger) -> Int:\n    1\n\n\
+             fn main(console: Console):\n    console.print(\"hi\")\n",
+        )
+        .expect_err("a Self-typed parameter blocks dyn use");
+        assert!(
+            err.contains("trait `Merger` is not existential-safe as `dyn Merger`")
+                && err.contains("method `merge` mentions `Self` outside the receiver"),
+            "{err}"
+        );
+
+        // …and `Self` NESTED in the return (bare returns are rule 3's).
+        let err = check_str(
+            "trait Splitter:\n    fn split(let self) -> List(Self)\n\n\
+             fn f(x: dyn Splitter) -> Int:\n    1\n\n\
+             fn main(console: Console):\n    console.print(\"hi\")\n",
+        )
+        .expect_err("a Self nested in the return blocks dyn use");
+        assert!(
+            err.contains("method `split` mentions `Self` outside the receiver"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rfc0081_safety_rule_5_receiver_borrowed_result() {
+        let err = check_str(
+            "trait Peeker:\n    fn peek(let self) -> View(String, 'a)\n\n\
+             fn f(x: dyn Peeker) -> Int:\n    1\n\n\
+             fn main(console: Console):\n    console.print(\"hi\")\n",
+        )
+        .expect_err("a borrowed result blocks dyn use in v1");
+        assert!(
+            err.contains("trait `Peeker` is not existential-safe as `dyn Peeker`")
+                && err.contains("method `peek` returns a result borrowed from the hidden receiver"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rfc0081_safety_rule_6_ambient_partial_eq() {
+        // `check_str` links no std, so `PartialEq` is the AMBIENT built-in
+        // here and takes the dedicated Self-binary diagnostic. (In a
+        // std-linked program the declared `trait PartialEq` takes the general
+        // rule-4 path naming `eq`/`ne`; both name the trait and the rule.)
+        let err = check_str(
+            "fn f(x: dyn PartialEq) -> Int:\n    1\n\n\
+             fn main(console: Console):\n    console.print(\"hi\")\n",
+        )
+        .expect_err("dyn PartialEq is never existential-safe");
+        assert!(
+            err.contains("trait `PartialEq` is not existential-safe as `dyn PartialEq`")
+                && err.contains("second `Self` parameter"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rfc0081_safety_diagnostic_names_every_blocking_method() {
+        // One error, listing every violating method+rule — not just the first.
+        let err = check_str(
+            "trait Bad:\n\
+             \x20   fn make() -> Int\n\
+             \x20   fn pick(let self, x: b) -> Int\n\
+             \x20   fn duplicate(let self) -> Self\n\
+             \x20   fn merge(let self, other: Self) -> Int\n\n\
+             fn f(x: dyn Bad) -> Int:\n    1\n\n\
+             fn main(console: Console):\n    console.print(\"hi\")\n",
+        )
+        .expect_err("every violation is reported at once");
+        for needle in [
+            "method `make` has no receiver",
+            "method `pick` introduces method-local type parameter `b`",
+            "method `duplicate` returns bare `Self`",
+            "method `merge` mentions `Self` outside the receiver",
+        ] {
+            assert!(err.contains(needle), "missing `{needle}` in: {err}");
+        }
+    }
+
+    #[test]
+    fn rfc0081_borrowed_dyn_is_a_v1_exclusion() {
+        let err = check_str(
+            "trait Render:\n    fn render(let self) -> String\n\n\
+             fn f(x: View(dyn Render, 'a)) -> Int:\n    1\n\n\
+             fn main(console: Console):\n    console.print(\"hi\")\n",
+        )
+        .expect_err("borrowed existentials are excluded from v1");
+        assert!(
+            err.contains(
+                "borrowed existential values (`View(dyn Render, 'a)` / `let('a) dyn Render`) \
+                 are excluded from RFC-0081 v1"
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rfc0081_as_dyn_rejects_record_capability_payload() {
+        let err = check_str(
+            "trait Render:\n    fn render(let self) -> String\n\n\
+             type Holder:\n    dir: Dir\n\n\
+             fn main(dir: Dir, console: Console):\n\
+             \x20   let h = Holder(dir)\n\
+             \x20   let r = h as dyn Render\n\
+             \x20   console.print(\"hi\")\n",
+        )
+        .expect_err("a Dir-carrying record cannot be erased");
+        assert!(
+            err.contains(
+                "`as dyn Render`: the concrete payload type `Holder` carries a `Dir` \
+                 capability — capability-carrying existential payloads are rejected (RFC-0081); \
+                 pass the capability explicitly in method signatures instead"
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rfc0081_as_dyn_rejects_container_capability_payloads() {
+        const TRAIT: &str = "trait Render:\n    fn render(let self) -> String\n\n";
+
+        // Tuple payload.
+        let err = check_str(&format!(
+            "{TRAIT}fn main(dir: Dir, console: Console):\n\
+             \x20   let r = (dir, \"x\") as dyn Render\n\
+             \x20   console.print(\"hi\")\n"
+        ))
+        .expect_err("a Dir-carrying tuple cannot be erased");
+        assert!(
+            err.contains("`as dyn Render`") && err.contains("carries a `Dir` capability"),
+            "{err}"
+        );
+
+        // Sum/variant payload.
+        let err = check_str(&format!(
+            "{TRAIT}type Wrap:\n    Wrapped(Dir)\n    Empty\n\n\
+             fn main(dir: Dir, console: Console):\n\
+             \x20   let w = Wrapped(dir)\n\
+             \x20   let r = w as dyn Render\n\
+             \x20   console.print(\"hi\")\n"
+        ))
+        .expect_err("a Dir-carrying variant cannot be erased");
+        assert!(
+            err.contains("`as dyn Render`")
+                && err.contains("payload type `Wrap` carries a `Dir` capability"),
+            "{err}"
+        );
+
+        // Generic-container payload (`Option(Dir)` is a legal parameter form).
+        let err = check_str(&format!(
+            "{TRAIT}fn f(x: Option(Dir)) -> Int:\n\
+             \x20   let r = x as dyn Render\n\
+             \x20   1\n\n\
+             fn main(console: Console):\n    console.print(\"hi\")\n"
+        ))
+        .expect_err("a Dir-carrying Option cannot be erased");
+        assert!(
+            err.contains("payload type `Option(Dir)` carries a `Dir` capability"),
+            "{err}"
+        );
+
+        // A `List(Dir)` payload is unconstructible TODAY: the list literal is
+        // rejected upstream (cap-carrying collections, RFC-0005), before the
+        // cast is reached. Pin that the program still errors on the `Dir`
+        // capability; `ty_carries_capability` covers List recursion for when
+        // collections learn to carry caps.
+        let err = check_str(&format!(
+            "{TRAIT}fn main(dir: Dir, console: Console):\n\
+             \x20   let r = [dir] as dyn Render\n\
+             \x20   console.print(\"hi\")\n"
+        ))
+        .expect_err("a Dir-carrying list is rejected before the cast");
+        assert!(err.contains("`Dir` capability"), "{err}");
+    }
+
+    #[test]
+    fn rfc0081_cap_free_as_dyn_reaches_the_feature_stage_gate() {
+        // The cast itself type-checks (no `check_narrow`, no cap complaint):
+        // the only error left is the staging gate, proving the erasure form
+        // is a legal cast in the frontend contract.
+        let err = check_str(
+            "trait Render:\n    fn render(let self) -> String\n\n\
+             type Plain:\n    tag: String\n\n\
+             impl Render for Plain:\n    fn render(let self) -> String:\n        self.tag\n\n\
+             fn main(console: Console):\n\
+             \x20   let p = Plain(\"x\")\n\
+             \x20   let r = p as dyn Render\n\
+             \x20   console.print(\"hi\")\n",
+        )
+        .expect_err("dyn construction is staged");
+        assert_eq!(err, rfc0081_stage_gate("dyn Render"));
+    }
+
+    #[test]
+    fn rfc0081_method_call_on_dyn_receiver_is_the_feature_stage_gate() {
+        // Dynamic dispatch is the witness slice's job: the diagnostic must be
+        // the SAME canonical staging message, not "no method on `dyn Render`".
+        let err = check_str(
+            "trait Render:\n    fn render(let self) -> String\n\n\
+             fn describe(part: dyn Render) -> String:\n    part.render()\n\n\
+             fn main(console: Console):\n    console.print(\"hi\")\n",
+        )
+        .expect_err("dyn dispatch is staged");
+        assert_eq!(err, rfc0081_stage_gate("dyn Render"));
+    }
+
+    #[test]
+    fn rfc0081_body_type_positions_are_validated() {
+        // `let` annotation.
+        let err = check_str(
+            "fn main(console: Console):\n\
+             \x20   let x: dyn Missing = 1\n\
+             \x20   console.print(\"hi\")\n",
+        )
+        .expect_err("a body let-annotation is validated");
+        assert!(err.contains("unknown trait `Missing` in `dyn Missing`"), "{err}");
+
+        // Lambda parameter position.
+        let err = check_str(
+            "fn main(console: Console):\n\
+             \x20   let f = fn(x: dyn Missing) -> Int: 1\n\
+             \x20   console.print(\"hi\")\n",
+        )
+        .expect_err("a lambda parameter type is validated");
+        assert!(err.contains("unknown trait `Missing` in `dyn Missing`"), "{err}");
+    }

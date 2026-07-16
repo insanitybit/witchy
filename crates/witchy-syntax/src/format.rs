@@ -1971,6 +1971,16 @@ pub fn type_str(t: &Type) -> String {
             format!("View({}, '{life})", type_str(inner))
         }
         Type::Qualified(q, inner) => format!("{} {}", q.as_str(), type_str(inner)),
+        // (RFC-0081) Canonical existential rendering: `dyn Render`,
+        // `dyn Convert(Int, String)`. Re-parses to the same node (idempotent).
+        Type::Dyn(n, args) => {
+            if args.is_empty() {
+                format!("dyn {n}")
+            } else {
+                let inner: Vec<String> = args.iter().map(type_str).collect();
+                format!("dyn {n}({})", inner.join(", "))
+            }
+        }
         Type::Named(n, args) => {
             if let Some(variants) = decode_anon_union_type_name(n) {
                 let total: usize = variants.iter().map(|(_, arity)| *arity).sum();

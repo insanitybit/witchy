@@ -49,6 +49,7 @@ fn ast_type_mentions_compiler_syntax(ty: &Type) -> bool {
             is_compiler_syntax_type_name(name)
                 || args.iter().any(ast_type_mentions_compiler_syntax)
         }
+        Type::Dyn(_, args) => args.iter().any(ast_type_mentions_compiler_syntax),
         Type::Tuple(items) => items.iter().any(ast_type_mentions_compiler_syntax),
         Type::Fn(params, ret, _) => {
             params.iter().any(ast_type_mentions_compiler_syntax)
@@ -90,7 +91,7 @@ fn collect_gc_tuple_type(
                 layouts.entry(shape).or_insert_with(|| items.clone());
             }
         }
-        Type::Named(_, args) => {
+        Type::Named(_, args) | Type::Dyn(_, args) => {
             for arg in args {
                 collect_gc_tuple_type(cg, arg, layouts);
             }

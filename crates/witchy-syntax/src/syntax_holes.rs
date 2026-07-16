@@ -253,7 +253,9 @@ fn substitute_type(ty: &mut Type, holes: &mut [Option<Type>]) -> Result<(), Stri
         }
     }
     match ty {
-        Type::Named(_, args) | Type::Tuple(args) => substitute_types(args, holes),
+        Type::Named(_, args) | Type::Tuple(args) | Type::Dyn(_, args) => {
+            substitute_types(args, holes)
+        }
         Type::Fn(params, ret, _) => {
             substitute_types(params, holes)?;
             substitute_type(ret, holes)
