@@ -12,11 +12,21 @@
 # mtime+size, so every rebuild invalidates them; without this, the first suite
 # after a rebuild re-compiles the same embedded programs in EVERY spawned
 # subprocess. The script is best-effort and always exits 0.
-experimental = ["setup-scripts"]
+experimental = ["setup-scripts", "wrapper-scripts"]
 
 [scripts.setup.warm-witchy-caches]
 command = "scripts/warm-witchy-caches.sh"
 slow-timeout = { period = "150s", terminate-after = 1 }
+
+# macOS can wedge dyld when nextest discovers the workspace's ~100 MB test
+# binaries at CPU-count concurrency. Serialize only the list phase there; test
+# execution retains the profile's normal scheduling and test groups.
+[scripts.wrapper.serial-list]
+command = { command-line = "bash scripts/nextest-list-wrapper.sh", relative-to = "workspace-root" }
+
+[[profile.default.scripts]]
+platform = "cfg(target_os = \"macos\")"
+list-wrapper = "serial-list"
 
 [profile.default]
 # Surface every failure in one run rather than stopping at the first.
