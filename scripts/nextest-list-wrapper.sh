@@ -41,8 +41,18 @@ while [ -z "$slot" ]; do
     while [ "$i" -le "$jobs" ]; do
         candidate="$root/$i"
         if mkdir "$candidate" 2>/dev/null; then
+            # Stamp ownership so a holder killed without running its trap does
+            # not leak one of the bounded slots for the rest of the nextest run.
+            echo "$$" >"$candidate/owner" 2>/dev/null || true
             slot="$candidate"
             break
+        fi
+        owner="$(cat "$candidate/owner" 2>/dev/null || true)"
+        if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
+            # Concurrent reclaimers are harmless: one removes the dead slot
+            # and the next acquisition race still has exactly one winner.
+            rm -rf "$candidate" 2>/dev/null || true
+            continue
         fi
         i=$((i + 1))
     done
@@ -57,7 +67,7 @@ done
 
 cleanup() {
     # $slot is empty in the fail-open path (no slot was ever acquired).
-    [ -n "$slot" ] && rmdir "$slot" 2>/dev/null || true
+    [ -n "$slot" ] && rm -rf "$slot" 2>/dev/null || true
     # Deliberately do NOT rmdir "$root": reaping the shared root is what races
     # concurrent starters into the ENOENT spin above. The root is keyed by the
     # per-run NEXTEST_RUN_ID, so at most one empty dir per suite run lingers in
