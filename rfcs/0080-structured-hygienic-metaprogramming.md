@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed compatibility builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned hole-free item/expression/type/pattern/statement/block payloads with structural item holes, and direct AST transport for typed tags landed; definition/call-site origin hygiene remains proposed"
+tracking: "source-backed compatibility builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned hole-free item/expression/type/pattern/statement/block payloads with structural item holes, direct AST transport for typed tags, and definition-site direct-function resolution for compiler-owned typed tag output landed; general identifier origins and meta.call_site remain proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -343,11 +343,24 @@ The first source-compatible slice is implemented:
   `meta.function_block` compatibility. Formatting emits literal
   `meta.stmt_raw` / `meta.block_raw` projections that the parser promotes back
   to the owned nodes when they contain one valid statement or block.
+- The thirtieth slice records the definition module when a typed tag emits a
+  compiler-owned expression. Direct calls and direct function references written
+  in that expression are resolved in the tag's defining module before call-site
+  holes are substituted. The expander carries that decision through an
+  unspellable linker marker, so private helpers remain reachable and a same-named
+  local at the invocation cannot capture the generated reference. Generated
+  lexical bindings inside the expression still shadow normally. Source-backed
+  compatibility output, constructors/types, composed syntax, and the explicit
+  `meta.call_site` escape remain later origin-model slices. The linker preserves
+  imported compile-time tag functions plus their syntax tables in sibling
+  expansion snapshots, while each module's runtime result remains stripped.
 
 This is intentionally not the full RFC. Whole items and their typed hole
 placement plus all hole-free syntax payloads are now compiler-owned, while
-composed and hole-bearing syntax payloads remain source-backed;
-definition-site/call-site identifier origins remain future work. The value is the
+composed and hole-bearing syntax payloads remain source-backed. Compiler-owned
+typed tag expressions now preserve definition-site direct function references,
+but general identifier origins and explicit call-site identifiers remain future
+work. The value is the
 migration seam: future work can move the
 payload behind these wrappers from parsed source to structured compiler nodes
 without changing the comptime append/merge path again.

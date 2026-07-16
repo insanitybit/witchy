@@ -1028,7 +1028,9 @@ back to owned syntax when they contain one parser-valid body.
 Top-level `comptime fn` declarations are helpers for this expansion phase. They
 may mention compile-time-only syntax types, may be called from `comptime:`,
 custom-derive, or tagged-literal expansion, and are stripped before the runtime
-module is linked and type-checked. Runtime code cannot call them.
+module is linked and type-checked. Imported tags remain available to sibling
+expansion even after their defining module has been expanded. Runtime code cannot
+call them.
 `std/meta` also exposes compatibility source-backed syntax builders such as `ident`,
 `type_named`, `expr_call`, `pattern_anon_ctor`, `match_arm`, `stmt_let`,
 `block`, `param`, and `function_block`; they make generated item structure
@@ -1036,8 +1038,11 @@ typed at the API boundary and validate identifier spelling. `meta.fresh(hint)`
 returns a deterministic compiler-owned `Ident` for generated bindings. Repeated
 calls and separate comptime blocks or tagged-literal invocations produce distinct
 names in the source-reserved `__` namespace, so a handwritten binding cannot
-capture them. Definition-site/call-site resolution contexts for ordinary quoted
-names remain future work.
+capture them. When a typed tag returns a compiler-owned expression, direct
+function calls and references written in that expression resolve in the tag's
+defining module; generated lexical bindings still shadow normally. General
+identifier origins, constructor/type origins, and explicit `meta.call_site`
+identifiers remain future work.
 `quote expr:`, `quote type:`, `quote pattern:`, `quote stmt:`, `quote block:`,
 and `quote item:` are the first quotation forms. They parse the indented
 expression, type, pattern, statement, block, or single item immediately and
@@ -1102,7 +1107,10 @@ a token the tag *places* where that hole's value belongs (the tag does not read
 the hole's source). A legacy string tag returns witchy **expression source**; a
 typed tag returns `meta.ExprSyntax`. A compiler-owned expression transfers its AST
 through the expansion event directly; source-backed compatibility values retain
-the generated-expression parse. The compiler then **substitutes** the real hole
+the generated-expression parse. Direct function references in compiler-owned
+output resolve in the tag's definition module, including private helpers; an
+invocation-site local with the same spelling cannot capture them. The compiler
+then **substitutes** the real hole
 expression — parsed once at the call site, carrying its source position — at each
 marker and splices the result over the literal before type checking. So both
 backends compile the same AST, the tag runs once in the compiler, and a hole's
@@ -1111,7 +1119,9 @@ only the items reachable from it run at expansion time.
 
 Because a tag emits *code*, interpolation holes are typed **by position** (the
 substituted expression is type-checked normally) and there is no runtime string
-parser. Hole expressions resolve at the **call site** (hygiene), and a type error
+parser. Hole expressions resolve at the **call site** (hygiene), while direct
+functions written in compiler-owned typed output resolve at the **definition
+site**. A type error
 in a hole points back **into the literal** at that `${…}`, not at generated code.
 The `html` tag in the `glamour` rune uses this: a `${userInput}` in text position
 becomes a `text(…)` **node**, never markup, so it is XSS-immune by construction.

@@ -124,7 +124,28 @@ in before type-checking.
 
 A typed generator may instead return `meta.ExprSyntax`. Hole-free `quote expr:`
 results stay as compiler-owned AST through this boundary; compatibility builders
-still project source until their structural forms land.
+still project source until their structural forms land. Direct function calls
+written in compiler-owned typed output resolve where the tag is defined, while
+the literal's holes keep their invocation-site context. Imported tags remain
+available during expansion and are removed before runtime type checking.
+
+```witchy
+fn answer_value() -> Int:
+    40
+
+comptime fn answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+    quote expr:
+        answer_value() + 2
+
+fn main(console: Console):
+    let answer_value = fn() -> Int:
+        0
+    console.print("${answer"ignored"}")
+```
+
+```text
+42
+```
 
 ```witchy
 import list

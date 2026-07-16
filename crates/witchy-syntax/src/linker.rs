@@ -120,6 +120,11 @@ type FnTable = HashMap<String, HashMap<String, EtaSig>>;
 /// `from X import f`, mapped to their exporting module.
 type BareFnImports = HashMap<String, HashMap<String, String>>;
 
+/// Compiler-only marker for a name already resolved in syntax's definition
+/// context. `@` is not a source identifier character, so user code cannot mint
+/// this spelling; the ordinary link rewrite consumes it before type checking.
+const DEFINITION_SITE_PREFIX: &str = "@definition_site:";
+
 /// The per-function facts eta-expansion consumes (RFC-0050 Part 2).
 #[derive(Clone)]
 struct EtaSig {
@@ -824,13 +829,24 @@ pub fn link_with_user_modules_with_mode(
     // invokes `expand` as an injected callback and never names comptime/tagged
     // itself (RFC-0018).
     {
+        // Expansion strips a module's `comptime fn` declarations and compiler-
+        // owned syntax tables from its runtime result. Later modules still need
+        // that compile-time API when they invoke an imported tag, so preserve the
+        // pre-expansion modules and overlay their compile-time-only pieces onto
+        // sibling snapshots. Runtime modules remain stripped after their own pass.
+        let expansion_sources = modules.clone();
         let names: Vec<String> = modules.iter().map(|(n, _)| n.clone()).collect();
         for (i, name) in names.iter().enumerate() {
             let siblings: Vec<(String, Module)> = modules
                 .iter()
                 .enumerate()
                 .filter(|(j, _)| *j != i)
-                .map(|(_, m)| m.clone())
+                .map(|(j, (module_name, module))| {
+                    (
+                        module_name.clone(),
+                        expansion_sibling(module, &expansion_sources[j].1),
+                    )
+                })
                 .collect();
             expand(name, &mut modules[i].1, &siblings).map_err(|message| LinkError { message, location: None })?;
         }
@@ -1277,6 +1293,46 @@ pub fn link_with_user_modules_with_mode(
     Ok(module)
 }
 
+fn expansion_sibling(runtime: &Module, source: &Module) -> Module {
+    let mut sibling = runtime.clone();
+    let existing: HashSet<String> = sibling
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Function(function) => Some(function.name.clone()),
+            _ => None,
+        })
+        .collect();
+    sibling.items.extend(source.items.iter().filter_map(|item| match item {
+        Item::Function(function)
+            if function.comptime_only && !existing.contains(&function.name) =>
+        {
+            Some(Item::Function(function.clone()))
+        }
+        _ => None,
+    }));
+
+    if sibling.compiler_item_syntax.is_empty() {
+        sibling.compiler_item_syntax = source.compiler_item_syntax.clone();
+    }
+    if sibling.compiler_expr_syntax.is_empty() {
+        sibling.compiler_expr_syntax = source.compiler_expr_syntax.clone();
+    }
+    if sibling.compiler_type_syntax.is_empty() {
+        sibling.compiler_type_syntax = source.compiler_type_syntax.clone();
+    }
+    if sibling.compiler_pattern_syntax.is_empty() {
+        sibling.compiler_pattern_syntax = source.compiler_pattern_syntax.clone();
+    }
+    if sibling.compiler_stmt_syntax.is_empty() {
+        sibling.compiler_stmt_syntax = source.compiler_stmt_syntax.clone();
+    }
+    if sibling.compiler_block_syntax.is_empty() {
+        sibling.compiler_block_syntax = source.compiler_block_syntax.clone();
+    }
+    sibling
+}
+
 /// The (nominal) type name of a `Type`, if it has one.
 fn type_name(t: &Type) -> Option<String> {
     match t {
@@ -1667,6 +1723,97 @@ struct RewriteContext<'a> {
     user_std_shadows: &'a HashSet<String>,
     mode: LinkMode,
     entry: &'a str,
+    definition_site: bool,
+}
+
+/// Resolve the direct function names in compiler-owned expression syntax
+/// against the module that defined the syntax. The result remains an ordinary
+/// expression AST, with unspellable markers that the final consumer link strips
+/// after validating the already-resolved target. Hole expressions are inserted
+/// after this pass and therefore retain their call-site context.
+pub fn mark_definition_site_expr(
+    expr: &mut Expr,
+    definition_module: &str,
+    modules: &[(String, Module)],
+) -> Result<(), LinkError> {
+    let Some((_, owner)) = modules.iter().find(|(name, _)| name == definition_module) else {
+        return lerr(format!(
+            "compiler-owned syntax refers to unknown definition module `{definition_module}`"
+        ));
+    };
+
+    let mut available = modules.to_vec();
+    for imported in owner
+        .imports
+        .iter()
+        .map(String::as_str)
+        .chain(PRELUDE_MODULES.iter().copied())
+    {
+        if available.iter().any(|(name, _)| name == imported) {
+            continue;
+        }
+        let Some(source) = std_source(imported) else { continue };
+        let module = crate::parser::parse_module(source).map_err(|error| LinkError {
+            message: format!("standard-library module `{imported}` failed to parse: {error}"),
+            location: None,
+        })?;
+        available.push((imported.to_string(), module));
+    }
+
+    let mut fns = FnTable::new();
+    for (module_name, module) in &available {
+        let mut names = HashMap::new();
+        for item in &module.items {
+            if let Item::Function(function) = item {
+                names.insert(
+                    function.name.clone(),
+                    EtaSig {
+                        arity: function.params.len(),
+                        conventions: function
+                            .params
+                            .iter()
+                            .map(|param| param.convention)
+                            .collect(),
+                        public: function.public,
+                        method_alias: false,
+                        alias_target: None,
+                    },
+                );
+            }
+        }
+        fns.insert(module_name.clone(), names);
+    }
+
+    let mut bare_imports = HashMap::new();
+    for (source, names) in &owner.from_imports {
+        for name in names {
+            if fns
+                .get(source)
+                .and_then(|functions| functions.get(name))
+                .is_some_and(|signature| signature.public)
+            {
+                bare_imports.insert(name.clone(), source.clone());
+            }
+        }
+    }
+
+    let mut bound = HashSet::new();
+    collect_bound_expr(expr, &mut bound);
+    let user_std_shadows = HashSet::new();
+    let context = RewriteContext {
+        module: definition_module,
+        imports: &owner.imports,
+        bare_imports: Some(&bare_imports),
+        fns: &fns,
+        bound: &bound,
+        user_std_shadows: &user_std_shadows,
+        // The final consumer link enforces test-only calls with its real mode.
+        // This prepass only proves the definition module could resolve the name.
+        mode: LinkMode::Test,
+        entry: definition_module,
+        definition_site: true,
+    };
+    rewrite_expr(expr, &context, None)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1683,7 +1830,7 @@ fn rewrite_block(
 ) -> Result<(), LinkError> {
     let context = RewriteContext {
         module: m, imports: imps, bare_imports, fns, bound,
-        user_std_shadows, mode, entry,
+        user_std_shadows, mode, entry, definition_site: false,
     };
     rewrite_block_with_context(b, &context)
 }
@@ -1740,15 +1887,27 @@ fn rewrite_expr(
             }
             let resolved = resolve_call(name, context, line)?;
             if let Some(sig) = fn_sig(fns, &resolved).filter(|sig| sig.method_alias) {
-                *name = sig
+                let target = sig
                     .alias_target
                     .expect("method aliases carry the generated implementation name");
+                *name = if context.definition_site {
+                    let module = resolved
+                        .split_once('.')
+                        .map_or(m, |(module, _)| module);
+                    format!("{DEFINITION_SITE_PREFIX}{module}.{target}")
+                } else {
+                    target
+                };
                 for a in args {
                     rewrite_expr(a, context, line)?;
                 }
                 return Ok(());
             }
-            *name = resolved;
+            *name = if context.definition_site && resolved.contains('.') {
+                format!("{DEFINITION_SITE_PREFIX}{resolved}")
+            } else {
+                resolved
+            };
             for a in args {
                 rewrite_expr(a, context, line)?;
             }
@@ -1769,7 +1928,11 @@ fn rewrite_expr(
                     line,
                 );
             }
-            *name = resolved;
+            *name = if context.definition_site && resolved.contains('.') {
+                format!("{DEFINITION_SITE_PREFIX}{resolved}")
+            } else {
+                resolved
+            };
             for (_, a) in args {
                 rewrite_expr(a, context, line)?;
             }
@@ -1778,10 +1941,17 @@ fn rewrite_expr(
         // to it; qualify it like a call — unless it is shadowed by a local of the
         // same name (a parameter, `let`, loop variable, or pattern binding).
         Expr::Var(name) => {
-            if !bound.contains(name.as_str())
+            if let Some(resolved) = definition_site_target(name, fns, m, line)? {
+                *name = resolved;
+            } else if !bound.contains(name.as_str())
                 && fns.get(m).is_some_and(|s| s.contains_key(name.as_str()))
             {
-                *name = format!("{m}.{name}");
+                let resolved = format!("{m}.{name}");
+                *name = if context.definition_site {
+                    format!("{DEFINITION_SITE_PREFIX}{resolved}")
+                } else {
+                    resolved
+                };
             }
         }
         Expr::Apply { func, args } => {
@@ -1833,6 +2003,9 @@ fn rewrite_expr(
                     .cloned()
                     .expect("resolve_call accepted the reference, so the function exists");
                 *e = eta_lambda(&qualified, sig);
+                if context.definition_site {
+                    rewrite_expr(e, context, line)?;
+                }
                 return Ok(());
             }
             // (BUG-303) A value-position `iter.count` whose base is a KNOWN std
@@ -2258,7 +2431,12 @@ fn resolve_call(
         user_std_shadows,
         mode,
         entry,
+        definition_site: _,
     } = *context;
+    if let Some(resolved) = definition_site_target(name, fns, m, line)? {
+        check_test_only_call(&resolved, m, mode, entry, line)?;
+        return Ok(resolved);
+    }
     let accept = |resolved: String| -> Result<String, LinkError> {
         check_test_only_call(&resolved, m, mode, entry, line)?;
         Ok(resolved)
@@ -2325,6 +2503,42 @@ fn resolve_call(
     // Not a function here and not a builtin: a local binding being applied (e.g.
     // a lambda parameter). Leave it unqualified; the type checker decides.
     Ok(name.to_string())
+}
+
+fn definition_site_target(
+    name: &str,
+    fns: &FnTable,
+    module_name: &str,
+    line: Option<u32>,
+) -> Result<Option<String>, LinkError> {
+    let Some(target) = name.strip_prefix(DEFINITION_SITE_PREFIX) else {
+        return Ok(None);
+    };
+    let Some((target_module, target_name)) = target.split_once('.') else {
+        return lerr_at(
+            "compiler-owned definition-site name lost its qualified target",
+            module_name,
+            line,
+        );
+    };
+    let exists = fns
+        .get(target_module)
+        .is_some_and(|functions| {
+            functions.contains_key(target_name)
+                || functions.values().any(|signature| {
+                    signature.alias_target.as_deref() == Some(target_name)
+                })
+        });
+    if !exists {
+        return lerr_at(
+            format!(
+                "compiler-owned definition-site reference targets unknown function `{target}`"
+            ),
+            module_name,
+            line,
+        );
+    }
+    Ok(Some(target.to_string()))
 }
 
 fn check_test_only_call(

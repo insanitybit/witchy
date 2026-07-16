@@ -91,6 +91,8 @@ pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) ->
     let mut items = module.items.clone();
     let mut compiler_item_syntax = module.compiler_item_syntax.clone();
     let mut compiler_expr_syntax = module.compiler_expr_syntax.clone();
+    let mut tag_origins = HashMap::new();
+    record_tag_origins(&mut tag_origins, name, &module.items);
     let mut compiler_type_syntax = module.compiler_type_syntax.clone();
     let mut compiler_pattern_syntax = module.compiler_pattern_syntax.clone();
     let mut compiler_stmt_syntax = module.compiler_stmt_syntax.clone();
@@ -115,6 +117,7 @@ pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) ->
             merge_std_from_imports(&mut std_from_imports, &m.from_imports);
             items.extend(m.items.iter().cloned());
             compiler_item_syntax.extend(m.compiler_item_syntax.iter().cloned());
+            record_tag_origins(&mut tag_origins, &imp, &m.items);
             compiler_expr_syntax.extend(m.compiler_expr_syntax.iter().cloned());
             compiler_type_syntax.extend(m.compiler_type_syntax.iter().cloned());
             compiler_pattern_syntax.extend(m.compiler_pattern_syntax.iter().cloned());
@@ -144,10 +147,14 @@ pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) ->
         qualifiers,
         compiler_item_syntax,
         compiler_expr_syntax,
+        tag_origins,
         compiler_type_syntax,
         compiler_pattern_syntax,
         compiler_stmt_syntax,
         compiler_block_syntax,
+        definition_modules: std::iter::once((name.to_string(), module.clone()))
+            .chain(siblings.iter().cloned())
+            .collect(),
         fresh_invocation: Cell::new(0),
     };
     // Expand tagged literals in EVERY expression-bearing item position, not just
@@ -191,13 +198,29 @@ struct Context {
     qualifiers: Vec<String>,
     compiler_item_syntax: Vec<CompilerItemSyntax>,
     compiler_expr_syntax: Vec<CompilerExprSyntax>,
+    tag_origins: HashMap<String, String>,
     compiler_type_syntax: Vec<CompilerTypeSyntax>,
     compiler_pattern_syntax: Vec<CompilerPatternSyntax>,
     compiler_stmt_syntax: Vec<CompilerStmtSyntax>,
     compiler_block_syntax: Vec<CompilerBlockSyntax>,
+    definition_modules: Vec<(String, Module)>,
     /// Stable traversal ordinal used to give each tagged-literal evaluator an
     /// independent RFC-0080 fresh-name namespace.
     fresh_invocation: Cell<u64>,
+}
+
+fn record_tag_origins(
+    origins: &mut HashMap<String, String>,
+    module: &str,
+    items: &[Item],
+) {
+    for item in items {
+        if let Item::Function(function) = item {
+            origins
+                .entry(function.name.clone())
+                .or_insert_with(|| module.to_string());
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -631,7 +654,25 @@ fn expand_one(
                 ));
             }
             match expr_output.pop().expect("one expression emission") {
-                crate::interpreter::ComptimeExprEmission::Syntax(expr) => *expr,
+                crate::interpreter::ComptimeExprEmission::Syntax(expr) => {
+                    let definition_module = ctx
+                        .tag_origins
+                        .get(tag)
+                        .ok_or_else(|| {
+                            format!(
+                                "{}: typed tag `{tag}` lost its definition module",
+                                where_()
+                            )
+                        })?;
+                    let mut expr = *expr;
+                    witchy_syntax::linker::mark_definition_site_expr(
+                        &mut expr,
+                        definition_module,
+                        &ctx.definition_modules,
+                    )
+                    .map_err(|error| format!("{}: {error}", where_()))?;
+                    expr
+                }
                 crate::interpreter::ComptimeExprEmission::Source(source) => parse_source(source)?,
             }
         }
