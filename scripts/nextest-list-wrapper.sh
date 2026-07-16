@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Bound nextest's macOS list phase. Nextest invokes this wrapper with the test
 # binary followed by its `--list` arguments.
 set -euo pipefail

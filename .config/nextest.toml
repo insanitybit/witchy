@@ -22,7 +22,7 @@ slow-timeout = { period = "150s", terminate-after = 1 }
 # binaries at CPU-count concurrency. Bound only the list phase there; test
 # execution retains the profile's normal scheduling and test groups.
 [scripts.wrapper.bounded-list]
-command = ["/bin/bash", "scripts/nextest-list-wrapper.sh"]
+command = { command-line = "scripts/nextest-list-wrapper.sh", relative-to = "workspace-root" }
 
 [[profile.default.scripts]]
 platform = "cfg(target_os = \"macos\")"
