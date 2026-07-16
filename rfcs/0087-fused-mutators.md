@@ -3,7 +3,7 @@ rfc: 0087
 title: "Uniform var write-back: one parameter convention for every call"
 status: implemented
 created: 2026-07-13
-implemented: 2026-07-14
+implemented: 2026-07-16
 predecessors:
   - "0043 (declared mutation - replaced the method-name census with var declarations)"
   - "0064 (complete mutation classification - enforced the return-shape table this RFC removes)"
@@ -16,9 +16,9 @@ related:
   - "0070 (0.1 blocking set - one spelling per concept, break rather than deprecate)"
   - "0083 (opt-mode lifetimes - returned views must block write-back to their live owner)"
   - "0088 (ownership-aware extraction - optional no-copy implementation after semantics land)"
-tracking: "Shipped in the 0.1 coherence cut; declaration and call-site census,
-  corpus verification, and RFC-0051 benchmark evidence are recorded in
-  rfcs/0087-migration-report.md"
+tracking: "Shipped with direct backend-parity conformance, compiler-resolved
+  migration census, RFC-0051 seven-kernel performance evidence, and public
+  guidance; closeout is recorded in rfcs/0087-acceptance-ledger.md"
 ---
 
 # RFC-0087: Uniform `var` write-back
@@ -404,6 +404,22 @@ Write-back is all-or-nothing at the language level: every final `var` value from
 one structured return commits together, and the caller cannot observe a subset.
 This is commit atomicity, not rollback of mutations merely because the ordinary
 result is `Err` or `None`.
+
+#### RFC-0088 amendment disposition
+
+Implementation feedback first recorded alongside RFC-0088 is resolved in this
+RFC, so one semantic fact never has two normative homes:
+
+- Section 4 owns captured assignment coordinates and current-root bounds
+  behavior; an invalidated projection takes the ordinary assignment trap.
+- This section owns structured completion; callee-side `?` commits exactly like
+  its explicit-return desugaring.
+- RFC-0083 owns borrowed-view lifetime and loan rules. RFC-0088 may consume
+  those facts for optimization but cannot extend their source semantics.
+
+RFC-0088 is consequently an optimization RFC only. Future view-lifetime or
+operation-specific optimization work belongs to its actual owning RFC and does
+not amend uniform write-back implicitly.
 
 ### 7. Methods, traits, and free calls agree
 
@@ -915,3 +931,14 @@ On acceptance:
   requires method and free forms to share conventions and write-back behavior.
 - RFC-0051's ownership and memory-safety invariants remain unchanged. `var`
   supplies a general ownership fact; no method-specific optimization is added.
+
+> 2026-07-16: **IMPLEMENTATION CLOSEOUT.** The dedicated current-master matrix
+> proves write-back, ordering, exclusivity, structured return (including
+> callee-side `?`), traps, function-value identity, comprehensions, closures,
+> generators, and the shipped async segment seam on the interpreter and
+> compiled Wasm backends. Captured assignment projections now apply to the
+> post-RHS current root with ordinary bounds behavior. Exact negative
+> diagnostics remain source-facing. The compiler-resolved repository census,
+> seven-kernel RFC-0051 performance gate, spec/book guidance, and RFC-0088
+> amendment disposition are current and green; see
+> `rfcs/0087-acceptance-ledger.md`.

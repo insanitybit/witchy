@@ -190,6 +190,13 @@ written in.
 > lowering cannot erase the public contract. General source-facing uniqueness
 > requirements on non-`var` parameters remain a separate refinement.
 
+> 2026-07-16: **Status clarification.** “Implements” above describes the
+> measured call-site refinement machinery, not a separate semantic home.
+> RFC-0088's release disposition followed RFC-0087's parity, compiler-census,
+> documentation, and RFC-0051 performance gates; those gates are now current
+> and green. This does not change RFC-0026's implemented `unique` qualifier
+> contract.
+
 <!--
   Once this RFC is implemented/rejected/superseded it is FROZEN.
   - To change the decision: write a NEW RFC that supersedes this one.

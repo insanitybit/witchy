@@ -211,10 +211,11 @@ function values, auxiliary-result statement ergonomics, and RFC-0051 performance
 non-regression required by RFC-0087. No asynchronous `var` parameter, lifetime
 surface, or no-copy extraction claim enters the blocking set.
 
-Implementation status (2026-07-14): shipped. The compiler, standard library,
-executable corpus, language specification, and performance gate now use the
-single move-in/move-out convention; the checked-in census and measurements are
-in `rfcs/0087-migration-report.md`.
+Implementation status (2026-07-16): shipped. RFC-0087's current-truth ledger
+records direct interpreter/compiled conformance, exact source diagnostics, the
+compiler-resolved 439-entry corpus census, and the seven-kernel RFC-0051
+optimized-versus-forced-copy gate. RFC-0088's semantic amendments are folded
+into RFC-0087, so D10 has one normative source contract.
 
 ## Out — the deferral ledger (0067's "accepted residual" bucket)
 

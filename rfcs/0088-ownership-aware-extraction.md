@@ -3,6 +3,7 @@ rfc: 0088
 title: "Ownership-aware update and extraction without mandatory container copies"
 status: implemented
 created: 2026-07-14
+implemented: 2026-07-16
 predecessors:
   - "0087 (uniform var write-back - defines the source semantics this RFC optimizes)"
 related:
@@ -10,10 +11,9 @@ related:
   - "0051 (memory-safety invariants - existing in-place paths are the performance floor)"
   - "0029 (performance-tier contract - normal mode copies; opt mode may reject)"
   - "0083 (opt-mode lifetimes - active loans prevent in-place update or extraction)"
-tracking: move-out selected and shipped for List.pop, Dict.insert, and
-  Dict.remove; copy-correct normal mode, single-search structural lowering,
-  ownership counters, RFC-0083 loan invalidation, and opt-mode no-copy
-  diagnostics are implemented
+tracking: move-out is shipped for List.pop, Dict.insert, and Dict.remove with
+  copy-correct normal mode, single-search lowering, ownership counters, and
+  current RFC-0087 parity, migration, documentation, and performance evidence
 ---
 
 # RFC-0088: Ownership-aware update and extraction
@@ -119,6 +119,13 @@ primitive, but they are not required for acceptance.
 RFC-0087 remains the sole source-level contract. Each call returns its ordinary
 `Option` and commits the final container on every structured return. This RFC
 may only choose the lowering that produces that result pair.
+
+Implementation feedback that affected source semantics has been folded into
+RFC-0087 rather than retained as an amendment here. In particular, RFC-0087
+Section 4 owns captured assignment coordinates and ordinary current-root bounds
+behavior, Section 6 owns commit-on-`?`, and RFC-0083 owns borrowed-view
+lifetimes. The requirements below are optimization-equivalence obligations, not
+alternate language rules.
 
 The forced-copy implementation is the value oracle. Unique, shared, optimized,
 interpreter, and compiled executions must agree on:
@@ -389,9 +396,10 @@ LSP publishes the same source-line ownership reason as `witchy check`.
   change source semantics or ordinary result types.
 - **Require uniqueness in normal mode.** Gives predictable performance but
   violates normal mode's copy-correct fallback contract.
-- **Bundle extraction into RFC-0087.** RFC-0087 is implemented and owns source
-  semantics. Reopening it would couple that coherent model to an unproven
-  optimization representation.
+- **Bundle extraction into RFC-0087.** RFC-0087 owns source semantics and is
+  intentionally independent of this optimization representation. Semantic
+  corrections discovered while implementing extraction are folded into
+  RFC-0087; the move-out mechanism and its evidence remain here.
 
 ## Drawbacks
 
@@ -416,3 +424,11 @@ move-out safety. Rust's `HashMap::insert` and entry APIs illustrate a
 single-search replacement that returns displaced values, while its collection
 implementations also show why structural algorithms cannot be collapsed into
 one container-agnostic operation.
+
+> 2026-07-16: **IMPLEMENTATION CLOSEOUT.** Ownership-aware extraction and its
+> deterministic counters are present, and RFC-0087's complete source-semantic,
+> parity, migration, documentation, and RFC-0051 performance gates are current
+> and green. RFC-0088 does not create a second home for write-back semantics;
+> RFC-0087 Sections 4 and 6 own current-root projection behavior and
+> commit-on-`?`. Future view-lifetime work remains in RFC-0083 and future
+> operation-specific optimization work remains with its owning RFC.
