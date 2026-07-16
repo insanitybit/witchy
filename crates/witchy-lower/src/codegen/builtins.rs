@@ -235,9 +235,9 @@ impl Codegen<'_> {
             (intrinsics::COMPILER_DOC_RESULT_JSON, 2) => {
                 call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
             }
-            ("regex.match_spans", 2) => {
+            (intrinsics::REGEX_MATCH_SPANS, 2) => {
                 self.uses_regex_spans = true;
-                call("regex_match_spans", self.lower_args(&[&args[0], &args[1]])?)
+                call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
             }
             // Encoding transforms share one selector-based WIR helper. The catalog
             // owns both the helper and selector so codegen cannot drift from the

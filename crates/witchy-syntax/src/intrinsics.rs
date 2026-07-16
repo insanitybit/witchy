@@ -28,6 +28,7 @@ pub enum IntrinsicId {
     CompilerDiff,
     CompilerDoc,
     CompilerDocResultJson,
+    RegexMatchSpans,
     EncodingUtf8Lossy,
     EncodingHexEncode,
     EncodingHexEncodeBytes,
@@ -378,6 +379,8 @@ pub const COMPILER_FOOTPRINT: &str = "compiler.footprint";
 pub const COMPILER_DIFF: &str = "compiler.diff";
 pub const COMPILER_DOC: &str = "compiler.doc";
 pub const COMPILER_DOC_RESULT_JSON: &str = "compiler.__doc_result_json";
+
+pub const REGEX_MATCH_SPANS: &str = "regex.match_spans";
 
 pub const ENCODING_UTF8_LOSSY: &str = "encoding.utf8_lossy";
 pub const ENCODING_HEX_ENCODE: &str = "encoding.hex_encode";
@@ -764,6 +767,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "compiler doc result encoding",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::RegexMatchSpans,
+        name: REGEX_MATCH_SPANS,
+        arity: 2,
+        signature: IntrinsicSignature::StringStringToString,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::Native,
+        wir_helpers: &["regex_match_spans"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: REGEX_MATCH_SPANS,
         private_callers: NO_PRIVATE_CALLERS,
     },
     IntrinsicSpec {
@@ -1763,6 +1781,8 @@ pub const CRYPTO_OPERATIONS: &[&str] = &[
     CRYPTO_HMAC_SHA256,
 ];
 
+pub const REGEX_OPERATIONS: &[&str] = &[REGEX_MATCH_SPANS];
+
 pub const STRING_OPERATIONS: &[&str] = &[
     STRING_LENGTH,
     STRING_CHAR_COUNT,
@@ -1927,6 +1947,10 @@ pub fn is_crypto_operation(name: &str) -> bool {
     })
 }
 
+pub fn is_regex_operation(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::RegexMatchSpans)
+}
+
 pub fn is_math_operation(name: &str) -> bool {
     lookup(name).is_some_and(|spec| {
         matches!(spec.id, IntrinsicId::MathToFloat | IntrinsicId::MathToInt | IntrinsicId::MathSqrt)
@@ -2039,6 +2063,7 @@ mod tests {
             COMPILER_DIFF,
             COMPILER_DOC,
             COMPILER_DOC_RESULT_JSON,
+            REGEX_MATCH_SPANS,
             ENCODING_UTF8_LOSSY,
             ENCODING_HEX_ENCODE,
             ENCODING_HEX_ENCODE_BYTES,
@@ -2153,6 +2178,58 @@ mod tests {
             assert!(spec.signature.returns_string() || spec.signature.returns_bytes());
         }
         assert_eq!(selectors, (0..=13).collect());
+    }
+
+    #[test]
+    fn regex_operation_family_has_complete_semantic_metadata() {
+        let expected: BTreeSet<_> = REGEX_OPERATIONS.iter().copied().collect();
+        let actual: BTreeSet<_> = ALL
+            .iter()
+            .filter(|spec| is_regex_operation(spec.name))
+            .map(|spec| spec.name)
+            .collect();
+        assert_eq!(actual, expected);
+        assert_eq!(actual.len(), 1);
+
+        let spec = lookup(REGEX_MATCH_SPANS).expect("regex operation");
+        assert_eq!(spec.arity, 2);
+        assert_eq!(spec.signature, IntrinsicSignature::StringStringToString);
+        assert_eq!(spec.effect, IntrinsicEffect::Pure);
+        assert_eq!(spec.capability_effect, CapabilityEffect::None);
+        assert_eq!(spec.lowering, IntrinsicLowering::Builtin);
+        assert_eq!(spec.runtime, IntrinsicRuntime::Native);
+        assert_eq!(sole_wir_helper(spec.name), Some("regex_match_spans"));
+        assert!(!spec.dynamic_wir_helpers);
+        assert!(spec.wir_host_call.is_none());
+    }
+
+    #[test]
+    fn regex_source_primitive_signature_matches_catalog() {
+        use crate::ast::{Item, Type};
+
+        let module = crate::parser::parse_module(include_str!("../../../std/regex.witchy"))
+            .expect("parse std/regex");
+        let function = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "match_spans" => Some(function),
+                _ => None,
+            })
+            .expect("regex.match_spans missing from std/regex");
+        let string = Type::Named("String".into(), Vec::new());
+        let spec = lookup(REGEX_MATCH_SPANS).expect("regex operation");
+
+        assert_eq!(function.params.len(), spec.arity);
+        assert_eq!(
+            function
+                .params
+                .iter()
+                .map(|param| param.ty.as_ref())
+                .collect::<Vec<_>>(),
+            vec![Some(&string), Some(&string)]
+        );
+        assert_eq!(function.ret.as_ref(), Some(&string));
     }
 
     #[test]

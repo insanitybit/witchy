@@ -413,13 +413,16 @@ pub fn hmac_sha256(key: &str, msg: &str) -> String {
 /// `regex.match_spans(pattern, text)` — the packed match-span string both backends
 /// share; the host shim stages it through `fill_pending` like the native runtime.
 pub fn regex_spans(pattern: &str, text: &str) -> String {
-    match native_call("regex.match_spans", &[pattern, text]) {
+    match native_call(witchy_syntax::intrinsics::REGEX_MATCH_SPANS, &[pattern, text]) {
         Ok(crate::value::NativeValue::Str(s)) => s,
         // The browser host calls this through the C-style wasm export, whose ABI
         // can only return bytes. Prefix host-visible errors with an impossible
         // span byte; web/witchy-host.js turns it back into a thrown error.
         Err(e) => format!("\x1fregex-error:{e}"),
-        _ => "\x1fregex-error:regex.match_spans did not return a String".into(),
+        _ => format!(
+            "\x1fregex-error:{} did not return a String",
+            witchy_syntax::intrinsics::REGEX_MATCH_SPANS
+        ),
     }
 }
 

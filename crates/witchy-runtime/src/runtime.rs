@@ -1497,11 +1497,14 @@ fn host_regex_match_spans_len(
     let mem = memory_of(&mut caller)?;
     let pattern = read_wstr(mem.data(&caller), pat_ptr)?;
     let text = read_wstr(mem.data(&caller), text_ptr)?;
-    let f = crate::native::lookup("regex.match_spans")
-        .ok_or_else(|| Error::msg("regex.match_spans is not registered"))?;
+    let f = crate::native::lookup(intrinsics::REGEX_MATCH_SPANS)
+        .ok_or_else(|| Error::msg(format!("{} is not registered", intrinsics::REGEX_MATCH_SPANS)))?;
     let spans = match f(&[Value::Str(pattern), Value::Str(text)]).map_err(|e| Error::msg(e.message))? {
         Value::Str(s) => s,
-        _ => return Err(Error::msg("regex.match_spans did not return a String")),
+        _ => return Err(Error::msg(format!(
+            "{} did not return a String",
+            intrinsics::REGEX_MATCH_SPANS
+        ))),
     };
     let len = spans.len() as i32;
     caller.data_mut().pending = Some(spans.into_bytes());

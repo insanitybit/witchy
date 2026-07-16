@@ -69,7 +69,7 @@ pub fn lookup(qualified: &str) -> Option<NativeFn> {
         intrinsics::ENCODING_BASE64URL_DECODE_LOSSY => Some(encoding::base64url_decode_lossy),
         intrinsics::ENCODING_BASE64URL_DECODE_BYTES_RAW => Some(encoding::base64url_decode_bytes_raw),
         intrinsics::ENCODING_BASE64URL_TO_HEX_LOSSY => Some(encoding::base64url_to_hex_lossy),
-        "regex.match_spans" => Some(regexp::match_spans),
+        intrinsics::REGEX_MATCH_SPANS => Some(regexp::match_spans),
         intrinsics::STRING_FROM_CODE => Some(string::from_code),
         _ => None,
     }
@@ -985,7 +985,7 @@ mod encoding {
 /// crate's byte offsets, so they feed `string.substring` directly. An invalid
 /// pattern is a loud error on every backend, not a silent non-match.
 mod regexp {
-    use super::{type_error, Value};
+    use super::{intrinsics, type_error, Value};
     use crate::value::NativeError as RuntimeError;
 
     /// Character offset of `byte` within `text` (a byte index from the crate).
@@ -998,7 +998,10 @@ mod regexp {
     /// WASM backend (`host_regex_spans`) calls straight through to this.
     pub fn match_spans(args: &[Value]) -> Result<Value, RuntimeError> {
         let [Value::Str(pattern), Value::Str(text)] = args else {
-            return Err(type_error("regex.match_spans expects (pattern, text) strings"));
+            return Err(type_error(format!(
+                "{} expects (pattern, text) strings",
+                intrinsics::REGEX_MATCH_SPANS
+            )));
         };
         let re = regex::Regex::new(pattern).map_err(|e| RuntimeError {
             message: format!("invalid regex pattern `{pattern}`: {e}"),
@@ -1052,6 +1055,26 @@ mod intrinsic_catalog_tests {
                 ),
             }
         }
+    }
+
+    #[test]
+    fn regex_catalog_row_executes_unicode_character_spans() {
+        use crate::value::NativeValue as Value;
+        use witchy_syntax::intrinsics;
+
+        let hook = super::lookup(intrinsics::REGEX_MATCH_SPANS).expect("cataloged regex hook");
+        assert_eq!(
+            hook(&[Value::Str("é+".into()), Value::Str("aééb".into())])
+                .expect("valid regex"),
+            Value::Str("1,3".into())
+        );
+        let error = hook(&[Value::Str("[".into()), Value::Str("text".into())])
+            .expect_err("invalid patterns are loud");
+        assert!(
+            error.message.contains("invalid regex pattern"),
+            "{}",
+            error.message
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]

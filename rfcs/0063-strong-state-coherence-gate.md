@@ -4,7 +4,7 @@ title: Strong-state coherence gate for a proud 0.1 release
 status: accepted
 created: 2026-07-04
 superseded-by:
-tracking: coherence gate accepted as the pre-tag bar; executed alongside RFC-0061; intrinsic-name, host-import authority, and string/math/List/Dict/crypto operation catalog slices landed
+tracking: coherence gate accepted as the pre-tag bar; executed alongside RFC-0061; intrinsic-name, host-import authority, and string/math/List/Dict/crypto/regex operation catalog slices landed
 ---
 
 # RFC-0063: Strong-state coherence gate for a proud 0.1 release
@@ -189,6 +189,16 @@ names, and lowering no longer maintains dead per-crypto usage flags. Coherence
 tests compare every row with `std/crypto.witchy`, require its native hook and
 WIR helper to exist, and reject operation, signature, capability-effect, or
 arity drift.
+
+The regex engine boundary is cataloged as one operation,
+`regex.match_spans(String, String) -> String`. Its row owns the pure effect,
+native runtime hook, direct `regex_match_spans` WIR helper, and compiled result
+shape. Type checking suppresses the native source placeholder and derives its
+signature from that row; interpreter dispatch, native lookup, Wasmtime host
+wiring, browser-host dispatch, and lowering consume the stable catalog name or
+helper. Coherence tests compare the row with `std/regex.witchy`, execute Unicode
+character spans and invalid-pattern failure, and reject a missing native hook,
+WIR helper, or signature/arity drift.
 
 ### 4. Typed compiler facts, not string or address shadows
 

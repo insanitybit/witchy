@@ -129,6 +129,19 @@
         }
     }
 
+    #[test]
+    fn regex_operation_catalog_names_its_native_wir_helper() {
+        use witchy_syntax::intrinsics;
+
+        let spec = intrinsics::lookup(intrinsics::REGEX_MATCH_SPANS)
+            .expect("cataloged regex operation");
+        assert!(witchy_types::typeck::intrinsic(spec.name));
+        let helper = intrinsics::sole_wir_helper(spec.name)
+            .expect("regex operation has one WIR helper");
+        assert_eq!(helper, "regex_match_spans");
+        assert!(witchy_wir::wir_helpers::wir_helper(helper).is_some());
+    }
+
     /// (RFC-0045) Define the always-linked, authority-free `__witchy_abort` import
     /// so a module that routes an abort through it (float ordering, list/bytes OOB,
     /// str_to_int, `fail`) instantiates in these minimal test linkers. The body

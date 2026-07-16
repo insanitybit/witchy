@@ -7859,6 +7859,7 @@ pub fn intrinsic(name: &str) -> bool {
         || witchy_syntax::intrinsics::is_string_operation(name)
         || witchy_syntax::intrinsics::is_math_operation(name)
         || witchy_syntax::intrinsics::is_crypto_operation(name)
+        || witchy_syntax::intrinsics::is_regex_operation(name)
 }
 
 

@@ -3006,6 +3006,24 @@ fn main():
     }
 
     #[test]
+    fn rfc0063_regex_catalog_signature_outranks_linked_placeholder() {
+        use witchy_syntax::ast::Item;
+
+        let mut module = witchy_syntax::parser::parse_module(
+            "import regex\n\nfn shadow(value: Int) -> Int:\n    value\n\nfn main() -> Int:\n    let spans: String = regex.match_spans(\"a\", \"cat\")\n    0\n",
+        )
+        .expect("parse regex catalog precedence probe");
+        let Item::Function(placeholder) = &mut module.items[0] else {
+            panic!("expected placeholder function")
+        };
+        placeholder.name = witchy_syntax::intrinsics::REGEX_MATCH_SPANS.into();
+
+        check(&module).expect(
+            "the catalog recipe, not the deliberately wrong linked placeholder signature, must type regex.match_spans",
+        );
+    }
+
+    #[test]
     fn rfc0087_impl_methods_accept_var_with_auxiliary_returns() {
         check_str(
             "type Box:\n    Box(List(Int))\nimpl Box:\n    fn row3_static(var xs: List(Int), n: Int) -> Int:\n        xs = list.__push(xs, n)\n        n\n",

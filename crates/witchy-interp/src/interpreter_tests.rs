@@ -53,6 +53,20 @@
     }
 
     #[test]
+    fn cataloged_regex_operation_has_interpreter_native_dispatch() {
+        let module = witchy_syntax::parser::parse_module("fn main() -> Int:\n    0\n")
+            .expect("parse minimal module");
+        let mut interpreter = Interpreter::new(module);
+        let result = interpreter
+            .call_builtin(
+                intrinsics::REGEX_MATCH_SPANS,
+                &[Value::Str("a+".into()), Value::Str("caaat".into())],
+            )
+            .expect("regex dispatch");
+        assert_eq!(result, Some(Value::Str("1,4".into())));
+    }
+
+    #[test]
     fn every_cataloged_list_operation_has_runtime_dispatch() {
         let module = witchy_syntax::parser::parse_module("fn main() -> Int:\n    0\n")
             .expect("parse minimal module");
