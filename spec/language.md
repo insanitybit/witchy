@@ -1344,10 +1344,11 @@ fn main(console: Console):
 The core data modules — `list`, `string`, `dict`, `math`, `option`, `result`,
 `policy`, and `show` — are **the prelude**: always available, no import line needed
 (`list.push(xs, 1)` works anywhere). Pure data operations live ONLY in
-modules; the global namespace is capability operations (`print`, `read`,
-`send`, `now`, …) and `fail` — authority is loud and unprefixed, everything
-else says where it came from. (Rendering needs no function at all: `${...}`
-interpolation is the rendering.) For other modules,
+modules; capability operations are **methods on the capability that carries the
+authority** (`console.print(msg)`, `dir.read(path)`, `clock.now()`) — the
+authority is loud because it names the capability, and `fail` is the one bare
+global. (Rendering needs no function at all: `${...}` interpolation is the
+rendering.) For other modules,
 `import name` brings the module in under its name; **function** calls are
 module-qualified (`list.map(xs, f)`) — or, for a built-in type's own operations,
 the equivalent method form (`xs.map(f)`, see §4), which is the idiom for the data

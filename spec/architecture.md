@@ -135,9 +135,9 @@ the same in-place self-assign optimization (values are fully owned there).
 Accumulation that falls back to copying inside a loop is flagged at check
 time (`witchy check` notes + LSP hints); `WITCHY_OPT=-inplace` compiles the
 copying paths for differential verification, and the exported
-`__witchy_reowns` counter lets tests assert copy counts. Measured: string
-workloads run 4–5.7× faster than Go, lists/dicts/compute at parity — see
-`bench/BASELINE.md`.
+`__witchy_reowns` counter lets tests assert copy counts. Measured against the
+benchmark baseline: string workloads run at 4–5.7× the reference throughput,
+lists/dicts/compute at parity — see `bench/BASELINE.md`.
 
 ## The runtime sandbox
 

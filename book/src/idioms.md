@@ -126,7 +126,7 @@ ada
 ## Methods on capabilities, like any other value
 
 Capability operations are spelled as methods on the capability
-([RFC-0076](../rfcs/0076-capability-ops-are-methods.md)): `console.print(s)`,
+([RFC-0076](https://github.com/insanitybit/witchy/blob/master/rfcs/0076-capability-ops-are-methods.md)): `console.print(s)`,
 `dir.read(path)`, `net.connect(addr)`. The receiver *is* the authority — the
 spelling keeps that visible.
 

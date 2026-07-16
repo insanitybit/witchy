@@ -1,32 +1,32 @@
 # Making the WASM tier the only compiled tier — and fast
 
 **Goal:** retire the native (Rust) backend by making compiled-to-WASM witchy
-competitive with native code — concretely, matching or beating Go and C# on
-the workloads witchy is for. **Sandboxing stays non-negotiable:** every
-optimization below preserves the capability model; nothing reaches around the
-VM boundary.
+run at native-class speed on the workloads witchy is for — bounded by the
+intrinsic cost of the work, not by interpretation or GC overhead.
+**Sandboxing stays non-negotiable:** every optimization below preserves the
+capability model; nothing reaches around the VM boundary.
 
-## Where that target is winnable (and where it is not)
+## Where that target is reachable (and where it is not)
 
 Wasmtime runs Cranelift-compiled machine code, not an interpreter. Our own
 measurements (2026-06-11): a 4M-op arithmetic loop runs in ~16 ms wall
 including JIT — the same class as the LLVM-compiled native binary. The gaps
 are not "WASM is slow"; they are specific and addressable:
 
-| Workload | Today | Winnable vs Go/C#? |
+| Workload | Today | Reachable at native-class speed? |
 |---|---|---|
 | Compute-bound loops | already native-class | **Yes** — Cranelift + a Binaryen post-pass closes most of the LLVM gap; SIMD where it applies |
-| Startup / cold runs | validated optimized-WASM + Cranelift caches exist | **Yes** — warm runs skip Binaryen and native recompilation while still validating cached wasm through Wasmtime's safe API; Go/C# pay process + runtime init |
-| Allocation-heavy (lists, strings) | **traps OOM** (copy-per-push under a bump arena, O(n²) bytes) | **Yes** — capacity-growth + ownership-driven in-place mutation beats GC throughput; this is Phase 1 |
-| Long-running request loops | arena grows until the cap | **Yes** — arena reset points are *faster* than any GC (free bulk reclaim, no pauses) |
+| Startup / cold runs | validated optimized-WASM + Cranelift caches exist | **Yes** — warm runs skip Binaryen and native recompilation while still validating cached wasm through Wasmtime's safe API |
+| Allocation-heavy (lists, strings) | **Phase 1 complete** — capacity-growth + ownership-driven in-place mutation (was: OOM trap, copy-per-push O(n²)) | **Yes, done** — GC-free throughput; the 300k-push bench runs in constant memory (see Phase 1 below) |
+| Long-running request loops | arena grows until the cap | **Yes** — arena reset points reclaim in bulk with no pauses |
 | Long-lived, evicting/mutating heaps (caches, indexes, long-lived owned state) | arena alone never reclaims | **In scope via RC** — reference counting ([RFC-0016](../rfcs/0016-reference-counted-memory.md), implemented) is the tier-0 reclamation floor that frees escaping/evicted values; witchy has no shared-mutable pointer graphs to chase, so there is no pointer-cycle tail to concede. See [RFC-0029](../rfcs/0029-performance-tier-contract.md) |
 
-The honest summary: witchy should not chase Go by building a *tracing GC*. Its
+The honest summary: witchy should not add a *tracing GC*. Its
 value semantics + ownership conventions + region-scoped arenas, with reference
 counting as the reclamation floor ([RFC-0016](../rfcs/0016-reference-counted-memory.md)),
-are an *Erlang-shaped* memory story that beats GC languages on throughput while
+are an *Erlang-shaped* memory story that delivers GC-free throughput while
 also serving the long-lived, evicting state — caches, indexes, servers holding
-state — that the general-purpose targets (Go, Python, Ruby, Swift) take for
+state — that general-purpose runtimes take for
 granted. Two properties make this work without a collector: value semantics
 admits no reference cycles, so RC is complete with no tracer; and graphs are
 expressed with index-arena handles rather than shared pointers, so even cyclic
@@ -149,7 +149,7 @@ change); item 3 landed twice (in-place insert, then the hidden-word hash
 index: 50k inserts 1.63 s → 10 ms); item 4 landed (loop watermark resets — a
 200k-iteration/6 GB-churn soak runs in constant memory); item 5 was already
 resolved (overflow wraps by definition on both backends). The 300k-push
-bench went from an OOM trap to Go parity.
+bench went from an OOM trap to constant-memory, native-class throughput.
 
 **Superseded (2026-06-11, later):** item 2's eligibility scan was replaced
 wholesale by the **uniqueness pass** ([ownership-analysis.md](../rfcs/ownership-analysis.md)):
@@ -158,9 +158,11 @@ re-own instead of disqualifying, read-only calls don't break accumulation,
 `d.update(…)` upserts and `x = f(move x)` own-ABI pipelines run in place,
 and the remaining copy-path cliffs are flagged by `witchy check`/the LSP.
 
-**Scoreboard vs Go (measured, bench/BASELINE.md):** strings 4–5.7× faster;
-lists, dicts, compute, and cold start at parity. C# legs ship in the harness
-and activate when a dotnet toolchain is present.
+**Measured baseline (bench/BASELINE.md):** the benchmark suite tracks witchy
+against native reference implementations as data — currently strings run
+4–5.7× the reference throughput; lists, dicts, compute, and cold start are at
+parity. Those reference legs (Go, and C# when a dotnet toolchain is present)
+are prior-art data points in the harness, not a target framing.
 
 ## Phase 2 — Codegen quality
 
