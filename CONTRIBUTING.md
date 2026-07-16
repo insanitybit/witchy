@@ -81,8 +81,9 @@ Witchy source in this repository follows the executable
 [Idiomatic witchy](book/src/idioms.md) chapter. In particular:
 
 - use interpolation for presentation strings, not concatenation;
-- use statement-form mutators such as `out.push(x)` and `d.insert(k, v)`, not
-  reassignment through `list.push` or `dict.insert`;
+- call `var` operations directly instead of self-reassignment: use
+  `out.push(x)` when the independent result is irrelevant, or bind that result
+  (`let old = d.insert(k, v)`) when it matters;
 - represent an absent value with `Option`, but a failed operation with `Result`
   and propagate it with `?`; never use `Some(String)` to mean failure;
 - destructure tuple-valued iteration in the `for` binder;
