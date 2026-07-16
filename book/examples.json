@@ -1592,6 +1592,20 @@
       "Console"
     ],
     "output": [
+      "42"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 8,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-comptime.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
       "Hello, witch!"
     ],
     "runnable": true

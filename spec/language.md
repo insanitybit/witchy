@@ -1031,10 +1031,13 @@ compatibility holes parse only their payload. Literal
 `meta.pattern_join(parts, holes)` plans are promoted to the same owned
 representation. Direct item holes consume the result without reparsing; other
 `meta.pattern_*` builders remain the compatibility construction path.
-Hole-free `quote stmt:` and `quote block:` values retain compiler-owned body
-AST. Existing statement/block builders project canonical source for
-compatibility, and literal `meta.stmt_raw` / `meta.block_raw` calls are promoted
-back to owned syntax when they contain one parser-valid body.
+`quote stmt:` and `quote block:` values retain compiler-owned body AST. Their
+expression, type, and pattern holes are exact template nodes and are substituted
+structurally through the mixed `meta.SyntaxHole` envelope. Literal
+`meta.stmt_raw`, `meta.block_raw`, `meta.stmt_join_syntax`, and
+`meta.block_join_syntax` plans are promoted back to owned syntax when they
+contain one parser-valid body. Existing statement/block builders may project
+canonical source for compatibility when constructing an item.
 Top-level `comptime fn` declarations are helpers for this expansion phase. They
 may mention compile-time-only syntax types, may be called from `comptime:`,
 custom-derive, or tagged-literal expansion, and are stripped before the runtime
@@ -1059,8 +1062,8 @@ expression, type, pattern, statement, block, or single item immediately and
 produce `meta.ExprSyntax`, `meta.TypeSyntax`, `meta.PatternSyntax`,
 `meta.StmtSyntax`, `meta.BlockSyntax`, or `meta.ItemSyntax`. Every hole-free
 quote category uses the compiler-owned channels described above. Hole-bearing
-item, expression, type, and pattern quotations are structural; hole-bearing
-statement and block quotations remain source-backed in this migration stage.
+quotations in every category are structural; only general compatibility-builder
+composition may still project and parse canonical source.
 Inside `quote expr:`,
 `${hole}` splices a `meta.ExprSyntax`; inside `quote type:` and
 `quote pattern:`, `${hole}` splices a `meta.TypeSyntax` or `meta.PatternSyntax`;
@@ -1071,9 +1074,9 @@ and pattern holes anywhere those grammar positions occur inside the quoted
 item. Holes are typed by the surrounding `comptime`/tag generator, not by
 runtime interpolation. Item-hole placement is structural. Directly supplied
 compiler-owned expression, type, and pattern values retain their AST. An
-expression, type, and pattern quotes also retain their enclosing template AST
-across hole substitution; values composed by other compatibility builders
-remain source-backed until their structural slices land.
+Every quote retains its enclosing template AST across hole substitution; values
+composed by other compatibility builders remain source-backed until their
+structural slices land.
 `quote type:` covers named, generic, module-qualified, tuple, function,
 ownership-qualified, capability-right, anonymous structural, and borrowed-view
 types.

@@ -1302,10 +1302,20 @@ fn expr(e: &Expr) -> String {
             {
                 return format!("meta.stmt_raw({})", string_lit(source));
             }
+            if name == crate::intrinsics::COMPILER_QUOTE_STMT_HOLES
+                && let [Expr::Str(_handle), parts, holes] = args.as_slice()
+            {
+                return format!("meta.stmt_join_syntax({}, {})", expr(parts), expr(holes));
+            }
             if name == crate::intrinsics::COMPILER_QUOTE_BLOCK
                 && let [Expr::Str(_handle), Expr::Str(source)] = args.as_slice()
             {
                 return format!("meta.block_raw({})", string_lit(source));
+            }
+            if name == crate::intrinsics::COMPILER_QUOTE_BLOCK_HOLES
+                && let [Expr::Str(_handle), parts, holes] = args.as_slice()
+            {
+                return format!("meta.block_join_syntax({}, {})", expr(parts), expr(holes));
             }
             // `to_string`/`int_to_string` were retired in favor of string
             // interpolation, whose only surface spelling is `"${x}"`; rewrite a
@@ -2176,7 +2186,9 @@ fn canon_expr(e: &mut Expr) {
                 | crate::intrinsics::COMPILER_QUOTE_PATTERN
                 | crate::intrinsics::COMPILER_QUOTE_PATTERN_HOLES
                 | crate::intrinsics::COMPILER_QUOTE_STMT
+                | crate::intrinsics::COMPILER_QUOTE_STMT_HOLES
                 | crate::intrinsics::COMPILER_QUOTE_BLOCK
+                | crate::intrinsics::COMPILER_QUOTE_BLOCK_HOLES
         ) && let Some(Expr::Str(handle)) = args.first_mut()
         {
             handle.clear();

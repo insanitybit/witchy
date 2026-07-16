@@ -60,16 +60,7 @@ pub fn parse_pattern_payload(source: &str) -> Result<Pattern, String> {
 }
 
 pub fn instantiate_item(template: &Item, holes: Vec<ItemSyntaxHole>) -> Result<Item, String> {
-    let mut exprs = Vec::new();
-    let mut types = Vec::new();
-    let mut patterns = Vec::new();
-    for hole in holes {
-        match hole {
-            ItemSyntaxHole::Expr(expr) => exprs.push(Some(expr)),
-            ItemSyntaxHole::Type(ty) => types.push(Some(ty)),
-            ItemSyntaxHole::Pattern(pattern) => patterns.push(Some(pattern)),
-        }
-    }
+    let (mut exprs, mut types, mut patterns) = hole_slots(holes);
 
     let mut item = template.clone();
     substitute_item(&mut item, &mut exprs, &mut types, &mut patterns)?;
@@ -77,6 +68,26 @@ pub fn instantiate_item(template: &Item, holes: Vec<ItemSyntaxHole>) -> Result<I
     ensure_consumed("type", &types)?;
     ensure_consumed("pattern", &patterns)?;
     Ok(item)
+}
+
+pub fn instantiate_stmt(template: &Stmt, holes: Vec<ItemSyntaxHole>) -> Result<Stmt, String> {
+    let (mut exprs, mut types, mut patterns) = hole_slots(holes);
+    let mut stmt = template.clone();
+    substitute_stmt(&mut stmt, &mut exprs, &mut types, &mut patterns)?;
+    ensure_consumed("expression", &exprs)?;
+    ensure_consumed("type", &types)?;
+    ensure_consumed("pattern", &patterns)?;
+    Ok(stmt)
+}
+
+pub fn instantiate_block(template: &Block, holes: Vec<ItemSyntaxHole>) -> Result<Block, String> {
+    let (mut exprs, mut types, mut patterns) = hole_slots(holes);
+    let mut block = template.clone();
+    substitute_block(&mut block, &mut exprs, &mut types, &mut patterns)?;
+    ensure_consumed("expression", &exprs)?;
+    ensure_consumed("type", &types)?;
+    ensure_consumed("pattern", &patterns)?;
+    Ok(block)
 }
 
 pub fn instantiate_expr(template: &Expr, holes: Vec<Expr>) -> Result<Expr, String> {
@@ -101,6 +112,22 @@ pub fn instantiate_pattern(template: &Pattern, holes: Vec<Pattern>) -> Result<Pa
     substitute_pattern(&mut pattern, &mut holes)?;
     ensure_consumed("pattern", &holes)?;
     Ok(pattern)
+}
+
+type HoleSlots = (Vec<Option<Expr>>, Vec<Option<Type>>, Vec<Option<Pattern>>);
+
+fn hole_slots(holes: Vec<ItemSyntaxHole>) -> HoleSlots {
+    let mut exprs = Vec::new();
+    let mut types = Vec::new();
+    let mut patterns = Vec::new();
+    for hole in holes {
+        match hole {
+            ItemSyntaxHole::Expr(expr) => exprs.push(Some(expr)),
+            ItemSyntaxHole::Type(ty) => types.push(Some(ty)),
+            ItemSyntaxHole::Pattern(pattern) => patterns.push(Some(pattern)),
+        }
+    }
+    (exprs, types, patterns)
 }
 
 fn indent(source: &str, spaces: usize) -> String {
@@ -277,23 +304,33 @@ fn substitute_block(
         substitute_type(ty, types)?;
     }
     for stmt in &mut block.stmts {
-        match stmt {
-            Stmt::Let { ty, value, .. } => {
-                if let Some(ty) = ty {
-                    substitute_type(ty, types)?;
-                }
-                substitute_expr(value, exprs, types, patterns)?;
+        substitute_stmt(stmt, exprs, types, patterns)?;
+    }
+    Ok(())
+}
+
+fn substitute_stmt(
+    stmt: &mut Stmt,
+    exprs: &mut [Option<Expr>],
+    types: &mut [Option<Type>],
+    patterns: &mut [Option<Pattern>],
+) -> Result<(), String> {
+    match stmt {
+        Stmt::Let { ty, value, .. } => {
+            if let Some(ty) = ty {
+                substitute_type(ty, types)?;
             }
-            Stmt::Assign { value, .. } | Stmt::Yield(value) | Stmt::Expr(value) => {
-                substitute_expr(value, exprs, types, patterns)?;
-            }
-            Stmt::LetPattern { pattern, value } => {
-                substitute_pattern(pattern, patterns)?;
-                substitute_expr(value, exprs, types, patterns)?;
-            }
-            Stmt::Return(Some(value)) => substitute_expr(value, exprs, types, patterns)?,
-            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+            substitute_expr(value, exprs, types, patterns)?;
         }
+        Stmt::Assign { value, .. } | Stmt::Yield(value) | Stmt::Expr(value) => {
+            substitute_expr(value, exprs, types, patterns)?;
+        }
+        Stmt::LetPattern { pattern, value } => {
+            substitute_pattern(pattern, patterns)?;
+            substitute_expr(value, exprs, types, patterns)?;
+        }
+        Stmt::Return(Some(value)) => substitute_expr(value, exprs, types, patterns)?,
+        Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
     }
     Ok(())
 }
@@ -495,5 +532,37 @@ mod tests {
         let pattern = instantiate_pattern(&template, vec![Pattern::Int(1)])
             .expect("substitute pattern hole");
         assert_eq!(pattern, Pattern::Or(vec![Pattern::Int(1), Pattern::Int(2)]));
+    }
+
+    #[test]
+    fn substitutes_mixed_block_holes_without_reparsing() {
+        let template = Block {
+            stmts: vec![
+                Stmt::Let {
+                    name: "x".into(),
+                    ty: Some(Type::Named(format!("{QUOTE_TYPE_HOLE_PREFIX}0"), Vec::new())),
+                    mutable: false,
+                    value: Expr::Var(format!("{QUOTE_EXPR_HOLE_PREFIX}0")),
+                },
+                Stmt::LetPattern {
+                    pattern: Pattern::Var(format!("{QUOTE_PATTERN_HOLE_PREFIX}0")),
+                    value: Expr::Var("x".into()),
+                },
+                Stmt::Expr(Expr::Var(format!("{QUOTE_EXPR_HOLE_PREFIX}1"))),
+            ],
+            lines: vec![0, 0, 0],
+            region: None,
+        };
+        let block = instantiate_block(
+            &template,
+            vec![
+                ItemSyntaxHole::Type(Type::Named("Int".into(), Vec::new())),
+                ItemSyntaxHole::Expr(Expr::Int(40)),
+                ItemSyntaxHole::Pattern(Pattern::Var("value".into())),
+                ItemSyntaxHole::Expr(Expr::Var("value".into())),
+            ],
+        )
+        .expect("substitute mixed block holes");
+        assert_eq!(crate::format::block_str(&block), "let x: Int = 40\nlet value = x\nvalue");
     }
 }

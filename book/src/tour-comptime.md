@@ -86,9 +86,10 @@ canonical source.
 The compiler substitutes the exact pattern node, while a compatibility hole may
 parse its own payload. General `meta.pattern_*` composition remains the
 source-backed construction API.
-Hole-free `quote stmt:` and `quote block:` values retain their body AST too.
-The existing body builders consume their canonical projection, so generators
-can migrate without changing the `meta.function_block` surface.
+`quote stmt:` and `quote block:` values retain their body AST too, including
+mixed expression, type, and pattern holes. The existing body builders consume
+their canonical projection, so generators can migrate without changing the
+`meta.function_block` surface while the quoted body itself stays structural.
 When a typed tagged-literal generator returns one of these compiler-owned values,
 the expansion engine transfers the expression AST directly. A composed
 source-backed `ExprSyntax` and a legacy `String` tag retain the explicit parse
@@ -105,6 +106,37 @@ comptime:
 
 fn main(console: Console):
     console.print("${identity(42)}")
+```
+
+```text
+42
+```
+
+Statement and block templates accept mixed syntax categories. The block below
+substitutes a compatibility-built type, pattern, and expression plus an owned
+expression quote before the existing function builder consumes it:
+
+```witchy
+import meta
+
+comptime fn generated_body() -> meta.BlockSyntax:
+    let int = meta.type_named(meta.ident("Int"), [])
+    let binding = meta.pattern_var(meta.ident("value"))
+    let seed = meta.expr_int(40)
+    let tail = quote expr:
+        value + 2
+    quote block:
+        let x: ${int} = ${seed}
+        let ${binding} = x
+        ${tail}
+
+comptime:
+    let int = quote type:
+        Int
+    emit_item(meta.function_block(true, meta.ident("body_generated"), [], Some(int), generated_body()))
+
+fn main(console: Console):
+    console.print("${body_generated()}")
 ```
 
 ```text

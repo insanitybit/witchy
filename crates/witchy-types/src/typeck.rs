@@ -3859,8 +3859,24 @@ impl Checker {
                 vec![Ty::String, Ty::String],
                 Ty::Named("meta.StmtSyntax".into(), Vec::new()),
             )),
+            S::CompilerQuoteStmtHoles => Some((
+                vec![
+                    Ty::String,
+                    Ty::List(Box::new(Ty::String)),
+                    Ty::List(Box::new(Ty::Named("meta.SyntaxHole".into(), Vec::new()))),
+                ],
+                Ty::Named("meta.StmtSyntax".into(), Vec::new()),
+            )),
             S::CompilerQuoteBlock => Some((
                 vec![Ty::String, Ty::String],
+                Ty::Named("meta.BlockSyntax".into(), Vec::new()),
+            )),
+            S::CompilerQuoteBlockHoles => Some((
+                vec![
+                    Ty::String,
+                    Ty::List(Box::new(Ty::String)),
+                    Ty::List(Box::new(Ty::Named("meta.SyntaxHole".into(), Vec::new()))),
+                ],
                 Ty::Named("meta.BlockSyntax".into(), Vec::new()),
             )),
             S::CompilerEmitItem => Some((

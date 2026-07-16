@@ -245,6 +245,27 @@
     }
 
     #[test]
+    fn compiler_owned_body_holes_round_trip_through_formatting() {
+        let src = "comptime fn statement(ty: meta.TypeSyntax, value: meta.ExprSyntax) -> meta.StmtSyntax:\n    quote stmt:\n        let x: ${ty} = ${value}\n\ncomptime fn body(ty: meta.TypeSyntax, pat: meta.PatternSyntax, value: meta.ExprSyntax) -> meta.BlockSyntax:\n    quote block:\n        let x: ${ty} = ${value}\n        let ${pat} = x\n        x + 2\n";
+        let out = reformat(src).expect("compiler-owned body holes round-trip");
+        assert!(out.contains("meta.stmt_join_syntax("), "{out}");
+        assert!(out.contains("meta.block_join_syntax("), "{out}");
+        let reparsed = crate::parser::parse_module(&out).expect("formatted body holes parse");
+        assert_eq!(reparsed.compiler_stmt_syntax.len(), 1);
+        assert_eq!(reparsed.compiler_block_syntax.len(), 1);
+        let mut intrinsic_names = reparsed.items.iter().filter_map(|item| match item {
+            crate::ast::Item::Function(function) => match function.body.stmts.as_slice() {
+                [crate::ast::Stmt::Expr(crate::ast::Expr::Call { name, .. })] => Some(name.as_str()),
+                _ => None,
+            },
+            _ => None,
+        });
+        assert_eq!(intrinsic_names.next(), Some(crate::intrinsics::COMPILER_QUOTE_STMT_HOLES));
+        assert_eq!(intrinsic_names.next(), Some(crate::intrinsics::COMPILER_QUOTE_BLOCK_HOLES));
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
+    }
+
+    #[test]
     fn compiler_owned_anonymous_expression_round_trips_through_formatting() {
         let src = "comptime fn make() -> meta.ExprSyntax:\n    quote expr:\n        .{value: 40}.value\n";
         let out = reformat(src).expect("anonymous compiler-owned expression quote round-trips");

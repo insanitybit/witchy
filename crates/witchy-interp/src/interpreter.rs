@@ -2770,6 +2770,58 @@ impl Interpreter {
                     _ => err("compiler-owned statement quotation expects a statement handle"),
                 }
             }
+            name if name == intrinsics::COMPILER_QUOTE_STMT_HOLES => {
+                if self.fresh_ident_scope.is_none() {
+                    return err(
+                        "compiler-owned statement quotation is available only during compile-time expansion",
+                    );
+                }
+                match args {
+                    [Value::Str(handle), Value::List(parts), Value::List(holes)]
+                        if parts.len() == holes.len() + 1
+                            && parts.iter().all(|part| matches!(part, Value::Str(_))) =>
+                    {
+                        let template = self
+                            .compiler_stmt_syntax
+                            .get(handle)
+                            .cloned()
+                            .ok_or_else(|| RuntimeError {
+                                message: "compiler-owned statement quotation referenced an invalid syntax handle"
+                                    .into(),
+                            })?;
+                        let holes = compiler_item_holes(
+                            holes,
+                            &self.compiler_expr_syntax,
+                            &self.compiler_type_syntax,
+                            &self.compiler_pattern_syntax,
+                        )?;
+                        let stmt = witchy_syntax::syntax_holes::instantiate_stmt(&template, holes)
+                            .map_err(|message| RuntimeError { message })?;
+                        let source = witchy_syntax::format::stmt_str(&stmt);
+                        let instance_handle =
+                            format!("{handle}\0compiler-owned-statement-instance\0{source}");
+                        if let Some(existing) = self.compiler_stmt_syntax.get(&instance_handle) {
+                            if existing != &stmt {
+                                return err(
+                                    "compiler-owned statement instance handle collided with a different AST",
+                                );
+                            }
+                        } else {
+                            self.compiler_stmt_syntax.insert(instance_handle.clone(), stmt);
+                        }
+                        Ok(Some(Value::Ctor {
+                            name: "meta.CompilerStmtSyntax".into(),
+                            fields: vec![Value::Str(instance_handle), Value::Str(source)],
+                        }))
+                    }
+                    [Value::Str(_), Value::List(_), Value::List(_)] => err(
+                        "compiler-owned statement quotation referenced an invalid syntax handle or hole plan",
+                    ),
+                    _ => err(
+                        "compiler-owned statement quotation expects a statement handle and typed holes",
+                    ),
+                }
+            }
             name if name == intrinsics::COMPILER_QUOTE_BLOCK => {
                 if self.fresh_ident_scope.is_none() {
                     return err(
@@ -2789,6 +2841,59 @@ impl Interpreter {
                         err("compiler-owned block quotation referenced an invalid syntax handle")
                     }
                     _ => err("compiler-owned block quotation expects a block handle"),
+                }
+            }
+            name if name == intrinsics::COMPILER_QUOTE_BLOCK_HOLES => {
+                if self.fresh_ident_scope.is_none() {
+                    return err(
+                        "compiler-owned block quotation is available only during compile-time expansion",
+                    );
+                }
+                match args {
+                    [Value::Str(handle), Value::List(parts), Value::List(holes)]
+                        if parts.len() == holes.len() + 1
+                            && parts.iter().all(|part| matches!(part, Value::Str(_))) =>
+                    {
+                        let template = self
+                            .compiler_block_syntax
+                            .get(handle)
+                            .cloned()
+                            .ok_or_else(|| RuntimeError {
+                                message: "compiler-owned block quotation referenced an invalid syntax handle"
+                                    .into(),
+                            })?;
+                        let holes = compiler_item_holes(
+                            holes,
+                            &self.compiler_expr_syntax,
+                            &self.compiler_type_syntax,
+                            &self.compiler_pattern_syntax,
+                        )?;
+                        let block =
+                            witchy_syntax::syntax_holes::instantiate_block(&template, holes)
+                                .map_err(|message| RuntimeError { message })?;
+                        let source = witchy_syntax::format::block_str(&block);
+                        let instance_handle =
+                            format!("{handle}\0compiler-owned-block-instance\0{source}");
+                        if let Some(existing) = self.compiler_block_syntax.get(&instance_handle) {
+                            if existing != &block {
+                                return err(
+                                    "compiler-owned block instance handle collided with a different AST",
+                                );
+                            }
+                        } else {
+                            self.compiler_block_syntax.insert(instance_handle.clone(), block);
+                        }
+                        Ok(Some(Value::Ctor {
+                            name: "meta.CompilerBlockSyntax".into(),
+                            fields: vec![Value::Str(instance_handle), Value::Str(source)],
+                        }))
+                    }
+                    [Value::Str(_), Value::List(_), Value::List(_)] => err(
+                        "compiler-owned block quotation referenced an invalid syntax handle or hole plan",
+                    ),
+                    _ => err(
+                        "compiler-owned block quotation expects a block handle and typed holes",
+                    ),
                 }
             }
             name if name == intrinsics::COMPILER_QUOTE_ITEM => {

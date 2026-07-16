@@ -751,7 +751,7 @@ fn f():
     }
 
     #[test]
-    fn quote_stmt_holes_lower_to_meta_stmt_join_syntax() {
+    fn quote_stmt_holes_keep_a_compiler_owned_template() {
         let m = parse_module(r#"
 fn f(value: meta.ExprSyntax):
     quote stmt:
@@ -760,17 +760,26 @@ fn f(value: meta.ExprSyntax):
         let Item::Function(f) = &m.items[0] else {
             panic!("expected function");
         };
-        let expected = Expr::Call {
-            name: "meta.stmt_join_syntax".into(),
-            args: vec![
-                Expr::List(vec![Expr::Str("let x = ".into()), Expr::Str("".into())]),
-                Expr::List(vec![Expr::Call {
-                    name: "meta.expr_hole".into(),
-                    args: vec![Expr::Var("value".into())],
-                }]),
-            ],
+        assert_eq!(m.compiler_stmt_syntax.len(), 1);
+        let Stmt::Expr(Expr::Call { name, args }) = &f.body.stmts[0] else {
+            panic!("expected compiler-owned statement-hole call");
         };
-        assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);
+        assert_eq!(name, crate::intrinsics::COMPILER_QUOTE_STMT_HOLES);
+        let [Expr::Str(handle), parts, holes] = args.as_slice() else {
+            panic!("expected statement handle, parts, and holes");
+        };
+        assert_eq!(handle, &m.compiler_stmt_syntax[0].handle);
+        assert_eq!(
+            parts,
+            &Expr::List(vec![Expr::Str("let x = ".into()), Expr::Str("".into())])
+        );
+        assert_eq!(
+            holes,
+            &Expr::List(vec![Expr::Call {
+                name: "meta.expr_hole".into(),
+                args: vec![Expr::Var("value".into())],
+            }])
+        );
     }
 
     #[test]
@@ -783,9 +792,13 @@ fn f(ty: meta.TypeSyntax, value: meta.ExprSyntax):
         let Item::Function(f) = &m.items[0] else {
             panic!("expected function");
         };
-        let expected = Expr::Call {
-            name: "meta.stmt_join_syntax".into(),
-            args: vec![
+        let Stmt::Expr(Expr::Call { name, args }) = &f.body.stmts[0] else {
+            panic!("expected compiler-owned statement-hole call");
+        };
+        assert_eq!(name, crate::intrinsics::COMPILER_QUOTE_STMT_HOLES);
+        assert_eq!(
+            &args[1..],
+            &[
                 Expr::List(vec![
                     Expr::Str("let x: ".into()),
                     Expr::Str(" = ".into()),
@@ -801,9 +814,8 @@ fn f(ty: meta.TypeSyntax, value: meta.ExprSyntax):
                         args: vec![Expr::Var("value".into())],
                     },
                 ]),
-            ],
-        };
-        assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);
+            ]
+        );
     }
 
     #[test]
@@ -834,7 +846,7 @@ fn f():
     }
 
     #[test]
-    fn quote_block_holes_lower_to_meta_block_join_syntax() {
+    fn quote_block_holes_keep_a_compiler_owned_template() {
         let m = parse_module(r#"
 fn f(value: meta.ExprSyntax, delta: meta.ExprSyntax):
     quote block:
@@ -844,9 +856,15 @@ fn f(value: meta.ExprSyntax, delta: meta.ExprSyntax):
         let Item::Function(f) = &m.items[0] else {
             panic!("expected function");
         };
-        let expected = Expr::Call {
-            name: "meta.block_join_syntax".into(),
-            args: vec![
+        assert_eq!(m.compiler_block_syntax.len(), 1);
+        let Stmt::Expr(Expr::Call { name, args }) = &f.body.stmts[0] else {
+            panic!("expected compiler-owned block-hole call");
+        };
+        assert_eq!(name, crate::intrinsics::COMPILER_QUOTE_BLOCK_HOLES);
+        assert_eq!(&args[0], &Expr::Str(m.compiler_block_syntax[0].handle.clone()));
+        assert_eq!(
+            &args[1..],
+            &[
                 Expr::List(vec![
                     Expr::Str("let x = ".into()),
                     Expr::Str("\nx + ".into()),
@@ -862,9 +880,8 @@ fn f(value: meta.ExprSyntax, delta: meta.ExprSyntax):
                         args: vec![Expr::Var("delta".into())],
                     },
                 ]),
-            ],
-        };
-        assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);
+            ]
+        );
     }
 
     #[test]
@@ -879,9 +896,13 @@ fn f(ty: meta.TypeSyntax, value: meta.ExprSyntax, pat: meta.PatternSyntax, tail:
         let Item::Function(f) = &m.items[0] else {
             panic!("expected function");
         };
-        let expected = Expr::Call {
-            name: "meta.block_join_syntax".into(),
-            args: vec![
+        let Stmt::Expr(Expr::Call { name, args }) = &f.body.stmts[0] else {
+            panic!("expected compiler-owned block-hole call");
+        };
+        assert_eq!(name, crate::intrinsics::COMPILER_QUOTE_BLOCK_HOLES);
+        assert_eq!(
+            &args[1..],
+            &[
                 Expr::List(vec![
                     Expr::Str("let x: ".into()),
                     Expr::Str(" = ".into()),
@@ -907,9 +928,8 @@ fn f(ty: meta.TypeSyntax, value: meta.ExprSyntax, pat: meta.PatternSyntax, tail:
                         args: vec![Expr::Var("tail".into())],
                     },
                 ]),
-            ],
-        };
-        assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);
+            ]
+        );
     }
 
     #[test]

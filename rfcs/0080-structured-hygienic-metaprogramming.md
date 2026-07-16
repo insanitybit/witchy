@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed compatibility builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned hole-free item/expression/type/pattern/statement/block payloads with structural item, expression, type, and pattern holes, direct AST transport for typed tags, and definition-site direct-function resolution for compiler-owned typed tag output landed; general identifier origins and meta.call_site remain proposed"
+tracking: "source-backed compatibility builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned item/expression/type/pattern/statement/block quotations with structural typed holes, direct AST transport for typed tags, and definition-site direct-function resolution for compiler-owned typed tag output landed; general identifier origins, spans, diagnostics, and meta.call_site remain proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -384,11 +384,21 @@ The first source-compatible slice is implemented:
   representation, and formatting restores that public typed spelling. General
   `meta.pattern_*` builder composition and hole-bearing statement/block
   quotations remain source-backed.
+- The thirty-fourth slice moves hole-bearing `quote stmt:` and `quote block:`
+  onto compiler-owned body templates. Their existing mixed `SyntaxHole`
+  envelope preserves source order across expression, type, and pattern holes,
+  while compile-time evaluation decodes each typed value and substitutes the
+  corresponding AST node into a cloned `Stmt` or `Block`. Literal
+  `meta.stmt_join_syntax(parts, holes)` and
+  `meta.block_join_syntax(parts, holes)` plans are promoted to the same owned
+  representation on parse/format round-trip. Current body builders may still
+  project canonical source when constructing an item; the quotation payload
+  itself is no longer assembled or reparsed.
 
-This is intentionally not the full RFC. Whole items, expression, type, and
-pattern templates, and their typed hole placement plus all hole-free syntax
-payloads are now compiler-owned. Other composed syntax and hole-bearing
-statement and block payloads remain source-backed. Compiler-owned typed tag
+This is intentionally not the full RFC. Every quotation category and its typed
+hole placement is now compiler-owned. General `meta.*` builder composition may
+still project canonical source, and current body builders use that compatibility
+surface when constructing an item. Compiler-owned typed tag
 expressions now preserve definition-site direct function references, but
 general identifier origins and explicit call-site identifiers remain future
 work. The value is the
