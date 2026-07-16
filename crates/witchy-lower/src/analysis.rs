@@ -420,6 +420,13 @@ pub struct Summaries {
     fns: HashMap<String, FnInfo>,
 }
 
+fn view_lifetime(ty: Option<&Type>) -> Option<&str> {
+    match ty {
+        Some(Type::Qualified(TypeQual::Borrow(lifetime), _)) => Some(lifetime),
+        _ => None,
+    }
+}
+
 impl Summaries {
     /// No information: every call is assumed to alias every argument out.
     pub fn empty() -> Self {
@@ -437,13 +444,24 @@ impl Summaries {
         let mut bodies: HashMap<String, &witchy_syntax::ast::Function> = HashMap::new();
         for item in &module.items {
             if let Item::Function(f) = item {
+                let returned_lifetime = view_lifetime(f.ret.as_ref());
+                let may_alias_out = f
+                    .params
+                    .iter()
+                    .map(|param| {
+                        returned_lifetime.is_some_and(|lifetime| {
+                            view_lifetime(param.ty.as_ref()) == Some(lifetime)
+                        })
+                    })
+                    .collect();
                 fns.insert(
                     f.name.clone(),
                     FnInfo {
                         convs: f.params.iter().map(|p| p.convention).collect(),
-                        // Optimistic start; `let` borrows are certified clean
-                        // by typeck (a borrow cannot be returned) and stay so.
-                        may_alias_out: vec![false; f.params.len()],
+                        // The declared output-to-input lifetime relation is an
+                        // immediate alias source. Other positions start at the
+                        // optimistic bottom and rise through the body fixpoint.
+                        may_alias_out,
                         own_abi: None,
                     },
                 );
@@ -456,7 +474,10 @@ impl Summaries {
             for (name, f) in &bodies {
                 for (i, p) in f.params.iter().enumerate() {
                     if p.convention == Convention::Borrow {
-                        continue; // typeck: a `let` borrow cannot escape.
+                        // An ordinary `let` borrow cannot escape. A returnable
+                        // view is the explicit exception and was seeded from
+                        // the signature relation above.
+                        continue;
                     }
                     if summaries.fns[name.as_str()].may_alias_out[i] {
                         continue;
@@ -538,8 +559,12 @@ impl Summaries {
     fn arg_live(&self, name: &str, idx: usize) -> bool {
         match self.fns.get(name) {
             Some(info) => match info.convs.get(idx) {
-                // typeck: a `let` borrow cannot escape the call.
-                Some(Convention::Borrow) => false,
+                // Explicit `let` normally borrows only for the call. RFC-0083
+                // permits the signature to tie a returned view to this input;
+                // that relation is a caller-observable storage alias.
+                Some(Convention::Borrow) => {
+                    info.may_alias_out.get(idx).copied().unwrap_or(true)
+                }
                 // an `own` argument is moved: the caller's binding is
                 // dead afterwards (use-after-move is a compile error), so no
                 // live DOUBLE alias can form.
@@ -2510,6 +2535,52 @@ mod last_use_tests {
     fn region_confined_value_is_not_dropped() {
         let d = drops("import list\nfn f() -> Int:\n    let n = region -> Int:\n        let tmp = list.push([], 1)\n        list.length(tmp)\n    n\n");
         assert_eq!(d.total(), 0, "`tmp` is region-confined; the region frees it, not the RC floor");
+    }
+
+    #[test]
+    fn returned_view_makes_explicit_borrow_argument_leak() {
+        let module = parser::parse_module(
+            "mode opt\n\n\
+             fn view(let xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n\n\
+             fn read(let xs: List(Int)) -> Int:\n    list.length(xs)\n",
+        )
+        .expect("parse");
+        let summaries = Summaries::of_module(&module);
+
+        assert!(
+            summaries.arg_leaks("view", 0, 1),
+            "the declared returned-view relation keeps the owner shared"
+        );
+        assert!(
+            !summaries.arg_leaks("read", 0, 1),
+            "an ordinary explicit borrow remains call-scoped"
+        );
+    }
+
+    #[test]
+    fn returned_view_relation_invalidates_the_uniqueness_token() {
+        let module = parser::parse_module(
+            "mode opt\n\n\
+             fn view(let xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n\n\
+             fn use() -> Nil:\n    var xs = [1]\n    let w = view(xs)\n    list.push(xs, 2)\n    let _ = w\n    return\n",
+        )
+        .expect("parse");
+        let summaries = Summaries::of_module(&module);
+        let function = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "use" => Some(function),
+                _ => None,
+            })
+            .expect("use function");
+        let facts = analyze(&function.body, &summaries);
+        let view_binding = &function.body.stmts[1];
+
+        assert!(
+            facts.kills_after(view_binding).iter().any(|name| name == "xs"),
+            "a returned view must invalidate the owner's uniqueness token"
+        );
     }
 
     /// A reassigned binding's churn is rc-floor's free-at-overwrite, not this pass.

@@ -13,9 +13,11 @@ tracking: >
   when a view opens, and emits compiled linear-memory owner roots released at last
   use and on explicit-return / `?` paths. Mutable/aggregate, lambda, task/channel,
   loop-edge, and async-suspension escapes are rejected; `Dynamic` is not a current
-  language type. A trapped VM is terminal rather than resumable with abandoned
-  roots. Host-backed capability leases remain a separate capability-specific
-  design, as specified below.
+  language type. The ownership summary lattice also consumes the declared
+  output-to-input relation, including explicit `let` parameters, instead of
+  assuming every call-scoped borrow is non-escaping. A trapped VM is terminal
+  rather than resumable with abandoned roots. Host-backed capability leases remain
+  a separate capability-specific design, as specified below.
 related:
   - "0029 (optimization contract - missed facts copy or reject in opt mode)"
   - "0087 (uniform var write-back - active returned views block owner write-back)"
