@@ -1502,7 +1502,6 @@ impl Interpreter {
             .map(|syntax| (syntax.handle, syntax.block))
             .collect();
         let mut functions = FxHashMap::new();
-        let mut param_names: FxHashMap<usize, Rc<[Rc<str>]>> = FxHashMap::new();
         let mut record_fields = FxHashMap::new();
         let mut ctor_type_name: FxHashMap<String, String> = FxHashMap::new();
         // (RFC-0047) Type names that DERIVED PartialEq (their impl is structural)
@@ -1514,12 +1513,7 @@ impl Interpreter {
         for item in module.items {
             match item {
                 Item::Function(f) => {
-                    let f = Rc::new(f);
-                    param_names.insert(
-                        Rc::as_ptr(&f) as usize,
-                        f.params.iter().map(|p| Rc::from(p.name.as_str())).collect(),
-                    );
-                    functions.insert(f.name.clone(), f);
+                    functions.insert(f.name.clone(), Rc::new(f));
                 }
                 // Types are erased at runtime, except a record's field names,
                 // which map `value.field` to a position in the constructor.
@@ -1540,6 +1534,21 @@ impl Interpreter {
         // (RFC-0047) A declared type has a CUSTOM (non-derived) PartialEq exactly
         // when the desugared `PartialEq__T__eq` function is present and the type did
         // NOT derive PartialEq/Eq. `==`/`!=` then honor that impl at every depth.
+        // Built AFTER registration from the SURVIVING entries: `functions` is
+        // last-wins on name collisions, and it pins every keyed `Rc<Function>`
+        // allocation for the interpreter's lifetime — so a pointer key can
+        // never outlive its function and be reused by a later allocation
+        // (adversarial-review hardening; collisions are also rejected upstream
+        // by typeck's unique-function check).
+        let param_names: FxHashMap<usize, Rc<[Rc<str>]>> = functions
+            .values()
+            .map(|f| {
+                (
+                    Rc::as_ptr(f) as usize,
+                    f.params.iter().map(|p| Rc::from(p.name.as_str())).collect(),
+                )
+            })
+            .collect();
         let custom_eq_types: FxHashSet<String> = declared_types
             .into_iter()
             .filter(|(name, derived)| {
