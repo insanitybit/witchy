@@ -43,6 +43,7 @@ ignored=0
 for arg in "$@"; do
     [ "$arg" = "--ignored" ] && ignored=1
 done
+progress_file="${WITCHY_GATE_PROGRESS_FILE:-}"
 case "$jobs" in
     '' | *[!0-9]* | 0)
         echo "nextest-list-wrapper: WITCHY_NEXTEST_LIST_JOBS must be a positive integer" >&2
@@ -64,6 +65,10 @@ pid_is_alive() {
             ;;
     esac
     return 1
+}
+
+mark_progress() {
+    [ -n "$progress_file" ] && touch "$progress_file" 2>/dev/null || true
 }
 
 # Failure to create the per-run root means the performance guard is unavailable.
@@ -129,6 +134,7 @@ while [ -z "$slot" ]; do
         # operations that can leak an ownerless slot forever.
         if ln -s "$$" "$candidate" 2>/dev/null; then
             slot="$candidate"
+            mark_progress
             break
         fi
         owner="$(readlink "$candidate" 2>/dev/null || true)"
@@ -157,6 +163,7 @@ cleanup() {
         # Ignored discovery exits above after consuming the cached list.
         :
     fi
+    mark_progress
     # Deliberately do NOT rmdir "$root": reaping the shared root is what races
     # concurrent starters into the ENOENT spin above. The root is keyed by the
     # per-run NEXTEST_RUN_ID, so at most one empty dir per suite run lingers in

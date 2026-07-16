@@ -31,6 +31,9 @@
 # MERGE_QUEUE_GATE_TIMEOUT seconds (default 2700), the process group is killed,
 # the candidate is journaled as timed out, the lock is released, and the queue
 # moves on. Logs are always preserved under state/merge-queue/logs/.
+# The bounded nextest list wrapper also records genuine discovery-wave progress
+# in a coordinator-owned sidecar; synthetic human heartbeats do not count as
+# liveness.
 #
 # State is machine-readable and lives under gitignored state/merge-queue/
 # IN THE MAIN WORKTREE (each worktree has its own state/, so state written
@@ -136,6 +139,13 @@ pid_is_alive() {
     esac
     return 1
 }
+
+case "$stall_timeout" in
+    '' | *[!0-9]* | 0)
+        note "MERGE_QUEUE_STALL_TIMEOUT must be a positive integer"
+        exit 2
+        ;;
+esac
 
 # The last `==> [N] stage (t+Ns)` marker in a gate log = the stage running now.
 current_stage() { { strip_ansi <"$1" 2>/dev/null || true; } | { grep -E '^==> \[' || true; } | tail -1 | sed 's/^==> //'; }
@@ -586,6 +596,7 @@ gate_result=""
 gate_attempt=0
 run_gate() { # run_gate <log> [fuzz-mode] [gate-scope]
     local log="$1"
+    local progress_file="${log}.progress"
     local fuzz_mode="${2:-full}"
     local gate_scope="${3:-all}"
     local start; start="$(date +%s)"
@@ -606,7 +617,8 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope]
     # (.config/nextest.toml); by run time every binary is loader-warm. Bounding
     # execution as well doubled gate wall-clock (measured 2026-07-16: ~20.6 min
     # at width 4 vs the historical 8-10 min).
-    ( cd "$gate_wt" && exec env CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" bash -c "$gate_cmd" ) >"$log" 2>&1 &
+    rm -f "$progress_file"
+    ( cd "$gate_wt" && exec env CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" bash -c "$gate_cmd" ) >"$log" 2>&1 &
     local gpid=$!
     set +m
     local why=""
@@ -622,10 +634,12 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope]
     # real_sig = count of log lines with heartbeat pulses removed; it only grows
     # on genuine output, so a change means real progress → reset the clock.
     local last_real_sig=""
+    local last_progress_mtime=""
     local last_real_time="$start"
     while :; do
         if ! pid_is_alive "$gpid"; then
             if wait "$gpid"; then gate_result="green"; else gate_result="red"; fi
+            rm -f "$progress_file"
             return 0
         fi
         sleep "$monitor_interval"
@@ -637,6 +651,12 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope]
         local real_sig; real_sig="$(grep -vcF 'still running (heartbeat' "$log" 2>/dev/null || true)"
         if [ "$real_sig" != "$last_real_sig" ]; then
             last_real_sig="$real_sig"
+            last_real_time="$t"
+        fi
+        local progress_mtime
+        progress_mtime="$(stat -f %m "$progress_file" 2>/dev/null || true)"
+        if [ -n "$progress_mtime" ] && [ "$progress_mtime" != "$last_progress_mtime" ]; then
+            last_progress_mtime="$progress_mtime"
             last_real_time="$t"
         fi
         local age=$((t - last_real_time))
@@ -662,9 +682,10 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope]
             # AND silent for far longer than any compile+enumeration takes is a
             # CPU-burning runaway (e.g. a busy-spin infinite loop in a test) — kill
             # it well before the 45-min whole-gate ceiling so it doesn't block the
-            # serialized queue that long. `busy_silence_max` = 3× the stall window
-            # (default 1800s), comfortably above a cold test-profile compile even
-            # under contention, far below GATE_TIMEOUT.
+            # serialized queue that long. `busy_silence_max` = 3× the active
+            # stall window, comfortably above a cold test-profile compile or
+            # bounded discovery under contention; GATE_TIMEOUT remains the
+            # absolute ceiling.
             local busy_silence_max="${MERGE_QUEUE_BUSY_SILENCE_MAX:-$((stall_timeout * 3))}"
             if group_is_busy "$gpid" && [ "$age" -le "$busy_silence_max" ]; then
                 continue
@@ -672,7 +693,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope]
             if group_is_busy "$gpid"; then
                 why="no log output for ${age}s despite a busy process group — runaway (MERGE_QUEUE_BUSY_SILENCE_MAX=${busy_silence_max})"
             else
-                why="no log output for ${age}s and process group idle (MERGE_QUEUE_STALL_TIMEOUT=${stall_timeout})"
+                why="no log or discovery progress for ${age}s and process group idle (MERGE_QUEUE_STALL_TIMEOUT=${stall_timeout})"
             fi
             break
         fi
@@ -682,6 +703,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope]
     sleep 5
     kill -KILL -- "-$gpid" 2>/dev/null || true
     wait "$gpid" 2>/dev/null || true
+    rm -f "$progress_file"
     gate_result="timeout: $why"
     return 0
 }

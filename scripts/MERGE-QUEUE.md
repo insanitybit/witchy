@@ -150,7 +150,7 @@ Environment knobs: `MERGE_QUEUE_GATE_CMD` (default `./scripts/check.sh`),
 `MERGE_QUEUE_GATE_TIMEOUT` (2700s), `MERGE_QUEUE_STALL_TIMEOUT` (600s of no log
 output **while the gate's process group is idle** — a group still burning CPU is
 compiling/testing, not hung, so silence alone never kills it; see the stall
-note below), `MERGE_QUEUE_BUSY_SILENCE_MAX` (3× stall = 1800s: the ceiling on
+note below), `MERGE_QUEUE_BUSY_SILENCE_MAX` (3× the stall window: the ceiling on
 silence even for a *busy* group, so a CPU-burning runaway is reclaimed here
 rather than at GATE_TIMEOUT), `MERGE_QUEUE_BATCH_MAX` (5),
 `WITCHY_STATE_DIR` (override the canonical local state root),
@@ -173,6 +173,9 @@ There is no time-based fail-open that can turn slow healthy discovery back into
 an unbounded loader herd. `WITCHY_NEXTEST_LIST_JOBS` permits local retuning;
 production defaults to two because four simultaneous distinct cold binaries
 measured no faster in aggregate, while one-wide developed a long tail.
+an unbounded loader herd. Each successful slot acquire/release also touches a
+coordinator-owned progress sidecar, so healthy waves reset the idle watchdog
+without treating synthetic log heartbeats as liveness.
 
 **Diff-scoped fuzzing.** The differential fuzzer is the gate's single biggest
 test (~57s, a fixed-seed parity regression suite). `process_one` classifies the
