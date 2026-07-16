@@ -93,12 +93,12 @@ pub fn ident(name: String) -> Ident:
         fail("meta.ident: invalid identifier `" + name + "`")
     Ident(name)
 
-// An explicit invocation-site reference. The compiler retains this origin in
-// ExprSyntax instead of rendering a source identifier for the defining module
-// to capture.
+// An explicit invocation-site value/function reference. The compiler retains
+// this origin in ExprSyntax instead of rendering a source identifier for the
+// defining module to capture. Constructor/type origins are not accepted yet.
 pub fn call_site(name: String) -> Ident:
-    if !is_identifier(name):
-        fail("meta.call_site: invalid identifier `" + name + "`")
+    if !is_identifier(name) || !is_value_ident_start(string.substring(name, 0, 1)):
+        fail("meta.call_site: expected a value/function identifier, got `" + name + "`")
     CallSiteIdent(name)
 
 // A deterministic compiler-owned binding name. The returned identifier cannot
@@ -144,6 +144,9 @@ fn __meta_call_site_expr(name: String) -> ExprSyntax:
 
 fn is_ident_start(c: String) -> Bool:
     c == "_" || "a" <= c && c <= "z" || "A" <= c && c <= "Z"
+
+fn is_value_ident_start(c: String) -> Bool:
+    c == "_" || "a" <= c && c <= "z"
 
 fn is_ident_continue(c: String) -> Bool:
     is_ident_start(c) || "0" <= c && c <= "9"

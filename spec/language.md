@@ -1097,8 +1097,10 @@ names in the source-reserved `__` namespace, so a handwritten binding cannot
 capture them. When a typed tag returns a compiler-owned expression, direct
 function calls and references written in that expression resolve in the tag's
 defining module; generated lexical bindings still shadow normally.
-`meta.call_site(name)` is the explicit escape for an expression reference that
-must resolve in the syntax consumer's scope. Passing it to `meta.expr_name`
+`meta.call_site(name)` is the explicit escape for a lowercase value/function
+reference that must resolve in the syntax consumer's scope. Constructor and
+type origins are rejected until those categories become compiler-owned.
+Passing it to `meta.expr_name`
 creates a compiler-owned expression node, so structural quotation and typed-tag
 transport preserve the invocation-site origin without a forgeable source
 spelling. General constructor, type, pattern, field, and item origins remain

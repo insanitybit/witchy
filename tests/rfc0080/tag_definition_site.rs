@@ -96,3 +96,21 @@ fn definition_site_markers_are_consumed_before_typechecking() {
     assert!(!rendered.contains("@call_site:"), "{rendered}");
     assert!(rendered.contains("tag_library.hidden"), "{rendered}");
 }
+
+#[test]
+fn call_site_rejects_constructor_and_type_identifiers() {
+    let source = r#"
+import meta
+
+comptime:
+    let unsupported = meta.call_site("TypeName")
+"#;
+    let parsed = parser::parse_module(source).expect("parse invalid call-site origin");
+    let error = pipeline::link(vec![("main".into(), parsed)], "main")
+        .expect_err("constructor/type origins are not implemented by this slice")
+        .to_string();
+    assert!(
+        error.contains("meta.call_site") && error.contains("value/function identifier"),
+        "{error}"
+    );
+}

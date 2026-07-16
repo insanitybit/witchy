@@ -2350,7 +2350,7 @@ A validated Witchy identifier. This rejects keywords, `_`, non-ASCII source spel
 
 #### `fn call_site(name: String) -> Ident`
 
-An explicit invocation-site reference. The compiler retains this origin in ExprSyntax instead of rendering a source identifier for the defining module to capture.
+An explicit invocation-site value/function reference. The compiler retains this origin in ExprSyntax instead of rendering a source identifier for the defining module to capture. Constructor/type origins are not accepted yet.
 
 #### `fn fresh(hint: String) -> Ident`
 

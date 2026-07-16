@@ -395,7 +395,8 @@ The first source-compatible slice is implemented:
   project canonical source when constructing an item; the quotation payload
   itself is no longer assembled or reparsed.
 - The thirty-fifth slice adds the explicit invocation-site escape for expression
-  references. `meta.call_site(name)` validates the identifier and carries a
+  references. `meta.call_site(name)` validates a lowercase value/function
+  identifier and carries a
   distinct `Ident` origin; `meta.expr_name` converts that value directly into a
   compiler-owned `Expr` node rather than rendering a reserved source spelling.
   Definition-site marking deliberately preserves the opaque origin through typed
