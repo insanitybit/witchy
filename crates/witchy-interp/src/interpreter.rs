@@ -67,7 +67,7 @@ pub enum Value {
     Bool(bool),
     List(Rc<Vec<Value>>),
     Tuple(Rc<Vec<Value>>),
-    Ctor { name: String, fields: Rc<Vec<Value>> },
+    Ctor { name: Rc<str>, fields: Rc<Vec<Value>> },
     Cap(Capability),
     /// An unforgeable capability to a directory subtree (cap-std `Dir` style).
     /// Carries the host path it is rooted at; can only be obtained from the root
@@ -142,7 +142,7 @@ impl Value {
     pub fn tuple(items: Vec<Value>) -> Value {
         Value::Tuple(Rc::new(items))
     }
-    pub fn ctor(name: impl Into<String>, fields: Vec<Value>) -> Value {
+    pub fn ctor(name: impl Into<Rc<str>>, fields: Vec<Value>) -> Value {
         Value::Ctor { name: name.into(), fields: Rc::new(fields) }
     }
     pub fn dict(entries: Vec<(Value, Value)>) -> Value {
@@ -256,9 +256,9 @@ impl fmt::Display for Value {
                 // the unqualified variant name a reader wrote (`Item`, not
                 // `iter.Item`). Both backends strip identically (parity).
                 let shown = if name.starts_with('.') {
-                    name.as_str()
+                    &**name
                 } else {
-                    name.rsplit_once('.').map_or(name.as_str(), |(_, c)| c)
+                    name.rsplit_once('.').map_or(&**name, |(_, c)| c)
                 };
                 write!(f, "{shown}")?;
                 if !fields.is_empty() {
@@ -1524,7 +1524,7 @@ impl Interpreter {
                 items.iter().map(|v| self.render_value(v)).collect::<Vec<_>>().join(", ")
             ),
             Value::Ctor { name, fields } if is_generated_anon_name(name) => {
-                let Some(names) = self.record_fields.get(name) else {
+                let Some(names) = self.record_fields.get(&**name) else {
                     return value.to_string();
                 };
                 if names.len() != fields.len() {
@@ -1540,9 +1540,9 @@ impl Interpreter {
             }
             Value::Ctor { name, fields } => {
                 let shown = if name.starts_with('.') {
-                    name.as_str()
+                    &**name
                 } else {
-                    name.rsplit_once('.').map_or(name.as_str(), |(_, c)| c)
+                    name.rsplit_once('.').map_or(&**name, |(_, c)| c)
                 };
                 if fields.is_empty() {
                     shown.to_string()
@@ -1794,12 +1794,12 @@ impl Interpreter {
     fn values_equal(&mut self, a: &Value, b: &Value) -> Result<bool, RuntimeError> {
         // A `Ctor` whose type has a custom impl: call it (this is the whole point).
         if let (Value::Ctor { name: an, .. }, Value::Ctor { name: bn, .. }) = (a, b) {
-            if let Some(tyname) = self.ctor_type_name.get(an).cloned() {
+            if let Some(tyname) = self.ctor_type_name.get(&**an).cloned() {
                 if self.custom_eq_types.contains(&tyname) {
                     // Only dispatch when both sides are the SAME custom-eq type;
                     // otherwise the impl's `other: T` parameter wouldn't type. (The
                     // checker guarantees `==` operands share a type, so this holds.)
-                    let same_type = self.ctor_type_name.get(bn).map(|t| t == &tyname).unwrap_or(false);
+                    let same_type = self.ctor_type_name.get(&**bn).map(|t| t == &tyname).unwrap_or(false);
                     if same_type {
                         let mangled = format!("PartialEq__{tyname}__eq");
                         let result = self.call(&mangled, vec![a.clone(), b.clone()])?;
@@ -1966,7 +1966,7 @@ impl Interpreter {
             return err(format!("field access `.{field}` on a non-record value `{value}`"));
         };
         self.record_fields
-            .get(name)
+            .get(&**name)
             .and_then(|names| names.iter().position(|candidate| candidate == field))
             .filter(|index| *index < fields.len())
             .ok_or_else(|| Flow::from(RuntimeError { message: format!("`{name}` has no field `{field}`") }))
@@ -2643,13 +2643,13 @@ impl Interpreter {
             return match args {
                 [val, Value::Str(msg)] => {
                     let out = match val {
-                        Value::Ctor { name: c, fields } if c == "Some" || c == "Ok" => {
+                        Value::Ctor { name: c, fields } if &**c == "Some" || &**c == "Ok" => {
                             Value::Ctor { name: "Ok".into(), fields: fields.clone() }
                         }
-                        Value::Ctor { name: c, .. } if c == "None" => {
+                        Value::Ctor { name: c, .. } if &**c == "None" => {
                             Value::ctor("Err", vec![Value::Str(msg.clone())])
                         }
-                        Value::Ctor { name: c, fields } if c == "Err" => {
+                        Value::Ctor { name: c, fields } if &**c == "Err" => {
                             let inner = match fields.first() {
                                 Some(Value::Str(e)) => (**e).clone(),
                                 Some(other) => format!("{other}"),
@@ -3171,7 +3171,7 @@ impl Interpreter {
                 }
                 let emission = match one(args)? {
                     Value::Ctor { name, fields }
-                        if name == OWNED_ITEM_SYNTAX_CTOR
+                        if &*name == OWNED_ITEM_SYNTAX_CTOR
                             && matches!(fields.as_slice(), [Value::Str(_)]) =>
                     {
                         let [Value::Str(handle)] = fields.as_slice() else {
@@ -3188,7 +3188,7 @@ impl Interpreter {
                         ComptimeItemEmission::Syntax(Box::new(item))
                     }
                     Value::Ctor { name, fields }
-                        if name == OWNED_ITEM_SYNTAX_CTOR
+                        if &*name == OWNED_ITEM_SYNTAX_CTOR
                             && matches!(fields.as_slice(), [Value::Str(_), Value::List(_)]) =>
                     {
                         let [Value::Str(handle), Value::List(holes)] = fields.as_slice() else {
@@ -3212,7 +3212,7 @@ impl Interpreter {
                         ComptimeItemEmission::Syntax(Box::new(item))
                     }
                     Value::Ctor { name, fields }
-                        if name.rsplit_once('.').map_or(name.as_str(), |(_, tail)| tail)
+                        if name.rsplit_once('.').map_or(&*name, |(_, tail)| tail)
                             == "ItemSyntax" =>
                     {
                         let [Value::Str(source)] = fields.as_slice() else {
@@ -3234,7 +3234,7 @@ impl Interpreter {
                 }
                 let emission = match one(args)? {
                     Value::Ctor { name, fields }
-                        if name.rsplit_once('.').map_or(name.as_str(), |(_, tail)| tail)
+                        if name.rsplit_once('.').map_or(&*name, |(_, tail)| tail)
                             == "CompilerExprSyntax" =>
                     {
                         let [Value::Str(handle), Value::Str(_source)] = fields.as_slice() else {
@@ -3251,7 +3251,7 @@ impl Interpreter {
                         ComptimeExprEmission::Syntax(Box::new(expr))
                     }
                     Value::Ctor { name, fields }
-                        if name.rsplit_once('.').map_or(name.as_str(), |(_, tail)| tail)
+                        if name.rsplit_once('.').map_or(&*name, |(_, tail)| tail)
                             == "ExprSyntax" =>
                     {
                         let [Value::Str(source)] = fields.as_slice() else {
@@ -4780,11 +4780,11 @@ impl Interpreter {
             Expr::Block(block) => self.eval_function_block(block, function, env),
             Expr::Binary { op: BinOp::Coalesce, lhs, rhs } => match self.eval(lhs, env)? {
                 Value::Ctor { name, mut fields }
-                    if (name == "Some" || name == "Ok") && fields.len() == 1 =>
+                    if (&*name == "Some" || &*name == "Ok") && fields.len() == 1 =>
                 {
                     Ok(Rc::make_mut(&mut fields).remove(0))
                 }
-                Value::Ctor { name, .. } if name == "None" || name == "Err" => {
+                Value::Ctor { name, .. } if &*name == "None" || &*name == "Err" => {
                     self.eval_tail_expr(rhs, function, env)
                 }
                 other => err(format!(
@@ -5013,14 +5013,16 @@ impl Interpreter {
                     .iter()
                     .map(|a| self.eval(a, env))
                     .collect::<Result<_, _>>()?;
-                Ok(Value::ctor(name.clone(), fields))
+                let name = self.intern(name);
+                Ok(Value::ctor(name, fields))
             }
             Expr::AnonCtor { tag, args } => {
                 let fields = args
                     .iter()
                     .map(|a| self.eval(a, env))
                     .collect::<Result<_, _>>()?;
-                Ok(Value::ctor(format!(".{tag}"), fields))
+                let name = self.intern(&format!(".{tag}"));
+                Ok(Value::ctor(name, fields))
             }
             Expr::Unary { op, expr } => {
                 let v = self.eval(expr, env)?;
@@ -5068,7 +5070,7 @@ impl Interpreter {
                 for (fname, vexpr) in fields {
                     let idx = self
                         .record_fields
-                        .get(&name)
+                        .get(&*name)
                         .and_then(|names| names.iter().position(|n| n == fname));
                     let val = self.eval(vexpr, env)?;
                     match idx.filter(|i| *i < values.len()) {
@@ -5098,7 +5100,7 @@ impl Interpreter {
                     Value::Ctor { name, fields } => {
                         let idx = self
                             .record_fields
-                            .get(&name)
+                            .get(&*name)
                             .and_then(|names| names.iter().position(|n| n == field));
                         match idx.and_then(|i| fields.get(i)) {
                             Some(v) => Ok(v.clone()),
@@ -5112,11 +5114,11 @@ impl Interpreter {
                 let v = self.eval(inner, env)?;
                 match v {
                     Value::Ctor { name, mut fields }
-                        if (name == "Ok" || name == "Some") && fields.len() == 1 =>
+                        if (&*name == "Ok" || &*name == "Some") && fields.len() == 1 =>
                     {
                         Ok(Rc::make_mut(&mut fields).remove(0))
                     }
-                    Value::Ctor { name, fields } if name == "Err" || name == "None" => {
+                    Value::Ctor { name, fields } if &*name == "Err" || &*name == "None" => {
                         // Short-circuit: return the Err/None from the enclosing function.
                         Err(Flow::Return(Value::Ctor { name, fields }))
                     }
@@ -5147,11 +5149,11 @@ impl Interpreter {
             // the fallback on `None`/`Err` (lazily; the error value is discarded).
             Expr::Binary { op: BinOp::Coalesce, lhs, rhs } => match self.eval(lhs, env)? {
                 Value::Ctor { name, mut fields }
-                    if (name == "Some" || name == "Ok") && fields.len() == 1 =>
+                    if (&*name == "Some" || &*name == "Ok") && fields.len() == 1 =>
                 {
                     Ok(Rc::make_mut(&mut fields).remove(0))
                 }
-                Value::Ctor { name, .. } if name == "None" || name == "Err" => {
+                Value::Ctor { name, .. } if &*name == "None" || &*name == "Err" => {
                     self.eval(rhs, env)
                 }
                 other => err(format!(
@@ -5295,7 +5297,7 @@ fn match_pattern(pat: &Pattern, value: &Value, env: &mut Env) -> bool {
         // through the first that matches is well-defined.
         (Pattern::Or(alts), v) => alts.iter().any(|p| match_pattern(p, v, env)),
         (Pattern::Ctor { name, args }, Value::Ctor { name: vname, fields }) => {
-            name == vname
+            name.as_str() == &**vname
                 && args.len() == fields.len()
                 && args
                     .iter()
@@ -5303,7 +5305,7 @@ fn match_pattern(pat: &Pattern, value: &Value, env: &mut Env) -> bool {
                     .all(|(p, v)| match_pattern(p, v, env))
         }
         (Pattern::AnonCtor { tag, args }, Value::Ctor { name: vname, fields }) => {
-            *vname == format!(".{tag}")
+            &**vname == format!(".{tag}").as_str()
                 && args.len() == fields.len()
                 && args
                     .iter()
