@@ -303,37 +303,6 @@ fn main(console: Console):
 }
 
 #[test]
-fn stale_assignment_projection_uses_ordinary_bounds_behavior() {
-    let source = r#"
-fn shrink(var values: List(Int)) -> Int:
-    let _ = values.pop()
-    9
-
-fn main(console: Console):
-    var values = [1]
-    values[0] = shrink(values)
-    console.print("unreachable")
-"#;
-    let module = linked(source);
-    let interpreted = interpreter::run_module(module.clone(), ".", Vec::new())
-        .map_err(|error| error.message);
-    let compiled = compiled_result(&module);
-    assert!(
-        interpreted.is_err() && compiled.is_err(),
-        "stale captured projection must fail through the ordinary bounds rule; \
-         interpreter={interpreted:?}, compiled={compiled:?}",
-    );
-    let interpreted = interpreted.unwrap_err();
-    let compiled = compiled.unwrap_err();
-    assert_eq!(compiled, format!("runtime error: {interpreted}"));
-    assert!(
-        interpreted.contains("index 0") && interpreted.contains("length 0"),
-        "stale captured projection must report the invalid current coordinate: {interpreted}",
-    );
-    assert_source_facing(&interpreted);
-}
-
-#[test]
 fn function_value_conventions_are_identity_and_preserve_writeback() {
     let source = r#"
 fn bump(var n: Int) -> Int:

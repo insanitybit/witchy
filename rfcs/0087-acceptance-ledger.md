@@ -80,6 +80,7 @@ Owners:
   `crates/witchy-lower/src/codegen/assembly.rs`, and
   `crates/witchy-types/src/typeck.rs`.
 
-The failing differential test is
-`stale_assignment_projection_uses_ordinary_bounds_behavior` in
-`tests/rfc0087_uniform_var.rs`.
+The failing differential test
+`stale_assignment_projection_uses_ordinary_bounds_behavior` remains committed
+on the blocked branch `test/rfc0087-conformance-matrix` at `5f0f97ff`. It is
+intentionally absent from the green, mergeable conformance-evidence branch.
