@@ -63,6 +63,7 @@ impl Codegen<'_> {
         use witchy_syntax::ast::is_render_intrinsic;
         use witchy_syntax::intrinsics;
         let name = witchy_syntax::cap_ops::surface_name(name);
+        let name = intrinsics::canonical_operation_name(name);
         if let Some((callback_index, diagnostic)) =
             witchy_types::typeck::isolated_vm_callback_contract(name, args.len())
             && !self.is_top_level_fn_ref(&args[callback_index])
@@ -819,7 +820,7 @@ impl Codegen<'_> {
                     Kind::I64,
                 )
             }
-            (intrinsics::BYTES_AT, 2) | ("bytes.at", 2) => {
+            (intrinsics::BYTES_AT, 2) => {
                 // Bounds-checked byte read via the `$bytes_at` helper: trap on
                 // `i < 0 || i >= len`, matching the interpreter's "bytes index out
                 // of bounds" error. (An unchecked `load8_u` here used to silently

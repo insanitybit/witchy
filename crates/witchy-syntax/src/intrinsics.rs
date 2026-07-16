@@ -367,6 +367,7 @@ pub const BYTES_FROM_LIST: &str = "__bytes_from_list";
 pub const BYTES_TO_STRING: &str = "__bytes_to_string";
 pub const BYTES_LENGTH: &str = "__bytes_length";
 pub const BYTES_AT: &str = "__bytes_at";
+pub const BYTES_AT_PUBLIC: &str = "bytes.at";
 pub const BYTES_CONCAT: &str = "__bytes_concat";
 pub const BYTES_SLICE: &str = "__bytes_slice";
 
@@ -1760,6 +1761,11 @@ pub const BYTES_BRIDGES: &[&str] = &[
     BYTES_SLICE,
 ];
 
+/// Public or compatibility spellings that share one canonical operation row.
+/// Consumers should canonicalize only through this table: synthesized
+/// monomorphized names still carry representation information of their own.
+pub const OPERATION_ALIASES: &[(&str, &str)] = &[(BYTES_AT_PUBLIC, BYTES_AT)];
+
 pub const CHANNEL_BRIDGES: &[&str] = &[
     CHANNEL_OPEN,
     CHANNEL_SEND,
@@ -1857,9 +1863,15 @@ static LOOKUP_TABLE: std::sync::OnceLock<foldhash::HashMap<&'static str, &'stati
 pub fn lookup(name: &str) -> Option<&'static IntrinsicSpec> {
     let table = LOOKUP_TABLE.get_or_init(|| {
         use foldhash::HashMapExt as _;
-        let mut table = foldhash::HashMap::with_capacity(ALL.len());
+        let mut table = foldhash::HashMap::with_capacity(ALL.len() + OPERATION_ALIASES.len());
         for spec in ALL {
             table.entry(spec.name).or_insert(spec);
+        }
+        for (alias, canonical) in OPERATION_ALIASES {
+            let spec = *table
+                .get(canonical)
+                .unwrap_or_else(|| panic!("operation alias `{alias}` targets missing row `{canonical}`"));
+            table.entry(alias).or_insert(spec);
         }
         table
     });
@@ -1880,6 +1892,13 @@ pub fn lookup(name: &str) -> Option<&'static IntrinsicSpec> {
     let (owner, bare) = name.rsplit_once('.')?;
     let spec = table.get(bare).copied()?;
     spec.private_callers.contains(&owner).then_some(spec)
+}
+
+pub fn canonical_operation_name(name: &str) -> &str {
+    OPERATION_ALIASES
+        .iter()
+        .find_map(|(alias, canonical)| (*alias == name).then_some(*canonical))
+        .unwrap_or(name)
 }
 
 pub fn arity_diagnostic(spec: &IntrinsicSpec, actual: usize) -> String {
@@ -2052,6 +2071,9 @@ pub fn is_meta_fresh_ident(name: &str) -> bool {
 }
 
 pub fn private_intrinsic_callers(bare_name: &str) -> Option<&'static [&'static str]> {
+    if canonical_operation_name(bare_name) != bare_name {
+        return None;
+    }
     let callers = lookup(bare_name)?.private_callers;
     (!callers.is_empty()).then_some(callers)
 }
@@ -2185,6 +2207,20 @@ mod tests {
     }
 
     #[test]
+    fn operation_aliases_are_unique_and_resolve_to_canonical_rows() {
+        let mut aliases = BTreeSet::new();
+        for (alias, canonical) in OPERATION_ALIASES {
+            assert!(aliases.insert(*alias), "duplicate operation alias {alias}");
+            assert_ne!(alias, canonical, "operation alias must use a distinct spelling");
+            assert_eq!(canonical_operation_name(alias), *canonical);
+            assert_eq!(lookup(alias), lookup(canonical));
+            assert!(ALL.iter().all(|spec| spec.name != *alias), "alias {alias} owns a second row");
+        }
+        assert_eq!(canonical_operation_name("user.function"), "user.function");
+        assert_eq!(private_intrinsic_callers(BYTES_AT_PUBLIC), None);
+    }
+
+    #[test]
     fn diagnostics_use_catalog_names_and_arities() {
         let at = lookup(BYTES_AT).expect("bytes.at intrinsic");
         assert_eq!(arity_diagnostic(at, 1), "`bytes.at` expects 2 arguments, got 1");
@@ -2194,6 +2230,60 @@ mod tests {
             arity_diagnostic(from_string, 0),
             "`bytes.from_string` expects 1 argument, got 0"
         );
+    }
+
+    #[test]
+    fn bytes_operation_family_has_complete_semantic_metadata() {
+        let expected_helpers = [
+            (BYTES_FROM_STRING, None, IntrinsicLowering::Identity),
+            (BYTES_FROM_LIST, Some("bytes_from_list"), IntrinsicLowering::Builtin),
+            (BYTES_TO_STRING, Some("bytes_to_string"), IntrinsicLowering::Builtin),
+            (BYTES_LENGTH, None, IntrinsicLowering::Builtin),
+            (BYTES_AT, Some("bytes_at"), IntrinsicLowering::Builtin),
+            (BYTES_CONCAT, Some("concat"), IntrinsicLowering::Builtin),
+            (BYTES_SLICE, Some("bytes_slice"), IntrinsicLowering::Builtin),
+        ];
+        let expected: BTreeSet<_> = BYTES_BRIDGES.iter().copied().collect();
+        let actual: BTreeSet<_> = ALL
+            .iter()
+            .filter(|spec| is_bytes_bridge(spec.name))
+            .map(|spec| spec.name)
+            .collect();
+        assert_eq!(actual, expected);
+
+        for (name, helper, lowering) in expected_helpers {
+            let spec = lookup(name).expect("bytes operation");
+            assert_eq!(spec.effect, IntrinsicEffect::Pure);
+            assert_eq!(spec.capability_effect, CapabilityEffect::None);
+            assert_eq!(spec.runtime, IntrinsicRuntime::InterpreterBuiltin);
+            assert_eq!(spec.lowering, lowering);
+            assert_eq!(spec.private_callers, BYTES_BRIDGE_CALLERS);
+            assert!(!spec.dynamic_wir_helpers);
+            assert!(spec.wir_host_call.is_none());
+            assert_eq!(sole_wir_helper(name), helper);
+        }
+
+        assert_eq!(lookup(BYTES_AT_PUBLIC), lookup(BYTES_AT));
+        assert_eq!(lookup(BYTES_AT_PUBLIC).map(|spec| spec.arity), Some(2));
+    }
+
+    #[test]
+    fn bytes_at_public_alias_signature_matches_source() {
+        use crate::ast::{Item, Type};
+
+        let module = crate::parser::parse_module(include_str!("../../../std/bytes.witchy"))
+            .expect("parse std/bytes");
+        let function = module.items.iter().find_map(|item| match item {
+            Item::Function(function) if function.name == "at" => Some(function),
+            _ => None,
+        });
+        let function = function.expect("bytes.at source function");
+        let bytes = Type::Named("Bytes".into(), Vec::new());
+        let int = Type::Named("Int".into(), Vec::new());
+        assert_eq!(function.params.len(), lookup(BYTES_AT_PUBLIC).expect("alias row").arity);
+        assert_eq!(function.params[0].ty.as_ref(), Some(&bytes));
+        assert_eq!(function.params[1].ty.as_ref(), Some(&int));
+        assert_eq!(function.ret.as_ref(), Some(&int));
     }
 
     #[test]

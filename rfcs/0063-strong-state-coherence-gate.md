@@ -4,7 +4,7 @@ title: Strong-state coherence gate for a proud 0.1 release
 status: accepted
 created: 2026-07-04
 superseded-by:
-tracking: coherence gate accepted as the pre-tag bar; executed alongside RFC-0061; intrinsic-name, host-import authority, and string/math/List/Dict/crypto/regex operation catalog slices landed
+tracking: coherence gate accepted as the pre-tag bar; executed alongside RFC-0061; intrinsic-name, host-import authority, and Bytes/string/math/List/Dict/crypto/regex operation catalog slices landed
 ---
 
 # RFC-0063: Strong-state coherence gate for a proud 0.1 release
@@ -199,6 +199,14 @@ wiring, browser-host dispatch, and lowering consume the stable catalog name or
 helper. Coherence tests compare the row with `std/regex.witchy`, execute Unicode
 character spans and invalid-pattern failure, and reject a missing native hook,
 WIR helper, or signature/arity drift.
+
+The Bytes backend boundary catalogs all seven private bridge operations. Their
+rows own exact signatures, pure/no-capability effects, interpreter dispatch,
+and direct WIR helper dependencies. The optimized public `bytes.at` spelling is
+an explicit alias of `__bytes_at`, so it cannot acquire a second signature or
+backend contract; catalog lookup, type checking, and lowering canonicalize it
+through the shared alias table. Coherence tests pin the complete family
+metadata, alias uniqueness, and exact twin-backend runtime results.
 
 ### 4. Typed compiler facts, not string or address shadows
 
