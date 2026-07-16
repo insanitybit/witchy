@@ -2717,6 +2717,7 @@ dependencies = [
 name = "witchy-interp"
 version = "0.1.0"
 dependencies = [
+ "foldhash 0.2.0",
  "witchy-caps",
  "witchy-runtime",
  "witchy-syntax",

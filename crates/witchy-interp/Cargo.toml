@@ -9,6 +9,7 @@ description = "witchy compiler — the reference interpreter (parity oracle) + c
 # Wasm-safe: the tree-walker is the playground's run path. No external crates and
 # no native gate — the tests are plain #[cfg(test)] units.
 [dependencies]
+foldhash = "0.2.0"
 witchy-caps = { path = "../witchy-caps" }
 witchy-runtime = { path = "../witchy-runtime" }
 witchy-syntax = { path = "../witchy-syntax" }

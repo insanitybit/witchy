@@ -10,21 +10,21 @@
             let args = match *name {
                 intrinsics::STRING_FROM_CODE => vec![Value::Int(65)],
                 intrinsics::STRING_REPLACE => vec![
-                    Value::Str("12".into()),
-                    Value::Str("1".into()),
-                    Value::Str("x".into()),
+                    Value::str("12"),
+                    Value::str("1"),
+                    Value::str("x"),
                 ],
                 intrinsics::STRING_SUBSTRING => {
-                    vec![Value::Str("12".into()), Value::Int(0), Value::Int(1)]
+                    vec![Value::str("12"), Value::Int(0), Value::Int(1)]
                 }
                 intrinsics::STRING_SPLIT
                 | intrinsics::STRING_CONTAINS
                 | intrinsics::STRING_STARTS_WITH
                 | intrinsics::STRING_ENDS_WITH
                 | intrinsics::STRING_FIND => {
-                    vec![Value::Str("12".into()), Value::Str("1".into())]
+                    vec![Value::str("12"), Value::str("1")]
                 }
-                _ => vec![Value::Str("12".into())],
+                _ => vec![Value::str("12")],
             };
             let result = interpreter
                 .call_builtin(name, &args)
@@ -60,10 +60,10 @@
         let result = interpreter
             .call_builtin(
                 intrinsics::REGEX_MATCH_SPANS,
-                &[Value::Str("a+".into()), Value::Str("caaat".into())],
+                &[Value::str("a+"), Value::str("caaat")],
             )
             .expect("regex dispatch");
-        assert_eq!(result, Some(Value::Str("1,4".into())));
+        assert_eq!(result, Some(Value::str("1,4")));
     }
 
     #[test]
@@ -72,33 +72,30 @@
             .expect("parse minimal module");
         let mut interpreter = Interpreter::new(module);
 
-        let list = || Value::List(vec![Value::Int(1)]);
-        let some_one = || Value::Ctor {
-            name: "Some".into(),
-            fields: vec![Value::Int(1)],
-        };
+        let list = || Value::list(vec![Value::Int(1)]);
+        let some_one = || Value::ctor("Some", vec![Value::Int(1)]);
         let cases = vec![
             (intrinsics::LIST_LENGTH, vec![list()], Value::Int(1)),
             (intrinsics::LIST_AT, vec![list(), Value::Int(0)], Value::Int(1)),
             (
                 intrinsics::LIST_PUSH,
                 vec![list(), Value::Int(2)],
-                Value::List(vec![Value::Int(1), Value::Int(2)]),
+                Value::list(vec![Value::Int(1), Value::Int(2)]),
             ),
             (
                 intrinsics::LIST_SET_AT,
                 vec![list(), Value::Int(0), Value::Int(2)],
-                Value::List(vec![Value::Int(2)]),
+                Value::list(vec![Value::Int(2)]),
             ),
             (
                 intrinsics::LIST_CONCAT,
                 vec![list(), list()],
-                Value::List(vec![Value::Int(1), Value::Int(1)]),
+                Value::list(vec![Value::Int(1), Value::Int(1)]),
             ),
             (
                 intrinsics::LIST_POP_EXTRACT,
                 vec![list()],
-                Value::Tuple(vec![Value::List(Vec::new()), some_one()]),
+                Value::tuple(vec![Value::list(Vec::new()), some_one()]),
             ),
         ];
         for (name, args, expected) in cases {
@@ -115,7 +112,7 @@
             Ok(None) => panic!("pop special dispatch fell through"),
             Err(_) => panic!("pop special dispatch failed"),
         };
-        assert_eq!(special, (some_one(), vec![Value::List(Vec::new())]));
+        assert_eq!(special, (some_one(), vec![Value::list(Vec::new())]));
 
         for index in [-1, 1] {
             for (name, args) in [
@@ -152,23 +149,20 @@
         });
         let inc = inc.expect("inc closure");
         let mut interpreter = Interpreter::new(module);
-        let dict = || Value::Dict(vec![(Value::Int(1), Value::Int(10))]);
-        let some_ten = || Value::Ctor {
-            name: "Some".into(),
-            fields: vec![Value::Int(10)],
-        };
+        let dict = || Value::dict(vec![(Value::Int(1), Value::Int(10))]);
+        let some_ten = || Value::ctor("Some", vec![Value::Int(10)]);
         let cases = vec![
-            (intrinsics::DICT_NEW, vec![], Value::Dict(Vec::new())),
+            (intrinsics::DICT_NEW, vec![], Value::dict(Vec::new())),
             (
                 intrinsics::DICT_INSERT,
                 vec![dict(), Value::Int(1), Value::Int(20)],
-                Value::Dict(vec![(Value::Int(1), Value::Int(20))]),
+                Value::dict(vec![(Value::Int(1), Value::Int(20))]),
             ),
             (
                 intrinsics::DICT_INSERT_EXTRACT,
                 vec![dict(), Value::Int(1), Value::Int(20)],
-                Value::Tuple(vec![
-                    Value::Dict(vec![(Value::Int(1), Value::Int(20))]),
+                Value::tuple(vec![
+                    Value::dict(vec![(Value::Int(1), Value::Int(20))]),
                     some_ten(),
                 ]),
             ),
@@ -190,27 +184,27 @@
             (
                 intrinsics::DICT_REMOVE,
                 vec![dict(), Value::Int(1)],
-                Value::Dict(Vec::new()),
+                Value::dict(Vec::new()),
             ),
             (
                 intrinsics::DICT_REMOVE_EXTRACT,
                 vec![dict(), Value::Int(1)],
-                Value::Tuple(vec![Value::Dict(Vec::new()), some_ten()]),
+                Value::tuple(vec![Value::dict(Vec::new()), some_ten()]),
             ),
             (
                 intrinsics::DICT_KEYS,
                 vec![dict()],
-                Value::List(vec![Value::Int(1)]),
+                Value::list(vec![Value::Int(1)]),
             ),
             (
                 intrinsics::DICT_VALUES,
                 vec![dict()],
-                Value::List(vec![Value::Int(10)]),
+                Value::list(vec![Value::Int(10)]),
             ),
             (
                 intrinsics::DICT_PAIRS,
                 vec![dict()],
-                Value::List(vec![Value::Tuple(vec![Value::Int(1), Value::Int(10)])]),
+                Value::list(vec![Value::tuple(vec![Value::Int(1), Value::Int(10)])]),
             ),
             (intrinsics::DICT_LENGTH, vec![dict()], Value::Int(1)),
         ];
@@ -227,19 +221,19 @@
                 vec![dict(), Value::Int(1), Value::Int(20)],
                 (
                     some_ten(),
-                    vec![Value::Dict(vec![(Value::Int(1), Value::Int(20))])],
+                    vec![Value::dict(vec![(Value::Int(1), Value::Int(20))])],
                 ),
             ),
             (
                 intrinsics::DICT_REMOVE_EXTRACT,
                 vec![dict(), Value::Int(1)],
-                (some_ten(), vec![Value::Dict(Vec::new())]),
+                (some_ten(), vec![Value::dict(Vec::new())]),
             ),
             (
                 intrinsics::DICT_UPDATE,
                 vec![dict(), Value::Int(1), Value::Int(0), inc],
                 (
-                    Value::Dict(vec![(Value::Int(1), Value::Int(11))]),
+                    Value::dict(vec![(Value::Int(1), Value::Int(11))]),
                     Vec::new(),
                 ),
             ),

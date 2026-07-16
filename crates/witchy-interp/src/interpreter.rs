@@ -21,6 +21,12 @@
 #![allow(clippy::result_large_err)]
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+// foldhash (not SipHash) for the interpreter's OWN lookup tables: keys are
+// program identifiers (function/ctor/binding names), never attacker-controlled
+// hash-flood surface, and `functions.get(name)` sits on the call hot path.
+// The comptime `compiler_*_syntax` tables stay std `HashMap`: they cross the
+// comptime boundary as parameters and are not hot.
+use foldhash::{HashMap as FxHashMap, HashMapExt as _, HashSet as FxHashSet, HashSetExt as _};
 use std::fmt;
 use std::io::{BufReader, Read, Write};
 use std::net::TcpListener;
@@ -56,12 +62,12 @@ pub enum FileValue {
 pub enum Value {
     Int(i64),
     Float(f64),
-    Str(String),
+    Str(Rc<String>),
     Bytes(Vec<u8>),
     Bool(bool),
-    List(Vec<Value>),
-    Tuple(Vec<Value>),
-    Ctor { name: String, fields: Vec<Value> },
+    List(Rc<Vec<Value>>),
+    Tuple(Rc<Vec<Value>>),
+    Ctor { name: String, fields: Rc<Vec<Value>> },
     Cap(Capability),
     /// An unforgeable capability to a directory subtree (cap-std `Dir` style).
     /// Carries the host path it is rooted at; can only be obtained from the root
@@ -109,13 +115,45 @@ pub enum Value {
     },
     /// An immutable associative map, kept as insertion-ordered key/value pairs
     /// (keys compared by value equality). `Dict(K, V)` in the type system.
-    Dict(Vec<(Value, Value)>),
+    Dict(Rc<Vec<(Value, Value)>>),
     /// A build-time capability, minted only for a rune's `build` entrypoint and
     /// carrying its confined grant (an output/read directory, or an allow-list).
     /// The build sandbox is where these enter — never `main`.
     Build(BuildCap),
     Nil,
 }
+
+impl Value {
+    /// Build a `Str` value from any string-ish source. `Value::Str` carries
+    /// `Rc<String>` so CLONING a string value is a refcount bump (the deep
+    /// `String` copy was the interpreter's single hottest allocation source),
+    /// while `Rc::make_mut` keeps the in-place accumulation fast path: append
+    /// mutates the buffer directly when the value is unshared and copies-on-
+    /// write when it is not — observationally identical to value semantics.
+    /// Containers carry `Rc<Vec<..>>`: cloning a list/tuple/record/dict value
+    /// bumps a refcount instead of deep-copying elements (the interpreter's
+    /// dominant allocation source). Mutation sites go through `Rc::make_mut`,
+    /// which mutates in place when the value is unshared — preserving the
+    /// in-place fast paths — and copies-on-write when it is not, which is
+    /// exactly the eager copy value semantics always implied.
+    pub fn list(items: Vec<Value>) -> Value {
+        Value::List(Rc::new(items))
+    }
+    pub fn tuple(items: Vec<Value>) -> Value {
+        Value::Tuple(Rc::new(items))
+    }
+    pub fn ctor(name: impl Into<String>, fields: Vec<Value>) -> Value {
+        Value::Ctor { name: name.into(), fields: Rc::new(fields) }
+    }
+    pub fn dict(entries: Vec<(Value, Value)>) -> Value {
+        Value::Dict(Rc::new(entries))
+    }
+
+    pub fn str(s: impl Into<String>) -> Value {
+        Value::Str(Rc::new(s.into()))
+    }
+}
+
 
 const OWNED_ITEM_SYNTAX_CTOR: &str = "@owned_item_syntax";
 
@@ -399,7 +437,7 @@ fn compiler_item_holes(
                             return err("CompilerExprSyntax carried an invalid payload");
                         };
                         compiler_expr_syntax
-                            .get(handle)
+                            .get(handle.as_str())
                             .cloned()
                             .map(ItemSyntaxHole::Expr)
                             .ok_or_else(|| RuntimeError {
@@ -417,7 +455,7 @@ fn compiler_item_holes(
                             return err("CompilerTypeSyntax carried an invalid payload");
                         };
                         compiler_type_syntax
-                            .get(handle)
+                            .get(handle.as_str())
                             .cloned()
                             .map(ItemSyntaxHole::Type)
                             .ok_or_else(|| RuntimeError {
@@ -435,7 +473,7 @@ fn compiler_item_holes(
                             return err("CompilerPatternSyntax carried an invalid payload");
                         };
                         compiler_pattern_syntax
-                            .get(handle)
+                            .get(handle.as_str())
                             .cloned()
                             .map(ItemSyntaxHole::Pattern)
                             .ok_or_else(|| RuntimeError {
@@ -473,7 +511,7 @@ fn compiler_expr_holes(
                         return err("CompilerExprSyntax carried an invalid payload");
                     };
                     compiler_expr_syntax
-                        .get(handle)
+                        .get(handle.as_str())
                         .cloned()
                         .ok_or_else(|| RuntimeError {
                             message: "compiler-owned expression referenced an invalid syntax handle"
@@ -515,7 +553,7 @@ fn compiler_type_holes(
                         return err("CompilerTypeSyntax carried an invalid payload");
                     };
                     compiler_type_syntax
-                        .get(handle)
+                        .get(handle.as_str())
                         .cloned()
                         .ok_or_else(|| RuntimeError {
                             message: "compiler-owned type referenced an invalid syntax handle"
@@ -557,7 +595,7 @@ fn compiler_pattern_holes(
                         return err("CompilerPatternSyntax carried an invalid payload");
                     };
                     compiler_pattern_syntax
-                        .get(handle)
+                        .get(handle.as_str())
                         .cloned()
                         .ok_or_else(|| RuntimeError {
                             message: "compiler-owned pattern referenced an invalid syntax handle"
@@ -739,35 +777,67 @@ enum Assign {
     Unbound,
 }
 
-#[derive(Default, Debug, Clone, PartialEq)]
+#[derive(Default, Debug)]
 pub struct Env {
     /// A stack of scopes; each scope is a small list of bindings carrying whether
     /// the binding is mutable (`var`/`own`) or not (`let`). Scopes are
     /// usually tiny (a couple of params/locals), so a linear scan beats a
     /// `HashMap`'s allocation and hashing on the hot call path. Lookups scan most
     /// recent first, so a later `let` shadows an earlier one.
-    scopes: Vec<Vec<(String, Value, bool)>>,
+    ///
+    /// Names are `Rc<str>`: bindings are created far more often than distinct
+    /// names exist (every call re-binds its params; every loop iteration
+    /// re-binds its variable), so defining clones a pointer instead of copying
+    /// a `String` (the interner / per-function name cache own the one real
+    /// allocation per distinct name).
+    scopes: Vec<Vec<(Rc<str>, Value, bool)>>,
+    /// Cleared scope vecs kept for reuse: loops push/pop a scope per
+    /// iteration, and recycling the allocation removes a malloc/free pair
+    /// from every iteration. Capacity is not a semantic: excluded from
+    /// `Clone`/`PartialEq` (manual impls below), so a cloned env (a closure
+    /// capture) or an env comparison behaves exactly as before.
+    spare: Vec<Vec<(Rc<str>, Value, bool)>>,
+}
+
+/// `spare` is a reuse pool, not state: clones start with an empty pool.
+impl Clone for Env {
+    fn clone(&self) -> Self {
+        Self { scopes: self.scopes.clone(), spare: Vec::new() }
+    }
+}
+
+/// `spare` is a reuse pool, not state: equality is over bindings only.
+impl PartialEq for Env {
+    fn eq(&self, other: &Self) -> bool {
+        self.scopes == other.scopes
+    }
 }
 
 impl Env {
     fn new() -> Self {
         Self {
             scopes: vec![Vec::new()],
+            spare: Vec::new(),
         }
     }
     fn push(&mut self) {
-        self.scopes.push(Vec::new());
+        self.scopes.push(self.spare.pop().unwrap_or_default());
     }
     fn pop(&mut self) {
-        self.scopes.pop();
+        if let Some(mut scope) = self.scopes.pop() {
+            scope.clear();
+            if self.spare.len() < 16 {
+                self.spare.push(scope);
+            }
+        }
     }
-    fn define(&mut self, name: String, value: Value, mutable: bool) {
+    fn define(&mut self, name: Rc<str>, value: Value, mutable: bool) {
         self.scopes.last_mut().unwrap().push((name, value, mutable));
     }
     fn get(&self, name: &str) -> Option<&Value> {
         for scope in self.scopes.iter().rev() {
             for (n, v, _) in scope.iter().rev() {
-                if n == name {
+                if &**n == name {
                     return Some(v);
                 }
             }
@@ -778,7 +848,7 @@ impl Env {
     fn assign(&mut self, name: &str, value: Value) -> Assign {
         for scope in self.scopes.iter_mut().rev() {
             for (n, slot, mutable) in scope.iter_mut().rev() {
-                if n == name {
+                if &**n == name {
                     if *mutable {
                         *slot = value;
                         return Assign::Done;
@@ -797,10 +867,10 @@ impl Env {
     /// never be looked up), without the O(everything) copy per closure created
     /// or applied.
     fn capture(&self, mentioned: &HashSet<String>) -> Env {
-        let mut scope: Vec<(String, Value, bool)> = Vec::new();
+        let mut scope: Vec<(Rc<str>, Value, bool)> = Vec::new();
         for s in &self.scopes {
             for (n, v, m) in s {
-                if mentioned.contains(n.as_str()) {
+                if mentioned.contains(&**n) {
                     match scope.iter_mut().find(|(en, _, _)| en == n) {
                         Some(slot) => *slot = (n.clone(), v.clone(), *m),
                         None => scope.push((n.clone(), v.clone(), *m)),
@@ -808,7 +878,7 @@ impl Env {
                 }
             }
         }
-        Env { scopes: vec![scope] }
+        Env { scopes: vec![scope], spare: Vec::new() }
     }
 
     /// Mutable access to a binding's slot plus its mutability, innermost first
@@ -816,7 +886,7 @@ impl Env {
     fn slot_mut(&mut self, name: &str) -> Option<(&mut Value, bool)> {
         for scope in self.scopes.iter_mut().rev() {
             for (n, slot, mutable) in scope.iter_mut().rev() {
-                if n == name {
+                if &**n == name {
                     return Some((slot, *mutable));
                 }
             }
@@ -997,12 +1067,24 @@ pub type UserCapGrants = std::collections::BTreeMap<String, std::collections::BT
 pub struct Interpreter {
     // `Rc` so a call clones a pointer, not the whole function AST (this is the
     // hot path for recursion).
-    functions: HashMap<String, Rc<Function>>,
+    functions: FxHashMap<String, Rc<Function>>,
+    /// Per-function parameter names as shared `Rc<str>`, built once at
+    /// registration: binding call arguments clones a pointer per parameter
+    /// instead of copying each name `String` on every call.
+    /// Keyed by the `Rc<Function>` allocation address — pointer identity is
+    /// authoritative for WHICH function object a call binds (names are not:
+    /// comptime-emitted or closure-carried functions can share a name with a
+    /// registered one while having different parameters). A miss falls back
+    /// to allocating the names, so absent entries are always correct.
+    param_names: FxHashMap<usize, Rc<[Rc<str>]>>,
+    /// One shared `Rc<str>` per distinct binding name seen by `let`/loops —
+    /// see `intern`.
+    interned_names: FxHashMap<String, Rc<str>>,
     /// Memoized bare-function closure values (`Expr::Var` on a top-level
     /// function name). The function table is immutable for a run, so the
     /// wrapped value is too; re-evaluating the name clones Rcs instead of
     /// re-copying the function's AST.
-    fn_values: HashMap<String, Value>,
+    fn_values: FxHashMap<String, Value>,
     /// Host directory the root `Dir` capability is rooted at (handle 0 / the
     /// first `Dir` parameter of `main`).
     root: PathBuf,
@@ -1042,17 +1124,17 @@ pub struct Interpreter {
     /// runtime uses (`witchy_runtime::net`); `None` for plain HTTP.
     listeners: Vec<(TcpListener, Option<witchy_runtime::net::ServerTlsConfig>)>,
     /// Record constructor name -> ordered field names, for `value.field` access.
-    record_fields: HashMap<String, Vec<String>>,
+    record_fields: FxHashMap<String, Vec<String>>,
     /// (RFC-0047) Constructor name -> its declaring type name, so value equality
     /// can find the type of a `Ctor` value and consult `custom_eq_types`.
-    ctor_type_name: HashMap<String, String>,
+    ctor_type_name: FxHashMap<String, String>,
     /// (RFC-0047) Type names with a CUSTOM (non-derived) `PartialEq` impl. `==`/`!=`
     /// honor these impls at EVERY depth: a container comparing elements of such a
     /// type calls its `PartialEq__T__eq` instead of recursing structurally, so a
     /// custom equality is respected inside `List`/`Option`/tuple/`Dict`/records.
     /// A derived (structural) impl is NOT here, so its containers keep the fast
     /// structural compare — behavior-identical to before.
-    custom_eq_types: std::collections::HashSet<String>,
+    custom_eq_types: FxHashSet<String>,
     /// Deterministic namespace and sequence for RFC-0080 `meta.fresh`. They are
     /// present only in a compile-time evaluator; ordinary runtime interpreters
     /// reject the compiler-private hook instead of minting generated names.
@@ -1097,7 +1179,7 @@ pub struct Interpreter {
     tail_dynamic_chain: bool,
     /// Direct proper-call edges that belong to a recursive component. Acyclic
     /// tail calls retain their ordinary call boundary; recursive SCCs trampoline.
-    proper_tail_edges: HashMap<String, HashSet<String>>,
+    proper_tail_edges: FxHashMap<String, FxHashSet<String>>,
     pub output: Vec<String>,
 }
 
@@ -1132,12 +1214,12 @@ const DEFAULT_STEP_LIMIT: u64 = u64::MAX;
 pub const COMPTIME_STEP_LIMIT: u64 = 500_000_000;
 
 fn recursive_tail_edges(
-    functions: &HashMap<String, Rc<Function>>,
-) -> HashMap<String, HashSet<String>> {
-    let graph: HashMap<_, Vec<_>> = functions
+    functions: &FxHashMap<String, Rc<Function>>,
+) -> FxHashMap<String, FxHashSet<String>> {
+    let graph: FxHashMap<_, Vec<_>> = functions
         .values()
         .map(|function| {
-            let mut targets = HashSet::new();
+            let mut targets = FxHashSet::new();
             collect_tail_callees_block(&function.body, &mut targets);
             targets.retain(|target| {
                 functions.get(target).is_some_and(|target| {
@@ -1148,11 +1230,11 @@ fn recursive_tail_edges(
         })
         .collect();
 
-    let mut recursive: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut recursive: FxHashMap<String, FxHashSet<String>> = FxHashMap::new();
     for (source, targets) in &graph {
         for target in targets {
             let mut pending = vec![target.as_str()];
-            let mut seen = HashSet::new();
+            let mut seen = FxHashSet::new();
             while let Some(next) = pending.pop() {
                 if next == source {
                     recursive.entry(source.clone()).or_default().insert(target.clone());
@@ -1199,7 +1281,7 @@ fn direct_tail_envelope_is_forwarded(
         )
 }
 
-fn collect_tail_callees_block(block: &Block, out: &mut HashSet<String>) {
+fn collect_tail_callees_block(block: &Block, out: &mut FxHashSet<String>) {
     for stmt in &block.stmts {
         collect_nested_returns_stmt(stmt, out);
     }
@@ -1208,7 +1290,7 @@ fn collect_tail_callees_block(block: &Block, out: &mut HashSet<String>) {
     }
 }
 
-fn collect_tail_callees_expr(expr: &Expr, out: &mut HashSet<String>) {
+fn collect_tail_callees_expr(expr: &Expr, out: &mut FxHashSet<String>) {
     match expr {
         Expr::Call { name, .. } => {
             out.insert(name.clone());
@@ -1232,7 +1314,7 @@ fn collect_tail_callees_expr(expr: &Expr, out: &mut HashSet<String>) {
     }
 }
 
-fn collect_nested_returns_stmt(stmt: &Stmt, out: &mut HashSet<String>) {
+fn collect_nested_returns_stmt(stmt: &Stmt, out: &mut FxHashSet<String>) {
     match stmt {
         Stmt::Return(Some(expr)) => collect_tail_callees_expr(expr, out),
         Stmt::Let { value, .. }
@@ -1244,13 +1326,13 @@ fn collect_nested_returns_stmt(stmt: &Stmt, out: &mut HashSet<String>) {
     }
 }
 
-fn collect_nested_returns_block(block: &Block, out: &mut HashSet<String>) {
+fn collect_nested_returns_block(block: &Block, out: &mut FxHashSet<String>) {
     for stmt in &block.stmts {
         collect_nested_returns_stmt(stmt, out);
     }
 }
 
-fn collect_nested_returns_expr(expr: &Expr, out: &mut HashSet<String>) {
+fn collect_nested_returns_expr(expr: &Expr, out: &mut FxHashSet<String>) {
     match expr {
         Expr::List(items) | Expr::Tuple(items) | Expr::Ctor { args: items, .. }
         | Expr::AnonCtor { args: items, .. } => {
@@ -1355,7 +1437,7 @@ impl Interpreter {
                 }
                 let parts = names
                     .iter()
-                    .zip(fields)
+                    .zip(fields.iter())
                     .map(|(name, field)| format!("{name}: {}", self.render_value(field)))
                     .collect::<Vec<_>>()
                     .join(", ");
@@ -1419,9 +1501,10 @@ impl Interpreter {
             .into_iter()
             .map(|syntax| (syntax.handle, syntax.block))
             .collect();
-        let mut functions = HashMap::new();
-        let mut record_fields = HashMap::new();
-        let mut ctor_type_name: HashMap<String, String> = HashMap::new();
+        let mut functions = FxHashMap::new();
+        let mut param_names: FxHashMap<usize, Rc<[Rc<str>]>> = FxHashMap::new();
+        let mut record_fields = FxHashMap::new();
+        let mut ctor_type_name: FxHashMap<String, String> = FxHashMap::new();
         // (RFC-0047) Type names that DERIVED PartialEq (their impl is structural)
         // vs. those declared. The `Item::Impl` was already desugared to a
         // `PartialEq__T__eq` function by `traits::lower`, so custom-eq is detected
@@ -1431,7 +1514,12 @@ impl Interpreter {
         for item in module.items {
             match item {
                 Item::Function(f) => {
-                    functions.insert(f.name.clone(), Rc::new(f));
+                    let f = Rc::new(f);
+                    param_names.insert(
+                        Rc::as_ptr(&f) as usize,
+                        f.params.iter().map(|p| Rc::from(p.name.as_str())).collect(),
+                    );
+                    functions.insert(f.name.clone(), f);
                 }
                 // Types are erased at runtime, except a record's field names,
                 // which map `value.field` to a position in the constructor.
@@ -1452,7 +1540,7 @@ impl Interpreter {
         // (RFC-0047) A declared type has a CUSTOM (non-derived) PartialEq exactly
         // when the desugared `PartialEq__T__eq` function is present and the type did
         // NOT derive PartialEq/Eq. `==`/`!=` then honor that impl at every depth.
-        let custom_eq_types: std::collections::HashSet<String> = declared_types
+        let custom_eq_types: FxHashSet<String> = declared_types
             .into_iter()
             .filter(|(name, derived)| {
                 !derived && functions.contains_key(&format!("PartialEq__{name}__eq"))
@@ -1492,7 +1580,9 @@ impl Interpreter {
             assert_site: None,
             depth: 0,
             depth_limit: DEFAULT_DEPTH_LIMIT,
-            fn_values: HashMap::new(),
+            fn_values: FxHashMap::new(),
+            param_names,
+            interned_names: FxHashMap::new(),
             tail_function: None,
             tail_dynamic_chain: false,
             proper_tail_edges,
@@ -1549,9 +1639,9 @@ impl Interpreter {
                     "the `[user_caps]` grant for `{param}` is missing field `{fname}` required by `{ty}`"
                 ),
             })?;
-            fields.push(Value::Str(v.clone()));
+            fields.push(Value::str(v.as_str()));
         }
-        Ok(Value::Ctor { name: ty.to_string(), fields })
+        Ok(Value::ctor(ty.to_string(), fields))
     }
 
     /// Mint a build-time capability for a `build` parameter, from the confined
@@ -1624,7 +1714,7 @@ impl Interpreter {
             (Value::List(xs), Value::List(ys)) => {
                 xs.len() == ys.len()
                     && {
-                        for (x, y) in xs.iter().zip(ys) {
+                        for (x, y) in xs.iter().zip(ys.iter()) {
                             if !self.values_equal(x, y)? {
                                 return Ok(false);
                             }
@@ -1635,7 +1725,7 @@ impl Interpreter {
             (Value::Tuple(xs), Value::Tuple(ys)) => {
                 xs.len() == ys.len()
                     && {
-                        for (x, y) in xs.iter().zip(ys) {
+                        for (x, y) in xs.iter().zip(ys.iter()) {
                             if !self.values_equal(x, y)? {
                                 return Ok(false);
                             }
@@ -1647,7 +1737,7 @@ impl Interpreter {
                 an == bn
                     && af.len() == bf.len()
                     && {
-                        for (x, y) in af.iter().zip(bf) {
+                        for (x, y) in af.iter().zip(bf.iter()) {
                             if !self.values_equal(x, y)? {
                                 return Ok(false);
                             }
@@ -1660,7 +1750,7 @@ impl Interpreter {
                 // `==` and the compiled `$eq_dict_*` do.
                 xs.len() == ys.len()
                     && {
-                        for ((xk, xv), (yk, yv)) in xs.iter().zip(ys) {
+                        for ((xk, xv), (yk, yv)) in xs.iter().zip(ys.iter()) {
                             if !self.values_equal(xk, yk)? || !self.values_equal(xv, yv)? {
                                 return Ok(false);
                             }
@@ -1840,9 +1930,9 @@ impl Interpreter {
             PlaceProjection::Field(field) => {
                 let index = self.place_field_index(current, field)?;
                 match current {
-                    Value::Tuple(items) => self.store_place_value(&mut items[index], rest, replacement),
+                    Value::Tuple(items) => self.store_place_value(&mut Rc::make_mut(items)[index], rest, replacement),
                     Value::Ctor { fields, .. } => {
-                        self.store_place_value(&mut fields[index], rest, replacement)
+                        self.store_place_value(&mut Rc::make_mut(fields)[index], rest, replacement)
                     }
                     _ => unreachable!("place_field_index checked the aggregate"),
                 }
@@ -1852,10 +1942,10 @@ impl Interpreter {
                 | (Value::Tuple(items), Value::Int(index))
                     if *index >= 0 && (*index as usize) < items.len() =>
                 {
-                    self.store_place_value(&mut items[*index as usize], rest, replacement)
+                    self.store_place_value(&mut Rc::make_mut(items)[*index as usize], rest, replacement)
                 }
                 (Value::Dict(entries), key) => {
-                    let Some((_, value)) = entries.iter_mut().find(|(candidate, _)| candidate == key)
+                    let Some((_, value)) = Rc::make_mut(entries).iter_mut().find(|(candidate, _)| candidate == key)
                     else {
                         return err("dictionary key is absent");
                     };
@@ -1936,12 +2026,15 @@ impl Interpreter {
                         ));
                     }
                     let mut env = Env::new();
-                    for (param, value) in function.params.iter().zip(current_args) {
-                        env.define(
-                            param.name.clone(),
-                            value,
-                            param.convention.binds_mutable(),
-                        );
+                    let cached_names = self.param_names.get(&(Rc::as_ptr(&function) as usize)).cloned();
+                    for (index, (param, value)) in
+                        function.params.iter().zip(current_args).enumerate()
+                    {
+                        let name = match &cached_names {
+                            Some(names) => names[index].clone(),
+                            None => Rc::from(param.name.as_str()),
+                        };
+                        env.define(name, value, param.convention.binds_mutable());
                     }
                     (function, env, false)
                 }
@@ -1955,12 +2048,15 @@ impl Interpreter {
                     }
                     let mut env = *env;
                     env.push();
-                    for (param, value) in function.params.iter().zip(current_args) {
-                        env.define(
-                            param.name.clone(),
-                            value,
-                            param.convention.binds_mutable(),
-                        );
+                    let cached_names = self.param_names.get(&(Rc::as_ptr(&function) as usize)).cloned();
+                    for (index, (param, value)) in
+                        function.params.iter().zip(current_args).enumerate()
+                    {
+                        let name = match &cached_names {
+                            Some(names) => names[index].clone(),
+                            None => Rc::from(param.name.as_str()),
+                        };
+                        env.define(name, value, param.convention.binds_mutable());
                     }
                     (function, env, true)
                 }
@@ -2097,45 +2193,45 @@ impl Interpreter {
             let Value::List(items) = &argvals[0] else {
                 return err("pop expects a list");
             };
-            let mut out = items.clone();
+            let mut out = (**items).clone();
             let old = match out.pop() {
-                Some(value) => Value::Ctor { name: "Some".into(), fields: vec![value] },
-                None => Value::Ctor { name: "None".into(), fields: Vec::new() },
+                Some(value) => Value::ctor("Some", vec![value]),
+                None => Value::ctor("None", Vec::new()),
             };
-            return Ok(Some((old, vec![Value::List(out)])));
+            return Ok(Some((old, vec![Value::list(out)])));
         }
         if intrinsics::is_dict_insert_extract(name) && argvals.len() == 3
         {
             let Value::Dict(entries) = &argvals[0] else {
                 return err("insert expects a Dict, a key, and a value");
             };
-            let mut out = entries.clone();
+            let mut out = (**entries).clone();
             let previous = match self.dict_key_position(&out, &argvals[1])? {
                 Some(index) => {
                     let old = std::mem::replace(&mut out[index].1, argvals[2].clone());
-                    Value::Ctor { name: "Some".into(), fields: vec![old] }
+                    Value::ctor("Some", vec![old])
                 }
                 None => {
                     out.push((argvals[1].clone(), argvals[2].clone()));
-                    Value::Ctor { name: "None".into(), fields: Vec::new() }
+                    Value::ctor("None", Vec::new())
                 }
             };
-            return Ok(Some((previous, vec![Value::Dict(out)])));
+            return Ok(Some((previous, vec![Value::dict(out)])));
         }
         if intrinsics::is_dict_remove_extract(name) && argvals.len() == 2
         {
             let Value::Dict(entries) = &argvals[0] else {
                 return err("remove expects a Dict and a key");
             };
-            let mut out = entries.clone();
+            let mut out = (**entries).clone();
             let previous = match self.dict_key_position(&out, &argvals[1])? {
                 Some(index) => Value::Ctor {
                     name: "Some".into(),
-                    fields: vec![out.remove(index).1],
+                    fields: Rc::new(vec![out.remove(index).1]),
                 },
-                None => Value::Ctor { name: "None".into(), fields: Vec::new() },
+                None => Value::ctor("None", Vec::new()),
             };
-            return Ok(Some((previous, vec![Value::Dict(out)])));
+            return Ok(Some((previous, vec![Value::dict(out)])));
         }
         // These two operations need the interpreter to apply a function value,
         // so they cannot live in the pure builtin table.
@@ -2143,7 +2239,7 @@ impl Interpreter {
             let Value::Dict(entries) = &argvals[0] else {
                 return err("update expects a Dict as its first argument");
             };
-            let mut out = entries.clone();
+            let mut out = (**entries).clone();
             let key = &argvals[1];
             let position = self.dict_key_position(&out, key)?;
             let current = position
@@ -2154,7 +2250,7 @@ impl Interpreter {
                 Some(index) => out[index].1 = new_v,
                 None => out.push((argvals[1].clone(), new_v)),
             }
-            return Ok(Some((Value::Dict(out), Vec::new())));
+            return Ok(Some((Value::dict(out), Vec::new())));
         }
         if name == "vm.par_map" && argvals.len() == 2 {
             let Value::List(items) = &argvals[0] else {
@@ -2163,10 +2259,10 @@ impl Interpreter {
             let items = items.clone();
             let f = argvals[1].clone();
             let mut out = Vec::with_capacity(items.len());
-            for item in items {
+            for item in items.iter().cloned() {
                 out.push(self.apply_closure(f.clone(), vec![item])?);
             }
-            return Ok(Some((Value::List(out), Vec::new())));
+            return Ok(Some((Value::list(out), Vec::new())));
         }
         Ok(None)
     }
@@ -2326,12 +2422,12 @@ impl Interpreter {
         // here (not in `native`) because a `SecretStore` is not a `NativeValue`.
         if name == "secretstore.get" {
             return match args {
-                [Value::SecretStore(map), Value::Str(key)] => Ok(Some(match map.get(key) {
+                [Value::SecretStore(map), Value::Str(key)] => Ok(Some(match map.get(key.as_str()) {
                     Some((bytes, use_only)) => Value::Ctor {
                         name: "Some".into(),
-                        fields: vec![Value::Secret(bytes.clone(), *use_only)],
+                        fields: Rc::new(vec![Value::Secret(bytes.clone(), *use_only)]),
                     },
-                    None => Value::Ctor { name: "None".into(), fields: Vec::new() },
+                    None => Value::ctor("None", Vec::new()),
                 })),
                 _ => err("secretstore.get expects (SecretStore, name)"),
             };
@@ -2348,17 +2444,17 @@ impl Interpreter {
                             Value::Ctor { name: "Ok".into(), fields: fields.clone() }
                         }
                         Value::Ctor { name: c, .. } if c == "None" => {
-                            Value::Ctor { name: "Err".into(), fields: vec![Value::Str(msg.clone())] }
+                            Value::ctor("Err", vec![Value::Str(msg.clone())])
                         }
                         Value::Ctor { name: c, fields } if c == "Err" => {
                             let inner = match fields.first() {
-                                Some(Value::Str(e)) => e.clone(),
+                                Some(Value::Str(e)) => (**e).clone(),
                                 Some(other) => format!("{other}"),
                                 None => String::new(),
                             };
                             Value::Ctor {
                                 name: "Err".into(),
-                                fields: vec![Value::Str(format!("{msg}: {inner}"))],
+                                fields: Rc::new(vec![Value::str(format!("{msg}: {inner}"))]),
                             }
                         }
                         _ => return err("`? \"msg\"` applies to an Option or Result"),
@@ -2372,7 +2468,7 @@ impl Interpreter {
         // or a loud error if absent (a configuration mistake, not an `Option`).
         if name == "secretstore.require" {
             return match args {
-                [Value::SecretStore(map), Value::Str(key)] => match map.get(key) {
+                [Value::SecretStore(map), Value::Str(key)] => match map.get(key.as_str()) {
                     Some((bytes, use_only)) => Ok(Some(Value::Secret(bytes.clone(), *use_only))),
                     None => err(format!("required secret `{key}` was not granted")),
                 },
@@ -2434,7 +2530,7 @@ impl Interpreter {
                 _ => err("print expects a Console capability and a message: console.print(msg)"),
             },
             name if intrinsics::is_meta_fresh_ident(name) => match one(args)? {
-                Value::Str(hint) => Ok(Some(Value::Str(self.next_fresh_ident(&hint)?))),
+                Value::Str(hint) => Ok(Some(Value::str(self.next_fresh_ident(hint.as_str())?))),
                 other => err(format!("meta.fresh expects a String hint, got `{other}`")),
             },
             name if name == intrinsics::COMPILER_QUOTE_EXPR => {
@@ -2445,11 +2541,11 @@ impl Interpreter {
                 }
                 match args {
                     [Value::Str(handle), Value::Str(source)]
-                        if self.compiler_expr_syntax.contains_key(handle) =>
+                        if self.compiler_expr_syntax.contains_key(handle.as_str()) =>
                     {
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerExprSyntax".into(),
-                            fields: vec![Value::Str(handle.clone()), Value::Str(source.clone())],
+                            fields: Rc::new(vec![Value::Str(handle.clone()), Value::Str(source.clone())]),
                         }))
                     }
                     [Value::Str(_), Value::Str(_)] => {
@@ -2471,7 +2567,7 @@ impl Interpreter {
                     {
                         let template = self
                             .compiler_expr_syntax
-                            .get(handle)
+                            .get(handle.as_str())
                             .cloned()
                             .ok_or_else(|| RuntimeError {
                                 message: "compiler-owned expression quotation referenced an invalid syntax handle"
@@ -2494,7 +2590,7 @@ impl Interpreter {
                         }
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerExprSyntax".into(),
-                            fields: vec![Value::Str(instance_handle), Value::Str(source)],
+                            fields: Rc::new(vec![Value::str(instance_handle), Value::str(source)]),
                         }))
                     }
                     [Value::Str(_), Value::List(_), Value::List(_)] => err(
@@ -2513,11 +2609,11 @@ impl Interpreter {
                 }
                 match args {
                     [Value::Str(handle), Value::Str(source)]
-                        if self.compiler_type_syntax.contains_key(handle) =>
+                        if self.compiler_type_syntax.contains_key(handle.as_str()) =>
                     {
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerTypeSyntax".into(),
-                            fields: vec![Value::Str(handle.clone()), Value::Str(source.clone())],
+                            fields: Rc::new(vec![Value::Str(handle.clone()), Value::Str(source.clone())]),
                         }))
                     }
                     [Value::Str(_), Value::Str(_)] => {
@@ -2539,7 +2635,7 @@ impl Interpreter {
                     {
                         let template = self
                             .compiler_type_syntax
-                            .get(handle)
+                            .get(handle.as_str())
                             .cloned()
                             .ok_or_else(|| RuntimeError {
                                 message: "compiler-owned type quotation referenced an invalid syntax handle"
@@ -2562,7 +2658,7 @@ impl Interpreter {
                         }
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerTypeSyntax".into(),
-                            fields: vec![Value::Str(instance_handle), Value::Str(source)],
+                            fields: Rc::new(vec![Value::str(instance_handle), Value::str(source)]),
                         }))
                     }
                     [Value::Str(_), Value::List(_), Value::List(_)] => err(
@@ -2581,11 +2677,11 @@ impl Interpreter {
                 }
                 match args {
                     [Value::Str(handle), Value::Str(source)]
-                        if self.compiler_pattern_syntax.contains_key(handle) =>
+                        if self.compiler_pattern_syntax.contains_key(handle.as_str()) =>
                     {
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerPatternSyntax".into(),
-                            fields: vec![Value::Str(handle.clone()), Value::Str(source.clone())],
+                            fields: Rc::new(vec![Value::Str(handle.clone()), Value::Str(source.clone())]),
                         }))
                     }
                     [Value::Str(_), Value::Str(_)] => {
@@ -2607,7 +2703,7 @@ impl Interpreter {
                     {
                         let template = self
                             .compiler_pattern_syntax
-                            .get(handle)
+                            .get(handle.as_str())
                             .cloned()
                             .ok_or_else(|| RuntimeError {
                                 message: "compiler-owned pattern quotation referenced an invalid syntax handle"
@@ -2633,7 +2729,7 @@ impl Interpreter {
                         }
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerPatternSyntax".into(),
-                            fields: vec![Value::Str(instance_handle), Value::Str(source)],
+                            fields: Rc::new(vec![Value::str(instance_handle), Value::str(source)]),
                         }))
                     }
                     [Value::Str(_), Value::List(_), Value::List(_)] => err(
@@ -2652,11 +2748,11 @@ impl Interpreter {
                 }
                 match args {
                     [Value::Str(handle), Value::Str(source)]
-                        if self.compiler_stmt_syntax.contains_key(handle) =>
+                        if self.compiler_stmt_syntax.contains_key(handle.as_str()) =>
                     {
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerStmtSyntax".into(),
-                            fields: vec![Value::Str(handle.clone()), Value::Str(source.clone())],
+                            fields: Rc::new(vec![Value::Str(handle.clone()), Value::Str(source.clone())]),
                         }))
                     }
                     [Value::Str(_), Value::Str(_)] => {
@@ -2673,11 +2769,11 @@ impl Interpreter {
                 }
                 match args {
                     [Value::Str(handle), Value::Str(source)]
-                        if self.compiler_block_syntax.contains_key(handle) =>
+                        if self.compiler_block_syntax.contains_key(handle.as_str()) =>
                     {
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerBlockSyntax".into(),
-                            fields: vec![Value::Str(handle.clone()), Value::Str(source.clone())],
+                            fields: Rc::new(vec![Value::Str(handle.clone()), Value::Str(source.clone())]),
                         }))
                     }
                     [Value::Str(_), Value::Str(_)] => {
@@ -2694,11 +2790,11 @@ impl Interpreter {
                 }
                 match args {
                     [Value::Str(handle), Value::Str(_source)]
-                        if self.compiler_item_syntax.contains_key(handle) =>
+                        if self.compiler_item_syntax.contains_key(handle.as_str()) =>
                     {
                         Ok(Some(Value::Ctor {
                             name: OWNED_ITEM_SYNTAX_CTOR.into(),
-                            fields: vec![Value::Str(handle.clone())],
+                            fields: Rc::new(vec![Value::Str(handle.clone())]),
                         }))
                     }
                     [Value::Str(_), Value::Str(_)] => {
@@ -2715,13 +2811,13 @@ impl Interpreter {
                 }
                 match args {
                     [Value::Str(handle), Value::List(parts), Value::List(holes)]
-                        if self.compiler_item_syntax.contains_key(handle)
+                        if self.compiler_item_syntax.contains_key(handle.as_str())
                             && parts.len() == holes.len() + 1
                             && parts.iter().all(|part| matches!(part, Value::Str(_))) =>
                     {
                         Ok(Some(Value::Ctor {
                             name: OWNED_ITEM_SYNTAX_CTOR.into(),
-                            fields: vec![Value::Str(handle.clone()), Value::List(holes.clone())],
+                            fields: Rc::new(vec![Value::Str(handle.clone()), Value::List(holes.clone())]),
                         }))
                     }
                     [Value::Str(_), Value::List(_), Value::List(_)] => {
@@ -2744,7 +2840,7 @@ impl Interpreter {
                         };
                         let item = self
                             .compiler_item_syntax
-                            .get(handle)
+                            .get(handle.as_str())
                             .cloned()
                             .ok_or_else(|| RuntimeError {
                                 message: "compiler-owned item emission referenced an invalid syntax handle"
@@ -2761,7 +2857,7 @@ impl Interpreter {
                         };
                         let template = self
                             .compiler_item_syntax
-                            .get(handle)
+                            .get(handle.as_str())
                             .ok_or_else(|| RuntimeError {
                                 message: "compiler-owned item emission referenced an invalid syntax handle"
                                     .into(),
@@ -2783,7 +2879,7 @@ impl Interpreter {
                         let [Value::Str(source)] = fields.as_slice() else {
                             return err("ItemSyntax carried an invalid source payload");
                         };
-                        ComptimeItemEmission::Source(source.clone())
+                        ComptimeItemEmission::Source((**source).clone())
                     }
                     _ => return err("emit_item expects meta.ItemSyntax"),
                 };
@@ -2807,7 +2903,7 @@ impl Interpreter {
                         };
                         let expr = self
                             .compiler_expr_syntax
-                            .get(handle)
+                            .get(handle.as_str())
                             .cloned()
                             .ok_or_else(|| RuntimeError {
                                 message: "compiler-owned expression emission referenced an invalid syntax handle"
@@ -2822,7 +2918,7 @@ impl Interpreter {
                         let [Value::Str(source)] = fields.as_slice() else {
                             return err("ExprSyntax carried an invalid source payload");
                         };
-                        ComptimeExprEmission::Source(source.clone())
+                        ComptimeExprEmission::Source((**source).clone())
                     }
                     _ => return err("expression emission expects meta.ExprSyntax"),
                 };
@@ -2830,7 +2926,7 @@ impl Interpreter {
                 Ok(Some(Value::Nil))
             }
             // Pure builtins need no capability.
-            name if is_render_intrinsic(name) => Ok(Some(Value::Str(self.render_value(&one(args)?)))),
+            name if is_render_intrinsic(name) => Ok(Some(Value::str(self.render_value(&one(args)?)))),
             // (RFC-0055) Channel message erasure. `Value` is uniform, so erasing a
             // typed message to the executor's opaque `__Msg` and recovering the
             // endpoint's type are both the identity — the value passes through
@@ -2845,13 +2941,15 @@ impl Interpreter {
             // with no UTF-8 contract; `to_string` decodes lossily (a strict decoder can
             // live in std). `Str <-> Bytes` are real conversions in the tree-walker.
             intrinsics::BYTES_FROM_STRING => match one(args)? {
-                Value::Str(s) => Ok(Some(Value::Bytes(s.into_bytes()))),
+                Value::Str(s) => Ok(Some(Value::Bytes(
+                    Rc::try_unwrap(s).unwrap_or_else(|rc| (*rc).clone()).into_bytes(),
+                ))),
                 other => err(format!("bytes.from_string expects a String, got `{other}`")),
             },
             intrinsics::BYTES_FROM_LIST => match one(args)? {
                 Value::List(xs) => {
                     let mut out = Vec::with_capacity(xs.len());
-                    for x in xs {
+                    for x in xs.iter().cloned() {
                         let Value::Int(n) = x else {
                             return err("bytes.from_list expects a List(Int)");
                         };
@@ -2865,7 +2963,7 @@ impl Interpreter {
                 other => err(format!("bytes.from_list expects a List(Int), got `{other}`")),
             },
             intrinsics::BYTES_TO_STRING => match one(args)? {
-                Value::Bytes(b) => Ok(Some(Value::Str(String::from_utf8_lossy(&b).into_owned()))),
+                Value::Bytes(b) => Ok(Some(Value::str(String::from_utf8_lossy(&b).into_owned()))),
                 other => err(format!("bytes.to_string expects Bytes, got `{other}`")),
             },
             intrinsics::BYTES_LENGTH => match one(args)? {
@@ -2906,11 +3004,11 @@ impl Interpreter {
             // Deliberately ASCII-only so the WASM backend can match it byte-for-
             // byte (full Unicode case folding would need large tables).
             intrinsics::STRING_TO_UPPER => match one(args)? {
-                Value::Str(s) => Ok(Some(Value::Str(s.to_ascii_uppercase()))),
+                Value::Str(s) => Ok(Some(Value::str(s.to_ascii_uppercase()))),
                 other => err(format!("to_upper expects a String, got `{other}`")),
             },
             intrinsics::STRING_TO_LOWER => match one(args)? {
-                Value::Str(s) => Ok(Some(Value::Str(s.to_ascii_lowercase()))),
+                Value::Str(s) => Ok(Some(Value::str(s.to_ascii_lowercase()))),
                 other => err(format!("to_lower expects a String, got `{other}`")),
             },
             // Abort with a message — the error-raising primitive behind
@@ -2928,7 +3026,7 @@ impl Interpreter {
                             self.cur_line = line;
                         }
                     }
-                    Err(RuntimeError { message: msg.clone() })
+                    Err(RuntimeError { message: (*msg).clone() })
                 }
                 other => err(format!("fail expects a String message, got `{other}`")),
             },
@@ -2941,7 +3039,7 @@ impl Interpreter {
                 Value::Str(s) => {
                     let trimmed =
                         s.trim_matches(|c: char| matches!(c, ' ' | '\t' | '\n' | '\x0b' | '\x0c' | '\r'));
-                    Ok(Some(Value::Str(trimmed.to_string())))
+                    Ok(Some(Value::str(trimmed)))
                 }
                 other => err(format!("trim expects a String, got `{other}`")),
             },
@@ -2964,22 +3062,22 @@ impl Interpreter {
                     let parts: Vec<Value> = if sep.is_empty() {
                         vec![Value::Str(s.clone())]
                     } else {
-                        s.split(sep.as_str()).map(|p| Value::Str(p.to_string())).collect()
+                        s.split(sep.as_str()).map(Value::str).collect()
                     };
-                    Ok(Some(Value::List(parts)))
+                    Ok(Some(Value::list(parts)))
                 }
                 _ => err("split expects two Strings"),
             },
             // The characters of a string, each as a single-char String (one pass).
             intrinsics::STRING_CHARS => match one(args)? {
                 Value::Str(s) => {
-                    Ok(Some(Value::List(s.chars().map(|c| Value::Str(c.to_string())).collect())))
+                    Ok(Some(Value::list(s.chars().map(|c| Value::str(c.to_string())).collect())))
                 }
                 _ => err("string_chars expects a String"),
             },
             intrinsics::STRING_REPLACE => match args {
                 [Value::Str(s), Value::Str(from), Value::Str(to)] => {
-                    Ok(Some(Value::Str(s.replace(from.as_str(), to.as_str()))))
+                    Ok(Some(Value::str(s.replace(from.as_str(), to.as_str()))))
                 }
                 _ => err("replace expects three Strings"),
             },
@@ -3014,7 +3112,7 @@ impl Interpreter {
                     } else {
                         String::new()
                     };
-                    Ok(Some(Value::Str(out)))
+                    Ok(Some(Value::str(out)))
                 }
                 _ => err("substring expects a String and two Int indices"),
             },
@@ -3060,23 +3158,23 @@ impl Interpreter {
             // not mutate the original).
             intrinsics::LIST_PUSH | intrinsics::GENERATED_LIST_PUSH => match args {
                 [Value::List(items), x] => {
-                    let mut out = items.clone();
+                    let mut out = (**items).clone();
                     out.push(x.clone());
-                    Ok(Some(Value::List(out)))
+                    Ok(Some(Value::list(out)))
                 }
                 _ => err("push expects a list and a value"),
             },
             name if intrinsics::is_list_pop_extract(name) => match args {
                 [Value::List(items)] => {
-                    let mut out = items.clone();
+                    let mut out = (**items).clone();
                     let old = match out.pop() {
                         Some(value) => Value::Ctor {
                             name: "Some".into(),
-                            fields: vec![value],
+                            fields: Rc::new(vec![value]),
                         },
-                        None => Value::Ctor { name: "None".into(), fields: Vec::new() },
+                        None => Value::ctor("None", Vec::new()),
                     };
-                    Ok(Some(Value::Tuple(vec![Value::List(out), old])))
+                    Ok(Some(Value::tuple(vec![Value::list(out), old])))
                 }
                 _ => err("pop expects a list"),
             },
@@ -3090,52 +3188,52 @@ impl Interpreter {
                             "",
                         ));
                     }
-                    let mut out = items.clone();
+                    let mut out = (**items).clone();
                     out[i] = value.clone();
-                    Ok(Some(Value::List(out)))
+                    Ok(Some(Value::list(out)))
                 }
                 _ => err("set_at expects a list, an Int index, and a value"),
             },
             // Return a new list that is the two given lists joined.
             intrinsics::LIST_CONCAT => match args {
                 [Value::List(a), Value::List(b)] => {
-                    let mut out = a.clone();
-                    out.extend(b.clone());
-                    Ok(Some(Value::List(out)))
+                    let mut out = (**a).clone();
+                    out.extend(b.iter().cloned());
+                    Ok(Some(Value::list(out)))
                 }
                 _ => err("concat expects two lists"),
             },
             // --- Dict: an immutable association map ---
             intrinsics::DICT_NEW => match args {
-                [] => Ok(Some(Value::Dict(Vec::new()))),
+                [] => Ok(Some(Value::dict(Vec::new()))),
                 _ => err("dict_new takes no arguments"),
             },
             // Return a new dict with `k` set to `v` (replacing any existing entry).
             intrinsics::DICT_INSERT => match args {
                 [Value::Dict(entries), k, v] => {
-                    let mut out = entries.clone();
+                    let mut out = (**entries).clone();
                     match self.dict_key_position(&out, k)? {
                         Some(index) => out[index].1 = v.clone(),
                         None => out.push((k.clone(), v.clone())),
                     }
-                    Ok(Some(Value::Dict(out)))
+                    Ok(Some(Value::dict(out)))
                 }
                 _ => err("insert expects a Dict, a key, and a value"),
             },
             name if intrinsics::is_dict_insert_extract(name) => match args {
                 [Value::Dict(entries), k, v] => {
-                    let mut out = entries.clone();
+                    let mut out = (**entries).clone();
                     let previous = match self.dict_key_position(&out, k)? {
                         Some(index) => {
                             let old = std::mem::replace(&mut out[index].1, v.clone());
-                            Value::Ctor { name: "Some".into(), fields: vec![old] }
+                            Value::ctor("Some", vec![old])
                         }
                         None => {
                             out.push((k.clone(), v.clone()));
-                            Value::Ctor { name: "None".into(), fields: Vec::new() }
+                            Value::ctor("None", Vec::new())
                         }
                     };
-                    Ok(Some(Value::Tuple(vec![Value::Dict(out), previous])))
+                    Ok(Some(Value::tuple(vec![Value::dict(out), previous])))
                 }
                 _ => err("insert expects a Dict, a key, and a value"),
             },
@@ -3163,46 +3261,46 @@ impl Interpreter {
             // A new dict with `k` (and its value) removed; unchanged if absent.
             intrinsics::DICT_REMOVE => match args {
                 [Value::Dict(entries), k] => {
-                    let mut out = entries.clone();
+                    let mut out = (**entries).clone();
                     if let Some(index) = self.dict_key_position(&out, k)? {
                         out.remove(index);
                     }
-                    Ok(Some(Value::Dict(out)))
+                    Ok(Some(Value::dict(out)))
                 }
                 _ => err("remove expects a Dict and a key"),
             },
             name if intrinsics::is_dict_remove_extract(name) => match args {
                 [Value::Dict(entries), k] => {
-                    let mut out = entries.clone();
+                    let mut out = (**entries).clone();
                     let previous = match self.dict_key_position(&out, k)? {
                         Some(index) => Value::Ctor {
                             name: "Some".into(),
-                            fields: vec![out.remove(index).1],
+                            fields: Rc::new(vec![out.remove(index).1]),
                         },
-                        None => Value::Ctor { name: "None".into(), fields: Vec::new() },
+                        None => Value::ctor("None", Vec::new()),
                     };
-                    Ok(Some(Value::Tuple(vec![Value::Dict(out), previous])))
+                    Ok(Some(Value::tuple(vec![Value::dict(out), previous])))
                 }
                 _ => err("remove expects a Dict and a key"),
             },
             intrinsics::DICT_KEYS => match args {
                 [Value::Dict(entries)] => {
-                    Ok(Some(Value::List(entries.iter().map(|(k, _)| k.clone()).collect())))
+                    Ok(Some(Value::list(entries.iter().map(|(k, _)| k.clone()).collect())))
                 }
                 _ => err("keys expects a Dict"),
             },
             intrinsics::DICT_VALUES => match args {
                 [Value::Dict(entries)] => {
-                    Ok(Some(Value::List(entries.iter().map(|(_, v)| v.clone()).collect())))
+                    Ok(Some(Value::list(entries.iter().map(|(_, v)| v.clone()).collect())))
                 }
                 _ => err("values expects a Dict"),
             },
             // Each entry as a `(key, value)` tuple, in insertion order.
             intrinsics::DICT_PAIRS => match args {
-                [Value::Dict(entries)] => Ok(Some(Value::List(
+                [Value::Dict(entries)] => Ok(Some(Value::list(
                     entries
                         .iter()
-                        .map(|(k, v)| Value::Tuple(vec![k.clone(), v.clone()]))
+                        .map(|(k, v)| Value::tuple(vec![k.clone(), v.clone()]))
                         .collect(),
                 ))),
                 _ => err("pairs expects a Dict"),
@@ -3214,7 +3312,7 @@ impl Interpreter {
             intrinsics::TESTING_MOCK_DIR => match args {
                 [Value::List(entries)] => {
                     let mut files = BTreeMap::new();
-                    for entry in entries {
+                    for entry in entries.iter() {
                         let Value::Tuple(fields) = entry else {
                             return err("mock_dir entries must be `(String, String)` pairs");
                         };
@@ -3225,7 +3323,7 @@ impl Interpreter {
                         if path.is_empty() {
                             return err("mock Dir entry path must name a file");
                         }
-                        files.insert(path, contents.clone());
+                        files.insert(path, (**contents).clone());
                     }
                     Ok(Some(Value::Dir(
                         DirValue::Mock {
@@ -3314,7 +3412,7 @@ impl Interpreter {
                     let code = output.status.code().unwrap_or(-1);
                     let out = String::from_utf8_lossy(&output.stdout);
                     let serr = String::from_utf8_lossy(&output.stderr);
-                    Ok(Some(Value::Str(format!("{code}\n{out}{serr}"))))
+                    Ok(Some(Value::str(format!("{code}\n{out}{serr}"))))
                 }
                 _ => err("exec expects (Exec, Dir, path, args, stdin)"),
             },
@@ -3324,10 +3422,10 @@ impl Interpreter {
                     if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
                     }
-                    Ok(Some(Value::Str(read_file_value(&dir_file_value(base, rel, false)?)?)))
+                    Ok(Some(Value::str(read_file_value(&dir_file_value(base, rel, false)?)?)))
                 }
                 // A `File` is already a confined path; read it directly (RFC-0012).
-                [Value::File(file)] => Ok(Some(Value::Str(read_file_value(file)?))),
+                [Value::File(file)] => Ok(Some(Value::str(read_file_value(file)?))),
                 _ => err("read expects a Dir and a relative path, or a File"),
             },
             // Write a file relative to a Dir capability, confined to its subtree
@@ -3438,7 +3536,7 @@ impl Interpreter {
                         }
                         DirValue::Mock { root, files } => mock_list(files, root)?,
                     };
-                    Ok(Some(Value::List(names.into_iter().map(Value::Str).collect())))
+                    Ok(Some(Value::list(names.into_iter().map(Value::str).collect())))
                 }
                 _ => err("list expects a Dir"),
             },
@@ -3503,9 +3601,9 @@ impl Interpreter {
             // `env.get_env(name) -> Option(String)` (None when unset). Reading the
             // process environment is ambient authority, so it is capability-gated.
             "get_env" => match args {
-                [Value::Cap(Capability::Env), Value::Str(name)] => Ok(Some(match std::env::var(name) {
-                    Ok(v) => Value::Ctor { name: "Some".into(), fields: vec![Value::Str(v)] },
-                    Err(_) => Value::Ctor { name: "None".into(), fields: Vec::new() },
+                [Value::Cap(Capability::Env), Value::Str(name)] => Ok(Some(match std::env::var(name.as_str()) {
+                    Ok(v) => Value::ctor("Some", vec![Value::str(v)]),
+                    Err(_) => Value::ctor("None", Vec::new()),
                 })),
                 _ => err("get_env expects an Env and a variable name"),
             },
@@ -3514,7 +3612,7 @@ impl Interpreter {
             "write_out" => match args {
                 [Value::Build(BuildCap::Out(base)), Value::Str(rel), Value::Str(contents)] => {
                     let path = resolve_write(base, rel)?;
-                    match std::fs::write(&path, contents) {
+                    match std::fs::write(&path, contents.as_bytes()) {
                         Ok(()) => Ok(Some(Value::Nil)),
                         Err(e) => err(format!("write_out failed for `{}`: {e}", path.display())),
                     }
@@ -3534,7 +3632,7 @@ impl Interpreter {
                     for base in roots {
                         match resolve(base, rel) {
                             Ok(path) => match std::fs::read_to_string(&path) {
-                                Ok(contents) => return Ok(Some(Value::Str(contents))),
+                                Ok(contents) => return Ok(Some(Value::str(contents))),
                                 Err(e) => last_err = Some(format!("`{}`: {e}", path.display())),
                             },
                             Err(e) => last_err = Some(e.message),
@@ -3550,14 +3648,14 @@ impl Interpreter {
             // Read a named env var, but only one on the BuildEnv allow-list.
             "get_build_env" => match args {
                 [Value::Build(BuildCap::Env(env)), Value::Str(name)] => {
-                    let value = env.get(name).ok_or_else(|| RuntimeError {
+                    let value = env.get(name.as_str()).ok_or_else(|| RuntimeError {
                         message: format!(
                             "get_build_env: `{name}` is not in this BuildEnv grant's allow-list"
                         ),
                     })?;
                     Ok(Some(match value {
-                        Some(v) => Value::Ctor { name: "Some".into(), fields: vec![Value::Str(v.clone())] },
-                        None => Value::Ctor { name: "None".into(), fields: Vec::new() },
+                        Some(v) => Value::ctor("Some", vec![Value::str(v.as_str())]),
+                        None => Value::ctor("None", Vec::new()),
                     }))
                 }
                 _ => err("get_build_env expects a BuildEnv and a variable name"),
@@ -3570,7 +3668,7 @@ impl Interpreter {
             // BuildNet/BuildExec use marks the build `pinned-only` for determinism.
             "fetch_build" => match args {
                 [Value::Build(BuildCap::Net(allow)), Value::Str(host), Value::Str(path)] => {
-                    if !allow.iter().any(|h| h == host) {
+                    if !allow.iter().any(|h| *h == **host) {
                         return err(format!(
                             "fetch_build: `{host}` is not in this BuildNet grant's allow-list"
                         ));
@@ -3597,7 +3695,7 @@ impl Interpreter {
                         Some((_, b)) => b.to_string(),
                         None => text.into_owned(),
                     };
-                    Ok(Some(Value::Str(body)))
+                    Ok(Some(Value::str(body)))
                 }
                 _ => err("fetch_build expects a BuildNet, a host, and a path"),
             },
@@ -3607,14 +3705,14 @@ impl Interpreter {
             // confinement, since the tool itself runs as a native process.
             "run_tool" => match args {
                 [Value::Build(BuildCap::Exec(allow)), Value::Str(tool), Value::Str(input)] => {
-                    if !allow.iter().any(|t| t == tool) {
+                    if !allow.iter().any(|t| *t == **tool) {
                         return err(format!(
                             "run_tool: `{tool}` is not in this BuildExec grant's allow-list"
                         ));
                     }
                     use std::io::Write;
                     use std::process::{Command, Stdio};
-                    let mut child = Command::new(tool)
+                    let mut child = Command::new(tool.as_str())
                         .stdin(Stdio::piped())
                         .stdout(Stdio::piped())
                         .stderr(Stdio::piped())
@@ -3633,7 +3731,7 @@ impl Interpreter {
                     if !out.status.success() {
                         return err(format!("run_tool: `{tool}` exited with {}", out.status));
                     }
-                    Ok(Some(Value::Str(String::from_utf8_lossy(&out.stdout).into_owned())))
+                    Ok(Some(Value::str(String::from_utf8_lossy(&out.stdout).into_owned())))
                 }
                 _ => err("run_tool expects a BuildExec, a tool name, and input"),
             },
@@ -3703,9 +3801,9 @@ impl Interpreter {
                         Ok(stream) => {
                             let id = self.sockets.len();
                             self.sockets.push(BufReader::new(stream));
-                            Value::Ctor { name: "Some".into(), fields: vec![Value::Socket(id)] }
+                            Value::ctor("Some", vec![Value::Socket(id)])
                         }
-                        Err(_) => Value::Ctor { name: "None".into(), fields: Vec::new() },
+                        Err(_) => Value::ctor("None", Vec::new()),
                     };
                     Ok(Some(v))
                 }
@@ -3718,7 +3816,7 @@ impl Interpreter {
             "resolve" => match args {
                 [Value::Net(_allow), Value::Str(host)] => {
                     let ips = witchy_runtime::net::resolve_ips(host);
-                    Ok(Some(Value::List(ips.into_iter().map(Value::Str).collect())))
+                    Ok(Some(Value::list(ips.into_iter().map(Value::str).collect())))
                 }
                 _ => err("resolve expects a Net and a host"),
             },
@@ -3758,9 +3856,9 @@ impl Interpreter {
                         Ok(stream) => {
                             let id = self.sockets.len();
                             self.sockets.push(BufReader::new(stream));
-                            Value::Ctor { name: "Some".into(), fields: vec![Value::Socket(id)] }
+                            Value::ctor("Some", vec![Value::Socket(id)])
                         }
-                        Err(_) => Value::Ctor { name: "None".into(), fields: Vec::new() },
+                        Err(_) => Value::ctor("None", Vec::new()),
                     };
                     Ok(Some(v))
                 }
@@ -3791,7 +3889,7 @@ impl Interpreter {
                     let raw = witchy_runtime::net::read_line_capped(sock)
                         .map_err(|e| RuntimeError { message: e.to_string() })?;
                     let line = String::from_utf8_lossy(&raw);
-                    Ok(Some(Value::Str(line.trim_end_matches('\n').to_string())))
+                    Ok(Some(Value::str(line.trim_end_matches('\n'))))
                 }
                 _ => err("recv_line expects a Socket"),
             },
@@ -3835,7 +3933,7 @@ impl Interpreter {
                             ),
                         });
                     }
-                    Ok(Some(Value::Str(String::from_utf8_lossy(&buf).into_owned())))
+                    Ok(Some(Value::str(String::from_utf8_lossy(&buf).into_owned())))
                 }
                 _ => err("recv_all expects a Socket"),
             },
@@ -3864,7 +3962,7 @@ impl Interpreter {
                             Err(e) => return err(format!("recv failed: {e}")),
                         }
                     }
-                    Ok(Some(Value::Str(String::from_utf8_lossy(&buf).into_owned())))
+                    Ok(Some(Value::str(String::from_utf8_lossy(&buf).into_owned())))
                 }
                 _ => err("recv_bytes expects a Socket and an Int"),
             },
@@ -3875,7 +3973,7 @@ impl Interpreter {
                     if !witchy_caps::capabilities::net_allows(allow, addr) {
                         return err(format!("listen: `{addr}` is not permitted by this Net capability"));
                     }
-                    match TcpListener::bind(addr) {
+                    match TcpListener::bind(addr.as_str()) {
                         Ok(listener) => {
                             let id = self.listeners.len();
                             self.listeners.push((listener, None));
@@ -3900,7 +3998,7 @@ impl Interpreter {
                         Ok(config) => config,
                         Err(message) => return err(message),
                     };
-                    match TcpListener::bind(addr) {
+                    match TcpListener::bind(addr.as_str()) {
                         Ok(listener) => {
                             let id = self.listeners.len();
                             self.listeners.push((listener, Some(config)));
@@ -4001,7 +4099,7 @@ impl Interpreter {
                 let Some((Value::List(items), true)) = env.slot_mut(name) else {
                     unreachable!("slot checked above; the argument cannot reach it");
                 };
-                items.push(x);
+                Rc::make_mut(items).push(x);
                 Ok(true)
             }
             Expr::Call { name: f, args }
@@ -4025,6 +4123,7 @@ impl Interpreter {
                 let Some((Value::Dict(entries), true)) = env.slot_mut(name) else {
                     unreachable!("slot checked above; the arguments cannot reach it");
                 };
+                let entries = Rc::make_mut(entries);
                 match position {
                     Some(index) => entries[index].1 = v,
                     None => entries.push((k, v)),
@@ -4057,6 +4156,7 @@ impl Interpreter {
                 let Some((Value::Dict(entries), true)) = env.slot_mut(name) else {
                     unreachable!("slot checked above; the closure cannot reach it");
                 };
+                let entries = Rc::make_mut(entries);
                 match position {
                     Some(index) => entries[index].1 = new_v,
                     None => entries.push((k, new_v)),
@@ -4074,8 +4174,11 @@ impl Interpreter {
                     return Ok(false);
                 }
                 let Some((slot, true)) = env.slot_mut(name) else { unreachable!() };
+                // Own the buffer while accumulating: unwrapping a unique Rc
+                // keeps the in-place append fast path; a shared one is copied
+                // once (copy-on-write — observationally identical).
                 let mut acc = match std::mem::replace(slot, Value::Nil) {
-                    Value::Str(s) => s,
+                    Value::Str(s) => Rc::try_unwrap(s).unwrap_or_else(|rc| (*rc).clone()),
                     _ => unreachable!("slot checked above"),
                 };
                 for r in rights {
@@ -4085,17 +4188,17 @@ impl Interpreter {
                             // Put the accumulated string back before unwinding so
                             // the environment stays consistent.
                             if let Some((slot, _)) = env.slot_mut(name) {
-                                *slot = Value::Str(acc);
+                                *slot = Value::Str(Rc::new(acc));
                             }
                             return Err(flow);
                         }
                     };
                     match v {
-                        Value::Str(b) => acc.push_str(&b),
+                        Value::Str(b) => acc.push_str(b.as_str()),
                         other => {
                             // The same error the general `<>` evaluation reports,
                             // with the left side accumulated so far.
-                            let a = Value::Str(acc);
+                            let a = Value::Str(Rc::new(acc));
                             return err(format!(
                                 "`<>` expects two Strings, got `{a}` and `{other}`"
                             ));
@@ -4103,7 +4206,7 @@ impl Interpreter {
                     }
                 }
                 let Some((slot, true)) = env.slot_mut(name) else { unreachable!() };
-                *slot = Value::Str(acc);
+                *slot = Value::Str(Rc::new(acc));
                 Ok(true)
             }
             _ => Ok(false),
@@ -4135,7 +4238,8 @@ impl Interpreter {
             let step = match stmt {
                 Stmt::Let { name, mutable, value, .. } => {
                     let value = self.eval(value, env)?;
-                    env.define(name.clone(), value, *mutable);
+                    let name = self.intern(name);
+                    env.define(name, value, *mutable);
                     Ok(Value::Nil)
                 }
                 Stmt::Assign { name, value } => {
@@ -4337,7 +4441,7 @@ impl Interpreter {
                 Value::Ctor { name, mut fields }
                     if (name == "Some" || name == "Ok") && fields.len() == 1 =>
                 {
-                    Ok(fields.remove(0))
+                    Ok(Rc::make_mut(&mut fields).remove(0))
                 }
                 Value::Ctor { name, .. } if name == "None" || name == "Err" => {
                     self.eval_tail_expr(rhs, function, env)
@@ -4370,7 +4474,8 @@ impl Interpreter {
             match stmt {
                 Stmt::Let { name, ty: _, mutable, value } => {
                     let v = self.eval(value, env)?;
-                    env.define(name.clone(), v, *mutable);
+                    let name = self.intern(name);
+                    env.define(name, v, *mutable);
                     result = Value::Nil;
                 }
                 Stmt::Assign { name, value } => {
@@ -4445,6 +4550,19 @@ impl Interpreter {
         Ok(result)
     }
 
+    /// One shared `Rc<str>` per distinct binding name: `let`s and loop
+    /// variables inside hot loops re-bind the same name every iteration, and
+    /// the interner turns each re-binding into a pointer clone instead of a
+    /// fresh `String` allocation. Bounded by the program's distinct names.
+    fn intern(&mut self, name: &str) -> Rc<str> {
+        if let Some(interned) = self.interned_names.get(name) {
+            return interned.clone();
+        }
+        let interned: Rc<str> = Rc::from(name);
+        self.interned_names.insert(name.to_string(), interned.clone());
+        interned
+    }
+
     fn eval(&mut self, expr: &Expr, env: &mut Env) -> Result<Value, Flow> {
         self.steps += 1;
         if self.steps > self.step_limit {
@@ -4462,7 +4580,7 @@ impl Interpreter {
             }
             Expr::Int(n) | Expr::Duration(n) => Ok(Value::Int(*n)),
             Expr::Float(x) => Ok(Value::Float(*x)),
-            Expr::Str(s) => Ok(Value::Str(s.clone())),
+            Expr::Str(s) => Ok(Value::str(s.as_str())),
             Expr::Bool(b) => Ok(Value::Bool(*b)),
             // A range lowers to a list-building block; evaluate that.
             Expr::Range { lo, hi, inclusive } => {
@@ -4499,14 +4617,14 @@ impl Interpreter {
                     .iter()
                     .map(|e| self.eval(e, env))
                     .collect::<Result<_, _>>()?;
-                Ok(Value::List(vals))
+                Ok(Value::list(vals))
             }
             Expr::Tuple(items) => {
                 let vals = items
                     .iter()
                     .map(|e| self.eval(e, env))
                     .collect::<Result<_, _>>()?;
-                Ok(Value::Tuple(vals))
+                Ok(Value::tuple(vals))
             }
             Expr::Var(name) => match env.get(name) {
                 Some(v) => Ok(v.clone()),
@@ -4552,20 +4670,14 @@ impl Interpreter {
                     .iter()
                     .map(|a| self.eval(a, env))
                     .collect::<Result<_, _>>()?;
-                Ok(Value::Ctor {
-                    name: name.clone(),
-                    fields,
-                })
+                Ok(Value::ctor(name.clone(), fields))
             }
             Expr::AnonCtor { tag, args } => {
                 let fields = args
                     .iter()
                     .map(|a| self.eval(a, env))
                     .collect::<Result<_, _>>()?;
-                Ok(Value::Ctor {
-                    name: format!(".{tag}"),
-                    fields,
-                })
+                Ok(Value::ctor(format!(".{tag}"), fields))
             }
             Expr::Unary { op, expr } => {
                 let v = self.eval(expr, env)?;
@@ -4617,7 +4729,7 @@ impl Interpreter {
                         .and_then(|names| names.iter().position(|n| n == fname));
                     let val = self.eval(vexpr, env)?;
                     match idx.filter(|i| *i < values.len()) {
-                        Some(i) => values[i] = val,
+                        Some(i) => Rc::make_mut(&mut values)[i] = val,
                         None => return err(format!("`{name}` has no field `{fname}`")),
                     }
                 }
@@ -4659,7 +4771,7 @@ impl Interpreter {
                     Value::Ctor { name, mut fields }
                         if (name == "Ok" || name == "Some") && fields.len() == 1 =>
                     {
-                        Ok(fields.remove(0))
+                        Ok(Rc::make_mut(&mut fields).remove(0))
                     }
                     Value::Ctor { name, fields } if name == "Err" || name == "None" => {
                         // Short-circuit: return the Err/None from the enclosing function.
@@ -4694,7 +4806,7 @@ impl Interpreter {
                 Value::Ctor { name, mut fields }
                     if (name == "Some" || name == "Ok") && fields.len() == 1 =>
                 {
-                    Ok(fields.remove(0))
+                    Ok(Rc::make_mut(&mut fields).remove(0))
                 }
                 Value::Ctor { name, .. } if name == "None" || name == "Err" => {
                     self.eval(rhs, env)
@@ -4742,9 +4854,10 @@ impl Interpreter {
                         }
                     };
                     let mut i = start;
+                    let var_name = self.intern(var);
                     while if *inclusive { i <= end } else { i < end } {
                         env.push();
-                        env.define(var.clone(), Value::Int(i), false);
+                        env.define(var_name.clone(), Value::Int(i), false);
                         let r = self.eval_block(body, env);
                         env.pop();
                         match r {
@@ -4763,9 +4876,10 @@ impl Interpreter {
                     Value::List(items) => items,
                     other => return err(format!("`for` expects a List, got `{other}`")),
                 };
-                for item in items {
+                let var_name = self.intern(var);
+                for item in items.iter().cloned() {
                     env.push();
-                    env.define(var.clone(), item, false);
+                    env.define(var_name.clone(), item, false);
                     let r = self.eval_block(body, env);
                     env.pop();
                     match r {
@@ -4820,11 +4934,11 @@ fn match_pattern(pat: &Pattern, value: &Value, env: &mut Env) -> bool {
     match (pat, value) {
         (Pattern::Wildcard, _) => true,
         (Pattern::Var(name), v) => {
-            env.define(name.clone(), v.clone(), false);
+            env.define(Rc::from(name.as_str()), v.clone(), false);
             true
         }
         (Pattern::Int(a), Value::Int(b)) => a == b,
-        (Pattern::Str(a), Value::Str(b)) => a == b,
+        (Pattern::Str(a), Value::Str(b)) => *a == **b,
         (Pattern::Bool(a), Value::Bool(b)) => a == b,
         // A Duration literal pattern is carried as whole milliseconds, and a
         // Duration value is an `Int` of milliseconds (Expr::Duration -> Value::Int),
@@ -4842,7 +4956,7 @@ fn match_pattern(pat: &Pattern, value: &Value, env: &mut Env) -> bool {
                 && args.len() == fields.len()
                 && args
                     .iter()
-                    .zip(fields)
+                    .zip(fields.iter())
                     .all(|(p, v)| match_pattern(p, v, env))
         }
         (Pattern::AnonCtor { tag, args }, Value::Ctor { name: vname, fields }) => {
@@ -4850,14 +4964,14 @@ fn match_pattern(pat: &Pattern, value: &Value, env: &mut Env) -> bool {
                 && args.len() == fields.len()
                 && args
                     .iter()
-                    .zip(fields)
+                    .zip(fields.iter())
                     .all(|(p, v)| match_pattern(p, v, env))
         }
         (Pattern::Tuple(pats), Value::Tuple(items)) => {
             pats.len() == items.len()
                 && pats
                     .iter()
-                    .zip(items)
+                    .zip(items.iter())
                     .all(|(p, v)| match_pattern(p, v, env))
         }
         (Pattern::List { elems, rest }, Value::List(items)) => {
@@ -4870,14 +4984,14 @@ fn match_pattern(pat: &Pattern, value: &Value, env: &mut Env) -> bool {
             }
             if !elems
                 .iter()
-                .zip(items)
+                .zip(items.iter())
                 .all(|(p, v)| match_pattern(p, v, env))
             {
                 return false;
             }
             if let Some(Some(name)) = rest {
                 let tail = items[elems.len()..].to_vec();
-                env.define(name.clone(), Value::List(tail), false);
+                env.define(Rc::from(name.as_str()), Value::list(tail), false);
             }
             true
         }
@@ -4896,7 +5010,7 @@ fn eval_binary(op: BinOp, l: Value, r: Value) -> Result<Value, RuntimeError> {
         Add | Sub | Mul | Div => match (op, l, r) {
             // `+` on strings concatenates (typeck guarantees both sides are
             // strings; this arm makes the reference semantics value-exact).
-            (Add, Str(a), Str(b)) => Ok(Str(format!("{a}{b}"))),
+            (Add, Str(a), Str(b)) => Ok(Value::str(format!("{a}{b}"))),
             (Add, Int(a), Int(b)) => Ok(Int(a.wrapping_add(b))),
             (Sub, Int(a), Int(b)) => Ok(Int(a.wrapping_sub(b))),
             (Mul, Int(a), Int(b)) => Ok(Int(a.wrapping_mul(b))),
@@ -4936,7 +5050,13 @@ fn eval_binary(op: BinOp, l: Value, r: Value) -> Result<Value, RuntimeError> {
             (a, b) => err(format!("`>>` expects two Ints, got `{a}` and `{b}`")),
         },
         Concat => match (l, r) {
-            (Str(a), Str(b)) => Ok(Str(a + &b)),
+            (Str(a), Str(b)) => {
+                // Reuse `a`'s buffer when this value is unshared (the string
+                // accumulation fast path); copy-on-write otherwise.
+                let mut out = Rc::try_unwrap(a).unwrap_or_else(|rc| (*rc).clone());
+                out.push_str(&b);
+                Ok(Str(Rc::new(out)))
+            }
             (a, b) => err(format!("`<>` expects two Strings, got `{a}` and `{b}`")),
         },
         Eq => Ok(Value::Bool(l == r)),
@@ -4986,7 +5106,7 @@ fn value_to_native(v: &Value) -> Result<witchy_runtime::value::NativeValue, Runt
     use witchy_runtime::value::NativeValue as N;
     Ok(match v {
         Value::Int(i) => N::Int(*i),
-        Value::Str(s) => N::Str(s.clone()),
+        Value::Str(s) => N::Str((**s).clone()),
         Value::Bytes(b) => N::Bytes(b.clone()),
         Value::Bool(b) => N::Bool(*b),
         Value::List(xs) => N::List(
@@ -5007,10 +5127,10 @@ fn native_to_value(v: witchy_runtime::value::NativeValue) -> Value {
     use witchy_runtime::value::NativeValue as N;
     match v {
         N::Int(i) => Value::Int(i),
-        N::Str(s) => Value::Str(s),
+        N::Str(s) => Value::str(s),
         N::Bytes(b) => Value::Bytes(b),
         N::Bool(b) => Value::Bool(b),
-        N::List(xs) => Value::List(xs.into_iter().map(native_to_value).collect()),
+        N::List(xs) => Value::list(xs.into_iter().map(native_to_value).collect()),
         // A secret produced by a native op (none do today) is revealable by default.
         N::Secret(s) => Value::Secret(s, false),
     }
@@ -5360,7 +5480,7 @@ fn run_module_inner_limited(
             let mut file_idx = 0usize;
             for p in &f.params {
                 if is_args_param(&p.ty) {
-                    vals.push(Value::List(args.iter().cloned().map(Value::Str).collect()));
+                    vals.push(Value::list(args.iter().map(Value::str).collect()));
                 } else if matches!(&p.ty, Some(Type::Named(n, _)) if n == "Dir") {
                     let r = if dir_idx == 0 {
                         interp.root.clone()
