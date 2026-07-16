@@ -31,14 +31,23 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# The merge coordinator marks serialized gates with WITCHY_GATE_SCOPE. macOS
-# test discovery there is bounded to four concurrent --list launches by
-# scripts/nextest-list-wrapper.sh (.config/nextest.toml), which can take
-# longer than the three-pulse standalone startup window. Keep the heartbeat
-# bounded while extending the serialized gate's observable-progress window to
-# sixteen minutes. Test EXECUTION is deliberately unbounded: the dyld stall
-# only ever hit cold first-exec of the ~100 MB binaries, and by run time every
-# binary has already been exec'd once by the list phase.
+# The merge coordinator marks serialized gates with WITCHY_GATE_SCOPE. Clear
+# Cargo's configured wrapper there so a detached coordinator does not inherit
+# a sandbox-incompatible sccache process. The coordinator also exports these
+# values after this change lands; keeping the check self-hosting lets this
+# candidate pass when an older coordinator is the one gating it.
+if [ -n "${WITCHY_GATE_SCOPE+x}" ]; then
+    export RUSTC_WRAPPER=
+    export CARGO_BUILD_RUSTC_WRAPPER=
+fi
+
+# macOS test discovery in the serialized gate is bounded to four concurrent
+# --list launches by scripts/nextest-list-wrapper.sh (.config/nextest.toml),
+# which can take longer than the three-pulse standalone startup window. Keep
+# the heartbeat bounded while extending the serialized gate's observable-
+# progress window to sixteen minutes. Test EXECUTION is deliberately unbounded:
+# the dyld stall only ever hit cold first-exec of the ~100 MB binaries, and by
+# run time every binary has already been exec'd once by the list phase.
 if [ -n "${WITCHY_GATE_SCOPE+x}" ] && [ -z "${WITCHY_STAGE_HEARTBEAT_LIMIT+x}" ]; then
     export WITCHY_STAGE_HEARTBEAT_LIMIT=8
 fi

@@ -189,13 +189,12 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope]
     # `set -m` puts the background job in its own process group, so a timeout
     # can kill the WHOLE cargo/nextest tree, not just the top shell.
     #
-    # CARGO_INCREMENTAL=0 is LOAD-BEARING, not hygiene (fb05dd34 landed it
-    # without a recorded reason): ~/.cargo/config.toml sets
-    # `rustc-wrapper = sccache`, and sccache REJECTS incremental compiles —
-    # `-C incremental=…` invocations exit nonzero, so an incremental gate
-    # build fails outright (measured 2026-07-15; see
-    # scratch/gate-perf-2026-07-15.md). Do not flip this while sccache is the
-    # global wrapper.
+    # Serialized gates deliberately bypass the globally configured sccache
+    # wrapper. Detached coordinators can run in a sandbox where the wrapper
+    # itself exits EPERM before Cargo metadata; exporting both Cargo controls
+    # keeps daemon and foreground coordinators equivalent. Incremental output
+    # remains disabled because this worktree is repeatedly rebased across
+    # unrelated branches and otherwise accumulates low-value state.
     set -m
     # Test execution runs at nextest's normal width. The macOS dyld stall that
     # once motivated NEXTEST_TEST_THREADS=4 here was a DISCOVERY problem —
@@ -204,7 +203,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope]
     # (.config/nextest.toml); by run time every binary is loader-warm. Bounding
     # execution as well doubled gate wall-clock (measured 2026-07-16: ~20.6 min
     # at width 4 vs the historical 8-10 min).
-    ( cd "$gate_wt" && exec env CARGO_INCREMENTAL=0 NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" bash -c "$gate_cmd" ) >"$log" 2>&1 &
+    ( cd "$gate_wt" && exec env CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" bash -c "$gate_cmd" ) >"$log" 2>&1 &
     local gpid=$!
     set +m
     local why=""

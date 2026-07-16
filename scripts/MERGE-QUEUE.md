@@ -170,9 +170,11 @@ shards ignore the scope.
    rebase excludes. Members carrying a `.nobatch` marker (from a previous
    red batch) are skipped, and a head with `.nobatch` gates strictly alone.
 5. Run the gate: own process group (`set -m`), stdout to the log,
-   `NEXTEST_STATUS_LEVEL=pass` for streaming. Discovery pressure on the macOS
-   gate host is bounded by the nextest list wrapper (see above); execution
-   runs at nextest's normal concurrency. A monitor loop kills the group on
+   `NEXTEST_STATUS_LEVEL=pass` for streaming, and Cargo wrapper variables
+   cleared so detached coordinators do not inherit a sandbox-incompatible
+   global sccache process. Discovery pressure on the macOS gate host is bounded
+   by the nextest list wrapper (see above); execution runs at nextest's normal
+   concurrency. A monitor loop kills the group on
    overall timeout, or on log-stall **only when the group is also idle** (CPU
    near zero) — a silent-but-CPU-busy gate is compiling/enumerating, not hung —
    and journals `timeout`. `check.sh` emits three two-minute stage heartbeats for
