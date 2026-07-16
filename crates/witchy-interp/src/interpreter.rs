@@ -2743,7 +2743,7 @@ impl Interpreter {
                             "meta.call_site is available only during compile-time expansion",
                         );
                     }
-                    let expr = witchy_syntax::linker::call_site_expr(&name);
+                    let expr = witchy_syntax::linker::call_site_expr(name.as_str());
                     let handle = format!("\0compiler-call-site-expression\0{name}");
                     if let Some(existing) = self.compiler_expr_syntax.get(&handle) {
                         if existing != &expr {
@@ -2756,7 +2756,7 @@ impl Interpreter {
                     }
                     Ok(Some(Value::Ctor {
                         name: "meta.CompilerExprSyntax".into(),
-                        fields: vec![Value::Str(handle), Value::Str(name)],
+                        fields: Rc::new(vec![Value::str(handle), Value::Str(name)]),
                     }))
                 }
                 other => err(format!("meta.call_site expects a String name, got `{other}`")),
