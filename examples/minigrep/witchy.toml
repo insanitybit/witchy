@@ -2,4 +2,10 @@
 name = "minigrep"
 version = "0.1.0"
 
+[targets.trusted-exe.dirs]
+# A trusted minigrep searches relative to the directory from which the user
+# launches it. The parameter remains Dir[Read], so the packaged app cannot
+# write there or escape that one subtree.
+root = { from = "cwd" }
+
 [dependencies]

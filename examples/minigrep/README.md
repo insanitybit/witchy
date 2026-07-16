@@ -7,7 +7,8 @@ set — with witchy's capability-typed entry point (`Console`, a read-only `Dir`
 `Env`, and the args). The two `search` functions are pure (`pub`).
 
 **Shows:** a capability-typed `main`, `Dir[Read]`/`Env`/args, `match` on an
-`Option`, `pub` functions across modules, and in-rune `test_*` functions.
+`Option`, `pub` functions across modules, in-rune `test_*` functions, and a
+trusted standalone application whose read-only root is the launch cwd.
 
 ## Run
 
@@ -16,6 +17,30 @@ set — with witchy's capability-typed entry point (`Console`, a read-only `Dir`
 witchy examples/minigrep/src/minigrep.witchy nobody examples/data/poem.txt
 IGNORE_CASE=1 witchy examples/minigrep/src/minigrep.witchy BODY examples/data/poem.txt
 ```
+
+## Build and install a trusted application
+
+The manifest binds `main`'s `root: Dir[Read]` to the directory from which the
+installed command is launched. Build one native executable containing the
+compiled WASM and Witchy runtime:
+
+```sh
+witchy --release build --target trusted-exe examples/minigrep
+install -m 755 examples/minigrep/target/release/minigrep ~/.local/bin/minigrep
+```
+
+The installed command needs neither Witchy nor capability flags:
+
+```sh
+cd /path/to/search-root
+minigrep nobody poem.txt
+```
+
+Installing this artifact means trusting the application, its embedded Witchy
+runtime, and its distributor. Its dependencies still receive no filesystem
+authority unless `minigrep` explicitly passes them the `Dir[Read]`. Use the
+portable WASM target and consumer-provided grants instead when the application
+is not trusted.
 
 ## Test
 

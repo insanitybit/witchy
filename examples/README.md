@@ -41,7 +41,7 @@ Or from inside a rune: `cd examples/hello && witchy run`.
 | [caps_guard](caps_guard/) | A CI gate that exits non-zero on capability widening |
 | [coven_check](coven_check/) | Auditing a package's footprint before depending on it |
 | [plugin_host](plugin_host/) | Hosting untrusted plugin code with attenuated authority |
-| [minigrep](minigrep/) | argv + Env + Dir together |
+| [minigrep](minigrep/) | argv + Env + Dir together; build and install a trusted standalone executable |
 | [serve_hello](serve_hello/), [serve_api](serve_api/), [serve_static](serve_static/) | `Net[Listen]` HTTP servers (routing, middleware, static files) |
 
 ## Performance modes
