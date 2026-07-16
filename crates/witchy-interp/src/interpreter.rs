@@ -2783,7 +2783,7 @@ impl Interpreter {
                     {
                         let template = self
                             .compiler_stmt_syntax
-                            .get(handle)
+                            .get(handle.as_str())
                             .cloned()
                             .ok_or_else(|| RuntimeError {
                                 message: "compiler-owned statement quotation referenced an invalid syntax handle"
@@ -2811,7 +2811,10 @@ impl Interpreter {
                         }
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerStmtSyntax".into(),
-                            fields: vec![Value::Str(instance_handle), Value::Str(source)],
+                            fields: Rc::new(vec![
+                                Value::str(instance_handle),
+                                Value::str(source),
+                            ]),
                         }))
                     }
                     [Value::Str(_), Value::List(_), Value::List(_)] => err(
@@ -2856,7 +2859,7 @@ impl Interpreter {
                     {
                         let template = self
                             .compiler_block_syntax
-                            .get(handle)
+                            .get(handle.as_str())
                             .cloned()
                             .ok_or_else(|| RuntimeError {
                                 message: "compiler-owned block quotation referenced an invalid syntax handle"
@@ -2885,7 +2888,10 @@ impl Interpreter {
                         }
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerBlockSyntax".into(),
-                            fields: vec![Value::Str(instance_handle), Value::Str(source)],
+                            fields: Rc::new(vec![
+                                Value::str(instance_handle),
+                                Value::str(source),
+                            ]),
                         }))
                     }
                     [Value::Str(_), Value::List(_), Value::List(_)] => err(
