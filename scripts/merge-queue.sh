@@ -396,8 +396,20 @@ cmd_doctor() {
     local cpid; cpid="$(cat "$qdir/coordinator.pid" 2>/dev/null || true)"
     if [ -n "$cpid" ] && pid_is_alive "$cpid"; then
         echo "coordinator : RUNNING (pid $cpid)"
+        # Durability check: a coordinator started as `run` from an interactive or
+        # tool-host session dies when that session's process group is reaped,
+        # ORPHANING any in-flight gate (it holds no lock once dead, but its
+        # check.sh keeps burning CPU with nothing left to merge the result).
+        # A `daemon`-started coordinator is reparented to init (ppid 1) via
+        # setsid and survives. Warn when it is NOT detached so an operator can
+        # migrate it (kill + `daemon`) at the next idle moment.
+        local cppid; cppid="$(ps -o ppid= -p "$cpid" 2>/dev/null | tr -d ' ')"
+        if [ -n "$cppid" ] && [ "$cppid" != 1 ]; then
+            echo "  WARNING   : session-bound (ppid $cppid ≠ 1) — dies with its launching session and orphans the gate."
+            echo "              Migrate when idle: kill $cpid && ./scripts/merge-queue.sh daemon"
+        fi
     else
-        echo "coordinator : NOT RUNNING${cpid:+ (last pid $cpid is dead)} — start: ./scripts/merge-queue.sh run"
+        echo "coordinator : NOT RUNNING${cpid:+ (last pid $cpid is dead)} — start (detached): ./scripts/merge-queue.sh daemon"
     fi
     local n; n="$(ls -1 "$queue_dir" 2>/dev/null | wc -l | tr -d ' ')"
     if [ "$n" -gt 0 ]; then
