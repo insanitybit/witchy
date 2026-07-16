@@ -22,6 +22,8 @@ mod structural_expr_holes;
 mod structural_item_holes;
 #[path = "rfc0080/structural_pattern_holes.rs"]
 mod structural_pattern_holes;
+#[path = "rfc0080/structural_body_holes.rs"]
+mod structural_body_holes;
 #[path = "rfc0080/structural_type_holes.rs"]
 mod structural_type_holes;
 #[path = "rfc0080/tag_definition_site.rs"]
