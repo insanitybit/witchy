@@ -18,6 +18,7 @@ pub fn is_render_intrinsic(name: &str) -> bool {
     crate::intrinsics::is_render(name)
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Module {
     /// The performance mode declared at the top of the file (`mode opt`), or empty
@@ -45,6 +46,7 @@ pub struct Module {
     pub item_lines: Vec<u32>,
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Item {
     Function(Function),
@@ -77,6 +79,7 @@ pub enum Item {
 /// A trait declaration: named method signatures (no bodies). The receiver is the
 /// first parameter, conventionally named `self`, whose type is the implementing
 /// type at each `impl`.
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct TraitDef {
     pub name: String,
@@ -90,6 +93,7 @@ pub struct TraitDef {
     pub methods: Vec<MethodSig>,
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct MethodSig {
     pub name: String,
@@ -104,6 +108,7 @@ pub struct MethodSig {
 /// (`trait_name` is `None`). Each method is a full function whose first parameter
 /// (`self`) stands for a value of `type_name`. Inherent methods are dispatched by
 /// receiver type just like trait methods, but belong to no trait.
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImplDef {
     pub origin: ImplOrigin,
@@ -125,6 +130,7 @@ pub struct ImplDef {
     pub methods: Vec<Function>,
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImplOrigin {
     Source,
@@ -132,6 +138,7 @@ pub enum ImplOrigin {
 }
 
 /// A sum type: `type Event { Click(Int, Int) Closed }`.
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeDef {
     pub name: String,
@@ -186,6 +193,7 @@ pub struct TypeDef {
     pub partial_eq_derived: bool,
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct Variant {
     pub name: String,
@@ -210,6 +218,7 @@ impl PartialEq for Variant {
     }
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Function {
     pub public: bool,
@@ -236,6 +245,7 @@ pub struct Function {
     pub is_async: bool,
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Param {
     pub name: String,
@@ -255,6 +265,7 @@ pub struct Param {
 /// Hylo-style parameter passing conventions (mutable value semantics).
 /// `let` borrows immutably (default), `var` mutates in place and writes back,
 /// `own` consumes (takes ownership / moves the value in).
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Convention {
     /// The default (no keyword): an owned value, observably immutable to the
@@ -279,6 +290,7 @@ impl Convention {
 }
 
 /// Types are parsed but not yet checked. `Named("Result", [Int, Error])`.
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     Named(String, Vec<Type>),
@@ -300,6 +312,7 @@ pub enum Type {
 
 /// An ownership/immutability qualifier (RFC-0025 `frozen`, RFC-0026 `unique`,
 /// RFC-0083 borrowed view). Not `Copy`: [`TypeQual::Borrow`] carries a lifetime name.
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeQual {
     /// `frozen` — deeply immutable; sharing is safe, mutation is a check-time error.
@@ -356,6 +369,7 @@ impl Type {
     }
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Block {
     pub stmts: Vec<Stmt>,
@@ -371,11 +385,13 @@ pub struct Block {
 
 /// A `region:` / `region -> T:` annotation. The optional type guarantees the
 /// copy-out shape at check time instead of inferring it from the tail.
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct RegionAnn {
     pub ty: Option<Type>,
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     /// `let x = e` or `var x = e`, optionally ascribed: `let x: T = e`.
@@ -418,6 +434,7 @@ pub enum Stmt {
     Expr(Expr),
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Int(i64),
@@ -573,6 +590,7 @@ pub enum Expr {
     },
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnOp {
     Neg,
@@ -590,6 +608,7 @@ pub enum UnOp {
     Await,
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
     Add,
@@ -618,6 +637,7 @@ pub enum BinOp {
     Shr,
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone)]
 pub struct MatchArm {
     /// Source line for the arm pattern. Used by the formatter for comment
@@ -634,6 +654,7 @@ impl PartialEq for MatchArm {
     }
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pattern {
     Wildcard,

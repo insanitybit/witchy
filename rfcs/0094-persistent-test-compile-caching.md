@@ -1,20 +1,18 @@
 ---
 rfc: 0094
 title: Persistent test-compile caching (std expansion across test processes)
-status: proposed
+status: implemented
 created: 2026-07-15
 superseded-by:
 tracking: >
-  Proposed. The differential test matrix spends ~41% of suite CPU in
-  frontend compilation, most of it re-compiling the same std modules in
-  every one of ~950 test processes. Extend the compile pipeline's caching
-  (per-process linker expansion cache; build-time prelude blob; wasmtime's
-  binary-identity-keyed disk cache) into a persistent, compiler-identity-
-  keyed artifact cache shared across test processes. Handed off: collides
-  with the active RFC-0063 catalog work in the linker/std surface.
+  Implemented 2026-07-15. Bundled std modules that round-trip through the
+  AST serializer are cached after records lowering and comptime expansion.
+  Test processes share BLAKE3-validated exact-AST
+  artifacts keyed by exact test-executable identity and ASLR-independent
+  expander identity; every cache failure falls back to ordinary expansion.
 related:
   - "0093 (diff-scoped merge gate — this is the next gate-time lever)"
-  - "0063 (intrinsic catalogs — owns the linker/std surface today)"
+  - "0063 (intrinsic catalogs — the cache landed after the active catalog edits cleared)"
 ---
 
 # RFC-0094: Persistent test-compile caching
@@ -40,19 +38,39 @@ cannot help across processes. Precedents that prove the shape of the fix:
 - wasmtime's disk cache is keyed on the `witchy` binary's mtime+size — the
   project already trusts binary-identity-keyed artifact caching.
 
-## Proposal
+## Decision
 
-One of (in increasing ambition):
-1. Extend the prelude blob to cover all of std (build-time cost, zero
-   run-time std expansion anywhere — also speeds the CLI for users).
-2. A disk-backed expansion/lowering cache under `target/witchy-testcache/`,
-   keyed (binary mtime+size, blake3 of linked source) — first process per
-   gate pays, the other ~950 hit.
+Implement the disk-backed expansion cache under
+`target/witchy-testcache/v1/`. The process-local cache remains the first tier.
+On its miss, a cargo test executable reads an exact-AST artifact for the
+bundled std module; on a disk miss it performs the existing parse, records
+lowering, and comptime expansion, then writes the artifact atomically.
 
-Estimated gate effect: example_tests CPU roughly halves (~-200s CPU,
-~-20s run wall idle; considerably more under contention). Combined with the
-shipped interp/runtime O2 this is the remaining path to a further ~25% cut
-in the post-RFC-0093 gate baseline.
+The namespace binds all of:
+
+- the test executable's Cargo filename, byte length, and nanosecond mtime;
+- the expander function's offset from a compiler anchor, which cancels ASLR but
+  keeps alternate test expanders separate;
+- the cache format version and std module name.
+
+The payload is the complete prepared `Module` encoded with Serde/Postcard. It
+preserves compiler-only state that canonical source cannot represent, including
+derived-type flags, generated-impl origins, lowered intrinsics, and exact source
+locations. It carries a BLAKE3 integrity envelope and an 8 MiB size ceiling.
+Missing, truncated, corrupt, undecodable, oversized, or unwritable entries are
+ordinary misses. Concurrent writers use per-process temporary files and atomic
+rename; losing a race is harmless because every writer produces the same
+validated artifact.
+
+The cache activates only for executables under Cargo's `debug/deps` or
+`release/deps` layout. Installed CLI binaries retain process-local caching; a
+user-facing persistent compiler cache needs its own location and lifecycle
+decision. Tests may redirect the root with `WITCHY_TEST_STDLIB_CACHE_DIR`.
+
+The pre-implementation estimate was that example-test frontend CPU could fall
+by roughly 200s across the full matrix. The focused measurement below is
+smaller per process, so that estimate is now a hypothesis rather than a claim;
+only serialized coordinator gates may establish the aggregate effect.
 
 ## Soundness constraints
 
@@ -63,13 +81,20 @@ in the post-RFC-0093 gate baseline.
 - Both backends must consume identical linked input (the cache serves the
   shared frontend, not either backend's lowering) or cache per-backend.
 
-## Why handed off rather than landed
+## Verification (2026-07-15)
 
-The linker/std expansion surface is under active RFC-0063 catalog work
-(string/math/encoding/list/dict catalogs merged 2026-07-15 alone), and the
-expansion cache itself was just introduced there. Two agents in that code
-concurrently is how parity bugs happen. Whoever owns the catalog completion
-should fold this in; the measurements above are current as of tonight.
+`rfc0094_persistent_std_cache` spawns the same test executable three times. The
+first process populates a semver artifact, the second proves a hit by leaving
+its mtime and bytes unchanged, and the third repairs a deliberately corrupted
+entry before linking and typechecking succeeds. This directly covers process
+identity, integrity fallback, and exact linked-AST reconstruction.
+
+Three clean cold/warm pairs of
+`example_tests::stdlib_properties::semver_roundtrips` measured a minimum 2.59s
+real / 2.32s user cold and 2.47s real / 2.21s user warm (4.6% real, 4.7% user).
+The exact-AST cache contained 17 modules and used 140 KiB. This validates a
+repeatable process-level saving but is not a whole-gate claim; the coordinator's
+serialized gate remains the aggregate measurement.
 
 ## Rejected for this goal (measured 2026-07-15)
 

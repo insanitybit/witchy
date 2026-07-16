@@ -440,15 +440,29 @@ pub type ComptimeExpander = fn(&str, &mut Module, &[(String, Module)]) -> Result
 /// literal expansion — is excluded by construction: a std source that even
 /// mentions `tag"` is never cached (see `pulled_std_cache_insert`). Keyed by
 /// the expander fn pointer so a non-standard `ComptimeExpander` gets its own
-/// entries, never another expander's output.
+/// entries, never another expander's output. Native cargo test executables add
+/// a second, process-shared tier below this map; it stores this exact `Module`
+/// AST in an executable-identity-keyed, integrity-checked envelope.
 static PULLED_STD_EXPANSION_CACHE: std::sync::OnceLock<
     std::sync::Mutex<HashMap<(usize, String), Module>>,
 > = std::sync::OnceLock::new();
 
 fn pulled_std_cache_get(expand: ComptimeExpander, name: &str) -> Option<Module> {
-    let cache = PULLED_STD_EXPANSION_CACHE.get()?;
-    let map = cache.lock().ok()?;
-    map.get(&(expand as usize, name.to_string())).cloned()
+    if let Some(module) = PULLED_STD_EXPANSION_CACHE
+        .get()
+        .and_then(|cache| cache.lock().ok())
+        .and_then(|map| map.get(&(expand as usize, name.to_string())).cloned())
+    {
+        return Some(module);
+    }
+
+    let module = persistent_std_cache_get(expand, name)?;
+    let cache =
+        PULLED_STD_EXPANSION_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    if let Ok(mut map) = cache.lock() {
+        map.insert((expand as usize, name.to_string()), module.clone());
+    }
+    Some(module)
 }
 
 fn pulled_std_cache_insert(expand: ComptimeExpander, name: &str, module: &Module) {
@@ -464,7 +478,139 @@ fn pulled_std_cache_insert(expand: ComptimeExpander, name: &str, module: &Module
     if let Ok(mut map) = cache.lock() {
         map.insert((expand as usize, name.to_string()), module.clone());
     }
+    persistent_std_cache_insert(expand, name, module);
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+const PERSISTENT_STD_CACHE_MAGIC: &[u8] = b"witchy-std-expansion-cache\x01";
+
+#[cfg(not(target_arch = "wasm32"))]
+const PERSISTENT_STD_CACHE_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+#[cfg(not(target_arch = "wasm32"))]
+static PERSISTENT_STD_CACHE_WRITE_ID: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// A stable address inside the current executable. Subtracting it from the
+/// expander address cancels ASLR while keeping alternate test expanders in
+/// separate namespaces.
+#[cfg(not(target_arch = "wasm32"))]
+#[inline(never)]
+fn persistent_std_cache_anchor() {}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn persistent_std_cache_path(expand: ComptimeExpander, name: &str) -> Option<std::path::PathBuf> {
+    if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return None;
+    }
+
+    // This cache targets cargo/nextest test executables. Installed CLI binaries
+    // keep their existing process-local cache until a user-facing cache location
+    // and lifecycle are specified separately.
+    let executable = std::env::current_exe().ok()?;
+    let deps = executable.parent()?;
+    if deps.file_name()?.to_str()? != "deps" {
+        return None;
+    }
+    let profile = deps.parent()?;
+    let target = profile.parent()?;
+    let root = std::env::var_os("WITCHY_TEST_STDLIB_CACHE_DIR")
+        .filter(|path| !path.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| target.join("witchy-testcache"));
+
+    let metadata = std::fs::metadata(&executable).ok()?;
+    let modified = metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    let anchor = persistent_std_cache_anchor as *const () as usize;
+    let expander_offset = (expand as *const () as usize).wrapping_sub(anchor);
+    let mut identity = blake3::Hasher::new();
+    identity.update(executable.file_name()?.to_string_lossy().as_bytes());
+    identity.update(&metadata.len().to_le_bytes());
+    identity.update(&modified.to_le_bytes());
+    identity.update(&expander_offset.to_le_bytes());
+    let identity = identity.finalize().to_hex();
+
+    Some(root.join("v1").join(identity.as_str()).join(format!("{name}.wstd")))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn persistent_std_cache_decode(bytes: &[u8]) -> Option<Module> {
+    let header = PERSISTENT_STD_CACHE_MAGIC.len().checked_add(32)?;
+    if bytes.len() < header
+        || bytes.len() > header + PERSISTENT_STD_CACHE_MAX_BYTES
+        || !bytes.starts_with(PERSISTENT_STD_CACHE_MAGIC)
+    {
+        return None;
+    }
+    let (stored_hash, payload) = bytes[PERSISTENT_STD_CACHE_MAGIC.len()..].split_at(32);
+    if stored_hash != blake3::hash(payload).as_bytes() {
+        return None;
+    }
+    postcard::from_bytes(payload).ok()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn persistent_std_cache_get(expand: ComptimeExpander, name: &str) -> Option<Module> {
+    let path = persistent_std_cache_path(expand, name)?;
+    let max_envelope = PERSISTENT_STD_CACHE_MAGIC.len() + 32 + PERSISTENT_STD_CACHE_MAX_BYTES;
+    if std::fs::metadata(&path).ok()?.len() > max_envelope as u64 {
+        let _ = std::fs::remove_file(path);
+        return None;
+    }
+    let bytes = std::fs::read(&path).ok()?;
+    if let Some(module) = persistent_std_cache_decode(&bytes) {
+        return Some(module);
+    }
+    // A malformed entry must never become sticky. Best effort only: failure to
+    // remove it still falls back to ordinary expansion in this process.
+    let _ = std::fs::remove_file(path);
+    None
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn persistent_std_cache_insert(expand: ComptimeExpander, name: &str, module: &Module) {
+    let Some(path) = persistent_std_cache_path(expand, name) else {
+        return;
+    };
+    let Ok(payload) = postcard::to_stdvec(module) else {
+        return;
+    };
+    if payload.len() > PERSISTENT_STD_CACHE_MAX_BYTES {
+        return;
+    }
+
+    let mut envelope = Vec::with_capacity(PERSISTENT_STD_CACHE_MAGIC.len() + 32 + payload.len());
+    envelope.extend_from_slice(PERSISTENT_STD_CACHE_MAGIC);
+    envelope.extend_from_slice(blake3::hash(&payload).as_bytes());
+    envelope.extend_from_slice(&payload);
+
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let write_id = PERSISTENT_STD_CACHE_WRITE_ID
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp = path.with_extension(format!("wstd.{}.{}.tmp", std::process::id(), write_id));
+    if std::fs::write(&temp, envelope).is_ok() {
+        let _ = std::fs::rename(&temp, &path);
+    }
+    let _ = std::fs::remove_file(temp);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn persistent_std_cache_get(_: ComptimeExpander, _: &str) -> Option<Module> {
+    None
+}
+
+#[cfg(target_arch = "wasm32")]
+fn persistent_std_cache_insert(_: ComptimeExpander, _: &str, _: &Module) {}
 
 /// Link-time policy for entry-specific privileges.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

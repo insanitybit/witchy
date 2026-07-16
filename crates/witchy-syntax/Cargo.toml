@@ -6,11 +6,19 @@ publish = false            # internal workspace crate — not published standalo
 license = "MIT OR Apache-2.0"
 description = "witchy compiler — the lexer, parser, and AST (source text → AST)"
 
-# Pure std; no external crates and no native gate — the tests are plain
-# `#[cfg(test)]` unit tests (no wasmtime), so this crate builds identically on
-# every target including the wasm playground.
+# Pure Rust with no native-code dependency gate. The AST/parser stay
+# target-neutral; native cargo test executables additionally enable the
+# advisory cross-process std-expansion cache below. The wasm playground omits
+# that filesystem-only tier.
 [dependencies]
 # Fast non-DoS-resistant hasher for internal tables (see witchy-types).
 foldhash = "0.2.0"
 # Shortest-round-trip f64 formatting for the shared interpreter/WASM render path.
 ryu = "1.0"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Exact AST payload plus integrity envelope for the advisory cross-process
+# std-expansion cache. Missing or corrupt entries fall back to expansion.
+blake3 = "1.8.3"
+postcard = { version = "1.1.3", features = ["use-std"] }
+serde = { version = "1.0.228", features = ["derive"] }
