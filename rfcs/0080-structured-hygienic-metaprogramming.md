@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed compatibility builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned hole-free item/expression/type/pattern/statement/block payloads with structural item, expression, and type holes, direct AST transport for typed tags, and definition-site direct-function resolution for compiler-owned typed tag output landed; general identifier origins and meta.call_site remain proposed"
+tracking: "source-backed compatibility builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned hole-free item/expression/type/pattern/statement/block payloads with structural item, expression, type, and pattern holes, direct AST transport for typed tags, and definition-site direct-function resolution for compiler-owned typed tag output landed; general identifier origins and meta.call_site remain proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -375,11 +375,20 @@ The first source-compatible slice is implemented:
   when parsed, while formatting preserves that public typed spelling. General
   `meta.type_*` builder composition and hole-bearing pattern, statement, and
   block quotations remain source-backed.
+- The thirty-third slice moves hole-bearing `quote pattern:` onto a
+  compiler-owned pattern-template channel. The parser stores one `Pattern` AST
+  containing exact pattern-hole nodes, and compile-time evaluation substitutes
+  each typed `PatternSyntax` into a clone. Compiler-owned holes transfer their
+  AST directly; compatibility holes parse only their payload. Literal
+  `meta.pattern_join(parts, holes)` plans are promoted to the same
+  representation, and formatting restores that public typed spelling. General
+  `meta.pattern_*` builder composition and hole-bearing statement/block
+  quotations remain source-backed.
 
-This is intentionally not the full RFC. Whole items, expression and type
-templates, and their typed hole placement plus all hole-free syntax payloads are
-now compiler-owned. Other composed syntax and hole-bearing pattern, statement,
-and block payloads remain source-backed. Compiler-owned typed tag
+This is intentionally not the full RFC. Whole items, expression, type, and
+pattern templates, and their typed hole placement plus all hole-free syntax
+payloads are now compiler-owned. Other composed syntax and hole-bearing
+statement and block payloads remain source-backed. Compiler-owned typed tag
 expressions now preserve definition-site direct function references, but
 general identifier origins and explicit call-site identifiers remain future
 work. The value is the

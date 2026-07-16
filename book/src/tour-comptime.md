@@ -82,8 +82,10 @@ type template remains compiler-owned, so nested anonymous structural types and
 borrowed views are substituted as nodes. A source-backed compatibility hole may
 parse its own payload; general `meta.type_*` builder composition still projects
 canonical source.
-Hole-free `quote pattern:` values also retain their parsed node through direct
-item holes; `meta.pattern_*` remains the compatibility construction API.
+`quote pattern:` values also retain their parsed node, including typed holes.
+The compiler substitutes the exact pattern node, while a compatibility hole may
+parse its own payload. General `meta.pattern_*` composition remains the
+source-backed construction API.
 Hole-free `quote stmt:` and `quote block:` values retain their body AST too.
 The existing body builders consume their canonical projection, so generators
 can migrate without changing the `meta.function_block` surface.
@@ -103,6 +105,32 @@ comptime:
 
 fn main(console: Console):
     console.print("${identity(42)}")
+```
+
+```text
+42
+```
+
+Pattern templates follow the same rule. The compatibility-built `1` pattern is
+inserted into an owned alternation, and that pattern is then inserted into the
+generated match arm:
+
+```witchy
+import meta
+
+comptime:
+    let one = meta.pattern_int(1)
+    let selected = quote pattern:
+        ${one} | 2
+    emit_item(quote item:
+        pub fn selected_value(value: Int) -> Int:
+            match value:
+                ${selected} -> 42
+                _ -> 0
+    )
+
+fn main(console: Console):
+    console.print("${selected_value(2)}")
 ```
 
 ```text

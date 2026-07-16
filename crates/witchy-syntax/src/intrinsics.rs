@@ -16,6 +16,7 @@ pub enum IntrinsicId {
     CompilerQuoteType,
     CompilerQuoteTypeHoles,
     CompilerQuotePattern,
+    CompilerQuotePatternHoles,
     CompilerQuoteStmt,
     CompilerQuoteBlock,
     CompilerEmitItem,
@@ -118,6 +119,7 @@ pub enum IntrinsicSignature {
     CompilerQuoteType,
     CompilerQuoteTypeHoles,
     CompilerQuotePattern,
+    CompilerQuotePatternHoles,
     CompilerQuoteStmt,
     CompilerQuoteBlock,
     CompilerEmitItem,
@@ -385,6 +387,7 @@ pub const COMPILER_QUOTE_EXPR_HOLES: &str = "@quote_expr_holes";
 pub const COMPILER_QUOTE_TYPE: &str = "@quote_type";
 pub const COMPILER_QUOTE_TYPE_HOLES: &str = "@quote_type_holes";
 pub const COMPILER_QUOTE_PATTERN: &str = "@quote_pattern";
+pub const COMPILER_QUOTE_PATTERN_HOLES: &str = "@quote_pattern_holes";
 pub const COMPILER_QUOTE_STMT: &str = "@quote_stmt";
 pub const COMPILER_QUOTE_BLOCK: &str = "@quote_block";
 pub const COMPILER_EMIT_ITEM: &str = "@emit_item";
@@ -624,6 +627,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "compiler-owned pattern quotation",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::CompilerQuotePatternHoles,
+        name: COMPILER_QUOTE_PATTERN_HOLES,
+        arity: 3,
+        signature: IntrinsicSignature::CompilerQuotePatternHoles,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "compiler-owned pattern quotation with holes",
         private_callers: NO_PRIVATE_CALLERS,
     },
     IntrinsicSpec {

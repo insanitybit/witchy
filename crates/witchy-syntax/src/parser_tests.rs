@@ -699,7 +699,7 @@ fn f():
     }
 
     #[test]
-    fn quote_pattern_holes_lower_to_meta_pattern_join() {
+    fn quote_pattern_holes_keep_a_compiler_owned_template() {
         let m = parse_module(r#"
 fn f(payload: meta.PatternSyntax):
     quote pattern:
@@ -708,14 +708,20 @@ fn f(payload: meta.PatternSyntax):
         let Item::Function(f) = &m.items[0] else {
             panic!("expected function");
         };
-        let expected = Expr::Call {
-            name: "meta.pattern_join".into(),
-            args: vec![
-                Expr::List(vec![Expr::Str("Some(".into()), Expr::Str(") | None".into())]),
-                Expr::List(vec![Expr::Var("payload".into())]),
-            ],
+        assert_eq!(m.compiler_pattern_syntax.len(), 1);
+        let Stmt::Expr(Expr::Call { name, args }) = &f.body.stmts[0] else {
+            panic!("expected compiler-owned pattern-hole call");
         };
-        assert_eq!(f.body.stmts, vec![Stmt::Expr(expected)]);
+        assert_eq!(name, crate::intrinsics::COMPILER_QUOTE_PATTERN_HOLES);
+        let [Expr::Str(handle), Expr::List(parts), Expr::List(holes)] = args.as_slice() else {
+            panic!("expected pattern handle, parts, and holes");
+        };
+        assert_eq!(handle, &m.compiler_pattern_syntax[0].handle);
+        assert_eq!(
+            parts,
+            &vec![Expr::Str("Some(".into()), Expr::Str(") | None".into())]
+        );
+        assert_eq!(holes, &vec![Expr::Var("payload".into())]);
     }
 
     #[test]

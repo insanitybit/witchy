@@ -95,6 +95,14 @@ pub fn instantiate_type(template: &Type, holes: Vec<Type>) -> Result<Type, Strin
     Ok(ty)
 }
 
+pub fn instantiate_pattern(template: &Pattern, holes: Vec<Pattern>) -> Result<Pattern, String> {
+    let mut holes = holes.into_iter().map(Some).collect::<Vec<_>>();
+    let mut pattern = template.clone();
+    substitute_pattern(&mut pattern, &mut holes)?;
+    ensure_consumed("pattern", &holes)?;
+    Ok(pattern)
+}
+
 fn indent(source: &str, spaces: usize) -> String {
     let prefix = " ".repeat(spaces);
     source
@@ -476,5 +484,16 @@ mod tests {
         let hole = Type::Named("Int".into(), Vec::new());
         let ty = instantiate_type(&template, vec![hole.clone()]).expect("substitute type hole");
         assert_eq!(ty, Type::Named("List".into(), vec![hole]));
+    }
+
+    #[test]
+    fn substitutes_pattern_holes_without_reparsing() {
+        let template = Pattern::Or(vec![
+            Pattern::Var(format!("{QUOTE_PATTERN_HOLE_PREFIX}0")),
+            Pattern::Int(2),
+        ]);
+        let pattern = instantiate_pattern(&template, vec![Pattern::Int(1)])
+            .expect("substitute pattern hole");
+        assert_eq!(pattern, Pattern::Or(vec![Pattern::Int(1), Pattern::Int(2)]));
     }
 }

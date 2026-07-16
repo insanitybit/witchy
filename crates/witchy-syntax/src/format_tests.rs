@@ -205,6 +205,25 @@
     }
 
     #[test]
+    fn compiler_owned_pattern_holes_round_trip_through_formatting() {
+        let src = "comptime fn either(first: meta.PatternSyntax) -> meta.PatternSyntax:\n    quote pattern:\n        ${first} | 2\n";
+        let out = reformat(src).expect("compiler-owned pattern holes round-trip");
+        assert!(out.starts_with("import meta\n"), "{out}");
+        assert!(out.contains("meta.pattern_join([\"\", \" | 2\"], [first])"), "{out}");
+        let reparsed = crate::parser::parse_module(&out).expect("formatted pattern holes parse");
+        assert_eq!(reparsed.compiler_pattern_syntax.len(), 1);
+        let crate::ast::Item::Function(either) = &reparsed.items[0] else {
+            panic!("expected helper function");
+        };
+        let crate::ast::Stmt::Expr(crate::ast::Expr::Call { name, .. }) = &either.body.stmts[0]
+        else {
+            panic!("expected compiler-owned pattern-hole call");
+        };
+        assert_eq!(name, crate::intrinsics::COMPILER_QUOTE_PATTERN_HOLES);
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
+    }
+
+    #[test]
     fn compiler_owned_body_quotes_round_trip_through_formatting() {
         let src = "comptime fn statement() -> meta.StmtSyntax:\n    quote stmt:\n        let x = 40\n\ncomptime fn body() -> meta.BlockSyntax:\n    quote block:\n        let x = 40\n        x + 2\n";
         let out = reformat(src).expect("compiler-owned body quotes round-trip");

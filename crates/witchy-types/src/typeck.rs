@@ -3847,6 +3847,14 @@ impl Checker {
                 vec![Ty::String, Ty::String],
                 Ty::Named("meta.PatternSyntax".into(), Vec::new()),
             )),
+            S::CompilerQuotePatternHoles => Some((
+                vec![
+                    Ty::String,
+                    Ty::List(Box::new(Ty::String)),
+                    Ty::List(Box::new(Ty::Named("meta.PatternSyntax".into(), Vec::new()))),
+                ],
+                Ty::Named("meta.PatternSyntax".into(), Vec::new()),
+            )),
             S::CompilerQuoteStmt => Some((
                 vec![Ty::String, Ty::String],
                 Ty::Named("meta.StmtSyntax".into(), Vec::new()),

@@ -537,6 +537,48 @@ fn compiler_type_holes(
         .collect()
 }
 
+fn compiler_pattern_holes(
+    values: &[Value],
+    compiler_pattern_syntax: &HashMap<String, Pattern>,
+) -> Result<Vec<Pattern>, RuntimeError> {
+    fn tail(name: &str) -> &str {
+        name.rsplit_once('.').map_or(name, |(_, tail)| tail)
+    }
+
+    values
+        .iter()
+        .map(|value| {
+            let Value::Ctor { name, fields } = value else {
+                return err("compiler-owned pattern hole was not meta.PatternSyntax");
+            };
+            match tail(name) {
+                "CompilerPatternSyntax" => {
+                    let [Value::Str(handle), Value::Str(_source)] = fields.as_slice() else {
+                        return err("CompilerPatternSyntax carried an invalid payload");
+                    };
+                    compiler_pattern_syntax
+                        .get(handle)
+                        .cloned()
+                        .ok_or_else(|| RuntimeError {
+                            message: "compiler-owned pattern referenced an invalid syntax handle"
+                                .into(),
+                        })
+                }
+                "PatternSyntax" => {
+                    let [Value::Str(source)] = fields.as_slice() else {
+                        return err("PatternSyntax carried an invalid source payload");
+                    };
+                    witchy_syntax::syntax_holes::parse_pattern_payload(source)
+                        .map_err(|message| RuntimeError { message })
+                }
+                other => err(format!(
+                    "compiler-owned pattern hole carried `{other}`, expected PatternSyntax"
+                )),
+            }
+        })
+        .collect()
+}
+
 fn mock_normalize(rel: &str) -> Result<String, RuntimeError> {
     let path = Path::new(rel);
     if path.is_absolute() {
@@ -2550,6 +2592,56 @@ impl Interpreter {
                         err("compiler-owned pattern quotation referenced an invalid syntax handle")
                     }
                     _ => err("compiler-owned pattern quotation expects a pattern handle"),
+                }
+            }
+            name if name == intrinsics::COMPILER_QUOTE_PATTERN_HOLES => {
+                if self.fresh_ident_scope.is_none() {
+                    return err(
+                        "compiler-owned pattern quotation is available only during compile-time expansion",
+                    );
+                }
+                match args {
+                    [Value::Str(handle), Value::List(parts), Value::List(holes)]
+                        if parts.len() == holes.len() + 1
+                            && parts.iter().all(|part| matches!(part, Value::Str(_))) =>
+                    {
+                        let template = self
+                            .compiler_pattern_syntax
+                            .get(handle)
+                            .cloned()
+                            .ok_or_else(|| RuntimeError {
+                                message: "compiler-owned pattern quotation referenced an invalid syntax handle"
+                                    .into(),
+                            })?;
+                        let holes =
+                            compiler_pattern_holes(holes, &self.compiler_pattern_syntax)?;
+                        let pattern =
+                            witchy_syntax::syntax_holes::instantiate_pattern(&template, holes)
+                                .map_err(|message| RuntimeError { message })?;
+                        let source = witchy_syntax::format::pattern_str(&pattern);
+                        let instance_handle =
+                            format!("{handle}\0compiler-owned-pattern-instance\0{source}");
+                        if let Some(existing) = self.compiler_pattern_syntax.get(&instance_handle) {
+                            if existing != &pattern {
+                                return err(
+                                    "compiler-owned pattern instance handle collided with a different AST",
+                                );
+                            }
+                        } else {
+                            self.compiler_pattern_syntax
+                                .insert(instance_handle.clone(), pattern);
+                        }
+                        Ok(Some(Value::Ctor {
+                            name: "meta.CompilerPatternSyntax".into(),
+                            fields: vec![Value::Str(instance_handle), Value::Str(source)],
+                        }))
+                    }
+                    [Value::Str(_), Value::List(_), Value::List(_)] => err(
+                        "compiler-owned pattern quotation referenced an invalid syntax handle or hole plan",
+                    ),
+                    _ => err(
+                        "compiler-owned pattern quotation expects a pattern handle and typed holes",
+                    ),
                 }
             }
             name if name == intrinsics::COMPILER_QUOTE_STMT => {

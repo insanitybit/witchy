@@ -1292,6 +1292,11 @@ fn expr(e: &Expr) -> String {
             {
                 return format!("meta.pattern_join([{}], [])", string_lit(source));
             }
+            if name == crate::intrinsics::COMPILER_QUOTE_PATTERN_HOLES
+                && let [Expr::Str(_handle), parts, holes] = args.as_slice()
+            {
+                return format!("meta.pattern_join({}, {})", expr(parts), expr(holes));
+            }
             if name == crate::intrinsics::COMPILER_QUOTE_STMT
                 && let [Expr::Str(_handle), Expr::Str(source)] = args.as_slice()
             {
@@ -2169,6 +2174,7 @@ fn canon_expr(e: &mut Expr) {
                 | crate::intrinsics::COMPILER_QUOTE_TYPE
                 | crate::intrinsics::COMPILER_QUOTE_TYPE_HOLES
                 | crate::intrinsics::COMPILER_QUOTE_PATTERN
+                | crate::intrinsics::COMPILER_QUOTE_PATTERN_HOLES
                 | crate::intrinsics::COMPILER_QUOTE_STMT
                 | crate::intrinsics::COMPILER_QUOTE_BLOCK
         ) && let Some(Expr::Str(handle)) = args.first_mut()
