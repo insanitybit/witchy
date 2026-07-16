@@ -35,8 +35,17 @@ pid_is_alive() {
 
 # Failure to create the per-run root means the performance guard is unavailable.
 # Run this one list command directly rather than spinning forever.
+# One line per binary into the check.sh progress channel (stage_heartbeat
+# turns growth into liveness-resetting log lines; nextest swallows wrapper
+# stdout/stderr, so a file is the only visible channel).
+record_progress() {
+    [ -n "${WITCHY_LIST_PROGRESS_FILE:-}" ] || return 0
+    printf '%s\n' "$(basename "$1")" >>"$WITCHY_LIST_PROGRESS_FILE" 2>/dev/null || true
+}
+
 if ! mkdir -p "$root" 2>/dev/null; then
     echo "nextest-list-wrapper: cannot create slot root; proceeding unbounded" >&2
+    record_progress "$1"
     exec "$@"
 fi
 
@@ -74,4 +83,5 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+record_progress "$1"
 "$@"

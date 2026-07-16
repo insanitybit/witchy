@@ -155,6 +155,17 @@ else
     test_cmd=(cargo test --workspace)
 fi
 
+# Progress channel for the bounded macOS list phase: the list wrapper appends
+# one line per test binary it starts (scripts/nextest-list-wrapper.sh), and
+# stage_heartbeat converts growth into REAL log lines that reset its bounded
+# pulse window. Needed because first-exec of a freshly linked ~100MB binary is
+# pure kernel-side codesign verification: ~25s wall with 0.00 user AND 0.00
+# sys CPU and no output — invisible to both the coordinator's idle check and
+# log liveness. An interp-touching diff relinks all ~47 binaries, so its list
+# phase is minutes of legitimate, observable-only-here work (this killed four
+# gates on 2026-07-16 before the channel existed).
+export WITCHY_LIST_PROGRESS_FILE="$(mktemp "${TMPDIR:-/tmp}/witchy-list-progress-XXXXXX")"
+
 # A named shard runs exactly one section and exits (reporting elapsed time).
 # The witchy formatter over std, examples, and projects (NOT rustfmt over the
 # Rust — that's hand-formatted and out of scope). Uses the binary built above.
@@ -240,11 +251,28 @@ stage_heartbeat() { # stage_heartbeat <step> <label> <stage-start>
     esac
     [ "$interval" -gt 0 ] && [ "$limit" -gt 0 ] || return 0
     trap 'kill "${sleep_pid:-}" 2>/dev/null || true; exit 0' TERM INT
+    local progress_seen=0 progress_now=0
     while [ "$pulse" -lt "$limit" ]; do
         sleep "$interval" &
         sleep_pid=$!
         wait "$sleep_pid" || return 0
         sleep_pid=""
+        # Observable progress RESETS the bounded window: these lines are real
+        # signal (the coordinator's liveness counts them, unlike the bounded
+        # pulses below), so a stage that keeps verifying+listing binaries may
+        # pulse indefinitely, while a truly stalled stage still exhausts the
+        # limit and goes silent for the watchdog exactly as before.
+        if [ -n "${WITCHY_LIST_PROGRESS_FILE:-}" ] && [ -f "$WITCHY_LIST_PROGRESS_FILE" ]; then
+            progress_now="$(wc -l <"$WITCHY_LIST_PROGRESS_FILE" 2>/dev/null | tr -d ' ')"
+            case "$progress_now" in '' | *[!0-9]*) progress_now=0 ;; esac
+            if [ "$progress_now" -gt "$progress_seen" ]; then
+                printf '\033[1;34m    [%d] %s list progress: %d test binaries started (stage+%ds)\033[0m\n' \
+                    "$stage_step" "$label" "$progress_now" "$(( $(date +%s) - stage_start ))"
+                progress_seen="$progress_now"
+                pulse=0
+                continue
+            fi
+        fi
         pulse=$((pulse + 1))
         printf '\033[1;34m    [%d] %s still running (heartbeat %d/%d, stage+%ds)\033[0m\n' \
             "$stage_step" "$label" "$pulse" "$limit" "$(( $(date +%s) - stage_start ))"
