@@ -3417,6 +3417,9 @@ struct Checker {
     gc_cap_aggregates: HashSet<String>,
     adt_variants: HashMap<String, Vec<String>>,
     fn_conventions: HashMap<String, Vec<Convention>>,
+    /// Source parameter names paired with [`Self::fn_conventions`]. Names are
+    /// diagnostic metadata only; function-type identity remains positional.
+    fn_param_names: HashMap<String, Vec<String>>,
     /// Per-function type parameters (name, var id), from lowercase type names in
     /// signatures. Generalized: instantiated fresh at each call site.
     fn_typarams: HashMap<String, Vec<(String, u32)>>,
@@ -5899,9 +5902,10 @@ impl Checker {
             for (i, (arg, conv)) in args.iter().zip(&convs).enumerate() {
                 match conv {
                     Convention::Var => {
+                        let parameter = self.var_parameter_context(name, i);
                         if matches!(arg, Expr::Unary { op: UnOp::Move, .. }) {
                             return terr(format!(
-                                "argument {} to `{name}` uses `move` for a `var` parameter; write-back requires a live mutable place in the caller",
+                                "argument {} to {parameter} uses `move`; write-back requires a live mutable place in the caller",
                                 i + 1
                             ));
                         }
@@ -5922,14 +5926,15 @@ impl Checker {
                         }
                         Some(place) => {
                             return terr(format!(
-                                "argument `{}` to `{name}` is passed to a `var` parameter, so its root `{}` must be a mutable `var`",
+                                "argument {} to {parameter} has immutable root `{}`; root `{}` must be a mutable `var` for write-back",
                                 i + 1,
+                                place.root,
                                 place.root
                             ))
                         }
                         None => {
                             return terr(format!(
-                                "argument {} to the `var` parameter of `{name}` must be a mutable place",
+                                "argument {} to {parameter} must be a mutable place; bind the expression to a mutable `var` before the call",
                                 i + 1
                             ))
                         }
@@ -5953,6 +5958,19 @@ impl Checker {
         Ok(ret)
     }
 
+    fn var_parameter_context(&self, name: &str, index: usize) -> String {
+        match self
+            .fn_param_names
+            .get(name)
+            .and_then(|names| names.get(index))
+        {
+            Some(parameter) => {
+                format!("`var` parameter `{parameter}` of `{name}`")
+            }
+            None => format!("`var` parameter {} of `{name}`", index + 1),
+        }
+    }
+
     fn enforce_function_value_conventions(
         &mut self,
         name: &str,
@@ -5963,9 +5981,10 @@ impl Checker {
         for (index, (arg, convention)) in args.iter().zip(conventions).enumerate() {
             match convention {
                 Convention::Var => {
+                    let parameter = self.var_parameter_context(name, index);
                     if matches!(arg, Expr::Unary { op: UnOp::Move, .. }) {
                         return terr(format!(
-                            "argument {} to `{name}` uses `move` for a `var` parameter; write-back requires a live mutable place in the caller",
+                            "argument {} to {parameter} uses `move`; write-back requires a live mutable place in the caller",
                             index + 1
                         ));
                     }
@@ -5986,14 +6005,15 @@ impl Checker {
                     }
                     Some(place) => {
                         return terr(format!(
-                            "argument {} to `{name}` is passed to a `var` parameter, so its root `{}` must be a mutable `var`",
+                            "argument {} to {parameter} has immutable root `{}`; root `{}` must be a mutable `var` for write-back",
                             index + 1,
+                            place.root,
                             place.root
                         ));
                     }
                     None => {
                         return terr(format!(
-                            "argument {} to the `var` parameter of `{name}` must be a mutable place",
+                            "argument {} to {parameter} must be a mutable place; bind the expression to a mutable `var` before the call",
                             index + 1
                         ));
                     }
@@ -8323,6 +8343,7 @@ fn run_check_selected(
         fn_sigs: HashMap::new(),
         from_conversion_fns: from_conversion_fns.cloned().unwrap_or_default(),
         fn_conventions: HashMap::new(),
+        fn_param_names: HashMap::new(),
         ctor_sigs: HashMap::new(),
         ctor_typarams: HashMap::new(),
         record_fields: HashMap::new(),
@@ -8424,6 +8445,8 @@ fn run_check_selected(
                 c.fn_bounds.insert(f.name.clone(), bounds);
                 c.fn_conventions
                     .insert(f.name.clone(), f.params.iter().map(|p| p.convention).collect());
+                c.fn_param_names
+                    .insert(f.name.clone(), f.params.iter().map(|p| p.name.clone()).collect());
             }
             Item::Type(t) => {
                 // A type's parameters: explicit ones (`type Step(m, a):`) FIX the

@@ -902,6 +902,15 @@ fn closest_method<'a>(name: &str, methods: impl Iterator<Item = &'a str>) -> Opt
         .map(|(_, cand)| cand)
 }
 
+fn convention_source_name(convention: Convention) -> &'static str {
+    match convention {
+        Convention::Let => "plain",
+        Convention::Borrow => "`let`",
+        Convention::Var => "`var`",
+        Convention::Own => "`own`",
+    }
+}
+
 fn validate_trait_impl(im: &ImplDef, methods: &[MethodSig], trait_params: &[String]) -> Vec<String> {
     let Some(trait_name) = &im.trait_name else { return Vec::new() };
     let trait_bare = bare(trait_name);
@@ -940,10 +949,13 @@ fn validate_trait_impl(im: &ImplDef, methods: &[MethodSig], trait_params: &[Stri
         for (idx, (actual, expected)) in method.params.iter().zip(&sig.params).enumerate() {
             if actual.convention != expected.convention {
                 diags.push(format!(
-                    "`impl {trait_bare} for {type_bare}` method `{name}` parameter {} has convention `{:?}`, but the trait requires `{:?}`",
+                    "in impl declaration `impl {trait_bare} for {type_bare}`, method `{name}` parameter {} `{}` is {}, but trait declaration `{trait_bare}.{name}` parameter {} `{}` is {}; Variable write-back parameter conventions must match exactly",
                     idx + 1,
-                    actual.convention,
-                    expected.convention
+                    actual.name,
+                    convention_source_name(actual.convention),
+                    idx + 1,
+                    expected.name,
+                    convention_source_name(expected.convention)
                 ));
             }
             if let (Some(actual_ty), Some(expected_ty)) = (&actual.ty, &expected.ty) {

@@ -226,7 +226,7 @@ fn exclusivity_and_place_diagnostics_are_exact_and_source_facing() {
     );
     assert_eq!(
         immutable,
-        "`main.test`, line 4: argument `1` to `main.bump` is passed to a `var` parameter, so its root `n` must be a mutable `var`",
+        "`main.test`, line 4: argument 1 to `var` parameter `n` of `main.bump` has immutable root `n`; root `n` must be a mutable `var` for write-back",
     );
     assert_source_facing(&immutable);
 
@@ -238,7 +238,7 @@ fn exclusivity_and_place_diagnostics_are_exact_and_source_facing() {
     );
     assert_eq!(
         temporary,
-        "`main`, line 4: argument 1 to the `var` parameter of `main.bump` must be a mutable place",
+        "`main`, line 4: argument 1 to `var` parameter `n` of `main.bump` must be a mutable place; bind the expression to a mutable `var` before the call",
     );
     assert_source_facing(&temporary);
 
@@ -251,9 +251,24 @@ fn exclusivity_and_place_diagnostics_are_exact_and_source_facing() {
     );
     assert_eq!(
         moved,
-        "`main`, line 5: argument 1 to `main.bump` uses `move` for a `var` parameter; write-back requires a live mutable place in the caller",
+        "`main`, line 5: argument 1 to `var` parameter `n` of `main.bump` uses `move`; write-back requires a live mutable place in the caller",
     );
     assert_source_facing(&moved);
+
+    let convention_mismatch = type_error(
+        "trait Advance:\n\
+         \x20   fn advance(var self, by: Int) -> Int\n\
+         type Counter:\n\
+         \x20   value: Int\n\
+         impl Advance for Counter:\n\
+         \x20   fn advance(self, by: Int) -> Int:\n\
+         \x20       self.value + by\n",
+    );
+    assert_eq!(
+        convention_mismatch,
+        "in impl declaration `impl Advance for Counter`, method `advance` parameter 1 `self` is plain, but trait declaration `Advance.advance` parameter 1 `self` is `var`; Variable write-back parameter conventions must match exactly",
+    );
+    assert_source_facing(&convention_mismatch);
 }
 
 #[test]
