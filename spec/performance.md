@@ -111,7 +111,7 @@ tracked in CI as numbers, not vibes:
 - cold-start latency (`witchy sandbox` cached vs `go run`/compiled binary vs `dotnet run`)
 
 `bench/run.sh` runs the paired programs via `hyperfine` and diffs against the
-recorded `bench/BASELINE.md`, so regressions fail loudly.
+recorded [benchmark baseline](../bench/BASELINE.md), so regressions fail loudly.
 
 ## Phase 1 — Memory model (the current blocker)
 
@@ -158,7 +158,7 @@ re-own instead of disqualifying, read-only calls don't break accumulation,
 `d.update(…)` upserts and `x = f(move x)` own-ABI pipelines run in place,
 and the remaining copy-path cliffs are flagged by `witchy check`/the LSP.
 
-**Measured baseline (bench/BASELINE.md):** the benchmark suite tracks witchy
+**Measured baseline ([bench/BASELINE.md](../bench/BASELINE.md)):** the benchmark suite tracks witchy
 against native reference implementations as data — currently strings run
 4–5.7× the reference throughput; lists, dicts, compute, and cold start are at
 parity. Those reference legs (Go, and C# when a dotnet toolchain is present)

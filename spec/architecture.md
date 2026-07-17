@@ -150,7 +150,7 @@ time (`witchy check` notes + LSP hints); `WITCHY_OPT=-inplace` compiles the
 copying paths for differential verification, and the exported
 `__witchy_reowns` counter lets tests assert copy counts. Measured against the
 benchmark baseline: string workloads run at 4–5.7× the reference throughput,
-lists/dicts/compute at parity — see `bench/BASELINE.md`.
+lists/dicts/compute at parity — see the [benchmark baseline](../bench/BASELINE.md).
 
 ## The runtime sandbox
 
