@@ -45,7 +45,7 @@ reachable before this:
 
 - **OIDC trusted publishing** must fetch a provider's signing keys (JWKS) —
   `https://token.actions.githubusercontent.com/...`, `https://www.googleapis.com/oauth2/v3/certs`.
-- **Social login** (`rfcs/0010-web-console-social-login.md`) must do the OAuth
+- **Social login** ([RFC-0010](0010-web-console-social-login.md)) must do the OAuth
   code→token exchange and userinfo call against `https://github.com` /
   `https://oauth2.googleapis.com` — server-side, because the client secret can
   never reach the browser and coven-web's `connect-src 'self'` forbids a
@@ -263,5 +263,5 @@ bypass.)
   PEM reader behind `WITCHY_TLS_EXTRA_ROOTS`.
 - RFC-0003 (network address scoping) — the `Net` allowlist + host:port matcher this
   extends.
-- `rfcs/0010-web-console-social-login.md` and the coven trusted-publishing flow — the
+- [RFC-0010](0010-web-console-social-login.md) and the coven trusted-publishing flow — the
   two consumers that made this a prerequisite, both now shipped on top of it.
