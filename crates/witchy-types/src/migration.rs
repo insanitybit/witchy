@@ -391,6 +391,12 @@ fn walk_expr(
                 walk_expr(arg, function, line, nested_position, signatures, mutable, census);
             }
         }
+        Expr::ExistentialCall { receiver, args, .. } => {
+            walk_expr(receiver, function, line, nested_position, signatures, mutable, census);
+            for arg in args {
+                walk_expr(arg, function, line, nested_position, signatures, mutable, census);
+            }
+        }
         Expr::Apply { func, args } => {
             walk_expr(func, function, line, nested_position, signatures, mutable, census);
             for arg in args {
@@ -551,6 +557,12 @@ fn find_call(expr: &Expr, visit: &mut impl FnMut(&str)) {
             }
         }
         Expr::MethodCall { receiver, args, .. } => {
+            find_call(receiver, visit);
+            for arg in args {
+                find_call(arg, visit);
+            }
+        }
+        Expr::ExistentialCall { receiver, args, .. } => {
             find_call(receiver, visit);
             for arg in args {
                 find_call(arg, visit);

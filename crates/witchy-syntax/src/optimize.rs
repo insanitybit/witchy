@@ -163,6 +163,10 @@ fn opt_expr(e: &mut Expr, consts: &mut Consts) {
         Expr::As { expr, .. } | Expr::ExistentialPack { expr, .. } => {
             opt_expr(expr, consts)
         }
+        Expr::ExistentialCall { receiver, args, .. } => {
+            opt_expr(receiver, consts);
+            for arg in args { opt_expr(arg, consts); }
+        }
         Expr::Binary { lhs, rhs, .. } => {
             opt_expr(lhs, consts);
             opt_expr(rhs, consts);

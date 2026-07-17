@@ -101,6 +101,12 @@ impl Renamer {
             | Expr::LabeledCall { .. } => {
                 unreachable!("range/index sugar is lowered before codegen (parser::lower_sugar_module)")
             }
+            Expr::ExistentialCall { receiver, args, .. } => {
+                self.rename_expr(receiver);
+                for arg in args {
+                    self.rename_expr(arg);
+                }
+            }
             Expr::Var(n) => *n = self.resolve(n),
             Expr::Int(_)
         | Expr::Duration(_)
@@ -312,7 +318,8 @@ pub(crate) fn flip_string_add_module(m: &mut Module, table: &witchy_types::typec
                     walk_expr(a, table);
                 }
             }
-            Expr::MethodCall { receiver, args, .. } => {
+            Expr::MethodCall { receiver, args, .. }
+            | Expr::ExistentialCall { receiver, args, .. } => {
                 walk_expr(receiver, table);
                 for a in args {
                     walk_expr(a, table);
@@ -479,7 +486,8 @@ pub(crate) fn rewrite_try_ctx_module(m: &mut Module, table: &witchy_types::typec
                     walk_expr(a, table, changed);
                 }
             }
-            Expr::MethodCall { receiver, args, .. } => {
+            Expr::MethodCall { receiver, args, .. }
+            | Expr::ExistentialCall { receiver, args, .. } => {
                 walk_expr(receiver, table, changed);
                 for a in args {
                     walk_expr(a, table, changed);

@@ -757,6 +757,13 @@ fn check_unique_parameters(module: &Module) -> Result<(), TypeError> {
                 }
                 Ok(())
             }
+            Expr::ExistentialCall { receiver, args, .. } => {
+                check_expr(receiver)?;
+                for arg in args {
+                    check_expr(arg)?;
+                }
+                Ok(())
+            }
             Expr::Apply { func, args } => {
                 check_expr(func)?;
                 for arg in args {
@@ -1473,6 +1480,22 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                     }
                     Ok(())
                 }
+                Expr::ExistentialCall {
+                    receiver,
+                    args,
+                    ty,
+                    result,
+                    ..
+                } => {
+                    validate_expr_types(receiver, known, arities, type_defs, ctx, in_ctx)?;
+                    for arg in args {
+                        validate_expr_types(arg, known, arities, type_defs, ctx, in_ctx)?;
+                    }
+                    validate_type_model(ty, known, arities, type_defs)
+                        .map_err(|e| in_ctx(e, ctx))?;
+                    validate_type_model(result, known, arities, type_defs)
+                        .map_err(|e| in_ctx(e, ctx))
+                }
                 Expr::Apply { func, args } => {
                     validate_expr_types(func, known, arities, type_defs, ctx, in_ctx)?;
                     for arg in args {
@@ -2037,6 +2060,18 @@ impl<'a> ExistentialCheck<'a> {
             Expr::MethodCall { receiver, args, .. } => {
                 self.visit_expr(receiver)?;
                 args.iter().try_for_each(|arg| self.visit_expr(arg))
+            }
+            Expr::ExistentialCall {
+                receiver,
+                args,
+                ty,
+                result,
+                ..
+            } => {
+                self.visit_expr(receiver)?;
+                args.iter().try_for_each(|arg| self.visit_expr(arg))?;
+                self.visit_type(ty)?;
+                self.visit_type(result)
             }
             Expr::Apply { func, args } => {
                 self.visit_expr(func)?;
@@ -3207,6 +3242,12 @@ fn check_unique_capacity_results(module: &Module) -> Result<(), TypeError> {
                 }
             }
             Expr::MethodCall { receiver, args, .. } => {
+                check_returns_expr(receiver, function, functions)?;
+                for arg in args {
+                    check_returns_expr(arg, function, functions)?;
+                }
+            }
+            Expr::ExistentialCall { receiver, args, .. } => {
                 check_returns_expr(receiver, function, functions)?;
                 for arg in args {
                     check_returns_expr(arg, function, functions)?;
@@ -6247,6 +6288,12 @@ impl Checker {
                     self.collect_var_writebacks_in_expr(argument, out);
                 }
             }
+            Expr::ExistentialCall { receiver, args, .. } => {
+                self.collect_var_writebacks_in_expr(receiver, out);
+                for argument in args {
+                    self.collect_var_writebacks_in_expr(argument, out);
+                }
+            }
             Expr::Apply { func, args } => {
                 if let Expr::Var(name) = func.as_ref()
                     && let Some(conventions) = self.call_conventions_for_expr(name)
@@ -6499,6 +6546,18 @@ impl Checker {
                     "cannot resolve the method call `.{method}(…)` — methods come from \
                      `impl` blocks; a plain function is called as `{method}(value, …)`"
                 ))
+            }
+            Expr::ExistentialCall {
+                receiver,
+                args,
+                result,
+                ..
+            } => {
+                self.infer(receiver)?;
+                for arg in args {
+                    self.infer(arg)?;
+                }
+                Ok(self.to_ty(result))
             }
             Expr::ExistentialPack { expr, ty, .. } => {
                 self.infer(expr)?;

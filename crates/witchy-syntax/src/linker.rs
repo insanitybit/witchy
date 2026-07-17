@@ -1723,6 +1723,10 @@ fn resolve_in_expr(
         | Expr::Field { base: expr, .. } => {
             resolve_in_expr(expr, sig, by_base, vars)
         }
+        Expr::ExistentialCall { receiver, args, .. } => {
+            resolve_in_expr(receiver, sig, by_base, vars);
+            for arg in args { resolve_in_expr(arg, sig, by_base, vars); }
+        }
         Expr::Binary { lhs, rhs, .. } => {
             resolve_in_expr(lhs, sig, by_base, vars);
             resolve_in_expr(rhs, sig, by_base, vars);
@@ -1907,6 +1911,10 @@ fn collect_bound_expr(e: &Expr, out: &mut HashSet<String>) {
         | Expr::ExistentialPack { expr, .. }
         | Expr::Field { base: expr, .. } => {
             collect_bound_expr(expr, out)
+        }
+        Expr::ExistentialCall { receiver, args, .. } => {
+            collect_bound_expr(receiver, out);
+            for arg in args { collect_bound_expr(arg, out); }
         }
         Expr::RecordUpdate { name: _, base, fields } => {
             collect_bound_expr(base, out);
@@ -2196,6 +2204,10 @@ fn rewrite_expr(
         | Expr::As { expr, .. }
         | Expr::ExistentialPack { expr, .. } => {
             rewrite_expr(expr, context, line)?
+        }
+        Expr::ExistentialCall { receiver, args, .. } => {
+            rewrite_expr(receiver, context, line)?;
+            for arg in args { rewrite_expr(arg, context, line)?; }
         }
         // (RFC-0050 Part 2) A bare `module.fn` in value (non-call) position is a
         // first-class function value, produced by eta-expansion: `list.length`
@@ -2576,6 +2588,10 @@ fn seal_expr(
         | Expr::ExistentialPack { expr, .. }
         | Expr::Field { base: expr, .. } => {
             seal_expr(expr, sealed, home, allow_test_sealed_type_construction)?;
+        }
+        Expr::ExistentialCall { receiver, args, .. } => {
+            seal_expr(receiver, sealed, home, allow_test_sealed_type_construction)?;
+            for arg in args { seal_expr(arg, sealed, home, allow_test_sealed_type_construction)?; }
         }
         Expr::RecordUpdate { name, base, fields } => {
             if let Some(name) = name {
@@ -3178,6 +3194,10 @@ fn check_reserved_expr(
         | Expr::ExistentialPack { expr, .. }
         | Expr::Field { base: expr, .. } => {
             check_reserved_expr(module_name, expr, line, generated_anon_types)?
+        }
+        Expr::ExistentialCall { receiver, args, .. } => {
+            check_reserved_expr(module_name, receiver, line, generated_anon_types)?;
+            for arg in args { check_reserved_expr(module_name, arg, line, generated_anon_types)?; }
         }
         Expr::Binary { lhs, rhs, .. } => {
             check_reserved_expr(module_name, lhs, line, generated_anon_types)?;

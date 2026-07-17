@@ -259,6 +259,10 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     // Expand type aliases and inline module-level constants first (a no-op once
     // the linker has done so, but covers single-module paths like `check_str`).
     let module = witchy_syntax::aliases::resolve(witchy_syntax::consts::inline(module));
+    // Retain the resolved trait/impl universe while ordinary trait lowering
+    // erases declarations. Existential method calls use this to resolve their
+    // static slot before either backend receives the compiler-owned node.
+    let witness_catalog = crate::witness::WitnessCatalog::from_module(&module);
     // The performance modes (`mode opt`) are a whole-module fact the borrow/loan
     // checker (RFC-0083) reads; carry them onto the rebuilt lowered module below.
     let modes = module.modes.clone();
@@ -564,6 +568,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             ctor_infos: &ctor_infos,
             fn_sigs: &fn_sigs,
             record_fields: &record_fields,
+            existential_catalog: &witness_catalog,
             free_fns: &free_fns,
             owner_methods: &owner_methods,
             missing_impls: &quiet,
@@ -802,6 +807,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             ctor_infos: &ctor_infos,
             fn_sigs: &fn_sigs,
             record_fields: &record_fields,
+            existential_catalog: &witness_catalog,
             free_fns: &free_fns,
             owner_methods: &owner_methods,
             missing_impls: &missing_impls,
@@ -1344,6 +1350,20 @@ fn collect_anon_union_heads_expr(expr: &Expr, out: &mut HashMap<String, usize>) 
             if let Expr::MethodCall { receiver, .. } = expr {
                 collect_anon_union_heads_expr(receiver, out);
             }
+        }
+        Expr::ExistentialCall {
+            receiver,
+            args,
+            ty,
+            result,
+            ..
+        } => {
+            collect_anon_union_heads_expr(receiver, out);
+            for arg in args {
+                collect_anon_union_heads_expr(arg, out);
+            }
+            collect_anon_union_heads_type(ty, out);
+            collect_anon_union_heads_type(result, out);
         }
         Expr::LabeledCall { args, .. } => {
             for (_, arg) in args {
@@ -1989,6 +2009,7 @@ struct Ctx<'a> {
     fn_sigs: &'a HashMap<String, FnSig>,
     /// Record type name -> its named field types (for typing `x.field`).
     record_fields: &'a HashMap<String, Vec<(String, Type)>>,
+    existential_catalog: &'a crate::witness::WitnessCatalog,
     /// Plain (non-method) function names: a trait-method call that ALSO names
     /// a free function may legitimately resolve to it, so it is never a
     /// missing-impl error.
@@ -2227,6 +2248,7 @@ fn local_expr_type(
         | Expr::For { .. }
         | Expr::WhileLet { .. }
         | Expr::TaggedLit { .. } => None,
+        Expr::ExistentialCall { result, .. } => Some(result.clone()),
     }
 }
 
@@ -2428,6 +2450,41 @@ impl Ctx<'_> {
             })
             .cloned()
             .collect()
+    }
+
+    fn existential_slot(&self, ty: &Type, method: &str) -> Result<(String, u32, Type), String> {
+        let Type::Dyn(root, _) = ty.unqualified() else {
+            return Err("internal: existential dispatch needs a dyn receiver".to_string());
+        };
+        let layout = crate::witness::layout_from_catalog(self.existential_catalog, ty)?;
+        let visible = |owner: &str| {
+            owner == root
+                || self
+                    .supertraits
+                    .get(root)
+                    .is_some_and(|supertraits| supertraits.iter().any(|name| name == owner))
+        };
+        let matches: Vec<_> = layout
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| slot.method == method && visible(&slot.owner_trait))
+            .collect();
+        match matches.as_slice() {
+            [(index, slot_def)] => {
+                let slot = u32::try_from(*index)
+                    .map_err(|_| "existential method slot exceeds u32".to_string())?;
+                Ok((slot_def.owner_trait.clone(), slot, slot_def.result.clone()))
+            }
+            [] => Err(format!(
+                "`{}` has no existential-safe method `{method}`",
+                witchy_syntax::format::type_str(ty)
+            )),
+            _ => Err(format!(
+                "method `{method}` on `{}` is ambiguous between supertraits; call through a more specific trait",
+                witchy_syntax::format::type_str(ty)
+            )),
+        }
     }
 
     fn ambiguous_method_msg(method: &str, tn: &str, owners: &[String]) -> String {
@@ -3055,20 +3112,30 @@ impl Ctx<'_> {
                 }
                 let owner_module = receiver_ty.as_ref().and_then(type_owner_module_ast);
                 match receiver_ty {
-                    // (RFC-0081 slice 1) A method call on an existential
-                    // receiver is the witness slice's dynamic dispatch, not a
-                    // resolution failure: `nominal_type_name` deliberately
-                    // returns None for `Type::Dyn`, so every dyn receiver
-                    // funnels here. Emit the one canonical feature-stage
-                    // diagnostic instead of a misleading "no method on
-                    // `dyn Render`" error.
+                    // RFC-0081: resolve all static dispatch facts now. The
+                    // resulting compiler-owned node leaves only witness-adapter
+                    // selection to the runtime; it never re-resolves a method
+                    // by source spelling or concrete payload type.
                     Some(ty) if matches!(ty.unqualified(), Type::Dyn(..)) => {
-                        self.missing_impls.borrow_mut().push(
-                            crate::typeck::existential_stage_error(
-                                &witchy_syntax::format::type_str(ty.unqualified()),
-                            )
-                            .message,
-                        )
+                        match self.existential_slot(&ty, method) {
+                            Ok((owner_trait, slot, result)) => {
+                                let receiver = std::mem::replace(
+                                    receiver.as_mut(),
+                                    Expr::Bool(false),
+                                );
+                                *e = Expr::ExistentialCall {
+                                    receiver: Box::new(receiver),
+                                    args: std::mem::take(args),
+                                    ty,
+                                    owner_trait,
+                                    method: method.clone(),
+                                    slot,
+                                    result,
+                                };
+                                return;
+                            }
+                            Err(message) => self.missing_impls.borrow_mut().push(message),
+                        }
                     }
                     // A free function of this name that could ACCEPT this receiver
                     // exists somewhere other than the receiver's owner module: the
@@ -3121,6 +3188,12 @@ impl Ctx<'_> {
                         "cannot resolve the method call `.{method}(…)` — the receiver's type \
                          is not known here; call the function directly: `{method}(value, …)`"
                     )),
+                }
+            }
+            Expr::ExistentialCall { receiver, args, .. } => {
+                self.rewrite_expr(receiver, scope);
+                for arg in args.iter_mut() {
+                    self.rewrite_expr(arg, scope);
                 }
             }
             Expr::WhileLet { pattern, scrutinee, body } => {
@@ -3334,6 +3407,9 @@ fn block_needs_lowering(b: &Block) -> bool {
 fn expr_needs_lowering(e: &Expr) -> bool {
     match e {
         Expr::MethodCall { .. } => true,
+        Expr::ExistentialCall { receiver, args, .. } => {
+            expr_needs_lowering(receiver) || args.iter().any(expr_needs_lowering)
+        }
         Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
         | Expr::Var(_) | Expr::TaggedLit { .. } => false,
         Expr::List(xs) | Expr::Tuple(xs) => xs.iter().any(expr_needs_lowering),
@@ -3812,6 +3888,20 @@ fn subst_expr_types(e: &mut Expr, subst: &HashMap<String, Type>) {
                 subst_expr_types(a, subst);
             }
         }
+        Expr::ExistentialCall {
+            receiver,
+            args,
+            ty,
+            result,
+            ..
+        } => {
+            subst_expr_types(receiver, subst);
+            for a in args {
+                subst_expr_types(a, subst);
+            }
+            *ty = subst_trait_params(ty, subst);
+            *result = subst_trait_params(result, subst);
+        }
         Expr::Apply { func, args } => {
             subst_expr_types(func, subst);
             for a in args {
@@ -3959,6 +4049,12 @@ fn collect_function_refs(f: &Function, out: &mut HashSet<String>) {
                 }
             }
             Expr::MethodCall { receiver, args, .. } => {
+                walk(receiver, locals, out);
+                for a in args {
+                    walk(a, locals, out);
+                }
+            }
+            Expr::ExistentialCall { receiver, args, .. } => {
                 walk(receiver, locals, out);
                 for a in args {
                     walk(a, locals, out);
@@ -4198,6 +4294,12 @@ fn rename_calls_block(
                 }
             }
             Expr::MethodCall { receiver, args, .. } => {
+                walk_expr(receiver, scope, ctx);
+                for a in args {
+                    walk_expr(a, scope, ctx);
+                }
+            }
+            Expr::ExistentialCall { receiver, args, .. } => {
                 walk_expr(receiver, scope, ctx);
                 for a in args {
                     walk_expr(a, scope, ctx);
@@ -4540,6 +4642,12 @@ fn rewrite_try_from_expr(
             }
         }
         Expr::MethodCall { receiver, args, .. } => {
+            rewrite_try_from_expr(receiver, dst_err, conversions, table);
+            for arg in args {
+                rewrite_try_from_expr(arg, dst_err, conversions, table);
+            }
+        }
+        Expr::ExistentialCall { receiver, args, .. } => {
             rewrite_try_from_expr(receiver, dst_err, conversions, table);
             for arg in args {
                 rewrite_try_from_expr(arg, dst_err, conversions, table);
@@ -5214,6 +5322,12 @@ impl Mono<'_> {
                     self.walk_expr(a, scope);
                 }
             }
+            Expr::ExistentialCall { receiver, args, .. } => {
+                self.walk_expr(receiver, scope);
+                for a in args.iter_mut() {
+                    self.walk_expr(a, scope);
+                }
+            }
             Expr::WhileLet { pattern, scrutinee, body } => {
                 self.walk_expr(scrutinee, scope);
                 let mut s = scope.clone();
@@ -5516,5 +5630,51 @@ mod structured_dispatch_tests {
             "from",
         );
         assert_ne!(qualified, underscored);
+    }
+
+    #[test]
+    fn dyn_method_syntax_lowers_to_an_authenticated_witness_slot() {
+        let source = r#"
+trait Render:
+    fn render(self) -> String
+
+type Label:
+    Label(String)
+
+impl Render for Label:
+    fn render(self) -> String:
+        match self:
+            Label(text) -> text
+
+fn show(value: dyn Render) -> String:
+    value.render()
+"#;
+        let module = witchy_syntax::parser::parse_module(source).expect("parse dyn dispatch");
+        let lowered = lower_for_wasm(module);
+        let function = lowered
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "show" => Some(function),
+                _ => None,
+            })
+            .expect("lowered show function");
+        let [Stmt::Expr(Expr::ExistentialCall {
+            ty: Type::Dyn(trait_name, trait_args),
+            owner_trait,
+            method,
+            slot,
+            result,
+            ..
+        })] = function.body.stmts.as_slice()
+        else {
+            panic!("dyn method call must lower to a compiler-owned witness slot");
+        };
+        assert_eq!(trait_name, "Render");
+        assert!(trait_args.is_empty());
+        assert_eq!(owner_trait, "Render");
+        assert_eq!(method, "render");
+        assert_eq!(*slot, 0);
+        assert_eq!(result, &named_type("String"));
     }
 }

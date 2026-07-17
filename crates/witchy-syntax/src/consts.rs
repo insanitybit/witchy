@@ -81,6 +81,10 @@ fn collect_names(e: &Expr, out: &mut Vec<String>) {
         | Expr::Field { base: expr, .. } => {
             collect_names(expr, out)
         }
+        Expr::ExistentialCall { receiver, args, .. } => {
+            collect_names(receiver, out);
+            for arg in args { collect_names(arg, out); }
+        }
         Expr::RecordUpdate { name: _, base, fields } => {
             collect_names(base, out);
             for (_, v) in fields {
@@ -339,6 +343,13 @@ fn subst_expr(
         | Expr::ExistentialPack { expr, .. }
         | Expr::Field { base: expr, .. } => {
             subst_expr(expr, consts, cnames, scope)
+        }
+        Expr::ExistentialCall { receiver, args, .. } => {
+            let mut changed = subst_expr(receiver, consts, cnames, scope);
+            for arg in args {
+                changed |= subst_expr(arg, consts, cnames, scope);
+            }
+            changed
         }
         Expr::RecordUpdate { name: _, base, fields } => {
             let mut changed = subst_expr(base, consts, cnames, scope);

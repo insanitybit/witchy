@@ -131,6 +131,10 @@ impl Resolver {
             | Expr::As { expr, .. }
             | Expr::ExistentialPack { expr, .. }
             | Expr::Field { base: expr, .. } => self.expr(expr)?,
+            Expr::ExistentialCall { receiver, args, .. } => {
+                self.expr(receiver)?;
+                for arg in args { self.expr(arg)?; }
+            }
             Expr::Index { base, index } => {
                 self.expr(base)?;
                 self.expr(index)?;

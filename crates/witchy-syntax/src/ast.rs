@@ -616,6 +616,18 @@ pub enum Expr {
         ty: Type,
         witness: u32,
     },
+    /// Compiler-owned RFC-0081 existential dispatch. Trait lowering resolves
+    /// the static owner and slot before either runtime sees the call; only the
+    /// witness-selected adapter remains dynamic.
+    ExistentialCall {
+        receiver: Box<Expr>,
+        args: Vec<Expr>,
+        ty: Type,
+        owner_trait: String,
+        method: String,
+        slot: u32,
+        result: Type,
+    },
     Binary { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr> },
     If {
         cond: Box<Expr>,

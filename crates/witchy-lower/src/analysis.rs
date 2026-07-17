@@ -793,7 +793,8 @@ fn collect_accumulators_expr(
             collect_accumulators(body, summaries, accs, loop_ptrs, loop_sites);
             loop_ptrs.pop();
         }
-        Expr::MethodCall { receiver, args, .. } => {
+        Expr::MethodCall { receiver, args, .. }
+        | Expr::ExistentialCall { receiver, args, .. } => {
             collect_accumulators_expr(receiver, summaries, accs, loop_ptrs, loop_sites);
             for a in args {
                 collect_accumulators_expr(a, summaries, accs, loop_ptrs, loop_sites);
@@ -1199,7 +1200,8 @@ impl<'a> Walker<'a> {
                 self.scan(base, false, reason, out);
                 self.scan(index, false, reason, out);
             }
-            Expr::MethodCall { receiver, args, .. } => {
+            Expr::MethodCall { receiver, args, .. }
+            | Expr::ExistentialCall { receiver, args, .. } => {
                 // Pre-lowered before codegen; if seen (diagnostics on the
                 // sugared form), be conservative: receiver and args live.
                 self.scan(receiver, true, reason, out);
@@ -1315,7 +1317,8 @@ fn expr(e: &Expr, accs: &HashSet<String>, out: &mut HashSet<String>) {
                 expr(base, accs, out);
                 expr(index, accs, out);
             }
-            Expr::MethodCall { receiver, args, .. } => {
+            Expr::MethodCall { receiver, args, .. }
+            | Expr::ExistentialCall { receiver, args, .. } => {
                 expr(receiver, accs, out);
                 for a in args {
                     expr(a, accs, out);
@@ -1447,7 +1450,8 @@ fn collect_candidates_in_expr(e: &Expr, out: &mut HashSet<(String, String)>) {
                 collect_candidates_in_expr(a, out);
             }
         }
-        Expr::MethodCall { receiver, args, .. } => {
+        Expr::MethodCall { receiver, args, .. }
+        | Expr::ExistentialCall { receiver, args, .. } => {
             collect_candidates_in_expr(receiver, out);
             for a in args {
                 collect_candidates_in_expr(a, out);
@@ -1539,7 +1543,8 @@ fn field_escapes_expr(e: &Expr, var: &str, field: &str) -> bool {
             field_escapes_expr(func, var, field)
                 || args.iter().any(|a| field_escapes_expr(a, var, field))
         }
-        Expr::MethodCall { receiver, args, .. } => {
+        Expr::MethodCall { receiver, args, .. }
+        | Expr::ExistentialCall { receiver, args, .. } => {
             field_escapes_expr(receiver, var, field)
                 || args.iter().any(|a| field_escapes_expr(a, var, field))
         }
@@ -1640,7 +1645,8 @@ fn collect_moved_accs(e: &Expr, accs: &HashSet<String>, out: &mut Vec<String>) {
                 collect_moved_accs(a, accs, out);
             }
         }
-        Expr::MethodCall { receiver, args, .. } => {
+        Expr::MethodCall { receiver, args, .. }
+        | Expr::ExistentialCall { receiver, args, .. } => {
             collect_moved_accs(receiver, accs, out);
             for a in args {
                 collect_moved_accs(a, accs, out);
@@ -1993,7 +1999,8 @@ fn rc_lets_expr(e: &Expr, confined: bool, out: &mut HashSet<String>) {
         Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
             args.iter().for_each(|a| rc_lets_expr(a, confined, out))
         }
-        Expr::MethodCall { receiver, args, .. } => {
+        Expr::MethodCall { receiver, args, .. }
+        | Expr::ExistentialCall { receiver, args, .. } => {
             rc_lets_expr(receiver, confined, out);
             args.iter().for_each(|a| rc_lets_expr(a, confined, out));
         }
@@ -2151,7 +2158,8 @@ fn each_value_child(e: &Expr, f: &mut impl FnMut(&Expr)) {
         Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
             args.iter().for_each(f)
         }
-        Expr::MethodCall { receiver, args, .. } => {
+        Expr::MethodCall { receiver, args, .. }
+        | Expr::ExistentialCall { receiver, args, .. } => {
             f(receiver);
             args.iter().for_each(f);
         }
@@ -2256,7 +2264,8 @@ fn expr_read_count(e: &Expr, name: &str) -> usize {
                 n += expr_read_count(a, name);
             }
         }
-        Expr::MethodCall { receiver, args, .. } => {
+        Expr::MethodCall { receiver, args, .. }
+        | Expr::ExistentialCall { receiver, args, .. } => {
             n += expr_read_count(receiver, name);
             for a in args {
                 n += expr_read_count(a, name);
@@ -2407,7 +2416,8 @@ fn each_block_in_expr(e: &Expr, f: &mut impl FnMut(&Block)) {
         Expr::Call { args, .. } | Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => {
             args.iter().for_each(|a| each_block_in_expr(a, f))
         }
-        Expr::MethodCall { receiver, args, .. } => {
+        Expr::MethodCall { receiver, args, .. }
+        | Expr::ExistentialCall { receiver, args, .. } => {
             each_block_in_expr(receiver, f);
             args.iter().for_each(|a| each_block_in_expr(a, f));
         }
@@ -2844,7 +2854,8 @@ impl<'a> FipChecker<'a> {
                 }
                 self.miss("an unresolved or first-class call cannot satisfy the FIP contract")
             }
-            Expr::MethodCall { receiver, args, .. } => {
+            Expr::MethodCall { receiver, args, .. }
+            | Expr::ExistentialCall { receiver, args, .. } => {
                 self.value(receiver);
                 for arg in args {
                     self.value(arg);
@@ -2943,7 +2954,8 @@ fn fip_expr_calls(expr: &Expr, function: &str) -> bool {
         Expr::LabeledCall { name, args } => {
             name == function || args.iter().any(|(_, arg)| fip_expr_calls(arg, function))
         }
-        Expr::MethodCall { receiver, args, .. } => {
+        Expr::MethodCall { receiver, args, .. }
+        | Expr::ExistentialCall { receiver, args, .. } => {
             fip_expr_calls(receiver, function)
                 || args.iter().any(|arg| fip_expr_calls(arg, function))
         }
@@ -3587,7 +3599,8 @@ impl<'a> NoCopyWalker<'a> {
                 }
                 NoCopyProof::Unavailable("an indirect call has no declared no-copy proof".to_string())
             }
-            Expr::MethodCall { receiver, args, .. } => {
+            Expr::MethodCall { receiver, args, .. }
+            | Expr::ExistentialCall { receiver, args, .. } => {
                 let _ = self.expr(receiver, stmt, env);
                 for arg in args {
                     let _ = self.expr(arg, stmt, env);

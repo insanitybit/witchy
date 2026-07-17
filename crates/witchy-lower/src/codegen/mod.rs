@@ -2972,6 +2972,12 @@ impl<'types> Codegen<'types> {
                     self.infer_locals_expr(a);
                 }
             }
+            Expr::ExistentialCall { receiver, args, .. } => {
+                self.infer_locals_expr(receiver);
+                for arg in args {
+                    self.infer_locals_expr(arg);
+                }
+            }
             Expr::Apply { func, args } => {
                 self.infer_locals_expr(func);
                 for a in args {
@@ -7456,6 +7462,10 @@ impl<'types> Codegen<'types> {
                     args: vec![payload, W::ConstI32(i32::try_from(*witness).ok()?)],
                 });
             }
+            // RFC-0081 dispatch reaches this backend only after the public
+            // feature gate is opened. Its next slice supplies uniform adapter
+            // trampolines; do not fall back to a source-name call here.
+            Expr::ExistentialCall { .. } => return None,
             // `e as T` (capability narrowing / type ascription) is value-neutral
             // at codegen — lower the inner expression unchanged.
             Expr::As { expr, .. } => return self.lower_expr(expr),
@@ -10219,6 +10229,12 @@ impl<'types> Codegen<'types> {
                     self.scan_escapes_expr(a, inner, ok);
                 }
             }
+            Expr::ExistentialCall { receiver, args, .. } => {
+                self.scan_escapes_expr(receiver, inner, ok);
+                for arg in args {
+                    self.scan_escapes_expr(arg, inner, ok);
+                }
+            }
             Expr::Ctor { args, .. }
             | Expr::AnonCtor { args, .. }
             | Expr::List(args)
@@ -10920,6 +10936,10 @@ impl DevirtScan {
                 self.walk_expr(receiver);
                 args.iter().for_each(|a| self.walk_expr(a));
             }
+            Expr::ExistentialCall { receiver, args, .. } => {
+                self.walk_expr(receiver);
+                args.iter().for_each(|a| self.walk_expr(a));
+            }
             Expr::Apply { func, args } => {
                 self.walk_expr(func);
                 args.iter().for_each(|a| self.walk_expr(a));
@@ -11192,6 +11212,12 @@ fn nested_var_place_roots(
             Expr::Lambda { body, .. } | Expr::Block(body) => {
                 scan_block(body, conventions, roots)
             }
+            Expr::ExistentialCall { receiver, args, .. } => {
+                scan_expr(receiver, conventions, roots);
+                for argument in args {
+                    scan_expr(argument, conventions, roots);
+                }
+            }
             Expr::MethodCall { .. }
             | Expr::Record { .. }
             | Expr::LabeledCall { .. }
@@ -11225,6 +11251,12 @@ fn collect_fn_refs_expr(e: &Expr, out: &mut HashSet<String>) {
         | Expr::Record { .. }
         | Expr::LabeledCall { .. } => {
             unreachable!("range/index sugar is lowered before codegen (parser::lower_sugar_module)")
+        }
+        Expr::ExistentialCall { receiver, args, .. } => {
+            collect_fn_refs_expr(receiver, out);
+            for arg in args {
+                collect_fn_refs_expr(arg, out);
+            }
         }
         Expr::Call { name, args } => {
             out.insert(name.clone());
@@ -11520,7 +11552,8 @@ fn collect_loan_event_keys_expr(
         Expr::LabeledCall { args, .. } => {
             args.iter().for_each(|(_, arg)| collect_loan_event_keys_expr(arg, facts, out));
         }
-        Expr::MethodCall { receiver, args, .. } => {
+        Expr::MethodCall { receiver, args, .. }
+        | Expr::ExistentialCall { receiver, args, .. } => {
             collect_loan_event_keys_expr(receiver, facts, out);
             args.iter().for_each(|arg| collect_loan_event_keys_expr(arg, facts, out));
         }
@@ -11600,7 +11633,8 @@ fn collect_loan_roots_expr(
         Expr::LabeledCall { args, .. } => {
             args.iter().for_each(|(_, arg)| collect_loan_roots_expr(arg, facts, out));
         }
-        Expr::MethodCall { receiver, args, .. } => {
+        Expr::MethodCall { receiver, args, .. }
+        | Expr::ExistentialCall { receiver, args, .. } => {
             collect_loan_roots_expr(receiver, facts, out);
             args.iter().for_each(|arg| collect_loan_roots_expr(arg, facts, out));
         }
@@ -11674,6 +11708,12 @@ fn collect_let_names_expr(expr: &Expr, out: &mut Vec<String>) {
         | Expr::Record { .. }
         | Expr::LabeledCall { .. } => {
             unreachable!("range/index sugar is lowered before codegen (parser::lower_sugar_module)")
+        }
+        Expr::ExistentialCall { receiver, args, .. } => {
+            collect_let_names_expr(receiver, out);
+            for arg in args {
+                collect_let_names_expr(arg, out);
+            }
         }
         Expr::If {
             then_block,

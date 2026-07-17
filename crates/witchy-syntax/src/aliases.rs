@@ -438,6 +438,12 @@ fn resolve_in_expr_with_origin(
             resolve_in_expr_with_origin(expr, map, resolve_call_site_head);
             resolve_type_with_origin(ty, map, resolve_call_site_head);
         }
+        Expr::ExistentialCall { receiver, args, ty, result, .. } => {
+            resolve_in_expr_with_origin(receiver, map, resolve_call_site_head);
+            for arg in args { resolve_in_expr_with_origin(arg, map, resolve_call_site_head); }
+            resolve_type_with_origin(ty, map, resolve_call_site_head);
+            resolve_type_with_origin(result, map, resolve_call_site_head);
+        }
         Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
             resolve_in_expr_with_origin(expr, map, resolve_call_site_head)
         }

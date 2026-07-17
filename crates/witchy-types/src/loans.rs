@@ -1578,6 +1578,10 @@ fn push_shallow_children<'a>(e: &'a Expr, stack: &mut Vec<&'a Expr>) {
             stack.push(receiver);
             stack.extend(args.iter());
         }
+        Expr::ExistentialCall { receiver, args, .. } => {
+            stack.push(receiver);
+            stack.extend(args.iter());
+        }
         Expr::Apply { func, args } => {
             stack.push(func);
             stack.extend(args.iter());
@@ -1655,6 +1659,10 @@ fn walk_expr<'a>(e: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
         }
         Expr::LabeledCall { args, .. } => args.iter().for_each(|(_, a)| walk_expr(a, f)),
         Expr::MethodCall { receiver, args, .. } => {
+            walk_expr(receiver, f);
+            args.iter().for_each(|a| walk_expr(a, f));
+        }
+        Expr::ExistentialCall { receiver, args, .. } => {
             walk_expr(receiver, f);
             args.iter().for_each(|a| walk_expr(a, f));
         }

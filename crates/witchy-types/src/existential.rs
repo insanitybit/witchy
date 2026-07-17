@@ -184,6 +184,12 @@ fn rewrite_expr(
                 rewrite_expr(argument, table, witnesses)?;
             }
         }
+        Expr::ExistentialCall { receiver, args, .. } => {
+            rewrite_expr(receiver, table, witnesses)?;
+            for argument in args {
+                rewrite_expr(argument, table, witnesses)?;
+            }
+        }
         Expr::LabeledCall { args, .. } => {
             for (_, argument) in args {
                 rewrite_expr(argument, table, witnesses)?;
@@ -352,6 +358,12 @@ fn visit_expr(
             if let Expr::MethodCall { receiver, .. } = expr {
                 visit_expr(receiver, visitor)?;
             }
+            for argument in args {
+                visit_expr(argument, visitor)?;
+            }
+        }
+        Expr::ExistentialCall { receiver, args, .. } => {
+            visit_expr(receiver, visitor)?;
             for argument in args {
                 visit_expr(argument, visitor)?;
             }

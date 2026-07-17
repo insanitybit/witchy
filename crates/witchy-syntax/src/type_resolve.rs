@@ -1188,6 +1188,12 @@ impl<'a> Scope<'a> {
                 self.resolve_expr(expr)?;
                 self.resolve_type(ty)?;
             }
+            Expr::ExistentialCall { receiver, args, ty, result, .. } => {
+                self.resolve_expr(receiver)?;
+                for arg in args { self.resolve_expr(arg)?; }
+                self.resolve_type(ty)?;
+                self.resolve_type(result)?;
+            }
             Expr::Lambda { params, body, ret } => {
                 for p in params.iter_mut() {
                     if let Some(t) = &mut p.ty {
@@ -1844,6 +1850,10 @@ fn resolve_residual_expr(
         | Expr::As { expr, .. }
         | Expr::ExistentialPack { expr, .. }
         | Expr::Field { base: expr, .. } => resolve_residual_expr(expr, by_suffix)?,
+        Expr::ExistentialCall { receiver, args, .. } => {
+            resolve_residual_expr(receiver, by_suffix)?;
+            for arg in args { resolve_residual_expr(arg, by_suffix)?; }
+        }
         Expr::Binary { lhs, rhs, .. } => {
             resolve_residual_expr(lhs, by_suffix)?;
             resolve_residual_expr(rhs, by_suffix)?;

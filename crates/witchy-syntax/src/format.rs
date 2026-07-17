@@ -1458,6 +1458,12 @@ fn expr(e: &Expr) -> String {
         Expr::ExistentialPack { expr: value, ty, .. } => {
             format!("{} as {}", expr(value), type_str(ty))
         }
+        Expr::ExistentialCall { receiver, args, method, .. } => format!(
+            "{}.{}({})",
+            expr(receiver),
+            method,
+            args.iter().map(expr).collect::<Vec<_>>().join(", ")
+        ),
         // A block in expression position is a comprehension's desugar (the
         // only block with an inline surface form) — print the literal back.
         Expr::Block(b) => {
@@ -2413,6 +2419,10 @@ fn rewrite_cap_method_expr(e: &mut Expr) {
         | Expr::As { expr, .. }
         | Expr::ExistentialPack { expr, .. }
         | Expr::Field { base: expr, .. } => rewrite_cap_method_expr(expr),
+        Expr::ExistentialCall { receiver, args, .. } => {
+            rewrite_cap_method_expr(receiver);
+            for arg in args { rewrite_cap_method_expr(arg); }
+        }
         Expr::Binary { lhs, rhs, .. } => {
             rewrite_cap_method_expr(lhs);
             rewrite_cap_method_expr(rhs);

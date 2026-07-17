@@ -407,6 +407,12 @@ fn substitute_expr(
             substitute_expr(expr, holes, types, patterns)?;
             substitute_type(ty, types)?;
         }
+        Expr::ExistentialCall { receiver, args, ty, result, .. } => {
+            substitute_expr(receiver, holes, types, patterns)?;
+            for arg in args { substitute_expr(arg, holes, types, patterns)?; }
+            substitute_type(ty, types)?;
+            substitute_type(result, types)?;
+        }
         Expr::Lambda { params, body, ret } => {
             substitute_params(params, holes, types, patterns)?;
             if let Some(ret) = ret {

@@ -200,6 +200,10 @@ fn lower_expr(e: &mut Expr, orders: &Orders, lenient: bool) -> Result<(), String
         | Expr::As { expr, .. }
         | Expr::ExistentialPack { expr, .. }
         | Expr::Field { base: expr, .. } => lower_expr(expr, orders, lenient)?,
+        Expr::ExistentialCall { receiver, args, .. } => {
+            lower_expr(receiver, orders, lenient)?;
+            for arg in args { lower_expr(arg, orders, lenient)?; }
+        }
         Expr::Index { base, index } => {
             lower_expr(base, orders, lenient)?;
             lower_expr(index, orders, lenient)?;
