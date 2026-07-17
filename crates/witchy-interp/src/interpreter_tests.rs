@@ -2284,3 +2284,110 @@ fn main(console: Console):
             e.message
         );
     }
+
+    // --- Drift guard for the `eval_call` builtin fast path -------------------
+    //
+    // `eval_call` (and the tail-call site) skip both `call_builtin` and
+    // `call_interpreter_special` whenever `is_interpreter_builtin(name)` is
+    // false — the win is not re-scanning the intrinsic table on every plain
+    // user-function call. Correctness requires the predicate to be a SUPERSET
+    // of the names those two functions can dispatch: if a builtin name is not
+    // covered, the fast path skips it and the call falls through to "unknown
+    // function". This test scans the two functions' source for their
+    // dispatch-position string literals and asserts every one is covered.
+    //
+    // Coverage of the intrinsic table and cap-ops is by construction (the
+    // predicate calls `intrinsics::lookup` / `cap_ops::is_op_name`). The only
+    // drift-prone arms are hand-written string literals — which this catches.
+    // NOTE: a `name == intrinsics::SOME_CONST` arm is covered only if that
+    // const is a real cataloged intrinsic; adding a const arm for a name that
+    // is NOT in the table would need a matching `matches!` entry (and this
+    // test can't see the const's value to check it).
+
+    fn scan_fn_body<'a>(src: &'a str, sig: &str) -> &'a str {
+        let start = src.find(sig).unwrap_or_else(|| panic!("missing `{sig}` in interpreter.rs"));
+        let tail = &src[start + sig.len()..];
+        let end = tail.find("\n    fn ").unwrap_or(tail.len());
+        &tail[..end]
+    }
+
+    fn is_name_shaped(s: &str) -> bool {
+        let mut chars = s.chars();
+        match chars.next() {
+            Some(c) if c.is_ascii_lowercase() || c == '_' => {}
+            _ => return false,
+        }
+        s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '.')
+    }
+
+    /// Name-shaped string literals in dispatch position: `name == "x"`, an
+    /// `"x" =>` match arm, or an `"x" |` / `| "x"` arm alternative.
+    fn dispatch_literals(body: &str) -> Vec<String> {
+        let bytes = body.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] != b'"' {
+                i += 1;
+                continue;
+            }
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j] != b'"' {
+                // A backslash escape means this is not a bare name literal.
+                if bytes[j] == b'\\' {
+                    j += 2;
+                    continue;
+                }
+                j += 1;
+            }
+            if j >= bytes.len() {
+                break;
+            }
+            let lit = &body[i + 1..j];
+            if is_name_shaped(lit) {
+                let before = body[..i].trim_end();
+                let after = body[j + 1..].trim_start();
+                let dispatch = before.ends_with("==")
+                    || before.ends_with('|')
+                    || after.starts_with("=>")
+                    || after.starts_with('|');
+                if dispatch {
+                    out.push(lit.to_string());
+                }
+            }
+            i = j + 1;
+        }
+        out
+    }
+
+    #[test]
+    fn interpreter_builtin_names_are_covered() {
+        let src = include_str!("interpreter.rs");
+        let mut names: Vec<String> = ["    fn call_builtin(", "    fn call_interpreter_special("]
+            .into_iter()
+            .flat_map(|sig| dispatch_literals(scan_fn_body(src, sig)))
+            .collect();
+        names.sort();
+        names.dedup();
+        // Sanity: the scan actually found the known dispatch arms (guards against
+        // a refactor that moves the functions or changes their shape so the scan
+        // silently matches nothing and the guard becomes vacuous).
+        assert!(
+            names.contains(&"print".to_string()) && names.contains(&"fail".to_string()),
+            "dispatch-literal scan found nothing recognizable ({} names) — the \
+             scan is stale, fix scan_fn_body/dispatch_literals",
+            names.len()
+        );
+        let uncovered: Vec<&String> = names
+            .iter()
+            .filter(|name| !is_interpreter_builtin(name))
+            .collect();
+        assert!(
+            uncovered.is_empty(),
+            "these builtin dispatch names are not covered by `is_interpreter_builtin` — the \
+             eval_call fast path would skip them and report `unknown function`: {uncovered:?}. \
+             Add each to the `matches!` list in `is_interpreter_builtin` (or, if it is a real \
+             intrinsic/cap-op, ensure it is in the intrinsic table / cap_ops::OPS).",
+        );
+    }

@@ -477,6 +477,35 @@ fn desugared_assignment_plan<'a>(
     Some(AssignmentPlan { projections, replacement })
 }
 
+/// Does `call_interpreter_special` or `call_builtin` handle this (surfaced) name?
+/// A user function name satisfies NONE of these, so `eval_call` can skip both
+/// dispatch helpers — each of which independently re-probes the intrinsic table
+/// (`is_*_extract` ×3, `call_builtin`'s own `lookup`, `native::lookup`) — when this
+/// returns false. That was ~33% of call-dense interpreter self-time (perf sweep).
+///
+/// Completeness is load-bearing: if a builtin name is NOT listed here, the fast
+/// path would skip it and it would fall through to "unknown function". The three
+/// sources are: the intrinsic table (list/dict/math/string/crypto/... ops), the
+/// capability ops (`cap_ops::is_op_name` — bare surface names like `print`/`now`/
+/// `read`/`write`, dispatched by `match` in `call_builtin`, NOT in the intrinsic
+/// table), and the handful handled by neither table (`fail`, `duration_to_int`,
+/// `int_to_duration`, `secretstore.get`/`require`, `vm.par_map`). The test
+/// `interpreter_builtin_names_are_covered`
+/// (test) asserts every `call_builtin` dispatch arm is covered here.
+fn is_interpreter_builtin(name: &str) -> bool {
+    intrinsics::lookup(name).is_some()
+        || witchy_syntax::cap_ops::is_op_name(name)
+        || matches!(
+            name,
+            "fail"
+                | "duration_to_int"
+                | "int_to_duration"
+                | "secretstore.get"
+                | "secretstore.require"
+                | "vm.par_map"
+        )
+}
+
 impl From<RuntimeError> for Flow {
     fn from(e: RuntimeError) -> Self {
         Flow::Err(e)
@@ -2388,6 +2417,10 @@ impl Interpreter {
         name: &str,
         argvals: &[Value],
     ) -> Result<Option<(Value, Vec<Value>)>, Flow> {
+        // NOTE: any name for which this OR `call_builtin` produces a result MUST be
+        // covered by `is_interpreter_builtin` (below) — the fast path in `eval_call`
+        // skips both when that predicate is false. `interpreter_builtin_names_are_covered`
+        // (test) enforces it so a new dispatch arm can't silently regress the fast path.
         // Native `var` operations have two independent result channels: the
         // ordinary source value and each final `var` value. Keep that split here
         // instead of encoding write-back into a tuple that source code must unpack.
@@ -2492,51 +2525,61 @@ impl Interpreter {
             .map(|function| function.params.as_slice())
             .unwrap_or(&[]);
         let (argvals, places) = self.eval_call_args(args, params, env)?;
-        if let Some((value, var_values)) = self.call_interpreter_special(name, &argvals)? {
-            let var_places: Vec<CapturedPlace> = params
-                .iter()
-                .enumerate()
-                .filter_map(|(index, param)| {
-                    (param.convention == Convention::Var)
-                        .then(|| places.get(index).and_then(Clone::clone))
-                        .flatten()
-                })
-                .collect();
-            if var_places.len() != var_values.len() {
-                return err(format!(
-                    "internal: native `{name}` returned {} `var` value(s), expected {}",
-                    var_values.len(),
-                    var_places.len()
-                ));
+        // Fast path: skip both builtin-dispatch probes for a name that is not a
+        // builtin (a plain user function / closure). Each probe otherwise re-scans
+        // the intrinsic table (see is_interpreter_builtin) — ~33% of call-dense
+        // interpreter self-time. Ordering within the builtin case is UNCHANGED:
+        // special before the closure check, call_builtin after.
+        let maybe_builtin = is_interpreter_builtin(name);
+        if maybe_builtin {
+            if let Some((value, var_values)) = self.call_interpreter_special(name, &argvals)? {
+                let var_places: Vec<CapturedPlace> = params
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, param)| {
+                        (param.convention == Convention::Var)
+                            .then(|| places.get(index).and_then(Clone::clone))
+                            .flatten()
+                    })
+                    .collect();
+                if var_places.len() != var_values.len() {
+                    return err(format!(
+                        "internal: native `{name}` returned {} `var` value(s), expected {}",
+                        var_values.len(),
+                        var_places.len()
+                    ));
+                }
+                self.commit_writebacks(var_places.into_iter().zip(var_values).collect(), env)?;
+                return Ok(value);
             }
-            self.commit_writebacks(var_places.into_iter().zip(var_values).collect(), env)?;
-            return Ok(value);
         }
         // A local variable holding a function value (a closure): apply it.
         if let Some(clo) = local_closure {
             return self.apply_closure_call(clo, argvals, places, env);
         }
-        if let Some(v) = self.call_builtin(name, &argvals)? {
-            let var_indices: Vec<usize> = params
-                .iter()
-                .enumerate()
-                .filter_map(|(index, param)| {
-                    (param.convention == Convention::Var).then_some(index)
-                })
-                .collect();
-            if let [index] = var_indices.as_slice() {
-                let place = places
-                    .get(*index)
-                    .and_then(Clone::clone)
-                    .ok_or_else(|| Flow::from(RuntimeError {
-                        message: format!("`var` argument to `{name}` must be a mutable place"),
-                    }))?;
-                // Current native collection primitives return the updated receiver.
-                // The stdlib migration will split auxiliary results from this
-                // write-back channel without changing the place machinery.
-                self.commit_writebacks(vec![(place, v.clone())], env)?;
+        if maybe_builtin {
+            if let Some(v) = self.call_builtin(name, &argvals)? {
+                let var_indices: Vec<usize> = params
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, param)| {
+                        (param.convention == Convention::Var).then_some(index)
+                    })
+                    .collect();
+                if let [index] = var_indices.as_slice() {
+                    let place = places
+                        .get(*index)
+                        .and_then(Clone::clone)
+                        .ok_or_else(|| Flow::from(RuntimeError {
+                            message: format!("`var` argument to `{name}` must be a mutable place"),
+                        }))?;
+                    // Current native collection primitives return the updated receiver.
+                    // The stdlib migration will split auxiliary results from this
+                    // write-back channel without changing the place machinery.
+                    self.commit_writebacks(vec![(place, v.clone())], env)?;
+                }
+                return Ok(v);
             }
-            return Ok(v);
         }
         let Some(func) = callee else {
             return err(format!("call to unknown function `{name}`"));
@@ -4698,16 +4741,23 @@ impl Interpreter {
                         (param.convention == Convention::Var) == place.is_some()
                     })
                 );
-                if let Some((value, var_values)) = self.call_interpreter_special(name, &values)? {
-                    if !var_values.is_empty() {
-                        return err(format!(
-                            "internal: tail special `{name}` produced `var` write-backs without places"
-                        ));
+                // Builtin-over-user precedence: a name that is a builtin resolves
+                // to it even here. Skip both probes for a plain user tail call
+                // (the common case) — see `is_interpreter_builtin`.
+                if is_interpreter_builtin(name) {
+                    if let Some((value, var_values)) =
+                        self.call_interpreter_special(name, &values)?
+                    {
+                        if !var_values.is_empty() {
+                            return err(format!(
+                                "internal: tail special `{name}` produced `var` write-backs without places"
+                            ));
+                        }
+                        return Ok(value);
                     }
-                    return Ok(value);
-                }
-                if let Some(value) = self.call_builtin(name, &values)? {
-                    return Ok(value);
+                    if let Some(value) = self.call_builtin(name, &values)? {
+                        return Ok(value);
+                    }
                 }
                 Err(Flow::TailCall {
                     callable: TailCallable::Function(target),
