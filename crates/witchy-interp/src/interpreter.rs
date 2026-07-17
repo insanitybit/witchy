@@ -1560,6 +1560,12 @@ fn idents_in_expr(e: &Expr, f: &mut dyn FnMut(&str)) {
         | Expr::ExistentialPack { expr, .. } => {
             idents_in_expr(expr, f)
         }
+        Expr::ExistentialCall { receiver, args, .. } => {
+            idents_in_expr(receiver, f);
+            for arg in args {
+                idents_in_expr(arg, f);
+            }
+        }
         Expr::Field { base, .. } => idents_in_expr(base, f),
         Expr::Lambda { body, .. } => idents_in_block(body, f),
         Expr::RecordUpdate { name: _, base, fields } => {
@@ -1985,6 +1991,12 @@ fn collect_nested_returns_expr(expr: &Expr, out: &mut FxHashSet<String>) {
         | Expr::Try(expr)
         | Expr::As { expr, .. }
         | Expr::ExistentialPack { expr, .. } => collect_nested_returns_expr(expr, out),
+        Expr::ExistentialCall { receiver, args, .. } => {
+            collect_nested_returns_expr(receiver, out);
+            for arg in args {
+                collect_nested_returns_expr(arg, out);
+            }
+        }
         Expr::RecordUpdate { base, fields, .. } => {
             collect_nested_returns_expr(base, out);
             for (_, value) in fields {
@@ -6504,6 +6516,9 @@ impl Interpreter {
             Expr::As { expr, .. } => self.eval(expr, env),
             Expr::ExistentialPack { .. } => err(
                 "internal: RFC-0081 existential node reached the interpreter before runtime witness lowering",
+            ),
+            Expr::ExistentialCall { .. } => err(
+                "internal: RFC-0081 existential dispatch reached the interpreter before runtime witness lowering",
             ),
             // `&&`/`||` short-circuit, so the right side isn't always evaluated.
             Expr::Binary { op: BinOp::And, lhs, rhs } => match self.eval(lhs, env)? {

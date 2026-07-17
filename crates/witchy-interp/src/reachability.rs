@@ -225,6 +225,14 @@ fn collect_refs_expr(e: &Expr, out: &mut HashSet<String>) {
             collect_refs_expr(expr, out);
             collect_type_names(ty, out);
         }
+        Expr::ExistentialCall { receiver, args, ty, result, .. } => {
+            collect_refs_expr(receiver, out);
+            for arg in args {
+                collect_refs_expr(arg, out);
+            }
+            collect_type_names(ty, out);
+            collect_type_names(result, out);
+        }
         Expr::RecordUpdate { base, fields, .. } => {
             collect_refs_expr(base, out);
             for (_, v) in fields {

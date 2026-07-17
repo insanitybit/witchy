@@ -669,6 +669,12 @@ fn stamp_expr(e: &mut Expr, line: u32) {
         | Expr::As { expr, .. }
         | Expr::ExistentialPack { expr, .. }
         | Expr::Field { base: expr, .. } => stamp_expr(expr, line),
+        Expr::ExistentialCall { receiver, args, .. } => {
+            stamp_expr(receiver, line);
+            for arg in args {
+                stamp_expr(arg, line);
+            }
+        }
         Expr::Index { base, index } => {
             stamp_expr(base, line);
             stamp_expr(index, line);
