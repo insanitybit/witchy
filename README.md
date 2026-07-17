@@ -189,7 +189,7 @@ it *must* be open and honest about the use of AI.
 ## Run the docs
 
 The guided way to learn witchy is **[The witchy Book](book/src/SUMMARY.md)** — which
-_is_ a witchy program: a client-side [Glamour](projects/glamour) app that renders
+_is_ a witchy program: a client-side [Glamour](projects/glamour/README.md) app that renders
 every chapter and turns each code block into an editable, runnable cell (the ultimate
 dogfood). Build the static bundle and serve it locally:
 
