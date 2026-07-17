@@ -517,20 +517,30 @@ fn persistent_std_cache_path(expand: ComptimeExpander, name: &str) -> Option<std
         return None;
     }
 
-    // This cache targets cargo/nextest test executables. Installed CLI binaries
-    // keep their existing process-local cache until a user-facing cache location
-    // and lifecycle are specified separately.
+    // Two on-disk homes, chosen by how the running binary was laid out. Cargo /
+    // nextest test executables (parent dir `deps`) share a cache under the target
+    // dir. Every other binary — the installed CLI — shares a cache under the user
+    // cache dir, beside the runtime's other witchy caches (`witchy/wasm`,
+    // `witchy/optimized-wasm`, ...), where `witchy cache gc` (RFC-0096) will prune
+    // it. The executable-identity key below invalidates either on a new binary, so
+    // enabling the CLI home can never serve a stale prelude.
     let executable = std::env::current_exe().ok()?;
-    let deps = executable.parent()?;
-    if deps.file_name()?.to_str()? != "deps" {
-        return None;
-    }
-    let profile = deps.parent()?;
-    let target = profile.parent()?;
-    let root = std::env::var_os("WITCHY_TEST_STDLIB_CACHE_DIR")
-        .filter(|path| !path.is_empty())
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| target.join("witchy-testcache"));
+    let parent = executable.parent()?;
+    let root = if parent.file_name()?.to_str()? == "deps" {
+        let profile = parent.parent()?;
+        let target = profile.parent()?;
+        std::env::var_os("WITCHY_TEST_STDLIB_CACHE_DIR")
+            .filter(|path| !path.is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| target.join("witchy-testcache"))
+    } else {
+        let base = std::env::var_os("XDG_CACHE_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache"))
+            })?;
+        base.join("witchy").join("stdlib")
+    };
 
     let metadata = std::fs::metadata(&executable).ok()?;
     let modified = metadata
