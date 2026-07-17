@@ -60,14 +60,16 @@ and handoff notes. It is observational, not a locking or file-ownership system.
   sort order.** Files are named `<epoch>-<branch-with-slashes-as-~>.json`;
   `submit --front` prefixes `0front-` which sorts before any epoch digit.
   Reordering the queue by renaming files is legitimate and was done live.
-  Schema-2 entries carry a stable `change_id` and an `after` array of parent
-  change IDs. The coordinator skips waiting/blocked entries rather than letting
-  one dependency stall unrelated ready work. Legacy entries without these
-  fields remain independent and ready.
-- `changes/*.json` — persistent logical-change registry keyed by branch. A
-  change ID survives SHA updates and red-parent resubmission; parent state
-  (`queued`, `gating`, `merged`, `red`, etc.) is therefore not lost when its
-  queue file is replaced. Dependencies use these IDs, not mutable branch SHAs.
+  Schema-2 entries carry a stable `change_id`, a per-submission `attempt_id`,
+  and an `after` array of parent change IDs. The coordinator skips
+  waiting/blocked entries rather than letting one dependency stall unrelated
+  ready work. Legacy entries without these fields remain independent and ready.
+- `changes/*.json` — persistent logical-change registry. The branch-named file
+  is its current generation; completed generations move to
+  `history-<change-id>.json` so existing descendants retain an addressable
+  parent even when a branch name is reused. A change ID survives SHA updates
+  and red-parent resubmission, but a branch reused after merge/drop gets a new
+  ID. Dependencies use these IDs, not mutable branch SHAs.
 - `change.lock/` — short metadata mutex for registry/queue mutations. It is
   held for milliseconds, never around a rebase, build, test, or gate, and is
   separate from `gate.lock`; unrelated editing and agent checks do not wait on
@@ -277,6 +279,11 @@ shards ignore the scope.
    clean trees. Ahead-count alone cannot distinguish a fresh agent worktree
    from a merged one — that heuristic almost deleted a working agent's
    checkout once.
+8. **A queue attempt owns one submitted SHA, not a mutable branch ref.** A
+   resubmission while that SHA gates keeps the logical change ID but replaces
+   its queued SHA. Compare-before-write transitions prevent the old attempt
+   from marking or deleting the newer submission; it receives its own gate
+   before descendants become ready.
 
 ## Known sharp edges / history (why the odd-looking code exists)
 

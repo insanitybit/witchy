@@ -376,7 +376,7 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
     fs::write(
         &fake_git,
         format!(
-            "#!/bin/sh\ncase \" $* \" in\n  *\" checkout --detach --quiet refs/heads/checkout-denied \"*) exit 73 ;;\nesac\nexec {real_git:?} \"$@\"\n",
+            "#!/bin/sh\ncase \" $* \" in\n  *\" checkout --detach --quiet \"*) exit 73 ;;\nesac\nexec {real_git:?} \"$@\"\n",
         ),
     )
     .expect("write checkout-denying git wrapper");
@@ -547,6 +547,7 @@ fn dependency_submission_keeps_stable_ids_reports_readiness_and_rejects_cycles()
         .as_str()
         .expect("change id is a string")
         .to_owned();
+    let first_attempt = fixture.change("a")["current_attempt"].clone();
 
     let status = fixture.status();
     let child = status["queue"]
@@ -565,6 +566,7 @@ fn dependency_submission_keeps_stable_ids_reports_readiness_and_rejects_cycles()
     run_git(&fixture.root, &["switch", "master"]);
     fixture.mq_ok(&["submit", "a"], "true");
     assert_eq!(fixture.change("a")["change_id"], first_id);
+    assert_ne!(fixture.change("a")["current_attempt"], first_attempt);
     assert_eq!(
         fs::read_dir(fixture.state.join("queue"))
             .expect("read queue")
@@ -582,6 +584,100 @@ fn dependency_submission_keeps_stable_ids_reports_readiness_and_rejects_cycles()
         "cycle rejection was not explicit: {}",
         String::from_utf8_lossy(&cycle.stderr),
     );
+}
+
+#[test]
+fn reused_branch_gets_a_new_change_id_without_forgetting_old_dependencies() {
+    let fixture = QueueFixture::stack(&["a.txt", "b.txt"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+    let old_id = fixture.change("a")["change_id"]
+        .as_str()
+        .expect("change id is a string")
+        .to_owned();
+    fixture.mq_ok(&["run", "--once"], "true");
+
+    fixture.mq_ok(&["submit", "--after", "a", "b"], "true");
+    run_git(&fixture.root, &["branch", "a", "master"]);
+    run_git(&fixture.root, &["switch", "a"]);
+    fs::write(fixture.root.join("a-next.txt"), "next generation\n")
+        .expect("write next branch generation");
+    run_git(&fixture.root, &["add", "a-next.txt"]);
+    run_git(&fixture.root, &["commit", "-m", "reuse branch a"]);
+    run_git(&fixture.root, &["switch", "master"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+
+    let new_id = fixture.change("a")["change_id"]
+        .as_str()
+        .expect("new change id is a string")
+        .to_owned();
+    assert_ne!(new_id, old_id, "completed branch generation reused its old ID");
+    let old_record: serde_json::Value = serde_json::from_slice(
+        &fs::read(fixture.state.join(format!("changes/history-{old_id}.json")))
+            .expect("old change generation remains addressable"),
+    )
+    .expect("old change record is JSON");
+    assert_eq!(old_record["state"], "merged");
+
+    let status = fixture.status();
+    let old_child = status["queue"]
+        .as_array()
+        .expect("queue is an array")
+        .iter()
+        .find(|entry| entry["branch"] == "b")
+        .expect("old child remains queued");
+    assert_eq!(old_child["readiness"], "ready");
+    assert_eq!(old_child["dependencies"][0]["change_id"], old_id);
+}
+
+#[test]
+fn resubmission_during_gate_is_not_deleted_or_falsely_marked_merged() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+    let change_id = fixture.change("a")["change_id"].clone();
+    let started = fixture._temp.path().join("gate-started");
+    let proceed = fixture._temp.path().join("gate-proceed");
+    let gate = format!(
+        "touch '{}'; while [ ! -f '{}' ]; do sleep 0.01; done; true",
+        started.display(),
+        proceed.display(),
+    );
+    let mut runner = fixture.mq_command(&["run", "--once"], &gate);
+    let runner = runner
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start paused queue gate");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !started.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(started.exists(), "gate did not reach its pause point");
+
+    run_git(&fixture.root, &["switch", "a"]);
+    fs::write(fixture.root.join("a2.txt"), "updated while gating\n")
+        .expect("write in-flight update");
+    run_git(&fixture.root, &["add", "a2.txt"]);
+    run_git(&fixture.root, &["commit", "-m", "update a while gating"]);
+    run_git(&fixture.root, &["switch", "master"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+    assert_eq!(fixture.change("a")["change_id"], change_id);
+    fs::write(&proceed, "go\n").expect("release paused gate");
+
+    let output = runner.wait_with_output().expect("wait for queue drain");
+    assert!(
+        output.status.success(),
+        "queue run failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(run_git(&fixture.root, &["show", "master:a2.txt"]).status.success());
+    assert_eq!(fixture.change("a")["state"], "merged");
+    let merged = fixture
+        .journal()
+        .into_iter()
+        .filter(|event| event["event"] == "merged" && event["branch"] == "a")
+        .count();
+    assert_eq!(merged, 2, "updated SHA did not receive its own gate attempt");
 }
 
 #[test]
