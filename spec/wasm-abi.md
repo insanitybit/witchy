@@ -300,7 +300,7 @@ a self-contained synchronous implementation needing none.
   (RFC-0007). Provides exactly the imports marked `browser: provided` above and
   omits every capability-authority import. Its
   `instantiate(wasmBytes, { onPrint })` returns `{ instance, output, run }`.
-  See `web/witchy-runtime/README.md`.
+  See the [browser runtime guide](../web/witchy-runtime/README.md).
 
 The spike [`web/witchy-runtime/spike.mjs`](../web/witchy-runtime/spike.mjs) (driven by the Rust test
 [`tests/browser/shim.rs`](../tests/browser/shim.rs)) compiles a pure rune, runs it under the JS host, asserts
