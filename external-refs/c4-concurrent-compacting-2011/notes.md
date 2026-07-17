@@ -6,7 +6,7 @@
 
 ## Why it matters to witchy
 
-The reference point for the **tracing-GC path witchy is choosing *not* to take.** The ZGC/Green Tea discussion (user-raised) is this lineage: barriers buy concurrent relocation on large, long-lived, *cyclic, shared-mutable* heaps. witchy has none of those properties — value semantics make the heap acyclic and unshared — so RC ([[perceus-2021]]) fits better and avoids barriers/relocation machinery entirely. Keep C4 as the "why not tracing" counterweight in the design record.
+The reference point for the **tracing-GC path witchy is choosing *not* to take.** The ZGC/Green Tea discussion (user-raised) is this lineage: barriers buy concurrent relocation on large, long-lived, *cyclic, shared-mutable* heaps. witchy has none of those properties — value semantics make the heap acyclic and unshared — so RC (see the [Perceus notes](../perceus-2021/notes.md)) fits better and avoids barriers/relocation machinery entirely. Keep C4 as the "why not tracing" counterweight in the design record.
 
 ## Informs
 
