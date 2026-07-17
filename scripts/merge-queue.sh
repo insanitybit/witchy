@@ -36,8 +36,9 @@
 # IN THE MAIN WORKTREE (each worktree has its own scratch/, so state written
 # elsewhere would be invisible to the coordinator):
 #   queue/*.json    one pending submission per file (FIFO by filename)
-#   journal.jsonl   append-only events: submitted/merged/red/timeout/conflict/
-#                   requeued/blocked/dropped (red+timeout carry the log path)
+#   journal.jsonl   append-only events: submitted/merged/already_merged/red/
+#                   timeout/conflict/requeued/blocked/dropped (red+timeout carry
+#                   the log path)
 #   logs/           full gate output per attempt (check.sh stage markers carry
 #                   t+<seconds> offsets, so per-stage timing is in every log)
 #   coordinator.lock/ lifetime singleton for the persistent coordinator loop
@@ -50,8 +51,9 @@
 #                                                   --front puts it at the HEAD of the
 #                                                   queue (urgent fixes; use sparingly)
 #   scripts/merge-queue.sh wait <branch> [secs]     block until the branch reaches a
-#                                                   terminal journal event (merged/red/
-#                                                   timeout/conflict/blocked/dropped),
+#                                                   terminal journal event (merged/
+#                                                   already_merged/red/timeout/
+#                                                   conflict/blocked/dropped),
 #                                                   print it as JSON; exit 0 iff merged.
 #                                                   Default timeout 3600s
 #   scripts/merge-queue.sh status                   queue + in-flight gate + recent journal (JSON)
@@ -542,6 +544,32 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         return 0
     fi
 
+    # A successful batch lands rebased commits while deliberately leaving each
+    # submitter's branch ref untouched. The original SHA is therefore often not
+    # an ancestor of master, and a stale duplicate queue file used to spend a
+    # full gate proving an already-landed patch again. Pin the comparison to the
+    # SHA stored at submission time so an agent advancing the branch cannot race
+    # this check. `git cherry` compares patch IDs commit by commit: consume the
+    # submission only when EVERY replayable commit is represented on master. One
+    # `+` in a multi-commit branch keeps the whole submission queued. `git cherry`
+    # intentionally ignores merge commits, so branches with an unlanded merge
+    # commit also fail safe into the normal rebase + gate path, as does missing
+    # or invalid queue metadata and any git error.
+    local submitted_sha; submitted_sha="$(jq -r '.sha // empty' "$f")"
+    local cherry_status="" merge_commits=""
+    if [ -n "$submitted_sha" ] \
+        && git -C "$root" rev-parse --verify --quiet "$submitted_sha^{commit}" >/dev/null \
+        && merge_commits="$(git -C "$root" rev-list --merges "master..$submitted_sha" 2>/dev/null)" \
+        && [ -z "$merge_commits" ] \
+        && cherry_status="$(git -C "$root" cherry master "$submitted_sha" 2>/dev/null)" \
+        && ! printf '%s\n' "$cherry_status" | grep -c '^+' >/dev/null; then
+        note "$branch is already represented on master; skipping duplicate gate"
+        record already_merged "$branch" sha "$submitted_sha" reason "all submitted patches already represented on master"
+        rm -f "$f" "$f.nobatch" "$f.batch-limit"
+        cmd_sweep || true
+        return 0
+    fi
+
     # Take the lock BEFORE touching the gate worktree: the checkout/rebase below
     # would corrupt a gate another lock-holder is running there right now.
     local t0; t0="$(date +%s)"
@@ -844,12 +872,13 @@ cmd_run() {
     done
 }
 
-# Remove worktrees whose branch this queue has MERGED (per journal.jsonl) and
-# whose tree is clean + fully contained in master. Journal-merged is the load-
-# bearing guard: a FRESH agent worktree (branch at master, no commits yet) is
-# indistinguishable from a merged one by ahead-count alone — sweeping on that
-# heuristic would delete a working agent's checkout. Never touches the main
-# worktree or the gate worktree. Each removal frees a multi-GB target/.
+# Remove worktrees whose branch this queue has MERGED or found already
+# represented (per journal.jsonl) and whose tree is clean + fully contained in
+# master. A successful journal event is the load-bearing guard: a FRESH agent
+# worktree (branch at master, no commits yet) is indistinguishable from a merged
+# one by ahead-count alone — sweeping on that heuristic would delete a working
+# agent's checkout. Never touches the main worktree or the gate worktree. Each
+# removal frees a multi-GB target/.
 cmd_sweep() {
     if [ ! -f "$journal" ]; then note "sweep: no journal; nothing merged yet"; return 0; fi
     local swept=0
@@ -859,8 +888,10 @@ cmd_sweep() {
         [ -d "$wt" ] || continue
         local branch; branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
         case "$branch" in '?' | HEAD) continue ;; esac
-        # The guard: only branches this queue merged, and not re-queued since.
-        jq -r 'select(.event=="merged") | .branch' "$journal" | grep -qx "$branch" || continue
+        # The guard: only branches this queue landed or proved represented, and
+        # not re-queued since.
+        jq -r 'select(.event=="merged" or .event=="already_merged") | .branch' "$journal" \
+            | grep -qx "$branch" || continue
         if ls "$queue_dir"/*.json >/dev/null 2>&1 && \
            jq -r .branch "$queue_dir"/*.json | grep -qx "$branch"; then continue; fi
         # Safety: clean and nothing beyond master. Gated merges land a REBASED
@@ -884,13 +915,14 @@ cmd_sweep() {
     while IFS= read -r b; do
         git -C "$root" show-ref --verify --quiet "refs/heads/$b" || continue
         git -C "$root" branch -d "$b" >/dev/null 2>&1 && note "sweep: deleted merged branch $b"
-    done < <(jq -r 'select(.event=="merged") | .branch' "$journal" | sort -u)
+    done < <(jq -r 'select(.event=="merged" or .event=="already_merged") | .branch' "$journal" | sort -u)
     note "sweep: removed $swept worktree(s)"
 }
 
 # Block until <branch> reaches a terminal journal event newer than this call
-# (merged/red/timeout/conflict/blocked/dropped), print that event as JSON.
-# Exit 0 iff merged. For agents: `submit X && wait X` replaces polling loops.
+# (merged/already_merged/red/timeout/conflict/blocked/dropped), print that event
+# as JSON. Exit 0 iff the branch is merged or was already represented. For
+# agents: `submit X && wait X` replaces polling loops.
 cmd_wait() {
     local branch="${1:?usage: merge-queue.sh wait <branch> [timeout-secs]}"
     local budget="${2:-3600}"
@@ -900,11 +932,14 @@ cmd_wait() {
     while [ "$waited" -le "$budget" ]; do
         if [ -f "$journal" ]; then
             ev="$(tail -n "+$((start_line + 1))" "$journal" | jq -c --arg b "$branch" \
-                'select(.branch==$b) | select(.event=="merged" or .event=="red" or .event=="timeout" or .event=="conflict" or .event=="blocked" or .event=="dropped")' \
+                'select(.branch==$b) | select(.event=="merged" or .event=="already_merged" or .event=="red" or .event=="timeout" or .event=="conflict" or .event=="blocked" or .event=="dropped")' \
                 | tail -1)"
             if [ -n "$ev" ]; then
                 echo "$ev"
-                [ "$(echo "$ev" | jq -r .event)" = "merged" ] && return 0 || return 1
+                case "$(echo "$ev" | jq -r .event)" in
+                    merged | already_merged) return 0 ;;
+                    *) return 1 ;;
+                esac
             fi
         fi
         sleep 10; waited=$((waited + 10))

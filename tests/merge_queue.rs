@@ -66,6 +66,196 @@ fn process_is_alive(pid: i32) -> bool {
         .is_ok_and(|status| status.success())
 }
 
+fn git(repo: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .current_dir(repo)
+        .args(args)
+        .output()
+        .expect("run git");
+    assert!(
+        output.status.success(),
+        "git {} failed:\nstdout: {}\nstderr: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    String::from_utf8(output.stdout)
+        .expect("git output is utf8")
+        .trim()
+        .to_owned()
+}
+
+#[test]
+fn coordinator_skips_only_fully_patch_equivalent_submissions() {
+    let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let temp = TempDir::new();
+    let repo = temp.path().join("repo");
+    let state = temp.path().join("state");
+    let gate_worktree = temp.path().join("gate-worktree");
+    let landed_worktree = temp.path().join("landed-worktree");
+    let gate_marker = temp.path().join("gate-ran");
+    let fake_bin = temp.path().join("bin");
+    fs::create_dir_all(repo.join("scripts")).expect("create temporary repository");
+    fs::create_dir(&fake_bin).expect("create fake bin directory");
+    fs::copy(
+        source_root.join("scripts/merge-queue.sh"),
+        repo.join("scripts/merge-queue.sh"),
+    )
+    .expect("copy merge queue script");
+    fs::set_permissions(
+        repo.join("scripts/merge-queue.sh"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .expect("chmod merge queue script");
+
+    git(&repo, &["init", "-b", "master"]);
+    git(&repo, &["config", "user.email", "merge-queue-test@witchy.invalid"]);
+    git(&repo, &["config", "user.name", "Merge Queue Test"]);
+    fs::write(repo.join("base"), "base\n").expect("write base file");
+    git(&repo, &["add", "base"]);
+    git(&repo, &["commit", "-m", "base"]);
+
+    git(&repo, &["checkout", "-b", "landed-original"]);
+    fs::write(repo.join("represented"), "represented\n").expect("write represented patch");
+    git(&repo, &["add", "represented"]);
+    git(&repo, &["commit", "-m", "represented patch"]);
+    let original_sha = git(&repo, &["rev-parse", "HEAD"]);
+
+    git(&repo, &["checkout", "master"]);
+    fs::write(repo.join("master-only"), "unrelated\n").expect("write unrelated master patch");
+    git(&repo, &["add", "master-only"]);
+    git(&repo, &["commit", "-m", "unrelated master patch"]);
+    git(&repo, &["cherry-pick", &original_sha]);
+    assert_ne!(
+        git(&repo, &["rev-parse", "master"]),
+        original_sha,
+        "fixture must model a rebased/cherry-picked landing",
+    );
+    let ancestor = Command::new("git")
+        .current_dir(&repo)
+        .args(["merge-base", "--is-ancestor", &original_sha, "master"])
+        .status()
+        .expect("check original ancestry");
+    assert!(!ancestor.success(), "original SHA unexpectedly became an ancestor");
+    assert!(
+        git(&repo, &["cherry", "master", "landed-original"])
+            .lines()
+            .all(|line| line.starts_with('-')),
+        "the original branch must be fully patch-equivalent to master",
+    );
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            landed_worktree.to_str().unwrap(),
+            "landed-original",
+        ],
+    );
+
+    git(&repo, &["checkout", "-b", "partially-new", "landed-original"]);
+    fs::write(repo.join("new-patch"), "new\n").expect("write new patch");
+    git(&repo, &["add", "new-patch"]);
+    git(&repo, &["commit", "-m", "new patch"]);
+    assert!(
+        git(&repo, &["cherry", "master", "partially-new"])
+            .lines()
+            .any(|line| line.starts_with('+')),
+        "multi-commit fixture must retain one unrepresented patch",
+    );
+    git(&repo, &["checkout", "master"]);
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            gate_worktree.to_str().unwrap(),
+            "master",
+        ],
+    );
+
+    let fake_sleep = fake_bin.join("sleep");
+    fs::write(&fake_sleep, "#!/bin/sh\nexec /bin/sleep 0.05\n").expect("write yielding sleep");
+    fs::set_permissions(&fake_sleep, fs::Permissions::from_mode(0o755))
+        .expect("chmod yielding sleep");
+    let gate_command = temp.path().join("gate-command");
+    fs::write(
+        &gate_command,
+        format!("#!/bin/sh\nprintf ran >{}\n", gate_marker.display()),
+    )
+    .expect("write gate command");
+    fs::set_permissions(&gate_command, fs::Permissions::from_mode(0o755))
+        .expect("chmod gate command");
+    let path = format!("{}:{}", fake_bin.display(), std::env::var("PATH").unwrap_or_default());
+    let queue = repo.join("scripts/merge-queue.sh");
+    for branch in ["landed-original", "partially-new"] {
+        let output = Command::new(&queue)
+            .args(["submit", branch])
+            .env("MERGE_QUEUE_STATE_DIR", &state)
+            .env("MERGE_QUEUE_GATE_WT", &gate_worktree)
+            .output()
+            .expect("submit fixture branch");
+        assert!(
+            output.status.success(),
+            "submit {branch} failed: {}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    let landed_queue_file = fs::read_dir(state.join("queue"))
+        .expect("read submitted queue")
+        .map(|entry| entry.expect("read queue entry").path())
+        .find(|path| {
+            path.extension().is_some_and(|extension| extension == "json")
+                && fs::read_to_string(path)
+                    .expect("read queue file")
+                    .contains("landed-original")
+        })
+        .expect("find landed queue file");
+    fs::write(format!("{}.nobatch", landed_queue_file.display()), "")
+        .expect("write no-batch sidecar");
+    fs::write(format!("{}.batch-limit", landed_queue_file.display()), "")
+        .expect("write batch-limit sidecar");
+
+    let output = Command::new(&queue)
+        .args(["run", "--once"])
+        .env("PATH", path)
+        .env("MERGE_QUEUE_STATE_DIR", &state)
+        .env("MERGE_QUEUE_GATE_WT", &gate_worktree)
+        .env("MERGE_QUEUE_GATE_CMD", &gate_command)
+        .output()
+        .expect("run isolated coordinator");
+    assert!(
+        output.status.success(),
+        "coordinator failed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(gate_marker.exists(), "the partially new branch was incorrectly skipped");
+    assert!(
+        !landed_worktree.exists(),
+        "already-merged clean worktree was not swept",
+    );
+
+    let events: Vec<serde_json::Value> = fs::read_to_string(state.join("journal.jsonl"))
+        .expect("read isolated journal")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("journal line is JSON"))
+        .collect();
+    assert!(events.iter().any(|event| {
+        event["event"] == "already_merged" && event["branch"] == "landed-original"
+    }));
+    assert!(events.iter().any(|event| {
+        event["event"] == "validated" && event["branch"] == "partially-new"
+    }));
+    assert_eq!(
+        fs::read_dir(state.join("queue"))
+            .expect("read drained queue")
+            .count(),
+        0,
+        "coordinator did not consume both terminal submissions",
+    );
+}
+
 #[test]
 fn daemon_enters_an_independent_process_group() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
