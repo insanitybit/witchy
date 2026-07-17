@@ -308,12 +308,14 @@ fn gc_list_scratch(prefix: &str, level: usize) -> String {
 ///     i64 and floats are bit-reinterpreted when they enter this representation
 ///     (see `to_slot`/`from_slot`).
 ///   * `F64` — `Float`.
-///   * `I32` — concrete pointers (strings/lists/records/closures and any
-///     future unmigrated handles) and `Bool`. These are the wasm32 address width.
+///   * `I32` — concrete linear-memory pointers (strings and scalar-only
+///     lists/records), future unmigrated handles, and `Bool`. These are the
+///     wasm32 address width.
 ///   * `ExternRef` — migrated unforgeable capabilities (`Dir`/`File`/`Net`,
 ///     `Socket`/`Listener`, and `Secret`). These must not cross the universal
 ///     slot or linear-memory heap.
-///   * `GcRef` — a typed GC-struct reference for named cap-carrying aggregates.
+///   * `GcRef` — a typed GC reference for closure wrappers, capture payloads,
+///     fixed reference-bearing aggregates, and function-valued arrays.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum Kind {
     I32,
@@ -1234,7 +1236,7 @@ struct Codegen<'types> {
     /// Cycle guard for `ensure_rcopy_wir_helper`, mirroring `eq_building`.
     rcopy_building: HashSet<String>,
     /// Lifted lambda bodies for the binary path, in table-index order — the WIR
-    /// twin of `lambdas`. Each is a `WirFunc $__lamw{i}`; the closure object
+    /// twin of `lambdas`. Each is a `WirFunc $__lamw{i}`; the uniform GC wrapper
     /// stores `i` as its code index and `CallIndirect` uses it as the table slot.
     lambda_wir_funcs: Vec<witchy_wir::wir::WirFunc>,
     /// Maps a lambda's source-owner/content hash to its index in
@@ -4730,7 +4732,7 @@ impl<'types> Codegen<'types> {
         Some(seq)
     }
 
-    /// Map codegen's `Kind` to the WIR `Kind` (the same three cases).
+    /// Map codegen's `Kind` to the exact WIR kind, preserving reference types.
     fn wir_kind(k: Kind) -> witchy_wir::wir::Kind {
         match k {
             Kind::I32 => witchy_wir::wir::Kind::I32,
@@ -6546,15 +6548,14 @@ impl<'types> Codegen<'types> {
             }
             // `match` on scalar patterns; non-scalar arms fall through to legacy.
             Expr::Match { scrutinee, arms } => return self.lower_match(scrutinee, arms),
-            // A lambda lowers to its closure-object creation (`$mk{c}`); the lifted
-            // body is registered as a `WirFunc` + table entry.
+            // A lambda lowers to a uniform GC wrapper plus its typed environment;
+            // the lifted body is registered as a `WirFunc` + table entry.
             Expr::Lambda { params, body, .. } => {
                 let signature = (self.closure_param_kinds(e), self.apply_ret_kind(e));
                 return self.lower_lambda(params, body, &signature);
             }
-            // Call a closure value: stash the pointer, then `call_indirect` with
-            // env (the closure ptr), signature-shaped args, and the code index (the
-            // closure's first word).
+            // Call a closure value: stash the wrapper, then `call_indirect` with
+            // that wrapper, signature-shaped args, and its immutable code field.
             Expr::Apply { func, args } => {
                 // Only a WIR-collecting scope lowers `Expr::Apply`; otherwise bail
                 // so the construct is reported unsupported.
@@ -7881,10 +7882,10 @@ impl<'types> Codegen<'types> {
                     };
                     return self.finish_closure_multi_call(call, writebacks, rk, typed_abi);
                 }
-                // A closure-typed local `f(x)`: pass the closure pointer as the env,
-                // signature-shaped args, and `call_indirect` on the code index (the
-                // closure record's first word). The pointer is a bare `GetLocal`,
-                // so no scratch stash is needed.
+                // A closure-typed local `f(x)`: pass the wrapper as the implicit
+                // environment, then signature-shaped args, and call indirectly on
+                // its immutable code field. The wrapper is a bare `GetLocal`, so
+                // no scratch stash is needed.
                 if self.locals.contains_key(name) {
                     let n = args.len();
                     let func_expr = Expr::Var(name.to_string());
@@ -8006,9 +8007,9 @@ impl<'types> Codegen<'types> {
         })
     }
 
-    /// Lower a lambda to its closure-object creation expression (the `$mk{c}` call
-    /// producing `[code_index][caps..]`), registering the lifted body `WirFunc` in
-    /// `lambda_wir_funcs` once (idempotent by owner/content hash). `None` (the
+    /// Lower a lambda to its uniform GC wrapper and typed capture payload,
+    /// registering the lifted body `WirFunc` in `lambda_wir_funcs` once
+    /// (idempotent by owner/content hash). `None` (the
     /// program is then rejected as unsupported) when the lambda assigns a
     /// captured var or its body doesn't fully lower.
     /// The source-owner/content hash keying a lambda's idempotent registration
@@ -8257,9 +8258,9 @@ impl<'types> Codegen<'types> {
     /// (RFC-0062) `cap_mode` selects how captures reach the body:
     /// - `CapMode::Env` (tier-3, the default): an env-pointer first param `$__lamw{i}`;
     ///   the prologue loads each capture from the heap env record.
-    /// - `CapMode::Threaded` (tier-1, elided closure): captures are LEADING value params
-    ///   `$__lamt{i}`; the prologue recovers each from its i64 param slot — no env, so the
-    ///   creating site allocates nothing.
+    /// - `CapMode::Threaded` (tier-1, elided closure): captures are leading value
+    ///   params to `$__lamt{i}`; reference captures retain their exact kind and
+    ///   scalar captures use slots. The creating site allocates no environment.
     fn build_lambda_wir_func(
         &mut self,
         params: &[Param],

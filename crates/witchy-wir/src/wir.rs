@@ -5,7 +5,8 @@
 //! not an SSA/CFG. Control flow is nested `Block`/`Loop`/`If`/`Br` nodes whose
 //! branch targets are always lexically-enclosing labels, so lowering to wasm is
 //! a direct structural walk with no relooper. Expressions are typed nodes, each
-//! carrying a `WirTy`, over the universal i64-slot value model.
+//! carrying a `WirTy`. Scalar values retain the universal i64-slot model while
+//! reference kinds remain exact throughout the tree.
 //!
 //! Locals, labels, and functions are referred to by name; `wir_encode` resolves
 //! those names to relative branch depths and wasm indices when it emits the
@@ -48,9 +49,10 @@ pub enum Kind {
 
 /// The exact wasm function type used by a closure `call_indirect`.
 ///
-/// Scalar closures currently use [`slot_closure_signature`], but keeping the
-/// kinds here is essential for reference-typed closure wrappers and parameters:
-/// arity alone cannot distinguish `i64`, `externref`, or GC-reference operands.
+/// Source closures use [`gc_slot_closure_signature`] or a fully typed variant;
+/// [`slot_closure_signature`] remains for legacy prelude helpers. Keeping the
+/// kinds here is essential because arity alone cannot distinguish `i64`,
+/// `externref`, or GC-reference operands.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ClosureSignature {
     pub params: Vec<Kind>,

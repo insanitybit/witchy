@@ -2414,21 +2414,6 @@ fn nullable_externref_option_cap(
 /// transitively carry a migrated externref capability. These lower to one typed
 /// wasm GC struct; a transparent one-field capability brand remains the direct
 /// externref representation instead.
-fn gc_cap_aggregate_cap(
-    name: &str,
-    defs: &HashMap<&str, &ast::TypeDef>,
-    storage: &ReferenceStorageClassifier<'_>,
-) -> Option<&'static str> {
-    if transparent_externref_brand_cap(name, defs, &mut HashSet::new()).is_some() {
-        return None;
-    }
-    let def = defs.get(name)?;
-    if !def.params.is_empty() || def.variants.is_empty() {
-        return None;
-    }
-    storage.first_externref(&ast::Type::Named(name.to_string(), Vec::new()))
-}
-
 fn gc_reference_aggregate_supported(
     name: &str,
     defs: &HashMap<&str, &ast::TypeDef>,
@@ -2441,15 +2426,10 @@ fn gc_reference_aggregate_supported(
     if def.variants.is_empty() {
         return false;
     }
-    let reference = storage.first_reference(&ast::Type::Named(name.to_string(), Vec::new()));
-    if def.params.is_empty() {
-        reference.is_some()
-    } else {
-        // A generic definition is representable when its declaration itself has
-        // a function field. Bare stored type parameters remain scalar and their
-        // reference-bearing instantiations are rejected below.
-        reference == Some(ReferenceLeaf::Function)
-    }
+    def.params.is_empty()
+        && storage
+            .first_reference(&ast::Type::Named(name.to_string(), Vec::new()))
+            .is_some()
 }
 
 /// (RFC-0005 stage 4) The module's GC-lowered cap-carrying nominal aggregate
@@ -5769,9 +5749,9 @@ impl Checker {
                 let function_ty = Ty::Fn(params, Box::new(ret), conventions);
                 if let Some(cap) = self.ty_carries_externref_cap(&function_ty) {
                     return terr(format!(
-                        "`{call_name}` cannot yet accept function value `{function}` carrying \
-                         `{cap}` through the isolated callback adapter; this requires RFC-0005's \
-                         typed callback lowering"
+                        "`{call_name}` cannot accept function value `{function}` carrying `{cap}` \
+                         through the isolated-worker callback adapter; that adapter still uses a \
+                         scalar cross-instance ABI"
                     ));
                 }
             }

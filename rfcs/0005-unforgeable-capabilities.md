@@ -555,10 +555,10 @@ recursive sums, concrete tuples, and tuple aliases. These shapes use typed Wasm
 GC structs selected by the shared reference-storage classifier; construction,
 projection, pattern matching, function boundaries, and direct proper-tail
 dispatch preserve their `externref` and GC-reference fields without i64 erasure.
-The typed closure ABI has since landed. The remaining representation work is
-reference-safe closure environments, followed by the still-rejected generic
-containers, generic aggregates, and region copy-out shapes that can
-transitively store a capability.
+At that checkpoint, the remaining representation work was reference-safe
+closure environments followed by generic containers, generic aggregates, and
+region copy-out shapes that can transitively store a capability. The later
+checkpoints below supersede the closure-environment part of that status.
 
 **2026-07-15 typed-call checkpoint.** Concrete function values now preserve
 `externref` and concrete GC-reference kinds in parameters, results, explicit
@@ -590,7 +590,7 @@ calls.
 Fixed-layout nominal and tuple aggregates may contain function values. Direct
 `List(fn(...))` uses a typed GC array and covers the source operations needed by
 the standard library: literal construction, persistent push/set/concat, length,
-indexed access, and iteration. Remaining representation gates are generic stored type
-parameters, `Option`/`Result`/`Dict` function payloads, nested function
-containers, capability-bearing region copy-out, and capability-typed callbacks
-crossing isolated worker instances.
+indexed access, and iteration. Remaining representation gates are generic
+stored type parameters, `Option`/`Result`/`Dict` function payloads, nested
+function containers, capability-bearing region copy-out, and capability-typed
+callbacks crossing isolated worker instances.

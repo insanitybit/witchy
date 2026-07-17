@@ -732,6 +732,18 @@ fn wrapper() -> Result(Int, AppError):
         )
         .expect_err("multi-parameter functions are references too");
         assert!(multi.contains("generic aggregate `Box`") && multi.contains("GC field layout"));
+
+        let stored_scalar = check_str(
+            "type CallbackBox(a):\n    callback: fn(Int) -> Int\n    value: a\n\
+             fn add1(n: Int) -> Int:\n    n + 1\n\
+             fn main():\n    let boxed = CallbackBox(add1, 1)\n",
+        )
+        .expect_err("a stored type parameter makes the concrete GC layout vary");
+        assert!(
+            stored_scalar.contains("generic aggregate `CallbackBox`")
+                && stored_scalar.contains("GC field layout"),
+            "{stored_scalar}"
+        );
     }
 
     #[test]
@@ -1243,11 +1255,21 @@ fn hold(vault: Vault):
 "#;
         check_str(nested).expect("a cap-carrying nominal GC reference is a valid capture");
 
-        let option = check_str(
-            "fn hold(x: Option(fn(Int) -> Int)):\n    let captured = x\n",
-        )
-        .expect_err("Option(fn) has no represented GC container lane");
-        assert!(option.contains("Option") && option.contains("function value"), "{option}");
+        for (container, ty) in [
+            ("Option", "Option(fn(Int) -> Int)"),
+            ("Result", "Result(fn(Int) -> Int, String)"),
+            ("Dict", "Dict(String, fn(Int) -> Int)"),
+            ("List", "List(List(fn(Int) -> Int))"),
+        ] {
+            let error = check_str(&format!(
+                "fn hold(x: {ty}):\n    let captured = x\n"
+            ))
+            .expect_err("unsupported function storage must stay reject-first");
+            assert!(
+                error.contains(container) && error.contains("function"),
+                "{ty} produced the wrong storage diagnostic: {error}"
+            );
+        }
     }
 
     #[test]

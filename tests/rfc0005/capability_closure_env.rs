@@ -35,6 +35,13 @@ fn invoke(reader: Reader, name: String) -> String:
     match reader:
         Reader(callback) -> callback(name)
 
+fn callback_count(callbacks: List(fn(String) -> String)) -> Int:
+    list.length(callbacks)
+
+fn invoke_pair(pair: (Dir[Read], fn(String) -> String), name: String) -> String:
+    match pair:
+        (dir, callback) -> dir.read(name) + "|" + callback(name)
+
 fn main(console: Console, root: Dir[Read]):
     let prefix = "P:"
     let read = fn(name: String) -> String: prefix + root.read(name)
@@ -47,7 +54,7 @@ fn main(console: Console, root: Dir[Read]):
 
     let pair = (root, alias)
     let from_pair = fn(name: String) -> String:
-        pair.0.read(name) + "|" + pair.1(name)
+        invoke_pair(pair, name)
     console.print(from_pair("value.txt"))
 
     let vault = Vault(root, "vault:")
@@ -65,7 +72,9 @@ fn main(console: Console, root: Dir[Read]):
     let concatenated = list.concat(original, [chained])
     var replaced = concatenated
     list.set_at(replaced, 0, chained)
-    console.print("${list.length(original)}:${list.length(concatenated)}:${list.length(replaced)}")
+    console.print("${list.length(original)}:${list.length(concatenated)}:${callback_count(replaced)}")
+    let first = list.at(replaced, 0)
+    console.print(first("value.txt"))
     for callback in replaced:
         console.print(callback("value.txt"))
 "#;
@@ -82,6 +91,7 @@ fn main(console: Console, root: Dir[Read]):
         "P:value".to_string(),
         "P:value!".to_string(),
         "1:2:2".to_string(),
+        "P:value!".to_string(),
         "P:value!".to_string(),
         "P:value!".to_string(),
     ];

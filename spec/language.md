@@ -667,12 +667,13 @@ capabilities, other closures, and fixed-layout GC aggregates remain references
 throughout creation, aliasing, and indirect invocation.
 
 Function values may be fields of fixed-layout nominal and tuple GC aggregates.
-Direct `List(fn(...))` values use typed GC arrays and support literals, persistent
-push/set/concat, length, indexed access, and iteration. Function storage in a generic type
-parameter, `Option`/`Result`/`Dict`, or a nested collection remains a check-time
-error until those containers have concrete typed GC layouts. Capability-typed
-callbacks crossing an isolated worker adapter remain rejected because workers
-receive only the scalar cross-instance callback ABI.
+Direct `List(fn(...))` values use typed GC arrays and support literals,
+persistent push/set/concat, length, indexed access, and iteration. Function
+storage in a generic type parameter, `Option`/`Result`/`Dict`, or a nested
+collection remains a check-time error until those containers have concrete
+typed GC layouts. Capability-typed callbacks crossing an isolated worker
+adapter remain rejected because workers receive only the scalar cross-instance
+callback ABI.
 
 ```witchy
 fn apply(f: fn(Int) -> Int, x: Int) -> Int:
