@@ -177,7 +177,8 @@ fn fv_expr(e: &Expr, s: &mut LambdaScan) {
         Expr::Unary { expr, .. }
         | Expr::Try(expr)
         | Expr::As { expr, .. }
-        | Expr::ExistentialPack { expr, .. } => fv_expr(expr, s),
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. } => fv_expr(expr, s),
         Expr::ExistentialCall { receiver, args, .. } => {
             fv_expr(receiver, s);
             for arg in args { fv_expr(arg, s); }

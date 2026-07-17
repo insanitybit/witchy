@@ -1207,7 +1207,9 @@ fn fv_expr(e: &Expr, bound: &HashSet<String>, seen: &mut HashSet<String>, out: &
         | Expr::Bool(_)
         | Expr::TaggedLit { .. } => {}
         Expr::Unary { expr, .. } | Expr::Field { base: expr, .. } | Expr::Try(expr)
-        | Expr::As { expr, .. } | Expr::ExistentialPack { expr, .. } => {
+        | Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. } => {
             fv_expr(expr, bound, seen, out)
         }
         Expr::ExistentialCall { receiver, args, .. } => {
@@ -1431,7 +1433,9 @@ fn contains_await(e: &Expr) -> bool {
         | Expr::Var(_)
         | Expr::TaggedLit { .. } => false,
         Expr::Unary { expr, .. } | Expr::Field { base: expr, .. } | Expr::Try(expr)
-        | Expr::As { expr, .. } | Expr::ExistentialPack { expr, .. } => {
+        | Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. } => {
             contains_await(expr)
         }
         Expr::ExistentialCall { receiver, args, .. } => {

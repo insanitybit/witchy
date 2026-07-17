@@ -1458,6 +1458,9 @@ fn expr(e: &Expr) -> String {
         Expr::ExistentialPack { expr: value, ty, .. } => {
             format!("{} as {}", expr(value), type_str(ty))
         }
+        Expr::ExistentialUpcast { expr: value, ty } => {
+            format!("{} as {}", expr(value), type_str(ty))
+        }
         Expr::ExistentialCall { receiver, args, method, .. } => format!(
             "{}.{}({})",
             expr(receiver),
@@ -2416,9 +2419,10 @@ fn rewrite_cap_method_expr(e: &mut Expr) {
         }
         Expr::Unary { expr, .. }
         | Expr::Try(expr)
-        | Expr::As { expr, .. }
-        | Expr::ExistentialPack { expr, .. }
-        | Expr::Field { base: expr, .. } => rewrite_cap_method_expr(expr),
+            | Expr::As { expr, .. }
+            | Expr::ExistentialPack { expr, .. }
+            | Expr::ExistentialUpcast { expr, .. }
+            | Expr::Field { base: expr, .. } => rewrite_cap_method_expr(expr),
         Expr::ExistentialCall { receiver, args, .. } => {
             rewrite_cap_method_expr(receiver);
             for arg in args { rewrite_cap_method_expr(arg); }

@@ -130,6 +130,7 @@ impl Resolver {
             | Expr::Try(expr)
             | Expr::As { expr, .. }
             | Expr::ExistentialPack { expr, .. }
+            | Expr::ExistentialUpcast { expr, .. }
             | Expr::Field { base: expr, .. } => self.expr(expr)?,
             Expr::ExistentialCall { receiver, args, .. } => {
                 self.expr(receiver)?;

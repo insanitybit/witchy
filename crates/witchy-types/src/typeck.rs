@@ -775,6 +775,7 @@ fn check_unique_parameters(module: &Module) -> Result<(), TypeError> {
             | Expr::Field { base: expr, .. }
             | Expr::Try(expr)
             | Expr::ExistentialPack { expr, .. }
+            | Expr::ExistentialUpcast { expr, .. }
             | Expr::As { expr, .. } => check_expr(expr),
             Expr::Lambda { params, body, .. } => {
                 check_params("lambda".to_string(), params)?;
@@ -1514,6 +1515,10 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                     validate_expr_types(expr, known, arities, type_defs, ctx, in_ctx)?;
                     validate_type_model(ty, known, arities, type_defs).map_err(|e| in_ctx(e, ctx))
                 }
+                Expr::ExistentialUpcast { expr, ty } => {
+                    validate_expr_types(expr, known, arities, type_defs, ctx, in_ctx)?;
+                    validate_type_model(ty, known, arities, type_defs).map_err(|e| in_ctx(e, ctx))
+                }
                 Expr::Lambda { params, body, ret } => {
                     for param in params {
                         if let Some(ty) = &param.ty {
@@ -2085,6 +2090,10 @@ impl<'a> ExistentialCheck<'a> {
                 self.visit_type(ty)
             }
             Expr::ExistentialPack { expr, ty, .. } => {
+                self.visit_expr(expr)?;
+                self.visit_type(ty)
+            }
+            Expr::ExistentialUpcast { expr, ty } => {
                 self.visit_expr(expr)?;
                 self.visit_type(ty)
             }
@@ -3468,6 +3477,10 @@ struct Checker {
     /// [`TypeTable`] preserves unresolved requests so final existential
     /// preparation rejects them loudly instead of silently omitting a pack.
     existential_pack_record: Option<HashMap<usize, (Ty, Ty)>>,
+    /// Directed existential supertrait conversions. The pair is `(target,
+    /// source)`; lowering converts the source witness to the target witness
+    /// without exposing the concrete payload.
+    existential_upcast_record: Option<HashMap<usize, (Ty, Ty)>>,
     fn_sigs: HashMap<String, (Vec<Ty>, Ty)>,
     /// Functions selected by trait lowering as actual `From.from` impls.
     /// Generated function names are an ABI detail, not semantic evidence.
@@ -5377,23 +5390,31 @@ impl Checker {
         }
     }
 
-    /// Whether this pair is one directed concrete-to-existential coercion.
+    /// Whether this pair is one directed existential conversion.
     ///
-    /// Existential-to-existential conversion is not implicit: upcasts need a
-    /// witness transformation of their own. An unresolved concrete type is
-    /// accepted here so generic bodies can be checked before monomorphization;
-    /// final existential preparation requires a fully resolved pair.
+    /// An unresolved concrete type is accepted here so generic bodies can be
+    /// checked before monomorphization; final existential preparation requires
+    /// a fully resolved pair.
     fn existential_coercion(
         &self,
         expected: &Ty,
         actual: &Ty,
     ) -> Result<bool, TypeError> {
-        let Ty::Dyn(dyn_name, _) = self.resolve(expected) else {
+        let expected = self.resolve(expected);
+        let Ty::Dyn(dyn_name, expected_args) = &expected else {
             return Ok(false);
         };
         let resolved_actual = self.resolve(actual);
-        if matches!(resolved_actual, Ty::Dyn(_, _)) {
-            return Ok(false);
+        if let Ty::Dyn(actual_name, actual_args) = &resolved_actual {
+            // Trait lowering has already erased declarations by the final
+            // annotation pass. Record a directed conversion here; the retained
+            // WitnessCatalog validates the exact supertrait edge before it can
+            // become a compiler-owned runtime node.
+            return Ok(
+                actual_name != dyn_name
+                    && expected_args.is_empty()
+                    && actual_args.is_empty(),
+            );
         }
         if let Some(cap) = self.ty_carries_capability(&resolved_actual) {
             return terr(format!(
@@ -5413,13 +5434,33 @@ impl Checker {
         expected: &Ty,
         actual: &Ty,
     ) -> Result<(), TypeError> {
-        if self.existential_coercion(expected, actual)?
-            && let Some(record) = &mut self.existential_pack_record
-        {
+        let is_conversion = self.existential_coercion(expected, actual)?;
+        let source = self.resolve(actual);
+        if is_conversion && !matches!(source, Ty::Dyn(_, _)) {
+            let target = self.resolve(expected);
+            if let Some(record) = &mut self.existential_pack_record {
             record.insert(
                 expr as *const Expr as usize,
-                (expected.clone(), actual.clone()),
+                    (target, source),
             );
+            }
+        }
+        Ok(())
+    }
+
+    fn record_existential_upcast(
+        &mut self,
+        expr: &Expr,
+        expected: &Ty,
+        actual: &Ty,
+    ) -> Result<(), TypeError> {
+        let is_conversion = self.existential_coercion(expected, actual)?;
+        let source = self.resolve(actual);
+        if is_conversion && matches!(source, Ty::Dyn(_, _)) {
+            let target = self.resolve(expected);
+            if let Some(record) = &mut self.existential_upcast_record {
+                record.insert(expr as *const Expr as usize, (target, source));
+            }
         }
         Ok(())
     }
@@ -5729,6 +5770,7 @@ impl Checker {
     fn infer_expected(&mut self, expr: &Expr, expected: &Ty) -> Result<Ty, TypeError> {
         let actual = self.infer_expected_inner(expr, expected)?;
         self.record_existential_pack(expr, expected, &actual)?;
+        self.record_existential_upcast(expr, expected, &actual)?;
         Ok(actual)
     }
 
@@ -6325,6 +6367,7 @@ impl Checker {
             | Expr::Try(expr)
             | Expr::As { expr, .. }
             | Expr::ExistentialPack { expr, .. }
+            | Expr::ExistentialUpcast { expr, .. }
             | Expr::Field { base: expr, .. } => self.collect_var_writebacks_in_expr(expr, out),
             Expr::RecordUpdate { base, fields, .. } => {
                 self.collect_var_writebacks_in_expr(base, out);
@@ -6560,6 +6603,10 @@ impl Checker {
                 Ok(self.to_ty(result))
             }
             Expr::ExistentialPack { expr, ty, .. } => {
+                self.infer(expr)?;
+                Ok(self.to_ty(ty))
+            }
+            Expr::ExistentialUpcast { expr, ty } => {
                 self.infer(expr)?;
                 Ok(self.to_ty(ty))
             }
@@ -7011,13 +7058,17 @@ impl Checker {
                 // already `Ty::Dyn` here.
                 if let Ty::Dyn(dyn_name, _) = &target {
                     let resolved_src = self.resolve(&src);
-                    if matches!(&resolved_src, Ty::Dyn(_, _)) {
+                    if matches!(&resolved_src, Ty::Dyn(_, _))
+                        && !self.existential_coercion(&target, &resolved_src)?
+                    {
                         return terr(format!(
-                            "cannot cast `{resolved_src}` to `{target}` — existential-to-existential \
-                             casts require the authenticated supertrait-upcast runtime, which has \
-                             not landed; omit a redundant same-type cast, and unrelated \
-                             existential types never convert"
+                            "cannot cast `{resolved_src}` to `{target}` — an existential may only \
+                             upcast to one of its transitive supertraits"
                         ));
+                    }
+                    if matches!(&resolved_src, Ty::Dyn(_, _)) {
+                        self.record_existential_upcast(expr, &target, &resolved_src)?;
+                        return Ok(target);
                     }
                     if let Some(cap) = self.ty_carries_capability(&resolved_src) {
                         let display_name = existential_bare(dyn_name);
@@ -8351,6 +8402,7 @@ fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) ->
 pub struct TypeTable {
     types: HashMap<usize, Ty>,
     existential_packs: HashMap<usize, (Ty, Ty)>,
+    existential_upcasts: HashMap<usize, (Ty, Ty)>,
 }
 
 impl TypeTable {
@@ -8369,6 +8421,13 @@ impl TypeTable {
     /// exact expression node.
     pub fn existential_pack(&self, e: &Expr) -> Option<&(Ty, Ty)> {
         self.existential_packs
+            .get(&(e as *const Expr as usize))
+    }
+
+    /// The finalized `(target, source)` supertrait conversion requested at this
+    /// exact expression node.
+    pub fn existential_upcast(&self, e: &Expr) -> Option<&(Ty, Ty)> {
+        self.existential_upcasts
             .get(&(e as *const Expr as usize))
     }
 }
@@ -8647,6 +8706,7 @@ fn run_check_selected(
         // capability payloads resolved only by the ending substitution are
         // rejected before annotation or lowering.
         existential_pack_record: Some(HashMap::new()),
+        existential_upcast_record: Some(HashMap::new()),
         fn_sigs: HashMap::new(),
         from_conversion_fns: from_conversion_fns.cloned().unwrap_or_default(),
         fn_conventions: HashMap::new(),
@@ -8895,6 +8955,16 @@ fn run_check_selected(
             }
         }
     }
+    let mut existential_upcasts = HashMap::new();
+    if let Some(records) = c.existential_upcast_record.take() {
+        for (key, (target, source)) in records {
+            let target = c.resolve(&target);
+            let source = c.resolve(&source);
+            if record {
+                existential_upcasts.insert(key, (target, source));
+            }
+        }
+    }
     if let Some(rec) = c.type_record.take() {
         let mut types = HashMap::new();
         for (k, ty) in rec {
@@ -8906,6 +8976,7 @@ fn run_check_selected(
         return Ok(Some(TypeTable {
             types,
             existential_packs,
+            existential_upcasts,
         }));
     }
     Ok(None)

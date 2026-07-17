@@ -1188,6 +1188,10 @@ impl<'a> Scope<'a> {
                 self.resolve_expr(expr)?;
                 self.resolve_type(ty)?;
             }
+            Expr::ExistentialUpcast { expr, ty } => {
+                self.resolve_expr(expr)?;
+                self.resolve_type(ty)?;
+            }
             Expr::ExistentialCall { receiver, args, ty, result, .. } => {
                 self.resolve_expr(receiver)?;
                 for arg in args { self.resolve_expr(arg)?; }
@@ -1849,6 +1853,7 @@ fn resolve_residual_expr(
         | Expr::Try(expr)
         | Expr::As { expr, .. }
         | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. }
         | Expr::Field { base: expr, .. } => resolve_residual_expr(expr, by_suffix)?,
         Expr::ExistentialCall { receiver, args, .. } => {
             resolve_residual_expr(receiver, by_suffix)?;

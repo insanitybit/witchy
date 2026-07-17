@@ -1387,6 +1387,10 @@ fn collect_anon_union_heads_expr(expr: &Expr, out: &mut HashMap<String, usize>) 
             collect_anon_union_heads_expr(expr, out);
             collect_anon_union_heads_type(ty, out);
         }
+        Expr::ExistentialUpcast { expr, ty } => {
+            collect_anon_union_heads_expr(expr, out);
+            collect_anon_union_heads_type(ty, out);
+        }
         Expr::Lambda { params, body, ret } => {
             for param in params {
                 if let Some(ty) = &param.ty {
@@ -2198,7 +2202,9 @@ fn local_expr_type(
             _ => None,
         },
         Expr::RecordUpdate { base, .. } => type_of(base),
-        Expr::As { ty, .. } | Expr::ExistentialPack { ty, .. } => Some(ty.clone()),
+        Expr::As { ty, .. }
+        | Expr::ExistentialPack { ty, .. }
+        | Expr::ExistentialUpcast { ty, .. } => Some(ty.clone()),
         Expr::Unary { op, expr } => match op {
             UnOp::Not => Some(named_type("Bool")),
             UnOp::Neg | UnOp::BitNot | UnOp::Move | UnOp::Await => type_of(expr),
@@ -2846,6 +2852,7 @@ impl Ctx<'_> {
             | Expr::Try(expr)
             | Expr::As { expr, .. }
             | Expr::ExistentialPack { expr, .. }
+            | Expr::ExistentialUpcast { expr, .. }
             | Expr::Field { base: expr, .. } => {
                 self.rewrite_expr(expr, scope)
             }
@@ -3433,7 +3440,8 @@ fn expr_needs_lowering(e: &Expr) -> bool {
         Expr::Unary { expr, .. }
         | Expr::Try(expr)
         | Expr::As { expr, .. }
-        | Expr::ExistentialPack { expr, .. } => {
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. } => {
             expr_needs_lowering(expr)
         }
         Expr::Field { base, .. } => expr_needs_lowering(base),
@@ -3854,8 +3862,8 @@ fn subst_expr_types(e: &mut Expr, subst: &HashMap<String, Type>) {
             *ty = subst_trait_params(ty, subst);
             subst_expr_types(expr, subst);
         }
-        Expr::ExistentialPack { .. } => {
-            panic!("existential packs must be prepared after monomorphization");
+        Expr::ExistentialPack { .. } | Expr::ExistentialUpcast { .. } => {
+            panic!("existential nodes must be prepared after monomorphization");
         }
         Expr::If { cond, then_block, else_block } => {
             subst_expr_types(cond, subst);
@@ -4079,6 +4087,7 @@ fn collect_function_refs(f: &Function, out: &mut HashSet<String>) {
             | Expr::Try(expr)
             | Expr::As { expr, .. }
             | Expr::ExistentialPack { expr, .. }
+            | Expr::ExistentialUpcast { expr, .. }
             | Expr::Field { base: expr, .. } => walk(expr, locals, out),
             Expr::Binary { lhs, rhs, .. } => {
                 walk(lhs, locals, out);
@@ -4324,6 +4333,7 @@ fn rename_calls_block(
             | Expr::Try(expr)
             | Expr::As { expr, .. }
             | Expr::ExistentialPack { expr, .. }
+            | Expr::ExistentialUpcast { expr, .. }
             | Expr::Field { base: expr, .. } => walk_expr(expr, scope, ctx),
             Expr::Binary { lhs, rhs, .. } => {
                 walk_expr(lhs, scope, ctx);
@@ -4669,6 +4679,7 @@ fn rewrite_try_from_expr(
         Expr::Unary { expr, .. }
         | Expr::As { expr, .. }
         | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. }
         | Expr::Field { base: expr, .. } => {
             rewrite_try_from_expr(expr, dst_err, conversions, table);
         }
@@ -5291,6 +5302,7 @@ impl Mono<'_> {
             | Expr::Try(expr)
             | Expr::As { expr, .. }
             | Expr::ExistentialPack { expr, .. }
+            | Expr::ExistentialUpcast { expr, .. }
             | Expr::Field { base: expr, .. } => {
                 self.walk_expr(expr, scope)
             }

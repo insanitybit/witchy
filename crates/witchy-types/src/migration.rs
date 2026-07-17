@@ -406,7 +406,8 @@ fn walk_expr(
         Expr::Unary { expr, .. }
         | Expr::Try(expr)
         | Expr::As { expr, .. }
-        | Expr::ExistentialPack { expr, .. } => {
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. } => {
             walk_expr(expr, function, line, nested_position, signatures, mutable, census);
         }
         Expr::Field { base, .. } => {
@@ -578,6 +579,7 @@ fn find_call(expr: &Expr, visit: &mut impl FnMut(&str)) {
         | Expr::Try(expr)
         | Expr::As { expr, .. }
         | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. }
         | Expr::Field { base: expr, .. } => find_call(expr, visit),
         Expr::RecordUpdate { base, fields, .. } => {
             find_call(base, visit);

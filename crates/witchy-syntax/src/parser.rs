@@ -3134,6 +3134,7 @@ impl Parser {
             | Expr::Try(expr)
             | Expr::As { expr, .. }
             | Expr::ExistentialPack { expr, .. }
+            | Expr::ExistentialUpcast { expr, .. }
             | Expr::Field { base: expr, .. } => Self::collect_quote_expr_holes(expr, holes),
             Expr::ExistentialCall { receiver, args, .. } => {
                 Self::collect_quote_expr_holes(receiver, holes);
@@ -4452,6 +4453,7 @@ fn lower_sugar_expr(e: &mut Expr) {
         | Expr::Try(expr)
         | Expr::As { expr, .. }
         | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. }
         | Expr::Field { base: expr, .. } => lower_sugar_expr(expr),
         Expr::ExistentialCall { receiver, args, .. } => {
             lower_sugar_expr(receiver);

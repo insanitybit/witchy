@@ -616,6 +616,13 @@ pub enum Expr {
         ty: Type,
         witness: u32,
     },
+    /// Compiler-owned RFC-0081 supertrait conversion. The runtime keeps the
+    /// opaque payload and switches to the target witness selected from the
+    /// closed-program upcast table. Source programs cannot spell this node.
+    ExistentialUpcast {
+        expr: Box<Expr>,
+        ty: Type,
+    },
     /// Compiler-owned RFC-0081 existential dispatch. Trait lowering resolves
     /// the static owner and slot before either runtime sees the call; only the
     /// witness-selected adapter remains dynamic.

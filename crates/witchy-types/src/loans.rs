@@ -1673,7 +1673,8 @@ fn walk_expr<'a>(e: &'a Expr, f: &mut impl FnMut(&'a Expr)) {
         Expr::Unary { expr, .. }
         | Expr::Try(expr)
         | Expr::As { expr, .. }
-        | Expr::ExistentialPack { expr, .. } => walk_expr(expr, f),
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. } => walk_expr(expr, f),
         Expr::Field { base, .. } => walk_expr(base, f),
         Expr::RecordUpdate { base, fields, .. } => {
             walk_expr(base, f);

@@ -69,8 +69,8 @@ pub fn lower_explicit_packs(
                 .to_string(),
         );
     }
-    let requests = collect_requests(typed.module(), typed.table())?;
-    let witnesses = witness::build_from_catalog(catalog, requests)?;
+    let (requests, upcasts) = collect_requests(typed.module(), typed.table())?;
+    let witnesses = witness::build_from_catalog_with_upcasts(catalog, requests, upcasts)?;
     let (module, table, result) = typed.rewrite_into_module(|table, module| {
         rewrite_module(module, table, &witnesses)
     });
@@ -96,18 +96,38 @@ fn pack_request(table: &TypeTable, expr: &Expr) -> Result<Option<(Type, Type)>, 
     )))
 }
 
+fn upcast_request(table: &TypeTable, expr: &Expr) -> Result<Option<(Type, Type)>, String> {
+    let Some((target, source)) = table.existential_upcast(expr) else {
+        return Ok(None);
+    };
+    let target = ty_to_ast(target).ok_or_else(|| {
+        "existential supertrait conversion requires one fully resolved target type".to_string()
+    })?;
+    let source = ty_to_ast(source).ok_or_else(|| {
+        "existential supertrait conversion requires one fully resolved source type".to_string()
+    })?;
+    Ok(Some((
+        target.unqualified().clone(),
+        source.unqualified().clone(),
+    )))
+}
+
 fn collect_requests(
     module: &Module,
     table: &TypeTable,
-) -> Result<Vec<(Type, Type)>, String> {
+) -> Result<(Vec<(Type, Type)>, Vec<(Type, Type)>), String> {
     let mut requests = Vec::new();
+    let mut upcasts = Vec::new();
     visit_module_exprs(module, &mut |expr| {
         if let Some(request) = pack_request(table, expr)? {
             requests.push(request);
         }
+        if let Some(upcast) = upcast_request(table, expr)? {
+            upcasts.push(upcast);
+        }
         Ok(())
     })?;
-    Ok(requests)
+    Ok((requests, upcasts))
 }
 
 fn rewrite_module(
@@ -163,6 +183,7 @@ fn rewrite_expr(
     witnesses: &WitnessPlan,
 ) -> Result<(), String> {
     let request = pack_request(table, expr)?;
+    let upcast = upcast_request(table, expr)?;
 
     match expr {
         Expr::List(items)
@@ -205,6 +226,7 @@ fn rewrite_expr(
         | Expr::Try(expr)
         | Expr::As { expr, .. }
         | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. }
         | Expr::Field { base: expr, .. } => rewrite_expr(expr, table, witnesses)?,
         Expr::Lambda { body, .. } | Expr::Block(body) => {
             rewrite_block(body, table, witnesses)?;
@@ -290,6 +312,16 @@ fn rewrite_expr(
             expr: Box::new(payload),
             ty: existential,
             witness,
+        };
+    } else if let Some((target, _source)) = upcast {
+        let old = std::mem::replace(expr, Expr::Bool(false));
+        let payload = match old {
+            Expr::As { expr: payload, .. } => *payload,
+            other => other,
+        };
+        *expr = Expr::ExistentialUpcast {
+            expr: Box::new(payload),
+            ty: target,
         };
     }
     Ok(())
@@ -383,6 +415,7 @@ fn visit_expr(
         | Expr::Try(expr)
         | Expr::As { expr, .. }
         | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. }
         | Expr::Field { base: expr, .. } => visit_expr(expr, visitor)?,
         Expr::Lambda { body, .. } | Expr::Block(body) => visit_block(body, visitor)?,
         Expr::RecordUpdate { base, fields, .. } => {

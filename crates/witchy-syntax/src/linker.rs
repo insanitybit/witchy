@@ -1720,6 +1720,7 @@ fn resolve_in_expr(
         | Expr::Try(expr)
         | Expr::As { expr, .. }
         | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. }
         | Expr::Field { base: expr, .. } => {
             resolve_in_expr(expr, sig, by_base, vars)
         }
@@ -1909,6 +1910,7 @@ fn collect_bound_expr(e: &Expr, out: &mut HashSet<String>) {
         | Expr::Try(expr)
         | Expr::As { expr, .. }
         | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. }
         | Expr::Field { base: expr, .. } => {
             collect_bound_expr(expr, out)
         }
@@ -2202,7 +2204,8 @@ fn rewrite_expr(
         Expr::Unary { expr, .. }
         | Expr::Try(expr)
         | Expr::As { expr, .. }
-        | Expr::ExistentialPack { expr, .. } => {
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. } => {
             rewrite_expr(expr, context, line)?
         }
         Expr::ExistentialCall { receiver, args, .. } => {
@@ -2586,6 +2589,7 @@ fn seal_expr(
         | Expr::Try(expr)
         | Expr::As { expr, .. }
         | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. }
         | Expr::Field { base: expr, .. } => {
             seal_expr(expr, sealed, home, allow_test_sealed_type_construction)?;
         }
@@ -3192,6 +3196,7 @@ fn check_reserved_expr(
         | Expr::Try(expr)
         | Expr::As { expr, .. }
         | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. }
         | Expr::Field { base: expr, .. } => {
             check_reserved_expr(module_name, expr, line, generated_anon_types)?
         }

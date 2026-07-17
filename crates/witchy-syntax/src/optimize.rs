@@ -160,7 +160,9 @@ fn opt_expr(e: &mut Expr, consts: &mut Consts) {
             }
         }
         Expr::Try(inner) => opt_expr(inner, consts),
-        Expr::As { expr, .. } | Expr::ExistentialPack { expr, .. } => {
+        Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. } => {
             opt_expr(expr, consts)
         }
         Expr::ExistentialCall { receiver, args, .. } => {

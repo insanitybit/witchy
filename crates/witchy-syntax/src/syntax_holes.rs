@@ -407,6 +407,10 @@ fn substitute_expr(
             substitute_expr(expr, holes, types, patterns)?;
             substitute_type(ty, types)?;
         }
+        Expr::ExistentialUpcast { expr, ty } => {
+            substitute_expr(expr, holes, types, patterns)?;
+            substitute_type(ty, types)?;
+        }
         Expr::ExistentialCall { receiver, args, ty, result, .. } => {
             substitute_expr(receiver, holes, types, patterns)?;
             for arg in args { substitute_expr(arg, holes, types, patterns)?; }

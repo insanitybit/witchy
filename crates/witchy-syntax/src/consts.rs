@@ -76,9 +76,10 @@ fn collect_names(e: &Expr, out: &mut Vec<String>) {
         }
         Expr::Unary { expr, .. }
         | Expr::Try(expr)
-        | Expr::As { expr, .. }
-        | Expr::ExistentialPack { expr, .. }
-        | Expr::Field { base: expr, .. } => {
+            | Expr::As { expr, .. }
+            | Expr::ExistentialPack { expr, .. }
+            | Expr::ExistentialUpcast { expr, .. }
+            | Expr::Field { base: expr, .. } => {
             collect_names(expr, out)
         }
         Expr::ExistentialCall { receiver, args, .. } => {
@@ -339,9 +340,10 @@ fn subst_expr(
         }
         Expr::Unary { expr, .. }
         | Expr::Try(expr)
-        | Expr::As { expr, .. }
-        | Expr::ExistentialPack { expr, .. }
-        | Expr::Field { base: expr, .. } => {
+            | Expr::As { expr, .. }
+            | Expr::ExistentialPack { expr, .. }
+            | Expr::ExistentialUpcast { expr, .. }
+            | Expr::Field { base: expr, .. } => {
             subst_expr(expr, consts, cnames, scope)
         }
         Expr::ExistentialCall { receiver, args, .. } => {

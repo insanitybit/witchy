@@ -31,9 +31,19 @@ pub struct Witness {
     pub slots: Vec<WitnessSlot>,
 }
 
+/// One authenticated runtime conversion from a source existential witness to
+/// the witness for one of its transitive supertraits. Both IDs describe the
+/// same opaque concrete payload.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WitnessUpcast {
+    pub source: u32,
+    pub target: u32,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WitnessPlan {
     pub witnesses: Vec<Witness>,
+    pub upcasts: Vec<WitnessUpcast>,
 }
 
 /// Stable dense table addressing for a closed witness plan.
@@ -147,6 +157,16 @@ impl WitnessPlan {
             }
         }
         Ok(WitnessDispatchIndex { stride })
+    }
+
+    pub fn upcast(&self, source: u32, target: &Type) -> Option<u32> {
+        self.upcasts.iter().find_map(|upcast| {
+            (upcast.source == source)
+                .then(|| self.by_id(upcast.target))
+                .flatten()
+                .filter(|witness| &witness.existential == target)
+                .map(|witness| witness.id)
+        })
     }
 }
 
@@ -299,6 +319,16 @@ pub fn build_from_catalog(
     catalog: &WitnessCatalog,
     requests: impl IntoIterator<Item = (Type, Type)>,
 ) -> Result<WitnessPlan, String> {
+    build_from_catalog_with_upcasts(catalog, requests, std::iter::empty())
+}
+
+/// Build a deterministic plan plus the directed supertrait conversions needed
+/// by compiler-owned `ExistentialUpcast` nodes.
+pub fn build_from_catalog_with_upcasts(
+    catalog: &WitnessCatalog,
+    requests: impl IntoIterator<Item = (Type, Type)>,
+    upcast_requests: impl IntoIterator<Item = (Type, Type)>,
+) -> Result<WitnessPlan, String> {
     let traits: HashMap<&str, &TraitDef> = catalog
         .traits
         .iter()
@@ -320,6 +350,47 @@ pub fn build_from_catalog(
             )
         })
         .collect::<Vec<_>>();
+    let upcast_requests = upcast_requests.into_iter().collect::<Vec<_>>();
+    for (target, source) in &upcast_requests {
+        let (Type::Dyn(target_name, target_args), Type::Dyn(source_name, source_args)) =
+            (target, source)
+        else {
+            return Err("existential upcast requests must convert `dyn Trait` values".to_string());
+        };
+        if !target_args.is_empty()
+            || !source_args.is_empty()
+            || !catalog_has_supertrait(catalog, source_name, target_name)
+        {
+            return Err(format!(
+                "invalid existential upcast request `{source_name}` to `{target_name}`"
+            ));
+        }
+    }
+    // An outer upcast can consume the result of an inner one. Close the
+    // request set before assigning IDs so source order cannot affect the plan.
+    loop {
+        let mut additions = Vec::new();
+        for (target, source) in &upcast_requests {
+            for (_, _, existential, concrete) in &entries {
+                if existential == source
+                    && !entries.iter().any(|(_, _, existing, candidate)| {
+                        existing == target && candidate == concrete
+                    })
+                {
+                    additions.push((
+                        type_key(target),
+                        type_key(concrete),
+                        target.clone(),
+                        concrete.clone(),
+                    ));
+                }
+            }
+        }
+        if additions.is_empty() {
+            break;
+        }
+        entries.extend(additions);
+    }
     entries.sort_by(|left, right| (&left.0, &left.1).cmp(&(&right.0, &right.1)));
     entries.dedup_by(|left, right| left.0 == right.0 && left.1 == right.1);
 
@@ -404,7 +475,44 @@ pub fn build_from_catalog(
             slots,
         });
     }
-    Ok(WitnessPlan { witnesses })
+    let mut upcasts = Vec::new();
+    for (target, source) in upcast_requests {
+        for witness in witnesses.iter().filter(|witness| witness.existential == source) {
+            let target_witness = witnesses
+                .iter()
+                .find(|candidate| {
+                    candidate.existential == target && candidate.concrete == witness.concrete
+                })
+                .ok_or_else(|| {
+                    format!(
+                        "existential witness plan lost supertrait target `{} -> {}` for `{}`",
+                        type_key(&source),
+                        type_key(&target),
+                        type_key(&witness.concrete)
+                    )
+                })?;
+            upcasts.push(WitnessUpcast {
+                source: witness.id,
+                target: target_witness.id,
+            });
+        }
+    }
+    upcasts.sort_by_key(|upcast| (upcast.source, upcast.target));
+    upcasts.dedup_by_key(|upcast| (upcast.source, upcast.target));
+    Ok(WitnessPlan { witnesses, upcasts })
+}
+
+fn catalog_has_supertrait(catalog: &WitnessCatalog, child: &str, target: &str) -> bool {
+    if child == target {
+        return false;
+    }
+    let Some(definition) = catalog.traits.iter().find(|definition| definition.name == child)
+    else {
+        return false;
+    };
+    definition.supertraits.iter().any(|supertrait| {
+        supertrait == target || catalog_has_supertrait(catalog, supertrait, target)
+    })
 }
 
 fn linearize_trait(
@@ -747,6 +855,39 @@ mod tests {
         let left = build(&source(&format!("{a}{b}")), requests.clone()).expect("left");
         let right = build(&source(&format!("{b}{a}")), requests).expect("right");
         assert_eq!(left, right);
+    }
+
+    #[test]
+    fn supertrait_upcasts_keep_the_same_concrete_payload() {
+        let module = parser::parse_module(
+            "trait Base:\n\
+             \x20   fn base(self) -> Int\n\n\
+             trait Render: Base:\n\
+             \x20   fn render(self) -> Int\n\n\
+             type Label:\n\
+             \x20   Label(Int)\n\n\
+             impl Base for Label:\n\
+             \x20   fn base(self) -> Int:\n\
+             \x20       1\n\n\
+             impl Render for Label:\n\
+             \x20   fn render(self) -> Int:\n\
+             \x20       2\n",
+        )
+        .expect("parse");
+        let render = Type::Dyn("Render".into(), Vec::new());
+        let base = Type::Dyn("Base".into(), Vec::new());
+        let label = Type::Named("Label".into(), Vec::new());
+        let plan = build_from_catalog_with_upcasts(
+            &WitnessCatalog::from_module(&module),
+            [(render.clone(), label.clone())],
+            [(base.clone(), render.clone())],
+        )
+        .expect("build supertrait witnesses");
+
+        let render_id = plan.get(&render, &label).expect("render witness").id;
+        let base_id = plan.upcast(render_id, &base).expect("base upcast");
+        assert_eq!(plan.by_id(base_id).expect("base witness").concrete, label);
+        assert_eq!(plan.by_id(base_id).expect("base witness").existential, base);
     }
 
     #[test]
