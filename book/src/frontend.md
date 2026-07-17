@@ -114,8 +114,8 @@ surfaces "this rune runs third-party JS"). A component builds the node with
 glamour.compartment("d3-runes-chart", json.stringify(chart_data), "ChartClicked")
 ```
 
-The shipped example is `projects/glamour/examples/package_page`, whose package
-page renders its download chart with an isolated `d3` bundle — d3 runs sandboxed,
+The shipped example is [`projects/glamour/examples/package_page`](https://github.com/insanitybit/witchy/tree/master/projects/glamour/examples/package_page),
+whose package page renders its download chart with an isolated `d3` bundle — d3 runs sandboxed,
 and even a compromised d3 is confined to its frame. Coven Web ships that bundle
 under `web/dist/compartments/d3-runes-chart/`.
 
