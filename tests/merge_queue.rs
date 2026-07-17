@@ -184,6 +184,25 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
     fs::write(&fake_sleep, "#!/bin/sh\nexec /bin/sleep 0.05\n").expect("write yielding sleep");
     fs::set_permissions(&fake_sleep, fs::Permissions::from_mode(0o755))
         .expect("chmod yielding sleep");
+    let real_jq = Command::new("sh")
+        .args(["-c", "command -v jq"])
+        .output()
+        .expect("locate real jq");
+    assert!(real_jq.status.success(), "jq is required by the queue harness");
+    let real_jq = String::from_utf8(real_jq.stdout)
+        .expect("jq path is utf8")
+        .trim()
+        .to_owned();
+    let fake_jq = fake_bin.join("jq");
+    fs::write(
+        &fake_jq,
+        format!(
+            "#!/bin/sh\ncase \" $* \" in\n  *\" --arg event validated \"*)\n    [ -d \"$MERGE_QUEUE_STATE_DIR/gate.lock\" ] || exit 97\n    ;;\nesac\nexec {real_jq:?} \"$@\"\n",
+        ),
+    )
+    .expect("write lock-asserting jq wrapper");
+    fs::set_permissions(&fake_jq, fs::Permissions::from_mode(0o755))
+        .expect("chmod jq wrapper");
     let gate_command = temp.path().join("gate-command");
     fs::write(
         &gate_command,
@@ -230,17 +249,16 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
         .expect("write live lock owner");
     fs::write(held_lock.join("what"), "focused external check\n")
         .expect("write lock description");
-    let lock_journal = state.join("journal.jsonl");
+    let prepared_worktree = gate_worktree.clone();
     let lock_releaser = thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !fs::read_to_string(&lock_journal)
-            .is_ok_and(|journal| journal.contains("\"event\":\"already_merged\""))
-        {
-            assert!(Instant::now() < deadline, "coordinator did not reach queued gate attempt");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !prepared_worktree.join("new-patch").exists() && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(25));
         }
+        let prepared_while_lock_held = prepared_worktree.join("new-patch").exists();
         thread::sleep(Duration::from_millis(1_100));
         fs::remove_dir_all(held_lock).expect("release externally held gate lock");
+        prepared_while_lock_held
     });
 
     let output = Command::new(&queue)
@@ -251,13 +269,17 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
         .env("MERGE_QUEUE_GATE_CMD", &gate_command)
         .output()
         .expect("run isolated coordinator");
-    lock_releaser.join().expect("join gate lock releaser");
+    let prepared_outside_lock = lock_releaser.join().expect("join gate lock releaser");
     assert!(
         output.status.success(),
         "coordinator failed: {}",
         String::from_utf8_lossy(&output.stderr),
     );
     assert!(gate_marker.exists(), "the partially new branch was incorrectly skipped");
+    assert!(
+        prepared_outside_lock,
+        "coordinator did not prepare the gate worktree while an external gate lock was held",
+    );
     assert!(
         !landed_worktree.exists(),
         "already-merged clean worktree was not swept",
@@ -287,8 +309,9 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
     );
     assert_eq!(validated["elapsed_s"], validated["gate_elapsed_s"]);
     let phase_total: u64 = [
-        "lock_wait_s",
         "prepare_elapsed_s",
+        "lock_wait_s",
+        "preflight_elapsed_s",
         "gate_elapsed_s",
         "landing_elapsed_s",
     ]
@@ -651,8 +674,8 @@ fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
         concat!(
             "{{\"ts\":\"2026-07-16T00:00:00Z\",\"event\":\"submitted\",\"branch\":\"a\"}}\n",
             "{{\"ts\":\"2026-07-16T00:00:10Z\",\"event\":\"submitted\",\"branch\":\"b\"}}\n",
-            "{{\"ts\":\"2026-07-16T00:01:40Z\",\"event\":\"merged\",\"branch\":\"a\",\"elapsed_s\":\"302\",\"attempt_elapsed_s\":\"302\",\"lock_wait_s\":\"181\",\"prepare_elapsed_s\":\"5\",\"gate_elapsed_s\":\"111\",\"landing_elapsed_s\":\"5\",\"batch\":\"2\",\"log\":{green:?}}}\n",
-            "{{\"ts\":\"2026-07-16T00:01:40Z\",\"event\":\"merged\",\"branch\":\"b\",\"elapsed_s\":\"302\",\"attempt_elapsed_s\":\"302\",\"lock_wait_s\":\"181\",\"prepare_elapsed_s\":\"5\",\"gate_elapsed_s\":\"111\",\"landing_elapsed_s\":\"5\",\"batch\":\"2\",\"log\":{green:?}}}\n",
+            "{{\"ts\":\"2026-07-16T00:01:40Z\",\"event\":\"merged\",\"branch\":\"a\",\"elapsed_s\":\"302\",\"attempt_elapsed_s\":\"302\",\"lock_wait_s\":\"181\",\"prepare_elapsed_s\":\"5\",\"preflight_elapsed_s\":\"0\",\"gate_elapsed_s\":\"111\",\"landing_elapsed_s\":\"5\",\"batch\":\"2\",\"log\":{green:?}}}\n",
+            "{{\"ts\":\"2026-07-16T00:01:40Z\",\"event\":\"merged\",\"branch\":\"b\",\"elapsed_s\":\"302\",\"attempt_elapsed_s\":\"302\",\"lock_wait_s\":\"181\",\"prepare_elapsed_s\":\"5\",\"preflight_elapsed_s\":\"0\",\"gate_elapsed_s\":\"111\",\"landing_elapsed_s\":\"5\",\"batch\":\"2\",\"log\":{green:?}}}\n",
             "{{\"ts\":\"2026-07-16T00:03:20Z\",\"event\":\"submitted\",\"branch\":\"c\"}}\n",
             "{{\"ts\":\"2026-07-16T00:04:20Z\",\"event\":\"timeout\",\"branch\":\"c\",\"elapsed_s\":\"60\",\"log\":{timeout:?}}}\n",
             "{{\"ts\":\"2026-07-16T00:05:00Z\",\"event\":\"submitted\",\"branch\":\"d\"}}\n",
@@ -702,6 +725,7 @@ fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
     assert_eq!(report["attempt_phases_s"]["lock_wait"]["count"], 1);
     assert_eq!(report["attempt_phases_s"]["lock_wait"]["p50"], 181);
     assert_eq!(report["attempt_phases_s"]["prepare"]["p50"], 5);
+    assert_eq!(report["attempt_phases_s"]["preflight"]["p50"], 0);
     assert_eq!(report["attempt_phases_s"]["gate"]["count"], 3);
     assert_eq!(report["attempt_phases_s"]["landing"]["p50"], 5);
     assert_eq!(report["outcomes"]["requeued"], 1);

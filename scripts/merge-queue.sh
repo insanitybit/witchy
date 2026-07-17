@@ -163,19 +163,20 @@ record() { # record <event> <branch> [key value]...
 
 # Record one coordinator attempt with phase boundaries captured by process_one.
 # Keep elapsed_s as the actual gate duration for existing journal consumers;
-# attempt_elapsed_s is the end-to-end coordinator work after dequeue. All
+# attempt_elapsed_s covers dequeue through the final validation decision. All
 # values are integer wall seconds because macOS /bin/date has no portable
 # sub-second epoch format.
-record_attempt() { # event branch attempt-start lock-acquired gate-start gate-end finish [key value]...
-    local event="$1" branch="$2" attempt_start="$3" lock_acquired="$4"
-    local gate_start="$5" gate_end="$6" finish="$7"
-    shift 7
+record_attempt() { # event branch start prepared locked gate-start gate-end finish [key value]...
+    local event="$1" branch="$2" attempt_start="$3" prepare_finished="$4"
+    local lock_acquired="$5" gate_start="$6" gate_end="$7" finish="$8"
+    shift 8
     record "$event" "$branch" \
         attempt_timing_schema "1" \
         elapsed_s "$((gate_end - gate_start))" \
         attempt_elapsed_s "$((finish - attempt_start))" \
-        lock_wait_s "$((lock_acquired - attempt_start))" \
-        prepare_elapsed_s "$((gate_start - lock_acquired))" \
+        prepare_elapsed_s "$((prepare_finished - attempt_start))" \
+        lock_wait_s "$((lock_acquired - prepare_finished))" \
+        preflight_elapsed_s "$((gate_start - lock_acquired))" \
         gate_elapsed_s "$((gate_end - gate_start))" \
         landing_elapsed_s "$((finish - gate_end))" \
         "$@"
@@ -612,22 +613,22 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         return 0
     fi
 
-    # Take the lock BEFORE touching the gate worktree: the checkout/rebase below
-    # would corrupt a gate another lock-holder is running there right now.
+    # The coordinator singleton owns the dedicated gate worktree. `with-lock`
+    # commands share compute/landing exclusion but never touch that worktree, so
+    # checkout/rebase/batch preparation stays concurrent with an external gate.
+    # The lock begins only after a candidate is fully prepared.
     local attempt_start; attempt_start="$(date +%s)"
-    acquire_lock "full gate: $branch" "$branch" ""
-    local lock_acquired; lock_acquired="$(date +%s)"
     ensure_gate_worktree
     local base; base="$(git -C "$root" rev-parse master)"
 
     git -C "$gate_wt" checkout --detach --quiet "refs/heads/$branch"
     if ! git -C "$gate_wt" rebase master >/dev/null 2>&1; then
         git -C "$gate_wt" rebase --abort >/dev/null 2>&1 || true
-        release_lock
         note "$branch does not rebase cleanly onto master — needs a human/agent rebase"
         local conflict_finished; conflict_finished="$(date +%s)"
-        record_attempt conflict "$branch" "$attempt_start" "$lock_acquired" \
-            "$conflict_finished" "$conflict_finished" "$conflict_finished" base "$base"
+        record_attempt conflict "$branch" "$attempt_start" "$conflict_finished" \
+            "$conflict_finished" "$conflict_finished" "$conflict_finished" \
+            "$conflict_finished" base "$base"
         rm -f "$f"
         return 0
     fi
@@ -666,7 +667,6 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     done
     if [ "${#batch_branches[@]}" -gt 1 ]; then
         note "batched ${#batch_branches[@]} branches into one gate: ${batch_branches[*]}"
-        echo "batch: ${batch_branches[*]}" >"$lock/what"
     fi
     local sha; sha="$(git -C "$gate_wt" rev-parse HEAD)"
 
@@ -727,17 +727,37 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     fi
 
     local log; log="$logs/$(date +%Y%m%d-%H%M%S)-$(echo "$branch" | tr '/' '~').log"
-    echo "$log" >"$lock/log"
+    local prepare_finished; prepare_finished="$(date +%s)"
+    local lock_what="full gate: $branch"
+    [ "${#batch_branches[@]}" -gt 1 ] && lock_what="batch: ${batch_branches[*]}"
+    acquire_lock "$lock_what" "$branch" "$log"
+    local lock_acquired; lock_acquired="$(date +%s)"
+
+    # Preparation raced the shared lock by design. Validate its base after
+    # acquisition; if another validated landing moved master, release without
+    # gating and rebuild the candidate from the new base on the next loop.
+    if [ "$(git -C "$root" rev-parse master)" != "$base" ]; then
+        note "master moved while $branch waited for the gate lock; re-preparing"
+        local pre_gate_requeued; pre_gate_requeued="$(date +%s)"
+        release_lock
+        record_attempt requeued "$branch" "$attempt_start" "$prepare_finished" \
+            "$lock_acquired" "$pre_gate_requeued" "$pre_gate_requeued" \
+            "$pre_gate_requeued" sha "$sha" reason "master moved before gate"
+        return 1
+    fi
+
     note "gating $branch (rebased to $sha on $base; fuzz=$fuzz_mode; scope=$gate_scope); log: $log"
     local gate_started; gate_started="$(date +%s)"
     run_gate "$log" "$fuzz_mode" "$gate_scope"
     local gate_finished; gate_finished="$(date +%s)"
-    release_lock
     local gate_took=$((gate_finished - gate_started))
 
     case "$gate_result" in
         green) ;;
         red | timeout:*)
+            # Red candidates cannot land. Release immediately so diagnosis and
+            # journal finalization do not delay the next heavyweight user.
+            release_lock
             local why="red" extra=""
             [ "$gate_result" != "red" ] && { why="timeout"; extra="${gate_result#timeout: }"; }
             if [ "${#batch_branches[@]}" -gt 1 ]; then
@@ -748,8 +768,8 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
                 note "batch of ${#batch_branches[@]} is $(echo "$why" | tr a-z A-Z) after ${gate_took}s — $extra"
                 note "  re-queueing members for individual gates; log: $log"
                 local batch_red_finished; batch_red_finished="$(date +%s)"
-                record_attempt batch_red "$branch" "$attempt_start" "$lock_acquired" \
-                    "$gate_started" "$gate_finished" "$batch_red_finished" \
+                record_attempt batch_red "$branch" "$attempt_start" "$prepare_finished" \
+                    "$lock_acquired" "$gate_started" "$gate_finished" "$batch_red_finished" \
                     members "${batch_branches[*]}" log "$log" reason "$extra" \
                     stages "$(stage_summary "$log")"
                 # Mark every member no-batch so the retry gates them one by one.
@@ -760,8 +780,8 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             note "$branch is $(echo "$why" | tr a-z A-Z) after ${gate_took}s — $extra"
             note "  log: $log"
             local failed_finished; failed_finished="$(date +%s)"
-            record_attempt "$why" "$branch" "$attempt_start" "$lock_acquired" \
-                "$gate_started" "$gate_finished" "$failed_finished" sha "$sha" \
+            record_attempt "$why" "$branch" "$attempt_start" "$prepare_finished" \
+                "$lock_acquired" "$gate_started" "$gate_finished" "$failed_finished" sha "$sha" \
                 log "$log" reason "$extra" stages "$(stage_summary "$log")"
             rm -f "$f"
             return 0
@@ -776,20 +796,22 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         local validated_finished; validated_finished="$(date +%s)"
         local vi
         for vi in "${!batch_branches[@]}"; do
-            record_attempt validated "${batch_branches[$vi]}" "$attempt_start" "$lock_acquired" \
-                "$gate_started" "$gate_finished" "$validated_finished" sha "$sha" log "$log" \
+            record_attempt validated "${batch_branches[$vi]}" "$attempt_start" "$prepare_finished" \
+                "$lock_acquired" "$gate_started" "$gate_finished" "$validated_finished" sha "$sha" log "$log" \
                 reason "test mode: merge skipped" stages "$(stage_summary "$log")"
             rm -f "${batch_files[$vi]}" "${batch_files[$vi]}.nobatch"
         done
+        release_lock
         return 0
     fi
 
     if [ "$(git -C "$root" rev-parse master)" != "$base" ]; then
         note "master moved during the gate; requeueing $branch for a fresh rebase"
         local requeued_finished; requeued_finished="$(date +%s)"
-        record_attempt requeued "$branch" "$attempt_start" "$lock_acquired" \
-            "$gate_started" "$gate_finished" "$requeued_finished" sha "$sha" log "$log" \
+        record_attempt requeued "$branch" "$attempt_start" "$prepare_finished" \
+            "$lock_acquired" "$gate_started" "$gate_finished" "$requeued_finished" sha "$sha" log "$log" \
             reason "master moved" stages "$(stage_summary "$log")"
+        release_lock
         return 1 # keep the queue file; the loop will re-process it
     fi
 
@@ -803,10 +825,11 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             note "fast-forward of master to $sha FAILED (dirty collision in main worktree)."
             note "the gate was GREEN — merge manually with: git merge --ff-only $sha"
             local blocked_finished; blocked_finished="$(date +%s)"
-            record_attempt blocked "$branch" "$attempt_start" "$lock_acquired" \
-                "$gate_started" "$gate_finished" "$blocked_finished" sha "$sha" log "$log" \
+            record_attempt blocked "$branch" "$attempt_start" "$prepare_finished" \
+                "$lock_acquired" "$gate_started" "$gate_finished" "$blocked_finished" sha "$sha" log "$log" \
                 reason "ff-merge failed in main worktree" stages "$(stage_summary "$log")"
             rm -f "$f"
+            release_lock
             return 0
         fi
     else
@@ -816,9 +839,10 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         if ! git -C "$root" update-ref refs/heads/master "$sha" "$base" >/dev/null 2>&1; then
             note "fast-forward of refs/heads/master to $sha FAILED (master moved or ref lock failed)."
             local ref_requeued_finished; ref_requeued_finished="$(date +%s)"
-            record_attempt requeued "$branch" "$attempt_start" "$lock_acquired" \
-                "$gate_started" "$gate_finished" "$ref_requeued_finished" sha "$sha" log "$log" \
+            record_attempt requeued "$branch" "$attempt_start" "$prepare_finished" \
+                "$lock_acquired" "$gate_started" "$gate_finished" "$ref_requeued_finished" sha "$sha" log "$log" \
                 reason "master ref update failed" stages "$(stage_summary "$log")"
+            release_lock
             return 1
         fi
     fi
@@ -826,12 +850,13 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     note "MERGED ${batch_branches[*]} → master @ $sha (gate ${gate_took}s, ${#batch_branches[@]} branch(es))"
     local i bf
     for i in "${!batch_branches[@]}"; do
-        record_attempt merged "${batch_branches[$i]}" "$attempt_start" "$lock_acquired" \
-            "$gate_started" "$gate_finished" "$landed_finished" sha "$sha" log "$log" \
+        record_attempt merged "${batch_branches[$i]}" "$attempt_start" "$prepare_finished" \
+            "$lock_acquired" "$gate_started" "$gate_finished" "$landed_finished" sha "$sha" log "$log" \
             batch "${#batch_branches[@]}" stages "$(stage_summary "$log")"
         bf="${batch_files[$i]}"
         rm -f "$bf" "$bf.nobatch"
     done
+    release_lock
     # Reclaim the merged branches' worktrees (their multi-GB target/) right away.
     # (The branch refs themselves are NOT force-moved: under batching the merged
     # sha contains OTHER branches' commits, and pointing an agent's branch at it
