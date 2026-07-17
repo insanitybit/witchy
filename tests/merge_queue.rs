@@ -279,7 +279,10 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
             thread::sleep(Duration::from_millis(25));
         }
         let prepared_while_lock_held = prepared_worktree.join("new-patch").exists();
-        thread::sleep(Duration::from_millis(1_100));
+        // Leave enough margin for a cold worktree preparation on a loaded
+        // machine; the assertion is about lock separation, not a race with
+        // the fixture's release timer.
+        thread::sleep(Duration::from_millis(4_100));
         fs::remove_dir_all(held_lock).expect("release externally held gate lock");
         prepared_while_lock_held
     });
