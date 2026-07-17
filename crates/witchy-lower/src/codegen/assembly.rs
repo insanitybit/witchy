@@ -851,7 +851,7 @@ fn register_module_items(
             fields.extend(
                 field_types
                     .iter()
-                    .map(|ty| Codegen::wir_kind(cg.kind_for_type(ty))),
+                    .map(|ty| Codegen::wir_kind(cg.gc_field_storage_kind(ty))),
             );
             cg.gc_ctor_layouts.insert(
                 (owner_key.clone(), variant_name.clone()),

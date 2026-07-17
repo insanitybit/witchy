@@ -1531,6 +1531,40 @@ impl<'types> Codegen<'types> {
             .and_then(|key| self.gc_aggregate_ids.get(&key).copied())
     }
 
+    /// Storage kind for a field in a GC aggregate whose declaration is generic.
+    /// Scalar type variables keep the existing universal-slot representation inside
+    /// the typed struct; concrete reference substitutions are rejected by typeck.
+    fn gc_field_storage_kind(&self, ty: &Type) -> Kind {
+        let kind = self.kind_for_type(ty);
+        if type_has_var(ty) && kind == Kind::I32 {
+            Kind::I64
+        } else {
+            kind
+        }
+    }
+
+    fn lower_gc_ctor_arg(
+        &mut self,
+        arg: &Expr,
+        field_ty: &Type,
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        use witchy_wir::wir::WirExpr as W;
+        let value = self.lower_expr(arg)?;
+        if type_has_var(field_ty) && self.gc_field_storage_kind(field_ty) == Kind::I64 {
+            let concrete = self.kind_of(arg);
+            debug_assert!(
+                !concrete.is_ref(),
+                "typeck must reject reference substitutions in generic GC fields"
+            );
+            if concrete.is_ref() {
+                return None;
+            }
+            Some(W::ToSlot(Box::new(value), Self::wir_kind(concrete)))
+        } else {
+            Some(value)
+        }
+    }
+
     fn gc_lookup_type_key(&self, ty: &Type) -> String {
         match ty.unqualified() {
             Type::Named(name, args) => {
@@ -6223,7 +6257,7 @@ impl<'types> Codegen<'types> {
         let mut binds: witchy_wir::wir::WirSeq = Vec::new();
         for (i, sub) in args.iter().enumerate() {
             let field_ty = field_types.get(i)?;
-            let field_kind = self.kind_for_type(field_ty);
+            let field_kind = self.gc_field_storage_kind(field_ty);
             let field = W::StructGet {
                 struct_id,
                 field: field_base + i as u32,
@@ -8121,8 +8155,8 @@ impl<'types> Codegen<'types> {
                     }
                     if layout.tag.is_none() {
                         let mut lowered = Vec::with_capacity(args.len());
-                        for arg in args {
-                            lowered.push(self.lower_expr(arg)?);
+                        for (arg, field_ty) in args.iter().zip(&layout.field_types) {
+                            lowered.push(self.lower_gc_ctor_arg(arg, field_ty)?);
                         }
                         return Some(W::StructNew { struct_id, args: lowered });
                     }
@@ -8144,7 +8178,8 @@ impl<'types> Codegen<'types> {
                         .collect();
                     lowered[0] = W::ConstI32(layout.tag? as i32);
                     for (i, arg) in args.iter().enumerate() {
-                        lowered[layout.field_base as usize + i] = self.lower_expr(arg)?;
+                        lowered[layout.field_base as usize + i] =
+                            self.lower_gc_ctor_arg(arg, &layout.field_types[i])?;
                     }
                     return Some(W::StructNew { struct_id, args: lowered });
                 }
