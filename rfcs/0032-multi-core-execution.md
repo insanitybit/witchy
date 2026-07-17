@@ -25,7 +25,7 @@ tracking: "IMPLEMENTED (2026-06-29). The std `vm` module delivers true multi-cor
   native parallel scheduler (in-VM = wasm-threads + thread-safe allocator + SOUND
   frozen/unique race-freedom = research-grade; OR OS-thread child VMs = the Tier-B
   backend); parity-neutral (must match the cooperative executor's deterministic
-  results). See [[project_rfc0032_impl_devlog]]."
+  results)."
 ---
 
 # RFC-0032: Multi-core execution — true parallelism vs the deterministic executor
