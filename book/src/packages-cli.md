@@ -27,7 +27,8 @@ Three sections matter:
   ones needn't be.
 - **`[dependencies]`** — version requirements against the registry, or `path`
   dependencies for work inside one repository (the multi-rune projects under
-  `examples/projects/` are all wired this way).
+  [`examples/projects/`](https://github.com/insanitybit/witchy/tree/master/examples/projects)
+  are all wired this way).
 - **`[build.grants."<name>"]`** — the *build-time authority* you, the consumer,
   explicitly hand to one specific dependency's build step: `read`/`exec`/`net`/
   `env` allow-lists. **Default deny applies to execution itself**: a dependency
