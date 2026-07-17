@@ -788,7 +788,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     let owner_methods = build_owner_methods(&typed.module().items);
     let missing_impls = std::cell::RefCell::new(Vec::new());
     let (var_calls, returns_nil) = build_mutation_tables(&typed.module().items);
-    let (mut lowered, ()) = typed.rewrite_into_module(|type_table, module| {
+    let (mut lowered, _, ()) = typed.rewrite_into_module(|type_table, module| {
         let ctx = Ctx {
             trait_methods: &trait_methods,
             inherent_methods: &inherent_methods,

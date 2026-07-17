@@ -942,6 +942,44 @@ fn main() -> Int:
     }
 
     #[test]
+    fn existential_pack_uses_a_typed_payload_box_and_erased_wrapper() {
+        let src = r#"
+trait Render:
+    fn render(self) -> Int
+
+type Label:
+    Label(Int)
+
+impl Render for Label:
+    fn render(self) -> Int:
+        match self:
+            Label(value) -> value
+
+fn main() -> Nil:
+    let item: dyn Render = Label(42)
+    Nil
+"#;
+        let module = parse_module(src).expect("parse");
+        let bytes = compile_module_binary(&module)
+            .expect_lowered("a closed existential construction lowers to Wasm GC");
+        let mut struct_news = 0usize;
+        for payload in gc_wasm_payloads(&bytes) {
+            if let wasmparser::Payload::CodeSectionEntry(body) = payload.expect("valid wasm") {
+                let mut operators = body.get_operators_reader().expect("operators");
+                while !operators.eof() {
+                    if matches!(operators.read().expect("operator"), wasmparser::Operator::StructNew { .. }) {
+                        struct_news += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            struct_news >= 2,
+            "one concrete payload box and one erased existential wrapper must be allocated"
+        );
+    }
+
+    #[test]
     fn full_int_program() {
         let src = r#"
 fn double(n: Int) -> Int:

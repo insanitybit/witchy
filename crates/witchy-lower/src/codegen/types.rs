@@ -23,6 +23,10 @@ impl Codegen<'_> {
             Expr::Int(_) | Expr::Duration(_) => Kind::I64,
             Expr::Float(_) => Kind::F64,
             Expr::Var(n) => self.locals.get(n).copied().unwrap_or(Kind::I32),
+            // Compiler-owned packs are inserted after type annotation, so the
+            // wrapper node itself has no address-keyed table entry. Its declared
+            // runtime representation is nevertheless fixed and never scalar.
+            Expr::ExistentialPack { .. } => Kind::GcRef(super::EXISTENTIAL_WRAPPER_ID),
             Expr::Unary { op, expr } => match op {
                 // `!x` is a bool (i32); negation/complement keep the operand kind.
                 UnOp::Not => Kind::I32,

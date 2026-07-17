@@ -8361,9 +8361,9 @@ impl TypedModule {
     pub(crate) fn rewrite_into_module<R>(
         mut self,
         rewrite: impl FnOnce(&TypeTable, &mut Module) -> R,
-    ) -> (Module, R) {
+    ) -> (Module, TypeTable, R) {
         let result = rewrite(&self.table, &mut self.module);
-        (self.module, result)
+        (self.module, self.table, result)
     }
 }
 

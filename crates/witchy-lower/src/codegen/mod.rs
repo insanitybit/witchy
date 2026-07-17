@@ -304,6 +304,9 @@ const REUSE_POOL: usize = 8;
 /// lambda. GC type zero is reserved for this wrapper before all payload types.
 const ENV_PARAM: &str = "__witchy_env";
 const CLOSURE_WRAPPER_ID: u32 = 0;
+/// The erased RFC-0081 envelope follows the closure wrapper in every module.
+/// Its payload is a `structref`; each witness gets a separate concrete box.
+const EXISTENTIAL_WRAPPER_ID: u32 = 1;
 const GC_LIST_SRC_TMP: &str = "__witchy_gc_list_src";
 const GC_LIST_RIGHT_TMP: &str = "__witchy_gc_list_right";
 const GC_LIST_DST_TMP: &str = "__witchy_gc_list_dst";
@@ -816,6 +819,9 @@ struct Codegen<'types> {
     /// element representation gets a typed GC array; direct externref
     /// collections remain rejected.
     gc_reference_list_ids: HashMap<String, u32>,
+    /// Closed witness ID -> concrete one-field payload box. The field uses the
+    /// payload's actual WIR kind, never the scalar slot ABI.
+    existential_payload_ids: HashMap<u32, u32>,
     /// Source lambda identity -> pre-reserved typed GC capture payload. All
     /// lambda structs are reserved before arrays so concrete GC type IDs never
     /// shift while function bodies lower.
@@ -1327,6 +1333,7 @@ impl<'types> Codegen<'types> {
             gc_structs: Vec::new(),
             gc_arrays: Vec::new(),
             gc_reference_list_ids: HashMap::new(),
+            existential_payload_ids: HashMap::new(),
             lambda_gc_env_ids: HashMap::new(),
             ctor_field_records: HashMap::new(),
             mk_arities: HashSet::new(),
@@ -1494,6 +1501,7 @@ impl<'types> Codegen<'types> {
     fn kind_for_type(&self, t: &Type) -> Kind {
         let t = t.unqualified();
         match t {
+            Type::Dyn(_, _) => Kind::GcRef(EXISTENTIAL_WRAPPER_ID),
             Type::Fn(_, _, _) => Kind::GcRef(CLOSURE_WRAPPER_ID),
             Type::Tuple(_) => self
                 .gc_tuple_shape(t)
@@ -7434,6 +7442,20 @@ impl<'types> Codegen<'types> {
                     }
                 }
             },
+            // Compiler-owned RFC-0081 construction: preserve the payload's exact
+            // representation inside its own GC box, then erase only the outer
+            // reference in the fixed `{structref, witness}` envelope.
+            Expr::ExistentialPack { expr, witness, .. } => {
+                let payload_id = *self.existential_payload_ids.get(witness)?;
+                let payload = W::StructNew {
+                    struct_id: payload_id,
+                    args: vec![self.lower_expr(expr)?],
+                };
+                return Some(W::StructNew {
+                    struct_id: EXISTENTIAL_WRAPPER_ID,
+                    args: vec![payload, W::ConstI32(i32::try_from(*witness).ok()?)],
+                });
+            }
             // `e as T` (capability narrowing / type ascription) is value-neutral
             // at codegen — lower the inner expression unchanged.
             Expr::As { expr, .. } => return self.lower_expr(expr),

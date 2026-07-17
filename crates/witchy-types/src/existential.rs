@@ -11,10 +11,19 @@ use witchy_syntax::ast::{Block, Expr, Item, Module, Stmt, Type};
 use crate::typeck::{TypeTable, TypedModule, ty_to_ast};
 use crate::witness::{self, WitnessCatalog, WitnessPlan};
 
-#[derive(Debug)]
 pub struct PreparedExistentials {
     module: Module,
+    table: TypeTable,
     witnesses: WitnessPlan,
+}
+
+impl std::fmt::Debug for PreparedExistentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedExistentials")
+            .field("module", &self.module)
+            .field("witnesses", &self.witnesses)
+            .finish_non_exhaustive()
+    }
 }
 
 impl PreparedExistentials {
@@ -26,8 +35,14 @@ impl PreparedExistentials {
         &self.witnesses
     }
 
-    pub fn into_parts(self) -> (Module, WitnessPlan) {
-        (self.module, self.witnesses)
+    /// Type facts for the exact payload expressions retained inside compiler-owned
+    /// packs. Backends use these to choose concrete payload field kinds.
+    pub fn table(&self) -> &TypeTable {
+        &self.table
+    }
+
+    pub fn into_parts(self) -> (Module, TypeTable, WitnessPlan) {
+        (self.module, self.table, self.witnesses)
     }
 }
 
@@ -56,11 +71,11 @@ pub fn lower_explicit_packs(
     }
     let requests = collect_requests(typed.module(), typed.table())?;
     let witnesses = witness::build_from_catalog(catalog, requests)?;
-    let (module, result) = typed.rewrite_into_module(|table, module| {
+    let (module, table, result) = typed.rewrite_into_module(|table, module| {
         rewrite_module(module, table, &witnesses)
     });
     result?;
-    Ok(PreparedExistentials { module, witnesses })
+    Ok(PreparedExistentials { module, table, witnesses })
 }
 
 fn pack_request(table: &TypeTable, expr: &Expr) -> Result<Option<(Type, Type)>, String> {

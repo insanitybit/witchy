@@ -645,6 +645,7 @@ fn register_module_items(
     cg: &mut Codegen,
     module: &Module,
     reachable: &HashSet<String>,
+    witnesses: &witchy_types::witness::WitnessPlan,
 ) {
     // `Option`/`Result` are language-level (`?`, `Some`/`Ok` literals, the
     // interpreter evaluates them natively): their constructors exist for
@@ -666,9 +667,20 @@ fn register_module_items(
         cg.transparent_externref_brands.insert(brand);
         cg.transparent_externref_ctors.insert(ctor, field);
     }
-    // Type zero is stable across every module: all first-class function values
-    // use this wrapper, and exact indirect signatures name it directly.
+    // Types zero and one are stable across every module: all first-class
+    // function values use type zero, and RFC-0081 packs use the erased wrapper
+    // at type one. Concrete payload boxes are reserved below and retain their
+    // real field kinds after the ordinary nominal layouts have been assigned.
     cg.gc_structs.push(witchy_wir::wir::closure_wrapper_struct());
+    cg.gc_structs.push(witchy_wir::wir::existential_wrapper_struct());
+    for witness in &witnesses.witnesses {
+        let payload_id = cg.gc_structs.len() as u32;
+        cg.existential_payload_ids.insert(witness.id, payload_id);
+        cg.gc_structs.push(witchy_wir::wir::WirStructDef {
+            fields: Vec::new(),
+            mutable: false,
+        });
+    }
     let mut lambda_keys = Vec::new();
     for item in &module.items {
         if let Item::Function(function) = item {
@@ -877,6 +889,18 @@ fn register_module_items(
             .collect();
         if let Some(slot) = cg.gc_structs.get_mut(id as usize) {
             slot.fields = field_kinds;
+        }
+    }
+    // A witness payload is one concrete value, not a universal slot. Materialize
+    // its field only after nominal/tuple IDs are known so nested GC references
+    // keep their typed representation across the erased envelope boundary.
+    for witness in &witnesses.witnesses {
+        let Some(payload_id) = cg.existential_payload_ids.get(&witness.id).copied() else {
+            continue;
+        };
+        let field = Codegen::wir_kind(cg.kind_for_type(&witness.concrete));
+        if let Some(slot) = cg.gc_structs.get_mut(payload_id as usize) {
+            slot.fields = vec![field];
         }
     }
     // Function return kinds may have been recorded before the GC-aggregate registry
@@ -1181,6 +1205,7 @@ fn assemble_wir_module_with_structs(
     let runtime_module = strip_compiler_syntax_items_for_runtime(module.clone());
     let recs = witchy_syntax::records::lower(runtime_module).map_err(|message| CodegenError { message })?;
     let eq_types = eq_impl_types(&recs);
+    let witness_catalog = witchy_types::witness::WitnessCatalog::from_module(&recs);
     let mut lowered = witchy_types::traits::lower_for_wasm(recs);
     witchy_syntax::parser::lower_sugar_module(&mut lowered);
     alpha_rename_module(&mut lowered);
@@ -1195,16 +1220,18 @@ fn assemble_wir_module_with_structs(
         rewrite_try_ctx_module(module, table)
     });
     typed.rewrite_preserving_nodes(|table, module| flip_string_add_module(module, table));
-    let module = typed.module();
-    let loan_facts = witchy_types::loans::facts(module)
+    let prepared = witchy_types::existential::lower_explicit_packs(typed, &witness_catalog)
+        .map_err(|message| CodegenError { message })?;
+    let (module, type_table, witnesses) = prepared.into_parts();
+    let loan_facts = witchy_types::loans::facts(&module)
         .map_err(|error| CodegenError { message: error.to_string() })?;
-    let custom_eq_roots = custom_eq_function_roots(module);
-    let reachable = reachable_functions_with(module, &custom_eq_roots);
-    let mut cg = Codegen::new(typed.table(), loan_facts);
+    let custom_eq_roots = custom_eq_function_roots(&module);
+    let reachable = reachable_functions_with(&module, &custom_eq_roots);
+    let mut cg = Codegen::new(&type_table, loan_facts);
     cg.collect_wir = true;
-    register_module_items(&mut cg, module, &reachable);
+    register_module_items(&mut cg, &module, &reachable, &witnesses);
     cg.eq_types = eq_types;
-    cg.summaries = analysis::Summaries::of_module(module);
+    cg.summaries = analysis::Summaries::of_module(&module);
 
     // (RFC-0047) A custom-`PartialEq` type's `PartialEq__T__eq` may be called only
     // from a codegen-synthesized container eq helper (invisible to the AST walk), so
@@ -1250,7 +1277,7 @@ fn assemble_wir_module_with_structs(
     let mut user_order: Vec<String> = Vec::new();
     // The JS-callable string exports (`pub fn f(String) -> String`); each gets an
     // `__export_f` wrapper and is an extra reachability root (above).
-    let string_exports = string_export_functions(module);
+    let string_exports = string_export_functions(&module);
     // (RFC-0040) Cap-gated exports (`export_*(cap, String)`): (export name, cap type,
     // field count). Their `__export_*` wrapper mints the grantable cap host-side, so
     // register the record allocator arity now (while `cg` is mutable).
@@ -1261,7 +1288,7 @@ fn assemble_wir_module_with_structs(
                 Item::Function(fu) if &fu.name == name => Some(fu),
                 _ => None,
             })?;
-            export_cap_of(f, module).map(|(c, n)| (name.clone(), c.to_string(), n))
+            export_cap_of(f, &module).map(|(c, n)| (name.clone(), c.to_string(), n))
         })
         .collect();
     for (_, _, nfields) in &export_cap_info {
