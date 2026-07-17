@@ -102,6 +102,11 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
         repo.join("scripts/merge-queue.sh"),
     )
     .expect("copy merge queue script");
+    let state_paths = source_root.join("scripts/state-paths.sh");
+    if state_paths.exists() {
+        fs::copy(state_paths, repo.join("scripts/state-paths.sh"))
+            .expect("copy merge queue state path helper");
+    }
     fs::set_permissions(
         repo.join("scripts/merge-queue.sh"),
         fs::Permissions::from_mode(0o755),
