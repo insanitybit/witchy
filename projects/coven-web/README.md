@@ -11,8 +11,8 @@ source, provenance, release state, and capability footprints in one place.
 - **Frontend:** a capability-pure Glamour rune built into the web bundle.
 - **Trusted shell:** small browser host code that owns browser authority and
   interprets the rune's inert `VNode` and `Cmd` data.
-- **Security model:** summarized in `SECURITY.md`; detailed historical plan in
-  `PLAN.md`.
+- **Security model:** summarized in [`SECURITY.md`](SECURITY.md); detailed
+  historical plan in [`PLAN.md`](PLAN.md).
 
 ## What it demonstrates
 
