@@ -2576,7 +2576,10 @@
         use crate::wir::WirStructDef;
 
         // struct $0 { field0: externref (a capability), field1: i64 (a scalar) }.
-        let structs = vec![WirStructDef { fields: vec![Kind::ExternRef, Kind::I64] }];
+        let structs = vec![WirStructDef {
+            fields: vec![Kind::ExternRef, Kind::I64],
+            mutable: true,
+        }];
 
         // fn takes_cap(cap: externref, agg: (ref null $0)) -> ()  — present but
         // uncalled, so its reference-typed SIGNATURE must still validate.
@@ -2679,8 +2682,14 @@
         // forward to array type 2, and type 2 is array definition 0. The
         // forward edge requires the encoder's explicit recursion group.
         let structs = vec![
-            WirStructDef { fields: vec![Kind::ExternRef, Kind::I64] },
-            WirStructDef { fields: vec![Kind::GcRef(2)] },
+            WirStructDef {
+                fields: vec![Kind::ExternRef, Kind::I64],
+                mutable: true,
+            },
+            WirStructDef {
+                fields: vec![Kind::GcRef(2)],
+                mutable: true,
+            },
         ];
         let arrays = vec![WirArrayDef { element: Kind::GcRef(0) }];
         let payload = |value| WirExpr::StructNew {
@@ -2800,7 +2809,10 @@
 
         let structs = vec![
             closure_wrapper_struct(),
-            WirStructDef { fields: vec![Kind::ExternRef, Kind::I64] },
+            WirStructDef {
+                fields: vec![Kind::ExternRef, Kind::I64],
+                mutable: true,
+            },
         ];
         let wrapper = WirExpr::GetLocal("closure".into());
         let payload = WirExpr::RefCast {
@@ -2885,6 +2897,51 @@
         };
 
         assert_eq!(run_binary(&encode(&module, &structs)), vec!["17", "7", "42"]);
+
+        let invalid_mutation = WirFunc {
+            name: "mutate_wrapper".into(),
+            params: vec![],
+            ret: vec![],
+            locals: vec![local("closure", WirTy::GcRef(0))],
+            body: vec![
+                WirNode::SetLocal {
+                    local: "closure".into(),
+                    value: WirExpr::StructNew {
+                        struct_id: 0,
+                        args: vec![
+                            WirExpr::ConstI32(7),
+                            WirExpr::ConstI32(17),
+                            WirExpr::RefNull(Kind::StructRef),
+                        ],
+                    },
+                },
+                WirNode::StructSet {
+                    struct_id: 0,
+                    field: CLOSURE_CODE_FIELD,
+                    base: WirExpr::GetLocal("closure".into()),
+                    value: WirExpr::ConstI32(8),
+                },
+            ],
+            raw_body: None,
+        };
+        let invalid_module = WirModule {
+            imports: vec![],
+            funcs: vec![invalid_mutation],
+            memory_pages: 1,
+            data: vec![],
+            globals: vec![],
+            table: None,
+            exports: vec![("run".into(), "mutate_wrapper".into())],
+        };
+        let invalid_binary = encode(&invalid_module, &structs);
+        let error = match wasmparser::validate(&invalid_binary) {
+            Ok(_) => panic!("the encoded closure wrapper fields must be immutable"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("immutable"),
+            "unexpected validation error: {error}"
+        );
     }
 
     #[test]
@@ -2921,8 +2978,14 @@
             ],
         };
         let structs = vec![
-            WirStructDef { fields: vec![Kind::I64] },
-            WirStructDef { fields: vec![Kind::I32] },
+            WirStructDef {
+                fields: vec![Kind::I64],
+                mutable: true,
+            },
+            WirStructDef {
+                fields: vec![Kind::I32],
+                mutable: true,
+            },
         ];
         let binary = encode(&module, &structs);
         let mut config = wasmtime::Config::new();

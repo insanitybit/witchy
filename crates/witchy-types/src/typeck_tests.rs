@@ -1023,17 +1023,30 @@ fn has_optional_id() -> Option(Bool):
             .expect_err("region copy-out cannot hide a GC tuple in a nominal aggregate");
         assert!(err.contains("region") && err.contains("File"), "got: {err}");
 
-        let err = check_str("fn callbacks(console: Console, pair: (File, fn(File) -> String)):\n    console.print(\"x\")\n")
-            .expect_err("a capability-bearing function signature remains unsupported in a tuple");
-        assert!(err.contains("function value") && err.contains("File"), "got: {err}");
+        check_str("fn callbacks(console: Console, pair: (File, fn(File) -> String)):\n    console.print(\"x\")\n")
+            .expect("fixed tuples preserve capabilities and function values as typed GC fields");
 
-        let err = check_str("fn callbacks(console: Console, pair: (fn(File) -> String, Int)):\n    console.print(\"x\")\n")
-            .expect_err("a tuple cannot hide a capability-bearing closure signature");
-        assert!(err.contains("function value") && err.contains("File"), "got: {err}");
+        check_str("fn callbacks(console: Console, pair: (fn(File) -> String, Int)):\n    console.print(\"x\")\n")
+            .expect("a fixed tuple may carry a typed capability-bearing function signature");
 
-        let err = check_str("fn callback(x: Int) -> Int:\n    x\nfn main(console: Console, f: File):\n    let pair = (f, callback)\n    console.print(\"x\")\n")
-            .expect_err("an inferred capability tuple cannot fall back around a function field");
-        assert!(err.contains("function value") && err.contains("File"), "got: {err}");
+        check_str("fn callback(x: Int) -> Int:\n    x\nfn main(console: Console, f: File):\n    let pair = (f, callback)\n    console.print(\"x\")\n")
+            .expect("an inferred fixed tuple keeps capability and function fields typed");
+
+        let err = check_str("trait Bad:\n    fn call(self, value: Option(fn(File) -> String)) -> Int\n")
+            .expect_err("trait method declarations reject unsupported function storage");
+        assert!(err.contains("call") && err.contains("function value"), "got: {err}");
+
+        let err = check_str("trait BadReturn:\n    fn call(self) -> Option(fn(File) -> String)\n")
+            .expect_err("trait method return types reject unsupported function storage");
+        assert!(err.contains("call") && err.contains("function value"), "got: {err}");
+
+        let err = check_str("type Box:\n    Box\nimpl Box:\n    fn call(self, value: Result(Int, fn(File) -> String)) -> Int:\n        0\n")
+            .expect_err("impl method declarations reject unsupported function storage");
+        assert!(err.contains("call") && err.contains("function value"), "got: {err}");
+
+        let err = check_str("type Pixel packed:\n    Pixel(Int)\ntype Box:\n    Box\nimpl Box:\n    fn pixels(self) -> List(Pixel):\n        []\n")
+            .expect_err("impl method return types reject packed-list boundaries");
+        assert!(err.contains("pixels") && err.contains("packed"), "got: {err}");
 
         check_str("fn id(x: (File, Int)) -> (File, Int):\n    x\nfn main(console: Console, f: File):\n    let local = id\n    let pair = local((f, 1))\n    console.print(\"x\")\n")
             .expect("a concrete capability tuple crosses the typed indirect-call ABI");

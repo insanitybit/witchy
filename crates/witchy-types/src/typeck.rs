@@ -1606,11 +1606,37 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                         if let Some(ty) = &param.ty {
                             validate_type_model(ty, &trait_known, &trait_arities, &type_defs)
                                 .map_err(|e| in_ctx(e, &tr.name))?;
+                            reject_packed_list_boundary(
+                                ty,
+                                &packed_names,
+                                &method.name,
+                                "a parameter",
+                            )?;
+                            reject_cap_slot_boundary(
+                                ty,
+                                &type_defs,
+                                &reference_storage,
+                                &method.name,
+                                "a parameter",
+                            )?;
                         }
                     }
                     if let Some(ret) = &method.ret {
                         validate_type_model(ret, &trait_known, &trait_arities, &type_defs)
                             .map_err(|e| in_ctx(e, &tr.name))?;
+                        reject_packed_list_boundary(
+                            ret,
+                            &packed_names,
+                            &method.name,
+                            "a return type",
+                        )?;
+                        reject_cap_slot_boundary(
+                            ret,
+                            &type_defs,
+                            &reference_storage,
+                            &method.name,
+                            "a return type",
+                        )?;
                     }
                     if let Some(default) = &method.default {
                         validate_block_types(default, &trait_known, &trait_arities, &type_defs, &tr.name, &in_ctx)?;
@@ -1650,11 +1676,37 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                         if let Some(ty) = &param.ty {
                             validate_type_model(ty, &method_known, &method_arities, &type_defs)
                                 .map_err(|e| in_ctx(e, &method.name))?;
+                            reject_packed_list_boundary(
+                                ty,
+                                &packed_names,
+                                &method.name,
+                                "a parameter",
+                            )?;
+                            reject_cap_slot_boundary(
+                                ty,
+                                &type_defs,
+                                &reference_storage,
+                                &method.name,
+                                "a parameter",
+                            )?;
                         }
                     }
                     if let Some(ret) = &method.ret {
                         validate_type_model(ret, &method_known, &method_arities, &type_defs)
                             .map_err(|e| in_ctx(e, &method.name))?;
+                        reject_packed_list_boundary(
+                            ret,
+                            &packed_names,
+                            &method.name,
+                            "a return type",
+                        )?;
+                        reject_cap_slot_boundary(
+                            ret,
+                            &type_defs,
+                            &reference_storage,
+                            &method.name,
+                            "a return type",
+                        )?;
                     }
                     for (_, _, trait_args) in &method.bounds {
                         for arg in trait_args {

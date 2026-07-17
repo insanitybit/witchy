@@ -42,6 +42,9 @@ fn invoke_pair(pair: (Dir[Read], fn(String) -> String), name: String) -> String:
     match pair:
         (dir, callback) -> dir.read(name) + "|" + callback(name)
 
+fn replace(var callback: fn(String) -> String, next: fn(String) -> String):
+    callback = next
+
 fn main(console: Console, root: Dir[Read]):
     let prefix = "P:"
     let read = fn(name: String) -> String: prefix + root.read(name)
@@ -77,6 +80,16 @@ fn main(console: Console, root: Dir[Read]):
     console.print(first("value.txt"))
     for callback in replaced:
         console.print(callback("value.txt"))
+
+    var reassigned = [alias]
+    reassigned = [chained]
+    let reassigned_first = list.at(reassigned, 0)
+    console.print(reassigned_first("value.txt"))
+
+    var indexed = [alias]
+    replace(indexed[0], chained)
+    let indexed_first = list.at(indexed, 0)
+    console.print(indexed_first("value.txt"))
 "#;
     let module = parser::parse_module(source).expect("parse");
     let linked = pipeline::link(vec![("main".into(), module)], "main").expect("link");
@@ -91,6 +104,8 @@ fn main(console: Console, root: Dir[Read]):
         "P:value".to_string(),
         "P:value!".to_string(),
         "1:2:2".to_string(),
+        "P:value!".to_string(),
+        "P:value!".to_string(),
         "P:value!".to_string(),
         "P:value!".to_string(),
         "P:value!".to_string(),

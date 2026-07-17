@@ -70,9 +70,12 @@ currently says one thing twice.
 
 **In:** all root capabilities become `externref` end-to-end (stage 2: File;
 stage 3: Socket/Listener and the rest); the `i32` handle tables are deleted
-(stage 5). **Deferred:** stage 4 (cap-carrying aggregates/closures as GC
-structs) stays behind the already-landed reject-first seam — caps inside
-`Option`/`List`/`Dict`/closures/channel messages reject loudly at check time.
+(stage 5). The original minimum allowed stage 4 to remain reject-first. The
+implementation subsequently exceeded that minimum: fixed-layout aggregates,
+typed closure environments, concrete function signatures, and direct
+`List(fn(...))` now have reference-preserving GC layouts. Generic stored type
+parameters, other reference-bearing collection payloads, region copy-out, and
+cross-instance capability callbacks remain loud check-time rejections.
 
 Rationale: capability security is the sole differentiator, and the compiled
 backend is the sole run path. Reject-first makes the stage-4 deferral loud

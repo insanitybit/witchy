@@ -559,7 +559,8 @@ pub fn encode_with_gc(
     }
     // 2) Concrete GC definitions form one recursion group. This makes every
     // `GcRef` edge in the combined struct/array band legal, including forward
-    // references and cycles. Fields/elements are mutable for aggregate updates.
+    // references and cycles. Arrays are mutable for aggregate updates; each
+    // struct declares whether its fields remain mutable after construction.
     let gc_types: Vec<SubType> = structs
         .iter()
         .map(|def| {
@@ -568,7 +569,7 @@ pub fn encode_with_gc(
                 .iter()
                 .map(|kind| FieldType {
                     element_type: StorageType::Val(val_type(*kind, gc_base)),
-                    mutable: true,
+                    mutable: def.mutable,
                 })
                 .collect::<Vec<_>>()
                 .into_boxed_slice();

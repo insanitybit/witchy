@@ -413,6 +413,10 @@
 
     #[test]
     fn closure_helpers_use_the_uniform_gc_wrapper_abi() {
+        assert!(
+            !closure_wrapper_struct().mutable,
+            "the closure code/environment identity is immutable after construction"
+        );
         for helper in [
             crate::wir_helpers::dict_update_helper(),
             crate::wir_helpers::dict_update_cap_helper(),

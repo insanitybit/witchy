@@ -3836,6 +3836,10 @@ impl<'types> Codegen<'types> {
                     if self.collect_wir
                         && self.reuse_vars.contains(name)
                         && matches!(value, Expr::List(_) | Expr::Ctor { .. })
+                        // Reference-backed aggregates have no linear slot buffer.
+                        // Their persistent GC lowering is already copy-correct;
+                        // never route them through the RFC-0016 i64 reuse path.
+                        && !self.locals.get(name).is_some_and(|kind| kind.is_ref())
                         && !expr_reads_var(value, name)
                     {
                         let slot_addr = |i: usize| W::Binary {
@@ -6069,7 +6073,35 @@ impl<'types> Codegen<'types> {
                 let actual = self.kind_of(&expr);
                 Some(Self::wir_convert(self.lower_expr(&expr)?, actual, expected))
             }
-            CodegenPlace::Index { base, coordinate, dict: false, .. } => {
+            CodegenPlace::Index {
+                base,
+                coordinate,
+                coordinate_kind,
+                dict: false,
+                ..
+            } => {
+                let base_expr = Self::codegen_place_read(base);
+                if let Some(array_ref) = self
+                    .gc_function_list_id
+                    .filter(|id| self.kind_of(&base_expr) == Kind::GcRef(*id))
+                {
+                    let array =
+                        self.lower_codegen_place_read(base, Kind::GcRef(array_ref))?;
+                    let value = W::ArrayGet {
+                        array_id: 0,
+                        array: Box::new(array),
+                        index: Box::new(Self::wir_convert(
+                            W::GetLocal(coordinate.clone()),
+                            *coordinate_kind,
+                            Kind::I32,
+                        )),
+                    };
+                    return Some(Self::wir_convert(
+                        value,
+                        Kind::GcRef(CLOSURE_WRAPPER_ID),
+                        expected,
+                    ));
+                }
                 let base = self.lower_codegen_place_read(base, Kind::I32)?;
                 let value = W::Call {
                     func: "list_at".into(),

@@ -407,7 +407,10 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
     for key in lambda_keys {
         let id = cg.gc_structs.len() as u32;
         cg.lambda_gc_env_ids.insert(key, id);
-        cg.gc_structs.push(witchy_wir::wir::WirStructDef { fields: Vec::new() });
+        cg.gc_structs.push(witchy_wir::wir::WirStructDef {
+            fields: Vec::new(),
+            mutable: true,
+        });
     }
     // (RFC-0005 stage 4 / BUG-566) The GC-aggregate classification lives in ONE
     // home — typeck — and codegen consumes it, so the boundary checks and the
@@ -421,13 +424,19 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
     for name in &gc_aggregate_names {
         let id = cg.gc_structs.len() as u32;
         cg.gc_aggregate_ids.insert(name.clone(), id);
-        cg.gc_structs.push(witchy_wir::wir::WirStructDef { fields: Vec::new() });
+        cg.gc_structs.push(witchy_wir::wir::WirStructDef {
+            fields: Vec::new(),
+            mutable: true,
+        });
     }
     let gc_tuple_layouts = collect_gc_tuple_layouts(cg, module);
     for shape in gc_tuple_layouts.keys() {
         let id = cg.gc_structs.len() as u32;
         cg.gc_tuple_ids.insert(shape.clone(), id);
-        cg.gc_structs.push(witchy_wir::wir::WirStructDef { fields: Vec::new() });
+        cg.gc_structs.push(witchy_wir::wir::WirStructDef {
+            fields: Vec::new(),
+            mutable: true,
+        });
     }
     if module_uses_function_list(cg, module) {
         let id = cg.gc_structs.len() as u32;

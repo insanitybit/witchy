@@ -83,11 +83,19 @@ destructuring use that typed representation on both backends.
 Concrete and generic type aliases are expanded before representation selection,
 so an alias for one of these tuples has exactly the same GC shape and behavior.
 
-Collections, generic aggregate specializations, closure environments, and
-`region:` copy-out carrying capabilities are still intentionally rejected until
-their reference-aware lowering lands. Capability aggregates also cannot be
-rendered or compared for equality: authority is not printable data or identity.
-No capability is silently boxed into an ordinary heap slot.
+Closures may capture capabilities: the compiled backend keeps each boxed
+lambda's captures in a typed GC environment, so the capability remains an
+unforgeable reference through aliases and indirect calls. Function values may
+also live in fixed-layout tuples and nominal aggregates. A direct
+`List(fn(...))` uses a typed GC array and supports literals, persistent updates,
+indexed access, and iteration.
+
+Generic stored type parameters, other reference-bearing collection payloads,
+nested function containers, and `region:` copy-out carrying capabilities remain
+intentionally rejected until those boundaries have concrete typed layouts.
+Capability aggregates also cannot be rendered or compared for equality:
+authority is not printable data or identity. No capability is silently boxed
+into an ordinary heap slot.
 
 ## At the entry point
 

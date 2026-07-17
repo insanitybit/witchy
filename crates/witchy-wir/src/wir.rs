@@ -147,9 +147,12 @@ impl WirTy {
 /// `externref` for a nested capability, or a `GcRef` for a nested aggregate). The
 /// encoder lays these after the reserved scalar closure-signature band, so a
 /// `Kind::GcRef(i)` resolves to the corresponding concrete GC type index.
+/// Aggregate payload structs are mutable; identity wrappers such as closures
+/// are immutable after construction.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WirStructDef {
     pub fields: Vec<Kind>,
+    pub mutable: bool,
 }
 
 /// A mutable GC array type declaration. Arrays share the concrete GC type-index
@@ -170,7 +173,10 @@ pub const CLOSURE_LINEAR_ENV_FIELD: u32 = 1;
 pub const CLOSURE_GC_ENV_FIELD: u32 = 2;
 
 pub fn closure_wrapper_struct() -> WirStructDef {
-    WirStructDef { fields: vec![Kind::I32, Kind::I32, Kind::StructRef] }
+    WirStructDef {
+        fields: vec![Kind::I32, Kind::I32, Kind::StructRef],
+        mutable: false,
+    }
 }
 
 /// RFC-0081's backend-neutral existential envelope. The payload is an erased
