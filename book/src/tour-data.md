@@ -75,8 +75,8 @@ fn main(console: Console):
 Field access (`point.x`) works exactly as on a named record, and because an
 anonymous record is reflectable, `json.stringify` — and the other reflection-based
 encoders (see [Generics](tour-generics.md)) — serialize it with no per-type code.
-That's the payoff: you can hand structured data to a JSON response or an encoder
-without declaring a one-off `type`. A bare `"${rec}"` structural print works too
+The same anonymous record can go directly to a JSON response or another
+reflection-based encoder without a one-off `type`. A bare `"${rec}"` structural print works too
 — an anonymous record renders as `.{x: 1, y: hi}`, exactly the way a named one
 does.
 
@@ -98,7 +98,7 @@ fn describe(e: LoadErr) -> String:
     match e:
         .NotFound -> "not found"
         .BadPort(p) -> "bad port ${p}"
-        .Missing(k) -> "missing " + k
+        .Missing(k) -> "missing ${k}"
 
 fn main(console: Console):
     console.print("${move_right(.{y: 2, x: 1})}")
@@ -217,9 +217,8 @@ negative
 ```
 
 A guarded arm (`m if m > 0`) doesn't count toward exhaustiveness — the checker
-knows the guard might not hold, so it still expects the cases below it. Aim a
-`match` at a value with an unhandled variant and witchy won't compile it; that's
-the feature, not an annoyance.
+knows the guard might not hold, so it still expects the cases below it. A
+`match` with an unhandled variant is rejected with the missing cases named.
 
 An arm can match **several values at once** with an or-pattern (`a | b | c`), or
 a **range** with `lo..hi` (half-open) or `lo..=hi` (inclusive):

@@ -274,9 +274,9 @@ pub fn count(t: Table, requested: String) -> String:
     match t:
         Table(_, name) ->
             if requested == name:
-                "ok: " + requested
+                "ok: ${requested}"
             else:
-                "denied: " + requested
+                "denied: ${requested}"
 
 fn main(console: Console, net: Net):
     let users = open_table(net, "users")
@@ -344,8 +344,8 @@ to a stretch of code: don't pass it. A function or closure that never receives a
 capability cannot use it — there is no name to reach, no value to alias, nothing
 to forge.
 
-So when a region of work must not touch the network (or the clock, or the disk),
-lift it into a function that simply isn't given that capability:
+When a region of work must not touch the network (or the clock, or the disk),
+lift it into a function that is not given that capability:
 
 ```witchy
 fn audit_log(console: Console, body: String):

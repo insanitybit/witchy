@@ -17,6 +17,7 @@
   - [Generics and Traits](tour-generics.md)
   - [Reflection](tour-reflection.md)
   - [Generators and Iterators](tour-iterators.md)
+  - [Modules and Source Files](tour-modules.md)
   - [Compile-Time Code: comptime](tour-comptime.md)
 - [Capabilities: The Heart of witchy](capabilities.md)
   - [Authority as a Value](capabilities-authority.md)
@@ -30,7 +31,7 @@
   - [The Manifest, the Lockfile, and the CLI](packages-cli.md)
   - [Build Steps: `build.witchy`](packages-build.md)
 - [Frontend Apps with Glamour](frontend.md)
-- [Under the Hood: Two Backends, One Meaning](backends.md)
+- [Execution Backends: One Meaning](backends.md)
 - [Idiomatic witchy](idioms.md)
 - [Testing](testing.md)
 

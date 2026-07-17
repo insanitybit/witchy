@@ -2,8 +2,8 @@
 
 ## The zero-install option: the playground
 
-The witchy interpreter compiles to WebAssembly, so it runs in a browser with no
-backend. If the repository ships a built playground, open `web/index.html`
+The witchy compiler runs in WebAssembly, so the playground needs no server-side
+compiler. If the repository ships a built playground, open `web/index.html`
 (served over HTTP); otherwise build it once:
 
 ```sh
@@ -14,8 +14,8 @@ python3 -m http.server -d web 8000
 # open http://localhost:8000
 ```
 
-Every `Console`-only example in this book runs there. It's the quickest way to
-follow along.
+Examples with a Run button execute there. Native-only host services and examples
+that require ungranted authority remain read-only.
 
 ## Installing a tagged release
 
@@ -56,8 +56,7 @@ GitHub.
 ## Building from source
 
 To use witchy as a real tool — the sandbox, the package manager — build the
-binary. You'll need a Rust toolchain (`rustup`
-recommended):
+binary. This requires a Rust toolchain (`rustup` recommended):
 
 ```sh
 git clone https://github.com/insanitybit/witchy
@@ -79,4 +78,4 @@ with tree-sitter highlighting and a language server (`witchy lsp`) that provides
 diagnostics, completion, and hover. Any editor that speaks LSP can use the
 server.
 
-With that, let's write something.
+The next chapter uses the browser or the installed binary to run a first program.

@@ -54,7 +54,7 @@ fn read_only(d: Dir[Read], name: String) -> String:
 
 fn touch(d: Dir[Write], name: String) -> String:
     d.write(name, "touched")
-    "wrote " + name
+    "wrote ${name}"
 
 fn handle(dir: Dir, writable: Bool, name: String) -> String:
     if writable:

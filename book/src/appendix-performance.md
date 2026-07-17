@@ -1,9 +1,9 @@
 # Appendix: Performance — the Ownership Knobs
 
-The parameter conventions from [the functions chapter](tour-functions.md) are
-not just a correctness model — they are what lets the compiler optimize
-without a garbage collector. This appendix says what each one means to the
-optimizer and which knobs actually move the needle.
+The parameter conventions from [the functions chapter](tour-functions.md)
+preserve value semantics and give the compiler facts it can use without a
+garbage collector. This appendix separates their source-level meaning from the
+optimizations they enable.
 
 First, the ground rule: witchy has value semantics. A callee must never be
 able to mutate what the caller still observes. That guarantee is exactly what
@@ -15,7 +15,7 @@ can be looking.
 |---|---|---|
 | `fn f(xs: List(Int))` *(default)* | an owned, observably immutable value | the callee's copy is independent; safe everywhere |
 | `fn f(let xs: List(Int))` | an immutable **borrow** — the type checker rejects returning it, so it cannot outlive the call | the value provably has no new owner after the call; backends share it without a defensive copy |
-| `fn f(own xs: List(Int))` | ownership transfer; use-after-move is a compile error | the callee may consume the value in place — its story ends here |
+| `fn f(own xs: List(Int))` | ownership transfer; use-after-move is a compile error | the callee may consume the value in place |
 | `fn f(var n: Int)` | the callee mutates and the caller's `var` is written back | mutate-in-place with write-back; no copy-out |
 
 ## The optimizations you get without asking

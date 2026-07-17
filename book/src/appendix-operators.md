@@ -18,9 +18,11 @@ has the precise semantics; this is the cheat sheet.
 | `xs[i]`, `d[k]` | strict indexing (sugar for `list.at(xs, i)` / `dict.at(d, k)`); out of bounds or missing-key reads error |
 | `xs[i] = v`, `d[k] = v`, `x.f = v` | assign to a place — sugar for a value update (`set_at` / record spread); the binding must be `var`. Compound `+=` etc. work |
 | `lo..hi` | half-open range, for iteration only |
+| `lo..=hi` | inclusive integer range in a pattern |
 | `x.f(a)` | a method call: an `impl`/trait method; standard data modules also keep equivalent module-qualified calls or compiler aliases such as `list.map(xs, f)` |
 | `${expr}` | string interpolation — renders *any* value into the string |
 | `e?` | unwrap `Ok`/`Some`, or early-return the `Err`/`None` |
+| `e? "context"` | propagate with context: prefix a String `Err`, or turn `None` into `Err("context")` |
 | `cap as T` | capability narrowing (drop rights; never widen) |
 | `..base` | record spread / list rest-pattern |
 
@@ -60,10 +62,11 @@ Comparison does not chain: write `0 <= x && x < n`, not `0 <= x < n`.
 | `for` / `in` / `while` | loops |
 | `break` / `continue` / `return` | loop and function control flow |
 | `type` | define a record, enum, or sum type (or a `=` alias) |
+| `sealed` | restrict construction of a nominal type to its defining module |
 | `trait` / `impl` | declare / implement an interface |
 | `where` | a trait bound on a generic (`where a: Ord`) |
 | `pub` | export an item from its module |
-| `import` | bring a module into scope |
+| `import` / `from ... import` | bring a module, or one type and its constructors, into scope |
 | `var` | a parameter whose final value is written back to the caller |
 | `own` / `move` | ownership transfer of a parameter / at a call |
 | `async` / `await` | concurrency: declare an async function / suspend on a future (`spawn` and channels are stdlib functions in `std/task` and `std/chan`, not keywords) |
@@ -71,8 +74,15 @@ Comparison does not chain: write `0 <= x && x < n`, not `0 <= x < n`.
 | `as` | capability rights narrowing |
 | `comptime` | a compile-time item-generation block (`comptime:`) |
 | `capability` | declare a user-defined capability (`capability X from U`) |
+| `grantable` | allow a bare user capability to be supplied to an entry point |
 | `region` | a scoped temporary-allocation region (`region:` / `region -> T:`) |
 | `true` / `false` | boolean literals |
+
+Several declaration and type modifiers are contextual words rather than general
+expression keywords: `packed` selects a flat record layout; `frozen`, `unique`,
+and `local unique` state ownership contracts; `mode opt` enables checked
+performance contracts; and `quote item|expr|type|pattern|stmt|block` constructs
+typed syntax inside compile-time code.
 
 ## Literals
 

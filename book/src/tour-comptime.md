@@ -298,7 +298,7 @@ Hello, witch!
 The tag runs **once, in the compiler**; both backends then compile the same AST.
 Holes are typed by position (the substituted expression is type-checked normally),
 so a type error points back *into the literal* at that `${…}`, and a marker may be
-placed zero, once, or many times. The payoff is safety by construction: the
+placed zero, once, or many times. This preserves structural safety: the
 `glamour` rune's `html` tag turns a `${userInput}` in text position into a
 `text(…)` **node**, never markup — so interpolated input is **XSS-immune**, not
 escaped-after-the-fact.

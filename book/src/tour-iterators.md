@@ -75,8 +75,8 @@ fn main(console: Console):
 
 The `while true` loop never finishes on its own; `iter.take(fibs(), 10)` stops
 pulling after ten values, so only ten Fibonacci numbers are ever computed. A
-generator can branch and loop as freely as any function — here is the Collatz
-sequence, which is finite but whose length you can't predict:
+generator can branch and loop as freely as any function. The Collatz sequence is
+finite, but its length is not known before iteration:
 
 ```witchy
 import iter
@@ -149,15 +149,13 @@ at parse time. A trait that wants a lazy sequence declares a plain
 iterator of pieces. With no expected type (say, collecting just to print),
 the compiler asks you to ascribe the binding rather than guess.
 
-If you've met iterators in Rust, you may be bracing for lifetimes and lending
-iterators. There's none of that here: witchy values are plain data with no
-borrowing, so an `Iter(a)` just yields values and a `gen fn` is lowered to an
+`Iter(a)` yields owned values; it is not a lending iterator. A `gen fn` is lowered to an
 ordinary function behind the scenes. The same generator runs identically on the
 interpreter and the compiled backend — laziness is a library and a lowering, not
 a special runtime.
 
-Note that a `gen fn` mutates `var` freely across a `yield` — `a`, `b`, and `n`
-above all carry forward. An `async fn` can also carry a `var` across an `await`
+A `gen fn` may mutate `var` across a `yield`; `a`, `b`, and `n` above all carry
+forward. An `async fn` can also carry a `var` across an `await`
 in supported positions ([Concurrency](tour-async.md)); the current async
 lowering threads live locals through state-machine segments. The remaining
 restriction is placement: `await` works in loop bodies, but not in branch
@@ -167,9 +165,5 @@ A generator with no capability parameters is also, by construction, **pure**: a
 `gen fn` that takes no `Console`/`Dir`/`Net` provably cannot do I/O — it can only
 compute the next value. That word — *provably* — is the thread we pull on next.
 
-Everything so far has been pure: code that computes and returns values. Now we
-get to the part witchy exists for — what happens when a program needs to actually
-*do* something in the world, and how the language keeps that authority honest.
-One short stop first: code that runs at compile time.
-
-Next: comptime.
+Modules organize these definitions; compile-time code can generate more of them
+before type checking.

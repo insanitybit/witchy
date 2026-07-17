@@ -170,6 +170,21 @@ function value are positional in v1**. When in doubt, positional always works;
 reach for labels when a call site has several same-typed arguments and the
 names make it readable.
 
+## Evaluation order
+
+Evaluation is deterministic and follows source order. A method receiver is
+evaluated before its arguments, and call arguments run left to right as written,
+including labeled arguments. Indexing evaluates the collection before the
+index. Unary operands run first; binary operators run the left operand before
+the right. `&&`, `||`, and `??` short-circuit.
+
+Tuple and list elements, constructor fields, record fields, and interpolation
+holes also run left to right. A comprehension evaluates its generators from
+left to right, then its filter, then its element expression. Assignment captures
+the destination and its projections once, evaluates the right side, and writes
+the result back last. A `var` call commits its write-back before the surrounding
+expression continues.
+
 ## `if` is an expression
 
 ```witchy
@@ -312,10 +327,10 @@ fn main(console: Console):
 42
 ```
 
-This is witchy's version of mutable references, but it's explicit at both the
-definition (`var n`) and — because the variable is visibly handed over — the
-call. There's no aliasing to reason about: `bump` has the only handle to `n`
-while it runs.
+This is witchy's write-back convention. It is explicit in the definition
+(`var n`), and the argument must be a mutable place. The callee works on the
+handed-over value; its final parameter value returns to that place independently
+of the function's ordinary result.
 
 ## Ownership: borrow and transfer
 
@@ -350,7 +365,7 @@ touching the original is a compile error, not a dangling reference:
 
 ```witchy
 fn into_label(own name: String) -> String:
-    "[" + name + "]"
+    "[${name}]"
 
 fn main(console: Console):
     let name = "witchy"
@@ -371,10 +386,28 @@ parameter is the idiom, and on the compiled backend that pair is a guaranteed
 copy-free hand-off. You don't write `move` for a `var` parameter, though — there
 you hand the variable over directly and it's written back.
 
-So the whole model is four choices, all visible in the signature: owned-immutable
-by default, `let` to borrow, `own`/`move` to transfer, `var` to mutate the
-caller's variable in place. There's no aliasing and no garbage-collector surprise
-— who may change what is part of every function's type.
+The four conventions are visible in the signature: owned and observably
+immutable by default, `let` to borrow, `own`/`move` to transfer, and `var` to
+write back to the caller's place. They preserve value semantics while giving the
+compiler the ownership facts it needs.
+
+## Ownership qualifiers
+
+Calling conventions describe what a call does. Type qualifiers state a stronger
+ownership contract about a value:
+
+| Qualifier | Contract |
+|---|---|
+| `frozen T` | deeply immutable; it cannot be bound as mutable or consumed through `own` |
+| `unique T` | the sole reference to the value |
+| `local unique T` | unique within the current call and forbidden from escaping it |
+| `View(T, 'a)` | a read-only view tied to a `let('a) T` input; available in `mode opt` |
+
+The qualifiers have no runtime representation and cannot change a program's
+answer. They let `mode opt` turn a missed ownership proof into a compile error
+instead of taking a copy-correct fallback. Borrowed views, the `own unique`
+recursive-kernel contract, and the operations that use `unique` are covered in
+[Appendix: Performance](appendix-performance.md).
 
 These conventions are also witchy's **performance knobs** (what may alias
 determines what the compiler may mutate in place): see

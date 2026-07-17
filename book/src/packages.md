@@ -21,11 +21,10 @@ A library rune just exports `pub` functions:
 ```witchy
 // src/shout.witchy
 pub fn shout(s: String) -> String:
-    "HEY " + s.to_upper()
+    "HEY ${s.to_upper()}"
 ```
 
-Notice it has no capability parameters — this rune is pure, and that fact is
-about to become something a consumer can *verify*, not just trust.
+It has no capability parameters, so consumers can verify that the rune is pure.
 
 ## The footprint is recomputed, never trusted
 
@@ -35,9 +34,9 @@ dependency, the footprint is **recomputed from the source** — the same analysi
 as `witchy caps`. Declared metadata that disagrees with the code is ignored in
 favor of the code.
 
-This is the load-bearing idea. In other ecosystems, "this package only needs
-network access" is a claim in a README. In witchy it's a fact derived from the
-source every time, so it can't drift, and it can't lie.
+In other ecosystems, "this package only needs network access" may be a README
+claim. witchy derives the footprint from source each time, preventing declared
+metadata from drifting away from the code.
 
 ## Adding a dependency gates on widening
 
@@ -100,7 +99,7 @@ tampering, and lockfiles pin content hashes, the registry's key, and the full
 provenance chain, all re-checkable offline with `witchy verify`. Add `--online`
 when you also want to re-fetch TUF metadata and check freshness or rollback.
 
-Crucially, **resolving and installing a rune never executes its code** — it is
+**Resolving and installing a rune never executes its code**: it is
 read and type-checked, nothing more. There is no `postinstall`, no `build.rs`
 running with your ambient authority.
 
@@ -118,7 +117,7 @@ flow with real tool output.
 
 ## Try the whole thing locally
 
-All of this runs on your machine — there's a scripted tour that starts a
+The repository includes a scripted tour that starts a
 registry, publishes through trusted publishing, promotes with a second factor,
 consumes the rune from a separate project, and demonstrates the widening gate
 refusing an over-reaching upgrade:

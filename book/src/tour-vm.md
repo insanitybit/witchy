@@ -1,13 +1,11 @@
 # Multi-Core and Isolated Workers
 
-The [`chan`/`task` model](tour-async.md) gives you *concurrency* — many tasks
-interleaving on one core, cooperatively. The `vm` module gives you the other two
-things a program eventually wants: **parallelism** (use every core) and **isolation**
-(run code in a separate sandbox with exactly the authority you choose).
+The [`chan`/`task` model](tour-async.md) provides cooperative concurrency within
+one VM. The `vm` module provides **parallelism** across cores and **isolation** in
+a separate sandbox with explicitly chosen authority.
 
-Everything here preserves witchy's prime directive — the interpreter and the compiled
-backend produce identical output. That is not a happy accident; it *shaped* the
-surface, as you'll see.
+These APIs preserve backend parity by fixing result order and rejecting callback
+shapes that cannot cross an isolated VM boundary.
 
 > The `vm` examples below have no **Run** button in the online book: worker VMs are a
 > native, multi-core facility, and the browser playground's pure-compute sandbox has no
@@ -31,11 +29,9 @@ fn main(console: Console):
     console.print("${list.sum(squares)}")
 ```
 
-Why is this safe to run in parallel when so much of witchy's speed comes from "one
-owner, no other observer"? Because the result is collected **by input index** and `f`
-is a pure function: the parallel answer is *identical* to the sequential one. So the
+The result is collected **by input index** and `f` is pure. The
 interpreter runs it sequentially, the compiled backend runs it across cores, and they
-agree. Parallelism changes how *fast* the map runs, not *what* it returns.
+produce the same ordered result.
 
 Two rules select the parallel fast path. Anything else runs the ordinary sequential
 body with the same ordered-map semantics:
@@ -48,14 +44,13 @@ body with the same ordered-map semantics:
   its own memory, so a captured parent-heap value would not be reachable there. A
   local function value or lambda remains valid, but runs sequentially.
 
-On CPU-bound work this scales close to linearly with core count; the residual
-overhead is the per-call cost of spinning up worker instances, so it pays off
-when each task does real work rather than for tiny per-element calls.
+Worker startup adds a per-call cost, so `vm.par_map` is intended for substantial
+CPU-bound elements rather than tiny callbacks.
 
 ## `Bytes`: the binary payload
 
 Crossing a VM boundary, or serializing anything structured, wants a flat byte buffer.
-That's the `Bytes` type ([`std/bytes`](appendix-stdlib.md)) — a UTF-8-free sequence of bytes,
+The `Bytes` type ([`std/bytes`](appendix-stdlib.md)) is a UTF-8-free sequence of bytes,
 the thing `String` (always valid UTF-8) can't faithfully hold:
 
 ```witchy
@@ -75,9 +70,9 @@ worker-VM wire format; once a value leaves its VM, `Bytes` is the dependable bou
 
 `vm.with_dir(dir, f, input)` runs `f` in an isolated worker VM granted **exactly** the
 one directory capability `dir` — and nothing else. The worker can read and write within
-`dir` (with `dir`'s own rights) and reach no other host resource: every ungranted
-capability simply traps. It is the sandbox for running partially-trusted code with
-precisely scoped authority.
+`dir` (with `dir`'s own rights) and reach no other host resource. An attempt to use
+ungranted authority traps. This is the sandbox for running partially-trusted code
+with precisely scoped authority.
 
 ```sh
 fn untrusted(d: Dir, name: Bytes) -> Bytes:
@@ -133,7 +128,7 @@ channel is *incompatible* with witchy's parity guarantee. Lock-step serving is n
 weaker compromise — it is the correct shape for a language that promises two backends,
 one meaning.
 
-## A multi-core HTTP server, for free
+## A multi-core HTTP server
 
 The same prefork idea gives you a parallel web server with **no extra code**.
 `server.serve(net, addr, app)` spawns one worker VM per core, each re-running your
@@ -151,7 +146,7 @@ fn main(net: Net, console: Console):
     server.serve(net, "127.0.0.1:8080", app)   # uses every core
 ```
 
-That's a capability-secure, multi-core HTTP server. The handlers are still pure
+The handlers remain pure
 `fn(Request) -> Response` — they hold no `Net`, so a handler can't phone home — and
 their state lives in their captured capabilities (a store `Dir` = the filesystem), so
 the workers are interchangeable. You write the routes; the parallelism is automatic.

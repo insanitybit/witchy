@@ -67,7 +67,7 @@ concrete type. `Self` inside an impl refers to the implementing type.
 
 Now combine the two: a generic function that requires its type to implement a
 trait, written `where a: TraitName`. The standard library's `Ord` trait gives
-ordering; here's a generic "biggest element" for anything orderable:
+ordering. This function finds the largest element of any ordered list:
 
 ```witchy
 import cmp
@@ -97,6 +97,36 @@ function by name. The standard `cmp` and `show` modules provide these traits
 (`PartialEq` → `Eq` → `PartialOrd` → `Ord`) along with scalar helpers such as
 `cmp.max_of`, `cmp.min_of`, and `cmp.clamp`; collection algorithms live in
 `list` (`list.contains`, `list.index_of`, `list.sort`, and so on).
+
+## Conversions with `From` and `Into`
+
+The `convert` module defines typed, explicit conversions. Implement `From(A)`
+for the destination type; a blanket implementation supplies the corresponding
+`Into(Destination)` for the source:
+
+```witchy
+import convert
+
+type Celsius:
+    degrees: Int
+
+impl From(Int) for Celsius:
+    fn from(value: Int) -> Celsius:
+        Celsius(value)
+
+fn main(console: Console):
+    let temperature: Celsius = 21.into()
+    let other = Celsius.from(5)
+    console.print("${temperature.degrees}, ${other.degrees}")
+```
+
+```text
+21, 5
+```
+
+The destination annotation resolves `21.into()`. `?` also uses available
+`From` implementations when an error must cross into the enclosing function's
+error type.
 
 ## `impl Trait` and rendering with `Show`
 
@@ -169,7 +199,8 @@ Score(12, beta)
 ```
 
 - `derive(Show)` gives the record a structural `Show` impl (`Score(12, beta)`),
-  which feeds `show.say`, `show.render`, and `${...}` once `show` is linked.
+  which feeds `show.say`, `show.render`, and `${...}`. `show` is in the prelude,
+  so rendering never depends on an import.
 - `derive(PartialEq)` is field-by-field structural equality (it backs `==`/`!=`);
   `derive(Eq)` marks it as a total equality, usable as a `Set`/`Dict` key.
 - `derive(PartialOrd)`/`derive(Ord)` compare fields lexicographically, in
@@ -228,9 +259,5 @@ Write an explicit `impl` only when you want behavior the mechanical version
 doesn't give you — a custom display format, a comparison that ignores a field.
 A derive and a hand-written impl of the same trait on the same type is an
 error, not an override.
-
-That rounds out the type system. One more pure-language idea remains before we
-reach the heart of witchy — describing sequences that are computed on demand
-rather than all at once.
 
 Next: generators and iterators.

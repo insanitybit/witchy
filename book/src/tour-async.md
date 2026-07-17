@@ -39,7 +39,7 @@ import chan
 
 async fn ticker(console: Console, name: String, n: Int) -> Nil:
     if n <= 0:
-        console.print(name + " done")
+        console.print("${name} done")
     else:
         console.print("${name} ${n}")
         chan.yield_now().await
@@ -74,7 +74,7 @@ async fn source(tx: Sender(String)) -> Nil:
 async fn main(console: Console):
     let (tx, rx) = chan.channel(4).await
     chan.spawn(source(tx)).await
-    chan.consume(rx, fn(msg): chan.done(console.print("got: " + msg))).await
+    chan.consume(rx, fn(msg): chan.done(console.print("got: ${msg}"))).await
 ```
 
 ## Request, reply, and stateful servers

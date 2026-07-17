@@ -58,6 +58,7 @@ to_ms` finds `duration.to_milliseconds`.
 | `semver` | version parsing and comparison |
 | `cmp` / `show` *(show is prelude)* | the comparison hierarchy (`PartialEq`/`Eq`/`PartialOrd`/`Ord`, backing `== != < > <= >=`) and display trait; scalar comparison helpers live in `cmp`, collection algorithms live in `list` |
 | `convert` / `error` | the `From`/`Into` conversion traits (`(5).into()`, `T.from(x)`) and the `Error` trait bound |
+| `borrow` | `.owned()` materialization for a borrowed `View` (and identity on an ordinary owned value); see the performance appendix |
 | `reflect` / `meta` | runtime reflection (`reflect(x)` → the `Mirror` tree, `derive(Reflect)`) and compile-time type introspection — see the [Reflection](tour-reflection.md) and [comptime](tour-comptime.md) chapters |
 | `ascii` | ASCII classification |
 
@@ -111,13 +112,22 @@ A couple of modules expose witchy's own toolchain to witchy programs — `compil
 and `crypto`'s hashing. These power the tooling you read about in the packages
 chapter.
 
+The `rights` module compares rendered capability names with rights-aware
+coverage rules (`Dir[Read]`, `Net[Connect, Tcp]`); it is used by supply-chain
+tooling. The preluded `policy` module supplies the sealed policy values built by
+`Net.tcp`, `Net.cidr`, `Net.private`, `Dir.ext`, and related type methods before
+they are passed to `only` or `deny`.
+
 ## A reminder about portability
 
-Most of the library works on every backend — including rendering the built-in
+The standard library follows the same parity rule as the language — including rendering the built-in
 compound values (lists, tuples, dicts, records, enums, and sets) with `${...}`
 interpolation, which is identical on both. Interpolation now also honors a
 custom `Show`: `"${x}"` renders through a hand-written `impl Show` (and a
 `Duration` in its human form, `1m30s`) exactly as `say` does — see the *Show*
-appendix. A few operations remain interpreter-only by nature: the Unicode-aware
-string operations the WebAssembly backend scopes to ASCII. A quick `witchy
-<file>` run confirms a program is sandbox-clean.
+appendix. Case conversion and trimming are deliberately ASCII-scoped on both
+backends; other UTF-8 operations, such as character counting and reversal, keep
+their documented character semantics. Native services such as cryptographic
+verification and networking use host imports in a native run and are unavailable
+when a browser host does not provide them. An unavailable operation fails loudly
+at compilation or instantiation; it never changes meaning silently.

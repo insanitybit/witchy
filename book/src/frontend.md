@@ -33,16 +33,15 @@ network authority is denied — running right in the page in
 A Glamour app compiles to the same witchy WebAssembly as any other program, and
 runs on the browser's own WebAssembly engine. The browser host provides only the
 pure-compute infrastructure imports; every authority import (`Dir`, `Net`,
-`Clock`, `Env`, `Exec`, secrets) is simply **not on offer**. A module that reaches
+`Clock`, `Env`, `Exec`, secrets) is **not offered**. A module that reaches
 for one cannot instantiate. That is the same structural guarantee as the native
 sandbox, arrived at by omission rather than by a runtime check — see
 [the WASM ABI](https://github.com/insanitybit/witchy/blob/master/spec/wasm-abi.md)
 and [Capabilities](capabilities.md) for the full model.
 
-This is also why, in the runnable version of this book, a `Console`-only example
-has a **Run** button: the book's own cell runs under a capability-*denied* host,
-so an example reaching for any other authority is shown as read-only code rather
-than a misleading button that would fail.
+The book gives a **Run** button only to examples supported by its browser host.
+The cell runs under a capability-denied default host, so examples that reach for
+other authority or unavailable native services remain read-only.
 
 For a *teaching* or *playground* embedder that wants those examples to run,
 [RFC-0091](https://github.com/insanitybit/witchy/blob/master/rfcs/0091-browser-virtual-capabilities.md)
@@ -55,8 +54,8 @@ and a page enables only the families it explicitly hands over. Those examples th
 run with ordinary, non-deterministic output (fine for a demo).
 
 `Exec` (a native subprocess) and host secrets have no browser analogue and stay
-un-runnable by design. `Net` also stays denied for now, for a concrete reason
-worth stating: Witchy's host-call ABI is **synchronous** (a capability call
+un-runnable by design. `Net` also stays denied for now because Witchy's host-call
+ABI is **synchronous** (a capability call
 returns its result inline before the guest continues), and `net.connect` is a raw
 **TCP socket** the guest reads and writes a byte at a time. The browser's only
 network primitive, `fetch`, is **asynchronous** and message-shaped, not a socket —

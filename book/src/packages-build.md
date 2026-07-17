@@ -10,7 +10,7 @@ runs with *your* full ambient authority. witchy splits the problem in two:
    a build step is a witchy program, so it is governed by capabilities like
    everything else: typed, footprinted, granted per-rune, gated on widening.
 
-## Yes, there is a `build.witchy`
+## The `build.witchy` entry point
 
 A rune that needs codegen puts it in `src/build.witchy`, whose entrypoint is a
 top-level `fn build` taking **only build capabilities** (its first parameter is
@@ -164,6 +164,6 @@ the output, so an unchanged step never re-runs — while a step that touches the
 outside world re-runs every time, since its output may depend on external
 state.
 
-That's the supply-chain story, end to end: authority that is typed, computed,
-granted explicitly, pinned in the lock, and unable to widen silently — at runtime
-*and* at build time. Next: how the two backends keep one meaning.
+Runtime and build-time authority are typed, computed, granted explicitly, and
+pinned in the lock. A widening on either axis requires review. The next chapter
+explains how the two execution implementations retain one meaning.

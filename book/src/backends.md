@@ -1,7 +1,7 @@
-# Under the Hood: Two Backends, One Meaning
+# Execution Backends: One Meaning
 
-witchy runs two ways, and understanding why — and what holds them together —
-explains a lot of the language's design choices.
+witchy has one production run path and one independent semantic oracle. Their
+agreement explains several of the language's design constraints.
 
 | Backend | How | Role |
 |---|---|---|
@@ -18,33 +18,29 @@ grant. The interpreter isn't a way to run your program — it's the reference
 implementation that *defines* what your program means, and the yardstick the
 compiled backend is held to.
 
-The split is deliberate: the interpreter optimizes for being *obviously
-correct* (it defines the semantics), the WASM tier for being *fast and
-confined* (the capability boundary is the VM boundary — an ungranted host
-function isn't denied, it simply does not exist in the instance). Two is
-also the right number: every backend added is another implementation of the
-semantics that parity has to hold to zero divergence, so witchy spends that
-budget on exactly one fast tier.
+The interpreter is kept direct enough to serve as the readable reference
+semantics. The WebAssembly tier is the optimized, confined implementation: the
+VM boundary is also the capability boundary, and an ungranted host function is
+absent from the instance. A third backend would add another independent
+implementation to the parity obligation, so the project maintains these two.
 
 ## Parity: the invariant that makes it safe
 
 These aren't two languages that happen to look alike. They are two
 implementations of *one* language, held to a single rule:
 
-> A program produces **identical** output on every backend — including identical
-> failure behavior — or it doesn't compile.
+> Every supported program has identical results and failures on both backends.
+> A construct that cannot meet that contract is rejected loudly.
 
-The interpreter is the reference: it defines what a program *means*. The
-compiled tier must match it. The project's test suite contains hundreds of
-*differential* tests that run a program on the interpreter and the compiled
-backend and assert the outputs are equal, plus a property-based fuzzer
-generating programs to try to pry them apart, plus a CI sweep that runs
-every example through `witchy parity` — the project's own
-verify-the-compiler harness. (It ships in the CLI so the claim is
-inspectable, not because your workflow needs it: parity checks **witchy**,
-not your program.)
+The interpreter defines the result; the compiled tier must match it. Hundreds of
+differential tests run the same source through both implementations. Property
+tests generate additional programs, and CI runs the maintained examples through
+`witchy parity`. The CLI exposes that same check so a user can inspect the
+invariant on a particular program. Ordinary `run` does not secretly execute the
+interpreter first; the test and parity harnesses are what keep the production
+compiler honest.
 
-Parity covers the boring-but-critical edges, not just the happy path:
+Parity includes edge and failure cases:
 
 - `Int` arithmetic **wraps** on overflow everywhere (that's why it wraps rather
   than being undefined — a portable choice both backends can honor).
@@ -62,23 +58,48 @@ is the design's north star.
 
 ## Why this matters to you
 
-This is the property that makes the sandbox trustworthy, and it's worth saying
-plainly: **the program you run is the program you deploy** — `witchy run` and
+**The program you run is the program you deploy**: `witchy run` and
 `witchy sandbox` are the same compiled backend, differing only in how much
-authority the host hands over. Parity is what lets that single run path be
-trusted: the compiled backend is mechanically proven, program by program, to
-match an independent reference implementation. Without it, "it worked when I
-tested it" and "it does the right thing in the sandbox" would lean on a fast
-tier no one had checked. With it, they're one fact, mechanically enforced.
+authority the host hands over. Differential coverage checks that the run path
+implements the independent reference semantics, while the sandbox constrains
+which host services that compiled module can reach.
 
-And it asks nothing of you. There is no "portable subset" to stay inside —
-the portable language is simply the language, covering the whole standard
-library (the native intrinsics, networking) and the full concurrency model
-(`async`/`await`, `spawn`, and channels), which runs on a cooperative executor
-written in pure witchy — so a concurrent run is byte-identical on both
-backends. On the rare edge a backend genuinely can't express the same way —
-historically, comparing certain generic types — the compiler stops you with a
-loud error at build time. You never run a verification step; you never guess.
+There is no silently divergent portable subset. The concurrency model
+(`async`/`await`, spawning, and channels) runs on a deterministic cooperative
+executor written in witchy. Native services such as networking and cryptography
+are host imports with shared semantics; a browser that does not supply such an
+import cannot run that operation. When a representation or host cannot support a
+construct faithfully, compilation or instantiation fails instead of selecting a
+different meaning.
+
+## Current limits
+
+The loud boundaries are part of the current language state:
+
+- Equality for a generic algebraic data type requires its payload types to be
+  known at the comparison site. Unresolved and recursive generic cases are
+  rejected rather than compared by pointer identity.
+- `dyn Trait` syntax, identity, and existential-safety checks exist in the
+  frontend, but existential values cannot yet be constructed or dispatched.
+  Any program mentioning one ends with a single feature-stage error before
+  backend lowering; use monomorphized generics or `impl Trait` today.
+- Capability-bearing values work directly and in closed tuples, nominal types,
+  closures, `Option`, `Result`, and typed lists. Capability-bearing `Dict`
+  entries, open generic call boundaries, `region:` copy-out, and isolated-worker
+  callbacks remain rejected until they have fixed typed representations.
+- `await` works in loop bodies and may carry mutable locals, but not in branch or
+  loop conditions or in match scrutinees. Spawned tasks return `Nil`; structured
+  combinators and channels carry results.
+- The current compiled async executor is intended for bounded task graphs and
+  streams. Long-lived producer/consumer loops eventually exhaust the linear
+  arena; the [async chapter](tour-async.md) gives the operational ceiling.
+- Browser hosts grant only the capability families they implement. The default
+  book host is pure-compute plus `Console`; native `Exec`, secrets, and raw
+  sockets are unavailable there.
+
+These are checked boundaries, not alternate semantics. The implementation's
+current list is maintained in
+[`spec/architecture.md`](https://github.com/insanitybit/witchy/blob/master/spec/architecture.md).
 
 ## A note on memory
 
@@ -97,5 +118,4 @@ all inside the sandbox (`bench/BASELINE.md` has the numbers). The repository's
 `spec/architecture.md` has the full
 memory-model story and the honest list of current limitations.
 
-That's the engine room. One more practical chapter: proving your own programs
-correct.
+The next chapter covers source-level conventions, followed by the test runner.

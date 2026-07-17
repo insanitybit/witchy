@@ -1,9 +1,8 @@
 # Appendix: The Ecosystem
 
-The book teaches the *language*. But witchy is also the foundation of a small
-ecosystem of applications written **in** witchy — the pieces that let you share
-code, build user interfaces, and run a registry. They live under
-[`projects/`](https://github.com/insanitybit/witchy/tree/master/projects) in the
+The book teaches the language and toolchain. Applications written in witchy use
+those pieces to share code, build user interfaces, and run a registry. They live
+under [`projects/`](https://github.com/insanitybit/witchy/tree/master/projects) in the
 repository (`projects/README.md` is the map); this appendix is the one-paragraph
 orientation.
 
@@ -12,8 +11,8 @@ orientation.
 - **coven** — the package **registry**. It stores signed records, recomputes
   each package's capability footprint from source (never trusting declared
   metadata), and *blocks any publish that widens authority*. Publishing is
-  two-phase: stage, then a human-2FA promote. This is where "a dependency can't
-  quietly gain new powers" is enforced. (Chapter:
+  two-phase: stage, then a human-2FA promote. The promotion gate enforces the
+  rule that a dependency cannot quietly gain authority. (Chapter:
   [Sharing Code: Runes and the Registry](packages.md).)
 
 - **pm** — the package-manager **client** ("cargo for witchy"): resolve, fetch,
@@ -34,7 +33,7 @@ orientation.
 
 ## Why it hangs together
 
-One idea unifies them: **authority is a value you can compute, diff, and gate.**
+They share one rule: **authority is a value you can compute, diff, and gate.**
 The language makes authority explicit (the capabilities you learned about);
 coven turns that into a supply-chain gate (footprints that can only shrink); and
 glamour extends the same discipline to the browser (UI effects are data a host

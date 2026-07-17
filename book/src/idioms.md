@@ -1,9 +1,8 @@
 # Idiomatic witchy
 
-Witchy usually offers exactly one blessed way to say a thing. This chapter is
-the house style in one place: each section shows the idiom next to the
-spelling it replaces. Both versions run — the unidiomatic forms are legal,
-just worse — and every example here is executed by the test suite.
+This chapter collects the repository's source conventions. Each section shows
+the preferred form beside a legal alternative, and every example is exercised
+by the test suite.
 
 ## Interpolation, not concatenation
 

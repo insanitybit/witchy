@@ -1,10 +1,9 @@
 # Project: A Confined Log Scanner
 
-Time to build something real and run it confined. We'll write `scan`: a
-command-line tool that searches a log file for lines containing a query, with
-optional case-insensitivity. It's small, but it exercises the whole stack — a
-pure core, a capability shell, and the sandbox — and it shows the witchy way of
-structuring a program: *push the effects to the edges, keep the middle pure.*
+This chapter builds `scan`, a confined command-line tool that searches a log file
+for lines containing a query, with optional case-insensitivity. It exercises a
+pure core, a capability shell, and the sandbox. The organizing rule is: *push
+the effects to the edges, keep the middle pure.*
 
 ## Start pure
 
@@ -32,9 +31,9 @@ fn matches_ci(query: String, contents: String) -> List(String):
 fn main(console: Console):
     let log = "INFO started\nWARN disk low\ninfo retry\nERROR boom"
     for line in matches("INFO", log):
-        console.print("exact:  " + line)
+        console.print("exact:  ${line}")
     for line in matches_ci("info", log):
-        console.print("ci:     " + line)
+        console.print("ci:     ${line}")
 ```
 
 ```text
@@ -116,7 +115,7 @@ The sandbox grants `scan` exactly its footprint: a `Console`, a read-only `Dir`
 rooted at `./logs`, `Env`, and the arguments `ERROR app.log`. Inside the VM there
 is no `write` import, no `Net` import, no `Dir` outside `./logs`. If a typo (or a
 malicious edit) made `scan` try to write a file or phone home, instantiation
-would fail — the host function it needs simply wouldn't be there.
+would fail because the required host function is absent.
 
 Try the confinement yourself: a path like `../../etc/passwd` is rejected by the
 `Dir`'s confinement, because `scan` was rooted at `./logs` and `..` can't escape

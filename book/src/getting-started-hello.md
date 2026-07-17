@@ -17,8 +17,7 @@ witchy hello.witchy
 hello, witchy
 ```
 
-Small as it is, every part of this program is doing something specific. Let's
-take it apart.
+The two parts worth examining are the entry point and its `Console` parameter.
 
 ## `fn main(...)`
 
@@ -49,8 +48,7 @@ parameter list.
 
 ## Pure by default
 
-Here's a slightly bigger program. Notice that `double` and `classify` take no
-capabilities at all:
+In this larger program, `double` and `classify` take no capabilities:
 
 ```witchy
 fn double(n: Int) -> Int:

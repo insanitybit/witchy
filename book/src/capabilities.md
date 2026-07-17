@@ -8,7 +8,7 @@ This chapter is about the other kind of code: the parts of a program that
 genuinely need to affect the world, and how witchy makes that authority
 explicit, bounded, auditable, and enforceable.
 
-The whole model rests on one rule, which we'll spend four sections unpacking:
+Four sections develop one rule:
 
 > **Authority enters a program in exactly one place — the parameters of `main` —
 > and flows onward only as function arguments.**
@@ -22,7 +22,6 @@ The whole model rests on one rule, which we'll spend four sections unpacking:
 - [**The Sandbox**](capabilities-sandbox.md) — turning "the types say so" into
   "the VM enforces it."
 
-If you've used object-capability systems before, this will feel familiar — it's
-the ocap idea, made the default and checked by the type system. If you haven't,
-the punchline is: "what can this code do?" stops being a question you answer by
-auditing and starts being one you answer by *reading a type*.
+This is an object-capability system made the language default and checked by the
+type system. A function's capability-typed parameters state the authority it can
+exercise.

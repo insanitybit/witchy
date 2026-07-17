@@ -30,7 +30,7 @@ found 4
 none
 ```
 
-There's a shorthand for "do this only if it's `Some`":
+`if let` handles the common "run this branch for `Some`" case:
 
 ```witchy
 fn lookup(xs: List(Int), i: Int) -> Option(Int):
@@ -50,7 +50,7 @@ fn main(console: Console):
 got 20
 ```
 
-And when you just want the value or a fallback, `??` unwraps an `Option`:
+When the absent case has a fallback, `??` unwraps an `Option`:
 `Some(x) ?? d` is `x`, and `None ?? d` is `d` (with `d` evaluated only when there's
 nothing to unwrap):
 
@@ -240,12 +240,12 @@ fn parse_release(date: String, ver: String) -> Result(String, String):
     let d = time.parse_iso8601(date)?
     // Result(Version, SemverError), converted to String by `?`
     let v = semver.parse(ver)?
-    Ok(time.date_string(d) + " v" + semver.format(v))
+    Ok("${time.date_string(d)} v${semver.format(v)}")
 
 fn main(console: Console):
     match parse_release("2026-06-12T00:00:00Z", "1.4.0"):
         Ok(s) -> console.print(s)
-        Err(e) -> console.print("error: " + e)
+        Err(e) -> console.print("error: ${e}")
 ```
 
 ```text

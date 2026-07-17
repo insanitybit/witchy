@@ -2,13 +2,14 @@
 
 ## The problem witchy is about
 
-Most of the common programming languages you use grant "ambient authority" - any function can do just about any action. If I call `foo()` in Python, I have
-no idea if `foo()` scoops up my env vars, reads `~/.ssh/`, sends it off to a
-remote server, etc. This extends into the package management systems for these languages as well - installation scripts execute with arbitrary user permissions and often it's "all or nothing" grants.
+Most general-purpose languages give code ambient authority. A Python function
+can read environment variables, inspect `~/.ssh`, or open a network connection
+without declaring any of those effects in its signature. Package installation
+and build scripts often inherit the invoking user's full permissions as well.
 
-Witchy aims at solving this area of problems while providing an overall nice language for development. Witchy programs aim to be best in class with regards to safety, but also ergonomics.
-
-When writing or executing a witchy program you are always able to reason about what your code *can* do. The entry point of every program declares its maximum capabilities via its parameter list:
+witchy makes authority explicit while retaining a small, general-purpose
+language. A program's entry point declares its maximum authority in its
+parameter list:
 
 ```witchy
 // This function can read a file. You can see that. It cannot write, connect to
@@ -21,13 +22,19 @@ fn main(console: Console, dir: Dir[Read]):
     console.print(first_line(dir, "notes.txt"))
 ```
 
-This program can write to the console and read whatever directory was provided to it.
+This program can write to the console and read within the directory supplied by
+the host.
 
-The `Console` capability is implicitly provided to programs but filesystem access must be granted explicitly.
+The normal launch host supplies `Console`; filesystem access must be granted
+explicitly.
 
-`witchy sandbox --dir . main.witchy`
+```sh
+witchy sandbox --dir . main.witchy
+```
 
-This sort of explicit capability approach is present throughout the witchy language. Consumers of witchy binaries grant rights to that execution, developers of witchy programs grant rights to their dependencies, etc.
+The same rule applies at other boundaries. A user grants resources when launching
+a program, and a project reviews capability growth when adding or updating a
+dependency.
 
 **You can audit by reading signatures.** `witchy caps program.witchy` walks the
 program and reports its complete capability footprint, computed from the source,
@@ -46,8 +53,8 @@ to call.
 
 ## A taste of the language
 
-Capabilities are the point, but the rest of the language is meant to be a pleasure
-to write. Here is a tiny in-process server: an `async` task that owns a channel,
+The rest of the language supports ordinary application code. This small
+in-process server is an `async` task that owns a channel,
 folds the messages it receives into running state, and answers a request — the
 request/reply shape you'd normally reach for a socket, here in pure, deterministic
 witchy that needs nothing but `Console`.
@@ -126,6 +133,5 @@ fn main(console: Console):
 {"squares":[1,4,9,16,25]}
 ```
 
-The chapters ahead build these up one at a time — values and functions, your own
-types, errors, generics and traits, iterators, compile-time code, and the
-capability system in depth.
+The following chapters introduce values, functions, data types, errors, generics,
+traits, iterators, compile-time code, modules, and the capability system.

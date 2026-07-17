@@ -15,10 +15,11 @@ want the terse, exhaustive description of every form, the
 [language reference](https://github.com/insanitybit/witchy/blob/master/spec/language.md)
 is its companion; this book is the narrative path.
 
-Every witchy example in this book is a complete program that the project's test
-suite type-checks and runs, so what you read here is what the language actually
-does today.
+Every `witchy` block in this book is a complete program that the test suite
+type-checks. Blocks classified as runnable are also executed against the
+committed output oracle; blocks requiring unavailable host authority are
+read-only.
 
-> **Try it as you read.** The interpreter compiles to WebAssembly, so there's a
-> [browser playground](https://github.com/insanitybit/witchy/tree/master/web) —
-> paste any `Console`-only example in and run it with no installation.
+> **Try it as you read.** The compiler itself runs in WebAssembly, so the
+> [browser playground](https://github.com/insanitybit/witchy/tree/master/web) can
+> compile and run the book's runnable examples without an installation.

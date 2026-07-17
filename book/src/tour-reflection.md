@@ -34,8 +34,8 @@ Point { x: 1, y: 2 }
 
 Two different consumers — `json.stringify` (from `import json`) and `reflect.debug`
 (a structural string, handy in tests and logs) — both read `Point` with no per-type
-code. That is the payoff: derive *once*, and every reflective consumer can handle
-your type. It is opt-in per type (like Zig's `@typeInfo`, but you choose which types
+code. One derivation supports every reflective consumer. Reflection is opt-in per
+type (like Zig's `@typeInfo`, but you choose which types
 participate), so reflection never sees a type that did not ask to be seen.
 
 Sum types reflect too, carrying their variant:

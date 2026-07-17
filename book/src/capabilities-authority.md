@@ -19,8 +19,8 @@ capabilities:
 | `SecretStore` / `Secret` | named host secrets, and signing with one |
 
 Each is *right-typed* where that matters — `Dir[Read]` vs `Dir[Write]`,
-`Net[Connect, Tcp]` — so the type says not just *which* resource but *what you may
-do* with it. The next chapter is all about that narrowing.
+`Net[Connect, Tcp]` — so the type identifies the resource and the permitted
+operations. The next chapter covers that narrowing.
 
 The defining property: **you cannot construct one.** There is no `Console()`,
 no `Dir.read_file("/")`, no global `stdin`. The type checker knows these types have
@@ -43,9 +43,9 @@ to put there; the program cannot ask for more.
 
 ## Authority flows only by argument
 
-A capability is an ordinary value once you have it, so it moves the only way
-values move: by being passed as an argument. There are no globals to stash it
-in, no ambient registry to fetch it from. That means a function's authority is
+A capability is an ordinary value once you have it, and code passes it as an
+argument. There are no globals to stash it in and no ambient registry to fetch
+it from. A function's authority is
 *exactly* its capability-typed parameters — visible, local, complete.
 
 ```witchy
@@ -74,15 +74,15 @@ audit the entire call graph.
 
 ## What this buys you: `witchy caps`
 
-Because authority is visible in types, a tool can compute it. `witchy caps`
-reports a program's footprint:
+Because authority is visible in types, `witchy caps` can compute a program's
+footprint:
 
 ```sh
 witchy caps program.witchy
 ```
 
 For a program whose `main` takes `Console` and `Dir[Read]`, it prints which
-functions demand which capabilities, and the total. Crucially, this is computed
+functions demand which capabilities, and the total. This is computed
 *from the source* — it re-derives what each function actually requires. It is
 not a manifest someone wrote down and might have lied in. That distinction is
 the entire foundation of the package-manager story later: a dependency's claimed
@@ -91,7 +91,7 @@ what gets checked.
 
 ## Effects you'd expect to be free aren't
 
-Notice that reading the clock needs a `Clock`. Why? Because the current time is
+Reading the clock needs a `Clock` because the current time is
 *input from outside the program* — it's nondeterminism, and a function that
 secretly depends on it isn't pure even though it looks like it returns a number.
 witchy makes that dependency show up in the type. The same goes for environment
@@ -99,5 +99,5 @@ variables (`Env`) and randomness. If a function's result can change based on
 something other than its arguments, it needs a capability to reach that
 something, and you can see it in the signature.
 
-That's the model: authority is a value, it can't be forged, and it goes only
-where you pass it. The next section is about passing *less* than you have.
+Authority is an unforgeable value that travels through arguments. The next
+section covers passing a narrower capability than the one held by the caller.

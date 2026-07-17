@@ -68,9 +68,8 @@ hit the network, write a file, inspect the environment, or depend on the real
 clock. Effectful production functions may live beside the tests, but the runner
 does not grant them authority merely because they were linked into a test.
 
-This is the payoff of the structure the project chapter pushed: when you keep
-effects at the edges, the middle — the part you test — is pure, and testing it is
-trivial and safe.
+Keeping effects at the edges leaves the program's core pure, so plain tests need
+no host setup and cannot accidentally exercise real authority.
 
 ## Integration tests use explicit real grants
 
@@ -148,9 +147,9 @@ The `testing` module gives you:
 `assert_value_eq` / `assert_value_ne` are the idiomatic choice for records,
 enums, and other typed values: they compare with `==` and render the mismatch
 through `Show` for you, so you don't hand-stringify at the call site. Reach for
-`assert_eq` when you already have strings. Under the hood these all call the `fail`
-primitive you met in the errors chapter, so a failing assertion is just a loud,
-message-carrying abort — and because aborts are part of parity, a test behaves
+`assert_eq` when you already have strings. All of these assertions call the
+`fail` primitive from the errors chapter, so a failing assertion is a
+message-carrying abort. Because aborts are part of parity, a test behaves
 the same whichever backend runs it.
 
 ## Beyond your own tests
@@ -161,8 +160,8 @@ by the maintainers rather than written by you:
 - **`witchy parity`** (from the last chapter) is differential testing for the
   *language itself* — it's how the backends are kept honest.
 - The documentation you're reading is tested. Every witchy example in this book
-  and the reference is extracted by the test suite, type-checked, and — when it's
-  a `Console`-only program — run on both backends with its output verified. If
+  and the reference is extracted by the test suite and type-checked. Blocks
+  classified as runnable are executed against the committed output oracle. If
   the language changed and an example here went stale, the build would fail. So
   what you've read is, quite literally, what the language does.
 

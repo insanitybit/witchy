@@ -1,8 +1,7 @@
 # Appendix: Recipes
 
-The everyday tasks of real programs, each as a complete, copy-pasteable program.
-Notice the shape they share: whatever a program needs to *do* in the world — read
-files, reach the network, see the environment — it asks for as a parameter of
+Each recipe is a complete program. They share one structure: a program requests
+filesystem, network, or environment access through a parameter of
 `main`. The host grants exactly those, and the program can do exactly that much
 and no more. If a recipe doesn't name `Net`, it provably can't reach the network.
 
@@ -205,8 +204,7 @@ or [narrow](capabilities-narrowing.md).
 (this very book is a Glamour app). A view is built as **data** — a tree of `VNode`s,
 never a string — and rendered to HTML. Because `text` is escaped by construction,
 there is no HTML-injection sink: a `<script>` in your data renders as inert text, not
-markup. Try running this — it needs no capability but `Console`, so it executes right
-here in the page:
+markup. This example needs only `Console` and runs in the page:
 
 ```witchy
 import glamour
@@ -222,8 +220,8 @@ effects-as-data (`Cmd`s the host performs), with UI authority — fetch, routing
 carried as capabilities (`UiFetch`, `UiRoute`, …) narrowed from a single app-root
 `UiRoot`, exactly like every other capability in witchy.
 
-Here is a **live** one — a real Glamour counter (`view`/`update`, clickable buttons)
-compiled to WebAssembly and mounted by the very same runtime that renders this book. Its
+The live example below is a Glamour counter (`view`/`update`, clickable buttons)
+compiled to WebAssembly and mounted by the runtime that renders this book. Its
 network authority (`UiFetch`) is **denied**, so it can compute and render but can't phone
 home — the capability model, running in the page:
 
@@ -239,5 +237,5 @@ feature in this book.
 When you're ready to build something larger, `examples/projects/` has complete
 multi-rune applications — a todo app, a ledger, a sales report, a dashboard, and
 more — each a small project with its own `witchy.toml`, a library rune and an app
-rune wired together by a path dependency. They're the closest thing to a template
-for real software: copy the shape, `witchy run`, and start editing.
+rune wired together by a path dependency. They can be copied as starting points
+for larger applications.

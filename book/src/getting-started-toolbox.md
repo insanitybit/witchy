@@ -1,7 +1,7 @@
 # The Toolbox
 
-The `witchy` binary is the whole toolchain. You'll reach for a few commands
-constantly; here they are, roughly in the order you meet them.
+The `witchy` binary is the whole toolchain. The commands below are ordered by
+when they first become useful.
 
 ## Running and checking
 
@@ -50,12 +50,13 @@ granted exactly its footprint:
 
 `grants-check` validates such a document against the program's computed footprint
 without running it — exit 2 if the grant withholds authority the code needs (or
-warns if it over-grants). We'll use these heavily in the capabilities chapter.
+warns if it over-grants). The capabilities chapters use these commands heavily.
 
 ## Compiling
 
 ```sh
 witchy emit-wat program.witchy      # print the generated WebAssembly text
+witchy expand program.witchy        # print source after comptime/tag expansion
 ```
 
 ## Tests and docs
@@ -72,8 +73,9 @@ witchy new my-rune        # scaffold a new package ("rune")
 witchy add acme/logger    # add a dependency (gated on capability widening)
 witchy build              # resolve, link, and type-check the project
 witchy run                # build and run
-witchy audit              # the whole dependency tree's authority
+witchy tree .             # dependency tree with each rune's authority
+witchy audit src/app.witchy  # recompute one source file's authority
 ```
 
-You don't need to memorize these — `witchy --help` lists them, and each is
-introduced where the book uses it. Now let's learn the language itself.
+`witchy --help` lists these commands. The rest of the book introduces them in
+context.
