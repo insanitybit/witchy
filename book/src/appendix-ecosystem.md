@@ -3,7 +3,8 @@
 The book teaches the language and toolchain. Applications written in witchy use
 those pieces to share code, build user interfaces, and run a registry. They live
 under [`projects/`](https://github.com/insanitybit/witchy/tree/master/projects) in the
-repository (`projects/README.md` is the map); this appendix is the one-paragraph
+repository ([`projects/README.md`](https://github.com/insanitybit/witchy/blob/master/projects/README.md)
+is the map); this appendix is the one-paragraph
 orientation.
 
 ## The pieces
