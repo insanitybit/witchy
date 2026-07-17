@@ -171,7 +171,7 @@ e2e-quick:
 # --- Book & playground ----------------------------------------------------
 
 # Build "The witchy Book" — the RFC-0041 docs bundle (glamour app + book content
-# compiled to a bag of static files) into ./dist, explicitly permitting an
+# compiled to a set of static files) into ./dist, explicitly permitting an
 # absent browser compiler. Use `just docs-build` for a complete runnable bundle.
 book: build-release
     ./scripts/build-docs.sh --allow-missing-compiler dist
