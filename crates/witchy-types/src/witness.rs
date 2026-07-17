@@ -36,6 +36,18 @@ pub struct WitnessPlan {
     pub witnesses: Vec<Witness>,
 }
 
+/// Stable dense table addressing for a closed witness plan.
+///
+/// A runtime receives only a witness ID and the compiler-owned static slot. The
+/// table index therefore cannot depend on source names or concrete payload
+/// types. Every valid pair maps to `witness_id * stride + slot`; unused cells
+/// belong to witnesses for smaller existential layouts and are never selected
+/// by well-typed code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WitnessDispatchIndex {
+    stride: u32,
+}
+
 /// Trait and impl declarations preserved across trait lowering.
 ///
 /// Runtime preparation runs after monomorphization, when the executable module
@@ -115,6 +127,39 @@ impl WitnessPlan {
         self.witnesses
             .iter()
             .find(|w| &w.existential == existential && &w.concrete == concrete)
+    }
+
+    pub fn dispatch_index(&self) -> Result<WitnessDispatchIndex, String> {
+        let stride = self
+            .witnesses
+            .iter()
+            .map(|witness| witness.slots.len())
+            .max()
+            .unwrap_or(0);
+        let stride = u32::try_from(stride)
+            .map_err(|_| "existential witness layout exceeds u32 slots".to_string())?;
+        for (position, witness) in self.witnesses.iter().enumerate() {
+            if witness.id != u32::try_from(position).unwrap_or(u32::MAX) {
+                return Err(
+                    "existential witness IDs must be dense and ordered for runtime dispatch"
+                        .to_string(),
+                );
+            }
+        }
+        Ok(WitnessDispatchIndex { stride })
+    }
+}
+
+impl WitnessDispatchIndex {
+    pub fn stride(self) -> u32 {
+        self.stride
+    }
+
+    pub fn table_index(self, witness: &Witness, slot: u32) -> Option<u32> {
+        if slot >= u32::try_from(witness.slots.len()).ok()? || self.stride == 0 {
+            return None;
+        }
+        witness.id.checked_mul(self.stride)?.checked_add(slot)
     }
 }
 
@@ -1059,6 +1104,42 @@ mod tests {
 
         assert_eq!(witness.concrete, concrete);
         assert_eq!(witness.slots[0].adapter, "Show__Box__show__Int");
+    }
+
+    #[test]
+    fn dispatch_index_is_dense_by_witness_id_and_static_slot() {
+        let slot = |adapter: &str| WitnessSlot {
+            owner_trait: "Show".to_string(),
+            method: "show".to_string(),
+            adapter: adapter.to_string(),
+            receiver: Convention::Let,
+            params: Vec::new(),
+            result: Type::Named("String".to_string(), Vec::new()),
+            conventions: Vec::new(),
+        };
+        let existential = Type::Dyn("Show".to_string(), Vec::new());
+        let plan = WitnessPlan {
+            witnesses: vec![
+                Witness {
+                    id: 0,
+                    existential: existential.clone(),
+                    concrete: Type::Named("Left".to_string(), Vec::new()),
+                    slots: vec![slot("show_left")],
+                },
+                Witness {
+                    id: 1,
+                    existential,
+                    concrete: Type::Named("Right".to_string(), Vec::new()),
+                    slots: vec![slot("show_right"), slot("debug_right")],
+                },
+            ],
+        };
+        let index = plan.dispatch_index().expect("dense index");
+        assert_eq!(index.stride(), 2);
+        assert_eq!(index.table_index(&plan.witnesses[0], 0), Some(0));
+        assert_eq!(index.table_index(&plan.witnesses[1], 0), Some(2));
+        assert_eq!(index.table_index(&plan.witnesses[1], 1), Some(3));
+        assert_eq!(index.table_index(&plan.witnesses[0], 1), None);
     }
 
     #[test]
