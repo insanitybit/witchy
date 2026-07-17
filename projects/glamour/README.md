@@ -13,7 +13,7 @@ network, storage, timer, or credential authority itself.
 - **Trusted boundary:** the Witchy rune computes data; a host shell owns browser
   authority and interprets that data.
 - **Primary implementation:** `src/glamour.witchy`.
-- **Current examples:** `examples/counter`, `examples/autocounter`,
+- **Current examples:** [`examples/`](examples/) includes `counter`, `autocounter`,
   `examples/catalog`, `examples/package_page`, `examples/trust_view`,
   `examples/version_view`, `examples/coven_app`, and `examples/coven_web_app`.
 
