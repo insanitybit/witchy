@@ -1,5 +1,6 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -40,25 +41,19 @@ impl Drop for TempDir {
 
 impl Drop for ProcessGroupGuard {
     fn drop(&mut self) {
-        let _ = Command::new("kill")
-            .args(["-TERM", &format!("-{}", self.0)])
+        let status = Command::new("kill")
+            .args(["-TERM", "--", &format!("-{}", self.0)])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
+        if !status.is_ok_and(|status| status.success()) {
+            let _ = Command::new("kill")
+                .args(["-TERM", &self.0.to_string()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
     }
-}
-
-fn process_group(pid: i32) -> i32 {
-    let output = Command::new("ps")
-        .args(["-o", "pgid=", "-p", &pid.to_string()])
-        .output()
-        .expect("run ps");
-    assert!(output.status.success(), "ps failed for pid {pid}");
-    String::from_utf8(output.stdout)
-        .expect("ps output is utf8")
-        .trim()
-        .parse()
-        .expect("parse process group")
 }
 
 fn process_is_alive(pid: i32) -> bool {
@@ -356,8 +351,17 @@ fn daemon_enters_an_independent_process_group() {
     let state = temp.path().join("state");
     let gate_worktree = temp.path().join("unused-gate-worktree");
 
-    let output = Command::new(root.join("scripts/merge-queue.sh"))
-        .arg("daemon")
+    // Keep the daemon command's launcher alive in a dedicated process group so
+    // this test can simulate the tool host reaping its whole group. Querying
+    // PGIDs with `ps` is denied in the same sandbox where the coordinator gate
+    // runs, while survival after group termination tests the actual invariant.
+    let mut launcher = Command::new("bash")
+        .args([
+            "-c",
+            r#""$1" daemon || exit $?; sleep 30"#,
+            "merge-queue-daemon-launcher",
+        ])
+        .arg(root.join("scripts/merge-queue.sh"))
         .env("MERGE_QUEUE_STATE_DIR", &state)
         .env("MERGE_QUEUE_GATE_WT", &gate_worktree)
         .env("MERGE_QUEUE_GATE_CMD", "true")
@@ -365,13 +369,12 @@ fn daemon_enters_an_independent_process_group() {
             "MERGE_QUEUE_COORDINATOR_SCRIPT",
             root.join("scripts/merge-queue.sh"),
         )
-        .output()
-        .expect("start isolated coordinator daemon");
-    assert!(
-        output.status.success(),
-        "daemon failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .expect("start isolated coordinator daemon launcher");
+    let launcher_group = launcher.id() as i32;
 
     let pid_path = state.join("coordinator.pid");
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -388,15 +391,16 @@ fn daemon_enters_an_independent_process_group() {
         process_is_alive(pid),
         "coordinator {pid} did not survive daemon return"
     );
-    assert_eq!(
-        process_group(pid),
-        pid,
-        "the coordinator must lead a new process group so launcher cleanup cannot kill it"
-    );
-    assert_ne!(
-        process_group(std::process::id() as i32),
-        pid,
-        "the coordinator remained in the test runner's process group"
+    let killed = Command::new("kill")
+        .args(["-TERM", "--", &format!("-{launcher_group}")])
+        .status()
+        .expect("terminate daemon launcher process group");
+    assert!(killed.success(), "could not terminate daemon launcher group");
+    let _ = launcher.wait();
+    thread::sleep(Duration::from_millis(100));
+    assert!(
+        process_is_alive(pid),
+        "coordinator {pid} remained in the launcher's process group"
     );
 
     drop(guard);
