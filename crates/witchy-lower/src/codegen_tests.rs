@@ -1039,6 +1039,35 @@ fn main() -> Int:
     }
 
     #[test]
+    fn existential_list_dispatches_each_concrete_witness() {
+        let src = r#"
+trait Render:
+    fn render(self) -> Int
+
+type Label:
+    Label(Int)
+
+type Badge:
+    Badge(Int)
+
+impl Render for Label:
+    fn render(self) -> Int:
+        match self:
+            Label(value) -> value
+
+impl Render for Badge:
+    fn render(self) -> Int:
+        match self:
+            Badge(value) -> value * 10
+
+fn main() -> Int:
+    let items: List(dyn Render) = [Label(4), Badge(3)]
+    items[0].render() + items[1].render()
+"#;
+        assert_eq!(run_int(src), 34);
+    }
+
+    #[test]
     fn full_int_program() {
         let src = r#"
 fn double(n: Int) -> Int:

@@ -214,15 +214,19 @@ fn type_has_planned_reference(
 ) -> bool {
     match ty.unqualified() {
         Type::Fn(_, _, _) => true,
-        Type::Tuple(items) | Type::Dyn(_, items) => items
-            .iter()
-            .any(|item| type_has_planned_reference(
+        // An existential's erased envelope is always a GC reference. Its trait
+        // arguments may themselves contain references, but cannot determine
+        // whether the envelope needs a typed reference container.
+        Type::Dyn(_, _) => true,
+        Type::Tuple(items) => items.iter().any(|item| {
+            type_has_planned_reference(
                 cg,
                 item,
                 storage,
                 nominals,
                 reference_lists,
-            )),
+            )
+        }),
         Type::Named(name, args) if name == "List" => {
             reference_lists.contains_key(&cg.gc_lookup_type_key(ty))
                 || args.first().is_some_and(|element| {
@@ -429,6 +433,19 @@ fn collect_gc_block_plans(
     reference_lists: &mut BTreeMap<String, Type>,
 ) {
     for stmt in &block.stmts {
+        // A declaration type can carry representation demand that the RHS's
+        // pre-coercion TypeTable entry does not. In particular, a `List(dyn T)`
+        // literal starts as concrete elements and is packed after annotation.
+        if let Stmt::Let { ty: Some(ty), .. } = stmt {
+            collect_gc_type_plans(
+                cg,
+                ty,
+                defs,
+                storage,
+                nominals,
+                reference_lists,
+            );
+        }
         let expr = match stmt {
             Stmt::Let { value, .. }
             | Stmt::Assign { value, .. }

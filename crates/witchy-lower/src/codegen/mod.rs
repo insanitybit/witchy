@@ -1681,6 +1681,41 @@ impl<'types> Codegen<'types> {
         Some((type_id, array_id, element_kind))
     }
 
+    /// The type table predates compiler-owned existential packing, so a list
+    /// literal may still be recorded as `List(Concrete)` even after each
+    /// element has become an `ExistentialPack`. Recover the rewritten element
+    /// type for this one literal; the registered GC layout remains keyed by the
+    /// ordinary source-level `List(T)` type, never by a runtime special case.
+    fn gc_reference_list_literal_layout(
+        &self,
+        list: &Expr,
+        items: &[Expr],
+    ) -> Option<(u32, u32, Kind)> {
+        self.ast_type_of_expr(list)
+            .as_ref()
+            .and_then(|ty| self.gc_reference_list_layout(ty))
+            .or_else(|| {
+                let element = items.first().and_then(|item| self.ast_type_of_expr(item))?;
+                self.gc_reference_list_layout(&Type::Named("List".to_string(), vec![element.clone()]))
+                    .or_else(|| {
+                        // The source annotation and its resolved compiler-owned
+                        // element can have different identity spellings. Arrays
+                        // are representation-typed, so a matching exact GC kind
+                        // is sufficient and remains type-safe at the Wasm layer.
+                        let element_kind = self.kind_for_type(&element);
+                        self.gc_reference_list_layouts().into_iter().find_map(
+                            |(type_id, candidate_kind)| {
+                                if candidate_kind != element_kind {
+                                    return None;
+                                }
+                                let array_id = type_id.checked_sub(self.gc_structs.len() as u32)?;
+                                Some((type_id, array_id, element_kind))
+                            },
+                        )
+                    })
+            })
+    }
+
     fn gc_reference_list_layouts(&self) -> Vec<(u32, Kind)> {
         let mut layouts = self
             .gc_reference_list_ids
@@ -2145,13 +2180,26 @@ impl<'types> Codegen<'types> {
     }
 
     fn ast_type_of_expr(&self, e: &Expr) -> Option<Type> {
-        self.type_table
-            .type_of(e)
-            .and_then(witchy_types::typeck::ty_to_ast)
-            .or_else(|| match e {
-                Expr::Var(name) => self.local_types.get(name).cloned(),
-                _ => None,
-            })
+        // These compiler-owned nodes are introduced after annotation. Their
+        // carried type must win over a structural TypeTable lookup, which can
+        // still match the rewritten node's pre-pack concrete expression.
+        match e {
+            Expr::ExistentialPack { ty, .. } => Some(ty.clone()),
+            Expr::ExistentialCall { result, .. } => Some(result.clone()),
+            Expr::Var(name) => self
+                .local_types
+                .get(name)
+                .cloned()
+                .or_else(|| {
+                    self.type_table
+                        .type_of(e)
+                        .and_then(witchy_types::typeck::ty_to_ast)
+                }),
+            _ => self
+                .type_table
+                .type_of(e)
+                .and_then(witchy_types::typeck::ty_to_ast),
+        }
     }
 
     fn block_record_type(&self, b: &Block) -> Option<String> {
@@ -2560,7 +2608,7 @@ impl<'types> Codegen<'types> {
     fn infer_locals(&mut self, block: &Block) {
         for stmt in &block.stmts {
             match stmt {
-                Stmt::Let { name, value, .. } => {
+                Stmt::Let { name, value, ty, .. } => {
                     // Infer the value's nested bindings FIRST (e.g. a `match`'s
                     // Some/Ok payload vars), so this binding's own kind/type —
                     // computed from `value` below — sees them. Otherwise
@@ -2572,14 +2620,17 @@ impl<'types> Codegen<'types> {
                     // call. Use the authoritative table for those two shapes;
                     // retain the established inference elsewhere because several
                     // specialized lowerings intentionally choose their local ABI.
-                    let needs_resolved_type = matches!(value, Expr::Try(_))
+                    let declared_type = ty.clone();
+                    let needs_resolved_type = declared_type.is_some()
+                        || matches!(value, Expr::Try(_))
                         || matches!(value, Expr::Call { name, .. }
                             if self.fn_conventions.get(name).is_some_and(|cs|
                                 cs.contains(&Convention::Var)));
-                    let resolved_type = self
-                        .type_table
-                        .type_of(value)
-                        .and_then(witchy_types::typeck::ty_to_ast);
+                    let resolved_type = declared_type.or_else(|| {
+                        self.type_table
+                            .type_of(value)
+                            .and_then(witchy_types::typeck::ty_to_ast)
+                    });
                     let inferred_type = if needs_resolved_type
                         || matches!(resolved_type.as_ref().map(Type::unqualified), Some(Type::Fn(..)))
                     {
@@ -8209,11 +8260,10 @@ impl<'types> Codegen<'types> {
             // Aggregate literals: ordinary tuples retain the linear-memory
             // `$mkN` layout. A concrete cap-carrying tuple uses its interned GC
             // struct, so no reference field crosses the universal i64 slot.
-            Expr::List(items) if self.ast_type_of_expr(e).as_ref().is_some_and(|ty| {
-                self.gc_reference_list_layout(ty).is_some()
-            }) => {
-                let ty = self.ast_type_of_expr(e)?;
-                let (_, array_id, _) = self.gc_reference_list_layout(&ty)?;
+            Expr::List(items)
+                if self.gc_reference_list_literal_layout(e, items).is_some() =>
+            {
+                let (_, array_id, _) = self.gc_reference_list_literal_layout(e, items)?;
                 let mut lowered = Vec::with_capacity(items.len());
                 for item in items {
                     lowered.push(self.lower_expr(item)?);
