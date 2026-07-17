@@ -9,7 +9,12 @@ set -euo pipefail
 # versions do not, but all wrappers still share the nextest runner as PPID.
 # Either key is per-run, so a killed gate cannot block a later gate.
 root="${TMPDIR:-/tmp}/witchy-nextest-list-${NEXTEST_RUN_ID:-$PPID}"
-jobs="${WITCHY_NEXTEST_LIST_JOBS:-4}"
+# Freshly linked test binaries are I/O/codesign bound on macOS. Four distinct
+# cold launches stretched to ~4x the single-launch time in a production gate,
+# with no aggregate throughput gain, while unrelated process startup also
+# stalled. Serialize by default; the override remains available for controlled
+# retuning and for environments where cold launch is not the bottleneck.
+jobs="${WITCHY_NEXTEST_LIST_JOBS:-1}"
 runner_pid="$PPID"
 binary_name="$(basename "$1")"
 normal_done="$root/normal-done-$binary_name"

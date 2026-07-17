@@ -50,7 +50,21 @@ set -e
 [ "$ignored_status" -eq 0 ]
 [ "$(cat "$tmp/failure-ignored.out")" = "ignored_test: test" ]
 
-# Different binaries retain the global concurrency allowed by separate keys.
+# The default serializes distinct cold binaries. Start A first, then require B
+# to observe A's completion when it eventually acquires the only slot.
+MARKER="$tmp/default-a-started" END="$tmp/default-a-ended" NEXTEST_RUN_ID=default-serial TMPDIR="$tmp" \
+    "$wrapper" /bin/bash -c ': >"$MARKER"; sleep 0.2; : >"$END"' >/dev/null &
+first_pid=$!
+deadline=$((SECONDS + 5))
+while [ ! -e "$tmp/default-a-started" ] && [ "$SECONDS" -lt "$deadline" ]; do sleep 0.01; done
+[ -e "$tmp/default-a-started" ]
+END="$tmp/default-a-ended" NEXTEST_RUN_ID=default-serial TMPDIR="$tmp" \
+    "$wrapper" /bin/zsh -c '[ -e "$END" ]' >/dev/null &
+second_pid=$!
+wait "$first_pid"
+wait "$second_pid"
+
+# An explicit width override keeps controlled parallel discovery available.
 # Each command waits for the other's start marker; serialization would fail.
 MARKER="$tmp/a-started" PEER="$tmp/b-started" NEXTEST_RUN_ID=parallel TMPDIR="$tmp" WITCHY_NEXTEST_LIST_JOBS=2 \
     "$wrapper" /bin/bash -c '

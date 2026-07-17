@@ -123,16 +123,18 @@ rather than at GATE_TIMEOUT), `MERGE_QUEUE_BATCH_MAX` (5),
 `MERGE_QUEUE_ALLOW_MERGE=1` (test mode still merges — see Testing below).
 `check.sh` raises the bounded stage-heartbeat count from three to eight
 two-minute pulses whenever `WITCHY_GATE_SCOPE` is present, enough for measured
-four-wide macOS discovery without making the watchdog unbounded.
+bounded macOS discovery without making the watchdog unbounded.
 On macOS, `.config/nextest.toml` routes test discovery through
 `scripts/nextest-list-wrapper.sh`. The wrapper bounds only the `--list` binary
-launches to four slots, keyed by `NEXTEST_RUN_ID` (or the shared nextest parent
-PID on older versions); test execution runs at nextest's normal width — the
-dyld stall was a cold-first-exec problem, and the list phase leaves every
-binary loader-warm. Slots are atomic PID symlinks: a crashed owner is reclaimed,
+launches to one slot by default, keyed by `NEXTEST_RUN_ID` (or the shared
+nextest parent PID on older versions); test execution runs at nextest's normal
+width — the dyld stall was a cold-first-exec problem, and the list phase leaves
+every binary loader-warm. Slots are atomic PID symlinks: a crashed owner is reclaimed,
 while an EPERM result from `kill -0` is treated as a live sandboxed process.
 There is no time-based fail-open that can turn slow healthy discovery back into
-an unbounded loader herd. `WITCHY_NEXTEST_LIST_JOBS` permits local retuning.
+an unbounded loader herd. `WITCHY_NEXTEST_LIST_JOBS` permits local retuning;
+production defaults to one because four simultaneous distinct cold binaries
+measured no faster in aggregate and stalled unrelated process startup.
 
 **Diff-scoped fuzzing.** The differential fuzzer is the gate's single biggest
 test (~57s, a fixed-seed parity regression suite). `process_one` classifies the
