@@ -831,6 +831,9 @@ struct Codegen<'types> {
     /// Closed witness ID -> concrete one-field payload box. The field uses the
     /// payload's actual WIR kind, never the scalar slot ABI.
     existential_payload_ids: HashMap<u32, u32>,
+    /// Closed-plan authenticated `(source witness, target existential, result
+    /// witness)` transitions for compiler-owned existential upcasts.
+    existential_upcasts: Vec<(u32, Type, u32)>,
     /// Source lambda identity -> pre-reserved typed GC capture payload. All
     /// lambda structs are reserved before arrays so concrete GC type IDs never
     /// shift while function bodies lower.
@@ -1353,6 +1356,7 @@ impl<'types> Codegen<'types> {
             gc_arrays: Vec::new(),
             gc_reference_list_ids: HashMap::new(),
             existential_payload_ids: HashMap::new(),
+            existential_upcasts: Vec::new(),
             lambda_gc_env_ids: HashMap::new(),
             ctor_field_records: HashMap::new(),
             mk_arities: HashSet::new(),
@@ -2185,6 +2189,7 @@ impl<'types> Codegen<'types> {
         // still match the rewritten node's pre-pack concrete expression.
         match e {
             Expr::ExistentialPack { ty, .. } => Some(ty.clone()),
+            Expr::ExistentialUpcast { ty, .. } => Some(ty.clone()),
             Expr::ExistentialCall { result, .. } => Some(result.clone()),
             Expr::Var(name) => self
                 .local_types
@@ -3063,7 +3068,8 @@ impl<'types> Codegen<'types> {
             }
             Expr::Unary { expr, .. }
             | Expr::As { expr, .. }
-            | Expr::ExistentialPack { expr, .. } => self.infer_locals_expr(expr),
+            | Expr::ExistentialPack { expr, .. }
+            | Expr::ExistentialUpcast { expr, .. } => self.infer_locals_expr(expr),
             Expr::Tuple(xs) | Expr::List(xs) => {
                 for x in xs {
                     self.infer_locals_expr(x);
@@ -7541,6 +7547,66 @@ impl<'types> Codegen<'types> {
                     struct_id: EXISTENTIAL_WRAPPER_ID,
                     args: vec![payload, W::ConstI32(i32::try_from(*witness).ok()?)],
                 });
+            }
+            Expr::ExistentialUpcast { expr, ty } => {
+                let level = self.existential_call_level;
+                if level >= EXISTENTIAL_CALL_POOL {
+                    return None;
+                }
+                self.existential_call_level += 1;
+                let source = self.lower_expr(expr);
+                self.existential_call_level = level;
+                let source = source?;
+                let local = existential_call_scratch(level);
+                let source_witness = || W::StructGet {
+                    struct_id: EXISTENTIAL_WRAPPER_ID,
+                    field: 1,
+                    base: Box::new(W::GetLocal(local.clone())),
+                };
+                let mut transitions = self
+                    .existential_upcasts
+                    .iter()
+                    .filter(|(_, target, _)| target == ty)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if transitions.is_empty() {
+                    return None;
+                }
+                transitions.sort_by_key(|(source, _, _)| *source);
+                let mut selected = None;
+                for (from, _, to) in transitions.into_iter().rev() {
+                    let fallback = selected.take().map_or_else(
+                        || W::Control(Box::new(N::Block {
+                            label: "__witchy_bad_existential_upcast".into(),
+                            result: Some(witchy_wir::wir::WirTy::Int),
+                            body: vec![N::Unreachable],
+                        })),
+                        |value| value,
+                    );
+                    selected = Some(W::Control(Box::new(N::If {
+                        cond: W::Binary {
+                            op: BinOp::Eq,
+                            kind: Kind::I32,
+                            lhs: Box::new(source_witness()),
+                            rhs: Box::new(W::ConstI32(i32::try_from(from).ok()?)),
+                        },
+                        then_: vec![N::Push(W::ConstI32(i32::try_from(to).ok()?))],
+                        els: vec![N::Push(fallback)],
+                        result: Some(witchy_wir::wir::WirTy::Int),
+                    })));
+                }
+                let payload = W::StructGet {
+                    struct_id: EXISTENTIAL_WRAPPER_ID,
+                    field: 0,
+                    base: Box::new(W::GetLocal(local.clone())),
+                };
+                W::Seq(vec![
+                    N::SetLocal { local, value: source },
+                    N::Push(W::StructNew {
+                        struct_id: EXISTENTIAL_WRAPPER_ID,
+                        args: vec![payload, selected?],
+                    }),
+                ])
             }
             // RFC-0081 dispatch selects a compiler-owned adapter from the dense
             // witness table. This is deliberately not a source-name fallback:

@@ -674,6 +674,15 @@ fn register_module_items(
         .dispatch_index()
         .expect("witness construction assigns dense runtime IDs")
         .stride();
+    cg.existential_upcasts = witnesses
+        .upcasts
+        .iter()
+        .filter_map(|upcast| {
+            witnesses
+                .by_id(upcast.target)
+                .map(|target| (upcast.source, target.existential.clone(), upcast.target))
+        })
+        .collect();
     // `Option`/`Result` are language-level (`?`, `Some`/`Ok` literals, the
     // interpreter evaluates them natively): their constructors exist for
     // patterns whether or not std/option / std/result are linked. Tags match

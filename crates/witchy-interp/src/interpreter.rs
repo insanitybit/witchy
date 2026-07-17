@@ -1579,7 +1579,8 @@ fn idents_in_expr(e: &Expr, f: &mut dyn FnMut(&str)) {
         Expr::Unary { expr, .. }
         | Expr::Try(expr)
         | Expr::As { expr, .. }
-        | Expr::ExistentialPack { expr, .. } => {
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. } => {
             idents_in_expr(expr, f)
         }
         Expr::ExistentialCall { receiver, args, .. } => {
@@ -2014,7 +2015,8 @@ fn collect_nested_returns_expr(expr: &Expr, out: &mut FxHashSet<String>) {
         | Expr::Field { base: expr, .. }
         | Expr::Try(expr)
         | Expr::As { expr, .. }
-        | Expr::ExistentialPack { expr, .. } => collect_nested_returns_expr(expr, out),
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. } => collect_nested_returns_expr(expr, out),
         Expr::ExistentialCall { receiver, args, .. } => {
             collect_nested_returns_expr(receiver, out);
             for arg in args {
@@ -6667,6 +6669,22 @@ impl Interpreter {
                 payload: Box::new(self.eval(expr, env)?),
                 witness: *witness,
             }),
+            Expr::ExistentialUpcast { expr, ty } => {
+                let Value::Existential { payload, witness } = self.eval(expr, env)? else {
+                    return err("internal: existential upcast received a non-existential value");
+                };
+                let target = self.witnesses.upcast(witness, ty).ok_or_else(|| {
+                    Flow::from(RuntimeError {
+                        message: format!(
+                            "internal: no authenticated existential upcast from witness {witness} to {ty}"
+                        ),
+                    })
+                })?;
+                Ok(Value::Existential {
+                    payload,
+                    witness: target,
+                })
+            }
             Expr::ExistentialCall {
                 receiver,
                 args,

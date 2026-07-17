@@ -27,6 +27,7 @@ impl Codegen<'_> {
             // wrapper node itself has no address-keyed table entry. Its declared
             // runtime representation is nevertheless fixed and never scalar.
             Expr::ExistentialPack { .. } => Kind::GcRef(super::EXISTENTIAL_WRAPPER_ID),
+            Expr::ExistentialUpcast { .. } => Kind::GcRef(super::EXISTENTIAL_WRAPPER_ID),
             // Dispatch has already selected its static slot result. The witness
             // chooses only an ABI-identical adapter, so result representation is
             // never discovered from the concrete payload at codegen time.
