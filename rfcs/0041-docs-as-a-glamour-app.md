@@ -96,7 +96,7 @@ server?" No. Docs are static content, and the runnable examples already execute 
 client-side. A server (whether serving pages or compiling submitted source) adds
 hosting cost, latency, and — for a compile server — an **arbitrary-code-execution
 trust boundary**, to deliver strictly *less* than the in-browser path we already have.
-This RFC keeps the deployment a bag of static files (compiled app wasm + content +
+This RFC keeps the deployment a set of static files (compiled app wasm + content +
 compiler wasm) on static hosting. `std/server` is a great capability; the docs simply
 do not need it.
 
