@@ -114,7 +114,8 @@ avoid allocating at all: an ownership analysis proves where accumulation
 happen, never the whole loop — and dicts carry a hidden hash index. The result
 runs at native-class throughput: a string builder stays linear instead of
 O(n²), and list/dict/compute loops carry no per-iteration allocation overhead —
-all inside the sandbox (`bench/BASELINE.md` has the numbers). The repository's
+all inside the sandbox ([`bench/BASELINE.md`](https://github.com/insanitybit/witchy/blob/master/bench/BASELINE.md)
+has the numbers). The repository's
 `spec/architecture.md` has the full
 memory-model story and the honest list of current limitations.
 
