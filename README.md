@@ -258,8 +258,9 @@ build step is default-deny, running only when you grant it explicitly — under
 build-only capabilities, per-rune grants, and a post-build footprint check — and
 published runes can vendor their generated source so consumers run no build step.
 
-The package manager and registry are **self-hosted**: `projects/pm` and
-`projects/coven` are witchy programs, exercised end-to-end by the test suite.
+The package manager and registry are **self-hosted**: [`projects/pm`](projects/pm)
+and [`projects/coven`](projects/coven) are witchy programs, exercised end-to-end
+by the test suite.
 
 Try the whole lifecycle locally — server, trusted publish, 2FA promote,
 verified consumption — with one command:
