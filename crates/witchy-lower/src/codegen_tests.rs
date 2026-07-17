@@ -785,8 +785,8 @@ fn main() -> Int:
             _name: &str,
             _module: &mut witchy_syntax::ast::Module,
             _siblings: &[(String, witchy_syntax::ast::Module)],
-        ) -> Result<(), String> {
-            Ok(())
+        ) -> Result<witchy_syntax::origin::OriginTable, String> {
+            Ok(witchy_syntax::origin::OriginTable::default())
         }
 
         let cases = [
