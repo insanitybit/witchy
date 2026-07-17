@@ -1016,6 +1016,29 @@ fn main() -> Int:
     }
 
     #[test]
+    fn existential_adapters_reserve_table_slots_before_closures() {
+        let src = r#"
+trait Render:
+    fn render(self) -> Int
+
+type Label:
+    Label(Int)
+
+impl Render for Label:
+    fn render(self) -> Int:
+        match self:
+            Label(value) -> value
+
+fn main() -> Int:
+    let item: dyn Render = Label(42)
+    let increment = fn (value: Int) -> Int:
+        value + 1
+    increment(item.render())
+"#;
+        assert_eq!(run_int(src), 43);
+    }
+
+    #[test]
     fn full_int_program() {
         let src = r#"
 fn double(n: Int) -> Int:
