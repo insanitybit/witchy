@@ -6292,6 +6292,50 @@ fn main(console: Console):
         assert_eq!(crate::run_wasm_bytes(&bytes).expect("wasm"), want, "wasm");
     }
 
+    #[test]
+    fn rfc0081_rejects_unrelated_existential_upcasts_before_execution() {
+        let src = r#"
+trait Render:
+    fn render(let self) -> Int
+
+trait Inspect:
+    fn inspect(let self) -> Int
+
+type Label:
+    Label(Int)
+
+impl Render for Label:
+    fn render(let self) -> Int:
+        match self:
+            Label(value) -> value
+
+impl Inspect for Label:
+    fn inspect(let self) -> Int:
+        match self:
+            Label(value) -> value
+
+fn main() -> Int:
+    let rendered: dyn Render = Label(2)
+    let inspect: dyn Inspect = rendered
+    inspect.inspect()
+"#;
+        let linked = resolve_std_src(src);
+        let interpreter_error = interpreter::run_module(linked.clone(), ".", Vec::new())
+            .expect_err("interpreter must reject unrelated upcast")
+            .to_string();
+        assert!(
+            interpreter_error.contains("invalid existential upcast request `Render` to `Inspect`"),
+            "unexpected interpreter error: {interpreter_error}"
+        );
+        let codegen_error = codegen::compile_module_binary(&linked)
+            .expect_rejected("compiled backend must reject unrelated upcast")
+            .to_string();
+        assert!(
+            codegen_error.contains("invalid existential upcast request `Render` to `Inspect`"),
+            "unexpected codegen error: {codegen_error}"
+        );
+    }
+
     /// `wasm_run` that also reads the exported `__witchy_reowns` counter —
     /// the timing-free proof of whether accumulation ran in place (O(1)
     /// re-owns) or fell to the copying path (O(n) re-owns).
