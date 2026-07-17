@@ -3,7 +3,7 @@
 coven-web is a web frontend for the coven registry built for **zero tolerance to XSS/CSRF**,
 **assuming XSS/CSRF happen anyway**, and **assuming any dependency may be malicious**. This
 document records the guarantees, the layers that provide them, and the accepted residual risk.
-The full design is in `PLAN.md`; this is the security summary.
+The full design is in [`PLAN.md`](PLAN.md); this is the security summary.
 
 ## Architecture in one line
 
@@ -175,7 +175,7 @@ optional source highlighter is a second one. Full threat model:
   zero-dep TS" to "audit the witchy source + trust the compiler (already the TCB) + a reproducible
   build + a provable empty footprint." The parent's executable artifact grows; that is the trade.
 
-## Known gaps (tracked in PLAN.md)
+## Known gaps (tracked in [`PLAN.md`](PLAN.md))
 
 - **TLS:** the witchy server is plain HTTP; production terminates TLS at a fronting proxy (needed
   for the `__Host-`/`Secure` cookie). `Strict-Transport-Security` is always sent so the browser
