@@ -30,6 +30,8 @@ The tour is organized as follows:
 - [**Values and Types**](tour-values.md)
 - [**Functions and Control Flow**](tour-functions.md)
 - [**Data: Records and Enums**](tour-data.md)
+- [**Uniform `var` Write-Back**](mutating-methods.md)
+- [**Mutating Elements in a Loop: `for var`**](for-var.md)
 - [**Errors as Values**](tour-errors.md)
 - [**Generics and Traits**](tour-generics.md)
 - [**Reflection**](tour-reflection.md)
