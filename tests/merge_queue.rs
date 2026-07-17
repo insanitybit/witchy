@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
@@ -410,6 +411,313 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
     assert!(!repo.join("must-not-be-gated-as-master").exists());
 }
 
+struct QueueFixture {
+    _temp: TempDir,
+    root: PathBuf,
+    state: PathBuf,
+    gate_worktree: PathBuf,
+}
+
+impl QueueFixture {
+    fn stack(files: &[&str]) -> Self {
+        let temp = TempDir::new();
+        let root = temp.path().join("repo");
+        let state = temp.path().join("state");
+        let gate_worktree = temp.path().join("gate");
+        fs::create_dir(&root).expect("create queue fixture repository");
+        run_git(&root, &["init", "-b", "master"]);
+        run_git(&root, &["config", "user.email", "queue-test@witchy.invalid"]);
+        run_git(&root, &["config", "user.name", "Witchy Queue Test"]);
+        fs::write(root.join("base.txt"), "base\n").expect("write base commit");
+        run_git(&root, &["add", "base.txt"]);
+        run_git(&root, &["commit", "-m", "base"]);
+
+        let mut parent = "master".to_owned();
+        for (index, file) in files.iter().enumerate() {
+            let branch = ((b'a' + index as u8) as char).to_string();
+            run_git(&root, &["switch", "-c", &branch, &parent]);
+            fs::write(root.join(file), format!("{branch}\n")).expect("write stack file");
+            run_git(&root, &["add", file]);
+            run_git(&root, &["commit", "-m", &format!("add {file}")]);
+            parent = branch;
+        }
+        run_git(&root, &["switch", "master"]);
+        Self {
+            _temp: temp,
+            root,
+            state,
+            gate_worktree,
+        }
+    }
+
+    fn mq_command(&self, args: &[&str], gate: &str) -> Command {
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let mut command = Command::new("bash");
+        command
+            .arg(repo.join("scripts/merge-queue.sh"))
+            .args(args)
+            .env("MERGE_QUEUE_TEST_ROOT", &self.root)
+            .env("MERGE_QUEUE_ALLOW_TEST_ROOT", "1")
+            .env("MERGE_QUEUE_STATE_DIR", &self.state)
+            .env("MERGE_QUEUE_GATE_WT", &self.gate_worktree)
+            .env("MERGE_QUEUE_GATE_CMD", gate)
+            .env("MERGE_QUEUE_ALLOW_MERGE", "1")
+            .env("MERGE_QUEUE_MONITOR_INTERVAL", "0")
+            .env("MERGE_QUEUE_RETRY_INTERVAL", "0")
+            .env("MERGE_QUEUE_POLL_INTERVAL", "0");
+        command
+    }
+
+    fn mq(&self, args: &[&str], gate: &str) -> std::process::Output {
+        self.mq_command(args, gate)
+            .output()
+            .expect("run isolated merge queue")
+    }
+
+    fn mq_ok(&self, args: &[&str], gate: &str) -> std::process::Output {
+        let output = self.mq(args, gate);
+        assert!(
+            output.status.success(),
+            "merge queue {:?} failed:\nstdout:\n{}\nstderr:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        output
+    }
+
+    fn change(&self, branch: &str) -> serde_json::Value {
+        serde_json::from_slice(
+            &fs::read(self.state.join(format!("changes/{branch}.json")))
+                .expect("read persistent change record"),
+        )
+        .expect("change record is JSON")
+    }
+
+    fn status(&self) -> serde_json::Value {
+        serde_json::from_slice(&self.mq_ok(&["status"], "true").stdout)
+            .expect("queue status is JSON")
+    }
+
+    fn journal(&self) -> Vec<serde_json::Value> {
+        fs::read_to_string(self.state.join("journal.jsonl"))
+            .expect("read queue journal")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("journal event is JSON"))
+            .collect()
+    }
+}
+
+fn run_git(root: &Path, args: &[&str]) -> std::process::Output {
+    let output = git_output(root, args);
+    assert!(
+        output.status.success(),
+        "git {:?} failed:\nstdout:\n{}\nstderr:\n{}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    output
+}
+
+fn git_output(root: &Path, args: &[&str]) -> std::process::Output {
+    Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .expect("run git for queue fixture")
+}
+
+fn submit_stack(fixture: &QueueFixture, branches: &[&str]) {
+    for (index, branch) in branches.iter().enumerate() {
+        if index == 0 {
+            fixture.mq_ok(&["submit", branch], "true");
+        } else {
+            fixture.mq_ok(&["submit", "--after", branches[index - 1], branch], "true");
+        }
+    }
+}
+
+#[test]
+fn dependency_submission_keeps_stable_ids_reports_readiness_and_rejects_cycles() {
+    let fixture = QueueFixture::stack(&["a.txt", "b.txt"]);
+    submit_stack(&fixture, &["a", "b"]);
+    let first_id = fixture.change("a")["change_id"]
+        .as_str()
+        .expect("change id is a string")
+        .to_owned();
+
+    let status = fixture.status();
+    let child = status["queue"]
+        .as_array()
+        .expect("queue is an array")
+        .iter()
+        .find(|entry| entry["branch"] == "b")
+        .expect("child is queued");
+    assert_eq!(child["readiness"], "waiting");
+    assert_eq!(child["waiting_on"][0]["branch"], "a");
+
+    run_git(&fixture.root, &["switch", "a"]);
+    fs::write(fixture.root.join("a2.txt"), "a2\n").expect("update queued parent");
+    run_git(&fixture.root, &["add", "a2.txt"]);
+    run_git(&fixture.root, &["commit", "-m", "update a"]);
+    run_git(&fixture.root, &["switch", "master"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+    assert_eq!(fixture.change("a")["change_id"], first_id);
+    assert_eq!(
+        fs::read_dir(fixture.state.join("queue"))
+            .expect("read queue")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+            .count(),
+        2,
+        "resubmit duplicated the logical change",
+    );
+
+    let cycle = fixture.mq(&["submit", "--after", "b", "a"], "true");
+    assert!(!cycle.status.success(), "dependency cycle was accepted");
+    assert!(
+        String::from_utf8_lossy(&cycle.stderr).contains("would create a cycle"),
+        "cycle rejection was not explicit: {}",
+        String::from_utf8_lossy(&cycle.stderr),
+    );
+}
+
+#[test]
+fn concurrent_dependency_updates_cannot_commit_opposite_cycle_edges() {
+    let fixture = QueueFixture::stack(&["a.txt", "b.txt"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+    fixture.mq_ok(&["submit", "b"], "true");
+
+    let mut left = fixture.mq_command(&["submit", "--after", "b", "a"], "true");
+    let mut right = fixture.mq_command(&["submit", "--after", "a", "b"], "true");
+    let left = left
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start first concurrent dependency update");
+    let right = right
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start second concurrent dependency update");
+    let left = left.wait_with_output().expect("wait for first dependency update");
+    let right = right.wait_with_output().expect("wait for second dependency update");
+
+    assert_ne!(
+        left.status.success(),
+        right.status.success(),
+        "exactly one opposite edge must commit:\nleft: {}\nright: {}",
+        String::from_utf8_lossy(&left.stderr),
+        String::from_utf8_lossy(&right.stderr),
+    );
+    let edge_count = fixture.change("a")["after"].as_array().unwrap().len()
+        + fixture.change("b")["after"].as_array().unwrap().len();
+    assert_eq!(edge_count, 1, "both cycle edges were persisted");
+    assert!(!fixture.state.join("change.lock").exists(), "metadata lock leaked");
+}
+
+#[test]
+fn red_parent_blocks_child_until_the_same_change_is_resubmitted_green() {
+    let fixture = QueueFixture::stack(&["a.txt", "b.txt", "c.txt"]);
+    submit_stack(&fixture, &["a", "b", "c"]);
+    let parent_id = fixture.change("a")["change_id"].clone();
+
+    fixture.mq_ok(&["run", "--once"], "false");
+    let status = fixture.status();
+    let child = status["queue"]
+        .as_array()
+        .expect("queue is an array")
+        .iter()
+        .find(|entry| entry["branch"] == "b")
+        .expect("red parent's child remains queued");
+    assert_eq!(child["readiness"], "blocked");
+    assert_eq!(child["blocked_by"][0]["branch"], "a");
+    assert_eq!(child["blocked_by"][0]["state"], "red");
+    let grandchild = status["queue"]
+        .as_array()
+        .expect("queue is an array")
+        .iter()
+        .find(|entry| entry["branch"] == "c")
+        .expect("red parent's grandchild remains queued");
+    assert_eq!(grandchild["readiness"], "blocked");
+    assert!(grandchild["blocked_by"]
+        .as_array()
+        .expect("blocked_by is an array")
+        .iter()
+        .any(|dependency| dependency["branch"] == "a" && dependency["state"] == "red"));
+    assert!(
+        !git_output(&fixture.root, &["show", "master:b.txt"]).status.success(),
+        "child landed after a red parent",
+    );
+
+    fixture.mq_ok(&["submit", "a"], "true");
+    assert_eq!(fixture.change("a")["change_id"], parent_id);
+    fixture.mq_ok(&["run", "--once"], "true");
+    assert!(run_git(&fixture.root, &["show", "master:c.txt"]).status.success());
+    assert_eq!(fixture.change("a")["state"], "merged");
+    assert_eq!(fixture.change("b")["state"], "merged");
+    assert_eq!(fixture.change("c")["state"], "merged");
+}
+
+#[test]
+fn green_dependency_stack_gates_the_tip_once_and_lands_the_whole_stack() {
+    let fixture = QueueFixture::stack(&["a.txt", "b.txt", "c.txt"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+    fixture.mq_ok(&["submit", "b"], "true");
+    fixture.mq_ok(&["submit", "--after", "a", "--after", "b", "c"], "true");
+    fixture.mq_ok(&["run", "--once"], "true");
+
+    assert!(run_git(&fixture.root, &["show", "master:c.txt"]).status.success());
+    let merged: Vec<_> = fixture
+        .journal()
+        .into_iter()
+        .filter(|event| event["event"] == "merged")
+        .collect();
+    assert_eq!(merged.len(), 3);
+    assert!(merged.iter().all(|event| event["batch"] == "3"));
+    let logs: BTreeSet<_> = merged
+        .iter()
+        .map(|event| event["log"].as_str().expect("merged event has log"))
+        .collect();
+    assert_eq!(logs.len(), 1, "stack used more than one green gate");
+}
+
+#[test]
+fn red_dependency_stack_bisects_and_lands_only_the_green_prefix() {
+    let fixture = QueueFixture::stack(&["a.txt", "b.txt", "c.txt"]);
+    submit_stack(&fixture, &["a", "b", "c"]);
+    fixture.mq_ok(&["run", "--once"], "test ! -f c.txt");
+
+    assert!(run_git(&fixture.root, &["show", "master:a.txt"]).status.success());
+    assert!(run_git(&fixture.root, &["show", "master:b.txt"]).status.success());
+    let missing_c = Command::new("git")
+        .args(["-C", fixture.root.to_str().unwrap(), "show", "master:c.txt"])
+        .output()
+        .expect("inspect red suffix on master");
+    assert!(!missing_c.status.success(), "red stack suffix landed");
+
+    let journal = fixture.journal();
+    let split = journal
+        .iter()
+        .find(|event| event["event"] == "batch_red")
+        .expect("initial stack red was journaled");
+    assert_eq!(split["strategy"], "prefix_split");
+    assert_eq!(split["members"], "a b c");
+    assert!(journal.iter().any(|event| event["event"] == "merged" && event["branch"] == "a"));
+    assert!(journal.iter().any(|event| event["event"] == "merged" && event["branch"] == "b"));
+    assert!(journal.iter().any(|event| event["event"] == "red" && event["branch"] == "c"));
+    let gate_logs: BTreeSet<_> = journal
+        .iter()
+        .filter(|event| {
+            event["event"] == "batch_red" || event["event"] == "merged" || event["event"] == "red"
+        })
+        .filter_map(|event| event["log"].as_str())
+        .collect();
+    assert_eq!(gate_logs.len(), 3, "expected full stack, prefix, and suffix gates");
+}
+
 #[test]
 fn daemon_enters_an_independent_process_group() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -710,6 +1018,7 @@ fn migrate_state_requires_a_drained_queue_and_leaves_legacy_compatibility() {
     assert!(root.join("state/agents").is_dir());
     assert!(root.join("state/README.txt").is_file());
     assert!(!root.join("state/merge-queue/gate.lock").exists());
+    assert!(!root.join("state/merge-queue/change.lock").exists());
     assert!(!root.join("state/merge-queue/coordinator.lock").exists());
     assert!(!root.join("state/merge-queue/coordinator.pid").exists());
 

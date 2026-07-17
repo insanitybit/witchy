@@ -169,6 +169,10 @@ is running (it invalidates that gate). The coordinator enforces both:
   for the section your change touches. A green shard qualifies you for the
   queue; it does not replace the full gate.
 - **When your branch is ready**: `./scripts/merge-queue.sh submit <branch>`.
+  If it is stacked on another queued change, use
+  `./scripts/merge-queue.sh submit --after <parent-branch> <branch>`; the queue
+  reports it as waiting/blocked until the stable parent change lands, and can
+  gate a ready dependency stack at its tip once.
   One coordinator session runs `./scripts/merge-queue.sh run`; it rebases each
   candidate onto latest master in a dedicated warm worktree
   (`.claude/worktrees/merge-gate`), runs the full gate under a lock, and

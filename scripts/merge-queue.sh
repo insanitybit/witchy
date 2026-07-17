@@ -95,6 +95,8 @@ fi
 . "$here/scripts/state-paths.sh"
 qdir="$(witchy_merge_queue_state_dir "$root")"
 queue_dir="$qdir/queue"
+changes_dir="$qdir/changes"
+change_lock="$qdir/change.lock"
 journal="$qdir/journal.jsonl"
 logs="$qdir/logs"
 lock="$qdir/gate.lock"
@@ -104,8 +106,11 @@ gate_cmd="${MERGE_QUEUE_GATE_CMD:-./scripts/check.sh}"
 coordinator_script="${MERGE_QUEUE_COORDINATOR_SCRIPT:-$root/scripts/merge-queue.sh}"
 gate_timeout="${MERGE_QUEUE_GATE_TIMEOUT:-2700}"
 stall_timeout="${MERGE_QUEUE_STALL_TIMEOUT:-600}"
+monitor_interval="${MERGE_QUEUE_MONITOR_INTERVAL:-10}"
+retry_interval="${MERGE_QUEUE_RETRY_INTERVAL:-5}"
+poll_interval="${MERGE_QUEUE_POLL_INTERVAL:-15}"
 
-mkdir -p "$queue_dir" "$logs"
+mkdir -p "$queue_dir" "$changes_dir" "$logs"
 
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 note() { printf 'merge-queue: %s\n' "$*" >&2; }
@@ -182,7 +187,154 @@ record_attempt() { # event branch start prepared locked gate-start gate-end fini
         "$@"
 }
 
+branch_key() { printf '%s\n' "$1" | tr '/' '~'; }
+change_file_for_branch() { printf '%s/%s.json\n' "$changes_dir" "$(branch_key "$1")"; }
+
+new_change_id() { # new_change_id <branch>
+    printf '%s\0%s\0%s\0%s\n' "$1" "$(date +%s)" "$$" "${RANDOM:-0}" \
+        | git -C "$root" hash-object --stdin \
+        | sed 's/^/mq-/'
+}
+
+change_id_for_branch() { # change_id_for_branch <branch>
+    local cf; cf="$(change_file_for_branch "$1")"
+    [ -f "$cf" ] || return 1
+    jq -er --arg branch "$1" 'select(.branch==$branch) | .change_id' "$cf"
+}
+
+change_state_for_id() { # change_state_for_id <change-id>
+    local cf
+    for cf in "$changes_dir"/*.json; do
+        [ -f "$cf" ] || continue
+        jq -er --arg id "$1" 'select(.change_id==$id) | .state' "$cf" 2>/dev/null && return 0
+    done
+    return 1
+}
+
+change_branch_for_id() { # change_branch_for_id <change-id>
+    local cf
+    for cf in "$changes_dir"/*.json; do
+        [ -f "$cf" ] || continue
+        jq -er --arg id "$1" 'select(.change_id==$id) | .branch' "$cf" 2>/dev/null && return 0
+    done
+    return 1
+}
+
+set_change_state() { # set_change_state <change-id> <state>
+    local id="$1" state="$2" cf tmp
+    [ -n "$id" ] || return 0
+    acquire_change_lock
+    for cf in "$changes_dir"/*.json; do
+        [ -f "$cf" ] || continue
+        jq -e --arg id "$id" 'select(.change_id==$id)' "$cf" >/dev/null 2>&1 || continue
+        tmp="$cf.tmp.$$"
+        jq --arg state "$state" --arg updated "$(now)" \
+            '.state=$state | .updated=$updated' "$cf" >"$tmp"
+        mv "$tmp" "$cf"
+        release_change_lock
+        return 0
+    done
+    release_change_lock
+    return 1
+}
+
+write_change_record() { # write_change_record <branch> <id> <sha> <after-json> <state>
+    local branch="$1" id="$2" sha="$3" after="$4" state="$5" cf tmp created
+    cf="$(change_file_for_branch "$branch")"
+    created="$(jq -r '.created // empty' "$cf" 2>/dev/null || true)"
+    [ -n "$created" ] || created="$(now)"
+    tmp="$cf.tmp.$$"
+    jq -cn --arg branch "$branch" --arg id "$id" --arg sha "$sha" \
+        --arg created "$created" --arg updated "$(now)" --arg state "$state" \
+        --argjson after "$after" \
+        '{schema:1, change_id:$id, branch:$branch, current_sha:$sha,
+          after:$after, state:$state, created:$created, updated:$updated}' >"$tmp"
+    mv "$tmp" "$cf"
+}
+
+retrofit_queued_change() { # retrofit_queued_change <branch> <change-id>
+    local branch="$1" id="$2" qf tmp
+    for qf in "$queue_dir"/*.json; do
+        [ -f "$qf" ] || continue
+        [ "$(jq -r '.branch // empty' "$qf")" = "$branch" ] || continue
+        tmp="$qf.tmp.$$"
+        jq --arg id "$id" '.schema=2 | .change_id=$id | .after=(.after // [])' "$qf" >"$tmp"
+        mv "$tmp" "$qf"
+    done
+}
+
+known_parent_change_id() { # known_parent_change_id <branch>
+    local branch="$1" id qf last state sha
+    if id="$(change_id_for_branch "$branch" 2>/dev/null)"; then
+        printf '%s\n' "$id"
+        return 0
+    fi
+    for qf in "$queue_dir"/*.json; do
+        [ -f "$qf" ] || continue
+        [ "$(jq -r '.branch // empty' "$qf")" = "$branch" ] || continue
+        id="$(new_change_id "$branch")"
+        sha="$(jq -r '.sha // empty' "$qf")"
+        write_change_record "$branch" "$id" "$sha" '[]' queued
+        retrofit_queued_change "$branch" "$id"
+        printf '%s\n' "$id"
+        return 0
+    done
+    last="$(jq -c --arg branch "$branch" \
+        'select(.branch==$branch) | select(.event=="merged" or .event=="red" or .event=="timeout" or .event=="conflict" or .event=="blocked" or .event=="dropped")' \
+        "$journal" 2>/dev/null | tail -1)"
+    [ -n "$last" ] || return 1
+    state="$(printf '%s\n' "$last" | jq -r .event)"
+    sha="$(printf '%s\n' "$last" | jq -r '.sha // empty')"
+    id="$(new_change_id "$branch")"
+    write_change_record "$branch" "$id" "$sha" '[]' "$state"
+    printf '%s\n' "$id"
+}
+
+dependencies_are_acyclic() { # dependencies_are_acyclic <child-id> <after-json>
+    local child="$1" after="$2"
+    jq -en --arg child "$child" --argjson proposed "$after" \
+        --slurpfile changes <(cat "$changes_dir"/*.json 2>/dev/null || true) '
+        def parents($id): [$changes[] | select(.change_id==$id) | (.after // [])[]];
+        def reaches($id; $target; $seen):
+            if $id == $target then true
+            elif ($seen | index($id)) != null then false
+            else any(parents($id)[]; reaches(.; $target; $seen + [$id]))
+            end;
+        all($proposed[]; (reaches(.; $child; []) | not))
+    ' >/dev/null
+}
+
+queue_entry_with_status() { # queue_entry_with_status <queue-file>
+    jq -n --slurpfile queue "$1" \
+        --slurpfile changes <(cat "$changes_dir"/*.json 2>/dev/null || true) '
+        def record($id): first($changes[] | select(.change_id==$id));
+        def walk_dependencies($ids; $seen):
+          $ids[] as $id |
+          if ($seen | index($id)) != null then empty
+          else (record($id) // {change_id:$id, branch:null, state:"missing", after:[]}) as $r |
+            $r, walk_dependencies(($r.after // []); $seen + [$id])
+          end;
+        ($queue[0].after // []) as $after |
+        [$after[] | . as $id | (record($id) // {}) as $r |
+          {change_id:$id, branch:($r.branch // null), state:($r.state // "missing")}] as $deps |
+        [walk_dependencies($after; [])] | unique_by(.change_id) as $all_deps |
+        [$all_deps[] | select(.state != "merged" and
+          (.state == "red" or .state == "timeout" or .state == "conflict" or
+           .state == "blocked" or .state == "dropped" or .state == "missing"))] as $blocked |
+        [$deps[] | select(.state != "merged" and
+          (.state != "red" and .state != "timeout" and .state != "conflict" and
+           .state != "blocked" and .state != "dropped" and .state != "missing"))] as $waiting |
+        $queue[0] + {readiness:(if ($blocked|length)>0 then "blocked"
+          elif ($waiting|length)>0 then "waiting" else "ready" end),
+          dependencies:$deps, blocked_by:$blocked, waiting_on:$waiting}
+    '
+}
+
+queue_readiness() { queue_entry_with_status "$1" | jq -r .readiness; }
+
 holding_lock=0
+holding_change_lock=0
+change_owner_shell_pid=""
 holding_coordinator_lock=0
 coordinator_owner_shell_pid=""
 migration_marker_active=0
@@ -193,6 +345,37 @@ release_migration_marker() {
     migration_marker_active=0
 }
 release_lock() { if [ "$holding_lock" -eq 1 ]; then rm -rf "$lock"; fi; holding_lock=0; }
+change_lock_owned() {
+    [ "$holding_change_lock" -eq 1 ] \
+        && [ "${BASHPID:-$$}" = "$change_owner_shell_pid" ] \
+        && [ "$(cat "$change_lock/pid" 2>/dev/null || true)" = "$$" ]
+}
+release_change_lock() {
+    if change_lock_owned; then
+        rm -rf "$change_lock"
+    fi
+    holding_change_lock=0
+}
+acquire_change_lock() {
+    while ! mkdir "$change_lock" 2>/dev/null; do
+        local owner; owner="$(cat "$change_lock/pid" 2>/dev/null || true)"
+        if [ -z "$owner" ]; then
+            # The winner may be between mkdir and recording its pid.
+            sleep 1
+            owner="$(cat "$change_lock/pid" 2>/dev/null || true)"
+            if [ -z "$owner" ] && rmdir "$change_lock" 2>/dev/null; then continue; fi
+        fi
+        if [ -n "$owner" ] && ! pid_is_alive "$owner"; then
+            note "stealing stale change metadata lock (pid $owner is gone)"
+            rm -rf "$change_lock"
+            continue
+        fi
+        sleep 0.05
+    done
+    echo "$$" >"$change_lock/pid"
+    holding_change_lock=1
+    change_owner_shell_pid="${BASHPID:-$$}"
+}
 coordinator_lock_owned() {
     [ "$holding_coordinator_lock" -eq 1 ] \
         && [ "${BASHPID:-$$}" = "$coordinator_owner_shell_pid" ] \
@@ -211,6 +394,7 @@ release_coordinator_lock() {
 cleanup() {
     release_migration_marker
     release_lock
+    release_change_lock
     release_coordinator_lock
 }
 trap cleanup EXIT
@@ -295,7 +479,7 @@ acquire_lock() { # acquire_lock <description> [branch] [log]
             note "gate lock held by pid ${pid:-?} ($(cat "$lock/what" 2>/dev/null || echo '?')); waiting"
         fi
         waited=1
-        sleep 10
+        sleep "$monitor_interval"
     done
     echo "$$" >"$lock/pid"
     echo "$1" >"$lock/what"
@@ -332,6 +516,7 @@ group_is_busy() { # group_is_busy <pgid>
 # Run the gate in its own process group with a stall/overall-timeout monitor.
 # Sets gate_result to "green", "red", or "timeout: <why>". Never returns nonzero.
 gate_result=""
+gate_attempt=0
 run_gate() { # run_gate <log> [fuzz-mode] [gate-scope]
     local log="$1"
     local fuzz_mode="${2:-full}"
@@ -376,7 +561,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope]
             if wait "$gpid"; then gate_result="green"; else gate_result="red"; fi
             return 0
         fi
-        sleep 10
+        sleep "$monitor_interval"
         local t; t="$(date +%s)"
         local elapsed=$((t - start))
         # grep -c prints the count AND exits 1 when it is zero, so `|| echo 0`
@@ -436,15 +621,31 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope]
 
 cmd_submit() {
     local front=0
-    [ "${1:-}" = "--front" ] && { front=1; shift; }
-    local branch="${1:?usage: merge-queue.sh submit [--front] <branch> [note]}"
-    local msg="${2:-}"
+    # Bash 3.2 treats an empty array expansion as unbound under `set -u`.
+    # Keep an empty sentinel; the loop and JSON conversion discard it.
+    local parent_branches=("")
+    while [ "${1:-}" != "" ]; do
+        case "$1" in
+            --front) front=1; shift ;;
+            --after)
+                [ -n "${2:-}" ] || { note "--after requires a parent branch"; exit 2; }
+                parent_branches+=("$2"); shift 2
+                ;;
+            --) shift; break ;;
+            -*) note "unknown submit option '$1'"; exit 2 ;;
+            *) break ;;
+        esac
+    done
+    local branch="${1:?usage: merge-queue.sh submit [--front] [--after <branch>]... <branch> [note]}"
+    shift
+    local msg="$*"
     if [ -f "$qdir/migrating" ]; then
         note "state migration is in progress; retry submit after it completes"
         exit 1
     fi
     git -C "$root" rev-parse --verify --quiet "refs/heads/$branch" >/dev/null \
         || { note "no local branch '$branch'"; exit 2; }
+    local sha; sha="$(git -C "$root" rev-parse "refs/heads/$branch")"
     # Submit-time conflict pre-check (instant, in-memory): a branch that cannot
     # even merge with current master would burn a queue slot only to journal
     # `conflict` minutes later. git merge-tree does a real 3-way merge without
@@ -458,9 +659,8 @@ cmd_submit() {
         fi
     fi
 
-    # Overlap warning (advisory, never blocking): if a queued branch touches the
-    # same files, the later one will likely need a semantic rebase after the
-    # earlier merges — worth knowing before you walk away.
+    # Overlap warning is advisory and can run before the short metadata
+    # critical section; branch editing and diffing never need a shared lock.
     local qf other overlap
     for qf in "$queue_dir"/*.json; do
         [ -f "$qf" ] || continue
@@ -475,18 +675,77 @@ cmd_submit() {
             note "WARNING: overlaps queued '$other' on: $overlap"
         fi
     done
+
+    # A change ID is stable across updated SHAs and red-parent resubmissions.
+    # Dependencies store IDs rather than branch names, so a child cannot become
+    # accidentally ready merely because its parent's queue file was replaced.
+    # The separate metadata lock is held only over these small JSON mutations;
+    # it is unrelated to the heavyweight gate/merge lock.
+    acquire_change_lock
+    local change_id cf existing_after='[]' parent parent_id parent_ids=("") added_after after
+    cf="$(change_file_for_branch "$branch")"
+    if change_id="$(change_id_for_branch "$branch" 2>/dev/null)"; then
+        existing_after="$(jq -c '.after // []' "$cf")"
+    else
+        change_id="$(new_change_id "$branch")"
+    fi
+    for parent in "${parent_branches[@]}"; do
+        [ -n "$parent" ] || continue
+        [ "$parent" != "$branch" ] || { note "REFUSED: $branch cannot depend on itself"; exit 1; }
+        if ! parent_id="$(known_parent_change_id "$parent")"; then
+            note "REFUSED: dependency '$parent' has no known submission; submit it first"
+            exit 1
+        fi
+        parent_ids+=("$parent_id")
+    done
+    added_after="$(printf '%s\n' "${parent_ids[@]}" | jq -Rsc 'split("\n") | map(select(length>0))')"
+    after="$(jq -cn --argjson old "$existing_after" --argjson added "$added_after" '$old + $added | unique')"
+    if ! dependencies_are_acyclic "$change_id" "$after"; then
+        note "REFUSED: dependency update would create a cycle for $branch ($change_id)"
+        exit 1
+    fi
+    write_change_record "$branch" "$change_id" "$sha" "$after" queued
+
     # Queue position is the filename's sort order. Normal: epoch seconds.
     # --front: sort before every epoch timestamp (queue files start with a digit).
-    local stamp; stamp="$(date +%s)"
-    [ "$front" -eq 1 ] && stamp="0front-$stamp"
-    local fname; fname="$stamp-$(echo "$branch" | tr '/' '~').json"
-    jq -cn --arg branch "$branch" --arg ts "$(now)" \
-           --arg sha "$(git -C "$root" rev-parse "refs/heads/$branch")" \
-           --arg by "${USER:-unknown}" --arg note "$msg" \
-           '{branch: $branch, sha: $sha, submitted: $ts, by: $by, note: $note}' \
-        >"$queue_dir/$fname"
-    record submitted "$branch" by "${USER:-unknown}"
-    note "queued $branch ($fname)"
+    local stamp fname existing_qf="" tmp after_words
+    after_words="$(jq -r 'join(" ")' <<<"$after")"
+    for qf in "$queue_dir"/*.json; do
+        [ -f "$qf" ] || continue
+        if [ "$(jq -r '.change_id // empty' "$qf")" = "$change_id" ] \
+            || [ "$(jq -r '.branch // empty' "$qf")" = "$branch" ]; then
+            if [ -z "$existing_qf" ]; then existing_qf="$qf"; else
+                rm -f "$qf" "$qf.nobatch" "$qf.batch-limit"
+            fi
+        fi
+    done
+    if [ -n "$existing_qf" ]; then
+        fname="$(basename "$existing_qf")"
+        # A new SHA deserves a fresh batching decision. Markers describe the
+        # previous content's failed gate, not the stable logical change.
+        rm -f "$existing_qf.nobatch" "$existing_qf.batch-limit"
+        tmp="$existing_qf.tmp.$$"
+        jq -cn --arg branch "$branch" --arg ts "$(now)" --arg sha "$sha" \
+            --arg by "${USER:-unknown}" --arg note "$msg" --arg id "$change_id" \
+            --argjson after "$after" \
+            '{schema:2, change_id:$id, branch:$branch, sha:$sha, after:$after,
+              submitted:$ts, by:$by, note:$note}' >"$tmp"
+        mv "$tmp" "$existing_qf"
+        record resubmitted "$branch" change_id "$change_id" after "$after_words" by "${USER:-unknown}"
+        note "updated queued change $change_id for $branch ($fname); queue position preserved"
+    else
+        stamp="$(date +%s)"
+        [ "$front" -eq 1 ] && stamp="0front-$stamp"
+        fname="$stamp-$(branch_key "$branch").json"
+        jq -cn --arg branch "$branch" --arg ts "$(now)" --arg sha "$sha" \
+            --arg by "${USER:-unknown}" --arg note "$msg" --arg id "$change_id" \
+            --argjson after "$after" \
+            '{schema:2, change_id:$id, branch:$branch, sha:$sha, after:$after,
+              submitted:$ts, by:$by, note:$note}' >"$queue_dir/$fname"
+        record submitted "$branch" change_id "$change_id" after "$after_words" by "${USER:-unknown}"
+        note "queued $branch as $change_id ($fname)"
+    fi
+    release_change_lock
     local cpid; cpid="$(coordinator_pid 2>/dev/null || true)"
     if [ -n "$cpid" ]; then
         note "coordinator (pid $cpid) will gate + merge it"
@@ -514,8 +773,15 @@ inflight_vars() {
 
 cmd_status() {
     inflight_vars
+    local queue_json='[]' qf
+    if ls "$queue_dir"/*.json >/dev/null 2>&1; then
+        queue_json="$({
+            while IFS= read -r qf; do queue_entry_with_status "$qf"; done \
+                < <(find "$queue_dir" -maxdepth 1 -name '*.json' -print | sort)
+        } | jq -s .)"
+    fi
     jq -n \
-        --slurpfile q <(cat "$queue_dir"/*.json 2>/dev/null || true) \
+        --argjson q "$queue_json" \
         --slurpfile j <(tail -20 "$journal" 2>/dev/null || true) \
         --arg pid "$lk_pid" --arg what "$lk_what" --arg branch "$lk_branch" \
         --arg log "$lk_log" --arg stage "$lk_stage" \
@@ -577,13 +843,56 @@ cmd_doctor() {
     fi
 }
 
+list_contains() { # list_contains <needle> <values...>
+    local needle="$1" value; shift
+    for value in "$@"; do [ "$value" = "$needle" ] && return 0; done
+    return 1
+}
+
+change_connected_to_batch() { # change_connected_to_batch <change-id> <batch-change-ids...>
+    local start="$1" targets; shift
+    targets="$(printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(length>0))')"
+    jq -en --arg start "$start" --argjson targets "$targets" \
+        --slurpfile changes <(cat "$changes_dir"/*.json 2>/dev/null || true) '
+        def neighbors($id):
+          ([$changes[] | select(.change_id==$id) | (.after // [])[]] +
+           [$changes[] | select((.after // []) | index($id)) | .change_id]) | unique;
+        def reaches($frontier; $seen):
+          if any($frontier[]; . as $node | ($targets | index($node)) != null) then true
+          elif ($frontier | length) == 0 then false
+          else ([$frontier[] as $id | neighbors($id)[] as $neighbor |
+                  select(($seen | index($neighbor)) == null) | $neighbor] | unique) as $next |
+            reaches($next; ($seen + $frontier | unique))
+          end;
+        reaches([$start]; [])
+    ' >/dev/null
+}
+
+stack_candidate_ready() { # stack_candidate_ready <queue-file> <batch-change-ids...>
+    local qf="$1" cid dep state batch_ids=(""); shift
+    batch_ids+=("$@")
+    cid="$(jq -r '.change_id // empty' "$qf")"
+    [ -n "$cid" ] || return 1
+    list_contains "$cid" "${batch_ids[@]}" && return 1
+    while IFS= read -r dep; do
+        [ -n "$dep" ] || continue
+        list_contains "$dep" "${batch_ids[@]}" && continue
+        state="$(change_state_for_id "$dep" 2>/dev/null || echo missing)"
+        [ "$state" = merged ] || return 1
+    done < <(jq -r '(.after // [])[]' "$qf")
+    change_connected_to_batch "$cid" "${batch_ids[@]}"
+}
+
 process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     local f="$1"
-    local branch; branch="$(jq -r .branch "$f")"
+    local branch change_id
+    branch="$(jq -r .branch "$f")"
+    change_id="$(jq -r '.change_id // empty' "$f")"
     if ! git -C "$root" rev-parse --verify --quiet "refs/heads/$branch" >/dev/null; then
         note "branch $branch vanished; dropping"
-        record dropped "$branch" reason "branch deleted"
-        rm -f "$f"
+        record dropped "$branch" change_id "$change_id" reason "branch deleted"
+        set_change_state "$change_id" dropped || true
+        rm -f "$f" "$f.nobatch" "$f.batch-limit"
         return 0
     fi
 
@@ -640,45 +949,94 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         local conflict_finished; conflict_finished="$(date +%s)"
         record_attempt conflict "$branch" "$attempt_start" "$conflict_finished" \
             "$conflict_finished" "$conflict_finished" "$conflict_finished" \
-            "$conflict_finished" base "$base"
-        rm -f "$f"
+            "$conflict_finished" change_id "$change_id" base "$base"
+        set_change_state "$change_id" conflict || true
+        rm -f "$f" "$f.nobatch" "$f.batch-limit"
         return 0
     fi
+    set_change_state "$change_id" gating || true
 
     # BATCHING: stack further queued branches onto this candidate so ONE gate
     # validates them all. A branch joins the batch if it rebases CLEANLY onto
     # the stack — textual overlap that rebases fine is allowed (nearly every
     # language branch touches example_tests.rs; requiring disjoint files
     # forfeited batching exactly where queues run deepest). A red batch
-    # re-queues every member for individual gating (.nobatch), so nothing is
-    # ever merged unvalidated and no member is blamed by association.
-    local batch_files=("$f") batch_branches=("$branch")
-    local qf cand cdiff csha tip
-    for qf in "$queue_dir"/*.json; do
-        [ -f "$qf" ] || continue
-        [ "$qf" = "$f" ] && continue
-        # A member of a failed batch gates alone until it individually passes
-        # or fails (the .nobatch marker set on batch_red).
-        [ -e "$f.nobatch" ] && break
-        [ -e "$qf.nobatch" ] && continue
-        [ "${#batch_branches[@]}" -ge "${MERGE_QUEUE_BATCH_MAX:-5}" ] && break
-        cand="$(jq -r .branch "$qf")"
-        csha="$(git -C "$root" rev-parse --verify --quiet "refs/heads/$cand")" || continue
-        cdiff="$(git -C "$root" diff --name-only "master...$cand" 2>/dev/null | sort -u)"
-        [ -n "$cdiff" ] || continue
-        # Rebase the candidate's SHA (detached — never moves the agent's branch
-        # ref) onto the current stack tip. On failure, abort returns HEAD to the
-        # candidate sha, so re-detach onto the saved tip either way it fails.
-        tip="$(git -C "$gate_wt" rev-parse HEAD)"
-        if git -C "$gate_wt" rebase "$tip" "$csha" >/dev/null 2>&1; then
-            batch_files+=("$qf"); batch_branches+=("$cand")
-        else
-            git -C "$gate_wt" rebase --abort >/dev/null 2>&1 || true
-            git -C "$gate_wt" checkout --detach --quiet "$tip"
-        fi
-    done
+    # either splits an ordered dependency stack at a prefix boundary or
+    # re-queues unrelated members for individual gating. Nothing is merged
+    # unvalidated and no member is blamed by association.
+    local batch_files=("$f") batch_branches=("$branch") batch_ids=("$change_id")
+    local qf cand cand_id cdiff csha tip added stack_mode=0
+    local batch_max="${MERGE_QUEUE_BATCH_MAX:-5}" batch_limit
+    batch_limit="$batch_max"
+    if [ -f "$f.batch-limit" ]; then
+        batch_limit="$(cat "$f.batch-limit" 2>/dev/null || echo 1)"
+        case "$batch_limit" in '' | *[!0-9]*) batch_limit=1 ;; esac
+        [ "$batch_limit" -ge 1 ] || batch_limit=1
+        [ "$batch_limit" -le "$batch_max" ] || batch_limit="$batch_max"
+    fi
+
+    # Explicit dependency stacks take priority over unrelated opportunistic
+    # batching. A child may join when every parent is already merged or is in
+    # this candidate; repeated passes handle queue filenames that are not in
+    # topological order. The final tip therefore validates the whole stack.
+    if [ -n "$change_id" ] && [ ! -e "$f.nobatch" ]; then
+        added=1
+        while [ "$added" -eq 1 ] && [ "${#batch_branches[@]}" -lt "$batch_limit" ]; do
+            added=0
+            while IFS= read -r qf; do
+                [ "$qf" = "$f" ] && continue
+                [ -e "$qf.nobatch" ] && continue
+                [ "${#batch_branches[@]}" -lt "$batch_limit" ] || break
+                stack_candidate_ready "$qf" "${batch_ids[@]}" || continue
+                cand="$(jq -r .branch "$qf")"
+                cand_id="$(jq -r '.change_id // empty' "$qf")"
+                list_contains "$cand" "${batch_branches[@]}" && continue
+                csha="$(git -C "$root" rev-parse --verify --quiet "refs/heads/$cand")" || continue
+                cdiff="$(git -C "$root" diff --name-only "master...$cand" 2>/dev/null | sort -u)"
+                [ -n "$cdiff" ] || continue
+                tip="$(git -C "$gate_wt" rev-parse HEAD)"
+                if git -C "$gate_wt" rebase "$tip" "$csha" >/dev/null 2>&1; then
+                    batch_files+=("$qf"); batch_branches+=("$cand"); batch_ids+=("$cand_id")
+                    set_change_state "$cand_id" gating || true
+                    stack_mode=1
+                    added=1
+                else
+                    git -C "$gate_wt" rebase --abort >/dev/null 2>&1 || true
+                    git -C "$gate_wt" checkout --detach --quiet "$tip"
+                fi
+            done < <(find "$queue_dir" -maxdepth 1 -name '*.json' -print | sort)
+        done
+    fi
+
+    # No explicit descendant joined: retain the existing throughput optimization
+    # for independent READY changes. Waiting/blocked children can never sneak
+    # into an unrelated batch and land ahead of a parent.
+    if [ "$stack_mode" -eq 0 ] && [ ! -e "$f.nobatch" ]; then
+        while IFS= read -r qf; do
+            [ "$qf" = "$f" ] && continue
+            [ -e "$qf.nobatch" ] && continue
+            [ "${#batch_branches[@]}" -lt "$batch_limit" ] || break
+            [ "$(queue_readiness "$qf")" = ready ] || continue
+            cand="$(jq -r .branch "$qf")"
+            cand_id="$(jq -r '.change_id // empty' "$qf")"
+            list_contains "$cand" "${batch_branches[@]}" && continue
+            csha="$(git -C "$root" rev-parse --verify --quiet "refs/heads/$cand")" || continue
+            cdiff="$(git -C "$root" diff --name-only "master...$cand" 2>/dev/null | sort -u)"
+            [ -n "$cdiff" ] || continue
+            tip="$(git -C "$gate_wt" rev-parse HEAD)"
+            if git -C "$gate_wt" rebase "$tip" "$csha" >/dev/null 2>&1; then
+                batch_files+=("$qf"); batch_branches+=("$cand"); batch_ids+=("$cand_id")
+                set_change_state "$cand_id" gating || true
+            else
+                git -C "$gate_wt" rebase --abort >/dev/null 2>&1 || true
+                git -C "$gate_wt" checkout --detach --quiet "$tip"
+            fi
+        done < <(find "$queue_dir" -maxdepth 1 -name '*.json' -print | sort)
+    fi
     if [ "${#batch_branches[@]}" -gt 1 ]; then
-        note "batched ${#batch_branches[@]} branches into one gate: ${batch_branches[*]}"
+        local batch_kind="batch"
+        [ "$stack_mode" -eq 1 ] && batch_kind="dependency stack"
+        note "$batch_kind: gating ${#batch_branches[@]} branches at the tip: ${batch_branches[*]}"
     fi
     local sha; sha="$(git -C "$gate_wt" rev-parse HEAD)"
 
@@ -738,10 +1096,13 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         gate_scope="docs"
     fi
 
-    local log; log="$logs/$(date +%Y%m%d-%H%M%S)-$(echo "$branch" | tr '/' '~').log"
+    gate_attempt=$((gate_attempt + 1))
+    local log; log="$logs/$(date +%Y%m%d-%H%M%S)-$(branch_key "$branch")-$$-$gate_attempt.log"
     local prepare_finished; prepare_finished="$(date +%s)"
     local lock_what="full gate: $branch"
-    [ "${#batch_branches[@]}" -gt 1 ] && lock_what="batch: ${batch_branches[*]}"
+    if [ "${#batch_branches[@]}" -gt 1 ]; then
+        lock_what="${batch_kind:-batch}: ${batch_branches[*]}"
+    fi
     acquire_lock "$lock_what" "$branch" "$log"
     local lock_acquired; lock_acquired="$(date +%s)"
 
@@ -754,7 +1115,11 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         release_lock
         record_attempt requeued "$branch" "$attempt_start" "$prepare_finished" \
             "$lock_acquired" "$pre_gate_requeued" "$pre_gate_requeued" \
-            "$pre_gate_requeued" sha "$sha" reason "master moved before gate"
+            "$pre_gate_requeued" change_id "$change_id" sha "$sha" \
+            reason "master moved before gate"
+        local pri; for pri in "${!batch_ids[@]}"; do
+            set_change_state "${batch_ids[$pri]}" queued || true
+        done
         return 1
     fi
 
@@ -773,19 +1138,37 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             local why="red" extra=""
             [ "$gate_result" != "red" ] && { why="timeout"; extra="${gate_result#timeout: }"; }
             if [ "${#batch_branches[@]}" -gt 1 ]; then
-                # A red BATCH indicts no one member: keep every queue file so
-                # each re-gates individually (batching only re-engages when a
-                # solo branch is at the head with others behind it).
+                # A red batch indicts no one member. Keep every queue file;
+                # ordered dependency stacks bisect by prefix, while unrelated
+                # changes re-gate individually.
                 [ "$why" = "red" ] && extra="$(failure_summary "$log")"
                 note "batch of ${#batch_branches[@]} is $(echo "$why" | tr a-z A-Z) after ${gate_took}s — $extra"
-                note "  re-queueing members for individual gates; log: $log"
+                if [ "$stack_mode" -eq 1 ]; then
+                    note "  splitting dependency stack at a validated prefix boundary; log: $log"
+                else
+                    note "  re-queueing unrelated members for individual gates; log: $log"
+                fi
                 local batch_red_finished; batch_red_finished="$(date +%s)"
                 record_attempt batch_red "$branch" "$attempt_start" "$prepare_finished" \
                     "$lock_acquired" "$gate_started" "$gate_finished" "$batch_red_finished" \
-                    members "${batch_branches[*]}" log "$log" reason "$extra" \
+                    change_id "$change_id" members "${batch_branches[*]}" log "$log" reason "$extra" \
+                    strategy "$([ "$stack_mode" -eq 1 ] && echo prefix_split || echo individual)" \
                     stages "$(stage_summary "$log")"
-                # Mark every member no-batch so the retry gates them one by one.
-                local bf; for bf in "${batch_files[@]}"; do touch "$bf.nobatch"; done
+                local bf bi
+                for bi in "${!batch_ids[@]}"; do set_change_state "${batch_ids[$bi]}" queued || true; done
+                if [ "$stack_mode" -eq 1 ]; then
+                    # A dependency stack has an ordered failure boundary. Gate
+                    # the first half as one prefix next; green lands that prefix
+                    # and exposes the remaining suffix, while another red halves
+                    # again. This finds/lands the safe prefix in logarithmic
+                    # splits instead of re-gating every member independently.
+                    local next_prefix=$(( (${#batch_branches[@]} + 1) / 2 ))
+                    echo "$next_prefix" >"$f.batch-limit"
+                    note "  dependency stack will re-gate prefix of $next_prefix before the blocked suffix"
+                else
+                    # An unrelated red batch has no ordered prefix to trust.
+                    for bf in "${batch_files[@]}"; do touch "$bf.nobatch"; done
+                fi
                 return 1
             fi
             [ "$why" = "red" ] && extra="$(failure_summary "$log")"
@@ -794,8 +1177,9 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             local failed_finished; failed_finished="$(date +%s)"
             record_attempt "$why" "$branch" "$attempt_start" "$prepare_finished" \
                 "$lock_acquired" "$gate_started" "$gate_finished" "$failed_finished" sha "$sha" \
-                log "$log" reason "$extra" stages "$(stage_summary "$log")"
-            rm -f "$f"
+                change_id "$change_id" log "$log" reason "$extra" stages "$(stage_summary "$log")"
+            set_change_state "$change_id" "$why" || true
+            rm -f "$f" "$f.nobatch" "$f.batch-limit"
             return 0
             ;;
     esac
@@ -810,8 +1194,10 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         for vi in "${!batch_branches[@]}"; do
             record_attempt validated "${batch_branches[$vi]}" "$attempt_start" "$prepare_finished" \
                 "$lock_acquired" "$gate_started" "$gate_finished" "$validated_finished" sha "$sha" log "$log" \
-                reason "test mode: merge skipped" stages "$(stage_summary "$log")"
-            rm -f "${batch_files[$vi]}" "${batch_files[$vi]}.nobatch"
+                change_id "${batch_ids[$vi]}" reason "test mode: merge skipped" \
+                stages "$(stage_summary "$log")"
+            set_change_state "${batch_ids[$vi]}" validated || true
+            rm -f "${batch_files[$vi]}" "${batch_files[$vi]}.nobatch" "${batch_files[$vi]}.batch-limit"
         done
         release_lock
         return 0
@@ -822,7 +1208,8 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         local requeued_finished; requeued_finished="$(date +%s)"
         record_attempt requeued "$branch" "$attempt_start" "$prepare_finished" \
             "$lock_acquired" "$gate_started" "$gate_finished" "$requeued_finished" sha "$sha" log "$log" \
-            reason "master moved" stages "$(stage_summary "$log")"
+            change_id "$change_id" reason "master moved" stages "$(stage_summary "$log")"
+        local ri; for ri in "${!batch_ids[@]}"; do set_change_state "${batch_ids[$ri]}" queued || true; done
         release_lock
         return 1 # keep the queue file; the loop will re-process it
     fi
@@ -839,8 +1226,13 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             local blocked_finished; blocked_finished="$(date +%s)"
             record_attempt blocked "$branch" "$attempt_start" "$prepare_finished" \
                 "$lock_acquired" "$gate_started" "$gate_finished" "$blocked_finished" sha "$sha" log "$log" \
-                reason "ff-merge failed in main worktree" stages "$(stage_summary "$log")"
-            rm -f "$f"
+                change_id "$change_id" reason "ff-merge failed in main worktree" \
+                stages "$(stage_summary "$log")"
+            set_change_state "$change_id" blocked || true
+            local bqi; for bqi in "${!batch_ids[@]}"; do
+                [ "$bqi" -eq 0 ] || set_change_state "${batch_ids[$bqi]}" queued || true
+            done
+            rm -f "$f" "$f.nobatch" "$f.batch-limit"
             release_lock
             return 0
         fi
@@ -853,7 +1245,8 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             local ref_requeued_finished; ref_requeued_finished="$(date +%s)"
             record_attempt requeued "$branch" "$attempt_start" "$prepare_finished" \
                 "$lock_acquired" "$gate_started" "$gate_finished" "$ref_requeued_finished" sha "$sha" log "$log" \
-                reason "master ref update failed" stages "$(stage_summary "$log")"
+                change_id "$change_id" reason "master ref update failed" stages "$(stage_summary "$log")"
+            local rui; for rui in "${!batch_ids[@]}"; do set_change_state "${batch_ids[$rui]}" queued || true; done
             release_lock
             return 1
         fi
@@ -864,9 +1257,10 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     for i in "${!batch_branches[@]}"; do
         record_attempt merged "${batch_branches[$i]}" "$attempt_start" "$prepare_finished" \
             "$lock_acquired" "$gate_started" "$gate_finished" "$landed_finished" sha "$sha" log "$log" \
-            batch "${#batch_branches[@]}" stages "$(stage_summary "$log")"
+            change_id "${batch_ids[$i]}" batch "${#batch_branches[@]}" stages "$(stage_summary "$log")"
+        set_change_state "${batch_ids[$i]}" merged || true
         bf="${batch_files[$i]}"
-        rm -f "$bf" "$bf.nobatch"
+        rm -f "$bf" "$bf.nobatch" "$bf.batch-limit"
     done
     release_lock
     # Reclaim the merged branches' worktrees (their multi-GB target/) right away.
@@ -923,6 +1317,17 @@ prewarm_gate() {
     release_lock
 }
 
+next_ready_queue_file() {
+    local qf readiness
+    while IFS= read -r qf; do
+        readiness="$(queue_readiness "$qf")"
+        [ "$readiness" = ready ] || continue
+        basename "$qf"
+        return 0
+    done < <(find "$queue_dir" -maxdepth 1 -name '*.json' -print | sort)
+    return 1
+}
+
 cmd_run() {
     local once=0
     [ "${1:-}" = "--once" ] && once=1
@@ -967,15 +1372,24 @@ cmd_run() {
             note "lost coordinator singleton ownership; exiting instead of becoming an unnamed sibling"
             return 1
         fi
-        local f
-        f="$(ls -1 "$queue_dir" 2>/dev/null | sort | head -1 || true)"
-        if [ -z "$f" ]; then
+        local f first
+        first="$(find "$queue_dir" -maxdepth 1 -name '*.json' -print | sort | head -1)"
+        if [ -z "$first" ]; then
             if [ "$once" -eq 1 ]; then note "queue drained"; break; fi
             prewarm_gate
-            sleep 15
+            sleep "$poll_interval"
             continue
         fi
-        process_one "$queue_dir/$f" || sleep 5
+        f="$(next_ready_queue_file || true)"
+        if [ -z "$f" ]; then
+            if [ "$once" -eq 1 ]; then
+                note "queue has no ready changes (dependencies are waiting or blocked)"
+                break
+            fi
+            sleep "$poll_interval"
+            continue
+        fi
+        process_one "$queue_dir/$f" || sleep "$retry_interval"
     done
 }
 
@@ -1087,14 +1501,16 @@ cmd_stats() {
 # it verifies the journaled sha actually IS on master, then journals `merged`.
 cmd_resolve() {
     local branch="${1:?usage: merge-queue.sh resolve <branch>}"
-    local sha
+    local sha change_id
     sha="$(jq -r --arg b "$branch" 'select(.event=="blocked" and .branch==$b) | .sha' "$journal" 2>/dev/null | tail -1)"
     [ -n "$sha" ] || { note "no blocked event for '$branch' in the journal"; exit 2; }
     if ! git -C "$root" merge-base --is-ancestor "$sha" master; then
         note "$sha is NOT on master — merge it first: git merge --ff-only $sha"
         exit 1
     fi
-    record merged "$branch" sha "$sha" via "manual ff after blocked"
+    change_id="$(change_id_for_branch "$branch" 2>/dev/null || true)"
+    record merged "$branch" sha "$sha" change_id "$change_id" via "manual ff after blocked"
+    set_change_state "$change_id" merged || true
     note "journaled merged for $branch @ $sha"
     cmd_sweep || true
 }
@@ -1188,6 +1604,7 @@ cmd_migrate_state() {
     acquire_coordinator_lock || { note "refusing: coordinator singleton is held"; return 1; }
     echo "$$" >"$qdir/coordinator.pid"
     acquire_lock "state migration: scratch/merge-queue -> state/merge-queue"
+    acquire_change_lock
     migration_marker_active=1
     : >"$qdir/migrating"
     if ls "$queue_dir"/*.json >/dev/null 2>&1; then
@@ -1213,6 +1630,8 @@ cmd_migrate_state() {
     # an invisible live lock behind in state/.
     qdir="$target"
     queue_dir="$qdir/queue"
+    changes_dir="$qdir/changes"
+    change_lock="$qdir/change.lock"
     journal="$qdir/journal.jsonl"
     logs="$qdir/logs"
     lock="$qdir/gate.lock"
@@ -1223,6 +1642,8 @@ cmd_migrate_state() {
             if mv "$target" "$legacy"; then
                 qdir="$legacy"
                 queue_dir="$qdir/queue"
+                changes_dir="$qdir/changes"
+                change_lock="$qdir/change.lock"
                 journal="$qdir/journal.jsonl"
                 logs="$qdir/logs"
                 lock="$qdir/gate.lock"
@@ -1246,6 +1667,7 @@ cmd_migrate_state() {
     fi
     release_migration_marker
     record state_migrated "" from "$legacy" to "$target" compatibility_symlink "$legacy"
+    release_change_lock
     release_lock
     release_coordinator_lock
     note "migrated operational state to $target"

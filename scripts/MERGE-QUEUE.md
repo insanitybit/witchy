@@ -2,7 +2,7 @@
 
 This documents the concurrent-agent merge infrastructure well enough that a
 fresh agent (or human) can operate, debug, and extend it with no other
-context. The implementation is `scripts/merge-queue.sh` (~550 lines of bash);
+context. The implementation is `scripts/merge-queue.sh`;
 this file explains the WHY and the invariants that are not obvious from
 reading it. Companion pieces: `scripts/check.sh` (the gate),
 `scripts/worktree-warm.sh` + `worktree-create.sh` (warm build caches),
@@ -33,7 +33,7 @@ coordinator process serializes full gates and owns all merges to master.
 ```
 agent worktree                    main worktree
   focused shard green   ────►  state/merge-queue/queue/<epoch>-<branch>.json
-                                     │  (FIFO by filename sort)
+                                     │  (first dependency-ready item by filename sort)
                                coordinator daemon (merge-queue.sh run)
                                      │ takes queue head
                                .claude/worktrees/merge-gate   (dedicated worktree)
@@ -60,6 +60,19 @@ and handoff notes. It is observational, not a locking or file-ownership system.
   sort order.** Files are named `<epoch>-<branch-with-slashes-as-~>.json`;
   `submit --front` prefixes `0front-` which sorts before any epoch digit.
   Reordering the queue by renaming files is legitimate and was done live.
+  Schema-2 entries carry a stable `change_id` and an `after` array of parent
+  change IDs. The coordinator skips waiting/blocked entries rather than letting
+  one dependency stall unrelated ready work. Legacy entries without these
+  fields remain independent and ready.
+- `changes/*.json` — persistent logical-change registry keyed by branch. A
+  change ID survives SHA updates and red-parent resubmission; parent state
+  (`queued`, `gating`, `merged`, `red`, etc.) is therefore not lost when its
+  queue file is replaced. Dependencies use these IDs, not mutable branch SHAs.
+- `change.lock/` — short metadata mutex for registry/queue mutations. It is
+  held for milliseconds, never around a rebase, build, test, or gate, and is
+  separate from `gate.lock`; unrelated editing and agent checks do not wait on
+  it. Atomic mutation makes concurrent submissions cycle-safe and prevents a
+  coordinator state update from overwriting a resubmission.
 - `journal.jsonl` — append-only event log, the system's ground truth.
   Events: `submitted`, `merged`, `red`, `timeout`, `conflict` (won't rebase),
   `blocked` (gate GREEN but ff-merge refused — see below), `requeued`
@@ -89,7 +102,12 @@ and handoff notes. It is observational, not a locking or file-ownership system.
 ## Command reference
 
 ```
-merge-queue.sh submit [--front] <branch> [note]  enqueue (pre-checks mergeability
+merge-queue.sh submit [--front] [--after <parent>]... <branch> [note]
+                                                 enqueue; --after is repeatable,
+                                                 preserves a stable change ID,
+                                                 and rejects unknown parents,
+                                                 self-dependencies, and cycles
+                                                 (pre-checks mergeability
                                                  via git merge-tree — refuses what
                                                  would only journal `conflict`;
                                                  MERGE_QUEUE_SKIP_PRECHECK=1 overrides;
@@ -106,8 +124,10 @@ merge-queue.sh run [--once]                      coordinator loop (--once drains
                                                  exits; refuses beside a live daemon)
 merge-queue.sh daemon                            start a new-session coordinator (survives
                                                  the launching session)
-merge-queue.sh status                            JSON: queue, in-flight gate (branch,
-                                                 stage, elapsed, log age), recent journal
+merge-queue.sh status                            JSON: queue entries with change ID,
+                                                 readiness, waiting_on/blocked_by;
+                                                 in-flight gate (branch, stage,
+                                                 elapsed, log age); recent journal
 merge-queue.sh doctor                            human health check: coordinator alive?
                                                  lock stale? which stage? log fresh?
 merge-queue.sh stats                             journal analytics: outcome counts,
@@ -179,17 +199,23 @@ shards ignore the scope.
 
 ## The gate lifecycle, step by step (process_one)
 
-1. Read queue head. Branch deleted → journal `dropped`, consume, next.
+1. Select the first dependency-`ready` item in filename order. Waiting and
+   blocked entries remain visible in `status` while unrelated ready work passes
+   them. Branch deleted → journal `dropped`, consume, next.
 2. **Acquire the lock BEFORE touching the gate worktree** (an earlier version
    rebased first — that corrupts a with-lock run already using the worktree).
 3. Record `base` = current master sha. Detach gate worktree onto the branch,
    `rebase master`. Failure → journal `conflict`, drop, release lock.
-4. **Batching:** walk the rest of the queue in order; each candidate branch's
-   SHA (detached — the agent's branch ref is never moved) is rebased onto the
-   current stack tip. Clean rebase → joins the batch (up to
-   MERGE_QUEUE_BATCH_MAX). Textual file overlap is FINE — only a failed
-   rebase excludes. Members carrying a `.nobatch` marker (from a previous
-   red batch) are skipped, and a head with `.nobatch` gates strictly alone.
+4. **Batching:** explicit dependency descendants take priority. A child joins
+   when all its parents are already merged or in the current stack. Ready
+   co-parents in the same dependency component join too; repeated passes
+   produce topological order, then the stack tip is gated once. If no
+   descendant joins, walk other ready entries for the existing opportunistic
+   batch. Every candidate SHA is rebased onto the current stack tip (detached —
+   the agent's branch ref is never moved). Clean rebase → joins (up to
+   `MERGE_QUEUE_BATCH_MAX`). Textual overlap is fine; only a failed rebase
+   excludes. `.nobatch` applies to unrelated red-batch recovery. A
+   `.batch-limit` marker bounds the next dependency-prefix retry.
 5. Run the gate: own process group (`set -m`), stdout to the log,
    `NEXTEST_STATUS_LEVEL=pass` for streaming, and Cargo wrapper variables
    cleared so detached coordinators do not inherit a sandbox-incompatible
@@ -217,9 +243,13 @@ shards ignore the scope.
      handles cleanup via `git cherry` patch-equivalence.
    - **red/timeout, solo:** journal with log + stage summary, drop the file.
      The submitter fixes and resubmits.
-   - **red/timeout, batch:** journal `batch_red`; NO member is blamed; every
-     member keeps its queue file and gains `.nobatch` so each re-gates
-     individually. Nothing is ever merged unvalidated.
+   - **red/timeout, dependency stack:** journal `batch_red` with
+     `strategy: prefix_split`; no member is blamed. Re-gate the first half as a
+     stack prefix. A green prefix lands and unblocks the suffix; another red
+     halves again. This locates and lands the green prefix without accepting an
+     unvalidated commit.
+   - **red/timeout, unrelated batch:** journal `batch_red`; every member keeps
+     its queue file and gains `.nobatch` so each re-gates individually.
 7. Queue empty → idle prewarm: under the lock, move the gate worktree to
    master, `cargo build --workspace`, run `warm-witchy-caches.sh`, record
    the sha in `prewarmed`. The next gate starts hot.
@@ -235,8 +265,9 @@ shards ignore the scope.
    it (Codex declined to act on "blocked" state — correctly). If reality
    diverges from the journal (manual ff), fix the JOURNAL (`resolve`), not
    the habit of trusting it.
-4. **A red batch indicts nobody.** Individual re-gating is mandatory; blame
-   requires a solo gate.
+4. **A red batch indicts nobody.** An ordered dependency stack may only narrow
+   by re-gating prefixes; an unrelated batch re-gates individuals. Blame and a
+   terminal red state require a solo gate.
 5. **Agents' branch refs belong to agents.** The coordinator gates SHAs,
    detached; it never rewrites a submitted branch (except the pre-batching
    solo path where branch == merged sha exactly).
@@ -321,8 +352,10 @@ Point it at throwaway state and NEVER at real master:
 
 ```sh
 export MERGE_QUEUE_STATE_DIR=/tmp/mq-test MERGE_QUEUE_GATE_WT=/tmp/mq-test/gwt
-git branch t-x master   # make test branches, commit in a temp worktree
-./scripts/merge-queue.sh submit t-x
+git branch t-parent master   # make test branches, commit in a temp worktree
+git branch t-child t-parent
+./scripts/merge-queue.sh submit t-parent
+./scripts/merge-queue.sh submit --after t-parent t-child
 MERGE_QUEUE_GATE_CMD='bash -c "true"' ./scripts/merge-queue.sh run --once
 # journal shows `validated` (merge skipped) unless MERGE_QUEUE_ALLOW_MERGE=1
 ```
@@ -341,6 +374,7 @@ you didn't drop a real commit that landed meanwhile.
 | lock held, holder pid dead | next acquirer steals it automatically; or `rm -rf state/merge-queue/gate.lock` if nothing will acquire soon |
 | lock held, holder alive but gate silent | expected during the `test`-profile compile / test enumeration; the monitor now kills only after 300s of silence WITH an idle process group (a busy group is compiling, not hung). If it is genuinely wedged AND idle it self-kills; a spinning runaway is caught by `GATE_TIMEOUT`. Only `kill <holder>` by hand if both clocks are somehow not progressing. |
 | journal says `blocked` | gate was GREEN: `git merge --ff-only <sha from journal>` in the main worktree, then `merge-queue.sh resolve <branch>` |
+| queue item says dependency `blocked` | fix and resubmit the terminal parent branch; its stable change ID is reused and the child remains linked. Do not resubmit the child merely to bypass the parent. |
 | branch red repeatedly, uniform ~32s e2e failures | environmental (server readiness under load), not the branch: check what else is hammering the machine, resubmit |
 | need to reorder the queue | rename files in `queue/` (sort order = order) or use `submit --front` |
 | queue file for an already-merged branch | harmless: the rebase collapses to master, gate passes, ff is a no-op; or just `rm` the file |
