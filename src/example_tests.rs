@@ -6254,6 +6254,44 @@ fn main(console: Console):
         crate::run_wasm_bytes(&bytes).expect("wasm run")
     }
 
+    #[test]
+    fn rfc0081_supertrait_upcast_backends_agree() {
+        let src = r#"
+trait Base:
+    fn base(let self) -> Int
+
+trait Render: Base:
+    fn render(let self) -> Int
+
+type Label:
+    Label(Int)
+
+impl Base for Label:
+    fn base(let self) -> Int:
+        match self:
+            Label(value) -> value
+
+impl Render for Label:
+    fn render(let self) -> Int:
+        match self:
+            Label(value) -> value + 10
+
+fn main(console: Console):
+    let rendered: dyn Render = Label(2)
+    let base: dyn Base = rendered
+    console.print("${base.base()}")
+"#;
+        let linked = resolve_std_src(src);
+        let want = vec!["2".to_string()];
+        assert_eq!(
+            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interpreter"),
+            want,
+            "interpreter"
+        );
+        let bytes = codegen::compile_module_binary(&linked).expect_lowered("compile wasm");
+        assert_eq!(crate::run_wasm_bytes(&bytes).expect("wasm"), want, "wasm");
+    }
+
     /// `wasm_run` that also reads the exported `__witchy_reowns` counter —
     /// the timing-free proof of whether accumulation ran in place (O(1)
     /// re-owns) or fell to the copying path (O(n) re-owns).
