@@ -884,7 +884,9 @@ fn daemon_enters_an_independent_process_group() {
     let launcher_group = launcher.id() as i32;
 
     let pid_path = state.join("coordinator.pid");
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // Daemon startup may contend with a cold workspace build; keep this
+    // readiness timeout separate from the later shutdown assertions.
+    let deadline = Instant::now() + Duration::from_secs(15);
     let pid = loop {
         if let Ok(text) = fs::read_to_string(&pid_path) {
             break text.trim().parse::<i32>().expect("parse coordinator pid");
@@ -904,7 +906,9 @@ fn daemon_enters_an_independent_process_group() {
         .expect("terminate daemon launcher process group");
     assert!(killed.success(), "could not terminate daemon launcher group");
     let _ = launcher.wait();
-    thread::sleep(Duration::from_millis(100));
+    // Allow signal delivery and process-group teardown to settle on loaded
+    // developer machines before checking that the coordinator survived.
+    thread::sleep(Duration::from_millis(250));
     assert!(
         process_is_alive(pid),
         "coordinator {pid} remained in the launcher's process group"
