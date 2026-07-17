@@ -4,6 +4,22 @@
         WirLocal { name: name.into(), ty }
     }
 
+    #[test]
+    fn existential_wrapper_keeps_payload_reference_typed() {
+        let wrapper = existential_wrapper_struct();
+        assert_eq!(
+            wrapper.fields,
+            [Kind::StructRef, Kind::I32],
+            "the payload is an erased GC reference and the witness is a table index"
+        );
+        assert_eq!(EXISTENTIAL_PAYLOAD_FIELD, 0);
+        assert_eq!(EXISTENTIAL_WITNESS_FIELD, 1);
+        assert!(
+            wrapper.fields[EXISTENTIAL_PAYLOAD_FIELD as usize].is_reference(),
+            "the payload must never cross an i64 slot"
+        );
+    }
+
     /// Encode a WIR module to a wasm binary and run its `run` export, capturing
     /// `print_int` and `print` output as ordered lines. (Runs the actual binary
     /// the codegen path emits — `wir_encode::encode` — not the `to_wat` display.)

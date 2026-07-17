@@ -34,10 +34,26 @@ pub struct WitnessPlan {
 }
 
 impl WitnessPlan {
+    pub fn by_id(&self, id: u32) -> Option<&Witness> {
+        self.witnesses
+            .get(usize::try_from(id).ok()?)
+            .filter(|witness| witness.id == id)
+    }
+
     pub fn get(&self, existential: &Type, concrete: &Type) -> Option<&Witness> {
         self.witnesses
             .iter()
             .find(|w| &w.existential == existential && &w.concrete == concrete)
+    }
+}
+
+impl Witness {
+    pub fn slot(&self, owner_trait: &str, method: &str) -> Option<(u32, &WitnessSlot)> {
+        self.slots
+            .iter()
+            .enumerate()
+            .find(|(_, slot)| slot.owner_trait == owner_trait && slot.method == method)
+            .and_then(|(index, slot)| u32::try_from(index).ok().map(|index| (index, slot)))
     }
 }
 
@@ -179,13 +195,15 @@ fn slot(
             .iter()
             .skip(1)
             .map(|param| {
-                expected_method_type(
-                    param.ty.as_ref().unwrap_or(&Type::Named("Self".into(), Vec::new())),
-                    implementation,
-                    vars,
-                )
+                let ty = param.ty.as_ref().ok_or_else(|| {
+                    format!(
+                        "trait method `{}.{}` parameter `{}` has no type; existential adapter signatures must be fully typed",
+                        owner.name, method.name, param.name
+                    )
+                })?;
+                Ok(expected_method_type(ty, implementation, vars))
             })
-            .collect(),
+            .collect::<Result<Vec<_>, String>>()?,
         result: ret_type(&method.ret, implementation, vars),
         conventions: method
             .params
@@ -266,6 +284,11 @@ mod tests {
             witness.slots[2].conventions,
             [Convention::Let]
         );
+        assert_eq!(
+            witness.slot("Render", "replace").map(|(index, _)| index),
+            Some(2)
+        );
+        assert_eq!(plan.by_id(witness.id), Some(witness));
     }
 
     #[test]
@@ -329,5 +352,25 @@ mod tests {
             [Type::Named("String".into(), Vec::new())]
         );
         assert_ne!(int.slots[0].adapter, string.slots[0].adapter);
+    }
+
+    #[test]
+    fn witness_slots_reject_untyped_explicit_arguments() {
+        let module = parser::parse_module(
+            "trait Bad:\n\
+             \x20   fn call(self, value) -> Int\n\n\
+             type Value:\n\
+             \x20   Value(Int)\n\n\
+             impl Bad for Value:\n\
+             \x20   fn call(self, value) -> Int:\n\
+             \x20       0\n",
+        )
+        .expect("parse");
+        let error = build(&module).expect_err("witness ABI may not guess an argument type");
+        assert!(
+            error.contains("parameter `value` has no type")
+                && error.contains("must be fully typed"),
+            "{error}"
+        );
     }
 }

@@ -161,6 +161,19 @@ pub fn closure_wrapper_struct() -> WirStructDef {
     WirStructDef { fields: vec![Kind::I32, Kind::I32, Kind::StructRef] }
 }
 
+/// RFC-0081's backend-neutral existential envelope. The payload is an erased
+/// reference to a separately generated, concretely typed GC struct; the witness
+/// is a closed-program table index. Payload fields never cross the scalar slot
+/// ABI merely because the envelope erases their concrete struct identity.
+pub const EXISTENTIAL_PAYLOAD_FIELD: u32 = 0;
+pub const EXISTENTIAL_WITNESS_FIELD: u32 = 1;
+
+pub fn existential_wrapper_struct() -> WirStructDef {
+    WirStructDef {
+        fields: vec![Kind::StructRef, Kind::I32],
+    }
+}
+
 /// A binary operator, abstract over the operand `Kind` (the printer picks the
 /// concrete mnemonic, e.g. `i64.add` vs `f64.add`). Comparisons yield an i32 bool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
