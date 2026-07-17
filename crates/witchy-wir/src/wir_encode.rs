@@ -451,16 +451,19 @@ pub fn try_encode(
     try_encode_with_gc(module, structs, &[])
 }
 
-/// Fallible production boundary for modules that also declare GC arrays.
+/// Fallible production boundary for modules that declare both GC structs and
+/// GC arrays. This is the checked counterpart to [`encode_with_gc`]; keeping
+/// [`try_encode`] as the struct-only compatibility entrypoint lets existing
+/// callers remain source-neutral while reference-bearing collection lowering
+/// is wired into production.
 pub fn try_encode_with_gc(
     module: &WirModule,
     structs: &[WirStructDef],
     arrays: &[WirArrayDef],
 ) -> Result<Vec<u8>, EncodeError> {
     preflight(module)?;
-    catch_unwind(AssertUnwindSafe(|| encode_with_gc(module, structs, arrays))).map_err(
-        |payload| EncodeError { message: panic_message(payload) },
-    )
+    catch_unwind(AssertUnwindSafe(|| encode_with_gc(module, structs, arrays)))
+        .map_err(|payload| EncodeError { message: panic_message(payload) })
 }
 
 /// Encode a module with both GC struct and GC array declarations. Concrete

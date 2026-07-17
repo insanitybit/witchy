@@ -2324,7 +2324,8 @@ mod diagnostic_site_tests {
 mod lowering_outcome_tests {
     use super::*;
     use witchy_wir::wir::{
-        ClosureSignature, Kind, UnOp, WirExpr, WirFunc, WirModule, WirNode, WirTable,
+        ClosureSignature, Kind, UnOp, WirArrayDef, WirExpr, WirFunc, WirLocal, WirModule,
+        WirNode, WirTable, WirTy,
     };
 
     fn empty_function(name: &str) -> WirFunc {
@@ -2453,6 +2454,42 @@ mod lowering_outcome_tests {
         let error = encoded_binary_outcome(&module, &[], &[])
             .expect_rejected("operator and kind mismatch must not be returned as lowered");
         assert!(error.message.contains("unary Not on F64"));
+    }
+
+    #[test]
+    fn production_finalizer_encodes_gc_array_definitions() {
+        let module = WirModule {
+            imports: Vec::new(),
+            funcs: vec![WirFunc {
+                name: "run".into(),
+                params: Vec::new(),
+                ret: Vec::new(),
+                locals: vec![WirLocal { name: "items".into(), ty: WirTy::GcRef(0) }],
+                body: vec![
+                    WirNode::SetLocal {
+                        local: "items".into(),
+                        value: WirExpr::ArrayNew {
+                            array_id: 0,
+                            value: Box::new(WirExpr::ConstI64(7)),
+                            len: Box::new(WirExpr::ConstI32(2)),
+                        },
+                    },
+                    WirNode::Drop(WirExpr::ArrayLen(Box::new(WirExpr::GetLocal(
+                        "items".into(),
+                    )))),
+                ],
+                raw_body: None,
+            }],
+            memory_pages: 1,
+            data: Vec::new(),
+            globals: Vec::new(),
+            table: None,
+            exports: vec![("run".into(), "run".into())],
+        };
+        let arrays = [WirArrayDef { element: Kind::I64 }];
+        let binary = encoded_binary_outcome(&module, &[], &arrays)
+            .expect_lowered("production finalization must retain GC array definitions");
+        wasmparser::validate(&binary).expect("the finalized module is valid Wasm GC");
     }
 }
 
