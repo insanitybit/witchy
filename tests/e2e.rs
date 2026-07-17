@@ -2020,7 +2020,13 @@ fn vendored_rune_reverifies_offline_against_the_root_key() {
     std::fs::write(&lock_path, without_root).unwrap();
     let out = offline(&["verify"]);
     assert!(!out.status.success(), "registry lock without a root pin must fail verify");
-    assert!(stdout(&out).contains("no pinned registry_rootpub"), "verify: {}", stdout(&out));
+    assert!(
+        stdout(&out).contains(
+            "registry_snapshot_version is present but registry_rootpub is missing"
+        ),
+        "verify: {}",
+        stdout(&out),
+    );
 
     // A lock entry without its vendored directory is a hard failure, not a
     // silently omitted dependency.

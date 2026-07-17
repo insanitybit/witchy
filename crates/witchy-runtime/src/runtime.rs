@@ -2202,13 +2202,17 @@ fn par_fan_out<T: Send + Clone>(
     Ok(results)
 }
 
-/// (RFC-0032) `vm_par_map_run(xs_ptr, f_ptr) -> byte_size`: map the closure at `f_ptr`
-/// over the `List(Int)` at `xs_ptr` across worker VMs (`par_fan_out` + `run_par_chunk`),
+/// (RFC-0032) `vm_par_map_run(xs_ptr, code_idx) -> byte_size`: map the capture-free
+/// function at `code_idx` over the `List(Int)` at `xs_ptr` across worker VMs
+/// (`par_fan_out` + `run_par_chunk`),
 /// staging the results for `vm_par_map_write` and returning the byte size of the resulting
 /// flat `List(Int)` (`[count][count x i64]`).
-fn host_vm_par_map_run(mut caller: Caller<'_, VmState>, xs_ptr: i32, f_ptr: i32) -> Result<i32> {
-    // Snapshot the input scalars + the closure's code index, then drop the borrow.
-    let (inputs, code_idx): (Vec<i64>, i32) = {
+fn host_vm_par_map_run(
+    mut caller: Caller<'_, VmState>,
+    xs_ptr: i32,
+    code_idx: i32,
+) -> Result<i32> {
+    let inputs = {
         let mem = memory_of(&mut caller)?;
         let data = mem.data(&caller);
         let lb = slice(data, xs_ptr, 4)?;
@@ -2218,9 +2222,7 @@ fn host_vm_par_map_run(mut caller: Caller<'_, VmState>, xs_ptr: i32, f_ptr: i32)
             let s = slice(data, xs_ptr + 4 + 8 * i, 8)?;
             v.push(i64::from_le_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]));
         }
-        // The closure record's first word is its table (code) index.
-        let cb = slice(data, f_ptr, 4)?;
-        (v, i32::from_le_bytes([cb[0], cb[1], cb[2], cb[3]]))
+        v
     };
     let engine = caller.data().engine.clone();
     let module = caller.data().module.clone();
@@ -2376,24 +2378,24 @@ fn sandbox_worker(
     )
 }
 
-/// (RFC-0032) `vm_with_dir_run(dir_grant_by_ordinal, f_ptr, input_ptr) -> byte_size`: run `f` on
-/// `input` inside an isolated worker VM granted EXACTLY the `Dir` at `dir_grant_by_ordinal` (its
+/// (RFC-0032) `vm_with_dir_run(dir, code_idx, input_ptr) -> byte_size`: run the
+/// capture-free function at `code_idx` on `input` inside an isolated worker VM granted
+/// EXACTLY `dir` (its
 /// `read`/`write` rights inherited from the parent) and NOTHING else — every other host
 /// import traps. Stages the result `Bytes` (`[len][bytes]`) for `fill_pending`. This is
 /// the capability-PASSING (Tier B) primitive: a sandboxed worker with attenuated authority.
 fn host_vm_with_dir_run(
     mut caller: Caller<'_, VmState>,
     dir_ref: Option<Rooted<ExternRef>>,
-    f_ptr: i32,
+    code_idx: i32,
     input_ptr: i32,
 ) -> Result<i32> {
-    let (dir, input, code_idx) = {
+    let (dir, input) = {
         let dir = dir_authority_ref(&caller, dir_ref)?;
         let mem = memory_of(&mut caller)?;
         let data = mem.data(&caller);
         let input = read_wbytes(data, input_ptr)?;
-        let cb = slice(data, f_ptr, 4)?;
-        (dir, input, i32::from_le_bytes([cb[0], cb[1], cb[2], cb[3]]))
+        (dir, input)
     };
     let engine = caller.data().engine.clone();
     let module = caller.data().module.clone();
@@ -2453,10 +2455,10 @@ fn run_with_dir_worker(
     read_wbytes(mem.data(&store), rptr as i32)
 }
 
-/// (RFC-0032) `vm_serve_run(init_ptr, requests_ptr, handler_ptr) -> byte_size`: a stateful
-/// SERVICE on a single long-lived isolated worker VM. The worker is created once and
-/// processes the request stream IN ORDER, threading the accumulator `state` through
-/// `handler(state, request) -> new_state` and emitting each new state as the response.
+/// (RFC-0032) `vm_serve_run(init_ptr, requests_ptr, code_idx) -> byte_size`: a
+/// stateful SERVICE on a single long-lived isolated worker VM. The worker is created
+/// once and processes the request stream IN ORDER, threading the accumulator `state`
+/// through the capture-free handler at `code_idx` and emitting each new state as the response.
 /// This is the deterministic, parity-safe realization of cross-VM channels: a worker that
 /// processes a message stream with persistent state, lock-step (no nondeterministic
 /// interleaving), so the interpreter's sequential scan reproduces the result exactly.
@@ -2464,15 +2466,14 @@ fn host_vm_serve_run(
     mut caller: Caller<'_, VmState>,
     init_ptr: i32,
     requests_ptr: i32,
-    handler_ptr: i32,
+    code_idx: i32,
 ) -> Result<i32> {
-    let (init, requests, code_idx) = {
+    let (init, requests) = {
         let mem = memory_of(&mut caller)?;
         let data = mem.data(&caller);
         let init = read_wbytes(data, init_ptr)?;
         let requests = read_wbytes_list(data, requests_ptr)?;
-        let cb = slice(data, handler_ptr, 4)?;
-        (init, requests, i32::from_le_bytes([cb[0], cb[1], cb[2], cb[3]]))
+        (init, requests)
     };
     let engine = caller.data().engine.clone();
     let module = caller.data().module.clone();
@@ -2522,16 +2523,18 @@ fn run_serve_worker(
     Ok(responses)
 }
 
-/// (RFC-0032) `vm_par_map_bytes_run(xs_ptr, f_ptr) -> byte_size`: the `Bytes` variant of
-/// `vm.par_map`. Identical to the `String` variant but the payload is kept as RAW bytes
-/// (`Vec<u8>`, no UTF-8 decode), so arbitrary binary survives the cross-VM round-trip.
-fn host_vm_par_map_bytes_run(mut caller: Caller<'_, VmState>, xs_ptr: i32, f_ptr: i32) -> Result<i32> {
-    let (inputs, code_idx): (Vec<Vec<u8>>, i32) = {
+/// (RFC-0032) `vm_par_map_bytes_run(xs_ptr, code_idx) -> byte_size`: the
+/// `Bytes` variant of `vm.par_map`. Identical to the `String` variant but the payload
+/// is kept as RAW bytes (`Vec<u8>`, no UTF-8 decode), so arbitrary binary survives.
+fn host_vm_par_map_bytes_run(
+    mut caller: Caller<'_, VmState>,
+    xs_ptr: i32,
+    code_idx: i32,
+) -> Result<i32> {
+    let inputs = {
         let mem = memory_of(&mut caller)?;
         let data = mem.data(&caller);
-        let inputs = read_wbytes_list(data, xs_ptr)?;
-        let cb = slice(data, f_ptr, 4)?;
-        (inputs, i32::from_le_bytes([cb[0], cb[1], cb[2], cb[3]]))
+        read_wbytes_list(data, xs_ptr)?
     };
     let engine = caller.data().engine.clone();
     let module = caller.data().module.clone();

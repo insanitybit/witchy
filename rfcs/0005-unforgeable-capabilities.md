@@ -1,7 +1,7 @@
 ---
 rfc: 0005
 title: Unforgeable capability representation on the compiled backend
-status: planned
+status: implemented
 created: 2026-06-21
 superseded-by:
 tracking:
@@ -9,12 +9,12 @@ tracking:
 
 # RFC-0005: Unforgeable capability representation on the compiled backend
 
-> Provisional. Code blocks here are intentionally **not** tagged `witchy` so the
+> Code blocks here are intentionally **not** tagged `witchy` so the
 > doc-examples test does not try to compile them.
 
 ## Summary
 
-On the compiled (WebAssembly) backend, every capability is represented as an
+Before this RFC, the compiled (WebAssembly) backend represented every capability as an
 **`i32` handle** — an index into a host-side table (`VmState::dirs`,
 `VmState::nets`, `VmState::files`, `VmState::sockets`, `VmState::listeners`,
 `caps.secrets`). Those integers are ordinary data: they live in
@@ -29,7 +29,7 @@ across an import → the host honors it" is a full capability bypass that the
 wasmtime sandbox does **not** stop, because wasmtime protects linear memory from
 the *outside* but never from the guest's own writes.
 
-This RFC proposes representing capabilities as **wasmtime reference types
+This RFC replaces those handles with **wasmtime reference types
 (`externref`)** rather than `i32` handles. References cannot be stored in linear
 memory, cannot be synthesized by the guest, and cannot be bit-cast from an
 integer; combined with WASM code immutability, this removes memory corruption as
@@ -623,3 +623,11 @@ formed; fixed/rest list patterns and `pop` preserve the exact element kind, and
 Indirect-call table discovery is driven by WIR call sites even when no function
 value is materialized. The capability corpus, all optimization configurations,
 and both backends cover these edges.
+
+**2026-07-17 worker-boundary checkpoint.** Isolated worker operations receive
+the immutable closure wrapper's table index directly. The host runtime never
+interprets that index as a linear-memory closure pointer. Nonzero-index
+regressions cover scalar and buffer `vm.par_map` plus `vm.serve`; the
+capability-bearing `vm.with_dir` callback remains rejected at type check until a
+separate cross-instance reference transport is specified. The full fast, Wasm,
+book, project-format, and e2e shards are green at this status transition.

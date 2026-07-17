@@ -1,7 +1,7 @@
 ---
 rfc: 0005-impl
 title: Externref capability core — implementation design (companion to RFC-0005)
-status: in-progress
+status: implemented
 created: 2026-07-03
 tracking: rfcs/0005-unforgeable-capabilities.md
 ---
@@ -699,3 +699,18 @@ Unsupported boundaries remain loud by design: reference-bearing `Dict`, open
 generic capability instantiations, reference-aware region copy-out, and
 cross-instance capability callbacks. None can erase a reference into an i64
 slot.
+
+## Stage 4 worker-boundary closure (2026-07-17)
+
+The closure wrapper's immutable code field is the complete ABI crossing for
+capture-free worker callbacks. `vm.par_map`, its String/Bytes path,
+`vm.with_dir`, and `vm.serve` pass that table index directly to the host; the
+host forwards it to `__call_idx` or `__call2` without reading a linear-memory
+closure record. Nonzero-index differential tests lock the three currently
+executable paths, including the Coven snapshot rebuild that exposed the stale
+pointer assumption.
+
+The capability-bearing `vm.with_dir` callback remains a loud type-check error:
+its host-side index plumbing is ready, but transporting the `Dir` reference
+into the exact typed callback signature is a separate cross-instance design.
+This does not leave an accepted RFC-0005 representation path incomplete.
