@@ -61,7 +61,7 @@ jq -r --argjson cutoff "$cutoff" '
     select((.event=="merged" or .event=="red" or .event=="timeout" or .event=="batch_red")
            and .log != null and .elapsed_s != null
            and ((.ts|fromdateiso8601) >= $cutoff))
-    | [.log, .event, (.elapsed_s|tostring)] | @tsv
+    | [.log, .event, ((.gate_elapsed_s // .elapsed_s)|tostring)] | @tsv
 ' "$journal" | awk -F '\t' '!seen[$1]++' >"$attempts"
 
 # One awk process scans every selected log. Spawning an awk+jq pair per gate
@@ -162,6 +162,7 @@ jq -sn \
     def distribution:
         {count:(map(select(. != null))|length),
          p50:(percentile(0.50)), p90:(percentile(0.90)), max:(map(select(. != null))|max//null)};
+    def numeric($value): if $value==null then null else ($value|tonumber) end;
     ($journal | map(select((.ts|fromdateiso8601) >= $cutoff))) as $recent
     | ($recent | map(select(terminal and .log != null and .elapsed_s != null)) | unique_by(.log)) as $attempts
     | ($recent | map(select(.event=="merged" and .log != null and .elapsed_s != null))) as $merged
@@ -175,18 +176,28 @@ jq -sn \
           | (($events[$i].ts|fromdateiso8601)-($events[$submitted].ts|fromdateiso8601))
        ]) as $waits
     | {
-        schema:1, generated_at:$generated, since:$since, state_dir:$state_dir,
+        schema:2, generated_at:$generated, since:$since, state_dir:$state_dir,
         throughput:{submissions:($recent|map(select(.event=="submitted"))|length),
                     merged_branches:($merged|length), green_gates:($green|length),
                     failed_attempts:($failed|length),
                     branches_per_green_gate:(if ($green|length)==0 then null else (($merged|length)/($green|length)) end),
                     batched_gates:($green|map(select((.batch//"1"|tonumber)>1))|length),
-                    failed_gate_minutes:($failed|map(.elapsed_s|tonumber)|add//0)/60},
+                    failed_gate_minutes:($failed|map(numeric(.gate_elapsed_s // .elapsed_s))|add//0)/60},
         outcomes:{red:($attempts|map(select(.event=="red"))|length),
                   timeout:($attempts|map(select(.event=="timeout"))|length),
-                  batch_red:($attempts|map(select(.event=="batch_red"))|length)},
+                  batch_red:($attempts|map(select(.event=="batch_red"))|length),
+                  requeued:($recent|map(select(.event=="requeued"))|length),
+                  conflict:($recent|map(select(.event=="conflict"))|length),
+                  blocked:($recent|map(select(.event=="blocked"))|length),
+                  automatic_retries:(($recent|map(select(.event=="requeued"))|length)
+                                     +($attempts|map(select(.event=="batch_red"))|length))},
         queue_wait_s:($waits|distribution),
-        gate_s:($attempts|map(.elapsed_s|tonumber)|distribution),
+        attempt_s:($attempts|map(numeric(.attempt_elapsed_s // .elapsed_s))|distribution),
+        gate_s:($attempts|map(numeric(.gate_elapsed_s // .elapsed_s))|distribution),
+        attempt_phases_s:{lock_wait:($attempts|map(numeric(.lock_wait_s))|distribution),
+                          prepare:($attempts|map(numeric(.prepare_elapsed_s))|distribution),
+                          gate:($attempts|map(numeric(.gate_elapsed_s // .elapsed_s))|distribution),
+                          landing:($attempts|map(numeric(.landing_elapsed_s))|distribution)},
         phases_s:{compile:($phases|map(.compile_s)|distribution),
                   discovery_estimate:($phases|map(.discovery_estimate_s)|distribution),
                   execution:($phases|map(.execution_s)|distribution),
@@ -220,7 +231,14 @@ jq -r '
     "",
     "Latency (p50 / p90 / max)",
     "  queue wait:              \(value(.queue_wait_s.p50; "s")) / \(value(.queue_wait_s.p90; "s")) / \(value(.queue_wait_s.max; "s"))",
-    "  gate:                    \(value(.gate_s.p50; "s")) / \(value(.gate_s.p90; "s")) / \(value(.gate_s.max; "s"))",
+    "  coordinator attempt:     \(value(.attempt_s.p50; "s")) / \(value(.attempt_s.p90; "s")) / \(value(.attempt_s.max; "s"))",
+    "  actual gate:             \(value(.gate_s.p50; "s")) / \(value(.gate_s.p90; "s")) / \(value(.gate_s.max; "s"))",
+    "",
+    "Coordinator attempt phases (p50 / p90; exact where instrumented)",
+    "  lock wait (n=\(.attempt_phases_s.lock_wait.count)): \(value(.attempt_phases_s.lock_wait.p50; "s")) / \(value(.attempt_phases_s.lock_wait.p90; "s"))",
+    "  preparation (n=\(.attempt_phases_s.prepare.count)): \(value(.attempt_phases_s.prepare.p50; "s")) / \(value(.attempt_phases_s.prepare.p90; "s"))",
+    "  gate (n=\(.attempt_phases_s.gate.count)):      \(value(.attempt_phases_s.gate.p50; "s")) / \(value(.attempt_phases_s.gate.p90; "s"))",
+    "  landing/finalize (n=\(.attempt_phases_s.landing.count)): \(value(.attempt_phases_s.landing.p50; "s")) / \(value(.attempt_phases_s.landing.p90; "s"))",
     "",
     "Gate phase wall time (p50 / p90; parsed logs)",
     "  compile (n=\(.phases_s.compile.count)):                \(value(.phases_s.compile.p50; "s")) / \(value(.phases_s.compile.p90; "s"))",
@@ -238,6 +256,8 @@ jq -r '
     "",
     "Outcomes",
     "  red / timeout / batch-red: \(.outcomes.red) / \(.outcomes.timeout) / \(.outcomes.batch_red)",
+    "  requeued / conflict / blocked: \(.outcomes.requeued) / \(.outcomes.conflict) / \(.outcomes.blocked)",
+    "  automatic retry events: \(.outcomes.automatic_retries)",
     "",
     "Discovery is estimated as test-stage wall time minus Cargo compile and nextest execution."
 ' "$report"

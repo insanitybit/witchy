@@ -222,6 +222,27 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
     fs::write(format!("{}.batch-limit", landed_queue_file.display()), "")
         .expect("write batch-limit sidecar");
 
+    // Hold the gate lock with this live test process long enough to make lock
+    // wait distinguishable from the actual (instant) gate in whole seconds.
+    let held_lock = state.join("gate.lock");
+    fs::create_dir(&held_lock).expect("create externally held gate lock");
+    fs::write(held_lock.join("pid"), format!("{}\n", std::process::id()))
+        .expect("write live lock owner");
+    fs::write(held_lock.join("what"), "focused external check\n")
+        .expect("write lock description");
+    let lock_journal = state.join("journal.jsonl");
+    let lock_releaser = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !fs::read_to_string(&lock_journal)
+            .is_ok_and(|journal| journal.contains("\"event\":\"already_merged\""))
+        {
+            assert!(Instant::now() < deadline, "coordinator did not reach queued gate attempt");
+            thread::sleep(Duration::from_millis(25));
+        }
+        thread::sleep(Duration::from_millis(1_100));
+        fs::remove_dir_all(held_lock).expect("release externally held gate lock");
+    });
+
     let output = Command::new(&queue)
         .args(["run", "--once"])
         .env("PATH", path)
@@ -230,6 +251,7 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
         .env("MERGE_QUEUE_GATE_CMD", &gate_command)
         .output()
         .expect("run isolated coordinator");
+    lock_releaser.join().expect("join gate lock releaser");
     assert!(
         output.status.success(),
         "coordinator failed: {}",
@@ -249,9 +271,45 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
     assert!(events.iter().any(|event| {
         event["event"] == "already_merged" && event["branch"] == "landed-original"
     }));
-    assert!(events.iter().any(|event| {
-        event["event"] == "validated" && event["branch"] == "partially-new"
-    }));
+    let validated = events
+        .iter()
+        .find(|event| event["event"] == "validated" && event["branch"] == "partially-new")
+        .expect("find validated attempt event");
+    assert_eq!(validated["attempt_timing_schema"], "1");
+    assert!(
+        validated["lock_wait_s"]
+            .as_str()
+            .expect("lock wait is journaled")
+            .parse::<u64>()
+            .expect("lock wait is numeric")
+            >= 1,
+        "external lock wait was not separated from the gate: {validated}",
+    );
+    assert_eq!(validated["elapsed_s"], validated["gate_elapsed_s"]);
+    let phase_total: u64 = [
+        "lock_wait_s",
+        "prepare_elapsed_s",
+        "gate_elapsed_s",
+        "landing_elapsed_s",
+    ]
+    .iter()
+    .map(|field| {
+        validated[*field]
+            .as_str()
+            .unwrap_or_else(|| panic!("missing {field} in {validated}"))
+            .parse::<u64>()
+            .unwrap_or_else(|_| panic!("non-numeric {field} in {validated}"))
+    })
+    .sum();
+    assert_eq!(
+        phase_total,
+        validated["attempt_elapsed_s"]
+            .as_str()
+            .expect("attempt total is journaled")
+            .parse::<u64>()
+            .expect("attempt total is numeric"),
+        "attempt phases do not account for end-to-end coordinator time",
+    );
     assert_eq!(
         fs::read_dir(state.join("queue"))
             .expect("read drained queue")
@@ -593,12 +651,15 @@ fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
         concat!(
             "{{\"ts\":\"2026-07-16T00:00:00Z\",\"event\":\"submitted\",\"branch\":\"a\"}}\n",
             "{{\"ts\":\"2026-07-16T00:00:10Z\",\"event\":\"submitted\",\"branch\":\"b\"}}\n",
-            "{{\"ts\":\"2026-07-16T00:01:40Z\",\"event\":\"merged\",\"branch\":\"a\",\"elapsed_s\":\"90\",\"batch\":\"2\",\"log\":{green:?}}}\n",
-            "{{\"ts\":\"2026-07-16T00:01:40Z\",\"event\":\"merged\",\"branch\":\"b\",\"elapsed_s\":\"90\",\"batch\":\"2\",\"log\":{green:?}}}\n",
+            "{{\"ts\":\"2026-07-16T00:01:40Z\",\"event\":\"merged\",\"branch\":\"a\",\"elapsed_s\":\"302\",\"attempt_elapsed_s\":\"302\",\"lock_wait_s\":\"181\",\"prepare_elapsed_s\":\"5\",\"gate_elapsed_s\":\"111\",\"landing_elapsed_s\":\"5\",\"batch\":\"2\",\"log\":{green:?}}}\n",
+            "{{\"ts\":\"2026-07-16T00:01:40Z\",\"event\":\"merged\",\"branch\":\"b\",\"elapsed_s\":\"302\",\"attempt_elapsed_s\":\"302\",\"lock_wait_s\":\"181\",\"prepare_elapsed_s\":\"5\",\"gate_elapsed_s\":\"111\",\"landing_elapsed_s\":\"5\",\"batch\":\"2\",\"log\":{green:?}}}\n",
             "{{\"ts\":\"2026-07-16T00:03:20Z\",\"event\":\"submitted\",\"branch\":\"c\"}}\n",
             "{{\"ts\":\"2026-07-16T00:04:20Z\",\"event\":\"timeout\",\"branch\":\"c\",\"elapsed_s\":\"60\",\"log\":{timeout:?}}}\n",
             "{{\"ts\":\"2026-07-16T00:05:00Z\",\"event\":\"submitted\",\"branch\":\"d\"}}\n",
-            "{{\"ts\":\"2026-07-16T00:05:40Z\",\"event\":\"red\",\"branch\":\"d\",\"elapsed_s\":\"40\",\"log\":{red:?}}}\n"
+            "{{\"ts\":\"2026-07-16T00:05:40Z\",\"event\":\"red\",\"branch\":\"d\",\"elapsed_s\":\"40\",\"log\":{red:?}}}\n",
+            "{{\"ts\":\"2026-07-16T00:06:00Z\",\"event\":\"requeued\",\"branch\":\"e\"}}\n",
+            "{{\"ts\":\"2026-07-16T00:06:10Z\",\"event\":\"conflict\",\"branch\":\"f\"}}\n",
+            "{{\"ts\":\"2026-07-16T00:06:20Z\",\"event\":\"blocked\",\"branch\":\"g\"}}\n"
         ),
         green = green_log.to_string_lossy(),
         timeout = timeout_log.to_string_lossy(),
@@ -633,8 +694,20 @@ fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
     assert_eq!(report["throughput"]["failed_attempts"], 2);
     assert_eq!(report["throughput"]["branches_per_green_gate"], 2.0);
     assert_eq!(report["throughput"]["batched_gates"], 1);
+    assert_eq!(report["schema"], 2);
+    assert_eq!(report["attempt_s"]["p50"], 60);
+    assert_eq!(report["attempt_s"]["p90"], 302);
     assert_eq!(report["gate_s"]["p50"], 60);
-    assert_eq!(report["gate_s"]["p90"], 90);
+    assert_eq!(report["gate_s"]["p90"], 111);
+    assert_eq!(report["attempt_phases_s"]["lock_wait"]["count"], 1);
+    assert_eq!(report["attempt_phases_s"]["lock_wait"]["p50"], 181);
+    assert_eq!(report["attempt_phases_s"]["prepare"]["p50"], 5);
+    assert_eq!(report["attempt_phases_s"]["gate"]["count"], 3);
+    assert_eq!(report["attempt_phases_s"]["landing"]["p50"], 5);
+    assert_eq!(report["outcomes"]["requeued"], 1);
+    assert_eq!(report["outcomes"]["conflict"], 1);
+    assert_eq!(report["outcomes"]["blocked"], 1);
+    assert_eq!(report["outcomes"]["automatic_retries"], 1);
     assert_eq!(report["phases_s"]["compile"]["p50"], 20);
     assert_eq!(report["phases_s"]["discovery_estimate"]["p50"], 21);
     assert_eq!(report["phases_s"]["execution"]["p50"], 30.0);
