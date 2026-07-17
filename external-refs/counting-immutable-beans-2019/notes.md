@@ -1,7 +1,7 @@
 # Counting Immutable Beans: Reference Counting Optimized for Purely Functional Programming
 
 - **Authors / venue:** Sebastian Ullrich, Leonardo de Moura. IFL 2019. (PDF: arXiv:1908.05647.)
-- **What it is:** The reference-counting scheme behind **Lean 4** and the direct precursor to [[perceus-2021]]. Reclaims memory for non-shared values eagerly and enables **destructive (in-place) update** when rc==1. Its key cost-reduction ideas: **borrowed references** (a parameter that only reads need not touch the count) and a **heuristic to infer borrow annotations** automatically.
+- **What it is:** The reference-counting scheme behind **Lean 4** and the direct precursor to the [Perceus notes](../perceus-2021/notes.md). Reclaims memory for non-shared values eagerly and enables **destructive (in-place) update** when rc==1. Its key cost-reduction ideas: **borrowed references** (a parameter that only reads need not touch the count) and a **heuristic to infer borrow annotations** automatically.
 
 ## Why it matters to witchy
 
