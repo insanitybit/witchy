@@ -967,6 +967,37 @@ stack_candidate_ready() { # stack_candidate_ready <queue-file> <batch-change-ids
     change_connected_to_batch "$cid" "${batch_ids[@]}"
 }
 
+# Replay only patches that are not already represented by the prepared tip.
+# Starting from current master avoids checking out an old submitted tree and
+# then rewriting every just-landed source file during rebase. That worktree
+# churn invalidates Cargo's warm fingerprints even when the final bytes match.
+# Return 2 when the target adds no patch, 1 on unsupported/conflicting history.
+replay_unrepresented_patches() { # replay_unrepresented_patches <onto> <target>
+    local onto="$1" target="$2" cherry_output merge_commits line mark commit
+    local patches=()
+    [ "$(git -C "$gate_wt" rev-parse HEAD 2>/dev/null || true)" = "$onto" ] || return 1
+    git -C "$root" cat-file -e "$target^{commit}" 2>/dev/null || return 1
+    merge_commits="$(git -C "$root" rev-list --merges "$onto..$target" 2>/dev/null)" \
+        || return 1
+    # Standard rebase does not preserve merge topology. Refuse merge commits
+    # explicitly rather than silently dropping merge-only conflict resolutions.
+    [ -z "$merge_commits" ] || return 1
+    # Preserve the submitted SHA when it is already a direct descendant of the
+    # prepared tip. Checkout writes only the actual branch delta, keeps normal
+    # ancestry (so safe sweep can delete the ref), and avoids needless commit
+    # rewriting. The patch-replay path is only for a submission on an older base.
+    if git -C "$root" merge-base --is-ancestor "$onto" "$target" 2>/dev/null; then
+        git -C "$gate_wt" checkout --detach --quiet "$target"
+        return
+    fi
+    cherry_output="$(git -C "$root" cherry "$onto" "$target" 2>/dev/null)" || return 1
+    while IFS=' ' read -r mark commit; do
+        [ "$mark" = + ] && patches+=("$commit")
+    done <<<"$cherry_output"
+    [ "${#patches[@]}" -gt 0 ] || return 2
+    git -C "$gate_wt" cherry-pick "${patches[@]}" >/dev/null 2>&1
+}
+
 process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     local f="$1"
     local branch change_id submitted_sha attempt_id
@@ -1025,12 +1056,12 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     ensure_gate_worktree
     local base; base="$(git -C "$root" rev-parse master)"
 
+    # Build from the current master tree and replay only the submitted patches.
     # `process_one` is called from an `||` list, which disables Bash's implicit
-    # errexit inside the function. Guard candidate checkout explicitly: a
-    # sandbox-denied index lock must never leave the gate worktree on master and
-    # then validate that unrelated SHA as if it were the submitted branch.
-    if ! git -C "$gate_wt" checkout --detach --quiet "$submitted_sha"; then
-        note "could not check out $branch in the gate worktree; refusing to gate the stale checkout"
+    # errexit inside the function, so guard the correctness boundary explicitly:
+    # a sandbox-denied index lock must never leave a stale checkout to be gated.
+    if ! git -C "$gate_wt" checkout --detach --quiet "$base"; then
+        note "could not check out current master for $branch; refusing to gate the stale checkout"
         local checkout_failed; checkout_failed="$(date +%s)"
         record_attempt blocked "$branch" "$attempt_start" "$checkout_failed" \
             "$checkout_failed" "$checkout_failed" "$checkout_failed" \
@@ -1040,9 +1071,9 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         consume_queue_entry "$f" "$change_id" "$submitted_sha" "$attempt_id" && return 0
         return 1
     fi
-    if ! git -C "$gate_wt" rebase master >/dev/null 2>&1; then
-        git -C "$gate_wt" rebase --abort >/dev/null 2>&1 || true
-        note "$branch does not rebase cleanly onto master — needs a human/agent rebase"
+    if ! replay_unrepresented_patches "$base" "$submitted_sha"; then
+        git -C "$gate_wt" cherry-pick --abort >/dev/null 2>&1 || true
+        note "$branch does not replay cleanly onto master (or contains merge commits) — needs a human/agent rebase"
         local conflict_finished; conflict_finished="$(date +%s)"
         record_attempt conflict "$branch" "$attempt_start" "$conflict_finished" \
             "$conflict_finished" "$conflict_finished" "$conflict_finished" \
@@ -1094,10 +1125,10 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
                 list_contains "$cand" "${batch_branches[@]}" && continue
                 csha="$(jq -r '.sha // empty' "$qf")"
                 git -C "$root" cat-file -e "$csha^{commit}" 2>/dev/null || continue
-                cdiff="$(git -C "$root" diff --name-only "master...$cand" 2>/dev/null | sort -u)"
+                cdiff="$(git -C "$root" diff --name-only "master...$csha" 2>/dev/null | sort -u)"
                 [ -n "$cdiff" ] || continue
                 tip="$(git -C "$gate_wt" rev-parse HEAD)"
-                if git -C "$gate_wt" rebase "$tip" "$csha" >/dev/null 2>&1; then
+                if replay_unrepresented_patches "$tip" "$csha"; then
                     batch_files+=("$qf"); batch_branches+=("$cand"); batch_ids+=("$cand_id")
                     batch_submitted_shas+=("$csha")
                     batch_attempt_ids+=("$cand_attempt")
@@ -1105,7 +1136,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
                     stack_mode=1
                     added=1
                 else
-                    git -C "$gate_wt" rebase --abort >/dev/null 2>&1 || true
+                    git -C "$gate_wt" cherry-pick --abort >/dev/null 2>&1 || true
                     git -C "$gate_wt" checkout --detach --quiet "$tip"
                 fi
             done < <(find "$queue_dir" -maxdepth 1 -name '*.json' -print | sort)
@@ -1127,16 +1158,16 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             list_contains "$cand" "${batch_branches[@]}" && continue
             csha="$(jq -r '.sha // empty' "$qf")"
             git -C "$root" cat-file -e "$csha^{commit}" 2>/dev/null || continue
-            cdiff="$(git -C "$root" diff --name-only "master...$cand" 2>/dev/null | sort -u)"
+            cdiff="$(git -C "$root" diff --name-only "master...$csha" 2>/dev/null | sort -u)"
             [ -n "$cdiff" ] || continue
             tip="$(git -C "$gate_wt" rev-parse HEAD)"
-            if git -C "$gate_wt" rebase "$tip" "$csha" >/dev/null 2>&1; then
+            if replay_unrepresented_patches "$tip" "$csha"; then
                 batch_files+=("$qf"); batch_branches+=("$cand"); batch_ids+=("$cand_id")
                 batch_submitted_shas+=("$csha")
                 batch_attempt_ids+=("$cand_attempt")
                 set_change_state "$cand_id" gating "$csha" "$cand_attempt" || true
             else
-                git -C "$gate_wt" rebase --abort >/dev/null 2>&1 || true
+                git -C "$gate_wt" cherry-pick --abort >/dev/null 2>&1 || true
                 git -C "$gate_wt" checkout --detach --quiet "$tip"
             fi
         done < <(find "$queue_dir" -maxdepth 1 -name '*.json' -print | sort)

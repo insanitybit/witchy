@@ -37,7 +37,7 @@ agent worktree                    main worktree
                                coordinator daemon (merge-queue.sh run)
                                      │ takes queue head
                                .claude/worktrees/merge-gate   (dedicated worktree)
-                                     │ rebase candidate onto master
+                                     │ replay unrepresented patches onto master
                                      │ batch compatible queued branches on top
                                      │ run full gate under gate.lock
                                      ▼
@@ -204,20 +204,28 @@ shards ignore the scope.
 1. Select the first dependency-`ready` item in filename order. Waiting and
    blocked entries remain visible in `status` while unrelated ready work passes
    them. Branch deleted → journal `dropped`, consume, next.
-2. **Acquire the lock BEFORE touching the gate worktree** (an earlier version
-   rebased first — that corrupts a with-lock run already using the worktree).
-3. Record `base` = current master sha. Detach gate worktree onto the branch,
-   `rebase master`. Failure → journal `conflict`, drop, release lock.
-4. **Batching:** explicit dependency descendants take priority. A child joins
+2. Record `base` = current master sha and detach the coordinator-owned gate
+   worktree onto that exact tree. Use `git cherry` to select only submitted
+   patches not represented by `base`, then cherry-pick them in order. This
+   preparation is outside `gate.lock`: `with-lock` users never touch the
+   coordinator-owned worktree, and unrelated candidate preparation must not
+   serialize behind a full gate. A checkout or replay failure journals a loud
+   terminal event; merge commits are rejected rather than silently losing
+   merge-only conflict resolutions. Submit linear history (rebase/flatten it).
+3. **Batching:** explicit dependency descendants take priority. A child joins
    when all its parents are already merged or in the current stack. Ready
    co-parents in the same dependency component join too; repeated passes
    produce topological order, then the stack tip is gated once. If no
    descendant joins, walk other ready entries for the existing opportunistic
-   batch. Every candidate SHA is rebased onto the current stack tip (detached —
-   the agent's branch ref is never moved). Clean rebase → joins (up to
+   batch. Every candidate contributes only patches not already represented by
+   the current stack tip (detached — the agent's branch ref is never moved).
+   Clean replay → joins (up to
    `MERGE_QUEUE_BATCH_MAX`). Textual overlap is fine; only a failed rebase
    excludes. `.nobatch` applies to unrelated red-batch recovery. A
    `.batch-limit` marker bounds the next dependency-prefix retry.
+4. Classify the prepared batch diff, then acquire `gate.lock`. Re-check every
+   immutable queue attempt and verify master is still `base`; if submission or
+   master moved during preparation, release and rebuild without gating.
 5. Run the gate: own process group (`set -m`), stdout to the log,
    `NEXTEST_STATUS_LEVEL=pass` for streaming, and Cargo wrapper variables
    cleared so detached coordinators do not inherit a sandbox-incompatible

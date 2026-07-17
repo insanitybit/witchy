@@ -162,6 +162,7 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
     fs::write(repo.join("new-patch"), "new\n").expect("write new patch");
     git(&repo, &["add", "new-patch"]);
     git(&repo, &["commit", "-m", "new patch"]);
+    let partially_new_sha = git(&repo, &["rev-parse", "HEAD"]);
     assert!(
         git(&repo, &["cherry", "master", "partially-new"])
             .lines()
@@ -203,6 +204,25 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
     .expect("write lock-asserting jq wrapper");
     fs::set_permissions(&fake_jq, fs::Permissions::from_mode(0o755))
         .expect("chmod jq wrapper");
+    let real_git = Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .expect("locate real git");
+    assert!(real_git.status.success());
+    let real_git = String::from_utf8(real_git.stdout)
+        .expect("git path is utf8")
+        .trim()
+        .to_owned();
+    let fake_git = fake_bin.join("git");
+    fs::write(
+        &fake_git,
+        format!(
+            "#!/bin/sh\ncase \" $* \" in\n  *\" checkout --detach --quiet {partially_new_sha} \"*|*\" checkout --detach --quiet refs/heads/partially-new \"*) exit 74 ;;\nesac\nexec {real_git:?} \"$@\"\n",
+        ),
+    )
+    .expect("write old-candidate-denying git wrapper");
+    fs::set_permissions(&fake_git, fs::Permissions::from_mode(0o755))
+        .expect("chmod old-candidate-denying git wrapper");
     let gate_command = temp.path().join("gate-command");
     fs::write(
         &gate_command,
@@ -363,16 +383,6 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
     assert!(submitted.status.success());
     fs::remove_file(&gate_marker).expect("clear prior gate marker");
 
-    let real_git = Command::new("sh")
-        .args(["-c", "command -v git"])
-        .output()
-        .expect("locate real git");
-    assert!(real_git.status.success());
-    let real_git = String::from_utf8(real_git.stdout)
-        .expect("git path is utf8")
-        .trim()
-        .to_owned();
-    let fake_git = fake_bin.join("git");
     fs::write(
         &fake_git,
         format!(
@@ -712,6 +722,30 @@ fn concurrent_dependency_updates_cannot_commit_opposite_cycle_edges() {
         + fixture.change("b")["after"].as_array().unwrap().len();
     assert_eq!(edge_count, 1, "both cycle edges were persisted");
     assert!(!fixture.state.join("change.lock").exists(), "metadata lock leaked");
+}
+
+#[test]
+fn merge_commit_submission_is_rejected_without_gating_or_erasing_resolutions() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    run_git(&fixture.root, &["switch", "-c", "side", "master"]);
+    fs::write(fixture.root.join("side.txt"), "side\n").expect("write side branch");
+    run_git(&fixture.root, &["add", "side.txt"]);
+    run_git(&fixture.root, &["commit", "-m", "side change"]);
+    run_git(&fixture.root, &["switch", "a"]);
+    run_git(&fixture.root, &["merge", "--no-ff", "side", "-m", "merge with resolution boundary"]);
+    run_git(&fixture.root, &["switch", "master"]);
+
+    fixture.mq_ok(&["submit", "a"], "true");
+    let marker = fixture.root.join("gate-must-not-run");
+    let gate = format!("printf gated >{}", marker.display());
+    fixture.mq_ok(&["run", "--once"], &gate);
+
+    assert!(!marker.exists(), "merge-commit candidate reached the gate");
+    assert_eq!(fixture.change("a")["state"], "conflict");
+    assert!(fixture
+        .journal()
+        .iter()
+        .any(|event| event["event"] == "conflict" && event["branch"] == "a"));
 }
 
 #[test]
