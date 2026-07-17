@@ -2,12 +2,15 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 struct ProcessGroupGuard(i32);
 
 struct TempDir(PathBuf);
+
+static NEXT_TEMP_DIR: AtomicU64 = AtomicU64::new(0);
 
 impl TempDir {
     fn new() -> Self {
@@ -16,8 +19,9 @@ impl TempDir {
             .expect("clock before epoch")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "witchy-merge-queue-daemon-{}-{nonce}",
+            "witchy-merge-queue-daemon-{}-{nonce}-{}",
             std::process::id(),
+            NEXT_TEMP_DIR.fetch_add(1, Ordering::Relaxed),
         ));
         fs::create_dir(&path).expect("create temporary state directory");
         Self(path)
@@ -251,7 +255,10 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
         .expect("write lock description");
     let prepared_worktree = gate_worktree.clone();
     let lock_releaser = thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        // Git worktree checkout/rebase can take several seconds on a loaded
+        // developer machine. Keep the lock held until preparation is visible;
+        // the assertion still fails if preparation actually waits on the lock.
+        let deadline = Instant::now() + Duration::from_secs(10);
         while !prepared_worktree.join("new-patch").exists() && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(25));
         }
