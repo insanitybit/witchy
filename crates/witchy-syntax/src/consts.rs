@@ -74,7 +74,11 @@ fn collect_names(e: &Expr, out: &mut Vec<String>) {
                 collect_names(a, out);
             }
         }
-        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
+        Expr::Unary { expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::Field { base: expr, .. } => {
             collect_names(expr, out)
         }
         Expr::RecordUpdate { name: _, base, fields } => {
@@ -329,7 +333,11 @@ fn subst_expr(
             }
             changed
         }
-        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
+        Expr::Unary { expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::Field { base: expr, .. } => {
             subst_expr(expr, consts, cnames, scope)
         }
         Expr::RecordUpdate { name: _, base, fields } => {

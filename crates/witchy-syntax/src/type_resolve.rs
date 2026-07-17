@@ -1184,6 +1184,10 @@ impl<'a> Scope<'a> {
                 self.resolve_expr(expr)?;
                 self.resolve_type(ty)?;
             }
+            Expr::ExistentialPack { expr, ty, .. } => {
+                self.resolve_expr(expr)?;
+                self.resolve_type(ty)?;
+            }
             Expr::Lambda { params, body, ret } => {
                 for p in params.iter_mut() {
                     if let Some(t) = &mut p.ty {
@@ -1838,6 +1842,7 @@ fn resolve_residual_expr(
         Expr::Unary { expr, .. }
         | Expr::Try(expr)
         | Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. }
         | Expr::Field { base: expr, .. } => resolve_residual_expr(expr, by_suffix)?,
         Expr::Binary { lhs, rhs, .. } => {
             resolve_residual_expr(lhs, by_suffix)?;

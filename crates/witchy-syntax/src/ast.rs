@@ -607,6 +607,15 @@ pub enum Expr {
     /// subset of its rights (`net as Net[Connect]`). Checked statically (the
     /// target rights must be a subset of the source's); identity at runtime.
     As { expr: Box<Expr>, ty: Type },
+    /// Compiler-owned RFC-0081 existential construction. The source `as dyn
+    /// Trait` expression is replaced only after type checking has selected one
+    /// closed witness. `witness` indexes the accompanying backend-neutral
+    /// witness plan; `ty` is the exact existential result type.
+    ExistentialPack {
+        expr: Box<Expr>,
+        ty: Type,
+        witness: u32,
+    },
     Binary { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr> },
     If {
         cond: Box<Expr>,

@@ -403,6 +403,10 @@ fn substitute_expr(
             substitute_expr(expr, holes, types, patterns)?;
             substitute_type(ty, types)?;
         }
+        Expr::ExistentialPack { expr, ty, .. } => {
+            substitute_expr(expr, holes, types, patterns)?;
+            substitute_type(ty, types)?;
+        }
         Expr::Lambda { params, body, ret } => {
             substitute_params(params, holes, types, patterns)?;
             if let Some(ret) = ret {

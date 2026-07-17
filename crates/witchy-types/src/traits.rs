@@ -1113,7 +1113,7 @@ fn transitive_supertraits(direct: &HashMap<String, Vec<String>>) -> HashMap<Stri
     out
 }
 
-fn synthesize_anon_union_impls(
+pub(crate) fn synthesize_anon_union_impls(
     items: &[Item],
     trait_method_list: &HashMap<String, Vec<MethodSig>>,
 ) -> Vec<ImplDef> {
@@ -1356,6 +1356,10 @@ fn collect_anon_union_heads_expr(expr: &Expr, out: &mut HashMap<String, usize>) 
             collect_anon_union_heads_expr(expr, out);
         }
         Expr::As { expr, ty } => {
+            collect_anon_union_heads_expr(expr, out);
+            collect_anon_union_heads_type(ty, out);
+        }
+        Expr::ExistentialPack { expr, ty, .. } => {
             collect_anon_union_heads_expr(expr, out);
             collect_anon_union_heads_type(ty, out);
         }
@@ -2169,7 +2173,7 @@ fn local_expr_type(
             _ => None,
         },
         Expr::RecordUpdate { base, .. } => type_of(base),
-        Expr::As { ty, .. } => Some(ty.clone()),
+        Expr::As { ty, .. } | Expr::ExistentialPack { ty, .. } => Some(ty.clone()),
         Expr::Unary { op, expr } => match op {
             UnOp::Not => Some(named_type("Bool")),
             UnOp::Neg | UnOp::BitNot | UnOp::Move | UnOp::Await => type_of(expr),
@@ -2768,7 +2772,11 @@ impl Ctx<'_> {
                     self.rewrite_expr(a, scope);
                 }
             }
-            Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
+            Expr::Unary { expr, .. }
+            | Expr::Try(expr)
+            | Expr::As { expr, .. }
+            | Expr::ExistentialPack { expr, .. }
+            | Expr::Field { base: expr, .. } => {
                 self.rewrite_expr(expr, scope)
             }
             Expr::RecordUpdate { name: _, base, fields } => {
@@ -3333,7 +3341,10 @@ fn expr_needs_lowering(e: &Expr) -> bool {
         Expr::Apply { func, args } => {
             expr_needs_lowering(func) || args.iter().any(expr_needs_lowering)
         }
-        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } => {
+        Expr::Unary { expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. } => {
             expr_needs_lowering(expr)
         }
         Expr::Field { base, .. } => expr_needs_lowering(base),
@@ -3754,6 +3765,9 @@ fn subst_expr_types(e: &mut Expr, subst: &HashMap<String, Type>) {
             *ty = subst_trait_params(ty, subst);
             subst_expr_types(expr, subst);
         }
+        Expr::ExistentialPack { .. } => {
+            panic!("existential packs must be prepared after monomorphization");
+        }
         Expr::If { cond, then_block, else_block } => {
             subst_expr_types(cond, subst);
             subst_block_types(then_block, subst);
@@ -3952,7 +3966,10 @@ fn collect_function_refs(f: &Function, out: &mut HashSet<String>) {
                     walk(a, locals, out);
                 }
             }
-            Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. }
+            Expr::Unary { expr, .. }
+            | Expr::Try(expr)
+            | Expr::As { expr, .. }
+            | Expr::ExistentialPack { expr, .. }
             | Expr::Field { base: expr, .. } => walk(expr, locals, out),
             Expr::Binary { lhs, rhs, .. } => {
                 walk(lhs, locals, out);
@@ -4188,7 +4205,10 @@ fn rename_calls_block(
                     walk_expr(a, scope, ctx);
                 }
             }
-            Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. }
+            Expr::Unary { expr, .. }
+            | Expr::Try(expr)
+            | Expr::As { expr, .. }
+            | Expr::ExistentialPack { expr, .. }
             | Expr::Field { base: expr, .. } => walk_expr(expr, scope, ctx),
             Expr::Binary { lhs, rhs, .. } => {
                 walk_expr(lhs, scope, ctx);
@@ -4525,7 +4545,10 @@ fn rewrite_try_from_expr(
             rewrite_try_from_expr(lhs, dst_err, conversions, table);
             rewrite_try_from_expr(rhs, dst_err, conversions, table);
         }
-        Expr::Unary { expr, .. } | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
+        Expr::Unary { expr, .. }
+        | Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::Field { base: expr, .. } => {
             rewrite_try_from_expr(expr, dst_err, conversions, table);
         }
         Expr::Try(inner) => {
@@ -5143,7 +5166,11 @@ impl Mono<'_> {
                     self.walk_expr(a, scope);
                 }
             }
-            Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
+            Expr::Unary { expr, .. }
+            | Expr::Try(expr)
+            | Expr::As { expr, .. }
+            | Expr::ExistentialPack { expr, .. }
+            | Expr::Field { base: expr, .. } => {
                 self.walk_expr(expr, scope)
             }
             Expr::RecordUpdate { name: _, base, fields } => {

@@ -160,7 +160,9 @@ fn opt_expr(e: &mut Expr, consts: &mut Consts) {
             }
         }
         Expr::Try(inner) => opt_expr(inner, consts),
-        Expr::As { expr, .. } => opt_expr(expr, consts),
+        Expr::As { expr, .. } | Expr::ExistentialPack { expr, .. } => {
+            opt_expr(expr, consts)
+        }
         Expr::Binary { lhs, rhs, .. } => {
             opt_expr(lhs, consts);
             opt_expr(rhs, consts);

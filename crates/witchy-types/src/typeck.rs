@@ -767,6 +767,7 @@ fn check_unique_parameters(module: &Module) -> Result<(), TypeError> {
             Expr::Unary { expr, .. }
             | Expr::Field { base: expr, .. }
             | Expr::Try(expr)
+            | Expr::ExistentialPack { expr, .. }
             | Expr::As { expr, .. } => check_expr(expr),
             Expr::Lambda { params, body, .. } => {
                 check_params("lambda".to_string(), params)?;
@@ -1486,6 +1487,10 @@ fn check_type_names(module: &Module) -> Result<(), TypeError> {
                     validate_expr_types(expr, known, arities, type_defs, ctx, in_ctx)?;
                     validate_type_model(ty, known, arities, type_defs).map_err(|e| in_ctx(e, ctx))
                 }
+                Expr::ExistentialPack { expr, ty, .. } => {
+                    validate_expr_types(expr, known, arities, type_defs, ctx, in_ctx)?;
+                    validate_type_model(ty, known, arities, type_defs).map_err(|e| in_ctx(e, ctx))
+                }
                 Expr::Lambda { params, body, ret } => {
                     for param in params {
                         if let Some(ty) = &param.ty {
@@ -2041,6 +2046,10 @@ impl<'a> ExistentialCheck<'a> {
                 self.visit_expr(expr)
             }
             Expr::As { expr, ty } => {
+                self.visit_expr(expr)?;
+                self.visit_type(ty)
+            }
+            Expr::ExistentialPack { expr, ty, .. } => {
                 self.visit_expr(expr)?;
                 self.visit_type(ty)
             }
@@ -6139,6 +6148,7 @@ impl Checker {
             Expr::Unary { expr, .. }
             | Expr::Try(expr)
             | Expr::As { expr, .. }
+            | Expr::ExistentialPack { expr, .. }
             | Expr::Field { base: expr, .. } => self.collect_var_writebacks_in_expr(expr, out),
             Expr::RecordUpdate { base, fields, .. } => {
                 self.collect_var_writebacks_in_expr(base, out);
@@ -6368,6 +6378,10 @@ impl Checker {
                     "cannot resolve the method call `.{method}(…)` — methods come from \
                      `impl` blocks; a plain function is called as `{method}(value, …)`"
                 ))
+            }
+            Expr::ExistentialPack { expr, ty, .. } => {
+                self.infer(expr)?;
+                Ok(self.to_ty(ty))
             }
             // Named-field record construction is lowered by `witchy_syntax::records`
             // before type-checking.

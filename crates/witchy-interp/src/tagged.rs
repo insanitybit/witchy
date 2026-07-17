@@ -413,6 +413,7 @@ fn walk_children(
         }
         Expr::Try(e) => recur(e)?,
         Expr::As { expr, .. } => recur(expr)?,
+        Expr::ExistentialPack { expr, .. } => recur(expr)?,
         Expr::Binary { lhs, rhs, .. } => {
             recur(lhs)?;
             recur(rhs)?;
@@ -1096,6 +1097,7 @@ fn substitute_holes_children(
         }
         Expr::Try(e) => substitute_holes(e, holes, where_)?,
         Expr::As { expr, .. } => substitute_holes(expr, holes, where_)?,
+        Expr::ExistentialPack { expr, .. } => substitute_holes(expr, holes, where_)?,
         Expr::Binary { lhs, rhs, .. } => {
             substitute_holes(lhs, holes, where_)?;
             substitute_holes(rhs, holes, where_)?;

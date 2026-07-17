@@ -3127,6 +3127,7 @@ impl Parser {
             Expr::Unary { expr, .. }
             | Expr::Try(expr)
             | Expr::As { expr, .. }
+            | Expr::ExistentialPack { expr, .. }
             | Expr::Field { base: expr, .. } => Self::collect_quote_expr_holes(expr, holes),
             Expr::Lambda { body, .. } | Expr::Block(body) => {
                 Self::collect_quote_expr_holes_block(body, holes);
@@ -4440,6 +4441,7 @@ fn lower_sugar_expr(e: &mut Expr) {
         Expr::Unary { expr, .. }
         | Expr::Try(expr)
         | Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. }
         | Expr::Field { base: expr, .. } => lower_sugar_expr(expr),
         Expr::RecordUpdate { name: _, base, fields } => {
             lower_sugar_expr(base);

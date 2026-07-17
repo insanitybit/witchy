@@ -1206,7 +1206,9 @@ fn fv_expr(e: &Expr, bound: &HashSet<String>, seen: &mut HashSet<String>, out: &
         | Expr::Bool(_)
         | Expr::TaggedLit { .. } => {}
         Expr::Unary { expr, .. } | Expr::Field { base: expr, .. } | Expr::Try(expr)
-        | Expr::As { expr, .. } => fv_expr(expr, bound, seen, out),
+        | Expr::As { expr, .. } | Expr::ExistentialPack { expr, .. } => {
+            fv_expr(expr, bound, seen, out)
+        }
         Expr::Index { base, index } => {
             fv_expr(base, bound, seen, out);
             fv_expr(index, bound, seen, out);
@@ -1424,7 +1426,9 @@ fn contains_await(e: &Expr) -> bool {
         | Expr::Var(_)
         | Expr::TaggedLit { .. } => false,
         Expr::Unary { expr, .. } | Expr::Field { base: expr, .. } | Expr::Try(expr)
-        | Expr::As { expr, .. } => contains_await(expr),
+        | Expr::As { expr, .. } | Expr::ExistentialPack { expr, .. } => {
+            contains_await(expr)
+        }
         Expr::Index { base, index } => contains_await(base) || contains_await(index),
         Expr::Binary { lhs, rhs, .. } => contains_await(lhs) || contains_await(rhs),
         Expr::Range { lo, hi, .. } => contains_await(lo) || contains_await(hi),

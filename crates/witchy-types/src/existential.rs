@@ -1,0 +1,541 @@
+//! RFC-0081 compiler-owned existential construction.
+//!
+//! This pass consumes a typed source AST after checking has selected concrete
+//! payload types. It builds the deterministic closed-program witness plan and
+//! replaces explicit `as dyn Trait` erasures with typed, source-unspellable AST
+//! nodes. Backends therefore consume one construction contract without
+//! rediscovering impl identity from names or runtime values.
+
+use witchy_syntax::ast::{Block, Expr, Item, Module, Stmt, Type};
+
+use crate::typeck::{TypeTable, TypedModule, ty_to_ast};
+use crate::witness::{self, WitnessCatalog, WitnessPlan};
+
+#[derive(Debug)]
+pub struct PreparedExistentials {
+    module: Module,
+    witnesses: WitnessPlan,
+}
+
+impl PreparedExistentials {
+    pub fn module(&self) -> &Module {
+        &self.module
+    }
+
+    pub fn witnesses(&self) -> &WitnessPlan {
+        &self.witnesses
+    }
+
+    pub fn into_parts(self) -> (Module, WitnessPlan) {
+        (self.module, self.witnesses)
+    }
+}
+
+/// Lower every explicit concrete-to-existential cast in one final typed module.
+///
+/// The public RFC-0081 stage gate remains closed while the interpreter and Wasm
+/// implementations are incomplete. This function is the shared internal seam
+/// those backends consume. `typed` must be the exact, trait-lowered and
+/// monomorphized executable module whose expression identities produced the
+/// type table. `catalog` is captured from the resolved linked module before
+/// trait lowering removes its declarations.
+pub fn lower_explicit_packs(
+    typed: TypedModule,
+    catalog: &WitnessCatalog,
+) -> Result<PreparedExistentials, String> {
+    if typed
+        .module()
+        .items
+        .iter()
+        .any(|item| matches!(item, Item::Trait(_) | Item::Impl(_)))
+    {
+        return Err(
+            "existential preparation requires a trait-lowered, monomorphic executable module"
+                .to_string(),
+        );
+    }
+    let requests = collect_requests(typed.module(), typed.table())?;
+    let witnesses = witness::build_from_catalog(catalog, requests)?;
+    let (module, result) = typed.rewrite_into_module(|table, module| {
+        rewrite_module(module, table, &witnesses)
+    });
+    result?;
+    Ok(PreparedExistentials { module, witnesses })
+}
+
+fn concrete_type(table: &TypeTable, expr: &Expr) -> Result<Type, String> {
+    let ty = table
+        .type_of(expr)
+        .and_then(ty_to_ast)
+        .ok_or_else(|| {
+            "existential construction requires one fully resolved concrete payload type"
+                .to_string()
+        })?;
+    Ok(ty.unqualified().clone())
+}
+
+fn existential_target(ty: &Type) -> Option<Type> {
+    match ty.unqualified() {
+        Type::Dyn(name, args) => Some(Type::Dyn(name.clone(), args.clone())),
+        _ => None,
+    }
+}
+
+fn collect_requests(
+    module: &Module,
+    table: &TypeTable,
+) -> Result<Vec<(Type, Type)>, String> {
+    let mut requests = Vec::new();
+    visit_module_exprs(module, &mut |expr| {
+        let Expr::As { expr: payload, ty } = expr else {
+            return Ok(());
+        };
+        let Some(existential) = existential_target(ty) else {
+            return Ok(());
+        };
+        requests.push((existential, concrete_type(table, payload)?));
+        Ok(())
+    })?;
+    Ok(requests)
+}
+
+fn rewrite_module(
+    module: &mut Module,
+    table: &TypeTable,
+    witnesses: &WitnessPlan,
+) -> Result<(), String> {
+    for item in &mut module.items {
+        match item {
+            Item::Function(function) => rewrite_block(&mut function.body, table, witnesses)?,
+            Item::Trait(definition) => {
+                for method in &mut definition.methods {
+                    if let Some(default) = &mut method.default {
+                        rewrite_block(default, table, witnesses)?;
+                    }
+                }
+            }
+            Item::Impl(definition) => {
+                for method in &mut definition.methods {
+                    rewrite_block(&mut method.body, table, witnesses)?;
+                }
+            }
+            Item::Const { value, .. } => rewrite_expr(value, table, witnesses)?,
+            Item::Comptime(block) => rewrite_block(block, table, witnesses)?,
+            Item::Type(_) | Item::TypeAlias { .. } => {}
+        }
+    }
+    Ok(())
+}
+
+fn rewrite_block(
+    block: &mut Block,
+    table: &TypeTable,
+    witnesses: &WitnessPlan,
+) -> Result<(), String> {
+    for statement in &mut block.stmts {
+        match statement {
+            Stmt::Let { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::LetPattern { value, .. }
+            | Stmt::Yield(value)
+            | Stmt::Expr(value)
+            | Stmt::Return(Some(value)) => rewrite_expr(value, table, witnesses)?,
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+    Ok(())
+}
+
+fn rewrite_expr(
+    expr: &mut Expr,
+    table: &TypeTable,
+    witnesses: &WitnessPlan,
+) -> Result<(), String> {
+    if let Expr::As { expr: payload, ty } = expr
+        && let Some(existential) = existential_target(ty)
+    {
+        let concrete = concrete_type(table, payload)?;
+        rewrite_expr(payload, table, witnesses)?;
+        let witness = witnesses
+            .get(&existential, &concrete)
+            .ok_or_else(|| {
+                format!(
+                    "existential witness plan lost construction `{concrete:?} as {existential:?}`"
+                )
+            })?
+            .id;
+        let payload = std::mem::replace(payload.as_mut(), Expr::Bool(false));
+        *expr = Expr::ExistentialPack {
+            expr: Box::new(payload),
+            ty: ty.clone(),
+            witness,
+        };
+        return Ok(());
+    }
+
+    match expr {
+        Expr::List(items)
+        | Expr::Tuple(items)
+        | Expr::Ctor { args: items, .. }
+        | Expr::AnonCtor { args: items, .. } => {
+            for item in items {
+                rewrite_expr(item, table, witnesses)?;
+            }
+        }
+        Expr::Call { args, .. } => {
+            for argument in args {
+                rewrite_expr(argument, table, witnesses)?;
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            rewrite_expr(receiver, table, witnesses)?;
+            for argument in args {
+                rewrite_expr(argument, table, witnesses)?;
+            }
+        }
+        Expr::LabeledCall { args, .. } => {
+            for (_, argument) in args {
+                rewrite_expr(argument, table, witnesses)?;
+            }
+        }
+        Expr::Apply { func, args } => {
+            rewrite_expr(func, table, witnesses)?;
+            for argument in args {
+                rewrite_expr(argument, table, witnesses)?;
+            }
+        }
+        Expr::Unary { expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::Field { base: expr, .. } => rewrite_expr(expr, table, witnesses)?,
+        Expr::Lambda { body, .. } | Expr::Block(body) => {
+            rewrite_block(body, table, witnesses)?;
+        }
+        Expr::RecordUpdate { base, fields, .. } => {
+            rewrite_expr(base, table, witnesses)?;
+            for (_, value) in fields {
+                rewrite_expr(value, table, witnesses)?;
+            }
+        }
+        Expr::Record { fields, spread, .. } => {
+            for (_, value) in fields {
+                rewrite_expr(value, table, witnesses)?;
+            }
+            if let Some(spread) = spread {
+                rewrite_expr(spread, table, witnesses)?;
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            rewrite_expr(lhs, table, witnesses)?;
+            rewrite_expr(rhs, table, witnesses)?;
+        }
+        Expr::If { cond, then_block, else_block } => {
+            rewrite_expr(cond, table, witnesses)?;
+            rewrite_block(then_block, table, witnesses)?;
+            if let Some(else_block) = else_block {
+                rewrite_block(else_block, table, witnesses)?;
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            rewrite_expr(scrutinee, table, witnesses)?;
+            for arm in arms {
+                if let Some(guard) = &mut arm.guard {
+                    rewrite_expr(guard, table, witnesses)?;
+                }
+                rewrite_expr(&mut arm.body, table, witnesses)?;
+            }
+        }
+        Expr::While { cond, body } => {
+            rewrite_expr(cond, table, witnesses)?;
+            rewrite_block(body, table, witnesses)?;
+        }
+        Expr::For { iter, body, .. } => {
+            rewrite_expr(iter, table, witnesses)?;
+            rewrite_block(body, table, witnesses)?;
+        }
+        Expr::Range { lo, hi, .. } => {
+            rewrite_expr(lo, table, witnesses)?;
+            rewrite_expr(hi, table, witnesses)?;
+        }
+        Expr::Index { base, index } => {
+            rewrite_expr(base, table, witnesses)?;
+            rewrite_expr(index, table, witnesses)?;
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            rewrite_expr(scrutinee, table, witnesses)?;
+            rewrite_block(body, table, witnesses)?;
+        }
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Duration(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::Var(_)
+        | Expr::TaggedLit { .. } => {}
+    }
+    Ok(())
+}
+
+fn visit_module_exprs(
+    module: &Module,
+    visitor: &mut impl FnMut(&Expr) -> Result<(), String>,
+) -> Result<(), String> {
+    for item in &module.items {
+        match item {
+            Item::Function(function) => visit_block(&function.body, visitor)?,
+            Item::Trait(definition) => {
+                for method in &definition.methods {
+                    if let Some(default) = &method.default {
+                        visit_block(default, visitor)?;
+                    }
+                }
+            }
+            Item::Impl(definition) => {
+                for method in &definition.methods {
+                    visit_block(&method.body, visitor)?;
+                }
+            }
+            Item::Const { value, .. } => visit_expr(value, visitor)?,
+            Item::Comptime(block) => visit_block(block, visitor)?,
+            Item::Type(_) | Item::TypeAlias { .. } => {}
+        }
+    }
+    Ok(())
+}
+
+fn visit_block(
+    block: &Block,
+    visitor: &mut impl FnMut(&Expr) -> Result<(), String>,
+) -> Result<(), String> {
+    for statement in &block.stmts {
+        match statement {
+            Stmt::Let { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::LetPattern { value, .. }
+            | Stmt::Yield(value)
+            | Stmt::Expr(value)
+            | Stmt::Return(Some(value)) => visit_expr(value, visitor)?,
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+    Ok(())
+}
+
+fn visit_expr(
+    expr: &Expr,
+    visitor: &mut impl FnMut(&Expr) -> Result<(), String>,
+) -> Result<(), String> {
+    visitor(expr)?;
+    match expr {
+        Expr::List(items)
+        | Expr::Tuple(items)
+        | Expr::Ctor { args: items, .. }
+        | Expr::AnonCtor { args: items, .. } => {
+            for item in items {
+                visit_expr(item, visitor)?;
+            }
+        }
+        Expr::Call { args, .. } | Expr::MethodCall { args, .. } => {
+            if let Expr::MethodCall { receiver, .. } = expr {
+                visit_expr(receiver, visitor)?;
+            }
+            for argument in args {
+                visit_expr(argument, visitor)?;
+            }
+        }
+        Expr::LabeledCall { args, .. } => {
+            for (_, argument) in args {
+                visit_expr(argument, visitor)?;
+            }
+        }
+        Expr::Apply { func, args } => {
+            visit_expr(func, visitor)?;
+            for argument in args {
+                visit_expr(argument, visitor)?;
+            }
+        }
+        Expr::Unary { expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::Field { base: expr, .. } => visit_expr(expr, visitor)?,
+        Expr::Lambda { body, .. } | Expr::Block(body) => visit_block(body, visitor)?,
+        Expr::RecordUpdate { base, fields, .. } => {
+            visit_expr(base, visitor)?;
+            for (_, value) in fields {
+                visit_expr(value, visitor)?;
+            }
+        }
+        Expr::Record { fields, spread, .. } => {
+            for (_, value) in fields {
+                visit_expr(value, visitor)?;
+            }
+            if let Some(spread) = spread {
+                visit_expr(spread, visitor)?;
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            visit_expr(lhs, visitor)?;
+            visit_expr(rhs, visitor)?;
+        }
+        Expr::If { cond, then_block, else_block } => {
+            visit_expr(cond, visitor)?;
+            visit_block(then_block, visitor)?;
+            if let Some(else_block) = else_block {
+                visit_block(else_block, visitor)?;
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            visit_expr(scrutinee, visitor)?;
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    visit_expr(guard, visitor)?;
+                }
+                visit_expr(&arm.body, visitor)?;
+            }
+        }
+        Expr::While { cond, body } => {
+            visit_expr(cond, visitor)?;
+            visit_block(body, visitor)?;
+        }
+        Expr::For { iter, body, .. } => {
+            visit_expr(iter, visitor)?;
+            visit_block(body, visitor)?;
+        }
+        Expr::Range { lo, hi, .. } => {
+            visit_expr(lo, visitor)?;
+            visit_expr(hi, visitor)?;
+        }
+        Expr::Index { base, index } => {
+            visit_expr(base, visitor)?;
+            visit_expr(index, visitor)?;
+        }
+        Expr::WhileLet { scrutinee, body, .. } => {
+            visit_expr(scrutinee, visitor)?;
+            visit_block(body, visitor)?;
+        }
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Duration(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::Var(_)
+        | Expr::TaggedLit { .. } => {}
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use witchy_syntax::parser;
+
+    #[test]
+    fn explicit_erasure_becomes_a_typed_compiler_owned_pack() {
+        let source = r#"
+trait Render:
+    fn render(self) -> String
+
+type Label:
+    Label(String)
+
+impl Render for Label:
+    fn render(self) -> String:
+        match self:
+            Label(text) -> text
+
+fn erase(value: Label) -> dyn Render:
+    value as dyn Render
+"#;
+        let mut module = parser::parse_module(source).expect("parse existential pack");
+        let catalog = WitnessCatalog::from_module(&module);
+        module
+            .items
+            .retain(|item| !matches!(item, Item::Trait(_) | Item::Impl(_)));
+        let prepared = lower_explicit_packs(crate::typeck::annotate(module), &catalog)
+            .expect("lower pack");
+        assert_eq!(prepared.witnesses().witnesses.len(), 1);
+        assert_eq!(prepared.witnesses().witnesses[0].id, 0);
+
+        let function = prepared
+            .module()
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "erase" => Some(function),
+                _ => None,
+            })
+            .expect("erase function");
+        assert!(matches!(
+            function.body.stmts.as_slice(),
+            [Stmt::Expr(Expr::ExistentialPack {
+                ty: Type::Dyn(name, args),
+                witness: 0,
+                ..
+            })] if name == "Render" && args.is_empty()
+        ));
+
+        let retyped = crate::typeck::annotate(prepared.module().clone());
+        let function = retyped
+            .module()
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "erase" => Some(function),
+                _ => None,
+            })
+            .expect("retyped erase function");
+        let [Stmt::Expr(pack @ Expr::ExistentialPack { .. })] =
+            function.body.stmts.as_slice()
+        else {
+            panic!("reannotation must preserve the compiler-owned pack");
+        };
+        assert!(matches!(
+            retyped.table().type_of(pack).and_then(ty_to_ast),
+            Some(Type::Dyn(name, args)) if name == "Render" && args.is_empty()
+        ));
+    }
+
+    #[test]
+    fn explicit_erasure_without_an_impl_fails_before_either_backend() {
+        let source = r#"
+trait Render:
+    fn render(self) -> String
+
+type Label:
+    Label(String)
+
+fn erase(value: Label) -> dyn Render:
+    value as dyn Render
+"#;
+        let mut module = parser::parse_module(source).expect("parse missing witness");
+        let catalog = WitnessCatalog::from_module(&module);
+        module
+            .items
+            .retain(|item| !matches!(item, Item::Trait(_) | Item::Impl(_)));
+        let error = lower_explicit_packs(crate::typeck::annotate(module), &catalog)
+            .expect_err("missing impl must reject")
+            .to_string();
+        assert!(
+            error.contains("no linked `impl Render` for `named:Label()`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn preparation_rejects_a_pre_lowering_module() {
+        let module = parser::parse_module(
+            "trait Render:\n\
+             \x20   fn render(self) -> String\n",
+        )
+        .expect("parse trait");
+        let catalog = WitnessCatalog::from_module(&module);
+        let error = lower_explicit_packs(crate::typeck::annotate(module), &catalog)
+            .expect_err("trait declarations prove preparation ran too early");
+        assert!(
+            error.contains("trait-lowered, monomorphic executable module"),
+            "{error}"
+        );
+    }
+}

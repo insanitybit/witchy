@@ -129,6 +129,7 @@ impl Resolver {
             Expr::Unary { expr, .. }
             | Expr::Try(expr)
             | Expr::As { expr, .. }
+            | Expr::ExistentialPack { expr, .. }
             | Expr::Field { base: expr, .. } => self.expr(expr)?,
             Expr::Index { base, index } => {
                 self.expr(base)?;

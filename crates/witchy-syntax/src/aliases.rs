@@ -434,6 +434,10 @@ fn resolve_in_expr_with_origin(
             resolve_in_expr_with_origin(expr, map, resolve_call_site_head);
             resolve_type_with_origin(ty, map, resolve_call_site_head);
         }
+        Expr::ExistentialPack { expr, ty, .. } => {
+            resolve_in_expr_with_origin(expr, map, resolve_call_site_head);
+            resolve_type_with_origin(ty, map, resolve_call_site_head);
+        }
         Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
             resolve_in_expr_with_origin(expr, map, resolve_call_site_head)
         }

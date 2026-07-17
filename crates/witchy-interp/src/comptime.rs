@@ -667,6 +667,7 @@ fn stamp_expr(e: &mut Expr, line: u32) {
         Expr::Unary { expr, .. }
         | Expr::Try(expr)
         | Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. }
         | Expr::Field { base: expr, .. } => stamp_expr(expr, line),
         Expr::Index { base, index } => {
             stamp_expr(base, line);

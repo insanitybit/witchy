@@ -1126,7 +1126,10 @@ fn idents_in_expr(e: &Expr, f: &mut dyn FnMut(&str)) {
                 idents_in_expr(a, f);
             }
         }
-        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } => {
+        Expr::Unary { expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. } => {
             idents_in_expr(expr, f)
         }
         Expr::Field { base, .. } => idents_in_expr(base, f),
@@ -1547,8 +1550,11 @@ fn collect_nested_returns_expr(expr: &Expr, out: &mut FxHashSet<String>) {
                 collect_nested_returns_expr(arg, out);
             }
         }
-        Expr::Unary { expr, .. } | Expr::Field { base: expr, .. }
-        | Expr::Try(expr) | Expr::As { expr, .. } => collect_nested_returns_expr(expr, out),
+        Expr::Unary { expr, .. }
+        | Expr::Field { base: expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. } => collect_nested_returns_expr(expr, out),
         Expr::RecordUpdate { base, fields, .. } => {
             collect_nested_returns_expr(base, out);
             for (_, value) in fields {
@@ -5438,6 +5444,9 @@ impl Interpreter {
             // `e as T` narrows a capability's rights — purely type-level, so at
             // runtime it is the identity on the underlying value.
             Expr::As { expr, .. } => self.eval(expr, env),
+            Expr::ExistentialPack { .. } => err(
+                "internal: RFC-0081 existential node reached the interpreter before runtime witness lowering",
+            ),
             // `&&`/`||` short-circuit, so the right side isn't always evaluated.
             Expr::Binary { op: BinOp::And, lhs, rhs } => match self.eval(lhs, env)? {
                 Value::Bool(false) => Ok(Value::Bool(false)),

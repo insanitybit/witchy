@@ -36,6 +36,74 @@ pub struct WitnessPlan {
     pub witnesses: Vec<Witness>,
 }
 
+/// Trait and impl declarations preserved across trait lowering.
+///
+/// Runtime preparation runs after monomorphization, when the executable module
+/// has concrete expression types but no longer contains these declarations.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WitnessCatalog {
+    traits: Vec<TraitDef>,
+    impls: Vec<ImplDef>,
+}
+
+impl WitnessCatalog {
+    pub fn from_module(module: &Module) -> Self {
+        let mut catalog = Self::default();
+        let trait_methods = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Trait(definition) => {
+                    Some((definition.name.clone(), definition.methods.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        for item in &module.items {
+            match item {
+                Item::Trait(definition) => catalog.traits.push(definition.clone()),
+                Item::Impl(definition) if definition.trait_name.is_some() => {
+                    catalog.impls.push(definition.clone());
+                }
+                _ => {}
+            }
+        }
+        catalog
+            .impls
+            .extend(crate::traits::synthesize_anon_union_impls(
+                &module.items,
+                &trait_methods,
+            ));
+        catalog
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExistentialSlot {
+    pub owner_trait: String,
+    pub method: String,
+    pub params: Vec<Type>,
+    pub result: Type,
+    /// Receiver first, followed by the explicit method arguments.
+    pub conventions: Vec<Convention>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExistentialLayout {
+    pub existential: Type,
+    pub slots: Vec<ExistentialSlot>,
+}
+
+impl ExistentialLayout {
+    pub fn slot(&self, owner_trait: &str, method: &str) -> Option<(u32, &ExistentialSlot)> {
+        self.slots
+            .iter()
+            .enumerate()
+            .find(|(_, slot)| slot.owner_trait == owner_trait && slot.method == method)
+            .and_then(|(index, slot)| u32::try_from(index).ok().map(|index| (index, slot)))
+    }
+}
+
 impl WitnessPlan {
     pub fn by_id(&self, id: u32) -> Option<&Witness> {
         self.witnesses
@@ -60,6 +128,114 @@ impl Witness {
     }
 }
 
+/// Resolve the method-slot surface from the static existential type alone.
+///
+/// Every concrete witness consumes this layout, so method lowering can select a
+/// slot before runtime witness identity is known and cannot drift from the
+/// adapter table built for a concrete payload.
+pub fn layout(module: &Module, existential: &Type) -> Result<ExistentialLayout, String> {
+    layout_from_catalog(&WitnessCatalog::from_module(module), existential)
+}
+
+pub fn layout_from_catalog(
+    catalog: &WitnessCatalog,
+    existential: &Type,
+) -> Result<ExistentialLayout, String> {
+    let Type::Dyn(trait_name, trait_args) = existential else {
+        return Err(format!(
+            "existential layout must name `dyn Trait`, got `{}`",
+            type_key(existential)
+        ));
+    };
+    if trait_args.iter().any(has_free_type_variable) {
+        return Err(format!(
+            "existential layout must be fully substituted, got `{}`",
+            type_key(existential)
+        ));
+    }
+    let traits: HashMap<&str, &TraitDef> = catalog
+        .traits
+        .iter()
+        .map(|definition| (definition.name.as_str(), definition))
+        .collect();
+    let root = traits
+        .get(trait_name.as_str())
+        .ok_or_else(|| format!("existential layout references unknown trait `{trait_name}`"))?;
+    if root.typarams.len() != trait_args.len() {
+        return Err(format!(
+            "trait `{trait_name}` expects {} type argument(s), got {}",
+            root.typarams.len(),
+            trait_args.len()
+        ));
+    }
+
+    let mut order = Vec::new();
+    linearize_trait(trait_name, &traits, &mut HashSet::new(), &mut order)?;
+    let mut slots = Vec::new();
+    for owner in order {
+        let definition = traits
+            .get(owner.as_str())
+            .ok_or_else(|| format!("existential layout references unknown trait `{owner}`"))?;
+        let owner_args = if owner == *trait_name {
+            trait_args.as_slice()
+        } else {
+            &[]
+        };
+        if definition.typarams.len() != owner_args.len() {
+            return Err(format!(
+                "supertrait `{owner}` requires type arguments that Witchy's supertrait syntax cannot supply"
+            ));
+        }
+        let vars: HashMap<String, Type> = definition
+            .typarams
+            .iter()
+            .cloned()
+            .zip(owner_args.iter().cloned())
+            .collect();
+        for method in &definition.methods {
+            if method.params.first().is_none_or(|param| param.name != "self") {
+                return Err(format!(
+                    "trait method `{}.{}` has no receiver and cannot occupy an existential slot",
+                    definition.name, method.name
+                ));
+            }
+            let params = method
+                .params
+                .iter()
+                .skip(1)
+                .map(|param| {
+                    param
+                        .ty
+                        .as_ref()
+                        .map(|ty| subst_trait_params(ty, &vars))
+                        .ok_or_else(|| {
+                            format!(
+                                "trait method `{}.{}` parameter `{}` has no type; existential dispatch signatures must be fully typed",
+                                definition.name, method.name, param.name
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            let result = method
+                .ret
+                .as_ref()
+                .map(|ty| subst_trait_params(ty, &vars))
+                .unwrap_or_else(|| Type::Named("Nil".into(), Vec::new()));
+            slots.push(ExistentialSlot {
+                owner_trait: definition.name.clone(),
+                method: method.name.clone(),
+                params,
+                result,
+                conventions: method.params.iter().map(|param| param.convention).collect(),
+            });
+        }
+    }
+    Ok(ExistentialLayout {
+        existential: existential.clone(),
+        slots,
+    })
+}
+
 /// Build the closed-program witness plan for the concrete-to-existential
 /// conversions selected by type checking. Impl declarations are templates:
 /// runtime identities are assigned only to these closed construction requests.
@@ -67,21 +243,21 @@ pub fn build(
     module: &Module,
     requests: impl IntoIterator<Item = (Type, Type)>,
 ) -> Result<WitnessPlan, String> {
-    let traits: HashMap<&str, &TraitDef> = module
-        .items
+    build_from_catalog(&WitnessCatalog::from_module(module), requests)
+}
+
+pub fn build_from_catalog(
+    catalog: &WitnessCatalog,
+    requests: impl IntoIterator<Item = (Type, Type)>,
+) -> Result<WitnessPlan, String> {
+    let traits: HashMap<&str, &TraitDef> = catalog
+        .traits
         .iter()
-        .filter_map(|item| match item {
-            Item::Trait(definition) => Some((definition.name.as_str(), definition)),
-            _ => None,
-        })
+        .map(|definition| (definition.name.as_str(), definition))
         .collect();
-    let impls: Vec<&ImplDef> = module
-        .items
+    let impls: Vec<&ImplDef> = catalog
+        .impls
         .iter()
-        .filter_map(|item| match item {
-            Item::Impl(definition) if definition.trait_name.is_some() => Some(definition),
-            _ => None,
-        })
         .collect();
 
     let mut entries = requests
@@ -115,17 +291,17 @@ pub fn build(
         }
         let (implementation, bindings) =
             resolve_impl(&impls, trait_name, trait_args, &concrete)?;
-        let mut order = Vec::new();
-        linearize_trait(trait_name, &traits, &mut HashSet::new(), &mut order)?;
+        let static_layout = layout_from_catalog(catalog, &existential)?;
         let mut slots = Vec::new();
-        for owner in order {
+        for dispatch in &static_layout.slots {
+            let owner = &dispatch.owner_trait;
             let owner_trait = traits
                 .get(owner.as_str())
                 .ok_or_else(|| format!("existential witness references unknown trait `{owner}`"))?;
-            let (owner_impl, owner_bindings) = if owner == *trait_name {
+            let (owner_impl, owner_bindings) = if owner == trait_name {
                 (implementation, bindings.clone())
             } else {
-                resolve_impl(&impls, &owner, &[], &concrete).map_err(|_| {
+                resolve_impl(&impls, owner, &[], &concrete).map_err(|_| {
                     format!(
                         "`{}` implements `{trait_name}` but has no witness impl for supertrait `{owner}`",
                         type_key(&concrete)
@@ -139,16 +315,37 @@ pub fn build(
                 .cloned()
                 .zip(concrete_impl.trait_args.iter().cloned())
                 .collect();
-            for method in &owner_trait.methods {
-                slots.push(slot(
-                    owner_trait,
-                    owner_impl,
-                    &concrete_impl,
-                    method,
-                    &vars,
-                    &owner_bindings,
-                )?);
+            let method = owner_trait
+                .methods
+                .iter()
+                .find(|method| method.name == dispatch.method)
+                .ok_or_else(|| {
+                    format!(
+                        "existential layout lost method `{}.{}`",
+                        dispatch.owner_trait, dispatch.method
+                    )
+                })?;
+            let concrete_slot = slot(
+                owner_trait,
+                owner_impl,
+                &concrete_impl,
+                method,
+                &vars,
+                &owner_bindings,
+            )?;
+            let concrete_conventions = std::iter::once(concrete_slot.receiver)
+                .chain(concrete_slot.conventions.iter().copied())
+                .collect::<Vec<_>>();
+            if concrete_slot.params != dispatch.params
+                || concrete_slot.result != dispatch.result
+                || concrete_conventions != dispatch.conventions
+            {
+                return Err(format!(
+                    "existential witness adapter ABI for `{}.{}` drifted from its static slot layout",
+                    dispatch.owner_trait, dispatch.method
+                ));
             }
+            slots.push(concrete_slot);
         }
         witnesses.push(Witness {
             id: u32::try_from(witnesses.len())
@@ -190,25 +387,17 @@ fn resolve_impl<'a>(
     trait_args: &[Type],
     concrete: &Type,
 ) -> Result<(&'a ImplDef, HashMap<String, Type>), String> {
-    let mut matches = impls.iter().filter_map(|candidate| {
-        if candidate.trait_name.as_deref() != Some(trait_name)
-            || candidate.trait_args.len() != trait_args.len()
-        {
-            return None;
+    let mut matches = Vec::new();
+    for candidate in impls {
+        let Some(bindings) = match_impl_head(candidate, trait_name, trait_args, concrete) else {
+            continue;
+        };
+        let mut visiting = HashSet::new();
+        if impl_bounds_hold(impls, candidate, &bindings, &mut visiting) {
+            matches.push((*candidate, bindings));
         }
-        let mut bindings = HashMap::new();
-        if !bind_ast_type_vars(&impl_self_type(candidate), concrete, &mut bindings)
-            || !candidate
-                .trait_args
-                .iter()
-                .zip(trait_args)
-                .all(|(pattern, concrete)| bind_ast_type_vars(pattern, concrete, &mut bindings))
-        {
-            return None;
-        }
-        Some((*candidate, bindings))
-    });
-    let Some(found) = matches.next() else {
+    }
+    let Some(found) = matches.first().cloned() else {
         return Err(format!(
             "no linked `impl {}` for `{}` can construct `dyn {}`",
             trait_name,
@@ -216,7 +405,7 @@ fn resolve_impl<'a>(
             trait_name
         ));
     };
-    if matches.next().is_some() {
+    if matches.len() > 1 {
         return Err(format!(
             "multiple linked `impl {}` declarations match `{}`",
             trait_name,
@@ -224,6 +413,73 @@ fn resolve_impl<'a>(
         ));
     }
     Ok(found)
+}
+
+fn match_impl_head(
+    candidate: &ImplDef,
+    trait_name: &str,
+    trait_args: &[Type],
+    concrete: &Type,
+) -> Option<HashMap<String, Type>> {
+    if candidate.trait_name.as_deref() != Some(trait_name)
+        || candidate.trait_args.len() != trait_args.len()
+    {
+        return None;
+    }
+    let mut bindings = HashMap::new();
+    if !bind_ast_type_vars(&impl_self_type(candidate), concrete, &mut bindings)
+        || !candidate
+            .trait_args
+            .iter()
+            .zip(trait_args)
+            .all(|(pattern, concrete)| bind_ast_type_vars(pattern, concrete, &mut bindings))
+    {
+        return None;
+    }
+    Some(bindings)
+}
+
+fn impl_bounds_hold(
+    impls: &[&ImplDef],
+    candidate: &ImplDef,
+    bindings: &HashMap<String, Type>,
+    visiting: &mut HashSet<String>,
+) -> bool {
+    candidate.bounds.iter().all(|(variable, trait_name, trait_args)| {
+        let Some(target) = bindings.get(variable) else {
+            return false;
+        };
+        let trait_args = trait_args
+            .iter()
+            .map(|arg| subst_trait_params(arg, bindings))
+            .collect::<Vec<_>>();
+        has_applicable_impl(impls, trait_name, &trait_args, target, visiting)
+    })
+}
+
+fn has_applicable_impl(
+    impls: &[&ImplDef],
+    trait_name: &str,
+    trait_args: &[Type],
+    concrete: &Type,
+    visiting: &mut HashSet<String>,
+) -> bool {
+    let key = format!(
+        "{trait_name}({}):{}",
+        trait_args.iter().map(type_key).collect::<Vec<_>>().join(","),
+        type_key(concrete)
+    );
+    if !visiting.insert(key.clone()) {
+        return false;
+    }
+    let found = impls.iter().any(|candidate| {
+        let Some(bindings) = match_impl_head(candidate, trait_name, trait_args, concrete) else {
+            return false;
+        };
+        impl_bounds_hold(impls, candidate, &bindings, visiting)
+    });
+    visiting.remove(&key);
+    found
 }
 
 fn instantiate_impl(implementation: &ImplDef, bindings: &HashMap<String, Type>) -> ImplDef {
@@ -368,6 +624,8 @@ mod tests {
             )],
         )
         .expect("witness plan");
+        let layout = layout(&module, &Type::Dyn("Render".into(), Vec::new()))
+            .expect("static existential layout");
         let witness = plan
             .get(
                 &Type::Dyn("Render".into(), Vec::new()),
@@ -391,6 +649,22 @@ mod tests {
         assert_eq!(
             witness.slots[2].conventions,
             [Convention::Let]
+        );
+        assert_eq!(
+            layout
+                .slots
+                .iter()
+                .map(|slot| (slot.owner_trait.as_str(), slot.method.as_str()))
+                .collect::<Vec<_>>(),
+            [("Base", "id"), ("Render", "render"), ("Render", "replace")]
+        );
+        assert_eq!(
+            layout.slots[2].conventions,
+            [Convention::Var, Convention::Let]
+        );
+        assert_eq!(
+            layout.slot("Render", "replace").map(|(index, _)| index),
+            Some(2)
         );
         assert_eq!(
             witness.slot("Render", "replace").map(|(index, _)| index),
@@ -489,6 +763,86 @@ mod tests {
             [Type::Named("String".into(), Vec::new())]
         );
         assert_ne!(int.slots[0].adapter, string.slots[0].adapter);
+    }
+
+    #[test]
+    fn conditional_impl_bounds_gate_witness_selection() {
+        let module = parser::parse_module(
+            "trait Show:\n\
+             \x20   fn show(self) -> String\n\n\
+             trait Render:\n\
+             \x20   fn render(self) -> String\n\n\
+             type HasShow:\n\
+             \x20   HasShow\n\n\
+             type NoShow:\n\
+             \x20   NoShow\n\n\
+             type Box(a):\n\
+             \x20   Box(a)\n\n\
+             impl Show for HasShow:\n\
+             \x20   fn show(self) -> String:\n\
+             \x20       \"shown\"\n\n\
+             impl Render for Box(a) where a: Show:\n\
+             \x20   fn render(self) -> String:\n\
+             \x20       \"rendered\"\n",
+        )
+        .expect("parse conditional impl");
+        let existential = Type::Dyn("Render".into(), Vec::new());
+        let boxed = |element: &str| {
+            Type::Named(
+                "Box".into(),
+                vec![Type::Named(element.into(), Vec::new())],
+            )
+        };
+
+        let plan = build(
+            &module,
+            [(existential.clone(), boxed("HasShow"))],
+        )
+        .expect("satisfied bound selects witness");
+        assert_eq!(plan.witnesses.len(), 1);
+
+        let error = build(&module, [(existential, boxed("NoShow"))])
+            .expect_err("unsatisfied bound must reject witness construction");
+        assert!(error.contains("no linked `impl Render`"), "{error}");
+    }
+
+    #[test]
+    fn catalog_includes_synthesized_anonymous_union_impls() {
+        let module = parser::parse_module(
+            "trait Show:\n\
+             \x20   fn show(self) -> String\n\n\
+             impl Show for Int:\n\
+             \x20   fn show(self) -> String:\n\
+             \x20       \"int\"\n\n\
+             impl Show for String:\n\
+             \x20   fn show(self) -> String:\n\
+             \x20       self\n\n\
+             fn describe(value: .[Count(Int) | Text(String)]) -> String:\n\
+             \x20   \"value\"\n",
+        )
+        .expect("parse anonymous union");
+        let catalog = WitnessCatalog::from_module(&module);
+        let implementation = catalog
+            .impls
+            .iter()
+            .find(|implementation| {
+                implementation.trait_name.as_deref() == Some("Show")
+                    && implementation.type_name.starts_with("__union")
+            })
+            .expect("anonymous union Show impl");
+        let concrete = Type::Named(
+            implementation.type_name.clone(),
+            vec![
+                Type::Named("Int".into(), Vec::new()),
+                Type::Named("String".into(), Vec::new()),
+            ],
+        );
+        let plan = build_from_catalog(
+            &catalog,
+            [(Type::Dyn("Show".into(), Vec::new()), concrete.clone())],
+        )
+        .expect("synthesized impl constructs a witness");
+        assert_eq!(plan.witnesses[0].concrete, concrete);
     }
 
     #[test]

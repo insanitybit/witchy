@@ -915,7 +915,11 @@ concrete type is hidden behind a trait's callable surface. The frontend
 contract is implemented; the runtime is not — a program that mentions a `dyn`
 type parses, formats, and type-checks (identity, existential safety, authority)
 and then fails with one feature-stage diagnostic before either backend lowers
-it. No `dyn` value can be constructed or dispatched yet.
+it. Internally, an explicit checked erasure already selects a deterministic
+witness and rewrites to one compiler-owned typed pack; this is the shared
+preparation contract for the runtime work, not executable language surface.
+Concrete payload boxing and dispatch are still unavailable, so no `dyn` value
+can be constructed or called by a program yet.
 
 - `dyn` is contextual and only in type position: it must be followed by an
   uppercase trait name or a lowercase module plus uppercase trait name, so a

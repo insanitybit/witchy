@@ -1716,7 +1716,11 @@ fn resolve_in_expr(
                 resolve_in_expr(a, sig, by_base, vars);
             }
         }
-        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
+        Expr::Unary { expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::Field { base: expr, .. } => {
             resolve_in_expr(expr, sig, by_base, vars)
         }
         Expr::Binary { lhs, rhs, .. } => {
@@ -1897,7 +1901,11 @@ fn collect_bound_expr(e: &Expr, out: &mut HashSet<String>) {
             collect_pattern_vars(pattern, out);
             collect_bound_block(body, out);
         }
-        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
+        Expr::Unary { expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::Field { base: expr, .. } => {
             collect_bound_expr(expr, out)
         }
         Expr::RecordUpdate { name: _, base, fields } => {
@@ -2183,7 +2191,10 @@ fn rewrite_expr(
                 rewrite_expr(a, context, line)?;
             }
         }
-        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } => {
+        Expr::Unary { expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. } => {
             rewrite_expr(expr, context, line)?
         }
         // (RFC-0050 Part 2) A bare `module.fn` in value (non-call) position is a
@@ -2562,6 +2573,7 @@ fn seal_expr(
         Expr::Unary { expr, .. }
         | Expr::Try(expr)
         | Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. }
         | Expr::Field { base: expr, .. } => {
             seal_expr(expr, sealed, home, allow_test_sealed_type_construction)?;
         }
@@ -3160,7 +3172,11 @@ fn check_reserved_expr(
                 check_reserved_expr(module_name, spread, line, generated_anon_types)?;
             }
         }
-        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
+        Expr::Unary { expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::Field { base: expr, .. } => {
             check_reserved_expr(module_name, expr, line, generated_anon_types)?
         }
         Expr::Binary { lhs, rhs, .. } => {

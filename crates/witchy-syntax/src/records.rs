@@ -198,6 +198,7 @@ fn lower_expr(e: &mut Expr, orders: &Orders, lenient: bool) -> Result<(), String
         Expr::Unary { expr, .. }
         | Expr::Try(expr)
         | Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. }
         | Expr::Field { base: expr, .. } => lower_expr(expr, orders, lenient)?,
         Expr::Index { base, index } => {
             lower_expr(base, orders, lenient)?;

@@ -2974,7 +2974,9 @@ impl<'types> Codegen<'types> {
                 self.infer_locals_expr(lhs);
                 self.infer_locals_expr(rhs);
             }
-            Expr::Unary { expr, .. } => self.infer_locals_expr(expr),
+            Expr::Unary { expr, .. }
+            | Expr::As { expr, .. }
+            | Expr::ExistentialPack { expr, .. } => self.infer_locals_expr(expr),
             Expr::Tuple(xs) | Expr::List(xs) => {
                 for x in xs {
                     self.infer_locals_expr(x);
@@ -10185,6 +10187,7 @@ impl<'types> Codegen<'types> {
             Expr::Unary { expr, .. }
             | Expr::Try(expr)
             | Expr::As { expr, .. }
+            | Expr::ExistentialPack { expr, .. }
             | Expr::Field { base: expr, .. } => self.scan_escapes_expr(expr, inner, ok),
             Expr::Call { name, args } => {
                 if self.call_writes_outer_heap(name, args, inner) {
@@ -10899,7 +10902,10 @@ impl DevirtScan {
                 self.walk_expr(func);
                 args.iter().for_each(|a| self.walk_expr(a));
             }
-            Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } => {
+            Expr::Unary { expr, .. }
+            | Expr::Try(expr)
+            | Expr::As { expr, .. }
+            | Expr::ExistentialPack { expr, .. } => {
                 self.walk_expr(expr)
             }
             Expr::Field { base, .. } => self.walk_expr(base),
@@ -11119,6 +11125,7 @@ fn nested_var_place_roots(
             Expr::Unary { expr, .. }
             | Expr::Try(expr)
             | Expr::As { expr, .. }
+            | Expr::ExistentialPack { expr, .. }
             | Expr::Field { base: expr, .. } => scan_expr(expr, conventions, roots),
             Expr::RecordUpdate { base, fields, .. } => {
                 scan_expr(base, conventions, roots);
@@ -11220,7 +11227,11 @@ fn collect_fn_refs_expr(e: &Expr, out: &mut HashSet<String>) {
                 collect_fn_refs_expr(a, out);
             }
         }
-        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
+        Expr::Unary { expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::Field { base: expr, .. } => {
             collect_fn_refs_expr(expr, out)
         }
         Expr::RecordUpdate { name: _, base, fields } => {
@@ -11495,7 +11506,10 @@ fn collect_loan_event_keys_expr(
             collect_loan_event_keys_expr(func, facts, out);
             args.iter().for_each(|arg| collect_loan_event_keys_expr(arg, facts, out));
         }
-        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. }
+        Expr::Unary { expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. }
         | Expr::Field { base: expr, .. } => collect_loan_event_keys_expr(expr, facts, out),
         Expr::Binary { lhs, rhs, .. }
         | Expr::Index { base: lhs, index: rhs }
@@ -11572,7 +11586,10 @@ fn collect_loan_roots_expr(
             collect_loan_roots_expr(func, facts, out);
             args.iter().for_each(|arg| collect_loan_roots_expr(arg, facts, out));
         }
-        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } => {
+        Expr::Unary { expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. } => {
             collect_loan_roots_expr(expr, facts, out);
         }
         Expr::Field { base, .. } => collect_loan_roots_expr(base, facts, out),
@@ -11699,7 +11716,11 @@ fn collect_let_names_expr(expr: &Expr, out: &mut Vec<String>) {
             collect_let_names_expr(lhs, out);
             collect_let_names_expr(rhs, out);
         }
-        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::As { expr, .. } | Expr::Field { base: expr, .. } => {
+        Expr::Unary { expr, .. }
+        | Expr::Try(expr)
+        | Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::Field { base: expr, .. } => {
             collect_let_names_expr(expr, out)
         }
         Expr::RecordUpdate { name: _, base, fields } => {
