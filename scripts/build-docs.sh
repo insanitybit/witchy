@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the deployable witchy-book bundle (RFC-0041): the glamour docs app compiled to wasm,
 # the book content, the browser compiler + shared web modules, and the classification manifest —
-# a bag of static files servable anywhere (GitHub Pages, `python3 -m http.server`), NO server.
+# a set of static files servable anywhere (GitHub Pages, `python3 -m http.server`), NO server.
 #
 #   ./scripts/build-docs.sh [OUTDIR]        (default: dist; builds the browser compiler)
 #   ./scripts/build-docs.sh --allow-missing-compiler [OUTDIR]  (non-runnable bundle)
