@@ -590,7 +590,23 @@ calls.
 Fixed-layout nominal and tuple aggregates may contain function values. Direct
 `List(fn(...))` uses a typed GC array and covers the source operations needed by
 the standard library: literal construction, persistent push/set/concat, length,
-indexed access, and iteration. Remaining representation gates are generic
-stored type parameters, `Option`/`Result`/`Dict` function payloads, nested
-function containers, capability-bearing region copy-out, and capability-typed
-callbacks crossing isolated worker instances.
+indexed access, and iteration. The later checkpoint below supersedes the
+generic-container boundary recorded here.
+
+**2026-07-17 closed-layout checkpoint.** Reference-safe storage now follows
+concrete semantic type identity rather than declaration identity. Every closed
+generic nominal instance receives its own typed GC struct; recursive generic
+sums reserve all IDs before their fields are materialized. `Option(reference)`
+uses a nullable reference, closed `Result` values use a typed tagged sum, and
+every reference-bearing `List(T)` uses a typed GC array of the exact element
+kind. The same constructor may therefore build `Box(Int)`, `Box(fn(...))`, and
+`Box(File)` without erasure or layout collision, and lists may nest those
+instances. Both backends execute the generic/recursive/container matrix, while
+WIR validation rejects any residual reference crossing an i64 Slot.
+
+The remaining loud boundaries are not part of the capability-representation
+cut: `Dict` still uses scalar key/value slots; an open generic function ABI
+still rejects capability-bearing instantiations; region copy-out has no
+reference-aware copier; and isolated workers cannot transport store-rooted
+references. These are explicit future representation features, not paths by
+which authority can enter linear memory.

@@ -277,14 +277,15 @@ paths during the transition (a temporary two-mode mint, deleted in stage 5).
 
 ## 7. Cap-carrying collections (`List(Net)`, `Dict(String, Dir)`)
 
-Rare but real. Two acceptable resolutions, decide at stage 4:
-- **Support:** a `List`/`Dict` whose elements are cap-carrying becomes a GC
-  `array`/struct-of-arrays. More lowering surface.
-- **Reject (recommended first cut):** `typeck` refuses a collection literal /
-  type whose element is cap-carrying, with a clear error ("a capability cannot be
-  stored in a `List`; pass it directly"). This matches how capabilities are meant
-  to flow (named, not bulk-stored) and defers the GC-array lowering. Revisit only
-  if a real program needs it.
+Resolved by representation:
+
+- **`List(T)` is supported** when `T` is reference-bearing. Lowering allocates a
+  typed GC array whose element is the exact `externref` or concrete `GcRef`
+  kind. Literals, length, indexed reads, iteration, and persistent
+  push/set/concat preserve that kind.
+- **`Dict(K, V)` remains rejected** when either stored side is
+  reference-bearing. Its hash-table cells still use universal i64 slots; support
+  requires a typed table layout rather than an exception in one operation.
 
 ## 8. Open questions / risks (the review agenda)
 
@@ -660,7 +661,26 @@ containing `externref` in an array, follows a forward struct-to-array edge, pass
 the concrete array reference in a function signature, runs the optimizer over
 every operation, and validates the result. The existing
 `encode(module, structs)` entrypoint still emits no arrays. Production uses the
-array-enabled encoder for one array of uniform closure-wrapper references behind
-direct `List(fn(...))`; fixed-layout nominal and tuple fields likewise carry the
-wrapper directly. Generic stored type parameters and other generic containers
-remain reject-first.
+array-enabled encoder for every demanded closed `List(T)` whose element is a
+reference. Closed generic nominal instances are keyed by complete semantic type
+identity and materialized after all recursive IDs are reserved. Nullable
+`Option(reference)` and typed `Result` sums complete the closed container
+matrix. `Dict`, open generic function ABIs, region copy-out, and isolated-worker
+crossings remain reject-first.
+
+## Stage 4 closed-layout completion (2026-07-17)
+
+The final Stage 4 slice replaced declaration-keyed GC aggregate registration
+with demand-planned closed layouts. The plan is seeded from function signatures
+and concrete checker facts, instantiates implicit or explicit type parameters,
+and recursively discovers nominal, tuple, and list dependencies. Canonical
+keys include linked declaration identity plus every concrete type argument, so
+two instances cannot accidentally share a Wasm field layout.
+
+Executable parity covers direct and nested closures, `Box(fn)`, `Box(File)`,
+recursive `Chain(fn)`, `Option(fn)`, `Result(fn, String)`,
+`List(Box(fn))`, and `List(File)` under optimized, boxed, indirect, and
+optimization-disabled configurations. The standard `dedup` and async-task
+programs exercise the linked implicit-generic `Iter`/`Step` and `Task` graphs.
+The encoder remains the backstop: no `ExternRef`, `StructRef`, or `GcRef` may
+cross `ToSlot`/`FromSlot`.

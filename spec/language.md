@@ -666,14 +666,16 @@ A boxed lambda's captures live in a per-lambda typed GC struct, so direct
 capabilities, other closures, and fixed-layout GC aggregates remain references
 throughout creation, aliasing, and indirect invocation.
 
-Function values may be fields of fixed-layout nominal and tuple GC aggregates.
-Direct `List(fn(...))` values use typed GC arrays and support literals,
-persistent push/set/concat, length, indexed access, and iteration. Function
-storage in a generic type parameter, `Option`/`Result`/`Dict`, or a nested
-collection remains a check-time error until those containers have concrete
-typed GC layouts. Capability-typed callbacks crossing an isolated worker
-adapter remain rejected because workers receive only the scalar cross-instance
-callback ABI.
+Function values may be fields of concrete tuples and closed nominal instances,
+including generic instances and recursive sums. `Option(reference)` uses a
+nullable reference; closed `Result` values use typed GC sums. Every
+reference-bearing `List(T)` uses a typed GC array of its exact element kind and
+supports literals, persistent push/set/concat, length, indexed access, and
+iteration, including nested lists and lists of reference-bearing aggregates.
+`Dict` reference payloads and open generic calls instantiated with
+capability-bearing values remain check-time errors. Capability-typed callbacks
+crossing an isolated worker adapter remain rejected because workers receive
+only the scalar cross-instance callback ABI.
 
 ```witchy
 fn apply(f: fn(Int) -> Int, x: Int) -> Int:

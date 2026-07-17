@@ -72,27 +72,30 @@ helpers still report only what they use (`Dir[Read]` and `Dir[Write]`).
 
 A capability-carrying **aggregate** compiles to a typed wasm GC struct when its
 layout is concrete. This includes a direct structural tuple such as
-`(Dir[Read], String)`, plus any non-generic `type` with named fields, positional
-payloads, or multiple variants, sealed `capability` declaration or plain `type`
-alike. The one exception is a transparent single-field capability brand, which
-stays a direct externref instead of allocating a wrapper struct. Concrete
-tuples and nominal aggregates may nest while keeping the capability an
-unforgeable reference; nominal types may also recurse. Tuple construction,
-numeric projection, parameter and return passing, and `let`/`match`
-destructuring use that typed representation on both backends.
+`(Dir[Read], String)`, plus each closed instance of a generic or non-generic
+`type` with named fields, positional payloads, or multiple variants, sealed
+`capability` declaration or plain `type` alike. The one exception is a
+transparent single-field capability brand, which stays a direct externref
+instead of allocating a wrapper struct. Concrete tuples and nominal instances
+may nest while keeping the capability an unforgeable reference; nominal types
+may also recurse. Tuple construction, numeric projection, parameter and return
+passing, and `let`/`match` destructuring use that typed representation on both
+backends.
 Concrete and generic type aliases are expanded before representation selection,
 so an alias for one of these tuples has exactly the same GC shape and behavior.
 
 Closures may capture capabilities: the compiled backend keeps each boxed
 lambda's captures in a typed GC environment, so the capability remains an
-unforgeable reference through aliases and indirect calls. Function values may
-also live in fixed-layout tuples and nominal aggregates. A direct
-`List(fn(...))` uses a typed GC array and supports literals, persistent updates,
-indexed access, and iteration.
+unforgeable reference through aliases and indirect calls. Function and
+capability values may also live in closed tuples, nominal instances,
+`Option`/`Result`, and nested `List` values. A reference-bearing `List(T)` uses
+a typed GC array and supports literals, persistent updates, indexed access,
+and iteration.
 
-Generic stored type parameters, other reference-bearing collection payloads,
-nested function containers, and `region:` copy-out carrying capabilities remain
-intentionally rejected until those boundaries have concrete typed layouts.
+`Dict` keys or values that carry references, open generic function calls
+instantiated with capability-bearing values, `region:` copy-out carrying
+capabilities, and isolated-worker callback crossings remain intentionally
+rejected until those boundaries have concrete typed layouts.
 Capability aggregates also cannot be rendered or compared for equality:
 authority is not printable data or identity. No capability is silently boxed
 into an ordinary heap slot.

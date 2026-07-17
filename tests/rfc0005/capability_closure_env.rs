@@ -31,6 +31,13 @@ type Vault:
     dir: Dir[Read]
     label: String
 
+type GenericBox(a):
+    GenericBox(a)
+
+type Chain(a):
+    ChainEnd
+    ChainLink(a, Chain(a))
+
 fn invoke(reader: Reader, name: String) -> String:
     match reader:
         Reader(callback) -> callback(name)
@@ -45,10 +52,34 @@ fn invoke_pair(pair: (Dir[Read], fn(String) -> String), name: String) -> String:
 fn replace(var callback: fn(String) -> String, next: fn(String) -> String):
     callback = next
 
+fn add1(value: Int) -> Int:
+    value + 1
+
+fn box_fn(value: fn(Int) -> Int) -> GenericBox(fn(Int) -> Int):
+    GenericBox(value)
+
+fn box_file(value: File[Read]) -> GenericBox(File[Read]):
+    GenericBox(value)
+
+fn maybe_fn(value: fn(Int) -> Int) -> Option(fn(Int) -> Int):
+    Some(value)
+
+fn result_fn(value: fn(Int) -> Int) -> Result(fn(Int) -> Int, String):
+    Ok(value)
+
+fn chain_fn(value: fn(Int) -> Int) -> Chain(fn(Int) -> Int):
+    ChainLink(value, ChainEnd)
+
+fn append_owned(
+    own values: List(GenericBox(fn(Int) -> Int)),
+    value: GenericBox(fn(Int) -> Int),
+) -> List(GenericBox(fn(Int) -> Int)):
+    list.concat(values, [value])
+
 fn main(console: Console, root: Dir[Read]):
     let prefix = "P:"
-    let read = fn(name: String) -> String: prefix + root.read(name)
-    let alias = read
+    let read_value = fn(name: String) -> String: prefix + root.read(name)
+    let alias = read_value
     let reader = Reader(alias)
     console.print(invoke(reader, "value.txt"))
 
@@ -90,6 +121,40 @@ fn main(console: Console, root: Dir[Read]):
     replace(indexed[0], chained)
     let indexed_first = list.at(indexed, 0)
     console.print(indexed_first("value.txt"))
+
+    let files: List(File[Read]) = [root.read_file("value.txt")]
+    let first_file: File[Read] = list.at(files, 0)
+    console.print(first_file.read())
+
+    match box_file(root.read_file("value.txt")):
+        GenericBox(file) -> console.print(file.read())
+
+    let boxes: List(GenericBox(fn(Int) -> Int)) = [box_fn(add1)]
+    match list.at(boxes, 0):
+        GenericBox(callback) -> console.print("${callback(6)}")
+
+    match maybe_fn(add1):
+        Some(callback) -> console.print("${callback(7)}")
+        None -> console.print("none")
+
+    match result_fn(add1):
+        Ok(callback) -> console.print("${callback(8)}")
+        Err(message) -> console.print(message)
+
+    match chain_fn(add1):
+        ChainLink(callback, _) -> console.print("${callback(9)}")
+        ChainEnd -> console.print("end")
+
+    let run_chain = fn(chain: Chain(fn(Int) -> Int)) -> Int:
+        match chain:
+            ChainLink(callback, _) -> callback(10)
+            ChainEnd -> 0
+    console.print("${run_chain(chain_fn(add1))}")
+
+    let grow = fn(values: List(GenericBox(fn(Int) -> Int))) -> Int:
+        let grown = append_owned(move values, box_fn(add1))
+        list.length(grown)
+    console.print("${grow([box_fn(add1)])}")
 "#;
     let module = parser::parse_module(source).expect("parse");
     let linked = pipeline::link(vec![("main".into(), module)], "main").expect("link");
@@ -109,6 +174,14 @@ fn main(console: Console, root: Dir[Read]):
         "P:value!".to_string(),
         "P:value!".to_string(),
         "P:value!".to_string(),
+        "value".to_string(),
+        "value".to_string(),
+        "7".to_string(),
+        "8".to_string(),
+        "9".to_string(),
+        "10".to_string(),
+        "11".to_string(),
+        "2".to_string(),
     ];
     assert_eq!(
         interpreter::run_module(linked.clone(), &root_string, Vec::new()).expect("interpret"),

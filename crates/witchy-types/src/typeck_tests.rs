@@ -702,48 +702,40 @@ fn wrapper() -> Result(Int, AppError):
     }
 
     #[test]
-    fn generic_aggregates_reject_reference_bearing_function_type_arguments() {
-        let direct = check_str(
+    fn closed_generic_aggregates_accept_reference_bearing_type_arguments() {
+        check_str(
             "trait Label:\n    fn label(self) -> String\n\
              type Box(a):\n    value: a\n\
              impl Label for Box(a):\n    fn label(self) -> String:\n        \"Box\"\n\
              fn id(n: Int) -> Int:\n    n\n\
              fn main(console: Console):\n    let b: Box(fn(Int) -> Int) = Box(id)\n    console.print(b.label())\n",
         )
-        .expect_err("a generic field has no fixed GC layout for a function reference");
-        assert!(direct.contains("generic aggregate `Box`") && direct.contains("GC field layout"));
+        .expect("a closed generic function field receives a concrete GC layout");
 
-        let nested = check_str(
+        check_str(
             "trait Label:\n    fn label(self) -> String\n\
              type Box(a):\n    value: a\n\
              impl Label for Box(a):\n    fn label(self) -> String:\n        \"Box\"\n\
              fn id(n: Int) -> Int:\n    n\n\
              fn main(console: Console):\n    let b: Box(List(fn(Int) -> Int)) = Box([id])\n    console.print(b.label())\n",
         )
-        .expect_err("nested function storage cannot cross a generic scalar field");
-        assert!(nested.contains("generic aggregate `Box`") && nested.contains("GC field layout"));
+        .expect("nested reference storage receives a concrete GC layout");
 
-        let multi = check_str(
+        check_str(
             "trait Label:\n    fn label(self) -> String\n\
              type Box(a):\n    value: a\n\
              impl Label for Box(a):\n    fn label(self) -> String:\n        \"Box\"\n\
              fn choose(n: Int, s: String) -> Int:\n    n\n\
              fn main(console: Console):\n    let b: Box(fn(Int, String) -> Int) = Box(choose)\n    console.print(b.label())\n",
         )
-        .expect_err("multi-parameter functions are references too");
-        assert!(multi.contains("generic aggregate `Box`") && multi.contains("GC field layout"));
+        .expect("multi-parameter function references receive a concrete GC layout");
 
-        let stored_scalar = check_str(
+        check_str(
             "type CallbackBox(a):\n    callback: fn(Int) -> Int\n    value: a\n\
              fn add1(n: Int) -> Int:\n    n + 1\n\
              fn main():\n    let boxed = CallbackBox(add1, 1)\n",
         )
-        .expect_err("a stored type parameter makes the concrete GC layout vary");
-        assert!(
-            stored_scalar.contains("generic aggregate `CallbackBox`")
-                && stored_scalar.contains("GC field layout"),
-            "{stored_scalar}"
-        );
+        .expect("each closed generic instance receives its own mixed-field GC layout");
     }
 
     #[test]
@@ -930,28 +922,23 @@ fn has_optional_id() -> Option(Bool):
     fn file_capability_cannot_cross_i64_slot_boundary() {
         // (RFC-0005 §4.4/§7) `File` is an unforgeable `externref` with no boxed
         // i64-slot representation. A bare `File` param/return stays an externref;
-        // `Option(File)` is represented as nullable externref. Slot/heap containers
-        // (`Result`/`List`/`Dict`/tuples) remain rejected. A named sealed
-        // capability record may carry a migrated cap directly because the
-        // compiled backend lowers that nominal wrapper to a GC struct.
+        // `Option(File)` is represented as nullable externref. Closed
+        // `Result`/`List`/tuple/nominal shapes use typed GC storage; `Dict`
+        // remains reject-first until its table layout carries references.
         check_str("fn ok(console: Console, f: File):\n    console.print(\"ok\")\nfn main(console: Console, f: File):\n    ok(console, f)\n")
             .expect("a bare File param/return is a plain externref — allowed");
 
         check_str("fn find(console: Console, o: Option(File)):\n    console.print(\"x\")\n")
             .expect("Option(File) is nullable externref — allowed");
 
-        // List(File) — the collection stores externref elements (§7).
-        let err = check_str("fn collect(console: Console, xs: List(File)):\n    console.print(\"x\")\n")
-            .expect_err("List(File) stores externref elements");
-        assert!(err.contains("File") && err.contains("List"), "got: {err}");
+        check_str("fn collect(console: Console, xs: List(File)):\n    console.print(\"x\")\n")
+            .expect("List(File) uses an externref-typed GC array");
 
         check_str("fn callbacks(console: Console, xs: List(fn(File[Read]) -> String)):\n    console.print(\"x\")\n")
             .expect("direct List(fn) uses the typed GC function array representation");
 
-        // Result(File, String) — the Ok payload is slot-boxed.
-        let err = check_str("fn open(console: Console, r: Result(File, String)):\n    console.print(\"x\")\n")
-            .expect_err("Result(File, _) slot-boxes an externref");
-        assert!(err.contains("File") && err.contains("Result"), "got: {err}");
+        check_str("fn open(console: Console, r: Result(File, String)):\n    console.print(\"x\")\n")
+            .expect("Result(File, _) uses a closed typed GC sum");
 
         // Dict(String, File) — the value is slot-boxed.
         let err = check_str("fn table(console: Console, d: Dict(String, File)):\n    console.print(\"x\")\n")
@@ -973,13 +960,11 @@ fn has_optional_id() -> Option(Bool):
         check_str("type Resource:\n    Missing(String)\n    Opened(File, String)\nfn take(console: Console, r: Resource):\n    match r:\n        Missing(label) -> console.print(label)\n        Opened(_, label) -> console.print(label)\n")
             .expect("a non-generic cap-carrying sum GC-lowers");
 
-        let err = check_str("type Bad:\n    Empty\n    Files(List(File))\nfn take(console: Console, x: Bad):\n    console.print(\"x\")\n")
-            .expect_err("a GC-lowered sum cannot hide a capability in a slot-boxed field");
-        assert!(err.contains("File") && err.contains("List"), "got: {err}");
+        check_str("type Good:\n    Empty\n    Files(List(File))\nfn take(console: Console, x: Good):\n    console.print(\"x\")\n")
+            .expect("reference lists compose inside a closed typed GC sum");
 
-        let err = check_str("type MaybeBox(a):\n    Empty\n    Boxed(a)\nfn main(console: Console, f: File):\n    let x = Boxed(f)\n    console.print(\"x\")\n")
-            .expect_err("a generic sum instantiated with File needs monomorphized GC lowering");
-        assert!(err.contains("MaybeBox") && err.contains("File"), "got: {err}");
+        check_str("type MaybeBox(a):\n    Empty\n    Boxed(a)\nfn main(console: Console, f: File):\n    let x: MaybeBox(File) = Boxed(f)\n    console.print(\"x\")\n")
+            .expect("a closed generic sum instantiated with File receives a concrete GC layout");
 
         check_str("type Left:\n    LeftEnd\n    ToRight(Right)\ntype Right:\n    RightFile(File)\n    ToLeft(Left)\nfn take(console: Console, x: Left):\n    match x:\n        LeftEnd -> console.print(\"end\")\n        ToRight(_) -> console.print(\"right\")\n")
             .expect("mutually recursive cap-carrying sums share the GC recursion group");
@@ -996,9 +981,8 @@ fn has_optional_id() -> Option(Bool):
         check_str("fn main(console: Console, f: File[Read]):\n    let read_later = fn() -> String: f.read()\n    console.print(\"x\")\n")
             .expect("a closure capture of File uses a typed GC environment");
 
-        let err = check_str("fn main(console: Console, f: File):\n    let xs = [f]\n    console.print(\"x\")\n")
-            .expect_err("an inferred List(File) literal needs the GC-struct aggregate path");
-        assert!(err.contains("List") && err.contains("File"), "got: {err}");
+        check_str("fn main(console: Console, f: File):\n    let xs = [f]\n    console.print(\"x\")\n")
+            .expect("an inferred List(File) literal receives an externref-typed GC array");
 
         check_str("fn main(console: Console, f: File):\n    let pair = (f, 1)\n    console.print(\"x\")\n")
             .expect("an inferred concrete File tuple uses typed GC-struct storage");
@@ -1007,9 +991,8 @@ fn has_optional_id() -> Option(Bool):
             .expect_err("a capability tuple cannot instantiate the scalar generic ABI");
         assert!(err.contains("generic") && err.contains("File"), "got: {err}");
 
-        let err = check_str("fn collect(console: Console, xs: List((File, Int))):\n    console.print(\"x\")\n")
-            .expect_err("a List still cannot slot-box a capability tuple");
-        assert!(err.contains("List") && err.contains("File"), "got: {err}");
+        check_str("fn collect(console: Console, xs: List((File, Int))):\n    console.print(\"x\")\n")
+            .expect("a list of capability tuples uses a typed GC array");
 
         let err = check_str("fn main(console: Console, f: File):\n    console.print(\"${(f, 1)}\")\n")
             .expect_err("rendering a capability tuple must remain forbidden");
@@ -1032,17 +1015,14 @@ fn has_optional_id() -> Option(Bool):
         check_str("fn callback(x: Int) -> Int:\n    x\nfn main(console: Console, f: File):\n    let pair = (f, callback)\n    console.print(\"x\")\n")
             .expect("an inferred fixed tuple keeps capability and function fields typed");
 
-        let err = check_str("trait Bad:\n    fn call(self, value: Option(fn(File) -> String)) -> Int\n")
-            .expect_err("trait method declarations reject unsupported function storage");
-        assert!(err.contains("call") && err.contains("function value"), "got: {err}");
+        check_str("trait Good:\n    fn call(self, value: Option(fn(File) -> String)) -> Int\n")
+            .expect("trait methods accept represented nullable function storage");
 
-        let err = check_str("trait BadReturn:\n    fn call(self) -> Option(fn(File) -> String)\n")
-            .expect_err("trait method return types reject unsupported function storage");
-        assert!(err.contains("call") && err.contains("function value"), "got: {err}");
+        check_str("trait GoodReturn:\n    fn call(self) -> Option(fn(File) -> String)\n")
+            .expect("trait returns accept represented nullable function storage");
 
-        let err = check_str("type Box:\n    Box\nimpl Box:\n    fn call(self, value: Result(Int, fn(File) -> String)) -> Int:\n        0\n")
-            .expect_err("impl method declarations reject unsupported function storage");
-        assert!(err.contains("call") && err.contains("function value"), "got: {err}");
+        check_str("type Box:\n    Box\nimpl Box:\n    fn call(self, value: Result(Int, fn(File) -> String)) -> Int:\n        0\n")
+            .expect("impl methods accept represented closed Result storage");
 
         let err = check_str("type Pixel packed:\n    Pixel(Int)\ntype Box:\n    Box\nimpl Box:\n    fn pixels(self) -> List(Pixel):\n        []\n")
             .expect_err("impl method return types reject packed-list boundaries");
@@ -1121,16 +1101,14 @@ fn has_optional_id() -> Option(Bool):
             .expect_err("an inferred Dict(String, File) needs the GC-struct aggregate path");
         assert!(err.contains("generic") && err.contains("File"), "got: {err}");
 
-        let err = check_str("type Box(a):\n    Box(a)\nfn main(console: Console, f: File):\n    let b = Box(f)\n    console.print(\"x\")\n")
-            .expect_err("a generic user aggregate instantiated with File needs the GC-struct aggregate path");
-        assert!(err.contains("Box") && err.contains("File"), "got: {err}");
+        check_str("type Box(a):\n    Box(a)\nfn main(console: Console, f: File):\n    let b: Box(File) = Box(f)\n    console.print(\"x\")\n")
+            .expect("a closed generic user aggregate instantiated with File receives a GC layout");
 
         check_str("fn get(console: Console, o: Option(Secret)):\n    console.print(\"x\")\n")
             .expect("Secret is externref-backed, so direct nullable Option(Secret) is allowed");
 
-        let err = check_str("fn collect(console: Console, xs: List(Secret)):\n    console.print(\"x\")\n")
-            .expect_err("List(Secret) stores externref elements");
-        assert!(err.contains("Secret") && err.contains("List"), "got: {err}");
+        check_str("fn collect(console: Console, xs: List(Secret)):\n    console.print(\"x\")\n")
+            .expect("List(Secret) uses an externref-typed GC array");
 
         check_str("fn maybe_dir(console: Console, out: Option(Dir[Write])):\n    console.print(\"x\")\n")
             .expect("Dir is externref-backed this stage, so direct nullable Option(Dir) is allowed");
@@ -1189,11 +1167,8 @@ fn load(o: Outer, name: String) -> String:
 "#;
         check_str(nested_record).expect("nested cap-carrying records GC-lower");
 
-        // Collections of a cap-carrying record remain closed until typed GC
-        // collection shapes are generalized beyond direct function lists.
-        let err = check_str("type W:\n    dir: Dir[Read]\n    label: String\n\nfn hold(xs: List(W)) -> Int:\n    0\n")
-            .expect_err("List of a cap-carrying record still needs the GC collection path");
-        assert!(err.contains("List") && err.contains("Dir"), "got: {err}");
+        check_str("type W:\n    dir: Dir[Read]\n    label: String\n\nfn hold(xs: List(W)) -> Int:\n    0\n")
+            .expect("a list of cap-carrying records uses a typed GC array");
 
         check_str("type W:\n    dir: Dir[Read]\n    label: String\n\nfn f(console: Console, w: W):\n    let g = fn() -> String: w.label\n    console.print(g())\n")
             .expect("a closure captures a cap-carrying record at its exact GC kind");
@@ -1268,21 +1243,22 @@ fn hold(vault: Vault):
 "#;
         check_str(nested).expect("a cap-carrying nominal GC reference is a valid capture");
 
-        for (container, ty) in [
-            ("Option", "Option(fn(Int) -> Int)"),
-            ("Result", "Result(fn(Int) -> Int, String)"),
-            ("Dict", "Dict(String, fn(Int) -> Int)"),
-            ("List", "List(List(fn(Int) -> Int))"),
+        for ty in [
+            "Option(fn(Int) -> Int)",
+            "Result(fn(Int) -> Int, String)",
+            "List(List(fn(Int) -> Int))",
         ] {
-            let error = check_str(&format!(
-                "fn hold(x: {ty}):\n    let captured = x\n"
-            ))
-            .expect_err("unsupported function storage must stay reject-first");
-            assert!(
-                error.contains(container) && error.contains("function"),
-                "{ty} produced the wrong storage diagnostic: {error}"
-            );
+            check_str(&format!("fn hold(x: {ty}):\n    let captured = x\n"))
+                .unwrap_or_else(|error| panic!("{ty} should have typed GC storage: {error}"));
         }
+        let error = check_str(
+            "fn hold(x: Dict(String, fn(Int) -> Int)):\n    let captured = x\n",
+        )
+        .expect_err("Dict function storage remains reject-first");
+        assert!(
+            error.contains("Dict") && error.contains("function"),
+            "Dict produced the wrong storage diagnostic: {error}"
+        );
     }
 
     #[test]
@@ -2321,8 +2297,7 @@ type Result(a, e):
 fn f(dir: Dir) -> Result(Dir, String):
     Ok(dir)
 "#;
-        let err = check_str(result_dir).expect_err("Dir is externref-backed and cannot enter Result");
-        assert!(err.contains("Dir") && err.contains("Result"), "got: {err}");
+        check_str(result_dir).expect("a closed Result(Dir, String) uses a typed GC sum");
 
         let higher_order_dir = r#"
 fn consume(f: fn(Dir, Bytes) -> Bytes):

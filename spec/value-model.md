@@ -22,9 +22,9 @@ Compiled Witchy carries ordinary values in an 8-byte slot. The WIR type
 | `Nil` | `I32`/slot | zero sentinel |
 | `String` | `I32` pointer | pointer to `[len: i32][utf8 bytes...]` |
 | `Bytes` | `I32` pointer | same flat `[len: i32][bytes...]` layout as `String` |
-| `List(T)` | `I32` pointer or `GcRef(_)` | pointer to `[count: i32][slot0][slot1]...`; direct `List(fn(...))` uses a typed GC array of closure-wrapper references; declared `packed` confined lists use their flat record layout |
+| `List(T)` | `I32` pointer or `GcRef(_)` | pointer to `[count: i32][slot0][slot1]...` for scalar storage; a reference-bearing element uses a typed GC array of its exact reference kind; declared `packed` confined lists use their flat record layout |
 | tuple `(A, B, ...)` | `I32` pointer or `GcRef(_)` | pointer to `[arity: i32][slot0][slot1]...`, or a typed GC struct when a field is reference-bearing |
-| record / enum payload | `I32` pointer or `GcRef(_)` | pointer to `[tag/size word][slot fields...]`, or a typed GC struct for a fixed reference-bearing layout |
+| record / enum payload | `I32` pointer or `GcRef(_)` | pointer to `[tag/size word][slot fields...]`, or a shape-keyed typed GC struct for each closed reference-bearing nominal instance |
 | function / closure | `GcRef(0)` | uniform immutable wrapper `{code, linear_env=0, gc_env}`; each boxed lambda's captures live in its own typed GC payload |
 | legacy host capability | `I32` handle | integer host handle, granted and checked by the wasmtime runtime |
 | externref capability | `ExternRef` | opaque host reference; never stored in linear memory |

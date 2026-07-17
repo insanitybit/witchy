@@ -267,9 +267,11 @@ impl Codegen<'_> {
             // in a WIR-collecting scope.
             (intrinsics::LIST_LENGTH, 1)
                 if self.collect_wir
-                    && self.gc_function_list_id.is_some_and(|id| {
-                        self.kind_of(&args[0]) == Kind::GcRef(id)
-                    }) =>
+                    && self
+                        .ast_type_of_expr(&args[0])
+                        .as_ref()
+                        .and_then(|ty| self.gc_reference_list_layout(ty))
+                        .is_some() =>
             {
                 Self::wir_convert(
                     W::ArrayLen(Box::new(self.lower_expr(&args[0])?)),
@@ -513,9 +515,12 @@ impl Codegen<'_> {
                 call(intrinsic_helper(name), self.lower_args(&[&args[0]])?)
             }
             (intrinsics::LIST_CONCAT, 2) => {
-                if self.gc_function_list_id.is_some_and(|id| {
-                    self.kind_of(&args[0]) == Kind::GcRef(id)
-                }) {
+                if self
+                    .ast_type_of_expr(&args[0])
+                    .as_ref()
+                    .and_then(|ty| self.gc_reference_list_layout(ty))
+                    .is_some()
+                {
                     self.lower_gc_function_list_concat(&args[0], &args[1])?
                 } else {
                     call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
@@ -893,9 +898,12 @@ impl Codegen<'_> {
                 ])
             }
             (intrinsics::LIST_PUSH | intrinsics::GENERATED_LIST_PUSH, 2) => {
-                if self.gc_function_list_id.is_some_and(|id| {
-                    self.kind_of(&args[0]) == Kind::GcRef(id)
-                }) {
+                if self
+                    .ast_type_of_expr(&args[0])
+                    .as_ref()
+                    .and_then(|ty| self.gc_reference_list_layout(ty))
+                    .is_some()
+                {
                     self.lower_gc_function_list_push(&args[0], &args[1])?
                 } else {
                     let xk = self.kind_of(&args[1]);
@@ -912,9 +920,12 @@ impl Codegen<'_> {
                 }
             }
             (intrinsics::LIST_SET_AT, 3) => {
-                if self.gc_function_list_id.is_some_and(|id| {
-                    self.kind_of(&args[0]) == Kind::GcRef(id)
-                }) {
+                if self
+                    .ast_type_of_expr(&args[0])
+                    .as_ref()
+                    .and_then(|ty| self.gc_reference_list_layout(ty))
+                    .is_some()
+                {
                     self.lower_gc_function_list_set_at(&args[0], &args[1], &args[2])?
                 } else {
                     let level = self.assign_level;
@@ -977,12 +988,14 @@ impl Codegen<'_> {
                 }
             }
             (intrinsics::LIST_AT, 2) => {
-                if self.gc_function_list_id.is_some_and(|id| {
-                    self.kind_of(&args[0]) == Kind::GcRef(id)
-                }) {
+                if let Some((_, array_id, _)) = self
+                    .ast_type_of_expr(&args[0])
+                    .as_ref()
+                    .and_then(|ty| self.gc_reference_list_layout(ty))
+                {
                     let ik = self.kind_of(&args[1]);
                     W::ArrayGet {
-                        array_id: 0,
+                        array_id,
                         array: Box::new(self.lower_expr(&args[0])?),
                         index: Box::new(Self::wir_convert(
                             self.lower_expr(&args[1])?,

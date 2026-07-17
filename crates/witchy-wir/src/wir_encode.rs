@@ -83,7 +83,8 @@ impl Preflight<'_> {
             WirExpr::ToSlot(value, kind) | WirExpr::FromSlot(value, kind) => {
                 if kind.is_ref() {
                     return Self::reject(format!(
-                        "reference kind {kind:?} cannot cross the i64 slot boundary"
+                        "reference kind {kind:?} cannot cross the i64 slot boundary \
+                         (value: {value:?})"
                     ));
                 }
                 self.expr(value, locals, labels)?;
@@ -388,7 +389,11 @@ fn preflight(module: &WirModule) -> Result<(), EncodeError> {
                 ));
             }
         }
-        context.seq(&func.body, &locals, &mut Vec::new())?;
+        context
+            .seq(&func.body, &locals, &mut Vec::new())
+            .map_err(|error| EncodeError {
+                message: format!("function ${}: {}", func.name, error.message),
+            })?;
     }
     Ok(())
 }

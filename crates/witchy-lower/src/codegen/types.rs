@@ -160,15 +160,14 @@ impl Codegen<'_> {
                 if (name == "Some" && args.len() == 1) || (name == "None" && args.is_empty()) =>
             {
                 self.ast_type_of_expr(e)
-                    .filter(|t| self.option_externref_inner(t).is_some())
-                    .map(|_| Kind::ExternRef)
+                    .and_then(|t| self.option_reference_inner(&t).map(|(_, kind)| kind))
                     .unwrap_or(Kind::I32)
             }
             Expr::Ctor { name, .. } if self.transparent_externref_ctors.contains_key(name) => {
                 Kind::ExternRef
             }
             Expr::Ctor { name, .. } => self
-                .gc_layout_for_ctor(name)
+                .gc_layout_for_ctor(name, self.ast_type_of_expr(e).as_ref())
                 .map(|(_, id)| Kind::GcRef(id))
                 .unwrap_or(Kind::I32),
             _ => Kind::I32, // Bool, Str, List, Ctor, Spawn

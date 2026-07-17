@@ -2449,19 +2449,6 @@ fn transparent_externref_brand_field_cap(
     }
 }
 
-fn nullable_externref_option_cap(
-    t: &ast::Type,
-    defs: &HashMap<&str, &ast::TypeDef>,
-) -> Option<String> {
-    let ast::Type::Named(n, args) = t.unqualified() else {
-        return None;
-    };
-    if n != "Option" || args.len() != 1 {
-        return None;
-    }
-    transparent_externref_brand_field_cap(&args[0], defs, &mut HashSet::new())
-}
-
 /// (RFC-0005 stage 4) A non-generic nominal aggregate whose variants
 /// transitively carry a migrated externref capability. These lower to one typed
 /// wasm GC struct; a transparent one-field capability brand remains the direct
@@ -2516,32 +2503,30 @@ pub fn gc_cap_aggregate_names(module: &ast::Module) -> Vec<String> {
 /// (RFC-0005 §4.4/§7) Reject `t` when it would carry a migrated externref capability
 /// through a representation the current lowering cannot preserve.
 ///
-/// A bare capability parameter/return is fine: it stays an `externref`. Slot-boxed
-/// containers (`Option`/`Result`/`List`/`Dict`) are impossible because an externref has
-/// no i64 bit-pattern. Non-generic nominal aggregates and fully concrete tuples use
-/// typed GC structs; generic aggregates remain rejected because their representation
-/// is not fixed before specialization.
+/// A bare capability parameter/return stays an `externref`. Closed
+/// `Option`/`Result`/`List`/nominal/tuple shapes use typed GC storage. `Dict`
+/// remains rejected because its key/value cells still use universal i64 slots.
 fn reject_cap_slot_boundary(
     t: &ast::Type,
-    defs: &HashMap<&str, &ast::TypeDef>,
+    _defs: &HashMap<&str, &ast::TypeDef>,
     storage: &ReferenceStorageClassifier<'_>,
     ctx: &str,
     position: &str,
 ) -> Result<(), TypeError> {
     match t {
         ast::Type::Qualified(_, inner) => {
-            reject_cap_slot_boundary(inner, defs, storage, ctx, position)
+            reject_cap_slot_boundary(inner, _defs, storage, ctx, position)
         }
         // (RFC-0081) A dyn value is not itself a capability slot; only its type
         // arguments need checking.
         ast::Type::Dyn(_, args) => {
             args.iter()
-                .try_for_each(|a| reject_cap_slot_boundary(a, defs, storage, ctx, position))
+                .try_for_each(|a| reject_cap_slot_boundary(a, _defs, storage, ctx, position))
         }
         ast::Type::Tuple(items) => {
             items
                 .iter()
-                .try_for_each(|a| reject_cap_slot_boundary(a, defs, storage, ctx, position))
+                .try_for_each(|a| reject_cap_slot_boundary(a, _defs, storage, ctx, position))
         }
         ast::Type::Fn(args, ret, _) => {
             // Function signatures may mention capabilities: the typed closure ABI
@@ -2549,77 +2534,41 @@ fn reject_cap_slot_boundary(
             // unsupported containers nested in the signature are diagnosed at their
             // declaration site.
             args.iter()
-                .try_for_each(|a| reject_cap_slot_boundary(a, defs, storage, ctx, position))?;
-            reject_cap_slot_boundary(ret, defs, storage, ctx, position)
+                .try_for_each(|a| reject_cap_slot_boundary(a, _defs, storage, ctx, position))?;
+            reject_cap_slot_boundary(ret, _defs, storage, ctx, position)
         }
         ast::Type::Named(n, args) => {
-            if n == "Option"
-                && matches!(position, "a parameter" | "a return type")
-                && nullable_externref_option_cap(t, defs).is_some()
-            {
-                return Ok(());
-            }
-            let direct_function_list = n == "List"
-                && matches!(args.first().map(ast::Type::unqualified), Some(ast::Type::Fn(..)));
-            if direct_function_list {
-                return args
-                    .iter()
-                    .try_for_each(|a| reject_cap_slot_boundary(a, defs, storage, ctx, position));
-            }
-            if matches!(n.as_str(), "Option" | "Result" | "List" | "Dict") {
+            // Dict still stores keys and values in universal i64 slots. Lists
+            // use typed GC arrays for reference elements; Option uses null for a
+            // direct reference or a typed wrapper; Result and closed nominals use
+            // demand-planned GC structs.
+            if n == "Dict" {
                 for a in args {
-                    if storage.first_reference(a) == Some(ReferenceLeaf::Function) {
-                        return Err(TypeError {
-                            message: format!(
-                                "`{ctx}`: `{n}` cannot store a function value in {position}; \
-                                 only direct `List(fn(...))` has a typed GC collection representation",
-                            ),
-                        });
+                    match storage.first_reference(a) {
+                        Some(ReferenceLeaf::Function) => {
+                            return Err(TypeError {
+                                message: format!(
+                                    "`{ctx}`: `Dict` cannot store a function value in {position}; \
+                                     its key/value ABI still uses i64 slots"
+                                ),
+                            });
+                        }
+                        Some(ReferenceLeaf::ExternRef(cap)) => {
+                            return Err(TypeError {
+                                message: format!(
+                                    "`{ctx}`: a `{cap}` capability cannot be wrapped in `Dict` in {position} — \
+                                     it is an unforgeable reference with no boxed representation"
+                                ),
+                            });
+                        }
+                        None => {}
                     }
-                    if let Some(cap) =
-                        storage.first_externref_including_function_signatures(a)
-                    {
-                        return Err(TypeError {
-                            message: format!(
-                                "`{ctx}`: a `{cap}` capability cannot be wrapped in `{n}` in {position} — \
-                                 it is an unforgeable reference with no boxed representation; pass it directly"
-                            ),
-                        });
-                    }
-                }
-            } else if defs.get(n.as_str()).is_some_and(|def| !def.params.is_empty())
-                && args.iter().any(|arg| storage.first_reference(arg).is_some())
-            {
-                return Err(TypeError {
-                    message: format!(
-                        "`{ctx}`: generic aggregate `{n}` stores a reference-bearing type argument \
-                         in {position}, but its concrete GC field layout is not fixed"
-                    ),
-                });
-            } else if !(is_externref_cap(n)
-                || transparent_externref_brand_cap(n, defs, &mut HashSet::new()).is_some()
-                || gc_reference_aggregate_supported(n, defs, storage))
-            {
-                if storage.first_reference(t) == Some(ReferenceLeaf::Function) {
-                    return Err(TypeError {
-                        message: format!(
-                            "`{ctx}`: generic aggregate `{n}` stores a function value in {position}, \
-                             but its concrete GC field layout is not fixed"
-                        ),
-                    });
-                }
-                if let Some(cap) = storage.first_externref_including_function_signatures(t) {
-                    return Err(TypeError {
-                        message: format!(
-                            "`{ctx}`: `{n}` carries a `{cap}` capability in {position}, but cap-carrying \
-                             aggregates require RFC-0005's GC-struct lowering — pass the capability directly"
-                        ),
-                    });
                 }
             }
-            // Recurse into arguments for a nested container (`List(Option(File))`).
+            // Recurse so an unsupported Dict nested in an otherwise represented
+            // aggregate is still rejected at its declaration boundary.
             args.iter()
-                .try_for_each(|a| reject_cap_slot_boundary(a, defs, storage, ctx, position))
+                .try_for_each(|a| reject_cap_slot_boundary(a, _defs, storage, ctx, position))
         }
     }
 }
@@ -4283,23 +4232,7 @@ impl Checker {
     fn reject_externref_cap_aggregate_ty(&self, t: &Ty, ctx: &str) -> Result<(), TypeError> {
         match self.resolve(t) {
             Ty::List(inner) => {
-                if matches!(self.resolve(&inner), Ty::Fn(_, _, _)) {
-                    return self.reject_externref_cap_aggregate_ty(&inner, ctx);
-                }
-                if self.ty_carries_function_value(&inner) {
-                    return terr(format!(
-                        "`{ctx}` builds a `List` whose element transitively stores a function; \
-                         only direct `List(fn(...))` has a fixed GC array representation"
-                    ));
-                }
-                if let Some(cap) = self.ty_carries_externref_cap(&inner) {
-                    return terr(format!(
-                        "`{ctx}` builds a `List` containing a `{cap}` capability; \
-                         cap-carrying collections require RFC-0005's GC-struct aggregate lowering — \
-                         pass the capability directly"
-                    ));
-                }
-                Ok(())
+                self.reject_externref_cap_aggregate_ty(&inner, ctx)
             }
             Ty::Tuple(items) => {
                 items
@@ -4311,16 +4244,16 @@ impl Checker {
             {
                 Ok(())
             }
-            Ty::Named(n, args) if matches!(n.as_str(), "Option" | "Result" | "Dict") => {
+            Ty::Named(n, args) if n == "Dict" => {
                 if args.iter().any(|arg| self.ty_carries_function_value(arg)) {
                     return terr(format!(
-                        "`{ctx}` stores a function value in `{n}`; only direct `List(fn(...))` \
-                         and fixed-layout nominal/tuple GC aggregates are represented"
+                        "`{ctx}` stores a function value in `Dict`, whose key/value ABI \
+                         still uses i64 slots"
                     ));
                 }
                 if let Some(cap) = args.iter().find_map(|a| self.ty_carries_externref_cap(a)) {
                     return terr(format!(
-                        "`{ctx}` wraps a `{cap}` capability in `{n}`; \
+                        "`{ctx}` wraps a `{cap}` capability in `Dict`; \
                          an externref capability has no boxed i64-slot representation — \
                          pass it directly"
                     ));
@@ -4333,39 +4266,9 @@ impl Checker {
                     .try_for_each(|param| self.reject_externref_cap_aggregate_ty(param, ctx))?;
                 self.reject_externref_cap_aggregate_ty(&ret, ctx)
             }
-            Ty::Named(n, args)
-                if self
-                    .record_fields
-                    .get(&n)
-                    .is_some_and(|(params, _)| !params.is_empty())
-                    && args.iter().any(|arg| self.ty_carries_function_value(arg)) =>
-            {
-                terr(format!(
-                    "`{ctx}` builds generic aggregate `{n}` carrying a function value, \
-                     but its concrete GC field layout is not fixed"
-                ))
-            }
-            Ty::Named(n, args)
-                if !(is_externref_cap(&n)
-                    || self.transparent_externref_brands.contains_key(&n)
-                    || self.gc_cap_aggregates.contains(&n))
-                    && structural_type_kind(&n).is_none() =>
-            {
-                if self.ty_carries_function_value(&Ty::Named(n.clone(), args.clone())) {
-                    return terr(format!(
-                        "`{ctx}` builds generic aggregate `{n}` carrying a function value, \
-                         but its concrete GC field layout is not fixed"
-                    ));
-                }
-                if let Some(cap) = self.ty_carries_externref_cap(&Ty::Named(n.clone(), args)) {
-                    return terr(format!(
-                        "`{ctx}` builds `{n}` carrying a `{cap}` capability; \
-                         cap-carrying aggregates require RFC-0005's GC-struct lowering — \
-                         pass the capability directly"
-                    ));
-                }
-                Ok(())
-            }
+            Ty::Named(_, args) => args
+                .iter()
+                .try_for_each(|arg| self.reject_externref_cap_aggregate_ty(arg, ctx)),
             _ => Ok(()),
         }
     }
@@ -5972,6 +5875,15 @@ impl Checker {
                 message: format!("in call to `{display}`: {}", e.message),
             })?;
         }
+        let typed_gc_list_intrinsic = matches!(
+            call_name,
+            intrinsics::LIST_LENGTH
+                | intrinsics::LIST_AT
+                | intrinsics::LIST_PUSH
+                | intrinsics::GENERATED_LIST_PUSH
+                | intrinsics::LIST_SET_AT
+                | intrinsics::LIST_CONCAT
+        );
         for (arg, param_ty) in args.iter().zip(&params) {
             let at = self.infer_expected(arg, param_ty)
                 .map_err(|e| in_call_context(&display, e))?;
@@ -6000,6 +5912,7 @@ impl Checker {
                 }
             }
             if ty_has_var(param_ty)
+                && !typed_gc_list_intrinsic
                 && let Some(cap) = self.ty_carries_externref_cap(&at)
             {
                 return terr(format!(
@@ -8188,6 +8101,13 @@ pub struct TypeTable {
 impl TypeTable {
     pub fn type_of(&self, e: &Expr) -> Option<&Ty> {
         self.types.get(&(e as *const Expr as usize))
+    }
+
+    /// Every concrete expression type in this table. Consumers use this only
+    /// while the owning [`TypedModule`] is alive; unlike the address keys, the
+    /// returned semantic types are independent of expression identity.
+    pub fn concrete_types(&self) -> impl Iterator<Item = &Ty> {
+        self.types.values()
     }
 }
 

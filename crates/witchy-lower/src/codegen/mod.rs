@@ -47,7 +47,7 @@ use witchy_wir::layout::{type_tag_of, DATA_BASE};
 // foldhash (not SipHash): all keys are compiler-internal names/ids, never
 // attacker-chosen collections — see the note in witchy-types/src/typeck.rs.
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use witchy_syntax::ast::{
@@ -298,8 +298,8 @@ const GC_LIST_LEFT_LEN_TMP: &str = "__witchy_gc_list_left_len";
 const GC_LIST_INDEX_TMP: &str = "__witchy_gc_list_index";
 const GC_LIST_TARGET_TMP: &str = "__witchy_gc_list_target";
 
-fn gc_list_scratch(prefix: &str, level: usize) -> String {
-    format!("{prefix}_{level}")
+fn gc_list_scratch(prefix: &str, level: usize, type_id: u32) -> String {
+    format!("{prefix}_{type_id}_{level}")
 }
 
 /// The WASM representation of a value:
@@ -717,7 +717,7 @@ struct LoanRoot {
 
 #[derive(Clone)]
 struct GcCtorLayout {
-    owner: String,
+    owner_key: String,
     tag: Option<u32>,
     field_base: u32,
     field_types: Vec<Type>,
@@ -733,7 +733,7 @@ enum GcFieldShape {
     F64,
     ExternRef,
     Function,
-    FunctionList,
+    ReferenceList(String),
     Nominal(String),
     Tuple(GcTupleShape),
 }
@@ -781,19 +781,24 @@ struct Codegen<'types> {
     /// Constructor name -> its single underlying field type for transparent
     /// externref brands. The constructor lowers to its sole argument.
     transparent_externref_ctors: HashMap<String, Type>,
-    /// Named, non-generic cap-carrying aggregates lowered as typed GC structs.
+    /// Closed nominal instances lowered as typed GC structs, keyed by canonical
+    /// semantic type identity (`Task(Int)` and `Task(String)` never collide).
     gc_aggregate_ids: HashMap<String, u32>,
+    /// Bare/qualified nominal spelling -> linked canonical declaration name.
+    gc_nominal_names: HashMap<String, String>,
     /// Fully concrete cap-carrying tuple layouts, interned by representation.
     gc_tuple_ids: HashMap<GcTupleShape, u32>,
-    /// Constructor name -> its owner, optional sum tag, and payload field band.
-    gc_ctor_layouts: HashMap<String, GcCtorLayout>,
+    /// `(canonical owner type, constructor)` -> optional sum tag and payload band.
+    gc_ctor_layouts: HashMap<(String, String), GcCtorLayout>,
     /// The WIR struct type declarations for `gc_aggregate_ids`, indexed by id.
     gc_structs: Vec<witchy_wir::wir::WirStructDef>,
     /// Reference-bearing list storage. Struct IDs precede these array IDs in the
     /// shared concrete GC type-index space.
     gc_arrays: Vec<witchy_wir::wir::WirArrayDef>,
-    /// The shared mutable GC array used by every concrete `List(fn(...))` shape.
-    gc_function_list_id: Option<u32>,
+    /// Closed `List(T)` instances whose element is a GC reference. Each exact
+    /// element representation gets a typed GC array; direct externref
+    /// collections remain rejected.
+    gc_reference_list_ids: HashMap<String, u32>,
     /// Source lambda identity -> pre-reserved typed GC capture payload. All
     /// lambda structs are reserved before arrays so concrete GC type IDs never
     /// shift while function bodies lower.
@@ -1295,11 +1300,12 @@ impl<'types> Codegen<'types> {
             transparent_externref_brands: HashSet::new(),
             transparent_externref_ctors: HashMap::new(),
             gc_aggregate_ids: HashMap::new(),
+            gc_nominal_names: HashMap::new(),
             gc_tuple_ids: HashMap::new(),
             gc_ctor_layouts: HashMap::new(),
             gc_structs: Vec::new(),
             gc_arrays: Vec::new(),
-            gc_function_list_id: None,
+            gc_reference_list_ids: HashMap::new(),
             lambda_gc_env_ids: HashMap::new(),
             ctor_field_records: HashMap::new(),
             mk_arities: HashSet::new(),
@@ -1473,29 +1479,207 @@ impl<'types> Codegen<'types> {
                 .map(Kind::GcRef)
                 .unwrap_or(Kind::I32),
             Type::Named(n, _) if self.transparent_externref_brands.contains(n) => Kind::ExternRef,
-            Type::Named(n, _) if n == "List" && self.type_is_function_list(t) => self
-                .gc_function_list_id
+            Type::Named(n, _) if n == "List" => self
+                .gc_reference_list_ids
+                .get(&self.gc_lookup_type_key(t))
+                .copied()
                 .map(Kind::GcRef)
                 .unwrap_or(Kind::I32),
-            Type::Named(n, _) if self.gc_aggregate_ids.contains_key(n) => {
-                self.gc_aggregate_ids
-                    .get(n)
-                    .copied()
-                    .map(Kind::GcRef)
-                    .unwrap_or_else(|| ty_kind(t))
-            }
             Type::Named(n, args)
-                if n == "Option" && args.len() == 1 && self.type_is_direct_externref(&args[0]) =>
+                if n == "Option"
+                    && args.len() == 1
+                    && !matches!(args[0].unqualified(), Type::Named(inner, _) if inner == "Option") =>
             {
-                Kind::ExternRef
+                match self.kind_for_type(&args[0]) {
+                    kind @ (Kind::ExternRef | Kind::GcRef(_)) => kind,
+                    _ => ty_kind(t),
+                }
             }
+            Type::Named(_, _) => self
+                .gc_struct_id_for_type(t)
+                .map(Kind::GcRef)
+                .unwrap_or_else(|| ty_kind(t)),
             _ => ty_kind(t),
         }
     }
 
-    fn type_is_function_list(&self, ty: &Type) -> bool {
+    fn gc_struct_id_for_type(&self, ty: &Type) -> Option<u32> {
+        matches!(ty.unqualified(), Type::Named(_, _))
+            .then(|| self.gc_lookup_type_key(ty))
+            .and_then(|key| self.gc_aggregate_ids.get(&key).copied())
+    }
+
+    fn gc_lookup_type_key(&self, ty: &Type) -> String {
+        match ty.unqualified() {
+            Type::Named(name, args) => {
+                let name = self.gc_nominal_names.get(name).unwrap_or(name);
+                format!(
+                    "N{}:{}[{}]",
+                    name.len(),
+                    name,
+                    args.iter()
+                        .map(|arg| self.gc_lookup_type_key(arg))
+                        .collect::<Vec<_>>()
+                        .join(";")
+                )
+            }
+            Type::Dyn(name, args) => format!(
+                "D{}:{}[{}]",
+                name.len(),
+                name,
+                args.iter()
+                    .map(|arg| self.gc_lookup_type_key(arg))
+                    .collect::<Vec<_>>()
+                    .join(";")
+            ),
+            Type::Tuple(items) => format!(
+                "T[{}]",
+                items
+                    .iter()
+                    .map(|item| self.gc_lookup_type_key(item))
+                    .collect::<Vec<_>>()
+                    .join(";")
+            ),
+            Type::Fn(params, result, conventions) => {
+                let conventions = conventions
+                    .iter()
+                    .map(|convention| match convention {
+                        Convention::Let => 'l',
+                        Convention::Borrow => 'b',
+                        Convention::Var => 'v',
+                        Convention::Own => 'o',
+                    })
+                    .collect::<String>();
+                format!(
+                    "F{conventions}[{}]->{}",
+                    params
+                        .iter()
+                        .map(|param| self.gc_lookup_type_key(param))
+                        .collect::<Vec<_>>()
+                        .join(";"),
+                    self.gc_lookup_type_key(result)
+                )
+            }
+            Type::Qualified(_, _) => unreachable!("unqualified above"),
+        }
+    }
+
+    fn type_is_reference_list_candidate(&self, ty: &Type) -> bool {
         matches!(ty.unqualified(), Type::Named(name, args)
-            if name == "List" && matches!(args.first().map(Type::unqualified), Some(Type::Fn(..))))
+            if name == "List"
+                && args.first().is_some_and(|element| {
+                    matches!(
+                        self.kind_for_type(element),
+                        Kind::ExternRef | Kind::GcRef(_)
+                    )
+                }))
+    }
+
+    fn gc_reference_list_layout(&self, ty: &Type) -> Option<(u32, u32, Kind)> {
+        let Type::Named(name, args) = ty.unqualified() else {
+            return None;
+        };
+        if name != "List" {
+            return None;
+        }
+        let element = args.first()?;
+        let element_kind = self.kind_for_type(element);
+        if !matches!(element_kind, Kind::ExternRef | Kind::GcRef(_)) {
+            return None;
+        }
+        let type_id = self
+            .gc_reference_list_ids
+            .get(&self.gc_lookup_type_key(ty))
+            .copied()?;
+        let array_id = type_id.checked_sub(self.gc_structs.len() as u32)?;
+        Some((type_id, array_id, element_kind))
+    }
+
+    fn gc_reference_list_layouts(&self) -> Vec<(u32, Kind)> {
+        let mut layouts = self
+            .gc_reference_list_ids
+            .values()
+            .copied()
+            .filter_map(|type_id| {
+                let array_id = type_id.checked_sub(self.gc_structs.len() as u32)?;
+                let element = self.gc_arrays.get(array_id as usize)?.element;
+                let kind = match element {
+                    witchy_wir::wir::Kind::I32 => Kind::I32,
+                    witchy_wir::wir::Kind::I64 => Kind::I64,
+                    witchy_wir::wir::Kind::F64 => Kind::F64,
+                    witchy_wir::wir::Kind::ExternRef => Kind::ExternRef,
+                    witchy_wir::wir::Kind::StructRef => return None,
+                    witchy_wir::wir::Kind::GcRef(id) => Kind::GcRef(id),
+                };
+                Some((type_id, kind))
+            })
+            .collect::<Vec<_>>();
+        layouts.sort_by_key(|(type_id, _)| *type_id);
+        layouts.dedup_by_key(|(type_id, _)| *type_id);
+        layouts
+    }
+
+    fn collect_unit_gc_ids_type(&self, ty: &Type, ids: &mut BTreeSet<u32>) {
+        if let Kind::GcRef(id) = self.kind_for_type(ty) {
+            ids.insert(id);
+        }
+        match ty.unqualified() {
+            Type::Named(_, args) | Type::Dyn(_, args) | Type::Tuple(args) => {
+                for arg in args {
+                    self.collect_unit_gc_ids_type(arg, ids);
+                }
+            }
+            Type::Fn(params, result, _) => {
+                for param in params {
+                    self.collect_unit_gc_ids_type(param, ids);
+                }
+                self.collect_unit_gc_ids_type(result, ids);
+            }
+            Type::Qualified(_, _) => unreachable!("unqualified above"),
+        }
+    }
+
+    fn collect_unit_gc_ids_expr(&self, expr: &Expr, ids: &mut BTreeSet<u32>) {
+        if let Some(ty) = self.ast_type_of_expr(expr) {
+            self.collect_unit_gc_ids_type(&ty, ids);
+        }
+        crate::escape::for_each_immediate_subexpr(expr, &mut |child| {
+            self.collect_unit_gc_ids_expr(child, ids);
+        });
+    }
+
+    fn collect_unit_gc_ids_block(&self, block: &Block, ids: &mut BTreeSet<u32>) {
+        for stmt in &block.stmts {
+            let expr = match stmt {
+                Stmt::Let { value, .. }
+                | Stmt::Assign { value, .. }
+                | Stmt::LetPattern { value, .. }
+                | Stmt::Yield(value)
+                | Stmt::Expr(value) => Some(value),
+                Stmt::Return(value) => value.as_ref(),
+                Stmt::Break | Stmt::Continue => None,
+            };
+            if let Some(expr) = expr {
+                self.collect_unit_gc_ids_expr(expr, ids);
+            }
+        }
+    }
+
+    fn unit_gc_ids(
+        &self,
+        params: impl IntoIterator<Item = Type>,
+        result: Option<Type>,
+        body: &Block,
+    ) -> BTreeSet<u32> {
+        let mut ids = BTreeSet::new();
+        for param in params {
+            self.collect_unit_gc_ids_type(&param, &mut ids);
+        }
+        if let Some(result) = result {
+            self.collect_unit_gc_ids_type(&result, &mut ids);
+        }
+        self.collect_unit_gc_ids_block(body, &mut ids);
+        ids
     }
 
     fn gc_tuple_shape(&self, ty: &Type) -> Option<GcTupleShape> {
@@ -1514,7 +1698,7 @@ impl<'types> Codegen<'types> {
                     field,
                     GcFieldShape::ExternRef
                         | GcFieldShape::Function
-                        | GcFieldShape::FunctionList
+                        | GcFieldShape::ReferenceList(_)
                         | GcFieldShape::Nominal(_)
                         | GcFieldShape::Tuple(_)
                 )
@@ -1533,19 +1717,20 @@ impl<'types> Codegen<'types> {
             Type::Named(_, _) if self.type_is_direct_externref(ty) => {
                 GcFieldShape::ExternRef
             }
-            Type::Named(_, _) if self.type_is_function_list(ty) => {
-                GcFieldShape::FunctionList
+            Type::Named(_, _) if self.type_is_reference_list_candidate(ty) => {
+                GcFieldShape::ReferenceList(self.gc_lookup_type_key(ty))
             }
             Type::Named(name, args)
                 if name == "Option"
                     && args.len() == 1
-                    && self.type_is_direct_externref(&args[0]) =>
+                    && self.option_reference_inner(ty).is_some() =>
             {
-                GcFieldShape::ExternRef
+                self.option_reference_inner(ty)
+                    .and_then(|(inner, _)| self.gc_field_shape(inner))
+                    .unwrap_or(GcFieldShape::I32)
             }
-            Type::Named(name, _) if self.gc_aggregate_ids.contains_key(name) =>
-            {
-                GcFieldShape::Nominal(name.clone())
+            Type::Named(_, _) if self.gc_struct_id_for_type(ty).is_some() => {
+                GcFieldShape::Nominal(self.gc_lookup_type_key(ty))
             }
             _ => match ty_kind(ty) {
                 Kind::I64 => GcFieldShape::I64,
@@ -1564,20 +1749,40 @@ impl<'types> Codegen<'types> {
         }
     }
 
-    fn option_externref_inner<'a>(&self, t: &'a Type) -> Option<&'a Type> {
+    fn option_reference_inner<'a>(&self, t: &'a Type) -> Option<(&'a Type, Kind)> {
         let Type::Named(n, args) = t.unqualified() else {
             return None;
         };
-        if n == "Option" && args.len() == 1 && self.type_is_direct_externref(&args[0]) {
-            args.first()
-        } else {
-            None
+        let inner = args.first()?;
+        if n != "Option"
+            || args.len() != 1
+            || matches!(inner.unqualified(), Type::Named(name, _) if name == "Option")
+        {
+            return None;
         }
+        let kind = self.kind_for_type(inner);
+        matches!(kind, Kind::ExternRef | Kind::GcRef(_)).then_some((inner, kind))
     }
 
-    fn gc_layout_for_ctor(&self, name: &str) -> Option<(GcCtorLayout, u32)> {
-        let layout = self.gc_ctor_layouts.get(name)?.clone();
-        let id = self.gc_aggregate_ids.get(&layout.owner).copied()?;
+    fn gc_layout_for_ctor(
+        &self,
+        name: &str,
+        owner_ty: Option<&Type>,
+    ) -> Option<(GcCtorLayout, u32)> {
+        let owner_key = owner_ty.map(|ty| self.gc_lookup_type_key(ty))?;
+        let direct = (owner_key.clone(), name.to_string());
+        let layout = self
+            .gc_ctor_layouts
+            .get(&direct)
+            .or_else(|| {
+                self.gc_ctor_layouts.iter().find_map(|((owner, ctor), layout)| {
+                    (owner == &owner_key
+                        && ctor.rsplit('.').next().unwrap_or(ctor) == name)
+                        .then_some(layout)
+                })
+            });
+        let layout = layout?.clone();
+        let id = self.gc_aggregate_ids.get(&layout.owner_key).copied()?;
         Some((layout, id))
     }
 
@@ -2104,6 +2309,9 @@ impl<'types> Codegen<'types> {
     }
 
     fn ctor_pattern_field_types(&self, name: &str, expected: Option<&Type>) -> Option<Vec<Type>> {
+        if let Some((layout, _)) = self.gc_layout_for_ctor(name, expected) {
+            return Some(layout.field_types);
+        }
         match (name, expected.map(Type::unqualified)) {
             ("Some", Some(Type::Named(owner, args))) if owner == "Option" => {
                 return args.first().cloned().map(|ty| vec![ty]);
@@ -2494,9 +2702,14 @@ impl<'types> Codegen<'types> {
                 // The two scratch locals (list pointer, index) are i32; the loop
                 // var takes the element's kind (Int->i64, Float->f64, else i32).
                 let iter_kind = self.kind_of(iter);
+                let reference_list = self
+                    .ast_type_of_expr(iter)
+                    .as_ref()
+                    .and_then(|ty| self.gc_reference_list_layout(ty))
+                    .is_some();
                 self.locals.insert(
                     format!("__forlist_{var}"),
-                    if self.gc_function_list_id.is_some_and(|id| iter_kind == Kind::GcRef(id)) {
+                    if reference_list {
                         iter_kind
                     } else {
                         Kind::I32
@@ -2859,6 +3072,11 @@ impl<'types> Codegen<'types> {
         // `.kind()` is all the encoder reads: `Bool` => i32, `Int` => i64.
         let i32t = || WirTy::Bool;
         let i64t = || WirTy::Int;
+        let unit_gc_ids = self.unit_gc_ids(
+            f.params.iter().filter_map(|param| param.ty.clone()),
+            f.ret.clone(),
+            &f.body,
+        );
         let mut params: Vec<WirLocal> = f
             .params
             .iter()
@@ -2942,7 +3160,7 @@ impl<'types> Codegen<'types> {
         locals.push(WirLocal { name: TYPECHECK_TMP.into(), ty: i32t() });
         locals.push(WirLocal { name: MATCH_TMP.into(), ty: i64t() });
         locals.push(WirLocal { name: MATCH_REF_TMP.into(), ty: witchy_wir::wir::WirTy::Extern });
-        for id in 0..(self.gc_structs.len() + self.gc_arrays.len()) as u32 {
+        for &id in &unit_gc_ids {
             locals.push(WirLocal {
                 name: call_result_gc_tmp(id),
                 ty: witchy_wir::wir::WirTy::GcRef(id),
@@ -2973,7 +3191,7 @@ impl<'types> Codegen<'types> {
                     name: var_scratch(prefix, i, Kind::ExternRef),
                     ty: WirTy::Extern,
                 });
-                for id in 0..(self.gc_structs.len() + self.gc_arrays.len()) as u32 {
+                for &id in &unit_gc_ids {
                     locals.push(WirLocal {
                         name: var_scratch(prefix, i, Kind::GcRef(id)),
                         ty: witchy_wir::wir::WirTy::GcRef(id),
@@ -3001,38 +3219,42 @@ impl<'types> Codegen<'types> {
                 ty: WirTy::GcRef(CLOSURE_WRAPPER_ID),
             });
         }
-        if let Some(id) = self.gc_function_list_id {
+        for (id, element_kind) in self
+            .gc_reference_list_layouts()
+            .into_iter()
+            .filter(|(id, _)| unit_gc_ids.contains(id))
+        {
             for level in 0..APPLY_POOL {
                 locals.push(WirLocal {
-                    name: gc_list_scratch(GC_LIST_SRC_TMP, level),
+                    name: gc_list_scratch(GC_LIST_SRC_TMP, level, id),
                     ty: WirTy::GcRef(id),
                 });
                 locals.push(WirLocal {
-                    name: gc_list_scratch(GC_LIST_RIGHT_TMP, level),
+                    name: gc_list_scratch(GC_LIST_RIGHT_TMP, level, id),
                     ty: WirTy::GcRef(id),
                 });
                 locals.push(WirLocal {
-                    name: gc_list_scratch(GC_LIST_DST_TMP, level),
+                    name: gc_list_scratch(GC_LIST_DST_TMP, level, id),
                     ty: WirTy::GcRef(id),
                 });
                 locals.push(WirLocal {
-                    name: gc_list_scratch(GC_LIST_VALUE_TMP, level),
-                    ty: WirTy::GcRef(CLOSURE_WRAPPER_ID),
+                    name: gc_list_scratch(GC_LIST_VALUE_TMP, level, id),
+                    ty: Self::wir_ty_for_kind(element_kind),
                 });
                 locals.push(WirLocal {
-                    name: gc_list_scratch(GC_LIST_LEN_TMP, level),
+                    name: gc_list_scratch(GC_LIST_LEN_TMP, level, id),
                     ty: i32t(),
                 });
                 locals.push(WirLocal {
-                    name: gc_list_scratch(GC_LIST_LEFT_LEN_TMP, level),
+                    name: gc_list_scratch(GC_LIST_LEFT_LEN_TMP, level, id),
                     ty: i32t(),
                 });
                 locals.push(WirLocal {
-                    name: gc_list_scratch(GC_LIST_INDEX_TMP, level),
+                    name: gc_list_scratch(GC_LIST_INDEX_TMP, level, id),
                     ty: i32t(),
                 });
                 locals.push(WirLocal {
-                    name: gc_list_scratch(GC_LIST_TARGET_TMP, level),
+                    name: gc_list_scratch(GC_LIST_TARGET_TMP, level, id),
                     ty: i32t(),
                 });
             }
@@ -4500,6 +4722,7 @@ impl<'types> Codegen<'types> {
                         tail_is_value = false;
                     } else if self.collect_wir
                         && self.rc_floor_vars.contains(name)
+                        && !self.locals.get(name).is_some_and(|kind| kind.is_ref())
                         && matches!(value, Expr::Call { name: f, args }
                             if matches!(args.first(), Some(Expr::Var(x)) if x == name)
                                 && analysis::fresh_heap_builtin_offset(f, args.len()).is_some())
@@ -4793,6 +5016,9 @@ impl<'types> Codegen<'types> {
         value: &Expr,
     ) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::{BinOp, Kind as WK, WirExpr as W, WirNode as N};
+        let list_ty = self.ast_type_of_expr(list)?;
+        let (type_id, array_id, element_kind) =
+            self.gc_reference_list_layout(&list_ty)?;
         let level = self.assign_level;
         if level >= APPLY_POOL {
             return None;
@@ -4801,11 +5027,11 @@ impl<'types> Codegen<'types> {
         let lowered = (|| Some((self.lower_expr(list)?, self.lower_expr(value)?)))();
         self.assign_level = level;
         let (list, value) = lowered?;
-        let src = gc_list_scratch(GC_LIST_SRC_TMP, level);
-        let dst = gc_list_scratch(GC_LIST_DST_TMP, level);
-        let item = gc_list_scratch(GC_LIST_VALUE_TMP, level);
-        let len = gc_list_scratch(GC_LIST_LEN_TMP, level);
-        let index = gc_list_scratch(GC_LIST_INDEX_TMP, level);
+        let src = gc_list_scratch(GC_LIST_SRC_TMP, level, type_id);
+        let dst = gc_list_scratch(GC_LIST_DST_TMP, level, type_id);
+        let item = gc_list_scratch(GC_LIST_VALUE_TMP, level, type_id);
+        let len = gc_list_scratch(GC_LIST_LEN_TMP, level, type_id);
+        let index = gc_list_scratch(GC_LIST_INDEX_TMP, level, type_id);
         let label = self.next_label;
         self.next_label += 1;
         let exit = format!("gcle{label}");
@@ -4826,8 +5052,8 @@ impl<'types> Codegen<'types> {
             N::SetLocal {
                 local: dst.clone(),
                 value: W::ArrayNew {
-                    array_id: 0,
-                    value: Box::new(W::RefNull(WK::GcRef(CLOSURE_WRAPPER_ID))),
+                    array_id,
+                    value: Box::new(W::RefNull(Self::wir_kind(element_kind))),
                     len: Box::new(add(W::GetLocal(len.clone()), W::ConstI32(1))),
                 },
             },
@@ -4848,11 +5074,11 @@ impl<'types> Codegen<'types> {
                             }),
                         },
                         N::ArraySet {
-                            array_id: 0,
+                            array_id,
                             array: W::GetLocal(dst.clone()),
                             index: W::GetLocal(index.clone()),
                             value: W::ArrayGet {
-                                array_id: 0,
+                                array_id,
                                 array: Box::new(W::GetLocal(src)),
                                 index: Box::new(W::GetLocal(index.clone())),
                             },
@@ -4866,7 +5092,7 @@ impl<'types> Codegen<'types> {
                 }],
             },
             N::ArraySet {
-                array_id: 0,
+                array_id,
                 array: W::GetLocal(dst.clone()),
                 index: W::GetLocal(len),
                 value: W::GetLocal(item),
@@ -4882,6 +5108,9 @@ impl<'types> Codegen<'types> {
         value: &Expr,
     ) -> Option<witchy_wir::wir::WirExpr> {
         use witchy_wir::wir::{BinOp, Kind as WK, WirExpr as W, WirNode as N};
+        let list_ty = self.ast_type_of_expr(list)?;
+        let (type_id, array_id, element_kind) =
+            self.gc_reference_list_layout(&list_ty)?;
         let level = self.assign_level;
         if level >= APPLY_POOL {
             return None;
@@ -4897,12 +5126,12 @@ impl<'types> Codegen<'types> {
         })();
         self.assign_level = level;
         let (list, target, value) = lowered?;
-        let src = gc_list_scratch(GC_LIST_SRC_TMP, level);
-        let dst = gc_list_scratch(GC_LIST_DST_TMP, level);
-        let item = gc_list_scratch(GC_LIST_VALUE_TMP, level);
-        let len = gc_list_scratch(GC_LIST_LEN_TMP, level);
-        let index = gc_list_scratch(GC_LIST_INDEX_TMP, level);
-        let target_local = gc_list_scratch(GC_LIST_TARGET_TMP, level);
+        let src = gc_list_scratch(GC_LIST_SRC_TMP, level, type_id);
+        let dst = gc_list_scratch(GC_LIST_DST_TMP, level, type_id);
+        let item = gc_list_scratch(GC_LIST_VALUE_TMP, level, type_id);
+        let len = gc_list_scratch(GC_LIST_LEN_TMP, level, type_id);
+        let index = gc_list_scratch(GC_LIST_INDEX_TMP, level, type_id);
+        let target_local = gc_list_scratch(GC_LIST_TARGET_TMP, level, type_id);
         let label = self.next_label;
         self.next_label += 1;
         let exit = format!("gcse{label}");
@@ -4924,8 +5153,8 @@ impl<'types> Codegen<'types> {
             N::SetLocal {
                 local: dst.clone(),
                 value: W::ArrayNew {
-                    array_id: 0,
-                    value: Box::new(W::RefNull(WK::GcRef(CLOSURE_WRAPPER_ID))),
+                    array_id,
+                    value: Box::new(W::RefNull(Self::wir_kind(element_kind))),
                     len: Box::new(W::GetLocal(len.clone())),
                 },
             },
@@ -4946,11 +5175,11 @@ impl<'types> Codegen<'types> {
                             }),
                         },
                         N::ArraySet {
-                            array_id: 0,
+                            array_id,
                             array: W::GetLocal(dst.clone()),
                             index: W::GetLocal(index.clone()),
                             value: W::ArrayGet {
-                                array_id: 0,
+                                array_id,
                                 array: Box::new(W::GetLocal(src.clone())),
                                 index: Box::new(W::GetLocal(index.clone())),
                             },
@@ -4966,7 +5195,7 @@ impl<'types> Codegen<'types> {
             // `array.set` performs the same bounds check for negative and high
             // indices as the read above; no reference is converted to a slot.
             N::ArraySet {
-                array_id: 0,
+                array_id,
                 array: W::GetLocal(dst.clone()),
                 index: W::GetLocal(target_local),
                 value: W::GetLocal(item),
@@ -4980,7 +5209,14 @@ impl<'types> Codegen<'types> {
         left: &Expr,
         right: &Expr,
     ) -> Option<witchy_wir::wir::WirExpr> {
-        use witchy_wir::wir::{BinOp, Kind as WK, WirExpr as W, WirNode as N, WirTy};
+        use witchy_wir::wir::{BinOp, Kind as WK, WirExpr as W, WirNode as N};
+        let list_ty = self.ast_type_of_expr(left)?;
+        let (type_id, array_id, element_kind) =
+            self.gc_reference_list_layout(&list_ty)?;
+        let right_ty = self.ast_type_of_expr(right)?;
+        if self.gc_reference_list_layout(&right_ty)?.0 != type_id {
+            return None;
+        }
         let level = self.assign_level;
         if level >= APPLY_POOL {
             return None;
@@ -4989,12 +5225,12 @@ impl<'types> Codegen<'types> {
         let lowered = (|| Some((self.lower_expr(left)?, self.lower_expr(right)?)))();
         self.assign_level = level;
         let (left, right) = lowered?;
-        let src = gc_list_scratch(GC_LIST_SRC_TMP, level);
-        let rhs = gc_list_scratch(GC_LIST_RIGHT_TMP, level);
-        let dst = gc_list_scratch(GC_LIST_DST_TMP, level);
-        let left_len = gc_list_scratch(GC_LIST_LEFT_LEN_TMP, level);
-        let len = gc_list_scratch(GC_LIST_LEN_TMP, level);
-        let index = gc_list_scratch(GC_LIST_INDEX_TMP, level);
+        let src = gc_list_scratch(GC_LIST_SRC_TMP, level, type_id);
+        let rhs = gc_list_scratch(GC_LIST_RIGHT_TMP, level, type_id);
+        let dst = gc_list_scratch(GC_LIST_DST_TMP, level, type_id);
+        let left_len = gc_list_scratch(GC_LIST_LEFT_LEN_TMP, level, type_id);
+        let len = gc_list_scratch(GC_LIST_LEN_TMP, level, type_id);
+        let index = gc_list_scratch(GC_LIST_INDEX_TMP, level, type_id);
         let label = self.next_label;
         self.next_label += 1;
         let exit = format!("gcce{label}");
@@ -5023,8 +5259,8 @@ impl<'types> Codegen<'types> {
             N::SetLocal {
                 local: dst.clone(),
                 value: W::ArrayNew {
-                    array_id: 0,
-                    value: Box::new(W::RefNull(WK::GcRef(CLOSURE_WRAPPER_ID))),
+                    array_id,
+                    value: Box::new(W::RefNull(Self::wir_kind(element_kind))),
                     len: Box::new(W::GetLocal(len.clone())),
                 },
             },
@@ -5044,7 +5280,7 @@ impl<'types> Codegen<'types> {
                             )),
                         },
                         N::ArraySet {
-                            array_id: 0,
+                            array_id,
                             array: W::GetLocal(dst.clone()),
                             index: W::GetLocal(index.clone()),
                             value: W::Control(Box::new(N::If {
@@ -5054,12 +5290,12 @@ impl<'types> Codegen<'types> {
                                     W::GetLocal(left_len.clone()),
                                 ),
                                 then_: vec![N::Push(W::ArrayGet {
-                                    array_id: 0,
+                                    array_id,
                                     array: Box::new(W::GetLocal(src.clone())),
                                     index: Box::new(W::GetLocal(index.clone())),
                                 })],
                                 els: vec![N::Push(W::ArrayGet {
-                                    array_id: 0,
+                                    array_id,
                                     array: Box::new(W::GetLocal(rhs.clone())),
                                     index: Box::new(binary(
                                         BinOp::Sub,
@@ -5067,7 +5303,7 @@ impl<'types> Codegen<'types> {
                                         W::GetLocal(left_len.clone()),
                                     )),
                                 })],
-                                result: Some(WirTy::GcRef(CLOSURE_WRAPPER_ID)),
+                                result: Some(Self::wir_ty_for_kind(element_kind)),
                             })),
                         },
                         N::SetLocal {
@@ -5460,9 +5696,21 @@ impl<'types> Codegen<'types> {
                 }],
             ),
             Pattern::Ctor { name, args } if name == "Some" && args.len() == 1 => {
-                let inner = expected.and_then(|t| self.option_externref_inner(t)).cloned()?;
-                let (sub_cond, sub_binds) =
-                    self.lower_externref_pattern(value, &args[0], Some(&inner))?;
+                let (inner, kind) = expected.and_then(|t| self.option_reference_inner(t))?;
+                let (sub_cond, sub_binds) = match kind {
+                    Kind::ExternRef => {
+                        self.lower_externref_pattern(value, &args[0], Some(inner))?
+                    }
+                    Kind::GcRef(struct_id) => {
+                        self.lower_gc_struct_pattern(
+                            value,
+                            &args[0],
+                            struct_id,
+                            Some(inner),
+                        )?
+                    }
+                    _ => return None,
+                };
                 let non_null = W::Unary {
                     op: witchy_wir::wir::UnOp::Not,
                     kind: witchy_wir::wir::Kind::I32,
@@ -5471,17 +5719,17 @@ impl<'types> Codegen<'types> {
                 let cond = if matches!(sub_cond, W::ConstI32(1)) {
                     non_null
                 } else {
-                    W::Binary {
-                        op: witchy_wir::wir::BinOp::And,
-                        kind: witchy_wir::wir::Kind::I32,
-                        lhs: Box::new(non_null),
-                        rhs: Box::new(sub_cond),
-                    }
+                    W::Control(Box::new(N::If {
+                        cond: non_null,
+                        then_: vec![N::Push(sub_cond)],
+                        els: vec![N::Push(W::ConstI32(0))],
+                        result: Some(witchy_wir::wir::WirTy::Bool),
+                    }))
                 };
                 (cond, sub_binds)
             }
             Pattern::Ctor { name, args } if name == "None" && args.is_empty() => {
-                expected.and_then(|t| self.option_externref_inner(t))?;
+                expected.and_then(|t| self.option_reference_inner(t))?;
                 (W::RefIsNull(Box::new(value.clone())), vec![])
             }
             Pattern::Ctor { name, args }
@@ -5558,6 +5806,14 @@ impl<'types> Codegen<'types> {
                     value: value.clone(),
                 }],
             ),
+            Pattern::Ctor { name, .. }
+                if matches!(name.as_str(), "Some" | "None")
+                    && expected
+                        .and_then(|ty| self.option_reference_inner(ty))
+                        .is_some_and(|(_, kind)| kind == Kind::GcRef(struct_id)) =>
+            {
+                self.lower_externref_pattern(value, pat, expected)?
+            }
             Pattern::Tuple(args) => {
                 let Type::Tuple(field_types) = expected?.unqualified() else {
                     return None;
@@ -5569,7 +5825,7 @@ impl<'types> Codegen<'types> {
                 self.lower_gc_field_patterns(value, args, field_types, struct_id, 0)?
             }
             Pattern::Ctor { name, args } => {
-                let (layout, id) = self.gc_layout_for_ctor(name)?;
+                let (layout, id) = self.gc_layout_for_ctor(name, expected)?;
                 if id != struct_id {
                     return None;
                 }
@@ -5852,15 +6108,18 @@ impl<'types> Codegen<'types> {
             // `x = f(move x)` self-call that `self_own_call` threads) derives a
             // token from the argument: tracked owners and fresh aggregates carry
             // capacity; unknown values pass zero and safely re-own in the callee.
-            // The returned token is retained only for a declared unique result;
-            // otherwise the expression yields the declared value via TUPLE_TMP.
+            // The returned token is retained only for a declared unique result.
+            // The declared value uses a kind-correct scratch because a closed
+            // reference-bearing `List(T)` is a concrete GC array reference.
             use witchy_wir::wir::{WirExpr as W, WirNode as N};
             let cap = args
                 .get(own_index)
                 .map(|arg| self.owned_argument_cap(arg))
                 .unwrap_or(W::ConstI32(0));
             args_w.push(cap);
-            let mut dests = vec![TUPLE_TMP.to_string()];
+            let result_kind = self.fn_ret.get(name).copied().unwrap_or(Kind::I32);
+            let result_tmp = call_result_tmp(result_kind);
+            let mut dests = vec![result_tmp.clone()];
             if self.fn_unique_ret.contains(name) {
                 dests.push(UNIQUE_RESULT_CAP_TMP.to_string());
             }
@@ -5871,21 +6130,23 @@ impl<'types> Codegen<'types> {
                     args: args_w,
                     dests,
                 },
-                N::Push(W::GetLocal(TUPLE_TMP.to_string())),
+                N::Push(W::GetLocal(result_tmp)),
             ]));
         }
         if self.fn_unique_ret.contains(name) {
             use witchy_wir::wir::{WirExpr as W, WirNode as N};
+            let result_kind = self.fn_ret.get(name).copied().unwrap_or(Kind::I32);
+            let result_tmp = call_result_tmp(result_kind);
             return Some(W::Seq(vec![
                 N::CallStoreMulti {
                     func: name.to_string(),
                     args: args_w,
                     dests: vec![
-                        TUPLE_TMP.to_string(),
+                        result_tmp.clone(),
                         UNIQUE_RESULT_CAP_TMP.to_string(),
                     ],
                 },
-                N::Push(W::GetLocal(TUPLE_TMP.to_string())),
+                N::Push(W::GetLocal(result_tmp)),
             ]));
         }
         Some(witchy_wir::wir::WirExpr::Call { func: name.to_string(), args: args_w })
@@ -6081,14 +6342,18 @@ impl<'types> Codegen<'types> {
                 ..
             } => {
                 let base_expr = Self::codegen_place_read(base);
-                if let Some(array_ref) = self
-                    .gc_function_list_id
-                    .filter(|id| self.kind_of(&base_expr) == Kind::GcRef(*id))
+                if let Some((array_ref, array_id, element_kind)) = self
+                    .ast_type_of_expr(&base_expr)
+                    .as_ref()
+                    .and_then(|ty| self.gc_reference_list_layout(ty))
                 {
+                    if element_kind != expected {
+                        return None;
+                    }
                     let array =
                         self.lower_codegen_place_read(base, Kind::GcRef(array_ref))?;
                     let value = W::ArrayGet {
-                        array_id: 0,
+                        array_id,
                         array: Box::new(array),
                         index: Box::new(Self::wir_convert(
                             W::GetLocal(coordinate.clone()),
@@ -6096,11 +6361,7 @@ impl<'types> Codegen<'types> {
                             Kind::I32,
                         )),
                     };
-                    return Some(Self::wir_convert(
-                        value,
-                        Kind::GcRef(CLOSURE_WRAPPER_ID),
-                        expected,
-                    ));
+                    return Some(value);
                 }
                 let base = self.lower_codegen_place_read(base, Kind::I32)?;
                 let value = W::Call {
@@ -6983,9 +7244,10 @@ impl<'types> Codegen<'types> {
                 };
                 let i32 = witchy_wir::wir::Kind::I32;
                 let add = witchy_wir::wir::BinOp::Add;
-                let gc_function_list = self
-                    .gc_function_list_id
-                    .is_some_and(|id| self.kind_of(iter) == Kind::GcRef(id));
+                let gc_reference_list = self
+                    .ast_type_of_expr(iter)
+                    .as_ref()
+                    .and_then(|ty| self.gc_reference_list_layout(ty));
                 // idx >= list.len  ->  br_if $fe
                 let exit = N::Br {
                     target: format!("fe{id}"),
@@ -6993,7 +7255,7 @@ impl<'types> Codegen<'types> {
                         op: witchy_wir::wir::BinOp::Ge,
                         kind: i32,
                         lhs: Box::new(W::GetLocal(idx_l.clone())),
-                        rhs: Box::new(if gc_function_list {
+                        rhs: Box::new(if gc_reference_list.is_some() {
                             W::ArrayLen(Box::new(W::GetLocal(list_l.clone())))
                         } else {
                             W::Load {
@@ -7023,9 +7285,9 @@ impl<'types> Codegen<'types> {
                 };
                 let bind = N::SetLocal {
                     local: var.clone(),
-                    value: if gc_function_list {
+                    value: if let Some((_, array_id, _)) = gc_reference_list {
                         W::ArrayGet {
-                            array_id: 0,
+                            array_id,
                             array: Box::new(W::GetLocal(list_l.clone())),
                             index: Box::new(W::GetLocal(idx_l.clone())),
                         }
@@ -7079,16 +7341,16 @@ impl<'types> Codegen<'types> {
             // Aggregate literals: ordinary tuples retain the linear-memory
             // `$mkN` layout. A concrete cap-carrying tuple uses its interned GC
             // struct, so no reference field crosses the universal i64 slot.
-            Expr::List(items)
-                if self
-                    .gc_function_list_id
-                    .is_some_and(|id| self.kind_of(e) == Kind::GcRef(id)) =>
-            {
+            Expr::List(items) if self.ast_type_of_expr(e).as_ref().is_some_and(|ty| {
+                self.gc_reference_list_layout(ty).is_some()
+            }) => {
+                let ty = self.ast_type_of_expr(e)?;
+                let (_, array_id, _) = self.gc_reference_list_layout(&ty)?;
                 let mut lowered = Vec::with_capacity(items.len());
                 for item in items {
                     lowered.push(self.lower_expr(item)?);
                 }
-                return Some(W::ArrayNewFixed { array_id: 0, items: lowered });
+                return Some(W::ArrayNewFixed { array_id, items: lowered });
             }
             Expr::List(items) => return self.lower_aggregate(items.len() as i32, items, 0),
             Expr::Tuple(items) => {
@@ -7121,13 +7383,13 @@ impl<'types> Codegen<'types> {
             }
             Expr::Ctor { name, args } => {
                 if let Some(ty) = self.ast_type_of_expr(e)
-                    && self.option_externref_inner(&ty).is_some()
+                    && let Some((_, option_kind)) = self.option_reference_inner(&ty)
                 {
                     if name == "Some" && args.len() == 1 {
                         return self.lower_expr(&args[0]);
                     }
                     if name == "None" && args.is_empty() {
-                        return Some(W::RefNull(witchy_wir::wir::Kind::ExternRef));
+                        return Some(W::RefNull(Self::wir_kind(option_kind)));
                     }
                 }
                 if self.transparent_externref_ctors.contains_key(name) {
@@ -7136,7 +7398,10 @@ impl<'types> Codegen<'types> {
                     }
                     return self.lower_expr(&args[0]);
                 }
-                if let Some((layout, struct_id)) = self.gc_layout_for_ctor(name) {
+                let owner_ty = self.ast_type_of_expr(e);
+                if let Some((layout, struct_id)) =
+                    self.gc_layout_for_ctor(name, owner_ty.as_ref())
+                {
                     if layout.field_types.len() != args.len() {
                         return None;
                     }
@@ -7192,7 +7457,9 @@ impl<'types> Codegen<'types> {
                 // (RFC-0005 stage 4) A GC-lowered cap-carrying record spreads via
                 // `StructNew`, reading each un-updated field from the base struct
                 // with `StructGet` — the GC analog of the linear `mk{N}` below.
-                if let Some(struct_id) = self.gc_aggregate_ids.get(&tyname).copied() {
+                if let Some(struct_id) =
+                    self.ast_type_of_expr(base).and_then(|ty| self.gc_struct_id_for_type(&ty))
+                {
                     let (prelude, base_ref): (Option<witchy_wir::wir::WirNode>, W) =
                         if let Expr::Var(v) = base.as_ref() {
                             (None, W::GetLocal(v.clone()))
@@ -7661,7 +7928,9 @@ impl<'types> Codegen<'types> {
                     }
                 }
                 if let Some(base_ty) = self.record_type_of(base) {
-                    if let Some(struct_id) = self.gc_aggregate_ids.get(&base_ty).copied() {
+                    if let Some(struct_id) =
+                        self.ast_type_of_expr(base).and_then(|ty| self.gc_struct_id_for_type(&ty))
+                    {
                         let names = self.record_fields.get(&base_ty)?;
                         let idx = names.iter().position(|(n, _)| n == field)?;
                         return Some(W::StructGet {
@@ -8075,7 +8344,12 @@ impl<'types> Codegen<'types> {
             dict_key_vt: self.local_dict_key_valtype.get(name).copied(),
             list_elem_list_vt: self.local_list_elem_list_valtype.get(name).copied(),
             list_nesting: self.local_list_nesting.get(name).cloned(),
-            fn_ret_kind: self.local_fn_ret_kind.get(name).copied(),
+            fn_ret_kind: self.local_fn_ret_kind.get(name).copied().or_else(|| {
+                let Type::Fn(_, result, _) = self.local_types.get(name)?.unqualified() else {
+                    return None;
+                };
+                Some(self.kind_for_type(result))
+            }),
         }
     }
 
@@ -8388,6 +8662,21 @@ impl<'types> Codegen<'types> {
         let func = match (body_res, fin) {
             (Some(seq), Ok(())) => {
                 let i32t = || WirTy::Bool;
+                let mut unit_gc_ids = self.unit_gc_ids(
+                    params.iter().filter_map(|param| param.ty.clone()),
+                    None,
+                    body,
+                );
+                for kind in param_kinds
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once(block_kind))
+                    .chain(cap_info.iter().map(|capture| capture.kind))
+                {
+                    if let Kind::GcRef(id) = kind {
+                        unit_gc_ids.insert(id);
+                    }
+                }
                 // Env mode receives the uniform wrapper. Threaded mode keeps scalar
                 // captures in slots but carries reference captures at their exact kind.
                 let mut func_params = match cap_mode {
@@ -8462,8 +8751,10 @@ impl<'types> Codegen<'types> {
                 locals.push(WirLocal { name: CALL_RESULT_I64_TMP.into(), ty: WirTy::Int });
                 locals.push(WirLocal { name: CALL_RESULT_F64_TMP.into(), ty: WirTy::Float });
                 locals.push(WirLocal { name: CALL_RESULT_EXTERN_TMP.into(), ty: WirTy::Extern });
-                for id in 0..(self.gc_structs.len() + self.gc_arrays.len()) as u32 {
+                for &id in &unit_gc_ids {
                     locals.push(WirLocal { name: call_result_gc_tmp(id), ty: WirTy::GcRef(id) });
+                    locals.push(WirLocal { name: match_gc_tmp(id), ty: WirTy::GcRef(id) });
+                    locals.push(WirLocal { name: update_gc_tmp(id), ty: WirTy::GcRef(id) });
                 }
                 locals.push(WirLocal { name: TRY_TMP.into(), ty: i32t() });
                 locals.push(WirLocal { name: MATCH_TMP.into(), ty: WirTy::Int });
@@ -8491,7 +8782,7 @@ impl<'types> Codegen<'types> {
                             name: var_scratch(prefix, i, Kind::ExternRef),
                             ty: WirTy::Extern,
                         });
-                        for id in 0..(self.gc_structs.len() + self.gc_arrays.len()) as u32 {
+                        for &id in &unit_gc_ids {
                             locals.push(WirLocal {
                                 name: var_scratch(prefix, i, Kind::GcRef(id)),
                                 ty: WirTy::GcRef(id),
@@ -8516,38 +8807,42 @@ impl<'types> Codegen<'types> {
                         ty: WirTy::GcRef(CLOSURE_WRAPPER_ID),
                     });
                 }
-                if let Some(id) = self.gc_function_list_id {
+                for (id, element_kind) in self
+                    .gc_reference_list_layouts()
+                    .into_iter()
+                    .filter(|(id, _)| unit_gc_ids.contains(id))
+                {
                     for level in 0..APPLY_POOL {
                         locals.push(WirLocal {
-                            name: gc_list_scratch(GC_LIST_SRC_TMP, level),
+                            name: gc_list_scratch(GC_LIST_SRC_TMP, level, id),
                             ty: WirTy::GcRef(id),
                         });
                         locals.push(WirLocal {
-                            name: gc_list_scratch(GC_LIST_RIGHT_TMP, level),
+                            name: gc_list_scratch(GC_LIST_RIGHT_TMP, level, id),
                             ty: WirTy::GcRef(id),
                         });
                         locals.push(WirLocal {
-                            name: gc_list_scratch(GC_LIST_DST_TMP, level),
+                            name: gc_list_scratch(GC_LIST_DST_TMP, level, id),
                             ty: WirTy::GcRef(id),
                         });
                         locals.push(WirLocal {
-                            name: gc_list_scratch(GC_LIST_VALUE_TMP, level),
-                            ty: WirTy::GcRef(CLOSURE_WRAPPER_ID),
+                            name: gc_list_scratch(GC_LIST_VALUE_TMP, level, id),
+                            ty: Self::wir_ty_for_kind(element_kind),
                         });
                         locals.push(WirLocal {
-                            name: gc_list_scratch(GC_LIST_LEN_TMP, level),
+                            name: gc_list_scratch(GC_LIST_LEN_TMP, level, id),
                             ty: i32t(),
                         });
                         locals.push(WirLocal {
-                            name: gc_list_scratch(GC_LIST_LEFT_LEN_TMP, level),
+                            name: gc_list_scratch(GC_LIST_LEFT_LEN_TMP, level, id),
                             ty: i32t(),
                         });
                         locals.push(WirLocal {
-                            name: gc_list_scratch(GC_LIST_INDEX_TMP, level),
+                            name: gc_list_scratch(GC_LIST_INDEX_TMP, level, id),
                             ty: i32t(),
                         });
                         locals.push(WirLocal {
-                            name: gc_list_scratch(GC_LIST_TARGET_TMP, level),
+                            name: gc_list_scratch(GC_LIST_TARGET_TMP, level, id),
                             ty: i32t(),
                         });
                     }

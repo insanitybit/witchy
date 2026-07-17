@@ -198,35 +198,237 @@ fn collect_lambda_env_keys_block(owner: &str, block: &Block, keys: &mut Vec<u64>
     }
 }
 
-fn type_uses_function_list(ty: &Type) -> bool {
+#[derive(Clone)]
+struct GcNominalPlan {
+    owner: String,
+    variant_names: Vec<String>,
+    variants: Vec<Vec<Type>>,
+}
+
+fn type_has_planned_reference(
+    cg: &Codegen<'_>,
+    ty: &Type,
+    storage: &witchy_types::storage::ReferenceStorageClassifier<'_>,
+    nominals: &BTreeMap<String, GcNominalPlan>,
+    reference_lists: &BTreeMap<String, Type>,
+) -> bool {
     match ty.unqualified() {
+        Type::Fn(_, _, _) => true,
+        Type::Tuple(items) | Type::Dyn(_, items) => items
+            .iter()
+            .any(|item| type_has_planned_reference(
+                cg,
+                item,
+                storage,
+                nominals,
+                reference_lists,
+            )),
         Type::Named(name, args) if name == "List" => {
-            matches!(args.first().map(Type::unqualified), Some(Type::Fn(..)))
-                || args.iter().any(type_uses_function_list)
+            reference_lists.contains_key(&cg.gc_lookup_type_key(ty))
+                || args.first().is_some_and(|element| {
+                    type_has_planned_reference(
+                        cg,
+                        element,
+                        storage,
+                        nominals,
+                        reference_lists,
+                    )
+                })
         }
-        Type::Named(_, args) | Type::Dyn(_, args) | Type::Tuple(args) => {
-            args.iter().any(type_uses_function_list)
-        }
-        Type::Fn(params, ret, _) => {
-            params.iter().any(type_uses_function_list) || type_uses_function_list(ret)
+        Type::Named(_, args) => {
+            storage.first_reference(ty).is_some()
+                || nominals.contains_key(&cg.gc_lookup_type_key(ty))
+                || args.iter().any(|arg| {
+                    type_has_planned_reference(
+                        cg,
+                        arg,
+                        storage,
+                        nominals,
+                        reference_lists,
+                    )
+                })
         }
         Type::Qualified(_, _) => unreachable!("unqualified above"),
     }
 }
 
-fn expr_uses_function_list(cg: &Codegen<'_>, expr: &Expr) -> bool {
-    if cg.ast_type_of_expr(expr).as_ref().is_some_and(type_uses_function_list) {
-        return true;
+fn collect_gc_type_plans(
+    cg: &Codegen<'_>,
+    ty: &Type,
+    defs: &HashMap<String, &witchy_syntax::ast::TypeDef>,
+    storage: &witchy_types::storage::ReferenceStorageClassifier<'_>,
+    nominals: &mut BTreeMap<String, GcNominalPlan>,
+    reference_lists: &mut BTreeMap<String, Type>,
+) {
+    let ty = ty.unqualified();
+    match ty {
+        Type::Named(name, args) => {
+            for arg in args {
+                collect_gc_type_plans(
+                    cg,
+                    arg,
+                    defs,
+                    storage,
+                    nominals,
+                    reference_lists,
+                );
+            }
+            if name == "List" {
+                if let Some(element) = args.first()
+                    && type_has_planned_reference(
+                        cg,
+                        element,
+                        storage,
+                        nominals,
+                        reference_lists,
+                    )
+                {
+                    reference_lists
+                        .entry(cg.gc_lookup_type_key(ty))
+                        .or_insert_with(|| ty.clone());
+                }
+                return;
+            }
+            if matches!(name.as_str(), "Dict") {
+                return;
+            }
+            let owner = cg.gc_nominal_names.get(name).unwrap_or(name);
+            if type_has_var(ty) {
+                return;
+            }
+            // Nullable direct externrefs keep the established zero-allocation
+            // `None = null` representation rather than receiving an ADT box.
+            if name == "Option"
+                && args.len() == 1
+                && !matches!(args[0].unqualified(), Type::Named(inner, _) if inner == "Option")
+                && storage.first_reference(&args[0]).is_some()
+            {
+                return;
+            }
+            let (variant_names, variants) = if let Some(def) = defs.get(owner) {
+                if witchy_types::storage::type_def_params(def).len() != args.len() {
+                    return;
+                }
+                (
+                    def.variants
+                        .iter()
+                        .map(|variant| variant.name.clone())
+                        .collect(),
+                    witchy_types::storage::instantiate_type_def_fields(def, args),
+                )
+            } else if name == "Result" && args.len() == 2 {
+                (
+                    vec!["Ok".to_string(), "Err".to_string()],
+                    vec![vec![args[0].clone()], vec![args[1].clone()]],
+                )
+            } else {
+                return;
+            };
+            if !variants
+                .iter()
+                .flatten()
+                .any(|field| storage.requires_reference_storage(field))
+            {
+                return;
+            }
+            let key = cg.gc_lookup_type_key(ty);
+            if nominals.contains_key(&key) {
+                return;
+            }
+            nominals.insert(
+                key,
+                GcNominalPlan {
+                    owner: owner.clone(),
+                    variant_names,
+                    variants: variants.clone(),
+                },
+            );
+            for field in variants.iter().flatten() {
+                collect_gc_type_plans(
+                    cg,
+                    field,
+                    defs,
+                    storage,
+                    nominals,
+                    reference_lists,
+                );
+            }
+        }
+        Type::Tuple(items) | Type::Dyn(_, items) => {
+            for item in items {
+                collect_gc_type_plans(
+                    cg,
+                    item,
+                    defs,
+                    storage,
+                    nominals,
+                    reference_lists,
+                );
+            }
+        }
+        Type::Fn(params, result, _) => {
+            for param in params {
+                collect_gc_type_plans(
+                    cg,
+                    param,
+                    defs,
+                    storage,
+                    nominals,
+                    reference_lists,
+                );
+            }
+            collect_gc_type_plans(
+                cg,
+                result,
+                defs,
+                storage,
+                nominals,
+                reference_lists,
+            );
+        }
+        Type::Qualified(_, _) => unreachable!("unqualified above"),
     }
-    let mut found = false;
-    crate::escape::for_each_immediate_subexpr(expr, &mut |child| {
-        found |= expr_uses_function_list(cg, child);
-    });
-    found
 }
 
-fn block_uses_function_list(cg: &Codegen<'_>, block: &Block) -> bool {
-    block.stmts.iter().any(|stmt| {
+fn collect_gc_expr_plans(
+    cg: &Codegen<'_>,
+    expr: &Expr,
+    defs: &HashMap<String, &witchy_syntax::ast::TypeDef>,
+    storage: &witchy_types::storage::ReferenceStorageClassifier<'_>,
+    nominals: &mut BTreeMap<String, GcNominalPlan>,
+    reference_lists: &mut BTreeMap<String, Type>,
+) {
+    if let Some(ty) = cg.ast_type_of_expr(expr) {
+        collect_gc_type_plans(
+            cg,
+            &ty,
+            defs,
+            storage,
+            nominals,
+            reference_lists,
+        );
+    }
+    crate::escape::for_each_immediate_subexpr(expr, &mut |child| {
+        collect_gc_expr_plans(
+            cg,
+            child,
+            defs,
+            storage,
+            nominals,
+            reference_lists,
+        );
+    });
+}
+
+fn collect_gc_block_plans(
+    cg: &Codegen<'_>,
+    block: &Block,
+    defs: &HashMap<String, &witchy_syntax::ast::TypeDef>,
+    storage: &witchy_types::storage::ReferenceStorageClassifier<'_>,
+    nominals: &mut BTreeMap<String, GcNominalPlan>,
+    reference_lists: &mut BTreeMap<String, Type>,
+) {
+    for stmt in &block.stmts {
         let expr = match stmt {
             Stmt::Let { value, .. }
             | Stmt::Assign { value, .. }
@@ -236,25 +438,70 @@ fn block_uses_function_list(cg: &Codegen<'_>, block: &Block) -> bool {
             Stmt::Return(value) => value.as_ref(),
             Stmt::Break | Stmt::Continue => None,
         };
-        expr.is_some_and(|expr| expr_uses_function_list(cg, expr))
-    })
+        if let Some(expr) = expr {
+            collect_gc_expr_plans(
+                cg,
+                expr,
+                defs,
+                storage,
+                nominals,
+                reference_lists,
+            );
+        }
+    }
 }
 
-fn module_uses_function_list(cg: &Codegen<'_>, module: &Module) -> bool {
-    module.items.iter().any(|item| match item {
-        Item::Function(function) => {
-            function.params.iter().filter_map(|param| param.ty.as_ref()).any(type_uses_function_list)
-                || function.ret.as_ref().is_some_and(type_uses_function_list)
-                || block_uses_function_list(cg, &function.body)
+fn gc_type_plans(
+    cg: &Codegen<'_>,
+    module: &Module,
+    reachable: &HashSet<String>,
+) -> (BTreeMap<String, GcNominalPlan>, BTreeMap<String, Type>) {
+    let defs: HashMap<String, &witchy_syntax::ast::TypeDef> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Type(def) => Some((def.name.clone(), def)),
+            _ => None,
+        })
+        .collect();
+    let storage = witchy_types::storage::ReferenceStorageClassifier::new(module);
+    let mut nominals = BTreeMap::new();
+    let mut reference_lists = BTreeMap::new();
+    for item in &module.items {
+        if let Item::Function(function) = item
+            && reachable.contains(&function.name)
+        {
+            for ty in function.params.iter().filter_map(|param| param.ty.as_ref()) {
+                collect_gc_type_plans(
+                    cg,
+                    ty,
+                    &defs,
+                    &storage,
+                    &mut nominals,
+                    &mut reference_lists,
+                );
+            }
+            if let Some(ty) = &function.ret {
+                collect_gc_type_plans(
+                    cg,
+                    ty,
+                    &defs,
+                    &storage,
+                    &mut nominals,
+                    &mut reference_lists,
+                );
+            }
+            collect_gc_block_plans(
+                cg,
+                &function.body,
+                &defs,
+                &storage,
+                &mut nominals,
+                &mut reference_lists,
+            );
         }
-        Item::Type(def) => def
-            .variants
-            .iter()
-            .flat_map(|variant| &variant.fields)
-            .any(type_uses_function_list),
-        Item::TypeAlias { ty, .. } => type_uses_function_list(ty),
-        Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::Comptime(_) => false,
-    })
+    }
+    (nominals, reference_lists)
 }
 
 /// (RFC-0040) If `f` is a cap-gated string export (`export_*(cap, String)`), the
@@ -330,6 +577,28 @@ fn eq_impl_types(module: &Module) -> HashSet<String> {
         .collect()
 }
 
+fn custom_eq_function_roots(module: &Module) -> Vec<String> {
+    let functions: HashSet<&str> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Function(function) => Some(function.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Type(def) if !def.partial_eq_derived => {
+                let name = format!("PartialEq__{}__eq", def.name);
+                functions.contains(name.as_str()).then_some(name)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 fn transparent_externref_brand_entries(module: &Module) -> Vec<(String, String, Type)> {
     let candidates: Vec<(String, String, Type)> = module
         .items
@@ -372,7 +641,11 @@ fn transparent_externref_brand_entries(module: &Module) -> Vec<(String, String, 
 
 /// Register every item's compile-time metadata (parameter conventions,
 /// return kinds/types, record fields, generic shape hints, ...) on `cg`.
-fn register_module_items(cg: &mut Codegen, module: &Module) {
+fn register_module_items(
+    cg: &mut Codegen,
+    module: &Module,
+    reachable: &HashSet<String>,
+) {
     // `Option`/`Result` are language-level (`?`, `Some`/`Ok` literals, the
     // interpreter evaluates them natively): their constructors exist for
     // patterns whether or not std/option / std/result are linked. Tags match
@@ -412,24 +685,33 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
             mutable: true,
         });
     }
-    // (RFC-0005 stage 4 / BUG-566) The GC-aggregate classification lives in ONE
-    // home — typeck — and codegen consumes it, so the boundary checks and the
-    // struct registration can never disagree on which values are GC-lowered.
-    let gc_aggregate_names = witchy_types::typeck::gc_cap_aggregate_names(module);
+    for item in &module.items {
+        if let Item::Type(def) = item {
+            cg.gc_nominal_names.insert(def.name.clone(), def.name.clone());
+            let bare = def.name.rsplit('.').next().unwrap_or(&def.name).to_string();
+            cg.gc_nominal_names.entry(bare).or_insert_with(|| def.name.clone());
+        }
+    }
+    // Demand-plan every closed nominal instance that transitively stores a
+    // WebAssembly reference. Keys include the concrete type arguments, so
+    // `Task(Int)` and `Task(String)` cannot accidentally share a field layout.
+    let (gc_nominal_plans, gc_reference_lists) = gc_type_plans(cg, module, reachable);
     let gc_aggregate_name_set: HashSet<String> =
-        gc_aggregate_names.iter().cloned().collect();
-    // Preserve nominal IDs in declaration order. Tuple layouts append in a
-    // stable representation order, so adding a tuple cannot renumber an
-    // existing nominal type.
-    for name in &gc_aggregate_names {
+        gc_nominal_plans.values().map(|plan| plan.owner.clone()).collect();
+    for key in gc_nominal_plans.keys() {
         let id = cg.gc_structs.len() as u32;
-        cg.gc_aggregate_ids.insert(name.clone(), id);
+        cg.gc_aggregate_ids.insert(key.clone(), id);
         cg.gc_structs.push(witchy_wir::wir::WirStructDef {
             fields: Vec::new(),
             mutable: true,
         });
     }
-    let gc_tuple_layouts = collect_gc_tuple_layouts(cg, module);
+    let mut gc_tuple_layouts = collect_gc_tuple_layouts(cg, module);
+    for plan in gc_nominal_plans.values() {
+        for field in plan.variants.iter().flatten() {
+            collect_gc_tuple_type(cg, field, &mut gc_tuple_layouts);
+        }
+    }
     for shape in gc_tuple_layouts.keys() {
         let id = cg.gc_structs.len() as u32;
         cg.gc_tuple_ids.insert(shape.clone(), id);
@@ -438,11 +720,21 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
             mutable: true,
         });
     }
-    if module_uses_function_list(cg, module) {
-        let id = cg.gc_structs.len() as u32;
-        cg.gc_function_list_id = Some(id);
+    for (key, ty) in &gc_reference_lists {
+        let Type::Named(_, args) = ty.unqualified() else {
+            continue;
+        };
+        let Some(element) = args.first() else {
+            continue;
+        };
+        let element_kind = cg.kind_for_type(element);
+        if !matches!(element_kind, Kind::ExternRef | Kind::GcRef(_)) {
+            continue;
+        }
+        let id = cg.gc_structs.len() as u32 + cg.gc_arrays.len() as u32;
+        cg.gc_reference_list_ids.insert(key.clone(), id);
         cg.gc_arrays.push(witchy_wir::wir::WirArrayDef {
-            element: witchy_wir::wir::Kind::GcRef(CLOSURE_WRAPPER_ID),
+            element: Codegen::wir_kind(element_kind),
         });
     }
     // Collect parameter conventions up front so call sites can resolve `var`
@@ -542,35 +834,32 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
     }
     // Every nominal and tuple ID is reserved before materializing a field kind,
     // so recursive references can point forward in the single Wasm GC group.
-    for item in &module.items {
-        let Item::Type(t) = item else { continue };
-        if !gc_aggregate_name_set.contains(&t.name) {
-            continue;
-        }
-        let Some(id) = cg.gc_aggregate_ids.get(&t.name).copied() else {
+    for (owner_key, plan) in &gc_nominal_plans {
+        let Some(id) = cg.gc_aggregate_ids.get(owner_key).copied() else {
             continue;
         };
-        let tagged = t.variants.len() > 1;
+        let tagged = plan.variants.len() > 1;
         let mut fields = if tagged {
             vec![witchy_wir::wir::Kind::I32]
         } else {
             Vec::new()
         };
-        for (tag, variant) in t.variants.iter().enumerate() {
+        for (tag, (variant_name, field_types)) in
+            plan.variant_names.iter().zip(&plan.variants).enumerate()
+        {
             let field_base = fields.len() as u32;
             fields.extend(
-                variant
-                    .fields
+                field_types
                     .iter()
                     .map(|ty| Codegen::wir_kind(cg.kind_for_type(ty))),
             );
             cg.gc_ctor_layouts.insert(
-                variant.name.clone(),
+                (owner_key.clone(), variant_name.clone()),
                 GcCtorLayout {
-                    owner: t.name.clone(),
+                    owner_key: owner_key.clone(),
                     tag: tagged.then_some(tag as u32),
                     field_base,
-                    field_types: variant.fields.clone(),
+                    field_types: field_types.clone(),
                 },
             );
         }
@@ -909,9 +1198,11 @@ fn assemble_wir_module_with_structs(
     let module = typed.module();
     let loan_facts = witchy_types::loans::facts(module)
         .map_err(|error| CodegenError { message: error.to_string() })?;
+    let custom_eq_roots = custom_eq_function_roots(module);
+    let reachable = reachable_functions_with(module, &custom_eq_roots);
     let mut cg = Codegen::new(typed.table(), loan_facts);
     cg.collect_wir = true;
-    register_module_items(&mut cg, module);
+    register_module_items(&mut cg, module, &reachable);
     cg.eq_types = eq_types;
     cg.summaries = analysis::Summaries::of_module(module);
 
@@ -919,12 +1210,6 @@ fn assemble_wir_module_with_structs(
     // from a codegen-synthesized container eq helper (invisible to the AST walk), so
     // seed those impls as reachability roots — otherwise a `[CI] == [CI]` helper
     // calls an un-emitted function and the whole module reports `Unsupported`.
-    let custom_eq_roots: Vec<String> = cg
-        .custom_eq_types
-        .iter()
-        .map(|t| format!("PartialEq__{t}__eq"))
-        .collect();
-    let reachable = reachable_functions_with(module, &custom_eq_roots);
     // The exact `$name` functions this module emits — the discriminator
     // `lower_expr`'s call arm uses to tell a user call from an intrinsic/native.
     cg.emitted_funcs = module

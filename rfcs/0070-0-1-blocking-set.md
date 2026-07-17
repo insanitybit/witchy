@@ -71,10 +71,10 @@ currently says one thing twice.
 **In:** all root capabilities become `externref` end-to-end (stage 2: File;
 stage 3: Socket/Listener and the rest); the `i32` handle tables are deleted
 (stage 5). The original minimum allowed stage 4 to remain reject-first. The
-implementation subsequently exceeded that minimum: fixed-layout aggregates,
-typed closure environments, concrete function signatures, and direct
-`List(fn(...))` now have reference-preserving GC layouts. Generic stored type
-parameters, other reference-bearing collection payloads, region copy-out, and
+implementation subsequently exceeded that minimum: closed generic aggregates,
+typed closure environments, concrete function signatures, `Option`/`Result`,
+and reference-bearing `List` values now have reference-preserving GC layouts.
+Reference-bearing `Dict`, open generic function ABIs, region copy-out, and
 cross-instance capability callbacks remain loud check-time rejections.
 
 Rationale: capability security is the sole differentiator, and the compiled
@@ -224,7 +224,7 @@ into RFC-0087, so D10 has one normative source contract.
 
 | Item | Status decision | Where it's documented |
 | --- | --- | --- |
-| RFC-0005 generic GC containers/region copy-out | fixed-layout aggregates, typed closure environments, and direct `List(fn)` implemented; residual shapes remain reject-first | SECURITY + book caps chapter |
+| RFC-0005 residual reference boundaries | closed generic aggregates, `Option`/`Result`, typed closure environments, and reference-bearing lists implemented; `Dict`, open generic ABIs, region copy-out, and isolated-worker crossings remain reject-first | SECURITY + book caps chapter |
 | RFC-0036 $rdrop / move-borrow oracle | deferred | RFC tracking note |
 | RFC-0059 Increment-2 Step 2 | deferred beyond 0.1; ceiling documented | book concurrency chapter |
 | RFC-0031 SIMD | deferred with explicit revival conditions | RFC tracking note |

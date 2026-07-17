@@ -91,20 +91,22 @@ authority objects whose paths, allowlists, streams, listeners, and secret bytes
 never enter guest memory unless an explicit API such as `crypto.reveal` returns
 data. Code cannot mint or widen them, and corrupted linear memory cannot forge
 one. Migrated capabilities may cross only boundaries with a typed reference
-representation: directly, as nullable `Option(cap)` where the ABI carries a
-null externref, as transparent single-field capability brands represented by a
-direct externref, inside a fully concrete structural tuple or non-generic
-nominal aggregate lowered to a Wasm GC struct, or in a closure's per-lambda GC
-environment. The nominal category includes sealed capabilities, plain
+representation: directly, as nullable `Option(reference)` where the ABI carries
+a null reference, as transparent single-field capability brands represented by
+a direct externref, inside a fully concrete structural tuple or closed nominal
+instance lowered to a Wasm GC struct, or in a closure's per-lambda GC
+environment. The nominal category includes generic and non-generic sealed
+capabilities, plain
 named-field records, positional wrappers, and multi-variant sums. Capability
 tuples are interned by their recursively typed field shape; qualifiers do not
 change that shape, and tuples may nest in other tuples or nominal GC
 aggregates. A sum stores its tag and each variant's payload in disjoint typed
 field bands, with inactive reference fields null; mixed and recursive nesting
-stays reference-typed. Direct `List(fn(...))` values use typed GC arrays.
-Generic stored type parameters, other reference-bearing collection payloads,
-and region copy-out remain rejected until those boundaries have fixed typed
-representations.
+stays reference-typed. Closed `Result` values use the same sum representation,
+and every reference-bearing `List(T)` uses an array of its exact reference kind.
+`Dict` reference payloads, open generic function ABIs, region copy-out, and
+isolated-worker crossings remain rejected until those boundaries have fixed
+typed representations.
 `Console`/`Clock`/`Rand`/`Env`/`Exec`/`SecretStore` and build capabilities are
 zero-representation authorities: type checking requires the source value, while
 the linked host import and launch grant carry the runtime authority.
