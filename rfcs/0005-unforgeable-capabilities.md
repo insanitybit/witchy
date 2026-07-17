@@ -575,6 +575,22 @@ closure ABI. Specialization re-annotates until no new concrete body is produced;
 an explicit safety limit is a loud compile error, never a partial fallback.
 Function-value dependencies through generic wrappers participate in that
 fixpoint, and unannotated non-generic parameters do not block signature matching.
-This closes the function-signature half of the closure tail;
-capability-bearing capture environments, isolated callback adapters, and
-function-valued GC aggregates remain open.
+This closed the function-signature half of the closure tail.
+
+**2026-07-16 closure-representation checkpoint.** Every first-class function
+value now uses one immutable GC wrapper at concrete type zero. Each boxed lambda
+has a pre-reserved, per-lambda typed GC environment; captures are written and
+recovered at their exact scalar, `externref`, or concrete `GcRef` kind through
+the wrapper's erased `structref` payload. The scalar `linear_env` field is kept
+at zero for layout stability, and no capture crosses an i64 Slot. This removes
+the capability-capture rejection after interpreter/Wasm parity coverage for
+aliasing, nested closure capture, fixed-layout function aggregates, and indirect
+calls.
+
+Fixed-layout nominal and tuple aggregates may contain function values. Direct
+`List(fn(...))` uses a typed GC array and covers the source operations needed by
+the standard library: literal construction, persistent push/set/concat, length,
+indexed access, and iteration. Remaining representation gates are generic stored type
+parameters, `Option`/`Result`/`Dict` function payloads, nested function
+containers, capability-bearing region copy-out, and capability-typed callbacks
+crossing isolated worker instances.

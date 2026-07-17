@@ -96,19 +96,17 @@ deployed to GitHub Pages; mdBook is removed. Follow-up polish (not blocking): do
   (`dir_rights_are_statically_enforced`, `net_capability_cannot_escalate`,
   `net_*_enforced_at_instantiation`, `as_ascription_narrows_to_subsets_only`). A
   differential fuzzer already exists (`metamorphic_property_laws` — it caught a real
-  false-trap during step 1). REMAINING = the **externref CORE** (below).
+  false-trap during step 1). The externref ABI and fixed-layout GC aggregate/closure
+  core are now implemented. Remaining representation gates are the explicitly
+  rejected generic containers/fields, region copy-out, and isolated typed callbacks.
 - **Entry points:** i32 handle tables in `crates/witchy-runtime/src/runtime.rs`
   (`dirs`/`nets`/`secrets`); import signatures `crates/witchy-wir/src/wir_prelude.rs`
   (`IMPORT_COUNT`); lowering `crates/witchy-lower/src/codegen/mod.rs`; wasmtime `Config`
   `runtime.rs` (hardened).
-- **Ordered steps (the remaining CORE):** (3) choose the aggregate/closure
-  representation — **DONE: approach (A) GC structs**, with a full implementation design
-  (classification, WIR/codegen GC surface, host boundary, staged per-capability-type
-  landing) in `rfcs/externref-implementation-plan.md`; (4) enable
-  `wasm_reference_types`/`wasm_gc` (currently left on in the Config for exactly this);
-  (5) rewire host imports to `externref` cap args + downcast to backing grant; (6) lower
-  caps to `externref` in codegen. Steps 4–6 are the ABI cut itself — gated on review of
-  the design plan (per the maintainer's design-first call; NOT for the autonomous loop).
+- **Implemented core:** approach (A) GC structs/arrays; `wasm_reference_types` and
+  `wasm_gc`; host-import `externref` grants; exact reference kinds across direct and
+  indirect calls; uniform GC closure wrappers with per-lambda typed environments;
+  fixed-layout nominal/tuple function fields; and direct `List(fn(...))` GC arrays.
 - **DoD:** all cap imports take `externref`; parity green; no bypass in the bounded
   threat model; fuzzer finds no diffs. **Size:** L (a coordinated ABI cut — cannot
   coexist with the i32 ABI; best done as a dedicated focused effort, not folded into a

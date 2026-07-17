@@ -660,13 +660,19 @@ conventions and generic bounds are preserved. Result-only type variables can be
 fixed by the expected function type, and a generic function may return another
 generic or bounded function value; specialization follows those references to a
 fixpoint. Unannotated parameters that do not carry a type variable do not block
-specialization. Scalar-only function values retain the universal scalar ABI.
+specialization. Scalar-only parameters and results retain the universal scalar
+ABI, but the function value itself always uses the uniform GC closure wrapper.
+A boxed lambda's captures live in a per-lambda typed GC struct, so direct
+capabilities, other closures, and fixed-layout GC aggregates remain references
+throughout creation, aliasing, and indirect invocation.
 
-The closure environment is a separate boundary. Capturing a value that carries
-a capability is currently a check-time error; pass it as a parameter instead.
-Function values stored inside capability-bearing aggregates and capability
-callbacks crossing an isolated worker adapter remain rejected for the same
-representation-first reason.
+Function values may be fields of fixed-layout nominal and tuple GC aggregates.
+Direct `List(fn(...))` values use typed GC arrays and support literals, persistent
+push/set/concat, length, indexed access, and iteration. Function storage in a generic type
+parameter, `Option`/`Result`/`Dict`, or a nested collection remains a check-time
+error until those containers have concrete typed GC layouts. Capability-typed
+callbacks crossing an isolated worker adapter remain rejected because workers
+receive only the scalar cross-instance callback ABI.
 
 ```witchy
 fn apply(f: fn(Int) -> Int, x: Int) -> Int:

@@ -63,6 +63,16 @@ pub fn slot_closure_signature(arity: usize, result_count: usize) -> ClosureSigna
     ClosureSignature { params, results: vec![Kind::I64; result_count] }
 }
 
+/// The scalar-value signature for a closure carried by the uniform RFC-0005 GC
+/// wrapper. Arguments and results retain the established i64 slot ABI; only the
+/// implicit environment changes from a forgeable linear-memory pointer to the
+/// concrete wrapper reference at GC type index zero.
+pub fn gc_slot_closure_signature(arity: usize, result_count: usize) -> ClosureSignature {
+    let mut params = vec![Kind::GcRef(0)];
+    params.extend(std::iter::repeat_n(Kind::I64, arity));
+    ClosureSignature { params, results: vec![Kind::I64; result_count] }
+}
+
 impl Kind {
     /// The WAT spelling. Reference kinds are approximate here — the WAT printer is
     /// debug-only and never round-trips the GC type section (the binary encoder in
@@ -150,9 +160,9 @@ pub struct WirArrayDef {
 }
 
 /// Field indices and layout for the uniform first-class closure wrapper used by
-/// RFC-0005 Stage 4. Scalar-only closures may retain their current linear
-/// environment behind `linear_env`; capability-bearing closures put a typed GC
-/// payload behind the erased `gc_env` reference.
+/// RFC-0005 Stage 4. Every source function value uses this wrapper. `linear_env`
+/// is reserved as zero for ABI stability; boxed captures live in a per-lambda
+/// typed GC payload behind the erased `gc_env` reference.
 pub const CLOSURE_CODE_FIELD: u32 = 0;
 pub const CLOSURE_LINEAR_ENV_FIELD: u32 = 1;
 pub const CLOSURE_GC_ENV_FIELD: u32 = 2;

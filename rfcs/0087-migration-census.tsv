@@ -26,7 +26,7 @@ spec/language.md#block-15	7	expression-position-mutator	main.bump	-	-
 witchy-files	271
 markdown-blocks	170
 checked	439
-rejected	2
+rejected	0
 var-declarations	25
 resolved-var-calls	472
 mechanical-self-reassignment	0
@@ -36,5 +36,3 @@ temporary-var-argument	0
 auxiliary-result-discard	14
 
 compiler-rejections
-projects/coven/src/coven.witchy: type error: `Coven.route_rootpub`, line 267: a closure cannot capture `self` because it carries a `Dir` capability; cap-carrying closure environments require RFC-0005's GC-struct aggregate lowering — pass the capability directly
-projects/coven-web/src/coven_web.witchy: type error: `coven_web.h_index_html`, line 129: a closure cannot capture `assets` because it carries a `Dir` capability; cap-carrying closure environments require RFC-0005's GC-struct aggregate lowering — pass the capability directly

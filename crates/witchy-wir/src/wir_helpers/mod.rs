@@ -2280,9 +2280,13 @@ pub fn list_update_cap_helper() -> WirFunc {
     let call_clos = N::SetLocal {
         local: "nv".into(),
         value: E::CallIndirect {
-            signature: slot_closure_signature(1, 1),
+            signature: gc_slot_closure_signature(1, 1),
             args: vec![getl("clos"), E::Load { ptr: Box::new(slot("list")), kind: Kind::I64, offset: 0 }],
-            index: Box::new(E::Load { ptr: Box::new(getl("clos")), kind: Kind::I32, offset: 0 }),
+            index: Box::new(E::StructGet {
+                struct_id: 0,
+                field: CLOSURE_CODE_FIELD,
+                base: Box::new(getl("clos")),
+            }),
         },
     };
     let inplace = vec![N::Store { ptr: slot("list"), value: getl("nv"), kind: Kind::I64, offset: 0 }];
@@ -2305,7 +2309,7 @@ pub fn list_update_cap_helper() -> WirFunc {
         params: vec![
             WirLocal { name: "list".into(), ty: WirTy::Bool },
             WirLocal { name: "index".into(), ty: WirTy::Bool },
-            WirLocal { name: "clos".into(), ty: WirTy::Bool },
+            WirLocal { name: "clos".into(), ty: WirTy::GcRef(0) },
             WirLocal { name: "cap".into(), ty: WirTy::Bool },
         ],
         ret: vec![WirTy::Bool, WirTy::Bool],

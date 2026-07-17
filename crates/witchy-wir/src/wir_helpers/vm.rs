@@ -41,7 +41,7 @@ pub fn galloc_helper() -> WirFunc {
 }
 
 /// (RFC-0032) A closure-call trampoline `$name(idx, x0..x{arity-1}) -> i64`: `call_indirect`s
-/// table slot `idx` with a NULL environment pointer and the `arity` slot args. Sound because
+/// table slot `idx` with a null uniform-wrapper reference and the `arity` slot args. Sound because
 /// `vm.par_map`/`vm.with_dir`/`vm.serve` all require capture-free functions, so the body never
 /// reads the environment — and a worker VM has its own linear memory, where a parent closure's
 /// environment record would not live anyway. The host invokes these re-entrantly (including
@@ -52,7 +52,7 @@ fn call_trampoline_helper(name: &str, arity: usize) -> WirFunc {
     let arg_names: Vec<String> = (0..arity).map(|i| format!("x{i}")).collect();
     let mut params = vec![WirLocal { name: "idx".into(), ty: WirTy::Bool }];
     params.extend(arg_names.iter().map(|n| WirLocal { name: n.clone(), ty: WirTy::Int }));
-    let mut args = vec![E::ConstI32(0)];
+    let mut args = vec![E::RefNull(Kind::GcRef(0))];
     args.extend(arg_names.iter().map(|n| E::GetLocal(n.clone())));
     WirFunc {
         name: name.into(),
@@ -60,7 +60,7 @@ fn call_trampoline_helper(name: &str, arity: usize) -> WirFunc {
         ret: vec![WirTy::Int],
         locals: vec![],
         body: vec![N::Push(E::CallIndirect {
-            signature: slot_closure_signature(arity, 1),
+            signature: gc_slot_closure_signature(arity, 1),
             args,
             index: Box::new(E::GetLocal("idx".into())),
         })],

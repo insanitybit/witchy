@@ -1030,7 +1030,7 @@ pub fn dict_update_cap_helper() -> WirFunc {
             WirLocal { name: "k".into(), ty: WirTy::Int },
             WirLocal { name: "default".into(), ty: WirTy::Int },
             WirLocal { name: "mode".into(), ty: WirTy::Bool },
-            WirLocal { name: "clos".into(), ty: WirTy::Bool },
+            WirLocal { name: "clos".into(), ty: WirTy::GcRef(0) },
             WirLocal { name: "cap".into(), ty: WirTy::Bool },
         ],
         ret: vec![WirTy::Bool, WirTy::Bool],
@@ -1043,7 +1043,7 @@ pub fn dict_update_cap_helper() -> WirFunc {
             N::SetLocal {
                 local: "new".into(),
                 value: E::CallIndirect {
-                    signature: slot_closure_signature(1, 1),
+                    signature: gc_slot_closure_signature(1, 1),
                     args: vec![
                         getl("clos"),
                         E::Call {
@@ -1051,7 +1051,11 @@ pub fn dict_update_cap_helper() -> WirFunc {
                             args: vec![getl("d"), getl("k"), getl("default"), getl("mode")],
                         },
                     ],
-                    index: Box::new(E::Load { ptr: Box::new(getl("clos")), kind: Kind::I32, offset: 0 }),
+                    index: Box::new(E::StructGet {
+                        struct_id: 0,
+                        field: CLOSURE_CODE_FIELD,
+                        base: Box::new(getl("clos")),
+                    }),
                 },
             },
             N::CallStoreMulti {
@@ -1155,7 +1159,7 @@ pub fn dict_update_helper() -> WirFunc {
             WirLocal { name: "k".into(), ty: WirTy::Int },
             WirLocal { name: "default".into(), ty: WirTy::Int },
             WirLocal { name: "mode".into(), ty: WirTy::Bool },
-            WirLocal { name: "clos".into(), ty: WirTy::Bool },
+            WirLocal { name: "clos".into(), ty: WirTy::GcRef(0) },
         ],
         ret: vec![WirTy::Bool],
         locals: vec![WirLocal { name: "new".into(), ty: WirTy::Int }],
@@ -1163,7 +1167,7 @@ pub fn dict_update_helper() -> WirFunc {
             N::SetLocal {
                 local: "new".into(),
                 value: E::CallIndirect {
-                    signature: slot_closure_signature(1, 1),
+                    signature: gc_slot_closure_signature(1, 1),
                     args: vec![
                         getl("clos"),
                         E::Call {
@@ -1171,10 +1175,10 @@ pub fn dict_update_helper() -> WirFunc {
                             args: vec![getl("d"), getl("k"), getl("default"), getl("mode")],
                         },
                     ],
-                    index: Box::new(E::Load {
-                        ptr: Box::new(getl("clos")),
-                        kind: Kind::I32,
-                        offset: 0,
+                    index: Box::new(E::StructGet {
+                        struct_id: 0,
+                        field: CLOSURE_CODE_FIELD,
+                        base: Box::new(getl("clos")),
                     }),
                 },
             },

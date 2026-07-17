@@ -221,7 +221,7 @@ into RFC-0087, so D10 has one normative source contract.
 
 | Item | Status decision | Where it's documented |
 | --- | --- | --- |
-| RFC-0005 stage 4 (GC aggregates) | deferred, reject-first enforced | SECURITY + book caps chapter |
+| RFC-0005 generic GC containers/region copy-out | fixed-layout aggregates, typed closure environments, and direct `List(fn)` implemented; residual shapes remain reject-first | SECURITY + book caps chapter |
 | RFC-0036 $rdrop / move-borrow oracle | deferred | RFC tracking note |
 | RFC-0059 Increment-2 Step 2 | deferred beyond 0.1; ceiling documented | book concurrency chapter |
 | RFC-0031 SIMD | deferred with explicit revival conditions | RFC tracking note |

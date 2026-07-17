@@ -1,5 +1,5 @@
-//! RFC-0005 typed closure ABI coverage. Reference-valued parameters and results
-//! stay typed at indirect-call boundaries; closure environments remain scalar.
+//! RFC-0005 typed closure ABI coverage. Reference-valued parameters, results,
+//! and capture environments stay typed at indirect-call boundaries.
 
 use witchy::runtime::{Capabilities, Runtime};
 use witchy::{codegen, interpreter, opt, parser, pipeline, typeck};

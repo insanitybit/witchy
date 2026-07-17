@@ -265,6 +265,18 @@ impl Codegen<'_> {
             // header, widened to the Int's i64. A count is non-negative so the
             // signed `Convert` matches an unsigned `i64.extend_i32_u`. Lowers only
             // in a WIR-collecting scope.
+            (intrinsics::LIST_LENGTH, 1)
+                if self.collect_wir
+                    && self.gc_function_list_id.is_some_and(|id| {
+                        self.kind_of(&args[0]) == Kind::GcRef(id)
+                    }) =>
+            {
+                Self::wir_convert(
+                    W::ArrayLen(Box::new(self.lower_expr(&args[0])?)),
+                    Kind::I32,
+                    Kind::I64,
+                )
+            }
             (intrinsics::LIST_LENGTH, 1) | (intrinsics::STRING_LENGTH, 1)
                 if self.collect_wir =>
             {
@@ -501,7 +513,13 @@ impl Codegen<'_> {
                 call(intrinsic_helper(name), self.lower_args(&[&args[0]])?)
             }
             (intrinsics::LIST_CONCAT, 2) => {
-                call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
+                if self.gc_function_list_id.is_some_and(|id| {
+                    self.kind_of(&args[0]) == Kind::GcRef(id)
+                }) {
+                    self.lower_gc_function_list_concat(&args[0], &args[1])?
+                } else {
+                    call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
+                }
             }
             (intrinsics::DICT_NEW, 0) => {
                 self.uses_dict = true;
@@ -567,7 +585,10 @@ impl Codegen<'_> {
                 if Self::is_scalar_par_map(name)
                     && self.is_top_level_fn_ref(&args[1]) =>
             {
-                call("vm_par_map", self.lower_args(&[&args[0], &args[1]])?)
+                call(
+                    "vm_par_map",
+                    vec![self.lower_expr(&args[0])?, self.lower_closure_code(&args[1])?],
+                )
             }
             // (RFC-0032) `String`/`Bytes` variant — flat buffer payloads copied raw across
             // worker VMs (one path; a `String` is valid-UTF-8 `Bytes`).
@@ -575,19 +596,36 @@ impl Codegen<'_> {
                 if Self::is_buf_par_map(name)
                     && self.is_top_level_fn_ref(&args[1]) =>
             {
-                call("vm_par_map_bytes", self.lower_args(&[&args[0], &args[1]])?)
+                call(
+                    "vm_par_map_bytes",
+                    vec![self.lower_expr(&args[0])?, self.lower_closure_code(&args[1])?],
+                )
             }
             // (RFC-0032) Capability-passing: run a top-level `f(Dir, Bytes) -> Bytes` in an
             // isolated worker VM granted exactly `dir`. `f` must be a top-level (capture-free)
             // function, like the par_map variants.
             ("vm.with_dir", 3) => {
-                call("vm_with_dir", self.lower_args(&[&args[0], &args[1], &args[2]])?)
+                call(
+                    "vm_with_dir",
+                    vec![
+                        self.lower_expr(&args[0])?,
+                        self.lower_closure_code(&args[1])?,
+                        self.lower_expr(&args[2])?,
+                    ],
+                )
             }
             // (RFC-0032) `vm.serve(init, requests, handler)` — a stateful service on a
             // long-lived isolated worker VM (the parity-safe cross-VM channel). `handler`
             // must be a top-level (capture-free) function.
             ("vm.serve", 3) => {
-                call("vm_serve", self.lower_args(&[&args[0], &args[1], &args[2]])?)
+                call(
+                    "vm_serve",
+                    vec![
+                        self.lower_expr(&args[0])?,
+                        self.lower_expr(&args[1])?,
+                        self.lower_closure_code(&args[2])?,
+                    ],
+                )
             }
             ("read_build", 2) => {
                 self.used_build_ops.insert("read_build");
@@ -855,84 +893,124 @@ impl Codegen<'_> {
                 ])
             }
             (intrinsics::LIST_PUSH | intrinsics::GENERATED_LIST_PUSH, 2) => {
-                let xk = self.kind_of(&args[1]);
-                call(
-                    intrinsic_helper_variant(name, "list_push"),
-                    vec![
-                        self.lower_expr(&args[0])?,
-                        W::ToSlot(Box::new(self.lower_expr(&args[1])?), Self::wir_kind(xk)),
-                    ],
-                )
+                if self.gc_function_list_id.is_some_and(|id| {
+                    self.kind_of(&args[0]) == Kind::GcRef(id)
+                }) {
+                    self.lower_gc_function_list_push(&args[0], &args[1])?
+                } else {
+                    let xk = self.kind_of(&args[1]);
+                    call(
+                        intrinsic_helper_variant(name, "list_push"),
+                        vec![
+                            self.lower_expr(&args[0])?,
+                            W::ToSlot(
+                                Box::new(self.lower_expr(&args[1])?),
+                                Self::wir_kind(xk),
+                            ),
+                        ],
+                    )
+                }
             }
             (intrinsics::LIST_SET_AT, 3) => {
-                let level = self.assign_level;
-                if level >= SCRUT_POOL {
-                    return None;
-                }
-                let ik = self.kind_of(&args[1]);
-                let vk = self.kind_of(&args[2]);
-                self.assign_level = level + 1;
-                let lowered = (|| {
-                    Some((
-                        self.lower_expr(&args[0])?,
-                        Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I64),
-                        self.lower_expr(&args[2])?,
-                    ))
-                })();
-                self.assign_level = level;
-                let (list, index, value) = lowered?;
-                let list_tmp = assign_scratch("list", level);
-                let index_tmp = assign_scratch("index", level);
-                let value_tmp = assign_scratch("value", level);
-                W::Seq(vec![
-                    // Assignment order is destination base, destination
-                    // coordinate, RHS, then the checked store. Stage all three
-                    // so no source expression is lowered or evaluated twice.
-                    N::SetLocal { local: list_tmp.clone(), value: list },
-                    N::SetLocal { local: index_tmp.clone(), value: index },
-                    N::SetLocal {
-                        local: value_tmp.clone(),
-                        value: W::ToSlot(Box::new(value), Self::wir_kind(vk)),
-                    },
-                    N::Drop(W::Call {
-                        func: intrinsic_helper_variant(intrinsics::LIST_SET_AT, "list_at").into(),
-                        args: vec![W::GetLocal(list_tmp.clone()), W::GetLocal(index_tmp.clone())],
-                    }),
-                    N::CallStoreMulti {
-                        func: intrinsic_helper_variant(intrinsics::LIST_SET_AT, "list_set_cap")
+                if self.gc_function_list_id.is_some_and(|id| {
+                    self.kind_of(&args[0]) == Kind::GcRef(id)
+                }) {
+                    self.lower_gc_function_list_set_at(&args[0], &args[1], &args[2])?
+                } else {
+                    let level = self.assign_level;
+                    if level >= SCRUT_POOL {
+                        return None;
+                    }
+                    let ik = self.kind_of(&args[1]);
+                    let vk = self.kind_of(&args[2]);
+                    self.assign_level = level + 1;
+                    let lowered = (|| {
+                        Some((
+                            self.lower_expr(&args[0])?,
+                            Self::wir_convert(self.lower_expr(&args[1])?, ik, Kind::I64),
+                            self.lower_expr(&args[2])?,
+                        ))
+                    })();
+                    self.assign_level = level;
+                    let (list, index, value) = lowered?;
+                    let list_tmp = assign_scratch("list", level);
+                    let index_tmp = assign_scratch("index", level);
+                    let value_tmp = assign_scratch("value", level);
+                    W::Seq(vec![
+                        // Assignment order is destination base, destination
+                        // coordinate, RHS, then the checked store. Stage all three
+                        // so no source expression is lowered or evaluated twice.
+                        N::SetLocal { local: list_tmp.clone(), value: list },
+                        N::SetLocal { local: index_tmp.clone(), value: index },
+                        N::SetLocal {
+                            local: value_tmp.clone(),
+                            value: W::ToSlot(Box::new(value), Self::wir_kind(vk)),
+                        },
+                        N::Drop(W::Call {
+                            func: intrinsic_helper_variant(intrinsics::LIST_SET_AT, "list_at")
+                                .into(),
+                            args: vec![
+                                W::GetLocal(list_tmp.clone()),
+                                W::GetLocal(index_tmp.clone()),
+                            ],
+                        }),
+                        N::CallStoreMulti {
+                            func: intrinsic_helper_variant(
+                                intrinsics::LIST_SET_AT,
+                                "list_set_cap",
+                            )
                             .into(),
-                        args: vec![
-                            W::GetLocal(list_tmp),
-                            Self::wir_convert(W::GetLocal(index_tmp), Kind::I64, Kind::I32),
-                            W::GetLocal(value_tmp),
-                            W::ConstI32(0),
-                        ],
-                        dests: vec![TUPLE_TMP.to_string(), "__witchy_owncap".to_string()],
-                    },
-                    N::Push(W::GetLocal(TUPLE_TMP.to_string())),
-                ])
+                            args: vec![
+                                W::GetLocal(list_tmp),
+                                Self::wir_convert(
+                                    W::GetLocal(index_tmp),
+                                    Kind::I64,
+                                    Kind::I32,
+                                ),
+                                W::GetLocal(value_tmp),
+                                W::ConstI32(0),
+                            ],
+                            dests: vec![TUPLE_TMP.to_string(), "__witchy_owncap".to_string()],
+                        },
+                        N::Push(W::GetLocal(TUPLE_TMP.to_string())),
+                    ])
+                }
             }
             (intrinsics::LIST_AT, 2) => {
-                let ek = self.list_elem_kind(&args[0]);
-                let ik = self.kind_of(&args[1]);
+                if self.gc_function_list_id.is_some_and(|id| {
+                    self.kind_of(&args[0]) == Kind::GcRef(id)
+                }) {
+                    let ik = self.kind_of(&args[1]);
+                    W::ArrayGet {
+                        array_id: 0,
+                        array: Box::new(self.lower_expr(&args[0])?),
+                        index: Box::new(Self::wir_convert(
+                            self.lower_expr(&args[1])?,
+                            ik,
+                            Kind::I32,
+                        )),
+                    }
+                } else {
+                    let ek = self.list_elem_kind(&args[0]);
+                    let ik = self.kind_of(&args[1]);
                 // (RFC-0034 L2) Bounds-check elision: when the For lowering proved this
                 // exact `list.at(xs, i)` is in range (a registered `(i, xs)` pair), emit
                 // the unchecked element load — `load_i64( (xs + 4) + i*8 )`, the same
                 // address `$list_at` computes, minus the `i < 0 || i >= len` trap guard.
                 // Both args are lowered once either way, so string-offset interning is
                 // identical to the checked path.
-                let elide = matches!((&args[0], &args[1]), (Expr::Var(lv), Expr::Var(iv))
+                    let elide = matches!((&args[0], &args[1]), (Expr::Var(lv), Expr::Var(iv))
                     if self.elide_index_list.iter().any(|(i, l)| i == iv && l == lv));
-                let list_w = self.lower_expr(&args[0])?;
+                    let list_w = self.lower_expr(&args[0])?;
                 // Lower the index ONCE (it may be a side-effecting call), then widen
                 // to the kind the chosen path needs. The elide path does i32 address
                 // math directly; the checked `$list_at` now takes the index as i64
                 // (so an out-of-i32-range index traps + reports its true value,
                 // matching the interpreter's `i as usize` — RFC-0045 message parity
                 // and a latent i32-wrap hole this closes).
-                let idx_target = if elide { Kind::I32 } else { Kind::I64 };
-                let idx_w = Self::wir_convert(self.lower_expr(&args[1])?, ik, idx_target);
-                let read = if elide {
+                    let idx_target = if elide { Kind::I32 } else { Kind::I64 };
+                    let idx_w = Self::wir_convert(self.lower_expr(&args[1])?, ik, idx_target);
+                    let read = if elide {
                     let wi32 = witchy_wir::wir::Kind::I32;
                     let add = witchy_wir::wir::BinOp::Add;
                     let addr = W::Binary {
@@ -967,7 +1045,7 @@ impl Codegen<'_> {
                         )),
                         Self::wir_kind(ek),
                     )
-                };
+                    };
                 // (RFC-0035 step 1) The element read out of the container is now an OWNED
                 // reference sharing the object with the slot, so `$rc_dup` it — it returns the
                 // pointer, wrapping the read in place. Gated `rc-floor`; only i32-kinded
@@ -975,14 +1053,15 @@ impl Codegen<'_> {
                 // (`list_elem_is_offset0_rc` excludes Dict / scalar / bare type-var — the plain
                 // `[ptr-8]` refcount is correct only there). dup-at-read alone only INCREMENTS,
                 // so it cannot free live data; a consumer transfers or drops it in later steps.
-                if Self::wir_kind(ek) == witchy_wir::wir::Kind::I32
+                    if Self::wir_kind(ek) == witchy_wir::wir::Kind::I32
                     && self.list_elem_is_offset0_rc(&args[0])
                     && !force_copy_mode()
                     && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::RcFloor)
-                {
-                    W::Call { func: "rc_dup".into(), args: vec![read] }
-                } else {
-                    read
+                    {
+                        W::Call { func: "rc_dup".into(), args: vec![read] }
+                    } else {
+                        read
+                    }
                 }
             }
             ("recv_bytes", 2) => {

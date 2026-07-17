@@ -410,3 +410,33 @@
              (route them through the single ensure-prefixed allocator): {violations:?}"
         );
     }
+
+    #[test]
+    fn closure_helpers_use_the_uniform_gc_wrapper_abi() {
+        for helper in [
+            crate::wir_helpers::dict_update_helper(),
+            crate::wir_helpers::dict_update_cap_helper(),
+            crate::wir_helpers::list_update_cap_helper(),
+        ] {
+            let closure = helper
+                .params
+                .iter()
+                .find(|param| param.name == "clos")
+                .unwrap_or_else(|| panic!("{} must declare a closure parameter", helper.name));
+            assert_eq!(
+                closure.ty,
+                WirTy::GcRef(0),
+                "{} must not accept a forgeable linear closure pointer",
+                helper.name,
+            );
+        }
+
+        let trampoline = crate::wir_helpers::call_idx_helper();
+        let [WirNode::Push(WirExpr::CallIndirect { signature, args, .. })] =
+            trampoline.body.as_slice()
+        else {
+            panic!("call trampoline must be one indirect call")
+        };
+        assert_eq!(signature.params.first(), Some(&Kind::GcRef(0)));
+        assert!(matches!(args.first(), Some(WirExpr::RefNull(Kind::GcRef(0)))));
+    }

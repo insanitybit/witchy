@@ -24,7 +24,7 @@ use witchy_syntax::ast::{
 use witchy_syntax::build_entry::{build_entrypoint, is_build_capability_type};
 use witchy_syntax::{cap_ops, intrinsics};
 
-use crate::storage::{externref_cap_name, ReferenceStorageClassifier};
+use crate::storage::{externref_cap_name, ReferenceLeaf, ReferenceStorageClassifier};
 
 /// The operations a `Dir` capability permits. Decomposing the capability by
 /// right makes the footprint distinguish read-only from writing code, and an op
@@ -2429,6 +2429,29 @@ fn gc_cap_aggregate_cap(
     storage.first_externref(&ast::Type::Named(name.to_string(), Vec::new()))
 }
 
+fn gc_reference_aggregate_supported(
+    name: &str,
+    defs: &HashMap<&str, &ast::TypeDef>,
+    storage: &ReferenceStorageClassifier<'_>,
+) -> bool {
+    if transparent_externref_brand_cap(name, defs, &mut HashSet::new()).is_some() {
+        return false;
+    }
+    let Some(def) = defs.get(name) else { return false };
+    if def.variants.is_empty() {
+        return false;
+    }
+    let reference = storage.first_reference(&ast::Type::Named(name.to_string(), Vec::new()));
+    if def.params.is_empty() {
+        reference.is_some()
+    } else {
+        // A generic definition is representable when its declaration itself has
+        // a function field. Bare stored type parameters remain scalar and their
+        // reference-bearing instantiations are rejected below.
+        reference == Some(ReferenceLeaf::Function)
+    }
+}
+
 /// (RFC-0005 stage 4) The module's GC-lowered cap-carrying nominal aggregate
 /// names. The representation-neutral reference fact comes from
 /// `ReferenceStorageClassifier`; this function adds only the current lowering's
@@ -2449,7 +2472,7 @@ pub fn gc_cap_aggregate_names(module: &ast::Module) -> Vec<String> {
         .iter()
         .filter_map(|item| match item {
             Item::Type(t)
-                if gc_cap_aggregate_cap(&t.name, &type_defs, &storage).is_some() =>
+                if gc_reference_aggregate_supported(&t.name, &type_defs, &storage) =>
             {
                 Some(t.name.clone())
             }
@@ -2484,28 +2507,6 @@ fn reject_cap_slot_boundary(
                 .try_for_each(|a| reject_cap_slot_boundary(a, defs, storage, ctx, position))
         }
         ast::Type::Tuple(items) => {
-            for item in items {
-                if matches!(item.unqualified(), ast::Type::Fn(_, _, _)) {
-                    if let Some(cap) =
-                        storage.first_externref_including_function_signatures(item)
-                    {
-                        return Err(TypeError {
-                            message: format!(
-                                "`{ctx}`: a function value whose signature carries `{cap}` cannot be \
-                                 held in a tuple in {position} until function-valued GC aggregate lowering lands"
-                            ),
-                        });
-                    }
-                    if let Some(cap) = storage.first_externref(t) {
-                        return Err(TypeError {
-                            message: format!(
-                                "`{ctx}`: a tuple carrying `{cap}` cannot also hold a function value \
-                                 in {position} until function-valued GC aggregate lowering lands"
-                            ),
-                        });
-                    }
-                }
-            }
             items
                 .iter()
                 .try_for_each(|a| reject_cap_slot_boundary(a, defs, storage, ctx, position))
@@ -2526,8 +2527,23 @@ fn reject_cap_slot_boundary(
             {
                 return Ok(());
             }
+            let direct_function_list = n == "List"
+                && matches!(args.first().map(ast::Type::unqualified), Some(ast::Type::Fn(..)));
+            if direct_function_list {
+                return args
+                    .iter()
+                    .try_for_each(|a| reject_cap_slot_boundary(a, defs, storage, ctx, position));
+            }
             if matches!(n.as_str(), "Option" | "Result" | "List" | "Dict") {
                 for a in args {
+                    if storage.first_reference(a) == Some(ReferenceLeaf::Function) {
+                        return Err(TypeError {
+                            message: format!(
+                                "`{ctx}`: `{n}` cannot store a function value in {position}; \
+                                 only direct `List(fn(...))` has a typed GC collection representation",
+                            ),
+                        });
+                    }
                     if let Some(cap) =
                         storage.first_externref_including_function_signatures(a)
                     {
@@ -2539,10 +2555,27 @@ fn reject_cap_slot_boundary(
                         });
                     }
                 }
+            } else if defs.get(n.as_str()).is_some_and(|def| !def.params.is_empty())
+                && args.iter().any(|arg| storage.first_reference(arg).is_some())
+            {
+                return Err(TypeError {
+                    message: format!(
+                        "`{ctx}`: generic aggregate `{n}` stores a reference-bearing type argument \
+                         in {position}, but its concrete GC field layout is not fixed"
+                    ),
+                });
             } else if !(is_externref_cap(n)
                 || transparent_externref_brand_cap(n, defs, &mut HashSet::new()).is_some()
-                || (args.is_empty() && gc_cap_aggregate_cap(n, defs, storage).is_some()))
+                || gc_reference_aggregate_supported(n, defs, storage))
             {
+                if storage.first_reference(t) == Some(ReferenceLeaf::Function) {
+                    return Err(TypeError {
+                        message: format!(
+                            "`{ctx}`: generic aggregate `{n}` stores a function value in {position}, \
+                             but its concrete GC field layout is not fixed"
+                        ),
+                    });
+                }
                 if let Some(cap) = storage.first_externref_including_function_signatures(t) {
                     return Err(TypeError {
                         message: format!(
@@ -3952,6 +3985,44 @@ impl Checker {
         go(self, t, &mut HashSet::new())
     }
 
+    fn ty_carries_function_value(&self, t: &Ty) -> bool {
+        fn go(c: &Checker, t: &Ty, seen: &mut HashSet<String>) -> bool {
+            match c.resolve(t) {
+                Ty::Fn(_, _, _) => true,
+                Ty::List(inner) => go(c, &inner, seen),
+                Ty::Tuple(items) | Ty::Dyn(_, items) => {
+                    items.iter().any(|item| go(c, item, seen))
+                }
+                Ty::Named(name, args) => {
+                    if args.iter().any(|arg| go(c, arg, seen)) {
+                        return true;
+                    }
+                    if !seen.insert(name.clone()) {
+                        return false;
+                    }
+                    let record_hit = c.record_fields.get(&name).is_some_and(|(_, fields)| {
+                        fields.iter().any(|(_, field)| go(c, field, seen))
+                    });
+                    let variant_hit = c.adt_variants.get(&name).is_some_and(|variants| {
+                        variants.iter().any(|variant| {
+                            c.ctor_sigs.get(variant).is_some_and(|(payloads, _)| {
+                                payloads.iter().any(|payload| go(c, payload, seen))
+                            })
+                        })
+                    });
+                    seen.remove(&name);
+                    record_hit || variant_hit
+                }
+                Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
+                | Ty::Bool | Ty::Nil | Ty::Console | Ty::Clock | Ty::Rand | Ty::Env
+                | Ty::Secret | Ty::Exec | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
+                | Ty::Socket | Ty::Listener | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv
+                | Ty::BuildNet | Ty::BuildExec | Ty::Var(_) => false,
+            }
+        }
+        go(self, t, &mut HashSet::new())
+    }
+
     /// (RFC-0081) The first capability of ANY kind carried by `t`, transitively:
     /// the full direct capability set (every variant `ty_externref_cap_name`
     /// matches on, whether or not it has migrated to externref, plus the
@@ -4180,6 +4251,15 @@ impl Checker {
     fn reject_externref_cap_aggregate_ty(&self, t: &Ty, ctx: &str) -> Result<(), TypeError> {
         match self.resolve(t) {
             Ty::List(inner) => {
+                if matches!(self.resolve(&inner), Ty::Fn(_, _, _)) {
+                    return self.reject_externref_cap_aggregate_ty(&inner, ctx);
+                }
+                if self.ty_carries_function_value(&inner) {
+                    return terr(format!(
+                        "`{ctx}` builds a `List` whose element transitively stores a function; \
+                         only direct `List(fn(...))` has a fixed GC array representation"
+                    ));
+                }
                 if let Some(cap) = self.ty_carries_externref_cap(&inner) {
                     return terr(format!(
                         "`{ctx}` builds a `List` containing a `{cap}` capability; \
@@ -4190,16 +4270,6 @@ impl Checker {
                 Ok(())
             }
             Ty::Tuple(items) => {
-                if items
-                    .iter()
-                    .any(|item| matches!(self.resolve(item), Ty::Fn(_, _, _)))
-                    && let Some(cap) = self.ty_carries_externref_cap(t)
-                {
-                    return terr(format!(
-                        "`{ctx}` builds a tuple that mixes a function value with capability \
-                         `{cap}`; this requires the typed closure ABI"
-                    ));
-                }
                 items
                     .iter()
                     .try_for_each(|item| self.reject_externref_cap_aggregate_ty(item, ctx))
@@ -4210,6 +4280,12 @@ impl Checker {
                 Ok(())
             }
             Ty::Named(n, args) if matches!(n.as_str(), "Option" | "Result" | "Dict") => {
+                if args.iter().any(|arg| self.ty_carries_function_value(arg)) {
+                    return terr(format!(
+                        "`{ctx}` stores a function value in `{n}`; only direct `List(fn(...))` \
+                         and fixed-layout nominal/tuple GC aggregates are represented"
+                    ));
+                }
                 if let Some(cap) = args.iter().find_map(|a| self.ty_carries_externref_cap(a)) {
                     return terr(format!(
                         "`{ctx}` wraps a `{cap}` capability in `{n}`; \
@@ -4226,11 +4302,29 @@ impl Checker {
                 self.reject_externref_cap_aggregate_ty(&ret, ctx)
             }
             Ty::Named(n, args)
+                if self
+                    .record_fields
+                    .get(&n)
+                    .is_some_and(|(params, _)| !params.is_empty())
+                    && args.iter().any(|arg| self.ty_carries_function_value(arg)) =>
+            {
+                terr(format!(
+                    "`{ctx}` builds generic aggregate `{n}` carrying a function value, \
+                     but its concrete GC field layout is not fixed"
+                ))
+            }
+            Ty::Named(n, args)
                 if !(is_externref_cap(&n)
                     || self.transparent_externref_brands.contains_key(&n)
-                    || args.is_empty() && self.gc_cap_aggregates.contains(&n))
+                    || self.gc_cap_aggregates.contains(&n))
                     && structural_type_kind(&n).is_none() =>
             {
+                if self.ty_carries_function_value(&Ty::Named(n.clone(), args.clone())) {
+                    return terr(format!(
+                        "`{ctx}` builds generic aggregate `{n}` carrying a function value, \
+                         but its concrete GC field layout is not fixed"
+                    ));
+                }
                 if let Some(cap) = self.ty_carries_externref_cap(&Ty::Named(n.clone(), args)) {
                     return terr(format!(
                         "`{ctx}` builds `{n}` carrying a `{cap}` capability; \
@@ -6420,19 +6514,6 @@ impl Checker {
                     return terr(format!(
                         "a closure cannot assign to the captured variable `{}` (captures are by value, so the write would be lost) — return the new value or use a `var` parameter instead",
                         outer.join("`, `")
-                    ));
-                }
-                for cap_name in scan.captures() {
-                    let Some(ty) = self.lookup(&cap_name) else {
-                        continue;
-                    };
-                    let Some(cap) = self.ty_carries_externref_cap(&ty) else {
-                        continue;
-                    };
-                    return terr(format!(
-                        "a closure cannot capture `{cap_name}` because it carries a `{cap}` capability; \
-                         cap-carrying closure environments require RFC-0005's GC-struct aggregate lowering — \
-                         pass the capability directly"
                     ));
                 }
                 self.push();

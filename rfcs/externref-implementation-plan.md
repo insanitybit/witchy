@@ -121,11 +121,11 @@ the heap never changes representation.
 - **Field access / match on a cap-carrying record:** `StructGet` (by field index)
   instead of `Load` (by byte offset). `match` binding of a sealed capability's
   fields (`UiRoot(_) -> UiFetch(...)`) lowers to `StructGet` on the struct.
-- **Closures capturing a cap:** the closure environment for a cap-carrying
-  closure becomes a GC struct (captures as struct fields), and the code index
-  stays a `funcref`. A closure with only scalar captures is unchanged (linear
-  memory). The `CallIndirect` dispatch is unaffected (funcref table); only the
-  environment pointer's type changes from `i32` to a `GcRef`.
+- **Closures capturing a cap:** every function value is a uniform GC wrapper.
+  Each boxed lambda stores all captures in a per-lambda typed GC struct and
+  recovers that payload through a checked `ref.cast`; scalar-only and
+  capability-bearing closures therefore share one first-class representation.
+  `CallIndirect` receives the wrapper as its exact leading parameter.
 
 ### 4.3 host imports
 Each capability host import changes signature from `(handle: i32, …)` to
@@ -615,13 +615,12 @@ Closure {
 }
 ```
 
-`structref` is an erased nullable GC-struct reference. WIR now represents that
-type and a checked `ref.cast` back to a concrete `GcRef`; a Wasmtime validation
-test constructs the wrapper, erases a payload containing an `externref`, casts
-it back, and reads it. This cut changes no source acceptance. The remaining
-order is: migrate every boxed scalar closure and helper to the uniform wrapper;
-then emit per-lambda typed GC payloads and remove the capture rejection. A
-capability never enters the legacy `linear_env` or an i64 slot at any stage.
+`structref` is an erased nullable GC-struct reference. WIR represents that type
+and a checked `ref.cast` back to a concrete `GcRef`; a Wasmtime validation test
+constructs the wrapper, erases a payload containing an `externref`, casts it
+back, and reads it. Production source lowering now uses this wrapper for every
+function value and emits per-lambda typed payloads before removing the capture
+rejection. A capability never enters `linear_env` or an i64 slot.
 
 The following substrate cut replaces WIR's lossy indirect-call key
 `(source arity, result count)` with an exact wasm parameter/result signature.
@@ -632,8 +631,8 @@ encoder checks argument and destination counts against the signature, and the
 proper-tail-call dispatcher stages each operand in a local of its exact kind.
 Tests place same-arity scalar- and GC-environment functions in one table and
 validate a GC-environment indirect tail cycle. That substrate checkpoint was
-source-neutral; the following cut begins selecting exact signatures for source
-function values without changing their scalar closure environment.
+source-neutral; the following cut began selecting exact signatures while the
+then-current scalar closure environment remained unchanged.
 
 The first source-enabling signature cut now selects that exact signature for a
 function value whenever a parameter, declared result, or `var` write-back is an
@@ -643,17 +642,14 @@ signatures drive inferred lambdas, so an unannotated `fn(x): x` applied to a
 capability cannot fall back to scalar lowering. Scalar-only function values keep
 the established i64-slot ABI.
 
-This does not make environments reference-safe. Capability captures remain
-rejected until the uniform wrapper and per-lambda GC payloads land. Named
-polymorphic functions now use first-class monomorphization: the checker-resolved
+Named polymorphic functions now use first-class monomorphization: the checker-resolved
 function type specializes the referenced body before forwarding-closure
 construction, including capability rights, concrete GC aggregates, bounds, and
 `var` write-backs. This includes result-only type variables, function references
 returned through generic wrappers, and unannotated non-generic parameters;
 specialization runs to convergence and rejects non-convergence loudly. Direct
 generic calls remain supported. Isolated worker
-callback adapters and function-valued GC aggregates retain their own explicit
-gates.
+callback adapters retain an explicit cross-instance typed-signature gate.
 
 The next source-neutral cut adds mutable typed GC arrays to WIR. Structs and
 arrays share one concrete GC type-index band and recursion group before
@@ -663,7 +659,8 @@ read/write, and length. An executable Wasmtime fixture stores GC payload structs
 containing `externref` in an array, follows a forward struct-to-array edge, passes
 the concrete array reference in a function signature, runs the optimizer over
 every operation, and validates the result. The existing
-`encode(module, structs)` entrypoint still emits no arrays, so production source
-representation remains unchanged. This is the required substrate for
-reference-bearing `List` lowering, not permission to flip closure values to the
-wrapper before ADT/tuple/list storage paths can carry references.
+`encode(module, structs)` entrypoint still emits no arrays. Production uses the
+array-enabled encoder for one array of uniform closure-wrapper references behind
+direct `List(fn(...))`; fixed-layout nominal and tuple fields likewise carry the
+wrapper directly. Generic stored type parameters and other generic containers
+remain reject-first.

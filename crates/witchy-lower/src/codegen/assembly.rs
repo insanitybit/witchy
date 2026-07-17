@@ -172,6 +172,91 @@ fn collect_gc_tuple_layouts(
     layouts
 }
 
+fn collect_lambda_env_keys_expr(owner: &str, expr: &Expr, keys: &mut Vec<u64>) {
+    if let Expr::Lambda { params, body, .. } = expr {
+        keys.push(Codegen::lambda_content_key(owner, params, body));
+    }
+    crate::escape::for_each_immediate_subexpr(expr, &mut |child| {
+        collect_lambda_env_keys_expr(owner, child, keys);
+    });
+}
+
+fn collect_lambda_env_keys_block(owner: &str, block: &Block, keys: &mut Vec<u64>) {
+    for stmt in &block.stmts {
+        let expr = match stmt {
+            Stmt::Let { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::LetPattern { value, .. }
+            | Stmt::Yield(value)
+            | Stmt::Expr(value) => Some(value),
+            Stmt::Return(value) => value.as_ref(),
+            Stmt::Break | Stmt::Continue => None,
+        };
+        if let Some(expr) = expr {
+            collect_lambda_env_keys_expr(owner, expr, keys);
+        }
+    }
+}
+
+fn type_uses_function_list(ty: &Type) -> bool {
+    match ty.unqualified() {
+        Type::Named(name, args) if name == "List" => {
+            matches!(args.first().map(Type::unqualified), Some(Type::Fn(..)))
+                || args.iter().any(type_uses_function_list)
+        }
+        Type::Named(_, args) | Type::Dyn(_, args) | Type::Tuple(args) => {
+            args.iter().any(type_uses_function_list)
+        }
+        Type::Fn(params, ret, _) => {
+            params.iter().any(type_uses_function_list) || type_uses_function_list(ret)
+        }
+        Type::Qualified(_, _) => unreachable!("unqualified above"),
+    }
+}
+
+fn expr_uses_function_list(cg: &Codegen<'_>, expr: &Expr) -> bool {
+    if cg.ast_type_of_expr(expr).as_ref().is_some_and(type_uses_function_list) {
+        return true;
+    }
+    let mut found = false;
+    crate::escape::for_each_immediate_subexpr(expr, &mut |child| {
+        found |= expr_uses_function_list(cg, child);
+    });
+    found
+}
+
+fn block_uses_function_list(cg: &Codegen<'_>, block: &Block) -> bool {
+    block.stmts.iter().any(|stmt| {
+        let expr = match stmt {
+            Stmt::Let { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::LetPattern { value, .. }
+            | Stmt::Yield(value)
+            | Stmt::Expr(value) => Some(value),
+            Stmt::Return(value) => value.as_ref(),
+            Stmt::Break | Stmt::Continue => None,
+        };
+        expr.is_some_and(|expr| expr_uses_function_list(cg, expr))
+    })
+}
+
+fn module_uses_function_list(cg: &Codegen<'_>, module: &Module) -> bool {
+    module.items.iter().any(|item| match item {
+        Item::Function(function) => {
+            function.params.iter().filter_map(|param| param.ty.as_ref()).any(type_uses_function_list)
+                || function.ret.as_ref().is_some_and(type_uses_function_list)
+                || block_uses_function_list(cg, &function.body)
+        }
+        Item::Type(def) => def
+            .variants
+            .iter()
+            .flat_map(|variant| &variant.fields)
+            .any(type_uses_function_list),
+        Item::TypeAlias { ty, .. } => type_uses_function_list(ty),
+        Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::Comptime(_) => false,
+    })
+}
+
 /// (RFC-0040) If `f` is a cap-gated string export (`export_*(cap, String)`), the
 /// leading grantable capability's `(type name, field count)`.
 fn export_cap_of<'a>(f: &'a Function, module: &'a Module) -> Option<(&'a str, usize)> {
@@ -308,6 +393,22 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
         cg.transparent_externref_brands.insert(brand);
         cg.transparent_externref_ctors.insert(ctor, field);
     }
+    // Type zero is stable across every module: all first-class function values
+    // use this wrapper, and exact indirect signatures name it directly.
+    cg.gc_structs.push(witchy_wir::wir::closure_wrapper_struct());
+    let mut lambda_keys = Vec::new();
+    for item in &module.items {
+        if let Item::Function(function) = item {
+            collect_lambda_env_keys_block(&function.name, &function.body, &mut lambda_keys);
+        }
+    }
+    lambda_keys.sort_unstable();
+    lambda_keys.dedup();
+    for key in lambda_keys {
+        let id = cg.gc_structs.len() as u32;
+        cg.lambda_gc_env_ids.insert(key, id);
+        cg.gc_structs.push(witchy_wir::wir::WirStructDef { fields: Vec::new() });
+    }
     // (RFC-0005 stage 4 / BUG-566) The GC-aggregate classification lives in ONE
     // home — typeck — and codegen consumes it, so the boundary checks and the
     // struct registration can never disagree on which values are GC-lowered.
@@ -327,6 +428,13 @@ fn register_module_items(cg: &mut Codegen, module: &Module) {
         let id = cg.gc_structs.len() as u32;
         cg.gc_tuple_ids.insert(shape.clone(), id);
         cg.gc_structs.push(witchy_wir::wir::WirStructDef { fields: Vec::new() });
+    }
+    if module_uses_function_list(cg, module) {
+        let id = cg.gc_structs.len() as u32;
+        cg.gc_function_list_id = Some(id);
+        cg.gc_arrays.push(witchy_wir::wir::WirArrayDef {
+            element: witchy_wir::wir::Kind::GcRef(CLOSURE_WRAPPER_ID),
+        });
     }
     // Collect parameter conventions up front so call sites can resolve `var`
     // write-back even for forward references.
@@ -631,12 +739,12 @@ fn public_outcome<T>(result: Result<T, LoweringFailure>) -> LoweringOutcome<T> {
 fn encode_validated(
     module: &witchy_wir::wir::WirModule,
     gc_structs: &[witchy_wir::wir::WirStructDef],
+    gc_arrays: &[witchy_wir::wir::WirArrayDef],
 ) -> Result<Vec<u8>, CodegenError> {
-    let bytes = witchy_wir::wir_encode::try_encode(module, gc_structs).map_err(|error| {
-        CodegenError {
+    let bytes = witchy_wir::wir_encode::try_encode_with_gc(module, gc_structs, gc_arrays)
+        .map_err(|error| CodegenError {
             message: format!("assembled WIR could not be encoded: {error}"),
-        }
-    })?;
+        })?;
     wasmparser::validate(&bytes).map_err(|error| CodegenError {
         message: format!("assembled WIR failed wasm validation: {error}"),
     })?;
@@ -646,8 +754,9 @@ fn encode_validated(
 fn validated_module_outcome(
     module: witchy_wir::wir::WirModule,
     gc_structs: &[witchy_wir::wir::WirStructDef],
+    gc_arrays: &[witchy_wir::wir::WirArrayDef],
 ) -> LoweringOutcome<witchy_wir::wir::WirModule> {
-    match encode_validated(&module, gc_structs) {
+    match encode_validated(&module, gc_structs, gc_arrays) {
         Ok(_) => LoweringOutcome::Lowered(module),
         Err(error) => LoweringOutcome::Rejected(error),
     }
@@ -656,8 +765,9 @@ fn validated_module_outcome(
 fn encoded_binary_outcome(
     module: &witchy_wir::wir::WirModule,
     gc_structs: &[witchy_wir::wir::WirStructDef],
+    gc_arrays: &[witchy_wir::wir::WirArrayDef],
 ) -> LoweringOutcome<Vec<u8>> {
-    match encode_validated(module, gc_structs) {
+    match encode_validated(module, gc_structs, gc_arrays) {
         Ok(bytes) => LoweringOutcome::Lowered(bytes),
         Err(error) => LoweringOutcome::Rejected(error),
     }
@@ -669,20 +779,21 @@ fn assemble_optimized_wir_with_structs(
     (
         witchy_wir::wir::WirModule,
         Vec<witchy_wir::wir::WirStructDef>,
+        Vec<witchy_wir::wir::WirArrayDef>,
     ),
     LoweringFailure,
 > {
-    let (mut wir_module, gc_structs) = assemble_wir_module_with_structs(module)?;
+    let (mut wir_module, gc_structs, gc_arrays) = assemble_wir_module_with_structs(module)?;
     witchy_wir::wir_opt::lower_direct_tail_calls(&mut wir_module);
     witchy_wir::wir_opt::optimize(&mut wir_module);
-    Ok((wir_module, gc_structs))
+    Ok((wir_module, gc_structs, gc_arrays))
 }
 
 /// Compile a module straight to a wasm **binary** via WIR + `wir_encode::encode`.
 /// The result distinguishes a valid source construct that lacks a compiled
 /// lowering from rejected input or malformed compiler output.
 pub fn compile_module_binary(module: &Module) -> LoweringOutcome<Vec<u8>> {
-    let (wir_module, gc_structs) = match assemble_optimized_wir_with_structs(module) {
+    let (wir_module, gc_structs, gc_arrays) = match assemble_optimized_wir_with_structs(module) {
         Ok(assembled) => assembled,
         Err(failure) => return public_outcome(Err(failure)),
     };
@@ -715,7 +826,7 @@ pub fn compile_module_binary(module: &Module) -> LoweringOutcome<Vec<u8>> {
             });
         }
     }
-    match encoded_binary_outcome(&wir_module, &gc_structs) {
+    match encoded_binary_outcome(&wir_module, &gc_structs, &gc_arrays) {
         LoweringOutcome::Rejected(error) => {
             if std::env::var_os("WIRDIAG").is_some() {
                 eprintln!("WIRBAIL encode-or-validate-failed: {error}");
@@ -732,7 +843,9 @@ pub fn compile_module_binary(module: &Module) -> LoweringOutcome<Vec<u8>> {
 /// can compare optimized and unoptimized encoding.
 pub fn assemble_wir_module(module: &Module) -> LoweringOutcome<witchy_wir::wir::WirModule> {
     match assemble_wir_module_with_structs(module) {
-        Ok((module, gc_structs)) => validated_module_outcome(module, &gc_structs),
+        Ok((module, gc_structs, gc_arrays)) => {
+            validated_module_outcome(module, &gc_structs, &gc_arrays)
+        }
         Err(failure) => public_outcome(Err(failure)),
     }
 }
@@ -744,14 +857,23 @@ pub fn assemble_optimized_wir_module(
     module: &Module,
 ) -> LoweringOutcome<witchy_wir::wir::WirModule> {
     match assemble_optimized_wir_with_structs(module) {
-        Ok((module, gc_structs)) => validated_module_outcome(module, &gc_structs),
+        Ok((module, gc_structs, gc_arrays)) => {
+            validated_module_outcome(module, &gc_structs, &gc_arrays)
+        }
         Err(failure) => public_outcome(Err(failure)),
     }
 }
 
 fn assemble_wir_module_with_structs(
     module: &Module,
-) -> Result<(witchy_wir::wir::WirModule, Vec<witchy_wir::wir::WirStructDef>), LoweringFailure> {
+) -> Result<
+    (
+        witchy_wir::wir::WirModule,
+        Vec<witchy_wir::wir::WirStructDef>,
+        Vec<witchy_wir::wir::WirArrayDef>,
+    ),
+    LoweringFailure,
+> {
     use witchy_wir::wir::{
         DataSegment, GlobalInit, Kind as WK, WirExpr, WirFunc, WirGlobal, WirImport, WirModule,
         WirNode, WirTable,
@@ -1549,6 +1671,7 @@ fn assemble_wir_module_with_structs(
                 })
                 .collect();
             let gc_structs = cg.gc_structs.clone();
+            let gc_arrays = cg.gc_arrays.clone();
             return Ok((WirModule {
                 imports: pruned_imports,
                 funcs: pruned_funcs,
@@ -1584,7 +1707,7 @@ fn assemble_wir_module_with_structs(
                     }
                     exports
                 },
-            }, gc_structs));
+            }, gc_structs, gc_arrays));
         }
 
         // Otherwise the program reaches a prelude helper not yet migrated to a
@@ -2230,11 +2353,11 @@ mod lowering_outcome_tests {
     #[test]
     fn malformed_wir_is_rejected_by_module_and_binary_finalizers() {
         let module = malformed_export_module();
-        let module_error = validated_module_outcome(module.clone(), &[])
+        let module_error = validated_module_outcome(module.clone(), &[], &[])
             .expect_rejected("public WIR assembly must reject malformed output");
         assert!(module_error.message.contains("unknown func $missing"));
 
-        let binary_error = encoded_binary_outcome(&module, &[])
+        let binary_error = encoded_binary_outcome(&module, &[], &[])
             .expect_rejected("public binary assembly must reject malformed output");
         assert!(binary_error.message.contains("unknown func $missing"));
     }
@@ -2267,7 +2390,7 @@ mod lowering_outcome_tests {
             table: None,
             exports: vec![("run".into(), "run".into())],
         };
-        let error = encoded_binary_outcome(&module, &[])
+        let error = encoded_binary_outcome(&module, &[], &[])
             .expect_rejected("reference values cannot cross the scalar slot ABI");
         assert!(error.message.contains("cannot cross the i64 slot boundary"));
     }
@@ -2283,7 +2406,7 @@ mod lowering_outcome_tests {
             table: None,
             exports: vec![("run".into(), "run".into())],
         };
-        let duplicate_error = encoded_binary_outcome(&duplicate, &[])
+        let duplicate_error = encoded_binary_outcome(&duplicate, &[], &[])
             .expect_rejected("duplicate function identities must not silently retarget calls");
         assert!(duplicate_error.message.contains("duplicate function name $run"));
 
@@ -2305,7 +2428,7 @@ mod lowering_outcome_tests {
             table: Some(WirTable { funcs: Vec::new() }),
             exports: vec![("run".into(), "run".into())],
         };
-        let indirect_error = encoded_binary_outcome(&bad_indirect, &[])
+        let indirect_error = encoded_binary_outcome(&bad_indirect, &[], &[])
             .expect_rejected("indirect-call signature mismatch must not reach the encoder");
         assert!(indirect_error.message.contains("signature has 1 parameters"));
     }
@@ -2327,7 +2450,7 @@ mod lowering_outcome_tests {
             table: None,
             exports: vec![("run".into(), "run".into())],
         };
-        let error = encoded_binary_outcome(&module, &[])
+        let error = encoded_binary_outcome(&module, &[], &[])
             .expect_rejected("operator and kind mismatch must not be returned as lowered");
         assert!(error.message.contains("unary Not on F64"));
     }

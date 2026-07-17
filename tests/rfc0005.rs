@@ -10,5 +10,7 @@ mod first_class_monomorphization_matrix;
 mod first_class_monomorphization;
 #[path = "rfc0005/gc_let_pattern.rs"]
 mod gc_let_pattern;
+#[path = "rfc0005/capability_closure_env.rs"]
+mod capability_closure_env;
 #[path = "rfc0005/typed_closure_abi.rs"]
 mod typed_closure_abi;

@@ -448,10 +448,19 @@ pub fn try_encode(
     module: &WirModule,
     structs: &[WirStructDef],
 ) -> Result<Vec<u8>, EncodeError> {
+    try_encode_with_gc(module, structs, &[])
+}
+
+/// Fallible production boundary for modules that also declare GC arrays.
+pub fn try_encode_with_gc(
+    module: &WirModule,
+    structs: &[WirStructDef],
+    arrays: &[WirArrayDef],
+) -> Result<Vec<u8>, EncodeError> {
     preflight(module)?;
-    catch_unwind(AssertUnwindSafe(|| encode(module, structs))).map_err(|payload| EncodeError {
-        message: panic_message(payload),
-    })
+    catch_unwind(AssertUnwindSafe(|| encode_with_gc(module, structs, arrays))).map_err(
+        |payload| EncodeError { message: panic_message(payload) },
+    )
 }
 
 /// Encode a module with both GC struct and GC array declarations. Concrete

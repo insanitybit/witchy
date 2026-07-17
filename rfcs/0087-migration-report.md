@@ -82,7 +82,7 @@ conventions from those declarations, and type-checks 271 Witchy sources plus
 checked in at [`0087-migration-census.tsv`](0087-migration-census.tsv) and
 freshness-tested by `tests/rfc0087_migration_census.rs`.
 
-The current resolved totals are 25 entry-source `var` declarations and 471
+The current resolved totals are 25 entry-source `var` declarations and 472
 lowered `var` call instances inspected. The obsolete migration-error classes
 are empty: zero mechanical self-reassignments, zero immutable arguments passed
 to `var`, and zero temporary `var` arguments. Nine expression-position calls
@@ -91,13 +91,10 @@ the teaching examples), and 14 statement-position calls intentionally discard
 an auxiliary result. The snapshot lists every such judgment by source line and
 resolved callee; no regex or method-name allowlist contributes to the counts.
 
-Two top-level project entries fail before RFC-0087 checking on the already-known
-RFC-0005 representation boundary: `projects/coven/src/coven.witchy` and
-`projects/coven-web/src/coven_web.witchy` capture a `Dir`-carrying value in a
-closure. The exact compiler diagnostics are retained in the snapshot as
-externally owned evidence. The census still lowers and classifies their direct
-`var` calls, and neither contains an RFC-0087 migration-error finding. This
-slice does not modify representation or closure-ABI files.
+The two former RFC-0005 representation rejections now pass: capability-bearing
+closure captures use per-lambda typed GC environments. The census still reports
+the same resolved `var` counts for those projects and no RFC-0087 migration-error
+finding; the compiler-rejection section is empty.
 
 The executable corpus gate separately links the real standard library and
 compiles or runs book examples, standalone examples, and nested example
@@ -133,7 +130,5 @@ workspace shard for this Rust-backed tool, so the slice must also pass current
 workspace tests and clippy before queue submission. The merge coordinator then
 runs the serialized full gate before landing.
 
-The two retained RFC-0005 representation-boundary rejections are explicit
-snapshot rows, not skipped files. All 439 corpus entries are parsed and linked
-far enough to classify their resolved `var` calls, and every RFC-0087
-migration-error category is required to remain at zero.
+All 439 corpus entries pass the census with no compiler rejection. Every
+RFC-0087 migration-error category is required to remain at zero.

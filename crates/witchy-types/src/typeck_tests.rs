@@ -702,33 +702,36 @@ fn wrapper() -> Result(Int, AppError):
     }
 
     #[test]
-    fn generic_trait_impls_preserve_function_type_arguments() {
-        check_str(
+    fn generic_aggregates_reject_reference_bearing_function_type_arguments() {
+        let direct = check_str(
             "trait Label:\n    fn label(self) -> String\n\
              type Box(a):\n    value: a\n\
              impl Label for Box(a):\n    fn label(self) -> String:\n        \"Box\"\n\
              fn id(n: Int) -> Int:\n    n\n\
              fn main(console: Console):\n    let b: Box(fn(Int) -> Int) = Box(id)\n    console.print(b.label())\n",
         )
-        .expect("generic trait dispatch preserves a function-typed type argument");
+        .expect_err("a generic field has no fixed GC layout for a function reference");
+        assert!(direct.contains("generic aggregate `Box`") && direct.contains("GC field layout"));
 
-        check_str(
+        let nested = check_str(
             "trait Label:\n    fn label(self) -> String\n\
              type Box(a):\n    value: a\n\
              impl Label for Box(a):\n    fn label(self) -> String:\n        \"Box\"\n\
              fn id(n: Int) -> Int:\n    n\n\
              fn main(console: Console):\n    let b: Box(List(fn(Int) -> Int)) = Box([id])\n    console.print(b.label())\n",
         )
-        .expect("nested function-typed type arguments keep their full scope encoding");
+        .expect_err("nested function storage cannot cross a generic scalar field");
+        assert!(nested.contains("generic aggregate `Box`") && nested.contains("GC field layout"));
 
-        check_str(
+        let multi = check_str(
             "trait Label:\n    fn label(self) -> String\n\
              type Box(a):\n    value: a\n\
              impl Label for Box(a):\n    fn label(self) -> String:\n        \"Box\"\n\
              fn choose(n: Int, s: String) -> Int:\n    n\n\
              fn main(console: Console):\n    let b: Box(fn(Int, String) -> Int) = Box(choose)\n    console.print(b.label())\n",
         )
-        .expect("function-typed type arguments may contain parameter commas");
+        .expect_err("multi-parameter functions are references too");
+        assert!(multi.contains("generic aggregate `Box`") && multi.contains("GC field layout"));
     }
 
     #[test]
@@ -930,9 +933,8 @@ fn has_optional_id() -> Option(Bool):
             .expect_err("List(File) stores externref elements");
         assert!(err.contains("File") && err.contains("List"), "got: {err}");
 
-        let err = check_str("fn callbacks(console: Console, xs: List(fn(File[Read]) -> String)):\n    console.print(\"x\")\n")
-            .expect_err("the scalar closure ABI cannot hide an externref parameter in a container");
-        assert!(err.contains("File") && err.contains("List"), "got: {err}");
+        check_str("fn callbacks(console: Console, xs: List(fn(File[Read]) -> String)):\n    console.print(\"x\")\n")
+            .expect("direct List(fn) uses the typed GC function array representation");
 
         // Result(File, String) — the Ok payload is slot-boxed.
         let err = check_str("fn open(console: Console, r: Result(File, String)):\n    console.print(\"x\")\n")
@@ -979,12 +981,8 @@ fn has_optional_id() -> Option(Bool):
         check_str("fn maybe(pair: (Option(File), Int)) -> (Option(File), Int):\n    pair\n")
             .expect("a nullable direct externref remains reference-typed in a tuple");
 
-        let err = check_str("fn main(console: Console, f: File[Read]):\n    let read_later = fn() -> String: f.read()\n    console.print(\"x\")\n")
-            .expect_err("a closure capture of File needs the GC-struct aggregate path");
-        assert!(
-            err.contains("closure") && err.contains("f") && err.contains("File") && err.contains("GC-struct"),
-            "got: {err}"
-        );
+        check_str("fn main(console: Console, f: File[Read]):\n    let read_later = fn() -> String: f.read()\n    console.print(\"x\")\n")
+            .expect("a closure capture of File uses a typed GC environment");
 
         let err = check_str("fn main(console: Console, f: File):\n    let xs = [f]\n    console.print(\"x\")\n")
             .expect_err("an inferred List(File) literal needs the GC-struct aggregate path");
@@ -1166,15 +1164,14 @@ fn load(o: Outer, name: String) -> String:
 "#;
         check_str(nested_record).expect("nested cap-carrying records GC-lower");
 
-        // Containers of, and closures over, a cap-carrying record stay
-        // reject-first: the record is itself cap-carrying.
+        // Collections of a cap-carrying record remain closed until typed GC
+        // collection shapes are generalized beyond direct function lists.
         let err = check_str("type W:\n    dir: Dir[Read]\n    label: String\n\nfn hold(xs: List(W)) -> Int:\n    0\n")
             .expect_err("List of a cap-carrying record still needs the GC collection path");
         assert!(err.contains("List") && err.contains("Dir"), "got: {err}");
 
-        let err = check_str("type W:\n    dir: Dir[Read]\n    label: String\n\nfn f(console: Console, w: W):\n    let g = fn() -> String: w.label\n    console.print(g())\n")
-            .expect_err("a closure capturing a cap-carrying record still needs the typed closure path");
-        assert!(err.contains("closure") && err.contains("Dir"), "got: {err}");
+        check_str("type W:\n    dir: Dir[Read]\n    label: String\n\nfn f(console: Console, w: W):\n    let g = fn() -> String: w.label\n    console.print(g())\n")
+            .expect("a closure captures a cap-carrying record at its exact GC kind");
     }
 
     #[test]
@@ -1203,13 +1200,13 @@ type Sum:
 
         assert_eq!(
             gc_cap_aggregate_names(&module),
-            vec!["Mixed".to_string(), "Sum".to_string()],
-            "function storage must not hide a later externref; transparent and generic shapes keep their separate representations"
+            vec!["Mixed".to_string(), "FunctionOnly".to_string(), "Sum".to_string()],
+            "fixed function/reference layouts GC-lower; transparent and generic shapes keep their separate representations"
         );
     }
 
     #[test]
-    fn every_externref_capability_is_rejected_in_a_closure_environment() {
+    fn every_externref_capability_is_allowed_in_a_typed_closure_environment() {
         let cases = [
             ("Dir[Read]", "Dir"),
             ("File[Read]", "File"),
@@ -1222,11 +1219,9 @@ type Sum:
             let src = format!(
                 "fn hold(x: {ty}):\n    let later = fn():\n        let captured = x\n"
             );
-            let err = check_str(&src).expect_err("externref capture must fail at type checking");
-            assert!(
-                err.contains("closure") && err.contains(label) && err.contains("GC-struct"),
-                "{ty} produced the wrong capture diagnostic: {err}"
-            );
+            check_str(&src).unwrap_or_else(|error| {
+                panic!("{ty} ({label}) should typecheck in a typed closure environment: {error}")
+            });
         }
 
         let branded = r#"
@@ -1236,11 +1231,7 @@ fn hold(redis: Redis):
     let later = fn():
         let captured = redis
 "#;
-        let err = check_str(branded).expect_err("an externref brand must retain its capability label");
-        assert!(
-            err.contains("closure") && err.contains("`Net` capability") && !err.contains("`File` capability"),
-            "brand produced the wrong capability diagnostic: {err}"
-        );
+        check_str(branded).expect("an externref brand is captured without scalar erasure");
 
         let nested = r#"
 type Vault:
@@ -1250,11 +1241,13 @@ fn hold(vault: Vault):
     let later = fn():
         let captured = vault
 "#;
-        let err = check_str(nested).expect_err("a cap-carrying record capture must fail at type checking");
-        assert!(
-            err.contains("closure") && err.contains("Secret") && err.contains("GC-struct"),
-            "nested record produced the wrong capability diagnostic: {err}"
-        );
+        check_str(nested).expect("a cap-carrying nominal GC reference is a valid capture");
+
+        let option = check_str(
+            "fn hold(x: Option(fn(Int) -> Int)):\n    let captured = x\n",
+        )
+        .expect_err("Option(fn) has no represented GC container lane");
+        assert!(option.contains("Option") && option.contains("function value"), "{option}");
     }
 
     #[test]
