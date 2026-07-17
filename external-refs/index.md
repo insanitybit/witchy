@@ -14,7 +14,7 @@ keeps this current as refs are added.
   The closest document-corpus implementation of the Karpathy pattern: merge-based
   ingest, frontmatter source attribution, lint-for-staleness, and an
   archive+rebuild escape hatch. Our `witchy-wiki` skill is adapted from its
-  `.skills/` skeleton. → informed `.claude/skills/witchy-wiki/`.
+  `.skills/` skeleton. → informed [`.claude/skills/witchy-wiki/`](../.claude/skills/witchy-wiki/).
 - **Cognition DeepWiki / "Ask Devin"** — docs.devin.ai/work-with-devin/deepwiki.
   Production wiki-plus-RAG over code corpora; staleness handled by periodic
   re-indexing. Evidence the materialized-wiki + retrieval hybrid runs in prod.
@@ -51,11 +51,11 @@ value semantics — plus the tracing-GC lineage we are choosing *not* to follow.
   (Ullrich, de Moura; IFL 2019). Lean 4's RC, precursor to Perceus; borrowed
   references + borrow inference keep RC traffic low. witchy's `let`-borrow ≈ their
   borrowed reference. → the RC-elision reading of the conventions.
-- **FP²: Fully in-Place Functional Programming** — `fip-fully-in-place-2023/`
+- **FP²: Fully in-Place Functional Programming** — [`fip-fully-in-place-2023/`](fip-fully-in-place-2023/)
   (Lorenzen, Leijen, Swierstra; ICFP 2023). A linear calculus for when pure code
   runs with zero allocation (in-place) given unshared args. The static discipline
-  `mode opt` would enforce. → `rfcs/performance-modes.md` tiers 3 + 5.
-- **Implementation Strategies for Mutable Value Semantics** — `mutable-value-semantics-2022/`
+  `mode opt` would enforce. → [`rfcs/performance-modes.md`](../rfcs/performance-modes.md) tiers 3 + 5.
+- **Implementation Strategies for Mutable Value Semantics** — [`mutable-value-semantics-2022/`](mutable-value-semantics-2022/)
   (Racordon, Shabalin, Zheng, Abrahams, Saeta; JOT 2022). The Hylo/Val basis —
   **witchy's design DNA**; `let`/`var`/`own` are Hylo's `let`/`inout`/`sink`. The
   authority for "no two bindings share mutable storage" → parity + acyclicity.
