@@ -40,6 +40,7 @@ use witchy_syntax::diag::DiagTemplate;
 use witchy_syntax::intrinsics;
 use witchy_syntax::origin::SyntaxCategory;
 use witchy_syntax::parser::parse_module;
+use witchy_types::witness::WitnessPlan;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DirValue {
@@ -114,6 +115,12 @@ pub enum Value {
         function: Rc<Function>,
         env: Box<Env>,
     },
+    /// Compiler-owned RFC-0081 envelope. Source programs cannot observe the
+    /// payload or witness; only a resolved existential call may use them.
+    Existential {
+        payload: Box<Value>,
+        witness: u32,
+    },
     /// An immutable associative map, kept as insertion-ordered key/value pairs
     /// (keys compared by value equality). `Dict(K, V)` in the type system.
     Dict(Rc<Vec<(Value, Value)>>),
@@ -152,6 +159,20 @@ impl Value {
 
     pub fn str(s: impl Into<String>) -> Value {
         Value::Str(Rc::new(s.into()))
+    }
+}
+
+/// Existentials are opaque at every runtime boundary. Keep this structural so
+/// unchecked oracle input cannot regain equality by hiding one in a container.
+fn contains_existential(value: &Value) -> bool {
+    match value {
+        Value::Existential { .. } => true,
+        Value::List(items) | Value::Tuple(items) => items.iter().any(contains_existential),
+        Value::Ctor { fields, .. } => fields.iter().any(contains_existential),
+        Value::Dict(entries) => entries
+            .iter()
+            .any(|(key, value)| contains_existential(key) || contains_existential(value)),
+        _ => false,
     }
 }
 
@@ -303,6 +324,7 @@ impl fmt::Display for Value {
             Value::Closure { function, .. } => {
                 write!(f, "<function/{}>", function.params.len())
             }
+            Value::Existential { .. } => write!(f, "<existential>"),
             Value::Dict(entries) => {
                 write!(f, "{{")?;
                 for (i, (k, v)) in entries.iter().enumerate() {
@@ -1686,6 +1708,8 @@ pub struct Interpreter {
     // `Rc` so a call clones a pointer, not the whole function AST (this is the
     // hot path for recursion).
     functions: FxHashMap<String, Rc<Function>>,
+    /// Closed compiler-owned witness plan for the executable module.
+    witnesses: WitnessPlan,
     /// Per-function parameter names as shared `Rc<str>`, built once at
     /// registration: binding call arguments clones a pointer per parameter
     /// instead of copying each name `String` on every call.
@@ -2104,6 +2128,10 @@ impl Interpreter {
     }
 
     pub fn new(module: Module) -> Self {
+        Self::new_with_witnesses(module, WitnessPlan::default())
+    }
+
+    fn new_with_witnesses(module: Module, witnesses: WitnessPlan) -> Self {
         let compiler_item_syntax = module
             .compiler_item_syntax
             .into_iter()
@@ -2195,6 +2223,7 @@ impl Interpreter {
         let proper_tail_edges = recursive_tail_edges(&functions);
         Self {
             functions,
+            witnesses,
             root: PathBuf::from("."),
             dir_roots: Vec::new(),
             file_grants: Vec::new(),
@@ -2339,6 +2368,9 @@ impl Interpreter {
     /// elements/fields so a custom impl nested inside is still honored. Mirrors the
     /// compiled backend's per-shape eq helpers (which call the user impl mid-recursion).
     fn values_equal(&mut self, a: &Value, b: &Value) -> Result<bool, RuntimeError> {
+        if matches!(a, Value::Existential { .. }) || matches!(b, Value::Existential { .. }) {
+            return err("existential values do not support equality");
+        }
         // A `Ctor` whose type has a custom impl: call it (this is the whole point).
         if let (Value::Ctor { name: an, .. }, Value::Ctor { name: bn, .. }) = (a, b) {
             if let Some(tyname) = self.ctor_type_name.get(&**an).cloned() {
@@ -3019,6 +3051,123 @@ impl Interpreter {
             return Ok(Some((Value::list(out), Vec::new())));
         }
         Ok(None)
+    }
+
+    /// Dispatch a compiler-owned existential call through its authenticated
+    /// closed-program witness entry. This deliberately reuses ordinary function
+    /// execution and the normal write-back commit path: tail returns, explicit
+    /// returns, and `?` therefore commit together, while traps commit nothing.
+    fn eval_existential_call(
+        &mut self,
+        receiver: &Expr,
+        args: &[Expr],
+        owner_trait: &str,
+        method: &str,
+        slot: u32,
+        env: &mut Env,
+    ) -> Result<Value, Flow> {
+        let receiver_convention = self
+            .witnesses
+            .witnesses
+            .iter()
+            .filter_map(|witness| witness.slots.get(usize::try_from(slot).ok()?))
+            .find(|entry| entry.owner_trait == owner_trait && entry.method == method)
+            .map(|entry| entry.receiver)
+            .ok_or_else(|| Flow::from(RuntimeError {
+                message: format!(
+                    "internal: no witness layout authenticates `{owner_trait}.{method}` slot {slot}",
+                ),
+            }))?;
+        let receiver_place = if receiver_convention == Convention::Var {
+            Some(self.capture_place(receiver, env)?)
+        } else {
+            None
+        };
+        let receiver_value = match &receiver_place {
+            Some(place) => self.read_place_value(place, env)?,
+            None => self.eval(receiver, env)?,
+        };
+        let Value::Existential { payload, witness } = receiver_value else {
+            return err("internal: existential dispatch received a non-existential receiver");
+        };
+        let (adapter, receiver_convention) = {
+            let witness_plan = self.witnesses.by_id(witness).ok_or_else(|| Flow::from(RuntimeError {
+                message: format!("internal: unknown existential witness {witness}"),
+            }))?;
+            let entry = witness_plan
+                .slots
+                .get(usize::try_from(slot).map_err(|_| Flow::from(RuntimeError {
+                    message: "internal: existential slot does not fit host indexing".to_string(),
+                }))?)
+                .ok_or_else(|| Flow::from(RuntimeError {
+                    message: format!("internal: witness {witness} has no slot {slot}"),
+                }))?;
+            if entry.owner_trait != owner_trait || entry.method != method {
+                return err(format!(
+                    "internal: witness {witness} slot {slot} does not authenticate `{owner_trait}.{method}`"
+                ));
+            }
+            (entry.adapter.clone(), entry.receiver)
+        };
+        let Some(function) = self.functions.get(&adapter).cloned() else {
+            return err(format!(
+                "internal: existential adapter `{}` is not registered",
+                adapter
+            ));
+        };
+        if function.params.len() != args.len() + 1 {
+            return err(format!(
+                "internal: existential adapter `{}` has a mismatched signature",
+                adapter
+            ));
+        }
+        if function.params.first().map(|param| param.convention) != Some(receiver_convention) {
+            return err(format!(
+                "internal: existential adapter `{}` changed receiver convention",
+                adapter
+            ));
+        }
+
+        let (mut values, explicit_places) = self.eval_call_args(args, &function.params[1..], env)?;
+        values.insert(0, *payload);
+        let outcome = self.run_callable(TailCallable::Function(function), values)?;
+        let result = outcome.value;
+        let mut writebacks = Vec::new();
+        if let Some(place) = receiver_place {
+            let updated_payload = outcome
+                .env
+                .get(&outcome.function.params[0].name)
+                .cloned()
+                .expect("terminal existential receiver is bound");
+            writebacks.push((
+                place,
+                Value::Existential {
+                    payload: Box::new(updated_payload),
+                    witness,
+                },
+            ));
+        }
+        for (index, param) in outcome.function.params.iter().enumerate().skip(1) {
+            if param.convention != Convention::Var {
+                continue;
+            }
+            let place = explicit_places
+                .get(index - 1)
+                .and_then(Clone::clone)
+                .ok_or_else(|| Flow::from(RuntimeError {
+                    message: format!(
+                        "`var` argument to existential `{owner_trait}.{method}` must be a mutable place"
+                    ),
+                }))?;
+            let value = outcome
+                .env
+                .get(&param.name)
+                .cloned()
+                .expect("terminal existential var parameter is bound");
+            writebacks.push((place, value));
+        }
+        self.commit_writebacks(writebacks, env)?;
+        Ok(result)
     }
 
     fn eval_call(&mut self, name: &str, args: &[Expr], env: &mut Env) -> Result<Value, Flow> {
@@ -6514,12 +6663,18 @@ impl Interpreter {
             // `e as T` narrows a capability's rights — purely type-level, so at
             // runtime it is the identity on the underlying value.
             Expr::As { expr, .. } => self.eval(expr, env),
-            Expr::ExistentialPack { .. } => err(
-                "internal: RFC-0081 existential node reached the interpreter before runtime witness lowering",
-            ),
-            Expr::ExistentialCall { .. } => err(
-                "internal: RFC-0081 existential dispatch reached the interpreter before runtime witness lowering",
-            ),
+            Expr::ExistentialPack { expr, witness, .. } => Ok(Value::Existential {
+                payload: Box::new(self.eval(expr, env)?),
+                witness: *witness,
+            }),
+            Expr::ExistentialCall {
+                receiver,
+                args,
+                owner_trait,
+                method,
+                slot,
+                ..
+            } => self.eval_existential_call(receiver, args, owner_trait, method, *slot, env),
             // `&&`/`||` short-circuit, so the right side isn't always evaluated.
             Expr::Binary { op: BinOp::And, lhs, rhs } => match self.eval(lhs, env)? {
                 Value::Bool(false) => Ok(Value::Bool(false)),
@@ -6555,11 +6710,16 @@ impl Interpreter {
             Expr::Binary { op, lhs, rhs } => {
                 let l = self.eval(lhs, env)?;
                 let r = self.eval(rhs, env)?;
-                // (RFC-0047) `==`/`!=` desugar through PartialEq at every depth: if
-                // ANY type in the program has a custom (non-derived) `eq` impl, walk
-                // the two values structurally and call that impl wherever a value of
-                // such a type is reached. With no custom impls (the common case) the
-                // walk never fires and equality is the plain structural `l == r`.
+                // The parser-level checker rejects existential equality. Preserve the
+                // same opacity for unchecked oracle input, including containers that
+                // hide an existential, before taking the normal fast equality path.
+                if matches!(op, BinOp::Eq | BinOp::NotEq)
+                    && (contains_existential(&l) || contains_existential(&r))
+                {
+                    return err("existential values do not support equality");
+                }
+                // (RFC-0047) `==`/`!=` desugar through PartialEq at every depth
+                // only when the program declares a custom implementation.
                 if matches!(op, BinOp::Eq | BinOp::NotEq) && !self.custom_eq_types.is_empty() {
                     let eq = self.values_equal(&l, &r)?;
                     return Ok(Value::Bool(if *op == BinOp::Eq { eq } else { !eq }));
@@ -6965,8 +7125,6 @@ pub(crate) fn run_comptime_module_outputs_budgeted_in_scope(
     step_limit: u64,
     fresh_ident_scope: Option<String>,
 ) -> Result<ComptimeOutputs, RuntimeError> {
-    let module = witchy_syntax::records::lower(module).map_err(|message| RuntimeError { message })?;
-    let module = witchy_types::traits::lower(module);
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
         run_module_inner_limited(module, root, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, Vec::new(), UserCapGrants::new(), step_limit, fresh_ident_scope)
@@ -6985,8 +7143,6 @@ pub fn run_module_files(
     root: impl AsRef<Path>,
     file_grants: Vec<PathBuf>,
 ) -> Result<Vec<String>, RuntimeError> {
-    let module = witchy_syntax::records::lower(module).map_err(|message| RuntimeError { message })?;
-    let module = witchy_types::traits::lower(module);
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
         run_module_inner_limited(module, root, Vec::new(), file_grants, Vec::new(), Vec::new(), None, Vec::new(), UserCapGrants::new(), DEFAULT_STEP_LIMIT, None)
@@ -7028,11 +7184,9 @@ pub fn run_module_exit(
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
 ) -> Result<(Vec<String>, i32), RuntimeError> {
-    // Lower named-field record construction, then traits/impls — so the
-    // interpreter only ever sees plain constructors and functions. (Both are
-    // no-ops once the linker has done them, for the linked CLI path.)
-    let module = witchy_syntax::records::lower(module).map_err(|message| RuntimeError { message })?;
-    let module = witchy_types::traits::lower(module);
+    // The execution boundary prepares records, traits, and existential
+    // witnesses together so both interpreter runtime representations consume
+    // one checked module.
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || run_module_inner(module, root, Vec::new(), net_allow, args, signing_key))
         .map(|outcome| (outcome.output, outcome.exit_code))
@@ -7051,8 +7205,6 @@ pub fn run_module_exit_secrets(
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<(String, Vec<u8>, bool)>,
 ) -> Result<(Vec<String>, i32), RuntimeError> {
-    let module = witchy_syntax::records::lower(module).map_err(|message| RuntimeError { message })?;
-    let module = witchy_types::traits::lower(module);
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
         run_module_inner_limited(
@@ -7083,8 +7235,6 @@ pub fn run_module_exit_dirs(
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
 ) -> Result<(Vec<String>, i32), RuntimeError> {
-    let module = witchy_syntax::records::lower(module).map_err(|message| RuntimeError { message })?;
-    let module = witchy_types::traits::lower(module);
     let mut roots = roots;
     let root = if roots.is_empty() { PathBuf::from(".") } else { roots.remove(0) };
     run_on_deep_stack(move || run_module_inner(module, root, roots, net_allow, args, signing_key))
@@ -7154,8 +7304,6 @@ pub fn run_module_user_caps(
     file_grants: Vec<PathBuf>,
     user_caps: UserCapGrants,
 ) -> Result<Vec<String>, RuntimeError> {
-    let module = witchy_syntax::records::lower(module).map_err(|message| RuntimeError { message })?;
-    let module = witchy_types::traits::lower(module);
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
         run_module_inner_limited(module, root, Vec::new(), file_grants, net_allow, args, None, Vec::new(), user_caps, DEFAULT_STEP_LIMIT, None)
@@ -7174,6 +7322,25 @@ fn run_module_inner(
     run_module_inner_limited(module, root, dir_roots, Vec::new(), net_allow, args, signing_key, Vec::new(), UserCapGrants::new(), DEFAULT_STEP_LIMIT, None)
 }
 
+/// Prepare the interpreter's executable AST through the same typed existential
+/// contract as the compiled backend. The catalog must be captured before trait
+/// lowering erases declarations; the resulting plan is then carried alongside
+/// the lowered module instead of rediscovering dispatch at evaluation time.
+fn prepare_runtime_module(module: Module) -> Result<(Module, WitnessPlan), RuntimeError> {
+    let module = witchy_syntax::records::lower(module).map_err(|message| RuntimeError { message })?;
+    let catalog = witchy_types::witness::WitnessCatalog::from_module(&module);
+    // Keep this ordering aligned with the compiled backend: trait lowering
+    // resolves dynamic method slots before the type table records the concrete
+    // construction sites that need compiler-owned packs.
+    let mut module = witchy_types::traits::lower_for_wasm(module);
+    witchy_syntax::parser::lower_sugar_module(&mut module);
+    let typed = witchy_types::typeck::annotate(module);
+    let prepared = witchy_types::existential::lower_explicit_packs(typed, &catalog)
+        .map_err(|message| RuntimeError { message })?;
+    let (module, _, witnesses) = prepared.into_parts();
+    Ok((module, witnesses))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_module_inner_limited(
     module: Module,
@@ -7188,7 +7355,8 @@ fn run_module_inner_limited(
     step_limit: u64,
     fresh_ident_scope: Option<String>,
 ) -> Result<InterpreterOutcome, RuntimeError> {
-    let mut interp = Interpreter::new(module);
+    let (module, witnesses) = prepare_runtime_module(module)?;
+    let mut interp = Interpreter::new_with_witnesses(module, witnesses);
     interp.step_limit = step_limit;
     interp.fresh_ident_scope = fresh_ident_scope;
     interp.root = root;
@@ -7301,13 +7469,13 @@ pub struct BuildGrants {
 pub fn run_build_step(module: Module, grants: BuildGrants) -> Result<Vec<String>, RuntimeError> {
     std::fs::create_dir_all(&grants.out_dir)
         .map_err(|e| RuntimeError { message: format!("build: cannot create output dir: {e}") })?;
-    let module = witchy_types::traits::lower(module);
     // Find the entrypoint before moving the module in — `build_entrypoint` is
     // robust to the linker's `mod.build` qualification.
     let Some(build) = witchy_syntax::build_entry::build_entrypoint(&module).cloned() else {
         return Ok(Vec::new());
     };
-    let mut interp = Interpreter::new(module);
+    let (module, witnesses) = prepare_runtime_module(module)?;
+    let mut interp = Interpreter::new_with_witnesses(module, witnesses);
     let argv = build
         .params
         .iter()

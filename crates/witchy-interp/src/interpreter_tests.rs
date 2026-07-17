@@ -66,6 +66,106 @@
         assert_eq!(result, Some(Value::str("1,4")));
     }
 
+    fn run_exit(source: &str) -> i32 {
+        let module = witchy_syntax::parser::parse_module(source).expect("parse runtime source");
+        run_module_exit(module, ".", Vec::new(), Vec::new(), None)
+            .expect("run runtime source")
+            .1
+    }
+
+    #[test]
+    fn existential_dispatch_uses_the_closed_witness_plan() {
+        let source = r#"
+trait Render:
+    fn render(let self) -> Int
+
+type Label:
+    Label(Int)
+
+type Badge:
+    Badge(Int)
+
+impl Render for Label:
+    fn render(let self) -> Int:
+        match self:
+            Label(value) -> value
+
+impl Render for Badge:
+    fn render(let self) -> Int:
+        match self:
+            Badge(value) -> value + 10
+
+fn main() -> Int:
+    let items: List(dyn Render) = [Label(2), Badge(3)]
+    items[0].render() + items[1].render()
+"#;
+        assert_eq!(run_exit(source), 15);
+    }
+
+    #[test]
+    fn existential_var_receiver_commits_after_each_structured_return() {
+        let source = r#"
+trait Tick:
+    fn tick(var self) -> Int
+
+type Counter:
+    Counter(Int)
+
+impl Tick for Counter:
+    fn tick(var self) -> Int:
+        let Counter(value) = self
+        self = Counter(value + 1)
+        value + 1
+
+fn main() -> Int:
+    var counter: dyn Tick = Counter(4)
+    counter.tick() + counter.tick()
+"#;
+        assert_eq!(run_exit(source), 11);
+    }
+
+    #[test]
+    fn existential_var_receiver_commits_on_callee_try_return() {
+        let source = r#"
+trait Tick:
+    fn tick(var self) -> Result(Int, String)
+    fn value(let self) -> Int
+
+type Counter:
+    Counter(Int)
+
+impl Tick for Counter:
+    fn tick(var self) -> Result(Int, String):
+        let Counter(value) = self
+        self = Counter(value + 1)
+        Err("stopped")?
+    fn value(let self) -> Int:
+        match self:
+            Counter(value) -> value
+
+fn main() -> Int:
+    var counter: dyn Tick = Counter(4)
+    let ignored = counter.tick()
+    counter.value()
+"#;
+        assert_eq!(run_exit(source), 5);
+    }
+
+    #[test]
+    fn existential_values_stay_opaque_when_the_oracle_skips_source_checking() {
+        let module = witchy_syntax::parser::parse_module("fn main() -> Nil:\n    Nil\n")
+            .expect("parse minimal module");
+        let mut interpreter = Interpreter::new(module);
+        let opaque = Value::Existential {
+            payload: Box::new(Value::Int(1)),
+            witness: 0,
+        };
+        let error = interpreter
+            .values_equal(&Value::list(vec![opaque]), &Value::list(vec![Value::Int(1)]))
+            .expect_err("existential equality must stay unavailable");
+        assert!(error.message.contains("do not support equality"), "{error:?}");
+    }
+
     #[test]
     fn every_cataloged_list_operation_has_runtime_dispatch() {
         let module = witchy_syntax::parser::parse_module("fn main() -> Int:\n    0\n")
