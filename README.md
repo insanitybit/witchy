@@ -202,7 +202,7 @@ python3 -m http.server -d dist 8000   # then open http://localhost:8000
 
 That's a chapter-by-chapter tour from "hello" through capabilities, concurrency,
 generators, and the package manager — every example is run and verified by the test
-suite, so what you read is exactly what the language does. The bundle is a bag of
+suite, so what you read is exactly what the language does. The bundle is a set of
 static files (no server), and you can always read the chapters as plain Markdown
 straight from [`book/src/`](book/src/SUMMARY.md).
 
