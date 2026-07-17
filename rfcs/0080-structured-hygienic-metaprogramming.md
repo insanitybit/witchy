@@ -451,7 +451,7 @@ The first source-compatible slice is implemented:
   before type checking. A call-site type alias expands only from the consumer's
   alias environment; a same-spelled alias in the generator module cannot capture
   it. Qualified-name composition and source-projecting item builders remain later
-  origin work.
+ origin work.
 
 This is intentionally not the full RFC. Every quotation category and its typed
 hole placement is now compiler-owned. General `meta.*` builder composition may
