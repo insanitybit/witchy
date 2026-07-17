@@ -15,4 +15,4 @@ A precise statement of the cost witchy's allocator structurally avoids: **bump/r
 
 ## Informs
 
-- The GC-comparison section of the memory-management design discussion. See [[c4-concurrent-compacting-2011]] (the relocation/barrier side) and [[zgc-openjdk]].
+- The GC-comparison section of the memory-management design discussion. See the [C4 notes](../c4-concurrent-compacting-2011/notes.md) (the relocation/barrier side) and [ZGC notes](../zgc-openjdk/notes.md).
