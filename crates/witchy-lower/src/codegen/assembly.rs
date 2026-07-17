@@ -1383,9 +1383,10 @@ fn assemble_wir_module_with_structs(
             prelude.funcs.iter().map(|f| f.name.as_str()).collect();
         let mut called = HashSet::new();
         let mut user_host_imports = HashSet::new();
+        let mut uses_table = false;
         for name in &user_order {
             if let Some(wf) = cg.wir_funcs.get(name) {
-                collect_called_funcs(&wf.body, &mut called);
+                uses_table |= collect_called_funcs(&wf.body, &mut called);
                 collect_called_host_imports(&wf.body, &mut user_host_imports);
             }
         }
@@ -1395,13 +1396,13 @@ fn assemble_wir_module_with_structs(
         // `$concat`/`$int_to_string`. Pull those (and nested eq_*/ts_* calls) into
         // the reached set so the resolution loop declares them.
         for f in cg.eq_wir_helpers.values() {
-            collect_called_funcs(&f.body, &mut called);
+            uses_table |= collect_called_funcs(&f.body, &mut called);
         }
         if let Some(f) = &custom_key_eq {
-            collect_called_funcs(&f.body, &mut called);
+            uses_table |= collect_called_funcs(&f.body, &mut called);
         }
         for f in cg.ts_wir_helpers.values() {
-            collect_called_funcs(&f.body, &mut called);
+            uses_table |= collect_called_funcs(&f.body, &mut called);
         }
         // Generated rcopy helpers call `$ensure`, `$rcopy_str`, and each other.
         // Only when a region actually reclaimed (so the `$rcopy_*` globals are
@@ -1409,13 +1410,13 @@ fn assemble_wir_module_with_structs(
         // block is an orphan and must not enter the module.
         if cg.uses_region {
             for f in cg.rcopy_wir_helpers.values() {
-                collect_called_funcs(&f.body, &mut called);
+                uses_table |= collect_called_funcs(&f.body, &mut called);
             }
         }
         // Lifted lambda bodies call `$mkN`/`$ensure`/prelude helpers and each
         // other; pull their reached helpers into the resolution set.
         for f in &cg.lambda_wir_funcs {
-            collect_called_funcs(&f.body, &mut called);
+            uses_table |= collect_called_funcs(&f.body, &mut called);
         }
         // (RFC-0045) `__witchy_abort` is authority-free and always linked (like the
         // checked-heap `heap_register`/`heap_frontier`), so a direct `fail(msg)` in
@@ -1495,7 +1496,6 @@ fn assemble_wir_module_with_structs(
             let mut import_names: std::collections::BTreeSet<&str> =
                 std::collections::BTreeSet::new();
             let mut uses_heap = false;
-            let mut uses_table = false;
             for spec in resolved.values() {
                 for i in spec.import_deps {
                     import_names.insert(i);
@@ -2024,28 +2024,33 @@ fn assemble_wir_module_with_structs(
 }
 
 /// Collect every function name a `WirSeq` calls directly (`Call{func}`),
-/// recursively. Used by `assemble_wir_module` to find which prelude helpers a
-/// program reaches.
-fn collect_called_funcs(seq: &[witchy_wir::wir::WirNode], out: &mut HashSet<String>) {
+/// recursively, and report whether the sequence contains an indirect call.
+/// Used by `assemble_wir_module` to find which prelude helpers and runtime
+/// declarations a program reaches.
+fn collect_called_funcs(
+    seq: &[witchy_wir::wir::WirNode],
+    out: &mut HashSet<String>,
+) -> bool {
     use witchy_wir::wir::{WirExpr as E, WirNode as N};
-    fn expr(e: &E, out: &mut HashSet<String>) {
+    fn expr(e: &E, out: &mut HashSet<String>, uses_table: &mut bool) {
         match e {
             E::Call { func, args } => {
                 out.insert(func.clone());
                 for a in args {
-                    expr(a, out);
+                    expr(a, out, uses_table);
                 }
             }
             E::CallHost { args, .. } => {
                 for a in args {
-                    expr(a, out);
+                    expr(a, out, uses_table);
                 }
             }
             E::CallIndirect { args, index, .. } => {
+                *uses_table = true;
                 for a in args {
-                    expr(a, out);
+                    expr(a, out, uses_table);
                 }
-                expr(index, out);
+                expr(index, out, uses_table);
             }
             E::ToSlot(i, _)
             | E::FromSlot(i, _)
@@ -2053,91 +2058,102 @@ fn collect_called_funcs(seq: &[witchy_wir::wir::WirNode], out: &mut HashSet<Stri
             | E::Convert { arg: i, .. }
             | E::Load { ptr: i, .. }
             | E::Load8U { ptr: i, .. }
-            | E::MemoryGrow(i) => expr(i, out),
+            | E::MemoryGrow(i) => expr(i, out, uses_table),
             E::Binary { lhs, rhs, .. } => {
-                expr(lhs, out);
-                expr(rhs, out);
+                expr(lhs, out, uses_table);
+                expr(rhs, out, uses_table);
             }
-            E::Control(n) => node(n, out),
-            E::Seq(s) => collect_called_funcs(s, out),
+            E::Control(n) => node(n, out, uses_table),
+            E::Seq(s) => {
+                *uses_table |= collect_called_funcs(s, out);
+            }
             E::StructNew { args, .. } => {
                 for a in args {
-                    expr(a, out);
+                    expr(a, out, uses_table);
                 }
             }
             E::ArrayNew { value, len, .. } => {
-                expr(value, out);
-                expr(len, out);
+                expr(value, out, uses_table);
+                expr(len, out, uses_table);
             }
             E::ArrayNewFixed { items, .. } => {
                 for item in items {
-                    expr(item, out);
+                    expr(item, out, uses_table);
                 }
             }
             E::ArrayGet { array, index, .. } => {
-                expr(array, out);
-                expr(index, out);
+                expr(array, out, uses_table);
+                expr(index, out, uses_table);
             }
             E::StructGet { base, .. }
             | E::RefCast { value: base, .. }
             | E::RefIsNull(base)
-            | E::ArrayLen(base) => expr(base, out),
+            | E::ArrayLen(base) => expr(base, out, uses_table),
             E::ConstI64(_) | E::ConstF64(_) | E::ConstI32(_) | E::StrPtr(_) | E::MemorySize
             | E::GetLocal(_) | E::GetGlobal(_) | E::RefNull(_) => {}
         }
     }
-    fn node(n: &N, out: &mut HashSet<String>) {
+    fn node(n: &N, out: &mut HashSet<String>, uses_table: &mut bool) {
         match n {
-            N::SetLocal { value, .. } | N::SetGlobal { value, .. } => expr(value, out),
+            N::SetLocal { value, .. } | N::SetGlobal { value, .. } => {
+                expr(value, out, uses_table)
+            }
             N::Store { ptr, value, .. } | N::Store8 { ptr, value, .. } => {
-                expr(ptr, out);
-                expr(value, out);
+                expr(ptr, out, uses_table);
+                expr(value, out, uses_table);
             }
             N::CallStoreMulti { func, args, .. } => {
                 out.insert(func.clone());
                 for a in args {
-                    expr(a, out);
+                    expr(a, out, uses_table);
                 }
             }
             N::CallIndirectStoreMulti { args, index, .. } => {
+                *uses_table = true;
                 for a in args {
-                    expr(a, out);
+                    expr(a, out, uses_table);
                 }
-                expr(index, out);
+                expr(index, out, uses_table);
             }
             N::MemoryCopy { dest, src, len } => {
-                expr(dest, out);
-                expr(src, out);
-                expr(len, out);
+                expr(dest, out, uses_table);
+                expr(src, out, uses_table);
+                expr(len, out, uses_table);
             }
             N::MemoryFill { dest, value, len } => {
-                expr(dest, out);
-                expr(value, out);
-                expr(len, out);
+                expr(dest, out, uses_table);
+                expr(value, out, uses_table);
+                expr(len, out, uses_table);
             }
             N::If { cond, then_, els, .. } => {
-                expr(cond, out);
-                collect_called_funcs(then_, out);
-                collect_called_funcs(els, out);
+                expr(cond, out, uses_table);
+                *uses_table |= collect_called_funcs(then_, out);
+                *uses_table |= collect_called_funcs(els, out);
             }
-            N::Block { body, .. } | N::Loop { body, .. } => collect_called_funcs(body, out),
+            N::Block { body, .. } | N::Loop { body, .. } => {
+                *uses_table |= collect_called_funcs(body, out);
+            }
             N::StructSet { base, value, .. } => {
-                expr(base, out);
-                expr(value, out);
+                expr(base, out, uses_table);
+                expr(value, out, uses_table);
             }
             N::ArraySet { array, index, value, .. } => {
-                expr(array, out);
-                expr(index, out);
-                expr(value, out);
+                expr(array, out, uses_table);
+                expr(index, out, uses_table);
+                expr(value, out, uses_table);
             }
-            N::Br { cond: Some(c), .. } => expr(c, out),
-            N::Drop(e) | N::Do(e) | N::Push(e) | N::Return(Some(e)) => expr(e, out),
+            N::Br { cond: Some(c), .. } => expr(c, out, uses_table),
+            N::Drop(e) | N::Do(e) | N::Push(e) | N::Return(Some(e)) => {
+                expr(e, out, uses_table)
+            }
             N::Br { cond: None, .. } | N::Return(None) | N::Unreachable => {}
         }
     }
+    let mut uses_table = false;
     for n in seq {
-        node(n, out);
+        node(n, out, &mut uses_table);
     }
+    uses_table
 }
 
 /// Collect every host import a `WirSeq` calls directly (`CallHost{import}`),
@@ -2611,6 +2627,83 @@ mod diagnostic_site_tests {
             [N::Push(E::Call { func, args })]
                 if func == "build_args" && matches!(&args[..], [E::ConstI64(0)])
         ));
+    }
+}
+
+#[cfg(test)]
+mod table_discovery_tests {
+    use super::*;
+    use witchy_syntax::parser::parse_module;
+    use witchy_wir::wir::{ClosureSignature, Kind, WirExpr as E, WirNode as N};
+
+    #[test]
+    fn indirect_expression_without_materialized_function_declares_table() {
+        let module = parse_module(
+            r#"fn invoke(callback: Option(fn(Int) -> Int)) -> Int:
+    match callback:
+        Some(f) -> f(41)
+        None -> 0
+
+fn main() -> Int:
+    invoke(None)
+"#,
+        )
+        .expect("parse");
+        let wir = assemble_wir_module(&module)
+            .expect_lowered("an indirect call in an unreachable match arm still lowers");
+
+        let table = wir.table.expect("CallIndirect requires a declared table");
+        assert!(table.funcs.is_empty(), "the program materializes no function value");
+    }
+
+    #[test]
+    fn indirect_store_multi_without_materialized_function_declares_table() {
+        let module = parse_module(
+            r#"fn invoke(callback: Option(fn(var Int) -> Int), var value: Int) -> Int:
+    match callback:
+        Some(f) -> f(value)
+        None -> 0
+
+fn main() -> Int:
+    var value = 1
+    invoke(None, value)
+"#,
+        )
+        .expect("parse");
+        let wir = assemble_wir_module(&module)
+            .expect_lowered("a multi-result indirect call in an unreachable arm still lowers");
+
+        let table = wir.table.expect("CallIndirectStoreMulti requires a declared table");
+        assert!(table.funcs.is_empty(), "the program materializes no function value");
+    }
+
+    #[test]
+    fn recursive_wir_discovery_finds_both_indirect_call_forms() {
+        let signature = ClosureSignature {
+            params: vec![Kind::I64],
+            results: vec![Kind::I64],
+        };
+        let expression = vec![N::Block {
+            label: "nested".into(),
+            result: None,
+            body: vec![N::Drop(E::Seq(vec![N::Push(E::CallIndirect {
+                signature: signature.clone(),
+                args: vec![E::ConstI64(1)],
+                index: Box::new(E::ConstI32(0)),
+            })]))],
+        }];
+        let store_multi = vec![N::Loop {
+            label: "nested".into(),
+            body: vec![N::CallIndirectStoreMulti {
+                signature,
+                args: vec![E::ConstI64(1)],
+                index: E::ConstI32(0),
+                dests: vec!["result".into()],
+            }],
+        }];
+
+        assert!(collect_called_funcs(&expression, &mut HashSet::new()));
+        assert!(collect_called_funcs(&store_multi, &mut HashSet::new()));
     }
 }
 

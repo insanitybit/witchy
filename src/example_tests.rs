@@ -1,6 +1,24 @@
     use crate::{ast, codegen, interpreter, parser, typeck};
     use wasmtime::{Engine, Module};
 
+    fn validates_wasm_gc(bytes: &[u8]) -> bool {
+        let features = wasmparser::WasmFeatures::default()
+            | wasmparser::WasmFeatures::GC
+            | wasmparser::WasmFeatures::REFERENCE_TYPES
+            | wasmparser::WasmFeatures::FUNCTION_REFERENCES;
+        wasmparser::Validator::new_with_features(features)
+            .validate_all(bytes)
+            .is_ok()
+    }
+
+    fn wasm_gc_engine() -> Engine {
+        let mut config = wasmtime::Config::new();
+        config.wasm_reference_types(true);
+        config.wasm_function_references(true);
+        config.wasm_gc(true);
+        Engine::new(&config).expect("Wasm GC engine")
+    }
+
     fn interp(src: &str) -> Vec<String> {
         link_run(src)
     }
@@ -14820,7 +14838,7 @@ fn main(console: Console):
         let module = parser::parse_module(src).expect("parse");
         let bytes = codegen::compile_module_binary(&module)
             .expect_lowered("the binary path lowers this program");
-        Module::new(&Engine::default(), &bytes).expect("valid wasm");
+        Module::new(&wasm_gc_engine(), &bytes).expect("valid wasm");
     }
 
     /// WIR migration progress meter (not an assertion): reports how many example
@@ -14972,7 +14990,7 @@ fn main(console: Console):
             exports: vec![("run".into(), "run".into())],
         };
         let wasm = crate::wir_encode::encode(&module, &[]);
-        assert!(wasmparser::validate(&wasm).is_ok(), "encoded module must validate");
+        assert!(validates_wasm_gc(&wasm), "encoded module must validate");
 
         // Run with ONLY `print` granted — nothing else. Success proves the module
         // imports no other authority (else instantiate would fail).
@@ -24480,7 +24498,7 @@ pub fn serve(console: Console, net: Net) -> Int:
         // and that the wrappers add NO host import (the rune stays instantiable
         // under the deny-all pure-compute host).
         assert!(
-            wasmparser::validate(&bytes).is_ok(),
+            validates_wasm_gc(&bytes),
             "a module with string-export wrappers must validate"
         );
     }
@@ -24509,7 +24527,7 @@ pub fn serve(console: Console, net: Net) -> Int:
             "the cap-gated export's wrapper must be exported; got {exports:?}"
         );
         assert!(
-            wasmparser::validate(&bytes).is_ok(),
+            validates_wasm_gc(&bytes),
             "a cap-gated export module must validate (the minting wrapper is well-formed)"
         );
     }

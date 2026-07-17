@@ -25,7 +25,7 @@ spec/language.md#block-15	7	expression-position-mutator	main.bump	-	-
 
 witchy-files	271
 markdown-blocks	170
-checked	439
+checked	441
 rejected	0
 var-declarations	25
 resolved-var-calls	472
@@ -34,5 +34,3 @@ expression-position-mutator	9
 immutable-var-argument	0
 temporary-var-argument	0
 auxiliary-result-discard	14
-
-compiler-rejections

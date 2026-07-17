@@ -90,7 +90,9 @@ unforgeable reference through aliases and indirect calls. Function and
 capability values may also live in closed tuples, nominal instances,
 `Option`/`Result`, and nested `List` values. A reference-bearing `List(T)` uses
 a typed GC array and supports literals, persistent updates, indexed access,
-and iteration.
+list patterns, `pop`, and iteration. `?` may propagate between `Option` or
+`Result` values whose success payloads have different representations; the
+compiled backend rebuilds the enclosing function's failure value.
 
 `Dict` keys or values that carry references, open generic function calls
 instantiated with capability-bearing values, `region:` copy-out carrying

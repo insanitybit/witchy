@@ -81,11 +81,15 @@ async fn main(console: Console):
         .iter()
         .filter(|function| function.name.contains("__witchy_tail_scc"))
         .collect();
-    assert_eq!(dispatchers.len(), 1, "the recursive segment cycle forms one SCC");
-    let dispatcher = format!("{:?}", dispatchers[0].body);
     assert!(
-        dispatcher.contains("Loop"),
-        "the recursive async segment SCC must use the portable loop: {dispatcher}",
+        !dispatchers.is_empty(),
+        "each recursive async segment cycle must form a typed SCC",
+    );
+    assert!(
+        dispatchers.iter().all(|dispatcher| {
+            format!("{:?}", dispatcher.body).contains("Loop")
+        }),
+        "every typed recursive async segment SCC must use the portable loop: {dispatchers:#?}",
     );
     assert!(
         segments.iter().all(|function| {

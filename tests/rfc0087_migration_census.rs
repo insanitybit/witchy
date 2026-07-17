@@ -17,7 +17,6 @@ fn repository_census_matches_the_checked_in_type_resolved_snapshot() {
     );
     assert_eq!(
         String::from_utf8(output.stderr).expect("UTF-8 census diagnostics"),
-        "rfc0087-census: 2 corpus source(s) failed compiler checking; \
-         see the compiler-rejections section\n"
+        ""
     );
 }

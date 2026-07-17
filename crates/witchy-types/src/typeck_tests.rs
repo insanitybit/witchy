@@ -1175,6 +1175,68 @@ fn load(o: Outer, name: String) -> String:
     }
 
     #[test]
+    fn region_rejects_reference_backed_capability_aggregates() {
+        check_str("fn copy(file: File) -> File:\n    region -> File:\n        file\n")
+            .expect("a bare File remains a direct externref across a region boundary");
+
+        let cases = [
+            (
+                "List(File)",
+                "fn copy(files: List(File)) -> List(File):\n    region -> List(File):\n        files\n",
+            ),
+            (
+                "Option(File)",
+                "fn copy(file: Option(File)) -> Option(File):\n    region -> Option(File):\n        file\n",
+            ),
+            (
+                "Box(File)",
+                "type Box(a):\n    Box(a)\nfn copy(box: Box(File)) -> Box(File):\n    region -> Box(File):\n        box\n",
+            ),
+            (
+                "nested Option(List(Box(File)))",
+                "type Box(a):\n    Box(a)\nfn copy(value: Option(List(Box(File)))) -> Option(List(Box(File))):\n    region -> Option(List(Box(File))):\n        value\n",
+            ),
+        ];
+        for (shape, source) in cases {
+            let error = match check_str(source) {
+                Err(error) => error,
+                Ok(()) => panic!("{shape} unexpectedly crossed a region boundary"),
+            };
+            assert!(
+                error.contains("region")
+                    && error.contains("reference-backed aggregate")
+                    && error.contains("File"),
+                "wrong diagnostic for {shape}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn isolated_worker_capability_callback_diagnostic_preserves_contract() {
+        fn no_comptime(
+            _name: &str,
+            _module: &mut witchy_syntax::ast::Module,
+            _siblings: &[(String, witchy_syntax::ast::Module)],
+        ) -> Result<witchy_syntax::origin::OriginTable, String> {
+            Ok(witchy_syntax::origin::OriginTable::default())
+        }
+
+        let entry = witchy_syntax::parser::parse_module(
+            "import vm\n\nfn reader(dir: Dir, input: Bytes) -> Bytes:\n    input\n\nfn invoke(dir: Dir, input: Bytes) -> Bytes:\n    vm.with_dir(dir, reader, input)\n\nfn main(console: Console):\n    console.print(\"ok\")\n",
+        )
+        .expect("parse isolated worker callback");
+        let module = witchy_syntax::linker::link(
+            vec![("main".to_string(), entry)],
+            "main",
+            no_comptime,
+        )
+        .expect("link bundled vm module");
+        let error = check(&module).expect_err("capability callback must fail closed").to_string();
+        assert!(error.contains("typed callback lowering"), "got: {error}");
+        assert!(error.contains("scalar cross-instance ABI"), "got: {error}");
+    }
+
+    #[test]
     fn gc_aggregate_names_use_reference_storage_classifier() {
         let module = witchy_syntax::parser::parse_module(
             r#"

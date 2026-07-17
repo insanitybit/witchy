@@ -281,8 +281,8 @@ Resolved by representation:
 
 - **`List(T)` is supported** when `T` is reference-bearing. Lowering allocates a
   typed GC array whose element is the exact `externref` or concrete `GcRef`
-  kind. Literals, length, indexed reads, iteration, and persistent
-  push/set/concat preserve that kind.
+  kind. Literals, length, full-width bounds-checked indexed reads, iteration,
+  list patterns, `pop`, and persistent push/set/concat preserve that kind.
 - **`Dict(K, V)` remains rejected** when either stored side is
   reference-bearing. Its hash-table cells still use universal i64 slots; support
   requires a typed table layout rather than an exception in one operation.
@@ -684,3 +684,18 @@ optimization-disabled configurations. The standard `dedup` and async-task
 programs exercise the linked implicit-generic `Iter`/`Step` and `Task` graphs.
 The encoder remains the backstop: no `ExternRef`, `StructRef`, or `GcRef` may
 cross `ToSlot`/`FromSlot`.
+
+## Stage 4 accepted-surface closure (2026-07-17)
+
+The final parity pass closed the accepted operations around those layouts.
+Cross-success-type `?` constructs the destination `None`/`Err` value instead of
+returning the source aggregate unchanged. Transparent externref brands have a
+reference-typed irrefutable-pattern path. Typed GC lists check i64 indices before
+narrowing, support fixed/rest patterns, and implement public `pop` as persistent
+array repair plus uniform `var` write-back. WIR discovers tables from indirect
+call nodes even when every runtime value is `None`/`Err`.
+
+Unsupported boundaries remain loud by design: reference-bearing `Dict`, open
+generic capability instantiations, reference-aware region copy-out, and
+cross-instance capability callbacks. None can erase a reference into an i64
+slot.

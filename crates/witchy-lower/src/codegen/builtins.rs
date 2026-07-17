@@ -89,6 +89,14 @@ impl Codegen<'_> {
         Some(match (name, args.len()) {
             (name, 1) if intrinsics::is_list_pop_extract(name) =>
             {
+                if self
+                    .ast_type_of_expr(&args[0])
+                    .as_ref()
+                    .and_then(|ty| self.gc_reference_list_layout(ty))
+                    .is_some()
+                {
+                    return self.lower_gc_reference_list_pop(&args[0]);
+                }
                 let list = self.lower_expr(&args[0])?;
                 let bias = self
                     .ast_type_of_expr(&args[0])
@@ -988,21 +996,13 @@ impl Codegen<'_> {
                 }
             }
             (intrinsics::LIST_AT, 2) => {
-                if let Some((_, array_id, _)) = self
+                if self
                     .ast_type_of_expr(&args[0])
                     .as_ref()
                     .and_then(|ty| self.gc_reference_list_layout(ty))
+                    .is_some()
                 {
-                    let ik = self.kind_of(&args[1]);
-                    W::ArrayGet {
-                        array_id,
-                        array: Box::new(self.lower_expr(&args[0])?),
-                        index: Box::new(Self::wir_convert(
-                            self.lower_expr(&args[1])?,
-                            ik,
-                            Kind::I32,
-                        )),
-                    }
+                    self.lower_gc_function_list_at(&args[0], &args[1])?
                 } else {
                     let ek = self.list_elem_kind(&args[0]);
                     let ik = self.kind_of(&args[1]);

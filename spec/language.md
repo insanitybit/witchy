@@ -647,6 +647,10 @@ variables (check-time error). A closure may declare its return type —
 `fn(n: Int) -> Bool: n > 0` — which also makes it a `?` boundary: a `?` inside
 the closure propagates to the closure's own `Result`/`Option`, not the enclosing
 function's, so closures can short-circuit on errors just like named functions.
+Failure propagation rebuilds the enclosing return type's `None` or `Err`
+representation. The success payload type of the operand may differ from the
+function's success type, including across scalar, capability-reference, and
+typed-GC layouts; only the propagated error contract must be compatible.
 
 Function values preserve the concrete runtime kinds in their signatures. A
 direct capability reference or concrete GC aggregate may therefore cross an
@@ -670,8 +674,9 @@ Function values may be fields of concrete tuples and closed nominal instances,
 including generic instances and recursive sums. `Option(reference)` uses a
 nullable reference; closed `Result` values use typed GC sums. Every
 reference-bearing `List(T)` uses a typed GC array of its exact element kind and
-supports literals, persistent push/set/concat, length, indexed access, and
-iteration, including nested lists and lists of reference-bearing aggregates.
+supports literals, persistent push/set/concat, `pop`, length, indexed access,
+list-pattern destructuring, and iteration, including nested lists and lists of
+reference-bearing aggregates.
 `Dict` reference payloads and open generic calls instantiated with
 capability-bearing values remain check-time errors. Capability-typed callbacks
 crossing an isolated worker adapter remain rejected because workers receive

@@ -150,8 +150,9 @@ impl Codegen<'_> {
             // `inner?` yields the Ok/Some payload; recover it at the payload's
             // kind (an Int payload as i64) so a big value isn't truncated.
             Expr::Try(inner) => self
-                .match_payload_valtype(inner)
-                .map(valtype_kind)
+                .ast_type_of_expr(e)
+                .map(|ty| self.kind_for_type(&ty))
+                .or_else(|| self.match_payload_valtype(inner).map(valtype_kind))
                 .unwrap_or(Kind::I32),
             // A closure call `f(x)` returns the universal i64 slot; recover it at
             // the closure's declared return kind (an Int-returning closure as i64).

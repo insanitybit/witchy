@@ -390,7 +390,7 @@ impl Coven:
         // BUG-219: a trusted promotion consumes the fresh MFA-attested token
         // before mutating release state. A request marker is never proof.
         if let Some(c) = claims:
-            self.consume_jti(c)?
+            let _ = self.consume_jti(c)?
         let signed = coven_record.sign_record(self.key, name, version, Released, rec.hash, rec.runtime_footprint, rec.uploaded_by, promoter, factor, coven_record.str_or_empty(rec.provenance), self.clock.now() / 1000)
         coven_store.write_record(self.store, name, version, signed)
         self.rebuild_metadata()

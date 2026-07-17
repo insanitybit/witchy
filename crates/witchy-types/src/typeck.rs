@@ -5400,16 +5400,12 @@ impl Checker {
             self.region_locals.pop();
         }
         let ty = result?;
-        let resolved = self.resolve(&ty);
-        let is_gc_aggregate = matches!(&resolved, Ty::Tuple(_))
-            || matches!(&resolved, Ty::Named(name, args)
-                if args.is_empty() && self.gc_cap_aggregates.contains(name));
         if is_region
-            && is_gc_aggregate
+            && !self.ty_is_direct_externref_value(&ty)
             && let Some(cap) = self.ty_carries_externref_cap(&ty)
         {
             return terr(format!(
-                "a `region` value cannot be a GC aggregate carrying capability `{cap}` until \
+                "a `region` value cannot be a reference-backed aggregate carrying capability `{cap}` until \
                  region copy-out understands GC references"
             ));
         }
@@ -5706,7 +5702,7 @@ impl Checker {
                     return terr(format!(
                         "`{call_name}` cannot accept function value `{function}` carrying `{cap}` \
                          through the isolated-worker callback adapter; that adapter still uses a \
-                         scalar cross-instance ABI"
+                         scalar cross-instance ABI and typed callback lowering is not implemented"
                     ));
                 }
             }
@@ -5883,7 +5879,8 @@ impl Checker {
                 | intrinsics::GENERATED_LIST_PUSH
                 | intrinsics::LIST_SET_AT
                 | intrinsics::LIST_CONCAT
-        );
+        ) || intrinsics::is_list_pop_extract(call_name)
+            || call_name == "list.pop";
         for (arg, param_ty) in args.iter().zip(&params) {
             let at = self.infer_expected(arg, param_ty)
                 .map_err(|e| in_call_context(&display, e))?;

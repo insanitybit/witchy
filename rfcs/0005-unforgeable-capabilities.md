@@ -610,3 +610,16 @@ still rejects capability-bearing instantiations; region copy-out has no
 reference-aware copier; and isolated workers cannot transport store-rooted
 references. These are explicit future representation features, not paths by
 which authority can enter linear memory.
+
+**2026-07-17 representation-completion checkpoint.** The closed-layout surface
+now preserves references through every accepted operation. `?` rebuilds the
+enclosing `Option`/`Result` failure representation when source and destination
+success payloads use different scalar, `externref`, or GC layouts; explicit and
+inferred closure return boundaries use the same rule. Irrefutable destructuring
+of transparent capability brands remains on the externref path. Reference-list
+indices are checked at full Witchy `Int` width before Wasm's i32 array index is
+formed; fixed/rest list patterns and `pop` preserve the exact element kind, and
+`pop` writes the repaired typed array back through the uniform `var` ABI.
+Indirect-call table discovery is driven by WIR call sites even when no function
+value is materialized. The capability corpus, all optimization configurations,
+and both backends cover these edges.

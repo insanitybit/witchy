@@ -104,6 +104,8 @@ aggregates. A sum stores its tag and each variant's payload in disjoint typed
 field bands, with inactive reference fields null; mixed and recursive nesting
 stays reference-typed. Closed `Result` values use the same sum representation,
 and every reference-bearing `List(T)` uses an array of its exact reference kind.
+Typed-array operations include persistent updates, full-width bounds-checked
+reads, list-pattern tails, and `pop` extraction with ordinary `var` write-back.
 `Dict` reference payloads, open generic function ABIs, region copy-out, and
 isolated-worker crossings remain rejected until those boundaries have fixed
 typed representations.

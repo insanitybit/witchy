@@ -3,6 +3,30 @@
     use std::sync::{Arc, Mutex};
     use wasmtime::{Caller, Engine, Linker, Module as WtModule, Store};
 
+    fn gc_wasm_features() -> wasmparser::WasmFeatures {
+        wasmparser::WasmFeatures::default()
+            | wasmparser::WasmFeatures::GC
+            | wasmparser::WasmFeatures::REFERENCE_TYPES
+            | wasmparser::WasmFeatures::FUNCTION_REFERENCES
+    }
+
+    fn gc_wasm_payloads(
+        wasm: &[u8],
+    ) -> impl Iterator<Item = wasmparser::Result<wasmparser::Payload<'_>>> {
+        wasmparser::Validator::new_with_features(gc_wasm_features())
+            .validate_all(wasm)
+            .expect("valid Wasm GC module");
+        wasmparser::Parser::new(0).parse_all(wasm)
+    }
+
+    fn gc_wasmtime_engine() -> Engine {
+        let mut config = wasmtime::Config::new();
+        config.wasm_reference_types(true);
+        config.wasm_function_references(true);
+        config.wasm_gc(true);
+        Engine::new(&config).expect("Wasm GC engine")
+    }
+
     #[test]
     fn string_operation_catalog_names_live_wir_helpers() {
         use witchy_syntax::intrinsics;
@@ -161,11 +185,19 @@
     fn import_param_counts(wasm: &[u8]) -> std::collections::BTreeMap<String, usize> {
         let mut func_param_counts = Vec::new();
         let mut imports = Vec::new();
-        for payload in wasmparser::Parser::new(0).parse_all(wasm) {
+        for payload in gc_wasm_payloads(wasm) {
             match payload.expect("valid wasm") {
                 wasmparser::Payload::TypeSection(reader) => {
-                    for ty in reader.into_iter_err_on_gc_types() {
-                        func_param_counts.push(ty.expect("function type").params().len());
+                    for group in reader {
+                        for ty in group.expect("recursive type group").into_types() {
+                            let params = match ty.composite_type.inner {
+                                wasmparser::CompositeInnerType::Func(func) => {
+                                    Some(func.params().len())
+                                }
+                                _ => None,
+                            };
+                            func_param_counts.push(params);
+                        }
                     }
                 }
                 wasmparser::Payload::ImportSection(reader) => {
@@ -182,8 +214,9 @@
         imports
             .into_iter()
             .map(|(name, idx)| {
-                let params = *func_param_counts
+                let params = func_param_counts
                     .get(idx)
+                    .and_then(|params| *params)
                     .unwrap_or_else(|| panic!("missing function type {idx} for import {name}"));
                 (name, params)
             })
@@ -220,7 +253,7 @@
         let wasm = compile_build_module(&module).expect_lowered("compile build module");
         let mut imports = Vec::new();
         let mut exports = Vec::new();
-        for payload in wasmparser::Parser::new(0).parse_all(&wasm) {
+        for payload in gc_wasm_payloads(&wasm) {
             match payload.expect("valid wasm") {
                 wasmparser::Payload::ImportSection(reader) => {
                     for imp in reader.into_imports() {
@@ -255,7 +288,7 @@
         .expect("parse");
         let wasm = compile_build_module(&module).expect_lowered("compile build module");
         let mut imports = Vec::new();
-        for payload in wasmparser::Parser::new(0).parse_all(&wasm) {
+        for payload in gc_wasm_payloads(&wasm) {
             if let wasmparser::Payload::ImportSection(reader) = payload.expect("valid wasm") {
                 for imp in reader.into_imports() {
                     imports.push(imp.expect("import").name.to_string());
@@ -289,7 +322,7 @@
         let module = parse_module(src).expect("parse");
         let bytes = compile_module_binary(&module)
             .expect_lowered("the binary path lowers this program");
-        let engine = Engine::default();
+        let engine = gc_wasmtime_engine();
         let wt = WtModule::new(&engine, &bytes).expect("valid wasm");
         let captured = Arc::new(Mutex::new(None));
         let mut linker = Linker::new(&engine);
@@ -315,7 +348,7 @@
         let module = parse_module(src).expect("parse");
         let bytes = compile_module_binary(&module)
             .expect_lowered("the binary path lowers this program");
-        let engine = Engine::default();
+        let engine = gc_wasmtime_engine();
         let wt = WtModule::new(&engine, &bytes).expect("valid wasm");
         let captured = Arc::new(Mutex::new(None));
         let mut linker = Linker::new(&engine);
@@ -862,7 +895,7 @@ fn main() -> Int:
     fn instantiate_with_print(
         bytes: &[u8],
     ) -> (Store<()>, wasmtime::Instance, Arc<Mutex<Vec<String>>>) {
-        let engine = Engine::default();
+        let engine = gc_wasmtime_engine();
         let wt = WtModule::new(&engine, bytes).expect("valid wasm");
         let captured: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let mut linker = Linker::new(&engine);
@@ -1228,9 +1261,9 @@ fn main(console: Console):
     }
 
     /// (BUG-008) Compile `src` under the optimization set `opt` and report the two
-    /// call-SHAPE signals the `direct-call` / `bounds-elide` levers move: the set of
-    /// function names reached by a DIRECT `call` and the count of `call_indirect`
-    /// operators. Callee indices are resolved through the emitted name section
+    /// representation signals the `direct-call`, `bounds-elide`, and `closure-elide`
+    /// levers move: direct callees, indirect-call count, and GC struct allocations.
+    /// Callee indices are resolved through the emitted name section
     /// (imports first, then defined funcs — the order `wir_encode` writes), so a
     /// devirtualized closure call shows up as a direct call to `__lamw{i}` and a
     /// checked list access as a direct call to `list_at`. This inspects the raw
@@ -1239,7 +1272,7 @@ fn main(console: Console):
     fn call_shape(
         src: &str,
         opt: witchy_syntax::opt::OptSet,
-    ) -> (std::collections::HashSet<String>, usize) {
+    ) -> (std::collections::HashSet<String>, usize, Vec<u32>) {
         use std::collections::{HashMap, HashSet};
         witchy_syntax::opt::set_for_tests(Some(opt));
         let module = parse_module(src).expect("parse");
@@ -1250,7 +1283,8 @@ fn main(console: Console):
         let mut names: HashMap<u32, String> = HashMap::new();
         let mut called: Vec<u32> = Vec::new();
         let mut indirect = 0usize;
-        for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
+        let mut gc_struct_news = Vec::new();
+        for payload in gc_wasm_payloads(&bytes) {
             match payload.expect("valid wasm") {
                 wasmparser::Payload::CustomSection(reader) => {
                     if let wasmparser::KnownCustom::Name(section) = reader.as_known() {
@@ -1269,6 +1303,9 @@ fn main(console: Console):
                         match op.expect("operator") {
                             wasmparser::Operator::Call { function_index } => called.push(function_index),
                             wasmparser::Operator::CallIndirect { .. } => indirect += 1,
+                            wasmparser::Operator::StructNew { struct_type_index } => {
+                                gc_struct_news.push(struct_type_index);
+                            }
                             _ => {}
                         }
                     }
@@ -1280,7 +1317,21 @@ fn main(console: Console):
             .into_iter()
             .map(|i| names.get(&i).cloned().unwrap_or_else(|| format!("#{i}")))
             .collect();
-        (direct, indirect)
+        (direct, indirect, gc_struct_news)
+    }
+
+    fn assert_one_boxed_gc_closure(struct_news: &[u32], context: &str) {
+        let distinct: std::collections::HashSet<_> = struct_news.iter().copied().collect();
+        assert_eq!(
+            struct_news.len(),
+            2,
+            "{context}: one boxed capturing closure allocates one typed GC environment and one closure wrapper (got {struct_news:?})",
+        );
+        assert_eq!(
+            distinct.len(),
+            2,
+            "{context}: the typed GC environment and closure wrapper use distinct struct types (got {struct_news:?})",
+        );
     }
 
     #[test]
@@ -1303,7 +1354,7 @@ fn main() -> Int:
 "#;
         let direct_base = witchy_syntax::opt::OptSet::default_set()
             .without(witchy_syntax::opt::Opt::ClosureElide);
-        let (on, on_indirect) = call_shape(src, direct_base);
+        let (on, on_indirect, _) = call_shape(src, direct_base);
         assert!(
             on.iter().any(|n| n.starts_with("__lamw")),
             "direct-call ON: the single-bound closure call devirtualizes to `call $__lamw` (got {on:?})",
@@ -1317,7 +1368,7 @@ fn main() -> Int:
         // an indirect call — proving the shape is this lever's doing, not incidental
         // codegen (an always-`__lamw` emitter would pass the ON case and lie here).
         let off_set = direct_base.without(witchy_syntax::opt::Opt::DirectCall);
-        let (off, off_indirect) = call_shape(src, off_set);
+        let (off, off_indirect, _) = call_shape(src, off_set);
         assert!(
             !off.iter().any(|n| n.starts_with("__lamw")),
             "-direct-call: the closure call is NOT devirtualized (got {off:?})",
@@ -1345,7 +1396,7 @@ fn main() -> Int:
     t
 "#;
         let default = witchy_syntax::opt::OptSet::default_set();
-        let (on, _) = call_shape(src, default);
+        let (on, _, _) = call_shape(src, default);
         assert!(
             !on.contains("list_at"),
             "bounds-elide ON: the counted-loop access is an unchecked load, no `call $list_at` (got {on:?})",
@@ -1354,7 +1405,7 @@ fn main() -> Int:
         // Inverse guard: remove ONLY `bounds-elide` and the checked `$list_at` helper
         // call returns — proving the elision is this lever's doing.
         let off_set = default.without(witchy_syntax::opt::Opt::BoundsElide);
-        let (off, _) = call_shape(src, off_set);
+        let (off, _, _) = call_shape(src, off_set);
         assert!(
             off.contains("list_at"),
             "-bounds-elide: the access keeps its checked `call $list_at` guard (got {off:?})",
@@ -1382,11 +1433,11 @@ fn main() -> Int:
     fn elides_nonescaping_closure_env() {
         // (RFC-0062 tier-1) `g` is bound by exactly one `let`, captures `k`, and is used
         // ONLY as a direct-call callee (`g(5)`, `g(7)`) — it never escapes. Under the
-        // `closure-elide` lever its heap environment is ELIDED: NO `mk{n}` allocation, and
+        // `closure-elide` lever its typed GC environment and wrapper are ELIDED, and
         // the call becomes a direct `call $__lamt{i}` that threads the capture `k` as a
         // leading argument (no env pointer, no per-call env load). The firing proof is the
-        // emitted call SHAPE: `mk1` gone, `__lamt` present, `__lamw` (the boxed-devirt body)
-        // absent.
+        // emitted representation: no `struct.new`, `__lamt` present, and `__lamw`
+        // (the boxed-devirt body) absent.
         let src = r#"
 fn main() -> Int:
     let k = 10
@@ -1394,10 +1445,10 @@ fn main() -> Int:
     (g(5) + g(7))
 "#;
         let on = witchy_syntax::opt::OptSet::default_set();
-        let (on_calls, on_indirect) = call_shape(src, on);
+        let (on_calls, on_indirect, on_struct_news) = call_shape(src, on);
         assert!(
-            !on_calls.iter().any(|n| n.starts_with("mk")),
-            "closure-elide ON: no env allocation — no `call $mk{{n}}` for the closure (got {on_calls:?})",
+            on_struct_news.is_empty(),
+            "closure-elide ON: no typed GC environment or closure wrapper is allocated (got {on_struct_news:?})",
         );
         assert!(
             on_calls.iter().any(|n| n.starts_with("__lamt")),
@@ -1410,14 +1461,11 @@ fn main() -> Int:
         assert_eq!(on_indirect, 0, "closure-elide ON: no `call_indirect` for an elided closure");
 
         // Inverse guard: remove ONLY `closure-elide` and the SAME program reverts to the
-        // boxed closure — a `mk1` env allocation and a devirtualized `call $__lamw` — proving
-        // the elision is this lever's doing (a phantom emitter would pass the ON case and lie).
+        // boxed closure — a typed GC environment plus closure wrapper and a devirtualized
+        // `call $__lamw` — proving the elision is this lever's doing.
         let off = on.without(witchy_syntax::opt::Opt::ClosureElide);
-        let (off_calls, _) = call_shape(src, off);
-        assert!(
-            off_calls.iter().any(|n| n.starts_with("mk")),
-            "-closure-elide: the closure env is heap-allocated (`mk1`) (got {off_calls:?})",
-        );
+        let (off_calls, _, off_struct_news) = call_shape(src, off);
+        assert_one_boxed_gc_closure(&off_struct_news, "-closure-elide");
         assert!(
             off_calls.iter().any(|n| n.starts_with("__lamw"))
                 && !off_calls.iter().any(|n| n.starts_with("__lamt")),
@@ -1428,8 +1476,9 @@ fn main() -> Int:
     #[test]
     fn keeps_env_for_escaping_closure() {
         // (RFC-0062 default-deny) `g` is passed WHOLE into `apply_it` — it escapes the
-        // frame, so even under `closure-elide` its environment MUST stay heap-allocated
-        // (`mk1`) and no `__lamt` threaded body is emitted. This is the firing proof's
+        // frame, so even under `closure-elide` its typed GC environment and immutable
+        // wrapper MUST stay allocated and no `__lamt` threaded body is emitted. This is
+        // the firing proof's
         // negative half: the lever fires ONLY when the escape oracle proves confinement.
         let src = r#"
 fn apply_it(f: fn(Int) -> Int, x: Int) -> Int:
@@ -1441,11 +1490,8 @@ fn main() -> Int:
     apply_it(g, 5)
 "#;
         let on = witchy_syntax::opt::OptSet::default_set();
-        let (calls, _) = call_shape(src, on);
-        assert!(
-            calls.iter().any(|n| n.starts_with("mk")),
-            "closure-elide ON but ESCAPING: the env is still heap-allocated (`mk1`) (got {calls:?})",
-        );
+        let (calls, _, struct_news) = call_shape(src, on);
+        assert_one_boxed_gc_closure(&struct_news, "closure-elide ON but ESCAPING");
         assert!(
             !calls.iter().any(|n| n.starts_with("__lamt")),
             "closure-elide ON but ESCAPING: no threaded body — the closure stays boxed (got {calls:?})",
