@@ -55,6 +55,7 @@ const MAX_TAG_DEPTH: u32 = 64;
 /// reserved `__witchy_` prefix cannot collide with user code, so after the tag
 /// places it we can find each marker as a leaf `Var` and substitute the real hole.
 const HOLE_MARKER_PREFIX: &str = "__witchy_hole_";
+const HOLE_ORIGIN_MARKER: &str = "@hole_origin";
 
 /// Build the marker for hole `i` (`__witchy_hole_0`, …).
 fn hole_marker(i: usize) -> String {
@@ -182,7 +183,7 @@ pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) ->
                     }
                 }
             }
-            Item::Const { value, .. } => walk_expr_depth(value, &ctx, 0)?,
+            Item::Const { value, .. } => walk_expr_depth(value, &ctx, 0, &[])?,
             // `comptime:` blocks are already expanded (and consumed) by
             // `comptime::expand`, which runs before this pass.
             Item::Type(_) | Item::TypeAlias { .. } | Item::Comptime(_) => {}
@@ -265,6 +266,26 @@ fn expansion_site(ctx: &Context, tag: &str, invocation_line: u32) -> String {
     }
 }
 
+fn expansion_site_with_trace(
+    ctx: &Context,
+    tag: &str,
+    invocation_line: u32,
+    ancestry: &[String],
+) -> String {
+    let current = expansion_site(ctx, tag, invocation_line);
+    if ancestry.is_empty() {
+        return current;
+    }
+    format!(
+        "{current}\nexpansion trace:\n{}",
+        ancestry
+            .iter()
+            .map(|frame| format!("  from {frame}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TagOutput {
     SourceString,
@@ -275,20 +296,40 @@ enum TagOutput {
 /// recursing into every child. A spliced expression may itself contain a
 /// `TaggedLit` (a tag emitting a tag), so we re-walk to a fixed point under a
 /// depth cap.
-fn walk_expr_depth(expr: &mut Expr, ctx: &Context, depth: u32) -> Result<(), String> {
+fn walk_expr_depth(
+    expr: &mut Expr,
+    ctx: &Context,
+    depth: u32,
+    ancestry: &[String],
+) -> Result<(), String> {
+    if let Some((mut hole_expr, hole_index, line, column)) = take_hole_origin(expr) {
+        let mut hole_ancestry = ancestry.to_vec();
+        hole_ancestry.push(format!(
+            "hole {} at hole-local line {}, column {}",
+            hole_index + 1,
+            line,
+            column
+        ));
+        walk_expr_depth(&mut hole_expr, ctx, depth, &hole_ancestry)?;
+        *expr = hole_expr;
+        return Ok(());
+    }
     if let Expr::TaggedLit { tag, parts, holes, hole_spans, line } = expr {
         if depth >= MAX_TAG_DEPTH {
             return Err(format!(
                 "{} expanded past the \
                  depth limit ({MAX_TAG_DEPTH}) — a tag is emitting tags without terminating",
-                expansion_site(ctx, tag, *line)
+                expansion_site_with_trace(ctx, tag, *line, ancestry)
             ));
         }
         let invocation_line = *line;
+        let current_site = expansion_site(ctx, tag, invocation_line);
         let tag = std::mem::take(tag);
         let parts = std::mem::take(parts);
         let holes = std::mem::take(holes);
         let hole_spans = std::mem::take(hole_spans);
+        let mut child_ancestry = ancestry.to_vec();
+        child_ancestry.push(current_site);
         let mut spliced = expand_one(
             ctx,
             &tag,
@@ -296,20 +337,26 @@ fn walk_expr_depth(expr: &mut Expr, ctx: &Context, depth: u32) -> Result<(), Str
             &holes,
             &hole_spans,
             invocation_line,
+            ancestry,
         )?;
-        // The spliced source may itself contain a tagged literal — expand it too.
-        // (Substitution has already replaced the markers with the real holes, so a
-        // nested tag inside a hole is a normal `TaggedLit` this recursion handles.)
-        walk_expr_depth(&mut spliced, ctx, depth + 1)?;
+        // Substitution happens before recursive expansion. This preserves the
+        // established generated-tree order: dropped holes are never expanded,
+        // and duplicated holes receive independent invocation identities.
+        walk_expr_depth(&mut spliced, ctx, depth + 1, &child_ancestry)?;
         *expr = spliced;
         return Ok(());
     }
-    walk_children(expr, ctx, depth)
+    walk_children(expr, ctx, depth, ancestry)
 }
 
 /// Recurse into an expression's children (it is not itself a `TaggedLit`).
-fn walk_children(expr: &mut Expr, ctx: &Context, depth: u32) -> Result<(), String> {
-    let recur = |e: &mut Expr| walk_expr_depth(e, ctx, depth);
+fn walk_children(
+    expr: &mut Expr,
+    ctx: &Context,
+    depth: u32,
+    ancestry: &[String],
+) -> Result<(), String> {
+    let recur = |e: &mut Expr| walk_expr_depth(e, ctx, depth, ancestry);
     match expr {
         Expr::Int(_)
         | Expr::Float(_)
@@ -349,7 +396,7 @@ fn walk_children(expr: &mut Expr, ctx: &Context, depth: u32) -> Result<(), Strin
         }
         Expr::Unary { expr, .. } => recur(expr)?,
         Expr::Field { base, .. } => recur(base)?,
-        Expr::Lambda { body, .. } => walk_block_depth(body, ctx, depth)?,
+        Expr::Lambda { body, .. } => walk_block_depth(body, ctx, depth, ancestry)?,
         Expr::RecordUpdate { name: _, base, fields } => {
             recur(base)?;
             for (_, v) in fields {
@@ -372,9 +419,9 @@ fn walk_children(expr: &mut Expr, ctx: &Context, depth: u32) -> Result<(), Strin
         }
         Expr::If { cond, then_block, else_block } => {
             recur(cond)?;
-            walk_block_depth(then_block, ctx, depth)?;
+            walk_block_depth(then_block, ctx, depth, ancestry)?;
             if let Some(b) = else_block {
-                walk_block_depth(b, ctx, depth)?;
+                walk_block_depth(b, ctx, depth, ancestry)?;
             }
         }
         Expr::Match { scrutinee, arms } => {
@@ -386,14 +433,14 @@ fn walk_children(expr: &mut Expr, ctx: &Context, depth: u32) -> Result<(), Strin
                 recur(body)?;
             }
         }
-        Expr::Block(b) => walk_block_depth(b, ctx, depth)?,
+        Expr::Block(b) => walk_block_depth(b, ctx, depth, ancestry)?,
         Expr::While { cond, body } => {
             recur(cond)?;
-            walk_block_depth(body, ctx, depth)?;
+            walk_block_depth(body, ctx, depth, ancestry)?;
         }
         Expr::For { iter, body, .. } => {
             recur(iter)?;
-            walk_block_depth(body, ctx, depth)?;
+            walk_block_depth(body, ctx, depth, ancestry)?;
         }
         Expr::Range { lo, hi, .. } => {
             recur(lo)?;
@@ -405,7 +452,7 @@ fn walk_children(expr: &mut Expr, ctx: &Context, depth: u32) -> Result<(), Strin
         }
         Expr::WhileLet { scrutinee, body, .. } => {
             recur(scrutinee)?;
-            walk_block_depth(body, ctx, depth)?;
+            walk_block_depth(body, ctx, depth, ancestry)?;
         }
         // Replaced by `walk_expr_depth` before reaching here.
         Expr::TaggedLit { .. } => unreachable!("TaggedLit handled by walk_expr_depth"),
@@ -414,20 +461,25 @@ fn walk_children(expr: &mut Expr, ctx: &Context, depth: u32) -> Result<(), Strin
 }
 
 fn walk_block(block: &mut Block, ctx: &Context) -> Result<(), String> {
-    walk_block_depth(block, ctx, 0)
+    walk_block_depth(block, ctx, 0, &[])
 }
 
-fn walk_block_depth(block: &mut Block, ctx: &Context, depth: u32) -> Result<(), String> {
+fn walk_block_depth(
+    block: &mut Block,
+    ctx: &Context,
+    depth: u32,
+    ancestry: &[String],
+) -> Result<(), String> {
     for stmt in &mut block.stmts {
         match stmt {
             Stmt::Let { value, .. }
             | Stmt::Assign { value, .. }
             | Stmt::LetPattern { value, .. }
             | Stmt::Yield(value)
-            | Stmt::Expr(value) => walk_expr_depth(value, ctx, depth)?,
+            | Stmt::Expr(value) => walk_expr_depth(value, ctx, depth, ancestry)?,
             Stmt::Return(opt) => {
                 if let Some(e) = opt {
-                    walk_expr_depth(e, ctx, depth)?;
+                    walk_expr_depth(e, ctx, depth, ancestry)?;
                 }
             }
             Stmt::Break | Stmt::Continue => {}
@@ -512,8 +564,9 @@ fn expand_one(
     holes: &[String],
     hole_spans: &[(u32, u32)],
     invocation_line: u32,
+    ancestry: &[String],
 ) -> Result<Expr, String> {
-    let where_ = || expansion_site(ctx, tag, invocation_line);
+    let where_ = || expansion_site_with_trace(ctx, tag, invocation_line, ancestry);
     let invocation = ctx.fresh_invocation.get();
     let next_invocation = invocation
         .checked_add(1)
@@ -738,7 +791,8 @@ fn expand_one(
     let mut hole_exprs: Vec<Expr> = Vec::with_capacity(holes.len());
     for (i, hole) in holes.iter().enumerate() {
         let span = hole_spans.get(i).copied().unwrap_or((0, 0));
-        hole_exprs.push(parse_hole(hole, span, &ctx.qualifiers, &where_)?);
+        let hole_expr = parse_hole(hole, span, &ctx.qualifiers, &where_)?;
+        hole_exprs.push(wrap_hole_origin(hole_expr, i, span));
     }
 
     // Replace every `__witchy_hole_N` marker leaf the tag placed with a CLONE of
@@ -909,6 +963,48 @@ fn parse_hole(
             region: None,
         }))
     }
+}
+
+fn wrap_hole_origin(
+    hole: Expr,
+    index: usize,
+    (line, column): (u32, u32),
+) -> Expr {
+    Expr::Block(Block {
+        stmts: vec![
+            Stmt::Expr(Expr::Call {
+                name: HOLE_ORIGIN_MARKER.to_string(),
+                args: vec![
+                    Expr::Int(index as i64),
+                    Expr::Int(i64::from(line)),
+                    Expr::Int(i64::from(column)),
+                ],
+            }),
+            Stmt::Expr(hole),
+        ],
+        lines: vec![line, line],
+        region: None,
+    })
+}
+
+fn take_hole_origin(expr: &mut Expr) -> Option<(Expr, usize, u32, u32)> {
+    let Expr::Block(block) = expr else { return None };
+    let [Stmt::Expr(Expr::Call { name, args }), Stmt::Expr(_)] = block.stmts.as_slice() else {
+        return None;
+    };
+    if name != HOLE_ORIGIN_MARKER {
+        return None;
+    }
+    let [Expr::Int(index), Expr::Int(line), Expr::Int(column)] = args.as_slice() else {
+        return None;
+    };
+    let index = usize::try_from(*index).ok()?;
+    let line = u32::try_from(*line).ok()?;
+    let column = u32::try_from(*column).ok()?;
+    let Some(Stmt::Expr(hole)) = block.stmts.pop() else {
+        unreachable!("hole-origin wrapper shape checked above")
+    };
+    Some((hole, index, line, column))
 }
 
 /// Walk `expr` and replace each `__witchy_hole_N` marker leaf with a CLONE of

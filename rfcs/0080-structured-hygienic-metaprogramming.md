@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed compatibility builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned item/expression/type/pattern/statement/block quotations with structural typed holes, direct AST transport for typed tags, definition-site direct-function resolution, explicit meta.call_site expression references, and direct tagged-expansion diagnostics carrying invocation plus definition module/line landed; general constructor/type/item origins and per-node span/hole ancestry remain proposed"
+tracking: "source-backed compatibility builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned item/expression/type/pattern/statement/block quotations with structural typed holes, direct AST transport for typed tags, definition-site direct-function resolution, explicit meta.call_site expression references, and nested tagged-expansion diagnostics carrying invocation, definition, generated-parent, and hole ancestry landed; general constructor/type/item origins and persistent per-node spans remain proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -414,6 +414,16 @@ The first source-compatible slice is implemented:
   trace. This does not yet attach a full span/ancestry object to every generated
   AST node; nested-node diagnostics and LSP generated-symbol navigation remain
   later tooling slices.
+- The thirty-seventh slice threads expansion ancestry through recursively emitted
+  tagged literals. A failing generated inner tag reports the outer invocation and
+  definition frame; a failing tag parsed from a call-site hole additionally
+  reports the hole index and explicitly labeled hole-local line/column. Hole
+  markers are substituted before recursive expansion, preserving generated-tree
+  order: dropped holes are not expanded, reordered holes follow placement order,
+  and duplicated holes receive independent invocation identities. A temporary
+  compiler-only wrapper carries each placement's hole ancestry through that walk
+  and is removed before type checking. This ancestry is diagnostic state during
+  expansion; it does not yet claim persistent spans on every generated AST node.
 
 This is intentionally not the full RFC. Every quotation category and its typed
 hole placement is now compiler-owned. General `meta.*` builder composition may
