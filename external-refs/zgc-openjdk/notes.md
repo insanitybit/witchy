@@ -12,7 +12,7 @@ Mechanism:
 - **Load barrier** — a read barrier on reference loads that lazily *heals* (remaps) a pointer to a relocated object on first access, enabling **concurrent compaction** without a stop-the-world relocation pause. (Generational ZGC adds **store barriers**.)
 - **Generational ZGC** (JDK 21, 2023) — separate young/old generations: most objects die young → frequent cheap young collections, infrequent old ones. A large throughput/footprint win over single-generation ZGC.
 
-This is the productionized descendant of the Azul Pauseless/C4 lineage (see [[c4-concurrent-compacting-2011]]).
+This is the productionized descendant of the Azul Pauseless/C4 lineage (see the [C4 notes](../c4-concurrent-compacting-2011/notes.md)).
 
 ## Why it matters to witchy
 
@@ -20,4 +20,4 @@ The state of the art for low-latency tracing on **large, long-lived, mutable, sh
 
 ## Informs
 
-- The GC-comparison section of the memory-management design discussion, alongside [[go-green-tea-gc-2025]] and [[c4-concurrent-compacting-2011]].
+- The GC-comparison section of the memory-management design discussion, alongside the [Green Tea GC notes](../go-green-tea-gc-2025/notes.md) and [C4 notes](../c4-concurrent-compacting-2011/notes.md).
