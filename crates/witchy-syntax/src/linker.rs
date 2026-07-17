@@ -439,7 +439,20 @@ pub fn std_source(name: &str) -> Option<&'static str> {
 /// agnostic of how compile-time code is evaluated (RFC-0018): it never names
 /// `comptime`/`tagged`. `crate::comptime::expand_compile_time` is the production
 /// implementation; `crate::pipeline::link` wires it in.
-pub type ComptimeExpander = fn(&str, &mut Module, &[(String, Module)]) -> Result<(), String>;
+pub type ComptimeExpander = fn(
+    &str,
+    &mut Module,
+    &[(String, Module)],
+) -> Result<crate::origin::OriginTable, String>;
+
+/// The ordinary linked runtime AST plus compiler-only generated-node metadata.
+/// Backends keep using [`link`] and therefore consume exactly the same `Module`;
+/// tooling and diagnostic frontends opt into [`link_with_origins`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinkedModule {
+    pub module: Module,
+    pub origins: crate::origin::OriginTable,
+}
 
 /// Process-lifetime cache of bundled std modules pulled into a link set, in
 /// their fully prepared form: parsed, records-lowered, and compile-time
@@ -656,7 +669,15 @@ pub fn link(
     entry: &str,
     expand: ComptimeExpander,
 ) -> Result<Module, LinkError> {
-    link_with_mode(modules, entry, expand, LinkMode::Production)
+    link_with_origins(modules, entry, expand).map(|linked| linked.module)
+}
+
+pub fn link_with_origins(
+    modules: Vec<(String, Module)>,
+    entry: &str,
+    expand: ComptimeExpander,
+) -> Result<LinkedModule, LinkError> {
+    link_with_mode_and_origins(modules, entry, expand, LinkMode::Production)
 }
 
 pub fn link_with_mode(
@@ -665,6 +686,15 @@ pub fn link_with_mode(
     expand: ComptimeExpander,
     mode: LinkMode,
 ) -> Result<Module, LinkError> {
+    link_with_mode_and_origins(modules, entry, expand, mode).map(|linked| linked.module)
+}
+
+pub fn link_with_mode_and_origins(
+    modules: Vec<(String, Module)>,
+    entry: &str,
+    expand: ComptimeExpander,
+    mode: LinkMode,
+) -> Result<LinkedModule, LinkError> {
     // Safe by default for in-memory callers that have no source-provenance map:
     // a supplied reserved module is canonical only when its parsed AST matches
     // the compiler-bundled source. Loaders with exact source identity should use
@@ -687,7 +717,7 @@ pub fn link_with_mode(
             user_modules.insert(name.clone());
         }
     }
-    link_with_user_modules_with_mode(modules, entry, expand, &user_modules, mode)
+    link_with_user_modules_with_mode_and_origins(modules, entry, expand, &user_modules, mode)
 }
 
 /// Like [`link`], but with the subset of module names that came from user
@@ -699,16 +729,34 @@ pub fn link_with_user_modules(
     expand: ComptimeExpander,
     user_modules: &std::collections::HashSet<String>,
 ) -> Result<Module, LinkError> {
-    link_with_user_modules_with_mode(modules, entry, expand, user_modules, LinkMode::Production)
+    link_with_user_modules_with_mode_and_origins(
+        modules,
+        entry,
+        expand,
+        user_modules,
+        LinkMode::Production,
+    ).map(|linked| linked.module)
 }
 
 pub fn link_with_user_modules_with_mode(
-    mut modules: Vec<(String, Module)>,
+    modules: Vec<(String, Module)>,
     entry: &str,
     expand: ComptimeExpander,
     user_modules: &std::collections::HashSet<String>,
     mode: LinkMode,
 ) -> Result<Module, LinkError> {
+    link_with_user_modules_with_mode_and_origins(modules, entry, expand, user_modules, mode)
+        .map(|linked| linked.module)
+}
+
+pub fn link_with_user_modules_with_mode_and_origins(
+    mut modules: Vec<(String, Module)>,
+    entry: &str,
+    expand: ComptimeExpander,
+    user_modules: &std::collections::HashSet<String>,
+    mode: LinkMode,
+) -> Result<LinkedModule, LinkError> {
+    let mut origin_tables: HashMap<String, crate::origin::OriginTable> = HashMap::new();
     check_reserved_source_names(&modules)?;
     if let Some(name) = user_modules
         .iter()
@@ -866,7 +914,9 @@ pub fn link_with_user_modules_with_mode(
                     )
                 })
                 .collect();
-            expand(name, &mut modules[i].1, &siblings).map_err(|message| LinkError { message, location: None })?;
+            let origins = expand(name, &mut modules[i].1, &siblings)
+                .map_err(|message| LinkError { message, location: None })?;
+            origin_tables.insert(name.clone(), origins);
         }
     }
 
@@ -959,7 +1009,9 @@ pub fn link_with_user_modules_with_mode(
             .collect();
         let imports_before =
             (modules[k].1.imports.clone(), modules[k].1.from_imports.clone());
-        expand(&name, &mut modules[k].1, &siblings).map_err(|message| LinkError { message, location: None })?;
+        let origins = expand(&name, &mut modules[k].1, &siblings)
+            .map_err(|message| LinkError { message, location: None })?;
+        origin_tables.insert(name.clone(), origins);
         // A comptime block may EMIT `import` lines, which merge into the module
         // after the pull-in loop above has already run — a cached copy would
         // feed them back into a later link's pull-in and pull modules this link
@@ -993,7 +1045,15 @@ pub fn link_with_user_modules_with_mode(
     // or `Item::Const` reaches later stages.
     modules = modules
         .into_iter()
-        .map(|(n, m)| (n, crate::aliases::resolve(crate::consts::inline(m))))
+        .map(|(n, m)| {
+            if let Some(origins) = origin_tables.get_mut(&n) {
+                let retained: Vec<bool> = m.items.iter().map(|item| {
+                    !matches!(item, Item::Const { .. } | Item::TypeAlias { .. })
+                }).collect();
+                origins.retain_items(&n, &retained);
+            }
+            (n, crate::aliases::resolve(crate::consts::inline(m)))
+        })
         .collect();
 
     // (RFC-0042) Canonicalize every user TYPE and CONSTRUCTOR name to
@@ -1115,10 +1175,12 @@ pub fn link_with_user_modules_with_mode(
     }
 
     let mut items = Vec::new();
+    let mut origin_item_maps: HashMap<String, Vec<Vec<usize>>> = HashMap::new();
     let mut seen_anon_types: HashMap<String, TypeDef> = HashMap::new();
     let mut seen_anon_trait_impls: HashSet<(String, Vec<String>, String, Vec<String>)> = HashSet::new();
     for (mname, m) in &modules {
-        for item in &m.items {
+        let mut item_map = vec![Vec::new(); m.items.len()];
+        for (source_index, item) in m.items.iter().enumerate() {
             match item {
                 Item::Function(f) => {
                     let mut f2 = f.clone();
@@ -1143,6 +1205,7 @@ pub fn link_with_user_modules_with_mode(
                         mode,
                         entry,
                     )?;
+                    item_map[source_index].push(items.len());
                     items.push(Item::Function(f2));
                 }
                 Item::Type(t) => {
@@ -1155,6 +1218,7 @@ pub fn link_with_user_modules_with_mode(
                             seen_anon_types.insert(t.name.clone(), t.clone());
                         }
                     }
+                    item_map[source_index].push(items.len());
                     items.push(Item::Type(t.clone()));
                 }
                 // Constants and aliases were resolved per-module above, so none
@@ -1186,6 +1250,7 @@ pub fn link_with_user_modules_with_mode(
                             )?;
                         }
                     }
+                    item_map[source_index].push(items.len());
                     items.push(Item::Trait(t2));
                 }
                 Item::Impl(im) => {
@@ -1213,10 +1278,12 @@ pub fn link_with_user_modules_with_mode(
                         entry,
                         )?;
                     }
+                    item_map[source_index].push(items.len());
                     items.push(Item::Impl(im2));
                 }
             }
         }
+        origin_item_maps.insert(mname.clone(), item_map);
     }
     let mut linked_modes = modules
         .iter()
@@ -1256,6 +1323,14 @@ pub fn link_with_user_modules_with_mode(
         .iter()
         .flat_map(|(_, module)| module.compiler_block_syntax.iter().cloned())
         .collect();
+    let mut origins = crate::origin::OriginTable::default();
+    for (name, _) in &modules {
+        let Some(mut table) = origin_tables.remove(name) else { continue };
+        if let Some(mapping) = origin_item_maps.get(name) {
+            table.remap_items(name, mapping);
+            origins.append_shifted(table, 0);
+        }
+    }
     let mut module = Module {
         // The entry module's performance modes carry onto the linked module;
         // enforcement applies to the entry file's own (unqualified) functions.
@@ -1308,7 +1383,7 @@ pub fn link_with_user_modules_with_mode(
     // point where an unknown record type is caught, whether or not a later stage
     // (typeck/backend) re-runs the idempotent lowering.
     let module = crate::records::lower(module).map_err(|message| LinkError { message, location: None })?;
-    Ok(module)
+    Ok(LinkedModule { module, origins })
 }
 
 fn expansion_sibling(runtime: &Module, source: &Module) -> Module {
@@ -3170,8 +3245,12 @@ mod tests {
         }
     }
 
-    fn noop_expand(_: &str, _: &mut Module, _: &[(String, Module)]) -> Result<(), String> {
-        Ok(())
+    fn noop_expand(
+        _: &str,
+        _: &mut Module,
+        _: &[(String, Module)],
+    ) -> Result<crate::origin::OriginTable, String> {
+        Ok(crate::origin::OriginTable::default())
     }
 
     /// Link `lib` (module `sealed_lib`) with `user` (module `user`, the entry) and

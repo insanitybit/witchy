@@ -38,6 +38,7 @@ use std::rc::Rc;
 use witchy_syntax::ast::*;
 use witchy_syntax::diag::DiagTemplate;
 use witchy_syntax::intrinsics;
+use witchy_syntax::origin::SyntaxCategory;
 use witchy_syntax::parser::parse_module;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -160,7 +161,24 @@ const OWNED_ITEM_SYNTAX_CTOR: &str = "@owned_item_syntax";
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ComptimeItemEmission {
     Source(String),
-    Syntax(Box<Item>),
+    Syntax {
+        item: Box<Item>,
+        definition_line: u32,
+        hole_ancestry: Vec<ComptimeHoleOrigin>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ComptimeHoleOrigin {
+    pub category: SyntaxCategory,
+    pub definition_line: u32,
+    pub invocation_line: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ComptimeSyntaxOrigin {
+    definition_line: u32,
+    hole_ancestry: Vec<ComptimeHoleOrigin>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -613,6 +631,87 @@ fn compiler_item_holes(
             }
         })
         .collect()
+}
+
+fn compiler_item_hole_origins(
+    values: &[Value],
+    expr_origins: &HashMap<String, ComptimeSyntaxOrigin>,
+    type_origins: &HashMap<String, ComptimeSyntaxOrigin>,
+    pattern_origins: &HashMap<String, ComptimeSyntaxOrigin>,
+    invocation_line: u32,
+) -> Vec<ComptimeHoleOrigin> {
+    fn tail(name: &str) -> &str {
+        name.rsplit_once('.').map_or(name, |(_, tail)| tail)
+    }
+
+    values
+        .iter()
+        .flat_map(|value| {
+            let Value::Ctor { name, fields } = value else {
+                return Vec::new();
+            };
+            let [syntax] = fields.as_slice() else {
+                return Vec::new();
+            };
+            let (category, compiler_ctor, origins) = match tail(name) {
+                "ExprHole" => (SyntaxCategory::Expr, "CompilerExprSyntax", expr_origins),
+                "TypeHole" => (SyntaxCategory::Type, "CompilerTypeSyntax", type_origins),
+                "PatternHole" => (
+                    SyntaxCategory::Pattern,
+                    "CompilerPatternSyntax",
+                    pattern_origins,
+                ),
+                _ => return Vec::new(),
+            };
+            syntax_hole_origin(category, syntax, compiler_ctor, origins, invocation_line)
+        })
+        .collect()
+}
+
+fn compiler_direct_hole_origins(
+    values: &[Value],
+    category: SyntaxCategory,
+    compiler_ctor: &str,
+    origins: &HashMap<String, ComptimeSyntaxOrigin>,
+    invocation_line: u32,
+) -> Vec<ComptimeHoleOrigin> {
+    values
+        .iter()
+        .flat_map(|syntax| {
+            syntax_hole_origin(category, syntax, compiler_ctor, origins, invocation_line)
+        })
+        .collect()
+}
+
+fn syntax_hole_origin(
+    category: SyntaxCategory,
+    syntax: &Value,
+    compiler_ctor: &str,
+    origins: &HashMap<String, ComptimeSyntaxOrigin>,
+    invocation_line: u32,
+) -> Vec<ComptimeHoleOrigin> {
+    fn tail(name: &str) -> &str {
+        name.rsplit_once('.').map_or(name, |(_, tail)| tail)
+    }
+
+    let syntax_origin = match syntax {
+        Value::Ctor { name, fields } if tail(name) == compiler_ctor => {
+            let [Value::Str(handle), ..] = fields.as_slice() else {
+                return Vec::new();
+            };
+            origins.get(handle.as_str())
+        }
+        _ => None,
+    };
+    let mut ancestry = vec![ComptimeHoleOrigin {
+        category,
+        definition_line: syntax_origin.map_or(0, |origin| origin.definition_line),
+        invocation_line,
+    }];
+    if let Some(origin) = syntax_origin {
+        ancestry.extend(origin.hole_ancestry.iter().cloned());
+    }
+    ancestry
 }
 
 fn compiler_expr_holes(
@@ -1264,10 +1363,14 @@ pub struct Interpreter {
     /// reject the compiler-private hook instead of minting generated names.
     fresh_ident_scope: Option<String>,
     fresh_ident_counter: u64,
+    compiler_syntax_instance_counter: u64,
     compiler_item_syntax: HashMap<String, Item>,
     compiler_expr_syntax: HashMap<String, Expr>,
     compiler_type_syntax: HashMap<String, Type>,
     compiler_pattern_syntax: HashMap<String, Pattern>,
+    compiler_expr_origins: HashMap<String, ComptimeSyntaxOrigin>,
+    compiler_type_origins: HashMap<String, ComptimeSyntaxOrigin>,
+    compiler_pattern_origins: HashMap<String, ComptimeSyntaxOrigin>,
     compiler_stmt_syntax: HashMap<String, Stmt>,
     compiler_block_syntax: HashMap<String, Block>,
     comptime_item_output: Vec<PositionedComptimeItem>,
@@ -1615,6 +1718,9 @@ impl Interpreter {
             .into_iter()
             .map(|syntax| (syntax.handle, syntax.pattern))
             .collect();
+        let compiler_expr_origins = HashMap::new();
+        let compiler_type_origins = HashMap::new();
+        let compiler_pattern_origins = HashMap::new();
         let compiler_stmt_syntax = module
             .compiler_stmt_syntax
             .into_iter()
@@ -1698,10 +1804,14 @@ impl Interpreter {
             custom_eq_types,
             fresh_ident_scope: None,
             fresh_ident_counter: 0,
+            compiler_syntax_instance_counter: 0,
             compiler_item_syntax,
             compiler_expr_syntax,
             compiler_type_syntax,
             compiler_pattern_syntax,
+            compiler_expr_origins,
+            compiler_type_origins,
+            compiler_pattern_origins,
             compiler_stmt_syntax,
             compiler_block_syntax,
             comptime_item_output: Vec::new(),
@@ -2657,6 +2767,17 @@ impl Interpreter {
         ))
     }
 
+    fn next_compiler_syntax_handle(&mut self, category: &str) -> Result<String, RuntimeError> {
+        let ordinal = self.compiler_syntax_instance_counter;
+        self.compiler_syntax_instance_counter = self
+            .compiler_syntax_instance_counter
+            .checked_add(1)
+            .ok_or_else(|| RuntimeError {
+                message: "compiler syntax instance counter overflowed".into(),
+            })?;
+        Ok(format!("\0compiler-syntax-instance\0{category}\0{ordinal}"))
+    }
+
     fn call_builtin(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>, RuntimeError> {
         let catalog = intrinsics::lookup(name);
         if let Some(spec) = catalog {
@@ -2787,16 +2908,15 @@ impl Interpreter {
                         );
                     }
                     let expr = witchy_syntax::linker::call_site_expr(name.as_str());
-                    let handle = format!("\0compiler-call-site-expression\0{name}");
-                    if let Some(existing) = self.compiler_expr_syntax.get(&handle) {
-                        if existing != &expr {
-                            return err(
-                                "compiler call-site expression handle collided with a different AST",
-                            );
-                        }
-                    } else {
-                        self.compiler_expr_syntax.insert(handle.clone(), expr);
-                    }
+                    let handle = self.next_compiler_syntax_handle("call-site-expression")?;
+                    self.compiler_expr_syntax.insert(handle.clone(), expr);
+                    self.compiler_expr_origins.insert(
+                        handle.clone(),
+                        ComptimeSyntaxOrigin {
+                            definition_line: self.cur_line,
+                            hole_ancestry: Vec::new(),
+                        },
+                    );
                     Ok(Some(Value::Ctor {
                         name: "meta.CompilerExprSyntax".into(),
                         fields: Rc::new(vec![Value::str(handle), Value::Str(name)]),
@@ -2814,9 +2934,22 @@ impl Interpreter {
                     [Value::Str(handle), Value::Str(source)]
                         if self.compiler_expr_syntax.contains_key(handle.as_str()) =>
                     {
+                        let expr = self.compiler_expr_syntax[handle.as_str()].clone();
+                        let instance_handle = self.next_compiler_syntax_handle("expression")?;
+                        self.compiler_expr_syntax.insert(instance_handle.clone(), expr);
+                        self.compiler_expr_origins.insert(
+                            instance_handle.clone(),
+                            ComptimeSyntaxOrigin {
+                                definition_line: self.cur_line,
+                                hole_ancestry: Vec::new(),
+                            },
+                        );
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerExprSyntax".into(),
-                            fields: Rc::new(vec![Value::Str(handle.clone()), Value::Str(source.clone())]),
+                            fields: Rc::new(vec![
+                                Value::str(instance_handle),
+                                Value::Str(source.clone()),
+                            ]),
                         }))
                     }
                     [Value::Str(_), Value::Str(_)] => {
@@ -2844,12 +2977,19 @@ impl Interpreter {
                                 message: "compiler-owned expression quotation referenced an invalid syntax handle"
                                     .into(),
                             })?;
+                        let definition_line = self.cur_line;
+                        let hole_ancestry = compiler_direct_hole_origins(
+                            holes,
+                            SyntaxCategory::Expr,
+                            "CompilerExprSyntax",
+                            &self.compiler_expr_origins,
+                            self.cur_line,
+                        );
                         let holes = compiler_expr_holes(holes, &self.compiler_expr_syntax)?;
                         let expr = witchy_syntax::syntax_holes::instantiate_expr(&template, holes)
                             .map_err(|message| RuntimeError { message })?;
                         let source = witchy_syntax::format::expr_str(&expr);
-                        let instance_handle =
-                            format!("{handle}\0compiler-owned-expression-instance\0{source}");
+                        let instance_handle = self.next_compiler_syntax_handle("expression")?;
                         if let Some(existing) = self.compiler_expr_syntax.get(&instance_handle) {
                             if existing != &expr {
                                 return err(
@@ -2859,6 +2999,10 @@ impl Interpreter {
                         } else {
                             self.compiler_expr_syntax.insert(instance_handle.clone(), expr);
                         }
+                        self.compiler_expr_origins.insert(
+                            instance_handle.clone(),
+                            ComptimeSyntaxOrigin { definition_line, hole_ancestry },
+                        );
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerExprSyntax".into(),
                             fields: Rc::new(vec![Value::str(instance_handle), Value::str(source)]),
@@ -2882,9 +3026,22 @@ impl Interpreter {
                     [Value::Str(handle), Value::Str(source)]
                         if self.compiler_type_syntax.contains_key(handle.as_str()) =>
                     {
+                        let ty = self.compiler_type_syntax[handle.as_str()].clone();
+                        let instance_handle = self.next_compiler_syntax_handle("type")?;
+                        self.compiler_type_syntax.insert(instance_handle.clone(), ty);
+                        self.compiler_type_origins.insert(
+                            instance_handle.clone(),
+                            ComptimeSyntaxOrigin {
+                                definition_line: self.cur_line,
+                                hole_ancestry: Vec::new(),
+                            },
+                        );
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerTypeSyntax".into(),
-                            fields: Rc::new(vec![Value::Str(handle.clone()), Value::Str(source.clone())]),
+                            fields: Rc::new(vec![
+                                Value::str(instance_handle),
+                                Value::Str(source.clone()),
+                            ]),
                         }))
                     }
                     [Value::Str(_), Value::Str(_)] => {
@@ -2912,12 +3069,19 @@ impl Interpreter {
                                 message: "compiler-owned type quotation referenced an invalid syntax handle"
                                     .into(),
                             })?;
+                        let definition_line = self.cur_line;
+                        let hole_ancestry = compiler_direct_hole_origins(
+                            holes,
+                            SyntaxCategory::Type,
+                            "CompilerTypeSyntax",
+                            &self.compiler_type_origins,
+                            self.cur_line,
+                        );
                         let holes = compiler_type_holes(holes, &self.compiler_type_syntax)?;
                         let ty = witchy_syntax::syntax_holes::instantiate_type(&template, holes)
                             .map_err(|message| RuntimeError { message })?;
                         let source = witchy_syntax::format::type_str(&ty);
-                        let instance_handle =
-                            format!("{handle}\0compiler-owned-type-instance\0{source}");
+                        let instance_handle = self.next_compiler_syntax_handle("type")?;
                         if let Some(existing) = self.compiler_type_syntax.get(&instance_handle) {
                             if existing != &ty {
                                 return err(
@@ -2927,6 +3091,10 @@ impl Interpreter {
                         } else {
                             self.compiler_type_syntax.insert(instance_handle.clone(), ty);
                         }
+                        self.compiler_type_origins.insert(
+                            instance_handle.clone(),
+                            ComptimeSyntaxOrigin { definition_line, hole_ancestry },
+                        );
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerTypeSyntax".into(),
                             fields: Rc::new(vec![Value::str(instance_handle), Value::str(source)]),
@@ -2950,9 +3118,22 @@ impl Interpreter {
                     [Value::Str(handle), Value::Str(source)]
                         if self.compiler_pattern_syntax.contains_key(handle.as_str()) =>
                     {
+                        let pattern = self.compiler_pattern_syntax[handle.as_str()].clone();
+                        let instance_handle = self.next_compiler_syntax_handle("pattern")?;
+                        self.compiler_pattern_syntax.insert(instance_handle.clone(), pattern);
+                        self.compiler_pattern_origins.insert(
+                            instance_handle.clone(),
+                            ComptimeSyntaxOrigin {
+                                definition_line: self.cur_line,
+                                hole_ancestry: Vec::new(),
+                            },
+                        );
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerPatternSyntax".into(),
-                            fields: Rc::new(vec![Value::Str(handle.clone()), Value::Str(source.clone())]),
+                            fields: Rc::new(vec![
+                                Value::str(instance_handle),
+                                Value::Str(source.clone()),
+                            ]),
                         }))
                     }
                     [Value::Str(_), Value::Str(_)] => {
@@ -2980,14 +3161,21 @@ impl Interpreter {
                                 message: "compiler-owned pattern quotation referenced an invalid syntax handle"
                                     .into(),
                             })?;
+                        let definition_line = self.cur_line;
+                        let hole_ancestry = compiler_direct_hole_origins(
+                            holes,
+                            SyntaxCategory::Pattern,
+                            "CompilerPatternSyntax",
+                            &self.compiler_pattern_origins,
+                            self.cur_line,
+                        );
                         let holes =
                             compiler_pattern_holes(holes, &self.compiler_pattern_syntax)?;
                         let pattern =
                             witchy_syntax::syntax_holes::instantiate_pattern(&template, holes)
                                 .map_err(|message| RuntimeError { message })?;
                         let source = witchy_syntax::format::pattern_str(&pattern);
-                        let instance_handle =
-                            format!("{handle}\0compiler-owned-pattern-instance\0{source}");
+                        let instance_handle = self.next_compiler_syntax_handle("pattern")?;
                         if let Some(existing) = self.compiler_pattern_syntax.get(&instance_handle) {
                             if existing != &pattern {
                                 return err(
@@ -2998,6 +3186,10 @@ impl Interpreter {
                             self.compiler_pattern_syntax
                                 .insert(instance_handle.clone(), pattern);
                         }
+                        self.compiler_pattern_origins.insert(
+                            instance_handle.clone(),
+                            ComptimeSyntaxOrigin { definition_line, hole_ancestry },
+                        );
                         Ok(Some(Value::Ctor {
                             name: "meta.CompilerPatternSyntax".into(),
                             fields: Rc::new(vec![Value::str(instance_handle), Value::str(source)]),
@@ -3176,7 +3368,10 @@ impl Interpreter {
                     {
                         Ok(Some(Value::Ctor {
                             name: OWNED_ITEM_SYNTAX_CTOR.into(),
-                            fields: Rc::new(vec![Value::Str(handle.clone())]),
+                            fields: Rc::new(vec![
+                                Value::Str(handle.clone()),
+                                Value::Int(i64::from(self.cur_line)),
+                            ]),
                         }))
                     }
                     [Value::Str(_), Value::Str(_)] => {
@@ -3199,7 +3394,11 @@ impl Interpreter {
                     {
                         Ok(Some(Value::Ctor {
                             name: OWNED_ITEM_SYNTAX_CTOR.into(),
-                            fields: Rc::new(vec![Value::Str(handle.clone()), Value::List(holes.clone())]),
+                            fields: Rc::new(vec![
+                                Value::Str(handle.clone()),
+                                Value::List(holes.clone()),
+                                Value::Int(i64::from(self.cur_line)),
+                            ]),
                         }))
                     }
                     [Value::Str(_), Value::List(_), Value::List(_)] => {
@@ -3215,9 +3414,10 @@ impl Interpreter {
                 let emission = match one(args)? {
                     Value::Ctor { name, fields }
                         if &*name == OWNED_ITEM_SYNTAX_CTOR
-                            && matches!(fields.as_slice(), [Value::Str(_)]) =>
+                            && matches!(fields.as_slice(), [Value::Str(_), Value::Int(_)]) =>
                     {
-                        let [Value::Str(handle)] = fields.as_slice() else {
+                        let [Value::Str(handle), Value::Int(definition_line)] = fields.as_slice()
+                        else {
                             unreachable!()
                         };
                         let item = self
@@ -3228,13 +3428,22 @@ impl Interpreter {
                                 message: "compiler-owned item emission referenced an invalid syntax handle"
                                     .into(),
                             })?;
-                        ComptimeItemEmission::Syntax(Box::new(item))
+                        ComptimeItemEmission::Syntax {
+                            item: Box::new(item),
+                            definition_line: u32::try_from(*definition_line).unwrap_or(0),
+                            hole_ancestry: Vec::new(),
+                        }
                     }
                     Value::Ctor { name, fields }
                         if &*name == OWNED_ITEM_SYNTAX_CTOR
-                            && matches!(fields.as_slice(), [Value::Str(_), Value::List(_)]) =>
+                            && matches!(
+                                fields.as_slice(),
+                                [Value::Str(_), Value::List(_), Value::Int(_)]
+                            ) =>
                     {
-                        let [Value::Str(handle), Value::List(holes)] = fields.as_slice() else {
+                        let [Value::Str(handle), Value::List(holes), Value::Int(invocation_line)] =
+                            fields.as_slice()
+                        else {
                             unreachable!()
                         };
                         let template = self
@@ -3244,6 +3453,13 @@ impl Interpreter {
                                 message: "compiler-owned item emission referenced an invalid syntax handle"
                                     .into(),
                             })?;
+                        let hole_ancestry = compiler_item_hole_origins(
+                            holes,
+                            &self.compiler_expr_origins,
+                            &self.compiler_type_origins,
+                            &self.compiler_pattern_origins,
+                            u32::try_from(*invocation_line).unwrap_or(0),
+                        );
                         let holes = compiler_item_holes(
                             holes,
                             &self.compiler_expr_syntax,
@@ -3252,7 +3468,11 @@ impl Interpreter {
                         )?;
                         let item = witchy_syntax::syntax_holes::instantiate_item(template, holes)
                             .map_err(|message| RuntimeError { message })?;
-                        ComptimeItemEmission::Syntax(Box::new(item))
+                        ComptimeItemEmission::Syntax {
+                            item: Box::new(item),
+                            definition_line: u32::try_from(*invocation_line).unwrap_or(0),
+                            hole_ancestry,
+                        }
                     }
                     Value::Ctor { name, fields }
                         if name.rsplit_once('.').map_or(&*name, |(_, tail)| tail)

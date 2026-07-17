@@ -29,6 +29,14 @@ interpreter is *not* a run path — it is the differential oracle (`witchy
 parity`), the `comptime:` evaluator, the in-language test runner, and the
 effectful build-step executor.
 
+Compile-time generation has a parallel, compiler-only provenance result. The
+ordinary `link` API returns only the expanded `Module`, so type checking and
+both execution backends continue to consume one identical AST. Tooling may use
+`link_with_origins` to retain typed generated-node IDs, structural AST paths,
+definition and invocation spans, and ordered syntax-hole ancestry. This table
+is allocated and remapped by compiler passes; formatted source is never a node
+identity.
+
 ### Workspace layout (RFC-0018)
 
 The compiler is a **Cargo workspace**: seven stage-aligned library crates under
@@ -40,7 +48,7 @@ everything flows downstream to the binary. To change a stage, edit its crate.
 
 | Crate | Modules | Role |
 |---|---|---|
-| `witchy-syntax` | `lexer`, `parser`, `ast`, `format`, + the AST-level base passes (`aliases`, `consts`, `fmt`, `async_lower`, `generators`, `optimize`, `reflect`, `derive`, `records`, `doc`, `linker`, `lambda_scan`, `build_entry`) | Source → AST (off-side layout, interpolation, duration literals; Pratt-core parser + sugar lowering), the canonical formatter, and the front-end/base layer every later stage builds on. `linker` combines modules into one flat module with qualified names + bundles the std library (`include_str!`). |
+| `witchy-syntax` | `lexer`, `parser`, `ast`, `format`, `origin`, + the AST-level base passes (`aliases`, `consts`, `fmt`, `async_lower`, `generators`, `optimize`, `reflect`, `derive`, `records`, `doc`, `linker`, `lambda_scan`, `build_entry`) | Source → AST (off-side layout, interpolation, duration literals; Pratt-core parser + sugar lowering), the canonical formatter, and the front-end/base layer every later stage builds on. `origin` defines the typed generated-node/span side table; `linker` combines modules into one flat module with qualified names + bundles the std library (`include_str!`). |
 | `witchy-types` | `typeck`, `traits` | Annotation-driven checking + HM unification (occurs-checked), capability rights, exhaustiveness; trait desugaring to plain functions + monomorphization of bounded AND unbounded generics. Mutually recursive — one crate. |
 | `witchy-wir` | `wir`, `wir_opt`, `wir_prelude`, `wir_encode` | The structured IR (typed expression tree, named lexical `Block`/`Loop` labels, no relooper), the peephole pass (cancels redundant slot/kind round-trips), the precompiled runtime-helper prelude (lists/strings/dicts/crypto), and the `wasm-encoder` backend. |
 | `witchy-lower` | `codegen`, `analysis` | Lowers the checked AST to WIR (universal 8-byte value slots, per-shape structural-equality helpers, capability host imports); `analysis` is the uniqueness / cap-token pass the in-place fast paths depend on. |
@@ -191,8 +199,8 @@ Tracked honestly rather than hidden:
   locals across the await; it is still not supported in loop/branch
   conditions or match scrutinees. See
   [concurrency-design.md](../rfcs/concurrency-design.md).
-- The LSP has diagnostics, completion, and hover — no go-to-definition or
-  rename yet.
+- The LSP has diagnostics, completion, hover, and expansion-aware document
+  symbols. It has no go-to-definition or rename yet.
 - No tracing GC: reclamation is structural (see the memory model above). A
   long-running loop that accumulates into a single ever-growing value still
   grows; bound it with a `region:` or a per-iteration watermark.

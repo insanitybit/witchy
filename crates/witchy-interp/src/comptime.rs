@@ -18,6 +18,7 @@
 use witchy_syntax::ast::{
     BinOp, Block, Expr, Function, ImplOrigin, Item, Module, Param, Stmt, Type,
 };
+use witchy_syntax::origin::{ExpansionOrigin, OriginTable, SourceSpan};
 
 const MAX_COMPTIME_BLOCKS: usize = 256;
 // Per module, after generated `gen`/`async` helpers are lowered into real items.
@@ -28,17 +29,33 @@ const SOURCE_OUTPUT_MARKER: &str = "\u{1e}witchy:comptime:source:";
 /// each and appending the items its output parses to. `name` is the module's
 /// name, for error messages.
 pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
-    expand_with_item_limit(name, module, MAX_COMPTIME_GENERATED_ITEMS)
+    expand_with_origins(name, module).map(|_| ())
 }
 
+/// Expand while retaining the typed source provenance that runtime linking and
+/// backend compilation intentionally ignore. Tooling uses this entry point.
+pub fn expand_with_origins(name: &str, module: &mut Module) -> Result<OriginTable, String> {
+    expand_with_item_limit_and_origins(name, module, MAX_COMPTIME_GENERATED_ITEMS)
+}
+
+#[cfg(test)]
 fn expand_with_item_limit(
     name: &str,
     module: &mut Module,
     max_generated_items: usize,
 ) -> Result<(), String> {
+    expand_with_item_limit_and_origins(name, module, max_generated_items).map(|_| ())
+}
+
+fn expand_with_item_limit_and_origins(
+    name: &str,
+    module: &mut Module,
+    max_generated_items: usize,
+) -> Result<OriginTable, String> {
     let mut i = 0;
     let mut expanded = 0;
     let mut generated_items = 0usize;
+    let mut origins = OriginTable::default();
     while i < module.items.len() {
         if !matches!(module.items[i], Item::Comptime(_)) {
             i += 1;
@@ -57,6 +74,9 @@ fn expand_with_item_limit(
         let Item::Comptime(mut body) = module.items.remove(i) else {
             unreachable!()
         };
+        let mut retained = vec![true; module.items.len() + 1];
+        retained[i] = false;
+        origins.retain_items(name, &retained);
         let block_line = if module.item_lines.len() > i {
             let l = module.item_lines.remove(i);
             if l == u32::MAX { 0 } else { l }
@@ -217,11 +237,11 @@ fn expand_with_item_limit(
             Some(format!("comptime:{}:{name}:{expanded}", name.len())),
         )
             .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
-        let emitted = decode_comptime_output(lines, item_output)
+        let emitted = decode_comptime_output(name, block_line, lines, item_output)
             .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
         let items_before_merge = module.items.len();
-        merge_emitted_module(module, emitted, block_line);
-        let normalized = normalize_generated_module(module.clone())
+        merge_emitted_module(module, &mut origins, emitted, block_line);
+        let normalized = normalize_generated_module(name, module.clone(), &mut origins)
             .map_err(|e| format!("module `{name}`: comptime generated source: {e}"))?;
         let generated_by_block = normalized
             .items
@@ -241,7 +261,7 @@ fn expand_with_item_limit(
         // into this slot, and normalization may also have appended derive-generated
         // comptime blocks for this same pass to consume.
     }
-    Ok(())
+    Ok(origins)
 }
 
 fn item_limit_error(name: &str, max_generated_items: usize) -> String {
@@ -264,9 +284,11 @@ fn marked_console_print(marker: &str, value_name: &str) -> Expr {
 }
 
 fn decode_comptime_output(
+    module_name: &str,
+    invocation_line: u32,
     lines: Vec<String>,
     item_output: Vec<crate::interpreter::PositionedComptimeItem>,
-) -> Result<Module, String> {
+) -> Result<(Module, OriginTable), String> {
     if !lines.is_empty() && !item_output.is_empty() {
         return Err(
             "mixed legacy source output (`emit`/`console.print`) with typed item output \
@@ -284,15 +306,27 @@ fn decode_comptime_output(
             })
             .collect::<Vec<_>>()
             .join("\n");
-        return witchy_syntax::parser::parse_module(&src).map_err(|e| {
+        let emitted = witchy_syntax::parser::parse_module(&src).map_err(|e| {
             format!(
                 "comptime block emitted source that does not parse: {e}\n--- emitted ---\n{src}"
             )
-        });
+        })?;
+        let mut origins = OriginTable::default();
+        record_emitted_items(
+            &mut origins,
+            emitted.items.len(),
+            module_name,
+            invocation_line,
+            invocation_line,
+            0,
+            &[],
+        );
+        return Ok((emitted, origins));
     }
 
     let mut emitted = witchy_syntax::parser::parse_module("")
         .expect("the empty module is always valid Witchy");
+    let mut origins = OriginTable::default();
     let mut source_batch = Vec::new();
     for positioned in item_output {
         if positioned.output_position != 0 {
@@ -302,18 +336,50 @@ fn decode_comptime_output(
             crate::interpreter::ComptimeItemEmission::Source(source) => {
                 source_batch.push(source);
             }
-            crate::interpreter::ComptimeItemEmission::Syntax(item) => {
-                append_item_source_batch(&mut emitted, &mut source_batch)?;
+            crate::interpreter::ComptimeItemEmission::Syntax {
+                item,
+                definition_line,
+                hole_ancestry,
+            } => {
+                append_item_source_batch(
+                    &mut emitted,
+                    &mut origins,
+                    &mut source_batch,
+                    module_name,
+                    invocation_line,
+                )?;
+                let item_index = emitted.items.len();
                 emitted.items.push(*item);
                 emitted.item_lines.push(0);
+                record_emitted_items(
+                    &mut origins,
+                    emitted.items.len(),
+                    module_name,
+                    definition_line,
+                    invocation_line,
+                    item_index,
+                    &hole_ancestry,
+                );
             }
         }
     }
-    append_item_source_batch(&mut emitted, &mut source_batch)?;
-    Ok(emitted)
+    append_item_source_batch(
+        &mut emitted,
+        &mut origins,
+        &mut source_batch,
+        module_name,
+        invocation_line,
+    )?;
+    Ok((emitted, origins))
 }
 
-fn append_item_source_batch(into: &mut Module, source_batch: &mut Vec<String>) -> Result<(), String> {
+fn append_item_source_batch(
+    into: &mut Module,
+    into_origins: &mut OriginTable,
+    source_batch: &mut Vec<String>,
+    module_name: &str,
+    invocation_line: u32,
+) -> Result<(), String> {
     if source_batch.is_empty() {
         return Ok(());
     }
@@ -323,11 +389,53 @@ fn append_item_source_batch(into: &mut Module, source_batch: &mut Vec<String>) -
             "emit_item received source that does not parse: {e}\n--- emitted item source ---\n{source}"
         )
     })?;
-    append_unstamped_module(into, parsed);
+    let mut parsed_origins = OriginTable::default();
+    record_emitted_items(
+        &mut parsed_origins,
+        parsed.items.len(),
+        module_name,
+        invocation_line,
+        invocation_line,
+        0,
+        &[],
+    );
+    append_unstamped_module(into, into_origins, parsed, parsed_origins);
     Ok(())
 }
 
-fn append_unstamped_module(into: &mut Module, mut from: Module) {
+fn record_emitted_items(
+    origins: &mut OriginTable,
+    item_len: usize,
+    module_name: &str,
+    definition_line: u32,
+    invocation_line: u32,
+    start: usize,
+    holes: &[crate::interpreter::ComptimeHoleOrigin],
+) {
+    let origin = ExpansionOrigin {
+        definition: SourceSpan::line(module_name, definition_line),
+        invocation: SourceSpan::line(module_name, invocation_line),
+        hole_ancestry: holes
+            .iter()
+            .map(|hole| witchy_syntax::origin::HoleOrigin {
+                category: hole.category,
+                definition: SourceSpan::line(module_name, hole.definition_line),
+                invocation: SourceSpan::line(module_name, hole.invocation_line),
+            })
+            .collect(),
+    };
+    for item in start..item_len {
+        origins.record_item(module_name, item, origin.clone());
+    }
+}
+
+fn append_unstamped_module(
+    into: &mut Module,
+    into_origins: &mut OriginTable,
+    mut from: Module,
+    from_origins: OriginTable,
+) {
+    let item_offset = into.items.len();
     for import in from.imports {
         if !into.imports.contains(&import) {
             into.imports.push(import);
@@ -342,6 +450,7 @@ fn append_unstamped_module(into: &mut Module, mut from: Module) {
     into.compiler_pattern_syntax.append(&mut from.compiler_pattern_syntax);
     into.compiler_stmt_syntax.append(&mut from.compiler_stmt_syntax);
     into.compiler_block_syntax.append(&mut from.compiler_block_syntax);
+    into_origins.append_shifted(from_origins, item_offset);
 }
 
 fn reachable_local_items(items: &[Item], root: &Block) -> Vec<Item> {
@@ -369,13 +478,44 @@ fn reachable_local_items(items: &[Item], root: &Block) -> Vec<Item> {
     out
 }
 
-fn normalize_generated_module(module: Module) -> Result<Module, String> {
+fn normalize_generated_module(
+    module_name: &str,
+    module: Module,
+    origins: &mut OriginTable,
+) -> Result<Module, String> {
+    let generator_mapping = generator_item_mapping(&module);
     let module = witchy_syntax::generators::lower(module)?;
+    origins.remap_items(module_name, &generator_mapping);
     let module = witchy_syntax::async_lower::lower(module)?;
     witchy_syntax::records::lower_lenient(module)
 }
 
-fn merge_emitted_module(module: &mut Module, emitted: Module, block_line: u32) {
+/// Mirror only the item-count/order part of generator lowering so side-table
+/// addresses follow helper/wrapper fanout without coupling origins to names.
+fn generator_item_mapping(module: &Module) -> Vec<Vec<usize>> {
+    let mut next = 0usize;
+    module.items.iter().map(|item| {
+        let count = match item {
+            Item::Function(function) if function.is_gen => 2,
+            Item::Impl(block) => {
+                block.methods.iter().filter(|method| method.is_gen).count() + 1
+            }
+            _ => 1,
+        };
+        let mapped = (next..next + count).collect();
+        next += count;
+        mapped
+    }).collect()
+}
+
+fn merge_emitted_module(
+    module: &mut Module,
+    origins: &mut OriginTable,
+    emitted: (Module, OriginTable),
+    block_line: u32,
+) {
+    let (emitted, emitted_origins) = emitted;
+    let item_offset = module.items.len();
     for imp in emitted.imports {
         if !module.imports.contains(&imp) {
             module.imports.push(imp);
@@ -392,6 +532,7 @@ fn merge_emitted_module(module: &mut Module, emitted: Module, block_line: u32) {
     module.compiler_stmt_syntax.extend(emitted.compiler_stmt_syntax);
     module.compiler_block_syntax.extend(emitted.compiler_block_syntax);
     let n = emitted.items.len();
+    origins.append_shifted(emitted_origins, item_offset);
     for mut item in emitted.items {
         // The emitted items were parsed from a standalone blob, so every line
         // number they carry is relative to that invisible text — a phantom offset
@@ -588,11 +729,11 @@ pub fn expand_compile_time(
     name: &str,
     module: &mut Module,
     siblings: &[(String, Module)],
-) -> Result<(), String> {
-    expand(name, module)?;
+) -> Result<OriginTable, String> {
+    let mut origins = expand_with_origins(name, module)?;
     crate::tagged::expand(name, module, siblings)?;
     if name != "comptime" {
-        strip_comptime_only_functions(module);
+        strip_comptime_only_functions(name, module, &mut origins);
         // All compiler-owned handles have either been emitted or were confined
         // to stripped compile-time helpers. Runtime type checking/codegen never
         // need the payload table, and persistent expanded-module caches should
@@ -604,10 +745,10 @@ pub fn expand_compile_time(
         module.compiler_stmt_syntax.clear();
         module.compiler_block_syntax.clear();
     }
-    Ok(())
+    Ok(origins)
 }
 
-fn strip_comptime_only_functions(module: &mut Module) {
+fn strip_comptime_only_functions(name: &str, module: &mut Module, origins: &mut OriginTable) {
     if !module.items.iter().any(|item| {
         matches!(item, Item::Function(Function { comptime_only: true, .. }))
     }) {
@@ -618,8 +759,11 @@ fn strip_comptime_only_functions(module: &mut Module) {
     let old_items = std::mem::take(&mut module.items);
     let mut new_items = Vec::with_capacity(old_items.len());
     let mut new_lines = Vec::with_capacity(old_lines.len());
+    let retained: Vec<bool> = old_items.iter().map(|item| {
+        !matches!(item, Item::Function(Function { comptime_only: true, .. }))
+    }).collect();
     for (idx, item) in old_items.into_iter().enumerate() {
-        if matches!(item, Item::Function(Function { comptime_only: true, .. })) {
+        if !retained[idx] {
             continue;
         }
         new_items.push(item);
@@ -631,10 +775,139 @@ fn strip_comptime_only_functions(module: &mut Module) {
     if had_lines {
         module.item_lines = new_lines;
     }
+    origins.retain_items(name, &retained);
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn typed_item_origin_survives_expansion_and_linking() {
+        let src = r#"
+import meta
+
+comptime fn build() -> ItemSyntax:
+    quote item:
+        pub fn generated() -> Int:
+            7
+
+comptime:
+    emit_item(build())
+
+fn main(console: Console):
+    console.print("${generated()}")
+"#;
+
+        let module = witchy_syntax::parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link_with_origins(vec![("main".into(), module)], "main")
+            .expect("link with generated origins");
+        let (index, _) = linked.module.items.iter().enumerate().find(|(_, item)| {
+            matches!(item, witchy_syntax::ast::Item::Function(function)
+                if function.name.ends_with("generated"))
+        }).expect("generated function");
+        let generated = linked.origins.origin_for_item(index).expect("persistent item origin");
+
+        assert_eq!(generated.id.module, "main");
+        assert_eq!(generated.origin.definition.start.line, 5);
+        assert_eq!(generated.origin.invocation.start.line, 9);
+        assert!(generated.origin.hole_ancestry.is_empty());
+        assert!(linked.module.compiler_item_syntax.is_empty());
+        let ordinary = crate::pipeline::link(
+            vec![(
+                "main".into(),
+                witchy_syntax::parser::parse_module(src).expect("reparse"),
+            )],
+            "main",
+        ).expect("ordinary runtime link");
+        assert_eq!(linked.module, ordinary, "origin collection must not alter backend AST");
+        witchy_types::typeck::check(&linked.module).expect("typecheck unchanged runtime AST");
+    }
+
+    #[test]
+    fn structural_item_hole_ancestry_survives_linking() {
+        let src = r#"
+import meta
+
+comptime fn build() -> ItemSyntax:
+    let leaf = quote expr:
+        7
+    let value = quote expr:
+        ${leaf}
+    quote item:
+        pub fn generated_with_hole() -> Int:
+            ${value}
+
+comptime:
+    emit_item(build())
+
+fn main(console: Console):
+    console.print("${generated_with_hole()}")
+"#;
+
+        let module = witchy_syntax::parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link_with_origins(vec![("main".into(), module)], "main")
+            .expect("link with structural hole origins");
+        let (index, _) = linked.module.items.iter().enumerate().find(|(_, item)| {
+            matches!(item, witchy_syntax::ast::Item::Function(function)
+                if function.name.ends_with("generated_with_hole"))
+        }).expect("generated function");
+        let generated = linked.origins.origin_for_item(index).expect("persistent item origin");
+
+        assert_eq!(generated.origin.hole_ancestry.len(), 2);
+        assert_eq!(
+            generated.origin.hole_ancestry[0].category,
+            witchy_syntax::origin::SyntaxCategory::Expr,
+        );
+        assert_eq!(generated.origin.hole_ancestry[0].definition.start.line, 7);
+        assert_eq!(generated.origin.hole_ancestry[0].invocation.start.line, 9);
+        assert_eq!(generated.origin.hole_ancestry[1].definition.start.line, 5);
+        assert_eq!(generated.origin.hole_ancestry[1].invocation.start.line, 7);
+    }
+
+    #[test]
+    fn identical_hole_source_keeps_distinct_definition_sites() {
+        let src = r#"
+import meta
+
+comptime fn build() -> ItemSyntax:
+    let first = quote expr:
+        7
+    let second = quote expr:
+        7
+    quote item:
+        pub fn generated_from_twins() -> Int:
+            ${first} + ${second}
+
+comptime:
+    emit_item(build())
+
+fn main(console: Console):
+    console.print("${generated_from_twins()}")
+"#;
+
+        let module = witchy_syntax::parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link_with_origins(vec![("main".into(), module)], "main")
+            .expect("link with distinct structural hole origins");
+        let generated = linked.origins.nodes().iter().find(|entry| {
+            linked.module.items.get(entry.node.item as usize).is_some_and(|item| {
+                matches!(item, witchy_syntax::ast::Item::Function(function)
+                    if function.name.ends_with("generated_from_twins"))
+            })
+        }).expect("generated function origin");
+
+        let definitions: Vec<u32> = generated
+            .origin
+            .hole_ancestry
+            .iter()
+            .map(|hole| hole.definition.start.line)
+            .collect();
+        assert_eq!(definitions, vec![5, 7]);
+        assert!(generated
+            .origin
+            .hole_ancestry
+            .iter()
+            .all(|hole| hole.invocation.start.line == 9));
+    }
+
     #[test]
     fn generated_item_budget_allows_the_exact_boundary() {
         let src = r#"

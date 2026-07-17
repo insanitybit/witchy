@@ -30,6 +30,7 @@ pub mod lexer;
 pub mod linker;
 pub mod opt;
 pub mod optimize;
+pub mod origin;
 pub mod parser;
 pub mod records;
 pub mod reflect;

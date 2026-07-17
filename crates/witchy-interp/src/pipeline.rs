@@ -14,6 +14,19 @@ pub fn link(modules: Vec<(String, Module)>, entry: &str) -> Result<Module, LinkE
     link_with_mode(modules, entry, LinkMode::Production)
 }
 
+/// Link once and retain RFC-0080 generated-node origins for tooling. Runtime
+/// callers continue to use [`link`] and receive the identical expanded AST.
+pub fn link_with_origins(
+    modules: Vec<(String, Module)>,
+    entry: &str,
+) -> Result<witchy_syntax::linker::LinkedModule, LinkError> {
+    witchy_syntax::linker::link_with_origins(
+        modules,
+        entry,
+        crate::comptime::expand_compile_time,
+    )
+}
+
 pub fn link_with_mode(
     modules: Vec<(String, Module)>,
     entry: &str,

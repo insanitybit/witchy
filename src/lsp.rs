@@ -23,6 +23,7 @@ pub fn run() -> LspResult {
         "textDocumentSync": 1,
         "completionProvider": {},
         "hoverProvider": true,
+        "documentSymbolProvider": true,
     }))?;
     main_loop(&connection)?;
     io_threads.join()?;
@@ -40,6 +41,9 @@ fn main_loop(connection: &Connection) -> LspResult {
                 let result = match req.method.as_str() {
                     "textDocument/completion" => Some(completion_response(&docs, &req.params)),
                     "textDocument/hover" => Some(hover_response(&docs, &req.params)),
+                    "textDocument/documentSymbol" => {
+                        Some(document_symbol_response(&docs, &req.params))
+                    }
                     _ => None,
                 };
                 if let Some(result) = result {
@@ -55,6 +59,135 @@ fn main_loop(connection: &Connection) -> LspResult {
         }
     }
     Ok(())
+}
+
+// --- document symbols ------------------------------------------------------
+
+/// Index handwritten entry declarations plus declarations produced by
+/// compile-time expansion. Generated symbols carry their typed origin contract
+/// in `data`; their visible range is the invocation span in the source buffer.
+fn document_symbol_response(docs: &HashMap<String, String>, params: &Value) -> Value {
+    let Some(uri) = params["textDocument"]["uri"].as_str() else {
+        return json!([]);
+    };
+    let Some(text) = docs.get(uri) else {
+        return json!([]);
+    };
+    let Some((entry, parsed, linked)) = link_document_with_origins(uri, text, docs) else {
+        return json!([]);
+    };
+
+    let mut symbols = Vec::new();
+    for (index, item) in parsed.items.iter().enumerate() {
+        let Some((name, kind)) = item_symbol(item) else { continue };
+        let source_line = parsed.item_lines.get(index).copied().unwrap_or(1);
+        if source_line == u32::MAX {
+            continue;
+        }
+        let line = source_line.saturating_sub(1);
+        symbols.push(document_symbol(name, kind, line, text, None));
+    }
+
+    for generated in linked.origins.nodes() {
+        if generated.origin.invocation.module != entry
+            || !generated.node.path.is_empty()
+            || generated.node.category != witchy::origin::SyntaxCategory::Item
+        {
+            continue;
+        }
+        let Some(item) = linked.module.items.get(generated.node.item as usize) else { continue };
+        let Some((name, kind)) = item_symbol(item) else { continue };
+        let prefix = format!("{entry}.");
+        let name = name.strip_prefix(&prefix).unwrap_or(name);
+        if name.starts_with("__") {
+            continue;
+        }
+        let line = generated.origin.invocation.start.line.saturating_sub(1);
+        symbols.push(document_symbol(
+            name,
+            kind,
+            line,
+            text,
+            Some(json!({
+                "generated": true,
+                "id": {
+                    "module": &generated.id.module,
+                    "ordinal": generated.id.ordinal,
+                },
+                "origin": &generated.origin,
+            })),
+        ));
+    }
+    json!(symbols)
+}
+
+fn document_symbol(name: &str, kind: u32, line0: u32, text: &str, data: Option<Value>) -> Value {
+    let end = line_len(text, line0).max(1);
+    let mut symbol = json!({
+        "name": name,
+        "kind": kind,
+        "range": {
+            "start": { "line": line0, "character": 0 },
+            "end": { "line": line0, "character": end },
+        },
+        "selectionRange": {
+            "start": { "line": line0, "character": 0 },
+            "end": { "line": line0, "character": end },
+        },
+    });
+    if let Some(data) = data {
+        symbol["detail"] = json!("generated");
+        symbol["data"] = data;
+    }
+    symbol
+}
+
+fn item_symbol(item: &ast::Item) -> Option<(&str, u32)> {
+    match item {
+        ast::Item::Function(function) => Some((&function.name, 12)),
+        ast::Item::Type(definition) => Some((&definition.name, 23)),
+        ast::Item::Trait(definition) => Some((&definition.name, 11)),
+        ast::Item::Const { name, .. } => Some((name, 14)),
+        ast::Item::TypeAlias { name, .. } => Some((name, 5)),
+        ast::Item::Impl(_) | ast::Item::Comptime(_) => None,
+    }
+}
+
+fn link_document_with_origins(
+    uri: &str,
+    text: &str,
+    docs: &HashMap<String, String>,
+) -> Option<(String, ast::Module, crate::linker::LinkedModule)> {
+    let path = uri_to_path(uri);
+    let dir = path.as_ref()?.parent().map(PathBuf::from)?;
+    let entry = path.as_ref()?.file_stem()?.to_str()?.to_string();
+    let parsed = parser::parse_module(text).ok()?;
+    let mut modules = vec![(entry.clone(), parsed.clone())];
+    let mut loaded = HashSet::from([entry.clone()]);
+    let mut queue: VecDeque<String> = parsed.imports.iter().cloned().collect();
+    queue.extend(parsed.from_imports.iter().map(|(name, _)| name.clone()));
+    while let Some(name) = queue.pop_front() {
+        if !loaded.insert(name.clone()) {
+            continue;
+        }
+        let sibling = dir.join(format!("{name}.witchy"));
+        let source = open_buffer(&sibling, docs)
+            .or_else(|| std::fs::read_to_string(&sibling).ok())
+            .or_else(|| crate::bundled_module(&name).map(str::to_string))?;
+        let module = parser::parse_module(&source).ok()?;
+        queue.extend(module.imports.iter().filter(|name| !loaded.contains(*name)).cloned());
+        queue.extend(
+            module
+                .from_imports
+                .iter()
+                .map(|(name, _)| name)
+                .filter(|name| !loaded.contains(*name))
+                .cloned(),
+        );
+        modules.push((name, module));
+    }
+    let linked = crate::pipeline::link_with_origins(modules, &entry).ok()?;
+    Some((entry, parsed, linked))
 }
 
 // --- completion -------------------------------------------------------------

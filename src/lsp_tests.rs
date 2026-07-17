@@ -31,6 +31,41 @@
     }
 
     #[test]
+    fn document_symbols_include_generated_items_with_typed_origins() {
+        let src = r#"import meta
+
+comptime fn build() -> ItemSyntax:
+    quote item:
+        pub fn generated() -> Int:
+            7
+
+comptime:
+    emit_item(build())
+
+fn main(console: Console):
+    console.print("${generated()}")
+"#;
+        let uri = "file:///tmp/main.witchy";
+        let mut docs = HashMap::new();
+        docs.insert(uri.to_string(), src.to_string());
+        let response = document_symbol_response(
+            &docs,
+            &json!({ "textDocument": { "uri": uri } }),
+        );
+        let symbols = response.as_array().expect("document symbols");
+        assert!(symbols.iter().any(|symbol| symbol["name"] == json!("main")));
+        let generated = symbols.iter().find(|symbol| {
+            symbol["name"].as_str().is_some_and(|name| name.ends_with("generated"))
+                && symbol["data"]["generated"] == json!(true)
+        }).expect("generated symbol");
+
+        assert_eq!(generated["range"]["start"]["line"], json!(7));
+        assert_eq!(generated["data"]["origin"]["definition"]["start"]["line"], json!(4));
+        assert_eq!(generated["data"]["origin"]["invocation"]["start"]["line"], json!(8));
+        assert_eq!(generated["data"]["origin"]["hole_ancestry"], json!([]));
+    }
+
+    #[test]
     fn async_and_generator_hover_preserve_function_kind() {
         let mut docs = HashMap::new();
         let generators = include_str!("../examples/generators/src/generators.witchy");

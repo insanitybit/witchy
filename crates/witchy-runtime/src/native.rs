@@ -686,8 +686,9 @@ mod compiler {
             _name: &str,
             module: &mut Module,
             _siblings: &[(String, Module)],
-        ) -> Result<(), String> {
-            reject_comptime(module, "compiler source-string introspection")
+        ) -> Result<witchy_syntax::origin::OriginTable, String> {
+            reject_comptime(module, "compiler source-string introspection")?;
+            Ok(witchy_syntax::origin::OriginTable::default())
         }
 
         let entry = parse_source_only_module(src, op)?;

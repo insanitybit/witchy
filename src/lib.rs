@@ -21,7 +21,7 @@ pub use witchy_lower::{analysis, codegen, escape};
 // `crate::{ast,lexer,parser,aliases,consts,fmt,…}::…` paths unchanged.
 pub use witchy_syntax::{
     aliases, ast, async_lower, build_entry, consts, derive, doc, fmt, format, generators,
-    lambda_scan, lexer, linker, opt, optimize, parser, records, reflect,
+    lambda_scan, lexer, linker, opt, optimize, origin, parser, records, reflect,
 };
 // RFC-0030: deterministic optimization counters (`witchy stats`) — native-only
 // (needs the wasmtime sandbox to run a program and read its counters).
