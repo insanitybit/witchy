@@ -7610,7 +7610,7 @@ impl<'types> Codegen<'types> {
                         dests: vec![call_result_tmp(result_kind), receiver_name.clone()],
                     });
                     seq.push(N::Push(W::GetLocal(call_result_tmp(result_kind))));
-                } else if matches!(conventions.first(), Some(Convention::Let | Convention::Borrow)) {
+                } else if matches!(conventions.first(), Some(Convention::Let | Convention::Borrow | Convention::Own)) {
                     seq.push(N::Push(W::CallIndirect {
                         signature: witchy_wir::wir::ClosureSignature {
                             params: signature_params,

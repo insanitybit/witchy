@@ -1096,6 +1096,27 @@ fn main() -> Int:
     }
 
     #[test]
+    fn existential_own_receiver_consumes_the_erased_payload() {
+        let src = r#"
+trait Consume:
+    fn take(own self) -> Int
+
+type Box:
+    Box(Int)
+
+impl Consume for Box:
+    fn take(own self) -> Int:
+        match self:
+            Box(value) -> value
+
+fn main() -> Int:
+    let item: dyn Consume = Box(27)
+    item.take()
+"#;
+        assert_eq!(run_int(src), 27);
+    }
+
+    #[test]
     fn full_int_program() {
         let src = r#"
 fn double(n: Int) -> Int:

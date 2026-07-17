@@ -1091,11 +1091,10 @@ fn build_existential_adapter_funcs(
             })
         })?;
         for (slot_index, slot) in witness.slots.iter().enumerate() {
-            if slot.receiver == Convention::Own
-                || slot.conventions.iter().any(|convention| *convention != Convention::Let)
+            if slot.conventions.iter().any(|convention| *convention != Convention::Let)
             {
                 return unsupported(format!(
-                    "RFC-0081 Wasm adapter for `{}`.{} with `own` or `var` explicit parameters is not lowered yet",
+                    "RFC-0081 Wasm adapter for `{}`.{} with `var` explicit parameters is not lowered yet",
                     slot.owner_trait, slot.method
                 ));
             }
@@ -1174,6 +1173,24 @@ fn build_existential_adapter_funcs(
                     ],
                 }));
                 ret.push(WirTy::GcRef(EXISTENTIAL_WRAPPER_ID));
+            } else if slot.receiver == Convention::Own {
+                // The public existential ABI consumes just the erased receiver.
+                // Its concrete own-ABI token is internal to the adapter: no
+                // existential payload is reconstructed after an owning call.
+                if cg.summaries.own_abi(&slot.adapter).is_some() {
+                    let result_local = format!("__dynw{0}_{1}_result", witness.id, slot_index);
+                    locals.push(WirLocal { name: result_local.clone(), ty: result_ty });
+                    args.push(E::ConstI32(0));
+                    body.push(N::CallStoreMulti {
+                        func: slot.adapter.clone(),
+                        args,
+                        dests: vec![result_local.clone(), "__dynw_owncap".to_string()],
+                    });
+                    body.push(N::Push(E::GetLocal(result_local)));
+                    locals.push(WirLocal { name: "__dynw_owncap".to_string(), ty: WirTy::Bool });
+                } else {
+                    body.push(N::Push(E::Call { func: slot.adapter.clone(), args }));
+                }
             } else {
                 body.push(N::Push(E::Call { func: slot.adapter.clone(), args }));
             }
