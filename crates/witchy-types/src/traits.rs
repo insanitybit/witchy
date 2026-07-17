@@ -3132,7 +3132,6 @@ impl Ctx<'_> {
                                     slot,
                                     result,
                                 };
-                                return;
                             }
                             Err(message) => self.missing_impls.borrow_mut().push(message),
                         }
