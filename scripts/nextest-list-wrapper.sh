@@ -10,6 +10,14 @@ set -euo pipefail
 # Either key is per-run, so a killed gate cannot block a later gate.
 root="${TMPDIR:-/tmp}/witchy-nextest-list-${NEXTEST_RUN_ID:-$PPID}"
 jobs="${WITCHY_NEXTEST_LIST_JOBS:-4}"
+runner_pid="$PPID"
+binary_name="$(basename "$1")"
+normal_done="$root/normal-done-$binary_name"
+normal_owner="$root/normal-owner-$binary_name"
+ignored=0
+for arg in "$@"; do
+    [ "$arg" = "--ignored" ] && ignored=1
+done
 case "$jobs" in
     '' | *[!0-9]* | 0)
         echo "nextest-list-wrapper: WITCHY_NEXTEST_LIST_JOBS must be a positive integer" >&2
@@ -49,6 +57,39 @@ if ! mkdir -p "$root" 2>/dev/null; then
     exec "$@"
 fi
 
+# Nextest launches each binary's ordinary and `--ignored` discovery passes at
+# the same time. On macOS that makes both processes pay the cold first-exec
+# codesign/page-in cost for the same freshly linked ~100 MB binary. Let the
+# ordinary pass warm that binary before its ignored pass starts. The ignored
+# waiter deliberately holds NO global slot, so other binaries still discover
+# up to `$jobs`-wide and a wave of waiters cannot deadlock the slot pool.
+#
+# The two passes are still both executed and their output is unchanged. This is
+# required for correctness: libtest's ordinary list includes ignored tests but
+# does not identify them, so nextest needs the second output to mark them.
+if [ "$ignored" -eq 1 ]; then
+    while [ ! -e "$normal_done" ]; do
+        # A SIGKILL cannot run the ordinary wrapper's cleanup. Its owner symlink
+        # lets the ignored peer fail closed instead of waiting forever.
+        owner="$(readlink "$normal_owner" 2>/dev/null || true)"
+        if [ -n "$owner" ] && ! pid_is_alive "$owner"; then
+            echo "nextest-list-wrapper: ordinary list process died for $binary_name" >&2
+            exit 1
+        fi
+        # If nextest itself exits, no process remains that can consume this
+        # output. Stop promptly rather than leaking an orphaned waiter.
+        if ! pid_is_alive "$runner_pid"; then
+            echo "nextest-list-wrapper: nextest parent exited while waiting for $binary_name" >&2
+            exit 1
+        fi
+        sleep 0.05
+    done
+else
+    # One ordinary pass exists per binary and run. A symlink records its PID so
+    # an untrappable death remains distinguishable from a slow healthy pass.
+    ln -s "$$" "$normal_owner" 2>/dev/null || true
+fi
+
 slot=""
 while [ -z "$slot" ]; do
     i=1
@@ -75,13 +116,27 @@ while [ -z "$slot" ]; do
 done
 
 cleanup() {
-    rm -f "$slot" 2>/dev/null || true
+    if [ -n "$slot" ]; then
+        rm -f "$slot" 2>/dev/null || true
+    fi
+    if [ "$ignored" -eq 0 ]; then
+        # Publish completion before removing the owner: waiters check the done
+        # marker first, so they can never mistake normal cleanup for SIGKILL.
+        : >"$normal_done" 2>/dev/null || true
+        rm -f "$normal_owner" 2>/dev/null || true
+    else
+        # The pair is complete. Avoid leaving a stale done marker if an older
+        # nextest without NEXTEST_RUN_ID eventually reuses the same parent PID.
+        rm -f "$normal_done" 2>/dev/null || true
+    fi
     # Deliberately do NOT rmdir "$root": reaping the shared root is what races
     # concurrent starters into the ENOENT spin above. The root is keyed by the
     # per-run NEXTEST_RUN_ID, so at most one empty dir per suite run lingers in
     # TMPDIR — the OS reaps it with the rest of the tmp dir.
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 record_progress "$1"
 "$@"
