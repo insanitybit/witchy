@@ -3525,6 +3525,11 @@ struct Checker {
     /// not have one first-class function value; value-position references need a
     /// targeted RFC-0050 diagnostic instead of the generic unbound-variable one.
     trait_method_names: HashSet<String>,
+    /// The source trait graph survives trait lowering only through this checker
+    /// context. It lets source checking reject an unrelated `dyn` conversion
+    /// before feature staging; final existential preparation validates the same
+    /// edge again before either runtime sees a compiler-owned upcast node.
+    trait_supertraits: HashMap<String, Vec<String>>,
     /// (BUG-308) The type parameters (name -> var id) of the function whose body is
     /// currently being checked, so a body `let`/`var` ascription's lowercase name
     /// (`let out: List(a) = …`) resolves to the SAME type-parameter var as the
@@ -5407,14 +5412,22 @@ impl Checker {
         let resolved_actual = self.resolve(actual);
         if let Ty::Dyn(actual_name, actual_args) = &resolved_actual {
             // Trait lowering has already erased declarations by the final
-            // annotation pass. Record a directed conversion here; the retained
-            // WitnessCatalog validates the exact supertrait edge before it can
-            // become a compiler-owned runtime node.
-            return Ok(
-                actual_name != dyn_name
-                    && expected_args.is_empty()
-                    && actual_args.is_empty(),
-            );
+            // annotation pass. Source checking retains the declaration graph,
+            // while final preparation validates the same edge against its
+            // retained WitnessCatalog before creating a runtime node.
+            let structural_ok = actual_name != dyn_name
+                && expected_args.is_empty()
+                && actual_args.is_empty();
+            if structural_ok
+                && !self.trait_supertraits.is_empty()
+                && !self.trait_has_supertrait(actual_name, dyn_name)
+            {
+                return terr(format!(
+                    "cannot convert `dyn {actual_name}` to unrelated `dyn {dyn_name}`; \
+                     `{dyn_name}` is not a supertrait of `{actual_name}`"
+                ));
+            }
+            return Ok(structural_ok);
         }
         if let Some(cap) = self.ty_carries_capability(&resolved_actual) {
             return terr(format!(
@@ -5426,6 +5439,27 @@ impl Checker {
             ));
         }
         Ok(true)
+    }
+
+    fn trait_has_supertrait(&self, child: &str, target: &str) -> bool {
+        let mut seen = HashSet::new();
+        let mut pending = self
+            .trait_supertraits
+            .get(child)
+            .cloned()
+            .unwrap_or_default();
+        while let Some(current) = pending.pop() {
+            if !seen.insert(current.clone()) {
+                continue;
+            }
+            if current == target {
+                return true;
+            }
+            if let Some(next) = self.trait_supertraits.get(&current) {
+                pending.extend(next.iter().cloned());
+            }
+        }
+        false
     }
 
     fn record_existential_pack(
@@ -8330,6 +8364,16 @@ fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) ->
     // after the rest of the check succeeds.
     let first_dyn = check_existential_types(&recs.items)?;
     let trait_method_names = collect_trait_method_names(&recs);
+    let trait_supertraits = recs
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Trait(definition) => {
+                Some((definition.name.clone(), definition.supertraits.clone()))
+            }
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
 
     // Trait/impl declarations are desugared to ordinary functions first, so the
     // checker only ever sees plain functions (a no-op for trait-free modules).
@@ -8338,7 +8382,13 @@ fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) ->
     match crate::traits::lower_checked(recs.clone()) {
         Ok(lowered) => {
             check_unique_parameters(&lowered)?;
-            run_check_with_trait_methods(&lowered, false, &trait_method_names, compiler_syntax_allowed)?;
+            run_check_with_trait_methods(
+                &lowered,
+                false,
+                &trait_method_names,
+                &trait_supertraits,
+                compiler_syntax_allowed,
+            )?;
             check_unique_capacity_results(&lowered)?;
             // (RFC-0083) Static lifetime/loan check for borrowed views. Runs after
             // type checking (so a genuine type error is reported first) on the
@@ -8370,6 +8420,7 @@ fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) ->
                         &crate::traits::lower(recs),
                         false,
                         &trait_method_names,
+                        &trait_supertraits,
                         compiler_syntax_allowed,
                     )
                 {
@@ -8621,7 +8672,15 @@ fn annotate_with_conversion_fns(
     module: Module,
     from_conversion_fns: Option<&HashSet<String>>,
 ) -> TypedModule {
-    let table = match run_check_selected(&module, true, None, None, from_conversion_fns, false) {
+    let table = match run_check_selected(
+        &module,
+        true,
+        None,
+        None,
+        None,
+        from_conversion_fns,
+        false,
+    ) {
         Ok(Some(table)) => table,
         Err(e) => {
             if std::env::var_os("WITCHY_DEBUG_ANNOTATE").is_some() {
@@ -8671,7 +8730,15 @@ pub(crate) fn check_selected_lowered(
     names: &HashSet<String>,
     from_conversion_fns: &HashSet<String>,
 ) -> Result<(), TypeError> {
-    run_check_selected(module, false, Some(names), None, Some(from_conversion_fns), false)
+    run_check_selected(
+        module,
+        false,
+        Some(names),
+        None,
+        None,
+        Some(from_conversion_fns),
+        false,
+    )
         .map(|_| ())
 }
 
@@ -8679,6 +8746,7 @@ fn run_check_with_trait_methods(
     module: &Module,
     record: bool,
     trait_method_names: &HashSet<String>,
+    trait_supertraits: &HashMap<String, Vec<String>>,
     compiler_syntax_allowed: bool,
 ) -> Result<Option<TypeTable>, TypeError> {
     run_check_selected(
@@ -8686,6 +8754,7 @@ fn run_check_with_trait_methods(
         record,
         None,
         Some(trait_method_names),
+        Some(trait_supertraits),
         None,
         compiler_syntax_allowed,
     )
@@ -8696,6 +8765,7 @@ fn run_check_selected(
     record: bool,
     selected_functions: Option<&HashSet<String>>,
     trait_method_names: Option<&HashSet<String>>,
+    trait_supertraits: Option<&HashMap<String, Vec<String>>>,
     from_conversion_fns: Option<&HashSet<String>>,
     compiler_syntax_allowed: bool,
 ) -> Result<Option<TypeTable>, TypeError> {
@@ -8722,6 +8792,18 @@ fn run_check_selected(
         fn_typarams: HashMap::new(),
         fn_bounds: HashMap::new(),
         trait_method_names: trait_method_names.cloned().unwrap_or_else(|| collect_trait_method_names(module)),
+        trait_supertraits: trait_supertraits.cloned().unwrap_or_else(|| {
+            module
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    Item::Trait(definition) => {
+                        Some((definition.name.clone(), definition.supertraits.clone()))
+                    }
+                    _ => None,
+                })
+                .collect()
+        }),
         current_typarams: HashMap::new(),
         current_bounds: Vec::new(),
         subst: HashMap::new(),

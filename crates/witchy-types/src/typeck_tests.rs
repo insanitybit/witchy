@@ -3635,6 +3635,24 @@ fn main():
     }
 
     #[test]
+    fn rfc0081_unrelated_dyn_conversion_fails_before_feature_staging() {
+        let err = check_str(
+            "trait Render:\n    fn render(let self) -> String\n\n\
+             trait Inspect:\n    fn inspect(let self) -> String\n\n\
+             type Label:\n    tag: String\n\n\
+             impl Render for Label:\n    fn render(let self) -> String:\n        self.tag\n\n\
+             impl Inspect for Label:\n    fn inspect(let self) -> String:\n        self.tag\n\n\
+             fn recast(value: dyn Render) -> dyn Inspect:\n    value\n\n\
+             fn main(console: Console):\n    console.print(\"hi\")\n",
+        )
+        .expect_err("unrelated existential conversion must be rejected by source checking");
+        assert!(
+            err.contains("cannot convert `dyn Render` to unrelated `dyn Inspect`"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn typed_capability_ascription_does_not_retain_broader_rights() {
         let err = check_str(
             "fn misuse(dir: Dir):\n\
