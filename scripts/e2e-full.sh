@@ -83,14 +83,16 @@ fn main(console: Console):
     var total = 0
     for s in shapes:
         total = total + area(s)
-    print(console, "total: ${total}")
+    console.print("total: ${total}")
     let add = fn(n: Int): n + total
-    print(console, "${add(1)}")
-    print(console, "${[1, 2] == [1, 2]}")
-    print(console, "${Some("a") == Some("a")}")
-    let d = dict.insert(dict.insert(dict.new(), "k", 1), "j", 2)
-    print(console, "${dict.get_or(d, "j", 0)}")
-    print(console, "${1500ms < 2s}")
+    console.print("${add(1)}")
+    console.print("${[1, 2] == [1, 2]}")
+    console.print("${Some("a") == Some("a")}")
+    var d: Dict(String, Int) = dict.new()
+    d.insert("k", 1)
+    d.insert("j", 2)
+    console.print("${dict.get_or(d, "j", 0)}")
+    console.print("${1500ms < 2s}")
 EOF
 WANT="$(printf 'total: 21\n22\ntrue\ntrue\n2\ntrue')"
 GOT_INTERP="$("$BIN" "$WORK/lang.witchy")"
@@ -108,7 +110,7 @@ expect_contains "type-checks standalone" "" "$("$BIN" check "$WORK/lang.witchy" 
 test -n "$("$BIN" emit-wat "$WORK/lang.witchy")" && ok "emit-wat produces a module"
 
 stage "3. The formatter: canonical and idempotent"
-printf 'fn main(console: Console):\n        print(console,"x")\n' > "$WORK/ugly.witchy"
+printf 'fn main(console: Console):\n        console.print("x")\n' > "$WORK/ugly.witchy"
 "$BIN" fmt "$WORK/ugly.witchy" >/dev/null
 "$BIN" fmt --check "$WORK/ugly.witchy" >/dev/null && ok "fmt then fmt --check passes"
 ONCE="$(cat "$WORK/ugly.witchy")"
@@ -140,19 +142,19 @@ expect_contains "failure carries the message" "deliberately wrong" "$("$BIN" tes
 stage "5. Capability auditing: footprints are computed, widening is loud"
 cat > "$WORK/v1.witchy" <<'EOF'
 pub fn load(dir: Dir[Read], name: String) -> String:
-    read(dir, name)
+    dir.read(name)
 
 fn main(console: Console, dir: Dir[Read]):
-    print(console, load(dir, "x"))
+    console.print(load(dir, "x"))
 EOF
 expect_contains "caps reports the rights-split footprint" "Dir[Read]" "$("$BIN" caps "$WORK/v1.witchy")"
 cat > "$WORK/v2.witchy" <<'EOF'
 pub fn load(dir: Dir, name: String) -> String:
-    write(dir, "audit.log", name)
-    read(dir, name)
+    dir.write("audit.log", name)
+    dir.read(name)
 
 fn main(console: Console, dir: Dir):
-    print(console, load(dir, "x"))
+    console.print(load(dir, "x"))
 EOF
 set +e
 "$BIN" caps-diff "$WORK/v1.witchy" "$WORK/v2.witchy" >/dev/null 2>&1
@@ -168,12 +170,12 @@ import option
 import string
 
 fn main(console: Console, env: Env, dir: Dir[Read], args: List(String)) -> Int:
-    let label = match get_env(env, "E2E_LABEL"):
+    let label = match env.get_env("E2E_LABEL"):
         Some(v) -> v
         None -> "unset"
-    for line in string.lines(read(dir, list.at(args, 0))):
+    for line in string.lines(dir.read(list.at(args, 0))):
         if string.contains(line, "needle"):
-            print(console, label + ": " + line)
+            console.print(label + ": " + line)
     0
 EOF
 GOT="$(E2E_LABEL=found "$BIN" sandbox --dir "$WORK/jail" "$WORK/grep.witchy" data.txt 2>/dev/null)"
@@ -181,13 +183,13 @@ expect_eq "sandboxed Dir+Env+argv program" "found: find the needle here" "$GOT"
 printf 'secret\n' > "$WORK/outside.txt"
 cat > "$WORK/escape.witchy" <<'EOF'
 fn main(console: Console, dir: Dir[Read]):
-    print(console, read(dir, "../outside.txt"))
+    console.print(dir.read("../outside.txt"))
 EOF
 expect_fails "a ../ escape is refused by the VM" "$BIN" sandbox --dir "$WORK/jail" "$WORK/escape.witchy"
 cat > "$WORK/dialer.witchy" <<'EOF'
 fn main(console: Console, net: Net[Connect]):
-    let sock = connect(net, "203.0.113.1:80")
-    print(console, "connected")
+    let sock = net.connect("203.0.113.1:80")
+    console.print("connected")
 EOF
 expect_fails "an address outside the --net allowlist is refused" "$BIN" sandbox "$WORK/dialer.witchy"
 
@@ -195,22 +197,37 @@ stage "7. The registry lifecycle, from nothing"
 export WITCHY_HOME="$WORK/home"
 mkdir -p "$WORK/idp" "$WORK/registry"
 PUBHEX="$("$BIN" coven-gen-issuer --out "$WORK/idp")"
-"$BIN" coven-serve --addr 127.0.0.1:0 --root "$WORK/registry" \
-    --trust-issuer "local-idp=$PUBHEX" > "$WORK/server.log" &
+printf '%064d' 1 > "$WORK/registry-signing.seed"
+PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+export COVEN_URL="http://127.0.0.1:$PORT"
+"$BIN" coven-serve --addr "127.0.0.1:$PORT" --root "$WORK/registry" \
+    --signing-key "$WORK/registry-signing.seed" \
+    --trust-issuer "local-idp=$PUBHEX" > "$WORK/server.log" 2>&1 &
 SERVER_PID=$!
-for _ in $(seq 1 50); do grep -q "http://" "$WORK/server.log" 2>/dev/null && break; sleep 0.1; done
-export COVEN_URL="$(grep -o 'http://[^ ]*' "$WORK/server.log" | head -1)"
+for _ in $(seq 1 100); do
+    grep -q "coven serving" "$WORK/server.log" 2>/dev/null && break
+    kill -0 "$SERVER_PID" 2>/dev/null || die "coven-serve exited during startup: $(cat "$WORK/server.log")"
+    sleep 0.1
+done
+grep -q "coven serving" "$WORK/server.log" 2>/dev/null \
+    || die "coven-serve did not become ready at $COVEN_URL: $(cat "$WORK/server.log")"
 ok "coven-serve up at $COVEN_URL"
 
 mint() { "$BIN" coven-mint-token --issuer-key "$WORK/idp" --issuer local-idp "$@"; }
 CI_TOKEN="$(mint --sub "repo:acme/logger-repo:ref:refs/heads/main" \
-    --claim repository=acme/logger-repo --claim workflow_ref=release.yml --claim ref=refs/heads/main)"
-ALICE="$(mint --sub alice)"
+    --claim repository=acme/logger-repo --claim workflow_ref=release.yml \
+    --claim ref=refs/heads/main --claim release=1.0.0)"
+ALICE="$(mint --sub alice --claim amr=webauthn --claim release=1.0.0)"
+ok "trusted-publishing identity tokens minted"
 
 mkdir -p "$WORK/logger/src"
 printf '[rune]\nname = "acme/logger"\nversion = "1.0.0"\n' > "$WORK/logger/witchy.toml"
 printf 'pub fn line(s: String) -> String:\n    "[log] " + s\n' > "$WORK/logger/src/logger.witchy"
-(cd "$WORK/logger" && WITCHY_USER=ci-bot COVEN_ID_TOKEN="$CI_TOKEN" "$BIN" publish >/dev/null)
+set +e
+PUBLISH_OUT="$(cd "$WORK/logger" && WITCHY_USER=ci-bot COVEN_ID_TOKEN="$CI_TOKEN" "$BIN" publish . 2>&1)"
+PUBLISH_CODE=$?
+set -e
+[ "$PUBLISH_CODE" -eq 0 ] || die "trusted publish failed: $PUBLISH_OUT"
 ok "trusted publish (lands STAGED)"
 
 mkdir -p "$WORK/app/src"
@@ -218,34 +235,45 @@ printf '[rune]\nname = "demo/app"\nversion = "0.1.0"\n' > "$WORK/app/witchy.toml
 expect_fails "a STAGED version is not addable" \
     env -C "$WORK/app" WITCHY_USER=dev "$BIN" add acme/logger
 (cd "$WORK/logger" && WITCHY_USER=alice COVEN_ID_TOKEN="$ALICE" \
-    "$BIN" promote acme/logger@1.0.0 --factor webauthn >/dev/null)
+    "$BIN" promote acme/logger 1.0.0 >/dev/null)
 ok "promote with a second factor (separation of duties)"
 expect_fails "a FRESH release sits out its staging cooldown" \
     env -C "$WORK/app" WITCHY_USER=dev "$BIN" add acme/logger
 (cd "$WORK/app" && WITCHY_USER=dev "$BIN" add acme/logger --allow-fresh >/dev/null)
 ok "add: fetched over HTTP, signature-verified (--allow-fresh past the cooldown)"
-expect_contains "lockfile pins the registry key" "ed25519:" "$(cat "$WORK/app/witchy.lock")"
-expect_contains "lockfile records trusted-publishing provenance" "trusted-publisher" "$(cat "$WORK/app/witchy.lock")"
+expect_contains "lockfile pins the registry key" 'registry_rootpub = "' "$(cat "$WORK/app/witchy.lock")"
+expect_contains "vendored record preserves trusted-publishing provenance" \
+    "trusted-publisher" "$(cat "$WORK/app/vendor/logger/coven.json")"
 
-printf 'import logger\n\nfn main(console: Console):\n    print(console, logger.line("hello"))\n' \
+printf 'import logger\n\nfn main(console: Console):\n    console.print(logger.line("hello"))\n' \
     > "$WORK/app/src/app.witchy"
 GOT="$(cd "$WORK/app" && WITCHY_USER=dev "$BIN" run)"
 expect_eq "the consumer runs against the fetched rune" "[log] hello" "$GOT"
 
 # The widening gate: v1.1.0 quietly starts demanding Net.
-printf '[rune]\nname = "acme/logger"\nversion = "1.1.0"\n' > "$WORK/logger/witchy.toml"
+printf '[rune]\nname = "acme/logger"\nversion = "1.1.0"\n\n[capabilities]\nruntime = ["Net"]\n' \
+    > "$WORK/logger/witchy.toml"
 printf 'pub fn line(s: String) -> String:\n    "[log] " + s\n\npub fn beacon(net: Net, s: String) -> String:\n    s\n' \
     > "$WORK/logger/src/logger.witchy"
-(cd "$WORK/logger" && WITCHY_USER=ci-bot COVEN_ID_TOKEN="$CI_TOKEN" "$BIN" publish >/dev/null)
-(cd "$WORK/logger" && WITCHY_USER=alice COVEN_ID_TOKEN="$ALICE" \
-    "$BIN" promote acme/logger@1.1.0 --factor webauthn >/dev/null)
+CI_TOKEN_2="$(mint --sub "repo:acme/logger-repo:ref:refs/heads/main" \
+    --claim repository=acme/logger-repo --claim workflow_ref=release.yml \
+    --claim ref=refs/heads/main --claim release=1.1.0)"
+ALICE_2="$(mint --sub alice --claim amr=webauthn --claim release=1.1.0)"
 set +e
-UPDATE_OUT="$(cd "$WORK/app" && WITCHY_USER=dev "$BIN" update --allow-fresh 2>&1)"
+PUBLISH2_OUT="$(cd "$WORK/logger" && WITCHY_USER=ci-bot COVEN_ID_TOKEN="$CI_TOKEN_2" "$BIN" publish . 2>&1)"
+PUBLISH2_CODE=$?
+set -e
+[ "$PUBLISH2_CODE" -eq 0 ] || die "widened-version publish failed: $PUBLISH2_OUT"
+(cd "$WORK/logger" && WITCHY_USER=alice COVEN_ID_TOKEN="$ALICE_2" \
+    "$BIN" promote acme/logger 1.1.0 >/dev/null)
+set +e
+UPDATE_OUT="$(cd "$WORK/app" && WITCHY_USER=dev WITCHY_COOLDOWN_SECS=0 "$BIN" update 2>&1)"
 UPDATE_CODE=$?
 set -e
 [ "$UPDATE_CODE" -ne 0 ] || die "update must BLOCK a widening upgrade"
 expect_contains "update blocks and names the new authority" "Net" "$UPDATE_OUT"
-(cd "$WORK/app" && WITCHY_USER=dev "$BIN" update --allow-cap Net --allow-fresh >/dev/null)
+(cd "$WORK/app" && WITCHY_USER=dev WITCHY_COOLDOWN_SECS=0 \
+    "$BIN" update --allow-cap Net >/dev/null)
 expect_contains "explicit consent upgrades and re-locks" "1.1.0" "$(cat "$WORK/app/witchy.lock")"
 
 # Namespace binding: a valid token from another repository cannot publish.
@@ -253,10 +281,10 @@ printf '[rune]\nname = "acme/logger"\nversion = "1.2.0"\n' > "$WORK/logger/witch
 EVIL="$(mint --sub "repo:evil/fork:ref:refs/heads/main" \
     --claim repository=evil/fork --claim workflow_ref=release.yml --claim ref=refs/heads/main)"
 expect_fails "a publish from the wrong repository is refused" \
-    env -C "$WORK/logger" WITCHY_USER=ci-bot COVEN_ID_TOKEN="$EVIL" "$BIN" publish
+    env -C "$WORK/logger" WITCHY_USER=ci-bot COVEN_ID_TOKEN="$EVIL" "$BIN" publish .
 
 stage "8. A multi-rune example project (path deps, lockfile, diamond)"
-GOT="$(cd "$REPO/examples/projects/dashboard/dashboard" && "$BIN" run 2>&1)" || die "dashboard run failed: $GOT"
+GOT="$("$BIN" run examples/projects/dashboard/dashboard 2>&1)" || die "dashboard run failed: $GOT"
 ok "examples/projects/dashboard builds and runs ($(echo "$GOT" | wc -l | tr -d ' ') lines)"
 
 stage "9. Documentation extraction"
