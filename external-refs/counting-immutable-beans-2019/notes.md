@@ -9,5 +9,5 @@ witchy's `let`-borrow parameter convention is precisely their "borrowed referenc
 
 ## Informs
 
-- The RC-elision reading of `own`/`let`-borrow conventions (`rfcs/performance-modes.md`, `rfcs/ownership-analysis.md`).
+- The RC-elision reading of `own`/`let`-borrow conventions ([`rfcs/performance-modes.md`](../../rfcs/performance-modes.md), [`rfcs/ownership-analysis.md`](../../rfcs/ownership-analysis.md)).
 - Evidence that a production functional language (Lean 4) runs on precise RC + reuse, not tracing.
