@@ -1068,6 +1068,34 @@ fn main() -> Int:
     }
 
     #[test]
+    fn existential_var_receiver_writes_back_a_reboxed_payload() {
+        let src = r#"
+trait Counter:
+    fn replace(var self, value: Int) -> Int
+    fn read(let self) -> Int
+
+type Box:
+    Box(Int)
+
+impl Counter for Box:
+    fn replace(var self, value: Int) -> Int:
+        match self:
+            Box(old) ->
+                self = Box(value)
+                old
+
+    fn read(let self) -> Int:
+        match self:
+            Box(value) -> value
+
+fn main() -> Int:
+    var item: dyn Counter = Box(4)
+    item.replace(9) + item.read()
+"#;
+        assert_eq!(run_int(src), 13);
+    }
+
+    #[test]
     fn full_int_program() {
         let src = r#"
 fn double(n: Int) -> Int:
