@@ -7554,7 +7554,9 @@ impl<'types> Codegen<'types> {
                 ..
             } => {
                 if !self.collect_wir
-                    || conventions.iter().skip(1).any(|convention| *convention != Convention::Let)
+                    || conventions.iter().skip(1).any(|convention| {
+                        !matches!(convention, Convention::Let | Convention::Var)
+                    })
                     || self.existential_dispatch_stride == 0
                 {
                     return None;
@@ -7572,6 +7574,15 @@ impl<'types> Codegen<'types> {
                 let result_kind = self.kind_for_type(result);
                 let receiver_is_var = conventions.first() == Some(&Convention::Var);
                 if receiver_is_var && !matches!(receiver.as_ref(), Expr::Var(_)) {
+                    return None;
+                }
+                let var_args: Vec<usize> = conventions
+                    .iter()
+                    .skip(1)
+                    .enumerate()
+                    .filter_map(|(index, convention)| (*convention == Convention::Var).then_some(index))
+                    .collect();
+                if var_args.iter().any(|index| !matches!(args[*index], Expr::Var(_))) {
                     return None;
                 }
                 let mut call_args = vec![W::GetLocal(receiver_tmp.clone())];
@@ -7595,19 +7606,28 @@ impl<'types> Codegen<'types> {
                     rhs: Box::new(W::ConstI32(i32::try_from(*slot).ok()?)),
                 };
                 let mut seq = vec![N::SetLocal { local: receiver_tmp, value: receiver_value }];
-                if receiver_is_var {
-                    let Expr::Var(receiver_name) = receiver.as_ref() else { unreachable!() };
+                if receiver_is_var || !var_args.is_empty() {
+                    let mut results = vec![Self::wir_kind(result_kind)];
+                    let mut dests = vec![call_result_tmp(result_kind)];
+                    if receiver_is_var {
+                        let Expr::Var(receiver_name) = receiver.as_ref() else { unreachable!() };
+                        results.push(witchy_wir::wir::Kind::GcRef(EXISTENTIAL_WRAPPER_ID));
+                        dests.push(receiver_name.clone());
+                    }
+                    for index in &var_args {
+                        let kind = self.kind_of(&args[*index]);
+                        results.push(Self::wir_kind(kind));
+                        let Expr::Var(name) = &args[*index] else { unreachable!() };
+                        dests.push(name.clone());
+                    }
                     seq.push(N::CallIndirectStoreMulti {
                         signature: witchy_wir::wir::ClosureSignature {
                             params: signature_params,
-                            results: vec![
-                                Self::wir_kind(result_kind),
-                                witchy_wir::wir::Kind::GcRef(EXISTENTIAL_WRAPPER_ID),
-                            ],
+                            results,
                         },
                         args: call_args,
                         index: table_index,
-                        dests: vec![call_result_tmp(result_kind), receiver_name.clone()],
+                        dests,
                     });
                     seq.push(N::Push(W::GetLocal(call_result_tmp(result_kind))));
                 } else if matches!(conventions.first(), Some(Convention::Let | Convention::Borrow | Convention::Own)) {

@@ -1091,10 +1091,14 @@ fn build_existential_adapter_funcs(
             })
         })?;
         for (slot_index, slot) in witness.slots.iter().enumerate() {
-            if slot.conventions.iter().any(|convention| *convention != Convention::Let)
+            if slot.conventions.iter().any(|convention| {
+                    !matches!(convention, Convention::Let | Convention::Var)
+                })
+                || (slot.receiver == Convention::Own
+                    && slot.conventions.iter().any(|convention| *convention == Convention::Var))
             {
                 return unsupported(format!(
-                    "RFC-0081 Wasm adapter for `{}`.{} with `var` explicit parameters is not lowered yet",
+                    "RFC-0081 Wasm adapter for `{}`.{} with `own self` and `var` explicit parameters is not lowered yet",
                     slot.owner_trait, slot.method
                 ));
             }
@@ -1144,35 +1148,59 @@ fn build_existential_adapter_funcs(
             let mut locals = Vec::new();
             let mut body = Vec::new();
             let mut ret = vec![result_ty.clone()];
-            if slot.receiver == Convention::Var {
+            let var_args: Vec<usize> = slot
+                .conventions
+                .iter()
+                .enumerate()
+                .filter_map(|(index, convention)| (*convention == Convention::Var).then_some(index))
+                .collect();
+            if slot.receiver == Convention::Var || !var_args.is_empty() {
                 let result_local = format!("__dynw{0}_{1}_result", witness.id, slot_index);
-                let payload_local = format!("__dynw{0}_{1}_payload", witness.id, slot_index);
                 locals.push(WirLocal { name: result_local.clone(), ty: result_ty });
-                locals.push(WirLocal {
-                    name: payload_local.clone(),
-                    ty: Codegen::wir_ty_for_kind(cg.kind_for_type(&witness.concrete)),
-                });
+                let mut dests = vec![result_local.clone()];
+                let payload_local = format!("__dynw{0}_{1}_payload", witness.id, slot_index);
+                if slot.receiver == Convention::Var {
+                    locals.push(WirLocal {
+                        name: payload_local.clone(),
+                        ty: Codegen::wir_ty_for_kind(cg.kind_for_type(&witness.concrete)),
+                    });
+                    dests.push(payload_local.clone());
+                }
+                let mut var_locals = Vec::new();
+                for index in var_args {
+                    let local = format!("__dynw{0}_{1}_arg{index}", witness.id, slot_index);
+                    let ty = Codegen::wir_ty_for_kind(cg.kind_for_type(&slot.params[index]));
+                    locals.push(WirLocal { name: local.clone(), ty: ty.clone() });
+                    dests.push(local.clone());
+                    var_locals.push((local, ty));
+                }
                 body.push(N::CallStoreMulti {
                     func: slot.adapter.clone(),
                     args,
-                    dests: vec![result_local.clone(), payload_local.clone()],
+                    dests,
                 });
                 body.push(N::Push(E::GetLocal(result_local)));
-                body.push(N::Push(E::StructNew {
-                    struct_id: EXISTENTIAL_WRAPPER_ID,
-                    args: vec![
-                        E::StructNew {
-                            struct_id: payload_id,
-                            args: vec![E::GetLocal(payload_local)],
-                        },
-                        E::ConstI32(i32::try_from(witness.id).map_err(|_| {
-                            LoweringFailure::Rejected(CodegenError {
-                                message: "existential witness id exceeds i32".to_string(),
-                            })
-                        })?),
-                    ],
-                }));
-                ret.push(WirTy::GcRef(EXISTENTIAL_WRAPPER_ID));
+                if slot.receiver == Convention::Var {
+                    body.push(N::Push(E::StructNew {
+                        struct_id: EXISTENTIAL_WRAPPER_ID,
+                        args: vec![
+                            E::StructNew {
+                                struct_id: payload_id,
+                                args: vec![E::GetLocal(payload_local)],
+                            },
+                            E::ConstI32(i32::try_from(witness.id).map_err(|_| {
+                                LoweringFailure::Rejected(CodegenError {
+                                    message: "existential witness id exceeds i32".to_string(),
+                                })
+                            })?),
+                        ],
+                    }));
+                    ret.push(WirTy::GcRef(EXISTENTIAL_WRAPPER_ID));
+                }
+                for (local, ty) in var_locals {
+                    body.push(N::Push(E::GetLocal(local)));
+                    ret.push(ty);
+                }
             } else if slot.receiver == Convention::Own {
                 // The public existential ABI consumes just the erased receiver.
                 // Its concrete own-ABI token is internal to the adapter: no

@@ -1117,6 +1117,57 @@ fn main() -> Int:
     }
 
     #[test]
+    fn existential_var_argument_writes_back_through_the_typed_table_abi() {
+        let src = r#"
+trait Counter:
+    fn bump(let self, var value: Int) -> Int
+
+type Box:
+    Box(Int)
+
+impl Counter for Box:
+    fn bump(let self, var value: Int) -> Int:
+        value = value + 1
+        match self:
+            Box(base) -> base + value
+
+fn main() -> Int:
+    let item: dyn Counter = Box(4)
+    var value = 7
+    item.bump(value) + value
+"#;
+        assert_eq!(run_int(src), 20);
+    }
+
+    #[test]
+    fn existential_var_receiver_and_argument_commit_in_one_table_result() {
+        let src = r#"
+trait Counter:
+    fn adjust(var self, var value: Int) -> Int
+    fn read(let self) -> Int
+
+type Box:
+    Box(Int)
+
+impl Counter for Box:
+    fn adjust(var self, var value: Int) -> Int:
+        self = Box(value)
+        value = value + 1
+        value
+
+    fn read(let self) -> Int:
+        match self:
+            Box(value) -> value
+
+fn main() -> Int:
+    var item: dyn Counter = Box(1)
+    var value = 8
+    item.adjust(value) + item.read() + value
+"#;
+        assert_eq!(run_int(src), 26);
+    }
+
+    #[test]
     fn full_int_program() {
         let src = r#"
 fn double(n: Int) -> Int:
