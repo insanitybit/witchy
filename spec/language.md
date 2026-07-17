@@ -427,7 +427,7 @@ parameters are still delivered). `return e if cond` is a postfix form of
 To deny a capability to a region of code, give that work its own function and
 don't pass the capability — a function that never receives a capability cannot
 use it, alias it, or forge it. That structural boundary (capture-as-DI) is
-witchy's firewall; see `spec/capabilities.md`.
+witchy's firewall; see [the capability reference](capabilities.md).
 
 A `region:` block (optionally `region -> T:`) is a user-controlled allocation
 scope: everything allocated inside is reclaimed at the block's end, and the
@@ -438,7 +438,7 @@ error (the value is the only pointer escape; scalar assignments are fine), and
 `yield` is rejected. A region never changes observable behavior — only when
 memory is reclaimed — so the interpreter runs it as a plain block. The
 optional `-> T` ascribes the value's type, guaranteeing the copy-out shape
-when inference cannot see it. See `rfcs/regions.md`.
+when inference cannot see it. See [RFC-0034](../rfcs/regions.md).
 
 ```witchy
 import option
