@@ -3,6 +3,25 @@
 # binary followed by its `--list` arguments.
 set -euo pipefail
 
+[ "${1:-}" != "--validate-ignore-policy" ] || {
+    cd "${2:-.}"
+    # Keep the gate self-contained on clean CI hosts: use find+grep rather than
+    # adding ripgrep as a new prerequisite merely for this source-policy check.
+    ignore_lines="$(find src crates tests -type f -name '*.rs' \
+        -exec grep -nH -E '^[[:space:]]*#\[ignore([^]]*)?\]' {} + || true)"
+    ignore_count="$(printf '%s\n' "$ignore_lines" | awk 'NF { n += 1 } END { print n + 0 }')"
+    ignore_paths="$(printf '%s\n' "$ignore_lines" | awk -F: 'NF { print $1 }' | sort -u)"
+    expected_paths="$(printf '%s\n' src/example_tests.rs src/stats.rs | sort)"
+    if [ "$ignore_count" -ne 2 ] || [ "$ignore_paths" != "$expected_paths" ] \
+        || ! awk '/^[[:space:]]*#\[ignore([^]]*)?\]/{ armed=1; next } armed { if ($0 ~ /^[[:space:]]*fn binary_path_coverage_report\(/) found=1; armed=0 } END { exit !found }' src/example_tests.rs \
+        || ! awk '/^[[:space:]]*#\[ignore([^]]*)?\]/{ armed=1; next } armed { if ($0 ~ /^[[:space:]]*fn chan_throughput_bounded_by_rc_floor\(/) found=1; armed=0 } END { exit !found }' src/stats.rs; then
+        echo "nextest-list-wrapper: ignored-test policy changed; update the audited names before discovery can skip the second cold exec" >&2
+        printf '%s\n' "$ignore_lines" >&2
+        exit 1
+    fi
+    exit 0
+}
+
 [ "$#" -gt 0 ] || { echo "nextest-list-wrapper: missing test binary" >&2; exit 2; }
 
 # New nextest versions expose one NEXTEST_RUN_ID to every list process. Older
@@ -19,6 +38,7 @@ runner_pid="$PPID"
 binary_name="$(basename "$1")"
 normal_done="$root/normal-done-$binary_name"
 normal_owner="$root/normal-owner-$binary_name"
+normal_output="$root/normal-output-$binary_name"
 ignored=0
 for arg in "$@"; do
     [ "$arg" = "--ignored" ] && ignored=1
@@ -63,15 +83,13 @@ if ! mkdir -p "$root" 2>/dev/null; then
 fi
 
 # Nextest launches each binary's ordinary and `--ignored` discovery passes at
-# the same time. On macOS that makes both processes pay the cold first-exec
-# codesign/page-in cost for the same freshly linked ~100 MB binary. Let the
-# ordinary pass warm that binary before its ignored pass starts. The ignored
-# waiter deliberately holds NO global slot, so other binaries still discover
-# up to `$jobs`-wide and a wave of waiters cannot deadlock the slot pool.
-#
-# The two passes are still both executed and their output is unchanged. This is
-# required for correctness: libtest's ordinary list includes ignored tests but
-# does not identify them, so nextest needs the second output to mark them.
+# the same time. Libtest's ordinary list includes ignored tests but does not
+# identify them, so nextest normally cold-executes every freshly linked ~100 MB
+# binary twice just to learn that almost all ignored lists are empty. Capture
+# the ordinary output and derive the ignored output from the two audited ignored
+# names instead. check.sh validates that source policy before invoking nextest;
+# a future un-audited `#[ignore]` makes the gate fail rather than silently
+# changing coverage. The ignored waiter holds NO global slot.
 if [ "$ignored" -eq 1 ]; then
     while [ ! -e "$normal_done" ]; do
         # A SIGKILL cannot run the ordinary wrapper's cleanup. Its owner symlink
@@ -89,6 +107,12 @@ if [ "$ignored" -eq 1 ]; then
         fi
         sleep 0.05
     done
+    awk '
+        $0 == "example_tests::binary_path_coverage_report: test" ||
+        $0 == "stats::tests::chan_throughput_bounded_by_rc_floor: test"
+    ' "$normal_output"
+    rm -f "$normal_done" "$normal_output" 2>/dev/null || true
+    exit 0
 else
     # One ordinary pass exists per binary and run. A symlink records its PID so
     # an untrappable death remains distinguishable from a slow healthy pass.
@@ -130,9 +154,8 @@ cleanup() {
         : >"$normal_done" 2>/dev/null || true
         rm -f "$normal_owner" 2>/dev/null || true
     else
-        # The pair is complete. Avoid leaving a stale done marker if an older
-        # nextest without NEXTEST_RUN_ID eventually reuses the same parent PID.
-        rm -f "$normal_done" 2>/dev/null || true
+        # Ignored discovery exits above after consuming the cached list.
+        :
     fi
     # Deliberately do NOT rmdir "$root": reaping the shared root is what races
     # concurrent starters into the ENOENT spin above. The root is keyed by the
@@ -144,4 +167,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 record_progress "$1"
-"$@"
+command_status=0
+"$@" >"$normal_output" || command_status=$?
+cat "$normal_output"
+exit "$command_status"

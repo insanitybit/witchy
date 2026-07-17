@@ -151,6 +151,11 @@ if [ "$full" -eq 1 ] || [ "$fast" -eq 1 ]; then gate_scope="all"; fi
 # By default, exclude the load-flaky e2e binary (coven/glamour publish tests)
 # from the merge gate. It runs explicitly via `--e2e` and as part of `--full`.
 if cargo nextest --version >/dev/null 2>&1; then
+    # On macOS the list wrapper avoids a second cold exec per test binary by
+    # deriving the ignored list from the ordinary list. Keep that optimization
+    # fail-closed: a new/renamed #[ignore] must update its two-name audit before
+    # the gate runs, otherwise nextest could misclassify the test.
+    scripts/nextest-list-wrapper.sh --validate-ignore-policy "$PWD"
     # Combine the e2e exclusion (default/--fast) and the fuzz-skip exclusion into one
     # filterset (nextest ANDs, so join with ` and `).
     excl=""
