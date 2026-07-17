@@ -3472,6 +3472,27 @@ fn main():
     }
 
     #[test]
+    fn rfc0081_implicit_dyn_rejects_record_capability_payload() {
+        let err = check_str(
+            "trait Render:\n    fn render(let self) -> String\n\n\
+             type Holder:\n    dir: Dir\n\n\
+             fn erase(h: Holder) -> dyn Render:\n    h\n\n\
+             fn main(dir: Dir, console: Console):\n\
+             \x20   let h = Holder(dir)\n\
+             \x20   console.print(\"hi\")\n",
+        )
+        .expect_err("a Dir-carrying record cannot be implicitly erased");
+        assert!(
+            err.contains(
+                "conversion to `dyn Render`: the concrete payload type `Holder` carries a `Dir` \
+                 capability — capability-carrying existential payloads are rejected (RFC-0081); \
+                 pass the capability explicitly in method signatures instead"
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn rfc0081_as_dyn_rejects_container_capability_payloads() {
         const TRAIT: &str = "trait Render:\n    fn render(let self) -> String\n\n";
 
@@ -3545,6 +3566,88 @@ fn main():
         )
         .expect_err("dyn construction is staged");
         assert_eq!(err, rfc0081_stage_gate("dyn Render"));
+    }
+
+    #[test]
+    fn rfc0081_cap_free_implicit_dyn_reaches_the_feature_stage_gate() {
+        let err = check_str(
+            "trait Render:\n    fn render(let self) -> String\n\n\
+             type Plain:\n    tag: String\n\n\
+             impl Render for Plain:\n    fn render(let self) -> String:\n        self.tag\n\n\
+             fn erase(p: Plain) -> dyn Render:\n    p\n\n\
+             fn main(console: Console):\n    console.print(\"hi\")\n",
+        )
+        .expect_err("implicit dyn construction is staged");
+        assert_eq!(err, rfc0081_stage_gate("dyn Render"));
+    }
+
+    #[test]
+    fn rfc0081_var_dyn_argument_requires_an_existential_caller_place() {
+        let err = check_str(
+            "trait Render:\n    fn render(let self) -> String\n\n\
+             type Plain:\n    tag: String\n\n\
+             impl Render for Plain:\n    fn render(let self) -> String:\n        self.tag\n\n\
+             fn replace(var value: dyn Render):\n    value = Plain(\"new\")\n\n\
+             fn use(var value: Plain):\n    replace(value)\n\n\
+             fn main(console: Console):\n    console.print(\"hi\")\n",
+        )
+        .expect_err("a concrete var place cannot receive an arbitrary existential write-back");
+        assert!(
+            err.contains(
+                "argument 1 to `var` parameter of `replace` cannot implicitly convert \
+                 `Plain` to `dyn Render`"
+            ) && err.contains("bind a `var` of the existential type before this call"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rfc0081_if_without_else_cannot_claim_an_existential_result() {
+        let err = check_str(
+            "trait Render:\n    fn render(let self) -> String\n\n\
+             type Plain:\n    tag: String\n\n\
+             fn erase(flag: Bool, value: Plain) -> dyn Render:\n\
+             \x20   if flag:\n\
+             \x20       value\n\n\
+             fn main(console: Console):\n    console.print(\"hi\")\n",
+        )
+        .expect_err("the false branch is Nil, not an existential");
+        assert!(
+            err.contains("`if` without `else` has an implicit `Nil` path")
+                && err.contains("add an explicit `else` branch"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rfc0081_dyn_to_dyn_casts_fail_until_authenticated_upcasts_land() {
+        let err = check_str(
+            "trait Render:\n    fn render(let self) -> String\n\n\
+             fn recast(value: dyn Render) -> dyn Render:\n    value as dyn Render\n\n\
+             fn main(console: Console):\n    console.print(\"hi\")\n",
+        )
+        .expect_err("even a redundant dyn cast must not bypass preparation");
+        assert!(
+            err.contains("existential-to-existential casts require the authenticated")
+                && err.contains("omit a redundant same-type cast"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn typed_capability_ascription_does_not_retain_broader_rights() {
+        let err = check_str(
+            "fn misuse(dir: Dir):\n\
+             \x20   let read_only: Dir[Read] = dir\n\
+             \x20   read_only.write(\"x\", \"y\")\n\n\
+             fn main(console: Console):\n    console.print(\"hi\")\n",
+        )
+        .expect_err("a typed binding must not retain broader authority");
+        assert!(
+            err.contains("declared `Dir[Read]` but the value disagrees")
+                || err.contains("does not grant Write"),
+            "{err}"
+        );
     }
 
     #[test]

@@ -2,9 +2,9 @@
 //!
 //! This pass consumes a typed source AST after checking has selected concrete
 //! payload types. It builds the deterministic closed-program witness plan and
-//! replaces explicit `as dyn Trait` erasures with typed, source-unspellable AST
-//! nodes. Backends therefore consume one construction contract without
-//! rediscovering impl identity from names or runtime values.
+//! replaces every directed concrete-to-`dyn Trait` coercion with a typed,
+//! source-unspellable AST node. Backends therefore consume one construction
+//! contract without rediscovering coercions, impl identity, or runtime types.
 
 use witchy_syntax::ast::{Block, Expr, Item, Module, Stmt, Type};
 
@@ -31,7 +31,7 @@ impl PreparedExistentials {
     }
 }
 
-/// Lower every explicit concrete-to-existential cast in one final typed module.
+/// Lower every concrete-to-existential construction in one final typed module.
 ///
 /// The public RFC-0081 stage gate remains closed while the interpreter and Wasm
 /// implementations are incomplete. This function is the shared internal seam
@@ -63,22 +63,22 @@ pub fn lower_explicit_packs(
     Ok(PreparedExistentials { module, witnesses })
 }
 
-fn concrete_type(table: &TypeTable, expr: &Expr) -> Result<Type, String> {
-    let ty = table
-        .type_of(expr)
-        .and_then(ty_to_ast)
+fn pack_request(table: &TypeTable, expr: &Expr) -> Result<Option<(Type, Type)>, String> {
+    let Some((existential, concrete)) = table.existential_pack(expr) else {
+        return Ok(None);
+    };
+    let existential = ty_to_ast(existential).ok_or_else(|| {
+        "existential construction requires one fully resolved target type".to_string()
+    })?;
+    let concrete = ty_to_ast(concrete)
         .ok_or_else(|| {
             "existential construction requires one fully resolved concrete payload type"
                 .to_string()
         })?;
-    Ok(ty.unqualified().clone())
-}
-
-fn existential_target(ty: &Type) -> Option<Type> {
-    match ty.unqualified() {
-        Type::Dyn(name, args) => Some(Type::Dyn(name.clone(), args.clone())),
-        _ => None,
-    }
+    Ok(Some((
+        existential.unqualified().clone(),
+        concrete.unqualified().clone(),
+    )))
 }
 
 fn collect_requests(
@@ -87,13 +87,9 @@ fn collect_requests(
 ) -> Result<Vec<(Type, Type)>, String> {
     let mut requests = Vec::new();
     visit_module_exprs(module, &mut |expr| {
-        let Expr::As { expr: payload, ty } = expr else {
-            return Ok(());
-        };
-        let Some(existential) = existential_target(ty) else {
-            return Ok(());
-        };
-        requests.push((existential, concrete_type(table, payload)?));
+        if let Some(request) = pack_request(table, expr)? {
+            requests.push(request);
+        }
         Ok(())
     })?;
     Ok(requests)
@@ -151,27 +147,7 @@ fn rewrite_expr(
     table: &TypeTable,
     witnesses: &WitnessPlan,
 ) -> Result<(), String> {
-    if let Expr::As { expr: payload, ty } = expr
-        && let Some(existential) = existential_target(ty)
-    {
-        let concrete = concrete_type(table, payload)?;
-        rewrite_expr(payload, table, witnesses)?;
-        let witness = witnesses
-            .get(&existential, &concrete)
-            .ok_or_else(|| {
-                format!(
-                    "existential witness plan lost construction `{concrete:?} as {existential:?}`"
-                )
-            })?
-            .id;
-        let payload = std::mem::replace(payload.as_mut(), Expr::Bool(false));
-        *expr = Expr::ExistentialPack {
-            expr: Box::new(payload),
-            ty: ty.clone(),
-            witness,
-        };
-        return Ok(());
-    }
+    let request = pack_request(table, expr)?;
 
     match expr {
         Expr::List(items)
@@ -273,6 +249,27 @@ fn rewrite_expr(
         | Expr::Bool(_)
         | Expr::Var(_)
         | Expr::TaggedLit { .. } => {}
+    }
+
+    if let Some((existential, concrete)) = request {
+        let witness = witnesses
+            .get(&existential, &concrete)
+            .ok_or_else(|| {
+                format!(
+                    "existential witness plan lost construction `{concrete:?} as {existential:?}`"
+                )
+            })?
+            .id;
+        let old = std::mem::replace(expr, Expr::Bool(false));
+        let payload = match old {
+            Expr::As { expr: payload, .. } => *payload,
+            other => other,
+        };
+        *expr = Expr::ExistentialPack {
+            expr: Box::new(payload),
+            ty: existential,
+            witness,
+        };
     }
     Ok(())
 }
@@ -519,6 +516,258 @@ fn erase(value: Label) -> dyn Render:
             .to_string();
         assert!(
             error.contains("no linked `impl Render` for `named:Label()`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn directed_coercions_become_packs_at_the_exact_expected_type_sites() {
+        let source = r#"
+trait Render:
+    fn render(self) -> String
+
+type Label:
+    Label(String)
+
+type Wrapped:
+    Wrapped(dyn Render)
+
+type Envelope:
+    item: dyn Render
+
+impl Render for Label:
+    fn render(self) -> String:
+        match self:
+            Label(text) -> text
+
+fn accept(value: dyn Render) -> Nil:
+    Nil
+
+fn accept_owned(own value: dyn Render) -> Nil:
+    Nil
+
+fn erase_return(value: Label) -> dyn Render:
+    value
+
+fn infer_then_erase(value: Label) -> dyn Render:
+    let concrete = value
+    concrete
+
+fn erase_branch(flag: Bool, value: Label) -> dyn Render:
+    if flag:
+        let marker = 1
+        value
+    else:
+        let marker = 2
+        value
+
+fn erase_argument(value: Label) -> Nil:
+    accept(value)
+
+fn erase_owned_argument(value: Label) -> Nil:
+    accept_owned(value)
+
+fn erase_element(value: Label) -> List(dyn Render):
+    [value]
+
+fn erase_annotation(value: Label) -> Nil:
+    let item: dyn Render = value
+    Nil
+
+fn erase_assignment(value: Label) -> Nil:
+    var item: dyn Render = value
+    item = value
+    Nil
+
+fn erase_tuple(value: Label) -> (dyn Render, Int):
+    (value, 1)
+
+fn erase_field(value: Label) -> Wrapped:
+    Wrapped(value)
+
+fn erase_update(value: Label, base: Envelope) -> Envelope:
+    Envelope(item: value, ..base)
+"#;
+        let mut module = parser::parse_module(source).expect("parse directed coercions");
+        let catalog = WitnessCatalog::from_module(&module);
+        module = witchy_syntax::records::lower(module).expect("lower named record updates");
+        module
+            .items
+            .retain(|item| !matches!(item, Item::Trait(_) | Item::Impl(_)));
+        let prepared = lower_explicit_packs(crate::typeck::annotate(module), &catalog)
+            .expect("lower directed packs");
+
+        assert_eq!(
+            prepared.witnesses().witnesses.len(),
+            1,
+            "all construction sites share one concrete witness"
+        );
+        let mut packs = 0;
+        visit_module_exprs(prepared.module(), &mut |expr| {
+            if matches!(
+                expr,
+                Expr::ExistentialPack {
+                    ty: Type::Dyn(name, args),
+                    witness: 0,
+                    ..
+                } if name == "Render" && args.is_empty()
+            ) {
+                packs += 1;
+            }
+            Ok(())
+        })
+        .expect("visit prepared module");
+        assert_eq!(
+            packs, 13,
+            "every directed expected-type site needs one exact pack"
+        );
+    }
+
+    #[test]
+    fn directed_coercion_without_an_impl_fails_before_either_backend() {
+        let source = r#"
+trait Render:
+    fn render(self) -> String
+
+type Label:
+    Label(String)
+
+fn erase(value: Label) -> dyn Render:
+    value
+"#;
+        let mut module = parser::parse_module(source).expect("parse missing directed witness");
+        let catalog = WitnessCatalog::from_module(&module);
+        module
+            .items
+            .retain(|item| !matches!(item, Item::Trait(_) | Item::Impl(_)));
+        let error = lower_explicit_packs(crate::typeck::annotate(module), &catalog)
+            .expect_err("missing directed witness must reject")
+            .to_string();
+        assert!(
+            error.contains("no linked `impl Render` for `named:Label()`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn heterogeneous_match_arms_select_their_own_witnesses() {
+        let source = r#"
+trait Render:
+    fn render(self) -> String
+
+type Label:
+    Label(String)
+
+type Badge:
+    Badge(Int)
+
+impl Render for Label:
+    fn render(self) -> String:
+        match self:
+            Label(text) -> text
+
+impl Render for Badge:
+    fn render(self) -> String:
+        "badge"
+
+fn choose(flag: Bool, label: Label, badge: Badge) -> dyn Render:
+    match flag:
+        true -> label
+        false -> badge
+"#;
+        let mut module = parser::parse_module(source).expect("parse heterogeneous match");
+        let catalog = WitnessCatalog::from_module(&module);
+        module
+            .items
+            .retain(|item| !matches!(item, Item::Trait(_) | Item::Impl(_)));
+        let prepared = lower_explicit_packs(crate::typeck::annotate(module), &catalog)
+            .expect("lower heterogeneous packs");
+
+        assert_eq!(prepared.witnesses().witnesses.len(), 2);
+        let mut witness_ids = Vec::new();
+        visit_module_exprs(prepared.module(), &mut |expr| {
+            if let Expr::ExistentialPack { witness, .. } = expr {
+                witness_ids.push(*witness);
+            }
+            Ok(())
+        })
+        .expect("visit heterogeneous packs");
+        witness_ids.sort_unstable();
+        assert_eq!(witness_ids, [0, 1]);
+    }
+
+    #[test]
+    fn bounded_generic_erasure_resolves_after_monomorphization() {
+        let source = r#"
+trait Render:
+    fn render(self) -> String
+
+type Label:
+    Label(String)
+
+type Badge:
+    Badge(Int)
+
+impl Render for Label:
+    fn render(self) -> String:
+        match self:
+            Label(text) -> text
+
+impl Render for Badge:
+    fn render(self) -> String:
+        "badge"
+
+fn erase(value: a) -> dyn Render where a: Render:
+    value
+
+fn pair(label: Label, badge: Badge) -> (dyn Render, dyn Render):
+    (erase(label), erase(badge))
+"#;
+        let module = parser::parse_module(source).expect("parse generic erasure");
+        let catalog = WitnessCatalog::from_module(&module);
+        let lowered = crate::traits::lower_checked(module).expect("monomorphize erasure");
+        assert!(
+            lowered
+                .items
+                .iter()
+                .all(|item| !matches!(item, Item::Trait(_) | Item::Impl(_))),
+            "existential preparation must see the final trait-lowered module"
+        );
+        let prepared = lower_explicit_packs(crate::typeck::annotate(lowered), &catalog)
+            .expect("prepare specialized erasures");
+
+        assert_eq!(prepared.witnesses().witnesses.len(), 2);
+        let mut packs = 0;
+        visit_module_exprs(prepared.module(), &mut |expr| {
+            if matches!(expr, Expr::ExistentialPack { .. }) {
+                packs += 1;
+            }
+            Ok(())
+        })
+        .expect("visit specialized packs");
+        assert_eq!(packs, 2);
+    }
+
+    #[test]
+    fn unresolved_directed_payload_fails_instead_of_dropping_the_pack() {
+        let source = r#"
+trait Render:
+    fn render(self) -> String
+
+fn erase() -> dyn Render:
+    None
+"#;
+        let mut module = parser::parse_module(source).expect("parse unresolved payload");
+        let catalog = WitnessCatalog::from_module(&module);
+        module
+            .items
+            .retain(|item| !matches!(item, Item::Trait(_) | Item::Impl(_)));
+        let error = lower_explicit_packs(crate::typeck::annotate(module), &catalog)
+            .expect_err("an unresolved payload must not erase the pack request");
+        assert!(
+            error.contains(
+                "existential construction requires one fully resolved concrete payload type"
+            ),
             "{error}"
         );
     }

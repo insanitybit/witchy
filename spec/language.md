@@ -915,8 +915,9 @@ concrete type is hidden behind a trait's callable surface. The frontend
 contract is implemented; the runtime is not — a program that mentions a `dyn`
 type parses, formats, and type-checks (identity, existential safety, authority)
 and then fails with one feature-stage diagnostic before either backend lowers
-it. Internally, an explicit checked erasure already selects a deterministic
-witness and rewrites to one compiler-owned typed pack; this is the shared
+it. Internally, expected-type checking records each directed concrete-to-`dyn`
+construction, and final monomorphic preparation selects its deterministic
+witness and rewrites it to one compiler-owned typed pack. This is the shared
 preparation contract for the runtime work, not executable language surface.
 Concrete payload boxing and dispatch are still unavailable, so no `dyn` value
 can be constructed or called by a program yet.
@@ -926,8 +927,17 @@ can be constructed or called by a program yet.
   bare `dyn` remains an ordinary type variable. Both `dyn Render` and
   `dyn render.Render` parse in every type position — parameters, returns,
   aliases, generic arguments, tuples, function types, `let` annotations, and
-  the explicit `value as dyn Trait` cast. Erasure is explicit: inference never
-  silently replaces a concrete type with an existential.
+  the explicit `value as dyn Trait` cast. A concrete value erases implicitly
+  only where an expected type is already existential: annotations, arguments,
+  returns and tail expressions, assignments, typed collection and tuple slots,
+  and constructor fields. Every other construction requires `as dyn Trait`;
+  unconstrained inference never replaces a concrete type with an existential.
+  A `var dyn Trait` argument is invariant: its caller place must already have
+  that existential type, because callee write-back may contain a different
+  concrete witness. Read-only and `own` arguments retain directed erasure.
+  `??` does not map an `Option`/`Result` payload implicitly: its payload and
+  fallback still have one concrete type. Convert both paths explicitly, or use
+  an existential payload type, when their original concrete types differ.
 - Identity is the resolved trait declaration plus its fully substituted
   arguments. Non-ambient trait declarations, supertraits, impl heads, bounds,
   and `dyn` heads resolve to `module.Trait` before modules merge. Aliases and
@@ -944,8 +954,8 @@ can be constructed or called by a program yet.
   diagnostic names every blocking method and rule (`dyn PartialEq` is rejected:
   its second `Self` parameter violates the `Self`-position rule).
 - Capability-carrying payloads are rejected transitively (records, sums,
-  tuples, containers): `value as dyn Trait` where the concrete type contains a
-  `Dir`/`File`/`Net`/… fails at check time. Borrowed existentials
+  tuples, containers): a directed or explicit conversion whose concrete type
+  contains a `Dir`/`File`/`Net`/… fails at check time. Borrowed existentials
   (`View(dyn T, 'a)`) are excluded from v1.
 
 Example (not runnable until RFC-0081's witness/runtime slice lands):

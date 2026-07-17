@@ -3422,6 +3422,11 @@ struct Checker {
     /// When annotating (see `annotate`): expression identity -> inferred type,
     /// finalized against the ending substitution. Key = `&Expr as *const _`.
     type_record: Option<HashMap<usize, Ty>>,
+    /// Directed concrete-to-existential coercions discovered while checking.
+    /// The types remain checker types until the ending substitution is known.
+    /// [`TypeTable`] preserves unresolved requests so final existential
+    /// preparation rejects them loudly instead of silently omitting a pack.
+    existential_pack_record: Option<HashMap<usize, (Ty, Ty)>>,
     fn_sigs: HashMap<String, (Vec<Ty>, Ty)>,
     /// Functions selected by trait lowering as actual `From.from` impls.
     /// Generated function names are an ABI detail, not semantic evidence.
@@ -4023,8 +4028,9 @@ impl Checker {
     /// `SecretStore` root), recursing through lists, tuples, function types,
     /// generic arguments, record fields, and ADT variant payloads exactly like
     /// `ty_carries_externref_cap`. Used to reject capability-carrying
-    /// existential payloads at `as dyn Trait` — v1 has no authority envelope,
-    /// so a payload capability would hide authority behind the existential.
+    /// existential payloads at directed and explicit construction sites — v1
+    /// has no authority envelope, so a payload capability would hide authority
+    /// behind the existential.
     fn ty_carries_capability(&self, t: &Ty) -> Option<&'static str> {
         fn direct(ty: &Ty) -> Option<&'static str> {
             Some(match ty {
@@ -5301,6 +5307,9 @@ impl Checker {
     /// (or re-pass) more than its declared type permits. Everything else (Vars,
     /// non-caps, exact caps, a too-narrow argument) falls back to unification.
     fn coerce_arg(&mut self, expected: &Ty, actual: &Ty) -> Result<(), TypeError> {
+        if self.existential_coercion(expected, actual)? {
+            return Ok(());
+        }
         let coercible = match (self.resolve(expected), self.resolve(actual)) {
             // `want`'s rights must be a subset of what the argument `has`.
             (Ty::Dir(want), Ty::Dir(has)) => (!want.read || has.read) && (!want.write || has.write),
@@ -5319,6 +5328,77 @@ impl Checker {
         } else {
             self.unify(expected, actual)
         }
+    }
+
+    /// Whether this pair is one directed concrete-to-existential coercion.
+    ///
+    /// Existential-to-existential conversion is not implicit: upcasts need a
+    /// witness transformation of their own. An unresolved concrete type is
+    /// accepted here so generic bodies can be checked before monomorphization;
+    /// final existential preparation requires a fully resolved pair.
+    fn existential_coercion(
+        &self,
+        expected: &Ty,
+        actual: &Ty,
+    ) -> Result<bool, TypeError> {
+        let Ty::Dyn(dyn_name, _) = self.resolve(expected) else {
+            return Ok(false);
+        };
+        let resolved_actual = self.resolve(actual);
+        if matches!(resolved_actual, Ty::Dyn(_, _)) {
+            return Ok(false);
+        }
+        if let Some(cap) = self.ty_carries_capability(&resolved_actual) {
+            return terr(format!(
+                "conversion to `dyn {}`: the concrete payload type `{resolved_actual}` \
+                 carries a `{cap}` capability — capability-carrying existential \
+                 payloads are rejected (RFC-0081); pass the capability explicitly \
+                 in method signatures instead",
+                existential_bare(&dyn_name)
+            ));
+        }
+        Ok(true)
+    }
+
+    fn record_existential_pack(
+        &mut self,
+        expr: &Expr,
+        expected: &Ty,
+        actual: &Ty,
+    ) -> Result<(), TypeError> {
+        if self.existential_coercion(expected, actual)?
+            && let Some(record) = &mut self.existential_pack_record
+        {
+            record.insert(
+                expr as *const Expr as usize,
+                (expected.clone(), actual.clone()),
+            );
+        }
+        Ok(())
+    }
+
+    fn reject_var_existential_coercion(
+        &self,
+        callable: &str,
+        index: usize,
+        convention: Option<&Convention>,
+        expected: &Ty,
+        actual: &Ty,
+    ) -> Result<(), TypeError> {
+        if matches!(convention, Some(Convention::Var))
+            && self.existential_coercion(expected, actual)?
+        {
+            return terr(format!(
+                "argument {} to `var` parameter of `{callable}` cannot implicitly convert \
+                 `{}` to `{}` — the callee may replace the existential with a different \
+                 concrete witness, which cannot be written back into the concrete caller \
+                 place; bind a `var` of the existential type before this call",
+                index + 1,
+                self.resolve(actual),
+                self.resolve(expected)
+            ));
+        }
+        Ok(())
     }
 
     /// (RFC-0047 / BUG-302) Whether `t` (a resolved [`Ty`]) contains a function or
@@ -5443,10 +5523,10 @@ impl Checker {
             }
             match stmt {
                 Stmt::Let { name, ty: decl, mutable, value } => {
-                    // An ascription is a unification constraint: it pins type
-                    // variables the RHS leaves open (`let xs: List(Int) = []`,
-                    // a return-position type variable) and errors at THIS line
-                    // when the RHS disagrees.
+                    // An ascription remains a unification constraint except
+                    // for RFC-0081's directed concrete-to-existential erasure.
+                    // It pins variables the RHS leaves open and reports
+                    // disagreement at THIS line.
                     let vt = if let Some(decl) = decl {
                         // (RFC-0025) `frozen` asserts deep immutability, so a `frozen`
                         // binding cannot also be mutable — `var x: frozen T` is a
@@ -5465,13 +5545,18 @@ impl Checker {
                                 e,
                             )
                         })?;
-                        self.unify(&want, &vt).map_err(|e| TypeError {
-                            message: format!(
-                                "`{name}` is declared `{want}` but the value disagrees: {}",
-                                e.message
-                            ),
-                        })?;
-                        vt
+                        let existential = self.existential_coercion(&want, &vt)?;
+                        if existential {
+                            want
+                        } else {
+                            self.unify(&want, &vt).map_err(|e| TypeError {
+                                message: format!(
+                                    "`{name}` is declared `{want}` but the value disagrees: {}",
+                                    e.message
+                                ),
+                            })?;
+                            vt
+                        }
                     } else {
                         self.infer(value)?
                     };
@@ -5498,7 +5583,9 @@ impl Checker {
                         }
                     }
                     let vt = self.infer_expected(value, &existing)?;
-                    self.unify(&existing, &vt)?;
+                    if !self.existential_coercion(&existing, &vt)? {
+                        self.unify(&existing, &vt)?;
+                    }
                     self.consumed.remove(name); // reassignment re-initializes
                     ty = Ty::Nil;
                 }
@@ -5593,6 +5680,12 @@ impl Checker {
     }
 
     fn infer_expected(&mut self, expr: &Expr, expected: &Ty) -> Result<Ty, TypeError> {
+        let actual = self.infer_expected_inner(expr, expected)?;
+        self.record_existential_pack(expr, expected, &actual)?;
+        Ok(actual)
+    }
+
+    fn infer_expected_inner(&mut self, expr: &Expr, expected: &Ty) -> Result<Ty, TypeError> {
         match expr {
             Expr::AnonCtor { tag, args } => {
                 self.check_anon_ctor(tag, args, expected)?;
@@ -5661,6 +5754,10 @@ impl Checker {
                 self.coerce_arg(expected, &at)?;
                 Ok(at)
             }
+            Expr::Match { scrutinee, arms } => {
+                let at = self.infer_match_expected(scrutinee, arms, expected)?;
+                self.finish_infer(expr, at)
+            }
             Expr::If { cond, then_block, else_block } => {
                 let ct = self.infer(cond)?;
                 self.unify(&Ty::Bool, &ct)?;
@@ -5669,6 +5766,15 @@ impl Checker {
                 if let Some(else_block) = else_block {
                     let et = self.infer_block_expected(else_block, expected)?;
                     self.coerce_arg(expected, &et)?;
+                } else if matches!(self.resolve(expected), Ty::Dyn(_, _)) {
+                    return terr(
+                        "`if` without `else` has an implicit `Nil` path that cannot produce \
+                         an existential value — add an explicit `else` branch"
+                    );
+                } else {
+                    self.coerce_arg(expected, &Ty::Nil).map_err(|e| TypeError {
+                        message: format!("`if` without `else` produces `Nil`: {}", e.message),
+                    })?;
                 }
                 self.finish_infer(expr, expected.clone())
             }
@@ -5746,9 +5852,16 @@ impl Checker {
                             message: format!("in call to `{display}`: {}", e.message),
                         })?;
                     }
-                    for (arg, pty) in args.iter().zip(&param_tys) {
+                    for (index, (arg, pty)) in args.iter().zip(&param_tys).enumerate() {
                         let at = self.infer_expected(arg, pty)
                             .map_err(|e| in_call_context(&display, e))?;
+                        self.reject_var_existential_coercion(
+                            &display,
+                            index,
+                            conventions.get(index),
+                            pty,
+                            &at,
+                        )?;
                         self.coerce_arg(pty, &at).map_err(|e| TypeError {
                             message: format!("in call to `{display}`: {}", e.message),
                         })?;
@@ -5894,9 +6007,19 @@ impl Checker {
                 | intrinsics::LIST_CONCAT
         ) || intrinsics::is_list_pop_extract(call_name)
             || call_name == "list.pop";
-        for (arg, param_ty) in args.iter().zip(&params) {
+        let call_conventions = self.fn_conventions.get(name).cloned();
+        for (index, (arg, param_ty)) in args.iter().zip(&params).enumerate() {
             let at = self.infer_expected(arg, param_ty)
                 .map_err(|e| in_call_context(&display, e))?;
+            self.reject_var_existential_coercion(
+                &display,
+                index,
+                call_conventions
+                    .as_ref()
+                    .and_then(|conventions| conventions.get(index)),
+                param_ty,
+                &at,
+            )?;
             // (BUG-305) `"${f}"` on a function value is rejected HERE, at
             // check time, so BOTH backends refuse it identically — rather
             // than the interpreter rendering `<function/N>` while the
@@ -6251,17 +6374,7 @@ impl Checker {
     }
 
     fn infer_block_expected(&mut self, block: &Block, expected: &Ty) -> Result<Ty, TypeError> {
-        if block.region.is_some() || block.stmts.len() != 1 {
-            return self.infer_block(block);
-        }
-        if let Some(line) = block.lines.first() {
-            self.cur_line = *line;
-        }
-        match &block.stmts[0] {
-            Stmt::Expr(e) | Stmt::Return(Some(e)) => self.infer_expected(e, expected),
-            Stmt::Return(None) => Ok(Ty::Nil),
-            _ => self.infer_block(block),
-        }
+        self.infer_block_tail_expected(block, expected)
     }
 
     fn anon_union_variants_for_ty(&self, ty: &Ty) -> Option<(Ty, AnonUnionVariants)> {
@@ -6321,9 +6434,11 @@ impl Checker {
     /// node that desugared (the `Range`/`Index`/`WhileLet` itself) is still
     /// recorded by the enclosing `infer`, with the result type this returns.
     fn infer_transient(&mut self, e: &Expr) -> Result<Ty, TypeError> {
-        let saved = self.type_record.take();
+        let saved_types = self.type_record.take();
+        let saved_packs = self.existential_pack_record.take();
         let r = self.infer(e);
-        self.type_record = saved;
+        self.type_record = saved_types;
+        self.existential_pack_record = saved_packs;
         r
     }
 
@@ -6529,8 +6644,15 @@ impl Checker {
                             args.len()
                         ));
                     }
-                    for (arg, pty) in args.iter().zip(&param_tys) {
+                    for (index, (arg, pty)) in args.iter().zip(&param_tys).enumerate() {
                         let at = self.infer_expected(arg, pty)?;
+                        self.reject_var_existential_coercion(
+                            "function value",
+                            index,
+                            conventions.get(index),
+                            pty,
+                            &at,
+                        )?;
                         self.coerce_arg(pty, &at).map_err(|e| TypeError {
                             message: format!("in function application: {}", e.message),
                         })?;
@@ -6758,9 +6880,11 @@ impl Checker {
                     };
                     let expected = self.subst_vars(fty, &map);
                     let vt = self.infer_expected(vexpr, &expected)?;
-                    self.unify(&expected, &vt).map_err(|e| TypeError {
-                        message: format!("`update` of field `{fname}`: {}", e.message),
-                    })?;
+                    if !self.existential_coercion(&expected, &vt)? {
+                        self.unify(&expected, &vt).map_err(|e| TypeError {
+                            message: format!("`update` of field `{fname}`: {}", e.message),
+                        })?;
+                    }
                 }
                 Ok(Ty::Named(tyname, base_args))
             }
@@ -6810,8 +6934,8 @@ impl Checker {
                 };
                 Ok(value_ty)
             }
-            Expr::As { expr, ty } => {
-                let src = self.infer(expr)?;
+            Expr::As { expr: payload, ty } => {
+                let src = self.infer(payload)?;
                 let target = self.to_ty(ty);
                 // (RFC-0081) Explicit erasure `value as dyn Trait` is a legal
                 // cast form of its own — NOT capability narrowing, so
@@ -6822,6 +6946,14 @@ impl Checker {
                 // already `Ty::Dyn` here.
                 if let Ty::Dyn(dyn_name, _) = &target {
                     let resolved_src = self.resolve(&src);
+                    if matches!(&resolved_src, Ty::Dyn(_, _)) {
+                        return terr(format!(
+                            "cannot cast `{resolved_src}` to `{target}` — existential-to-existential \
+                             casts require the authenticated supertrait-upcast runtime, which has \
+                             not landed; omit a redundant same-type cast, and unrelated \
+                             existential types never convert"
+                        ));
+                    }
                     if let Some(cap) = self.ty_carries_capability(&resolved_src) {
                         let display_name = existential_bare(dyn_name);
                         return terr(format!(
@@ -6831,6 +6963,7 @@ impl Checker {
                              in method signatures instead"
                         ));
                     }
+                    self.record_existential_pack(expr, &target, &src)?;
                     return Ok(target);
                 }
                 self.check_narrow(&src, &target)?;
@@ -7077,8 +7210,26 @@ impl Checker {
     }
 
     fn infer_match(&mut self, scrutinee: &Expr, arms: &[MatchArm]) -> Result<Ty, TypeError> {
+        self.infer_match_with_expected(scrutinee, arms, None)
+    }
+
+    fn infer_match_expected(
+        &mut self,
+        scrutinee: &Expr,
+        arms: &[MatchArm],
+        expected: &Ty,
+    ) -> Result<Ty, TypeError> {
+        self.infer_match_with_expected(scrutinee, arms, Some(expected))
+    }
+
+    fn infer_match_with_expected(
+        &mut self,
+        scrutinee: &Expr,
+        arms: &[MatchArm],
+        expected: Option<&Ty>,
+    ) -> Result<Ty, TypeError> {
         let st = self.infer(scrutinee)?;
-        let result = self.fresh();
+        let result = expected.cloned().unwrap_or_else(|| self.fresh());
         let before = self.consumed.clone();
         let mut merged = before.clone();
         for arm in arms {
@@ -7096,10 +7247,19 @@ impl Checker {
                 self.unify(&Ty::Bool, &gt)
                     .map_err(|e| TypeError { message: format!("match guard: {}", e.message) })?;
             }
-            let bt = self.infer(&arm.body)?;
-            self.unify(&result, &bt).map_err(|e| TypeError {
-                message: format!("match arms produce different types: {}", e.message),
-            })?;
+            let bt = match expected {
+                Some(expected) => self.infer_expected(&arm.body, expected)?,
+                None => self.infer(&arm.body)?,
+            };
+            if expected.is_some() {
+                self.coerce_arg(&result, &bt).map_err(|e| TypeError {
+                    message: format!("match arm disagrees with the expected type: {}", e.message),
+                })?;
+            } else {
+                self.unify(&result, &bt).map_err(|e| TypeError {
+                    message: format!("match arms produce different types: {}", e.message),
+                })?;
+            }
             self.pop();
             merged = &merged | &self.consumed;
         }
@@ -8112,10 +8272,12 @@ fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) ->
     }
 }
 
-/// The resolved-type side table owned by [`TypedModule`]: expression identity
-/// (`&Expr as *const _`) -> the concrete `Ty` the checker inferred, finalized
-/// against the ending substitution. Entries exist only where the type is
-/// fully concrete (no free variables) — consumers fall back where it is not.
+/// The semantic side tables owned by [`TypedModule`]: expression identity
+/// (`&Expr as *const _`) maps to the inferred type and any directed
+/// existential-construction request, both finalized against the ending
+/// substitution. Ordinary type entries exist only where the type is fully
+/// concrete; unresolved existential requests remain present so their final
+/// consumer fails loudly.
 ///
 /// This table is deliberately not produced independently of its AST. Raw node
 /// addresses are valid identities only while that exact module allocation is
@@ -8123,6 +8285,7 @@ fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) ->
 #[derive(Default)]
 pub struct TypeTable {
     types: HashMap<usize, Ty>,
+    existential_packs: HashMap<usize, (Ty, Ty)>,
 }
 
 impl TypeTable {
@@ -8135,6 +8298,13 @@ impl TypeTable {
     /// returned semantic types are independent of expression identity.
     pub fn concrete_types(&self) -> impl Iterator<Item = &Ty> {
         self.types.values()
+    }
+
+    /// The finalized `(existential, concrete)` construction requested at this
+    /// exact expression node.
+    pub fn existential_pack(&self, e: &Expr) -> Option<&(Ty, Ty)> {
+        self.existential_packs
+            .get(&(e as *const Expr as usize))
     }
 }
 
@@ -8408,6 +8578,10 @@ fn run_check_selected(
     let module = &module;
     let mut c = Checker {
         type_record: if record { Some(HashMap::new()) } else { None },
+        // Construction requests are also retained during ordinary checking so
+        // capability payloads resolved only by the ending substitution are
+        // rejected before annotation or lowering.
+        existential_pack_record: Some(HashMap::new()),
         fn_sigs: HashMap::new(),
         from_conversion_fns: from_conversion_fns.cloned().unwrap_or_default(),
         fn_conventions: HashMap::new(),
@@ -8634,6 +8808,28 @@ fn run_check_selected(
             Item::Type(_) | Item::Trait(_) | Item::Impl(_) | Item::Const { .. } | Item::TypeAlias { .. } | Item::Comptime(_) => {}
         }
     }
+    let mut existential_packs = HashMap::new();
+    if let Some(records) = c.existential_pack_record.take() {
+        for (key, (existential, concrete)) in records {
+            let existential = c.resolve(&existential);
+            let concrete = c.resolve(&concrete);
+            if let Some(cap) = c.ty_carries_capability(&concrete) {
+                let dyn_name = match &existential {
+                    Ty::Dyn(name, _) => existential_bare(name),
+                    _ => "existential",
+                };
+                return terr(format!(
+                    "conversion to `dyn {dyn_name}`: the concrete payload type `{concrete}` \
+                     carries a `{cap}` capability — capability-carrying existential \
+                     payloads are rejected (RFC-0081); pass the capability explicitly \
+                     in method signatures instead"
+                ));
+            }
+            if record {
+                existential_packs.insert(key, (existential, concrete));
+            }
+        }
+    }
     if let Some(rec) = c.type_record.take() {
         let mut types = HashMap::new();
         for (k, ty) in rec {
@@ -8642,7 +8838,10 @@ fn run_check_selected(
                 types.insert(k, resolved);
             }
         }
-        return Ok(Some(TypeTable { types }));
+        return Ok(Some(TypeTable {
+            types,
+            existential_packs,
+        }));
     }
     Ok(None)
 }
