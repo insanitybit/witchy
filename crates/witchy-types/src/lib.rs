@@ -14,3 +14,4 @@ pub mod migration;
 pub mod storage;
 pub mod traits;
 pub mod typeck;
+pub mod witness;

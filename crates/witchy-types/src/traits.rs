@@ -41,7 +41,12 @@ type TraitImplTable = HashMap<(String, String, String), Vec<ImplTraitMethod>>;
 
 /// Mangled name for an impl method: `Trait__Type__method`, or
 /// `Trait__Arg__Type__method` for parameterized trait impls such as `From(Arg)`.
-fn mangle(trait_name: Option<&str>, trait_args: &[Type], type_name: &str, method: &str) -> String {
+pub(crate) fn mangle(
+    trait_name: Option<&str>,
+    trait_args: &[Type],
+    type_name: &str,
+    method: &str,
+) -> String {
     match trait_name {
         Some(t) if trait_args.is_empty() => format!("{t}__{type_name}__{method}"),
         Some(t) => {
@@ -847,7 +852,7 @@ fn nil_type() -> Type {
     Type::Named("Nil".to_string(), Vec::new())
 }
 
-fn impl_self_type(im: &ImplDef) -> Type {
+pub(crate) fn impl_self_type(im: &ImplDef) -> Type {
     if im.type_name.starts_with("Tuple") {
         Type::Tuple(im.target_args.clone())
     } else {
@@ -877,11 +882,19 @@ fn subst_trait_params(t: &Type, vars: &HashMap<String, Type>) -> Type {
     }
 }
 
-fn expected_method_type(t: &Type, im: &ImplDef, trait_params: &HashMap<String, Type>) -> Type {
+pub(crate) fn expected_method_type(
+    t: &Type,
+    im: &ImplDef,
+    trait_params: &HashMap<String, Type>,
+) -> Type {
     subst_trait_params(&subst_self(t, &impl_self_type(im)), trait_params)
 }
 
-fn ret_type(ret: &Option<Type>, im: &ImplDef, trait_params: &HashMap<String, Type>) -> Type {
+pub(crate) fn ret_type(
+    ret: &Option<Type>,
+    im: &ImplDef,
+    trait_params: &HashMap<String, Type>,
+) -> Type {
     ret.as_ref()
         .map(|t| expected_method_type(t, im, trait_params))
         .unwrap_or_else(nil_type)
