@@ -189,6 +189,7 @@ pub const EXISTENTIAL_WITNESS_FIELD: u32 = 1;
 pub fn existential_wrapper_struct() -> WirStructDef {
     WirStructDef {
         fields: vec![Kind::StructRef, Kind::I32],
+        mutable: false,
     }
 }
 
