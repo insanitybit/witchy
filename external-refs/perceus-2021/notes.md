@@ -9,8 +9,8 @@ The canonical reference for the **RC-as-floor** direction. Its core precondition
 
 ## Informs
 
-- `rfcs/performance-modes.md` — tier-5 "Reuse / FBIP" (PROPOSED), and the open "pick one memory identity" decision.
-- `rfcs/ownership-analysis.md` — recasts the cap-token as proven-`rc==1` elision.
+- [`rfcs/performance-modes.md`](../../rfcs/performance-modes.md) — tier-5 "Reuse / FBIP" (PROPOSED), and the open "pick one memory identity" decision.
+- [`rfcs/ownership-analysis.md`](../../rfcs/ownership-analysis.md) — recasts the cap-token as proven-`rc==1` elision.
 
 ## Caution
 
