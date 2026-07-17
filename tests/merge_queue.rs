@@ -265,7 +265,7 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
 
     let output = Command::new(&queue)
         .args(["run", "--once"])
-        .env("PATH", path)
+        .env("PATH", &path)
         .env("MERGE_QUEUE_STATE_DIR", &state)
         .env("MERGE_QUEUE_GATE_WT", &gate_worktree)
         .env("MERGE_QUEUE_GATE_CMD", &gate_command)
@@ -342,6 +342,72 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
         0,
         "coordinator did not consume both terminal submissions",
     );
+
+    // Candidate checkout is a correctness boundary, not a best-effort setup
+    // step. Reproduce a sandbox-denied gate-worktree index update and prove the
+    // coordinator blocks the submission instead of gating the stale master
+    // checkout and attributing that result to the branch.
+    git(&repo, &["checkout", "-b", "checkout-denied", "master"]);
+    fs::write(repo.join("must-not-be-gated-as-master"), "candidate\n")
+        .expect("write denied-checkout candidate");
+    git(&repo, &["add", "must-not-be-gated-as-master"]);
+    git(&repo, &["commit", "-m", "candidate requiring checkout"]);
+    git(&repo, &["checkout", "master"]);
+    let submitted = Command::new(&queue)
+        .args(["submit", "checkout-denied"])
+        .env("MERGE_QUEUE_STATE_DIR", &state)
+        .env("MERGE_QUEUE_GATE_WT", &gate_worktree)
+        .output()
+        .expect("submit checkout-denied fixture");
+    assert!(submitted.status.success());
+    fs::remove_file(&gate_marker).expect("clear prior gate marker");
+
+    let real_git = Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .expect("locate real git");
+    assert!(real_git.status.success());
+    let real_git = String::from_utf8(real_git.stdout)
+        .expect("git path is utf8")
+        .trim()
+        .to_owned();
+    let fake_git = fake_bin.join("git");
+    fs::write(
+        &fake_git,
+        format!(
+            "#!/bin/sh\ncase \" $* \" in\n  *\" checkout --detach --quiet refs/heads/checkout-denied \"*) exit 73 ;;\nesac\nexec {real_git:?} \"$@\"\n",
+        ),
+    )
+    .expect("write checkout-denying git wrapper");
+    fs::set_permissions(&fake_git, fs::Permissions::from_mode(0o755))
+        .expect("chmod checkout-denying git wrapper");
+
+    let denied = Command::new(&queue)
+        .args(["run", "--once"])
+        .env("PATH", &path)
+        .env("MERGE_QUEUE_STATE_DIR", &state)
+        .env("MERGE_QUEUE_GATE_WT", &gate_worktree)
+        .env("MERGE_QUEUE_GATE_CMD", &gate_command)
+        .output()
+        .expect("run coordinator with denied candidate checkout");
+    assert!(
+        denied.status.success(),
+        "coordinator did not fail closed cleanly: {}",
+        String::from_utf8_lossy(&denied.stderr),
+    );
+    assert!(!gate_marker.exists(), "stale gate worktree was gated after checkout failure");
+    let journal = fs::read_to_string(state.join("journal.jsonl"))
+        .expect("read checkout-failure journal");
+    assert!(
+        journal.lines().any(|line| {
+            let event: serde_json::Value = serde_json::from_str(line).unwrap();
+            event["event"] == "blocked"
+                && event["branch"] == "checkout-denied"
+                && event["reason"] == "candidate checkout failed"
+        }),
+        "checkout failure was not journaled as blocked: {journal}",
+    );
+    assert!(!repo.join("must-not-be-gated-as-master").exists());
 }
 
 #[test]

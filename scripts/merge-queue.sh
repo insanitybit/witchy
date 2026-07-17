@@ -621,7 +621,19 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     ensure_gate_worktree
     local base; base="$(git -C "$root" rev-parse master)"
 
-    git -C "$gate_wt" checkout --detach --quiet "refs/heads/$branch"
+    # `process_one` is called from an `||` list, which disables Bash's implicit
+    # errexit inside the function. Guard candidate checkout explicitly: a
+    # sandbox-denied index lock must never leave the gate worktree on master and
+    # then validate that unrelated SHA as if it were the submitted branch.
+    if ! git -C "$gate_wt" checkout --detach --quiet "refs/heads/$branch"; then
+        note "could not check out $branch in the gate worktree; refusing to gate the stale checkout"
+        local checkout_failed; checkout_failed="$(date +%s)"
+        record_attempt blocked "$branch" "$attempt_start" "$checkout_failed" \
+            "$checkout_failed" "$checkout_failed" "$checkout_failed" \
+            "$checkout_failed" base "$base" reason "candidate checkout failed"
+        rm -f "$f" "$f.nobatch" "$f.batch-limit"
+        return 0
+    fi
     if ! git -C "$gate_wt" rebase master >/dev/null 2>&1; then
         git -C "$gate_wt" rebase --abort >/dev/null 2>&1 || true
         note "$branch does not rebase cleanly onto master — needs a human/agent rebase"
