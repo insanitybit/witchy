@@ -14,6 +14,9 @@ witchy test    examples/hello                    # run the rune's tests (if any)
 
 Or from inside a rune: `cd examples/hello && witchy run`.
 
+For a guided introduction to the language before diving into individual
+examples, see the [book tour](../book/src/tour.md).
+
 ## Start here
 
 | Example | Shows |
