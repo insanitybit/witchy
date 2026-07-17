@@ -627,6 +627,10 @@ pub enum Expr {
         method: String,
         slot: u32,
         result: Type,
+        /// Receiver first, followed by explicit arguments. This is copied from
+        /// the static witness layout so runtime adapters preserve `let`/`var`/
+        /// `own` behavior without re-resolving a trait declaration.
+        conventions: Vec<Convention>,
     },
     Binary { op: BinOp, lhs: Box<Expr>, rhs: Box<Expr> },
     If {

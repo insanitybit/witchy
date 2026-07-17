@@ -2452,7 +2452,11 @@ impl Ctx<'_> {
             .collect()
     }
 
-    fn existential_slot(&self, ty: &Type, method: &str) -> Result<(String, u32, Type), String> {
+    fn existential_slot(
+        &self,
+        ty: &Type,
+        method: &str,
+    ) -> Result<(String, u32, Type, Vec<Convention>), String> {
         let Type::Dyn(root, _) = ty.unqualified() else {
             return Err("internal: existential dispatch needs a dyn receiver".to_string());
         };
@@ -2474,7 +2478,12 @@ impl Ctx<'_> {
             [(index, slot_def)] => {
                 let slot = u32::try_from(*index)
                     .map_err(|_| "existential method slot exceeds u32".to_string())?;
-                Ok((slot_def.owner_trait.clone(), slot, slot_def.result.clone()))
+                Ok((
+                    slot_def.owner_trait.clone(),
+                    slot,
+                    slot_def.result.clone(),
+                    slot_def.conventions.clone(),
+                ))
             }
             [] => Err(format!(
                 "`{}` has no existential-safe method `{method}`",
@@ -3118,7 +3127,7 @@ impl Ctx<'_> {
                     // by source spelling or concrete payload type.
                     Some(ty) if matches!(ty.unqualified(), Type::Dyn(..)) => {
                         match self.existential_slot(&ty, method) {
-                            Ok((owner_trait, slot, result)) => {
+                            Ok((owner_trait, slot, result, conventions)) => {
                                 let receiver = std::mem::replace(
                                     receiver.as_mut(),
                                     Expr::Bool(false),
@@ -3131,6 +3140,7 @@ impl Ctx<'_> {
                                     method: method.clone(),
                                     slot,
                                     result,
+                                    conventions,
                                 };
                             }
                             Err(message) => self.missing_impls.borrow_mut().push(message),
@@ -5664,6 +5674,7 @@ fn show(value: dyn Render) -> String:
             method,
             slot,
             result,
+            conventions,
             ..
         })] = function.body.stmts.as_slice()
         else {
@@ -5675,5 +5686,6 @@ fn show(value: dyn Render) -> String:
         assert_eq!(method, "render");
         assert_eq!(*slot, 0);
         assert_eq!(result, &named_type("String"));
+        assert_eq!(conventions, &vec![Convention::Let]);
     }
 }
