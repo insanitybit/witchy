@@ -247,7 +247,8 @@ exposes read and write as separate facets, or a mailer over `Net` and a `Secret`
 
 A plain `type` brand (`type ConfigDir: ConfigDir(Dir)`) is convention only: any
 module can construct one. Use `capability` when the brand has to hold as a
-guarantee. See `examples/branded_caps` and `examples/redis_capability`.
+guarantee. See [`examples/branded_caps`](https://github.com/insanitybit/witchy/tree/master/examples/branded_caps)
+and [`examples/redis_capability`](https://github.com/insanitybit/witchy/tree/master/examples/redis_capability).
 
 ## Capabilities that carry policy
 
@@ -290,7 +291,8 @@ fn main(console: Console, net: Net):
 because the footprint sums its capability-typed fields and the `String` carries no
 authority. So you get carried policy with **nothing hidden** — the hard tier (the
 `Net` is host-confined to one server) plus a soft, library-enforced tier (the
-`table` filter), in one unforgeable value. See `examples/carried_state`.
+`table` filter), in one unforgeable value. See
+[`examples/carried_state`](https://github.com/insanitybit/witchy/tree/master/examples/carried_state).
 
 ## Grantable capabilities: a library's own root authority
 
