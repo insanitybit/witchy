@@ -24,6 +24,45 @@ cargo build --release
 ./target/release/witchy examples/hello/src/hello.witchy
 ```
 
+### Private 0.1.0 installation
+
+Witchy 0.1.0 is distributed only through this private GitHub repository. Access
+requires an authorized GitHub account; there is no public or unauthenticated
+download mirror. Authenticate with GitHub CLI, select the archive matching your
+platform, and download it together with the checksum manifest:
+
+```sh
+gh auth login
+gh release download v0.1.0 --repo insanitybit/witchy \
+  --pattern witchy-0.1.0-aarch64-apple-darwin.tar.gz \
+  --pattern SHA256SUMS --dir witchy-0.1.0-download
+cd witchy-0.1.0-download
+grep '  witchy-0.1.0-aarch64-apple-darwin.tar.gz$' SHA256SUMS | shasum -a 256 -c -
+tar -xzf witchy-0.1.0-aarch64-apple-darwin.tar.gz
+./witchy-0.1.0-aarch64-apple-darwin/bin/witchy --version
+```
+
+Use `x86_64-apple-darwin` for an Intel Mac or
+`x86_64-unknown-linux-gnu` for x86-64 Linux. Linux users may replace
+`shasum -a 256` with `sha256sum`. Verify the archive before extraction.
+
+Every archive has exactly this layout, under its target-named root:
+
+```text
+witchy-0.1.0-<target>/
+  bin/witchy
+  README.md
+  CHANGELOG.md
+  LICENSE-MIT
+  LICENSE-APACHE
+```
+
+The macOS binaries are not Apple-notarized or independently code-signed. An
+authorized download made with `gh` normally runs directly; if local Gatekeeper
+policy adds quarantine and blocks it, inspect the file and then remove that
+attribute explicitly with `xattr -d com.apple.quarantine <root>/bin/witchy`.
+This private-development workaround is not notarization.
+
 ## Why witchy?
 
 Supply chain security is a serious problem. Packages have very good reasons for running
@@ -101,13 +140,29 @@ Every piece of `witchy` is designed with security in mind.
 
 ## Language stability
 
-Keep in mind that witchy is beyond unstable. I wouldn't even label it `0.0.0-alpha` at this point - even that level of semantic versioning feels like it's radically overstating things. The language isn't stable,
-the goals aren't stable, the repo names for the project aren't stable, nothing is stable. I could yank the repo at any moment.
+Witchy 0.1.0 is a private, usable, compatibility-unstable checkpoint. The
+installed CLI and release artifacts are exercised by executable release gates,
+but 0.x releases may still make breaking language, standard-library, package,
+artifact, and CLI changes without a deprecation period.
 
-Perhaps most importantly, `witchy` shouldn't be trusted. A significant amount of witchy's security requires that code is memory safe - not *all* of the security, but plenty of it.
+The parity, checked-heap, sandbox, and installed-artifact tests provide concrete
+regression evidence; they are not a proof that the compiler or runtime has no
+defects. In particular, current filesystem confinement is not race-free against
+a concurrent local symlink swap. See [CHANGELOG.md](CHANGELOG.md) for the exact
+0.1.0 surface and known limitations.
 
-Currently, I've spent no real effort ensuring that the generated code actually is safe. The "worst case" should only be a program that's confined to the wasm
-VM, but guarantees within that VM would be totally available if there's a way to trigger arbitrary code execution in the generated code.
+Portable `.wasm` artifacts remain untrusted guests run by a separately installed
+Witchy host. A `trusted-exe`, by contrast, embeds the application, checked root
+capability bindings, and the native Witchy runtime in one executable. Running it
+trusts that complete artifact and its distributor; capabilities constrain
+delegation inside the trusted application, not the trusted root's authority over
+the user. Embedded digests detect corruption but do not authenticate a publisher.
+For 0.1.0, publisher authentication is authorized access to the private GitHub
+repository and release.
+
+Grimoire/Coven integrated installation is not included in 0.1.0. Neither the
+README nor the release claims proposed existential, `Dynamic`, lexical-extension,
+or Grimoire semantics that are not independently implemented and tested.
 
 ## AI disclosure
 
