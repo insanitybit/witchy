@@ -11,10 +11,10 @@ set -euo pipefail
 root="${TMPDIR:-/tmp}/witchy-nextest-list-${NEXTEST_RUN_ID:-$PPID}"
 # Freshly linked test binaries are I/O/codesign bound on macOS. Four distinct
 # cold launches stretched to ~4x the single-launch time in a production gate,
-# with no aggregate throughput gain, while unrelated process startup also
-# stalled. Serialize by default; the override remains available for controlled
-# retuning and for environments where cold launch is not the bottleneck.
-jobs="${WITCHY_NEXTEST_LIST_JOBS:-1}"
+# with no aggregate throughput gain, while one-wide discovery later developed
+# a >100s no-progress tail. Default to two as the bounded middle ground; the
+# override remains available for controlled retuning.
+jobs="${WITCHY_NEXTEST_LIST_JOBS:-2}"
 runner_pid="$PPID"
 binary_name="$(basename "$1")"
 normal_done="$root/normal-done-$binary_name"

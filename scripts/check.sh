@@ -53,8 +53,8 @@ if [ -n "${WITCHY_GATE_SCOPE+x}" ]; then
     unset CARGO_INCREMENTAL
 fi
 
-# macOS test discovery in the serialized gate is bounded to one cold binary at
-# a time by default in scripts/nextest-list-wrapper.sh (.config/nextest.toml),
+# macOS test discovery in the serialized gate is bounded to two cold binaries
+# at a time by default in scripts/nextest-list-wrapper.sh (.config/nextest.toml),
 # which can take longer than the three-pulse standalone startup window. Keep
 # the heartbeat bounded while extending the serialized gate's observable-
 # progress window to sixteen minutes. Test EXECUTION is deliberately unbounded:
