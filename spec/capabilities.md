@@ -89,7 +89,7 @@ syscall by the runtime** on both backends, so a narrowed `Net` cannot dial
 elsewhere. Policy patterns are **scheme-agnostic `host:port`**: HTTPS is not a
 right and not an allowlist scheme but a *connect-time* `tls:` choice on the
 address you dial (`net.connect("tls:github.com:443")`), terminated on the host —
-see `rfcs/0009-https-tls-client.md`.
+see [RFC-0009](../rfcs/0009-https-tls-client.md).
 
 **Resolve-once-and-pin.** `connect` resolves a hostname a *single* time: the IP set
 checked against the allowlist is the same set dialed — no code path re-resolves
@@ -123,7 +123,7 @@ match http.pin(safe, user_url, public_ok):
     Err(e) -> Err(e)
 ```
 
-See `rfcs/0020-rebinding-resistant-http.md`.
+See [RFC-0020](../rfcs/0020-rebinding-resistant-http.md).
 
 `Exec` is the right to spawn a native subprocess — the runtime analog of the
 build-time `BuildExec`. It is right-less and carries no payload of its own: the
@@ -137,7 +137,7 @@ footprinted and gated like any other, the `Dir[Read]` confinement and
 argv-only (no shell string) call shape are load-bearing, and almost nothing
 should hold it. It exists chiefly so the self-hosted `witchy` package manager
 can drive the compiler — the same binary's `compile`/`build-step` verbs — as a
-confined subprocess; see `rfcs/0004-self-hosted-cli.md`.
+confined subprocess; see [RFC-0004](../rfcs/0004-self-hosted-cli.md).
 
 ## Attenuation patterns
 
