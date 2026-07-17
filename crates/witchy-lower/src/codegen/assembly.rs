@@ -647,6 +647,16 @@ fn register_module_items(
     reachable: &HashSet<String>,
     witnesses: &witchy_types::witness::WitnessPlan,
 ) {
+    let existential_dispatch = witnesses
+        .dispatch_index()
+        .expect("witness construction assigns dense runtime IDs")
+        .table_len(witnesses.witnesses.len())
+        .expect("existential witness table fits u32 addressing");
+    cg.existential_table_len = existential_dispatch;
+    cg.existential_dispatch_stride = witnesses
+        .dispatch_index()
+        .expect("witness construction assigns dense runtime IDs")
+        .stride();
     // `Option`/`Result` are language-level (`?`, `Some`/`Ok` literals, the
     // interpreter evaluates them natively): their constructors exist for
     // patterns whether or not std/option / std/result are linked. Tags match
@@ -1032,6 +1042,116 @@ fn register_module_items(
     }
 }
 
+/// Materialize the closed witness plan as typed Wasm table functions.
+///
+/// Each wrapper receives the erased existential envelope, casts only through
+/// compiler-reserved GC layouts, extracts the concrete payload, and calls the
+/// monomorphized impl adapter. The table index is the backend-neutral dense
+/// `(witness_id, static_slot)` contract from `witchy-types::witness`.
+fn build_existential_adapter_funcs(
+    cg: &Codegen<'_>,
+    witnesses: &witchy_types::witness::WitnessPlan,
+) -> Result<(Vec<witchy_wir::wir::WirFunc>, Vec<String>), LoweringFailure> {
+    use witchy_syntax::ast::Convention;
+    use witchy_wir::wir::{WirExpr as E, WirFunc, WirLocal, WirNode as N, WirTy};
+
+    let index = witnesses.dispatch_index().map_err(|message| {
+        LoweringFailure::Rejected(CodegenError { message })
+    })?;
+    let Some(table_len) = index.table_len(witnesses.witnesses.len()) else {
+        return unsupported("existential witness table exceeds u32 addressing");
+    };
+    if table_len == 0 {
+        return Ok((Vec::new(), Vec::new()));
+    }
+
+    let mut funcs = Vec::new();
+    let mut entries = vec![String::new(); usize::try_from(table_len).unwrap_or(0)];
+    for witness in &witnesses.witnesses {
+        let payload_id = *cg.existential_payload_ids.get(&witness.id).ok_or_else(|| {
+            LoweringFailure::Rejected(CodegenError {
+                message: format!("missing payload box for existential witness {}", witness.id),
+            })
+        })?;
+        for (slot_index, slot) in witness.slots.iter().enumerate() {
+            if slot.receiver != Convention::Let
+                || slot.conventions.iter().any(|convention| *convention != Convention::Let)
+            {
+                return unsupported(format!(
+                    "RFC-0081 Wasm adapter for `{}`.{} with `var` or `own` parameters is not lowered yet",
+                    slot.owner_trait, slot.method
+                ));
+            }
+            let slot_index = u32::try_from(slot_index).map_err(|_| {
+                LoweringFailure::Rejected(CodegenError {
+                    message: "existential witness slot exceeds u32".to_string(),
+                })
+            })?;
+            let table_index = index.table_index(witness, slot_index).ok_or_else(|| {
+                LoweringFailure::Rejected(CodegenError {
+                    message: "witness dispatch plan lost a valid static slot".to_string(),
+                })
+            })?;
+            let name = format!("__dynw{}_{}", witness.id, slot_index);
+            let mut params = vec![WirLocal {
+                name: "receiver".to_string(),
+                ty: WirTy::StructRef,
+            }];
+            for (argument_index, ty) in slot.params.iter().enumerate() {
+                params.push(WirLocal {
+                    name: format!("arg{argument_index}"),
+                    ty: Codegen::wir_ty_for_kind(cg.kind_for_type(ty)),
+                });
+            }
+            let wrapped = E::RefCast {
+                struct_id: EXISTENTIAL_WRAPPER_ID,
+                value: Box::new(E::GetLocal("receiver".to_string())),
+            };
+            let erased_payload = E::StructGet {
+                struct_id: EXISTENTIAL_WRAPPER_ID,
+                field: 0,
+                base: Box::new(wrapped),
+            };
+            let payload = E::StructGet {
+                struct_id: payload_id,
+                field: 0,
+                base: Box::new(E::RefCast {
+                    struct_id: payload_id,
+                    value: Box::new(erased_payload),
+                }),
+            };
+            let mut args = vec![payload];
+            args.extend((0..slot.params.len()).map(|argument_index| {
+                E::GetLocal(format!("arg{argument_index}"))
+            }));
+            funcs.push(WirFunc {
+                name: name.clone(),
+                params,
+                ret: vec![Codegen::wir_ty_for_kind(cg.kind_for_type(&slot.result))],
+                locals: Vec::new(),
+                body: vec![N::Push(E::Call {
+                    func: slot.adapter.clone(),
+                    args,
+                })],
+                raw_body: None,
+            });
+            entries[usize::try_from(table_index).expect("u32 table index fits usize")] = name;
+        }
+    }
+    let Some(fallback) = funcs.first().map(|function| function.name.clone()) else {
+        return Ok((Vec::new(), Vec::new()));
+    };
+    for entry in &mut entries {
+        if entry.is_empty() {
+            // This cell belongs to a shorter, incompatible existential layout;
+            // a well-typed static slot can never select it. It must still hold
+            // a funcref so the dense table has stable arithmetic indexing.
+            *entry = fallback.clone();
+        }
+    }
+    Ok((funcs, entries))
+}
+
 #[derive(Debug)]
 enum LoweringFailure {
     Unsupported(UnsupportedLowering),
@@ -1226,7 +1346,16 @@ fn assemble_wir_module_with_structs(
     let loan_facts = witchy_types::loans::facts(&module)
         .map_err(|error| CodegenError { message: error.to_string() })?;
     let custom_eq_roots = custom_eq_function_roots(&module);
-    let reachable = reachable_functions_with(&module, &custom_eq_roots);
+    let mut reachable = reachable_functions_with(&module, &custom_eq_roots);
+    // Witness adapters are ordinary monomorphized impl methods, but their only
+    // callers are generated after source reachability has run. Keep them as
+    // roots so a closed existential construction cannot leave a table entry
+    // pointing at an un-emitted function.
+    for witness in &witnesses.witnesses {
+        for slot in &witness.slots {
+            reachable.insert(slot.adapter.clone());
+        }
+    }
     let mut cg = Codegen::new(&type_table, loan_facts);
     cg.collect_wir = true;
     register_module_items(&mut cg, &module, &reachable, &witnesses);
@@ -1362,6 +1491,11 @@ fn assemble_wir_module_with_structs(
             "reachable functions do not fully lower to WIR: {missing:?}"
         ));
     }
+    // Generate the compiler-owned adapter functions only after their direct impl
+    // targets have been lowered. They occupy the leading dense table cells;
+    // lifted closures are offset by `existential_table_len` when constructed.
+    let (existential_adapter_funcs, existential_table_entries) =
+        build_existential_adapter_funcs(&cg, &witnesses)?;
     // Bail if the program needs program-specific helpers (not in the prelude) or
     // closure types beyond the reserved band. An Int/Float `main` is fine now —
     // the prelude declares `print_int`/`print_float` and the `run` wrapper prints
@@ -1443,6 +1577,9 @@ fn assemble_wir_module_with_structs(
         // Lifted lambda bodies call `$mkN`/`$ensure`/prelude helpers and each
         // other; pull their reached helpers into the resolution set.
         for f in &cg.lambda_wir_funcs {
+            uses_table |= collect_called_funcs(&f.body, &mut called);
+        }
+        for f in &existential_adapter_funcs {
             uses_table |= collect_called_funcs(&f.body, &mut called);
         }
         // (RFC-0045) `__witchy_abort` is authority-free and always linked (like the
@@ -1600,6 +1737,11 @@ fn assemble_wir_module_with_structs(
                 for f in cg.rcopy_wir_helpers.values() {
                     pruned_funcs.push(f.clone());
                 }
+            }
+            // Closed existential witness adapters must precede closures: their
+            // dense table indices are part of the RFC-0081 backend contract.
+            for f in &existential_adapter_funcs {
+                pruned_funcs.push(f.clone());
             }
             // Lifted lambda bodies, in table-index order (so `$__lamw{i}` lands at
             // table slot i, matching the code index baked into each closure object).
@@ -1999,12 +2141,15 @@ fn assemble_wir_module_with_structs(
                 memory_pages: 1,
                 data,
                 globals: pruned_globals,
-                table: if cg.lambda_wir_funcs.is_empty() {
+                table: if existential_table_entries.is_empty() && cg.lambda_wir_funcs.is_empty() {
                     if uses_table { Some(WirTable { funcs: Vec::new() }) } else { None }
                 } else {
-                    // Slot i = `$__lamw{i}`, so a closure object's code index
-                    // resolves to its lifted body through the element segment.
-                    Some(WirTable { funcs: cg.lambda_wir_funcs.iter().map(|f| f.name.clone()).collect() })
+                    // Witness adapters occupy the leading cells. Lambda wrappers
+                    // store that offset plus their local index, preserving the
+                    // longstanding closure table contract.
+                    let mut funcs = existential_table_entries.clone();
+                    funcs.extend(cg.lambda_wir_funcs.iter().map(|f| f.name.clone()));
+                    Some(WirTable { funcs })
                 },
                 exports: {
                     let mut exports: Vec<(String, String)> = Vec::new();

@@ -161,6 +161,10 @@ impl WitnessDispatchIndex {
         }
         witness.id.checked_mul(self.stride)?.checked_add(slot)
     }
+
+    pub fn table_len(self, witness_count: usize) -> Option<u32> {
+        u32::try_from(witness_count).ok()?.checked_mul(self.stride)
+    }
 }
 
 impl Witness {

@@ -293,6 +293,15 @@ const TYPECHECK_TMP: &str = "__witchy_typecheck_tmp";
 /// position is rejected (absurd in practice).
 const APPLY_POOL: usize = 8;
 
+/// Scratch envelopes for nested RFC-0081 dynamic calls. The receiver must be
+/// evaluated once before its arguments, and those arguments may themselves
+/// dispatch dynamically, so each nesting level needs an independent local.
+const EXISTENTIAL_CALL_POOL: usize = 8;
+
+fn existential_call_scratch(level: usize) -> String {
+    format!("__witchy_dyn_receiver_{level}")
+}
+
 /// (RFC-0016) Scratch i64 slots for capacity-resizing in-place reuse: a list `var`
 /// reassignment `x = [e0, …, e_{k-1}]` evaluates its elements into these once, then
 /// either overwrites `x`'s buffer (when it fits) or reallocates — so the elements
@@ -1271,6 +1280,16 @@ struct Codegen<'types> {
     /// twin of `lambdas`. Each is a `WirFunc $__lamw{i}`; the uniform GC wrapper
     /// stores `i` as its code index and `CallIndirect` uses it as the table slot.
     lambda_wir_funcs: Vec<witchy_wir::wir::WirFunc>,
+    /// Leading table cells reserved for RFC-0081 witness adapters. Lambda
+    /// bodies retain their local vector indices, while closure objects carry
+    /// `existential_table_len + lambda_index` as the shared table address.
+    existential_table_len: u32,
+    /// Width of the dense `(witness_id, static_slot)` adapter table. This is
+    /// captured from the frontend witness plan during module registration.
+    existential_dispatch_stride: u32,
+    /// Current nesting level of an RFC-0081 dynamic call, indexing
+    /// `EXISTENTIAL_CALL_POOL` receiver scratch locals.
+    existential_call_level: usize,
     /// Maps a lambda's source-owner/content hash to its index in
     /// `lambda_wir_funcs`, so the many lowering passes register each lambda
     /// exactly once (idempotent).
@@ -1464,6 +1483,9 @@ impl<'types> Codegen<'types> {
             rcopy_wir_helpers: std::collections::BTreeMap::new(),
             rcopy_building: HashSet::new(),
             lambda_wir_funcs: Vec::new(),
+            existential_table_len: 0,
+            existential_dispatch_stride: 0,
+            existential_call_level: 0,
             lambda_wir_index: HashMap::new(),
             lambda_threaded_index: HashMap::new(),
             ts_helpers: std::collections::BTreeMap::new(),
@@ -3152,6 +3174,7 @@ impl<'types> Codegen<'types> {
         self.begin_unit(renamed);
 
         self.apply_level = 0;
+        self.existential_call_level = 0;
         self.assign_level = 0;
         self.wm_level = 0;
         // Lower the body straight to WIR (`assemble_wir_module` sets `collect_wir`
@@ -3360,6 +3383,12 @@ impl<'types> Codegen<'types> {
             locals.push(WirLocal {
                 name: format!("__witchy_call_{i}"),
                 ty: WirTy::GcRef(CLOSURE_WRAPPER_ID),
+            });
+        }
+        for i in 0..EXISTENTIAL_CALL_POOL {
+            locals.push(WirLocal {
+                name: existential_call_scratch(i),
+                ty: WirTy::GcRef(EXISTENTIAL_WRAPPER_ID),
             });
         }
         for (id, element_kind) in self
@@ -7462,10 +7491,67 @@ impl<'types> Codegen<'types> {
                     args: vec![payload, W::ConstI32(i32::try_from(*witness).ok()?)],
                 });
             }
-            // RFC-0081 dispatch reaches this backend only after the public
-            // feature gate is opened. Its next slice supplies uniform adapter
-            // trampolines; do not fall back to a source-name call here.
-            Expr::ExistentialCall { .. } => return None,
+            // RFC-0081 dispatch selects a compiler-owned adapter from the dense
+            // witness table. This is deliberately not a source-name fallback:
+            // trait lowering already authenticated the static owner and slot.
+            Expr::ExistentialCall {
+                receiver,
+                args,
+                slot,
+                result,
+                conventions,
+                ..
+            } => {
+                if !self.collect_wir
+                    || conventions.first() != Some(&Convention::Let)
+                    || conventions.iter().any(|convention| *convention != Convention::Let)
+                    || self.existential_dispatch_stride == 0
+                {
+                    return None;
+                }
+                let level = self.existential_call_level;
+                if level >= EXISTENTIAL_CALL_POOL {
+                    return None;
+                }
+                let receiver_value = self.lower_expr(receiver)?;
+                self.existential_call_level = level + 1;
+                let lowered_args: Option<Vec<W>> = args.iter().map(|arg| self.lower_expr(arg)).collect();
+                self.existential_call_level = level;
+                let lowered_args = lowered_args?;
+                let receiver_tmp = existential_call_scratch(level);
+                let result_kind = self.kind_for_type(result);
+                let mut call_args = vec![W::GetLocal(receiver_tmp.clone())];
+                call_args.extend(lowered_args);
+                let mut signature_params = vec![witchy_wir::wir::Kind::StructRef];
+                signature_params.extend(args.iter().map(|arg| Self::wir_kind(self.kind_of(arg))));
+                let witness_id = W::StructGet {
+                    struct_id: EXISTENTIAL_WRAPPER_ID,
+                    field: 1,
+                    base: Box::new(W::GetLocal(receiver_tmp.clone())),
+                };
+                let table_index = W::Binary {
+                    op: witchy_wir::wir::BinOp::Add,
+                    kind: witchy_wir::wir::Kind::I32,
+                    lhs: Box::new(W::Binary {
+                        op: witchy_wir::wir::BinOp::Mul,
+                        kind: witchy_wir::wir::Kind::I32,
+                        lhs: Box::new(witness_id),
+                        rhs: Box::new(W::ConstI32(i32::try_from(self.existential_dispatch_stride).ok()?)),
+                    }),
+                    rhs: Box::new(W::ConstI32(i32::try_from(*slot).ok()?)),
+                };
+                return Some(W::Seq(vec![
+                    N::SetLocal { local: receiver_tmp, value: receiver_value },
+                    N::Push(W::CallIndirect {
+                        signature: witchy_wir::wir::ClosureSignature {
+                            params: signature_params,
+                            results: vec![Self::wir_kind(result_kind)],
+                        },
+                        args: call_args,
+                        index: Box::new(table_index),
+                    }),
+                ]));
+            }
             // `e as T` (capability narrowing / type ascription) is value-neutral
             // at codegen — lower the inner expression unchanged.
             Expr::As { expr, .. } => return self.lower_expr(expr),
@@ -9416,7 +9502,13 @@ impl<'types> Codegen<'types> {
         };
         Some(W::StructNew {
             struct_id: CLOSURE_WRAPPER_ID,
-            args: vec![W::ConstI32(index as i32), W::ConstI32(0), gc_env],
+            args: vec![
+                W::ConstI32(i32::try_from(
+                    self.existential_table_len.checked_add(u32::try_from(index).ok()?)?
+                ).ok()?),
+                W::ConstI32(0),
+                gc_env,
+            ],
         })
     }
 
@@ -9565,9 +9657,11 @@ impl<'types> Codegen<'types> {
         self.cur_fn_ret_slot = !typed_abi;
         self.cur_fn_unique_ret = false;
         let saved_apply = self.apply_level;
+        let saved_existential_call = self.existential_call_level;
         let saved_assign = self.assign_level;
         let saved_wm = self.wm_level;
         self.apply_level = 0;
+        self.existential_call_level = 0;
         self.assign_level = 0;
         self.wm_level = 0;
         let body_res = self.lower_block(body);
@@ -9577,6 +9671,7 @@ impl<'types> Codegen<'types> {
         // lambda's accumulators, not the enclosing function's.
         let lambda_inplace = self.inplace_push.clone();
         self.apply_level = saved_apply;
+        self.existential_call_level = saved_existential_call;
         self.assign_level = saved_assign;
         self.wm_level = saved_wm;
         let fin = self.finish_unit("lambda");
@@ -9729,6 +9824,12 @@ impl<'types> Codegen<'types> {
                     locals.push(WirLocal {
                         name: format!("__witchy_call_{i}"),
                         ty: WirTy::GcRef(CLOSURE_WRAPPER_ID),
+                    });
+                }
+                for i in 0..EXISTENTIAL_CALL_POOL {
+                    locals.push(WirLocal {
+                        name: existential_call_scratch(i),
+                        ty: WirTy::GcRef(EXISTENTIAL_WRAPPER_ID),
                     });
                 }
                 for (id, element_kind) in self

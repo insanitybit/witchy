@@ -980,6 +980,42 @@ fn main() -> Nil:
     }
 
     #[test]
+    fn existential_dispatch_uses_a_closed_typed_table_adapter() {
+        let src = r#"
+trait Render:
+    fn render(self) -> Int
+
+type Label:
+    Label(Int)
+
+impl Render for Label:
+    fn render(self) -> Int:
+        match self:
+            Label(value) -> value
+
+fn main() -> Int:
+    let item: dyn Render = Label(42)
+    item.render()
+"#;
+        let module = parse_module(src).expect("parse");
+        let bytes = compile_module_binary(&module)
+            .expect_lowered("a closed existential dispatch lowers to a Wasm table adapter");
+        let mut indirect_calls = 0usize;
+        for payload in gc_wasm_payloads(&bytes) {
+            if let wasmparser::Payload::CodeSectionEntry(body) = payload.expect("valid wasm") {
+                let mut operators = body.get_operators_reader().expect("operators");
+                while !operators.eof() {
+                    if matches!(operators.read().expect("operator"), wasmparser::Operator::CallIndirect { .. }) {
+                        indirect_calls += 1;
+                    }
+                }
+            }
+        }
+        assert!(indirect_calls >= 1, "existential dispatch must use a table call");
+        assert_eq!(run_int(src), 42);
+    }
+
+    #[test]
     fn full_int_program() {
         let src = r#"
 fn double(n: Int) -> Int:
