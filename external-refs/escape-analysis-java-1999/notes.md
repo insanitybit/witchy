@@ -5,8 +5,8 @@
 
 ## Why it matters to witchy
 
-witchy already computes "does this value escape this scope?" in **six disconnected places** (uniqueness share-events, `loop_body_escape_free`, `borrow_escape_check`, the region outer-assignment rule, the lambda-capture scan, region copy-out's watermark check — see `rfcs/performance-modes.md`). This paper is the prior art for consolidating them into **one escape lattice**, and for the payoff of doing so: **escape-driven stack allocation / SROA** (non-escaping records/tuples live in WASM locals, never the heap).
+witchy already computes "does this value escape this scope?" in **six disconnected places** (uniqueness share-events, `loop_body_escape_free`, `borrow_escape_check`, the region outer-assignment rule, the lambda-capture scan, region copy-out's watermark check — see [`rfcs/performance-modes.md`](../../rfcs/performance-modes.md)). This paper is the prior art for consolidating them into **one escape lattice**, and for the payoff of doing so: **escape-driven stack allocation / SROA** (non-escaping records/tuples live in WASM locals, never the heap).
 
 ## Informs
 
-- `rfcs/performance-modes.md` — the unified escape/region lattice ("NEXT") and representation tier 2 (escape-driven stack allocation / SROA).
+- [`rfcs/performance-modes.md`](../../rfcs/performance-modes.md) — the unified escape/region lattice ("NEXT") and representation tier 2 (escape-driven stack allocation / SROA).
