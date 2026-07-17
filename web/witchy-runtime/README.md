@@ -2,7 +2,7 @@
 
 `witchy-runtime.mjs` runs witchyc-compiled WASM in JavaScript (browser or Node)
 with **every capability denied**. It is the browser analog of the wasmtime host
-in `crates/witchy-runtime/src/runtime.rs`, with the capability set fixed to
+in [`crates/witchy-runtime/src/runtime.rs`](../../crates/witchy-runtime/src/runtime.rs), with the capability set fixed to
 empty — the implementation of
 [RFC-0007](../../rfcs/0007-witchy-wasm-browser-target.md). The ABI it targets is
 the public contract in [`spec/wasm-abi.md`](../../spec/wasm-abi.md).
@@ -78,11 +78,10 @@ acts (holds the DOM, the events, and the effects).
 (`opts.setTimeout`, defaulting to the global `setTimeout`, injectable for tests)
 and dispatches the deferred `msg` back into the loop when it fires;
 `{"cmd":"batch","cmds":[…]}` interprets each. The timer is the *shell's* authority;
-the rune only emitted the description. The `autocounter` example
-(`projects/glamour/examples/autocounter/`) demonstrates this — its count
+the rune only emitted the description. The [`autocounter` example](../../projects/glamour/examples/autocounter/) demonstrates this — its count
 auto-increments once a second via `After(1000, Tick)`, with a footprint-empty rune.
-`glamour-dom-timer.test.mjs` (and `tests/glamour_dom.rs`) prove it headlessly with
-a fake, controllable clock.
+[`glamour-dom-timer.test.mjs`](glamour-dom-timer.test.mjs) proves it headlessly
+with a fake, controllable clock.
 
 ## What it provides — and refuses
 
@@ -124,6 +123,4 @@ node web/witchy-runtime/spike.mjs path/to/witchy
 
 It compiles a footprint-empty rune, runs it under this runtime, asserts the
 output matches the native interpreter run byte-for-byte, and confirms a
-capability-using rune is refused with a `LinkError`. The Rust test
-`tests/browser_shim.rs` drives the same spike (skipping cleanly if `node` is
-absent).
+capability-using rune is refused with a `LinkError`.
