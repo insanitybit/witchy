@@ -5,6 +5,9 @@ release is a tested checkpoint, not a promise that source, bytecode, package
 metadata, or command-line interfaces will remain compatible with the next 0.x
 release.
 
+The current release checklist and outstanding blockers are tracked in the
+[release-readiness record](RELEASE-READINESS.md).
+
 ## 0.1.0 — private release candidate
 
 Witchy 0.1.0 is the first installable toolchain checkpoint. Distribution is
