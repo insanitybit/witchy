@@ -38,7 +38,7 @@ note.
 
 ## Related example
 
-[`../../examples/coven_check`](../../examples/coven_check) is a focused example
+[`../../examples/coven_check/README.md`](../../examples/coven_check/README.md) is a focused example
 of the same safety rule at manifest-check time: compare declared capabilities
 with the source-derived footprint and fail when the manifest under-declares what
 the code demands.
