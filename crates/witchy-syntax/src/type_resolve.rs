@@ -82,6 +82,10 @@ const AMBIENT_TRAITS: &[(&str, &str)] = &[
     ("Show", "show"),
 ];
 
+const DEFINITION_SITE_TYPE_PREFIX: &str = "@definition_site_type:";
+const DEFINITION_SITE_TRAIT_PREFIX: &str = "@definition_site_trait:";
+const DEFINITION_SITE_CTOR_PREFIX: &str = "@definition_site_ctor:";
+
 fn is_ambient_type(name: &str) -> bool {
     AMBIENT_TYPES.contains(&name)
 }
@@ -96,16 +100,24 @@ fn is_ambient_trait(name: &str) -> bool {
 
 /// Whether an ambient declaration comes from its one canonical std owner.
 fn ambient_declaration_allowed(home: &str, user_module: bool, t: &TypeDef) -> bool {
-    let canonical_owner = match t.name.as_str() {
+    let Some(canonical_owner) = ambient_type_owner(&t.name) else {
+        return false;
+    };
+    home == canonical_owner && !user_module
+}
+
+/// Canonical declaration module for an ambient user-defined type. Primitive,
+/// host-capability, and compiler-only ambient names have no source declaration.
+pub fn ambient_type_owner(name: &str) -> Option<&'static str> {
+    Some(match name {
         "Option" => "option",
         "Result" => "result",
         "Ordering" => "cmp",
         "Set" => "set",
         "Iter" => "iter",
         "NetPolicy" | "DirPolicy" => "policy",
-        _ => return false,
-    };
-    home == canonical_owner && !user_module
+        _ => return None,
+    })
 }
 
 fn ambient_trait_declaration_allowed(home: &str, user_module: bool, name: &str) -> bool {
@@ -299,6 +311,7 @@ struct Scope<'a> {
     user_module: bool,
     imports: &'a [String],
     world: &'a World,
+    definition_site: bool,
     /// bare type name -> canonical (`home.T` or `srcmod.T`).
     type_map: HashMap<String, String>,
     /// bare constructor name -> canonical (`home.C` or `srcmod.C`).
@@ -339,6 +352,32 @@ pub fn resolve_with_user_modules(
         scope.rewrite_module(&mut modules[idx].1)?;
     }
     Ok(())
+}
+
+/// Resolve the type and constructor syntax written inside one compiler-owned
+/// expression against its definition module. Tagged-expression holes are
+/// substituted only after this pass, so their call-site names are not touched.
+pub fn resolve_definition_site_expr(
+    expr: &mut Expr,
+    definition_module: &str,
+    modules: &[(String, Module)],
+) -> Result<(), LinkError> {
+    let Some((_, owner)) = modules.iter().find(|(name, _)| name == definition_module) else {
+        return lerr(format!(
+            "compiler-owned syntax refers to unknown definition module `{definition_module}`"
+        ));
+    };
+    crate::aliases::resolve_expr_aliases(expr, owner);
+    let world = World::build(modules);
+    let mut scope = Scope::build(
+        definition_module,
+        false,
+        &owner.imports,
+        &owner.from_imports,
+        &world,
+    )?;
+    scope.definition_site = true;
+    scope.resolve_expr(expr)
 }
 
 impl<'a> Scope<'a> {
@@ -487,6 +526,7 @@ impl<'a> Scope<'a> {
             user_module,
             imports,
             world,
+            definition_site: false,
             type_map,
             ctor_map,
             trait_map,
@@ -502,8 +542,24 @@ impl<'a> Scope<'a> {
 
     // ---- type references -------------------------------------------------
 
-    /// Canonicalize a written type NAME (a bare `String`, e.g. an impl head).
     fn resolve_type_name(&self, name: &str) -> Result<String, LinkError> {
+        if let Some(target) = name.strip_prefix(DEFINITION_SITE_TYPE_PREFIX) {
+            let Some((module, ty)) = target.split_once('.') else {
+                return lerr("compiler-owned definition-site type lost its qualified target");
+            };
+            if !self.world.module_has_type(module, ty) {
+                return lerr(format!(
+                    "compiler-owned definition-site type targets unknown type `{target}`"
+                ));
+            }
+            return Ok(target.to_string());
+        }
+        let resolved = self.resolve_type_name_unmarked(name)?;
+        Ok(self.mark_definition_site_name(DEFINITION_SITE_TYPE_PREFIX, resolved))
+    }
+
+    /// Canonicalize a written type NAME (a bare `String`, e.g. an impl head).
+    fn resolve_type_name_unmarked(&self, name: &str) -> Result<String, LinkError> {
         if let Some((module, ty)) = name.split_once('.') {
             // A parser-qualified `mod.Type`: validate and keep it canonical.
             if !self.in_scope(module) {
@@ -561,6 +617,22 @@ impl<'a> Scope<'a> {
     }
 
     fn resolve_trait_name(&self, name: &str) -> Result<String, LinkError> {
+        if let Some(target) = name.strip_prefix(DEFINITION_SITE_TRAIT_PREFIX) {
+            let Some((module, trait_name)) = target.split_once('.') else {
+                return lerr("compiler-owned definition-site trait lost its qualified target");
+            };
+            if !self.world.module_has_trait(module, trait_name) {
+                return lerr(format!(
+                    "compiler-owned definition-site trait targets unknown trait `{target}`"
+                ));
+            }
+            return Ok(target.to_string());
+        }
+        let resolved = self.resolve_trait_name_unmarked(name)?;
+        Ok(self.mark_definition_site_name(DEFINITION_SITE_TRAIT_PREFIX, resolved))
+    }
+
+    fn resolve_trait_name_unmarked(&self, name: &str) -> Result<String, LinkError> {
         if let Some((module, trait_name)) = name.split_once('.') {
             if module != self.home && !self.in_scope(module) {
                 return lerr(format!(
@@ -620,6 +692,14 @@ impl<'a> Scope<'a> {
         }
     }
 
+    fn mark_definition_site_name(&self, prefix: &str, resolved: String) -> String {
+        if self.definition_site && resolved.contains('.') {
+            format!("{prefix}{resolved}")
+        } else {
+            resolved
+        }
+    }
+
     fn resolve_type(&self, ty: &mut Type) -> Result<(), LinkError> {
         match ty {
             Type::Qualified(_, inner) => self.resolve_type(inner),
@@ -675,6 +755,27 @@ impl<'a> Scope<'a> {
     }
 
     fn resolve_ctor_expr_name(&self, name: &str) -> Result<String, LinkError> {
+        if let Some(target) = name.strip_prefix(DEFINITION_SITE_CTOR_PREFIX) {
+            let Some((module, ctor)) = target.split_once('.') else {
+                return lerr(
+                    "compiler-owned definition-site constructor lost its qualified target"
+                );
+            };
+            let known = self.world.types.get(module).is_some_and(|types| {
+                types.ctors.contains_key(ctor) || types.types.contains(ctor)
+            });
+            if !known {
+                return lerr(format!(
+                    "compiler-owned definition-site constructor targets unknown constructor `{target}`"
+                ));
+            }
+            return Ok(target.to_string());
+        }
+        let resolved = self.resolve_ctor_expr_name_unmarked(name)?;
+        Ok(self.mark_definition_site_name(DEFINITION_SITE_CTOR_PREFIX, resolved))
+    }
+
+    fn resolve_ctor_expr_name_unmarked(&self, name: &str) -> Result<String, LinkError> {
         if let Some((module, ctor)) = name.split_once('.') {
             if !self.in_scope(module) {
                 return lerr(format!(
@@ -754,6 +855,38 @@ impl<'a> Scope<'a> {
     /// becomes canonical; one that does not is LEFT BARE for the post-merge sweep
     /// (or the checker) to resolve against the scrutinee's type (RFC-0042 §4).
     fn resolve_ctor_pat_name(&self, name: &str) -> Result<String, LinkError> {
+        if let Some(target) = name.strip_prefix(DEFINITION_SITE_CTOR_PREFIX) {
+            return self.resolve_ctor_expr_name(&format!(
+                "{DEFINITION_SITE_CTOR_PREFIX}{target}"
+            ));
+        }
+        let mut resolved = self.resolve_ctor_pat_name_unmarked(name)?;
+        if self.definition_site
+            && resolved == name
+            && !is_ambient_ctor(name)
+            && name.chars().next().is_some_and(char::is_uppercase)
+        {
+            let mut candidates = self
+                .world
+                .ctor_exporters(name)
+                .into_iter()
+                .filter(|(module, _)| self.in_scope(module));
+            match (candidates.next(), candidates.next()) {
+                (Some((module, _)), None) => resolved = format!("{module}.{name}"),
+                (None, _) => resolved = self.resolve_ctor_expr_name_unmarked(name)?,
+                (Some((first, _)), Some((second, _))) => {
+                    return lerr(format!(
+                        "ambiguous constructor pattern `{name}` in compiler-owned syntax from \
+                         module `{}` — qualify it as `{}.{name}` or `{}.{name}`",
+                        self.home, first, second
+                    ));
+                }
+            }
+        }
+        Ok(self.mark_definition_site_name(DEFINITION_SITE_CTOR_PREFIX, resolved))
+    }
+
+    fn resolve_ctor_pat_name_unmarked(&self, name: &str) -> Result<String, LinkError> {
         if let Some((module, ctor)) = name.split_once('.') {
             if !self.in_scope(module) {
                 return lerr(format!("constructor `{name}`: module `{module}` is not imported"));
@@ -994,7 +1127,10 @@ impl<'a> Scope<'a> {
                         for a in &mut new_args {
                             self.resolve_expr(a)?;
                         }
-                        *e = Expr::Ctor { name, args: new_args };
+                        *e = Expr::Ctor {
+                            name: self.resolve_ctor_expr_name(&name)?,
+                            args: new_args,
+                        };
                         return Ok(());
                     }
                 }
@@ -1006,7 +1142,10 @@ impl<'a> Scope<'a> {
             Expr::Field { base, field } => {
                 if let Expr::Var(module) = base.as_ref() {
                     if self.is_qualified_ctor(module, field) {
-                        *e = Expr::Ctor { name: format!("{module}.{field}"), args: Vec::new() };
+                        *e = Expr::Ctor {
+                            name: self.resolve_ctor_expr_name(&format!("{module}.{field}"))?,
+                            args: Vec::new(),
+                        };
                         return Ok(());
                     }
                 }
@@ -1037,8 +1176,10 @@ impl<'a> Scope<'a> {
                 // ctor "qualify it" error here would both mask that clearer message
                 // and pre-empt the merged pass that legitimately resolves an imported
                 // record type this module cannot yet see.
-                if let Ok(canon) = self.resolve_ctor_expr_name(name) {
-                    *name = canon;
+                match self.resolve_ctor_expr_name(name) {
+                    Ok(canon) => *name = canon,
+                    Err(error) if self.definition_site => return Err(error),
+                    Err(_) => {}
                 }
                 for (_, v) in fields {
                     self.resolve_expr(v)?;
@@ -1049,8 +1190,10 @@ impl<'a> Scope<'a> {
             }
             Expr::RecordUpdate { name, base, fields } => {
                 if let Some(name) = name {
-                    if let Ok(canon) = self.resolve_ctor_expr_name(name) {
-                        *name = canon;
+                    match self.resolve_ctor_expr_name(name) {
+                        Ok(canon) => *name = canon,
+                        Err(error) if self.definition_site => return Err(error),
+                        Err(_) => {}
                     }
                 }
                 self.resolve_expr(base)?;
@@ -1081,7 +1224,7 @@ impl<'a> Scope<'a> {
                 };
                 if let Some((module, field)) = qualified_type_receiver {
                     **receiver = Expr::Ctor {
-                        name: format!("{module}.{field}"),
+                        name: self.resolve_ctor_expr_name(&format!("{module}.{field}"))?,
                         args: Vec::new(),
                     };
                 }

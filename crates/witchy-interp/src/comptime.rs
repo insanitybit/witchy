@@ -225,6 +225,7 @@ fn expand_with_item_limit_and_origins(
             compiler_pattern_syntax: module.compiler_pattern_syntax.clone(),
             compiler_stmt_syntax: module.compiler_stmt_syntax.clone(),
             compiler_block_syntax: module.compiler_block_syntax.clone(),
+            linked_entry: None,
         };
         let linked = crate::pipeline::link(vec![("comptime".into(), prog)], "comptime")
             .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;

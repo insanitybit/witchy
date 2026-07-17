@@ -155,6 +155,17 @@ pub(crate) fn resolve_type_aliases(ty: &mut Type, map: &HashMap<String, Alias>) 
     resolve_type(ty, map)
 }
 
+/// Expand aliases in the written-type positions of one compiler-owned
+/// expression using the definition module's alias environment. Tagged syntax is
+/// resolved before the ordinary per-module alias-erasure pass, so it must not
+/// carry a definition-site alias into the consumer module.
+pub(crate) fn resolve_expr_aliases(expr: &mut Expr, module: &Module) {
+    let map = resolved_map(module);
+    if !map.is_empty() {
+        resolve_in_expr(expr, &map);
+    }
+}
+
 /// Expand alias names appearing anywhere in a type. The `map` is already
 /// fixpoint-resolved, so a single replacement yields an alias-free type. Returns
 /// whether anything changed.
@@ -322,6 +333,11 @@ fn resolve_methodsig(m: &mut MethodSig, map: &HashMap<String, Alias>) {
 /// ascriptions, `as`-cast targets, and lambda parameter/return annotations (the
 /// last two reached through `resolve_in_expr`).
 fn resolve_in_block(block: &mut Block, map: &HashMap<String, Alias>) {
+    if let Some(region) = &mut block.region {
+        if let Some(ty) = &mut region.ty {
+            resolve_type(ty, map);
+        }
+    }
     for stmt in &mut block.stmts {
         match stmt {
             Stmt::Let { ty, value, .. } => {

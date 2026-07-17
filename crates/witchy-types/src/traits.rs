@@ -262,6 +262,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     // The performance modes (`mode opt`) are a whole-module fact the borrow/loan
     // checker (RFC-0083) reads; carry them onto the rebuilt lowered module below.
     let modes = module.modes.clone();
+    let linked_entry = module.linked_entry.clone();
     let needs_lowering = module.items.iter().any(|it| {
         matches!(it, Item::Trait(_) | Item::Impl(_))
             || matches!(it, Item::Function(f) if !f.bounds.is_empty()
@@ -599,6 +600,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             compiler_pattern_syntax: compiler_pattern_syntax.clone(),
             compiler_stmt_syntax: compiler_stmt_syntax.clone(),
             compiler_block_syntax: compiler_block_syntax.clone(),
+            linked_entry: linked_entry.clone(),
         },
         &from_conversion_fns,
     );
@@ -632,6 +634,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             compiler_pattern_syntax: typed.module().compiler_pattern_syntax.clone(),
             compiler_stmt_syntax: typed.module().compiler_stmt_syntax.clone(),
             compiler_block_syntax: typed.module().compiler_block_syntax.clone(),
+            linked_entry: linked_entry.clone(),
         };
         crate::typeck::check_selected_lowered(&probe, &no_fallback, &from_conversion_fns)
             .err()

@@ -67,6 +67,11 @@ pub struct Module {
     /// Compiler-owned block payloads referenced by unspellable calls in
     /// compile-time code.
     pub compiler_block_syntax: Vec<CompilerBlockSyntax>,
+    /// The designated entry module after linking. Parsed source modules do not
+    /// know their loader-assigned name; the linker records it here so later
+    /// semantic passes do not infer ownership from flattened item order.
+    #[cfg_attr(not(target_arch = "wasm32"), serde(default))]
+    pub linked_entry: Option<String>,
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]

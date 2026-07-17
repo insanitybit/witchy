@@ -291,13 +291,15 @@ clamped to 100
 ```
 
 Sealing restricts **construction only** — reading fields (`p.value`) and
-`match`ing on the value work exactly as before, from anywhere. Inside the
-declaring module the constructor is still available, which is how `percent`
-builds one. This is the same mechanism that makes capabilities unforgeable (only
-the host mints a `Net`); a `sealed type` just opens it to your own types. The
-standard library uses it widely — `Set` guarantees distinct members,
-`semver.Version` non-negative components, `time.DateTime` a real calendar date —
-each an invariant its smart constructor enforces and its type then carries.
+`match`ing on the value work exactly as before, from anywhere. Field assignment
+and record spread build a new whole value, so those updates are also confined to
+the declaring module. Inside that module the constructor and updates remain
+available, which is how `percent` builds one. This is the same mechanism that
+makes capabilities unforgeable (only the host mints a `Net`); a `sealed type`
+just opens it to your own types. The standard library uses it widely — `Set`
+guarantees distinct members, `semver.Version` non-negative components,
+`time.DateTime` a real calendar date — each an invariant its smart constructor
+enforces and its type then carries.
 
 With records and enums in hand, we can talk about the witchy way to handle
 things going wrong.

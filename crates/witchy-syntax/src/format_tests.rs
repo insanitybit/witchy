@@ -410,6 +410,7 @@
             compiler_pattern_syntax: vec![],
             compiler_stmt_syntax: vec![],
             compiler_block_syntax: vec![],
+            linked_entry: None,
         };
         let printed = module(&m, &[]);
         // The printed form parses, but to a DIFFERENT program (`let x = 0`);

@@ -1346,6 +1346,7 @@ pub fn link_with_user_modules_with_mode_and_origins(
         compiler_pattern_syntax,
         compiler_stmt_syntax,
         compiler_block_syntax,
+        linked_entry: Some(entry.to_string()),
     };
     resolve_methods(&mut module);
     // (RFC-0042) Fix up residual bare constructor PATTERNS — a plain `import iter`
@@ -1867,6 +1868,12 @@ pub fn mark_definition_site_expr(
         })?;
         available.push((imported.to_string(), module));
     }
+
+    crate::type_resolve::resolve_definition_site_expr(
+        expr,
+        definition_module,
+        &available,
+    )?;
 
     let mut fns = FnTable::new();
     for (module_name, module) in &available {
@@ -2462,13 +2469,17 @@ fn seal_expr(
         | Expr::Field { base: expr, .. } => {
             seal_expr(expr, sealed, home, allow_test_sealed_type_construction)?;
         }
-        Expr::RecordUpdate { name: _, base, fields } => {
+        Expr::RecordUpdate { name, base, fields } => {
+            if let Some(name) = name {
+                seal_use(name, sealed, home, "construct", allow_test_sealed_type_construction)?;
+            }
             seal_expr(base, sealed, home, allow_test_sealed_type_construction)?;
             for (_, v) in fields {
                 seal_expr(v, sealed, home, allow_test_sealed_type_construction)?;
             }
         }
-        Expr::Record { fields, spread, .. } => {
+        Expr::Record { name, fields, spread } => {
+            seal_use(name, sealed, home, "construct", allow_test_sealed_type_construction)?;
             for (_, v) in fields {
                 seal_expr(v, sealed, home, allow_test_sealed_type_construction)?;
             }

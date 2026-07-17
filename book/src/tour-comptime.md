@@ -241,16 +241,19 @@ in before type-checking.
 A typed generator may instead return `meta.ExprSyntax`. `quote expr:` results,
 including structurally substituted expression templates, stay as compiler-owned
 AST through this boundary; compatibility builders still project source until
-their structural forms land. Direct function calls
-written in compiler-owned typed output resolve where the tag is defined, while
-the literal's holes keep their invocation-site context. Use
+their structural forms land. Direct functions, types, constructors, and
+constructor patterns written in compiler-owned typed output resolve where the
+tag is defined, including through that module's imports, while the literal's
+holes keep their invocation-site context. This name resolution does not bypass
+sealed-type construction rules. Use
 `meta.expr_name(meta.call_site("name"))` when generated code deliberately needs
-an expression reference from the invocation scope. That reference remains a
-compiler-owned node through structural quotation; it is not encoded as generated
-source. Imported tags remain available during expansion and are removed before
-runtime type checking. If a direct tag expansion fails, its diagnostic names the
-literal's invocation line and the tag function's defining module and line, so an
-imported generator does not collapse to an unlocated generated-source error.
+a value/function expression reference from the invocation scope. That reference
+remains a compiler-owned node through structural quotation; it is not encoded as
+generated source. Imported tags remain available during expansion and are
+removed before runtime type checking. If a direct tag expansion fails, its
+diagnostic names the literal's invocation line and the tag function's defining
+module and line, so an imported generator does not collapse to an unlocated
+generated-source error.
 
 ```witchy
 fn answer_value() -> Int:

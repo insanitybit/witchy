@@ -703,6 +703,7 @@ fn expand_one(
         compiler_pattern_syntax: ctx.compiler_pattern_syntax.clone(),
         compiler_stmt_syntax: ctx.compiler_stmt_syntax.clone(),
         compiler_block_syntax: ctx.compiler_block_syntax.clone(),
+        linked_entry: None,
     };
     let linked = crate::pipeline::link(vec![("comptime".into(), prog)], "comptime")
         .map_err(|e| format!("{}: {e}", where_()))?;

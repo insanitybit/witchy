@@ -425,6 +425,7 @@ impl Parser {
             compiler_pattern_syntax: std::mem::take(&mut self.compiler_pattern_syntax),
             compiler_stmt_syntax: std::mem::take(&mut self.compiler_stmt_syntax),
             compiler_block_syntax: std::mem::take(&mut self.compiler_block_syntax),
+            linked_entry: None,
         })
     }
 
@@ -2952,6 +2953,7 @@ impl Parser {
             compiler_pattern_syntax: Vec::new(),
             compiler_stmt_syntax: Vec::new(),
             compiler_block_syntax: Vec::new(),
+            linked_entry: None,
         };
         crate::format::module(&module, &[])
     }

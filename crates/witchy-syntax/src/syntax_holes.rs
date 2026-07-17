@@ -490,6 +490,7 @@ mod tests {
             compiler_pattern_syntax: Vec::new(),
             compiler_stmt_syntax: Vec::new(),
             compiler_block_syntax: Vec::new(),
+            linked_entry: None,
         }, &[]);
         assert!(source.contains("x: Int"), "{source}");
         assert!(source.contains("1 -> 7"), "{source}");

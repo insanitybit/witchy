@@ -209,7 +209,9 @@ private business of the defining module: outside code cannot call the data
 constructor and must go through the module's public functions — so those
 "smart constructors" are the one place an invariant is established, and a
 value of the type is *proof* the invariant holds. Sealing restricts
-**construction only**: field reads and `match` work from anywhere.
+**construction only**: field reads and `match` work from anywhere. A record
+update, including `value.field = replacement`, constructs a new whole value and
+therefore remains confined to the defining module.
 
 ```witchy
 sealed type Percent:
@@ -1114,17 +1116,19 @@ returns a deterministic compiler-owned `Ident` for generated bindings. Repeated
 calls and separate comptime blocks or tagged-literal invocations produce distinct
 names in the source-reserved `__` namespace, so a handwritten binding cannot
 capture them. When a typed tag returns a compiler-owned expression, direct
-function calls and references written in that expression resolve in the tag's
-defining module; generated lexical bindings still shadow normally.
+function calls, function references, type names, constructor expressions, and
+constructor patterns written in that expression resolve in the tag's defining
+module, including through that module's imports; generated lexical bindings
+still shadow normally.
 `meta.call_site(name)` is the explicit escape for a lowercase value/function
-reference that must resolve in the syntax consumer's scope. Constructor and
-type origins are rejected until those categories become compiler-owned.
+reference that must resolve in the syntax consumer's scope. An explicit
+invocation-site constructor/type escape is not yet exposed.
 Passing it to `meta.expr_name`
 creates a compiler-owned expression node, so structural quotation and typed-tag
 transport preserve the invocation-site origin without a forgeable source
-spelling. General constructor, type, pattern, field, and item origins remain
-future work; other compatibility builders currently consume only the validated
-identifier spelling.
+spelling. Compatibility builders still consume only the validated identifier
+spelling; their general constructor, type, pattern, field, and item origin
+channels remain future work.
 `quote expr:`, `quote type:`, `quote pattern:`, `quote stmt:`, `quote block:`,
 and `quote item:` are the first quotation forms. They parse the indented
 expression, type, pattern, statement, block, or single item immediately and
@@ -1193,10 +1197,12 @@ a token the tag *places* where that hole's value belongs (the tag does not read
 the hole's source). A legacy string tag returns witchy **expression source**; a
 typed tag returns `meta.ExprSyntax`. A compiler-owned expression transfers its AST
 through the expansion event directly; source-backed compatibility values retain
-the generated-expression parse. Direct function references in compiler-owned
-output resolve in the tag's definition module, including private helpers; an
-invocation-site local with the same spelling cannot capture them. The compiler
-then **substitutes** the real hole
+the generated-expression parse. Direct function, type, and constructor
+references in compiler-owned output resolve in the tag's definition module,
+including private function helpers and transitively imported declarations; an
+invocation-site declaration with the same spelling cannot capture them.
+Definition-site identity does not bypass sealed-type construction rules. The
+compiler then **substitutes** the real hole
 expression — parsed once at the call site, carrying its source position — at each
 marker and splices the result over the literal before type checking. So both
 backends compile the same AST, the tag runs once in the compiler, and a hole's
@@ -1206,9 +1212,10 @@ only the items reachable from it run at expansion time.
 Because a tag emits *code*, interpolation holes are typed **by position** (the
 substituted expression is type-checked normally) and there is no runtime string
 parser. Hole expressions resolve at the **call site** (hygiene), while direct
-functions written in compiler-owned typed output resolve at the **definition
-site**. A generator can opt one expression reference back into invocation-site
-resolution with `meta.expr_name(meta.call_site("name"))`. A type error
+functions, types, constructors, and constructor patterns written in
+compiler-owned typed output resolve at the **definition site**. A generator can
+opt one value/function expression reference back into invocation-site resolution
+with `meta.expr_name(meta.call_site("name"))`. A type error
 in a hole points back **into the literal** at that `${…}`, not at generated code.
 The `html` tag in the `glamour` rune uses this: a `${userInput}` in text position
 becomes a `text(…)` **node**, never markup, so it is XSS-immune by construction.

@@ -3430,6 +3430,10 @@ struct Checker {
     /// carried capability is `match`, which the linker confines to the home
     /// module — otherwise an alias would leak the underlying authority.
     sealed_types: HashSet<String>,
+    /// Every `sealed type` and `capability` record. Rebuilding one through a
+    /// record update is construction, so it is legal only while checking a
+    /// function in the type's defining module.
+    construction_sealed_types: HashSet<String>,
     /// Single-field brands whose compiled representation is the same externref
     /// as their single underlying migrated host capability.
     transparent_externref_brands: HashMap<String, String>,
@@ -6717,6 +6721,18 @@ impl Checker {
                          only its own module may construct it"
                     ));
                 }
+                if self.construction_sealed_types.contains(&tyname)
+                    && let Some(home) = tyname
+                        .rsplit_once('.')
+                        .map(|(home, _)| home)
+                        .or_else(|| witchy_syntax::type_resolve::ambient_type_owner(&tyname))
+                    && home != self.cur_module
+                {
+                    return terr(format!(
+                        "`{tyname}` is sealed and cannot be `update`d outside its defining \
+                         module `{home}`"
+                    ));
+                }
                 let Some((params, rec_fields)) = self.record_fields.get(&tyname).cloned() else {
                     return terr(format!("type `{tyname}` is not a record"));
                 };
@@ -8386,6 +8402,7 @@ fn run_check_selected(
         ctor_typarams: HashMap::new(),
         record_fields: HashMap::new(),
         sealed_types: HashSet::new(),
+        construction_sealed_types: HashSet::new(),
         transparent_externref_brands: HashMap::new(),
         gc_cap_aggregates: HashSet::new(),
         adt_variants: HashMap::new(),
@@ -8404,7 +8421,10 @@ fn run_check_selected(
         dict_key_ops: Vec::new(),
         cur_line: 0,
         cur_module: String::new(),
-        entry_module: detect_entry_module(module),
+        entry_module: module
+            .linked_entry
+            .clone()
+            .unwrap_or_else(|| detect_entry_module(module)),
         compiler_syntax_allowed,
     };
 
@@ -8513,6 +8533,9 @@ fn run_check_selected(
                     result_args.push(v);
                 }
                 let result = Ty::Named(t.name.clone(), result_args);
+                if t.sealed {
+                    c.construction_sealed_types.insert(t.name.clone());
+                }
                 let mut names = Vec::new();
                 for variant in &t.variants {
                     let fields: Vec<Ty> = variant
