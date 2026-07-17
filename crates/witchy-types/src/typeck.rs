@@ -4495,7 +4495,7 @@ impl Checker {
                 vec![
                     Ty::String,
                     Ty::List(Box::new(Ty::String)),
-                    Ty::List(Box::new(Ty::Named("meta.ExprSyntax".into(), Vec::new()))),
+                    Ty::List(Box::new(Ty::Named("meta.SyntaxHole".into(), Vec::new()))),
                 ],
                 Ty::Named("meta.ExprSyntax".into(), Vec::new()),
             )),

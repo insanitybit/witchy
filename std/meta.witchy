@@ -93,12 +93,13 @@ pub fn ident(name: String) -> Ident:
         fail("meta.ident: invalid identifier `" + name + "`")
     Ident(name)
 
-// An explicit invocation-site value/function reference. The compiler retains
-// this origin in ExprSyntax instead of rendering a source identifier for the
-// defining module to capture. Constructor/type origins are not accepted yet.
+// An explicit invocation-site reference. The syntax constructor that consumes
+// this Ident determines whether it denotes a value/function, type, or
+// constructor; the compiler retains that category and origin without rendering
+// a forgeable source marker.
 pub fn call_site(name: String) -> Ident:
-    if !is_identifier(name) || !is_value_ident_start(string.substring(name, 0, 1)):
-        fail("meta.call_site: expected a value/function identifier, got `" + name + "`")
+    if !is_identifier(name):
+        fail("meta.call_site: expected an identifier, got `" + name + "`")
     CallSiteIdent(name)
 
 // A deterministic compiler-owned binding name. The returned identifier cannot
@@ -145,9 +146,6 @@ fn __meta_call_site_expr(name: String) -> ExprSyntax:
 fn is_ident_start(c: String) -> Bool:
     c == "_" || "a" <= c && c <= "z" || "A" <= c && c <= "Z"
 
-fn is_value_ident_start(c: String) -> Bool:
-    c == "_" || "a" <= c && c <= "z"
-
 fn is_ident_continue(c: String) -> Bool:
     is_ident_start(c) || "0" <= c && c <= "9"
 
@@ -188,7 +186,14 @@ fn is_keyword(name: String) -> Bool:
 // Source-backed type syntax. Prefer this to assembling type names at each
 // generator call site; it is still a migration helper, not full hygiene.
 pub fn type_named(name: Ident, args: List(TypeSyntax)) -> TypeSyntax:
-    type_with_head(ident_source(name), args)
+    match name:
+        Ident(source) -> type_with_head(source, args)
+        CallSiteIdent(source) -> __meta_call_site_type(source, args)
+
+// Interpreter-owned compile-time hook. It retains an invocation-site type
+// identity plus structurally decoded type arguments.
+fn __meta_call_site_type(name: String, args: List(TypeSyntax)) -> TypeSyntax:
+    __meta_call_site_type(name, args)
 
 pub fn type_qualified(module: Ident, name: Ident, args: List(TypeSyntax)) -> TypeSyntax:
     type_with_head(ident_source(module) + "." + ident_source(name), args)
@@ -306,6 +311,18 @@ pub fn expr_join(parts: List(String), holes: List(ExprSyntax)) -> ExprSyntax:
         i = i + 1
     ExprSyntax(out)
 
+// Join parser-checked expression fragments with mixed typed syntax holes.
+pub fn expr_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> ExprSyntax:
+    if list.length(parts) != list.length(holes) + 1:
+        fail("meta.expr_join_syntax: expected one more part than hole")
+
+    var out = list.at(parts, 0)
+    var i = 0
+    while i < list.length(holes):
+        out = out + syntax_hole_source(list.at(holes, i)) + list.at(parts, i + 1)
+        i = i + 1
+    ExprSyntax(out)
+
 fn expr_source(expr: ExprSyntax) -> String:
     match expr:
         ExprSyntax(source) -> source
@@ -345,7 +362,14 @@ pub fn pattern_range(lo: Int, hi: Int, inclusive: Bool) -> PatternSyntax:
     PatternSyntax("${lo}" + op + "${hi}")
 
 pub fn pattern_ctor(name: Ident, args: List(PatternSyntax)) -> PatternSyntax:
-    pattern_with_head(ident_source(name), args)
+    match name:
+        Ident(source) -> pattern_with_head(source, args)
+        CallSiteIdent(source) -> __meta_call_site_pattern(source, args)
+
+// Interpreter-owned compile-time hook. It retains an invocation-site
+// constructor-pattern identity plus structurally decoded arguments.
+fn __meta_call_site_pattern(name: String, args: List(PatternSyntax)) -> PatternSyntax:
+    __meta_call_site_pattern(name, args)
 
 // A module-qualified constructor pattern such as `iter.Item(x)`.
 pub fn pattern_qualified_ctor(module: Ident, name: Ident, args: List(PatternSyntax)) -> PatternSyntax:

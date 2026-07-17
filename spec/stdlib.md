@@ -2350,7 +2350,7 @@ A validated Witchy identifier. This rejects keywords, `_`, non-ASCII source spel
 
 #### `fn call_site(name: String) -> Ident`
 
-An explicit invocation-site value/function reference. The compiler retains this origin in ExprSyntax instead of rendering a source identifier for the defining module to capture. Constructor/type origins are not accepted yet.
+An explicit invocation-site reference. The syntax constructor that consumes this Ident determines whether it denotes a value/function, type, or constructor; the compiler retains that category and origin without rendering a forgeable source marker.
 
 #### `fn fresh(hint: String) -> Ident`
 
@@ -2415,6 +2415,10 @@ Expression syntax builders. Ordinary names retain the compatibility payload; cal
 #### `fn expr_join(parts: List(String), holes: List(ExprSyntax)) -> ExprSyntax`
 
 Join parser-checked expression quote fragments with typed expression holes. `parts` must have exactly one more element than `holes`, as in string interpolation: part0, hole0, part1, ...
+
+#### `fn expr_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> ExprSyntax`
+
+Join parser-checked expression fragments with mixed typed syntax holes.
 
 #### `fn pattern_var(name: Ident) -> PatternSyntax`
 

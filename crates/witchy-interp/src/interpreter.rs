@@ -714,48 +714,6 @@ fn syntax_hole_origin(
     ancestry
 }
 
-fn compiler_expr_holes(
-    values: &[Value],
-    compiler_expr_syntax: &HashMap<String, Expr>,
-) -> Result<Vec<Expr>, RuntimeError> {
-    fn tail(name: &str) -> &str {
-        name.rsplit_once('.').map_or(name, |(_, tail)| tail)
-    }
-
-    values
-        .iter()
-        .map(|value| {
-            let Value::Ctor { name, fields } = value else {
-                return err("compiler-owned expression hole was not meta.ExprSyntax");
-            };
-            match tail(name) {
-                "CompilerExprSyntax" => {
-                    let [Value::Str(handle), Value::Str(_source)] = fields.as_slice() else {
-                        return err("CompilerExprSyntax carried an invalid payload");
-                    };
-                    compiler_expr_syntax
-                        .get(handle.as_str())
-                        .cloned()
-                        .ok_or_else(|| RuntimeError {
-                            message: "compiler-owned expression referenced an invalid syntax handle"
-                                .into(),
-                        })
-                }
-                "ExprSyntax" => {
-                    let [Value::Str(source)] = fields.as_slice() else {
-                        return err("ExprSyntax carried an invalid source payload");
-                    };
-                    witchy_syntax::syntax_holes::parse_expr_payload(source)
-                        .map_err(|message| RuntimeError { message })
-                }
-                other => err(format!(
-                    "compiler-owned expression hole carried `{other}`, expected ExprSyntax"
-                )),
-            }
-        })
-        .collect()
-}
-
 fn compiler_type_holes(
     values: &[Value],
     compiler_type_syntax: &HashMap<String, Type>,
@@ -2924,6 +2882,82 @@ impl Interpreter {
                 }
                 other => err(format!("meta.call_site expects a String name, got `{other}`")),
             },
+            name if intrinsics::is_meta_call_site_type(name) => match args {
+                [Value::Str(name), Value::List(args)] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.call_site is available only during compile-time expansion",
+                        );
+                    }
+                    let hole_ancestry = compiler_direct_hole_origins(
+                        args,
+                        SyntaxCategory::Type,
+                        "CompilerTypeSyntax",
+                        &self.compiler_type_origins,
+                        self.cur_line,
+                    );
+                    let args = compiler_type_holes(args, &self.compiler_type_syntax)?;
+                    let source = witchy_syntax::linker::call_site_type_source(name, &args);
+                    let ty = witchy_syntax::linker::call_site_type(name, args);
+                    let handle = self.next_compiler_syntax_handle("call-site-type")?;
+                    self.compiler_type_syntax.insert(handle.clone(), ty);
+                    self.compiler_type_origins.insert(
+                        handle.clone(),
+                        ComptimeSyntaxOrigin {
+                            definition_line: self.cur_line,
+                            hole_ancestry,
+                        },
+                    );
+                    Ok(Some(Value::Ctor {
+                        name: "meta.CompilerTypeSyntax".into(),
+                        fields: Rc::new(vec![
+                            Value::str(handle),
+                            Value::str(source),
+                        ]),
+                    }))
+                }
+                _ => err("meta.call_site type construction expects a name and type arguments"),
+            },
+            name if intrinsics::is_meta_call_site_pattern(name) => match args {
+                [Value::Str(name), Value::List(args)] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.call_site is available only during compile-time expansion",
+                        );
+                    }
+                    let hole_ancestry = compiler_direct_hole_origins(
+                        args,
+                        SyntaxCategory::Pattern,
+                        "CompilerPatternSyntax",
+                        &self.compiler_pattern_origins,
+                        self.cur_line,
+                    );
+                    let args =
+                        compiler_pattern_holes(args, &self.compiler_pattern_syntax)?;
+                    let source =
+                        witchy_syntax::linker::call_site_pattern_source(name, &args);
+                    let pattern = witchy_syntax::linker::call_site_pattern(name, args);
+                    let handle = self.next_compiler_syntax_handle("call-site-pattern")?;
+                    self.compiler_pattern_syntax.insert(handle.clone(), pattern);
+                    self.compiler_pattern_origins.insert(
+                        handle.clone(),
+                        ComptimeSyntaxOrigin {
+                            definition_line: self.cur_line,
+                            hole_ancestry,
+                        },
+                    );
+                    Ok(Some(Value::Ctor {
+                        name: "meta.CompilerPatternSyntax".into(),
+                        fields: Rc::new(vec![
+                            Value::str(handle),
+                            Value::str(source),
+                        ]),
+                    }))
+                }
+                _ => {
+                    err("meta.call_site pattern construction expects a name and pattern arguments")
+                }
+            },
             name if name == intrinsics::COMPILER_QUOTE_EXPR => {
                 if self.fresh_ident_scope.is_none() {
                     return err(
@@ -2978,16 +3012,22 @@ impl Interpreter {
                                     .into(),
                             })?;
                         let definition_line = self.cur_line;
-                        let hole_ancestry = compiler_direct_hole_origins(
+                        let hole_ancestry = compiler_item_hole_origins(
                             holes,
-                            SyntaxCategory::Expr,
-                            "CompilerExprSyntax",
                             &self.compiler_expr_origins,
+                            &self.compiler_type_origins,
+                            &self.compiler_pattern_origins,
                             self.cur_line,
                         );
-                        let holes = compiler_expr_holes(holes, &self.compiler_expr_syntax)?;
-                        let expr = witchy_syntax::syntax_holes::instantiate_expr(&template, holes)
-                            .map_err(|message| RuntimeError { message })?;
+                        let holes = compiler_item_holes(
+                            holes,
+                            &self.compiler_expr_syntax,
+                            &self.compiler_type_syntax,
+                            &self.compiler_pattern_syntax,
+                        )?;
+                        let expr =
+                            witchy_syntax::syntax_holes::instantiate_expr_mixed(&template, holes)
+                                .map_err(|message| RuntimeError { message })?;
                         let source = witchy_syntax::format::expr_str(&expr);
                         let instance_handle = self.next_compiler_syntax_handle("expression")?;
                         if let Some(existing) = self.compiler_expr_syntax.get(&instance_handle) {

@@ -98,6 +98,19 @@ pub fn instantiate_expr(template: &Expr, holes: Vec<Expr>) -> Result<Expr, Strin
     Ok(expr)
 }
 
+pub fn instantiate_expr_mixed(
+    template: &Expr,
+    holes: Vec<ItemSyntaxHole>,
+) -> Result<Expr, String> {
+    let (mut exprs, mut types, mut patterns) = hole_slots(holes);
+    let mut expr = template.clone();
+    substitute_expr(&mut expr, &mut exprs, &mut types, &mut patterns)?;
+    ensure_consumed("expression", &exprs)?;
+    ensure_consumed("type", &types)?;
+    ensure_consumed("pattern", &patterns)?;
+    Ok(expr)
+}
+
 pub fn instantiate_type(template: &Type, holes: Vec<Type>) -> Result<Type, String> {
     let mut holes = holes.into_iter().map(Some).collect::<Vec<_>>();
     let mut ty = template.clone();

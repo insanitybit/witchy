@@ -180,21 +180,134 @@ fn definition_site_markers_are_consumed_before_typechecking() {
 }
 
 #[test]
-fn call_site_rejects_constructor_and_type_identifiers() {
+fn call_site_rejects_non_identifiers() {
     let source = r#"
 import meta
 
 comptime:
-    let unsupported = meta.call_site("TypeName")
+    let unsupported = meta.call_site("not.valid")
 "#;
     let parsed = parser::parse_module(source).expect("parse invalid call-site origin");
     let error = pipeline::link(vec![("main".into(), parsed)], "main")
-        .expect_err("constructor/type origins are not implemented by this slice")
+        .expect_err("call-site origins still require one valid identifier")
         .to_string();
     assert!(
-        error.contains("meta.call_site") && error.contains("value/function identifier"),
+        error.contains("meta.call_site") && error.contains("expected an identifier"),
         "{error}"
     );
+}
+
+#[test]
+fn call_site_type_constructor_and_pattern_resolve_in_the_consumer() {
+    let library = parser::parse_module(
+        r#"
+import meta
+
+type ConsumerValue:
+    ConsumerValue(String)
+
+type ConsumerInner:
+    ConsumerInner(String)
+
+type ConsumerEmpty:
+    ConsumerEmpty(String)
+
+type ConsumerAlias(a) = List(a)
+
+comptime fn inspect_type(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+    let inner_ty = meta.type_named(meta.call_site("ConsumerInner"), [])
+    let ty = meta.type_named(meta.call_site("ConsumerValue"), [inner_ty])
+    let inner_constructor = meta.expr_name(meta.call_site("ConsumerInner"))
+    let constructor = meta.expr_name(meta.call_site("ConsumerValue"))
+    quote expr:
+        (fn(item: ${ty}) -> Int: 42)(${constructor}(${inner_constructor}(41)))
+
+comptime fn inspect_pattern(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+    let binding = meta.pattern_var(meta.ident("value"))
+    let inner_pattern = meta.pattern_ctor(meta.call_site("ConsumerInner"), [binding])
+    let pattern = meta.pattern_ctor(meta.call_site("ConsumerValue"), [inner_pattern])
+    let inner_constructor = meta.expr_name(meta.call_site("ConsumerInner"))
+    let constructor = meta.expr_name(meta.call_site("ConsumerValue"))
+    quote expr:
+        match ${constructor}(${inner_constructor}(41)):
+            ${pattern} -> value + 1
+
+comptime fn inspect_empty(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+    let constructor = meta.expr_name(meta.call_site("ConsumerEmpty"))
+    let pattern = meta.pattern_ctor(meta.call_site("ConsumerEmpty"), [])
+    quote expr:
+        match ${constructor}:
+            ${pattern} -> 42
+
+comptime fn inspect_alias(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+    let argument = quote type:
+        Int
+    let ty = meta.type_named(meta.call_site("ConsumerAlias"), [argument])
+    let constructor = meta.expr_name(meta.call_site("ConsumerValue"))
+    quote expr:
+        (fn(item: ${ty}) -> Int: 42)(${constructor}(41))
+"#,
+    )
+    .expect("parse call-site identity tag");
+    let consumer = parser::parse_module(
+        r#"
+import tag_library
+
+type ConsumerValue(a):
+    ConsumerValue(a)
+
+type ConsumerInner:
+    ConsumerInner(Int)
+
+type ConsumerEmpty:
+    ConsumerEmpty
+
+type ConsumerAlias(a) = ConsumerValue(a)
+
+fn main(console: Console):
+    console.print("${inspect_type"ignored"}")
+    console.print("${inspect_pattern"ignored"}")
+    console.print("${inspect_empty"ignored"}")
+    console.print("${inspect_alias"ignored"}")
+"#,
+    )
+    .expect("parse call-site identity consumer");
+    let linked = pipeline::link(
+        vec![
+            ("tag_library".into(), library),
+            ("main".into(), consumer),
+        ],
+        "main",
+    )
+    .expect("link call-site type and constructor identities");
+    typeck::check(&linked).expect("typecheck call-site type and constructor identities");
+
+    let rendered = format!("{linked:?}");
+    assert!(!rendered.contains("@call_site"), "{rendered}");
+    assert!(rendered.contains("main.ConsumerValue"), "{rendered}");
+
+    let expected = vec![
+        "42".to_string(),
+        "42".to_string(),
+        "42".to_string(),
+        "42".to_string(),
+    ];
+    assert_eq!(
+        interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interpret"),
+        expected,
+    );
+    let wasm = codegen::compile_module_binary(&linked)
+        .expect_lowered("compile call-site type and constructor identities");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut actor = runtime
+        .spawn(
+            &wasm,
+            Capabilities { print: true, quiet: true, ..Default::default() },
+            64,
+        )
+        .expect("spawn");
+    actor.run().expect("run compiled call-site identity program");
+    assert_eq!(actor.output(), expected);
 }
 
 #[test]

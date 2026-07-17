@@ -246,14 +246,15 @@ constructor patterns written in compiler-owned typed output resolve where the
 tag is defined, including through that module's imports, while the literal's
 holes keep their invocation-site context. This name resolution does not bypass
 sealed-type construction rules. Use
-`meta.expr_name(meta.call_site("name"))` when generated code deliberately needs
-a value/function expression reference from the invocation scope. That reference
-remains a compiler-owned node through structural quotation; it is not encoded as
-generated source. Imported tags remain available during expansion and are
-removed before runtime type checking. If a direct tag expansion fails, its
-diagnostic names the literal's invocation line and the tag function's defining
-module and line, so an imported generator does not collapse to an unlocated
-generated-source error.
+`meta.call_site("name")` when generated code deliberately needs an invocation
+scope identity. Pass it to `meta.expr_name`, `meta.type_named`, or
+`meta.pattern_ctor` to choose an expression, type, or constructor-pattern
+reference. These references remain compiler-owned nodes through structural
+quotation; they are not encoded as generated source. Imported tags remain
+available during expansion and are removed before runtime type checking. If a
+direct tag expansion fails, its diagnostic names the literal's invocation line
+and the tag function's defining module and line, so an imported generator does
+not collapse to an unlocated generated-source error.
 
 ```witchy
 fn answer_value() -> Int:

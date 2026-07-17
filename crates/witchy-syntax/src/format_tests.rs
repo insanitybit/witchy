@@ -130,7 +130,10 @@
     fn compiler_owned_expression_holes_round_trip_through_formatting() {
         let src = "comptime fn make(x: meta.ExprSyntax) -> meta.ExprSyntax:\n    quote expr:\n        ${x} + 2\n";
         let out = reformat(src).expect("compiler-owned expression holes round-trip");
-        assert!(out.contains("meta.expr_join([\"\", \" + 2\"], [x])"), "{out}");
+        assert!(
+            out.contains("meta.expr_join_syntax([\"\", \" + 2\"], [meta.expr_hole(x)])"),
+            "{out}"
+        );
         let reparsed = crate::parser::parse_module(&out).expect("formatted expression holes parse");
         assert_eq!(reparsed.compiler_expr_syntax.len(), 1);
         let crate::ast::Item::Function(make) = &reparsed.items[0] else {
@@ -140,6 +143,30 @@
             panic!("expected compiler-owned expression-hole call");
         };
         assert_eq!(name, crate::intrinsics::COMPILER_QUOTE_EXPR_HOLES);
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
+    }
+
+    #[test]
+    fn compiler_owned_mixed_expression_holes_keep_their_categories_after_formatting() {
+        let src = "comptime fn make(ty: meta.TypeSyntax, pattern: meta.PatternSyntax, value: meta.ExprSyntax) -> meta.ExprSyntax:\n    quote expr:\n        match ${value} as ${ty}:\n            ${pattern} -> 1\n";
+        let parsed = crate::parser::parse_module(src).expect("mixed expression holes parse");
+        let candidate = crate::format::module(&parsed, &[]);
+        let out = reformat(src)
+            .unwrap_or_else(|| panic!("mixed expression holes failed to round-trip:\n{candidate}"));
+        assert!(out.contains("meta.expr_join_syntax("), "{out}");
+        assert!(out.contains("meta.type_hole(ty)"), "{out}");
+        assert!(out.contains("meta.expr_hole(value)"), "{out}");
+        assert!(out.contains("meta.pattern_hole(pattern)"), "{out}");
+
+        let reparsed =
+            crate::parser::parse_module(&out).expect("formatted mixed expression holes parse");
+        let [syntax] = reparsed.compiler_expr_syntax.as_slice() else {
+            panic!("expected one compiler-owned expression template");
+        };
+        let template = format!("{:?}", syntax.expr);
+        assert!(template.contains(crate::parser::QUOTE_TYPE_HOLE_PREFIX), "{template}");
+        assert!(template.contains(crate::parser::QUOTE_EXPR_HOLE_PREFIX), "{template}");
+        assert!(template.contains(crate::parser::QUOTE_PATTERN_HOLE_PREFIX), "{template}");
         assert_eq!(reformat(&out).as_deref(), Some(out.as_str()), "formatting is idempotent");
     }
 

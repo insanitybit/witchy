@@ -534,7 +534,16 @@ fn f(x: meta.ExprSyntax, y: meta.ExprSyntax):
                     Expr::Str(", 2 * ".to_string()),
                     Expr::Str(")".to_string()),
                 ]),
-                Expr::List(vec![Expr::Var("x".to_string()), Expr::Var("y".to_string())]),
+                Expr::List(vec![
+                    Expr::Call {
+                        name: "meta.expr_hole".to_string(),
+                        args: vec![Expr::Var("x".to_string())],
+                    },
+                    Expr::Call {
+                        name: "meta.expr_hole".to_string(),
+                        args: vec![Expr::Var("y".to_string())],
+                    },
+                ]),
             ]
         );
     }

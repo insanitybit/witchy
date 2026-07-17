@@ -543,6 +543,12 @@ impl<'a> Scope<'a> {
     // ---- type references -------------------------------------------------
 
     fn resolve_type_name(&self, name: &str) -> Result<String, LinkError> {
+        if let Some(target) = crate::linker::call_site_type_target(name) {
+            if self.definition_site {
+                return Ok(name.to_string());
+            }
+            return self.resolve_type_name_unmarked(target);
+        }
         if let Some(target) = name.strip_prefix(DEFINITION_SITE_TYPE_PREFIX) {
             let Some((module, ty)) = target.split_once('.') else {
                 return lerr("compiler-owned definition-site type lost its qualified target");
@@ -855,6 +861,29 @@ impl<'a> Scope<'a> {
     /// becomes canonical; one that does not is LEFT BARE for the post-merge sweep
     /// (or the checker) to resolve against the scrutinee's type (RFC-0042 §4).
     fn resolve_ctor_pat_name(&self, name: &str) -> Result<String, LinkError> {
+        if let Some(target) = crate::linker::call_site_ctor_target(name) {
+            if self.definition_site {
+                return Ok(name.to_string());
+            }
+            let resolved = self.resolve_ctor_pat_name_unmarked(target)?;
+            if resolved != target || is_ambient_ctor(target) {
+                return Ok(resolved);
+            }
+            let mut candidates = self
+                .world
+                .ctor_exporters(target)
+                .into_iter()
+                .filter(|(module, _)| self.in_scope(module));
+            return match (candidates.next(), candidates.next()) {
+                (Some((module, _)), None) => Ok(format!("{module}.{target}")),
+                (None, _) => self.resolve_ctor_expr_name_unmarked(target),
+                (Some((first, _)), Some((second, _))) => lerr(format!(
+                    "ambiguous call-site constructor pattern `{target}` in module `{}` — \
+                     qualify it as `{}.{target}` or `{}.{target}`",
+                    self.home, first, second
+                )),
+            };
+        }
         if let Some(target) = name.strip_prefix(DEFINITION_SITE_CTOR_PREFIX) {
             return self.resolve_ctor_expr_name(&format!(
                 "{DEFINITION_SITE_CTOR_PREFIX}{target}"
@@ -1207,6 +1236,20 @@ impl<'a> Scope<'a> {
                 }
             }
             Expr::Apply { func, args } => {
+                if let Expr::Var(name) = func.as_ref()
+                    && let Some(target) = crate::linker::call_site_expr_target(name)
+                    && target.chars().next().is_some_and(char::is_uppercase)
+                {
+                    for arg in args.iter_mut() {
+                        self.resolve_expr(arg)?;
+                    }
+                    if !self.definition_site {
+                        let name = self.resolve_ctor_expr_name_unmarked(target)?;
+                        let args = std::mem::take(args);
+                        *e = Expr::Ctor { name, args };
+                    }
+                    return Ok(());
+                }
                 self.resolve_expr(func)?;
                 for a in args {
                     self.resolve_expr(a)?;
@@ -1282,6 +1325,21 @@ impl<'a> Scope<'a> {
                 }
             }
             Expr::Block(b) => self.resolve_block(b)?,
+            Expr::Var(name)
+                if crate::linker::call_site_expr_target(name)
+                    .is_some_and(|target| {
+                        target.chars().next().is_some_and(char::is_uppercase)
+                    }) =>
+            {
+                if !self.definition_site {
+                    let target = crate::linker::call_site_expr_target(name)
+                        .expect("guard established a call-site constructor");
+                    *e = Expr::Ctor {
+                        name: self.resolve_ctor_expr_name_unmarked(target)?,
+                        args: Vec::new(),
+                    };
+                }
+            }
             Expr::Int(_)
             | Expr::Float(_)
             | Expr::Duration(_)

@@ -128,9 +128,105 @@ const DEFINITION_SITE_PREFIX: &str = "@definition_site:";
 /// Compiler-only marker for a name that must be resolved in the syntax
 /// consumer's context. It is created directly as AST, never parsed from source.
 const CALL_SITE_PREFIX: &str = "@call_site:";
+const CALL_SITE_TYPE_PREFIX: &str = "@call_site_type:";
+const CALL_SITE_CTOR_PREFIX: &str = "@call_site_ctor:";
 
 pub fn call_site_expr(name: &str) -> Expr {
     Expr::Var(format!("{CALL_SITE_PREFIX}{name}"))
+}
+
+pub fn call_site_type(name: &str, args: Vec<Type>) -> Type {
+    Type::Named(format!("{CALL_SITE_TYPE_PREFIX}{name}"), args)
+}
+
+pub fn call_site_pattern(name: &str, args: Vec<Pattern>) -> Pattern {
+    Pattern::Ctor { name: format!("{CALL_SITE_CTOR_PREFIX}{name}"), args }
+}
+
+pub fn call_site_type_source(name: &str, args: &[Type]) -> String {
+    fn project(ty: &mut Type) {
+        match ty {
+            Type::Qualified(_, inner) => project(inner),
+            Type::Named(name, args) => {
+                if let Some(target) = call_site_type_target(name) {
+                    *name = target.to_string();
+                }
+                for arg in args {
+                    project(arg);
+                }
+            }
+            Type::Tuple(items) => {
+                for item in items {
+                    project(item);
+                }
+            }
+            Type::Fn(params, ret, _) => {
+                for param in params {
+                    project(param);
+                }
+                project(ret);
+            }
+            Type::Dyn(_, args) => {
+                for arg in args {
+                    project(arg);
+                }
+            }
+        }
+    }
+
+    let mut ty = Type::Named(name.to_string(), args.to_vec());
+    project(&mut ty);
+    crate::format::type_str(&ty)
+}
+
+pub fn call_site_pattern_source(name: &str, args: &[Pattern]) -> String {
+    fn project(pattern: &mut Pattern) {
+        match pattern {
+            Pattern::Ctor { name, args } => {
+                if let Some(target) = call_site_ctor_target(name) {
+                    *name = target.to_string();
+                }
+                for arg in args {
+                    project(arg);
+                }
+            }
+            Pattern::AnonCtor { args, .. }
+            | Pattern::Tuple(args)
+            | Pattern::Or(args) => {
+                for arg in args {
+                    project(arg);
+                }
+            }
+            Pattern::List { elems, .. } => {
+                for elem in elems {
+                    project(elem);
+                }
+            }
+            Pattern::Wildcard
+            | Pattern::Var(_)
+            | Pattern::Int(_)
+            | Pattern::Str(_)
+            | Pattern::Bool(_)
+            | Pattern::Duration(_)
+            | Pattern::IntRange { .. } => {}
+        }
+    }
+
+    let mut pattern = Pattern::Ctor { name: name.to_string(), args: args.to_vec() };
+    project(&mut pattern);
+    crate::format::pattern_str(&pattern)
+}
+
+pub(crate) fn call_site_type_target(name: &str) -> Option<&str> {
+    name.strip_prefix(CALL_SITE_TYPE_PREFIX)
+}
+
+pub(crate) fn call_site_ctor_target(name: &str) -> Option<&str> {
+    name.strip_prefix(CALL_SITE_CTOR_PREFIX)
+}
+
+pub(crate) fn call_site_expr_target(name: &str) -> Option<&str> {
+    name.strip_prefix(CALL_SITE_PREFIX)
 }
 
 /// The per-function facts eta-expansion consumes (RFC-0050 Part 2).
@@ -2056,7 +2152,7 @@ fn rewrite_expr(
         // to it; qualify it like a call — unless it is shadowed by a local of the
         // same name (a parameter, `let`, loop variable, or pattern binding).
         Expr::Var(name) => {
-            if let Some(target) = call_site_target(name).map(str::to_owned) {
+            if let Some(target) = call_site_expr_target(name).map(str::to_owned) {
                 if context.definition_site {
                     return Ok(());
                 }
@@ -2558,7 +2654,7 @@ fn resolve_call(
         entry,
         definition_site: _,
     } = *context;
-    if let Some(target) = call_site_target(name) {
+    if let Some(target) = call_site_expr_target(name) {
         if context.definition_site {
             return Ok(name.to_string());
         }
@@ -2634,10 +2730,6 @@ fn resolve_call(
     // Not a function here and not a builtin: a local binding being applied (e.g.
     // a lambda parameter). Leave it unqualified; the type checker decides.
     Ok(name.to_string())
-}
-
-fn call_site_target(name: &str) -> Option<&str> {
-    name.strip_prefix(CALL_SITE_PREFIX)
 }
 
 fn definition_site_target(
@@ -3215,6 +3307,21 @@ fn private_intrinsic_friend_call(provider: &str, name: &str, caller: &str) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn call_site_source_projection_never_exposes_compiler_markers() {
+        let nested_type = call_site_type("Inner", Vec::new());
+        assert_eq!(call_site_type_source("Outer", &[nested_type]), "Outer(Inner)");
+
+        let nested_pattern = call_site_pattern(
+            "Inner",
+            vec![Pattern::Var("value".into())],
+        );
+        assert_eq!(
+            call_site_pattern_source("Outer", &[nested_pattern]),
+            "Outer(Inner(value))"
+        );
+    }
 
     #[test]
     fn suggests_near_miss_std_module_and_function() {

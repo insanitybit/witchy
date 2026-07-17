@@ -1700,7 +1700,12 @@ impl Parser {
                                     owned
                                 } else if name == "meta.expr_join"
                                     && let Some(owned) =
-                                        self.compiler_owned_expr_join(&args, member_line)
+                                        self.compiler_owned_expr_join(&args, member_line, false)
+                                {
+                                    owned
+                                } else if name == "meta.expr_join_syntax"
+                                    && let Some(owned) =
+                                        self.compiler_owned_expr_join(&args, member_line, true)
                                 {
                                     owned
                                 } else if name == "meta.type_join"
@@ -2045,11 +2050,32 @@ impl Parser {
         }
         let quoted = match category.as_str() {
             "expr" => {
+                let type_base = self.quote_type_holes.len();
+                let pattern_base = self.quote_pattern_holes.len();
+                self.quote_type_hole_bases.push(type_base);
+                self.quote_pattern_hole_bases.push(pattern_base);
                 self.quote_expr_hole_depth += 1;
+                self.quote_type_hole_depth += 1;
+                self.quote_pattern_hole_depth += 1;
                 let quoted = self.expr(0);
                 self.quote_expr_hole_depth -= 1;
+                self.quote_type_hole_depth -= 1;
+                self.quote_pattern_hole_depth -= 1;
+                self.quote_type_hole_bases.pop();
+                self.quote_pattern_hole_bases.pop();
+                if quoted.is_err() {
+                    self.quote_type_holes.truncate(type_base);
+                    self.quote_pattern_holes.truncate(pattern_base);
+                }
                 let quoted = quoted?;
-                self.quote_expr_syntax_expr(quoted, quote_line)?
+                let type_holes = self.quote_type_holes.split_off(type_base);
+                let pattern_holes = self.quote_pattern_holes.split_off(pattern_base);
+                self.quote_expr_syntax_expr(
+                    quoted,
+                    type_holes,
+                    pattern_holes,
+                    quote_line,
+                )?
             }
             "type" => {
                 let base = self.quote_type_holes.len();
@@ -2203,15 +2229,28 @@ impl Parser {
     fn quote_expr_syntax_expr(
         &mut self,
         mut quoted: Expr,
+        type_holes: Vec<Expr>,
+        pattern_holes: Vec<Expr>,
         definition_line: u32,
     ) -> Result<Expr, ParseError> {
-        let mut holes = Vec::new();
-        Self::collect_quote_expr_holes(&mut quoted, &mut holes);
-        let source = crate::format::expr_str(&quoted);
-        if holes.is_empty() {
+        let mut expr_holes = Vec::new();
+        Self::collect_quote_expr_holes(&mut quoted, &mut expr_holes);
+        // A quoted expression may itself be statement-shaped (`match`, `if`,
+        // loops). Render it through statement context so its full structure and
+        // typed-hole markers survive; the inline expression formatter
+        // intentionally uses `0` for forms it cannot faithfully inline.
+        let source = crate::format::stmt_str(&Stmt::Expr(quoted.clone()));
+        if expr_holes.is_empty() && type_holes.is_empty() && pattern_holes.is_empty() {
             return Ok(self.compiler_owned_expr(quoted, source, definition_line));
         }
-        let parts = self.quote_hole_parts(&source, QUOTE_EXPR_HOLE_PREFIX, holes.len(), "expression")?;
+        let (parts, holes) =
+            self.quote_mixed_hole_parts(
+                &source,
+                expr_holes,
+                type_holes,
+                pattern_holes,
+                "expression",
+            )?;
         let (handle, _) = self.register_expr_syntax(quoted, source, definition_line);
         Ok(Expr::Call {
             name: crate::intrinsics::COMPILER_QUOTE_EXPR_HOLES.into(),
@@ -2299,6 +2338,7 @@ impl Parser {
         &mut self,
         args: &[Expr],
         definition_line: u32,
+        holes_are_syntax: bool,
     ) -> Option<Expr> {
         let [Expr::List(parts), Expr::List(holes)] = args else {
             return None;
@@ -2306,16 +2346,21 @@ impl Parser {
         if parts.len() != holes.len() + 1 {
             return None;
         }
-        let mut source = String::new();
-        for (index, part) in parts.iter().enumerate() {
-            let Expr::Str(part) = part else {
-                return None;
-            };
-            source.push_str(part);
-            if index < holes.len() {
-                source.push_str(&format!("{QUOTE_EXPR_HOLE_PREFIX}{index}"));
+        let source = if holes_are_syntax {
+            Self::compiler_owned_mixed_join_source(args)?
+        } else {
+            let mut source = String::new();
+            for (index, part) in parts.iter().enumerate() {
+                let Expr::Str(part) = part else {
+                    return None;
+                };
+                source.push_str(part);
+                if index < holes.len() {
+                    source.push_str(&format!("{QUOTE_EXPR_HOLE_PREFIX}{index}"));
+                }
             }
-        }
+            source
+        };
         let owned = self.compiler_owned_expr_literal(&source, definition_line)?;
         let Expr::Call { name, args: owned_args } = owned else {
             return None;
@@ -2331,7 +2376,15 @@ impl Parser {
             args: vec![
                 Expr::Str(handle.clone()),
                 Expr::List(parts.clone()),
-                Expr::List(holes.clone()),
+                Expr::List(if holes_are_syntax {
+                    holes.clone()
+                } else {
+                    holes
+                        .iter()
+                        .cloned()
+                        .map(|hole| self.meta_call("expr_hole", vec![hole]))
+                        .collect()
+                }),
             ],
         })
     }
@@ -2984,7 +3037,7 @@ impl Parser {
             let marker = format!("{QUOTE_EXPR_HOLE_PREFIX}{idx}");
             let Some(pos) = Self::quote_marker_pos(source, &marker) else {
                 return Err(self.error(format!(
-                    "internal error: quote {category} expression hole marker was lost"
+                    "internal error: quote {category} expression hole marker was lost in `{source}`"
                 )));
             };
             markers.push((pos, marker.len(), self.meta_call("expr_hole", vec![hole])));
@@ -2993,7 +3046,7 @@ impl Parser {
             let marker = format!("{QUOTE_TYPE_HOLE_PREFIX}{idx}");
             let Some(pos) = Self::quote_marker_pos(source, &marker) else {
                 return Err(self.error(format!(
-                    "internal error: quote {category} type hole marker was lost"
+                    "internal error: quote {category} type hole marker was lost in `{source}`"
                 )));
             };
             markers.push((pos, marker.len(), self.meta_call("type_hole", vec![hole])));
@@ -3002,7 +3055,7 @@ impl Parser {
             let marker = format!("{QUOTE_PATTERN_HOLE_PREFIX}{idx}");
             let Some(pos) = Self::quote_marker_pos(source, &marker) else {
                 return Err(self.error(format!(
-                    "internal error: quote {category} pattern hole marker was lost"
+                    "internal error: quote {category} pattern hole marker was lost in `{source}`"
                 )));
             };
             markers.push((pos, marker.len(), self.meta_call("pattern_hole", vec![hole])));

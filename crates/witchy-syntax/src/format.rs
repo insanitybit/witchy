@@ -1275,7 +1275,7 @@ fn expr(e: &Expr) -> String {
             if name == crate::intrinsics::COMPILER_QUOTE_EXPR_HOLES
                 && let [Expr::Str(_handle), parts, holes] = args.as_slice()
             {
-                return format!("meta.expr_join({}, {})", expr(parts), expr(holes));
+                return format!("meta.expr_join_syntax({}, {})", expr(parts), expr(holes));
             }
             if name == crate::intrinsics::COMPILER_QUOTE_TYPE
                 && let [Expr::Str(_handle), Expr::Str(source)] = args.as_slice()

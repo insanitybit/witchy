@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed compatibility builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned item/expression/type/pattern/statement/block quotations with structural typed holes, direct AST transport for typed tags, definition-site function/type/constructor/pattern resolution, explicit meta.call_site value/function references, and nested tagged-expansion diagnostics carrying invocation, definition, generated-parent, and hole ancestry landed; explicit call-site constructor/type origins, general compatibility-builder/item origins, and persistent per-node spans remain proposed"
+tracking: "source-backed compatibility builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned item/expression/type/pattern/statement/block quotations with structural typed holes, direct AST transport for typed tags, definition-site function/type/constructor/pattern resolution, explicit meta.call_site value/function/type/constructor references, and nested tagged-expansion diagnostics carrying invocation, definition, generated-parent, and hole ancestry landed; general qualified/compatibility-builder/item origins and persistent per-node spans remain proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -439,6 +439,19 @@ The first source-compatible slice is implemented:
   the previously untyped `value.field = replacement` path: record updates infer
   the sealed type's canonical owner (including ambient stdlib types) and remain
   legal only in that defining module.
+- The thirty-ninth slice completes the explicit invocation-site escape for the
+  compiler-owned expression surface. `meta.call_site(name)` accepts any valid
+  identifier; the consuming constructor assigns its category:
+  `meta.expr_name` retains value/function or constructor identity,
+  `meta.type_named` retains type identity and structural type arguments, and
+  `meta.pattern_ctor` retains constructor-pattern identity and structural
+  subpatterns. Uppercase expression references become nullary constructors or,
+  when applied, constructor calls in the consumer scope. All three origins stay
+  as unspellable AST markers through definition-site expansion and are consumed
+  before type checking. A call-site type alias expands only from the consumer's
+  alias environment; a same-spelled alias in the generator module cannot capture
+  it. Qualified-name composition and source-projecting item builders remain later
+  origin work.
 
 This is intentionally not the full RFC. Every quotation category and its typed
 hole placement is now compiler-owned. General `meta.*` builder composition may
@@ -446,11 +459,12 @@ still project canonical source, and current body builders use that compatibility
 surface when constructing an item. Compiler-owned typed tag expressions preserve
 definition-site direct function, type, constructor, and constructor-pattern
 references, and
-`meta.expr_name(meta.call_site("name"))` explicitly selects invocation-site
-value/function resolution. Direct tagged-expansion failures preserve the
-invocation and definition module/line pair. Explicit call-site constructor/type
-origins, compatibility-builder origins, and item/field identities remain future
-work. The value is the
+`meta.call_site("name")`, consumed through `meta.expr_name`, `meta.type_named`,
+or `meta.pattern_ctor`, explicitly selects invocation-site value, type, or
+constructor resolution. Direct tagged-expansion failures preserve the invocation
+and definition module/line pair. General qualified-name composition,
+source-projecting compatibility-builder origins, and item/field identities
+remain future work. The value is the
 migration seam: future work can move the
 payload behind these wrappers from parsed source to structured compiler nodes
 without changing the comptime append/merge path again.

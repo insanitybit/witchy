@@ -162,7 +162,7 @@ pub(crate) fn resolve_type_aliases(ty: &mut Type, map: &HashMap<String, Alias>) 
 pub(crate) fn resolve_expr_aliases(expr: &mut Expr, module: &Module) {
     let map = resolved_map(module);
     if !map.is_empty() {
-        resolve_in_expr(expr, &map);
+        resolve_in_expr_with_origin(expr, &map, false);
     }
 }
 
@@ -170,14 +170,29 @@ pub(crate) fn resolve_expr_aliases(expr: &mut Expr, module: &Module) {
 /// fixpoint-resolved, so a single replacement yields an alias-free type. Returns
 /// whether anything changed.
 fn resolve_type(ty: &mut Type, map: &HashMap<String, Alias>) -> bool {
+    resolve_type_with_origin(ty, map, true)
+}
+
+fn resolve_type_with_origin(
+    ty: &mut Type,
+    map: &HashMap<String, Alias>,
+    resolve_call_site_head: bool,
+) -> bool {
     match ty {
-        Type::Qualified(_, inner) => resolve_type(inner, map),
+        Type::Qualified(_, inner) => {
+            resolve_type_with_origin(inner, map, resolve_call_site_head)
+        }
         Type::Named(name, args) => {
             let mut changed = false;
             for a in args.iter_mut() {
-                changed |= resolve_type(a, map);
+                changed |= resolve_type_with_origin(a, map, resolve_call_site_head);
             }
-            if let Some(alias) = map.get(name) {
+            let alias_name = if resolve_call_site_head {
+                crate::linker::call_site_type_target(name).unwrap_or(name)
+            } else {
+                name
+            };
+            if let Some(alias) = map.get(alias_name) {
                 if alias.params.len() == args.len() {
                     let subst: HashMap<String, Type> = alias
                         .params
@@ -196,16 +211,16 @@ fn resolve_type(ty: &mut Type, map: &HashMap<String, Alias>) -> bool {
         Type::Tuple(ts) => {
             let mut changed = false;
             for t in ts {
-                changed |= resolve_type(t, map);
+                changed |= resolve_type_with_origin(t, map, resolve_call_site_head);
             }
             changed
         }
         Type::Fn(params, ret, _) => {
             let mut changed = false;
             for p in params {
-                changed |= resolve_type(p, map);
+                changed |= resolve_type_with_origin(p, map, resolve_call_site_head);
             }
-            changed |= resolve_type(ret, map);
+            changed |= resolve_type_with_origin(ret, map, resolve_call_site_head);
             changed
         }
         // (RFC-0081) The head is a trait name — aliases bind TYPE names, so only
@@ -214,7 +229,7 @@ fn resolve_type(ty: &mut Type, map: &HashMap<String, Alias>) -> bool {
         Type::Dyn(_, args) => {
             let mut changed = false;
             for a in args {
-                changed |= resolve_type(a, map);
+                changed |= resolve_type_with_origin(a, map, resolve_call_site_head);
             }
             changed
         }
@@ -333,134 +348,154 @@ fn resolve_methodsig(m: &mut MethodSig, map: &HashMap<String, Alias>) {
 /// ascriptions, `as`-cast targets, and lambda parameter/return annotations (the
 /// last two reached through `resolve_in_expr`).
 fn resolve_in_block(block: &mut Block, map: &HashMap<String, Alias>) {
+    resolve_in_block_with_origin(block, map, true);
+}
+
+fn resolve_in_block_with_origin(
+    block: &mut Block,
+    map: &HashMap<String, Alias>,
+    resolve_call_site_head: bool,
+) {
     if let Some(region) = &mut block.region {
         if let Some(ty) = &mut region.ty {
-            resolve_type(ty, map);
+            resolve_type_with_origin(ty, map, resolve_call_site_head);
         }
     }
     for stmt in &mut block.stmts {
         match stmt {
             Stmt::Let { ty, value, .. } => {
                 if let Some(t) = ty {
-                    resolve_type(t, map);
+                    resolve_type_with_origin(t, map, resolve_call_site_head);
                 }
-                resolve_in_expr(value, map);
+                resolve_in_expr_with_origin(value, map, resolve_call_site_head);
             }
             Stmt::LetPattern { value, .. }
             | Stmt::Assign { value, .. }
             | Stmt::Yield(value)
-            | Stmt::Expr(value) => resolve_in_expr(value, map),
-            Stmt::Return(Some(e)) => resolve_in_expr(e, map),
+            | Stmt::Expr(value) => {
+                resolve_in_expr_with_origin(value, map, resolve_call_site_head)
+            }
+            Stmt::Return(Some(e)) => {
+                resolve_in_expr_with_origin(e, map, resolve_call_site_head)
+            }
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
     }
 }
 
-fn resolve_in_expr(e: &mut Expr, map: &HashMap<String, Alias>) {
+fn resolve_in_expr_with_origin(
+    e: &mut Expr,
+    map: &HashMap<String, Alias>,
+    resolve_call_site_head: bool,
+) {
     match e {
         Expr::Lambda { params, body, ret } => {
             for p in params.iter_mut() {
                 if let Some(t) = &mut p.ty {
-                    resolve_type(t, map);
+                    resolve_type_with_origin(t, map, resolve_call_site_head);
                 }
             }
             if let Some(t) = ret {
-                resolve_type(t, map);
+                resolve_type_with_origin(t, map, resolve_call_site_head);
             }
-            resolve_in_block(body, map);
+            resolve_in_block_with_origin(body, map, resolve_call_site_head);
         }
         Expr::Int(_) | Expr::Float(_) | Expr::Duration(_) | Expr::Str(_) | Expr::Bool(_)
         | Expr::Var(_) | Expr::TaggedLit { .. } => {}
         Expr::List(xs) | Expr::Tuple(xs) => {
             for x in xs {
-                resolve_in_expr(x, map);
+                resolve_in_expr_with_origin(x, map, resolve_call_site_head);
             }
         }
         Expr::Call { args, .. } | Expr::Ctor { args, .. }
         | Expr::AnonCtor { args, .. } => {
             for a in args {
-                resolve_in_expr(a, map);
+                resolve_in_expr_with_origin(a, map, resolve_call_site_head);
             }
         }
         Expr::LabeledCall { args, .. } => {
             for (_, a) in args {
-                resolve_in_expr(a, map);
+                resolve_in_expr_with_origin(a, map, resolve_call_site_head);
             }
         }
         Expr::MethodCall { receiver, args, .. } => {
-            resolve_in_expr(receiver, map);
+            resolve_in_expr_with_origin(receiver, map, resolve_call_site_head);
             for a in args {
-                resolve_in_expr(a, map);
+                resolve_in_expr_with_origin(a, map, resolve_call_site_head);
             }
         }
         Expr::Apply { func, args } => {
-            resolve_in_expr(func, map);
+            resolve_in_expr_with_origin(func, map, resolve_call_site_head);
             for a in args {
-                resolve_in_expr(a, map);
+                resolve_in_expr_with_origin(a, map, resolve_call_site_head);
             }
         }
         Expr::As { expr, ty } => {
-            resolve_in_expr(expr, map);
-            resolve_type(ty, map);
+            resolve_in_expr_with_origin(expr, map, resolve_call_site_head);
+            resolve_type_with_origin(ty, map, resolve_call_site_head);
         }
         Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
-            resolve_in_expr(expr, map)
+            resolve_in_expr_with_origin(expr, map, resolve_call_site_head)
         }
         Expr::RecordUpdate { name: _, base, fields } => {
-            resolve_in_expr(base, map);
+            resolve_in_expr_with_origin(base, map, resolve_call_site_head);
             for (_, v) in fields {
-                resolve_in_expr(v, map);
+                resolve_in_expr_with_origin(v, map, resolve_call_site_head);
             }
         }
         Expr::Record { fields, spread, .. } => {
             for (_, v) in fields {
-                resolve_in_expr(v, map);
+                resolve_in_expr_with_origin(v, map, resolve_call_site_head);
             }
             if let Some(s) = spread {
-                resolve_in_expr(s, map);
+                resolve_in_expr_with_origin(s, map, resolve_call_site_head);
             }
         }
         Expr::Binary { lhs, rhs, .. } => {
-            resolve_in_expr(lhs, map);
-            resolve_in_expr(rhs, map);
+            resolve_in_expr_with_origin(lhs, map, resolve_call_site_head);
+            resolve_in_expr_with_origin(rhs, map, resolve_call_site_head);
         }
         Expr::Range { lo, hi, .. } => {
-            resolve_in_expr(lo, map);
-            resolve_in_expr(hi, map);
+            resolve_in_expr_with_origin(lo, map, resolve_call_site_head);
+            resolve_in_expr_with_origin(hi, map, resolve_call_site_head);
         }
         Expr::Index { base, index } => {
-            resolve_in_expr(base, map);
-            resolve_in_expr(index, map);
+            resolve_in_expr_with_origin(base, map, resolve_call_site_head);
+            resolve_in_expr_with_origin(index, map, resolve_call_site_head);
         }
         Expr::WhileLet { scrutinee, body, .. } => {
-            resolve_in_expr(scrutinee, map);
-            resolve_in_block(body, map);
+            resolve_in_expr_with_origin(scrutinee, map, resolve_call_site_head);
+            resolve_in_block_with_origin(body, map, resolve_call_site_head);
         }
         Expr::If { cond, then_block, else_block } => {
-            resolve_in_expr(cond, map);
-            resolve_in_block(then_block, map);
+            resolve_in_expr_with_origin(cond, map, resolve_call_site_head);
+            resolve_in_block_with_origin(then_block, map, resolve_call_site_head);
             if let Some(b) = else_block {
-                resolve_in_block(b, map);
+                resolve_in_block_with_origin(b, map, resolve_call_site_head);
             }
         }
         Expr::While { cond, body } => {
-            resolve_in_expr(cond, map);
-            resolve_in_block(body, map);
+            resolve_in_expr_with_origin(cond, map, resolve_call_site_head);
+            resolve_in_block_with_origin(body, map, resolve_call_site_head);
         }
         Expr::For { iter, body, .. } => {
-            resolve_in_expr(iter, map);
-            resolve_in_block(body, map);
+            resolve_in_expr_with_origin(iter, map, resolve_call_site_head);
+            resolve_in_block_with_origin(body, map, resolve_call_site_head);
         }
         Expr::Match { scrutinee, arms } => {
-            resolve_in_expr(scrutinee, map);
+            resolve_in_expr_with_origin(scrutinee, map, resolve_call_site_head);
             for arm in arms.iter_mut() {
                 if let Some(g) = &mut arm.guard {
-                    resolve_in_expr(g, map);
+                    resolve_in_expr_with_origin(g, map, resolve_call_site_head);
                 }
-                resolve_in_expr(&mut arm.body, map);
+                resolve_in_expr_with_origin(
+                    &mut arm.body,
+                    map,
+                    resolve_call_site_head,
+                );
             }
         }
-        Expr::Block(b) => resolve_in_block(b, map),
+        Expr::Block(b) => resolve_in_block_with_origin(b, map, resolve_call_site_head),
     }
 }
 
