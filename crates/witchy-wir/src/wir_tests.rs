@@ -15,7 +15,7 @@
         assert_eq!(EXISTENTIAL_PAYLOAD_FIELD, 0);
         assert_eq!(EXISTENTIAL_WITNESS_FIELD, 1);
         assert!(
-            wrapper.fields[EXISTENTIAL_PAYLOAD_FIELD as usize].is_reference(),
+            wrapper.fields[EXISTENTIAL_PAYLOAD_FIELD as usize].is_ref(),
             "the payload must never cross an i64 slot"
         );
     }

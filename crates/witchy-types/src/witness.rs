@@ -4,10 +4,13 @@
 //! boxes. It assigns closed-program witness IDs and typed method slots without
 //! choosing either backend's runtime representation.
 
-use foldhash::{HashMap, HashSet, HashSetExt as _};
+use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 use witchy_syntax::ast::{Convention, ImplDef, Item, MethodSig, Module, TraitDef, Type};
 
-use crate::traits::{expected_method_type, impl_self_type, mangle, ret_type};
+use crate::traits::{
+    bind_ast_type_vars, expected_method_type, impl_self_type, monomorphic_impl_method_name,
+    ret_type, subst_trait_params,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WitnessSlot {
@@ -57,7 +60,13 @@ impl Witness {
     }
 }
 
-pub fn build(module: &Module) -> Result<WitnessPlan, String> {
+/// Build the closed-program witness plan for the concrete-to-existential
+/// conversions selected by type checking. Impl declarations are templates:
+/// runtime identities are assigned only to these closed construction requests.
+pub fn build(
+    module: &Module,
+    requests: impl IntoIterator<Item = (Type, Type)>,
+) -> Result<WitnessPlan, String> {
     let traits: HashMap<&str, &TraitDef> = module
         .items
         .iter()
@@ -75,27 +84,37 @@ pub fn build(module: &Module) -> Result<WitnessPlan, String> {
         })
         .collect();
 
-    let mut entries = impls
-        .iter()
-        .map(|implementation| {
-            let trait_name = implementation
-                .trait_name
-                .as_deref()
-                .expect("filtered trait impl");
-            let existential =
-                Type::Dyn(trait_name.to_string(), implementation.trait_args.clone());
-            let concrete = impl_self_type(implementation);
-            (type_key(&existential), type_key(&concrete), *implementation)
+    let mut entries = requests
+        .into_iter()
+        .map(|(existential, concrete)| {
+            (
+                type_key(&existential),
+                type_key(&concrete),
+                existential,
+                concrete,
+            )
         })
         .collect::<Vec<_>>();
     entries.sort_by(|left, right| (&left.0, &left.1).cmp(&(&right.0, &right.1)));
+    entries.dedup_by(|left, right| left.0 == right.0 && left.1 == right.1);
 
     let mut witnesses = Vec::with_capacity(entries.len());
-    for (_, _, implementation) in entries {
-        let trait_name = implementation
-            .trait_name
-            .as_deref()
-            .expect("filtered trait impl");
+    for (_, _, existential, concrete) in entries {
+        let Type::Dyn(trait_name, trait_args) = &existential else {
+            return Err(format!(
+                "existential witness request must name `dyn Trait`, got `{}`",
+                type_key(&existential)
+            ));
+        };
+        if trait_args.iter().any(has_free_type_variable) || has_free_type_variable(&concrete) {
+            return Err(format!(
+                "existential witness requests must be fully substituted, got `{} -> {}`",
+                type_key(&concrete),
+                type_key(&existential)
+            ));
+        }
+        let (implementation, bindings) =
+            resolve_impl(&impls, trait_name, trait_args, &concrete)?;
         let mut order = Vec::new();
         linearize_trait(trait_name, &traits, &mut HashSet::new(), &mut order)?;
         let mut slots = Vec::new();
@@ -103,27 +122,39 @@ pub fn build(module: &Module) -> Result<WitnessPlan, String> {
             let owner_trait = traits
                 .get(owner.as_str())
                 .ok_or_else(|| format!("existential witness references unknown trait `{owner}`"))?;
-            let owner_impl = find_impl(&impls, &owner, implementation).ok_or_else(|| {
-                format!(
-                    "`{}` implements `{trait_name}` but has no witness impl for supertrait `{owner}`",
-                    type_key(&impl_self_type(implementation))
-                )
-            })?;
+            let (owner_impl, owner_bindings) = if owner == *trait_name {
+                (implementation, bindings.clone())
+            } else {
+                resolve_impl(&impls, &owner, &[], &concrete).map_err(|_| {
+                    format!(
+                        "`{}` implements `{trait_name}` but has no witness impl for supertrait `{owner}`",
+                        type_key(&concrete)
+                    )
+                })?
+            };
+            let concrete_impl = instantiate_impl(owner_impl, &owner_bindings);
             let vars: HashMap<String, Type> = owner_trait
                 .typarams
                 .iter()
                 .cloned()
-                .zip(owner_impl.trait_args.iter().cloned())
+                .zip(concrete_impl.trait_args.iter().cloned())
                 .collect();
             for method in &owner_trait.methods {
-                slots.push(slot(owner_trait, owner_impl, method, &vars)?);
+                slots.push(slot(
+                    owner_trait,
+                    owner_impl,
+                    &concrete_impl,
+                    method,
+                    &vars,
+                    &owner_bindings,
+                )?);
             }
         }
         witnesses.push(Witness {
             id: u32::try_from(witnesses.len())
                 .map_err(|_| "existential witness table exceeds u32 IDs".to_string())?,
-            existential: Type::Dyn(trait_name.to_string(), implementation.trait_args.clone()),
-            concrete: impl_self_type(implementation),
+            existential,
+            concrete,
             slots,
         });
     }
@@ -153,26 +184,70 @@ fn linearize_trait(
     Ok(())
 }
 
-fn find_impl<'a>(
+fn resolve_impl<'a>(
     impls: &'a [&ImplDef],
     trait_name: &str,
-    concrete: &'a ImplDef,
-) -> Option<&'a ImplDef> {
-    if concrete.trait_name.as_deref() == Some(trait_name) {
-        return Some(concrete);
+    trait_args: &[Type],
+    concrete: &Type,
+) -> Result<(&'a ImplDef, HashMap<String, Type>), String> {
+    let mut matches = impls.iter().filter_map(|candidate| {
+        if candidate.trait_name.as_deref() != Some(trait_name)
+            || candidate.trait_args.len() != trait_args.len()
+        {
+            return None;
+        }
+        let mut bindings = HashMap::new();
+        if !bind_ast_type_vars(&impl_self_type(candidate), concrete, &mut bindings)
+            || !candidate
+                .trait_args
+                .iter()
+                .zip(trait_args)
+                .all(|(pattern, concrete)| bind_ast_type_vars(pattern, concrete, &mut bindings))
+        {
+            return None;
+        }
+        Some((*candidate, bindings))
+    });
+    let Some(found) = matches.next() else {
+        return Err(format!(
+            "no linked `impl {}` for `{}` can construct `dyn {}`",
+            trait_name,
+            type_key(concrete),
+            trait_name
+        ));
+    };
+    if matches.next().is_some() {
+        return Err(format!(
+            "multiple linked `impl {}` declarations match `{}`",
+            trait_name,
+            type_key(concrete)
+        ));
     }
-    impls.iter().copied().find(|candidate| {
-        candidate.trait_name.as_deref() == Some(trait_name)
-            && candidate.type_name == concrete.type_name
-            && candidate.target_args == concrete.target_args
-    })
+    Ok(found)
+}
+
+fn instantiate_impl(implementation: &ImplDef, bindings: &HashMap<String, Type>) -> ImplDef {
+    let mut concrete = implementation.clone();
+    concrete.trait_args = concrete
+        .trait_args
+        .iter()
+        .map(|ty| subst_trait_params(ty, bindings))
+        .collect();
+    concrete.target_args = concrete
+        .target_args
+        .iter()
+        .map(|ty| subst_trait_params(ty, bindings))
+        .collect();
+    concrete
 }
 
 fn slot(
     owner: &TraitDef,
     implementation: &ImplDef,
+    concrete_implementation: &ImplDef,
     method: &MethodSig,
     vars: &HashMap<String, Type>,
+    bindings: &HashMap<String, Type>,
 ) -> Result<WitnessSlot, String> {
     if method.params.first().is_none_or(|param| param.name != "self") {
         return Err(format!(
@@ -180,15 +255,22 @@ fn slot(
             owner.name, method.name
         ));
     }
+    let template_trait_params: HashMap<String, Type> = owner
+        .typarams
+        .iter()
+        .cloned()
+        .zip(implementation.trait_args.iter().cloned())
+        .collect();
     Ok(WitnessSlot {
         owner_trait: owner.name.clone(),
         method: method.name.clone(),
-        adapter: mangle(
-            Some(&owner.name),
-            &implementation.trait_args,
-            &implementation.type_name,
-            &method.name,
-        ),
+        adapter: monomorphic_impl_method_name(
+            &owner.name,
+            implementation,
+            method,
+            &template_trait_params,
+            bindings,
+        )?,
         receiver: method.params[0].convention,
         params: method
             .params
@@ -201,10 +283,10 @@ fn slot(
                         owner.name, method.name, param.name
                     )
                 })?;
-                Ok(expected_method_type(ty, implementation, vars))
+                Ok(expected_method_type(ty, concrete_implementation, vars))
             })
             .collect::<Result<Vec<_>, String>>()?,
-        result: ret_type(&method.ret, implementation, vars),
+        result: ret_type(&method.ret, concrete_implementation, vars),
         conventions: method
             .params
             .iter()
@@ -216,9 +298,12 @@ fn slot(
 
 fn type_key(ty: &Type) -> String {
     match ty {
-        Type::Named(name, args) | Type::Dyn(name, args) => format!(
-            "{}({})",
-            name,
+        Type::Named(name, args) => format!(
+            "named:{name}({})",
+            args.iter().map(type_key).collect::<Vec<_>>().join(",")
+        ),
+        Type::Dyn(name, args) => format!(
+            "dyn:{name}({})",
             args.iter().map(type_key).collect::<Vec<_>>().join(",")
         ),
         Type::Tuple(items) => {
@@ -231,6 +316,22 @@ fn type_key(ty: &Type) -> String {
             type_key(result)
         ),
         Type::Qualified(qualifier, inner) => format!("{qualifier:?}:{}", type_key(inner)),
+    }
+}
+
+fn has_free_type_variable(ty: &Type) -> bool {
+    match ty {
+        Type::Named(name, args) => {
+            (args.is_empty()
+                && name.chars().next().is_some_and(char::is_lowercase)
+                && !name.contains('.'))
+                || args.iter().any(has_free_type_variable)
+        }
+        Type::Dyn(_, args) | Type::Tuple(args) => args.iter().any(has_free_type_variable),
+        Type::Fn(params, result, _) => {
+            params.iter().any(has_free_type_variable) || has_free_type_variable(result)
+        }
+        Type::Qualified(_, inner) => has_free_type_variable(inner),
     }
 }
 
@@ -259,7 +360,14 @@ mod tests {
              \x20       value\n",
         )
         .expect("parse");
-        let plan = build(&module).expect("witness plan");
+        let plan = build(
+            &module,
+            [(
+                Type::Dyn("Render".into(), Vec::new()),
+                Type::Named("Label".into(), Vec::new()),
+            )],
+        )
+        .expect("witness plan");
         let witness = plan
             .get(
                 &Type::Dyn("Render".into(), Vec::new()),
@@ -303,8 +411,18 @@ mod tests {
         };
         let a = "impl Show for A:\n    fn show(self) -> String:\n        \"a\"\n\n";
         let b = "impl Show for B:\n    fn show(self) -> String:\n        \"b\"\n\n";
-        let left = build(&source(&format!("{a}{b}"))).expect("left");
-        let right = build(&source(&format!("{b}{a}"))).expect("right");
+        let requests = [
+            (
+                Type::Dyn("Show".into(), Vec::new()),
+                Type::Named("B".into(), Vec::new()),
+            ),
+            (
+                Type::Dyn("Show".into(), Vec::new()),
+                Type::Named("A".into(), Vec::new()),
+            ),
+        ];
+        let left = build(&source(&format!("{a}{b}")), requests.clone()).expect("left");
+        let right = build(&source(&format!("{b}{a}")), requests).expect("right");
         assert_eq!(left, right);
     }
 
@@ -323,7 +441,26 @@ mod tests {
              \x20       value\n",
         )
         .expect("parse");
-        let plan = build(&module).expect("witness plan");
+        let plan = build(
+            &module,
+            [
+                (
+                    Type::Dyn(
+                        "Convert".into(),
+                        vec![Type::Named("Int".into(), Vec::new())],
+                    ),
+                    Type::Named("Box".into(), Vec::new()),
+                ),
+                (
+                    Type::Dyn(
+                        "Convert".into(),
+                        vec![Type::Named("String".into(), Vec::new())],
+                    ),
+                    Type::Named("Box".into(), Vec::new()),
+                ),
+            ],
+        )
+        .expect("witness plan");
         let int = plan
             .get(
                 &Type::Dyn(
@@ -355,6 +492,166 @@ mod tests {
     }
 
     #[test]
+    fn provided_methods_use_the_instantiated_trait_abi() {
+        let module = parser::parse_module(
+            "trait Convert(t):\n\
+             \x20   fn convert(self, value: t) -> t\n\n\
+             type Box:\n\
+             \x20   Box(Int)\n\n\
+             impl Convert(Int) for Box:\n\
+             \x20   fn convert(self, value: t) -> t:\n\
+             \x20       value\n",
+        )
+        .expect("parse");
+        let plan = build(
+            &module,
+            [(
+                Type::Dyn(
+                    "Convert".into(),
+                    vec![Type::Named("Int".into(), Vec::new())],
+                ),
+                Type::Named("Box".into(), Vec::new()),
+            )],
+        )
+        .expect("provided-method witness");
+
+        assert_eq!(
+            plan.witnesses[0].slots[0].adapter,
+            "Convert__Int__Box__convert"
+        );
+        assert_eq!(
+            plan.witnesses[0].slots[0].params,
+            [Type::Named("Int".into(), Vec::new())]
+        );
+    }
+
+    #[test]
+    fn parameterized_trait_defaults_use_the_existing_specialization_symbol() {
+        let module = parser::parse_module(
+            "trait Convert(t):\n\
+             \x20   fn convert(self, value: t) -> t:\n\
+             \x20       value\n\n\
+             type Box:\n\
+             \x20   Box(Int)\n\n\
+             impl Convert(Int) for Box\n",
+        )
+        .expect("parse");
+        let plan = build(
+            &module,
+            [(
+                Type::Dyn(
+                    "Convert".into(),
+                    vec![Type::Named("Int".into(), Vec::new())],
+                ),
+                Type::Named("Box".into(), Vec::new()),
+            )],
+        )
+        .expect("default-method witness");
+
+        assert_eq!(
+            plan.witnesses[0].slots[0].adapter,
+            "Convert__Int__Box__convert"
+        );
+    }
+
+    #[test]
+    fn receiver_binding_wins_a_same_spelled_trait_parameter_for_default_symbols() {
+        let module = parser::parse_module(
+            "trait Tag(t):\n\
+             \x20   fn tag(self) -> Int:\n\
+             \x20       1\n\n\
+             type Box(a):\n\
+             \x20   Box(a)\n\n\
+             impl Tag(Int) for Box(t)\n",
+        )
+        .expect("parse");
+        let plan = build(
+            &module,
+            [(
+                Type::Dyn(
+                    "Tag".into(),
+                    vec![Type::Named("Int".into(), Vec::new())],
+                ),
+                Type::Named(
+                    "Box".into(),
+                    vec![Type::Named("String".into(), Vec::new())],
+                ),
+            )],
+        )
+        .expect("same-spelled generic namespaces");
+
+        assert_eq!(
+            plan.witnesses[0].slots[0].adapter,
+            "Tag__Int__Box__tag__String"
+        );
+    }
+
+    #[test]
+    fn default_symbols_separate_trait_and_target_generic_namespaces() {
+        let module = parser::parse_module(
+            "trait Convert(t):\n\
+             \x20   fn convert(self, value: t) -> t:\n\
+             \x20       value\n\n\
+             type Box(a):\n\
+             \x20   Box(a)\n\n\
+             impl Convert(a) for Box(t)\n",
+        )
+        .expect("parse");
+        let plan = build(
+            &module,
+            [(
+                Type::Dyn(
+                    "Convert".into(),
+                    vec![Type::Named("Int".into(), Vec::new())],
+                ),
+                Type::Named(
+                    "Box".into(),
+                    vec![Type::Named("String".into(), Vec::new())],
+                ),
+            )],
+        )
+        .expect("separate default-method generic namespaces");
+
+        assert_eq!(
+            plan.witnesses[0].slots[0].adapter,
+            "Convert__a__Box__convert__String__Int"
+        );
+    }
+
+    #[test]
+    fn provided_symbols_separate_trait_and_target_generic_namespaces() {
+        let module = parser::parse_module(
+            "trait Convert(t):\n\
+             \x20   fn convert(self, value: t) -> t\n\n\
+             type Box(a):\n\
+             \x20   Box(a)\n\n\
+             impl Convert(a) for Box(t):\n\
+             \x20   fn convert(self, value: a) -> a:\n\
+             \x20       value\n",
+        )
+        .expect("parse");
+        let plan = build(
+            &module,
+            [(
+                Type::Dyn(
+                    "Convert".into(),
+                    vec![Type::Named("Int".into(), Vec::new())],
+                ),
+                Type::Named(
+                    "Box".into(),
+                    vec![Type::Named("String".into(), Vec::new())],
+                ),
+            )],
+        )
+        .expect("provided-method generic namespaces");
+
+        assert_eq!(
+            plan.witnesses[0].slots[0].adapter,
+            "Convert__a__Box__convert__String__Int"
+        );
+    }
+
+    #[test]
     fn witness_slots_reject_untyped_explicit_arguments() {
         let module = parser::parse_module(
             "trait Bad:\n\
@@ -366,11 +663,111 @@ mod tests {
              \x20       0\n",
         )
         .expect("parse");
-        let error = build(&module).expect_err("witness ABI may not guess an argument type");
+        let error = build(
+            &module,
+            [(
+                Type::Dyn("Bad".into(), Vec::new()),
+                Type::Named("Value".into(), Vec::new()),
+            )],
+        )
+        .expect_err("witness ABI may not guess an argument type");
         assert!(
             error.contains("parameter `value` has no type")
                 && error.contains("must be fully typed"),
             "{error}"
+        );
+    }
+
+    #[test]
+    fn generic_impls_are_instantiated_for_closed_witness_requests() {
+        let module = parser::parse_module(
+            "trait Show:\n\
+             \x20   fn show(self) -> String\n\n\
+             type Box(a):\n\
+             \x20   Box(a)\n\n\
+             impl Show for Box(a):\n\
+             \x20   fn show(self) -> String:\n\
+             \x20       \"box\"\n",
+        )
+        .expect("parse");
+        let concrete = Type::Named(
+            "Box".into(),
+            vec![Type::Named("Int".into(), Vec::new())],
+        );
+        let plan = build(
+            &module,
+            [(Type::Dyn("Show".into(), Vec::new()), concrete.clone())],
+        )
+        .expect("closed generic witness");
+        let witness = plan
+            .get(&Type::Dyn("Show".into(), Vec::new()), &concrete)
+            .expect("Box(Int) witness");
+
+        assert_eq!(witness.concrete, concrete);
+        assert_eq!(witness.slots[0].adapter, "Show__Box__show__Int");
+    }
+
+    #[test]
+    fn open_generic_requests_never_receive_runtime_witness_ids() {
+        let module = parser::parse_module(
+            "trait Show:\n\
+             \x20   fn show(self) -> String\n\n\
+             type Box(a):\n\
+             \x20   Box(a)\n\n\
+             impl Show for Box(a):\n\
+             \x20   fn show(self) -> String:\n\
+             \x20       \"box\"\n",
+        )
+        .expect("parse");
+        let error = build(
+            &module,
+            [(
+                Type::Dyn("Show".into(), Vec::new()),
+                Type::Named(
+                    "Box".into(),
+                    vec![Type::Named("a".into(), Vec::new())],
+                ),
+            )],
+        )
+        .expect_err("open impl template is not a runtime witness");
+
+        assert!(error.contains("must be fully substituted"), "{error}");
+    }
+
+    #[test]
+    fn generic_supertrait_impls_match_after_substitution_not_variable_spelling() {
+        let module = parser::parse_module(
+            "trait Base:\n\
+             \x20   fn base(self) -> Int\n\n\
+             trait Render: Base:\n\
+             \x20   fn render(self) -> String\n\n\
+             type Box(a):\n\
+             \x20   Box(a)\n\n\
+             impl Base for Box(a):\n\
+             \x20   fn base(self) -> Int:\n\
+             \x20       1\n\n\
+             impl Render for Box(b):\n\
+             \x20   fn render(self) -> String:\n\
+             \x20       \"box\"\n",
+        )
+        .expect("parse");
+        let concrete = Type::Named(
+            "Box".into(),
+            vec![Type::Named("Int".into(), Vec::new())],
+        );
+        let plan = build(
+            &module,
+            [(Type::Dyn("Render".into(), Vec::new()), concrete)],
+        )
+        .expect("generic supertrait witness");
+
+        assert_eq!(
+            plan.witnesses[0]
+                .slots
+                .iter()
+                .map(|slot| slot.adapter.as_str())
+                .collect::<Vec<_>>(),
+            ["Base__Box__base__Int", "Render__Box__render__Int"]
         );
     }
 }

@@ -151,6 +151,43 @@ fn method_fn(
     }
 }
 
+fn instantiate_trait_method_signature(
+    method: &MethodSig,
+    trait_params: &HashMap<String, Type>,
+) -> (Vec<Param>, Option<Type>) {
+    let params = method
+        .params
+        .iter()
+        .cloned()
+        .map(|mut param| {
+            param.ty = param
+                .ty
+                .as_ref()
+                .map(|ty| subst_trait_params(ty, trait_params));
+            param
+        })
+        .collect();
+    let ret = method
+        .ret
+        .as_ref()
+        .map(|ty| subst_trait_params(ty, trait_params));
+    (params, ret)
+}
+
+fn instantiate_provided_trait_method_signature(
+    implementation: &Function,
+    declaration: &MethodSig,
+    trait_params: &HashMap<String, Type>,
+) -> (Vec<Param>, Option<Type>) {
+    let (declared_params, ret) =
+        instantiate_trait_method_signature(declaration, trait_params);
+    let mut params = implementation.params.clone();
+    for (parameter, declared) in params.iter_mut().zip(declared_params) {
+        parameter.ty = declared.ty;
+    }
+    (params, ret)
+}
+
 /// Replace every `Self` in a type with the implementing type. `self_ty` carries
 /// the type's parameters for a generic impl (`Pair(a, b)`, `(a, b)`), so a
 /// default method's `other: Self` is typed `Pair(a, b)` to match the receiver —
@@ -298,6 +335,30 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                 &im.type_name,
                 &method.name,
             );
+            let trait_params: HashMap<String, Type> = im
+                .trait_name
+                .as_ref()
+                .and_then(|trait_name| trait_type_params.get(trait_name))
+                .into_iter()
+                .flatten()
+                .cloned()
+                .zip(im.trait_args.iter().cloned())
+                .collect();
+            let (params, ret) = im
+                .trait_name
+                .as_ref()
+                .and_then(|trait_name| trait_method_list.get(trait_name))
+                .and_then(|methods| methods.iter().find(|decl| decl.name == method.name))
+                .map_or_else(
+                    || (method.params.clone(), method.ret.clone()),
+                    |declaration| {
+                        instantiate_provided_trait_method_signature(
+                            method,
+                            declaration,
+                            &trait_params,
+                        )
+                    },
+                );
             let is_static =
                 method.params.first().is_none_or(|p| p.name != "self");
             if is_static {
@@ -317,8 +378,8 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                 );
                 generated.push(method_fn(
                     mangled,
-                    method.params.clone(),
-                    method.ret.clone(),
+                    params,
+                    ret,
                     method.body.clone(),
                     &im.type_name,
                     &im.target_args,
@@ -349,8 +410,8 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             }
             generated.push(method_fn(
                 mangled,
-                method.params.clone(),
-                method.ret.clone(),
+                params,
+                ret,
                 method.body.clone(),
                 &im.type_name,
                 &im.target_args,
@@ -366,6 +427,15 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                         continue;
                     }
                     if let Some(body) = &ms.default {
+                        let trait_params: HashMap<String, Type> = trait_type_params
+                            .get(trait_name)
+                            .into_iter()
+                            .flatten()
+                            .cloned()
+                            .zip(im.trait_args.iter().cloned())
+                            .collect();
+                        let (params, ret) =
+                            instantiate_trait_method_signature(ms, &trait_params);
                         let mangled = mangle(
                             Some(trait_name),
                             &im.trait_args,
@@ -382,8 +452,8 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                         );
                         generated.push(method_fn(
                             mangled,
-                            ms.params.clone(),
-                            ms.ret.clone(),
+                            params,
+                            ret,
                             body.clone(),
                             &im.type_name,
                             &im.target_args,
@@ -860,7 +930,7 @@ pub(crate) fn impl_self_type(im: &ImplDef) -> Type {
     }
 }
 
-fn subst_trait_params(t: &Type, vars: &HashMap<String, Type>) -> Type {
+pub(crate) fn subst_trait_params(t: &Type, vars: &HashMap<String, Type>) -> Type {
     match t {
         Type::Qualified(q, inner) => Type::Qualified(q.clone(), Box::new(subst_trait_params(inner, vars))),
         Type::Named(n, args) if args.is_empty() => {
@@ -3561,7 +3631,7 @@ fn build_record_fields(items: &[Item]) -> HashMap<String, Vec<(String, Type)>> {
 
 /// Match a declared type pattern against a concrete type transactionally.
 /// Failed shape matches cannot leak partial bindings into later judgments.
-fn bind_ast_type_vars(
+pub(crate) fn bind_ast_type_vars(
     pattern: &Type,
     concrete: &Type,
     out: &mut HashMap<String, Type>,
@@ -4245,6 +4315,69 @@ fn type_var_list(f: &Function) -> Vec<String> {
         }
         vars
     }
+}
+
+pub(crate) fn monomorphic_impl_method_name(
+    owner: &str,
+    implementation: &ImplDef,
+    method: &MethodSig,
+    trait_params: &HashMap<String, Type>,
+    bindings: &HashMap<String, Type>,
+) -> Result<String, String> {
+    let base = mangle(
+        Some(owner),
+        &implementation.trait_args,
+        &implementation.type_name,
+        &method.name,
+    );
+    // Provided methods lower from their impl signatures. Inherited defaults
+    // lower from the trait declaration's unsubstituted signature. Mirror that
+    // existing split exactly so this name is the one Mono::specialize emits.
+    let (params, ret) = match implementation
+        .methods
+        .iter()
+        .find(|implementation_method| implementation_method.name == method.name)
+    {
+        Some(implementation_method) => instantiate_provided_trait_method_signature(
+            implementation_method,
+            method,
+            trait_params,
+        ),
+        None => instantiate_trait_method_signature(method, trait_params),
+    };
+    let template = method_fn(
+        base.clone(),
+        params,
+        ret,
+        Block {
+            stmts: Vec::new(),
+            lines: Vec::new(),
+            region: None,
+        },
+        &implementation.type_name,
+        &implementation.target_args,
+        implementation.bounds.clone(),
+    );
+    let type_args = type_var_list(&template)
+        .into_iter()
+        .map(|variable| {
+            bindings.get(&variable).cloned().ok_or_else(|| {
+                format!(
+                    "existential witness for `{}.{}` leaves type variable `{variable}` unresolved",
+                    owner, method.name
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if type_args.is_empty() {
+        return Ok(base);
+    }
+    let suffix = type_args
+        .iter()
+        .map(|ty| mangle_type_key(&type_key(ty.unqualified())))
+        .collect::<Vec<_>>()
+        .join("__");
+    Ok(format!("{base}__{suffix}"))
 }
 
 fn type_args_from_receiver(template: &Function, concrete_receiver: &Type) -> Option<Vec<Type>> {
