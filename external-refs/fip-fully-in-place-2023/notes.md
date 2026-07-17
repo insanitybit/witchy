@@ -1,7 +1,7 @@
 # FP²: Fully in-Place Functional Programming
 
 - **Authors / venue:** Anton Lorenzen, Daan Leijen, Wouter Swierstra. ICFP 2023 (PACMPL vol. 7). (PDF: Microsoft Research preprint `fip.pdf`; also Utrecht webspace.)
-- **What it is:** A **linear "fully in-place" (FIP) calculus** that pins down exactly when a pure functional program can run with **zero allocation** — reusing its inputs in place — provided arguments are not shared. Worked through non-trivial data structures: splay trees, finger trees, merge sort, quicksort. The formal backbone for the reuse that [[perceus-2021]] does dynamically.
+- **What it is:** A **linear "fully in-place" (FIP) calculus** that pins down exactly when a pure functional program can run with **zero allocation** — reusing its inputs in place — provided arguments are not shared. Worked through non-trivial data structures: splay trees, finger trees, merge sort, quicksort. The formal backbone for the reuse that the [Perceus notes](../perceus-2021/notes.md) describe dynamically.
 
 ## Why it matters to witchy
 
@@ -9,4 +9,4 @@ This is the *theory* under witchy's in-place ambition. Where the cap-token decid
 
 ## Informs
 
-- `rfcs/performance-modes.md` — tier 3 (`unique`/`unshared` type) and tier 5 (reuse/FBIP); the "error on de-opt" precision requirement.
+- [`rfcs/performance-modes.md`](../../rfcs/performance-modes.md) — tier 3 (`unique`/`unshared` type) and tier 5 (reuse/FBIP); the "error on de-opt" precision requirement.
