@@ -126,11 +126,12 @@ refusing an over-reaching upgrade:
 ./scripts/local-registry-demo.sh
 ```
 
-The repository's `spec/local-registry.md` walks through it step by step, and
-`rfcs/package-manager.md` is the full design and threat model. The package
-manager and the registry are themselves written in witchy (`projects/pm` and
-`projects/coven`) — the language eats its own dog food, sandboxable footprint
-and all.
+The repository's [`spec/local-registry.md`](https://github.com/insanitybit/witchy/blob/master/spec/local-registry.md)
+walks through it step by step, and [`rfcs/package-manager.md`](https://github.com/insanitybit/witchy/blob/master/rfcs/package-manager.md)
+is the full design and threat model. The package manager and the registry are
+themselves written in witchy ([`projects/pm`](https://github.com/insanitybit/witchy/tree/master/projects/pm)
+and [`projects/coven`](https://github.com/insanitybit/witchy/tree/master/projects/coven)) —
+the language eats its own dog food, sandboxable footprint and all.
 
 The next two chapters get concrete: [the manifest, the lockfile, and the
 day-to-day CLI](packages-cli.md), then [build steps and build-time
