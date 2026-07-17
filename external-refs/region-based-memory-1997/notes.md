@@ -5,11 +5,11 @@
 
 ## Why it matters to witchy
 
-The theory under witchy's `region:` blocks and the heap **watermark** reclamation (`$heap` saved on entry, reset on exit). The "smallest scope a value is confined to" question that `rfcs/performance-modes.md` wants to unify into one **escape/region lattice** is precisely region inference. Regions are the **RC-elision tier**: allocations proven confined to a scope skip reference counting entirely and free in bulk.
+The theory under witchy's `region:` blocks and the heap **watermark** reclamation (`$heap` saved on entry, reset on exit). The "smallest scope a value is confined to" question that [`rfcs/performance-modes.md`](../../rfcs/performance-modes.md) wants to unify into one **escape/region lattice** is precisely region inference. Regions are the **RC-elision tier**: allocations proven confined to a scope skip reference counting entirely and free in bulk.
 
 ## Informs
 
-- `rfcs/regions.md`; the escape/region lattice consolidation (`rfcs/performance-modes.md` "NEXT").
+- [`rfcs/regions.md`](../../rfcs/regions.md); the escape/region lattice consolidation ([`rfcs/performance-modes.md`](../../rfcs/performance-modes.md) "NEXT").
 
 ## Caution
 
