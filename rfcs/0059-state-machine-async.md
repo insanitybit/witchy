@@ -20,6 +20,11 @@ tracking: >
 
 # RFC-0059: State-machine async — frames, an owning executor, and ring channels
 
+The shipped state-machine lowering is implemented in
+[`crates/witchy-syntax/src/async_lower.rs`](../crates/witchy-syntax/src/async_lower.rs);
+the deferred scalar-SoA target remains documented and measured in
+[`src/stats.rs`](../src/stats.rs).
+
 ## Summary
 
 Replace the CPS-over-closures async lowering with a defunctionalized
