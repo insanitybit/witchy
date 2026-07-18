@@ -78,11 +78,11 @@ their resolved declaration performs `var` write-back.
 `cargo run --bin rfc0087-census -- .` is the durable compiler census. It parses,
 links, lowers methods/traits to their exact callee declarations, reads `var`
 conventions from those declarations, and type-checks 271 Witchy sources plus
-170 Witchy blocks from the README, spec, and book. Its complete stable output is
+176 Witchy blocks from the README, spec, and book. Its complete stable output is
 checked in at [`0087-migration-census.tsv`](0087-migration-census.tsv) and
 freshness-tested by `tests/rfc0087_migration_census.rs`.
 
-The current resolved totals are 25 entry-source `var` declarations and 469
+The current resolved totals are 26 entry-source `var` declarations and 469
 lowered `var` call instances inspected. The obsolete migration-error classes
 are empty: zero mechanical self-reassignments, zero immutable arguments passed
 to `var`, and zero temporary `var` arguments. Nine expression-position calls

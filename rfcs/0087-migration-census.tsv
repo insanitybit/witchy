@@ -24,10 +24,10 @@ book/src/mutating-methods.md#block-4	5	expression-position-mutator	dict.remove__
 spec/language.md#block-15	7	expression-position-mutator	main.bump	-	-
 
 witchy-files	271
-markdown-blocks	173
-checked	444
+markdown-blocks	176
+checked	447
 rejected	0
-var-declarations	25
+var-declarations	26
 resolved-var-calls	469
 mechanical-self-reassignment	0
 expression-position-mutator	9
