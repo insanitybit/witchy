@@ -452,6 +452,14 @@ The first source-compatible slice is implemented:
   alias environment; a same-spelled alias in the generator module cannot capture
   it. Qualified-name composition and source-projecting item builders remain later
   origin work.
+- The fortieth slice records provenance for every node in a generated item, not
+  only its item root. The compiler assigns deterministic DFS structural paths to
+  nested expressions, types, patterns, statements, and blocks, each retaining
+  the generated item's definition span, invocation span, and hole ancestry.
+  `OriginTable` supports exact path lookup, and remapping/appending continue to
+  preserve those paths as item indices move. This gives diagnostics and tooling
+  persistent per-node expansion provenance without adding rendered-source IDs or
+  changing the runtime AST.
 
 This is intentionally not the full RFC. Every quotation category and its typed
 hole placement is now compiler-owned. General `meta.*` builder composition may

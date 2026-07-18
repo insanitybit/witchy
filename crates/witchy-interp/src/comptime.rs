@@ -315,7 +315,7 @@ fn decode_comptime_output(
         let mut origins = OriginTable::default();
         record_emitted_items(
             &mut origins,
-            emitted.items.len(),
+            &emitted,
             module_name,
             invocation_line,
             invocation_line,
@@ -354,7 +354,7 @@ fn decode_comptime_output(
                 emitted.item_lines.push(0);
                 record_emitted_items(
                     &mut origins,
-                    emitted.items.len(),
+                    &emitted,
                     module_name,
                     definition_line,
                     invocation_line,
@@ -393,7 +393,7 @@ fn append_item_source_batch(
     let mut parsed_origins = OriginTable::default();
     record_emitted_items(
         &mut parsed_origins,
-        parsed.items.len(),
+        &parsed,
         module_name,
         invocation_line,
         invocation_line,
@@ -406,7 +406,7 @@ fn append_item_source_batch(
 
 fn record_emitted_items(
     origins: &mut OriginTable,
-    item_len: usize,
+    module: &Module,
     module_name: &str,
     definition_line: u32,
     invocation_line: u32,
@@ -425,8 +425,8 @@ fn record_emitted_items(
             })
             .collect(),
     };
-    for item in start..item_len {
-        origins.record_item(module_name, item, origin.clone());
+    for (item_index, item) in module.items.iter().enumerate().skip(start) {
+        origins.record_item_tree(module_name, item_index, item, origin.clone());
     }
 }
 
@@ -812,6 +812,17 @@ fn main(console: Console):
         assert_eq!(generated.origin.definition.start.line, 5);
         assert_eq!(generated.origin.invocation.start.line, 9);
         assert!(generated.origin.hole_ancestry.is_empty());
+        let generated_expr = linked.origins.nodes().iter().find(|entry| {
+            entry.node.item as usize == index
+                && entry.node.category == witchy_syntax::origin::SyntaxCategory::Expr
+                && !entry.node.path.is_empty()
+        }).expect("generated function body expression origin");
+        assert_eq!(generated_expr.origin.definition.start.line, 5);
+        assert_eq!(generated_expr.origin.invocation.start.line, 9);
+        assert_eq!(
+            linked.origins.origin_for_node(&generated_expr.node).expect("origin lookup by structural path").id,
+            generated_expr.id,
+        );
         assert!(linked.module.compiler_item_syntax.is_empty());
         let ordinary = crate::pipeline::link(
             vec![(
