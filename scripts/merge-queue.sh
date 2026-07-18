@@ -90,7 +90,9 @@ if [ -n "${MERGE_QUEUE_TEST_ROOT:-}" ]; then
     }
     root="$MERGE_QUEUE_TEST_ROOT"
 else
-    root="$(git -C "$here" worktree list --porcelain | head -1 | sed 's/^worktree //')"
+    # Drain the full worktree listing under pipefail; `head` closes the pipe
+    # early and turns a large shared checkout into a spurious SIGPIPE (141).
+    root="$(git -C "$here" worktree list --porcelain | sed -n '1p' | sed 's/^worktree //')"
 fi
 . "$here/scripts/state-paths.sh"
 qdir="$(witchy_merge_queue_state_dir "$root")"
