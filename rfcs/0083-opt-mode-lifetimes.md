@@ -26,6 +26,10 @@ related:
 
 # RFC-0083: Opt-mode lifetimes and returnable borrowed views
 
+The loan checker is implemented in [`crates/witchy-types/src/loans.rs`](../crates/witchy-types/src/loans.rs),
+with cross-backend behavior coverage in the RFC-0083 cases in
+[`src/example_tests.rs`](../src/example_tests.rs).
+
 ## Summary
 
 Complete the tier-4 work anticipated by RFC-0026, RFC-0028, RFC-0029, and
