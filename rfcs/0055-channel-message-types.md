@@ -198,10 +198,10 @@ implementation body.
 - **CLR/JVM erasure**: the general precedent that a uniform runtime
   representation makes generic channels a type-checking problem, not a
   codegen one.
-- Internal: `rfcs/concurrency-design.md` (the constraint's origin and the
+- Internal: [`rfcs/concurrency-design.md`](concurrency-design.md) (the constraint's origin and the
   parity rationale this RFC keeps), RFC-0042 (namespaces — the sibling half),
   RFC-0036 (executor memory bounding — same file, independent concern),
-  `spec/architecture.md` §"The WASM value model" (the i64-slot fact the
+  [`spec/architecture.md`](../spec/architecture.md) §"The WASM value model" (the i64-slot fact the
   recommendation rests on).
 
 ---
