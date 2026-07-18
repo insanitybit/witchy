@@ -184,7 +184,7 @@ against the recorded baseline and fails loudly on regressions):
 - a **mutable-accumulation** bench (a `Stack`/builder wrapping a list) — to exercise
   RFC-0033 and L2 against Go;
 - **channel ping-pong** and **fan-out throughput** — concurrency beyond `parmap`;
-- keep `bench/BASELINE.md` as the reference (do not overwrite with another machine's
+- keep [`bench/BASELINE.md`](../bench/BASELINE.md) as the reference (do not overwrite with another machine's
   numbers; regenerate on a fixed reference machine in CI).
 
 ## Sequencing
