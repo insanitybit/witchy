@@ -88,7 +88,7 @@ fn main(config: File[Read], log: File[Write], data: Dir[Write], net: Net[Connect
 ```
 
 The launch grant names each (`--file-read config.toml`, `--file-write run.log`, …), or a
-grant document enumerates them (RFC-0013). The host opens each file and hands `main` the
+grant document enumerates them ([RFC-0013](./0013-capability-grant-documents.md)). The host opens each file and hands `main` the
 handle; the program never names a path the host did not grant.
 
 ### Navigation: `Dir` produces `File` (attenuation-by-naming)
@@ -170,10 +170,10 @@ the spelling.
 
 ## Prior art
 
-- RFC-0011 (capability refinement) — `File` is a host-primitive under its two-tier model;
+- [RFC-0011](./0011-capability-refinement.md) (capability refinement) — `File` is a host-primitive under its two-tier model;
   navigation vs. policy refinement.
-- RFC-0003 (Net scope-by-value) — the carried-state model `Dir`/`File` follow.
-- RFC-0004 (self-hosted CLI) — the constrained, branded `Exec` that `File[Exec]`
+- [RFC-0003](./0003-network-address-scoping.md) (Net scope-by-value) — the carried-state model `Dir`/`File` follow.
+- [RFC-0004](./0004-self-hosted-cli.md) (self-hosted CLI) — the constrained, branded `Exec` that `File[Exec]`
   supersedes.
-- RFC-0002 (user-definable capabilities) — rights facets (`File[Read]` from
+- [RFC-0002](./0002-user-definable-capabilities.md) (user-definable capabilities) — rights facets (`File[Read]` from
   `File[Read, Write]`).
