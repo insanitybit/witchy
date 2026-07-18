@@ -9,6 +9,11 @@ tracking:
 
 # RFC-0013: Capability grant documents
 
+The shipped grant parser and footprint cross-check live in
+[`crates/witchy-caps/src/grants.rs`](../crates/witchy-caps/src/grants.rs), with
+CLI launch/approval wiring in [`src/main.rs`](../src/main.rs) and end-to-end
+coverage in [`tests/e2e.rs`](../tests/e2e.rs).
+
 > **Status: partially implemented** (2026-06-25). Shipped: the grant-document
 > format + TOML parser (`[files]`/`[dirs]`/`[net]`/`[secrets]`) and the
 > **footprint cross-check** — the feature of this RFC — in [`src/grants.rs`](../src/grants.rs). A
