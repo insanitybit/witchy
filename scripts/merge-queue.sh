@@ -1563,7 +1563,9 @@ cmd_run() {
             return 1
         fi
         local f first
-        first="$(find "$queue_dir" -maxdepth 1 -name '*.json' -print | sort | head -1)"
+        # Drain the sorted listing under pipefail; `head` can SIGPIPE `sort`
+        # when a busy queue has enough entries to fill the pipe.
+        first="$(find "$queue_dir" -maxdepth 1 -name '*.json' -print | sort | sed -n '1p')"
         if [ -z "$first" ]; then
             if [ "$once" -eq 1 ]; then note "queue drained"; break; fi
             prewarm_gate
