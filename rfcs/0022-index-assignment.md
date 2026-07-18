@@ -49,7 +49,7 @@ sugar for `.at` / `.get`; subscript-**write** is the symmetric gap.
 
 ## Current behavior
 
-- `xs[i]` parses as a read: sugar for `list.at(xs, i)` (`parser.rs`).
+- `xs[i]` parses as a read: sugar for `list.at(xs, i)` ([`crates/witchy-syntax/src/parser.rs`](../crates/witchy-syntax/src/parser.rs)).
 - `d["k"] = v` and `xs[0] = v` are **parse errors** ("expected an expression,
   found `=`").
 - The update primitives exist: `list.set_at(xs, i, v) -> List(a)`,
@@ -182,7 +182,7 @@ people already use.
 
 ## Rollout
 
-`proposed`. Sibling of [RFC-0021](0021-or-unwrap-option.md) (the `||` Option
+`proposed`. Sibling of [RFC-0021](./0021-or-unwrap-option.md) (the `||` Option
 unwrap). Both are ergonomics over the value-semantic collections; land after the
-compiler workspace refactor (RFC-0018) settles to avoid churn in the parser /
+compiler workspace refactor ([RFC-0018](./0018-compiler-architecture.md)) settles to avoid churn in the parser /
 typeck / both lowerings.
