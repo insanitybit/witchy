@@ -3667,7 +3667,12 @@ impl Interpreter {
                         .iter()
                         .map(|arg| compiler_expr_syntax_value(arg, &self.compiler_expr_syntax))
                         .collect::<Result<Vec<_>, _>>()?;
-                    let expr = Expr::Apply { func: Box::new(callee), args };
+                    let expr = match callee {
+                        Expr::Ctor { name, args: existing } if existing.is_empty() => {
+                            Expr::Ctor { name, args }
+                        }
+                        callee => Expr::Apply { func: Box::new(callee), args },
+                    };
                     let source = witchy_syntax::format::expr_str(&expr);
                     let handle = self.next_compiler_syntax_handle("expression-call")?;
                     self.compiler_expr_syntax.insert(handle.clone(), expr);

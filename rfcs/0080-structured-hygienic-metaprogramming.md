@@ -513,6 +513,12 @@ The first source-compatible slice is implemented:
   nodes retain their origin ancestry, including call-site constructors beneath
   definition-site aggregates. A call-site identifier remains reference-only
   and is rejected when used as a list-rest binding.
+- The fifty-third slice makes `meta.expr_call` preserve constructor-call shape.
+  Applying a compiler-owned nullary constructor reference to structural
+  arguments produces one constructor AST node rather than an `Apply` over a
+  zero-field constructor value. Ordinary function values continue to produce
+  `Apply`, and call-site constructor references retain their existing
+  consumer-scope resolution path.
 
 This is intentionally not the full RFC. Every quotation category and its typed
 hole placement is now compiler-owned. Some `meta.*` compatibility builders may

@@ -80,9 +80,13 @@ comptime fn composed_pattern_selected(parts: List(String), holes: List(String)) 
     let tuple = meta.pattern_tuple([exact, rest])
     let pattern = meta.pattern_ctor(meta.ident("PatternEnvelope"), [tuple])
     let local = meta.expr_name(meta.call_site("LocalPatternValue"))
-    quote expr:
-        match PatternEnvelope(([${local}(20)], [${local}(22), ${local}(0)])):
-            ${pattern} -> left + right
+    let payload = quote expr:
+        ([${local}(20)], [${local}(22), ${local}(0)])
+    let envelope = meta.expr_name(meta.ident("PatternEnvelope"))
+    let scrutinee = meta.expr_call(envelope, [payload])
+    let body = quote expr:
+        left + right
+    meta.expr_match(scrutinee, [meta.match_arm(pattern, body)])
 
 comptime fn construct_hidden(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     quote expr:
