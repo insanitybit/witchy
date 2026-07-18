@@ -14,6 +14,11 @@ tracking: "merged to master 2661b23"
 
 # RFC-0052: One pattern grammar; contexts differ only by refutability
 
+The shipped grammar and refutability checks are implemented in
+[`crates/witchy-syntax/src/parser.rs`](../crates/witchy-syntax/src/parser.rs) and
+[`crates/witchy-types/src/typeck.rs`](../crates/witchy-types/src/typeck.rs), with
+acceptance coverage in [`src/example_tests.rs`](../src/example_tests.rs).
+
 > Provisional syntax throughout. Code blocks are intentionally **not** tagged
 > `witchy` so the doc-examples sweep does not compile pre-implementation
 > snippets.
