@@ -171,7 +171,7 @@ pub fn clock(d: Duration) -> String:
         "${part_hours(d)}" + ":" + pad2(part_minutes(d)) + ":" + pad2(part_seconds(d))
 
 fn pad2(n: Int) -> String:
-    string.pad_left("${n}", 2, "0")
+    "${n}".pad_left(2, "0")
 
 // A compact label that omits leading zero units: `1h1m1s`, `1m30s`, `5s`, and
 // `500ms` for a pure sub-second span. A negative span (e.g. from subtraction)
@@ -206,12 +206,12 @@ pub fn parse(s: String) -> Result(Duration, DurationParseError):
     var seen_digit = false
     var seen_unit = false
     var i = 0
-    let n = string.char_count(s)
+    let n = s.char_count()
     while i < n:
-        let c = string.substring(s, i, i + 1)
-        let two = if i + 1 < n: string.substring(s, i, i + 2) else: ""
+        let c = s.substring(i, i + 1)
+        let two = if i + 1 < n: s.substring(i, i + 2) else: ""
         if c >= "0" && c <= "9":
-            match push_digit(cur, string.to_int(c)):
+            match push_digit(cur, c.to_int()):
                 Some(v) -> cur = v
                 None -> return Err(DurationOverflow(s))
             seen_digit = true
@@ -225,7 +225,7 @@ pub fn parse(s: String) -> Result(Duration, DurationParseError):
                 Some(uf) ->
                     let (mult, width) = uf
                     if !seen_digit:
-                        return Err(UnitWithoutCount(s, string.substring(s, i, i + width)))
+                        return Err(UnitWithoutCount(s, s.substring(i, i + width)))
                     match scale_add(total, cur, mult):
                         Some(v) -> total = v
                         None -> return Err(DurationOverflow(s))

@@ -38,9 +38,9 @@ pub fn hex(rand: Rand, nbytes: Int) -> String:
         ""
     else:
         var out = ""
-        while string.length(out) < nbytes * 2:
+        while out.length() < nbytes * 2:
             out = out + word_hex(rand.rand_u64())
-        string.substring(out, 0, nbytes * 2)
+        out.substring(0, nbytes * 2)
 
 // The 16 lowercase hex characters of a 64-bit word, most-significant nibble first.
 fn word_hex(n: Int) -> String:
@@ -49,6 +49,6 @@ fn word_hex(n: Int) -> String:
     var shift = 60
     while shift >= 0:
         let nibble = n >> shift & 15
-        out = out + string.substring(digits, nibble, nibble + 1)
+        out = out + digits.substring(nibble, nibble + 1)
         shift = shift - 4
     out

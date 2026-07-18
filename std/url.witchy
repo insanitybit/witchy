@@ -52,27 +52,27 @@ impl From(UrlError) for String:
 // case-insensitive (RFC 3986 §3.1) and is normalized to lowercase, so
 // `HTTPS://` gets the https default port and formats back canonically.
 pub fn parse(s: String) -> Result(Url, UrlError):
-    let sep = string.index_of(s, "://") ?? -1
+    let sep = s.index_of("://") ?? -1
     if sep < 0:
         Err(MissingSchemeSeparator(s))
     else:
-        let scheme = string.to_lower(string.substring(s, 0, sep))
-        if string.is_empty(scheme):
+        let scheme = s.substring(0, sep).to_lower()
+        if scheme.is_empty():
             Err(EmptyScheme(s))
         else:
-            let rest = string.substring(s, sep + 3, string.char_count(s))
+            let rest = s.substring(sep + 3, s.char_count())
             // The authority ends at the first `/`, `?`, or `#` — so a query or
             // fragment glued straight to the host (`host?x=1`) is not swallowed
             // into the host. Split the remaining suffix structurally so HTTP
             // clients never mistake a fragment for request-target bytes.
             let cut = authority_end(rest)
-            let authority = string.substring(rest, 0, cut)
-            let suffix = if cut >= string.char_count(rest): "" else: string.substring(rest, cut, string.char_count(rest))
+            let authority = rest.substring(0, cut)
+            let suffix = if cut >= rest.char_count(): "" else: rest.substring(cut, rest.char_count())
             let (path, query, fragment) = split_suffix(suffix)
             // Userinfo (`user@` or `user:pass@`) is outside this minimal
             // `scheme://host[:port][/path]` grammar; reject it loudly rather
             // than reinterpret credentials as host/port text (BUG-380).
-            if string.contains(authority, "@"):
+            if authority.contains("@"):
                 Err(UserinfoUnsupported(s))
             else if malformed_ipv6_authority(authority):
                 Err(MalformedIpv6Literal(s))
@@ -83,13 +83,13 @@ pub fn parse(s: String) -> Result(Url, UrlError):
                 // literal has no brackets and no port, so any colon before the
                 // closing `]` is part of the host.
                 let split = host_port_split(authority)
-                let host = string.substring(authority, 0, split)
-                if string.is_empty(host):
+                let host = authority.substring(0, split)
+                if host.is_empty():
                     Err(EmptyHost(s))
-                else if split >= string.char_count(authority):
+                else if split >= authority.char_count():
                     Ok(Url(scheme, host, default_port(scheme), path, query, fragment))
                 else:
-                    match parse_port(string.substring(authority, split + 1, string.char_count(authority))):
+                    match parse_port(authority.substring(split + 1, authority.char_count())):
                         Some(p) -> Ok(Url(scheme, host, p, path, query, fragment))
                         None -> Err(InvalidPort(s))
 
@@ -102,14 +102,14 @@ pub fn parse_string(s: String) -> Result(Url, String):
 // The index in `rest` where the authority ends: the earliest of `/`, `?`, `#`,
 // or the end of the string when none is present.
 fn authority_end(rest: String) -> Int:
-    var best = string.char_count(rest)
-    let slash = string.index_of(rest, "/") ?? -1
+    var best = rest.char_count()
+    let slash = rest.index_of("/") ?? -1
     if slash >= 0 && slash < best:
         best = slash
-    let query = string.index_of(rest, "?") ?? -1
+    let query = rest.index_of("?") ?? -1
     if query >= 0 && query < best:
         best = query
-    let hash = string.index_of(rest, "#") ?? -1
+    let hash = rest.index_of("#") ?? -1
     if hash >= 0 && hash < best:
         best = hash
     best
@@ -118,12 +118,12 @@ fn authority_end(rest: String) -> Int:
 // fragment. Presence is retained separately from content, so trailing `?` and
 // `#` round-trip instead of collapsing into absence.
 fn split_suffix(suffix: String) -> (String, Option(String), Option(String)):
-    let hash = string.index_of(suffix, "#") ?? -1
-    let before_fragment = if hash < 0: suffix else: string.substring(suffix, 0, hash)
-    let fragment = if hash < 0: None else: Some(string.substring(suffix, hash + 1, string.char_count(suffix)))
-    let question = string.index_of(before_fragment, "?") ?? -1
-    let path = if question < 0: before_fragment else: string.substring(before_fragment, 0, question)
-    let query = if question < 0: None else: Some(string.substring(before_fragment, question + 1, string.char_count(before_fragment)))
+    let hash = suffix.index_of("#") ?? -1
+    let before_fragment: String = if hash < 0: suffix else: suffix.substring(0, hash)
+    let fragment = if hash < 0: None else: Some(suffix.substring(hash + 1, suffix.char_count()))
+    let question = before_fragment.index_of("?") ?? -1
+    let path = if question < 0: before_fragment else: before_fragment.substring(0, question)
+    let query = if question < 0: None else: Some(before_fragment.substring(question + 1, before_fragment.char_count()))
     (path, query, fragment)
 
 // The index of the port-separating colon in an authority, or the authority's
@@ -133,12 +133,12 @@ fn split_suffix(suffix: String) -> (String, Option(String), Option(String)):
 // splits at its last colon, so an ordinary `host:port` is unambiguous and a
 // bare IPv6 literal (`::1`, no port) stays entirely in the host.
 fn host_port_split(authority: String) -> Int:
-    let n = string.char_count(authority)
-    if string.starts_with(authority, "["):
-        let close = string.index_of(authority, "]") ?? -1
+    let n = authority.char_count()
+    if authority.starts_with("["):
+        let close = authority.index_of("]") ?? -1
         if close < 0:
             n
-        else if close + 1 < n && string.char_at(authority, close + 1) == Some(":"):
+        else if close + 1 < n && authority.char_at(close + 1) == Some(":"):
             close + 1
         else:
             n
@@ -146,7 +146,7 @@ fn host_port_split(authority: String) -> Int:
         let last = last_colon(authority)
         if last < 0:
             n
-        else if string.index_of(authority, ":") != Some(last):
+        else if authority.index_of(":") != Some(last):
             // More than one colon means an unbracketed IPv6 literal, not a
             // host followed by a decimal port. An explicit IPv6 port requires
             // brackets (`[::1]:8080`) so the boundary is unambiguous.
@@ -155,19 +155,19 @@ fn host_port_split(authority: String) -> Int:
             last
 
 fn malformed_ipv6_authority(authority: String) -> Bool:
-    let opens = string.starts_with(authority, "[")
-    let close = string.index_of(authority, "]") ?? -1
+    let opens = authority.starts_with("[")
+    let close = authority.index_of("]") ?? -1
     if opens:
-        close <= 1 || close + 1 < string.char_count(authority) && string.char_at(authority, close + 1) != Some(":")
+        close <= 1 || close + 1 < authority.char_count() && authority.char_at(close + 1) != Some(":")
     else:
         close >= 0
 
 fn last_colon(s: String) -> Int:
-    var i = string.char_count(s) - 1
+    var i = s.char_count() - 1
     var found = 0 - 1
     var scanning = true
     while scanning && i >= 0:
-        if string.char_at(s, i) == Some(":"):
+        if s.char_at(i) == Some(":"):
             found = i
             scanning = false
         i = i - 1
@@ -187,16 +187,16 @@ fn parse_port(digits: String) -> Option(Int):
     if !all_decimal_digits(digits):
         None
     else:
-        match string.parse_int(digits):
+        match digits.parse_int():
             Some(p) -> if p <= 65535: Some(p) else: None
             None -> None
 
 fn all_decimal_digits(s: String) -> Bool:
-    if string.is_empty(s):
+    if s.is_empty():
         false
     else:
         var valid = true
-        for ch in string.chars(s):
+        for ch in s.chars():
             if ch < "0" || ch > "9":
                 valid = false
         valid
@@ -219,13 +219,13 @@ pub fn port(u: Url) -> Int:
 pub fn path(u: Url) -> String:
     match u:
         Url(_scheme, _host, _port, p, q, f) ->
-            let base = if string.is_empty(p) && suffix_absent(q, f): "/" else: p
+            let base = if p.is_empty() && suffix_absent(q, f): "/" else: p
             base + query_suffix(q) + fragment_suffix(f)
 
 // The path component only, normalized to `/` when the URL omits a path.
 pub fn pathname(u: Url) -> String:
     match u:
-        Url(_scheme, _host, _port, p, _query, _fragment) -> if string.is_empty(p): "/" else: p
+        Url(_scheme, _host, _port, p, _query, _fragment) -> if p.is_empty(): "/" else: p
 
 // The query text without its leading `?`, retaining `Some("")` for a URL that
 // explicitly ends its query component at `?`.
@@ -248,7 +248,7 @@ pub fn with_query(u: Url, key: String, value: String) -> Url:
             let pair = encode(key) + "=" + encode(value)
             let next = match q:
                 None -> pair
-                Some(existing) -> if string.is_empty(existing): pair else: existing + "&" + pair
+                Some(existing) -> if existing.is_empty(): pair else: existing + "&" + pair
             Url(s, h, p, pa, Some(next), f)
 
 // The HTTP request target: path plus query, deliberately excluding the
@@ -256,7 +256,7 @@ pub fn with_query(u: Url, key: String, value: String) -> Url:
 pub fn request_target(u: Url) -> String:
     match u:
         Url(_scheme, _host, _port, pa, q, _fragment) ->
-            let path = if string.is_empty(pa): "/" else: pa
+            let path = if pa.is_empty(): "/" else: pa
             path + query_suffix(q)
 
 fn query_suffix(q: Option(String)) -> String:
@@ -284,7 +284,7 @@ pub fn format(u: Url) -> String:
     match u:
         Url(s, h, p, pa, q, f) ->
             let authority = if p == default_port(s): h else: h + ":" + "${p}"
-            let path = if string.is_empty(pa) && suffix_absent(q, f): "/" else: pa
+            let path = if pa.is_empty() && suffix_absent(q, f): "/" else: pa
             s + "://" + authority + path + query_suffix(q) + fragment_suffix(f)
 
 impl Show for Url:
@@ -296,7 +296,7 @@ impl Show for Url:
 // query strings safely — e.g. an OAuth `redirect_uri`, `scope`, or `state`.
 pub fn encode(s: String) -> String:
     var out = ""
-    for ch in string.chars(s):
+    for ch in s.chars():
         if is_unreserved(ch):
             out = out + ch
         else:
@@ -304,15 +304,15 @@ pub fn encode(s: String) -> String:
     out
 
 fn is_unreserved(ch: String) -> Bool:
-    string.contains("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~", ch)
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~".contains(ch)
 
 // `%XX` for each UTF-8 byte of a single character (hex of the bytes, split into pairs).
 fn percent(ch: String) -> String:
-    let hex = string.to_upper(encoding.hex_encode(ch))
+    let hex = encoding.hex_encode(ch).to_upper()
     var out = ""
     var i = 0
-    while i < string.length(hex):
-        out = out + "%" + string.substring(hex, i, i + 2)
+    while i < hex.length():
+        out = out + "%" + hex.substring(i, i + 2)
         i = i + 2
     out
 
@@ -334,11 +334,11 @@ fn pct_decode(s: String, plus_space: Bool) -> String:
     var out = ""
     var pending = ""
     var i = 0
-    let n = string.char_count(s)
+    let n = s.char_count()
     while i < n:
-        let ch = string.char_at(s, i) ?? ""
-        if ch == "%" && i + 2 < n && is_hex_digit(string.char_at(s, i + 1) ?? "") && is_hex_digit(string.char_at(s, i + 2) ?? ""):
-            pending = pending + string.substring(s, i + 1, i + 3)
+        let ch = s.char_at(i) ?? ""
+        if ch == "%" && i + 2 < n && is_hex_digit(s.char_at(i + 1) ?? "") && is_hex_digit(s.char_at(i + 2) ?? ""):
+            pending = pending + s.substring(i + 1, i + 3)
             i = i + 3
         else:
             out = out + flush_hex(pending)
@@ -359,4 +359,4 @@ fn flush_hex(hex: String) -> String:
             Err(_e) -> hex
 
 fn is_hex_digit(c: String) -> Bool:
-    string.char_count(c) == 1 && string.contains("0123456789abcdefABCDEF", c)
+    c.char_count() == 1 && "0123456789abcdefABCDEF".contains(c)

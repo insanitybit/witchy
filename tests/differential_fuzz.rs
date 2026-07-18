@@ -109,7 +109,7 @@ fn gen_pos_int(r: &mut Rng, depth: u32) -> String {
     match r.below(3) {
         0 => format!("{}", 1 + r.below(1000)),
         1 => format!("(1 + list.length({}))", gen_intlist(r, depth.min(1))),
-        _ => format!("(1 + string.length({}))", gen_str(r, depth.min(1))),
+        _ => format!("(1 + {}.length())", gen_str(r, depth.min(1))),
     }
 }
 
@@ -131,7 +131,7 @@ fn gen_bool(r: &mut Rng, depth: u32) -> String {
     match r.below(if depth == 0 { 3 } else { 5 }) {
         0 => format!("({} {} {})", gen_int(r, 1), ["<", "<=", "==", "!=", ">", ">="][r.below(6) as usize], gen_int(r, 1)),
         1 => format!("({} == {})", gen_str(r, 1), gen_str(r, 1)),
-        2 => format!("string.contains({}, {})", gen_str(r, 1), gen_str(r, 1)),
+        2 => format!("{}.contains({})", gen_str(r, 1), gen_str(r, 1)),
         3 => format!("({} && {})", gen_bool(r, depth - 1), gen_bool(r, depth - 1)),
         _ => format!("(!{})", gen_bool(r, depth - 1)),
     }
@@ -159,7 +159,7 @@ fn gen_str(r: &mut Rng, depth: u32) -> String {
     } else {
         match r.below(4) {
             0 | 1 => format!("({} + {})", gen_str(r, depth - 1), gen_str(r, depth - 1)),
-            2 => format!("string.to_upper({})", gen_str(r, depth - 1)),
+            2 => format!("{}.to_upper()", gen_str(r, depth - 1)),
             // Substring over an IN-RANGE window (start 0, end in `0..=len`). Keeping the
             // indices valid makes the program total AND COMPARABLE: an out-of-range
             // substring is a VALUE the two backends clamp differently (a real codegen
@@ -168,7 +168,7 @@ fn gen_str(r: &mut Rng, depth: u32) -> String {
             // BUG-003 totality fix this statement's divergence was masked by earlier traps.
             _ => {
                 let s = gen_str(r, depth - 1);
-                format!("string.substring({s}, 0, ({} % (string.length({s}) + 1)))", gen_pos_int(r, 0))
+                format!("{s}.substring(0, ({} % ({s}.length() + 1)))", gen_pos_int(r, 0))
             }
         }
     }
@@ -228,7 +228,7 @@ fn gen_shape(r: &mut Rng) -> String {
     match r.below(3) {
         0 => format!("Circle({})", gen_int(r, 0)),
         1 => format!("Rect({}, {})", gen_int(r, 0), gen_int(r, 0)),
-        _ => format!("Named(string.to_upper(\"{}\"))", alnum(r)),
+        _ => format!("Named(\"{}\".to_upper())", alnum(r)),
     }
 }
 
@@ -274,7 +274,7 @@ fn shape_area(sh: Shape) -> Int:\n\
 \x20   match sh:\n\
 \x20       Circle(rr) -> rr * rr\n\
 \x20       Rect(w, h) -> w * h\n\
-\x20       Named(nm) -> string.length(nm)\n\
+\x20       Named(nm) -> nm.length()\n\
 fn grow(own xs: List(Int), n: Int) -> List(Int):\n\
 \x20   var ys = xs\n\
 \x20   var i = 0\n\
@@ -351,7 +351,7 @@ fn capsrc_code(s: CapSrc) -> Int:\n\
 \x20   match s:\n\
 \x20       SrcPlain(k) -> k\n\
 \x20       SrcDir(d, k) -> k + 1\n\
-\x20       SrcNet(n, lbl) -> string.length(lbl)\n\
+\x20       SrcNet(n, lbl) -> lbl.length()\n\
 fn capchain_depth(c: CapChain) -> Int:\n\
 \x20   match c:\n\
 \x20       ChLeaf(k) -> k\n\
@@ -399,7 +399,7 @@ fn gen_program(seed: u64, statements: usize) -> (String, u64) {
             0 => format!("    console.print(\"${{{}}}\")\n", gen_int(&mut r, depth)),
             1 => format!("    console.print({})\n", gen_str(&mut r, depth)),
             2 => format!("    console.print(\"${{{}}}\")\n", gen_intlist(&mut r, 2)),
-            3 => format!("    console.print(\"${{string.length({})}}\")\n", gen_str(&mut r, 2)),
+            3 => format!("    console.print(\"${{{}.length()}}\")\n", gen_str(&mut r, 2)),
             4 => format!("    console.print(\"${{list.length({})}}\")\n", gen_intlist(&mut r, 2)),
             5 => format!("    console.print(\"${{{}}}\")\n", gen_float(&mut r, depth)),
             6 => format!("    console.print(\"${{{}}}\")\n", gen_bool(&mut r, depth)),
@@ -499,7 +499,7 @@ fn gen_program(seed: u64, statements: usize) -> (String, u64) {
                 let s1 = gen_str(&mut r, 1);
                 let s2 = gen_str(&mut r, 1);
                 format!(
-                    "    var sc{stmt_i} = {s1}\n    sc{stmt_i} = sc{stmt_i} + {s2}\n    var tc{stmt_i} = sc{stmt_i}\n    tc{stmt_i} = string.to_upper(tc{stmt_i})\n    console.print(sc{stmt_i})\n    console.print(tc{stmt_i})\n"
+                    "    var sc{stmt_i} = {s1}\n    sc{stmt_i} = sc{stmt_i} + {s2}\n    var tc{stmt_i} = sc{stmt_i}\n    tc{stmt_i} = tc{stmt_i}.to_upper()\n    console.print(sc{stmt_i})\n    console.print(tc{stmt_i})\n"
                 )
             }
             28 => {
@@ -537,7 +537,7 @@ fn gen_program(seed: u64, statements: usize) -> (String, u64) {
             33 => {
                 // `match` as an EXPRESSION bound to a `let`, with indented arms binding payloads.
                 format!(
-                    "    let sh{stmt_i} = {}\n    let out{stmt_i} = match sh{stmt_i}:\n        Circle(rr) -> rr\n        Rect(w, h) -> w + h\n        Named(nm) -> string.length(nm)\n    console.print(\"${{out{stmt_i}}}\")\n",
+                    "    let sh{stmt_i} = {}\n    let out{stmt_i} = match sh{stmt_i}:\n        Circle(rr) -> rr\n        Rect(w, h) -> w + h\n        Named(nm) -> nm.length()\n    console.print(\"${{out{stmt_i}}}\")\n",
                     gen_shape(&mut r)
                 )
             }
@@ -545,7 +545,7 @@ fn gen_program(seed: u64, statements: usize) -> (String, u64) {
                 // `if let` binding a HEAP payload (`Named(nm)`) then re-reading it — extracts a
                 // heap string out of an ADT and uses it past the destructure.
                 format!(
-                    "    let sh{stmt_i} = Named(string.to_upper(\"{}\"))\n    if let Named(nm{stmt_i}) = sh{stmt_i}:\n        console.print(nm{stmt_i})\n    else:\n        console.print(\"no\")\n",
+                    "    let sh{stmt_i} = Named(\"{}\".to_upper())\n    if let Named(nm{stmt_i}) = sh{stmt_i}:\n        console.print(nm{stmt_i})\n    else:\n        console.print(\"no\")\n",
                     alnum(&mut r)
                 )
             }
@@ -618,7 +618,7 @@ fn gen_program(seed: u64, statements: usize) -> (String, u64) {
                 // dispatch must skip non-matching cap/non-cap variants before binding the payload.
                 let lbl = gen_str(&mut r, depth.min(2));
                 format!(
-                    "    let cs{stmt_i} = SrcNet(net, {lbl})\n    let code{stmt_i} = match cs{stmt_i}:\n        SrcPlain(k) -> k\n        SrcDir(d, k) -> k\n        SrcNet(n, lbl) -> string.length(lbl)\n    console.print(\"${{code{stmt_i}}}\")\n"
+                    "    let cs{stmt_i} = SrcNet(net, {lbl})\n    let code{stmt_i} = match cs{stmt_i}:\n        SrcPlain(k) -> k\n        SrcDir(d, k) -> k\n        SrcNet(n, lbl) -> lbl.length()\n    console.print(\"${{code{stmt_i}}}\")\n"
                 )
             }
             43 => {
@@ -1065,7 +1065,7 @@ fn capability_aggregates_reach_both_backends() {
         ("net_wrapper", "    let nb = NetBox(net, \"conn\")\n    console.print(netbox_label(nb))\n    console.print(nb.label)\n"),
         ("nested_record", "    let cn = CapNest(DirBox(root, 3), 4)\n    console.print(\"${capnest_count(cn)}\")\n    console.print(\"${cn.inner.tag}\")\n"),
         ("sum_mixed_variants", "    console.print(\"${capsrc_code(SrcDir(root, 10))}\")\n    console.print(\"${capsrc_code(SrcNet(net, \\\"lbl\\\"))}\")\n    console.print(\"${capsrc_code(SrcPlain(99))}\")\n"),
-        ("match_wrong_arm_order", "    let cs = SrcNet(net, \"hey\")\n    let code = match cs:\n        SrcPlain(k) -> k\n        SrcDir(d, k) -> k\n        SrcNet(n, lbl) -> string.length(lbl)\n    console.print(\"${code}\")\n"),
+        ("match_wrong_arm_order", "    let cs = SrcNet(net, \"hey\")\n    let code = match cs:\n        SrcPlain(k) -> k\n        SrcDir(d, k) -> k\n        SrcNet(n, lbl) -> lbl.length()\n    console.print(\"${code}\")\n"),
         ("recursive_cap_adt", "    console.print(\"${capchain_depth(ChLink(root, ChLink(root, ChLeaf(3))))}\")\n"),
         ("mutually_recursive_cap_adt", "    console.print(\"${capeven_count(EvSucc(root, OdSucc(net, EvZero(1))))}\")\n"),
         ("qualified_narrowed_field", "    let rb = RoBox(root as Dir[Read], \"cfg\")\n    console.print(robox_name(rb))\n    console.print(rb.name)\n"),
@@ -1199,9 +1199,9 @@ fn dict_removed(d: Dict(String, Int), key: String) -> Dict(String, Int):\n\
          \x20   console.print(\"${{is_perm(sorted(xs), xs)}}\")\n\
          \x20   console.print(\"${{dict.get_or(dict_inserted(d, {k}, {v}), {k}, 0 - 1) == {v}}}\")\n\
          \x20   console.print(\"${{(dict.get_or(rt, {s1}, 0 - 1) == {v}) && (dict.length(rt) == dict.length(d2)) && (list.length(dict.pairs(rt)) == dict.length(rt))}}\")\n\
-         \x20   console.print(\"${{string.length(s1 + s2) == string.length(s1) + string.length(s2)}}\")\n\
-         \x20   console.print(\"${{string.reverse(string.reverse(s1)) == s1}}\")\n\
-         \x20   console.print(\"${{string.length(string.repeat(s1, {rep})) == string.length(s1) * {rep}}}\")\n\
+         \x20   console.print(\"${{(s1 + s2).length() == s1.length() + s2.length()}}\")\n\
+         \x20   console.print(\"${{s1.reverse().reverse() == s1}}\")\n\
+         \x20   console.print(\"${{s1.repeat({rep}).length() == s1.length() * {rep}}}\")\n\
          \x20   console.print(\"${{bytes.to_string(ba) == s1}}\")\n\
          \x20   console.print(\"${{bytes.to_list(bytes.concat(ba, bb)) == list.concat(bytes.to_list(ba), bytes.to_list(bb))}}\")\n\
          \x20   console.print(\"${{set.union(sa, sb) == set.union(sb, sa)}}\")\n\
@@ -1246,7 +1246,7 @@ fn gen_reclaim_pair(seed: u64) -> (String, String) {
         let dk = 1 + r.below(6);
         let de: Vec<String> = (0..dk).map(|_| format!("{}", r.below(20))).collect();
         twin.push_str(&format!(
-            "    let dz{i} = [{}]\n    let dw{i} = string.to_upper(\"{}\")\n",
+            "    let dz{i} = [{}]\n    let dw{i} = \"{}\".to_upper()\n",
             de.join(", "),
             alnum(&mut r)
         ));
@@ -1254,7 +1254,7 @@ fn gen_reclaim_pair(seed: u64) -> (String, String) {
         // strings/lists (computed, not static literals) so the rc machinery is live.
         let unit = if r.below(2) == 0 {
             format!(
-                "    let sv{i} = string.to_upper(\"{}\")\n    let av{i} = alias_str(sv{i})\n    console.print(sv{i})\n    console.print(av{i})\n",
+                "    let sv{i} = \"{}\".to_upper()\n    let av{i} = alias_str(sv{i})\n    console.print(sv{i})\n    console.print(av{i})\n",
                 alnum(&mut r)
             )
         } else {

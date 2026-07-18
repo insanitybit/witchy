@@ -63,6 +63,44 @@ pub fn associated_function(
     Ok(None)
 }
 
+/// Find a public inherent instance method (a `self` receiver) by its source
+/// name, optionally restricted to one owning type. The signature is rendered in
+/// its callable Type-qualified spelling (`String.repeat(n: Int) -> String`), so
+/// editor hover reports a method under its owner rather than as a free function.
+pub fn instance_method(
+    source: &str,
+    owner: Option<&str>,
+    name: &str,
+) -> Result<Option<AssociatedFunctionDoc>, String> {
+    let module = crate::parser::parse_module(source).map_err(|e| e.to_string())?;
+    let lines: Vec<&str> = source.lines().collect();
+    for item in &module.items {
+        let Item::Impl(im) = item else { continue };
+        if im.trait_name.is_some() || owner.is_some_and(|o| im.type_name != o) {
+            continue;
+        }
+        for method in &im.methods {
+            if !method.public || method.name != name {
+                continue;
+            }
+            let (signature, is_static) = inherent_signature(&im.type_name, method);
+            if is_static {
+                continue;
+            }
+            let marker = format!(
+                "pub {}fn {}(",
+                fn_qualifier(method.is_async, method.is_gen),
+                method.name
+            );
+            return Ok(Some(AssociatedFunctionDoc {
+                signature,
+                docs: doc_above_indented(&lines, &marker),
+            }));
+        }
+    }
+    Ok(None)
+}
+
 /// Render Markdown documentation for one module from an already-parsed AST.
 /// Callers that run frontend expansion passes first use this so generated public
 /// APIs are rendered through the same AST path as handwritten APIs.

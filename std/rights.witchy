@@ -42,24 +42,24 @@ pub fn uncovered(declared: List(String), demanded: List(String)) -> List(String)
 
 // A bracket-free capability ("Net") is the full authority of its kind.
 pub fn is_full(cap: String) -> Bool:
-    !string.contains(cap, "[")
+    !cap.contains("[")
 
 // The base kind: "Dir[Read]" -> "Dir"; "Console" -> "Console".
 pub fn base_name(cap: String) -> String:
-    if string.contains(cap, "["):
-        let (name, _rest) = string.split_once(cap, "[")
+    if cap.contains("["):
+        let (name, _rest) = cap.split_once("[")
         name
     else:
         cap
 
 // The rights inside "Kind[A, B]" as ["A", "B"] (trimmed, blanks dropped).
 pub fn rights_of(cap: String) -> List(String):
-    let (_kind, rest) = string.split_once(cap, "[")
-    let inner = string.strip_suffix(rest, "]")
+    let (_kind, rest) = cap.split_once("[")
+    let inner = rest.strip_suffix("]")
     var out = []
-    for part in string.split(inner, ","):
-        let r = string.trim(part)
-        if !string.is_empty(r):
+    for part in inner.split(","):
+        let r = part.trim()
+        if !r.is_empty():
             list.push(out, r)
     out
 

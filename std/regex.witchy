@@ -16,7 +16,7 @@ fn match_spans(pattern: String, text: String) -> String:
 
 // True if `pattern` matches anywhere in `text`.
 pub fn matches(pattern: String, text: String) -> Bool:
-    !string.is_empty(match_spans(pattern, text))
+    !match_spans(pattern, text).is_empty()
 
 // The leftmost match as a (start, end) character span — end exclusive — or None.
 pub fn find(pattern: String, text: String) -> Option((Int, Int)):
@@ -29,13 +29,13 @@ pub fn find(pattern: String, text: String) -> Option((Int, Int)):
 // Every non-overlapping match, leftmost first.
 pub fn find_all(pattern: String, text: String) -> List((Int, Int)):
     let encoded = match_spans(pattern, text)
-    if string.is_empty(encoded):
+    if encoded.is_empty():
         []
     else:
         var out = []
-        for part in string.split(encoded, ";"):
-            let pair = string.split(part, ",")
-            list.push(out, (string.to_int(list.at(pair, 0)), string.to_int(list.at(pair, 1))))
+        for part in encoded.split(";"):
+            let pair = part.split(",")
+            list.push(out, (list.at(pair, 0).to_int(), list.at(pair, 1).to_int()))
         out
 
 // The matched substrings, leftmost first: extract("\\d+", "a1b22") is ["1", "22"].
@@ -43,7 +43,7 @@ pub fn extract(pattern: String, text: String) -> List(String):
     var out = []
     for span in find_all(pattern, text):
         let (s, e) = span
-        list.push(out, string.substring(text, s, e))
+        list.push(out, text.substring(s, e))
     out
 
 // `text` with every match replaced (the replacement is literal — no `$1` group
@@ -53,9 +53,9 @@ pub fn replace_all(pattern: String, text: String, replacement: String) -> String
     var prev = 0
     for span in find_all(pattern, text):
         let (s, e) = span
-        out = out + string.substring(text, prev, s) + replacement
+        out = out + text.substring(prev, s) + replacement
         prev = e
-    out + string.drop(text, prev)
+    out + text.drop(prev)
 
 // `text` split on every match: split(",\\s*", "a, b,c") is ["a", "b", "c"].
 pub fn split(pattern: String, text: String) -> List(String):
@@ -63,7 +63,7 @@ pub fn split(pattern: String, text: String) -> List(String):
     var prev = 0
     for span in find_all(pattern, text):
         let (s, e) = span
-        list.push(out, string.substring(text, prev, s))
+        list.push(out, text.substring(prev, s))
         prev = e
-    list.push(out, string.drop(text, prev))
+    list.push(out, text.drop(prev))
     out

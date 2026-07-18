@@ -72,7 +72,7 @@ fn view(name: String) -> VNode(Msg):
 
 fn main(console: Console):
     let ordinary = "\0"
-    console.print("${string.length(ordinary)}")
+    console.print("${ordinary.length()}")
 "#;
     std::fs::write(dir.join("control.witchy"), control).expect("write control source");
 

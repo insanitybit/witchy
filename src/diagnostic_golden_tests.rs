@@ -492,7 +492,7 @@ mod typecheck {
     #[test]
     fn plain_function_as_method_on_builtin_receiver() {
         insta::assert_snapshot!(type_diag(
-            "fn describe(s: String) -> Int:\n    string.length(s)\n\nfn main(console: Console):\n    let s = \"hi\"\n    console.print(\"${s.describe()}\")\n"
+            "fn describe(s: String) -> Int:\n    s.length()\n\nfn main(console: Console):\n    let s = \"hi\"\n    console.print(\"${s.describe()}\")\n"
         ));
     }
 
@@ -668,7 +668,7 @@ mod runtime {
     #[test]
     fn parse_int_of_junk() {
         insta::assert_snapshot!(trap_pair(
-            "import string\n\nfn main(console: Console):\n    console.print(\"${string.to_int(\"notanumber\")}\")\n"
+            "\nfn main(console: Console):\n    console.print(\"${\"notanumber\".to_int()}\")\n"
         ));
     }
 

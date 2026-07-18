@@ -401,7 +401,7 @@
             "compiled reordered var write-back must agree",
         );
         // A reordered `own`/`move` argument still moves correctly (temp path intact).
-        let owned = "fn eat(own s: String, n: Int) -> String:\n    string.repeat(s, n)\n\nfn main(console: Console):\n    let s = \"ab\"\n    console.print(eat(n: 3, s: move s))\n";
+        let owned = "fn eat(own s: String, n: Int) -> String:\n    s.repeat(n)\n\nfn main(console: Console):\n    let s = \"ab\"\n    console.print(eat(n: 3, s: move s))\n";
         assert_eq!(link_run(owned), ["ababab"], "interp reordered own/move");
         assert_eq!(
             run_linked_on_wasm(&[("main", owned)], "main"),
@@ -806,7 +806,7 @@
     /// missing-separator bit that the legacy tuple helpers erase.
     #[test]
     fn string_split_once_option_helpers_backends_agree() {
-        let src = "import string\n\nfn show(console: Console, label: String, p: Option((String, String))):\n    match p:\n        Some(parts) ->\n            let (a, b) = parts\n            console.print(label + \"=Some(\" + a + \"|\" + b + \")\")\n        None -> console.print(label + \"=None\")\n\nfn main(console: Console):\n    show(console, \"missing\", string.split_once_opt(\"host\", \":\"))\n    show(console, \"present-empty-right\", string.split_once_opt(\"host:\", \":\"))\n    show(console, \"present-empty-left\", string.split_once_opt(\":name\", \":\"))\n    show(console, \"last\", string.rsplit_once_opt(\"a.b.c\", \".\"))\n    show(console, \"last-missing\", string.rsplit_once_opt(\"name\", \".\"))\n    let (a, b) = string.split_once(\"host\", \":\")\n    console.print(\"old-first=\" + a + \"|\" + b)\n    let (c, d) = string.rsplit_once(\"name\", \".\")\n    console.print(\"old-last=\" + c + \"|\" + d)\n";
+        let src = "\nfn show(console: Console, label: String, p: Option((String, String))):\n    match p:\n        Some(parts) ->\n            let (a, b) = parts\n            console.print(label + \"=Some(\" + a + \"|\" + b + \")\")\n        None -> console.print(label + \"=None\")\n\nfn main(console: Console):\n    show(console, \"missing\", \"host\".split_once_opt(\":\"))\n    show(console, \"present-empty-right\", \"host:\".split_once_opt(\":\"))\n    show(console, \"present-empty-left\", \":name\".split_once_opt(\":\"))\n    show(console, \"last\", \"a.b.c\".rsplit_once_opt(\".\"))\n    show(console, \"last-missing\", \"name\".rsplit_once_opt(\".\"))\n    let (a, b) = \"host\".split_once(\":\")\n    console.print(\"old-first=\" + a + \"|\" + b)\n    let (c, d) = \"name\".rsplit_once(\".\")\n    console.print(\"old-last=\" + c + \"|\" + d)\n";
         let expected = [
             "missing=None",
             "present-empty-right=Some(host|)",
@@ -829,7 +829,7 @@
     /// or non-ASCII keys skip past the value.
     #[test]
     fn string_tail_slices_use_character_counts_on_both_backends() {
-        let src = "import string\n\nfn value_after_eq(kv: String, name: String) -> String:\n    if string.starts_with(kv, name + \"=\"):\n        string.drop(kv, string.char_count(name) + 1)\n    else:\n        \"\"\n\nfn main(console: Console):\n    console.print(value_after_eq(\"naïve=x\", \"naïve\"))\n    console.print(string.drop(\"éclair\", 1))\n";
+        let src = "\nfn value_after_eq(kv: String, name: String) -> String:\n    if kv.starts_with(name + \"=\"):\n        kv.drop(name.char_count() + 1)\n    else:\n        \"\"\n\nfn main(console: Console):\n    console.print(value_after_eq(\"naïve=x\", \"naïve\"))\n    console.print(\"éclair\".drop(1))\n";
         let expected = ["x", "clair"];
         assert_eq!(link_run(src), expected, "interp: char-count tail slice");
         assert_eq!(
@@ -843,7 +843,7 @@
     /// the existing `list.join`/`parts.join` spellings remain valid.
     #[test]
     fn string_join_alias_backends_agree() {
-        let src = "import string\n\nfn main(console: Console):\n    let parts = string.split(\"a,b,c\", \",\")\n    console.print(string.join(parts, \"-\"))\n    console.print(parts.join(\"|\"))\n    console.print(string.join([], \",\"))\n";
+        let src = "\nfn main(console: Console):\n    let parts = \"a,b,c\".split(\",\")\n    console.print(parts.join(\"-\"))\n    console.print(parts.join(\"|\"))\n    console.print([].join(\",\"))\n";
         let expected = ["a-b-c", "a|b|c", ""];
         assert_eq!(link_run(src), expected, "interp: string.join");
         assert_eq!(
@@ -904,7 +904,7 @@
         // Slicing `é` at [0,1) leaves a lone 0xC3 — invalid UTF-8. `to_string` must
         // lossily decode it to U+FFFD (3 bytes) on both backends, not return the
         // raw invalid byte.
-        let lossy_src = "import bytes\nimport string\n\nfn main(console: Console):\n    let half = bytes.slice(bytes.from_string(\"é\"), 0, 1)\n    let s = bytes.to_string_lossy(half)\n    console.print(\"${string.length(s)}\")\n    console.print(\"${bytes.length(bytes.from_string(s))}\")\n    match bytes.decode_utf8(half):\n        Ok(_) -> console.print(\"bad\")\n        Err(e) -> console.print(bytes.bytes_error_message(e))\n    match bytes.decode_utf8(bytes.from_string(\"ok\")):\n        Ok(text) -> console.print(text)\n        Err(e) -> console.print(\"bad\")\n";
+        let lossy_src = "import bytes\n\nfn main(console: Console):\n    let half = bytes.slice(bytes.from_string(\"é\"), 0, 1)\n    let s = bytes.to_string_lossy(half)\n    console.print(\"${s.length()}\")\n    console.print(\"${bytes.length(bytes.from_string(s))}\")\n    match bytes.decode_utf8(half):\n        Ok(_) -> console.print(\"bad\")\n        Err(e) -> console.print(bytes.bytes_error_message(e))\n    match bytes.decode_utf8(bytes.from_string(\"ok\")):\n        Ok(text) -> console.print(text)\n        Err(e) -> console.print(\"bad\")\n";
         // The lossy decode replaces the lone invalid byte with U+FFFD, which is 3
         // UTF-8 bytes (`string.length` is a BYTE count). The old buggy compiled
         // identity returned the single raw byte, so both readings would be "1".
@@ -1149,14 +1149,13 @@ fn main(console: Console):
     #[test]
     fn rfc0088_custom_eq_keys_select_the_same_entry_on_both_backends() {
         let src = r#"import dict
-import string
 
 type CI:
     text: String
 
 impl PartialEq for CI:
     fn eq(self, other: CI) -> Bool:
-        string.to_lower(self.text) == string.to_lower(other.text)
+        self.text.to_lower() == other.text.to_lower()
 
 impl Eq for CI
 
@@ -2961,7 +2960,7 @@ fn main(console: Console):
     /// and explicit-module use.
     #[test]
     fn string_transform_methods_require_explicit_reassignment() {
-        let src = "import string\n\nfn main(console: Console):\n    var s = \"  hello  \"\n    s = s.trim()\n    console.print(s)\n    s = s.to_upper()\n    console.print(s)\n    s = s.replace(\"HELLO\", \"hi\")\n    console.print(s)\n    s = s.pad_left(5, \"0\")\n    console.print(s)\n    s = s.pad_right(7, \"!\")\n    console.print(s)\n    s = s.center(9, \".\")\n    console.print(s)\n    s = s.strip_prefix(\".\")\n    s = s.strip_suffix(\".\")\n    console.print(s)\n    s = s.replace_first(\"hi\", \"bye\")\n    console.print(s)\n    var t = \"  edge  \"\n    t = t.trim_start()\n    console.print(t)\n    t = t.trim_end()\n    console.print(t)\n    console.print(string.trim(\"  module  \"))\n    console.print(string.replace_first(\"alpha alpha\", \"alpha\", \"beta\"))\n";
+        let src = "\nfn main(console: Console):\n    var s = \"  hello  \"\n    s = s.trim()\n    console.print(s)\n    s = s.to_upper()\n    console.print(s)\n    s = s.replace(\"HELLO\", \"hi\")\n    console.print(s)\n    s = s.pad_left(5, \"0\")\n    console.print(s)\n    s = s.pad_right(7, \"!\")\n    console.print(s)\n    s = s.center(9, \".\")\n    console.print(s)\n    s = s.strip_prefix(\".\")\n    s = s.strip_suffix(\".\")\n    console.print(s)\n    s = s.replace_first(\"hi\", \"bye\")\n    console.print(s)\n    var t = \"  edge  \"\n    t = t.trim_start()\n    console.print(t)\n    t = t.trim_end()\n    console.print(t)\n    console.print(\"  module  \".trim())\n    console.print(\"alpha alpha\".replace_first(\"alpha\", \"beta\"))\n";
         let expected = [
             "hello",
             "HELLO",
@@ -2988,8 +2987,7 @@ fn main(console: Console):
     /// not just receiver-first module functions reached through UFCS.
     #[test]
     fn string_read_methods_work_on_both_backends() {
-        let src = r#"import string
-
+        let src = r#"
 fn main(console: Console):
     let text = "alpha,beta,alpha"
     console.print("${text.length()}")
@@ -3634,7 +3632,7 @@ fn main(console: Console):
 
     #[test]
     fn toml_decode_rejects_empty_table_path_segments() {
-        let src = "import string\nimport toml\n\nfn status(text: String) -> String:\n    match toml.decode(text):\n        Ok(_) -> \"ok\"\n        Err(e) ->\n            let msg = toml.decode_error_message(e)\n            if string.contains(msg, \"empty path segment\"):\n                \"err:empty\"\n            else:\n                \"err:\" + msg\n\nfn main(console: Console):\n    console.print(\"empty_header=\" + status(\"[]\\nroot = 1\\n\"))\n    console.print(\"empty_mid=\" + status(\"[a..b]\\nx = 1\\n\"))\n    console.print(\"empty_tail=\" + status(\"[a.]\\nx = 1\\n\"))\n    console.print(\"empty_head=\" + status(\"[.a]\\nx = 1\\n\"))\n    console.print(\"array_empty_mid=\" + status(\"[[a..b]]\\nx = 1\\n\"))\n    console.print(\"quoted_dot=\" + status(\"[\\\"a..b\\\"]\\nx = 1\\n\"))\n";
+        let src = "import toml\n\nfn status(text: String) -> String:\n    match toml.decode(text):\n        Ok(_) -> \"ok\"\n        Err(e) ->\n            let msg = toml.decode_error_message(e)\n            if msg.contains(\"empty path segment\"):\n                \"err:empty\"\n            else:\n                \"err:\" + msg\n\nfn main(console: Console):\n    console.print(\"empty_header=\" + status(\"[]\\nroot = 1\\n\"))\n    console.print(\"empty_mid=\" + status(\"[a..b]\\nx = 1\\n\"))\n    console.print(\"empty_tail=\" + status(\"[a.]\\nx = 1\\n\"))\n    console.print(\"empty_head=\" + status(\"[.a]\\nx = 1\\n\"))\n    console.print(\"array_empty_mid=\" + status(\"[[a..b]]\\nx = 1\\n\"))\n    console.print(\"quoted_dot=\" + status(\"[\\\"a..b\\\"]\\nx = 1\\n\"))\n";
         let expected = [
             "empty_header=err:empty",
             "empty_mid=err:empty",
@@ -3749,7 +3747,7 @@ fn main(console: Console):
 
     #[test]
     fn compiler_footprint_rejects_type_invalid_sources_on_both_backends() {
-        let src = "import compiler\nimport string\n\nfn main(console: Console):\n    let bad = \"fn main(console: Console):\\n    missing(console)\\n\"\n    let fp = compiler.footprint(bad)\n    console.print(\"${string.contains(fp, \"error\")}\")\n    console.print(\"${string.contains(fp, \"missing\")}\")\n    let diff = compiler.diff(\"pub fn direct() -> Int:\\n    0\\n\", bad)\n    console.print(\"${string.contains(diff, \"error\")}\")\n    console.print(\"${string.contains(diff, \"missing\")}\")\n";
+        let src = "import compiler\n\nfn main(console: Console):\n    let bad = \"fn main(console: Console):\\n    missing(console)\\n\"\n    let fp = compiler.footprint(bad)\n    console.print(\"${fp.contains(\"error\")}\")\n    console.print(\"${fp.contains(\"missing\")}\")\n    let diff = compiler.diff(\"pub fn direct() -> Int:\\n    0\\n\", bad)\n    console.print(\"${diff.contains(\"error\")}\")\n    console.print(\"${diff.contains(\"missing\")}\")\n";
         let expected = ["true", "true", "true", "true"];
         assert_eq!(link_run(src), expected, "interp: compiler.footprint type gate");
         assert_eq!(
@@ -4077,10 +4075,10 @@ fn main(console: Console):
 
     /// (BUG-216) A local binding with the same name as a prelude/imported module
     /// owns dotted calls consistently. `string.to_upper("x")` below must dispatch
-    /// to the local `S` method, not silently escape to std `string.to_upper`.
+    /// to the local `S` method, not silently escape to std String.to_upper.
     #[test]
     fn shadowing_module_name_keeps_dotted_calls_on_local() {
-        let src = "type S:\n    x: String\n\nimpl S:\n    fn to_upper(self: S, suffix: String) -> String:\n        self.x + suffix\n\nfn module_upper(s: String) -> String:\n    string.to_upper(s)\n\nfn main(console: Console):\n    let string = S(\"s\")\n    console.print(string.to_upper(\"x\"))\n    console.print(module_upper(\"y\"))\n";
+        let src = "type S:\n    x: String\n\nimpl S:\n    fn to_upper(self: S, suffix: String) -> String:\n        self.x + suffix\n\nfn module_upper(s: String) -> String:\n    s.to_upper()\n\nfn main(console: Console):\n    let string = S(\"s\")\n    console.print(string.to_upper(\"x\"))\n    console.print(module_upper(\"y\"))\n";
         let expected = ["sx", "Y"];
         assert_eq!(link_run(src), expected, "interp");
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
@@ -4121,7 +4119,7 @@ fn main(console: Console):
     /// double-receiver spelling `rand.hex(rand, n)`.
     #[test]
     fn rand_capability_supports_std_method_syntax() {
-        let src = "import rand\n\nfn main(console: Console, rand: Rand):\n    let token = rand.hex(4)\n    console.print(\"${string.length(token)}\")\n";
+        let src = "import rand\n\nfn main(console: Console, rand: Rand):\n    let token = rand.hex(4)\n    console.print(\"${token.length()}\")\n";
         let expected = ["8"];
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
@@ -4341,10 +4339,10 @@ fn main(console: Console):
     #[test]
     fn http_crlf_header_validators_trap_on_both_backends() {
         let prog = |call: &str| {
-            format!("import http\nimport string\n\nfn main(console: Console):\n    {call}\n    console.print(\"ok\")\n")
+            format!("import http\n\nfn main(console: Console):\n    {call}\n    console.print(\"ok\")\n")
         };
         let server_prog = |call: &str| {
-            format!("import server\nimport string\n\nfn main(console: Console):\n    {call}\n    console.print(\"ok\")\n")
+            format!("import server\n\nfn main(console: Console):\n    {call}\n    console.print(\"ok\")\n")
         };
         // A header VALUE with an embedded CRLF must error on both backends.
         let crlf_value = prog("http.check_header(\"x-test\", \"a\\r\\nInjected: 1\")");
@@ -4628,9 +4626,9 @@ fn main(console: Console):
     fn overflowing_content_length_does_not_trap_on_either_backend() {
         // `ascii.all_digits` accepts the overflowing string (the old trap trigger),
         // but the total parse yields 0 (no body) rather than aborting the VM.
-        let src = "import string\nimport ascii\nimport option\n\n\
+        let src = "import ascii\nimport option\n\n\
                    fn content_length_val(v: String) -> Int:\n\
-                   \x20   match string.parse_int(v):\n\
+                   \x20   match v.parse_int():\n\
                    \x20       Some(n) -> if n > 0: n else: 0\n\
                    \x20       None -> 0\n\n\
                    fn main(console: Console):\n\
@@ -4719,7 +4717,7 @@ fn main(console: Console):
         Ok(_) -> console.print("truncated=parsed")
         Err(e) -> console.print("truncated=" + http.http_error_message(e))
     let r1 = server.with_header(server.text(200, "hi"), "content-length", "999")
-    console.print("cl=" + "${string.count(string.to_lower(server.render(r1)), "content-length")}")
+    console.print("cl=" + "${server.render(r1).to_lower().count("content-length")}")
     console.print("${http.is_framing_header("Content-Length")}")
 "#;
         let expected = vec![
@@ -5620,7 +5618,7 @@ fn main(console: Console, root: Dir[Read]):
     /// and the output matches every backend.
     #[test]
     fn convention_string_and_dict_borrow() {
-        let strs = "fn first_char(let s: String) -> String:\n    if string.char_count(s) > 0:\n        string.substring(s, 0, 1)\n    else:\n        \"\"\nfn main(c: Console):\n    let txt = \"héllo\"\n    c.print(first_char(txt))\n    c.print(\"${string.char_count(txt)}\")\n";
+        let strs = "fn first_char(let s: String) -> String:\n    if s.char_count() > 0:\n        s.substring(0, 1)\n    else:\n        \"\"\nfn main(c: Console):\n    let txt = \"héllo\"\n    c.print(first_char(txt))\n    c.print(\"${txt.char_count()}\")\n";
         assert_eq!(interpreter::run(strs).expect("interp str"), ["h", "5"]);
         assert_eq!(run_linked_on_wasm(&[("main", strs)], "main"), ["h", "5"], "wasm str");
 
@@ -6015,7 +6013,7 @@ fn main(console: Console, root: Dir[Read]):
             #[test]
             fn rle_round_trips_over_digit_free_text(s in "[a-zA-Z ]{0,40}") {
                 let src = format!(
-                    "import string\nimport ascii\n\nfn encode(t: String) -> String:\n    let cs = string.chars(t)\n    let n = list.length(cs)\n    var out = \"\"\n    var i = 0\n    while i < n:\n        let c = list.at(cs, i)\n        var k = 0\n        while i < n && list.at(cs, i) == c:\n            k = k + 1\n            i = i + 1\n        out = out + \"${{k}}\" + c\n    out\n\nfn decode(e: String) -> String:\n    let cs = string.chars(e)\n    let n = list.length(cs)\n    var out = \"\"\n    var i = 0\n    while i < n:\n        var k = 0\n        while i < n && ascii.is_digit(list.at(cs, i)):\n            k = k * 10 + (ascii.to_digit(list.at(cs, i)) ?? 0)\n            i = i + 1\n        if i < n:\n            out = out + string.repeat(list.at(cs, i), k)\n            i = i + 1\n    out\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n\nfn main(console: Console):\n    let s = \"{}\"\n    console.print(yn(decode(encode(s)) == s))\n",
+                    "import ascii\n\nfn encode(t: String) -> String:\n    let cs = t.chars()\n    let n = list.length(cs)\n    var out = \"\"\n    var i = 0\n    while i < n:\n        let c = list.at(cs, i)\n        var k = 0\n        while i < n && list.at(cs, i) == c:\n            k = k + 1\n            i = i + 1\n        out = out + \"${{k}}\" + c\n    out\n\nfn decode(e: String) -> String:\n    let cs = e.chars()\n    let n = list.length(cs)\n    var out = \"\"\n    var i = 0\n    while i < n:\n        var k = 0\n        while i < n && ascii.is_digit(list.at(cs, i)):\n            k = k * 10 + (ascii.to_digit(list.at(cs, i)) ?? 0)\n            i = i + 1\n        if i < n:\n            out = out + list.at(cs, i).repeat(k)\n            i = i + 1\n    out\n\nfn yn(b: Bool) -> String:\n    if b: \"y\" else: \"n\"\n\nfn main(console: Console):\n    let s = \"{}\"\n    console.print(yn(decode(encode(s)) == s))\n",
                     esc(&s)
                 );
                 prop_assert_eq!(link_run(&src), vec!["y".to_string()]);
@@ -6736,7 +6734,7 @@ fn main() -> Int:
     /// and stays value-semantic on both backends.
     #[test]
     fn analysis_dirty_shapes_stay_value_semantic() {
-        let src = "fn main(console: Console):\n    var s = \"ab\"\n    var k = 0\n    while k < 5:\n        s = s + s\n        k = k + 1\n    console.print(\"${string.length(s)}\")\n    var d = dict.new()\n    var zs = [1]\n    dict.insert(d, \"snap\", zs)\n    list.push(zs, 2)\n    console.print(\"${list.length(dict.get_or(d, \"snap\", []))}\")\n    console.print(\"${list.length(zs)}\")\n";
+        let src = "fn main(console: Console):\n    var s = \"ab\"\n    var k = 0\n    while k < 5:\n        s = s + s\n        k = k + 1\n    console.print(\"${s.length()}\")\n    var d = dict.new()\n    var zs = [1]\n    dict.insert(d, \"snap\", zs)\n    list.push(zs, 2)\n    console.print(\"${list.length(dict.get_or(d, \"snap\", []))}\")\n    console.print(\"${list.length(zs)}\")\n";
         let want: Vec<String> = ["64", "1", "2"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
@@ -7070,7 +7068,7 @@ fn main() -> Int:
     /// this guards that they stay in sync.
     #[test]
     fn coalesce_fallback_both_backends() {
-        let src = "import option\n\nfn find(b: Bool) -> Option(String):\n    if b: Some(\"hit\") else: None\n\nfn parse(s: String) -> Result(Int, String):\n    match string.parse_int(s):\n        Some(n) -> Ok(n)\n        None -> Err(\"bad int\")\n\nfn main(console: Console):\n    console.print(find(true) ?? \"fallback\")\n    console.print(find(false) ?? \"fallback\")\n    console.print(\"${parse(\"41\") ?? 0}\")\n    console.print(\"${parse(\"x\") ?? 9}\")\n    var d = dict.new()\n    dict.insert(d, \"a\", 1)\n    console.print(\"${dict.get(d, \"a\") ?? dict.get(d, \"b\") ?? 0}\")\n    console.print(\"${dict.get(d, \"z\") ?? dict.get(d, \"b\") ?? 5}\")\n    console.print(\"${Some(\"\") ?? \"x\"}\")\n    console.print(\"${false || true}\")\n";
+        let src = "import option\n\nfn find(b: Bool) -> Option(String):\n    if b: Some(\"hit\") else: None\n\nfn parse(s: String) -> Result(Int, String):\n    match s.parse_int():\n        Some(n) -> Ok(n)\n        None -> Err(\"bad int\")\n\nfn main(console: Console):\n    console.print(find(true) ?? \"fallback\")\n    console.print(find(false) ?? \"fallback\")\n    console.print(\"${parse(\"41\") ?? 0}\")\n    console.print(\"${parse(\"x\") ?? 9}\")\n    var d = dict.new()\n    dict.insert(d, \"a\", 1)\n    console.print(\"${dict.get(d, \"a\") ?? dict.get(d, \"b\") ?? 0}\")\n    console.print(\"${dict.get(d, \"z\") ?? dict.get(d, \"b\") ?? 5}\")\n    console.print(\"${Some(\"\") ?? \"x\"}\")\n    console.print(\"${false || true}\")\n";
         let want: Vec<String> = ["hit", "fallback", "41", "9", "1", "5", "", "true"]
             .iter()
             .map(|s| s.to_string())
@@ -7302,7 +7300,7 @@ fn main(console: Console):
     /// pointer-compare and return None.
     #[test]
     fn runtime_built_dict_keys_compare_by_content() {
-        let src = "import dict\nimport string\n\nfn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, string.trim(\"  host  \"), \"localhost\")\n    let parts = string.split(\"port=8080\", \"=\")\n    dict.insert(d, list.at(parts, 0), list.at(parts, 1))\n    dict.insert(d, \"lit\" + \"eral\", \"joined\")\n    match dict.get(d, \"host\"):\n        Some(v) -> console.print(\"host=\" + v)\n        None -> console.print(\"host MISSING\")\n    match dict.get(d, \"port\"):\n        Some(v) -> console.print(\"port=\" + v)\n        None -> console.print(\"port MISSING\")\n    console.print(\"${dict.contains_key(d, \"literal\")}\")\n    console.print(\"${dict.length(d)}\")\n";
+        let src = "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, \"  host  \".trim(), \"localhost\")\n    let parts = \"port=8080\".split(\"=\")\n    dict.insert(d, list.at(parts, 0), list.at(parts, 1))\n    dict.insert(d, \"lit\" + \"eral\", \"joined\")\n    match dict.get(d, \"host\"):\n        Some(v) -> console.print(\"host=\" + v)\n        None -> console.print(\"host MISSING\")\n    match dict.get(d, \"port\"):\n        Some(v) -> console.print(\"port=\" + v)\n        None -> console.print(\"port MISSING\")\n    console.print(\"${dict.contains_key(d, \"literal\")}\")\n    console.print(\"${dict.length(d)}\")\n";
         let want: Vec<String> = ["host=localhost", "port=8080", "true", "3"]
             .iter()
             .map(|s| s.to_string())
@@ -7410,7 +7408,7 @@ fn main(console: Console):
     /// must be identical — any divergence is an analysis soundness bug.
     #[test]
     fn forced_copy_mode_is_differential() {
-        let src = "fn tag(let prefix: String, n: Int) -> String:\n    prefix + \"${n}\"\n\nfn main(console: Console):\n    var xs = []\n    let alias = xs\n    var s = \"\"\n    var d = dict.new()\n    var i = 0\n    while i < 800:\n        list.push(xs, i)\n        s = s + tag(\"x\", i)\n        dict.update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    console.print(\"${list.length(xs)}\")\n    console.print(\"${list.length(alias)}\")\n    console.print(\"${string.length(s)}\")\n    console.print(\"${dict.get_or(d, 3, 0)}\")\n";
+        let src = "fn tag(let prefix: String, n: Int) -> String:\n    prefix + \"${n}\"\n\nfn main(console: Console):\n    var xs = []\n    let alias = xs\n    var s = \"\"\n    var d = dict.new()\n    var i = 0\n    while i < 800:\n        list.push(xs, i)\n        s = s + tag(\"x\", i)\n        dict.update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    console.print(\"${list.length(xs)}\")\n    console.print(\"${list.length(alias)}\")\n    console.print(\"${s.length()}\")\n    console.print(\"${dict.get_or(d, 3, 0)}\")\n";
         let optimized = wasm_run(src);
         codegen::set_force_copy_for_tests(Some(true));
         let forced = wasm_run(src);
@@ -7498,7 +7496,7 @@ fn main(console: Console):
     #[test]
     fn witchy_opt_sweep_is_differential() {
         use crate::opt::{self, Opt, OptSet};
-        let src = "fn tag(let prefix: String, n: Int) -> String:\n    prefix + \"${n}\"\n\nfn main(console: Console):\n    var xs = []\n    let alias = xs\n    var s = \"\"\n    var d = dict.new()\n    var i = 0\n    while i < 600:\n        list.push(xs, i)\n        s = s + tag(\"x\", i)\n        dict.update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    console.print(\"${list.length(xs)}\")\n    console.print(\"${list.length(alias)}\")\n    console.print(\"${string.length(s)}\")\n    console.print(\"${dict.get_or(d, 3, 0)}\")\n";
+        let src = "fn tag(let prefix: String, n: Int) -> String:\n    prefix + \"${n}\"\n\nfn main(console: Console):\n    var xs = []\n    let alias = xs\n    var s = \"\"\n    var d = dict.new()\n    var i = 0\n    while i < 600:\n        list.push(xs, i)\n        s = s + tag(\"x\", i)\n        dict.update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    console.print(\"${list.length(xs)}\")\n    console.print(\"${list.length(alias)}\")\n    console.print(\"${s.length()}\")\n    console.print(\"${dict.get_or(d, 3, 0)}\")\n";
         let oracle = link_run(src);
 
         let mut settings: Vec<(String, OptSet)> = vec![
@@ -7713,7 +7711,7 @@ fn main(console: Console):
     }
 
     /// (RFC-0051 I1 / SEC-039) Regression: the free-at-overwrite path must not free a
-    /// non-owning-object pointer. The 7-line repro — `var t = "abc"; t = string.trim(t)`
+    /// non-owning-object pointer. The 7-line repro — `var t = "abc"; t = t.trim()`
     /// — reassigns a `var` whose FIRST buffer is a string LITERAL (a data-segment pointer
     /// BELOW `heap_base`, not an `$rc_alloc` object). Under `inplace + rc-floor` the
     /// free-at-overwrite emitted `$rc_free(old)` directly on that literal; `$rc_free` had
@@ -7726,7 +7724,7 @@ fn main(console: Console):
     #[test]
     fn rc_free_at_overwrite_does_not_free_a_literal_sec_039() {
         use crate::opt::{self, Opt, OptSet};
-        let src = "fn main(console: Console):\n    var xs = [3, 1, 2]\n    list.sort(xs)\n    console.print(\"${xs}\")\n    var t = \"abc\"\n    t = string.trim(t)\n    console.print(\"[${t}]\")\n";
+        let src = "fn main(console: Console):\n    var xs = [3, 1, 2]\n    list.sort(xs)\n    console.print(\"${xs}\")\n    var t = \"abc\"\n    t = t.trim()\n    console.print(\"[${t}]\")\n";
         let oracle = link_run(src);
         assert_eq!(oracle, vec!["[1, 2, 3]", "[abc]"], "oracle shape changed");
         let mut settings: Vec<(String, OptSet)> = vec![
@@ -8013,7 +8011,6 @@ fn main(console: Console):
     #[test]
     fn toml_module_reads_manifest_values() {
         let src = r#"import toml
-import string
 
 fn main(console: Console):
     let m = "[rune]\nname = \"acme/widget\"\nversion = \"1.2.0\"\n\n[capabilities]\nruntime = [\"Net\", \"Console\"]\n"
@@ -8109,7 +8106,6 @@ fn main(console: Console):
     #[test]
     fn toml_module_ignores_trailing_comments() {
         let src = r#"import toml
-import string
 
 fn main(console: Console):
     let m = "[rune]\nname = \"acme/widget\"  # the canonical name\ntag = \"v#1\"  # has a hash inside\n\n[capabilities]\nruntime = [\"Console\", \"Dir[Read]\"]  # what it needs\n"
@@ -8136,7 +8132,6 @@ fn opt(o: Option(String)) -> String:
     #[test]
     fn toml_module_enumerates_tables_and_arrays() {
         let src = r#"import toml
-import string
 
 fn main(console: Console):
     let m = "[rune]\nname = \"ledger\"\n\n[dependencies]\n\"money\" = { path = \"../money\" }\n\"acme/util\" = { path = \"../util\", version = \"1.2\" }\n"
@@ -8195,7 +8190,6 @@ fn opt(o: Option(String)) -> String:
     #[test]
     fn structured_lockfile_is_the_single_rune_parser() {
         let src = r#"import toml
-import string
 
 fn main(console: Console):
     // Two [[rune]] entries; the second repeats the `name` key shape and carries a
@@ -8560,7 +8554,7 @@ fn yn(b: Bool) -> String:
     /// changes observable behavior, only when memory is reclaimed.
     #[test]
     fn region_blocks_value_escape_and_parity() {
-        let src = "import string\n\nfn main(console: Console):\n    let summary = region:\n        var parts = []\n        for i in 0..50:\n            list.push(parts, \"${i}\")\n        list.join(parts, \",\")\n    console.print(\"${string.length(summary)}\")\n    var n = 0\n    let direct = region -> Int:\n        n = n + 42\n        n\n    console.print(\"${direct}\")\n";
+        let src = "\nfn main(console: Console):\n    let summary: String = region:\n        var parts = []\n        for i in 0..50:\n            list.push(parts, \"${i}\")\n        list.join(parts, \",\")\n    console.print(\"${summary.length()}\")\n    var n = 0\n    let direct = region -> Int:\n        n = n + 42\n        n\n    console.print(\"${direct}\")\n";
         let want: Vec<String> = ["139", "42"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want.clone(), "interpreter");
         assert_eq!(wasm_run(src), want, "compiled WASM must agree");
@@ -8572,7 +8566,7 @@ fn yn(b: Bool) -> String:
     /// through shared, all agreeing with the interpreter.
     #[test]
     fn region_copy_out_shapes_agree_on_both_backends() {
-        let src = "type Stack:\n    Empty\n    Push(a, Stack(a))\n\ntype Reading:\n    sensor: String\n    values: List(Int)\n\nfn main(console: Console):\n    let st = region -> Stack(Int):\n        Push(1, Push(2, Empty))\n    console.print(\"${st == Push(1, Push(2, Empty))}\")\n    let r = region -> Reading:\n        var vs = []\n        for i in 0..50:\n            list.push(vs, i * i)\n        Reading(sensor: \"t\" + \"0\", values: vs)\n    console.print(r.sensor)\n    console.print(\"${list.at(r.values, 49)}\")\n    let d = region -> Dict(String, Int):\n        var m = dict.new()\n        for i in 0..100:\n            dict.insert(m, \"k\" + \"${i}\", i)\n        m\n    console.print(\"${dict.get_or(d, \"k42\", 0 - 1)}\")\n    let shared = \"parent-side\"\n    let s = region -> String:\n        shared\n    console.print(s)\n    let nested = region -> Int:\n        let inner = region -> String:\n            \"abc\" + \"def\"\n        string.length(inner)\n    console.print(\"${nested}\")\n";
+        let src = "type Stack:\n    Empty\n    Push(a, Stack(a))\n\ntype Reading:\n    sensor: String\n    values: List(Int)\n\nfn main(console: Console):\n    let st = region -> Stack(Int):\n        Push(1, Push(2, Empty))\n    console.print(\"${st == Push(1, Push(2, Empty))}\")\n    let r = region -> Reading:\n        var vs = []\n        for i in 0..50:\n            list.push(vs, i * i)\n        Reading(sensor: \"t\" + \"0\", values: vs)\n    console.print(r.sensor)\n    console.print(\"${list.at(r.values, 49)}\")\n    let d = region -> Dict(String, Int):\n        var m = dict.new()\n        for i in 0..100:\n            dict.insert(m, \"k\" + \"${i}\", i)\n        m\n    console.print(\"${dict.get_or(d, \"k42\", 0 - 1)}\")\n    let shared = \"parent-side\"\n    let s = region -> String:\n        shared\n    console.print(s)\n    let nested = region -> Int:\n        let inner: String = region -> String:\n            \"abc\" + \"def\"\n        inner.length()\n    console.print(\"${nested}\")\n";
         let want: Vec<String> = ["true", "t0", "2401", "42", "parent-side", "6"]
             .iter()
             .map(|s| s.to_string())
@@ -8632,7 +8626,7 @@ fn yn(b: Bool) -> String:
     /// case-insensitive impl proves the user fn decided the answer ("X" == "x").
     #[test]
     fn custom_partial_eq_inside_containers_backends_agree() {
-        let src = "type CI:\n    s: String\n\nimpl PartialEq for CI:\n    fn eq(self, other: CI) -> Bool:\n        string.to_lower(self.s) == string.to_lower(other.s)\n\nfn main(console: Console):\n    let la = [CI(s: \"X\")]\n    let lb = [CI(s: \"x\")]\n    console.print(\"${la == lb}\")\n    let oa: Option(CI) = Some(CI(s: \"Y\"))\n    let ob: Option(CI) = Some(CI(s: \"y\"))\n    console.print(\"${oa == ob}\")\n    let ta = (CI(s: \"Z\"), 1)\n    let tb = (CI(s: \"z\"), 1)\n    console.print(\"${ta == tb}\")\n";
+        let src = "type CI:\n    s: String\n\nimpl PartialEq for CI:\n    fn eq(self, other: CI) -> Bool:\n        self.s.to_lower() == other.s.to_lower()\n\nfn main(console: Console):\n    let la = [CI(s: \"X\")]\n    let lb = [CI(s: \"x\")]\n    console.print(\"${la == lb}\")\n    let oa: Option(CI) = Some(CI(s: \"Y\"))\n    let ob: Option(CI) = Some(CI(s: \"y\"))\n    console.print(\"${oa == ob}\")\n    let ta = (CI(s: \"Z\"), 1)\n    let tb = (CI(s: \"z\"), 1)\n    console.print(\"${ta == tb}\")\n";
         let want = ["true", "true", "true"];
         assert_eq!(link_run(src), want, "interp");
         assert_eq!(wasm_run(src), want, "wasm");
@@ -8927,7 +8921,7 @@ fn yn(b: Bool) -> String:
     /// the copying path, so the interned literal is never mutated.
     #[test]
     fn inplace_string_append_is_fast_and_alias_safe() {
-        let src = "fn main(console: Console):\n    var s = \"\"\n    for i in 0..20000:\n        s = s + \"ab\"\n    console.print(\"${string.length(s)}\")\n    var t = \"seed\"\n    let alias = t\n    t = t + \"!\"\n    console.print(alias)\n    console.print(t)\n";
+        let src = "fn main(console: Console):\n    var s = \"\"\n    for i in 0..20000:\n        s = s + \"ab\"\n    console.print(\"${s.length()}\")\n    var t = \"seed\"\n    let alias = t\n    t = t + \"!\"\n    console.print(alias)\n    console.print(t)\n";
         let want: Vec<String> =
             ["40000", "seed", "seed!"].iter().map(|s| s.to_string()).collect();
         assert_eq!(link_run(src), want.clone(), "interpreter");
@@ -8985,7 +8979,7 @@ fn yn(b: Bool) -> String:
     /// agrees on both backends, including the `Option((Int, Int))` span payload.
     #[test]
     fn regex_module_toolkit_agrees_on_both_backends() {
-        let src = "import regex\nimport string\n\nfn main(console: Console):\n    console.print(\"${regex.matches(\"h.llo\", \"say hello\")}\")\n    console.print(\"${regex.matches(\"^\\\\d+$\", \"12345\")}\")\n    console.print(\"${regex.matches(\"^\\\\d+$\", \"12a45\")}\")\n    console.print(\"${regex.extract(\"\\\\d+\", \"a1b22c333\")}\")\n    console.print(regex.replace_all(\"\\\\s+\", \"too   many    spaces\", \" \"))\n    console.print(\"${regex.split(\",\\\\s*\", \"a, b,c\")}\")\n    console.print(\"${regex.matches(\"[a-f]+\", \"deadbeef\")}\")\n    console.print(\"${regex.matches(\"^[^0-9]+$\", \"abc\")}\")\n    console.print(\"${regex.find(\"a+\", \"caat\")}\")\n    console.print(\"${regex.matches(\"\\\\w+@\\\\w+\\\\.\\\\w+\", \"mail me: a_b@example.com\")}\")\n    console.print(regex.replace_all(\"[0-9]+\", \"r2d2\", \"#\"))\n";
+        let src = "import regex\n\nfn main(console: Console):\n    console.print(\"${regex.matches(\"h.llo\", \"say hello\")}\")\n    console.print(\"${regex.matches(\"^\\\\d+$\", \"12345\")}\")\n    console.print(\"${regex.matches(\"^\\\\d+$\", \"12a45\")}\")\n    console.print(\"${regex.extract(\"\\\\d+\", \"a1b22c333\")}\")\n    console.print(regex.replace_all(\"\\\\s+\", \"too   many    spaces\", \" \"))\n    console.print(\"${regex.split(\",\\\\s*\", \"a, b,c\")}\")\n    console.print(\"${regex.matches(\"[a-f]+\", \"deadbeef\")}\")\n    console.print(\"${regex.matches(\"^[^0-9]+$\", \"abc\")}\")\n    console.print(\"${regex.find(\"a+\", \"caat\")}\")\n    console.print(\"${regex.matches(\"\\\\w+@\\\\w+\\\\.\\\\w+\", \"mail me: a_b@example.com\")}\")\n    console.print(regex.replace_all(\"[0-9]+\", \"r2d2\", \"#\"))\n";
         let want: Vec<String> = [
             "true",
             "true",
@@ -9877,7 +9871,7 @@ fn yn(b: Bool) -> String:
                 "list index 5 out of bounds (length 2)",
             ),
             (
-                "import string\nfn main(console: Console):\n    console.print(\"${string.to_int(\"junk\")}\")\n",
+                "fn main(console: Console):\n    console.print(\"${\"junk\".to_int()}\")\n",
                 "cannot parse `junk` as an Int",
             ),
             (
@@ -9962,15 +9956,15 @@ fn yn(b: Bool) -> String:
                 "math.to_base: base `1` is outside 2..16",
             ),
             (
-                "import string\nfn main(console: Console):\n    console.print(string.pad_left(\"x\", 3, \"\"))\n",
+                "fn main(console: Console):\n    console.print(\"x\".pad_left(3, \"\"))\n",
                 "string.pad_left: empty `fill` cannot pad to width 3",
             ),
             (
-                "import string\nfn main(console: Console):\n    console.print(string.pad_right(\"x\", 3, \"\"))\n",
+                "fn main(console: Console):\n    console.print(\"x\".pad_right(3, \"\"))\n",
                 "string.pad_right: empty `fill` cannot pad to width 3",
             ),
             (
-                "import string\nfn main(console: Console):\n    console.print(string.center(\"x\", 3, \"\"))\n",
+                "fn main(console: Console):\n    console.print(\"x\".center(3, \"\"))\n",
                 "string.center: empty `fill` cannot pad to width 3",
             ),
             (
@@ -10018,7 +10012,7 @@ fn yn(b: Bool) -> String:
         // pow(x, 0), isqrt(0), days_in_month for every month 1..12, to_base at both
         // ends of 2..16, and an empty fill when the string is already wide enough
         // (no padding is needed, so nothing is violated).
-        let ok = "import math\nimport time\nimport string\nfn main(console: Console):\n    console.print(\"${math.factorial(0)}\")\n    console.print(\"${math.pow(2, 0)}\")\n    console.print(\"${math.isqrt(0)}\")\n    console.print(\"${time.days_in_month(2024, 2)}\")\n    console.print(\"${time.days_in_month(2026, 2)}\")\n    console.print(\"${time.days_in_month(2026, 12)}\")\n    console.print(math.to_base(10, 2))\n    console.print(math.to_base(255, 16))\n    console.print(string.pad_left(\"abc\", 3, \"\"))\n    console.print(string.center(\"abcd\", 3, \"\"))\n";
+        let ok = "import math\nimport time\nfn main(console: Console):\n    console.print(\"${math.factorial(0)}\")\n    console.print(\"${math.pow(2, 0)}\")\n    console.print(\"${math.isqrt(0)}\")\n    console.print(\"${time.days_in_month(2024, 2)}\")\n    console.print(\"${time.days_in_month(2026, 2)}\")\n    console.print(\"${time.days_in_month(2026, 12)}\")\n    console.print(math.to_base(10, 2))\n    console.print(math.to_base(255, 16))\n    console.print(\"abc\".pad_left(3, \"\"))\n    console.print(\"abcd\".center(3, \"\"))\n";
         let want = vec!["1", "1", "0", "29", "28", "31", "1010", "ff", "abc", "abcd"];
         assert_eq!(link_run(ok), want, "interpreter boundary");
         assert_eq!(wasm_run(ok), want, "compiled boundary");
@@ -10038,7 +10032,6 @@ import list
 import time
 import duration
 import ascii
-import string
 import option
 
 fn show_chunks(xs: List(List(Int))) -> String:
@@ -10083,8 +10076,7 @@ fn main(console: Console):
     /// oauth.authorize_url extends a query-bearing endpoint with `&`.
     #[test]
     fn stdlib_edge_contracts_batch2_backends_agree() {
-        let src = r#"import string
-import semver
+        let src = r#"import semver
 import encoding
 import oauth
 import option
@@ -10100,10 +10092,10 @@ fn ver(s: String) -> String:
         Err(_) -> "err"
 
 fn main(console: Console):
-    let (a1, a2) = string.split_once("abc", "")
-    console.print(string.replace_first("abc", "", "X") + "|" + a1 + "," + a2 + "|" + "${string.index_of("abc", "")}" + "|" + "${string.count("abc", "")}")
-    let (b1, b2) = string.split_once("k=v", "=")
-    console.print(string.replace_first("aXc", "X", "b") + "|" + b1 + "," + b2)
+    let (a1, a2) = "abc".split_once("")
+    console.print("abc".replace_first("", "X") + "|" + a1 + "," + a2 + "|" + "${"abc".index_of("")}" + "|" + "${"abc".count("")}")
+    let (b1, b2) = "k=v".split_once("=")
+    console.print("aXc".replace_first("X", "b") + "|" + b1 + "," + b2)
     console.print(ver("1.2.3") + "|" + ver("+1.2.3") + "|" + ver("1.+2.3") + "|" + ver("-1.2.3"))
     console.print(ok_err(encoding.base64url_decode("SGk")) + "|" + ok_err(encoding.base64url_decode("SGk=")) + "|" + ok_err(encoding.base64_decode("SGk=")))
     console.print(oauth.authorize_url("https://idp/auth?prompt=consent", "c", "https://app/cb", "openid", "s"))
@@ -10142,7 +10134,6 @@ import server
 import iter
 import option
 import duration
-import string
 
 fn show_url(raw: String) -> String:
     match url.parse(raw):
@@ -10158,7 +10149,7 @@ fn main(console: Console):
     console.print((http.header(resp, "x-trace-id") ?? "none") + "|" + (http.header(resp, "X-Trace-Id") ?? "none"))
     let head_wire = server.render_for(server.text(200, "body"), "HEAD")
     let get_wire = server.render_for(server.text(200, "body"), "GET")
-    console.print("${string.contains(head_wire, "Content-Length: 4")}|${string.ends_with(head_wire, "\r\n\r\n")}|${string.ends_with(get_wire, "body")}")
+    console.print("${head_wire.contains("Content-Length: 4")}|${head_wire.ends_with("\r\n\r\n")}|${get_wire.ends_with("body")}")
     let tail: List(Int) = iter.collect(iter.drop(iter.range(0, 100000), 99997))
     console.print("${tail}")
 "#;
@@ -11019,7 +11010,7 @@ fn main(console: Console, root: Dir):
     /// inside a `List`/`Option` are `true`; genuinely different values are `false`.
     #[test]
     fn case_insensitive_custom_eq_through_containers() {
-        let src = "import string\n\ntype CI:\n    CI(String)\n\nimpl PartialEq for CI:\n    fn eq(self, other: CI) -> Bool:\n        match self:\n            CI(a) -> match other:\n                CI(b) -> string.to_lower(a) == string.to_lower(b)\n\nfn main(console: Console):\n    console.print(\"${CI(\"Hello\") == CI(\"hello\")}\")\n    console.print(\"${[CI(\"Hi\"), CI(\"YO\")] == [CI(\"hi\"), CI(\"yo\")]}\")\n    console.print(\"${Some(CI(\"Ab\")) == Some(CI(\"ab\"))}\")\n    console.print(\"${CI(\"x\") == CI(\"y\")}\")\n";
+        let src = "\ntype CI:\n    CI(String)\n\nimpl PartialEq for CI:\n    fn eq(self, other: CI) -> Bool:\n        match self:\n            CI(a) -> match other:\n                CI(b) -> a.to_lower() == b.to_lower()\n\nfn main(console: Console):\n    console.print(\"${CI(\"Hello\") == CI(\"hello\")}\")\n    console.print(\"${[CI(\"Hi\"), CI(\"YO\")] == [CI(\"hi\"), CI(\"yo\")]}\")\n    console.print(\"${Some(CI(\"Ab\")) == Some(CI(\"ab\"))}\")\n    console.print(\"${CI(\"x\") == CI(\"y\")}\")\n";
         let want = vec![
             "true".to_string(),
             "true".to_string(),
@@ -11240,7 +11231,7 @@ fn main(console: Console, root: Dir):
         ];
         for v in err_cases {
             let src = format!(
-                "fn main(console: Console):\n    console.print(\"${{string.to_int(\"{v}\")}}\")\n"
+                "fn main(console: Console):\n    console.print(\"${{\"{v}\".to_int()}}\")\n"
             );
             let module = parser::parse_module(&src).expect("parse");
             let bytes = codegen::compile_module_binary(&module)
@@ -11249,7 +11240,7 @@ fn main(console: Console, root: Dir):
             assert!(crate::run_wasm_bytes(&bytes).is_err(), "WASM must trap on `{v}`");
         }
         // The exact i64 boundaries parse identically on both backends.
-        let ok = "fn main(console: Console):\n    console.print(\"${string.to_int(\"9223372036854775807\")}\")\n    console.print(\"${string.to_int(\"-9223372036854775808\")}\")\n";
+        let ok = "fn main(console: Console):\n    console.print(\"${\"9223372036854775807\".to_int()}\")\n    console.print(\"${\"-9223372036854775808\".to_int()}\")\n";
         let want = vec![
             "9223372036854775807".to_string(),
             "-9223372036854775808".to_string(),
@@ -11293,7 +11284,7 @@ fn main(console: Console, root: Dir):
     #[test]
     fn trim_whitespace_set_agrees_on_both_backends() {
         // "  \t\n hi \r\x0b" -> "hi"; "\x0c x \x0c" -> "x"; NBSP stays around 'y'.
-        let src = "fn main(console: Console):\n    console.print(\"[\" + string.trim(\"  \\t\\n hi \\r\u{0b}\") + \"]\")\n    console.print(\"[\" + string.trim(\"\u{0c} x \u{0c}\") + \"]\")\n    console.print(\"[\" + string.trim(\"\u{a0}y\u{a0}\") + \"]\")\n";
+        let src = "fn main(console: Console):\n    console.print(\"[\" + \"  \\t\\n hi \\r\u{0b}\".trim() + \"]\")\n    console.print(\"[\" + \"\u{0c} x \u{0c}\".trim() + \"]\")\n    console.print(\"[\" + \"\u{a0}y\u{a0}\".trim() + \"]\")\n";
         let want = vec![
             "[hi]".to_string(),
             "[x]".to_string(),
@@ -11311,7 +11302,7 @@ fn main(console: Console, root: Dir):
     /// conversion.)
     #[test]
     fn to_string_of_builtin_call_results_agrees() {
-        let src = "fn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, \"a\", 1)\n    dict.insert(d, \"b\", 2)\n    console.print(\"${dict.contains_key(d, \"a\")}\")\n    console.print(\"${dict.contains_key(d, \"z\")}\")\n    console.print(\"${dict.length(d)}\")\n    console.print(\"${string.contains(\"hello\", \"ell\")}\")\n";
+        let src = "fn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, \"a\", 1)\n    dict.insert(d, \"b\", 2)\n    console.print(\"${dict.contains_key(d, \"a\")}\")\n    console.print(\"${dict.contains_key(d, \"z\")}\")\n    console.print(\"${dict.length(d)}\")\n    console.print(\"${\"hello\".contains(\"ell\")}\")\n";
         let want = vec![
             "true".to_string(),
             "false".to_string(),
@@ -11544,11 +11535,10 @@ fn main(console: Console):
     fn proper_tail_calls_preserve_intrinsic_dispatch_on_both_backends() {
         let src = r#"
 import list
-import string
 import vm
 
 fn upper(s: String) -> String:
-    string.to_upper(s)
+    s.to_upper()
 
 fn parallel_once(xs: List(Int)) -> List(Int):
     vm.par_map(xs, fn(n: Int): n + 1)
@@ -11897,7 +11887,7 @@ fn main(console: Console):
     /// the interpreter's ASCII fold byte-for-byte — no longer interpreter-only.
     #[test]
     fn wasm_ascii_case_mapping() {
-        let src = "fn main(console: Console):\n    console.print(string.to_upper(\"Hi, World! 9z\"))\n    console.print(string.to_lower(\"Hi, World! 9A\"))\n";
+        let src = "fn main(console: Console):\n    console.print(\"Hi, World! 9z\".to_upper())\n    console.print(\"Hi, World! 9A\".to_lower())\n";
         let want = vec!["HI, WORLD! 9Z".to_string(), "hi, world! 9a".to_string()];
         assert_eq!(interp(src), want.clone(), "interpreter");
         assert_eq!(run_on_wasm(src), want, "compiled WASM must agree");
@@ -11937,7 +11927,7 @@ fn main(console: Console):
     /// number; it now agrees on both backends.
     #[test]
     fn wasm_string_to_int_uses_i64_and_trims() {
-        let src = "fn main(console: Console):\n    console.print(\"${string.to_int(\"5000000000\")}\")\n    console.print(\"${string.to_int(\"-7000000000\")}\")\n    console.print(\"${string.to_int(\"  42  \")}\")\n";
+        let src = "fn main(console: Console):\n    console.print(\"${\"5000000000\".to_int()}\")\n    console.print(\"${\"-7000000000\".to_int()}\")\n    console.print(\"${\"  42  \".to_int()}\")\n";
         let want = vec![
             "5000000000".to_string(),
             "-7000000000".to_string(),
@@ -11957,13 +11947,13 @@ fn main(console: Console):
     fn wasm_substring_clamps_out_of_range_indices_in_i64() {
         let src = r#"fn main(console: Console):
     let s = "abcdef"
-    console.print(string.substring(s, (-2), 3))
-    console.print(string.substring(s, 2, 100))
-    console.print(string.substring(s, 4, 2))
-    console.print(string.substring(s, 0, 6))
-    console.print(string.substring(s, (-9000000000), 9000000000))
-    console.print(string.substring(s, (-9223372036854775807), 9223372036854775807))
-    console.print(string.substring("X-5166417078869286437Y", (-3261219961577993898), 5500724189412945291))
+    console.print(s.substring((-2), 3))
+    console.print(s.substring(2, 100))
+    console.print(s.substring(4, 2))
+    console.print(s.substring(0, 6))
+    console.print(s.substring((-9000000000), 9000000000))
+    console.print(s.substring((-9223372036854775807), 9223372036854775807))
+    console.print("X-5166417078869286437Y".substring((-3261219961577993898), 5500724189412945291))
 "#;
         let want = vec![
             "abc".to_string(),
@@ -12032,7 +12022,6 @@ fn yn(b: Bool) -> String:
     #[test]
     fn dict_module_higher_level_operations() {
         let src = r#"import dict
-import string
 
 fn main(console: Console):
     let d = dict.from_pairs([("a", 1), ("b", 2), ("c", 3)])
@@ -12068,7 +12057,6 @@ fn bs(b: Bool) -> String:
     #[test]
     fn json_module_typed_field_accessors() {
         let src = r#"import json
-import string
 
 fn main(console: Console):
     match json.decode("{\"name\":\"acme\",\"n\":7,\"caps\":[\"Net\",\"Console\"],\"arr\":[\"a\",\"b\"]}"):
@@ -12107,7 +12095,6 @@ fn oi(o: Option(Int)) -> String:
     #[test]
     fn rights_module_covers_capabilities_rights_precisely() {
         let src = r#"import rights
-import string
 
 fn main(console: Console):
     console.print(yes(rights.covers("Net", "Net[Listen]")))
@@ -12244,7 +12231,7 @@ fn yes(b: Bool) -> String:
     #[test]
     fn main_receives_command_line_args() {
         let run = |args: Vec<String>| -> Vec<String> {
-            let src = "import string\nfn main(console: Console, args: List(String)):\n    console.print(list.join(args, \",\"))\n";
+            let src = "fn main(console: Console, args: List(String)):\n    console.print(list.join(args, \",\"))\n";
             let module = parser::parse_module(src).expect("parse");
             let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
             typeck::check(&linked).expect("typecheck");
@@ -12345,10 +12332,10 @@ fn main(console: Console):
                 "strings",
                 r#"
 fn main(console: Console):
-    console.print(string.replace("a,b,c", ",", "-"))
-    console.print("${string.contains("hello", "l")}")
-    console.print(string.substring("hello", 1, 4))
-    for w in string.split("the cat sat", " "):
+    console.print("a,b,c".replace(",", "-"))
+    console.print("${"hello".contains("l")}")
+    console.print("hello".substring(1, 4))
+    for w in "the cat sat".split(" "):
         console.print(w)
 "#,
             ),
@@ -12363,7 +12350,7 @@ fn count_matches(words: List(String), target: String) -> Int:
     n
 
 fn main(console: Console):
-    let words = string.split("apple banana apple cherry apple", " ")
+    let words = "apple banana apple cherry apple".split(" ")
     console.print("${count_matches(words, "apple")}")
 "#,
             ),
@@ -12371,7 +12358,7 @@ fn main(console: Console):
                 "string equality + ordering",
                 r#"
 fn main(console: Console):
-    let a = string.substring("xapple", 1, 6)
+    let a = "xapple".substring(1, 6)
     console.print("${(a == "apple")}")
     console.print("${(a == "apricot")}")
     console.print("${(a != "apricot")}")
@@ -12838,8 +12825,8 @@ impl Eq for Box
 fn build(s: String) -> String:
     var acc = ""
     var i = 0
-    while (i < string.char_count(s)):
-        acc = (acc + string.substring(s, i, (i + 1)))
+    while (i < s.char_count()):
+        acc = (acc + s.substring(i, (i + 1)))
         i = (i + 1)
     acc
 
@@ -12870,7 +12857,6 @@ fn main(console: Console):
         // strings and user `impl Eq` types (Tag).
         let client = r#"
 import list
-import string
 
 type Tag:
     Tag(Int)
@@ -12886,8 +12872,8 @@ impl Eq for Tag
 fn build(s: String) -> String:
     var acc = ""
     var i = 0
-    while (i < string.char_count(s)):
-        acc = (acc + string.substring(s, i, (i + 1)))
+    while (i < s.char_count()):
+        acc = (acc + s.substring(i, (i + 1)))
         i = (i + 1)
     acc
 
@@ -12917,7 +12903,6 @@ fn main(console: Console):
         // runtime-built strings and a user Eq type (Id), and dedupe along the way.
         let client = r#"
 import set
-import string
 
 type Id:
     Id(Int)
@@ -12933,8 +12918,8 @@ impl Eq for Id
 fn build(s: String) -> String:
     var acc = ""
     var i = 0
-    while (i < string.char_count(s)):
-        acc = (acc + string.substring(s, i, (i + 1)))
+    while (i < s.char_count()):
+        acc = (acc + s.substring(i, (i + 1)))
         i = (i + 1)
     acc
 
@@ -12996,13 +12981,12 @@ fn main(console: Console):
         // a tiny tokenizer-style use: sum the digit values in a string.
         let client = r#"
 import ascii
-import string
 
 fn digit_sum(s: String) -> Int:
     var total = 0
     var i = 0
-    while (i < string.char_count(s)):
-        let c = string.char_at(s, i) ?? ""
+    while (i < s.char_count()):
+        let c = s.char_at(i) ?? ""
         if ascii.is_digit(c):
             total = (total + (ascii.to_digit(c) ?? 0))
         i = (i + 1)
@@ -13280,7 +13264,7 @@ fn main(console: Console):
     /// including a multi-byte (UTF-8) character. Counted by Unicode scalar.
     #[test]
     fn string_chars_backends_agree() {
-        let src = "fn main(console: Console):\n    let cs = string.chars(\"café\")\n    console.print(\"${list.length(cs)}\")\n    console.print(list.at(cs, 0))\n    console.print(list.at(cs, 3))\n";
+        let src = "fn main(console: Console):\n    let cs = \"café\".chars()\n    console.print(\"${list.length(cs)}\")\n    console.print(list.at(cs, 0))\n    console.print(list.at(cs, 3))\n";
         let expected = vec!["4".to_string(), "c".to_string(), "é".to_string()];
         // Interpreter (source of truth).
         assert_eq!(interpreter::run(src).expect("interp"), expected);
@@ -13324,7 +13308,6 @@ fn main(console: Console):
         // ascending or descending, and yields [] when step is 0.
         let client = r#"
 import list
-import string
 fn show_ints(xs: List(Int)) -> String:
     list.join(list.map(xs, fn(n: Int): "${n}"), ",")
 fn main(console: Console):
@@ -13353,7 +13336,6 @@ fn main(console: Console):
         let client = r#"
 import set
 import list
-import string
 fn show_ints(xs: List(Int)) -> String:
     list.join(list.map(xs, fn(n: Int): "${n}"), ",")
 fn main(console: Console):
@@ -13389,7 +13371,6 @@ fn main(console: Console):
         let client = r#"
 import math
 import list
-import string
 fn main(console: Console):
     let roots = list.map([0, 1, 2, 3, 4, 8, 9, 15, 16, 100, 99], fn(n: Int): math.isqrt(n))
     console.print(list.join(list.map(roots, fn(n: Int): "${n}"), ","))
@@ -13415,21 +13396,20 @@ fn main(console: Console):
         // parse_int validates an optional sign + digits before calling the raw
         // string_to_int builtin, so bad input is None (not a trap) consistently.
         let client = r#"
-import string
 import option
 fn show(o: Option(Int)) -> String:
     match o:
         Some(n) -> "${n}"
         None -> "none"
 fn main(console: Console):
-    console.print(show(string.parse_int("42")))
-    console.print(show(string.parse_int("-7")))
-    console.print(show(string.parse_int("0")))
-    console.print(show(string.parse_int("")))
-    console.print(show(string.parse_int("-")))
-    console.print(show(string.parse_int("12a")))
-    console.print(show(string.parse_int("3.5")))
-    console.print(show(string.parse_int(" 5")))
+    console.print(show("42".parse_int()))
+    console.print(show("-7".parse_int()))
+    console.print(show("0".parse_int()))
+    console.print(show("".parse_int()))
+    console.print(show("-".parse_int()))
+    console.print(show("12a".parse_int()))
+    console.print(show("3.5".parse_int()))
+    console.print(show(" 5".parse_int()))
 "#;
         let sources = [
             ("option", crate::bundled_module("option").unwrap()),
@@ -13450,13 +13430,12 @@ fn main(console: Console):
         // center pads both sides; an odd remainder goes on the right, and a
         // string already at/over width is returned unchanged.
         let client = r#"
-import string
 fn main(console: Console):
-    console.print("[" + string.center("hi", 6, " ") + "]")
-    console.print("[" + string.center("hi", 7, " ") + "]")
-    console.print("[" + string.center("odd", 8, "*") + "]")
-    console.print("[" + string.center("toolong", 4, " ") + "]")
-    console.print("[" + string.center("x", 1, " ") + "]")
+    console.print("[" + "hi".center(6, " ") + "]")
+    console.print("[" + "hi".center(7, " ") + "]")
+    console.print("[" + "odd".center(8, "*") + "]")
+    console.print("[" + "toolong".center(4, " ") + "]")
+    console.print("[" + "x".center(1, " ") + "]")
 "#;
         let sources = [
             ("string", crate::bundled_module("string").unwrap()),
@@ -13672,7 +13651,6 @@ fn main(console: Console):
         let client = r#"
 import func
 import list
-import string
 fn fst(p: (String, Int)) -> String:
     let (a, _b) = p
     a
@@ -13835,17 +13813,16 @@ fn main(console: Console):
         // rsplit_once splits on the LAST separator (vs split_once's first); when
         // the separator is absent the whole string is the right part.
         let client = r#"
-import string
 fn show2(p: (String, String)) -> String:
     let (a, b) = p
     a + "|" + b
 fn main(console: Console):
-    console.print(show2(string.rsplit_once("a.b.c", ".")))
-    console.print(show2(string.split_once("a.b.c", ".")))
-    console.print(show2(string.rsplit_once("nodot", ".")))
-    console.print(show2(string.rsplit_once("file.tar.gz", ".")))
-    console.print("${string.last_index_of("a.b.c", ".") ?? -1}")
-    console.print("${string.last_index_of("nodot", ".") ?? -1}")
+    console.print(show2("a.b.c".rsplit_once(".")))
+    console.print(show2("a.b.c".split_once(".")))
+    console.print(show2("nodot".rsplit_once(".")))
+    console.print(show2("file.tar.gz".rsplit_once(".")))
+    console.print("${"a.b.c".last_index_of(".") ?? -1}")
+    console.print("${"nodot".last_index_of(".") ?? -1}")
 "#;
         let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -13863,7 +13840,6 @@ fn main(console: Console):
         // shortest row, and an empty input gives an empty result.
         let client = r#"
 import list
-import string
 fn show_row(r: List(Int)) -> String:
     list.join(list.map(r, fn(n: Int): "${n}"), ",")
 fn show_grid(g: List(List(Int))) -> String:
@@ -13936,7 +13912,6 @@ fn main(console: Console):
         let client = r#"
 import prng
 import list
-import string
 fn main(console: Console):
     var r = prng.seed(1)
     var out = []
@@ -13994,7 +13969,6 @@ fn main(console: Console):
 import result
 import option
 import list
-import string
 fn nums(r: Result(List(Int), String)) -> String:
     match r:
         Ok(xs) -> list.join(list.map(xs, fn(n: Int): "${n}"), ",")
@@ -14030,7 +14004,6 @@ fn main(console: Console):
         let client = r#"
 import result
 import list
-import string
 fn main(console: Console):
     let (oks, errs) = result.partition([Ok(1), Err("a"), Ok(2), Err("b"), Ok(3)])
     console.print(list.join(list.map(oks, fn(n: Int): "${n}"), ","))
@@ -14227,7 +14200,6 @@ fn main(console: Console):
         let client = r#"
 import math
 import list
-import string
 fn show(xs: List(Int)) -> String:
     list.join(list.map(xs, fn(n: Int): "${n}"), ",")
 fn main(console: Console):
@@ -14721,7 +14693,7 @@ fn main(console: Console):
         let src_path = root.join("prog.witchy");
         std::fs::write(
             &src_path,
-            "import option\nimport string\n\nfn main(console: Console, env: Env, dir: Dir[Read], args: List(String)) -> Int:\n    let path = list.at(args, 0)\n    let label = match env.get_env(\"PATH\"):\n        Some(v) -> v\n        None -> \"unlabeled\"\n    for line in string.lines(dir.read(path)):\n        if string.contains(line, \"needle\"):\n            console.print(label + \": \" + line)\n    0\n",
+            "import option\n\nfn main(console: Console, env: Env, dir: Dir[Read], args: List(String)) -> Int:\n    let path = list.at(args, 0)\n    let label = match env.get_env(\"PATH\"):\n        Some(v) -> v\n        None -> \"unlabeled\"\n    for line in dir.read(path).lines():\n        if line.contains(\"needle\"):\n            console.print(label + \": \" + line)\n    0\n",
         )
         .unwrap();
         let host_path = std::env::var("PATH").expect("the test process has PATH");
@@ -15118,13 +15090,12 @@ fn main(console: Console):
         // Ord-over-String for max_of/maximum and Ints via the same `sort`.
         let client = r#"
 import cmp
-import string
 
 fn build(s: String) -> String:
     var acc = ""
     var i = 0
-    while (i < string.char_count(s)):
-        acc = (acc + string.substring(s, i, (i + 1)))
+    while (i < s.char_count()):
+        acc = (acc + s.substring(i, (i + 1)))
         i = (i + 1)
     acc
 
@@ -15172,7 +15143,7 @@ fn checked(n: Int) -> Result(Int, String):
 fn main(console: Console):
     console.print("${result.unwrap_or(result.or(checked(5), Ok(9)), 0)}")
     console.print("${result.unwrap_or(result.or(checked((0 - 1)), Ok(9)), 0)}")
-    console.print("${result.unwrap_or(result.or_else(checked((0 - 1)), fn(e: String): Ok(string.length(e))), 0)}")
+    console.print("${result.unwrap_or(result.or_else(checked((0 - 1)), fn(e: String): Ok(e.length())), 0)}")
     console.print("${result.map_or(checked(5), 0, fn(x: Int): (x * 2))}")
     console.print("${result.map_or(checked((0 - 1)), 99, fn(x: Int): (x * 2))}")
 "#;
@@ -15203,7 +15174,7 @@ fn main(console: Console):
     console.print("${result.is_err(checked((0 - 1)))}")
     let chained = result.and_then(checked(5), fn(n: Int): Ok((n * 10)))
     console.print("${result.unwrap_or(chained, 0)}")
-    let mapped = result.map_err(checked((0 - 1)), fn(s: String): string.length(s))
+    let mapped = result.map_err(checked((0 - 1)), fn(s: String): s.length())
     console.print("${result.is_err(mapped)}")
 "#;
         let sources = [("result", crate::bundled_module("result").unwrap()), ("main", client)];
@@ -15541,7 +15512,7 @@ fn main(console: Console):
     /// agree with the interpreter, AND `$__witchy_reowns` stays O(1).
     #[test]
     fn wir_inplace_str_append_is_o1_reowns() {
-        let src = "fn build(n: Int) -> String:\n    var s = \"\"\n    var i = 0\n    while i < n:\n        s = s + \"x\"\n        i = i + 1\n    s\n\nfn main(console: Console):\n    let r = build(500)\n    console.print(\"${string.length(r)}\")\n";
+        let src = "fn build(n: Int) -> String:\n    var s = \"\"\n    var i = 0\n    while i < n:\n        s = s + \"x\"\n        i = i + 1\n    s\n\nfn main(console: Console):\n    let r = build(500)\n    console.print(\"${r.length()}\")\n";
         let want = vec!["500".to_string()];
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
@@ -15629,11 +15600,11 @@ fn main(console: Console):
     fn single_allocator_invariant_holds_on_lowered_programs() {
         let progs = [
             // accumulators: list push / dict insert / string concat self-assigns
-            "fn main(console: Console):\n    var xs = []\n    var d = dict.new()\n    var s = \"\"\n    for i in 0..50:\n        list.push(xs, i)\n        dict.insert(d, \"k${i}\", i)\n        s = s + \"x\"\n    list.set_at(xs, 0, 9)\n    console.print(\"${list.length(xs)} ${dict.length(d)} ${string.length(s)}\")\n",
+            "fn main(console: Console):\n    var xs = []\n    var d = dict.new()\n    var s = \"\"\n    for i in 0..50:\n        list.push(xs, i)\n        dict.insert(d, \"k${i}\", i)\n        s = s + \"x\"\n    list.set_at(xs, 0, 9)\n    console.print(\"${list.length(xs)} ${dict.length(d)} ${s.length()}\")\n",
             // scalar region reclaim (the watermark rewind exemption)
-            "import string\n\nfn main(console: Console):\n    let n = region -> Int:\n        var parts = []\n        for i in 0..20:\n            list.push(parts, \"p${i}\")\n        list.length(parts)\n    console.print(\"${n}\")\n",
+            "\nfn main(console: Console):\n    let n = region -> Int:\n        var parts = []\n        for i in 0..20:\n            list.push(parts, \"p${i}\")\n        list.length(parts)\n    console.print(\"${n}\")\n",
             // pointer region copy-out (the `heap = wm + copied_len` advance-rewind)
-            "import string\n\nfn main(console: Console):\n    let summary = region:\n        var parts = []\n        for i in 0..20:\n            list.push(parts, \"p${i}\")\n        list.join(parts, \",\")\n    console.print(\"${string.length(summary)}\")\n",
+            "\nfn main(console: Console):\n    let summary: String = region:\n        var parts = []\n        for i in 0..20:\n            list.push(parts, \"p${i}\")\n        list.join(parts, \",\")\n    console.print(\"${summary.length()}\")\n",
         ];
         for src in progs {
             let linked = resolve_std_src(src);
@@ -15770,62 +15741,62 @@ fn main(console: Console):
             ),
             // string.length on the binary path.
             (
-                "fn main(console: Console):\n    console.print(\"${string.length(\"hello\")}\")\n",
+                "fn main(console: Console):\n    console.print(\"${\"hello\".length()}\")\n",
                 vec!["5".to_string()],
             ),
             // string.contains ($find_byte — a conditional br inside a loop) on
             // the binary path.
             (
-                "fn main(console: Console):\n    if string.contains(\"hello\", \"ell\"):\n        console.print(\"yes\")\n    else:\n        console.print(\"no\")\n    if string.contains(\"hello\", \"xyz\"):\n        console.print(\"yes2\")\n    else:\n        console.print(\"no2\")\n",
+                "fn main(console: Console):\n    if \"hello\".contains(\"ell\"):\n        console.print(\"yes\")\n    else:\n        console.print(\"no\")\n    if \"hello\".contains(\"xyz\"):\n        console.print(\"yes2\")\n    else:\n        console.print(\"no2\")\n",
                 vec!["yes".to_string(), "no2".to_string()],
             ),
             // string.starts_with ($starts_with — prefix byte-compare loop) on
             // the binary path.
             (
-                "fn main(console: Console):\n    console.print(\"${string.starts_with(\"hello\", \"hel\")}\")\n    console.print(\"${string.starts_with(\"hello\", \"lo\")}\")\n    console.print(\"${string.starts_with(\"hello\", \"\")}\")\n",
+                "fn main(console: Console):\n    console.print(\"${\"hello\".starts_with(\"hel\")}\")\n    console.print(\"${\"hello\".starts_with(\"lo\")}\")\n    console.print(\"${\"hello\".starts_with(\"\")}\")\n",
                 vec!["true".to_string(), "false".to_string(), "true".to_string()],
             ),
             // string.ends_with ($ends_with — suffix byte-compare loop) on the
             // binary path.
             (
-                "fn main(console: Console):\n    console.print(\"${string.ends_with(\"hello\", \"llo\")}\")\n    console.print(\"${string.ends_with(\"hello\", \"hel\")}\")\n    console.print(\"${string.ends_with(\"hello\", \"\")}\")\n",
+                "fn main(console: Console):\n    console.print(\"${\"hello\".ends_with(\"llo\")}\")\n    console.print(\"${\"hello\".ends_with(\"hel\")}\")\n    console.print(\"${\"hello\".ends_with(\"\")}\")\n",
                 vec!["true".to_string(), "false".to_string(), "true".to_string()],
             ),
             // string.substring ($str_substring → $char_to_byte + $substr, a
             // heap-allocating slice) on the binary path.
             (
-                "fn main(console: Console):\n    console.print(string.substring(\"hello world\", 0, 5))\n    console.print(string.substring(\"hello world\", 6, 11))\n",
+                "fn main(console: Console):\n    console.print(\"hello world\".substring(0, 5))\n    console.print(\"hello world\".substring(6, 11))\n",
                 vec!["hello".to_string(), "world".to_string()],
             ),
             // string.trim ($trim → $is_ws + $substr, two whitespace scan loops)
             // on the binary path.
             (
-                "fn main(console: Console):\n    console.print(string.trim(\"  hi  \"))\n    console.print(string.trim(\"abc\"))\n",
+                "fn main(console: Console):\n    console.print(\"  hi  \".trim())\n    console.print(\"abc\".trim())\n",
                 vec!["hi".to_string(), "abc".to_string()],
             ),
             // string.split ($split → $substr + $list_push, nested scan/compare
             // loops building a List(String)) on the binary path; indexed with
             // the already-migrated $list_at.
             (
-                "fn main(console: Console):\n    let parts = string.split(\"a,b,c\", \",\")\n    console.print(list.at(parts, 0))\n    console.print(list.at(parts, 1))\n    console.print(list.at(parts, 2))\n",
+                "fn main(console: Console):\n    let parts = \"a,b,c\".split(\",\")\n    console.print(list.at(parts, 0))\n    console.print(list.at(parts, 1))\n    console.print(list.at(parts, 2))\n",
                 vec!["a".to_string(), "b".to_string(), "c".to_string()],
             ),
             // for-loop over a list with an arena-resettable body (the watermark
             // optimization, ported to WIR): per-iteration `$heap` save/restore.
             (
-                "fn main(console: Console):\n    for piece in string.split(\"a,b,c\", \",\"):\n        console.print(piece)\n",
+                "fn main(console: Console):\n    for piece in \"a,b,c\".split(\",\"):\n        console.print(piece)\n",
                 vec!["a".to_string(), "b".to_string(), "c".to_string()],
             ),
             // range for-loop whose body allocates per iteration (nothing escapes,
             // so it's watermarked) — exercises the range-for arena reset on WIR.
             (
-                "fn main(console: Console):\n    for i in 0..3:\n        console.print(string.substring(\"abcdef\", i, i + 2))\n",
+                "fn main(console: Console):\n    for i in 0..3:\n        console.print(\"abcdef\".substring(i, i + 2))\n",
                 vec!["ab".to_string(), "bc".to_string(), "cd".to_string()],
             ),
             // while-loop with an arena-resettable allocating body (the watermark
             // now ported to WIR for `while` too).
             (
-                "fn main(console: Console):\n    var i: Int = 0\n    while i < 3:\n        console.print(string.substring(\"abcdef\", i, i + 2))\n        i = i + 1\n",
+                "fn main(console: Console):\n    var i: Int = 0\n    while i < 3:\n        console.print(\"abcdef\".substring(i, i + 2))\n        i = i + 1\n",
                 vec!["ab".to_string(), "bc".to_string(), "cd".to_string()],
             ),
             // match on an ADT constructor with a payload bind (Some(n)) / a
@@ -15891,7 +15862,7 @@ fn main(console: Console):
             // string.chars ($str_chars → $byte_to_char + $str_substring +
             // $list_push) splitting a multibyte string into a List(String).
             (
-                "fn main(console: Console):\n    let cs = string.chars(\"héllo\")\n    console.print(list.at(cs, 0))\n    console.print(list.at(cs, 1))\n    console.print(list.at(cs, 4))\n",
+                "fn main(console: Console):\n    let cs = \"héllo\".chars()\n    console.print(list.at(cs, 0))\n    console.print(list.at(cs, 1))\n    console.print(list.at(cs, 4))\n",
                 vec!["h".to_string(), "é".to_string(), "o".to_string()],
             ),
             // list.concat ($list_concat — two memory.copy's into a fresh slot
@@ -15903,19 +15874,19 @@ fn main(console: Console):
             // string.to_upper / to_lower ($ascii_case byte transform) on the
             // binary path.
             (
-                "fn main(console: Console):\n    console.print(string.to_upper(\"Hello, World!\"))\n    console.print(string.to_lower(\"Hello, World!\"))\n",
+                "fn main(console: Console):\n    console.print(\"Hello, World!\".to_upper())\n    console.print(\"Hello, World!\".to_lower())\n",
                 vec!["HELLO, WORLD!".to_string(), "hello, world!".to_string()],
             ),
             // string.to_int ($str_to_int — whitespace/sign/overflow-checked parse)
             // on the binary path.
             (
-                "fn main(console: Console):\n    console.print(\"${string.to_int(\"123\") + string.to_int(\"-23\")}\")\n",
+                "fn main(console: Console):\n    console.print(\"${\"123\".to_int() + \"-23\".to_int()}\")\n",
                 vec!["100".to_string()],
             ),
             // string.replace ($replace + $match_at — count-then-fill) on the
             // binary path, including a growing replacement.
             (
-                "fn main(console: Console):\n    console.print(string.replace(\"hello world\", \"o\", \"0\"))\n    console.print(string.replace(\"a.b.c\", \".\", \"::\"))\n",
+                "fn main(console: Console):\n    console.print(\"hello world\".replace(\"o\", \"0\"))\n    console.print(\"a.b.c\".replace(\".\", \"::\"))\n",
                 vec!["hell0 w0rld".to_string(), "a::b::c".to_string()],
             ),
             // dict with String keys ($dict_new/insert/get_or/has/size →
@@ -15976,7 +15947,7 @@ fn main(console: Console):
             // `string.char_count` (Unicode scalars, not bytes) via the `$char_count`
             // → `$byte_to_char` helper — the blocker for parse_int/pad_*.
             (
-                "fn main(console: Console):\n    console.print(\"${string.char_count(\"abc\")}\")\n    console.print(\"${string.char_count(\"héllo\")}\")\n",
+                "fn main(console: Console):\n    console.print(\"${\"abc\".char_count()}\")\n    console.print(\"${\"héllo\".char_count()}\")\n",
                 vec!["3".to_string(), "5".to_string()],
             ),
             // Int<->Float numeric conversions + sqrt (the new `ToFloat`/`ToInt`/`Sqrt`
@@ -17870,15 +17841,15 @@ fn main() -> Int:
         // separator yielding the whole string.
         let src = r#"
 fn main(console: Console):
-    let p = string.split("a,bb,ccc", ",")
+    let p = "a,bb,ccc".split(",")
     console.print("${list.length(p)}")
     console.print(list.at(p, 0))
     console.print(list.at(p, 2))
-    console.print("${list.length(string.split("a,,b", ","))}")
-    console.print(list.at(string.split("a,,b", ","), 1))
-    console.print("${list.length(string.split("", ","))}")
-    console.print("${list.length(string.split("abc", ""))}")
-    console.print(list.at(string.split("xXXyXXz", "XX"), 2))
+    console.print("${list.length("a,,b".split(","))}")
+    console.print(list.at("a,,b".split(","), 1))
+    console.print("${list.length("".split(","))}")
+    console.print("${list.length("abc".split(""))}")
+    console.print(list.at("xXXyXXz".split("XX"), 2))
 "#;
         assert_eq!(
             run_on_wasm(src),
@@ -18015,14 +17986,14 @@ fn main(console: Console):
         // at every char boundary), and UTF-8 (`é` is a 2-byte match).
         let src = r#"
 fn main(console: Console):
-    console.print(string.replace("a,b,c", ",", ";"))
-    console.print(string.replace("aXXbXXc", "XX", "-"))
-    console.print(string.replace("aaa", "aa", "x"))
-    console.print(string.replace("a,b,c", ",", ""))
-    console.print(string.replace("abc", "b", "XYZ"))
-    console.print(string.replace("abc", "z", "Q"))
-    console.print(string.replace("ab", "", "-"))
-    console.print(string.replace("café", "é", "e"))
+    console.print("a,b,c".replace(",", ";"))
+    console.print("aXXbXXc".replace("XX", "-"))
+    console.print("aaa".replace("aa", "x"))
+    console.print("a,b,c".replace(",", ""))
+    console.print("abc".replace("b", "XYZ"))
+    console.print("abc".replace("z", "Q"))
+    console.print("ab".replace("", "-"))
+    console.print("café".replace("é", "e"))
 "#;
         assert_eq!(
             run_on_wasm(src),
@@ -18037,16 +18008,16 @@ fn main(console: Console):
         // 4 (byte 5), and string.substring(3,5) is the two characters "é!".
         let src = r#"
 fn main(console: Console):
-    console.print("${if string.contains("hello world", "world"): 1 else: 0}")
-    console.print("${if string.contains("abc", "xyz"): 1 else: 0}")
-    console.print("${if string.contains("abc", ""): 1 else: 0}")
-    console.print("${string.contains("hello", "l")}")
-    console.print("${string.contains("hello", "z")}")
-    console.print(string.substring("hello", 1, 4))
-    console.print(string.substring("hi", 0, 100))
-    console.print(string.substring("hi", 5, 10))
-    console.print("${string.contains("café!", "!")}")
-    console.print(string.substring("café!", 3, 5))
+    console.print("${if "hello world".contains("world"): 1 else: 0}")
+    console.print("${if "abc".contains("xyz"): 1 else: 0}")
+    console.print("${if "abc".contains(""): 1 else: 0}")
+    console.print("${"hello".contains("l")}")
+    console.print("${"hello".contains("z")}")
+    console.print("hello".substring(1, 4))
+    console.print("hi".substring(0, 100))
+    console.print("hi".substring(5, 10))
+    console.print("${"café!".contains("!")}")
+    console.print("café!".substring(3, 5))
 "#;
         assert_eq!(
             run_on_wasm(src),
@@ -18362,7 +18333,7 @@ fn main(console: Console):
     dict.insert(d, "c", 30)
     var ksum = 0
     for k in dict.keys(d):
-        ksum = (ksum + string.length(k))
+        ksum = (ksum + k.length())
     console.print("${ksum}")
     var vsum = 0
     for v in dict.values(d):
@@ -18371,7 +18342,7 @@ fn main(console: Console):
     var psum = 0
     for entry in dict.pairs(d):
         let (k, v) = entry
-        psum = ((psum + string.length(k)) + v)
+        psum = ((psum + k.length()) + v)
     console.print("${psum}")
 "#;
         // keys "a","b","c" (len 1 each) -> 3; values 10+20+30 -> 60; pairs
@@ -18395,13 +18366,12 @@ fn main(console: Console):
         // (split on "\n"), `join`, and `repeat`. lines -> ["a","bb","ccc"] (3);
         // join -> "a-bb-ccc" (8); repeat -> "zzzzz" (5): 3*100 + 8 + 5 = 313.
         let client = r#"
-import string
 
 fn main() -> Int:
-    let parts = string.lines("a\nbb\nccc")
+    let parts = "a\nbb\nccc".lines()
     let joined = list.join(parts, "-")
-    let r = string.repeat("z", 5)
-    (((list.length(parts) * 100) + string.length(joined)) + string.length(r))
+    let r = "z".repeat(5)
+    (((list.length(parts) * 100) + joined.length()) + r.length())
 "#;
         assert_eq!(
             run_linked_on_wasm(
@@ -18418,15 +18388,14 @@ fn main() -> Int:
         // even when `fill` is multi-character; an already-wide string is left
         // untouched. Multi-char fill "-=" padding "ab" to 7 -> "-=-=-ab".
         let client = r#"
-import string
 
 fn main(console: Console):
-    console.print(string.pad_left("42", 5, "0"))
-    console.print(string.pad_right("42", 5, "."))
-    console.print(string.pad_left("hello", 3, "x"))
-    console.print(string.pad_left("ab", 7, "-="))
-    console.print(string.pad_left("café", 6, "*"))
-    console.print(string.pad_right("café", 6, "*"))
+    console.print("42".pad_left(5, "0"))
+    console.print("42".pad_right(5, "."))
+    console.print("hello".pad_left(3, "x"))
+    console.print("ab".pad_left(7, "-="))
+    console.print("café".pad_left(6, "*"))
+    console.print("café".pad_right(6, "*"))
 "#;
         let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -18471,17 +18440,16 @@ fn main(console: Console):
         // leaving the string untouched otherwise; stripping the whole string
         // yields "". Complements starts_with/ends_with.
         let client = r#"
-import string
 
 fn main(console: Console):
-    console.print(string.strip_prefix("witchy.lang", "witchy."))
-    console.print(string.strip_prefix("witchy.lang", "scala."))
-    console.print(string.strip_suffix("main.witchy", ".witchy"))
-    console.print(string.strip_suffix("main.rs", ".witchy"))
-    console.print(string.strip_prefix("abc", "abc"))
-    console.print(string.strip_prefix("émile", "é"))
-    console.print(string.strip_suffix("héllo!", "!"))
-    console.print(string.strip_suffix("naïveté", "té"))
+    console.print("witchy.lang".strip_prefix("witchy."))
+    console.print("witchy.lang".strip_prefix("scala."))
+    console.print("main.witchy".strip_suffix(".witchy"))
+    console.print("main.rs".strip_suffix(".witchy"))
+    console.print("abc".strip_prefix("abc"))
+    console.print("émile".strip_prefix("é"))
+    console.print("héllo!".strip_suffix("!"))
+    console.print("naïveté".strip_suffix("té"))
 "#;
         let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -18529,7 +18497,7 @@ fn main() -> Int:
     while (i < 400):
         s = (s + "x")
         i = (i + 1)
-    string.length(s)
+    s.length()
 "#;
         assert_eq!(run_on_wasm(src), vec!["400"]);
     }
@@ -18631,8 +18599,8 @@ fn main() -> Int:
         // check("html")=2, check("http")=1, check("xml")=0 -> 210.
         let src = r#"
 fn check(s: String) -> Int:
-    if string.starts_with(s, "ht"):
-        if string.ends_with(s, "ml"):
+    if s.starts_with("ht"):
+        if s.ends_with("ml"):
             2
         else:
             1
@@ -19128,7 +19096,6 @@ fn main(console: Console):
         let client = r#"
 import iter
 import func
-import string
 fn main(console: Console):
     var es = []
     let ps: List((Int, String)) = iter.collect(iter.enumerate(iter.from_list(["a", "b", "c"])))
@@ -19771,7 +19738,7 @@ fn main(console: Console):
             interpreter::run_module(linked, &tmp, Vec::new())
         };
         // `list` enumerates a subdir's entries in sorted (deterministic) order.
-        let out = run("import string\nfn main(console: Console, root: Dir):\n    console.print(list.join(root.subtree(\"store\").list(), \",\"))\n")
+        let out = run("fn main(console: Console, root: Dir):\n    console.print(list.join(root.subtree(\"store\").list(), \",\"))\n")
             .expect("run");
         assert_eq!(out, vec!["alpha,bravo"]);
         // `make_dir` creates a confined subdirectory.
@@ -20469,10 +20436,10 @@ fn main(console: Console):
     fn replace_and_int_keyed_dict_backends_agree() {
         let src = r#"
 fn main(console: Console):
-    console.print((("[" + string.replace("abc", "", "-")) + "]"))
-    console.print(string.replace("abc", "x", "y"))
-    console.print(string.replace("aaa", "a", "bb"))
-    console.print(string.replace("hello world", "o", "0"))
+    console.print((("[" + "abc".replace("", "-")) + "]"))
+    console.print("abc".replace("x", "y"))
+    console.print("aaa".replace("a", "bb"))
+    console.print("hello world".replace("o", "0"))
     var d = dict.new()
     dict.insert(d, 1, 100)
     dict.insert(d, 2, 200)
@@ -21042,11 +21009,11 @@ fn main(console: Console):
     fn char_count_vs_string_length_backends_agree() {
         let src = r#"
 fn main(console: Console):
-    console.print("${string.char_count("hello")}")
-    console.print("${string.length("hello")}")
-    console.print("${string.char_count("café")}")
-    console.print("${string.length("café")}")
-    console.print("${string.char_count("")}")
+    console.print("${"hello".char_count()}")
+    console.print("${"hello".length()}")
+    console.print("${"café".char_count()}")
+    console.print("${"café".length()}")
+    console.print("${"".char_count()}")
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "char_count diverged");
         assert_eq!(run_on_wasm(src), vec!["5", "5", "4", "5", "0"]);
@@ -21058,14 +21025,13 @@ fn main(console: Console):
         // or 4-byte (emoji) boundary must compute the same char->byte offsets on
         // both backends, while length (bytes) vs char_count tracks UTF-8 widths.
         let src = r#"
-import string
 fn main(console: Console):
-    console.print(string.substring("café", 0, 3))
-    console.print(string.substring("café", 3, 4))
-    console.print("${string.length("a😀b")}")
-    console.print("${string.char_count("a😀b")}")
-    console.print(string.substring("a😀b", 1, 2))
-    console.print(string.substring("a😀b", 0, 2))
+    console.print("café".substring(0, 3))
+    console.print("café".substring(3, 4))
+    console.print("${"a😀b".length()}")
+    console.print("${"a😀b".char_count()}")
+    console.print("a😀b".substring(1, 2))
+    console.print("a😀b".substring(0, 2))
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "multibyte substring diverged");
         assert_eq!(run_on_wasm(src), vec!["caf", "é", "6", "3", "😀", "a😀"]);
@@ -21078,16 +21044,15 @@ fn main(console: Console):
     #[test]
     fn std_string_take_drop_backends_agree() {
         let client = r#"
-import string
 
 fn main(console: Console):
-    console.print(string.take("hello", 3))
-    console.print((("[" + string.take("hi", 10)) + "]"))
-    console.print((("[" + string.take("hi", 0)) + "]"))
-    console.print(string.drop("hello", 2))
-    console.print((("[" + string.drop("hi", 5)) + "]"))
-    console.print(string.take("café", 2))
-    console.print(string.drop("café", 3))
+    console.print("hello".take(3))
+    console.print((("[" + "hi".take(10)) + "]"))
+    console.print((("[" + "hi".take(0)) + "]"))
+    console.print("hello".drop(2))
+    console.print((("[" + "hi".drop(5)) + "]"))
+    console.print("café".take(2))
+    console.print("café".drop(3))
 "#;
         let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -21099,13 +21064,12 @@ fn main(console: Console):
     #[test]
     fn std_string_reverse_backends_agree() {
         let client = r#"
-import string
 
 fn main(console: Console):
-    console.print(string.reverse("hello"))
-    console.print((("[" + string.reverse("")) + "]"))
-    console.print(string.reverse("a"))
-    console.print(string.reverse("café"))
+    console.print("hello".reverse())
+    console.print((("[" + "".reverse()) + "]"))
+    console.print("a".reverse())
+    console.print("café".reverse())
 "#;
         let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -21126,13 +21090,12 @@ fn main(console: Console):
     #[test]
     fn std_string_replace_first_backends_agree() {
         let client = r#"
-import string
 
 fn main(console: Console):
-    console.print(string.replace_first("a.b.c", ".", "/"))
-    console.print(string.replace_first("hello", "l", "L"))
-    console.print(string.replace_first("xyz", "q", "Q"))
-    console.print(string.replace_first("aa", "a", "bb"))
+    console.print("a.b.c".replace_first(".", "/"))
+    console.print("hello".replace_first("l", "L"))
+    console.print("xyz".replace_first("q", "Q"))
+    console.print("aa".replace_first("a", "bb"))
 "#;
         let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -21144,16 +21107,15 @@ fn main(console: Console):
     #[test]
     fn std_string_split_once_backends_agree() {
         let client = r#"
-import string
 
 fn main(console: Console):
-    let (k, v) = string.split_once("name=witchy", "=")
+    let (k, v) = "name=witchy".split_once("=")
     console.print(k)
     console.print(v)
-    let (a, b) = string.split_once("no-sep-here", "=")
+    let (a, b) = "no-sep-here".split_once("=")
     console.print(a)
     console.print((("[" + b) + "]"))
-    let (h, rest) = string.split_once("a=b=c", "=")
+    let (h, rest) = "a=b=c".split_once("=")
     console.print(h)
     console.print(rest)
 "#;
@@ -21167,15 +21129,14 @@ fn main(console: Console):
     #[test]
     fn std_string_words_backends_agree() {
         let client = r#"
-import string
 
 fn main(console: Console):
-    let ws = string.words("the  quick\tbrown\nfox ")
+    let ws = "the  quick\tbrown\nfox ".words()
     console.print("${list.length(ws)}")
     for w in ws:
         console.print(w)
-    console.print("${list.length(string.words("   "))}")
-    console.print("${list.length(string.words(""))}")
+    console.print("${list.length("   ".words())}")
+    console.print("${list.length("".words())}")
 "#;
         let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -21187,14 +21148,13 @@ fn main(console: Console):
     #[test]
     fn std_string_to_chars_backends_agree() {
         let client = r#"
-import string
 
 fn main(console: Console):
-    let cs = string.chars("café")
+    let cs = "café".chars()
     console.print("${list.length(cs)}")
     for c in cs:
         console.print(c)
-    console.print("${list.length(string.chars(""))}")
+    console.print("${list.length("".chars())}")
 "#;
         let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -21209,17 +21169,16 @@ fn main(console: Console):
         // occurrences (0 for an empty needle, and overlapping matches don't
         // double-count: "aaaa"/"aa" is 2). Both backends agree.
         let client = r#"
-import string
 
 fn main(console: Console):
-    console.print("${string.is_empty("")}")
-    console.print("${string.is_empty("x")}")
-    console.print("${string.count("banana", "a")}")
-    console.print("${string.count("banana", "an")}")
-    console.print("${string.count("aaaa", "aa")}")
-    console.print("${string.count("abc", "x")}")
-    console.print("${string.count("abc", "")}")
-    console.print("${string.count("aéaéa", "éa")}")
+    console.print("${"".is_empty()}")
+    console.print("${"x".is_empty()}")
+    console.print("${"banana".count("a")}")
+    console.print("${"banana".count("an")}")
+    console.print("${"aaaa".count("aa")}")
+    console.print("${"abc".count("x")}")
+    console.print("${"abc".count("")}")
+    console.print("${"aéaéa".count("éa")}")
 "#;
         let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -21235,13 +21194,12 @@ fn main(console: Console):
         // RFC-0044 rule 1: char_at returns `Some(c)` in range, `None` out of range
         // (no more "" sentinel). `?? "?"` recovers a display char for the miss.
         let client = r#"
-import string
 
 fn main(console: Console):
-    console.print(string.char_at("witchy", 0) ?? "?")
-    console.print(string.char_at("witchy", 5) ?? "?")
-    console.print((("[" + (string.char_at("witchy", 10) ?? "")) + "]"))
-    console.print((("[" + (string.char_at("", 0) ?? "")) + "]"))
+    console.print("witchy".char_at(0) ?? "?")
+    console.print("witchy".char_at(5) ?? "?")
+    console.print((("[" + ("witchy".char_at(10) ?? "")) + "]"))
+    console.print((("[" + ("".char_at(0) ?? "")) + "]"))
 "#;
         let sources = [("string", crate::bundled_module("string").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -21383,7 +21341,7 @@ fn main(console: Console):
     console.print("${option.unwrap_or(result.ok(check(5)), 0)}")
     console.print("${option.is_none(result.ok(check((0 - 1))))}")
     console.print("${option.is_none(result.err(check(5)))}")
-    console.print("${string.length(option.unwrap_or(result.err(check((0 - 1))), ""))}")
+    console.print("${option.unwrap_or(result.err(check((0 - 1))), "").length()}")
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -21529,7 +21487,6 @@ fn main(console: Console):
     fn json_renderer_integration_backends_agree() {
         let client = r#"
 import list
-import string
 
 type Json:
     JNull
@@ -22302,16 +22259,16 @@ fn main(console: Console):
     fn string_edge_cases_backends_agree() {
         let src = r#"
 fn main(console: Console):
-    console.print("${list.length(string.split("abc", ""))}")
-    console.print("${list.length(string.split("abc", "x"))}")
-    console.print("${list.length(string.split("a,b,c", ","))}")
-    console.print((("[" + string.substring("", 0, 5)) + "]"))
-    console.print((("[" + string.substring("hello", 3, 1)) + "]"))
-    console.print(string.substring("hello", 2, 100))
-    console.print("${string.contains("hello", "")}")
-    console.print("${string.contains("hello", "z")}")
+    console.print("${list.length("abc".split(""))}")
+    console.print("${list.length("abc".split("x"))}")
+    console.print("${list.length("a,b,c".split(","))}")
+    console.print((("[" + "".substring(0, 5)) + "]"))
+    console.print((("[" + "hello".substring(3, 1)) + "]"))
+    console.print("hello".substring(2, 100))
+    console.print("${"hello".contains("")}")
+    console.print("${"hello".contains("z")}")
     console.print((("[" + (("" + "x") + "")) + "]"))
-    console.print("${string.length("")}")
+    console.print("${"".length()}")
 "#;
         assert_eq!(interp(src), run_on_wasm(src), "string edge cases diverged");
     }
@@ -22322,11 +22279,11 @@ fn main(console: Console):
         // newlines, CRs) is stripped; an all-whitespace string trims to "".
         let src = r#"
 fn main(console: Console):
-    console.print(string.trim("  hello  "))
-    console.print(string.trim("\t\nfoo\r\n"))
-    console.print(string.trim("nospaces"))
-    console.print(string.trim("   "))
-    console.print("${string.length(string.trim("  a b  "))}")
+    console.print("  hello  ".trim())
+    console.print("\t\nfoo\r\n".trim())
+    console.print("nospaces".trim())
+    console.print("   ".trim())
+    console.print("${"  a b  ".trim().length()}")
 "#;
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["hello", "foo", "nospaces", "", "3"]);
@@ -22475,13 +22432,12 @@ fn main(console: Console, net: Net):
     #[test]
     fn std_string_trim_backends_agree() {
         let client = r#"
-import string
 fn main(console: Console):
-    console.print("[" + string.trim("  hello  ") + "]")
-    console.print("[" + string.trim_start("  hi") + "]")
-    console.print("[" + string.trim_end("bye  ") + "]")
-    console.print("[" + string.trim("\t\n x \r\n") + "]")
-    console.print("[" + string.trim("nospace") + "]")
+    console.print("[" + "  hello  ".trim() + "]")
+    console.print("[" + "  hi".trim_start() + "]")
+    console.print("[" + "bye  ".trim_end() + "]")
+    console.print("[" + "\t\n x \r\n".trim() + "]")
+    console.print("[" + "nospace".trim() + "]")
 "#;
         let sources = [("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -22531,7 +22487,7 @@ fn main(console: Console):
     /// `show` resolves — identically on both backends.
     #[test]
     fn rfc0046_trait_call_on_builtin_result_resolves_show() {
-        let src = "import show\nimport string\nimport list\n\nfn main(console: Console):\n    let parts = string.split(\"a,b,c\", \",\")\n    show.say(console, list.at(parts, 1))\n    show.say(console, list.at(string.split(\"x-y\", \"-\"), 0))\n";
+        let src = "import show\nimport list\n\nfn main(console: Console):\n    let parts = \"a,b,c\".split(\",\")\n    show.say(console, list.at(parts, 1))\n    show.say(console, list.at(\"x-y\".split(\"-\"), 0))\n";
         let want = vec!["b".to_string(), "x".to_string()];
         assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
@@ -24077,12 +24033,12 @@ fn main(console: Console):
         // are honored, and the parsed value feeds straight into arithmetic.
         let src = r#"
 fn main(console: Console):
-    console.print("${string.to_int("42")}")
-    console.print("${string.to_int("-17")}")
-    console.print("${string.to_int("  123  ")}")
-    console.print("${string.to_int("+8")}")
-    console.print("${string.to_int("0")}")
-    console.print("${(string.to_int("1000000") + 1)}")
+    console.print("${"42".to_int()}")
+    console.print("${"-17".to_int()}")
+    console.print("${"  123  ".to_int()}")
+    console.print("${"+8".to_int()}")
+    console.print("${"0".to_int()}")
+    console.print("${("1000000".to_int() + 1)}")
 "#;
         assert_eq!(interp(src), run_on_wasm(src));
         assert_eq!(run_on_wasm(src), vec!["42", "-17", "123", "8", "0", "1000001"]);
@@ -25271,15 +25227,15 @@ pub fn serve(console: Console, net: Net) -> Int:
     /// on the -1 ABI) still powers the tight std loops. Both backends agree.
     #[test]
     fn rfc0044_string_search_absence_is_option() {
-        let src = "import string\n\
+        let src = "\
                    fn main(console: Console):\n\
-                   \x20   console.print(\"${string.index_of(\"hello\", \"ll\") ?? -1}\")\n\
-                   \x20   console.print(\"${string.index_of(\"hello\", \"z\") ?? -1}\")\n\
-                   \x20   console.print(\"${string.last_index_of(\"a.b.c\", \".\") ?? -1}\")\n\
-                   \x20   console.print(\"${string.last_index_of(\"abc\", \".\") ?? -1}\")\n\
-                   \x20   console.print(\"${string.char_at(\"hi\", 1) ?? \"?\"}\")\n\
-                   \x20   console.print(\"${string.char_at(\"hi\", 9) ?? \"?\"}\")\n\
-                   \x20   console.print(\"${string.count(\"banana\", \"a\")}\")\n";
+                   \x20   console.print(\"${\"hello\".index_of(\"ll\") ?? -1}\")\n\
+                   \x20   console.print(\"${\"hello\".index_of(\"z\") ?? -1}\")\n\
+                   \x20   console.print(\"${\"a.b.c\".last_index_of(\".\") ?? -1}\")\n\
+                   \x20   console.print(\"${\"abc\".last_index_of(\".\") ?? -1}\")\n\
+                   \x20   console.print(\"${\"hi\".char_at(1) ?? \"?\"}\")\n\
+                   \x20   console.print(\"${\"hi\".char_at(9) ?? \"?\"}\")\n\
+                   \x20   console.print(\"${\"banana\".count(\"a\")}\")\n";
         let expected = ["2", "-1", "3", "-1", "i", "?", "3"];
         let linked = resolve_std_src(src);
         assert_eq!(

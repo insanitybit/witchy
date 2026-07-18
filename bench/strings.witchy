@@ -6,5 +6,5 @@ fn main(console: Console, clock: Clock):
     for i in 0..20000:
         s = s + "ab"
     let bench_t1 = clock.now_monotonic()
-    console.print("${string.length(s)}")
+    console.print("${s.length()}")
     console.print("bench_ns=${bench_t1 - bench_t0}")

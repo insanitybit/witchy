@@ -2133,12 +2133,12 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     let s = "abcdef"
-    console.print(string.substring(s, 1, 4))
-    console.print(string.substring(s, 4, 100))
-    console.print(string.substring(s, 3, 1))
+    console.print(s.substring(1, 4))
+    console.print(s.substring(4, 100))
+    console.print(s.substring(3, 1))
     console.print("${string.find(s, "cd")}")
     console.print("${string.find(s, "z")}")
-    console.print("${string.ends_with(s, "ef")}")
+    console.print("${s.ends_with("ef")}")
 "#;
         assert_eq!(
             run(src).unwrap(),
@@ -2152,7 +2152,7 @@ fn main(console: Console):
         let src = r#"
 fn main(console: Console):
     let s = "héllo"
-    console.print(string.substring(s, 0, 2))
+    console.print(s.substring(0, 2))
 "#;
         assert_eq!(run(src).unwrap(), vec!["hé"]);
     }
@@ -2161,11 +2161,11 @@ fn main(console: Console):
     fn string_split_contains_replace() {
         let src = r#"
 fn main(console: Console):
-    let parts = string.split("a,b,c", ",")
+    let parts = "a,b,c".split(",")
     console.print("${list.length(parts)}")
     console.print(list.at(parts, 1))
-    console.print(string.replace("a,b,c", ",", "-"))
-    console.print("${string.contains("hello", "ell")}")
+    console.print("a,b,c".replace(",", "-"))
+    console.print("${"hello".contains("ell")}")
 "#;
         assert_eq!(run(src).unwrap(), vec!["3", "b", "a-b-c", "true"]);
     }
@@ -2311,7 +2311,7 @@ fn main(console: Console):
 fn main(console: Console):
     console.print("${math.to_float(7)}")
     console.print("${math.to_int(3.9)}")
-    console.print("${string.to_int("42")}")
+    console.print("${"42".to_int()}")
 "#;
         assert_eq!(run(src).unwrap(), vec!["7.0", "3", "42"]);
     }
@@ -2320,10 +2320,10 @@ fn main(console: Console):
     fn string_stdlib() {
         let src = r#"
 fn main(console: Console):
-    console.print(string.to_upper("witchy"))
-    console.print("${string.length("hello")}")
-    console.print(string.trim("  hi  "))
-    if string.starts_with("witchy", "wit"):
+    console.print("witchy".to_upper())
+    console.print("${"hello".length()}")
+    console.print("  hi  ".trim())
+    if "witchy".starts_with("wit"):
         console.print("yes")
     else:
         console.print("no")

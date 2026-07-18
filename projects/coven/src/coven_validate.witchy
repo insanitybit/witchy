@@ -1,20 +1,18 @@
 // coven_validate — rune-name and version validation, plus wire-name decoding.
-// Self-contained (depends only on `string`): a name must be `namespace/name`,
-// lowercase, exactly one `/`, with no `..` traversal; a version must be strict
-// `major.minor.patch`. These guard every path built from a network-supplied name.
-
-import string
+// Self-contained: a name must be `namespace/name`, lowercase, exactly one `/`,
+// with no `..` traversal; a version must be strict `major.minor.patch`. These
+// guard every path built from a network-supplied name.
 
 // Rune names contain `/`; the wire encodes it as `~` for use in a query value.
 pub fn unwire(n: String) -> String:
-    list.join(string.split(n, "~"), "/")
+    n.split("~").join("/")
 
 // `namespace/name`: exactly one `/`, each segment a non-empty run of the URL-safe
 // charset `[a-z0-9-]` (lowercase ASCII letters, digits, hyphen). The charset alone
 // forbids `..` traversal, an embedded `/`, uppercase, and any URL-unsafe byte — a name
 // is a path segment and a URL path component, so it must be safe as both.
 pub fn valid_name(name: String) -> Bool:
-    match string.split_once_opt(name, "/"):
+    match name.split_once_opt("/"):
         Some(parts) ->
             let (ns, nm) = parts
             valid_segment(ns) && valid_segment(nm)
@@ -22,11 +20,11 @@ pub fn valid_name(name: String) -> Bool:
 
 // A single name segment: non-empty and every character in the safe charset `[a-z0-9-]`.
 fn valid_segment(s: String) -> Bool:
-    if string.is_empty(s):
+    if s.is_empty():
         false
     else:
         var ok = true
-        for ch in string.chars(s):
+        for ch in s.chars():
             if !is_name_char(ch):
                 ok = false
         ok
@@ -36,9 +34,9 @@ fn is_name_char(ch: String) -> Bool:
 
 // A single ASCII lowercase letter: it lowercases to itself yet is changed by
 // uppercasing (which digits, `-`, and non-ASCII bytes are not). ASCII-only, matching
-// the byte-wise case folding of `string.to_upper`/`to_lower`.
+// the byte-wise case folding of `.to_upper`/`.to_lower`.
 fn is_lower(ch: String) -> Bool:
-    string.to_lower(ch) == ch && string.to_upper(ch) != ch
+    ch.to_lower() == ch && ch.to_upper() != ch
 
 // A signed-record field must not contain the canonical payload's line separator
 // (`\n`): a value like `x\npromoted_by=admin` would inject a sibling `key=` line into
@@ -46,29 +44,29 @@ fn is_lower(ch: String) -> Bool:
 // and versions are already constrained; this guards the free-form identity/provenance
 // fields (`uploaded_by`, `promoted_by`, `factor`, `provenance`). (SEC-013.)
 pub fn single_line(s: String) -> Bool:
-    !string.contains(s, "\n")
+    !s.contains("\n")
 
 // A version is strict `major.minor.patch` — exactly three digit-only components, each
 // non-empty and without a redundant leading zero (`0` is fine, `01` is not), so a
 // version has one canonical form and `01.2.3` cannot masquerade as `1.2.3`.
 pub fn valid_version(version: String) -> Bool:
-    let parts = string.split(version, ".")
+    let parts = version.split(".")
     if list.length(parts) != 3:
         false
     else:
         var ok = true
         for p in parts:
-            if string.is_empty(p) || !all_digits(p) || has_leading_zero(p):
+            if p.is_empty() || !all_digits(p) || has_leading_zero(p):
                 ok = false
         ok
 
 // A numeric component with a redundant leading zero (`0` alone is allowed).
 fn has_leading_zero(p: String) -> Bool:
-    string.length(p) > 1 && string.starts_with(p, "0")
+    p.length() > 1 && p.starts_with("0")
 
 fn all_digits(s: String) -> Bool:
-    var ok = !string.is_empty(s)
-    for ch in string.chars(s):
+    var ok = !s.is_empty()
+    for ch in s.chars():
         if !is_digit(ch):
             ok = false
     ok

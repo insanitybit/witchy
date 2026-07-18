@@ -246,7 +246,7 @@ fn render(m: Mirror) -> String:
 // parseable-looking instead of smuggling terminal controls into structural text.
 fn escape_string(s: String) -> String:
     var out = ""
-    for c in string.chars(s):
+    for c in s.chars():
         if c == "\\":
             out = out + "\\\\"
         else if c == "\"":
@@ -281,7 +281,7 @@ fn control_code(c: String) -> Int:
     0
 
 fn hex_digit(v: Int) -> String:
-    string.substring("0123456789abcdef", v, v + 1)
+    "0123456789abcdef".substring(v, v + 1)
 
 fn join_rendered(xs: List(Mirror)) -> String:
     var parts = []

@@ -1755,20 +1755,20 @@ fn f() -> Int:
     fn string_builtins_type() {
         let src = r#"
 fn first_field(row: String) -> String:
-    list.at(string.split(row, ","), 0)
+    list.at(row.split(","), 0)
 
 fn has(s: String, sub: String) -> Bool:
-    string.contains(s, sub)
+    s.contains(sub)
 
 fn fix(s: String) -> String:
-    string.replace(s, "a", "b")
+    s.replace("a", "b")
 "#;
         assert!(check_str(src).is_ok(), "{:?}", check_str(src));
     }
 
     #[test]
     fn rejects_split_on_non_string() {
-        assert!(check_str("fn f() -> List(String) { string.split(5, \",\") }").is_err());
+        assert!(check_str("fn f() -> List(String) { 5.split(\",\") }").is_err());
     }
 
     #[test]
@@ -2006,7 +2006,7 @@ type Result:
     Err(e)
 
 fn parse(s: String) -> Result(Int, String):
-    Ok(string.to_int(s))
+    Ok(s.to_int())
 
 fn add(a: String, b: String) -> Result(Int, String):
     let x = (parse(a))?

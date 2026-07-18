@@ -12,7 +12,7 @@ import option
 // `"0" <= c && c <= "9"`), silently accepting multi-character strings the
 // contract excludes.
 fn one_char(c: String) -> Bool:
-    string.char_count(c) == 1
+    c.char_count() == 1
 
 pub fn is_digit(c: String) -> Bool:
     one_char(c) && "0" <= c && c <= "9"
@@ -36,21 +36,21 @@ pub fn is_space(c: String) -> Bool:
 // not a digit (RFC-0044 rule 1: absence is `Option`, never a -1 sentinel).
 pub fn to_digit(c: String) -> Option(Int):
     if is_digit(c):
-        Some(string.to_int(c))
+        Some(c.to_int())
     else:
         None
 
 // True when `s` is non-empty and every character is an ASCII digit — a safe
 // guard before `string_to_int`, which traps on non-numeric input.
 pub fn all_digits(s: String) -> Bool:
-    let n = string.char_count(s)
+    let n = s.char_count()
     if n == 0:
         false
     else:
         var ok = true
         var i = 0
         while i < n:
-            if !is_digit(string.substring(s, i, i + 1)):
+            if !is_digit(s.substring(i, i + 1)):
                 ok = false
             i = i + 1
         ok

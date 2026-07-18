@@ -23,7 +23,7 @@ import string
 // host, CIDR block, or suffix would inject an extra, unintended allowlist entry
 // (`Net.tcp("evil\ngood", 80)` would admit both `evil` and `good:80`). Refuse it.
 fn checked_component(value: String) -> String:
-    if string.contains(value, "\n") || string.contains(value, "\r"):
+    if value.contains("\n") || value.contains("\r"):
         fail("policy: a pattern component may not contain a newline")
     value
 

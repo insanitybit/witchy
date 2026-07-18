@@ -112,7 +112,7 @@ impl From(JwtError) for String:
 // public key (hex), checking the signature, `exp > now` (unix seconds), and
 // `aud == audience`. Returns the decoded claims, or a typed error.
 pub fn verify_rs256(token: String, rsa_pubkey_der_hex: String, audience: String, now: Int) -> Result(Json, JwtError):
-    let parts = string.split(token, ".")
+    let parts = token.split(".")
     if list.length(parts) != 3:
         Err(MalformedCompact)
     else:
@@ -302,8 +302,8 @@ fn require_string_claim(claims: Json, name: String) -> Result(String, JwtError):
 // The decoded JOSE header of a compact JWT (its first segment), or an error — so a
 // verifier can read `alg`/`kid` to select the JWKS key before checking the signature.
 pub fn header(token: String) -> Result(Json, JwtError):
-    let parts = string.split(token, ".")
-    if list.length(parts) < 1 || string.is_empty(list.at(parts, 0)):
+    let parts = token.split(".")
+    if list.length(parts) < 1 || list.at(parts, 0).is_empty():
         Err(NoHeaderSegment)
     else:
         let header_json = encoding.base64url_decode(list.at(parts, 0)).map_err(fn(e: encoding.EncodingError): HeaderBase64(encoding.encoding_error_message(e)))?
@@ -316,8 +316,8 @@ pub fn header(token: String) -> Result(Json, JwtError):
 // before `verify_oidc`. DANGER: never authorize on these claims; verify the signature
 // first and read the claims `verify_oidc` returns.
 pub fn claims_unverified(token: String) -> Result(Json, JwtError):
-    let parts = string.split(token, ".")
-    if list.length(parts) < 2 || string.is_empty(list.at(parts, 1)):
+    let parts = token.split(".")
+    if list.length(parts) < 2 || list.at(parts, 1).is_empty():
         Err(NoPayloadSegment)
     else:
         let payload_json = encoding.base64url_decode(list.at(parts, 1)).map_err(fn(e: encoding.EncodingError): PayloadBase64(encoding.encoding_error_message(e)))?
@@ -336,9 +336,9 @@ pub fn rsa_key_from_jwk(n: String, e: String) -> Result(String, JwtError):
     // Reject an empty/missing `n` or `e` (a JWK with no such member decodes to empty
     // hex): building a key from them would yield a structurally-valid but bogus DER
     // key that later "verifies" nothing, so fail closed here (BUG-408).
-    if string.is_empty(n_hex):
+    if n_hex.is_empty():
         Err(JwkModulusEmpty)
-    else if string.is_empty(e_hex):
+    else if e_hex.is_empty():
         Err(JwkExponentEmpty)
     else:
         let body = der_integer(n_hex) + der_integer(e_hex)
@@ -354,21 +354,21 @@ fn der_integer(value_hex: String) -> String:
 // `0x8N` count-of-length-bytes prefix. RSA keys stay well under 65536 bytes, so one or
 // two length bytes always suffice.
 fn der_len(content_hex: String) -> String:
-    let n = string.length(content_hex) / 2
+    let n = content_hex.length() / 2
     if n < 128:
         byte_hex(n)
     else if n < 256:
         "81" + byte_hex(n)
     else:
-        "82" + string.pad_left(math.to_hex(n), 4, "0")
+        "82" + math.to_hex(n).pad_left(4, "0")
 
 // A single byte as exactly two lowercase hex digits.
 fn byte_hex(b: Int) -> String:
-    string.pad_left(math.to_hex(b), 2, "0")
+    math.to_hex(b).pad_left(2, "0")
 
 // Is the top bit of the first byte set (first hex digit in `8`..`f`)? Empty hex is not.
 fn high_bit_set(value_hex: String) -> Bool:
-    !string.is_empty(value_hex) && string.contains("89abcdef", string.char_at(value_hex, 0) ?? "")
+    !value_hex.is_empty() && "89abcdef".contains(value_hex.char_at(0) ?? "")
 
 // Require the `kid` (key id) from a compact JWT header, preserving malformed
 // compact/header input and a missing `kid` as matchable `JwtError` cases.

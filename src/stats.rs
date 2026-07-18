@@ -639,7 +639,7 @@ fn main(console: Console):
         let corpus = [
             // accumulation (inplace) + string build + dict update + fold, with a
             // `nodes.push` statement and escape-free loop scratch (region).
-            "fn main(console: Console):\n    var xs = []\n    var s = \"\"\n    var d = dict.new()\n    var i = 0\n    while i < 300:\n        let scratch = [i, i + 1]\n        xs.push(i + list.length(scratch) - 2)\n        s = s + \"${i % 10}\"\n        dict.update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    let folded = 2 * 3 + 4\n    console.print(\"${list.length(xs)}\")\n    console.print(\"${string.length(s)}\")\n    console.print(\"${dict.get_or(d, 3, 0)}\")\n    console.print(\"${folded}\")\n",
+            "fn main(console: Console):\n    var xs = []\n    var s = \"\"\n    var d = dict.new()\n    var i = 0\n    while i < 300:\n        let scratch = [i, i + 1]\n        xs.push(i + list.length(scratch) - 2)\n        s = s + \"${i % 10}\"\n        dict.update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    let folded = 2 * 3 + 4\n    console.print(\"${list.length(xs)}\")\n    console.print(\"${s.length()}\")\n    console.print(\"${dict.get_or(d, 3, 0)}\")\n    console.print(\"${folded}\")\n",
             // `for var` write-back over record elements.
             "type P:\n    x: Int\n    y: Int\n\nfn main(console: Console):\n    var ps = [P(1, 2), P(3, 4)]\n    for var p in ps:\n        p.x = p.x + 100\n    console.print(\"${ps}\")\n",
             // confined slice VIEW: a read-only window over an unmutated param,
@@ -994,7 +994,7 @@ fn main(console: Console):
 
     /// RFC-0016 RC-floor generalizes past dicts to the STRING primitive allocators:
     /// a confined string `var` transformed each iteration (`s = s.to_upper()` →
-    /// `string.to_upper(s)`, a fresh same-length buffer via the now-`$rc_alloc`-routed
+    /// `s.to_upper()`, a fresh same-length buffer via the now-`$rc_alloc`-routed
     /// `ascii_case`) frees its old buffer for reuse — so the loop is bounded with the
     /// floor on and leaks O(n) with it off, identical output either way.
     #[test]
@@ -1352,7 +1352,7 @@ fn main(console: Console):
     /// identical (folding is semantics-preserving).
     #[test]
     fn fold_elides_constant_concatenations() {
-        let src = "fn main(console: Console):\n    let g = \"Hi, \"\n    var total = 0\n    var i = 0\n    while i < 300:\n        let s = g + \"World\" + g + \"There\"\n        total = total + string.length(s)\n        i = i + 1\n    console.print(\"${total}\")\n";
+        let src = "fn main(console: Console):\n    let g = \"Hi, \"\n    var total = 0\n    var i = 0\n    while i < 300:\n        let s = g + \"World\" + g + \"There\"\n        total = total + s.length()\n        i = i + 1\n    console.print(\"${total}\")\n";
         opt::set_for_tests(Some(OptSet::default_set().without(Opt::Region)));
         let on = compute(src).expect("fold on");
         opt::set_for_tests(Some(OptSet::default_set().without(Opt::Region).without(Opt::Fold)));
@@ -1374,7 +1374,7 @@ fn main(console: Console):
     /// regardless of iteration count. 5000 iterations stay under a tiny budget.
     #[test]
     fn never_oom_long_loop_stays_bounded() {
-        let src = "fn cost(n: Int) -> Int:\n    let tmp = [n, n + 1, n + 2]\n    list.length(tmp) + string.length(\"${n}\")\nfn main(console: Console):\n    var total = 0\n    var i = 0\n    while i < 5000:\n        let scratch = [i, i + 1]\n        total = total + cost(i) + list.length(scratch)\n        i = i + 1\n    console.print(\"${total}\")\n";
+        let src = "fn cost(n: Int) -> Int:\n    let tmp = [n, n + 1, n + 2]\n    list.length(tmp) + \"${n}\".length()\nfn main(console: Console):\n    var total = 0\n    var i = 0\n    while i < 5000:\n        let scratch = [i, i + 1]\n        total = total + cost(i) + list.length(scratch)\n        i = i + 1\n    console.print(\"${total}\")\n";
         opt::set_for_tests(Some(OptSet::default_set()));
         let s = compute(src).expect("compute");
         opt::set_for_tests(None);

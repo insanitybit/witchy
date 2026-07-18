@@ -118,14 +118,14 @@ fn __meta_fresh_ident(hint: String) -> String:
     __meta_fresh_ident(hint)
 
 pub fn is_identifier(name: String) -> Bool:
-    let n = string.char_count(name)
-    if n == 0 || name == "_" || is_keyword(name) || string.contains(name, "__"):
+    let n = name.char_count()
+    if n == 0 || name == "_" || is_keyword(name) || name.contains("__"):
         false
     else:
-        var ok = is_ident_start(string.substring(name, 0, 1))
+        var ok = is_ident_start(name.substring(0, 1))
         var i = 1
         while i < n:
-            if !is_ident_continue(string.substring(name, i, i + 1)):
+            if !is_ident_continue(name.substring(i, i + 1)):
                 ok = false
             i = i + 1
         ok
@@ -489,7 +489,7 @@ fn syntax_hole_source(hole: SyntaxHole) -> String:
 
 fn string_literal(value: String) -> String:
     var out = "\""
-    for c in string.chars(value):
+    for c in value.chars():
         if c == "\"":
             out = out + "\\\""
         else if c == "\\":
@@ -635,7 +635,7 @@ fn stmt_sources(stmts: List(StmtSyntax)) -> List(String):
 
 fn indent(source: String) -> String:
     var out = []
-    for line in string.split(source, "\n"):
+    for line in source.split("\n"):
         list.push(out, "    " + line)
     list.join(out, "\n")
 

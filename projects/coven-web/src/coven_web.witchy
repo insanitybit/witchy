@@ -10,7 +10,6 @@
 // they can reach the upstream coven; nothing else can phone home.
 
 import server
-import string
 import ascii
 import list
 import crypto
@@ -166,7 +165,7 @@ fn h_proxy(net: Net, upstream: String, base: String) -> fn(Request) -> Response:
 fn query_has_control(pairs: List((String, String))) -> Bool:
     var bad = false
     for k, v in pairs:
-        if string.contains(k, "\n") || string.contains(k, "\r") || string.contains(v, "\n") || string.contains(v, "\r"):
+        if k.contains("\n") || k.contains("\r") || v.contains("\n") || v.contains("\r"):
             bad = true
     bad
 
@@ -337,11 +336,11 @@ fn issue_session(key: Secret, clock: Clock, sub: String) -> (String, Int):
 // characters with no early exit, so the time does not reveal WHERE a mismatch is and
 // an attacker cannot recover a valid session/state signature byte-by-byte by timing.
 fn ct_eq(a: String, b: String) -> Bool:
-    if string.length(a) != string.length(b):
+    if a.length() != b.length():
         false
     else:
-        let ca = string.chars(a)
-        let cb = string.chars(b)
+        let ca = a.chars()
+        let cb = b.chars()
         var same = true
         var i = 0
         while i < list.length(ca):
@@ -361,19 +360,19 @@ fn session_subject(key: Secret, clock: Clock, req: Request) -> String:
         Some(h) -> verify_bearer(key, clock, h)
 
 fn verify_bearer(key: Secret, clock: Clock, header: String) -> String:
-    let bearer = if string.starts_with(header, "Bearer "): string.drop(header, 7) else: ""
-    let parts = string.split(bearer, ".")
+    let bearer: String = if header.starts_with("Bearer "): header.drop(7) else: ""
+    let parts = bearer.split(".")
     if list.length(parts) != 3:
         ""
     else:
-        let exp_s = list.at(parts, 0)
+        let exp_s: String = list.at(parts, 0)
         let sub_hex = list.at(parts, 1)
         let sig = list.at(parts, 2)
         match encoding.hex_decode(sub_hex):
             // idiom-exempt: this reconstructs the signed session bytes above.
             Err(_e) -> ""
             Ok(sub) ->
-                if ascii.all_digits(exp_s) && ct_eq(sig, crypto.sign(key, "session:" + exp_s + ":" + sub)) && string.to_int(exp_s) > clock.now():
+                if ascii.all_digits(exp_s) && ct_eq(sig, crypto.sign(key, "session:" + exp_s + ":" + sub)) && exp_s.to_int() > clock.now():
                     sub
                 else:
                     ""
@@ -429,10 +428,10 @@ fn nonce_cookie(nonce: String) -> String:
 // Pull a cookie's value out of a `Cookie:` header ("k=v; k2=v2"); "" if absent.
 fn cookie_value(cookies: String, name: String) -> String:
     var out = ""
-    for part in string.split(cookies, ";"):
-        let kv = string.trim(part)
-        if string.starts_with(kv, "${name}="):
-            out = string.drop(kv, string.char_count(name) + 1)
+    for part in cookies.split(";"):
+        let kv = part.trim()
+        if kv.starts_with("${name}="):
+            out = kv.drop(name.char_count() + 1)
     out
 
 fn cookie_nonce(req: Request) -> String:
@@ -448,18 +447,18 @@ fn sign_state(key: Secret, clock: Clock, nonce: String) -> String:
     "${exp}" + "." + nonce + "." + crypto.sign(key, "oauth-state:" + "${exp}" + ":" + nonce)
 
 fn valid_state(key: Secret, clock: Clock, state: String, expected_nonce: String) -> Bool:
-    let parts = string.split(state, ".")
+    let parts = state.split(".")
     if list.length(parts) != 3:
         false
     else:
-        let exp_s = list.at(parts, 0)
+        let exp_s: String = list.at(parts, 0)
         let nonce = list.at(parts, 1)
         let sig = list.at(parts, 2)
         // SEC-024: guard `to_int` (it traps on non-numeric input) against the attacker-supplied
         // expiry half — `&&` short-circuits, so a malformed state is just invalid, never a VM abort.
         // SEC-007: the nonce must be non-empty AND equal the issuing session's cookie.
         // idiom-exempt: this reconstructs the signed OAuth-state bytes above.
-        ascii.all_digits(exp_s) && ct_eq(sig, crypto.sign(key, "oauth-state:" + exp_s + ":" + nonce)) && string.to_int(exp_s) > clock.now() && nonce != "" && ct_eq(nonce, expected_nonce)
+        ascii.all_digits(exp_s) && ct_eq(sig, crypto.sign(key, "oauth-state:" + exp_s + ":" + nonce)) && exp_s.to_int() > clock.now() && nonce != "" && ct_eq(nonce, expected_nonce)
 
 // BUG-424: server-side single-use of a login nonce. `valid_state` has already proven the nonce
 // is one WE signed and equals the caller's cookie, so it is a server-minted hex string (a safe,
@@ -596,8 +595,8 @@ fn split_host_port(hp: String) -> (String, Int):
     // authority (config typo, or an upstream string that lost its port) must never
     // abort a request handler mid-flight — fall back to port 0, which fails the dial
     // and surfaces as a clean 502 rather than a VM trap.
-    let (h, p) = string.split_once(hp, ":")
-    let port = if ascii.all_digits(p): string.to_int(p) else: 0
+    let (h, p) = hp.split_once(":")
+    let port: Int = if ascii.all_digits(p): p.to_int() else: 0
     (h, port)
 
 fn encode_query(pairs: List((String, String))) -> String:
@@ -628,7 +627,7 @@ fn security_headers() -> fn(fn(Request) -> Response) -> fn(Request) -> Response:
 // asset/API route still matches first, and anything else (a typo, a missing asset with an
 // extension) keeps its honest 404. security_headers (outer) then stamps the app CSP by path.
 fn is_client_route(p: String) -> Bool:
-    p == "/" || string.starts_with(p, "/v/") || string.starts_with(p, "/d/") || string.starts_with(p, "/s/") || string.starts_with(p, "/trust")
+    p == "/" || p.starts_with("/v/") || p.starts_with("/d/") || p.starts_with("/s/") || p.starts_with("/trust")
 
 fn spa_fallback(assets: Dir) -> fn(fn(Request) -> Response) -> fn(Request) -> Response:
     fn(inner: fn(Request) -> Response):
@@ -682,9 +681,9 @@ fn headers_for(p: String) -> List((String, String)):
 fn csp_for(p: String) -> String:
     if p == "/sandbox-frame":
         sandbox_csp()
-    else if string.starts_with(p, "/compartments/"):
+    else if p.starts_with("/compartments/"):
         compartment_csp()
-    else if string.starts_with(p, "/api/"):
+    else if p.starts_with("/api/"):
         api_csp()
     else:
         app_csp()

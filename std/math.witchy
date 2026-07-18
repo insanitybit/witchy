@@ -210,7 +210,7 @@ fn to_base_neg(n: Int, base: Int) -> String:
         to_base_neg(n / base, base) + base_digit(0 - n % base)
 
 fn base_digit(d: Int) -> String:
-    string.substring("0123456789abcdef", d, d + 1)
+    "0123456789abcdef".substring(d, d + 1)
 
 // `n` in hexadecimal (e.g. 255 -> "ff").
 pub fn to_hex(n: Int) -> String:
@@ -262,6 +262,6 @@ pub fn format_float(x: Float, decimals: Int) -> String:
 // `n` as a decimal string left-padded with zeros to at least `width` digits.
 fn zero_pad(n: Int, width: Int) -> String:
     var s = "${n}"
-    while string.length(s) < width:
+    while s.length() < width:
         s = "0" + s
     s

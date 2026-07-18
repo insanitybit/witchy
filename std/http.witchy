@@ -11,6 +11,7 @@
 
 import option
 import result
+import string
 import url
 import ascii
 import bytes
@@ -189,9 +190,9 @@ fn render_and_send(sock: Socket, method: String, host: String, path: String, hea
         // Transfer-Encoding / Connection would conflict with ours and enable request
         // smuggling; a second Host is the request-routing twin of that ambiguity.
         // Drop them rather than emit two owned headers.
-        if !is_framing_header(k) && string.to_lower(k) != "host":
+        if !is_framing_header(k) && k.to_lower() != "host":
             head = head + k + ": " + v + "\r\n"
-    let req = head + "Content-Length: " + "${string.length(body)}" + "\r\n" + "Connection: close\r\n\r\n" + body
+    let req = head + "Content-Length: " + "${body.length()}" + "\r\n" + "Connection: close\r\n\r\n" + body
 
     sock.send_bytes(req)
 
@@ -407,7 +408,7 @@ pub fn body(r: Response) -> String:
 // The value of a response header, looked up case-insensitively, or None.
 pub fn header(r: Response, name: String) -> Option(String):
     match r:
-        Response(_code, hdrs, _body) -> find_header(hdrs, string.to_lower(name))
+        Response(_code, hdrs, _body) -> find_header(hdrs, name.to_lower())
 
 // Look up a header by its (already-lowercased) name. Shared with `server`.
 pub fn find_header(hdrs: List((String, String)), name: String) -> Option(String):
@@ -430,21 +431,21 @@ pub fn find_header(hdrs: List((String, String)), name: String) -> Option(String)
 
 // Whether `s` contains a CR or LF — the response/request-splitting bytes.
 pub fn has_crlf(s: String) -> Bool:
-    string.contains(s, "\r") || string.contains(s, "\n")
+    s.contains("\r") || s.contains("\n")
 
 // A valid HTTP header-name char (RFC 7230 tchar): alphanumeric or one of a small
 // punctuation set. Notably EXCLUDES `:`, space, CR, LF — so a header name can
 // never carry the `:`/CRLF that would break out of the name field.
 fn is_tchar(c: String) -> Bool:
-    ascii.is_alnum(c) || string.contains("!#\$%&'*+-.^_`|~", c)
+    ascii.is_alnum(c) || "!#\$%&'*+-.^_`|~".contains(c)
 
 // Whether `name` is a non-empty header-name token (every char a `tchar`).
 fn is_header_name(name: String) -> Bool:
-    if string.char_count(name) == 0:
+    if name.char_count() == 0:
         false
     else:
         var ok = true
-        for c in string.chars(name):
+        for c in name.chars():
             if !is_tchar(c):
                 ok = false
         ok
@@ -453,8 +454,8 @@ fn is_header_name(name: String) -> Bool:
 // field. Header values may contain HTAB; request-line fields may not.
 fn has_forbidden_control(s: String, allow_tab: Bool) -> Bool:
     var bad = false
-    for c in string.chars(s):
-        let c0 = string.char_count(c) == 1 && c < " "
+    for c in s.chars():
+        let c0 = c.char_count() == 1 && c < " "
         let del = c == string.from_code(127)
         if del || c0 && !(allow_tab && c == "\t"):
             bad = true
@@ -484,7 +485,7 @@ pub fn check_header(name: String, value: String):
 // extra tokens (request smuggling). Stricter than `check_field`, because header
 // values legitimately contain spaces and may contain HTAB.
 pub fn check_request_field(what: String, value: String):
-    if has_forbidden_control(value, false) || string.contains(value, " "):
+    if has_forbidden_control(value, false) || value.contains(" "):
         fail("HTTP " + what + " contains a whitespace/control character that would break the request line: " + value)
 
 // (BUG-358 / BUG-393) Whether `name` is a message-FRAMING header — Content-Length,
@@ -493,7 +494,7 @@ pub fn check_request_field(what: String, value: String):
 // dropped rather than emitted alongside ours: two conflicting framing headers are a
 // request/response-smuggling primitive.
 pub fn is_framing_header(name: String) -> Bool:
-    let n = string.to_lower(name)
+    let n = name.to_lower()
     n == "content-length" || n == "transfer-encoding" || n == "connection"
 
 // Parse a raw HTTP/1.1 response string into a `Response`: split at the blank line
@@ -522,19 +523,19 @@ pub fn try_parse_response_string(raw: String) -> Result(Response, String):
         Err(e) -> Err(http_error_message(e))
 
 fn parse_response_inner(raw: String, strict_chunked: Bool) -> Result(Response, ResponseParseError):
-    let sep = string.index_of(raw, "\r\n\r\n") ?? -1
-    let head = if sep < 0: raw else: string.substring(raw, 0, sep)
-    let bdy = if sep < 0: "" else: string.substring(raw, sep + 4, string.char_count(raw))
-    let lines = string.split(head, "\r\n")
+    let sep = raw.index_of("\r\n\r\n") ?? -1
+    let head: String = if sep < 0: raw else: raw.substring(0, sep)
+    let bdy: String = if sep < 0: "" else: raw.substring(sep + 4, raw.char_count())
+    let lines = head.split("\r\n")
     let status_line = if list.length(lines) > 0: list.at(lines, 0) else: ""
     var hdrs = []
     var i = 1
     while i < list.length(lines):
         let line = list.at(lines, i)
-        let colon = string.index_of(line, ":") ?? -1
+        let colon = line.index_of(":") ?? -1
         if colon >= 0:
-            let name = string.to_lower(string.substring(line, 0, colon))
-            let value = string.trim(string.substring(line, colon + 1, string.char_count(line)))
+            let name = line.substring(0, colon).to_lower()
+            let value = line.substring(colon + 1, line.char_count()).trim()
             list.push(hdrs, (name, value))
         i = i + 1
     // (BUG-269) A `Transfer-Encoding: chunked` response frames its body as a series
@@ -543,7 +544,7 @@ fn parse_response_inner(raw: String, strict_chunked: Bool) -> Result(Response, R
     // value like `gzip, chunked` counts); otherwise pass the body through unchanged.
     let body = match find_header(hdrs, "transfer-encoding"):
         Some(te) ->
-            if string.contains(string.to_lower(te), "chunked"):
+            if te.to_lower().contains("chunked"):
                 if strict_chunked:
                     match dechunk_strict(bdy):
                         Ok(decoded) -> decoded
@@ -558,18 +559,18 @@ fn parse_response_inner(raw: String, strict_chunked: Bool) -> Result(Response, R
 
 // Pull the numeric code out of a status line like "HTTP/1.1 200 OK".
 fn status_code(line: String) -> Int:
-    let sp = string.index_of(line, " ") ?? -1
+    let sp = line.index_of(" ") ?? -1
     if sp < 0:
         0
     else:
-        let rest = string.substring(line, sp + 1, string.char_count(line))
-        let sp2 = string.index_of(rest, " ") ?? -1
-        let code = if sp2 < 0: rest else: string.substring(rest, 0, sp2)
+        let rest = line.substring(sp + 1, line.char_count())
+        let sp2 = rest.index_of(" ") ?? -1
+        let code: String = if sp2 < 0: rest else: rest.substring(0, sp2)
         // (BUG-203) A malformed/non-HTTP response can carry a non-numeric OR an
         // overflowing code. `string.to_int` TRAPS on i64 overflow — an
         // attacker-controlled response could crash the client — so parse totally
         // with `string.parse_int` (None on non-digit, empty, or overflow) → 0.
-        string.parse_int(code) ?? 0
+        code.parse_int() ?? 0
 
 // Decode a `chunked` transfer-coding body: a sequence of
 // `<hex-size>[;ext]CRLF <size bytes> CRLF`, ending at a `0`-sized chunk. Total —
@@ -647,20 +648,20 @@ fn bytes_index_from(b: Bytes, needle: Bytes, from: Int) -> Int:
 // The hex size of a chunk line, with any `;chunk-extension` and surrounding
 // whitespace stripped.
 fn chunk_size_hex(line: String) -> String:
-    let semi = string.index_of(line, ";") ?? -1
-    let raw = if semi < 0: line else: string.substring(line, 0, semi)
-    string.trim(raw)
+    let semi = line.index_of(";") ?? -1
+    let raw: String = if semi < 0: line else: line.substring(0, semi)
+    raw.trim()
 
 // Parse a hex string to an Int, totally: `None` on empty, a non-hex digit, or a
 // size wide enough to risk i64 overflow (>15 hex digits) — so a hostile chunk
 // header can't trap the arithmetic.
 fn parse_hex_size(hex: String) -> Option(Int):
-    if hex == "" || string.char_count(hex) > 15:
+    if hex == "" || hex.char_count() > 15:
         None
     else:
         var val = 0
         var ok = true
-        for c in string.chars(hex):
+        for c in hex.chars():
             match hex_digit(c):
                 Some(d) -> val = val * 16 + d
                 None -> ok = false
@@ -671,9 +672,9 @@ fn parse_hex_size(hex: String) -> Option(Int):
 
 // One hex digit `0-9a-fA-F` as its value, or None.
 fn hex_digit(c: String) -> Option(Int):
-    if string.char_count(c) != 1:
+    if c.char_count() != 1:
         None
     else:
-        match string.index_of("0123456789abcdef", string.to_lower(c)):
+        match "0123456789abcdef".index_of(c.to_lower()):
             Some(k) -> Some(k)
             None -> None

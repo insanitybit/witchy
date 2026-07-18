@@ -10,16 +10,16 @@ import option
 
 // Whether `p` is absolute (rooted at `/`).
 pub fn is_abs(p: String) -> Bool:
-    string.starts_with(p, "/")
+    p.starts_with("/")
 
 // Join two path pieces with a single `/`. An empty piece is ignored; an absolute
 // `b` replaces `a`.
 pub fn join(a: String, b: String) -> String:
-    if string.is_empty(a) || is_abs(b):
+    if a.is_empty() || is_abs(b):
         b
-    else if string.is_empty(b):
+    else if b.is_empty():
         a
-    else if string.ends_with(a, "/"):
+    else if a.ends_with("/"):
         a + b
     else:
         a + "/" + b
@@ -29,12 +29,12 @@ pub fn join(a: String, b: String) -> String:
 // never confused with the absolute root.
 pub fn base(p: String) -> String:
     let t = trim_slashes(p)
-    if string.is_empty(t):
+    if t.is_empty():
         "."
     else if t == "/":
         "/"
-    else if string.contains(t, "/"):
-        let (_head, b) = string.rsplit_once(t, "/")
+    else if t.contains("/"):
+        let (_head, b) = t.rsplit_once("/")
         b
     else:
         t
@@ -45,11 +45,11 @@ pub fn base(p: String) -> String:
 // sentinel). In particular, repeatedly taking `dir` cannot loop at root.
 pub fn dir(p: String) -> Option(String):
     let t = trim_slashes(p)
-    if t == "/" || !string.contains(t, "/"):
+    if t == "/" || !t.contains("/"):
         None
     else:
-        let (head, _b) = string.rsplit_once(t, "/")
-        if string.is_empty(head):
+        let (head, _b) = t.rsplit_once("/")
+        if head.is_empty():
             Some("/")
         else:
             Some(head)
@@ -61,9 +61,9 @@ pub fn dir(p: String) -> Option(String):
 // is `None`. A trailing dot on an ordinary filename is an empty extension.
 pub fn ext(p: String) -> Option(String):
     let b = base(p)
-    let i = string.last_index_of(b, ".") ?? -1
+    let i = b.last_index_of(".") ?? -1
     if b != ".." && i > 0:
-        Some(string.substring(b, i + 1, string.char_count(b)))
+        Some(b.substring(i + 1, b.char_count()))
     else:
         None
 
@@ -71,7 +71,7 @@ pub fn ext(p: String) -> Option(String):
 pub fn stem(p: String) -> String:
     let b = base(p)
     match ext(p):
-        Some(e) -> string.strip_suffix(b, "." + e)
+        Some(e) -> b.strip_suffix("." + e)
         None -> b
 
 // Collapse `.` and `..` segments and redundant slashes. A relative path that
@@ -80,7 +80,7 @@ pub fn stem(p: String) -> String:
 pub fn normalize(p: String) -> String:
     let absolute = is_abs(p)
     var stack = []
-    for seg in string.split(p, "/"):
+    for seg in p.split("/"):
         if seg == "..":
             if list.length(stack) > 0 && last(stack) != "..":
                 stack = drop_last(stack)
@@ -91,7 +91,7 @@ pub fn normalize(p: String) -> String:
     let joined = list.join(stack, "/")
     if absolute:
         "/" + joined
-    else if string.is_empty(joined):
+    else if joined.is_empty():
         "."
     else:
         joined
@@ -99,8 +99,8 @@ pub fn normalize(p: String) -> String:
 // --- internals ---------------------------------------------------------------
 fn trim_slashes(p: String) -> String:
     var t = p
-    while string.char_count(t) > 1 && string.ends_with(t, "/"):
-        t = string.strip_suffix(t, "/")
+    while t.char_count() > 1 && t.ends_with("/"):
+        t = t.strip_suffix("/")
     t
 
 fn last(xs: List(String)) -> String:

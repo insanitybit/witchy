@@ -10,9 +10,9 @@ import option
 // not recursive). Idempotent. Needs a writable `Dir`.
 pub fn ensure_dir(root: Dir, path: String):
     var acc = ""
-    for seg in string.split(path, "/"):
+    for seg in path.split("/"):
         if seg != "":
-            acc = if string.is_empty(acc): seg else: acc + "/" + seg
+            acc = if acc.is_empty(): seg else: acc + "/" + seg
             if !root.exists(acc):
                 root.make_dir(acc)
 
@@ -22,8 +22,8 @@ pub fn ensure_dir(root: Dir, path: String):
 // exists can default explicitly: `fs.parent_dir(p) ?? ""` (ensure_dir of ""
 // creates nothing).
 pub fn parent_dir(path: String) -> Option(String):
-    if string.contains(path, "/"):
-        let (head, _tail) = string.rsplit_once(path, "/")
+    if path.contains("/"):
+        let (head, _tail) = path.rsplit_once("/")
         Some(head)
     else:
         None
@@ -39,11 +39,11 @@ pub fn collect_files(root: Dir, path: String, rel: String, ext: String) -> List(
             // At the root (empty `path`/`rel`) the child is the bare entry name,
             // never "/entry": the confinement resolver rejects absolute-looking
             // paths, so raw concatenation would skip or trap on root-level entries.
-            let child = if string.is_empty(path): entry else: path + "/" + entry
-            let child_rel = if string.is_empty(rel): entry else: rel + "/" + entry
+            let child = if path.is_empty(): entry else: path + "/" + entry
+            let child_rel = if rel.is_empty(): entry else: rel + "/" + entry
             if root.is_dir(child):
                 for f in collect_files(root, child, child_rel, ext):
                     list.push(out, f)
-            else if string.ends_with(entry, ext):
+            else if entry.ends_with(ext):
                 list.push(out, (child_rel, root.read(child)))
     out

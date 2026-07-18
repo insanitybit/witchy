@@ -7,7 +7,6 @@
 //   witchy examples/caps_guard/src/caps_guard.witchy
 
 import compiler
-import string
 from json import Json
 
 fn main(console: Console, root: Dir[Read]) -> Int:

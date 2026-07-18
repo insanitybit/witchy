@@ -86,7 +86,7 @@ pub fn query_or(req: Request, name: String, default: String) -> String:
 // A request header, looked up case-insensitively, or None.
 pub fn request_header(req: Request, name: String) -> Option(String):
     match req:
-        Request(_m, _p, _pa, _q, h, _b) -> http.find_header(h, string.to_lower(name))
+        Request(_m, _p, _pa, _q, h, _b) -> http.find_header(h, name.to_lower())
 
 pub fn request_body(req: Request) -> String:
     match req:
@@ -191,7 +191,7 @@ pub fn with_header(resp: Response, name: String, value: String) -> Response:
     match resp:
         Response(code, hdrs, body) ->
             var headers = hdrs
-            list.push(headers, (string.to_lower(name), value))
+            list.push(headers, (name.to_lower(), value))
             Response(code, headers, body)
 
 // Return `resp` with its status code replaced.
@@ -328,7 +328,7 @@ fn split_path(p: String) -> List(String):
     // one segment rather than forging a new routing boundary. (`+` is left literal:
     // it is a space only in query/form encoding, not in a path.)
     var out = []
-    for seg in string.split(p, "/"):
+    for seg in p.split("/"):
         if seg != "":
             list.push(out, percent_decode(seg, false))
     out
@@ -341,17 +341,17 @@ fn match_segs(pat: List(String), segs: List(String), acc: List((String, String))
             None
     else:
         let ps = list.at(pat, 0)
-        if string.starts_with(ps, "*"):
+        if ps.starts_with("*"):
             var out = acc
-            list.push(out, (string.substring(ps, 1, string.char_count(ps)), join_segs(segs)))
+            list.push(out, (ps.substring(1, ps.char_count()), join_segs(segs)))
             Some(out)
         else if list.length(segs) == 0:
             None
         else:
             let seg = list.at(segs, 0)
-            if string.starts_with(ps, ":"):
+            if ps.starts_with(":"):
                 var out = acc
-                list.push(out, (string.substring(ps, 1, string.char_count(ps)), seg))
+                list.push(out, (ps.substring(1, ps.char_count()), seg))
                 match_segs(rest(pat), rest(segs), out)
             else if ps == seg:
                 match_segs(rest(pat), rest(segs), acc)
@@ -396,7 +396,7 @@ fn read_headers(sock: Socket) -> List((String, String)):
     var hdrs = []
     var done = false
     while !done:
-        let line = string.trim(sock.recv_line())
+        let line = sock.recv_line().trim()
         if line == "":
             done = true
         else:
@@ -408,12 +408,12 @@ fn read_headers(sock: Socket) -> List((String, String)):
 // Parse one `Name: value` header line into `(lowercased name, trimmed value)`, or
 // None if it has no colon. Shared by the streaming reader and `parse_request`.
 fn parse_header_line(line: String) -> Option((String, String)):
-    let colon = string.index_of(line, ":") ?? -1
+    let colon = line.index_of(":") ?? -1
     if colon < 0:
         None
     else:
-        let name = string.to_lower(string.trim(string.substring(line, 0, colon)))
-        let value = string.trim(string.substring(line, colon + 1, string.char_count(line)))
+        let name = line.substring(0, colon).trim().to_lower()
+        let value = line.substring(colon + 1, line.char_count()).trim()
         Some((name, value))
 
 // Parse a whole raw HTTP/1.1 request string into a `Request`, preserving malformed
@@ -421,10 +421,10 @@ fn parse_header_line(line: String) -> Option((String, String)):
 // and of `http.try_parse_response`. Public so a router can be tested, or a request
 // framed by another transport re-parsed, without a socket.
 pub fn parse_request(raw: String) -> Result(Request, RequestParseError):
-    let sep = string.index_of(raw, "\r\n\r\n") ?? -1
-    let head = if sep < 0: raw else: string.substring(raw, 0, sep)
-    let body_all = if sep < 0: "" else: string.substring(raw, sep + 4, string.char_count(raw))
-    let lines = string.split(head, "\r\n")
+    let sep = raw.index_of("\r\n\r\n") ?? -1
+    let head: String = if sep < 0: raw else: raw.substring(0, sep)
+    let body_all: String = if sep < 0: "" else: raw.substring(sep + 4, raw.char_count())
+    let lines = head.split("\r\n")
     let request_line = if list.length(lines) > 0: list.at(lines, 0) else: ""
     match validate_request_line(request_line):
         Err(e) -> Err(e)
@@ -441,7 +441,7 @@ pub fn parse_request(raw: String) -> Result(Request, RequestParseError):
             match framed_length(headers):
                 Err(e) -> Err(e)
                 Ok(len) ->
-                    let body = if len > 0: string.take(body_all, len) else: ""
+                    let body = if len > 0: body_all.take(len) else: ""
                     Ok(Request(m, raw_path, [], q, headers, body))
 
 // Application/server-boundary bridge for callers that want the old "parse or 400
@@ -468,7 +468,7 @@ fn framed_length(headers: List((String, String))) -> Result(Int, RequestParseErr
     for h in headers:
         let (k, v) = h
         if k == "content-length":
-            let tv = string.trim(v)
+            let tv = v.trim()
             if seen:
                 if tv != value:
                     conflict = true
@@ -484,7 +484,7 @@ fn framed_length(headers: List((String, String))) -> Result(Int, RequestParseErr
     else if !seen:
         Ok(0)
     else:
-        match string.parse_int(value):
+        match value.parse_int():
             Some(n) -> if n > 0: Ok(n) else: Ok(0)
             None -> Ok(0)
 
@@ -497,12 +497,12 @@ fn parse_query(q: String) -> List((String, String)):
         []
     else:
         var out = []
-        for pair in string.split(q, "&"):
+        for pair in q.split("&"):
             if pair != "":
-                let eq = string.index_of(pair, "=") ?? -1
+                let eq = pair.index_of("=") ?? -1
                 if eq >= 0:
-                    let k = percent_decode(string.substring(pair, 0, eq), true)
-                    let v = percent_decode(string.substring(pair, eq + 1, string.char_count(pair)), true)
+                    let k = percent_decode(pair.substring(0, eq), true)
+                    let v = percent_decode(pair.substring(eq + 1, pair.char_count()), true)
                     list.push(out, (k, v))
                 else:
                     list.push(out, (percent_decode(pair, true), ""))
@@ -517,11 +517,11 @@ fn percent_decode(s: String, plus_space: Bool) -> String:
     var out = ""
     var pending = ""
     var i = 0
-    let n = string.char_count(s)
+    let n = s.char_count()
     while i < n:
-        let ch = string.char_at(s, i) ?? ""
-        if ch == "%" && i + 2 < n && is_hex(string.char_at(s, i + 1) ?? "") && is_hex(string.char_at(s, i + 2) ?? ""):
-            pending = pending + string.substring(s, i + 1, i + 3)
+        let ch = s.char_at(i) ?? ""
+        if ch == "%" && i + 2 < n && is_hex(s.char_at(i + 1) ?? "") && is_hex(s.char_at(i + 2) ?? ""):
+            pending = pending + s.substring(i + 1, i + 3)
             i = i + 3
         else:
             out = out + flush_bytes(pending)
@@ -545,7 +545,7 @@ fn flush_bytes(hex: String) -> String:
             Err(_e) -> hex
 
 fn is_hex(c: String) -> Bool:
-    string.char_count(c) == 1 && string.contains("0123456789abcdefABCDEF", c)
+    c.char_count() == 1 && "0123456789abcdefABCDEF".contains(c)
 
 // Validate that a request line has the form "METHOD target HTTP/x.y". Returns
 // the method and target on success, or BadRequestLine on failure.
@@ -559,7 +559,7 @@ fn validate_request_line(line: String) -> Result((String, String), RequestParseE
             Err(BadRequestLine)
         else:
             let version = third_word(line)
-            if !string.starts_with(version, "HTTP/"):
+            if !version.starts_with("HTTP/"):
                 Err(BadRequestLine)
             else:
                 Ok((m, target))
@@ -573,9 +573,9 @@ fn normalize_path(p: String) -> String:
         var out = ""
         var prev_slash = false
         var i = 0
-        let n = string.char_count(p)
+        let n = p.char_count()
         while i < n:
-            let ch = string.char_at(p, i) ?? ""
+            let ch = p.char_at(i) ?? ""
             if ch == "/":
                 if !prev_slash:
                     out = out + ch
@@ -584,55 +584,55 @@ fn normalize_path(p: String) -> String:
                 out = out + ch
                 prev_slash = false
             i = i + 1
-        if string.char_count(out) > 1 && string.ends_with(out, "/"):
-            string.substring(out, 0, string.char_count(out) - 1)
+        if out.char_count() > 1 && out.ends_with("/"):
+            out.substring(0, out.char_count() - 1)
         else:
             out
 
 fn third_word(s: String) -> String:
-    let sp = string.index_of(s, " ") ?? -1
+    let sp = s.index_of(" ") ?? -1
     if sp < 0:
         ""
     else:
-        let r = string.substring(s, sp + 1, string.char_count(s))
-        let sp2 = string.index_of(r, " ") ?? -1
+        let r = s.substring(sp + 1, s.char_count())
+        let sp2 = r.index_of(" ") ?? -1
         if sp2 < 0:
             ""
         else:
-            string.trim(string.substring(r, sp2 + 1, string.char_count(r)))
+            r.substring(sp2 + 1, r.char_count()).trim()
 
 fn first_word(s: String) -> String:
-    let sp = string.index_of(s, " ") ?? -1
+    let sp = s.index_of(" ") ?? -1
     if sp < 0:
         s
     else:
-        string.substring(s, 0, sp)
+        s.substring(0, sp)
 
 fn second_word(s: String) -> String:
-    let sp = string.index_of(s, " ") ?? -1
+    let sp = s.index_of(" ") ?? -1
     if sp < 0:
         ""
     else:
-        let r = string.substring(s, sp + 1, string.char_count(s))
-        let sp2 = string.index_of(r, " ") ?? -1
+        let r = s.substring(sp + 1, s.char_count())
+        let sp2 = r.index_of(" ") ?? -1
         if sp2 < 0:
             r
         else:
-            string.substring(r, 0, sp2)
+            r.substring(0, sp2)
 
 fn before(s: String, sep: String) -> String:
-    let i = string.index_of(s, sep) ?? -1
+    let i = s.index_of(sep) ?? -1
     if i < 0:
         s
     else:
-        string.substring(s, 0, i)
+        s.substring(0, i)
 
 fn after(s: String, sep: String) -> String:
-    let i = string.index_of(s, sep) ?? -1
+    let i = s.index_of(sep) ?? -1
     if i < 0:
         ""
     else:
-        string.substring(s, i + string.char_count(sep), string.char_count(s))
+        s.substring(i + sep.char_count(), s.char_count())
 
 // ---- Rendering + the serve loop ----
 
@@ -676,7 +676,7 @@ pub fn render_for(resp: Response, method: String) -> String:
                 http.check_header(k, v)
                 if !http.is_framing_header(k):
                     out = out + k + ": " + v + "\r\n"
-            out = out + "Content-Length: " + "${string.length(b)}" + "\r\n"
+            out = out + "Content-Length: " + "${b.length()}" + "\r\n"
             out = out + "Connection: close\r\n\r\n"
             if method == "HEAD":
                 out

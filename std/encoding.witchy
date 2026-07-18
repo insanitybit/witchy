@@ -171,8 +171,8 @@ pub fn base64url_to_hex_string(data: String) -> Result(String, String):
 fn hex_valid(data: String) -> Bool:
     var count = 0
     var ok = true
-    for ch in string.chars(data):
-        if string.contains("0123456789abcdefABCDEF", ch):
+    for ch in data.chars():
+        if "0123456789abcdefABCDEF".contains(ch):
             count = count + 1
         else:
             ok = false
@@ -187,7 +187,7 @@ fn base64_valid(data: String) -> Bool:
 // base64url is the NO-PADDING form (the JWT/WebAuthn wire format), so any `=` —
 // even a well-formed trailing run — is invalid here, not just misplaced padding.
 fn base64url_valid(data: String) -> Bool:
-    !string.contains(data, "=") && valid_symbols(data, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+    !data.contains("=") && valid_symbols(data, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
 
 // Shared base64/base64url check. Every data symbol must be in `alphabet`, and any
 // `=` padding must be a contiguous run of 1 or 2 at the very END — never in the
@@ -196,14 +196,14 @@ fn base64url_valid(data: String) -> Bool:
 // accepted when its symbol count is not `≡ 1 (mod 4)` (a lone trailing symbol
 // carries only 6 bits — a truncated final group that would decode to nothing).
 fn valid_symbols(data: String, alphabet: String) -> Bool:
-    let cs = string.chars(data)
+    let cs = data.chars()
     let n = list.length(cs)
     var i = 0
     var count = 0
     var ok = true
     // Leading data symbols (up to the first `=`).
     while i < n && list.at(cs, i) != "=":
-        if !string.contains(alphabet, list.at(cs, i)):
+        if !alphabet.contains(list.at(cs, i)):
             ok = false
         count = count + 1
         i = i + 1

@@ -61,7 +61,7 @@ impl From(OAuthError) for String:
 // An endpoint that already carries fixed parameters (a tenant, `prompt`, ...) is
 // extended with `&`, never a second `?`.
 pub fn authorize_url(authorize_endpoint: String, client_id: String, redirect_uri: String, scope: String, state: String) -> String:
-    let joiner = if string.contains(authorize_endpoint, "?"): "&" else: "?"
+    let joiner = if authorize_endpoint.contains("?"): "&" else: "?"
     authorize_endpoint + joiner + "response_type=code" + "&client_id=" + url.encode(client_id) + "&redirect_uri=" + url.encode(redirect_uri) + "&scope=" + url.encode(scope) + "&state=" + url.encode(state)
 
 // Exchange an authorization `code` for an access token at the provider's token endpoint
@@ -97,7 +97,7 @@ pub fn exchange_code_id_token_string(net: Net[Connect, Tcp], token_url: String, 
 pub fn token_response(net: Net[Connect, Tcp], token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(Json, OAuthError):
     // This POST carries the `client_secret`; plaintext HTTP would leak it on the
     // wire, so refuse anything but HTTPS — fail closed (BUG-265).
-    if !string.starts_with(token_url, "https://"):
+    if !token_url.starts_with("https://"):
         return Err(TokenEndpointNotHttps(token_url))
     let body = "grant_type=authorization_code" + "&client_id=" + url.encode(client_id) + "&client_secret=" + url.encode(client_secret) + "&code=" + url.encode(code) + "&redirect_uri=" + url.encode(redirect_uri)
 
@@ -129,7 +129,7 @@ pub fn token_response_string(net: Net[Connect, Tcp], token_url: String, client_i
 pub fn bearer_get_json(net: Net[Connect, Tcp], url: String, token: String) -> Result(Json, OAuthError):
     // The request carries a `Bearer` access token; plaintext HTTP would leak it, so
     // refuse anything but HTTPS — fail closed (BUG-265).
-    if !string.starts_with(url, "https://"):
+    if !url.starts_with("https://"):
         return Err(BearerEndpointNotHttps(url))
     let req = http.get_request(url)
         .with_header("authorization", "Bearer " + token)

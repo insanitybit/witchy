@@ -15,13 +15,13 @@ pub fn run(e: Exec, dir: Dir[Read], path: String, args: List(String), stdin: Str
     // an argument that itself contains a `\0` would be split into two arguments —
     // an argument-injection. Reject it loudly (RFC-0044 rule 3).
     for a in args:
-        if string.contains(a, "\0"):
+        if a.contains("\0"):
             fail("exec.run: an argument may not contain a NUL byte")
     let joined = list.join(args, "\0")
     let payload = e.exec(dir, path, joined, stdin)
-    let nl = string.index_of(payload, "\n") ?? -1
-    let code = string.to_int(string.substring(payload, 0, nl))
-    let output = string.drop(payload, nl + 1)
+    let nl = payload.index_of("\n") ?? -1
+    let code = payload.substring(0, nl).to_int()
+    let output = payload.drop(nl + 1)
     (code, output)
 
 // Run `path` with `args` and no stdin — the common case.

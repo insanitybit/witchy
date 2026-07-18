@@ -25,7 +25,6 @@ import exec
 import fs
 import http
 import rights
-import string
 import show
 import error
 import convert
@@ -117,7 +116,7 @@ fn dispatch_more(console: Console, root: Dir, args: List(String), cmd: String) -
 
 // --- info: a one-screen summary of a rune -----------------------------------
 fn cmd_info(console: Console, root: Dir, dir: String):
-    if string.is_empty(dir):
+    if dir.is_empty():
         console.print("usage: pm info <dir>")
     else:
         let manifest = root.read(join_path(dir, "witchy.toml"))
@@ -137,13 +136,13 @@ fn cmd_info(console: Console, root: Dir, dir: String):
 // `witchyc` does the compiling/running.
 fn cmd_run(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, clock: Clock, args: List(String)) -> Int:
     let target = arg(args, 1)
-    let dir = if string.is_empty(target): "." else: target
+    let dir = if target.is_empty(): "." else: target
     // BUG-102: everything after `run <file|dir>` is the program's own argv and must
     // be forwarded to the sandboxed run, not dropped.
     let app_args = args_from(args, 2)
     if root.exists(join_path(dir, "witchy.toml")):
         run_project(console, runner, root, bin, dir, app_args)
-    else if string.is_empty(target):
+    else if target.is_empty():
         console.print("usage: pm run <file|dir>")
         1
     else:
@@ -170,7 +169,7 @@ fn build_options(args: List(String)) -> BuildOptions:
     for value in args:
         if index == 0:
             Nil
-        else if !string.is_empty(pending):
+        else if !pending.is_empty():
             if pending == "target":
                 target = value
             else:
@@ -184,7 +183,7 @@ fn build_options(args: List(String)) -> BuildOptions:
             mode = "release"
         else if value == "--debug":
             mode = "debug"
-        else if string.starts_with(value, "--"):
+        else if value.starts_with("--"):
             error = "unknown build option `${value}`"
         else if positional:
             error = "build accepts at most one <file|dir>"
@@ -192,7 +191,7 @@ fn build_options(args: List(String)) -> BuildOptions:
             dir = value
             positional = true
         index = index + 1
-    if !string.is_empty(pending):
+    if !pending.is_empty():
         error = "--${pending} needs a value"
     BuildOptions(dir, target, out, mode, error)
 
@@ -200,7 +199,7 @@ fn build_options(args: List(String)) -> BuildOptions:
 fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, args: List(String)) -> Int:
     let options = build_options(args)
     let dir = options.dir
-    if !string.is_empty(options.error):
+    if !options.error.is_empty():
         console.print("usage: pm build [--target trusted-exe] [--out <path>] [--release|--debug] [<dir>]")
         console.print(options.error)
         1
@@ -239,10 +238,10 @@ fn cmd_build(console: Console, runner: Exec, root: Dir, bin: Dir, env: Env, args
 fn build_project_target(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, entry: String, deps: List(String), build_flags: List(String), options: BuildOptions) -> Int:
     if options.target == "trusted-exe":
         let manifest = join_path(dir, "witchy.toml")
-        let configured = if string.is_empty(options.out): trusted_output(root, dir, options.mode) else: options.out
+        let configured = if options.out.is_empty(): trusted_output(root, dir, options.mode) else: options.out
         let target_flags = ["--target", "trusted-exe", "--manifest", manifest, "--out", configured, "--${options.mode}"]
         run_compiler(console, runner, bin, "build", flatten_argv(["compile", entry], flatten_argv(deps, flatten_argv(build_flags, target_flags))))
-    else if !string.is_empty(options.out):
+    else if !options.out.is_empty():
         console.print("--out is supported by `build --target trusted-exe`; portable project builds remain verification-only")
         1
     else:
@@ -343,7 +342,7 @@ fn lock_rune_entries(lock: String) -> Result(List(Toml), LockIntegrityError):
                 Ok(entries) -> Ok(entries)
 
 fn verify_registry_lock_entries(root: Dir, dir: String, lock: String) -> Result(Nil, LockIntegrityError):
-    let rootpub = match pinned_registry_trust(lock):
+    let rootpub: String = match pinned_registry_trust(lock):
         Err(e) -> return Err(LockEntryMalformed(lock_pin_error_message(e)))
         Ok(None) -> ""
         Ok(Some(trust)) -> trust.1
@@ -357,12 +356,12 @@ fn verify_registry_lock_entries(root: Dir, dir: String, lock: String) -> Result(
                     let version = required_lock_field(entry, "version")?
                     let hash = required_lock_field(entry, "hash")?
                     let alias = entry_alias(entry)
-                    if string.is_empty(alias):
+                    if alias.is_empty():
                         return Err(LockEntryMalformed("registry entry `${name}` has no local alias"))
                     else if aliases.contains(alias):
                         return Err(LockDuplicateAlias(alias))
                     aliases.push(alias)
-                    if string.is_empty(rootpub):
+                    if rootpub.is_empty():
                         return Err(LockRootKeyMissing)
                     let rune_dir = join_path(join_path(dir, "vendor"), alias)
                     let record_path = join_path(rune_dir, "coven.json")
@@ -387,7 +386,7 @@ fn verify_registry_lock_entries(root: Dir, dir: String, lock: String) -> Result(
                         return Err(LockRecordCoordinateMismatch(alias, "hash", hash, record.hash))
                     else if rune_hash(root, rune_dir) != hash:
                         return Err(LockSourceHashMismatch(alias))
-                else if string.starts_with(source, "path:"):
+                else if source.starts_with("path:"):
                     let name = required_lock_field(entry, "name")?
                     if !is_locked_path_dependency(root, dir, name):
                         return Err(LockEntryMalformed("path entry `${name}` is not in the manifest dependency closure"))
@@ -517,7 +516,7 @@ fn strip_net_flags(args: List(String)) -> List(String):
 // (`.` when pm is run from inside the project, `<dir>` when run from a workspace
 // root). Data files (`tasks.md`, `config.kv`, `output.json`, …) live here.
 fn project_data_dir(dir: String) -> String:
-    if string.is_empty(dir) || dir == ".":
+    if dir.is_empty() || dir == ".":
         "."
     else:
         dir
@@ -560,7 +559,7 @@ fn collect_deps(root: Dir, dir: String, flags: List(String)) -> Result(List(Stri
             // registry identity `name` (BUG-099). Old-format locks have no `alias`,
             // so fall back to the basename of `name`.
             let alias = entry_alias(entry)
-            if entry_is_registry(entry) && !string.is_empty(alias) && !has_dep(acc, alias):
+            if entry_is_registry(entry) && !alias.is_empty() && !has_dep(acc, alias):
                 if let Some(src) = vendored_module(root, dir, alias):
                     acc = dep_flag(acc, alias, src)
     Ok(acc)
@@ -599,7 +598,7 @@ fn dep_flag(flags: List(String), name: String, src: String) -> List(String):
 fn has_dep(flags: List(String), name: String) -> Bool:
     var found = false
     for f in flags:
-        if string.contains(f, "=") && string.split_once(f, "=").0 == name:
+        if f.contains("=") && f.split_once("=").0 == name:
             found = true
     found
 
@@ -618,7 +617,7 @@ fn module_in_src(root: Dir, base: String) -> Option(String):
         None
     else:
         let conventional = manifest_entry(root, base)
-        if !string.is_empty(conventional) && root.exists(conventional):
+        if !conventional.is_empty() && root.exists(conventional):
             Some(conventional)
         else:
             match first_witchy(root.subtree(srcdir).list()):
@@ -664,7 +663,7 @@ fn run_compiler(console: Console, runner: Exec, bin: Dir, label: String, argv: L
 // run/typecheck/fmt/test/doc — the CLI front-end driving the compiler, RFC-0004's
 // cargo→rustc split.
 fn cmd_drive(console: Console, runner: Exec, bin: Dir, verb: String, argv: List(String)) -> Int:
-    if string.is_empty(list.at(argv, list.length(argv) - 1)):
+    if list.at(argv, list.length(argv) - 1).is_empty():
         console.print("usage: pm ${verb} <file>")
         1
     else:
@@ -743,7 +742,7 @@ fn entry_is_registry(entry: Toml) -> Bool:
 // Whether a dependency ships a `build` step (`src/build.witchy` defining `build`).
 fn has_build_step(root: Dir, depdir: String) -> Bool:
     let path = join_path(join_path(depdir, "src"), "build.witchy")
-    root.exists(path) && string.contains(root.read(path), "fn build")
+    root.exists(path) && root.read(path).contains("fn build")
 
 // Run one dependency's build step under its grant, returning (code, dep_flags).
 // Default-deny layer 1: refuse unless the consumer accepted execution with a
@@ -800,7 +799,7 @@ fn audit_then_flags(console: Console, root: Dir, dir: String, name: String, depd
     var generated = []
     var flags = []
     for f in root.subtree(gendir).list():
-        if string.ends_with(f, ".witchy"):
+        if f.ends_with(".witchy"):
             let path = join_path(gendir, f)
             let caps = match footprint_values(compiler.footprint(root.read(path)), "total"):
                 Err(e) ->
@@ -863,10 +862,10 @@ fn cache_hit(root: Dir, gendir: String, key: String) -> Bool:
 fn has_grants_section(manifest: String, name: String) -> Bool:
     let target = "build.grants.\"${name}\""
     var found = false
-    for line in string.lines(manifest):
-        let t = string.trim(line)
-        if string.starts_with(t, "[") && string.ends_with(t, "]"):
-            let inner = string.trim(string.strip_suffix(string.strip_prefix(t, "["), "]"))
+    for line in manifest.lines():
+        let t = line.trim()
+        if t.starts_with("[") && t.ends_with("]"):
+            let inner = t.strip_prefix("[").strip_suffix("]").trim()
             if inner == target:
                 found = true
     found
@@ -917,11 +916,11 @@ fn build_footprint(source: String) -> Result(List(String), FootprintError):
 
 // `greet.witchy` → module name `greet`.
 fn module_stem(file: String) -> String:
-    string.strip_suffix(file, ".witchy")
+    file.strip_suffix(".witchy")
 
 // --- audit: the footprint a single file demands -----------------------------
 fn cmd_audit(console: Console, root: Dir, file: String):
-    if string.is_empty(file):
+    if file.is_empty():
         console.print("usage: pm audit <file>")
     else:
         let report = compiler.footprint(root.read(file))
@@ -935,7 +934,7 @@ fn cmd_audit(console: Console, root: Dir, file: String):
 // admits — rights-precisely, so a declared `Net[Connect]` does NOT admit a
 // demanded full `Net` (the under-declaration a supply-chain attacker relies on).
 fn cmd_check(console: Console, root: Dir, dir: String) -> Int:
-    if string.is_empty(dir):
+    if dir.is_empty():
         console.print("usage: pm check <dir>")
         1
     else:
@@ -952,11 +951,11 @@ fn cmd_check(console: Console, root: Dir, dir: String) -> Int:
         report_check(console, undeclared, unused)
 
 fn report_check(console: Console, undeclared: List(String), unused: List(String)) -> Int:
-    if !string.is_empty(list.join(undeclared, ", ")):
+    if !list.join(undeclared, ", ").is_empty():
         console.print("BLOCK: code demands authority not admitted by [capabilities]: ${list.join(undeclared, ", ")}")
         2
     else:
-        if !string.is_empty(list.join(unused, ", ")):
+        if !list.join(unused, ", ").is_empty():
             console.print("OK (lint): declared but unused: ${list.join(unused, ", ")}")
         else:
             console.print("OK: declared footprint admits the code, nothing unused")
@@ -979,7 +978,7 @@ fn admits_any(declared: String, demanded: List(String)) -> Bool:
 
 // --- guard: block an upgrade that widens authority --------------------------
 fn cmd_guard(console: Console, root: Dir, old: String, new: String) -> Int:
-    if string.is_empty(old) || string.is_empty(new):
+    if old.is_empty() || new.is_empty():
         console.print("usage: pm guard <old-file> <new-file>")
         1
     else:
@@ -997,7 +996,7 @@ fn cmd_guard(console: Console, root: Dir, old: String, new: String) -> Int:
 
 // --- deps: list a rune's dependencies ---------------------------------------
 fn cmd_deps(console: Console, root: Dir, dir: String):
-    if string.is_empty(dir):
+    if dir.is_empty():
         console.print("usage: pm deps <dir>")
     else:
         let manifest = root.read(join_path(dir, "witchy.toml"))
@@ -1013,7 +1012,7 @@ fn cmd_deps(console: Console, root: Dir, dir: String):
 // dependency is a leaf (its own subtree lives in the registry, not on disk). A
 // diamond/cycle terminates via the visited set.
 fn cmd_tree(console: Console, root: Dir, dir: String):
-    if string.is_empty(dir):
+    if dir.is_empty():
         console.print("usage: pm tree <dir>")
     else:
         let manifest = root.read(join_path(dir, "witchy.toml"))
@@ -1036,7 +1035,7 @@ fn tree_children(console: Console, root: Dir, dir: String, indent: String, seen:
 // vendor <dir> — materialize path dependencies' sources into <dir>/vendor/<name>
 // for offline, auditable builds. Copies each dep's src/*.witchy and manifest.
 fn cmd_vendor(console: Console, root: Dir, dir: String) -> Int:
-    if string.is_empty(dir):
+    if dir.is_empty():
         console.print("usage: pm vendor <dir>")
         1
     else:
@@ -1092,12 +1091,12 @@ fn vendor_one(root: Dir, dep_dir: String, vendor: String, name: String) -> Int:
 // published version lands STAGED (not resolvable until a separate `promote`).
 fn cmd_publish(console: Console, net: Net, root: Dir, env: Env, args: List(String)) -> Int:
     let dir = arg(args, 1)
-    if string.is_empty(dir):
+    if dir.is_empty():
         console.print("usage: pm publish <dir> [host:port] [identity]")
         1
     else:
         let addr = coven_addr(env, arg(args, 2))
-        let identity = if string.is_empty(arg(args, 3)): "ci-bot" else: arg(args, 3)
+        let identity = if arg(args, 3).is_empty(): "ci-bot" else: arg(args, 3)
         match parse_hostport(addr):
             Err(m) ->
                 console.print("invalid registry address: ${m}")
@@ -1148,7 +1147,7 @@ fn id_token_from_env(env: Env) -> Option(String):
 // the environment (the Rust CLI's convention), else the default. The bootstrap
 // auto-grants Net to `COVEN_URL` so no explicit `--net` is needed.
 fn coven_addr(env: Env, arg_addr: String) -> String:
-    if !string.is_empty(arg_addr):
+    if !arg_addr.is_empty():
         arg_addr
     else:
         match env.get_env("COVEN_URL"):
@@ -1156,7 +1155,7 @@ fn coven_addr(env: Env, arg_addr: String) -> String:
             None -> "127.0.0.1:8787"
 
 fn strip_scheme(u: String) -> String:
-    string.replace(string.replace(u, "https://", ""), "http://", "")
+    u.replace("https://", "").replace("http://", "")
 
 // promote <name> <version> [host:port] [identity] — release a staged version.
 // Trusted registries require COVEN_ID_TOKEN to carry an IdP-attested MFA/WebAuthn
@@ -1164,12 +1163,12 @@ fn strip_scheme(u: String) -> String:
 fn cmd_promote(console: Console, net: Net, env: Env, args: List(String)) -> Int:
     let name = arg(args, 1)
     let version = arg(args, 2)
-    if string.is_empty(name) || string.is_empty(version):
+    if name.is_empty() || version.is_empty():
         console.print("usage: pm promote <name> <version> [host:port] [identity]")
         1
     else:
         let addr = coven_addr(env, arg(args, 3))
-        let identity = if string.is_empty(arg(args, 4)): "release-human" else: arg(args, 4)
+        let identity = if arg(args, 4).is_empty(): "release-human" else: arg(args, 4)
         match parse_hostport(addr):
             Err(m) ->
                 console.print("invalid registry address: ${m}")
@@ -1190,7 +1189,7 @@ fn cmd_promote(console: Console, net: Net, env: Env, args: List(String)) -> Int:
 fn cmd_outdated(console: Console, net: Net, root: Dir, args: List(String)) -> Int:
     let dir = arg(args, 1)
     let addr = arg(args, 2)
-    if string.is_empty(dir) || string.is_empty(addr):
+    if dir.is_empty() || addr.is_empty():
         console.print("usage: pm outdated <dir> <coven-host:port>")
         1
     else:
@@ -1240,7 +1239,7 @@ fn latest_version(versions: List(Version)) -> Option(Version):
 fn cmd_yank(console: Console, net: Net, env: Env, args: List(String)) -> Int:
     let name = arg(args, 1)
     let version = arg(args, 2)
-    if string.is_empty(name) || string.is_empty(version):
+    if name.is_empty() || version.is_empty():
         console.print("usage: pm yank <name> <version> [host:port]")
         1
     else:
@@ -1264,7 +1263,7 @@ fn cmd_yank(console: Console, net: Net, env: Env, args: List(String)) -> Int:
 // per record so a consumer can see what is resolvable before adding.
 fn cmd_list(console: Console, net: Net, env: Env, args: List(String)) -> Int:
     let name = arg(args, 1)
-    if string.is_empty(name):
+    if name.is_empty():
         console.print("usage: pm list <name> [host:port]")
         1
     else:
@@ -1321,7 +1320,7 @@ fn resp_field(text: String, key: String) -> String:
 // a transitive dependency too, tracing the path from the root to it (`app -> lib ->
 // name`), not only a direct match.
 fn cmd_why(console: Console, root: Dir, dir: String, name: String) -> Int:
-    if string.is_empty(dir) || string.is_empty(name):
+    if dir.is_empty() || name.is_empty():
         console.print("usage: pm why <dir> <name>")
         1
     else:
@@ -1358,7 +1357,7 @@ fn why_path(root: Dir, dir: String, target: String, seen: List(String)) -> Optio
 
 // why-cap <dir> <Cap> — which dependencies introduce a capability into the tree.
 fn cmd_why_cap(console: Console, root: Dir, dir: String, cap: String) -> Int:
-    if string.is_empty(dir) || string.is_empty(cap):
+    if dir.is_empty() || cap.is_empty():
         console.print("usage: pm why-cap <dir> <Cap>")
         1
     else:
@@ -1377,7 +1376,7 @@ fn cmd_why_cap(console: Console, root: Dir, dir: String, cap: String) -> Int:
 // init [name] — add a manifest + src stub to the CURRENT directory (vs `new`,
 // which creates a new subdirectory). No-op if it is already a rune.
 fn cmd_init(console: Console, root: Dir, dir: String) -> Int:
-    let name = if string.is_empty(dir): "app" else: dir
+    let name = if dir.is_empty(): "app" else: dir
     if !valid_scaffold_name(name):
         // BUG-200: same up-front validation as `pm new`.
         console.print(scaffold_name_error(name))
@@ -1409,7 +1408,7 @@ fn version_source(let inline: String) -> String:
 // The lockfile is regenerated from source, so it can never disagree with the
 // bytes on disk: `lock` writes the hashes, `verify` recomputes and compares.
 fn cmd_lock(console: Console, root: Dir, dir: String) -> Int:
-    if string.is_empty(dir):
+    if dir.is_empty():
         console.print("usage: pm lock <dir>")
         1
     else:
@@ -1505,8 +1504,8 @@ fn check_path_identity(problems: List(String), name: String, rel: String, dep_ma
 // for the offline source + signed-record checks.
 fn cmd_verify(console: Console, net: Net, root: Dir, env: Env, clock: Clock, args: List(String)) -> Int:
     let first = arg(args, 1)
-    let target = if first == "--online": "" else: first
-    let dir = if string.is_empty(target): "." else: target
+    let target: String = if first == "--online": "" else: first
+    let dir = if target.is_empty(): "." else: target
     let online = first == "--online" || arg(args, 2) == "--online"
     match verify_lock_integrity(root, dir):
         Err(e) ->
@@ -1776,7 +1775,7 @@ fn pinned_registry_trust(lock: String) -> Result(Option((Int, String)), LockPinE
                     Err(LockPinRootMalformed)
 
 fn parse_snapshot_pin(value: String) -> Result(Int, LockPinError):
-    match string.parse_int(value):
+    match value.parse_int():
         Some(n) ->
             if n < 0:
                 Err(LockPinNegative(value))
@@ -1874,7 +1873,7 @@ fn entry_name(entry: Toml) -> String:
 // entries that carry no `alias` — the basename of the registry `name`.
 fn entry_alias(entry: Toml) -> String:
     let alias = optional_lock_string(entry, "alias", "")
-    if string.is_empty(alias):
+    if alias.is_empty():
         basename(entry_name(entry))
     else:
         alias
@@ -1900,7 +1899,7 @@ fn entry_hash(entry: Toml) -> String:
 // `--allow-cap`), folding into the baseline so an intended widening passes.
 fn cmd_gate(console: Console, root: Dir, args: List(String)) -> Int:
     let dir = arg(args, 1)
-    if string.is_empty(dir):
+    if dir.is_empty():
         console.print("usage: pm gate <dir> [allowed-cap..]")
         1
     else if !root.exists(join_path(dir, "witchy.lock")):
@@ -2055,7 +2054,7 @@ fn footprint_toml(caps: List(String)) -> String:
 // rewrite a sibling path-dependency into a non-existent same-directory one.
 fn normalize_path(let p: String) -> String:
     var stack = []
-    for seg in string.split(p, "/"):
+    for seg in p.split("/"):
         if seg == "..":
             if can_pop(stack):
                 stack = drop_last(stack)
@@ -2159,7 +2158,7 @@ fn update_vendored(console: Console, net: Net, root: Dir, host: String, port: In
     var blocked = false
     var failed = false
     for entry in root.subtree("vendor").list():
-        if string.is_empty(only) || entry == only:
+        if only.is_empty() || entry == only:
             let outcome = update_one(console, net, root, host, port, entry, allowed, cooldown, manifest)
             changed = changed + outcome.0
             if outcome.1:
@@ -2221,7 +2220,7 @@ fn update_one(console: Console, net: Net, root: Dir, host: String, port: Int, en
                 console.print("BLOCK: cannot resolve an update for ${fullname}: ${version_resolve_error_message(e)}")
                 (0, false, true)
             Ok(latest) ->
-                if string.is_empty(latest) || latest == current:
+                if latest.is_empty() || latest == current:
                     (0, false, false)
                 else:
                     gated_refetch(console, net, root, host, port, fullname, current, latest, vendored.runtime_footprint, allowed, cooldown)
@@ -2384,7 +2383,7 @@ fn refetch(console: Console, net: Net, root: Dir, host: String, port: Int, fulln
 fn has_path_flag(args: List(String)) -> Bool:
     var found = false
     for a in args:
-        if a == "--path" || string.starts_with(a, "--path="):
+        if a == "--path" || a.starts_with("--path="):
             found = true
     found
 
@@ -2399,7 +2398,7 @@ fn cmd_add(console: Console, net: Net, root: Dir, env: Env, clock: Clock, args: 
 
 fn cmd_add_dispatch(console: Console, net: Net, root: Dir, env: Env, clock: Clock, args: List(String)) -> Int:
     let pos = positionals(args)
-    if string.is_empty(arg(pos, 3)):
+    if arg(pos, 3).is_empty():
         cmd_add_pkg(console, net, root, env, clock, args)
     else:
         let name = arg(pos, 1)
@@ -2424,7 +2423,7 @@ fn cmd_add_dispatch(console: Console, net: Net, root: Dir, env: Env, clock: Cloc
 fn cmd_add_pkg(console: Console, net: Net, root: Dir, env: Env, clock: Clock, args: List(String)) -> Int:
     let pos = positionals(args)
     let spec = arg(pos, 1)
-    if string.is_empty(spec):
+    if spec.is_empty():
         console.print("usage: pm add <pkg>[@<ver>] [host:port] [--allow-cap <Cap>]... [--allow-fresh]")
         1
     else:
@@ -2507,9 +2506,9 @@ fn project_baseline(root: Dir) -> Result(List(String), LockIntegrityError):
 // Split `<pkg>[@<ver>]` into a (name, requirement); an absent `@<ver>` resolves to
 // `*` (the latest released version). A leading-`@` namespace is not split.
 fn split_spec(spec: String) -> (String, String):
-    if string.contains(spec, "@"):
-        let (name, ver) = string.rsplit_once(spec, "@")
-        if string.is_empty(name):
+    if spec.contains("@"):
+        let (name, ver) = spec.rsplit_once("@")
+        if name.is_empty():
             (spec, "*")
         else:
             (name, ver)
@@ -2727,7 +2726,7 @@ fn parse_vendored_record(text: String) -> Result(VendoredRecord, VendoredRecordE
                 Some(_parsed) ->
                     if state != "released":
                         Err(VendoredRecordInvalidState(state))
-                    else if !string.starts_with(hash, "sha256:"):
+                    else if !hash.starts_with("sha256:"):
                         Err(VendoredRecordInvalidHash(hash))
                     else:
                         Ok(VendoredRecord(name, version, state, hash, runtime_footprint))
@@ -2736,7 +2735,7 @@ fn required_vendored_string(doc: Json, field: String) -> Result(String, Vendored
     match json.get_string(doc, field):
         None -> Err(VendoredRecordMissingString(field))
         Some(value) ->
-            if string.is_empty(value):
+            if value.is_empty():
                 Err(VendoredRecordEmptyString(field))
             else:
                 Ok(value)
@@ -2965,7 +2964,7 @@ fn cooldown_now(env: Env, clock: Clock, args: List(String)) -> (Int, Int, Bool):
 
 fn cooldown_window(env: Env) -> Int:
     match env.get_env("WITCHY_COOLDOWN_SECS"):
-        Some(v) -> string.to_int(v)
+        Some(v) -> v.to_int()
         None -> 259200
 
 fn has_flag(args: List(String), flag: String) -> Bool:
@@ -2985,7 +2984,7 @@ fn positionals(args: List(String)) -> List(String):
             skip = false
         else if a == "--allow-cap" || a == "--allow-build-cap":
             skip = true
-        else if !string.starts_with(a, "--"):
+        else if !a.starts_with("--"):
             out.push(a)
     out
 
@@ -3111,10 +3110,10 @@ impl From(SourceFileSetError) for String:
 // Whether a fetched source path is confined and conventional: `witchy.toml`, or a
 // `src/...` file ending in `.witchy`, with no absolute prefix or `..` traversal.
 fn path_shape_ok(path: String) -> Bool:
-    if string.is_empty(path) || string.starts_with(path, "/") || string.contains(path, ".."):
+    if path.is_empty() || path.starts_with("/") || path.contains(".."):
         false
     else:
-        path == "witchy.toml" || string.starts_with(path, "src/") && string.ends_with(path, ".witchy")
+        path == "witchy.toml" || path.starts_with("src/") && path.ends_with(".witchy")
 
 // Matchable failures from the `/coven/source` response boundary. This response is
 // untrusted registry/mirror structure; malformed JSON or a wrong-shaped `files`
@@ -3193,7 +3192,7 @@ fn recorded_hash(text: String) -> String:
 // root public key (TOFU-pinned), re-verify it with no network: the record must
 // be validly signed, and the on-disk source must still hash to the signed hash.
 fn cmd_verify_rune(console: Console, root: Dir, dir: String, rootpub: String) -> Int:
-    if string.is_empty(dir) || string.is_empty(rootpub):
+    if dir.is_empty() || rootpub.is_empty():
         console.print("usage: pm verify-rune <vendored-rune-dir> <registry-root-pubkey-hex>")
         1
     else if !root.exists(join_path(dir, "coven.json")):
@@ -3207,7 +3206,7 @@ fn cmd_verify_rune(console: Console, root: Dir, dir: String, rootpub: String) ->
 // same signature + content check as verify-rune). A CI gate over an entire
 // vendored dependency graph; exits 2 if any rune fails.
 fn cmd_verify_vendor(console: Console, root: Dir, dir: String, rootpub: String) -> Int:
-    if string.is_empty(dir) || string.is_empty(rootpub):
+    if dir.is_empty() || rootpub.is_empty():
         console.print("usage: pm verify-vendor <vendor-dir> <registry-root-pubkey-hex>")
         1
     else if !root.exists(dir):
@@ -3306,7 +3305,7 @@ fn record_signature_valid(rootpub: String, text: String) -> Bool:
 // signing payload ambiguous. coven refuses to sign such a record; reject it on the
 // consumer side too (defense in depth against a hostile/buggy registry).
 fn record_field_has_newline(doc: Json) -> Bool:
-    string.contains(jget(doc, "uploaded_by"), "\n") || string.contains(jget(doc, "promoted_by"), "\n") || string.contains(jget(doc, "second_factor"), "\n") || string.contains(jget(doc, "provenance"), "\n")
+    jget(doc, "uploaded_by").contains("\n") || jget(doc, "promoted_by").contains("\n") || jget(doc, "second_factor").contains("\n") || jget(doc, "provenance").contains("\n")
 
 // idiom-exempt: concatenation defines the signed coven-v1 payload byte format.
 fn record_payload(doc: Json) -> Option(String):
@@ -3343,17 +3342,17 @@ fn jget_int(doc: Json, key: String) -> Int:
 // (a common `COVEN_URL` spelling like `127.0.0.1:8787/`) is tolerated, matching the
 // Rust launcher's auto-grant normalization.
 fn parse_hostport(addr: String) -> Result((String, Int), HostPortError):
-    let trimmed = string.strip_suffix(string.trim(addr), "/")
-    if !string.contains(trimmed, ":"):
+    let trimmed = addr.trim().strip_suffix("/")
+    if !trimmed.contains(":"):
         Err(HostPortMissingPort(addr))
     else:
-        let (host, portstr) = string.split_once(trimmed, ":")
-        if string.is_empty(host):
+        let (host, portstr) = trimmed.split_once(":")
+        if host.is_empty():
             Err(HostPortEmptyHost(addr))
-        else if string.contains(portstr, ":"):
+        else if portstr.contains(":"):
             Err(HostPortMultipleColons(addr))
         else:
-            match string.parse_int(portstr):
+            match portstr.parse_int():
                 None -> Err(HostPortNonNumeric(addr, portstr))
                 Some(p) ->
                     if p < 1 || p > 65535:
@@ -3388,11 +3387,11 @@ impl From(HostPortError) for String:
 
 // Rune names contain `/`; the wire encodes it as `~` for a query value.
 fn wire(name: String) -> String:
-    list.join(string.split(name, "/"), "~")
+    name.split("/").join("~")
 
 fn basename(name: String) -> String:
-    if string.contains(name, "/"):
-        let (_ns, base) = string.rsplit_once(name, "/")
+    if name.contains("/"):
+        let (_ns, base) = name.rsplit_once("/")
         base
     else:
         name
@@ -3413,7 +3412,7 @@ fn json_index_str(j: Json, i: Int) -> String:
 
 // --- new: scaffold a rune ----------------------------------------------------
 fn cmd_new(console: Console, root: Dir, name: String) -> Int:
-    if string.is_empty(name):
+    if name.is_empty():
         console.print("usage: pm new <name>")
         1
     else if !valid_scaffold_name(name):
@@ -3437,7 +3436,7 @@ fn cmd_new(console: Console, root: Dir, name: String) -> Int:
 // mapped to `_` (a module name is an identifier), matching the launcher's
 // `project_entry_file` mapping. `acme/http` -> `http`, `my-rune` -> `my_rune`.
 fn module_name(name: String) -> String:
-    string.replace(basename(name), "-", "_")
+    basename(name).replace("-", "_")
 
 // A local scaffold-name grammar (BUG-200): a bare `name` or a `namespace/name`,
 // each segment non-empty and made of lowercase ASCII letters, digits, `-`, or `_`,
@@ -3446,10 +3445,10 @@ fn module_name(name: String) -> String:
 // admits the documented valid names and rejects any character that would break the
 // generated `witchy.toml` or `src/<name>.witchy`.
 fn valid_scaffold_name(name: String) -> Bool:
-    if string.is_empty(name) || string.contains(name, "..") || string.starts_with(name, "/") || string.ends_with(name, "/"):
+    if name.is_empty() || name.contains("..") || name.starts_with("/") || name.ends_with("/"):
         false
     else:
-        let parts = string.split(name, "/")
+        let parts = name.split("/")
         if list.length(parts) > 2:
             false
         else:
@@ -3460,11 +3459,11 @@ fn valid_scaffold_name(name: String) -> Bool:
             ok
 
 fn valid_name_segment(s: String) -> Bool:
-    if string.is_empty(s):
+    if s.is_empty():
         false
     else:
         var ok = true
-        for ch in string.chars(s):
+        for ch in s.chars():
             if !name_char_ok(ch):
                 ok = false
         ok
@@ -3517,7 +3516,7 @@ fn vendored_closure_footprint(root: Dir) -> Result(List(String), FootprintError)
 fn first_witchy(let files: List(String)) -> Option(String):
     var found = None
     for f in files:
-        if found.is_none() && string.ends_with(f, ".witchy"):
+        if found.is_none() && f.ends_with(".witchy"):
             found = Some(f)
     found
 

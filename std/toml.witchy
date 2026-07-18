@@ -58,8 +58,8 @@ pub fn decode(text: String) -> Result(Toml, TomlDecodeError):
     var seen_keys: List(String) = []
     var seen_tables: List(String) = []
     var scalar_paths: List(String) = []
-    for line in string.lines(text):
-        let t = string.trim(line)
+    for line in text.lines():
+        let t = line.trim()
         if is_array_header(t):
             aot = array_header_name(t)
             let _path = header_path(aot)?
@@ -79,7 +79,7 @@ pub fn decode(text: String) -> Result(Toml, TomlDecodeError):
             list.push(seen_tables, id)
             section = path
             in_aot = false
-        else if !(string.is_empty(t) || string.starts_with(t, "#")):
+        else if !(t.is_empty() || t.starts_with("#")):
             match key_value(t):
                 Some(pair) ->
                     let (k, raw) = pair
@@ -173,7 +173,7 @@ pub fn required_string(entry: Toml, field: String, label: String) -> Result(Stri
         None -> Err(decode_error(label + " has no `" + field + "` field"))
         Some(value) ->
             let s = as_string(value, label + "'s `" + field + "` field")?
-            if string.is_empty(s):
+            if s.is_empty():
                 Err(decode_error(label + " has an empty `" + field + "` field"))
             else:
                 Ok(s)
@@ -212,7 +212,7 @@ fn kind_name(node: Toml) -> String:
 fn ns_prefix_collision(path: List(String), scalars: List(String)) -> Option(String):
     var prefix = ""
     for seg in path:
-        prefix = if string.is_empty(prefix): seg else: prefix + "." + seg
+        prefix = if prefix.is_empty(): seg else: prefix + "." + seg
         if list.contains(scalars, prefix):
             return Some(prefix)
     None
@@ -269,8 +269,8 @@ fn header_path(name: String) -> Result(List(String), TomlDecodeError):
     // `a` -> `b`. Shares the one quote-aware grammar with values/arrays.
     var out = []
     for seg in split_outside_quotes(name, "."):
-        let s = string.trim(seg)
-        if string.is_empty(s):
+        let s = seg.trim()
+        if s.is_empty():
             return Err(decode_error("malformed TOML table header `" + name + "` (empty path segment)"))
         else:
             list.push(out, unquote_key(s))
@@ -280,14 +280,14 @@ fn header_path(name: String) -> Result(List(String), TomlDecodeError):
 // — an opening `"` with no closing `"`, or an opening `[` with no closing `]`
 // (a truncated line the old lenient parser silently accepted).
 fn parse_value(raw: String) -> Result(Toml, TomlDecodeError):
-    let v = string.trim(raw)
-    if string.starts_with(v, "\""):
+    let v = raw.trim()
+    if v.starts_with("\""):
         if has_closing_quote(v):
             Ok(TomlString(unquote(v)))
         else:
             Err(decode_error("unterminated string in TOML value `" + v + "`"))
-    else if string.starts_with(v, "["):
-        if !string.contains(v, "]"):
+    else if v.starts_with("["):
+        if !v.contains("]"):
             Err(decode_error("unterminated array in TOML value `" + v + "`"))
         else:
             var elems = []
@@ -301,13 +301,13 @@ fn parse_value(raw: String) -> Result(Toml, TomlDecodeError):
         else if bare == "false":
             Ok(TomlBool(false))
         else:
-            match string.parse_int(bare):
+            match bare.parse_int():
                 Some(n) -> Ok(TomlInt(n))
                 None -> Ok(TomlString(bare))
 
 // Whether a value that opens with `"` also has a closing `"`.
 fn has_closing_quote(v: String) -> Bool:
-    string.contains(string.strip_prefix(v, "\""), "\"")
+    v.strip_prefix("\"").contains("\"")
 
 // Insert (key -> value) into `node` at the table reached by `path`, creating
 // intermediate tables as needed.
@@ -387,8 +387,8 @@ pub fn get_array(text: String, path: String) -> List(String):
 pub fn table(text: String, section: String) -> List((String, String)):
     var in_section = section == ""
     var out = []
-    for line in string.lines(text):
-        let t = string.trim(line)
+    for line in text.lines():
+        let t = line.trim()
         if is_header(t):
             in_section = header_name(t) == section
         else if in_section:
@@ -407,12 +407,12 @@ pub fn keys(text: String, section: String) -> List(String):
 // Read `key` from an inline table value like `{ path = "../money", version = "1" }`.
 // Returns the unquoted value, or None if the key is absent.
 pub fn inline_get(inline: String, key: String) -> Option(String):
-    let body = string.strip_suffix(string.strip_prefix(string.trim(inline), "{"), "}")
+    let body = inline.trim().strip_prefix("{").strip_suffix("}")
     var found = None
     // Split on commas OUTSIDE quotes, so a quoted value that itself contains a
     // comma (`path = "../foo,bar"`) is not truncated at the embedded comma.
     for part in split_outside_quotes(body, ","):
-        if let Some((k, v)) = key_value(string.trim(part)):
+        if let Some((k, v)) = key_value(part.trim()):
             if k == key:
                 found = Some(unquote(v))
     found
@@ -422,7 +422,7 @@ fn split_outside_quotes(s: String, sep: String) -> List(String):
     var parts = []
     var current = ""
     var in_quotes = false
-    for ch in string.chars(s):
+    for ch in s.chars():
         if ch == "\"":
             in_quotes = !in_quotes
             current = current + ch
@@ -443,7 +443,7 @@ fn split_once_outside_quotes(s: String, sep: String) -> Option((String, String))
     var in_quotes = false
     var found = false
     var rest = ""
-    for ch in string.chars(s):
+    for ch in s.chars():
         if found:
             rest = rest + ch
         else if ch == "\"":
@@ -460,18 +460,18 @@ fn split_once_outside_quotes(s: String, sep: String) -> Option((String, String))
 
 // If `line` is `key = value` (and not a comment), return (unquoted key, raw value).
 fn key_value(line: String) -> Option((String, String)):
-    if string.starts_with(line, "#"):
+    if line.starts_with("#"):
         None
     else:
         match split_once_outside_quotes(line, "="):
-            Some((k, v)) -> Some((unquote_key(string.trim(k)), string.trim(v)))
+            Some((k, v)) -> Some((unquote_key(k.trim()), v.trim()))
             None -> None
 
 // A bare key is itself; a quoted key has its surrounding quotes stripped (so a
 // scoped name like `"acme/money"` reads back as `acme/money`).
 fn unquote_key(k: String) -> String:
-    if string.starts_with(k, "\"") && string.ends_with(k, "\""):
-        string.strip_suffix(string.strip_prefix(k, "\""), "\"")
+    if k.starts_with("\"") && k.ends_with("\""):
+        k.strip_prefix("\"").strip_suffix("\"")
     else:
         k
 
@@ -480,8 +480,8 @@ fn lookup(text: String, path: String) -> Option(String):
     let (section, key) = split_path(path)
     var in_section = section == ""
     var result = None
-    for line in string.lines(text):
-        let t = string.trim(line)
+    for line in text.lines():
+        let t = line.trim()
         if is_header(t):
             in_section = header_name(t) == section
         else if in_section:
@@ -499,36 +499,36 @@ fn split_path(path: String) -> (String, String):
         ("", path)
     else:
         let key = list.at(segs, list.length(segs) - 1)
-        let section = string.join(list.take(segs, list.length(segs) - 1), ".")
+        let section = list.take(segs, list.length(segs) - 1).join(".")
         (section, key)
 
 fn is_header(line: String) -> Bool:
-    string.starts_with(line, "[") && string.ends_with(header_no_comment(line), "]")
+    line.starts_with("[") && header_no_comment(line).ends_with("]")
 
 fn header_name(line: String) -> String:
-    string.strip_suffix(string.strip_prefix(header_no_comment(line), "["), "]")
+    header_no_comment(line).strip_prefix("[").strip_suffix("]")
 
 // Whether `line` is a `[[name]]` array-of-tables header (checked before the
 // single-table `is_header`, which a `[[...]]` line also matches).
 fn is_array_header(line: String) -> Bool:
-    string.starts_with(header_no_comment(line), "[[") && string.ends_with(header_no_comment(line), "]]")
+    header_no_comment(line).starts_with("[[") && header_no_comment(line).ends_with("]]")
 
 // The `name` inside a `[[name]]` array-of-tables header.
 fn array_header_name(line: String) -> String:
-    string.strip_suffix(string.strip_prefix(header_no_comment(line), "[["), "]]")
+    header_no_comment(line).strip_prefix("[[").strip_suffix("]]")
 
 // A header line with any trailing `# comment` dropped: the header runs to its
 // closing `]`, and a `#` after that begins a comment. A `#` before the first `]`
 // (e.g. inside a quoted key) is left intact, so `[section] # note` reads as
 // `[section]` while `["a#b"]` keeps its key.
 fn header_no_comment(line: String) -> String:
-    let close = string.index_of(line, "]") ?? -1
+    let close = line.index_of("]") ?? -1
     if close < 0:
         line
     else:
-        let rest = string.substring(line, close + 1, string.char_count(line))
-        match string.index_of(rest, "#"):
-            Some(h) -> string.trim(string.substring(line, 0, close + 1 + h))
+        let rest = line.substring(close + 1, line.char_count())
+        match rest.index_of("#"):
+            Some(h) -> line.substring(0, close + 1 + h).trim()
             None -> line
 
 // If `line` is `key = value`, return the trimmed raw value (still quoted).
@@ -538,8 +538,8 @@ fn header_no_comment(line: String) -> String:
 fn match_key(line: String, key: String) -> Option(String):
     match split_once_outside_quotes(line, "="):
         Some((k, v)) ->
-            if unquote_key(string.trim(k)) == unquote_key(key):
-                Some(string.trim(v))
+            if unquote_key(k.trim()) == unquote_key(key):
+                Some(v.trim())
             else:
                 None
         None -> None
@@ -549,22 +549,22 @@ fn match_key(line: String, key: String) -> Option(String):
 // quote, so a `#` *inside* the string is preserved; for a bare value we cut at
 // the first `#`.
 fn unquote(s: String) -> String:
-    if string.starts_with(s, "\""):
-        let (inner, _rest) = string.split_once(string.strip_prefix(s, "\""), "\"")
+    if s.starts_with("\""):
+        let (inner, _rest) = s.strip_prefix("\"").split_once("\"")
         inner
     else:
-        let (bare, _comment) = string.split_once(s, "#")
-        string.trim(bare)
+        let (bare, _comment) = s.split_once("#")
+        bare.trim()
 
 // Parse `["a", "b"]` into ["a", "b"] (unquoted, blanks dropped). Splits at the
 // last `]` so a trailing comment is dropped while `]` inside an element (e.g.
 // "Dir[Read]") is kept.
 fn parse_array(raw: String) -> List(String):
-    let (body, _comment) = string.rsplit_once(string.trim(raw), "]")
-    let inner = string.strip_prefix(body, "[")
+    let (body, _comment) = raw.trim().rsplit_once("]")
+    let inner = body.strip_prefix("[")
     var out = []
     for part in split_outside_quotes(inner, ","):
-        let t = string.trim(part)
-        if !string.is_empty(t):
+        let t = part.trim()
+        if !t.is_empty():
             list.push(out, unquote(t))
     out

@@ -3966,153 +3966,31 @@ The witchy standard string library. Like `list`, it is pure: it declares no capa
 
 #### `fn length(s: String) -> Int`
 
-The string's length in BYTES (UTF-8). For user-perceived characters, see `char_count`.
-
 #### `fn char_count(s: String) -> Int`
-
-The number of Unicode scalar values.
 
 #### `fn chars(s: String) -> List(String)`
 
-The characters, each as a single-character String — one O(n) pass, so callers can index characters in O(1).
-
 #### `fn from_code(code: Int) -> String`
-
-The single character (as a String) for a Unicode scalar value — the inverse of reading a code point. An out-of-range or surrogate value yields U+FFFD (the replacement character), never an error. Powers the JSON `\u` decoder.
 
 #### `fn split(s: String, sep: String) -> List(String)`
 
-Split on every occurrence of `sep`.
-
-#### `fn join(parts: List(String), sep: String) -> String`
-
-Join `parts` with `sep` between adjacent strings. This is the string-side inverse of `split`; `list.join` remains as the receiver-first spelling that powers `parts.join(sep)`.
-
 #### `fn contains(s: String, needle: String) -> Bool`
-
-Whether `needle` occurs in `s`.
 
 #### `fn starts_with(s: String, prefix: String) -> Bool`
 
 #### `fn ends_with(s: String, suffix: String) -> Bool`
 
-#### `fn index_of(s: String, needle: String) -> Option(Int)`
-
-The character index (counted by Unicode scalar) of the first occurrence of `needle` as `Some`, or `None` when `needle` does not occur (RFC-0044 rule 1: absence is `Option`, never a -1 sentinel). An empty `needle` matches nothing (the module-wide empty-pattern rule, matching `last_index_of`/`count`). For a bare yes/no, use `contains`.
-
 #### `fn replace(s: String, from: String, to: String) -> String`
-
-Replace every occurrence of `from` with `to`.
 
 #### `fn substring(s: String, start: Int, end: Int) -> String`
 
-The substring from character index `start` (inclusive) to `end` (exclusive), counted by Unicode scalar; out-of-range indices clamp.
-
 #### `fn to_upper(s: String) -> String`
-
-ASCII case mapping (the portable set both backends share).
 
 #### `fn to_lower(s: String) -> String`
 
 #### `fn trim(s: String) -> String`
 
-Strip leading and trailing ASCII whitespace.
-
 #### `fn to_int(s: String) -> Int`
-
-Parse a decimal integer; junk, overflow, or an empty string ABORTS the program (a runtime error, not an `Err`) on every backend. For the total version that returns `Option(Int)`, see `parse_int`.
-
-#### `fn repeat(s: String, n: Int) -> String`
-
-Repeat a string `n` times.
-
-#### `fn pad_left(s: String, width: Int, fill: String) -> String`
-
-Left-pad `s` with copies of `fill` until it is `width` characters wide. The padding is trimmed to fit exactly, so any non-empty fill yields a result of exactly `width` chars; `s` is returned unchanged when already that long. An empty `fill` can never reach the promised width, so when padding is needed it fails loudly (RFC-0044 rule 3) instead of returning a short string.
-
-#### `fn pad_right(s: String, width: Int, fill: String) -> String`
-
-Right-pad `s` with copies of `fill` until it is `width` characters wide; an empty `fill` fails loudly when padding is needed (see `pad_left`).
-
-#### `fn center(s: String, width: Int, fill: String) -> String`
-
-Center `s` in a field `width` characters wide, padding both sides with `fill`; an odd remainder goes on the right. `s` is returned unchanged when already at least that wide; an empty `fill` fails loudly when padding is needed (see `pad_left`).
-
-#### `fn strip_prefix(s: String, prefix: String) -> String`
-
-Remove `prefix` from the front of `s` when present; otherwise return `s` unchanged. The complement of the `starts_with` builtin.
-
-#### `fn strip_suffix(s: String, suffix: String) -> String`
-
-Remove `suffix` from the end of `s` when present; otherwise return `s` unchanged. The complement of the `ends_with` builtin.
-
-#### `fn char_at(s: String, i: Int) -> Option(String)`
-
-The single character (as a String) at character index `i` (counted by Unicode scalar) as `Some`, or `None` when `i` is out of range (RFC-0044 rule 1: absence is `Option`, never a "" sentinel). For a clamping view use `substring`.
-
-#### `fn is_empty(s: String) -> Bool`
-
-Whether the string has no characters.
-
-#### `fn reverse(s: String) -> String`
-
-The string with its characters in reverse order. Counted by Unicode scalar (via `char_count`/`substring`), so multi-byte characters stay intact: `reverse("café")` is `"éfac"`.
-
-#### `fn take(s: String, n: Int) -> String`
-
-The first `n` characters (the whole string if it is shorter, "" if n <= 0).
-
-#### `fn drop(s: String, n: Int) -> String`
-
-All characters after the first `n` ("" if n covers the whole string).
-
-#### `fn count(s: String, sub: String) -> Int`
-
-The number of non-overlapping occurrences of `sub` in `s` (0 for an empty `sub`). After each match the search resumes past it.
-
-#### `fn words(text: String) -> List(String)`
-
-The whitespace-separated words of `text`: tabs, newlines, and carriage returns are treated as spaces, and empty pieces (from runs of whitespace) are dropped. `words("the  quick\tfox")` is `["the", "quick", "fox"]`.
-
-#### `fn replace_first(s: String, from: String, to: String) -> String`
-
-Replace only the first occurrence of `from` with `to`; return `s` unchanged when `from` is absent. An empty `from` matches nothing (the module-wide empty-pattern rule: `count`/`index_of`/`last_index_of` treat it as absent). (The `replace` builtin replaces every occurrence.)
-
-#### `fn split_once_opt(s: String, sep: String) -> Option((String, String))`
-
-Split at the first occurrence of `sep` into `Some((before, after))`, with `sep` itself dropped. Returns `None` when `sep` is absent or empty, so parsing code can distinguish a missing separator from a present separator with an empty side (`"host"` vs `"host:"`). Counted by Unicode scalar.
-
-#### `fn split_once(s: String, sep: String) -> (String, String)`
-
-Split at the first occurrence of `sep` into `(before, after)`, with `sep` itself dropped. Compatibility wrapper: when `sep` is absent — including the empty separator, which matches nothing (mirroring `rsplit_once`) — returns `(s, "")`. Prefer `split_once_opt` for parsers and validators that need to distinguish absence from a present empty side. Counted by Unicode scalar.
-
-#### `fn last_index_of(s: String, sep: String) -> Option(Int)`
-
-The character index of the LAST occurrence of `sep` in `s` as `Some`, or `None` when absent or `sep` is empty (RFC-0044 rule 1: absence is `Option`, never -1). The right-to-left companion of `index_of`.
-
-#### `fn rsplit_once_opt(s: String, sep: String) -> Option((String, String))`
-
-Split on the LAST occurrence of `sep` into `Some((before, after))`, with `sep` itself dropped. Returns `None` when `sep` is absent or empty.
-
-#### `fn rsplit_once(s: String, sep: String) -> (String, String)`
-
-Split on the LAST occurrence of `sep` (e.g. a file extension): `rsplit_once` of `"a.b.c"` on `"."` is `("a.b", "c")`. Compatibility wrapper: when `sep` is absent the whole string is the right part: `("", s)` — mirroring `split_once`'s `(s, "")`. Prefer `rsplit_once_opt` when absence matters.
-
-#### `fn parse_int(s: String) -> Option(Int)`
-
-Safely parse a base-10 integer: an optional leading `-`/`+` then one or more digits. Returns None for empty, sign-only, non-digit, or out-of-range (beyond the i64 range) input — so it never traps the way the raw `string_to_int` builtin can.
-
-#### `fn lines(text: String) -> List(String)`
-
-Split text into its newline-separated lines.
-
-#### `fn trim_start(s: String) -> String`
-
-Remove leading whitespace.
-
-#### `fn trim_end(s: String) -> String`
-
-Remove trailing whitespace.
 
 #### `String.length() -> Int`
 
@@ -4132,7 +4010,7 @@ Split on every occurrence of `sep`.
 
 #### `String.contains(needle: String) -> Bool`
 
-Whether `needle` occurs in `s`.
+Whether `needle` occurs in `self`.
 
 #### `String.starts_with(prefix: String) -> Bool`
 
@@ -4160,6 +4038,14 @@ ASCII case mapping (the portable set both backends share).
 
 Strip leading and trailing ASCII whitespace.
 
+#### `String.trim_start() -> String`
+
+Remove leading whitespace.
+
+#### `String.trim_end() -> String`
+
+Remove trailing whitespace.
+
 #### `String.to_int() -> Int`
 
 Parse a decimal integer; junk, overflow, or an empty string ABORTS the program (a runtime error, not an `Err`) on every backend. For the total version that returns `Option(Int)`, see `parse_int`.
@@ -4170,23 +4056,23 @@ Repeat a string `n` times.
 
 #### `String.pad_left(width: Int, fill: String) -> String`
 
-Left-pad `s` with copies of `fill` until it is `width` characters wide. The padding is trimmed to fit exactly, so any non-empty fill yields a result of exactly `width` chars; `s` is returned unchanged when already that long. An empty `fill` can never reach the promised width, so when padding is needed it fails loudly (RFC-0044 rule 3) instead of returning a short string.
+Left-pad `self` with copies of `fill` until it is `width` characters wide. The padding is trimmed to fit exactly, so any non-empty fill yields a result of exactly `width` chars; `self` is returned unchanged when already that long. An empty `fill` can never reach the promised width, so when padding is needed it fails loudly (RFC-0044 rule 3) instead of returning a short string.
 
 #### `String.pad_right(width: Int, fill: String) -> String`
 
-Right-pad `s` with copies of `fill` until it is `width` characters wide; an empty `fill` fails loudly when padding is needed (see `pad_left`).
+Right-pad `self` with copies of `fill` until it is `width` characters wide; an empty `fill` fails loudly when padding is needed (see `pad_left`).
 
 #### `String.center(width: Int, fill: String) -> String`
 
-Center `s` in a field `width` characters wide, padding both sides with `fill`; an odd remainder goes on the right. `s` is returned unchanged when already at least that wide; an empty `fill` fails loudly when padding is needed (see `pad_left`).
+Center `self` in a field `width` characters wide, padding both sides with `fill`; an odd remainder goes on the right. `self` is returned unchanged when already at least that wide; an empty `fill` fails loudly when padding is needed (see `pad_left`).
 
 #### `String.strip_prefix(prefix: String) -> String`
 
-Remove `prefix` from the front of `s` when present; otherwise return `s` unchanged. The complement of the `starts_with` builtin.
+Remove `prefix` from the front of `self` when present; otherwise return `self` unchanged. The complement of the `starts_with` builtin.
 
 #### `String.strip_suffix(suffix: String) -> String`
 
-Remove `suffix` from the end of `s` when present; otherwise return `s` unchanged. The complement of the `ends_with` builtin.
+Remove `suffix` from the end of `self` when present; otherwise return `self` unchanged. The complement of the `ends_with` builtin.
 
 #### `String.char_at(i: Int) -> Option(String)`
 
@@ -4210,15 +4096,15 @@ All characters after the first `n` ("" if n covers the whole string).
 
 #### `String.count(sub: String) -> Int`
 
-The number of non-overlapping occurrences of `sub` in `s` (0 for an empty `sub`). After each match the search resumes past it.
+The number of non-overlapping occurrences of `sub` in `self` (0 for an empty `sub`). After each match the search resumes past it.
 
 #### `String.words() -> List(String)`
 
-The whitespace-separated words of `text`: tabs, newlines, and carriage returns are treated as spaces, and empty pieces (from runs of whitespace) are dropped. `words("the  quick\tfox")` is `["the", "quick", "fox"]`.
+The whitespace-separated words of `self`: tabs, newlines, and carriage returns are treated as spaces, and empty pieces (from runs of whitespace) are dropped. `"the  quick\tfox".words()` is `["the", "quick", "fox"]`.
 
 #### `String.replace_first(from: String, to: String) -> String`
 
-Replace only the first occurrence of `from` with `to`; return `s` unchanged when `from` is absent. An empty `from` matches nothing (the module-wide empty-pattern rule: `count`/`index_of`/`last_index_of` treat it as absent). (The `replace` builtin replaces every occurrence.)
+Replace only the first occurrence of `from` with `to`; return `self` unchanged when `from` is absent. An empty `from` matches nothing (the module-wide empty-pattern rule: `count`/`index_of`/`last_index_of` treat it as absent). (The `replace` builtin replaces every occurrence.)
 
 #### `String.split_once_opt(sep: String) -> Option((String, String))`
 
@@ -4230,7 +4116,7 @@ Split at the first occurrence of `sep` into `(before, after)`, with `sep` itself
 
 #### `String.last_index_of(sep: String) -> Option(Int)`
 
-The character index of the LAST occurrence of `sep` in `s` as `Some`, or `None` when absent or `sep` is empty (RFC-0044 rule 1: absence is `Option`, never -1). The right-to-left companion of `index_of`.
+The character index of the LAST occurrence of `sep` in `self` as `Some`, or `None` when absent or `sep` is empty (RFC-0044 rule 1: absence is `Option`, never -1). The right-to-left companion of `index_of`.
 
 #### `String.rsplit_once_opt(sep: String) -> Option((String, String))`
 
@@ -4247,14 +4133,6 @@ Safely parse a base-10 integer: an optional leading `-`/`+` then one or more dig
 #### `String.lines() -> List(String)`
 
 Split text into its newline-separated lines.
-
-#### `String.trim_start() -> String`
-
-Remove leading whitespace.
-
-#### `String.trim_end() -> String`
-
-Remove trailing whitespace.
 
 ## `task`
 

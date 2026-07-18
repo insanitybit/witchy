@@ -177,7 +177,7 @@ fn encode_float(x: Float) -> String:
 // Wrap `s` in quotes, escaping the characters JSON requires.
 fn encode_string(s: String) -> String:
     var out = "\""
-    for c in string.chars(s):
+    for c in s.chars():
         out = out + escape_char(c)
     out + "\""
 
@@ -223,7 +223,7 @@ fn control_code(c: String) -> Int:
 
 // One lowercase hex digit for `v` in 0..15 (always in range here).
 fn hex_digit(v: Int) -> String:
-    string.substring("0123456789abcdef", v, v + 1)
+    "0123456789abcdef".substring(v, v + 1)
 
 // --- Decoder (parsing) ---------------------------------------------------
 //
@@ -241,7 +241,7 @@ pub fn decode(s: String) -> Result(Json, DecodeError):
     // `list.at`, so the whole parse is O(n). Reading characters with `string.substring(s, j,
     // j + 1)` instead would be O(j) per char (UTF-8 character indexing walks from the start),
     // i.e. O(n^2) overall — which made decoding even a modest document take hundreds of ms.
-    let cs = string.chars(s)
+    let cs = s.chars()
     let r = parse_value(cs, skip_ws(cs, 0), 0)?
     let (v, rest) = r
     let end = skip_ws(cs, rest)
@@ -300,7 +300,7 @@ fn parse_value(cs: List(String), i: Int, depth: Int) -> Result((Json, Int), Deco
             parse_number(cs, i)
 
 fn parse_lit(cs: List(String), i: Int, word: String, value: Json) -> Result((Json, Int), DecodeError):
-    let n = string.char_count(word)
+    let n = word.char_count()
     if i + n <= list.length(cs) && cspan(cs, i, i + n) == word:
         Ok((value, i + n))
     else:
@@ -313,15 +313,15 @@ fn is_digit(c: String) -> Bool:
 // without an intermediate i64, so a large integer part never overflows. Each
 // per-digit `string.to_int` is on a single character, so it can't trap.
 fn digits_to_float(s: String) -> Float:
-    let n = string.char_count(s)
+    let n = s.char_count()
     var i = 0
     var neg = false
-    if n > 0 && string.substring(s, 0, 1) == "-":
+    if n > 0 && s.substring(0, 1) == "-":
         neg = true
         i = 1
     var acc = 0.0
     while i < n:
-        acc = acc * 10.0 + math.to_float(string.to_int(string.substring(s, i, i + 1)))
+        acc = acc * 10.0 + math.to_float(s.substring(i, i + 1).to_int())
         i = i + 1
     if neg:
         0.0 - acc
@@ -349,7 +349,7 @@ fn parse_number(cs: List(String), i: Int) -> Result((Json, Int), DecodeError):
     else:
         // A bare integer literal beyond the i64 range can't be a `JsonInt`;
         // report it rather than trapping in the raw `string.to_int`.
-        match string.parse_int(cspan(cs, i, j)):
+        match cspan(cs, i, j).parse_int():
             Some(v) -> Ok((JsonInt(v), j))
             None -> Err(decode_error("integer out of range at " + "${i}"))
 
@@ -393,7 +393,7 @@ fn parse_float_tail(cs: List(String), start: Int, ip_end: Int) -> Result((Json, 
         // and wrapped (`1e9223372036854775808` decoded to `1.0`); `parse_int`
         // returns None on overflow, and a magnitude no double can represent is
         // rejected rather than fed to `pow10` (which would loop or produce `inf`).
-        match string.parse_int(cspan(cs, exp_start, j)):
+        match cspan(cs, exp_start, j).parse_int():
             Some(e) -> exp = e
             None -> return Err(decode_error("exponent out of range at " + "${start}"))
         if exp > 400:
@@ -494,7 +494,7 @@ fn unescape(e: String) -> String:
 
 // One hex digit (0-9, a-f, A-F) to its 0..15 value, or -1 if not a hex digit.
 fn hex_val(c: String) -> Int:
-    string.index_of("0123456789abcdef", string.to_lower(c)) ?? -1
+    "0123456789abcdef".index_of(c.to_lower()) ?? -1
 
 // The 16-bit value of the four hex digits at `j`, or -1 if any is not hex.
 fn hex4(cs: List(String), j: Int) -> Int:
@@ -824,7 +824,7 @@ pub fn get_in(j: Json, segments: List(String)) -> Option(Json):
 // splits on every `.`, so use `get_in` when a key itself may contain a dot. Any
 // missing key (or a non-object along the way) yields `None`.
 pub fn get_path(j: Json, path: String) -> Option(Json):
-    get_in(j, string.split(path, "."))
+    get_in(j, path.split("."))
 
 fn step(cur: Option(Json), seg: String) -> Option(Json):
     match cur:

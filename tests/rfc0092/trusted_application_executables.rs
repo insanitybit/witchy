@@ -63,12 +63,11 @@ fn trusted_executable_end_to_end() {
     std::fs::write(
         scratch.join("src/trusted_fixture.witchy"),
         r#"import list
-import string
 
 fn main(console: Console, cwd: Dir[Read], root: Dir[Read], env: Env, args: List(String)) -> Int:
     let requested = list.at(args, 0)
-    if string.starts_with(requested, "/"):
-        console.print("absolute:${root.read(string.strip_prefix(requested, "/"))}")
+    if requested.starts_with("/"):
+        console.print("absolute:${root.read(requested.strip_prefix("/"))}")
     else:
         console.print("relative:${cwd.read(requested)}")
     match env.get_env("RFC0092_TEST_LABEL"):

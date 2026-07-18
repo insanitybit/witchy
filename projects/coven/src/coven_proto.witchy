@@ -4,7 +4,6 @@
 // missing or empty required field returns Err at the envelope boundary rather than
 // defaulting to "" and failing later inside authorization/storage.
 
-import string
 import coven_json
 import coven_validate
 from json import Json
@@ -56,7 +55,7 @@ pub fn yank_of(doc: Json) -> Result(YankRequest, String):
 
 fn require_str(doc: Json, key: String) -> Result(String, String):
     match json.get_string(doc, key):
-        Some(s) -> if string.is_empty(s): Err("missing required field `" + key + "`") else: Ok(s)
+        Some(s) -> if s.is_empty(): Err("missing required field `" + key + "`") else: Ok(s)
         None -> Err("missing required field `" + key + "`")
 
 // The wire source is {"source":{"files":[[path,text],...]}} (matches SourceDto).
@@ -75,7 +74,7 @@ fn source_files(doc: Json) -> Result(List((String, String)), String):
 
 fn file_pair(it: Json) -> Result((String, String), String):
     let path = coven_json.index_str(it, 0)
-    if string.is_empty(path):
+    if path.is_empty():
         Err("source file entry has empty path")
     else:
         Ok((path, coven_json.index_str(it, 1)))

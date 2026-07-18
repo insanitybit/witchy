@@ -3908,13 +3908,13 @@ mod tests {
 
     #[test]
     fn which_finds_functions_by_name_fragment_and_abbreviation() {
-        // Exact: module-qualified signature with its doc line.
+        // Exact: Type-qualified signature with its doc line (impl methods).
         let split = std_signatures("split");
-        assert!(split.iter().any(|s| s.starts_with("string.split(")), "{split:?}");
+        assert!(split.iter().any(|s| s.starts_with("String.split(")), "{split:?}");
         // Substring: `pad` lists both pads.
         let pad = std_signatures("pad");
-        assert!(pad.iter().any(|s| s.starts_with("string.pad_left(")), "{pad:?}");
-        assert!(pad.iter().any(|s| s.starts_with("string.pad_right(")), "{pad:?}");
+        assert!(pad.iter().any(|s| s.starts_with("String.pad_left(")), "{pad:?}");
+        assert!(pad.iter().any(|s| s.starts_with("String.pad_right(")), "{pad:?}");
         // Abbreviation: the round-3 learner guessed `to_ms`.
         let ms = std_signatures("to_ms");
         assert!(
@@ -3949,7 +3949,7 @@ mod tests {
         assert!(exports.iter().any(|s| s.starts_with("Dir.ext(")), "{exports:?}");
         assert!(!exports.iter().any(|s| s.starts_with("policy.")), "no module-qualified form: {exports:?}");
 
-        // Ordinary module functions stay module-qualified.
-        assert!(std_signatures("split").iter().any(|s| s.starts_with("string.split(")));
+        // Impl methods on String are surfaced as Type-qualified.
+        assert!(std_signatures("split").iter().any(|s| s.starts_with("String.split(")));
     }
 }

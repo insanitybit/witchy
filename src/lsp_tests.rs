@@ -7,7 +7,7 @@
     #[test]
     fn completion_includes_keywords_builtins_and_module_fns() {
         let mut docs = HashMap::new();
-        let src = "import string\n\nfn helper(n: Int) -> Int:\n    n\n\nfn main(console: Console):\n    console.print(\"x\")\n";
+        let src = "\nfn helper(n: Int) -> Int:\n    n\n\nfn main(console: Console):\n    console.print(\"x\")\n";
         docs.insert("file:///t.witchy".to_string(), src.to_string());
         let items = completion_response(
             &docs,
@@ -194,10 +194,10 @@ fn main(console: Console):
     #[test]
     fn hover_resolves_imported_module_functions() {
         let mut docs = HashMap::new();
-        let src = "import string\n\nfn main(console: Console):\n    console.print(string.repeat(\"ab\", 2))\n";
+        let src = "\nfn main(console: Console):\n    console.print(\"ab\".repeat(2))\n";
         docs.insert("file:///t.witchy".to_string(), src.to_string());
-        let line = 3u64;
-        let col = src.lines().nth(3).unwrap().find("repeat").unwrap() as u64;
+        let line = 2u64;
+        let col = src.lines().nth(2).unwrap().find("repeat").unwrap() as u64;
         let resp = hover_response(
             &docs,
             &json!({
@@ -207,22 +207,17 @@ fn main(console: Console):
         );
         let contents = resp["contents"]["value"].as_str().expect("hover text");
         assert!(contents.contains("repeat"), "{contents}");
-        // BUG-161: the module qualifier must go BEFORE the fn name, not jammed in
-        // front of `pub fn` — `string.pub fn repeat(...)` is malformed.
+        // Impl methods are reported under their Type qualifier.
         assert!(
-            !contents.contains("string.pub fn"),
-            "malformed signature: {contents}"
-        );
-        assert!(
-            contents.contains("fn string.repeat("),
-            "expected qualified signature, got: {contents}"
+            contents.contains("String.repeat("),
+            "expected Type-qualified signature, got: {contents}"
         );
     }
 
     #[test]
     fn associated_std_function_hover_uses_type_owner() {
         let mut docs = HashMap::new();
-        let src = "import string\n\nfn main(console: Console):\n    let net_policy = Net.tcp(\"127.0.0.1\", 8080)\n    let dir_policy = Dir.ext(\".log\")\n    console.print(string.repeat(\"x\", 2))\n";
+        let src = "\nfn main(console: Console):\n    let net_policy = Net.tcp(\"127.0.0.1\", 8080)\n    let dir_policy = Dir.ext(\".log\")\n    console.print(\"x\".repeat(2))\n";
         let uri = "file:///policy-hover.witchy";
         docs.insert(uri.to_string(), src.to_string());
 
@@ -237,7 +232,7 @@ fn main(console: Console):
             )
         };
 
-        let net = hover(3, "tcp");
+        let net = hover(2, "tcp");
         let net_contents = net["contents"]["value"].as_str().expect("Net.tcp hover");
         assert!(
             net_contents.contains("Net.tcp(host: String, port: Int) -> NetPolicy"),
@@ -245,7 +240,7 @@ fn main(console: Console):
         );
         assert!(!net_contents.contains("policy.tcp"), "{net_contents}");
 
-        let dir = hover(4, "ext");
+        let dir = hover(3, "ext");
         let dir_contents = dir["contents"]["value"].as_str().expect("Dir.ext hover");
         assert!(
             dir_contents.contains("Dir.ext(suffix: String) -> DirPolicy"),
@@ -285,12 +280,12 @@ fn main(console: Console):
         // code-unit (char) offset; using it as a BYTE index slices off a UTF-8
         // boundary (panic) or returns the wrong word. Here `π` precedes `repeat`;
         // the char offset of `repeat` differs from its byte offset.
-        let line = "    console.print(\"π\" + string.repeat(\"ab\", 2))";
+        let line = "    console.print(\"π\" + \"ab\".repeat(2))";
         let text = format!("fn main(console: Console):\n{line}\n");
         // char offset of the `r` in `repeat` (differs from its byte offset).
-        let repeat_char_idx = "    console.print(\"π\" + string.".chars().count();
+        let repeat_char_idx = "    console.print(\"π\" + \"ab\".".chars().count();
         let w = word_at(&text, 1, repeat_char_idx).expect("word found");
-        assert_eq!(w, "string.repeat", "got {w:?}");
+        assert_eq!(w, "repeat", "got {w:?}");
         // Hovering right on the multibyte char must not panic.
         let pi_idx = "    console.print(\"".chars().count();
         let _ = word_at(&text, 1, pi_idx); // must not panic
@@ -349,7 +344,7 @@ fn main(console: Console):
         // BUG-388: `from X import Y` binds `Y` unqualified. Completion must offer
         // the bare name, and hover on a bare use must resolve it in module X.
         let mut docs = HashMap::new();
-        let src = "from string import repeat\n\nfn main(console: Console):\n    console.print(repeat(\"ab\", 2))\n";
+        let src = "from string import from_code\n\nfn main(console: Console):\n    console.print(from_code(65))\n";
         docs.insert("file:///t.witchy".to_string(), src.to_string());
         let items = completion_response(
             &docs,
@@ -362,12 +357,12 @@ fn main(console: Console):
             .map(|i| i["label"].as_str().unwrap().to_string())
             .collect();
         assert!(
-            labels.contains(&"repeat".to_string()),
+            labels.contains(&"from_code".to_string()),
             "bare from-import offered: {labels:?}"
         );
 
-        // Hover on the bare `repeat` on line 3.
-        let col = src.lines().nth(3).unwrap().find("repeat").unwrap() as u64;
+        // Hover on the bare `from_code` on line 3.
+        let col = src.lines().nth(3).unwrap().find("from_code").unwrap() as u64;
         let resp = hover_response(
             &docs,
             &json!({
@@ -378,7 +373,7 @@ fn main(console: Console):
         assert!(
             resp["contents"]["value"]
                 .as_str()
-                .is_some_and(|c| c.contains("fn string.repeat(")),
+                .is_some_and(|c| c.contains("fn string.from_code(")),
             "{resp}"
         );
     }
@@ -400,7 +395,7 @@ fn main(console: Console):
             }),
         );
         let contents = resp["contents"]["value"].as_str().expect("hover text");
-        assert!(contents.contains("fn list.push("), "{contents}");
+        assert!(contents.contains("List.push("), "{contents}");
 
         // `xs.length` (no call) must resolve too.
         let src2 = "fn main(console: Console):\n    let xs = [1]\n    let n = xs.length\n";
@@ -416,7 +411,7 @@ fn main(console: Console):
         assert!(
             resp2["contents"]["value"]
                 .as_str()
-                .is_some_and(|c| c.contains("fn list.length(")),
+                .is_some_and(|c| c.contains("List.length(")),
             "{resp2}"
         );
     }
@@ -528,7 +523,7 @@ fn main(console: Console):
     fn importing_std_resolves_without_false_errors() {
         // `string` isn't on disk next to /tmp/main.witchy, so this exercises the
         // bundled-module fallback. A clean program must stay diagnostic-free.
-        let src = "import string\nfn main(console: Console):\n    console.print(string.repeat(\"ab\", 2))\n";
+        let src = "fn main(console: Console):\n    console.print(\"ab\".repeat(2))\n";
         assert_eq!(diags(src), Vec::<Value>::new());
     }
 

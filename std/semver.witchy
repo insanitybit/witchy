@@ -75,7 +75,7 @@ pub fn version(major: Int, minor: Int, patch: Int) -> Version:
 // Parse `major.minor.patch` (missing trailing components default to 0), returning
 // a typed error a library can match.
 pub fn parse(s: String) -> Result(Version, SemverError):
-    let parts = string.split(string.trim(s), ".")
+    let parts = s.trim().split(".")
     if list.length(parts) == 0 || list.length(parts) > 3:
         Err(BadVersionShape(s))
     else:
@@ -96,12 +96,12 @@ pub fn parse_string(s: String) -> Result(Version, String):
 fn component(parts: List(String), i: Int) -> Result(Int, SemverError):
     if i >= list.length(parts):
         Ok(0)
-    else if string.starts_with(list.at(parts, i), "+"):
+    else if list.at(parts, i).starts_with("+"):
         // `parse_int` deliberately accepts a leading `+`, but a SemVer component
         // is a bare unsigned decimal: `+1.2.3` is not a version coordinate.
         Err(SignedVersionComponent(list.at(parts, i)))
     else:
-        match string.parse_int(list.at(parts, i)):
+        match list.at(parts, i).parse_int():
             Some(n) ->
                 if n < 0:
                     Err(NegativeVersionComponent(list.at(parts, i)))
@@ -133,17 +133,17 @@ pub fn less(a: Version, b: Version) -> Bool:
 
 // --- constraints -------------------------------------------------------------
 pub fn parse_req(s: String) -> Result(Req, SemverError):
-    let t = string.trim(s)
+    let t = s.trim()
     if t == "*":
         Ok(Any)
-    else if string.starts_with(t, "^"):
-        let raw = string.drop(t, 1)
+    else if t.starts_with("^"):
+        let raw = t.drop(1)
         wrap_caret(parse(raw), version_precision(raw))
-    else if string.starts_with(t, "~"):
-        let raw = string.drop(t, 1)
+    else if t.starts_with("~"):
+        let raw = t.drop(1)
         wrap_tilde(parse(raw), version_precision(raw))
-    else if string.starts_with(t, ">="):
-        wrap_atleast(parse(string.drop(t, 2)))
+    else if t.starts_with(">="):
+        wrap_atleast(parse(t.drop(2)))
     else:
         wrap_exact(parse(t))
 
@@ -153,7 +153,7 @@ pub fn parse_req_string(s: String) -> Result(Req, String):
         Err(e) -> Err(semver_error_message(e))
 
 fn version_precision(raw: String) -> Int:
-    list.length(string.split(string.trim(raw), "."))
+    list.length(raw.trim().split("."))
 
 fn wrap_caret(r: Result(Version, SemverError), precision: Int) -> Result(Req, SemverError):
     match r:

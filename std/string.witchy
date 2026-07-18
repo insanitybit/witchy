@@ -7,39 +7,24 @@ import option
 import list
 
 // --- Native primitives (intercepted by both backends; self-recursive
-// placeholder bodies give the type checker the signatures). ---
-
-// The string's length in BYTES (UTF-8). For user-perceived characters, see
-// `char_count`.
+// placeholder bodies give the type checker the signatures). These must exist
+// as module-level functions because the intrinsic interception resolves by
+// the qualified name `string.X`. The impl methods below delegate to these. ---
 pub fn length(s: String) -> Int:
     string.length(s)
 
-// The number of Unicode scalar values.
 pub fn char_count(s: String) -> Int:
     string.char_count(s)
 
-// The characters, each as a single-character String — one O(n) pass, so
-// callers can index characters in O(1).
 pub fn chars(s: String) -> List(String):
     string.chars(s)
 
-// The single character (as a String) for a Unicode scalar value — the inverse
-// of reading a code point. An out-of-range or surrogate value yields U+FFFD
-// (the replacement character), never an error. Powers the JSON `\u` decoder.
 pub fn from_code(code: Int) -> String:
     string.from_code(code)
 
-// Split on every occurrence of `sep`.
 pub fn split(s: String, sep: String) -> List(String):
     string.split(s, sep)
 
-// Join `parts` with `sep` between adjacent strings. This is the string-side
-// inverse of `split`; `list.join` remains as the receiver-first spelling that
-// powers `parts.join(sep)`.
-pub fn join(parts: List(String), sep: String) -> String:
-    list.join(parts, sep)
-
-// Whether `needle` occurs in `s`.
 pub fn contains(s: String, needle: String) -> Bool:
     string.contains(s, needle)
 
@@ -49,339 +34,31 @@ pub fn starts_with(s: String, prefix: String) -> Bool:
 pub fn ends_with(s: String, suffix: String) -> Bool:
     string.ends_with(s, suffix)
 
-// The character index (counted by Unicode scalar) of the first occurrence of
-// `needle` as `Some`, or `None` when `needle` does not occur (RFC-0044 rule 1:
-// absence is `Option`, never a -1 sentinel). An empty `needle` matches nothing
-// (the module-wide empty-pattern rule, matching `last_index_of`/`count`). For
-// a bare yes/no, use `contains`.
-pub fn index_of(s: String, needle: String) -> Option(Int):
-    let i = if is_empty(needle): 0 - 1 else: find(s, needle)
-    if i < 0:
-        None
-    else:
-        Some(i)
-
-// The raw search intrinsic (char index of the first occurrence, or -1). Private:
-// public callers use `index_of` (Option) or `contains` (Bool); the std internals
-// below use it directly for tight scan loops where the -1 test is the condition.
-fn find(s: String, needle: String) -> Int:
-    string.find(s, needle)
-
-// Replace every occurrence of `from` with `to`.
 pub fn replace(s: String, from: String, to: String) -> String:
     string.replace(s, from, to)
 
-// The substring from character index `start` (inclusive) to `end` (exclusive),
-// counted by Unicode scalar; out-of-range indices clamp.
 pub fn substring(s: String, start: Int, end: Int) -> String:
     string.substring(s, start, end)
 
-// ASCII case mapping (the portable set both backends share).
 pub fn to_upper(s: String) -> String:
     string.to_upper(s)
 
 pub fn to_lower(s: String) -> String:
     string.to_lower(s)
 
-// Strip leading and trailing ASCII whitespace.
 pub fn trim(s: String) -> String:
     string.trim(s)
 
-// Real methods mirror the primary string surface while the module functions
-// remain as stable, first-class values.
-impl String:
-    pub fn length(self) -> Int:
-        string.length(self)
-
-    pub fn char_count(self) -> Int:
-        string.char_count(self)
-
-    pub fn chars(self) -> List(String):
-        string.chars(self)
-
-    pub fn split(self, sep: String) -> List(String):
-        string.split(self, sep)
-
-    pub fn contains(self, needle: String) -> Bool:
-        string.contains(self, needle)
-
-    pub fn starts_with(self, prefix: String) -> Bool:
-        string.starts_with(self, prefix)
-
-    pub fn ends_with(self, suffix: String) -> Bool:
-        string.ends_with(self, suffix)
-
-    pub fn index_of(self, needle: String) -> Option(Int):
-        string.index_of(self, needle)
-
-    pub fn replace(self, from: String, to: String) -> String:
-        string.replace(self, from, to)
-
-    pub fn substring(self, start: Int, end: Int) -> String:
-        string.substring(self, start, end)
-
-    pub fn to_upper(self) -> String:
-        string.to_upper(self)
-
-    pub fn to_lower(self) -> String:
-        string.to_lower(self)
-
-    pub fn trim(self) -> String:
-        string.trim(self)
-
-    pub fn to_int(self) -> Int:
-        string.to_int(self)
-
-    pub fn repeat(self, n: Int) -> String:
-        string.repeat(self, n)
-
-    pub fn pad_left(self, width: Int, fill: String) -> String:
-        string.pad_left(self, width, fill)
-
-    pub fn pad_right(self, width: Int, fill: String) -> String:
-        string.pad_right(self, width, fill)
-
-    pub fn center(self, width: Int, fill: String) -> String:
-        string.center(self, width, fill)
-
-    pub fn strip_prefix(self, prefix: String) -> String:
-        string.strip_prefix(self, prefix)
-
-    pub fn strip_suffix(self, suffix: String) -> String:
-        string.strip_suffix(self, suffix)
-
-    pub fn char_at(self, i: Int) -> Option(String):
-        string.char_at(self, i)
-
-    pub fn is_empty(self) -> Bool:
-        string.is_empty(self)
-
-    pub fn reverse(self) -> String:
-        string.reverse(self)
-
-    pub fn take(self, n: Int) -> String:
-        string.take(self, n)
-
-    pub fn drop(self, n: Int) -> String:
-        string.drop(self, n)
-
-    pub fn count(self, sub: String) -> Int:
-        string.count(self, sub)
-
-    pub fn words(self) -> List(String):
-        string.words(self)
-
-    pub fn replace_first(self, from: String, to: String) -> String:
-        string.replace_first(self, from, to)
-
-    pub fn split_once_opt(self, sep: String) -> Option((String, String)):
-        string.split_once_opt(self, sep)
-
-    pub fn split_once(self, sep: String) -> (String, String):
-        string.split_once(self, sep)
-
-    pub fn last_index_of(self, sep: String) -> Option(Int):
-        string.last_index_of(self, sep)
-
-    pub fn rsplit_once_opt(self, sep: String) -> Option((String, String)):
-        string.rsplit_once_opt(self, sep)
-
-    pub fn rsplit_once(self, sep: String) -> (String, String):
-        string.rsplit_once(self, sep)
-
-    pub fn parse_int(self) -> Option(Int):
-        string.parse_int(self)
-
-    pub fn lines(self) -> List(String):
-        string.lines(self)
-
-    pub fn trim_start(self) -> String:
-        string.trim_start(self)
-
-    pub fn trim_end(self) -> String:
-        string.trim_end(self)
-
-// Parse a decimal integer; junk, overflow, or an empty string ABORTS the
-// program (a runtime error, not an `Err`) on every backend. For the total
-// version that returns `Option(Int)`, see `parse_int`.
 pub fn to_int(s: String) -> Int:
     string.to_int(s)
 
-// Repeat a string `n` times.
-pub fn repeat(s: String, n: Int) -> String:
-    var out = ""
-    var i = 0
-    while i < n:
-        out = out + s
-        i = i + 1
-    out
+// --- Private helpers ---
 
-// Left-pad `s` with copies of `fill` until it is `width` characters wide.
-// The padding is trimmed to fit exactly, so any non-empty fill yields a result
-// of exactly `width` chars; `s` is returned unchanged when already that long.
-// An empty `fill` can never reach the promised width, so when padding is
-// needed it fails loudly (RFC-0044 rule 3) instead of returning a short string.
-pub fn pad_left(s: String, width: Int, fill: String) -> String:
-    let len = string.char_count(s)
-    if len >= width:
-        s
-    else:
-        if is_empty(fill):
-            fail("string.pad_left: empty `fill` cannot pad to width ${width}")
-        let needed = width - len
-        string.substring(repeat(fill, needed), 0, needed) + s
-
-// Right-pad `s` with copies of `fill` until it is `width` characters wide; an
-// empty `fill` fails loudly when padding is needed (see `pad_left`).
-pub fn pad_right(s: String, width: Int, fill: String) -> String:
-    let len = string.char_count(s)
-    if len >= width:
-        s
-    else:
-        if is_empty(fill):
-            fail("string.pad_right: empty `fill` cannot pad to width ${width}")
-        let needed = width - len
-        s + string.substring(repeat(fill, needed), 0, needed)
-
-// Center `s` in a field `width` characters wide, padding both sides with `fill`;
-// an odd remainder goes on the right. `s` is returned unchanged when already at
-// least that wide; an empty `fill` fails loudly when padding is needed (see
-// `pad_left`).
-pub fn center(s: String, width: Int, fill: String) -> String:
-    let len = string.char_count(s)
-    if len >= width:
-        s
-    else:
-        if is_empty(fill):
-            fail("string.center: empty `fill` cannot pad to width ${width}")
-        let total = width - len
-        let left = total / 2
-        let right = total - left
-        string.substring(repeat(fill, left), 0, left) + s + string.substring(repeat(fill, right), 0, right)
-
-// Remove `prefix` from the front of `s` when present; otherwise return `s`
-// unchanged. The complement of the `starts_with` builtin.
-pub fn strip_prefix(s: String, prefix: String) -> String:
-    if string.starts_with(s, prefix):
-        string.substring(s, string.char_count(prefix), string.char_count(s))
-    else:
-        s
-
-// Remove `suffix` from the end of `s` when present; otherwise return `s`
-// unchanged. The complement of the `ends_with` builtin.
-pub fn strip_suffix(s: String, suffix: String) -> String:
-    if string.ends_with(s, suffix):
-        string.substring(s, 0, string.char_count(s) - string.char_count(suffix))
-    else:
-        s
-
-// The single character (as a String) at character index `i` (counted by Unicode
-// scalar) as `Some`, or `None` when `i` is out of range (RFC-0044 rule 1:
-// absence is `Option`, never a "" sentinel). For a clamping view use `substring`.
-pub fn char_at(s: String, i: Int) -> Option(String):
-    if i >= 0 && i < string.char_count(s):
-        Some(string.substring(s, i, i + 1))
-    else:
-        None
-
-// The raw character at `i`, or "" out of range (the clamping `substring` view).
-// Private: the std internals below index with an already-bounds-checked `i`, so
-// the Option would be pure overhead; public callers use `char_at`.
-fn char_or_empty(s: String, i: Int) -> String:
-    string.substring(s, i, i + 1)
-
-// Whether the string has no characters.
-pub fn is_empty(s: String) -> Bool:
-    string.length(s) == 0
-
-// The string with its characters in reverse order. Counted by Unicode scalar
-// (via `char_count`/`substring`), so multi-byte characters stay intact:
-// `reverse("café")` is `"éfac"`.
-pub fn reverse(s: String) -> String:
-    var out = ""
-    var i = string.char_count(s) - 1
-    while i >= 0:
-        out = out + string.substring(s, i, i + 1)
-        i = i - 1
-    out
-
-// The first `n` characters (the whole string if it is shorter, "" if n <= 0).
-pub fn take(s: String, n: Int) -> String:
-    string.substring(s, 0, n)
-
-// All characters after the first `n` ("" if n covers the whole string).
-pub fn drop(s: String, n: Int) -> String:
-    string.substring(s, n, string.char_count(s))
-
-// The number of non-overlapping occurrences of `sub` in `s` (0 for an empty
-// `sub`). After each match the search resumes past it.
-pub fn count(s: String, sub: String) -> Int:
-    if string.char_count(sub) == 0:
-        0
-    else:
-        var total = 0
-        var rest = s
-        var i = find(rest, sub)
-        while i >= 0:
-            total = total + 1
-            rest = string.substring(rest, i + string.char_count(sub), string.char_count(rest))
-            i = find(rest, sub)
-        total
-
-// The whitespace-separated words of `text`: tabs, newlines, and carriage
-// returns are treated as spaces, and empty pieces (from runs of whitespace) are
-// dropped. `words("the  quick\tfox")` is `["the", "quick", "fox"]`.
-pub fn words(text: String) -> List(String):
-    let a = string.replace(text, "\t", " ")
-    let b = string.replace(a, "\n", " ")
-    let c = string.replace(b, "\r", " ")
-    var out = []
-    for w in string.split(c, " "):
-        if string.length(w) > 0:
-            list.push(out, w)
-    out
-
-// Replace only the first occurrence of `from` with `to`; return `s` unchanged
-// when `from` is absent. An empty `from` matches nothing (the module-wide
-// empty-pattern rule: `count`/`index_of`/`last_index_of` treat it as absent).
-// (The `replace` builtin replaces every occurrence.)
-pub fn replace_first(s: String, from: String, to: String) -> String:
-    let i = if is_empty(from): 0 - 1 else: find(s, from)
-    if i < 0:
-        s
-    else:
-        string.substring(s, 0, i) + to + string.substring(s, i + string.char_count(from), string.char_count(s))
-
-// Split at the first occurrence of `sep` into `Some((before, after))`, with
-// `sep` itself dropped. Returns `None` when `sep` is absent or empty, so parsing
-// code can distinguish a missing separator from a present separator with an empty
-// side (`"host"` vs `"host:"`). Counted by Unicode scalar.
-pub fn split_once_opt(s: String, sep: String) -> Option((String, String)):
-    let i = if is_empty(sep): 0 - 1 else: find(s, sep)
-    if i < 0:
-        None
-    else:
-        Some((string.substring(s, 0, i), string.substring(s, i + string.char_count(sep), string.char_count(s))))
-
-// Split at the first occurrence of `sep` into `(before, after)`, with `sep`
-// itself dropped. Compatibility wrapper: when `sep` is absent — including the
-// empty separator, which matches nothing (mirroring `rsplit_once`) — returns
-// `(s, "")`. Prefer `split_once_opt` for parsers and validators that need to
-// distinguish absence from a present empty side. Counted by Unicode scalar.
-pub fn split_once(s: String, sep: String) -> (String, String):
-    match split_once_opt(s, sep):
-        Some(parts) -> parts
-        None -> (s, "")
-
-// The character index of the LAST occurrence of `sep` in `s` as `Some`, or
-// `None` when absent or `sep` is empty (RFC-0044 rule 1: absence is `Option`,
-// never -1). The right-to-left companion of `index_of`.
-pub fn last_index_of(s: String, sep: String) -> Option(Int):
-    let i = rfind(s, sep)
-    if i < 0:
-        None
-    else:
-        Some(i)
+// The raw search intrinsic (char index of the first occurrence, or -1). Private:
+// public callers use `index_of` (Option) or `contains` (Bool); the std internals
+// below use it directly for tight scan loops where the -1 test is the condition.
+fn find(s: String, needle: String) -> Int:
+    string.find(s, needle)
 
 // The raw last-occurrence index (or -1). Private: public callers use
 // `last_index_of` (Option); the std internals here take the raw index directly.
@@ -400,86 +77,325 @@ fn rfind(s: String, sep: String) -> Int:
             i = find(rest, sep)
         last
 
-// Split on the LAST occurrence of `sep` into `Some((before, after))`, with `sep`
-// itself dropped. Returns `None` when `sep` is absent or empty.
-pub fn rsplit_once_opt(s: String, sep: String) -> Option((String, String)):
-    let i = rfind(s, sep)
-    if i < 0:
-        None
-    else:
-        Some((string.substring(s, 0, i), string.substring(s, i + string.char_count(sep), string.char_count(s))))
-
-// Split on the LAST occurrence of `sep` (e.g. a file extension): `rsplit_once`
-// of `"a.b.c"` on `"."` is `("a.b", "c")`. Compatibility wrapper: when `sep`
-// is absent the whole string is the right part: `("", s)` — mirroring
-// `split_once`'s `(s, "")`. Prefer `rsplit_once_opt` when absence matters.
-pub fn rsplit_once(s: String, sep: String) -> (String, String):
-    match rsplit_once_opt(s, sep):
-        Some(parts) -> parts
-        None -> ("", s)
-
-// Safely parse a base-10 integer: an optional leading `-`/`+` then one or more
-// digits. Returns None for empty, sign-only, non-digit, or out-of-range (beyond
-// the i64 range) input — so it never traps the way the raw `string_to_int`
-// builtin can.
-pub fn parse_int(s: String) -> Option(Int):
-    let n = string.char_count(s)
-    if n == 0:
-        None
-    else:
-        var start = 0
-        let first = char_or_empty(s, 0)
-        let neg = first == "-"
-        if first == "-" || first == "+":
-            start = 1
-        if start >= n:
-            None
-        else:
-            var i = start
-            var ok = true
-            while i < n:
-                let c = char_or_empty(s, i)
-                if c < "0" || c > "9":
-                    ok = false
-                i = i + 1
-            if ok == false:
-                None
-            else:
-                // Digits are valid; reject a string that would overflow i64
-                // (otherwise `string.to_int` traps). Strip leading zeros, then
-                // compare the significant digits against the bound — equal-length
-                // digit strings compare numerically, and |i64::MIN| is one past
-                // i64::MAX, so the bound depends on the sign.
-                var j = start
-                while j < n - 1 && char_or_empty(s, j) == "0":
-                    j = j + 1
-                let mag = string.substring(s, j, n)
-                let mlen = string.char_count(mag)
-                let limit = if neg: "9223372036854775808" else: "9223372036854775807"
-                if mlen > 19 || mlen == 19 && mag > limit:
-                    None
-                else:
-                    Some(string.to_int(s))
-
-// Split text into its newline-separated lines.
-pub fn lines(text: String) -> List(String):
-    string.split(text, "\n")
+// The raw character at `i`, or "" out of range (the clamping `substring` view).
+// Private: the std internals below index with an already-bounds-checked `i`, so
+// the Option would be pure overhead; public callers use `char_at`.
+fn char_or_empty(s: String, i: Int) -> String:
+    string.substring(s, i, i + 1)
 
 // Whether `c` is an ASCII whitespace character (space, tab, newline, return).
 fn is_space(c: String) -> Bool:
     c == " " || c == "\t" || c == "\n" || c == "\r"
 
-// Remove leading whitespace.
-pub fn trim_start(s: String) -> String:
-    var i = 0
-    let n = string.char_count(s)
-    while i < n && is_space(char_or_empty(s, i)):
-        i = i + 1
-    string.substring(s, i, n)
+// --- impl String: all operations as methods ---
+impl String:
+    // The string's length in BYTES (UTF-8). For user-perceived characters, see
+    // `char_count`.
+    pub fn length(self) -> Int:
+        string.length(self)
 
-// Remove trailing whitespace.
-pub fn trim_end(s: String) -> String:
-    var j = string.char_count(s)
-    while j > 0 && is_space(char_or_empty(s, j - 1)):
-        j = j - 1
-    string.substring(s, 0, j)
+    // The number of Unicode scalar values.
+    pub fn char_count(self) -> Int:
+        string.char_count(self)
+
+    // The characters, each as a single-character String — one O(n) pass, so
+    // callers can index characters in O(1).
+    pub fn chars(self) -> List(String):
+        string.chars(self)
+
+    // Split on every occurrence of `sep`.
+    pub fn split(self, sep: String) -> List(String):
+        string.split(self, sep)
+
+    // Whether `needle` occurs in `self`.
+    pub fn contains(self, needle: String) -> Bool:
+        string.contains(self, needle)
+
+    pub fn starts_with(self, prefix: String) -> Bool:
+        string.starts_with(self, prefix)
+
+    pub fn ends_with(self, suffix: String) -> Bool:
+        string.ends_with(self, suffix)
+
+    // The character index (counted by Unicode scalar) of the first occurrence of
+    // `needle` as `Some`, or `None` when `needle` does not occur (RFC-0044 rule 1:
+    // absence is `Option`, never a -1 sentinel). An empty `needle` matches nothing
+    // (the module-wide empty-pattern rule, matching `last_index_of`/`count`). For
+    // a bare yes/no, use `contains`.
+    pub fn index_of(self, needle: String) -> Option(Int):
+        let i = if needle.is_empty(): 0 - 1 else: find(self, needle)
+        if i < 0:
+            None
+        else:
+            Some(i)
+
+    // Replace every occurrence of `from` with `to`.
+    pub fn replace(self, from: String, to: String) -> String:
+        string.replace(self, from, to)
+
+    // The substring from character index `start` (inclusive) to `end` (exclusive),
+    // counted by Unicode scalar; out-of-range indices clamp.
+    pub fn substring(self, start: Int, end: Int) -> String:
+        string.substring(self, start, end)
+
+    // ASCII case mapping (the portable set both backends share).
+    pub fn to_upper(self) -> String:
+        string.to_upper(self)
+
+    pub fn to_lower(self) -> String:
+        string.to_lower(self)
+
+    // Strip leading and trailing ASCII whitespace.
+    pub fn trim(self) -> String:
+        string.trim(self)
+
+    // Remove leading whitespace.
+    pub fn trim_start(self) -> String:
+        var i = 0
+        let n = string.char_count(self)
+        while i < n && is_space(char_or_empty(self, i)):
+            i = i + 1
+        string.substring(self, i, n)
+
+    // Remove trailing whitespace.
+    pub fn trim_end(self) -> String:
+        var j = string.char_count(self)
+        while j > 0 && is_space(char_or_empty(self, j - 1)):
+            j = j - 1
+        string.substring(self, 0, j)
+
+    // Parse a decimal integer; junk, overflow, or an empty string ABORTS the
+    // program (a runtime error, not an `Err`) on every backend. For the total
+    // version that returns `Option(Int)`, see `parse_int`.
+    pub fn to_int(self) -> Int:
+        string.to_int(self)
+
+    // Repeat a string `n` times.
+    pub fn repeat(self, n: Int) -> String:
+        var out = ""
+        var i = 0
+        while i < n:
+            out = out + self
+            i = i + 1
+        out
+
+    // Left-pad `self` with copies of `fill` until it is `width` characters wide.
+    // The padding is trimmed to fit exactly, so any non-empty fill yields a result
+    // of exactly `width` chars; `self` is returned unchanged when already that long.
+    // An empty `fill` can never reach the promised width, so when padding is
+    // needed it fails loudly (RFC-0044 rule 3) instead of returning a short string.
+    pub fn pad_left(self, width: Int, fill: String) -> String:
+        let len = string.char_count(self)
+        if len >= width:
+            self
+        else:
+            if fill.is_empty():
+                fail("string.pad_left: empty `fill` cannot pad to width ${width}")
+            let needed = width - len
+            string.substring(fill.repeat(needed), 0, needed) + self
+
+    // Right-pad `self` with copies of `fill` until it is `width` characters wide; an
+    // empty `fill` fails loudly when padding is needed (see `pad_left`).
+    pub fn pad_right(self, width: Int, fill: String) -> String:
+        let len = string.char_count(self)
+        if len >= width:
+            self
+        else:
+            if fill.is_empty():
+                fail("string.pad_right: empty `fill` cannot pad to width ${width}")
+            let needed = width - len
+            self + string.substring(fill.repeat(needed), 0, needed)
+
+    // Center `self` in a field `width` characters wide, padding both sides with `fill`;
+    // an odd remainder goes on the right. `self` is returned unchanged when already at
+    // least that wide; an empty `fill` fails loudly when padding is needed (see
+    // `pad_left`).
+    pub fn center(self, width: Int, fill: String) -> String:
+        let len = string.char_count(self)
+        if len >= width:
+            self
+        else:
+            if fill.is_empty():
+                fail("string.center: empty `fill` cannot pad to width ${width}")
+            let total = width - len
+            let left = total / 2
+            let right = total - left
+            string.substring(fill.repeat(left), 0, left) + self + string.substring(fill.repeat(right), 0, right)
+
+    // Remove `prefix` from the front of `self` when present; otherwise return `self`
+    // unchanged. The complement of the `starts_with` builtin.
+    pub fn strip_prefix(self, prefix: String) -> String:
+        if string.starts_with(self, prefix):
+            string.substring(self, string.char_count(prefix), string.char_count(self))
+        else:
+            self
+
+    // Remove `suffix` from the end of `self` when present; otherwise return `self`
+    // unchanged. The complement of the `ends_with` builtin.
+    pub fn strip_suffix(self, suffix: String) -> String:
+        if string.ends_with(self, suffix):
+            string.substring(self, 0, string.char_count(self) - string.char_count(suffix))
+        else:
+            self
+
+    // The single character (as a String) at character index `i` (counted by Unicode
+    // scalar) as `Some`, or `None` when `i` is out of range (RFC-0044 rule 1:
+    // absence is `Option`, never a "" sentinel). For a clamping view use `substring`.
+    pub fn char_at(self, i: Int) -> Option(String):
+        if i >= 0 && i < string.char_count(self):
+            Some(string.substring(self, i, i + 1))
+        else:
+            None
+
+    // Whether the string has no characters.
+    pub fn is_empty(self) -> Bool:
+        string.length(self) == 0
+
+    // The string with its characters in reverse order. Counted by Unicode scalar
+    // (via `char_count`/`substring`), so multi-byte characters stay intact:
+    // `reverse("café")` is `"éfac"`.
+    pub fn reverse(self) -> String:
+        var out = ""
+        var i = string.char_count(self) - 1
+        while i >= 0:
+            out = out + string.substring(self, i, i + 1)
+            i = i - 1
+        out
+
+    // The first `n` characters (the whole string if it is shorter, "" if n <= 0).
+    pub fn take(self, n: Int) -> String:
+        string.substring(self, 0, n)
+
+    // All characters after the first `n` ("" if n covers the whole string).
+    pub fn drop(self, n: Int) -> String:
+        string.substring(self, n, string.char_count(self))
+
+    // The number of non-overlapping occurrences of `sub` in `self` (0 for an empty
+    // `sub`). After each match the search resumes past it.
+    pub fn count(self, sub: String) -> Int:
+        if string.char_count(sub) == 0:
+            0
+        else:
+            var total = 0
+            var rest = self
+            var i = find(rest, sub)
+            while i >= 0:
+                total = total + 1
+                rest = string.substring(rest, i + string.char_count(sub), string.char_count(rest))
+                i = find(rest, sub)
+            total
+
+    // The whitespace-separated words of `self`: tabs, newlines, and carriage
+    // returns are treated as spaces, and empty pieces (from runs of whitespace) are
+    // dropped. `"the  quick\tfox".words()` is `["the", "quick", "fox"]`.
+    pub fn words(self) -> List(String):
+        let a = string.replace(self, "\t", " ")
+        let b = string.replace(a, "\n", " ")
+        let c = string.replace(b, "\r", " ")
+        var out = []
+        for w in string.split(c, " "):
+            if string.length(w) > 0:
+                list.push(out, w)
+        out
+
+    // Replace only the first occurrence of `from` with `to`; return `self` unchanged
+    // when `from` is absent. An empty `from` matches nothing (the module-wide
+    // empty-pattern rule: `count`/`index_of`/`last_index_of` treat it as absent).
+    // (The `replace` builtin replaces every occurrence.)
+    pub fn replace_first(self, from: String, to: String) -> String:
+        let i = if from.is_empty(): 0 - 1 else: find(self, from)
+        if i < 0:
+            self
+        else:
+            string.substring(self, 0, i) + to + string.substring(self, i + string.char_count(from), string.char_count(self))
+
+    // Split at the first occurrence of `sep` into `Some((before, after))`, with
+    // `sep` itself dropped. Returns `None` when `sep` is absent or empty, so parsing
+    // code can distinguish a missing separator from a present separator with an empty
+    // side (`"host"` vs `"host:"`). Counted by Unicode scalar.
+    pub fn split_once_opt(self, sep: String) -> Option((String, String)):
+        let i = if sep.is_empty(): 0 - 1 else: find(self, sep)
+        if i < 0:
+            None
+        else:
+            Some((string.substring(self, 0, i), string.substring(self, i + string.char_count(sep), string.char_count(self))))
+
+    // Split at the first occurrence of `sep` into `(before, after)`, with `sep`
+    // itself dropped. Compatibility wrapper: when `sep` is absent — including the
+    // empty separator, which matches nothing (mirroring `rsplit_once`) — returns
+    // `(s, "")`. Prefer `split_once_opt` for parsers and validators that need to
+    // distinguish absence from a present empty side. Counted by Unicode scalar.
+    pub fn split_once(self, sep: String) -> (String, String):
+        match self.split_once_opt(sep):
+            Some(parts) -> parts
+            None -> (self, "")
+
+    // The character index of the LAST occurrence of `sep` in `self` as `Some`, or
+    // `None` when absent or `sep` is empty (RFC-0044 rule 1: absence is `Option`,
+    // never -1). The right-to-left companion of `index_of`.
+    pub fn last_index_of(self, sep: String) -> Option(Int):
+        let i = rfind(self, sep)
+        if i < 0:
+            None
+        else:
+            Some(i)
+
+    // Split on the LAST occurrence of `sep` into `Some((before, after))`, with `sep`
+    // itself dropped. Returns `None` when `sep` is absent or empty.
+    pub fn rsplit_once_opt(self, sep: String) -> Option((String, String)):
+        let i = rfind(self, sep)
+        if i < 0:
+            None
+        else:
+            Some((string.substring(self, 0, i), string.substring(self, i + string.char_count(sep), string.char_count(self))))
+
+    // Split on the LAST occurrence of `sep` (e.g. a file extension): `rsplit_once`
+    // of `"a.b.c"` on `"."` is `("a.b", "c")`. Compatibility wrapper: when `sep`
+    // is absent the whole string is the right part: `("", s)` — mirroring
+    // `split_once`'s `(s, "")`. Prefer `rsplit_once_opt` when absence matters.
+    pub fn rsplit_once(self, sep: String) -> (String, String):
+        match self.rsplit_once_opt(sep):
+            Some(parts) -> parts
+            None -> ("", self)
+
+    // Safely parse a base-10 integer: an optional leading `-`/`+` then one or more
+    // digits. Returns None for empty, sign-only, non-digit, or out-of-range (beyond
+    // the i64 range) input — so it never traps the way the raw `string_to_int`
+    // builtin can.
+    pub fn parse_int(self) -> Option(Int):
+        let n = string.char_count(self)
+        if n == 0:
+            None
+        else:
+            var start = 0
+            let first = char_or_empty(self, 0)
+            let neg = first == "-"
+            if first == "-" || first == "+":
+                start = 1
+            if start >= n:
+                None
+            else:
+                var i = start
+                var ok = true
+                while i < n:
+                    let c = char_or_empty(self, i)
+                    if c < "0" || c > "9":
+                        ok = false
+                    i = i + 1
+                if ok == false:
+                    None
+                else:
+                    var j = start
+                    while j < n - 1 && char_or_empty(self, j) == "0":
+                        j = j + 1
+                    let mag = string.substring(self, j, n)
+                    let mlen = string.char_count(mag)
+                    let limit = if neg: "9223372036854775808" else: "9223372036854775807"
+                    if mlen > 19 || mlen == 19 && mag > limit:
+                        None
+                    else:
+                        Some(string.to_int(self))
+
+    // Split text into its newline-separated lines.
+    pub fn lines(self) -> List(String):
+        string.split(self, "\n")

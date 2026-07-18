@@ -365,6 +365,7 @@ fn hover_response(docs: &HashMap<String, String>, params: &Value) -> Value {
     // document can see (prelude + imports).
     let mut sources: Vec<(String, String)> = Vec::new();
     let mut associated_owner: Option<String> = None;
+    let mut module_qualified = false;
     let bare = match word.split_once('.') {
         Some((head, tail)) => {
             // `head.tail`: `head` is a module (`string.repeat`) or a receiver
@@ -373,6 +374,7 @@ fn hover_response(docs: &HashMap<String, String>, params: &Value) -> Value {
             // every visible module (`xs.push` → `list.push`).
             let name = tail.rsplit_once('.').map_or(tail, |(_, n)| n).to_string();
             if let Some(src) = module_source(head, uri, docs) {
+                module_qualified = true;
                 sources.push((src, format!("{head}.")));
             } else {
                 // An uppercase head is a type-owned associated function, not a
@@ -393,17 +395,34 @@ fn hover_response(docs: &HashMap<String, String>, params: &Value) -> Value {
             word.clone()
         }
     };
-    for (src, prefix) in sources {
-        if let Some(owner) = &associated_owner {
-            if let Ok(Some(symbol)) = crate::doc::associated_function(&src, owner, &bare) {
+    if let Some(owner) = &associated_owner {
+        for (src, _prefix) in &sources {
+            if let Ok(Some(symbol)) = crate::doc::associated_function(src, owner, &bare) {
                 let contents = format!(
                     "```witchy\n{}\n```\n{}",
                     symbol.signature, symbol.docs
                 );
                 return json!({ "contents": { "kind": "markdown", "value": contents } });
             }
-            continue;
         }
+        return Value::Null;
+    }
+    // Methods-first (RFC-0099): an impl instance method owns the operation, so
+    // a receiver spelling (`"ab".repeat`, `xs.push`) reports the Type-qualified
+    // method before any incidental free-function namesake in another module. An
+    // explicit module qualifier (`list.repeat`) still means the module function.
+    if !module_qualified {
+        for (src, _prefix) in &sources {
+            if let Ok(Some(symbol)) = crate::doc::instance_method(src, None, &bare) {
+                let contents = format!(
+                    "```witchy\n{}\n```\n{}",
+                    symbol.signature, symbol.docs
+                );
+                return json!({ "contents": { "kind": "markdown", "value": contents } });
+            }
+        }
+    }
+    for (src, prefix) in sources {
         if let Some((sig, doc)) = signature_doc(&src, &bare) {
             let contents = format!("```witchy\n{}\n```\n{}", qualify_signature(&sig, &prefix), doc);
             return json!({ "contents": { "kind": "markdown", "value": contents } });

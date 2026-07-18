@@ -1270,7 +1270,7 @@ fn main() -> Int:
     fn compiles_string_length() {
         assert_eq!(run_int(r#"
 fn main() -> Int:
-    string.length("hello")
+    "hello".length()
 "#), 5);
     }
 
