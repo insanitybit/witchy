@@ -11,6 +11,11 @@ tracking:
 
 # RFC-0020: DNS-rebinding-resistant HTTP — resolve / pin / connect
 
+The shipped resolve/pin/connect contract is specified in
+[`spec/capabilities.md`](../spec/capabilities.md), surfaced by
+[`std/http.witchy`](../std/http.witchy), and covered end-to-end in
+[`src/example_tests.rs`](../src/example_tests.rs).
+
 > Code blocks here are intentionally **not** tagged `witchy` (per RFC-0002's
 > convention): they are illustrative sketches, not complete programs, and must
 > not be executed by the doc-test harness.
