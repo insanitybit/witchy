@@ -15,6 +15,10 @@ related:
 
 # RFC-0089: Functional-in-place state kernels
 
+The source-contract checks are collected in
+[`tests/misc/rfc0089_fip_contract.rs`](../tests/misc/rfc0089_fip_contract.rs),
+with end-to-end counters and parity exercised by the same test harness.
+
 ## Summary
 
 Witchy supports a checked functional-in-place (FIP) kernel in `mode opt` without
