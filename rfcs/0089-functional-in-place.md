@@ -4,7 +4,7 @@ title: "Functional-in-place state kernels"
 status: implemented
 created: 2026-07-14
 updated: 2026-07-15
-tracking: initial scalar-record kernel shipped; recursive ADT reuse remains additive future work. The checked source contract (criterion 5) is pinned per rejection class in tests/rfc0089_fip_contract.rs — non-tail recursion, replacement exit, helper call, owner escape, loops, heap field, heap auxiliary — plus non-candidate shapes (non-recursive and Result-wrapped owners) and the canonical kernel's both-backend parity at 50,000 transitions
+tracking: initial scalar-record kernel shipped; recursive ADT reuse remains additive future work. The checked source contract (criterion 5) is pinned per rejection class in [tests/misc/rfc0089_fip_contract.rs](../tests/misc/rfc0089_fip_contract.rs) — non-tail recursion, replacement exit, helper call, owner escape, loops, heap field, heap auxiliary — plus non-candidate shapes (non-recursive and Result-wrapped owners) and the canonical kernel's both-backend parity at 50,000 transitions
 related:
   - "0016 (reference-counted memory - supplies the allocation floor and counters)"
   - "0026 (unique qualifier - supplies the ownership surface)"
@@ -121,7 +121,7 @@ RFC-0033's compiled `own` ABI passes an aggregate value with a hidden ownership
 token and returns both. Qualifiers are representation-transparent, so
 `own unique T` participates in the same ABI as `own T`.
 
-RFC-0090's ordinary scalar tail pass is extended to recognize the canonical
+[RFC-0090](0090-proper-tail-calls.md)'s ordinary scalar tail pass is extended to recognize the canonical
 two-result envelope:
 
 ```text
