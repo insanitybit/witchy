@@ -41,7 +41,7 @@ the exact silent-failure family the RFC was written to kill:
 
 3. **The discard error covers method statements only** (BUG-209).
    `list.push(xs, 2)` as a bare statement — the call form of a documented
-   mutator, which rfcs/0043:192-195 promises "fall[s] under the discard
+  mutator, which [`rfcs/0043:192-195`](0043-declared-mutation-writeback.md) promises "fall[s] under the discard
    error" — checks clean and does nothing. Same for user mutators called in
    free form and for any discarded non-Nil free call.
 
@@ -79,7 +79,7 @@ Meanwhile the shape the RFC-0043 breaking-change note says "gets the row-3
 compile error" (`push_twice`-style combined channels, just with the `var`
 param moved out of first position) still compiles with combined semantics on
 both backends (gap 1), so the "no ambiguous case exists" claim in
-rfcs/0043:142 and the two-shape contract in spec/language.md:426 are both
+[`rfcs/0043:142`](0043-declared-mutation-writeback.md) and the two-shape contract in [`spec/language.md:426`](../spec/language.md) are both
 false as shipped.
 
 ## Design
