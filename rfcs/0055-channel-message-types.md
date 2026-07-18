@@ -10,6 +10,10 @@ tracking: "option (b): erased messages, typed endpoints"
 
 # RFC-0055: Beyond one message type per program (design-first)
 
+The implemented erased executor and typed channel boundary live in
+[`std/task.witchy`](../std/task.witchy) and [`std/chan.witchy`](../std/chan.witchy),
+with acceptance coverage in [`src/example_tests.rs`](../src/example_tests.rs).
+
 > Design-first: this RFC decides the direction; implementation is a separate
 > decision. No code ships from it.
 
