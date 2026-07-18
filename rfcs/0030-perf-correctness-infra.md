@@ -8,6 +8,11 @@ tracking: branch perf/rfc-0030-witchy-opt (WITCHY_OPT lever + de-opt registry, w
 
 # RFC-0030: Performance & correctness infrastructure
 
+The shipped optimization lever and deterministic counters are implemented in
+[`crates/witchy-syntax/src/opt.rs`](../crates/witchy-syntax/src/opt.rs) and
+[`src/stats.rs`](../src/stats.rs), with differential de-opt coverage in
+[`src/example_tests.rs`](../src/example_tests.rs).
+
 ## Summary
 
 The foundation that must exist **before** any of the performance work
