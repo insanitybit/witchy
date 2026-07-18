@@ -26,7 +26,7 @@ tracking:
 ## Summary
 
 Split witchy's single crate into a **Cargo workspace of focused, stage-aligned
-crates**, one per pipeline stage that `spec/architecture.md` already names. This
+crates**, one per pipeline stage that [`spec/architecture.md`](../spec/architecture.md) already names. This
 forces the `codegen.rs` monolith apart, turns the (already clean) stage seams
 into **compiler-enforced** boundaries, and makes each stage independently
 testable and documented — without changing what the compiler does. The
@@ -35,7 +35,7 @@ keeping it a separate implementation is the point.
 
 ## Motivation
 
-witchy's file-map is clean — `spec/architecture.md` gives each `src/` file one
+witchy's file-map is clean — [`spec/architecture.md`](../spec/architecture.md) gives each `src/` file one
 job — but a **single crate cannot enforce those seams**, and the layout has two
 concrete costs:
 
