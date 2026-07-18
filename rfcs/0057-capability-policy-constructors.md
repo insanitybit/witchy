@@ -81,7 +81,7 @@ what makes RFC-0011's "a library defines its own" true for the value half too.
 
 **Verified against the shipped binary (2026-07-03):** method calls dispatch on a
 receiver *value* — `only`/`deny` are instance methods on a `Net` value
-(`crates/witchy-types/src/typeck.rs:1976`). There is **no** `Type.func` form:
+([`crates/witchy-types/src/typeck.rs:1976`](../crates/witchy-types/src/typeck.rs)). There is **no** `Type.func` form:
 `Net.tcp(…)` does not parse as a call today. That is the one gap between the current
 design and the end state this RFC describes.
 
@@ -197,9 +197,9 @@ Pre-prod, one-cut (break-don't-deprecate). A pure rename, mechanizable by `fmt`:
 | `confine.dirs()`         | `Dir.dirs()`              |
 
 Then delete `std/confine.witchy` and drop `import confine`. Call sites to update
-(2026-07-03): `std/http.witchy`, `examples/redis_capability`, and the prose in
-`spec/language.md`, `spec/capabilities.md`, `book/src/capabilities-narrowing.md`,
-`book/src/appendix-recipes.md` (~36 references, mostly docs). Parity: a
+(2026-07-03): [`std/http.witchy`](../std/http.witchy), [`examples/redis_capability`](../examples/redis_capability), and the prose in
+[`spec/language.md`](../spec/language.md), [`spec/capabilities.md`](../spec/capabilities.md), [`book/src/capabilities-narrowing.md`](../book/src/capabilities-narrowing.md),
+[`book/src/appendix-recipes.md`](../book/src/appendix-recipes.md) (~36 references, mostly docs). Parity: a
 differential test that a policy built via `Net.tcp(…)` narrows identically on both
 backends, plus the existing `dir_only_ext_policy_confines_on_both_backends` /
 `net_only` suites re-pointed at the new constructors.
