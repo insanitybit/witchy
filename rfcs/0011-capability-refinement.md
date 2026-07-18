@@ -238,7 +238,7 @@ are scheme-agnostic `host:port`). The as-built surface:
   are rejected in typeck, so the only way to reach a carried cap is `match` (which the
   seal confines to the home module). Otherwise an alias (`let raw = pg.net`) would leak
   the underlying authority past the policy. Worked example:
-  `examples/carried_state`. Refinement methods (`pg.use_table(...)`) are ordinary
+  [`examples/carried_state`](../examples/carried_state). Refinement methods (`pg.use_table(...)`) are ordinary
   module functions that rebuild the record with a narrower field — no special
   machinery; the soft-tier check lives in the library's own operations.
 - **`subdir` retired (2026-06-25):** the free-function `subdir(dir, p)` is removed;
@@ -286,9 +286,9 @@ are scheme-agnostic `host:port`). The as-built surface:
 
 ## Prior art
 
-- RFC-0003 (network address scoping) — "scope is carried by the `Net` value," the seed
+- [`RFC-0003`](./0003-network-address-scoping.md) (network address scoping) — "scope is carried by the `Net` value," the seed
   this generalizes; its allowlist/CIDR/rebinding rules become `Net`'s method vocabulary.
-- RFC-0002 (user-definable capabilities) — sealed brands + footprint transparency,
+- [`RFC-0002`](./0002-user-definable-capabilities.md) (user-definable capabilities) — sealed brands + footprint transparency,
   extended here to carry policy state beyond one underlying cap.
 - `Secret` / `SecretStore` — the existing precedent for a sealed, carried-state
   capability minted only by consuming a root.
