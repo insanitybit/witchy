@@ -36,11 +36,11 @@ proven dead. A missed fact costs one refcount op; it can never free live data.
 ## Motivation
 
 The compiled backend is a monotonic bump allocator (`$heap += size` gated by
-`ensure_helper`, `src/wir.rs:495`); the only reclamation is the LIFO watermark in
+`ensure_helper`, [`crates/witchy-wir/src/wir.rs`](../crates/witchy-wir/src/wir.rs):495); the only reclamation is the LIFO watermark in
 `region:` blocks and loop bodies. A value that escapes every watermark — a
 server cache, a session map, a per-request response returned up the stack — is
 **never freed**. A `std/server` loop climbs the 1 GiB `StoreLimits` ramp
-(`RUN_MEMORY_PAGES = 16384`, `src/main.rs`) and traps. That is the OOM blocking
+(`RUN_MEMORY_PAGES = 16384`, [`src/main.rs`](../src/main.rs)) and traps. That is the OOM blocking
 witchy's headline workload.
 
 The choice is forced by **asymmetric failure**: the arena fails toward *unbounded
@@ -49,8 +49,8 @@ overhead* (a throughput cost, recoverable by elision). A default must fail towar
 "slower," not "OOM."
 
 And witchy is already ~70% of the way there. The `__cap` token
-(`list_push_cap_helper`, `src/wir.rs:1069`) is a statically-special-cased "is
-this buffer rc==1?" test; the uniqueness pass (`src/analysis.rs`) is already a
+(`list_push_cap_helper`, [`crates/witchy-wir/src/wir.rs`](../crates/witchy-wir/src/wir.rs):1069) is a statically-special-cased "is
+this buffer rc==1?" test; the uniqueness pass ([`crates/witchy-lower/src/analysis.rs`](../crates/witchy-lower/src/analysis.rs)) is already a
 borrow/sharing analysis with interprocedural summaries. This RFC generalizes that
 {0,1}-at-mutation-sites count into a real per-object word with `dec`-at-last-use,
 and unifies every existing and proposed optimization as elision of it.
@@ -98,7 +98,7 @@ normal and opt — only whether an un-elided op is *tolerated* or *rejected*.
 Every heap record gains a **leading `i32` refcount stored at `p-4`**; the pointer
 returned by the allocator still points at the tag, so **every existing reader
 (`list_at`, `eq_<shape>`, `ts_<shape>` format, `rcopy_<shape>`, and the host
-functions in `src/runtime.rs` that read guest memory) is byte-for-byte
+functions in [`crates/witchy-runtime/src/runtime.rs`](../crates/witchy-runtime/src/runtime.rs) that read guest memory) is byte-for-byte
 unchanged** — only the allocator and the three new helpers touch `p-4`.
 (Negative-offset header words already exist: the dict allocator keeps a hidden
 word at `p-4`.) Concrete layouts:
@@ -421,7 +421,7 @@ gets the same three-layer rigor the uniqueness pass already demands.
 attenuable **`Memory` capability**:
 
 - A `Memory` handle carries a byte budget (host-side, unforgeable,
-  un-widenable); the footprint analyzer (`src/capabilities.rs`) reports it like
+  un-widenable); the footprint analyzer ([`crates/witchy-caps/src/capabilities.rs`](../crates/witchy-caps/src/capabilities.rs)) reports it like
   any right, so `coven`'s block-on-widening gate can refuse a package that raises
   its ceiling.
 - **Attenuation:** `mem.cap(64.mb)` returns a narrower handle (monotone, like
@@ -506,7 +506,7 @@ free list).
 
 **Change:** `$mk{n}` writes `rc=1` at `p-4` and pops the free list before bumping;
 add `$dup`/`$drop`/`$free`/`$reset`/`$reuse` + per-shape `$rdrop_<shape>` to
-`wir_prelude.rs`; promote list `cap` from the shadow local into the header; build
+[`crates/witchy-wir/src/wir_prelude.rs`](../crates/witchy-wir/src/wir_prelude.rs); promote list `cap` from the shadow local into the header; build
 the escape/region lattice as the shared oracle for R4–R5.
 
 **Delete (after the relevant phase proves out at parity):** the bespoke
