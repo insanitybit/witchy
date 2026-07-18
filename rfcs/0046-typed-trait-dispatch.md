@@ -62,6 +62,11 @@ predecessors:
 
 # RFC-0046: Typed trait dispatch — retire the string shadow type system
 
+The shipped structured dispatch and monomorphization paths are exercised in
+[`crates/witchy-types/src/traits.rs`](../crates/witchy-types/src/traits.rs) and
+[`src/example_tests.rs`](../src/example_tests.rs); the RFC’s tracking note records
+the remaining scope and completion boundary.
+
 > Provisional snippets throughout; code blocks are deliberately **not** tagged
 > `witchy` so the doc-examples sweep does not execute pre-implementation code.
 
