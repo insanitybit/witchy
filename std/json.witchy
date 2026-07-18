@@ -66,8 +66,11 @@ impl From(DeserializeError) for String:
 fn decode_error(message: String) -> DecodeError:
     DecodeError(message)
 
-// Serialize a Json value to its compact textual form.
-pub fn encode(j: Json) -> String:
+// The compact serializer core. The recursive walk stays a free function with a
+// non-colliding name: the pre-mono pass cannot resolve a method called from
+// inside the recursive helpers (`encode_array`/`encode_object`), so the
+// `encode` method delegates here.
+fn encode_value(j: Json) -> String:
     match j:
         JsonNull -> "null"
         JsonBool(b) -> if b: "true" else: "false"
@@ -77,11 +80,7 @@ pub fn encode(j: Json) -> String:
         JsonArray(items) -> encode_array(items)
         JsonObject(pairs) -> encode_object(pairs)
 
-// Serialize with 2-space indentation, for human-readable output. Empty arrays
-// and objects stay on one line (`[]` / `{}`).
-pub fn encode_pretty(j: Json) -> String:
-    encode_indent(j, 0)
-
+// The pretty serializer core (see `encode_value` for why it is a free function).
 fn encode_indent(j: Json, depth: Int) -> String:
     match j:
         JsonNull -> "null"
@@ -140,7 +139,7 @@ fn encode_array(items: List(Json)) -> String:
             first = false
         else:
             out = out + ","
-        out = out + encode(it)
+        out = out + encode_value(it)
     out + "]"
 
 fn encode_object(pairs: List((String, Json))) -> String:
@@ -153,7 +152,7 @@ fn encode_object(pairs: List((String, Json))) -> String:
             first = false
         else:
             out = out + ","
-        out = out + encode_string(k) + ":" + encode(v)
+        out = out + encode_string(k) + ":" + encode_value(v)
     out + "}"
 
 fn assert_unique_object_keys(pairs: List((String, Json)), context: String):
@@ -583,15 +582,18 @@ fn parse_object(cs: List(String), i: Int, depth: Int) -> Result((Json, Int), Dec
             return Err(decode_error("expected , or } in object"))
     Err(decode_error("unreachable"))
 
-// --- Accessors -----------------------------------------------------------
+// --- Accessor cores -------------------------------------------------------
 //
-// Read data out of a decoded value. Each returns an Option, so a wrong shape is
-// `None` rather than a trap. A JsonObject with duplicate names is not a valid
-// std JSON object; accessors fail loudly instead of choosing first- or
-// last-wins semantics.
+// The shared bodies behind the accessor methods below. They stay free
+// functions with non-colliding names: the pre-mono pass cannot resolve
+// method-to-method chains inside generic module code, so any logic reused by
+// another method lives here and the methods delegate.
 
-// Look up a key in a JSON object.
-pub fn get(j: Json, key: String) -> Option(Json):
+// The lookup core. `get` is reused by `require`, the typed field accessors, and
+// the path walkers; method-to-method chaining inside std internals is
+// pre-mono-risky, so the shared logic lives here under a non-colliding name and
+// the `get` method delegates.
+fn get_key(j: Json, key: String) -> Option(Json):
     match j:
         JsonObject(pairs) ->
             assert_unique_object_keys(pairs, "json.get")
@@ -605,35 +607,12 @@ fn find_key(pairs: List((String, Json)), key: String) -> Option(Json):
             return Some(v)
     None
 
-// Whether a JSON object has `key` (false for non-objects).
-pub fn contains_key(j: Json, key: String) -> Bool:
-    match j:
-        JsonObject(pairs) ->
-            assert_unique_object_keys(pairs, "json.contains_key")
-            pairs_contains_key(pairs, key)
-        _ -> false
-
 fn pairs_contains_key(pairs: List((String, Json)), key: String) -> Bool:
     for p in pairs:
         let (k, _v) = p
         if k == key:
             return true
     false
-
-// A shallow merge of two JSON objects: every key of `b` overrides the same key
-// in `a`, and `a`'s other keys are kept. If either value is not an object, `b`
-// wins (so it works as "patch `a` with `b`"). Override is top-level only —
-// nested objects are replaced, not deep-merged.
-pub fn merge(a: Json, b: Json) -> Json:
-    match a:
-        JsonObject(pa) ->
-            match b:
-                JsonObject(pb) ->
-                    assert_unique_object_keys(pa, "json.merge")
-                    assert_unique_object_keys(pb, "json.merge")
-                    JsonObject(merge_pairs(pa, pb))
-                _ -> b
-        _ -> b
 
 fn merge_pairs(pa: List((String, Json)), pb: List((String, Json))) -> List((String, Json)):
     var out = []
@@ -645,43 +624,32 @@ fn merge_pairs(pa: List((String, Json)), pb: List((String, Json))) -> List((Stri
         list.push(out, q)
     out
 
-// The element at index `i` of a JSON array.
-pub fn index(j: Json, i: Int) -> Option(Json):
+// The array-index core (`index` method + `index_string`).
+fn index_at(j: Json, i: Int) -> Option(Json):
     match j:
         JsonArray(items) -> if i >= 0 && i < list.length(items): Some(list.at(items, i)) else: None
         _ -> None
 
-// `j` as an integer, when it is one.
-pub fn as_int(j: Json) -> Option(Int):
+// Scalar coercion cores, shared by the `as_*` methods and the typed field
+// accessors (`get_string`/`get_int`/`get_bool`, `strings`, `index_string`).
+fn int_value(j: Json) -> Option(Int):
     match j:
         JsonInt(n) -> Some(n)
         _ -> None
 
-// `j` as a string, when it is one.
-pub fn as_string(j: Json) -> Option(String):
+fn string_value(j: Json) -> Option(String):
     match j:
         JsonString(s) -> Some(s)
         _ -> None
 
-// `j` as a bool, when it is one.
-pub fn as_bool(j: Json) -> Option(Bool):
+fn bool_value(j: Json) -> Option(Bool):
     match j:
         JsonBool(b) -> Some(b)
         _ -> None
 
-// `j` as a list of elements, when it is an array.
-pub fn as_array(j: Json) -> Option(List(Json)):
+fn array_value(j: Json) -> Option(List(Json)):
     match j:
         JsonArray(items) -> Some(items)
-        _ -> None
-
-// `j` as its key/value pairs, when it is an object — for iterating an object
-// whose keys aren't known ahead of time.
-pub fn as_object(j: Json) -> Option(List((String, Json))):
-    match j:
-        JsonObject(pairs) ->
-            assert_unique_object_keys(pairs, "json.as_object")
-            Some(pairs)
         _ -> None
 
 // Reconstruct a value from a `Json`. Reflection can read a value's structure but not
@@ -690,41 +658,6 @@ pub fn as_object(j: Json) -> Option(List((String, Json))):
 // serialize any `Reflect` value.
 trait Deserialize:
     fn from_json(j: Json) -> Result(Self, DeserializeError)
-
-// --- Result-returning decoders (the backbone of `derive(Deserialize)`'s from_json) -----
-pub fn require(j: Json, key: String) -> Result(Json, DeserializeError):
-    match get(j, key):
-        Some(v) -> Ok(v)
-        None -> Err(DeserializeMissingField(key))
-
-// Coerce a Json value to a scalar, or `Err` describing the expected shape.
-pub fn int_of(j: Json) -> Result(Int, DeserializeError):
-    match j:
-        JsonInt(n) -> Ok(n)
-        _ -> Err(DeserializeExpected("an integer"))
-
-pub fn string_of(j: Json) -> Result(String, DeserializeError):
-    match j:
-        JsonString(s) -> Ok(s)
-        _ -> Err(DeserializeExpected("a string"))
-
-pub fn bool_of(j: Json) -> Result(Bool, DeserializeError):
-    match j:
-        JsonBool(b) -> Ok(b)
-        _ -> Err(DeserializeExpected("a boolean"))
-
-pub fn float_of(j: Json) -> Result(Float, DeserializeError):
-    match j:
-        JsonFloat(f) -> Ok(f)
-        JsonInt(n) -> Ok(math.to_float(n))
-        _ -> Err(DeserializeExpected("a number"))
-
-// A JSON number with no fraction/exponent decodes to `JsonInt`, but it is
-// still a valid `Float` field value (`{"ratio": 1}`), so widen it here.
-pub fn array_of(j: Json) -> Result(List(Json), DeserializeError):
-    match j:
-        JsonArray(items) -> Ok(items)
-        _ -> Err(DeserializeExpected("an array"))
 
 // Decode an optional field: an absent key or an explicit `null` is `None`;
 // otherwise the value is decoded via `each`. Used for `Option(_)` fields.
@@ -761,74 +694,25 @@ fn insert_by_key(sorted: List((String, Json)), item: (String, Json)) -> List((St
         list.push(out, item)
     out
 
-// --- typed field accessors (get a key, then coerce) --------------------------
-// `get` composed with each `as_*` — the common case of reading a typed field out
-// of an object without spelling the two steps every time.
-pub fn get_string(j: Json, key: String) -> Option(String):
-    match get(j, key):
-        Some(v) -> as_string(v)
-        None -> None
-
-pub fn get_int(j: Json, key: String) -> Option(Int):
-    match get(j, key):
-        Some(v) -> as_int(v)
-        None -> None
-
-pub fn get_bool(j: Json, key: String) -> Option(Bool):
-    match get(j, key):
-        Some(v) -> as_bool(v)
-        None -> None
-
-// The string array at `key` as a `List(String)`, dropping any non-string element;
-// `[]` when the key is absent or not an array. Collapses the very common
-// "decode an object's array-of-strings field" pattern into one call.
-//
-// LENIENT BY DESIGN (RFC-0044): a missing key, a non-array value, and a non-string
-// element all collapse to the same empty/filtered result — ergonomic for display,
-// but it cannot tell "absent" from "malformed". At a trust boundary (package,
-// registry, or security code) where a wrong shape must be an ERROR, use the strict
-// path instead: `get(j, key)` then `array_of` (`Result`), coercing each element
-// with `as_string`.
-pub fn get_strings(j: Json, key: String) -> List(String):
-    match get(j, key):
-        Some(arr) -> strings(arr)
-        None -> []
-
-// A JSON array value as a `List(String)`, dropping any non-string element. Lenient
-// by design (RFC-0044), like `get_strings`; for a strict decode use `array_of`
-// (`Result`) and coerce each element with `as_string`.
-pub fn strings(j: Json) -> List(String):
+// The "array of strings, leniently" core (`strings` method + `get_strings`).
+fn string_items(j: Json) -> List(String):
     var out = []
-    if let Some(items) = as_array(j):
+    if let Some(items) = array_value(j):
         for it in items:
-            if let Some(s) = as_string(it):
+            if let Some(s) = string_value(it):
                 list.push(out, s)
     out
 
-// The string at index `i` of a JSON array, when it is a string.
-pub fn index_string(j: Json, i: Int) -> Option(String):
-    match index(j, i):
-        Some(v) -> as_string(v)
-        None -> None
-
-// Follow exact object-key segments. Unlike `get_path`, segment strings are not
-// parsed, so dots and empty strings are literal key names. Any missing key (or a
-// non-object along the way) yields `None`.
-pub fn get_in(j: Json, segments: List(String)) -> Option(Json):
+// The path-walking core (`get_in` + `get_path` methods).
+fn follow_segments(j: Json, segments: List(String)) -> Option(Json):
     var cur = Some(j)
     for seg in segments:
         cur = step(cur, seg)
     cur
 
-// Follow a dotted path of object keys, e.g. `get_path(resp, "user.name")`. This
-// splits on every `.`, so use `get_in` when a key itself may contain a dot. Any
-// missing key (or a non-object along the way) yields `None`.
-pub fn get_path(j: Json, path: String) -> Option(Json):
-    get_in(j, path.split("."))
-
 fn step(cur: Option(Json), seg: String) -> Option(Json):
     match cur:
-        Some(j) -> get(j, seg)
+        Some(j) -> get_key(j, seg)
         None -> None
 
 // Encode an `Option` as payload-or-`null` — `Some(x)` through `each`, `None` as
@@ -839,6 +723,177 @@ pub fn from_option(o: Option(a), each: fn(a) -> Json) -> Json:
         Some(x) -> each(x)
         None -> JsonNull
 
+// --- Methods are the primary surface (RFC-0099). The module level keeps the
+// String-input decoder (`decode`), the generic reflective encoders
+// (`from_value`/`stringify` — bounded on `a: Reflect`, so they cannot be Json
+// methods), the constructor `object_sorted`, the Option-shaped combinators
+// (`optional`/`from_option`), and the error-message helpers; every operation
+// on a `Json` value lives here. The accessors return `Option`, so a wrong
+// shape is `None` rather than a trap. A JsonObject with duplicate names is not
+// a valid std JSON object; accessors fail loudly instead of choosing first- or
+// last-wins semantics. Recursive or internally-reused bodies live in the
+// private cores above; those methods delegate. ---
+impl Json:
+    // Serialize to the compact textual form.
+    pub fn encode(self) -> String:
+        encode_value(self)
+
+    // Serialize with 2-space indentation, for human-readable output. Empty
+    // arrays and objects stay on one line (`[]` / `{}`).
+    pub fn encode_pretty(self) -> String:
+        encode_indent(self, 0)
+
+    // Look up a key in a JSON object.
+    pub fn get(self, key: String) -> Option(Json):
+        get_key(self, key)
+
+    // Whether a JSON object has `key` (false for non-objects).
+    pub fn contains_key(self, key: String) -> Bool:
+        match self:
+            JsonObject(pairs) ->
+                assert_unique_object_keys(pairs, "json.contains_key")
+                pairs_contains_key(pairs, key)
+            _ -> false
+
+    // A shallow merge of two JSON objects: every key of `other` overrides the
+    // same key in `self`, and `self`'s other keys are kept. If either value is
+    // not an object, `other` wins (so it works as "patch `self` with `other`").
+    // Override is top-level only — nested objects are replaced, not deep-merged.
+    pub fn merge(self, other: Json) -> Json:
+        match self:
+            JsonObject(pa) ->
+                match other:
+                    JsonObject(pb) ->
+                        assert_unique_object_keys(pa, "json.merge")
+                        assert_unique_object_keys(pb, "json.merge")
+                        JsonObject(merge_pairs(pa, pb))
+                    _ -> other
+            _ -> other
+
+    // The element at index `i` of a JSON array.
+    pub fn index(self, i: Int) -> Option(Json):
+        index_at(self, i)
+
+    // `self` as an integer, when it is one.
+    pub fn as_int(self) -> Option(Int):
+        int_value(self)
+
+    // `self` as a string, when it is one.
+    pub fn as_string(self) -> Option(String):
+        string_value(self)
+
+    // `self` as a bool, when it is one.
+    pub fn as_bool(self) -> Option(Bool):
+        bool_value(self)
+
+    // `self` as a list of elements, when it is an array.
+    pub fn as_array(self) -> Option(List(Json)):
+        array_value(self)
+
+    // `self` as its key/value pairs, when it is an object — for iterating an
+    // object whose keys aren't known ahead of time.
+    pub fn as_object(self) -> Option(List((String, Json))):
+        match self:
+            JsonObject(pairs) ->
+                assert_unique_object_keys(pairs, "json.as_object")
+                Some(pairs)
+            _ -> None
+
+    // --- Result-returning decoders (the backbone of `derive(Deserialize)`'s
+    // from_json) ---
+
+    // The value at `key`, or `Err(DeserializeMissingField)` when absent.
+    pub fn require(self, key: String) -> Result(Json, DeserializeError):
+        match get_key(self, key):
+            Some(v) -> Ok(v)
+            None -> Err(DeserializeMissingField(key))
+
+    // Coerce a Json value to a scalar, or `Err` describing the expected shape.
+    pub fn int_of(self) -> Result(Int, DeserializeError):
+        match self:
+            JsonInt(n) -> Ok(n)
+            _ -> Err(DeserializeExpected("an integer"))
+
+    pub fn string_of(self) -> Result(String, DeserializeError):
+        match self:
+            JsonString(s) -> Ok(s)
+            _ -> Err(DeserializeExpected("a string"))
+
+    pub fn bool_of(self) -> Result(Bool, DeserializeError):
+        match self:
+            JsonBool(b) -> Ok(b)
+            _ -> Err(DeserializeExpected("a boolean"))
+
+    // A JSON number with no fraction/exponent decodes to `JsonInt`, but it is
+    // still a valid `Float` field value (`{"ratio": 1}`), so widen it here.
+    pub fn float_of(self) -> Result(Float, DeserializeError):
+        match self:
+            JsonFloat(f) -> Ok(f)
+            JsonInt(n) -> Ok(math.to_float(n))
+            _ -> Err(DeserializeExpected("a number"))
+
+    pub fn array_of(self) -> Result(List(Json), DeserializeError):
+        match self:
+            JsonArray(items) -> Ok(items)
+            _ -> Err(DeserializeExpected("an array"))
+
+    // --- typed field accessors (get a key, then coerce) ---
+    // `get` composed with each `as_*` — the common case of reading a typed
+    // field out of an object without spelling the two steps every time.
+    pub fn get_string(self, key: String) -> Option(String):
+        match get_key(self, key):
+            Some(v) -> string_value(v)
+            None -> None
+
+    pub fn get_int(self, key: String) -> Option(Int):
+        match get_key(self, key):
+            Some(v) -> int_value(v)
+            None -> None
+
+    pub fn get_bool(self, key: String) -> Option(Bool):
+        match get_key(self, key):
+            Some(v) -> bool_value(v)
+            None -> None
+
+    // The string array at `key` as a `List(String)`, dropping any non-string
+    // element; `[]` when the key is absent or not an array. Collapses the very
+    // common "decode an object's array-of-strings field" pattern into one call.
+    //
+    // LENIENT BY DESIGN (RFC-0044): a missing key, a non-array value, and a
+    // non-string element all collapse to the same empty/filtered result —
+    // ergonomic for display, but it cannot tell "absent" from "malformed". At a
+    // trust boundary (package, registry, or security code) where a wrong shape
+    // must be an ERROR, use the strict path instead: `get` then `array_of`
+    // (`Result`), coercing each element with `as_string`.
+    pub fn get_strings(self, key: String) -> List(String):
+        match get_key(self, key):
+            Some(arr) -> string_items(arr)
+            None -> []
+
+    // A JSON array value as a `List(String)`, dropping any non-string element.
+    // Lenient by design (RFC-0044), like `get_strings`; for a strict decode use
+    // `array_of` (`Result`) and coerce each element with `as_string`.
+    pub fn strings(self) -> List(String):
+        string_items(self)
+
+    // The string at index `i` of a JSON array, when it is a string.
+    pub fn index_string(self, i: Int) -> Option(String):
+        match index_at(self, i):
+            Some(v) -> string_value(v)
+            None -> None
+
+    // Follow exact object-key segments. Unlike `get_path`, segment strings are
+    // not parsed, so dots and empty strings are literal key names. Any missing
+    // key (or a non-object along the way) yields `None`.
+    pub fn get_in(self, segments: List(String)) -> Option(Json):
+        follow_segments(self, segments)
+
+    // Follow a dotted path of object keys, e.g. `resp.get_path("user.name")`.
+    // This splits on every `.`, so use `get_in` when a key itself may contain a
+    // dot. Any missing key (or a non-object along the way) yields `None`.
+    pub fn get_path(self, path: String) -> Option(Json):
+        follow_segments(self, path.split("."))
+
 // --- reflective encoding (no derive) -----------------------------------------
 // `from_value(x)` encodes a value to `Json` by reflecting over its structure, so
 // it works for any type with no derive. `stringify(x)` returns the encoded string.
@@ -846,7 +901,7 @@ pub fn from_value(x: a) -> Json where a: Reflect:
     mirror_to_json(reflect(x))
 
 pub fn stringify(x: a) -> String where a: Reflect:
-    encode(from_value(x))
+    encode_value(from_value(x))
 
 // A `Json` reflects to its own value rather than to the `Json` enum's shape, so
 // `mirror_to_json(reflect(j))` returns `j`. This lets an already-built `Json` (a

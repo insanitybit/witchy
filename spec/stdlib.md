@@ -1591,69 +1591,9 @@ Reconstruct a value from a `Json`. Reflection can read a value's structure but n
 
 #### `fn deserialize_error_message(e: DeserializeError) -> String`
 
-#### `fn encode(j: Json) -> String`
-
-Serialize a Json value to its compact textual form.
-
-#### `fn encode_pretty(j: Json) -> String`
-
-Serialize with 2-space indentation, for human-readable output. Empty arrays and objects stay on one line (`[]` / `{}`).
-
 #### `fn decode(s: String) -> Result(Json, DecodeError)`
 
 Parse a complete JSON document, or return an error message. The whole input must be a single value: trailing content after it (other than whitespace) is rejected, so `decode("1 2")` is an Err rather than silently yielding `1`.
-
-#### `fn get(j: Json, key: String) -> Option(Json)`
-
-Look up a key in a JSON object.
-
-#### `fn contains_key(j: Json, key: String) -> Bool`
-
-Whether a JSON object has `key` (false for non-objects).
-
-#### `fn merge(a: Json, b: Json) -> Json`
-
-A shallow merge of two JSON objects: every key of `b` overrides the same key in `a`, and `a`'s other keys are kept. If either value is not an object, `b` wins (so it works as "patch `a` with `b`"). Override is top-level only — nested objects are replaced, not deep-merged.
-
-#### `fn index(j: Json, i: Int) -> Option(Json)`
-
-The element at index `i` of a JSON array.
-
-#### `fn as_int(j: Json) -> Option(Int)`
-
-`j` as an integer, when it is one.
-
-#### `fn as_string(j: Json) -> Option(String)`
-
-`j` as a string, when it is one.
-
-#### `fn as_bool(j: Json) -> Option(Bool)`
-
-`j` as a bool, when it is one.
-
-#### `fn as_array(j: Json) -> Option(List(Json))`
-
-`j` as a list of elements, when it is an array.
-
-#### `fn as_object(j: Json) -> Option(List((String, Json)))`
-
-`j` as its key/value pairs, when it is an object — for iterating an object whose keys aren't known ahead of time.
-
-#### `fn require(j: Json, key: String) -> Result(Json, DeserializeError)`
-
-#### `fn int_of(j: Json) -> Result(Int, DeserializeError)`
-
-Coerce a Json value to a scalar, or `Err` describing the expected shape.
-
-#### `fn string_of(j: Json) -> Result(String, DeserializeError)`
-
-#### `fn bool_of(j: Json) -> Result(Bool, DeserializeError)`
-
-#### `fn float_of(j: Json) -> Result(Float, DeserializeError)`
-
-#### `fn array_of(j: Json) -> Result(List(Json), DeserializeError)`
-
-A JSON number with no fraction/exponent decodes to `JsonInt`, but it is still a valid `Float` field value (`{"ratio": 1}`), so widen it here.
 
 #### `fn optional(o: Option(Json), each: fn(Json) -> Result(a, e)) -> Result(Option(a), e)`
 
@@ -1662,36 +1602,6 @@ Decode an optional field: an absent key or an explicit `null` is `None`; otherwi
 #### `fn object_sorted(pairs: List((String, Json))) -> Json`
 
 Build a JSON object whose keys are sorted (matching a serialized BTreeMap), e.g. TUF `targets`. Use this only for dynamic key/value sets whose order must be deterministic for signing; reflectively-encoded records keep their declared field order instead.
-
-#### `fn get_string(j: Json, key: String) -> Option(String)`
-
-`get` composed with each `as_*` — the common case of reading a typed field out of an object without spelling the two steps every time.
-
-#### `fn get_int(j: Json, key: String) -> Option(Int)`
-
-#### `fn get_bool(j: Json, key: String) -> Option(Bool)`
-
-#### `fn get_strings(j: Json, key: String) -> List(String)`
-
-The string array at `key` as a `List(String)`, dropping any non-string element; `[]` when the key is absent or not an array. Collapses the very common "decode an object's array-of-strings field" pattern into one call.
-
-LENIENT BY DESIGN (RFC-0044): a missing key, a non-array value, and a non-string element all collapse to the same empty/filtered result — ergonomic for display, but it cannot tell "absent" from "malformed". At a trust boundary (package, registry, or security code) where a wrong shape must be an ERROR, use the strict path instead: `get(j, key)` then `array_of` (`Result`), coercing each element with `as_string`.
-
-#### `fn strings(j: Json) -> List(String)`
-
-A JSON array value as a `List(String)`, dropping any non-string element. Lenient by design (RFC-0044), like `get_strings`; for a strict decode use `array_of` (`Result`) and coerce each element with `as_string`.
-
-#### `fn index_string(j: Json, i: Int) -> Option(String)`
-
-The string at index `i` of a JSON array, when it is a string.
-
-#### `fn get_in(j: Json, segments: List(String)) -> Option(Json)`
-
-Follow exact object-key segments. Unlike `get_path`, segment strings are not parsed, so dots and empty strings are literal key names. Any missing key (or a non-object along the way) yields `None`.
-
-#### `fn get_path(j: Json, path: String) -> Option(Json)`
-
-Follow a dotted path of object keys, e.g. `get_path(resp, "user.name")`. This splits on every `.`, so use `get_in` when a key itself may contain a dot. Any missing key (or a non-object along the way) yields `None`.
 
 #### `fn from_option(o: Option(a), each: fn(a) -> Json) -> Json`
 
@@ -1702,6 +1612,98 @@ Encode an `Option` as payload-or-`null` — `Some(x)` through `each`, `None` as 
 `from_value(x)` encodes a value to `Json` by reflecting over its structure, so it works for any type with no derive. `stringify(x)` returns the encoded string.
 
 #### `fn stringify(x: a) -> String where a: Reflect`
+
+#### `Json.encode() -> String`
+
+Serialize to the compact textual form.
+
+#### `Json.encode_pretty() -> String`
+
+Serialize with 2-space indentation, for human-readable output. Empty arrays and objects stay on one line (`[]` / `{}`).
+
+#### `Json.get(key: String) -> Option(Json)`
+
+Look up a key in a JSON object.
+
+#### `Json.contains_key(key: String) -> Bool`
+
+Whether a JSON object has `key` (false for non-objects).
+
+#### `Json.merge(other: Json) -> Json`
+
+A shallow merge of two JSON objects: every key of `other` overrides the same key in `self`, and `self`'s other keys are kept. If either value is not an object, `other` wins (so it works as "patch `self` with `other`"). Override is top-level only — nested objects are replaced, not deep-merged.
+
+#### `Json.index(i: Int) -> Option(Json)`
+
+The element at index `i` of a JSON array.
+
+#### `Json.as_int() -> Option(Int)`
+
+`self` as an integer, when it is one.
+
+#### `Json.as_string() -> Option(String)`
+
+`self` as a string, when it is one.
+
+#### `Json.as_bool() -> Option(Bool)`
+
+`self` as a bool, when it is one.
+
+#### `Json.as_array() -> Option(List(Json))`
+
+`self` as a list of elements, when it is an array.
+
+#### `Json.as_object() -> Option(List((String, Json)))`
+
+`self` as its key/value pairs, when it is an object — for iterating an object whose keys aren't known ahead of time.
+
+#### `Json.require(key: String) -> Result(Json, DeserializeError)`
+
+The value at `key`, or `Err(DeserializeMissingField)` when absent.
+
+#### `Json.int_of() -> Result(Int, DeserializeError)`
+
+Coerce a Json value to a scalar, or `Err` describing the expected shape.
+
+#### `Json.string_of() -> Result(String, DeserializeError)`
+
+#### `Json.bool_of() -> Result(Bool, DeserializeError)`
+
+#### `Json.float_of() -> Result(Float, DeserializeError)`
+
+A JSON number with no fraction/exponent decodes to `JsonInt`, but it is still a valid `Float` field value (`{"ratio": 1}`), so widen it here.
+
+#### `Json.array_of() -> Result(List(Json), DeserializeError)`
+
+#### `Json.get_string(key: String) -> Option(String)`
+
+`get` composed with each `as_*` — the common case of reading a typed field out of an object without spelling the two steps every time.
+
+#### `Json.get_int(key: String) -> Option(Int)`
+
+#### `Json.get_bool(key: String) -> Option(Bool)`
+
+#### `Json.get_strings(key: String) -> List(String)`
+
+The string array at `key` as a `List(String)`, dropping any non-string element; `[]` when the key is absent or not an array. Collapses the very common "decode an object's array-of-strings field" pattern into one call.
+
+LENIENT BY DESIGN (RFC-0044): a missing key, a non-array value, and a non-string element all collapse to the same empty/filtered result — ergonomic for display, but it cannot tell "absent" from "malformed". At a trust boundary (package, registry, or security code) where a wrong shape must be an ERROR, use the strict path instead: `get` then `array_of` (`Result`), coercing each element with `as_string`.
+
+#### `Json.strings() -> List(String)`
+
+A JSON array value as a `List(String)`, dropping any non-string element. Lenient by design (RFC-0044), like `get_strings`; for a strict decode use `array_of` (`Result`) and coerce each element with `as_string`.
+
+#### `Json.index_string(i: Int) -> Option(String)`
+
+The string at index `i` of a JSON array, when it is a string.
+
+#### `Json.get_in(segments: List(String)) -> Option(Json)`
+
+Follow exact object-key segments. Unlike `get_path`, segment strings are not parsed, so dots and empty strings are literal key names. Any missing key (or a non-object along the way) yields `None`.
+
+#### `Json.get_path(path: String) -> Option(Json)`
+
+Follow a dotted path of object keys, e.g. `resp.get_path("user.name")`. This splits on every `.`, so use `get_in` when a key itself may contain a dot. Any missing key (or a non-object along the way) yields `None`.
 
 ### Trait implementations
 
