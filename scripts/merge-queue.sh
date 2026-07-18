@@ -93,9 +93,10 @@ if [ -n "${MERGE_QUEUE_TEST_ROOT:-}" ]; then
     }
     root="$MERGE_QUEUE_TEST_ROOT"
 else
-    # Drain the full worktree listing under pipefail; `head` closes the pipe
-    # early and turns a large shared checkout into a spurious SIGPIPE (141).
-    root="$(git -C "$here" worktree list --porcelain | sed -n '1p' | sed 's/^worktree //')"
+    # Do not use `head -1` here: with pipefail it can SIGPIPE `git worktree
+    # list` once the shared checkout has enough worktrees to fill the pipe,
+    # making every queue command exit 141 before it reads its state.
+    root="$(git -C "$here" worktree list --porcelain | sed -n '1s/^worktree //p')"
 fi
 . "$here/scripts/state-paths.sh"
 qdir="$(witchy_merge_queue_state_dir "$root")"
@@ -409,6 +410,36 @@ queue_entry_with_status() { # queue_entry_with_status <queue-file>
 
 queue_readiness() { queue_entry_with_status "$1" | jq -r .readiness; }
 
+# Status is observational, but it must remain cheap enough to use when the
+# queue is large. Unlike scheduling (which asks about one candidate at a
+# time), load every queued entry and change record once for the report.
+queue_entries_with_status() {
+    jq -n --slurpfile queue <(cat "$queue_dir"/*.json) \
+        --slurpfile changes <(cat "$changes_dir"/*.json 2>/dev/null || true) '
+        def record($id): first($changes[] | select(.change_id==$id));
+        def walk_dependencies($ids; $seen):
+          $ids[] as $id |
+          if ($seen | index($id)) != null then empty
+          else (record($id) // {change_id:$id, branch:null, state:"missing", after:[]}) as $r |
+            $r, walk_dependencies(($r.after // []); $seen + [$id])
+          end;
+        $queue[] | . as $entry |
+        (.after // []) as $after |
+        [$after[] | . as $id | (record($id) // {}) as $r |
+          {change_id:$id, branch:($r.branch // null), state:($r.state // "missing")}] as $deps |
+        [walk_dependencies($after; [])] | unique_by(.change_id) as $all_deps |
+        [$all_deps[] | select(.state != "merged" and
+          (.state == "red" or .state == "timeout" or .state == "conflict" or
+           .state == "blocked" or .state == "dropped" or .state == "missing"))] as $blocked |
+        [$deps[] | select(.state != "merged" and
+          (.state != "red" and .state != "timeout" and .state != "conflict" and
+           .state != "blocked" and .state != "dropped" and .state != "missing"))] as $waiting |
+        $entry + {readiness:(if ($blocked|length)>0 then "blocked"
+          elif ($waiting|length)>0 then "waiting" else "ready" end),
+          dependencies:$deps, blocked_by:$blocked, waiting_on:$waiting}
+    '
+}
+
 holding_lock=0
 holding_change_lock=0
 change_owner_shell_pid=""
@@ -574,6 +605,18 @@ ensure_gate_worktree() {
     fi
     # Recover from a previous run that died mid-rebase.
     git -C "$gate_wt" rebase --abort >/dev/null 2>&1 || true
+}
+
+# A checked-out master with tracked edits can make the final fast-forward fail
+# after a successful, expensive gate. Untracked local state is intentionally
+# excluded: it is common in the shared checkout and only blocks Git when the
+# candidate would overwrite the same path.
+main_worktree_is_ready_to_land() {
+    local current_branch
+    current_branch="$(git -C "$root" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+    [ "$current_branch" != "master" ] && return 0
+    git -C "$root" diff --quiet --ignore-submodules -- \
+        && git -C "$root" diff --cached --quiet --ignore-submodules --
 }
 
 # Is the gate's process group actively using CPU? `set -m` puts the gate in its
@@ -883,10 +926,7 @@ cmd_status() {
     inflight_vars
     local queue_json='[]' qf
     if ls "$queue_dir"/*.json >/dev/null 2>&1; then
-        queue_json="$({
-            while IFS= read -r qf; do queue_entry_with_status "$qf"; done \
-                < <(find "$queue_dir" -maxdepth 1 -name '*.json' -print | sort)
-        } | jq -s .)"
+        queue_json="$(queue_entries_with_status | jq -s .)"
     fi
     jq -n \
         --argjson q "$queue_json" \
@@ -1310,6 +1350,26 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         return 1
     fi
 
+    # Do this under gate.lock, immediately before the expensive operation. A
+    # dirty main master checkout is an operational wait, not a bad submission:
+    # preserve every queue entry and retry once its owner has committed or
+    # stashed the tracked changes. Return 2 so `run --once` reports the wait
+    # instead of spinning on the same ready entry.
+    if ! main_worktree_is_ready_to_land; then
+        note "main master checkout has tracked changes; deferring $branch before the full gate"
+        local dirty_finished; dirty_finished="$(date +%s)"
+        release_lock
+        local dqi; for dqi in "${!batch_ids[@]}"; do
+            set_change_state "${batch_ids[$dqi]}" queued "${batch_submitted_shas[$dqi]}" \
+                "${batch_attempt_ids[$dqi]}" || true
+        done
+        record_attempt requeued "$branch" "$attempt_start" "$prepare_finished" \
+            "$lock_acquired" "$dirty_finished" "$dirty_finished" "$dirty_finished" \
+            change_id "$change_id" attempt_id "$attempt_id" submitted_sha "$submitted_sha" \
+            sha "$sha" reason "main master checkout has tracked changes before gate"
+        return 2
+    fi
+
     note "gating $branch (rebased to $sha on $base; fuzz=$fuzz_mode; scope=$gate_scope); log: $log"
     local gate_started; gate_started="$(date +%s)"
     run_gate "$log" "$fuzz_mode" "$gate_scope"
@@ -1614,7 +1674,18 @@ cmd_run() {
             sleep "$poll_interval"
             continue
         fi
-        process_one "$queue_dir/$f" || sleep "$retry_interval"
+        local process_status=0
+        process_one "$queue_dir/$f" || process_status=$?
+        [ "$process_status" -eq 0 ] && continue
+        if [ "$process_status" -eq 2 ]; then
+            if [ "$once" -eq 1 ]; then
+                note "queue deferred: main master checkout has tracked changes"
+                break
+            fi
+            sleep "$poll_interval"
+        else
+            sleep "$retry_interval"
+        fi
     done
 }
 

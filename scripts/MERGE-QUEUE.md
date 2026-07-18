@@ -47,8 +47,8 @@ agent worktree                    main worktree
 
 All state is under `state/merge-queue/` **in the MAIN worktree** (each git
 worktree has its own gitignored `state/`, so state written elsewhere is
-invisible — the script resolves the main worktree itself via
-`git worktree list`):
+invisible — the script resolves the main worktree itself via a pipefail-safe
+`git worktree list` scan):
 
 `scratch/merge-queue` is a compatibility symlink after the one-time
 `migrate-state` cutover. Older agents and absolute log paths already stored in
@@ -82,6 +82,8 @@ and handoff notes. It is observational, not a locking or file-ownership system.
   `validated` (test-mode green, merge skipped), `swept`. `merged`/`red`/
   `timeout` carry the gate log path, elapsed seconds, and a stage-timing
   summary parsed from check.sh's `==> [N] stage (t+Ns)` markers.
+- `status` resolves all queued entries from one queue/registry snapshot, so it
+  remains usable when a large batch is waiting.
 - `logs/` — full gate output per attempt (nextest streams one line per test:
   `NEXTEST_STATUS_LEVEL=pass`).
 - `gate.lock/` — a DIRECTORY used as the mutex (`mkdir` is atomic). Contains
@@ -228,7 +230,11 @@ shards ignore the scope.
    `.batch-limit` marker bounds the next dependency-prefix retry.
 4. Classify the prepared batch diff, then acquire `gate.lock`. Re-check every
    immutable queue attempt and verify master is still `base`; if submission or
-   master moved during preparation, release and rebuild without gating.
+   master moved during preparation, release and rebuild without gating. When
+   the main worktree has `master` checked out with tracked staged or unstaged
+   edits, defer the batch before the full gate and retry after it is clean.
+   Untracked local tool state does not defer a gate; Git itself remains the
+   collision authority for an untracked path a candidate would overwrite.
 5. Run the gate: own process group (`set -m`), stdout to the log,
    `NEXTEST_STATUS_LEVEL=pass` for streaming, and Cargo wrapper variables
    cleared so detached coordinators do not inherit a sandbox-incompatible
@@ -343,9 +349,12 @@ shards ignore the scope.
   queue for the full 45-min whole-gate ceiling. Raising `STALL_TIMEOUT` would
   only move the cliff; the compile is genuinely long, so liveness is the right
   signal.
-- **`blocked` almost always means the main worktree is dirty** with an
-  untracked file the merge would overwrite, or master is checked out
-  somewhere unexpected. The gate result stays valid; only the ff needs help.
+- **Tracked edits on checked-out main `master` defer before a gate.** The queue
+  keeps the submission queued and retries once the checkout is clean, avoiding
+  a full gate that cannot safely fast-forward. A later `blocked` event usually
+  means an untracked collision introduced during the gate, or a worktree state
+  Git refused at the final fast-forward; the gate result remains valid and only
+  the landing needs help.
 - **check.sh shards:** `--fast` (commit gate: build+clippy+tests minus e2e),
   `--e2e`, `--examples`, `--wasm` — agents' pre-submit validation.
   `test-for-paths.sh` maps a diff to the right shards. The `witchy` e2e

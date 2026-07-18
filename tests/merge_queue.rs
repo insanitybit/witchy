@@ -818,6 +818,53 @@ fn green_dependency_stack_gates_the_tip_once_and_lands_the_whole_stack() {
 }
 
 #[test]
+fn dirty_main_master_defers_the_queue_before_running_the_gate() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+    fs::write(fixture.root.join("base.txt"), "locally edited\n")
+        .expect("dirty the main master checkout");
+
+    let marker = fixture.root.join("gate-ran");
+    let gate = format!("printf ran > {}", marker.display());
+    fixture.mq_ok(&["run", "--once"], &gate);
+
+    assert!(
+        !marker.exists(),
+        "the full gate ran despite tracked changes in the main master checkout"
+    );
+    assert_eq!(fixture.change("a")["state"], "queued");
+    assert_eq!(
+        fs::read_dir(fixture.state.join("queue"))
+            .expect("read deferred queue")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().is_some_and(|extension| extension == "json"))
+            .count(),
+        1,
+        "the deferred submission was consumed"
+    );
+    assert!(fixture.journal().iter().any(|event| {
+        event["event"] == "requeued"
+            && event["branch"] == "a"
+            && event["reason"] == "main master checkout has tracked changes before gate"
+    }));
+}
+
+#[test]
+fn status_reports_multiple_queue_entries_from_one_registry_snapshot() {
+    let fixture = QueueFixture::stack(&["a.txt", "b.txt"]);
+    submit_stack(&fixture, &["a", "b"]);
+
+    let status = fixture.status();
+    let queue = status["queue"].as_array().expect("queue is an array");
+    assert_eq!(queue.len(), 2);
+    let a = queue.iter().find(|entry| entry["branch"] == "a").expect("a is queued");
+    let b = queue.iter().find(|entry| entry["branch"] == "b").expect("b is queued");
+    assert_eq!(a["readiness"], "ready");
+    assert_eq!(b["readiness"], "waiting");
+    assert_eq!(b["waiting_on"][0]["branch"], "a");
+}
+
+#[test]
 fn red_dependency_stack_bisects_and_lands_only_the_green_prefix() {
     let fixture = QueueFixture::stack(&["a.txt", "b.txt", "c.txt"]);
     submit_stack(&fixture, &["a", "b", "c"]);
