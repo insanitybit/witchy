@@ -30,6 +30,12 @@ tracking: "IMPLEMENTED (2026-06-29). The std `vm` module delivers true multi-cor
 
 # RFC-0032: Multi-core execution — true parallelism vs the deterministic executor
 
+The shipped isolated-worker surface is implemented in
+[`std/vm.witchy`](../std/vm.witchy) and the native worker runtime in
+[`crates/witchy-runtime/src/runtime.rs`](../crates/witchy-runtime/src/runtime.rs),
+with parity coverage in [`src/example_tests.rs`](../src/example_tests.rs); the
+free-racing/shared-heap designs remain explicit non-goals.
+
 ## Summary
 
 > **Status: implemented (2026-06-29).** This began as a design-space RFC. It is now
