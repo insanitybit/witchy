@@ -185,7 +185,7 @@ This trades Bun's "collisions impossible" for "collisions confined to one
 agent whose whole job is merging them" — the strongest guarantee actually
 available given witchy's shared-file topology.
 
-### 4. Phase boundaries and the existing merge queue
+### 4. Phase boundaries and the [existing merge queue](../scripts/MERGE-QUEUE.md)
 
 A *phase* = queue drained. At the boundary, ONE verifier run
 (`CARGO_TARGET_DIR=target-<run> ./scripts/check.sh --fast`, or the relevant
