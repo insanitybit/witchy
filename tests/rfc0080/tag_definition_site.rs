@@ -19,7 +19,7 @@ fn selected() -> Int:
     0
 
 type SelectedRecord:
-    SelectedRecord(value: Int)
+    value: Int
 
 fn selected_record() -> SelectedRecord:
     SelectedRecord(value: 0)
@@ -111,7 +111,7 @@ type ImportedValue:
 type HiddenAlias = HiddenRecord
 
 type LocalSelectedRecord:
-    LocalSelectedRecord(value: Int)
+    value: Int
 
 fn main(console: Console):
     let hidden = fn() -> Int:
