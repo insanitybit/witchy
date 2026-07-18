@@ -143,6 +143,100 @@ are never silently chosen for ordinary syntax. The LSP can show a dynamic call's
 known receiver constraints but must not pretend a string-named method is statically
 resolved. `witchy caps` reports the conservative dynamic-call contribution.
 
+## Dependencies and implementation order
+
+RFC-0082 is not an alternative representation for RFC-0081. It consumes the
+same resolved declaration identities, package coordinates, and convention-aware
+call contracts, then adds a checked runtime boundary on top. The following are
+hard prerequisites:
+
+1. **RFC-0005:** aggregate and closure payloads have a representation-safe
+   typed slot boundary on both backends. A `Dynamic` payload must never be
+   recovered by interpreting an arbitrary scalar slot as a reference.
+2. **RFC-0081 slices 1-2:** resolved nominal and trait identities, canonical
+   anonymous-union shapes, and deterministic method-slot layouts exist before
+   a descriptor is emitted. RFC-0082 does not use type display names as keys.
+3. **RFC-0081 owned-value execution:** an owned payload and authenticated
+   dispatch envelope work on both backends before `as_trait` or `call` ships.
+4. **RFC-0080 attributes:** `@dynamic` is compiler-owned, hygienic declaration
+   metadata before dynamic method enumeration or invocation ships. A temporary
+   spelling is not a second public surface.
+5. **RFC-0083 loan facts:** an active owner loan prevents an in-place dynamic
+   payload extraction or mutation path. The baseline remains correct by copying
+   when no uniqueness proof is available.
+
+Implementation proceeds in these independently mergeable stages:
+
+1. **Descriptor identity and conversion:** add backend-neutral immutable
+   descriptor plans; implement `dynamic`, `type`, `decode`, and `try_decode`
+   for reflectable, capability-free values. This stage has no field access or
+   string dispatch.
+2. **Public shape inspection:** add descriptor enumeration and checked public
+   field reads. Private members and capability-bearing transitive payloads must
+   be rejected before either backend executes the operation.
+3. **Authenticated calls:** consume RFC-0081's resolved call contract for
+   `@dynamic` methods, with checked arity, argument descriptors, result
+   descriptors, explicit capability arguments, and conservative footprint
+   accounting.
+4. **Trait bridge and tooling:** add `implements`/`as_trait`, `witchy caps`,
+   LSP presentation, generated documentation, and migration guidance only after
+   stages 1-3 agree across both backends.
+
+## Representation and failure invariants
+
+- A descriptor identity is immutable and compares by resolved identity, never
+  by `type_name`. Nominal identities include package coordinate, module path,
+  declaration identity, and instantiated type arguments. Structural records and
+  RFC-0078 unions compare by their canonical normalized shape identity.
+- A `Dynamic` owns its payload according to the normal value model. Converting a
+  mutable source cannot expose a second observable mutable alias; unique
+  ownership may move, while shared or borrowed storage follows the established
+  copy-on-write and loan rules.
+- A descriptor cannot manufacture authority. Capability values, values that
+  transitively contain capabilities, private members, sealed constructors, and
+  non-opted-in methods are absent or rejected at the boundary.
+- Every failure is data: malformed descriptors, descriptor/payload mismatch,
+  missing member, visibility denial, arity mismatch, argument mismatch, result
+  mismatch, and capability denial return `DynamicError`. Compiler bugs and
+  runtime traps do not become successful dynamic values, and no operation may
+  silently fall back to a string lookup or ambient authority.
+- The interpreter is the semantic reference, but the compiled representation
+  must use only descriptor-authorized typed loads, stores, and calls. A scalar
+  optimization is valid only when it preserves the same ownership and failure
+  behavior as the aggregate/reference path.
+
+## Acceptance criteria
+
+RFC-0082 is implemented only when all of the following are true:
+
+1. The compiler emits one canonical descriptor identity per resolved nominal
+   instantiation and canonical RFC-0078 shape; package-distinct same-spelled
+   declarations and display-name collisions cannot decode each other.
+2. `dynamic` rejects direct and transitive capability payloads at type checking,
+   with a source diagnostic naming the retaining field or constructor path.
+3. `decode` and `try_decode` preserve exact value semantics for scalars,
+   aggregate values, generic values, anonymous records, and anonymous unions;
+   mismatches return `DynamicError`/`None`, never a trap or unchecked cast.
+4. Descriptor constants, conversion, and mismatch behavior agree on the
+   interpreter and compiled-Wasm backend, including reference-bearing payloads.
+5. Public field enumeration and `field` expose only declared public readable
+   members; private, sealed, missing, and malformed requests fail distinctly.
+6. `@dynamic` method tables use RFC-0081's resolved identity and slot contract,
+   validate arity/argument/result descriptors, and cannot invoke a private or
+   non-opted-in method by spelling its name.
+7. Dynamic calls retain explicit capability parameters and `witchy caps`
+   includes every reachable opted-in method conservatively. A method name alone
+   cannot widen authority.
+8. Active RFC-0083 loans, shared payloads, and unique payloads each take a
+   memory-safe path. Differential tests cover copy/move decisions and prove no
+   use-after-reclaim or observable aliasing.
+9. The LSP and generated docs identify dynamic operations as checked runtime
+   dispatch, and source diagnostics remain loud when an expected decode type or
+   required capability argument is absent.
+10. Each stage carries focused type-checking, interpreter, compiled-Wasm, and
+    adversarial malformed-descriptor tests; the final stage updates the language
+    specification, book, stdlib surface, and package-boundary examples.
+
 ## Alternatives
 
 - **Use `Json` everywhere.** Good for data interchange, but erases nominal type
