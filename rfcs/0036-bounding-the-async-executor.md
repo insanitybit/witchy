@@ -205,7 +205,7 @@ and `std/chan.witchy` `run` are rewritten from the tail-recursive
 BORROWED params rebuilt per step through a `(slots, channels, Bool)` tuple return, so
 every `set_at` took the copy path — into a single iterative loop whose `slots`/`channels`
 are confined-unique local `var` accumulators, mutated in place with self-assign
-(`slots = list.set_at(slots, …)` / `list.push(…)`), the exact shape RFC-0035/0016 reclaim
+(`slots = list.set_at(slots, …)` / `list.push(…)`), the exact shape [RFC-0035](./0035-completing-the-rc-floor.md)/[RFC-0016](./0016-reference-counted-memory.md) reclaim
 per step. The schedule is unchanged and verified byte-identical on both backends via
 `witchy parity` across every concurrency example (for_await/scope/worker_pool/select/
 channels/async_tasks/request_reply/conventions). The task/chan DEDUP the review note
@@ -242,7 +242,7 @@ recursive drop. A SOUND implementation is a large matched-pair change:
   so closure drop needs a DEFUNCTIONALIZED per-code-index drop — a drop table parallel to
   the `$__lamw{i}` call table, each `$__lamdrop{i}` dropping its captures' statically-known
   kinds. The executor's dominant leak IS closures, so this is required, not optional.
-- **erased `__Msg` (RFC-0055)** — the executor's `List(__Msg)` buffers carry values of
+- **erased `__Msg` ([RFC-0055](./0055-channel-message-types.md))** — the executor's `List(__Msg)` buffers carry values of
   OPAQUE kind; recursive drop must LEAVE them undropped (a sound leak), never guess, or a
   heap message payload is a UAF. Sound for the Int-message DoD (scalar); leaky-but-safe
   for heap messages.
@@ -298,7 +298,7 @@ params CONSUMED (move — the callee may drop) or BORROWED (the caller retains)?
 witchy's default `let` (borrow) convention a borrowed param must NOT be dropped by the
 callee; only an `own` / last-use-move param may be.
 
-This is precisely the piece the `last_use` oracle (`crates/witchy-lower/src/analysis.rs`,
+This is precisely the piece the `last_use` oracle ([`crates/witchy-lower/src/analysis.rs`](../crates/witchy-lower/src/analysis.rs),
 ~lines 1610-1616) **deliberately does not ship unverified**: "the full backward-liveness
 drop-at-last-use … MUST discharge two soundness obligations before it can place a drop on
 a *used* value — the Perceus dup/move discipline … and inter-procedural escape via
@@ -309,7 +309,7 @@ move/borrow oracle for construction arguments and closure captures exists.
 
 **Precise scope for the next increment** (same shape, sharper gate). The construction
 surface is now mapped and centralized: `lower_aggregate`
-(`crates/witchy-lower/src/codegen/mod.rs` ~3349-3368) covers ADT/record/tuple/list, and
+([`crates/witchy-lower/src/codegen/mod.rs`](../crates/witchy-lower/src/codegen/mod.rs) ~3349-3368) covers ADT/record/tuple/list, and
 `lower_lambda` (~5197-5270) covers closures; the closure code-index registry is
 `lambda_wir_funcs` (index = code index) with per-capture kinds in `cap_info`; the drop
 sites are mod.rs ~2811 (set_at displaced), ~3295 (read-binding last use), ~3766 (match
