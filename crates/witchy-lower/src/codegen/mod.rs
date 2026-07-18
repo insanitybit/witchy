@@ -2613,7 +2613,7 @@ impl<'types> Codegen<'types> {
     fn infer_locals(&mut self, block: &Block) {
         for stmt in &block.stmts {
             match stmt {
-                Stmt::Let { name, value, ty, .. } => {
+                Stmt::Let { name, value, .. } => {
                     // Infer the value's nested bindings FIRST (e.g. a `match`'s
                     // Some/Ok payload vars), so this binding's own kind/type —
                     // computed from `value` below — sees them. Otherwise
@@ -2625,17 +2625,14 @@ impl<'types> Codegen<'types> {
                     // call. Use the authoritative table for those two shapes;
                     // retain the established inference elsewhere because several
                     // specialized lowerings intentionally choose their local ABI.
-                    let declared_type = ty.clone();
-                    let needs_resolved_type = declared_type.is_some()
-                        || matches!(value, Expr::Try(_))
+                    let needs_resolved_type = matches!(value, Expr::Try(_))
                         || matches!(value, Expr::Call { name, .. }
                             if self.fn_conventions.get(name).is_some_and(|cs|
                                 cs.contains(&Convention::Var)));
-                    let resolved_type = declared_type.or_else(|| {
-                        self.type_table
-                            .type_of(value)
-                            .and_then(witchy_types::typeck::ty_to_ast)
-                    });
+                    let resolved_type = self
+                        .type_table
+                        .type_of(value)
+                        .and_then(witchy_types::typeck::ty_to_ast);
                     let inferred_type = if needs_resolved_type
                         || matches!(resolved_type.as_ref().map(Type::unqualified), Some(Type::Fn(..)))
                     {

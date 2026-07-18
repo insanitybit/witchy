@@ -1094,7 +1094,7 @@ fn main(console: Console, net: Net):
             console.print("${{http.status(resp)}}")
             console.print(http.body(resp))
             console.print("${{http.is_success(resp)}}")
-        Err(e) -> console.print("err: " + e)
+        Err(e) -> console.print("err: " + http.http_error_message(e))
 "#
         );
         let parsed = witchy_syntax::parser::parse_module(&src).expect("parse");
@@ -1378,15 +1378,17 @@ fn main(console: Console, net: Net):
         let allow = vec![addr.clone()];
         let server = std::thread::spawn(move || run_module(linked, ".", allow));
 
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut stream = None;
-        for _ in 0..100 {
+        while std::time::Instant::now() < deadline {
             if let Ok(s) = TcpStream::connect(&addr) {
                 stream = Some(s);
                 break;
             }
+            assert!(!server.is_finished(), "server exited before accepting a request");
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        let mut stream = stream.expect("connect");
+        let mut stream = stream.expect("server did not accept a request within 10 seconds");
         stream.write_all(b"GET /hello/witchy HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
         let mut resp = String::new();
         stream.read_to_string(&mut resp).unwrap();
@@ -1429,15 +1431,17 @@ fn main(console: Console, net: Net):
         let allow = vec![addr.clone()];
         let server = std::thread::spawn(move || run_module(linked, ".", allow));
 
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut stream = None;
-        for _ in 0..100 {
+        while std::time::Instant::now() < deadline {
             if let Ok(s) = TcpStream::connect(&addr) {
                 stream = Some(s);
                 break;
             }
+            assert!(!server.is_finished(), "server exited before accepting a request");
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        let mut stream = stream.expect("connect");
+        let mut stream = stream.expect("server did not accept a request within 10 seconds");
         let body = "{\"name\":\"witchy\"}";
         let req = format!(
             "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n{}",
