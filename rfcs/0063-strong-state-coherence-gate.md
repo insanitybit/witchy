@@ -9,6 +9,10 @@ tracking: coherence gate accepted as the pre-tag bar; executed alongside RFC-006
 
 # RFC-0063: Strong-state coherence gate for a proud 0.1 release
 
+The landed catalog/coherence checks are exercised in
+[`tests/misc/rfc0063_bytes_catalog.rs`](../tests/misc/rfc0063_bytes_catalog.rs) and
+the related type-checking tests in [`crates/witchy-types/src/typeck_tests.rs`](../crates/witchy-types/src/typeck_tests.rs).
+
 ## Summary
 
 RFC-0061 defines a checkable 0.1.0 gate: drain reviewed RFCs, close prime-directive
