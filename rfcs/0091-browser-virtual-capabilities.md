@@ -199,7 +199,7 @@ Phase 1 (this RFC):
   `{Console, Clock, Env, Dir}`: `Clock` against real wall/monotonic time, `Env`
   against an empty-or-page-supplied immutable map, `Dir` against a confined
   per-run in-memory tree. Verified end-to-end
-  (`web/witchy-runtime/capability-host.test.mjs`, driven by `tests/browser_shim.rs`):
+  ([`web/witchy-runtime/capability-host.test.mjs`](../web/witchy-runtime/capability-host.test.mjs), driven by [`tests/browser/shim.rs`](../tests/browser/shim.rs)):
   `Env`/`Dir` output is byte-identical to the native interpreter oracle.
 - Non-widening is verified: the **default** host still `LinkError`s on any
   `Dir`/`Clock`/`Env` program, and `Exec`/`Secret`/`Net` stay denied **even under
