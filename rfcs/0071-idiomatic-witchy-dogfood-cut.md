@@ -90,7 +90,7 @@ enforcement). It canonizes, with a before/after pair each:
    held up as the positive exemplar.
 
 Plus a matching ~20-line normative section in `CONTRIBUTING.md` ("Witchy code
-in this repo follows the idiom canon — book/src/idioms.md") so the rule binds
+in this repo follows the idiom canon — [book/src/idioms.md](../book/src/idioms.md)") so the rule binds
 contributors and agents, not just readers.
 
 ### 2. The dogfood cut (one sweep, no aliases)
