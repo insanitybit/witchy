@@ -16,9 +16,9 @@ tracking:
 > not be executed by the doc-test harness.
 
 > **Status: implemented** (2026-07-02). All layers shipped; behavior lives in
-> `spec/capabilities.md`, `std/http`/`std/confine`, and the code. This RFC is frozen.
+> [`spec/capabilities.md`](../spec/capabilities.md), `std/http`/`std/confine`, and the code. This RFC is frozen.
 > - **Layer 0** — the resolve-once-and-pin invariant is documented in
->   `spec/capabilities.md` (connect resolves once; the checked IP set is the
+>   [`spec/capabilities.md`](../spec/capabilities.md) (connect resolves once; the checked IP set is the
 >   dialed set; CIDR/IP entries match the resolved IP, bare hostnames don't).
 > - **Layer 1** — `confine.private()` in `std/confine`. `net.deny(confine.private())`
 >   refuses an internal address at connect time, enforced on the resolved IP. A silent
@@ -45,7 +45,7 @@ tracking:
 >
 > The `type PinnedUrl:` sum, `net.connect_pinned(ip, host, port, secure)` free-function
 > shape, and `pin_with`/`public_only` in the Design section below are the ORIGINAL
-> sketch; the shipped surface is as summarized above (see `spec/stdlib.md`).
+> sketch; the shipped surface is as summarized above (see [`spec/stdlib.md`](../spec/stdlib.md)).
 
 ## Summary
 
@@ -106,7 +106,7 @@ new primitives a program has to reason about; layers 2–3 cover dynamic policy.
 ### Layer 0 — state the guarantee we already have
 
 The connect path resolves once and dials the exact resolved IPs. We will document
-this as an explicit, tested invariant in `spec/capabilities.md`:
+this as an explicit, tested invariant in [`spec/capabilities.md`](../spec/capabilities.md):
 
 > **Resolve-once-and-pin.** `connect`/`try_connect` resolve a hostname a single
 > time; the IP set checked against the `Net` allowlist is the *same* set dialed.
@@ -288,7 +288,7 @@ policy ran: a function that wants a vetted target asks for a `PinnedUrl` and the
 system enforces the rest. The `Net` allowlist still sits underneath as the hard floor
 (`connect_pinned` re-checks the IP), so even a buggy or hostile chooser cannot exceed
 the capability — the same two-tier "hard host capability + soft sealed policy"
-composition as `capability Postgres` in `spec/capabilities.md`.
+composition as `capability Postgres` in [`spec/capabilities.md`](../spec/capabilities.md).
 
 **Resolution is the client's single step; the chooser only selects.** The chooser
 receives the *already-resolved* candidate list and returns one of them (or an `Err`);
