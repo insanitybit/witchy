@@ -58,6 +58,12 @@ comptime fn composed_field_selected(parts: List(String), holes: List(String)) ->
     let record = meta.expr_call(selected, [])
     meta.expr_field(record, meta.ident("value"))
 
+comptime fn composed_match_selected(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+    let selected = meta.expr_name(meta.call_site("selected"))
+    let value = meta.expr_call(selected, [])
+    let arm = meta.match_arm(meta.pattern_int(42), meta.expr_int(42))
+    meta.expr_match(value, [arm])
+
 comptime fn construct_hidden(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     quote expr:
         match HiddenValue(41):
@@ -127,6 +133,7 @@ fn main(console: Console):
     console.print("${selected_fn()}")
     console.print("${composed_call_selected"ignored"}")
     console.print("${composed_field_selected"ignored"}")
+    console.print("${composed_match_selected"ignored"}")
     console.print("${construct_hidden"ignored"}")
     console.print("${type_hidden"ignored"}")
     console.print("${record_hidden"ignored"}")
@@ -157,6 +164,7 @@ fn linked() -> ast::Module {
 fn typed_tag_names_resolve_at_definition_site_on_both_backends() {
     let linked = linked();
     let expected = vec![
+        "42".to_string(),
         "42".to_string(),
         "42".to_string(),
         "42".to_string(),

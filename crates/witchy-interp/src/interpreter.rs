@@ -583,6 +583,27 @@ fn compiler_ident_name(value: &Value, operation: &str) -> Result<String, Runtime
     }
 }
 
+fn compiler_match_arm_sources(value: &Value) -> Result<Vec<String>, RuntimeError> {
+    fn tail(name: &str) -> &str {
+        name.rsplit_once('.').map_or(name, |(_, tail)| tail)
+    }
+
+    let Value::List(arms) = value else {
+        return err("meta.expr_match expected List(MatchArmSyntax) arms");
+    };
+    arms.iter()
+        .map(|arm| match arm {
+            Value::Ctor { name, fields }
+                if tail(name) == "MatchArmSyntax" && matches!(fields.as_slice(), [Value::Str(_)]) =>
+            {
+                let Value::Str(source) = &fields[0] else { unreachable!() };
+                Ok(source.to_string())
+            }
+            _ => err("meta.expr_match expected MatchArmSyntax arms"),
+        })
+        .collect()
+}
+
 fn compiler_item_holes(
     values: &[Value],
     compiler_expr_syntax: &HashMap<String, Expr>,
@@ -3078,6 +3099,52 @@ impl Interpreter {
                     }))
                 }
                 _ => err("meta.expr_field expects an ExprSyntax base and Ident field"),
+            },
+            name if intrinsics::is_meta_expr_match(name) => match args {
+                [scrutinee, arms] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.expr_match is available only during compile-time expansion",
+                        );
+                    }
+                    let hole_ancestry = compiler_direct_hole_origins(
+                        std::slice::from_ref(scrutinee),
+                        SyntaxCategory::Expr,
+                        "CompilerExprSyntax",
+                        &self.compiler_expr_origins,
+                        self.cur_line,
+                    );
+                    let scrutinee =
+                        compiler_expr_syntax_value(scrutinee, &self.compiler_expr_syntax)?;
+                    let arm_sources = compiler_match_arm_sources(arms)?;
+                    let source = format!(
+                        "match __witchy_meta_match_scrutinee:\n{}",
+                        arm_sources
+                            .iter()
+                            .map(|arm| format!("    {arm}"))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    );
+                    let Expr::Match { arms, .. } =
+                        witchy_syntax::syntax_holes::parse_expr_payload(&source)
+                            .map_err(|message| RuntimeError { message })?
+                    else {
+                        return err("meta.expr_match failed to parse its arms");
+                    };
+                    let expr = Expr::Match { scrutinee: Box::new(scrutinee), arms };
+                    let canonical_source = witchy_syntax::format::expr_str(&expr);
+                    let handle = self.next_compiler_syntax_handle("expression-match")?;
+                    self.compiler_expr_syntax.insert(handle.clone(), expr);
+                    self.compiler_expr_origins.insert(
+                        handle.clone(),
+                        ComptimeSyntaxOrigin { definition_line: self.cur_line, hole_ancestry },
+                    );
+                    Ok(Some(Value::Ctor {
+                        name: "meta.CompilerExprSyntax".into(),
+                        fields: Rc::new(vec![Value::str(handle), Value::str(canonical_source)]),
+                    }))
+                }
+                _ => err("meta.expr_match expects an ExprSyntax scrutinee and List(MatchArmSyntax) arms"),
             },
             name if name == intrinsics::COMPILER_QUOTE_EXPR => {
                 if self.fresh_ident_scope.is_none() {

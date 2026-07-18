@@ -471,6 +471,10 @@ The first source-compatible slice is implemented:
   reason: an owned base expression, including `meta.call_site`, stays attached
   to the constructed `Field` node. Field names remain validated identifiers,
   because member selection is not a lexical binding position.
+- The forty-third slice makes `meta.expr_match` preserve its compiler-owned
+  scrutinee. `MatchArmSyntax` deliberately remains source-backed until its own
+  node representation exists; each arm is parsed as an individual compatibility
+  payload, never by projecting and reparsing the scrutinee or enclosing match.
 
 This is intentionally not the full RFC. Every quotation category and its typed
 hole placement is now compiler-owned. General `meta.*` builder composition may

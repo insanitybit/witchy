@@ -303,7 +303,12 @@ pub fn expr_bool(b: Bool) -> ExprSyntax:
 pub fn expr_match(scrutinee: ExprSyntax, arms: List(MatchArmSyntax)) -> ExprSyntax:
     if list.is_empty(arms):
         fail("meta.expr_match: at least one match arm is required")
-    ExprSyntax("match " + expr_source(scrutinee) + ":\n" + indent(list.join(match_arm_sources(arms), "\n")))
+    __meta_expr_match(scrutinee, arms)
+
+// The scrutinee remains compiler-owned. Match arms are still the documented
+// source-backed compatibility boundary until MatchArmSyntax has owned nodes.
+fn __meta_expr_match(scrutinee: ExprSyntax, arms: List(MatchArmSyntax)) -> ExprSyntax:
+    __meta_expr_match(scrutinee, arms)
 
 pub fn expr_raw(source: String) -> ExprSyntax:
     ExprSyntax(source)
