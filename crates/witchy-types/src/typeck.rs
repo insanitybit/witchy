@@ -8792,6 +8792,35 @@ pub fn annotate_checked(module: Module) -> Result<TypedModule, TypeError> {
     Ok(TypedModule { module, table })
 }
 
+/// Reannotate a build module after its checked `build` entrypoint has been
+/// renamed to the runtime's internal `main` export.
+///
+/// Node identities survive the temporary name restoration, so the resulting
+/// table still belongs to `module`. This keeps the ordinary public `main`
+/// contract strict while validating the generated entrypoint under the build
+/// capability contract.
+pub fn annotate_checked_build(module: Module) -> Result<TypedModule, TypeError> {
+    let mut checked = module.clone();
+    for item in &mut checked.items {
+        if let Item::Function(function) = item
+            && function.name == "main"
+        {
+            function.name = "build".to_string();
+        }
+    }
+    let table = run_check_selected(
+        &checked,
+        true,
+        None,
+        None,
+        None,
+        None,
+        true,
+    )?
+        .unwrap_or_default();
+    Ok(TypedModule { module, table })
+}
+
 fn annotate_with_conversion_fns(
     module: Module,
     from_conversion_fns: Option<&HashSet<String>>,

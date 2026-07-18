@@ -826,27 +826,37 @@ fn main() -> Int:
             (
                 "vm.with_dir",
                 r#"
+import bytes
 import vm
 
 fn worker(dir: Dir, input: Bytes) -> Bytes:
     input
 
-fn main(dir: Dir, input: Bytes) -> Bytes:
+fn invoke(dir: Dir, input: Bytes) -> Bytes:
     let callback = worker
     vm.with_dir(dir, callback, input)
+
+fn main(dir: Dir):
+    let _ = invoke(dir, bytes.from_string("input"))
 "#,
             ),
             (
                 "vm.serve",
                 r#"
+import bytes
 import vm
 
 fn worker(state: Bytes, request: Bytes) -> Bytes:
     state
 
-fn main(init: Bytes, requests: List(Bytes)) -> List(Bytes):
+fn invoke(init: Bytes, requests: List(Bytes)) -> List(Bytes):
     let callback = worker
     vm.serve(init, requests, callback)
+
+fn main():
+    let initial = bytes.from_string("state")
+    let requests = [bytes.from_string("request")]
+    let _ = invoke(initial, requests)
 "#,
             ),
         ];

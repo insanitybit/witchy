@@ -1342,7 +1342,22 @@ fn assemble_optimized_wir_with_structs(
     ),
     LoweringFailure,
 > {
-    let (mut wir_module, gc_structs, gc_arrays) = assemble_wir_module_with_structs(module)?;
+    assemble_optimized_wir_with_structs_mode(module, false)
+}
+
+fn assemble_optimized_wir_with_structs_mode(
+    module: &Module,
+    build_entrypoint: bool,
+) -> Result<
+    (
+        witchy_wir::wir::WirModule,
+        Vec<witchy_wir::wir::WirStructDef>,
+        Vec<witchy_wir::wir::WirArrayDef>,
+    ),
+    LoweringFailure,
+> {
+    let (mut wir_module, gc_structs, gc_arrays) =
+        assemble_wir_module_with_structs_mode(module, build_entrypoint)?;
     witchy_wir::wir_opt::lower_direct_tail_calls(&mut wir_module);
     witchy_wir::wir_opt::optimize(&mut wir_module);
     Ok((wir_module, gc_structs, gc_arrays))
@@ -1352,7 +1367,15 @@ fn assemble_optimized_wir_with_structs(
 /// The result distinguishes a valid source construct that lacks a compiled
 /// lowering from rejected input or malformed compiler output.
 pub fn compile_module_binary(module: &Module) -> LoweringOutcome<Vec<u8>> {
-    let (wir_module, gc_structs, gc_arrays) = match assemble_optimized_wir_with_structs(module) {
+    compile_module_binary_mode(module, false)
+}
+
+fn compile_module_binary_mode(
+    module: &Module,
+    build_entrypoint: bool,
+) -> LoweringOutcome<Vec<u8>> {
+    let (wir_module, gc_structs, gc_arrays) =
+        match assemble_optimized_wir_with_structs_mode(module, build_entrypoint) {
         Ok(assembled) => assembled,
         Err(failure) => return public_outcome(Err(failure)),
     };
@@ -1433,6 +1456,20 @@ fn assemble_wir_module_with_structs(
     ),
     LoweringFailure,
 > {
+    assemble_wir_module_with_structs_mode(module, false)
+}
+
+fn assemble_wir_module_with_structs_mode(
+    module: &Module,
+    build_entrypoint: bool,
+) -> Result<
+    (
+        witchy_wir::wir::WirModule,
+        Vec<witchy_wir::wir::WirStructDef>,
+        Vec<witchy_wir::wir::WirArrayDef>,
+    ),
+    LoweringFailure,
+> {
     use witchy_wir::wir::{
         DataSegment, GlobalInit, Kind as WK, WirExpr, WirFunc, WirGlobal, WirImport, WirModule,
         WirNode, WirTable,
@@ -1446,7 +1483,11 @@ fn assemble_wir_module_with_structs(
     let mut lowered = witchy_types::traits::lower_for_wasm(recs);
     witchy_syntax::parser::lower_sugar_module(&mut lowered);
     alpha_rename_module(&mut lowered);
-    let mut typed = witchy_types::typeck::annotate_checked(lowered)
+    let mut typed = if build_entrypoint {
+        witchy_types::typeck::annotate_checked_build(lowered)
+    } else {
+        witchy_types::typeck::annotate_checked(lowered)
+    }
         .map_err(|error| CodegenError { message: error.to_string() })?;
     // `e ? "msg"` desugar (`__try_ctx`) is type-directed: an `Option` operand lowers
     // via `option.ok_or`, a `Result` via `result.map_err`. Rewrite it here — after
@@ -3189,5 +3230,5 @@ pub fn compile_build_module(module: &Module) -> LoweringOutcome<Vec<u8>> {
             }
         }
     }
-    compile_module_binary(&m)
+    compile_module_binary_mode(&m, true)
 }
