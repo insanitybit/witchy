@@ -99,7 +99,7 @@ non-special and privacy-free.
 
 ### The two primitives this rides on
 
-Per `secrets-design.md`, the entire feature reduces to two general,
+Per [the secrets design](./secrets-design.md), the entire feature reduces to two general,
 non-resource-specific language primitives; **everything else is library code.**
 
 1. **Sealed types** — a type whose constructor is private to its declaring
@@ -142,7 +142,7 @@ pub fn connect(net: Net[Connect, Tcp], host: String, port: Int) -> Result(Redis,
     Ok(net as Redis)            // mint — consumes a real Net; module-only
 ```
 
-**The non-negotiable soundness invariant** (from `secrets-design.md`): a library
+**The non-negotiable soundness invariant** (from [the secrets design](./secrets-design.md)): a library
 may *attenuate / compose* authority into a new sealed type, but may **never mint
 authority from nothing.** A mint must *consume* a host-rooted capability the
 caller already passed in. The fixed host capability set stays the trust anchor;
@@ -173,7 +173,7 @@ brands to declared capabilities.
 
 There are two ways to hand out *less* of a user capability. This RFC makes
 **facets the primary mechanism** and a **rights lattice an optional extension**,
-reconciling this RFC's examples with `secrets-design.md`'s preference.
+reconciling this RFC's examples with [the secrets design](./secrets-design.md)'s preference.
 
 **Facets — a narrower sealed type exposing fewer operations.** Attenuation is
 then just ordinary type-checking: the narrower type structurally lacks the
@@ -191,7 +191,7 @@ pub fn execute(db: Postgres, sql: String) -> Result(Int, String): run(db, sql)
 
 A consumer handed a `PgReader` has *no* `execute` in scope and cannot reconstruct
 a `Postgres` (sealed), so it is provably read-only — enforced by the type checker,
-no new machinery beyond sealed types. This is `secrets-design.md`'s "facet
+no new machinery beyond sealed types. This is [the secrets design](./secrets-design.md)'s "facet
 pattern" (`signer = sm.signer_for(...)`).
 
 **Rights lattice — `X[Verb]`, optional sugar** for capabilities that want
