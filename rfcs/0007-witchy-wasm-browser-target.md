@@ -30,9 +30,9 @@ denied**. The result is a module structurally incapable of acquiring ambient
 authority: it can compute over host-provided inputs and emit captured outputs,
 but it cannot reach the network, filesystem, clock, process environment, or
 secrets. The browser is not a new backend — it is the **existing compiled backend** (the same WASM
-`crates/witchy-lower/src/codegen/` and `crates/witchy-wir/` already emit) plus
+[`crates/witchy-lower/src/codegen/`](../crates/witchy-lower/src/codegen/) and [`crates/witchy-wir/`](../crates/witchy-wir/) already emit) plus
 the **empty capability set** plus a **JavaScript host** standing in for the
-wasmtime host functions in `crates/witchy-runtime/src/runtime.rs`. To make this
+wasmtime host functions in [`crates/witchy-runtime/src/runtime.rs`](../crates/witchy-runtime/src/runtime.rs). To make this
 a stable surface rather than an internal
 codegen↔runtime detail, this RFC also stabilizes and documents the `"witchy"`
 import ABI as a versioned public contract.
@@ -76,12 +76,12 @@ The browser execution path is, deliberately, *not* a third backend:
 
 - **The artifact** is the same WASM witchyc emits today — the output of
   `lower_* → assemble_wir_module → wir_encode`
-  (`crates/witchy-lower/src/codegen/`, `crates/witchy-wir/`).
+  ([`crates/witchy-lower/src/codegen/`](../crates/witchy-lower/src/codegen/), [`crates/witchy-wir/`](../crates/witchy-wir/)).
   No new compiler mode, no new lowering, no `--target=browser`.
 - **The capability set is empty.** The launch grant that a CLI run gets from
   `--net`/`--dir`/etc. is, in the browser, simply nothing.
 - **The host is JavaScript.** The wasmtime host functions in
-  `crates/witchy-runtime/src/runtime.rs` —
+  [`crates/witchy-runtime/src/runtime.rs`](../crates/witchy-runtime/src/runtime.rs) —
   the functions that satisfy the module's imports — are replaced by a small JS
   shim that implements the browser-supported non-authority imports and provides
   *none* of the capability imports.
@@ -93,7 +93,7 @@ a new one (see *Parity*).
 ### What the shim implements — and what it refuses
 
 witchy's compiled modules import from a single module named `"witchy"`. The
-canonical catalog in `spec/wasm-abi.md` classifies every import as pure
+canonical catalog in [`spec/wasm-abi.md`](../spec/wasm-abi.md) classifies every import as pure
 infrastructure, capability authority, launch input, internal/toolchain service,
 or runtime diagnostic, and independently marks the exact browser subset. The
 shim provides no authority. Its supported subset spans deterministic
@@ -115,9 +115,9 @@ admits no authority-bearing module.
 ### ABI stabilization
 
 Today the `"witchy"` import surface is a handshake between
-`crates/witchy-wir/src/wir_prelude.rs` (which declares the imports),
-`crates/witchy-lower/src/codegen/` (which selects them), and
-`crates/witchy-runtime/src/runtime.rs` (which satisfies them). Once a
+[`crates/witchy-wir/src/wir_prelude.rs`](../crates/witchy-wir/src/wir_prelude.rs) (which declares the imports),
+[`crates/witchy-lower/src/codegen/`](../crates/witchy-lower/src/codegen/) (which selects them), and
+[`crates/witchy-runtime/src/runtime.rs`](../crates/witchy-runtime/src/runtime.rs) (which satisfies them). Once a
 *browser* host depends on it — and especially once third-party tooling or a
 shipped framework rune does — it becomes a **public contract**. This RFC
 enumerates what is frozen and versioned:
@@ -165,8 +165,8 @@ browser cannot diverge because it adds no semantics, only removes authority.
 
 This section is the heart of the RFC: the design exists *because* of the
 guarantee it provides, and that guarantee composes with the containment model
-already specified in `projects/coven-web/PLAN.md` (§5) and recorded in
-`projects/coven-web/SECURITY.md`.
+already specified in [`projects/coven-web/PLAN.md`](../projects/coven-web/PLAN.md) (§5) and recorded in
+[`projects/coven-web/SECURITY.md`](../projects/coven-web/SECURITY.md).
 
 ### Deny-all-imports is the guarantee, not an implementation note
 
