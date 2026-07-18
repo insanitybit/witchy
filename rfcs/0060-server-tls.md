@@ -29,14 +29,14 @@ Serving HTTPS is table stakes for a server-shaped stdlib.
 Doing it the witchy way also produces a property worth having: a TLS private
 key is the most valuable secret a server process holds, and the existing
 secrets model (guest holds an opaque handle; the host holds the bytes —
-`crates/witchy-runtime/src/runtime.rs:209-211`, the signing-key pattern) means
+[`crates/witchy-runtime/src/runtime.rs:209-211`](../crates/witchy-runtime/src/runtime.rs), the signing-key pattern) means
 witchy can perform the handshake **without the key ever entering guest
 memory**. A bug in the server program — request smuggling, a deserialization
 flaw, even guest-memory corruption — cannot exfiltrate a key the guest cannot
 address.
 
 One honesty gap must be closed for that claim: `crypto.reveal` can reveal a
-granted value secret (runtime.rs:732). A key that *can* be revealed is only
+granted value secret ([`runtime.rs:732`](../crates/witchy-runtime/src/runtime.rs)). A key that *can* be revealed is only
 conventionally protected. Hence the use-only flag below.
 
 ## Design
@@ -148,7 +148,7 @@ cert hot-reload. Each is compatible with this design and none blocks it.
 - The in-repo signing-key pattern (`secret_seed_bytes`, host-side use by
   handle) — this RFC generalizes it to a second consumer and hardens it with
   use-only.
-- RFC-0009 (HTTPS client) — the counterpart surface and the shared rustls
+- [RFC-0009](0009-https-tls-client.md) (HTTPS client) — the counterpart surface and the shared rustls
   seat.
 - Go's `http.ListenAndServeTLS` — the API shape callers expect (cert + key +
   serve); its keys live as plaintext bytes in process memory, which is the
