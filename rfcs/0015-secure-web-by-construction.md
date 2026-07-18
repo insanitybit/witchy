@@ -21,7 +21,7 @@ Two claims, made true by the shape of the language rather than by careful coding
    auditable grant, and the browser actually enforces the box.
 
 Much of the machinery already exists: glamour's DOM shell is structurally `innerHTML`-free
-(`web/witchy-runtime/glamour-dom.mjs` — `createNode`/`patch` use `createElement`/
+([`web/witchy-runtime/glamour-dom.mjs`](../web/witchy-runtime/glamour-dom.mjs) — `createNode`/`patch` use `createElement`/
 `textContent`/`setAttribute` only); coven-web already ships a double-iframe sandbox
 (opaque origin, `connect-src 'none'`, `MessageChannel`) for source viewing; and auth is
 already header-bearer, not cookie. This RFC *names the thesis*, closes the two remaining
@@ -252,7 +252,7 @@ $ witchy caps coven-web
 **Decision 4b — `caps-diff` gates new foreign code.** A dependency that newly emits a compartment
 (adds `Js`), spawns a new renderer id, or widens a profile beyond `Sealed` is a `WIDENING` — the
 exact signal that catches a package trying to smuggle in a library. **Decision 4c —** a grant
-document (RFC-0013) may carry a `[compartments]` allowlist the host honors, cross-checked against
+document ([RFC-0013](./0013-capability-grant-documents.md)) may carry a `[compartments]` allowlist the host honors, cross-checked against
 this footprint, so deployment can pin *which* foreign bundles may ever spawn.
 
 ### 5. coven-web as the reference application
@@ -307,11 +307,11 @@ stay as the trust boundary; the four views, Model/Msg/update, and search become 
 
 ## Prior art
 
-- RFC-0006 (`html` tagged literal), 0007 (browser/WASM target), 0008 (glamour, effects-as-data) —
+- [RFC-0006](./0006-compile-time-tagged-literals.md) (`html` tagged literal), [RFC-0007](./0007-witchy-wasm-browser-target.md) (browser/WASM target), [RFC-0008](./0008-frontend-framework-rune.md) (glamour, effects-as-data) —
   this builds directly on them; the additions are the attribute hardening, Trusted Types, and `Js`.
-- RFC-0004 / 0012 (`Exec`) — `Js` is the browser sibling: a named, footprinted spawn with a grant,
+- [RFC-0004](./0004-self-hosted-cli.md) / [RFC-0012](./0012-file-capability.md) (`Exec`) — `Js` is the browser sibling: a named, footprinted spawn with a grant,
   and the same "confinement ends at the boundary" caveat — *improved*, because the browser confines.
-- RFC-0011 / 0013 (refinement, grant documents) — compartment grants are auditable footprint; the
+- [RFC-0011](./0011-capability-refinement.md) / [RFC-0013](./0013-capability-grant-documents.md) (refinement, grant documents) — compartment grants are auditable footprint; the
   `[compartments]` allowlist is the RFC-0013 grant-doc tie-in.
 
 ## Implementation phases
