@@ -14,6 +14,11 @@ tracking:
 
 # RFC-0039: Glamour capability-safe effects and UI authority
 
+The shipped sealed capability vocabulary is implemented in
+[`projects/glamour/src/glamour.witchy`](../projects/glamour/src/glamour.witchy),
+with structural capability and secret-custody coverage in
+[`tests/glamour/dom.rs`](../tests/glamour/dom.rs).
+
 > Provisional syntax. Code blocks here are intentionally **not** tagged `witchy`
 > so the doc-examples test does not try to compile partial snippets.
 
