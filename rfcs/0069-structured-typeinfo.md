@@ -8,6 +8,10 @@ tracking: "RFC-0067 structured comptime facts"
 
 # RFC-0069: Structured TypeInfo for compile-time reflection
 
+The reflection builder is implemented in
+[`crates/witchy-syntax/src/reflect.rs`](../crates/witchy-syntax/src/reflect.rs),
+with cross-backend generator coverage in [`src/example_tests.rs`](../src/example_tests.rs).
+
 ## Summary
 
 `std/meta.TypeInfo` exposes declaration shape through `TypeKind` and declared
