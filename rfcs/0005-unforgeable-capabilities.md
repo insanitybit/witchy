@@ -406,8 +406,9 @@ built.
 - **Migration.** Every cap-passing import signature and call site changes at once
   (`break, don't deprecate`): the `i32`-handle ABI and the `externref` ABI cannot
   coexist on the same import. This is a single coordinated cut across
-  `crates/witchy-runtime/src/runtime.rs`, `crates/witchy-lower/src/codegen.rs`,
-  and the WIR layer (`crates/witchy-wir/src/`).
+  [`crates/witchy-runtime/src/runtime.rs`](../crates/witchy-runtime/src/runtime.rs),
+  [`crates/witchy-lower/src/codegen.rs`](../crates/witchy-lower/src/codegen.rs),
+  and the WIR layer ([`crates/witchy-wir/src/`](../crates/witchy-wir/src/)).
 
 ## Prior art
 
@@ -487,12 +488,12 @@ were applied in the same pass (the RFC is `planned`, not yet frozen).
 
 **Hardening #1–#4 and #7 have all shipped.**
 - **#1 signing@0** — deleted; `secret_seed_bytes`
-  (`crates/witchy-runtime/src/runtime.rs:2403`) resolves only real granted
+  ([`crates/witchy-runtime/src/runtime.rs`](../crates/witchy-runtime/src/runtime.rs):2403) resolves only real granted
   entries, and every grant site populates the signing key as a normal
   `"signing"` secret.
 - **#2 in-place bound traps** — the in-place store path checks the write against
   the `$rc_alloc` header's real allocation size and traps, unconditionally, on
-  violation (`crates/witchy-wir/src/wir_helpers/mod.rs:1493-1510`).
+  violation ([`crates/witchy-wir/src/wir_helpers/mod.rs`](../crates/witchy-wir/src/wir_helpers/mod.rs):1493-1510).
 - **#3 fuzzing** — RFC-0023 (checked heap: canaries, loud corruption) and
   RFC-0037 (differential/sanitized/coverage-guided correctness harness) cover
   the ownership analysis; CI runs the heap-check fuzz sweep.
