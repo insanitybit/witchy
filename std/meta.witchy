@@ -498,12 +498,12 @@ fn match_arm_sources(arms: List(MatchArmSyntax)) -> List(String):
 // compiler boundary, but they make block-shaped generators compose through
 // typed, validated pieces instead of one large string template.
 pub fn stmt_let(mutable: Bool, name: Ident, ty: Option(TypeSyntax), value: ExprSyntax) -> StmtSyntax:
-    let binding = if mutable: "var " else: "let "
-    let ty_source = match ty:
-        Some(t) -> ": " + type_syntax_source(t)
-        None -> ""
+    __meta_stmt_let(mutable, name, ty, value)
 
-    StmtSyntax(binding + ident_source(name) + ty_source + " = " + expr_source(value))
+// Compiler-owned let/var statement construction. Binder, optional type, and
+// value remain typed nodes through block construction.
+fn __meta_stmt_let(mutable: Bool, name: Ident, ty: Option(TypeSyntax), value: ExprSyntax) -> StmtSyntax:
+    __meta_stmt_let(mutable, name, ty, value)
 
 pub fn stmt_expr(expr: ExprSyntax) -> StmtSyntax:
     __meta_stmt_expr(expr)

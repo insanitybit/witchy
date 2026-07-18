@@ -6,6 +6,8 @@ use witchy::{codegen, comptime, format, interpreter, parser, pipeline, typeck};
 const SOURCE: &str = r#"
 import meta
 
+type Number = Int
+
 comptime fn local_stmt() -> meta.StmtSyntax:
     quote stmt:
         let x = 40
@@ -15,7 +17,7 @@ comptime fn direct_body() -> meta.BlockSyntax:
         let x = 40
         x + 2
 
-fn selected() -> Int:
+fn selected() -> Number:
     42
 
 fn touched() -> Nil:
@@ -29,9 +31,12 @@ comptime fn call_site_body() -> meta.BlockSyntax:
 comptime fn statement_body() -> meta.BlockSyntax:
     let touched = meta.expr_name(meta.call_site("touched"))
     let touch = meta.stmt_expr(meta.expr_call(touched, []))
+    let binding = meta.fresh("selected_value")
+    let number = meta.type_named(meta.call_site("Number"), [])
     let selected = meta.expr_name(meta.call_site("selected"))
-    let result = meta.stmt_return(meta.expr_call(selected, []))
-    meta.block([touch, result], Some(meta.expr_int(0)))
+    let bind = meta.stmt_let(false, binding, Some(number), meta.expr_call(selected, []))
+    let result = meta.stmt_return(meta.expr_name(binding))
+    meta.block([touch, bind, result], Some(meta.expr_int(0)))
 
 comptime:
     let int = quote type:

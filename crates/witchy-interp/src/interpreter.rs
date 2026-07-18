@@ -567,6 +567,53 @@ fn compiler_expr_syntax_value(
     }
 }
 
+fn compiler_type_syntax_value(
+    value: &Value,
+    compiler_type_syntax: &HashMap<String, Type>,
+) -> Result<Type, RuntimeError> {
+    fn tail(name: &str) -> &str {
+        name.rsplit_once('.').map_or(name, |(_, tail)| tail)
+    }
+
+    let Value::Ctor { name, fields } = value else {
+        return err("meta.stmt_let expected TypeSyntax");
+    };
+    match (tail(name), fields.as_slice()) {
+        ("CompilerTypeSyntax", [Value::Str(handle), Value::Str(_source)]) => {
+            compiler_type_syntax.get(handle.as_str()).cloned().ok_or_else(|| RuntimeError {
+                message: "CompilerTypeSyntax carried an invalid syntax handle".into(),
+            })
+        }
+        ("TypeSyntax", [Value::Str(source)]) => {
+            witchy_syntax::syntax_holes::parse_type_payload(source)
+                .map_err(|message| RuntimeError { message })
+        }
+        ("CompilerTypeSyntax", _) => err("CompilerTypeSyntax carried an invalid payload"),
+        ("TypeSyntax", _) => err("TypeSyntax carried an invalid source payload"),
+        (other, _) => err(format!("meta.stmt_let expected TypeSyntax, got `{other}`")),
+    }
+}
+
+fn compiler_optional_type_syntax_value(
+    value: &Value,
+    compiler_type_syntax: &HashMap<String, Type>,
+) -> Result<Option<Type>, RuntimeError> {
+    fn tail(name: &str) -> &str {
+        name.rsplit_once('.').map_or(name, |(_, tail)| tail)
+    }
+
+    match value {
+        Value::Ctor { name, fields } if tail(name) == "Some" && fields.len() == 1 => {
+            Ok(Some(compiler_type_syntax_value(
+                &fields[0],
+                compiler_type_syntax,
+            )?))
+        }
+        Value::Ctor { name, fields } if tail(name) == "None" && fields.is_empty() => Ok(None),
+        _ => err("meta.stmt_let expected Option(TypeSyntax) annotation"),
+    }
+}
+
 fn compiler_stmt_syntax_value(
     value: &Value,
     compiler_stmt_syntax: &HashMap<String, Stmt>,
@@ -639,6 +686,25 @@ fn compiler_ident_name(value: &Value, operation: &str) -> Result<String, Runtime
             Ok(name.to_string())
         }
         _ => err(format!("{operation} expected an Ident field name")),
+    }
+}
+
+fn compiler_binding_ident_name(value: &Value, operation: &str) -> Result<String, RuntimeError> {
+    fn tail(name: &str) -> &str {
+        name.rsplit_once('.').map_or(name, |(_, tail)| tail)
+    }
+
+    match value {
+        Value::Ctor { name, fields }
+            if tail(name) == "Ident" && matches!(fields.as_slice(), [Value::Str(_)]) =>
+        {
+            let Value::Str(name) = &fields[0] else { unreachable!() };
+            Ok(name.to_string())
+        }
+        Value::Ctor { name, .. } if tail(name) == "CallSiteIdent" => err(format!(
+            "{operation} requires a binding identifier; meta.call_site is reference-only"
+        )),
+        _ => err(format!("{operation} expected an Ident binding name")),
     }
 }
 
@@ -3288,6 +3354,29 @@ impl Interpreter {
                     )?))
                 }
                 _ => err("meta.stmt_return expects ExprSyntax"),
+            },
+            name if intrinsics::is_meta_stmt_let(name) => match args {
+                [Value::Bool(mutable), binding, ty, value] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.stmt_let is available only during compile-time expansion",
+                        );
+                    }
+                    let name = compiler_binding_ident_name(binding, "meta.stmt_let")?;
+                    let ty = compiler_optional_type_syntax_value(
+                        ty,
+                        &self.compiler_type_syntax,
+                    )?;
+                    let value =
+                        compiler_expr_syntax_value(value, &self.compiler_expr_syntax)?;
+                    Ok(Some(self.store_compiler_stmt_syntax(
+                        "let-statement",
+                        Stmt::Let { name, ty, mutable: *mutable, value },
+                    )?))
+                }
+                _ => err(
+                    "meta.stmt_let expects Bool, Ident, Option(TypeSyntax), and ExprSyntax",
+                ),
             },
             name if intrinsics::is_meta_block(name) => match args {
                 [Value::List(stmts), tail] => {
