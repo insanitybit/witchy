@@ -39,7 +39,7 @@ A lexicon is only useful if it has no exceptions a user must memorize. Today:
 - `semver.lt` is the lone terse defector from the cmp trait's own spelled-out
   vocabulary (`less`, `less_equal` — the flagship of the readable-names rule).
 - `dict.set_at` is a literal alias of `dict.insert` in the same module
-  (`std/dict.witchy:18-25`) — two public names, one operation, kept only as
+  ([`std/dict.witchy:18-25`](../std/dict.witchy)) — two public names, one operation, kept only as
   the `d[k] = v` desugar target.
 - `rand` (capability CSPRNG) vs `random` (pure seeded LCG): nothing in the
   names signals the security-relevant distinction — rated the worst-confusion
@@ -81,10 +81,10 @@ Maintainer-reviewed decisions (amending the reviewer's raw list):
 
 | Current | Decision | Rationale |
 |---|---|---|
-| `iter.count` | **KEEP** | Rust's word deliberately signals *consuming the stream* (it drives to exhaustion — `std/iter.witchy:305-307`); `length` would imply a cheap property. The lexicon gains a note: on `Iter`, `count` = consume-and-tally. |
+| `iter.count` | **KEEP** | Rust's word deliberately signals *consuming the stream* (it drives to exhaustion — [`std/iter.witchy:305-307`](../std/iter.witchy)); `length` would imply a cheap property. The lexicon gains a note: on `Iter`, `count` = consume-and-tally. |
 | `list.count(xs, pred)` | → `count_where` | Frees `count` from the predicate meaning on eager containers; the name states the signature. |
 | `string.count(s, sub)` | **KEEP** | Counting substring occurrences is the established reading (Python `str.count`); no predicate confusion. |
-| `dict.set_at` | **DELETE**; `d[k] = v` desugar retargeted to `insert` | Dict keeps `insert` (matching `set.insert`). The parser's place-assign desugar (`crates/witchy-syntax/src/parser.rs:1907-1920`) emits `set_at` today for *both* list and dict via UFCS; it becomes type-directed post-typeck (`insert` for Dict, `set_at` for List) — a small piece of [RFC-0043](0043-declared-mutation-writeback.md)/[RFC-0050](0050-method-call-generalization.md)'s receiver-type-aware direction. |
+| `dict.set_at` | **DELETE**; `d[k] = v` desugar retargeted to `insert` | Dict keeps `insert` (matching `set.insert`). The parser's place-assign desugar ([`crates/witchy-syntax/src/parser.rs:1907-1920`](../crates/witchy-syntax/src/parser.rs)) emits `set_at` today for *both* list and dict via UFCS; it becomes type-directed post-typeck (`insert` for Dict, `set_at` for List) — a small piece of [RFC-0043](0043-declared-mutation-writeback.md)/[RFC-0050](0050-method-call-generalization.md)'s receiver-type-aware direction. |
 | `semver.lt` | → `less` | Aligns with the cmp trait's spelled-out vocabulary; callers: pm/coven resolution code, one cut. |
 | `rights.covered` | → `any_covers` | `covered(declared, demanded)` reads backwards (what is covered?); `any_covers` states the quantifier and the direction. |
 | `json.value_of` | → `from_value` | The only direction-inverted `_of` (it *constructs* Json from a value). Callers include glamour examples — wide but mechanical. |
@@ -103,12 +103,12 @@ Maintainer-reviewed decisions (amending the reviewer's raw list):
   cell).
 - `list.position` — **stays** as the by-predicate Option-index form; it
   gains the by-predicate role `find_index` vacates. (Today `position` is
-  by-value — `std/list.witchy:281` — so its argument changes to a predicate;
+  by-value — [`std/list.witchy:281`](../std/list.witchy) — so its argument changes to a predicate;
   by-value search is `index_of`. One name per axis, both Option.)
 
 **Doc-only alignments** (param names are API): `option.filter`'s callback
 renames `pred` → `keep` to match `list.filter`/`iter.filter`
-(`std/option.witchy:44` vs `list.witchy:96`/`iter.witchy:94`); `list.at`'s
+([`std/option.witchy:44`](../std/option.witchy) vs [`list.witchy:96`](../std/list.witchy)/[`iter.witchy:94`](../std/iter.witchy)); `list.at`'s
 `index` vs `list.get`'s `i` align on `index`. Regenerate `spec/stdlib.md`
 from the edited doc-comments; never hand-edit it.
 
