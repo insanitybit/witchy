@@ -11,6 +11,9 @@ use witchy_syntax::ast::{Block, Expr, Item, Module, Stmt, Type};
 use crate::typeck::{TypeTable, TypedModule, ty_to_ast};
 use crate::witness::{self, WitnessCatalog, WitnessPlan};
 
+type ExistentialRequest = (Type, Type);
+type CollectedRequests = (Vec<ExistentialRequest>, Vec<ExistentialRequest>);
+
 pub struct PreparedExistentials {
     module: Module,
     table: TypeTable,
@@ -78,7 +81,7 @@ pub fn lower_explicit_packs(
     Ok(PreparedExistentials { module, table, witnesses })
 }
 
-fn pack_request(table: &TypeTable, expr: &Expr) -> Result<Option<(Type, Type)>, String> {
+fn pack_request(table: &TypeTable, expr: &Expr) -> Result<Option<ExistentialRequest>, String> {
     let Some((existential, concrete)) = table.existential_pack(expr) else {
         return Ok(None);
     };
@@ -96,7 +99,7 @@ fn pack_request(table: &TypeTable, expr: &Expr) -> Result<Option<(Type, Type)>, 
     )))
 }
 
-fn upcast_request(table: &TypeTable, expr: &Expr) -> Result<Option<(Type, Type)>, String> {
+fn upcast_request(table: &TypeTable, expr: &Expr) -> Result<Option<ExistentialRequest>, String> {
     let Some((target, source)) = table.existential_upcast(expr) else {
         return Ok(None);
     };
@@ -115,7 +118,7 @@ fn upcast_request(table: &TypeTable, expr: &Expr) -> Result<Option<(Type, Type)>
 fn collect_requests(
     module: &Module,
     table: &TypeTable,
-) -> Result<(Vec<(Type, Type)>, Vec<(Type, Type)>), String> {
+) -> Result<CollectedRequests, String> {
     let mut requests = Vec::new();
     let mut upcasts = Vec::new();
     visit_module_exprs(module, &mut |expr| {

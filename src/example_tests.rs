@@ -6338,6 +6338,222 @@ fn main() -> Int:
         );
     }
 
+    #[test]
+    fn rfc0081_receiver_and_nested_var_writebacks_agree_across_backends() {
+        let src = r#"
+trait CounterOps:
+    fn bare(self) -> Int
+    fn inspect(let self) -> Int
+    fn tail(var self) -> Int
+    fn explicit(var self) -> Int
+    fn question(var self) -> Result(Int, String)
+    fn adjust(let self, var value: Int) -> Int
+    fn pair(let self, var left: Int, var right: Int) -> Int
+    fn announce(let self, console: Console)
+    fn take(own self) -> Int
+
+type Counter:
+    Counter(Int)
+
+type Holder:
+    item: dyn CounterOps
+
+type Slots:
+    left: Int
+    right: Int
+
+fn tail_step(var value: Counter) -> Int:
+    let Counter(current) = value
+    value = Counter(current + 1)
+    current + 1
+
+impl CounterOps for Counter:
+    fn bare(self) -> Int:
+        match self:
+            Counter(value) -> value
+
+    fn inspect(let self) -> Int:
+        match self:
+            Counter(value) -> value
+
+    fn tail(var self) -> Int:
+        tail_step(self)
+
+    fn explicit(var self) -> Int:
+        let Counter(current) = self
+        self = Counter(current + 2)
+        return current + 2
+
+    fn question(var self) -> Result(Int, String):
+        let Counter(current) = self
+        self = Counter(current + 3)
+        Err("stopped")?
+
+    fn adjust(let self, var value: Int) -> Int:
+        value = value + 1
+        match self:
+            Counter(current) -> current + value
+
+    fn pair(let self, var left: Int, var right: Int) -> Int:
+        left = left + 1
+        right = right + 2
+        match self:
+            Counter(current) -> current + left + right
+
+    fn announce(let self, console: Console):
+        match self:
+            Counter(value) -> console.print("counter=${value}")
+
+    fn take(own self) -> Int:
+        match self:
+            Counter(value) -> value
+
+fn direct(console: Console):
+    var counter = Counter(1)
+    var slots = Slots(3, 9)
+    console.print("${counter.bare()} ${counter.inspect()}")
+    console.print("${counter.tail()} ${counter.explicit()}")
+    let ignored = counter.question()
+    let adjusted = counter.adjust(slots.left)
+    console.print("${adjusted} ${counter.pair(slots.left, slots.right)} ${counter.inspect()} ${slots.left} ${slots.right}")
+    counter.announce(console)
+    let consumed = Counter(12)
+    console.print("${consumed.take()}")
+
+fn dynamic(console: Console):
+    var holder = Holder(Counter(1))
+    var slots = Slots(3, 9)
+    console.print("${holder.item.bare()} ${holder.item.inspect()}")
+    console.print("${holder.item.tail()} ${holder.item.explicit()}")
+    let ignored = holder.item.question()
+    let adjusted = holder.item.adjust(slots.left)
+    console.print("${adjusted} ${holder.item.pair(slots.left, slots.right)} ${holder.item.inspect()} ${slots.left} ${slots.right}")
+    holder.item.announce(console)
+    let consumed: dyn CounterOps = Counter(12)
+    console.print("${consumed.take()}")
+
+fn main(console: Console):
+    direct(console)
+    dynamic(console)
+"#;
+        let linked = resolve_std_src(src);
+        let interpreter =
+            interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interpreter");
+        let bytes = codegen::compile_module_binary(&linked).expect_lowered("compile wasm");
+        let wasm = crate::run_wasm_bytes(&bytes).expect("wasm");
+        let one_backend = vec![
+            "1 1".to_string(),
+            "2 4".to_string(),
+            "11 23 7 5 11".to_string(),
+            "counter=7".to_string(),
+            "12".to_string(),
+        ];
+        assert_eq!(interpreter, [one_backend.clone(), one_backend.clone()].concat());
+        assert_eq!(wasm, interpreter);
+    }
+
+    #[test]
+    fn rfc0081_rejects_aliased_var_places_and_use_after_own() {
+        let aliases = r#"
+trait Adjust:
+    fn clash(let self, var left: Int, var right: Int) -> Int
+
+type Counter:
+    Counter(Int)
+
+impl Adjust for Counter:
+    fn clash(let self, var left: Int, var right: Int) -> Int:
+        left = left + 1
+        right = right + 1
+        left + right
+
+fn main() -> Int:
+    let counter: dyn Adjust = Counter(1)
+    var value = 3
+    counter.clash(value, value)
+"#;
+        let aliases = resolve_std_src(aliases);
+        let alias_interpreter = interpreter::run_module(aliases.clone(), ".", Vec::new())
+            .expect_err("interpreter must reject overlapping var places")
+            .to_string();
+        let alias_codegen = codegen::compile_module_binary(&aliases)
+            .expect_rejected("compiled backend must reject overlapping var places")
+            .to_string();
+        for alias_error in [&alias_interpreter, &alias_codegen] {
+            assert!(
+                alias_error.contains("overlapping `var` places rooted in `value`"),
+                "{alias_error}"
+            );
+        }
+
+        let moved = r#"
+trait Consume:
+    fn take(own self) -> Int
+
+type Counter:
+    Counter(Int)
+
+impl Consume for Counter:
+    fn take(own self) -> Int:
+        match self:
+            Counter(value) -> value
+
+fn main() -> Int:
+    let counter: dyn Consume = Counter(1)
+    let first = counter.take()
+    first + counter.take()
+"#;
+        let moved = resolve_std_src(moved);
+        let move_interpreter = interpreter::run_module(moved.clone(), ".", Vec::new())
+            .expect_err("interpreter must reject use after own")
+            .to_string();
+        let move_codegen = codegen::compile_module_binary(&moved)
+            .expect_rejected("compiled backend must reject use after own")
+            .to_string();
+        for move_error in [&move_interpreter, &move_codegen] {
+            assert!(
+                move_error.contains("was already consumed")
+                    || move_error.contains("use after move")
+                    || move_error.contains("after it was moved"),
+                "{move_error}"
+            );
+        }
+    }
+
+    #[test]
+    fn rfc0081_var_receiver_traps_before_writeback_on_both_backends() {
+        let src = r#"
+trait Explode:
+    fn explode(var self) -> Int
+
+type Counter:
+    Counter(Int)
+
+impl Explode for Counter:
+    fn explode(var self) -> Int:
+        self = Counter(99)
+        1 / 0
+
+fn main() -> Int:
+    var counter: dyn Explode = Counter(1)
+    counter.explode()
+"#;
+        let linked = resolve_std_src(src);
+        let interpreter_error = interpreter::run_module(linked.clone(), ".", Vec::new())
+            .expect_err("interpreter call must trap")
+            .to_string();
+        let bytes = codegen::compile_module_binary(&linked).expect_lowered("compile wasm");
+        let wasm_error = crate::run_wasm_bytes(&bytes).expect_err("wasm call must trap");
+        assert!(
+            interpreter_error.contains("division by zero"),
+            "{interpreter_error}"
+        );
+        assert!(
+            wasm_error.contains("divide by zero") || wasm_error.contains("division by zero"),
+            "{wasm_error}"
+        );
+    }
+
     /// `wasm_run` that also reads the exported `__witchy_reowns` counter —
     /// the timing-free proof of whether accumulation ran in place (O(1)
     /// re-owns) or fell to the copying path (O(n) re-owns).

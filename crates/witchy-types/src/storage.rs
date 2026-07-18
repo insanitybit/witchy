@@ -11,6 +11,8 @@ use witchy_syntax::ast::{Item, Module, Type, TypeDef};
 pub enum ReferenceLeaf {
     ExternRef(&'static str),
     Function,
+    /// RFC-0081's owned `{structref payload, i32 witness}` envelope.
+    Existential,
 }
 
 /// The migrated host capabilities represented as unforgeable `externref`
@@ -86,7 +88,7 @@ impl<'a> ReferenceStorageClassifier<'a> {
             FunctionTraversal::IgnoreSignature,
         ) {
             Some(ReferenceLeaf::ExternRef(cap)) => Some(cap),
-            Some(ReferenceLeaf::Function) | None => None,
+            Some(ReferenceLeaf::Function | ReferenceLeaf::Existential) | None => None,
         }
     }
 
@@ -105,7 +107,7 @@ impl<'a> ReferenceStorageClassifier<'a> {
             FunctionTraversal::InspectSignature,
         ) {
             Some(ReferenceLeaf::ExternRef(cap)) => Some(cap),
-            Some(ReferenceLeaf::Function) | None => None,
+            Some(ReferenceLeaf::Function | ReferenceLeaf::Existential) | None => None,
         }
     }
 
@@ -127,11 +129,11 @@ impl<'a> ReferenceStorageClassifier<'a> {
                     .iter()
                     .find_map(|item| self.classify(item, bindings, seen, functions))
             }
-            Type::Dyn(_, args) => {
-                args
-                    .iter()
-                    .find_map(|arg| self.classify(arg, bindings, seen, functions))
-            }
+            // The existential envelope is itself a GC reference regardless of
+            // whether the trait carries type arguments. Its hidden concrete
+            // payload is classified before construction and never crosses a
+            // caller's scalar aggregate boundary directly.
+            Type::Dyn(_, _) => Some(ReferenceLeaf::Existential),
             // A first-class function value is itself a reference regardless of
             // the scalar/reference shapes in its signature.
             Type::Fn(params, ret, _) => match functions {
@@ -595,6 +597,9 @@ type RecursiveMixed(a):
     MoreMixed(RecursiveMixed(List(a)))
     EndMixed(Callback, Net[Connect])
 
+type DynBox:
+    value: dyn Render
+
 type Step:
     Empty
     Item(a, Iter(a))
@@ -650,6 +655,12 @@ fn mixed_alias(x: MixedAlias) -> Nil:
 fn recursive_mixed(x: RecursiveMixed(Int)) -> Nil:
     nil
 
+fn existential(x: dyn Render) -> Nil:
+    nil
+
+fn boxed_existential(x: DynBox) -> Nil:
+    nil
+
 fn capability_callback(x: List(CapabilityCallback)) -> Nil:
     nil
 
@@ -690,6 +701,13 @@ fn phantom_cap(x: Phantom(File[Read])) -> Nil:
         assert!(!classifier.requires_reference_storage(param(&module, "phantom")));
         assert!(!classifier.requires_reference_storage(param(&module, "recursive_phantom")));
         assert!(!classifier.requires_reference_storage(param(&module, "plain")));
+        for name in ["existential", "boxed_existential"] {
+            assert_eq!(
+                classifier.first_reference(param(&module, name)),
+                Some(ReferenceLeaf::Existential),
+                "{name}"
+            );
+        }
         for (name, cap) in [
             ("mixed", "Dir"),
             ("mixed_alias", "File"),

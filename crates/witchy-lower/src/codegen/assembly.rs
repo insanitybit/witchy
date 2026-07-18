@@ -1117,7 +1117,7 @@ fn build_existential_adapter_funcs(
                     !matches!(convention, Convention::Let | Convention::Var)
                 })
                 || (slot.receiver == Convention::Own
-                    && slot.conventions.iter().any(|convention| *convention == Convention::Var))
+                    && slot.conventions.contains(&Convention::Var))
             {
                 return unsupported(format!(
                     "RFC-0081 Wasm adapter for `{}`.{} with `own self` and `var` explicit parameters is not lowered yet",
@@ -1446,7 +1446,8 @@ fn assemble_wir_module_with_structs(
     let mut lowered = witchy_types::traits::lower_for_wasm(recs);
     witchy_syntax::parser::lower_sugar_module(&mut lowered);
     alpha_rename_module(&mut lowered);
-    let mut typed = witchy_types::typeck::annotate(lowered);
+    let mut typed = witchy_types::typeck::annotate_checked(lowered)
+        .map_err(|error| CodegenError { message: error.to_string() })?;
     // `e ? "msg"` desugar (`__try_ctx`) is type-directed: an `Option` operand lowers
     // via `option.ok_or`, a `Result` via `result.map_err`. Rewrite it here — after
     // annotation (so the operand's type is known) and before the string-`+` flip +

@@ -2614,6 +2614,14 @@ fn reject_cap_slot_boundary(
                                 ),
                             });
                         }
+                        Some(ReferenceLeaf::Existential) => {
+                            return Err(TypeError {
+                                message: format!(
+                                    "`{ctx}`: an owned existential cannot be wrapped in `Dict` in {position} — \
+                                     its key/value ABI still uses i64 slots"
+                                ),
+                            });
+                        }
                         None => {}
                     }
                 }
@@ -5435,7 +5443,7 @@ impl Checker {
                  carries a `{cap}` capability — capability-carrying existential \
                  payloads are rejected (RFC-0081); pass the capability explicitly \
                  in method signatures instead",
-                existential_bare(&dyn_name)
+                existential_bare(dyn_name)
             ));
         }
         Ok(true)
@@ -6332,6 +6340,87 @@ impl Checker {
         Ok(())
     }
 
+    /// Re-validate the convention contract carried by a compiler-owned dynamic
+    /// call. Final existential preparation resolves the method after the public
+    /// source-stage gate, so this is the point where both backends must receive
+    /// identical place, alias, and move guarantees.
+    fn enforce_existential_conventions(
+        &mut self,
+        owner_trait: &str,
+        method: &str,
+        receiver: &Expr,
+        args: &[Expr],
+        conventions: &[Convention],
+    ) -> Result<(), TypeError> {
+        let callee = format!("{owner_trait}.{method}");
+        let mut operands = Vec::with_capacity(args.len() + 1);
+        operands.push(receiver.clone());
+        operands.extend(args.iter().cloned());
+        if operands.len() != conventions.len() {
+            return terr(format!(
+                "internal: existential `{callee}` has {} operand(s) but {} convention(s)",
+                operands.len(),
+                conventions.len()
+            ));
+        }
+
+        let mut var_places = Vec::new();
+        for (index, (operand, convention)) in operands.iter().zip(conventions).enumerate() {
+            match convention {
+                Convention::Var => {
+                    if matches!(operand, Expr::Unary { op: UnOp::Move, .. }) {
+                        return terr(format!(
+                            "operand {} to existential `{callee}` uses `move`; write-back requires a live mutable place in the caller",
+                            index + 1
+                        ));
+                    }
+                    match var_place(operand) {
+                        Some(place) if self.is_mutable(&place.root) == Some(true) => {
+                            for (previous_index, previous) in &var_places {
+                                if places_overlap(previous, &place) {
+                                    return terr(format!(
+                                        "operands {} and {} to existential `{callee}` are overlapping `var` places rooted in `{}`",
+                                        previous_index + 1,
+                                        index + 1,
+                                        place.root
+                                    ));
+                                }
+                            }
+                            self.reject_later_writeback_conflict(
+                                &callee,
+                                &operands,
+                                index,
+                                &place,
+                            )?;
+                            var_places.push((index, place));
+                        }
+                        Some(place) => {
+                            return terr(format!(
+                                "operand {} to existential `{callee}` has immutable root `{}`; root `{}` must be a mutable `var` for write-back",
+                                index + 1,
+                                place.root,
+                                place.root
+                            ));
+                        }
+                        None => {
+                            return terr(format!(
+                                "operand {} to existential `{callee}` must be a mutable place; bind the expression to a mutable `var` before the call",
+                                index + 1
+                            ));
+                        }
+                    }
+                }
+                Convention::Own => {
+                    if let Expr::Var(name) = operand {
+                        self.consumed.insert(name.clone());
+                    }
+                }
+                Convention::Let | Convention::Borrow => {}
+            }
+        }
+        Ok(())
+    }
+
     fn call_conventions_for_expr(&self, name: &str) -> Option<Vec<Convention>> {
         self.fn_conventions.get(name).cloned().or_else(|| {
             let ty = self.lookup(name)?;
@@ -6364,7 +6453,26 @@ impl Checker {
                     self.collect_var_writebacks_in_expr(argument, out);
                 }
             }
-            Expr::ExistentialCall { receiver, args, .. } => {
+            Expr::ExistentialCall {
+                receiver,
+                args,
+                owner_trait,
+                method,
+                conventions,
+                ..
+            } => {
+                let callee = format!("{owner_trait}.{method}");
+                for (index, (argument, convention)) in std::iter::once(receiver.as_ref())
+                    .chain(args.iter())
+                    .zip(conventions)
+                    .enumerate()
+                {
+                    if *convention == Convention::Var
+                        && let Some(place) = var_place(argument)
+                    {
+                        out.push((callee.clone(), index, place));
+                    }
+                }
                 self.collect_var_writebacks_in_expr(receiver, out);
                 for argument in args {
                     self.collect_var_writebacks_in_expr(argument, out);
@@ -6628,12 +6736,22 @@ impl Checker {
                 receiver,
                 args,
                 result,
+                owner_trait,
+                method,
+                conventions,
                 ..
             } => {
                 self.infer(receiver)?;
                 for arg in args {
                     self.infer(arg)?;
                 }
+                self.enforce_existential_conventions(
+                    owner_trait,
+                    method,
+                    receiver,
+                    args,
+                    conventions,
+                )?;
                 Ok(self.to_ty(result))
             }
             Expr::ExistentialPack { expr, ty, .. } => {
@@ -8666,6 +8784,19 @@ fn ty_has_var(t: &Ty) -> bool {
 /// consumer's own fallbacks apply.
 pub fn annotate(module: Module) -> TypedModule {
     annotate_with_conversion_fns(module, None)
+}
+
+/// Annotate an already-lowered module while preserving checker failures.
+///
+/// Backend preparation uses this after compiler-owned nodes such as
+/// `ExistentialCall` have been introduced. Those nodes can carry new semantic
+/// obligations that did not exist during source checking, so silently replacing
+/// their diagnostics with an empty table would turn a required rejection into a
+/// later generic "unsupported lowering" error.
+pub fn annotate_checked(module: Module) -> Result<TypedModule, TypeError> {
+    let table = run_check_selected(&module, true, None, None, None, None, false)?
+        .unwrap_or_default();
+    Ok(TypedModule { module, table })
 }
 
 fn annotate_with_conversion_fns(

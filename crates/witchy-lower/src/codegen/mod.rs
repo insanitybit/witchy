@@ -7575,13 +7575,12 @@ impl<'types> Codegen<'types> {
                 transitions.sort_by_key(|(source, _, _)| *source);
                 let mut selected = None;
                 for (from, _, to) in transitions.into_iter().rev() {
-                    let fallback = selected.take().map_or_else(
+                    let fallback = selected.take().unwrap_or_else(
                         || W::Control(Box::new(N::Block {
                             label: "__witchy_bad_existential_upcast".into(),
                             result: Some(witchy_wir::wir::WirTy::Bool),
                             body: vec![N::Unreachable],
                         })),
-                        |value| value,
                     );
                     selected = Some(W::Control(Box::new(N::If {
                         cond: W::Binary {
@@ -7631,28 +7630,25 @@ impl<'types> Codegen<'types> {
                 if level >= EXISTENTIAL_CALL_POOL {
                     return None;
                 }
-                let receiver_value = self.lower_expr(receiver)?;
+                if conventions.len() != args.len() + 1 {
+                    return None;
+                }
+                let mut operands = Vec::with_capacity(args.len() + 1);
+                operands.push(receiver.as_ref().clone());
+                operands.extend(args.iter().cloned());
+                let mut operand_kinds = Vec::with_capacity(args.len() + 1);
+                operand_kinds.push(Kind::GcRef(EXISTENTIAL_WRAPPER_ID));
+                operand_kinds.extend(args.iter().map(|arg| self.kind_of(arg)));
                 self.existential_call_level = level + 1;
-                let lowered_args: Option<Vec<W>> = args.iter().map(|arg| self.lower_expr(arg)).collect();
+                let lowered =
+                    self.lower_closure_args(&operands, conventions, &operand_kinds, true);
                 self.existential_call_level = level;
-                let lowered_args = lowered_args?;
+                let (mut lowered_operands, writebacks) = lowered?;
+                let receiver_value = lowered_operands.remove(0);
                 let receiver_tmp = existential_call_scratch(level);
                 let result_kind = self.kind_for_type(result);
-                let receiver_is_var = conventions.first() == Some(&Convention::Var);
-                if receiver_is_var && !matches!(receiver.as_ref(), Expr::Var(_)) {
-                    return None;
-                }
-                let var_args: Vec<usize> = conventions
-                    .iter()
-                    .skip(1)
-                    .enumerate()
-                    .filter_map(|(index, convention)| (*convention == Convention::Var).then_some(index))
-                    .collect();
-                if var_args.iter().any(|index| !matches!(args[*index], Expr::Var(_))) {
-                    return None;
-                }
                 let mut call_args = vec![W::GetLocal(receiver_tmp.clone())];
-                call_args.extend(lowered_args);
+                call_args.extend(lowered_operands);
                 let mut signature_params = vec![witchy_wir::wir::Kind::StructRef];
                 signature_params.extend(args.iter().map(|arg| Self::wir_kind(self.kind_of(arg))));
                 let witness_id = W::StructGet {
@@ -7672,21 +7668,18 @@ impl<'types> Codegen<'types> {
                     rhs: Box::new(W::ConstI32(i32::try_from(*slot).ok()?)),
                 };
                 let mut seq = vec![N::SetLocal { local: receiver_tmp, value: receiver_value }];
-                if receiver_is_var || !var_args.is_empty() {
+                if !writebacks.is_empty() {
                     let mut results = vec![Self::wir_kind(result_kind)];
                     let mut dests = vec![call_result_tmp(result_kind)];
-                    if receiver_is_var {
-                        let Expr::Var(receiver_name) = receiver.as_ref() else { unreachable!() };
-                        results.push(witchy_wir::wir::Kind::GcRef(EXISTENTIAL_WRAPPER_ID));
-                        dests.push(receiver_name.clone());
-                    }
-                    for index in &var_args {
-                        let kind = self.kind_of(&args[*index]);
-                        results.push(Self::wir_kind(kind));
-                        let Expr::Var(name) = &args[*index] else { unreachable!() };
-                        dests.push(name.clone());
-                    }
-                    seq.push(N::CallIndirectStoreMulti {
+                    results.extend(
+                        writebacks
+                            .iter()
+                            .map(|(_, kind, _)| Self::wir_kind(*kind)),
+                    );
+                    dests.extend(writebacks.iter().enumerate().map(
+                        |(index, (_, kind, _))| var_scratch("result", index, *kind),
+                    ));
+                    let call = N::CallIndirectStoreMulti {
                         signature: witchy_wir::wir::ClosureSignature {
                             params: signature_params,
                             results,
@@ -7694,8 +7687,10 @@ impl<'types> Codegen<'types> {
                         args: call_args,
                         index: table_index,
                         dests,
-                    });
-                    seq.push(N::Push(W::GetLocal(call_result_tmp(result_kind))));
+                    };
+                    let result =
+                        self.finish_closure_multi_call(call, writebacks, result_kind, true)?;
+                    seq.push(N::Push(result));
                 } else if matches!(conventions.first(), Some(Convention::Let | Convention::Borrow | Convention::Own)) {
                     seq.push(N::Push(W::CallIndirect {
                         signature: witchy_wir::wir::ClosureSignature {

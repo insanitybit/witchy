@@ -4,10 +4,20 @@ Audit date: 2026-07-18
 
 Master baseline: `172f901cffe302ba1feff374e6d329fe0a19858d`
 
-Recovery branch: `integration/rfc0081-root-recovery`, based on the queued
+Recovery root: `integration/rfc0081-root-recovery`, based on the queued
 RFC-0080 structural parent `impl/rfc0080-structural-block-builder` at
 `ab372014e0b4a40ca22dd0e43c73e93551b71c99` so the RFC-0081 recovery does not
 overwrite RFC-0080's `crates/witchy-interp/src/interpreter.rs` work.
+
+Canonical recovery stack:
+
+```text
+integration/rfc0081-root-recovery
+  -> integration/rfc0081-runtime-witnesses
+  -> integration/rfc0081-receiver-conventions
+  -> integration/rfc0081-supertrait-upcasts-recovery
+  -> integration/rfc0081-receiver-safety
+```
 
 Statuses:
 
@@ -30,11 +40,11 @@ Statuses:
 | 3 | **DONE** | Type-checker tests cover receiver-less methods, unresolved trait arguments, method-local generics, bare and nested forbidden `Self`, receiver-borrowed results, `PartialEq`, and diagnostics listing every blocker. |
 | 4 | **DONE** | Type-checker and linked-pipeline tests reject direct and transitive capability payloads through records, sums, tuples, `Option`, and collections before lowering. |
 | 5 | **DONE** | The landed witness substrate (`dbfa1579`, `5f89632c`, `220cad06`) pins deterministic witness IDs, concrete-independent slot linearization, conditional impl selection, and transitive supertrait slot deduplication. |
-| 6 | **BROKEN** | Master has no executable existential construction/dispatch. The recovered root branch adds compiled-Wasm dispatch and a heterogeneous `List(dyn Trait)` test, but interpreter execution and a checked differential test remain required. |
+| 6 | **READY** | `integration/rfc0081-runtime-witnesses` adds interpreter execution to the compiled closed-witness dispatch root. Focused interpreter/lowerer tests plus `rfc0081_same_spelled_traits_dispatch_independently_on_both_backends` and the heterogeneous-list coverage prove both backends select the same witnesses; merge evidence remains required. |
 | 7 | **DONE** | Master commit `1c6f7d22` emits one concrete GC payload box per closed witness using the payload's WIR kind plus a fixed `{structref, i32}` wrapper; structural tests and WIR validation guard reference-kind crossings. |
-| 8 | **BROKEN** | Recoverable Wasm commits exist for bare/`let`, `var`, and `own`, but only bare/`let` is in the root recovery branch and the interpreter still rejects compiler-owned existential nodes. Direct/interpreter/Wasm agreement is missing. |
-| 9 | **BROKEN** | No checked-in existential test proves `var self` all-at-once write-back for tail return, explicit return, `?`, and traps. The preserved receiver commit covers only a basic compiled write-back. |
-| 10 | **READY** | The preserved upcast stack contains authenticated witness projection, interpreter and Wasm execution, positive differential coverage, and unrelated-upcast rejection. It depends on the recovered runtime root and must be replayed and revalidated there. |
+| 8 | **READY** | `integration/rfc0081-receiver-safety` proves bare, `let`, `var`, and `own` direct/interpreter/Wasm agreement in one differential program. Dynamic receiver and explicit-argument write-backs now reuse the ordinary typed nested-place reconstruction path. |
+| 9 | **READY** | The receiver-safety differential covers tail-call, explicit-return, and `?` write-back, two non-overlapping projections of one root, alias rejection, `own` use-after-move rejection, and traps in both backends. Interpreter commits only after `run_callable`; Wasm commits only after `CallIndirectStoreMulti`, so a trap cannot expose a partial caller update. |
+| 10 | **READY** | `integration/rfc0081-supertrait-upcasts-recovery` carries authenticated projection, interpreter and Wasm execution, qualified-identity diagnostics, a positive differential, and unrelated-upcast rejection. Focused type/interpreter/lower/root shards are green; merge evidence remains required. |
 | 11 | **BROKEN** | Lowering refuses structural equality for `dyn`, but there is no complete adversarial rejection matrix for equality, ordering, hashing, reflection, serialization, type names, addresses, witnesses, or downcasts. |
 | 12 | **BROKEN** | Existing construction reachability is conservative, but no checked-in footprint test proves every reachable witness adapter is included or that a reachable authority-using construction widens deterministically. |
 | 13 | **BROKEN** | No normal-versus-`mode opt` existential differential matrix proves identical values and traps or documents the allocation/devirtualization non-promise. |
@@ -58,6 +68,11 @@ Statuses:
 | `impl/rfc0081-supertrait-upcasts` | **READY** | Contains authenticated supertrait projection planning only; it is not a complete upcast slice. |
 | `impl/rfc0081-upcast-integration` | **READY** | Contains the recoverable complete upcast sequence, but also replays the obsolete fresh root and uses stale queue parents. Only its unique commits should survive. |
 | `docs/language-rfc-link`, `docs/language-rfc0081-link` | **OBSOLETE** | Different tips carry the same patch ID. The one-line link is insufficient for criterion 14 and will be subsumed by public-contract closeout. |
+| `integration/rfc0081-root-recovery` | **READY** | Canonical recovered dispatch root, queued explicitly after `impl/rfc0080-structural-block-builder`; obsolete duplicate queue entries are not parents. |
+| `integration/rfc0081-runtime-witnesses` | **READY** | Canonical interpreter runtime and compiled-adapter slice, queued after the recovered root. |
+| `integration/rfc0081-receiver-conventions` | **READY** | Canonical basic `var self`, `own self`, and explicit `var` argument adapter slice, queued after runtime witnesses. |
+| `integration/rfc0081-supertrait-upcasts-recovery` | **READY** | Canonical authenticated-upcast slice, queued after receiver conventions. |
+| `integration/rfc0081-receiver-safety` | **READY** | Canonical nested-place, alias/move, tail/explicit/`?`/trap parity slice, stacked after authenticated upcasts; the merge-queue journal remains authoritative for landing state. |
 
 ## Reconstructed semantic graph
 

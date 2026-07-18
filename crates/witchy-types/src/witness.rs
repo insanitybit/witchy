@@ -289,7 +289,7 @@ pub fn layout_from_catalog(
                 .ret
                 .as_ref()
                 .map(|ty| subst_trait_params(ty, &vars))
-                .unwrap_or_else(|| Type::Named("Nil".into(), Vec::new()));
+                .unwrap_or_else(|| Type::Tuple(Vec::new()));
             slots.push(ExistentialSlot {
                 owner_trait: definition.name.clone(),
                 method: method.name.clone(),
@@ -828,6 +828,24 @@ mod tests {
             Some(2)
         );
         assert_eq!(plan.by_id(witness.id), Some(witness));
+    }
+
+    #[test]
+    fn unit_returning_methods_keep_static_and_concrete_adapter_abis_equal() {
+        let module = parser::parse_module(
+            "trait Notify:\n    fn notify(let self)\n\n\
+             type Label:\n    Label(Int)\n\n\
+             impl Notify for Label:\n    fn notify(let self):\n        Nil\n",
+        )
+        .expect("parse");
+        let existential = Type::Dyn("Notify".into(), Vec::new());
+        let concrete = Type::Named("Label".into(), Vec::new());
+        let plan = build(&module, [(existential.clone(), concrete.clone())])
+            .expect("unit-returning witness plan");
+        let layout = layout(&module, &existential).expect("unit-returning layout");
+        let witness = plan.get(&existential, &concrete).expect("Notify for Label witness");
+        assert_eq!(layout.slots[0].result, Type::Tuple(Vec::new()));
+        assert_eq!(witness.slots[0].result, layout.slots[0].result);
     }
 
     #[test]

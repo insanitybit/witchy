@@ -7355,7 +7355,8 @@ fn prepare_runtime_module(module: Module) -> Result<(Module, WitnessPlan), Runti
     // construction sites that need compiler-owned packs.
     let mut module = witchy_types::traits::lower_for_wasm(module);
     witchy_syntax::parser::lower_sugar_module(&mut module);
-    let typed = witchy_types::typeck::annotate(module);
+    let typed = witchy_types::typeck::annotate_checked(module)
+        .map_err(|error| RuntimeError { message: error.to_string() })?;
     let prepared = witchy_types::existential::lower_explicit_packs(typed, &catalog)
         .map_err(|message| RuntimeError { message })?;
     let (module, _, witnesses) = prepared.into_parts();
