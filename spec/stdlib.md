@@ -2488,7 +2488,7 @@ Hole-free `quote type:` values retain a compiler-owned type AST. The internal co
 
 #### `sealed type ExprSyntax`
 
-Hole-free `quote expr:` and literal `meta.expr_raw("...")` values retain a compiler-owned expression AST. The second constructor is compiler-internal; existing builders deliberately project its canonical source when composing a new compatibility value.
+Hole-free `quote expr:` and literal `meta.expr_raw("...")` values retain a compiler-owned expression AST. The second constructor is compiler-internal; structural call, field, and match builders retain it, while remaining compatibility builders may still project canonical source.
 
 - `ExprSyntax(String)`
 - `CompilerExprSyntax(String, String)`
@@ -2523,10 +2523,12 @@ Hole-free `quote block:` values retain compiler-owned block AST.
 #### `sealed type MatchArmSyntax`
 
 - `MatchArmSyntax(String)`
+- `CompilerMatchArmSyntax(String, String)`
 
 #### `sealed type ParamSyntax`
 
 - `ParamSyntax(String)`
+- `CompilerParamSyntax(String, String)`
 
 #### `sealed type Ident`
 
@@ -4751,3 +4753,4 @@ Verify an assertion. All `*_hex` arguments are hex-encoded bytes; `client_data_j
 #### `impl From(AssertionError) for String`
 
 - `fn from(value: AssertionError) -> Self`
+
