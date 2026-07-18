@@ -2475,7 +2475,7 @@ This is COMPILE-TIME structure (field names + declared type expressions), distin
 
 #### `sealed type ItemSyntax`
 
-RFC-0080's typed boundary for whole generated items. `quote item:` and literal whole-item `meta.item("...")` values retain compiler-owned item AST. For an item quote with holes, the compiler substitutes typed expression, type, and pattern nodes into that AST; those hole payload types and dynamic item builders retain their source-backed compatibility representation for now.
+RFC-0080's typed boundary for whole generated items. `quote item:` and literal whole-item `meta.item("...")` values retain compiler-owned item AST. For an item quote with holes, the compiler substitutes typed expression, type, and pattern nodes into that AST. `function_block` also transfers an owned block directly; other dynamic item builders retain source compatibility for now.
 
 - `ItemSyntax(String)`
 
@@ -4751,4 +4751,3 @@ Verify an assertion. All `*_hex` arguments are hex-encoded bytes; `client_data_j
 #### `impl From(AssertionError) for String`
 
 - `fn from(value: AssertionError) -> Self`
-
