@@ -20,6 +20,10 @@ related:
 
 # RFC-0078: Anonymous tagged unions and the structural tier
 
+The structural type-checking coverage lives in
+[`crates/witchy-types/src/typeck_tests.rs`](../crates/witchy-types/src/typeck_tests.rs),
+with cross-backend examples in [`src/example_tests.rs`](../src/example_tests.rs).
+
 ## Summary
 
 Witchy has anonymous *products* (`.{x: 1, y: 2}`) and they earned their keep.
