@@ -22344,10 +22344,10 @@ fn main(console: Console):
         let names: Vec<&str> = wir.funcs.iter().map(|f| f.name.as_str()).collect();
         let has = |fn_name: &str| names.iter().any(|n| *n == fn_name || n.starts_with(&format!("{fn_name}__")));
         assert!(has("List__map"), "map should be compiled: {names:?}");
-        assert!(has("list.sum"), "sum should be compiled: {names:?}");
-        assert!(!has("list.partition"), "partition should be eliminated: {names:?}");
-        assert!(!has("list.windows"), "windows should be eliminated: {names:?}");
-        assert!(!has("list.sort_by"), "sort_by should be eliminated: {names:?}");
+        assert!(has("List__sum"), "sum should be compiled: {names:?}");
+        assert!(!has("List__partition"), "partition should be eliminated: {names:?}");
+        assert!(!has("List__windows"), "windows should be eliminated: {names:?}");
+        assert!(!has("List__sort_by"), "sort_by should be eliminated: {names:?}");
         assert!(!names.iter().any(|n| n.starts_with("option.")), "unused option fns should be eliminated: {names:?}");
         // And it still runs correctly.
         assert_eq!(run_linked_on_wasm(&[("main", client)], "main"), vec!["12"]);

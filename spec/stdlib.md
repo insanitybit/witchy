@@ -1895,204 +1895,6 @@ Append `x` in place.
 
 A new list that is `xs` followed by `ys`.
 
-#### `fn join(parts: List(String), sep: String) -> String`
-
-Concatenate the strings in `parts`, inserting `sep` between adjacent elements: `["a", "b", "c"].join("-")` is `"a-b-c"`, and `[].join(sep)` is `""`.
-
-#### `fn range(n: Int) -> List(Int)`
-
-#### `fn range_between(lo: Int, hi: Int) -> List(Int)`
-
-The half-open span `lo..hi`: [lo, lo+1, ..., hi-1], empty when `lo >= hi`.
-
-#### `fn range_step(start: Int, stop: Int, step: Int) -> List(Int)`
-
-The span from `start` toward `stop` (exclusive) advancing by `step`. A positive `step` counts up while below `stop`, a negative `step` counts down while above `stop`, and a zero `step` yields [] rather than looping forever.
-
-#### `fn partition(xs: List(a), pred: fn(a) -> Bool) -> (List(a), List(a))`
-
-Split `xs` into (matching, non-matching) by `pred`, each preserving the original order. A single pass — the dual of running `filter` twice.
-
-#### `fn fold(xs: List(a), init: b, f: fn(b, a) -> b) -> b`
-
-Reduce the list to a single value, left to right.
-
-#### `fn reduce(xs: List(a), f: fn(a, a) -> a) -> Option(a)`
-
-Combine the elements left to right using the first as the seed, as `Some`; `None` for the empty list. (A `fold` that needs no initial value — handy for max/min/sum over a non-empty list with a plain binary op.)
-
-#### `fn sum(xs: List(Int)) -> Int`
-
-The sum of a list of integers (0 for the empty list).
-
-#### `fn sum_by(xs: List(a), f: fn(a) -> Int) -> Int`
-
-The sum of `f` applied to each element (0 for the empty list) — e.g. a total over a record field: `sum_by(cart, fn(it): it.price * it.qty)`.
-
-#### `fn product(xs: List(Int)) -> Int`
-
-The product of a list of integers (1 for the empty list).
-
-#### `fn scan(xs: List(a), init: b, f: fn(b, a) -> b) -> List(b)`
-
-Like `fold`, but collect every intermediate accumulator left to right, starting from `init`: scan([1,2,3], 0, +) -> [0, 1, 3, 6].
-
-#### `fn is_empty(xs: List(a)) -> Bool`
-
-Whether the list has no elements.
-
-#### `fn head_or(xs: List(a), default: a) -> a`
-
-The first element, or `default` when the list is empty. (A total accessor in the style of `get_or`/`unwrap_or`, so it never indexes out of bounds.)
-
-#### `fn last_or(xs: List(a), default: a) -> a`
-
-The last element, or `default` when the list is empty.
-
-#### `fn find_or(xs: List(a), pred: fn(a) -> Bool, default: a) -> a`
-
-The first element satisfying `pred`, or `default` if none do.
-
-#### `fn head(xs: List(a)) -> Option(a)`
-
-The first element as `Some`, or `None` for the empty list.
-
-#### `fn last(xs: List(a)) -> Option(a)`
-
-The last element as `Some`, or `None` for the empty list.
-
-#### `fn get(xs: List(a), index: Int) -> Option(a)`
-
-The element at `index` as `Some`, or `None` when `index` is out of range — a total, bounds-checked alternative to the `at` builtin.
-
-#### `fn find(xs: List(a), pred: fn(a) -> Bool) -> Option(a)`
-
-The first element satisfying `pred` as `Some`, or `None` if none do.
-
-#### `fn find_map(xs: List(a), f: fn(a) -> Option(b)) -> Option(b)`
-
-The first non-`None` result of applying `f` across the list (search and transform in one pass), or `None` if every result is `None`.
-
-#### `fn min(xs: List(a)) -> Option(a) where a: Ord`
-
-The smallest element as `Some`, or `None` for the empty list. Generic over any `Ord` element type (like `sort`), dispatching through the total order — so `xs.min()` works for `Int`, `String`, `Duration`, or a derived-`Ord` record. For a merely-partial type or a custom criterion, use `min_by`.
-
-#### `fn max(xs: List(a)) -> Option(a) where a: Ord`
-
-The largest element as `Some`, or `None` for the empty list. Generic over any `Ord` element type — see `min`.
-
-#### `fn max_by(xs: List(a), less: fn(a, a) -> Bool) -> Option(a)`
-
-The maximum element under a caller-supplied "is-less-than" comparator, as `Some` (the first of equal maxima), or `None` for the empty list. Generic, so it works for any type — e.g. max by a record field.
-
-#### `fn min_by(xs: List(a), less: fn(a, a) -> Bool) -> Option(a)`
-
-The minimum element under `less`, as `Some`; `None` for the empty list.
-
-#### `fn position(xs: List(a), pred: fn(a) -> Bool) -> Option(Int)`
-
-The index of the first element satisfying `pred` as `Some`, or `None` if none do — the by-predicate search (`index_of` is the by-value search). One name per axis, both `Option`, no sentinel (RFC-0044/0049).
-
-#### `fn flatten(xss: List(List(a))) -> List(a)`
-
-Concatenate a list of lists into one.
-
-#### `fn flat_map(xs: List(a), f: fn(a) -> List(b)) -> List(b)`
-
-Map each element to a list, then concatenate the results.
-
-#### `fn transpose(xss: List(List(a))) -> List(List(a))`
-
-Turn a list of rows into a list of columns. Rows are read only up to the length of the SHORTEST row, so a ragged tail is dropped and the result stays rectangular: `transpose([[1, 2, 3], [4, 5, 6]])` is `[[1, 4], [2, 5], [3, 6]]`.
-
-#### `fn count_where(xs: List(a), pred: fn(a) -> Bool) -> Int`
-
-How many elements satisfy `pred`.
-
-#### `fn take_while(xs: List(a), pred: fn(a) -> Bool) -> List(a)`
-
-The longest leading run of elements satisfying `pred`.
-
-#### `fn drop_while(xs: List(a), pred: fn(a) -> Bool) -> List(a)`
-
-Drop the longest leading run satisfying `pred`, keeping the rest.
-
-#### `fn repeat(x: a, n: Int) -> List(a)`
-
-A list of `n` copies of `x` (empty when `n <= 0`).
-
-#### `fn zip_with(xs: List(a), ys: List(b), f: fn(a, b) -> c) -> List(c)`
-
-Combine two lists element-wise with `f`, stopping at the shorter one.
-
-#### `fn intersperse(xs: List(a), sep: a) -> List(a)`
-
-Insert `sep` between adjacent elements: [a, b, c] -> [a, sep, b, sep, c].
-
-#### `fn reverse(var xs: List(a))`
-
-#### `fn sort_by(var xs: List(a), less: fn(a, a) -> Bool)`
-
-#### `fn sort(var xs: List(a)) where a: Ord`
-
-Sort any list whose elements are `Ord` ascending — a stable merge sort (O(n log n)) that dispatches through the element type's total order, so `xs.sort()` works for `Int`, `String`, `Duration`, or your own derived-`Ord` records, content-correct on both backends (RFC-0046). A merely-partial type like `Float` (not `Ord`) is rejected at the bound; sort those with `sort_by`.
-
-#### `fn contains(xs: List(a), target: a) -> Bool where a: Eq`
-
-Whether `target` appears in the list, by the element type's `Eq` impl. The `where a: Eq` bound monomorphizes the equality per element type, so the comparison is content-correct on both backends — including user record element types, which the compiled backend cannot compare through an unbounded generic `==` (RFC-0046).
-
-#### `fn remove(var xs: List(a), target: a) -> Bool where a: Eq`
-
-A new list with the first occurrence of `target` removed; unchanged when absent. To remove every occurrence, use `filter(xs, fn(y): y != target)`.
-
-#### `fn count(xs: List(a), target: a) -> Int where a: Eq`
-
-The number of elements equal to `target`, by the element type's `Eq` impl. This is the counted companion to `contains`, so equality dispatch stays in the list module alongside membership, indexing, and de-duplication.
-
-#### `fn unique(xs: List(a)) -> List(a) where a: Eq`
-
-The list with duplicates removed, keeping the first occurrence of each element (by the element type's `Eq`), in original order. `contains` here is this module's own list function — a same-module function shadows the like-named string builtin.
-
-#### `fn any(xs: List(a), pred: fn(a) -> Bool) -> Bool`
-
-Whether at least one element satisfies `pred`.
-
-#### `fn all(xs: List(a), pred: fn(a) -> Bool) -> Bool`
-
-Whether every element satisfies `pred` (true for the empty list).
-
-#### `fn index_of(xs: List(a), target: a) -> Option(Int) where a: Eq`
-
-The index of the first element equal to `target` as `Some`, or `None` if absent (RFC-0044 rule 1: absence is `Option`, never a -1 sentinel). The `where a: Eq` bound makes the equality content-correct on both backends.
-
-#### `fn take(xs: List(a), n: Int) -> List(a)`
-
-The first `n` elements (fewer if the list is shorter).
-
-#### `fn split_at(xs: List(a), n: Int) -> (List(a), List(a))`
-
-Split the list at index `n` into `(first n, the rest)`. `n` is clamped, so `split_at(xs, 0)` is `([], xs)` and an `n` past the end gives `(xs, [])`.
-
-#### `fn drop(xs: List(a), n: Int) -> List(a)`
-
-All but the first `n` elements.
-
-#### `fn tail(xs: List(a)) -> List(a)`
-
-All elements after the first; the empty list maps to the empty list.
-
-#### `fn drop_last(xs: List(a)) -> List(a)`
-
-All elements except the last; the empty list maps to the empty list.
-
-#### `fn chunks(xs: List(a), n: Int) -> List(List(a))`
-
-Split `xs` into consecutive sublists of length `n` (the final one may be shorter). `chunks([1,2,3,4,5], 2)` is `[[1,2],[3,4],[5]]`; there are no chunks of a non-positive length, so `n < 1` yields `[]` (like `windows`).
-
-#### `fn slice(xs: List(a), start: Int, end: Int) -> List(a)`
-
-The elements in the half-open index range [start, end), clamped to bounds. `slice(xs, 1, 3)` of [a,b,c,d] is [b,c].
-
 #### `fn set_at(var xs: List(a), index: Int, value: a)`
 
 Store `value` at `index`. An out-of-range (or negative) index is a runtime error on both backends, symmetric with `list.at` and `xs[i]`.
@@ -2105,25 +1907,25 @@ A copy of `xs` with the function `f` applied to the element at `index`. An out-o
 
 Remove and return the final element. A uniquely owned non-empty list moves the leaf out in O(1) without copying its spine; a shared root is copied so aliases retain their old contents in normal mode. In `mode opt`, the `unique` receiver rejects a shared or loaned call site with the ownership reason. An empty list returns None without copying.
 
-#### `fn pop_front(var xs: List(a)) -> Option(a)`
+#### `fn slice(xs: List(a), start: Int, end: Int) -> List(a)`
 
-#### `fn swap(var xs: List(a), i: Int, j: Int)`
+The elements in the half-open index range [start, end), clamped to bounds. `slice(xs, 1, 3)` of [a,b,c,d] is [b,c].
 
-#### `fn windows(xs: List(a), n: Int) -> List(List(a))`
+#### `fn range(n: Int) -> List(Int)`
 
-All contiguous sublists of length `n` (a sliding window of step 1). Empty when `n < 1` or longer than the list. `windows([1,2,3,4], 2)` is `[[1,2],[2,3],[3,4]]`.
+[0, 1, ..., n-1].
 
-#### `fn zip(xs: List(a), ys: List(b)) -> List((a, b))`
+#### `fn range_between(lo: Int, hi: Int) -> List(Int)`
 
-Pair up two lists element-wise, stopping at the shorter one.
+The half-open span `lo..hi`: [lo, lo+1, ..., hi-1], empty when `lo >= hi`.
 
-#### `fn unzip(xs: List((a, b))) -> (List(a), List(b))`
+#### `fn range_step(start: Int, stop: Int, step: Int) -> List(Int)`
 
-Split a list of pairs into a pair of lists — the inverse of `zip`.
+The span from `start` toward `stop` (exclusive) advancing by `step`. A positive `step` counts up while below `stop`, a negative `step` counts down while above `stop`, and a zero `step` yields [] rather than looping forever.
 
-#### `fn enumerate(xs: List(a)) -> List((Int, a))`
+#### `fn repeat(x: a, n: Int) -> List(a)`
 
-Pair each element with its index: `[a, b]` -> `[(0, a), (1, b)]`.
+A list of `n` copies of `x` (empty when `n <= 0`).
 
 #### `List.push(x: a)`
 
@@ -2143,7 +1945,11 @@ Keep only the elements for which `keep` returns true.
 
 #### `List.reverse()`
 
+Reverse in place.
+
 #### `List.sort_by(less: fn(a, a) -> Bool)`
+
+Sort using a caller-supplied "is-less-than" comparator — a stable merge sort (O(n log n)), so equal elements keep their original order. Generic over the element type.
 
 #### `List.set_at(index: Int, value: a)`
 
@@ -2159,7 +1965,11 @@ Remove and return the final element. A uniquely owned non-empty list moves the l
 
 #### `List.pop_front() -> Option(a)`
 
+Remove and return the first element, or `None` for the empty list.
+
 #### `List.swap(i: Int, j: Int)`
+
+Exchange the elements at `i` and `j`. An out-of-range index is a runtime error on both backends, like `list.at`.
 
 #### `List.length() -> Int`
 
@@ -2173,6 +1983,10 @@ Whether the list has no elements.
 
 The element at `index` (0-based). Out of bounds is a runtime error on every backend.
 
+#### `List.slice(start: Int, end: Int) -> List(a)`
+
+The elements in the half-open index range [start, end), clamped to bounds. `slice(xs, 1, 3)` of [a,b,c,d] is [b,c].
+
 #### `List.get(index: Int) -> Option(a)`
 
 The element at `index` as `Some`, or `None` when `index` is out of range — a total, bounds-checked alternative to the `at` builtin.
@@ -2185,9 +1999,25 @@ The first element as `Some`, or `None` for the empty list.
 
 The last element as `Some`, or `None` for the empty list.
 
+#### `List.head_or(default: a) -> a`
+
+The first element, or `default` when the list is empty. (A total accessor in the style of `get_or`/`unwrap_or`, so it never indexes out of bounds.)
+
+#### `List.last_or(default: a) -> a`
+
+The last element, or `default` when the list is empty.
+
 #### `List.find(pred: fn(a) -> Bool) -> Option(a)`
 
 The first element satisfying `pred` as `Some`, or `None` if none do.
+
+#### `List.find_map(f: fn(a) -> Option(b)) -> Option(b)`
+
+The first non-`None` result of applying `f` across the list (search and transform in one pass), or `None` if every result is `None`.
+
+#### `List.find_or(pred: fn(a) -> Bool, default: a) -> a`
+
+The first element satisfying `pred`, or `default` if none do.
 
 #### `List.any(pred: fn(a) -> Bool) -> Bool`
 
@@ -2201,13 +2031,45 @@ Whether every element satisfies `pred` (true for the empty list).
 
 The index of the first element satisfying `pred` as `Some`, or `None` if none do — the by-predicate search (`index_of` is the by-value search). One name per axis, both `Option`, no sentinel (RFC-0044/0049).
 
+#### `List.count_where(pred: fn(a) -> Bool) -> Int`
+
+How many elements satisfy `pred`.
+
 #### `List.fold(init: b, f: fn(b, a) -> b) -> b`
 
 Reduce the list to a single value, left to right.
 
+#### `List.reduce(f: fn(a, a) -> a) -> Option(a)`
+
+Combine the elements left to right using the first as the seed, as `Some`; `None` for the empty list. (A `fold` that needs no initial value — handy for max/min/sum over a non-empty list with a plain binary op.)
+
+#### `List.scan(init: b, f: fn(b, a) -> b) -> List(b)`
+
+Like `fold`, but collect every intermediate accumulator left to right, starting from `init`: scan([1,2,3], 0, +) -> [0, 1, 3, 6].
+
+#### `List.sum() -> Int`
+
+The sum of a list of integers (0 for the empty list).
+
+#### `List.sum_by(f: fn(a) -> Int) -> Int`
+
+The sum of `f` applied to each element (0 for the empty list) — e.g. a total over a record field: `cart.sum_by(fn(it): it.price * it.qty)`.
+
+#### `List.product() -> Int`
+
+The product of a list of integers (1 for the empty list).
+
 #### `List.flat_map(f: fn(a) -> List(b)) -> List(b)`
 
 Map each element to a list, then concatenate the results.
+
+#### `List.flatten() -> List(b)`
+
+Concatenate a list of lists into one.
+
+#### `List.transpose() -> List(List(b))`
+
+Turn a list of rows into a list of columns. Rows are read only up to the length of the SHORTEST row, so a ragged tail is dropped and the result stays rectangular: `[[1, 2, 3], [4, 5, 6]].transpose()` is `[[1, 4], [2, 5], [3, 6]]`.
 
 #### `List.take(n: Int) -> List(a)`
 
@@ -2217,13 +2079,65 @@ The first `n` elements (fewer if the list is shorter).
 
 All but the first `n` elements.
 
-#### `List.enumerate() -> List((Int, a))`
+#### `List.take_while(pred: fn(a) -> Bool) -> List(a)`
 
-Pair each element with its index: `[a, b]` -> `[(0, a), (1, b)]`.
+The longest leading run of elements satisfying `pred`.
+
+#### `List.drop_while(pred: fn(a) -> Bool) -> List(a)`
+
+Drop the longest leading run satisfying `pred`, keeping the rest.
+
+#### `List.split_at(n: Int) -> (List(a), List(a))`
+
+Split the list at index `n` into `(first n, the rest)`. `n` is clamped, so `xs.split_at(0)` is `([], xs)` and an `n` past the end gives `(xs, [])`.
+
+#### `List.tail() -> List(a)`
+
+All elements after the first; the empty list maps to the empty list.
+
+#### `List.drop_last() -> List(a)`
+
+All elements except the last; the empty list maps to the empty list.
+
+#### `List.chunks(n: Int) -> List(List(a))`
+
+Split the list into consecutive sublists of length `n` (the final one may be shorter). `[1,2,3,4,5].chunks(2)` is `[[1,2],[3,4],[5]]`; there are no chunks of a non-positive length, so `n < 1` yields `[]` (like `windows`).
+
+#### `List.windows(n: Int) -> List(List(a))`
+
+All contiguous sublists of length `n` (a sliding window of step 1). Empty when `n < 1` or longer than the list. `[1,2,3,4].windows(2)` is `[[1,2],[2,3],[3,4]]`.
 
 #### `List.zip(ys: List(b)) -> List((a, b))`
 
 Pair up two lists element-wise, stopping at the shorter one.
+
+#### `List.zip_with(ys: List(b), f: fn(a, b) -> c) -> List(c)`
+
+Combine two lists element-wise with `f`, stopping at the shorter one.
+
+#### `List.unzip() -> (List(x), List(y))`
+
+Split a list of pairs into a pair of lists — the inverse of `zip`.
+
+#### `List.enumerate() -> List((Int, a))`
+
+Pair each element with its index: `[a, b]` -> `[(0, a), (1, b)]`.
+
+#### `List.intersperse(sep: a) -> List(a)`
+
+Insert `sep` between adjacent elements: [a, b, c] -> [a, sep, b, sep, c].
+
+#### `List.partition(pred: fn(a) -> Bool) -> (List(a), List(a))`
+
+Split the list into (matching, non-matching) by `pred`, each preserving the original order. A single pass — the dual of running `filter` twice.
+
+#### `List.max_by(less: fn(a, a) -> Bool) -> Option(a)`
+
+The maximum element under a caller-supplied "is-less-than" comparator, as `Some` (the first of equal maxima), or `None` for the empty list. Generic, so it works for any type — e.g. max by a record field.
+
+#### `List.min_by(less: fn(a, a) -> Bool) -> Option(a)`
+
+The minimum element under `less`, as `Some`; `None` for the empty list.
 
 #### `List.contains(target: a) -> Bool`
 
@@ -2235,11 +2149,15 @@ The index of the first element equal to `target` as `Some`, or `None` if absent 
 
 #### `List.remove(target: a) -> Bool`
 
-A new list with the first occurrence of `target` removed; unchanged when absent. To remove every occurrence, use `filter(xs, fn(y): y != target)`.
+Remove the first occurrence of `target`, reporting whether one was removed; the list is unchanged when absent. To remove every occurrence, use `xs.filter(fn(y): y != target)`.
+
+#### `List.count(target: a) -> Int`
+
+The number of elements equal to `target`, by the element type's `Eq` impl. This is the counted companion to `contains`, so equality dispatch stays in the list module alongside membership, indexing, and de-duplication.
 
 #### `List.unique() -> List(a)`
 
-The list with duplicates removed, keeping the first occurrence of each element (by the element type's `Eq`), in original order. `contains` here is this module's own list function — a same-module function shadows the like-named string builtin.
+The list with duplicates removed, keeping the first occurrence of each element (by the element type's `Eq`), in original order.
 
 #### `List.sort()`
 
@@ -2255,7 +2173,7 @@ The largest element as `Some`, or `None` for the empty list. Generic over any `O
 
 #### `List.join(sep: String) -> String`
 
-Concatenate the strings in `parts`, inserting `sep` between adjacent elements: `["a", "b", "c"].join("-")` is `"a-b-c"`, and `[].join(sep)` is `""`.
+Concatenate the strings, inserting `sep` between adjacent elements: `["a", "b", "c"].join("-")` is `"a-b-c"`, and `[].join(sep)` is `""`.
 
 ## `math`
 

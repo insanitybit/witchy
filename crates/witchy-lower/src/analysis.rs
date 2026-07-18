@@ -442,31 +442,48 @@ impl Summaries {
     pub fn of_module(module: &Module) -> Self {
         let mut fns: HashMap<String, FnInfo> = HashMap::new();
         let mut bodies: HashMap<String, &witchy_syntax::ast::Function> = HashMap::new();
+        // Free functions summarize under their own names; inherent impl methods
+        // under the generated implementation symbol (`{Type}__{method}`) that the
+        // linker's module-function aliases target (RFC-0099: `list.contains(xs, t)`
+        // rewrites to `List__contains`), so a pre-lowering caller resolves a
+        // method callee's summary exactly as it would a free function's. Trait/
+        // impl lowering erases `Item::Impl`, so the method arm is a no-op on the
+        // lowered path.
+        let mut sources: Vec<(String, &witchy_syntax::ast::Function)> = Vec::new();
         for item in &module.items {
-            if let Item::Function(f) = item {
-                let returned_lifetime = view_lifetime(f.ret.as_ref());
-                let may_alias_out = f
-                    .params
-                    .iter()
-                    .map(|param| {
-                        returned_lifetime.is_some_and(|lifetime| {
-                            view_lifetime(param.ty.as_ref()) == Some(lifetime)
-                        })
-                    })
-                    .collect();
-                fns.insert(
-                    f.name.clone(),
-                    FnInfo {
-                        convs: f.params.iter().map(|p| p.convention).collect(),
-                        // The declared output-to-input lifetime relation is an
-                        // immediate alias source. Other positions start at the
-                        // optimistic bottom and rise through the body fixpoint.
-                        may_alias_out,
-                        own_abi: None,
-                    },
-                );
-                bodies.insert(f.name.clone(), f);
+            match item {
+                Item::Function(f) => sources.push((f.name.clone(), f)),
+                Item::Impl(im) if im.trait_name.is_none() => {
+                    for f in &im.methods {
+                        sources.push((format!("{}__{}", im.type_name, f.name), f));
+                    }
+                }
+                _ => {}
             }
+        }
+        for (name, f) in sources {
+            let returned_lifetime = view_lifetime(f.ret.as_ref());
+            let may_alias_out = f
+                .params
+                .iter()
+                .map(|param| {
+                    returned_lifetime.is_some_and(|lifetime| {
+                        view_lifetime(param.ty.as_ref()) == Some(lifetime)
+                    })
+                })
+                .collect();
+            fns.insert(
+                name.clone(),
+                FnInfo {
+                    convs: f.params.iter().map(|p| p.convention).collect(),
+                    // The declared output-to-input lifetime relation is an
+                    // immediate alias source. Other positions start at the
+                    // optimistic bottom and rise through the body fixpoint.
+                    may_alias_out,
+                    own_abi: None,
+                },
+            );
+            bodies.insert(name, f);
         }
         let mut summaries = Summaries { fns };
         loop {
@@ -4097,10 +4114,24 @@ pub fn module_cliffs(module: &Module) -> Vec<(String, Cliff)> {
     let summaries = Summaries::of_module(module);
     let mut out = Vec::new();
     for item in &module.items {
-        if let Item::Function(f) = item {
-            for c in analyze(&f.body, &summaries).cliffs {
-                out.push((f.name.clone(), c));
+        match item {
+            Item::Function(f) => {
+                for c in analyze(&f.body, &summaries).cliffs {
+                    out.push((f.name.clone(), c));
+                }
             }
+            // Inherent impl methods own their implementations under RFC-0099's
+            // methods-first stdlib, so a cliff inside a method body must be
+            // caught exactly like one in a free function. Reported under the
+            // generated implementation symbol the aliases target.
+            Item::Impl(im) if im.trait_name.is_none() => {
+                for f in &im.methods {
+                    for c in analyze(&f.body, &summaries).cliffs {
+                        out.push((format!("{}__{}", im.type_name, f.name), c));
+                    }
+                }
+            }
+            _ => {}
         }
     }
     out
