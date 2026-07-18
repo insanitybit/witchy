@@ -8,6 +8,12 @@ tracking:
 
 # RFC-0028: Ergonomic mutable value semantics
 
+The shipped mutable-iteration and confined-view lowering is implemented in
+[`crates/witchy-syntax/src/parser.rs`](../crates/witchy-syntax/src/parser.rs),
+[`crates/witchy-lower/src/escape.rs`](../crates/witchy-lower/src/escape.rs), and
+[`crates/witchy-lower/src/codegen`](../crates/witchy-lower/src/codegen), with
+counter evidence in [`src/stats.rs`](../src/stats.rs).
+
 ## Summary
 
 Close the ergonomic gap that makes witchy's value semantics *feel* awkward next
