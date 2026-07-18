@@ -125,7 +125,7 @@ on a cap-typed receiver = cap op. The two can no longer collide.)
 
 - **The intrinsic substance.** Signatures and rights checks stay
   checker-owned (`check_file_op` / `check_dir_op` / `check_net_op` /
-  console/clock/etc. tables in `crates/witchy-types/src/typeck.rs`); lowering
+  console/clock/etc. tables in [`crates/witchy-types/src/typeck.rs`](../crates/witchy-types/src/typeck.rs)); lowering
   to host imports and interpreter natives is untouched. Cap ops do **not**
   move into std, and no FFI/extern declaration form is introduced.
 - **The closed set.** The op inventory is still the complete effect surface,
@@ -140,7 +140,8 @@ on a cap-typed receiver = cap op. The two can no longer collide.)
 ### 4. Migration (the cut)
 
 Inventory source of truth: the checker's op tables (every name/arity in
-`check_*_op` and the console/clock/rand/env/exec/secret tables). For each op,
+`check_*_op` and the console/clock/rand/env/exec/secret tables in
+[`crates/witchy-types/src/typeck.rs`](../crates/witchy-types/src/typeck.rs)). For each op,
 in one release batch:
 
 1. **Checker**: accept method position only; bare position produces the
