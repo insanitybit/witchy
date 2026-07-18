@@ -15,6 +15,10 @@ tracking: "A free-at-overwrite use-after-free lived ~2 days across the entire li
 
 # RFC-0037: A best-in-class correctness harness
 
+The shipped differential and sanitizer harness is exercised in
+[`tests/differential_fuzz.rs`](../tests/differential_fuzz.rs), with compiled-memory
+checks in [`crates/witchy-wir/src/wir_helpers`](../crates/witchy-wir/src/wir_helpers).
+
 ## Summary
 
 witchy's greatest correctness asset is its shape: **twin backends with a memory-safe
