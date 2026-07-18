@@ -328,7 +328,7 @@ Everything is an expression; a block's value is its final expression.
 | `??` | the **fallback** operator: `Option(T) ?? T -> T` unwraps `Some` or yields the fallback on `None`; `Result(T, e) ?? T -> T` unwraps `Ok` or yields the fallback on `Err` (the error is discarded — reach for `?` / `match` when it matters). The fallback is evaluated **lazily** (only on `None`/`Err`). Right-associative and the loosest binary operator, so `d.get(k1) ?? d.get(k2) ?? 0` chains and `d.get(k) ?? n + 1` is `d.get(k) ?? (n + 1)`. There is no truthiness: `""` and `[]` are values, not absences — default them with an explicit test (`if name.is_empty(): "anon" else: name`) |
 | `!` | negation |
 | `& \| ^ ~ << >>` | bitwise on `Int` (shifts mask the count to 6 bits) |
-| `xs[i]`, `d[k]` | strict indexing, sugar for `list.at(xs, i)` / `dict.at(d, k)`; out of bounds or missing-key reads are runtime errors on every backend |
+| `xs[i]`, `d[k]` | strict indexing, sugar for `xs.at(i)` / `d.at(k)`; out of bounds or missing-key reads are runtime errors on every backend |
 
 ### Evaluation order
 
@@ -351,7 +351,7 @@ arguments with the same root are accepted only when their projections are proven
 disjoint (for example `swap(xs[0], xs[1])`); dynamic or prefix-overlapping places
 are rejected.
 | `lo..hi` | a half-open range (for-loop iteration; never materialized) |
-| `x.f(args)` | a method call: an `impl`/trait method on `x`; standard data modules also preserve equivalent module-qualified calls or compiler aliases such as `list.map(xs, f)` |
+| `x.f(args)` | a method call: an `impl`/trait method on `x` — the primary form for the standard data types; every public method also has an equivalent module-qualified alias (`list.map(xs, f)` is `xs.map(f)`) |
 | `e?` | unwrap `Ok`/`Some` or return the `Err`/`None` from the enclosing function |
 | `e? "msg"` | like `e?` with context: a `Result` `Err` gets `"msg: "` prepended; an `Option` `None` becomes `Err("msg")` |
 | `cap as Dir[Read]` | capability narrowing (drop rights; never widen) |
@@ -524,7 +524,7 @@ fn size(n: Int) -> String:
 fn head(xs: List(Int)) -> String:
     match xs:
         [] -> "empty"
-        [first, ..rest] -> "first " + "${first}" + ", " + "${list.length(rest)}" + " more"
+        [first, ..rest] -> "first " + "${first}" + ", " + "${rest.length()}" + " more"
 
 fn main(console: Console):
     console.print(describe(Circle(2)))
@@ -1401,8 +1401,8 @@ gen fn fibs() -> Iter(Int):
         b = nxt
 
 fn main(console: Console):
-    let first8 = iter.collect(fibs().take(8))
-    console.print(list.join(list.map(first8, fn(n: Int): "${n}"), " "))
+    let first8: List(Int) = iter.collect(fibs().take(8))
+    console.print(first8.map(fn(n: Int): "${n}").join(" "))
 
 // 0 1 1 2 3 5 8 13
 ```
@@ -1420,17 +1420,20 @@ fn main(console: Console):
 
 The core data modules — `list`, `string`, `dict`, `math`, `option`, `result`,
 `policy`, and `show` — are **the prelude**: always available, no import line needed
-(`list.push(xs, 1)` works anywhere). Pure data operations live ONLY in
-modules; capability operations are **methods on the capability that carries the
+(`xs.push(1)` and `dict.new()` work anywhere). Pure data operations belong to
+their data type or its module — never bare globals; capability operations are
+**methods on the capability that carries the
 authority** (`console.print(msg)`, `dir.read(path)`, `clock.now()`) — the
 authority is loud because it names the capability, and `fail` is the one bare
 global. (Rendering needs no function at all: `${...}` interpolation is the
 rendering.) For other modules,
-`import name` brings the module in under its name; **function** calls are
-module-qualified (`list.map(xs, f)`) — or, for a built-in type's own operations,
-the equivalent method form (`xs.map(f)`, see §4), which is the idiom for the data
-libraries. Some std operations are real `impl` methods with compiler-provided
-module aliases; others remain receiver-first module functions. A module's `pub`
+`import name` brings the module in under its name. A standard data type's own
+operations are **methods** (`xs.map(f)`, see §4) — the primary form for the data
+libraries. Every public inherent method also has an equivalent module-qualified
+alias (`list.map(xs, f)`), so the qualified spelling always works too; the
+remaining module-level functions — constructors such as `iter.range` and
+`dict.from_pairs`, and helpers whose argument is not the module's own type, such
+as `json.stringify(x)` — are called module-qualified. A module's `pub`
 **types and their constructors** are module-scoped
 the same way: after `import json` you name them qualified (`json.Json`,
 `json.JsonInt(1)`, `json.JsonObject([...])`). To use a type and its constructors

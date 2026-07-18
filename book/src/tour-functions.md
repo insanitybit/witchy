@@ -103,16 +103,18 @@ fn main(console: Console):
 7
 ```
 
-Method-call syntax, `value.method(args)`, is the idiomatic way to call the
+Method-call syntax, `value.method(args)`, is the way to call the
 standard data libraries — `xs.map(f)`, `d.insert(k, v)`, `s.to_upper()` — and it
 uses the same parameter conventions as free calls. A `var` receiver such as
 `insert` requires a mutable place and writes back; pure transformations such as
 `map` may chain. Build a dictionary value with `dict.from_pairs([("a", 1),
-("b", 2)])`, since a temporary receiver has no write-back place. For standard
-data types, the module-qualified form remains available too: it is the same
-receiver-first module function (`dict.insert(d, k, v)`) or a compiler alias to
-the method implementation (`list.map(xs, f)`). Module qualification is also
-the only form when a helper lives in a module other than the receiver's type —
+("b", 2)])`, since a temporary receiver has no write-back place. Every public
+method on a standard data type also has a module-qualified alias —
+`list.map(xs, f)` is the same call as `xs.map(f)` — so the qualified spelling
+still works everywhere; the method form is the documented idiom. Module
+qualification is the primary form only for operations without a receiver of the
+module's type: constructors (`dict.from_pairs`, `iter.range`) and helpers that
+live in a module other than the receiver's type —
 `json.stringify(x)`, `math.to_float(n)`. The same dot syntax also calls
 **methods** you declare in an `impl` block with a `self` parameter — which we'll
 meet properly in the types chapter; the shape looks like this:

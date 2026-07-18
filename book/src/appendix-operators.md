@@ -19,7 +19,7 @@ has the precise semantics; this is the cheat sheet.
 | `xs[i] = v`, `d[k] = v`, `x.f = v` | assign to a place — sugar for a value update (`set_at` / record spread); the binding must be `var`. Compound `+=` etc. work |
 | `lo..hi` | half-open range, for iteration only |
 | `lo..=hi` | inclusive integer range in a pattern |
-| `x.f(a)` | a method call: an `impl`/trait method; standard data modules also keep equivalent module-qualified calls or compiler aliases such as `list.map(xs, f)` |
+| `x.f(a)` | a method call: an `impl`/trait method — the primary form for the standard data types; every public method also has an equivalent module-qualified alias (`list.map(xs, f)` is `xs.map(f)`) |
 | `${expr}` | string interpolation — renders *any* value into the string |
 | `e?` | unwrap `Ok`/`Some`, or early-return the `Err`/`None` |
 | `e? "context"` | propagate with context: prefix a String `Err`, or turn `None` into `Err("context")` |

@@ -58,8 +58,8 @@ import bytes
 
 fn main(console: Console):
     let b = bytes.from_string("hi")
-    console.print("${bytes.length(b)}")
-    console.print("${bytes.at(b, 0)}")
+    console.print("${b.length()}")
+    console.print("${b.at(0)}")
 ```
 
 Structured values cross a VM or wire boundary by choosing an explicit encoding into

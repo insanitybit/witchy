@@ -1,7 +1,11 @@
 # Appendix: The Standard Library
 
-witchy ships a broad bundled standard library. Bring a non-prelude module in with `import name` and
-call its functions module-qualified (`list.map`, `list.join`). A module's
+witchy ships a broad bundled standard library. A data type's operations are
+**methods** — `xs.map(f)`, `s.trim()`, `d.insert(k, v)` — and every public
+method also has a module-qualified alias (`list.map(xs, f)`). Bring a
+non-prelude module in with `import name`; its constructors and other
+receiver-less helpers are called module-qualified (`iter.range(...)`,
+`json.stringify(x)`). A module's
 *types and their constructors* are module-scoped the same way — after
 `import json` you write `json.JsonInt(1)`. Name a type explicitly with
 `from json import Json` to use it and its variant constructors unqualified
@@ -9,7 +13,7 @@ call its functions module-qualified (`list.map`, `list.join`). A module's
 
 Eight modules form **the prelude** and never need an import line: `list`,
 `string`, `dict`, `math`, `option`, `result`, `policy`, and `show`. Every
-program can write `list.push(...)`, `dict.new()`, or `show.render(...)` directly;
+program can write `xs.push(...)`, `dict.new()`, or `show.render(...)` directly;
 an explicit prelude import is accepted but redundant. This appendix is a map; the full,
 function-by-function reference — generated from the library sources, so it's
 always current — is

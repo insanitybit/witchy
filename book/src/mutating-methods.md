@@ -21,8 +21,8 @@ fn main(console: Console):
     console.print("${tally.get_or("a", 0)}")
 ```
 
-Free and method calls are equivalent: `xs.push(3)` resolves to the same
-`var`-declared operation as `list.push(xs, 3)`. Statement position may discard a
+The method call is the idiom; its module-qualified alias `list.push(xs, 3)`
+resolves to the same `var`-declared operation. Statement position may discard a
 `var` call's independent result because the write-back is already an effect. A
 non-`var`, non-`()` result still requires a binding or `let _ =`.
 
@@ -32,7 +32,7 @@ An immutable binding or temporary cannot be a write-back target:
 fn main(console: Console):
     let frozen = [9, 9]
     // frozen.push(1)       // error: root must be `var`
-    // list.push([1], 2)    // error: temporary has no write-back place
+    // [1].push(2)          // error: temporary has no write-back place
     console.print("${frozen}")
 ```
 
