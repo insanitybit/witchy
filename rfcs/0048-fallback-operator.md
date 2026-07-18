@@ -15,6 +15,11 @@ tracking: "merged to master 2661b23"
 
 # RFC-0048: A dedicated `??` fallback; `||` returns to Bool
 
+The shipped operator semantics are specified in
+[`spec/language.md`](../spec/language.md) and implemented across the lexer,
+type checker, and lowering paths, with parity coverage in
+[`src/example_tests.rs`](../src/example_tests.rs).
+
 > Provisional syntax throughout. Code blocks are intentionally **not** tagged
 > `witchy` so the doc-examples sweep does not compile pre-implementation
 > snippets.
