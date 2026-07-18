@@ -10,6 +10,10 @@ tracking:
 
 # RFC-0014: Remove the `retain`/`without` capability firewall
 
+The implemented structural firewall is documented in
+[`spec/language.md`](../spec/language.md) (capture-as-dependency-injection); the
+former `retain`/`without` syntax and type-checker machinery are intentionally absent.
+
 > **Status: implemented** (2026-06-25). The `retain`/`without` keywords, the
 > `Block.restrict`/`CapRestrict`/`RestrictMode` AST, the typeck tombstone
 > machinery, and the formatter paths are deleted; the `examples/firewall` project
