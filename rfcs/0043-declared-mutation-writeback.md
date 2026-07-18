@@ -19,7 +19,7 @@ tracking:
 
 RFC-0028's mutating-method statement (`xs.push(1)` as a statement reassigns
 `xs`) is today decided by `rewrite_mut_method_stmts`
-(crates/witchy-syntax/src/linker.rs:631-678): a **link-time, name-global,
+([crates/witchy-syntax/src/linker.rs](../crates/witchy-syntax/src/linker.rs):631-678): a **link-time, name-global,
 receiver-type-blind census** over every function in the linked program. Two
 probed, silent failure classes follow directly from that mechanism. This RFC
 replaces the census with a **declaration**: a function opts its receiver into
@@ -133,7 +133,7 @@ form writes back." The three call forms:
 
 ### 2. `var` is overloaded — deliberately, and checked
 
-What `var` on a parameter means today (spec/language.md:361-392, probed):
+What `var` on a parameter means today ([spec/language.md](../spec/language.md):361-392, probed):
 the argument must be a plain mutable `var` at the call site, the callee may
 reassign the parameter, and the caller's variable is written back — even on
 early return; `move` into `var` is rejected. That is a *procedure-style*
@@ -304,7 +304,7 @@ now correctly write back.
 - Hylo (`inout`) and Swift (`mutating func`): mutation-of-receiver is a
   *declared* property of the function in every mutable-value-semantics
   language that shipped; none infers it from return-type shape.
-  (external-refs/mutable-value-semantics-2022.)
+  ([external-refs/mutable-value-semantics-2022](../external-refs/mutable-value-semantics-2022/notes.md)).
 - Rust: `fn push(&mut self, …)` — the declaration doubles as the call-site
   requirement, the same split §2 encodes without references.
 - RFC-0028's own Drawbacks section flagged "the statement-vs-expression
