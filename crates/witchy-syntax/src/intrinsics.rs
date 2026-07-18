@@ -42,6 +42,8 @@ pub enum IntrinsicId {
     MetaCallSiteExpr,
     MetaCallSiteType,
     MetaCallSitePattern,
+    MetaTypeNamed,
+    MetaTypeTuple,
     MetaExprCall,
     MetaExprField,
     MetaExprMatch,
@@ -436,6 +438,8 @@ pub const META_FRESH_IDENT: &str = "__meta_fresh_ident";
 pub const META_CALL_SITE_EXPR: &str = "__meta_call_site_expr";
 pub const META_CALL_SITE_TYPE: &str = "__meta_call_site_type";
 pub const META_CALL_SITE_PATTERN: &str = "__meta_call_site_pattern";
+pub const META_TYPE_NAMED: &str = "__meta_type_named";
+pub const META_TYPE_TUPLE: &str = "__meta_type_tuple";
 pub const META_EXPR_CALL: &str = "__meta_expr_call";
 pub const META_EXPR_FIELD: &str = "__meta_expr_field";
 pub const META_EXPR_MATCH: &str = "__meta_expr_match";
@@ -1049,6 +1053,36 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "meta.call_site",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaTypeNamed,
+        name: META_TYPE_NAMED,
+        arity: 2,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.type_named",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaTypeTuple,
+        name: META_TYPE_TUPLE,
+        arity: 1,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.type_tuple",
         private_callers: META_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
@@ -2555,6 +2589,14 @@ pub fn is_meta_call_site_pattern(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaCallSitePattern)
 }
 
+pub fn is_meta_type_named(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaTypeNamed)
+}
+
+pub fn is_meta_type_tuple(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaTypeTuple)
+}
+
 pub fn is_meta_expr_call(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprCall)
 }
@@ -2635,6 +2677,8 @@ mod tests {
         assert_eq!(private_intrinsic_callers(META_CALL_SITE_EXPR), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_CALL_SITE_TYPE), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_CALL_SITE_PATTERN), Some(META_BRIDGE_CALLERS));
+        assert_eq!(private_intrinsic_callers(META_TYPE_NAMED), Some(META_BRIDGE_CALLERS));
+        assert_eq!(private_intrinsic_callers(META_TYPE_TUPLE), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_EXPR_CALL), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_EXPR_FIELD), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_EXPR_MATCH), Some(META_BRIDGE_CALLERS));
@@ -2652,6 +2696,8 @@ mod tests {
             lookup("meta.__meta_call_site_pattern"),
             lookup(META_CALL_SITE_PATTERN)
         );
+        assert_eq!(lookup("meta.__meta_type_named"), lookup(META_TYPE_NAMED));
+        assert_eq!(lookup("meta.__meta_type_tuple"), lookup(META_TYPE_TUPLE));
         assert_eq!(lookup("meta.__meta_expr_call"), lookup(META_EXPR_CALL));
         assert_eq!(lookup("meta.__meta_expr_field"), lookup(META_EXPR_FIELD));
         assert_eq!(lookup("meta.__meta_expr_match"), lookup(META_EXPR_MATCH));
@@ -2699,6 +2745,8 @@ mod tests {
             META_CALL_SITE_EXPR,
             META_CALL_SITE_TYPE,
             META_CALL_SITE_PATTERN,
+            META_TYPE_NAMED,
+            META_TYPE_TUPLE,
             META_EXPR_CALL,
             META_EXPR_FIELD,
             META_EXPR_MATCH,

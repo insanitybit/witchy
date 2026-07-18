@@ -189,8 +189,13 @@ fn is_keyword(name: String) -> Bool:
 // generator call site; it is still a migration helper, not full hygiene.
 pub fn type_named(name: Ident, args: List(TypeSyntax)) -> TypeSyntax:
     match name:
-        Ident(source) -> type_with_head(source, args)
+        Ident(source) -> __meta_type_named(source, args)
         CallSiteIdent(source) -> __meta_call_site_type(source, args)
+
+// Compiler-owned definition-site named type construction. Type arguments retain
+// their own origin and structure.
+fn __meta_type_named(name: String, args: List(TypeSyntax)) -> TypeSyntax:
+    __meta_type_named(name, args)
 
 // Interpreter-owned compile-time hook. It retains an invocation-site type
 // identity plus structurally decoded type arguments.
@@ -202,7 +207,11 @@ pub fn type_qualified(module: Ident, name: Ident, args: List(TypeSyntax)) -> Typ
 
 // A tuple type such as `(Int, String)`.
 pub fn type_tuple(types: List(TypeSyntax)) -> TypeSyntax:
-    TypeSyntax("(" + list.join(type_syntax_sources(types), ", ") + ")")
+    __meta_type_tuple(types)
+
+// Compiler-owned tuple type construction.
+fn __meta_type_tuple(types: List(TypeSyntax)) -> TypeSyntax:
+    __meta_type_tuple(types)
 
 // A function type such as `fn(Int) -> String`.
 pub fn type_fn(params: List(TypeSyntax), ret: TypeSyntax) -> TypeSyntax:

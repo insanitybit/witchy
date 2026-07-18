@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed compatibility builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned item/expression/type/pattern/statement/block quotations with structural typed holes, direct AST transport for typed tags, match-arm/let/expression/return statement builders, block builders, and complete function signatures/bodies, definition-site function/type/constructor/pattern resolution, explicit meta.call_site value/function/type/constructor references, and nested tagged-expansion diagnostics carrying invocation, definition, generated-parent, and hole ancestry landed; general qualified/remaining compatibility-builder/item origins and persistent per-node spans remain proposed"
+tracking: "source-backed compatibility builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned item/expression/type/pattern/statement/block quotations with structural typed holes, direct AST transport for typed tags, named/tuple type builders, match-arm/let/expression/return statement builders, block builders, and complete function signatures/bodies, definition-site function/type/constructor/pattern resolution, explicit meta.call_site value/function/type/constructor references, and nested tagged-expansion diagnostics carrying invocation, definition, generated-parent, and hole ancestry landed; general qualified/remaining compatibility-builder/item origins and persistent per-node spans remain proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -500,6 +500,10 @@ The first source-compatible slice is implemented:
   end to end. Function names and parameter names remain binding identifiers;
   parameter and return types retain owned type identity; and the body remains a
   compiler-owned block. The compatibility signature-header parse is removed.
+- The fiftieth slice makes ordinary `meta.type_named` applications and
+  `meta.type_tuple` compiler-owned. Nested type arguments retain their origin
+  ancestry, including call-site types embedded under definition-site container
+  heads and tuples used in generated signatures.
 
 This is intentionally not the full RFC. Every quotation category and its typed
 hole placement is now compiler-owned. General `meta.*` builder composition may

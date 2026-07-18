@@ -3091,6 +3091,28 @@ impl Interpreter {
         })
     }
 
+    fn store_compiler_type_syntax(
+        &mut self,
+        category: &str,
+        ty: Type,
+        hole_ancestry: Vec<ComptimeHoleOrigin>,
+    ) -> Result<Value, RuntimeError> {
+        let source = witchy_syntax::format::type_str(&ty);
+        let handle = self.next_compiler_syntax_handle(category)?;
+        self.compiler_type_syntax.insert(handle.clone(), ty);
+        self.compiler_type_origins.insert(
+            handle.clone(),
+            ComptimeSyntaxOrigin {
+                definition_line: self.cur_line,
+                hole_ancestry,
+            },
+        );
+        Ok(Value::Ctor {
+            name: "meta.CompilerTypeSyntax".into(),
+            fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+        })
+    }
+
     fn call_builtin(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>, RuntimeError> {
         let catalog = intrinsics::lookup(name);
         if let Some(spec) = catalog {
@@ -3272,6 +3294,53 @@ impl Interpreter {
                     }))
                 }
                 _ => err("meta.call_site type construction expects a name and type arguments"),
+            },
+            name if intrinsics::is_meta_type_named(name) => match args {
+                [Value::Str(name), Value::List(args)] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.type_named is available only during compile-time expansion",
+                        );
+                    }
+                    let hole_ancestry = compiler_direct_hole_origins(
+                        args,
+                        SyntaxCategory::Type,
+                        "CompilerTypeSyntax",
+                        &self.compiler_type_origins,
+                        self.cur_line,
+                    );
+                    let args = compiler_type_holes(args, &self.compiler_type_syntax)?;
+                    let ty = Type::Named(name.to_string(), args);
+                    Ok(Some(self.store_compiler_type_syntax(
+                        "named-type",
+                        ty,
+                        hole_ancestry,
+                    )?))
+                }
+                _ => err("meta.type_named expects a name and type arguments"),
+            },
+            name if intrinsics::is_meta_type_tuple(name) => match args {
+                [Value::List(types)] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.type_tuple is available only during compile-time expansion",
+                        );
+                    }
+                    let hole_ancestry = compiler_direct_hole_origins(
+                        types,
+                        SyntaxCategory::Type,
+                        "CompilerTypeSyntax",
+                        &self.compiler_type_origins,
+                        self.cur_line,
+                    );
+                    let types = compiler_type_holes(types, &self.compiler_type_syntax)?;
+                    Ok(Some(self.store_compiler_type_syntax(
+                        "tuple-type",
+                        Type::Tuple(types),
+                        hole_ancestry,
+                    )?))
+                }
+                _ => err("meta.type_tuple expects List(TypeSyntax)"),
             },
             name if intrinsics::is_meta_call_site_pattern(name) => match args {
                 [Value::Str(name), Value::List(args)] => {

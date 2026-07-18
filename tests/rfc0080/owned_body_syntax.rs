@@ -48,16 +48,18 @@ comptime:
     emit_item(meta.function_block(true, meta.ident("statement_generated"), [], Some(int), statement_body()))
     let input = meta.ident("input")
     let number = meta.type_named(meta.call_site("Number"), [])
+    let numbers = meta.type_named(meta.ident("List"), [number])
+    let composite = meta.type_tuple([numbers, number])
     let identity_body = meta.block([], Some(meta.expr_name(input)))
-    let identity_param = meta.param(input, number)
-    emit_item(meta.function_block(true, meta.ident("generated_identity"), [identity_param], Some(number), identity_body))
+    let identity_param = meta.param(input, composite)
+    emit_item(meta.function_block(true, meta.ident("generated_identity"), [identity_param], Some(composite), identity_body))
 
 fn main(console: Console):
     console.print("${composed()}")
     console.print("${direct()}")
     console.print("${generated_selected()}")
     console.print("${statement_generated()}")
-    console.print("${generated_identity(42)}")
+    console.print("${generated_identity(([42], 42))}")
 "#;
 
 #[test]
@@ -75,9 +77,7 @@ fn owned_body_syntax_survives_function_builders_on_both_backends() {
     assert!(expanded_source.contains("pub fn generated_selected() -> Int:"), "{expanded_source}");
     assert!(expanded_source.contains("pub fn statement_generated() -> Int:"), "{expanded_source}");
     assert!(
-        expanded_source.contains(
-            "pub fn generated_identity(input: @call_site_type:Number) -> @call_site_type:Number:"
-        ),
+        expanded_source.contains("List(@call_site_type:Number)"),
         "{expanded_source}"
     );
     assert!(!expanded_source.contains("@quote_stmt"), "{expanded_source}");
@@ -100,7 +100,7 @@ fn owned_body_syntax_survives_function_builders_on_both_backends() {
         "42".to_string(),
         "42".to_string(),
         "42".to_string(),
-        "42".to_string(),
+        "([42], 42)".to_string(),
     ];
     assert_eq!(
         interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interpret"),
