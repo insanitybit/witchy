@@ -72,7 +72,7 @@ system** in `crates/witchy-types/src/traits.rs`, parallel to the real HM
 inference in `typeck.rs`: types are encoded as *strings* (`"List<Int>"`,
 `"Tuple2<Int,String>"`) and recovered by hand-rolled string parsers and
 hardcoded shape tables. This RFC deletes that shadow system and makes dispatch
-consume typeck's real `TypeTable` (`typeck.rs:3119-3131`) — the resolved `Ty`
+consume typeck's real `TypeTable` ([`typeck.rs:3119-3131`](../crates/witchy-types/src/typeck.rs)) — the resolved `Ty`
 of every expression, which `annotate` already computes and which traits.rs
 already threads (but barely uses). One type system, one answer.
 
@@ -132,7 +132,7 @@ and this RFC preserves it (trivially: the TypeTable is not a guess).
 3. **`list.unique` does not compile on WASM for record element types** —
    "cannot compile to WASM: … (an interpreter-only feature?)". This is the
    *sole* reason the `cmp.member`/`cmp.index_of`/`cmp.count`/`cmp.unique`
-   quadruplet (std/cmp.witchy:230-256) exists: the Eq-bounded cmp forms
+   quadruplet ([`std/cmp.witchy:230-256`](../std/cmp.witchy)) exists: the Eq-bounded cmp forms
    monomorphize where the unbounded list forms cannot (2026-06-28
    investigation, re-verified in the 2026-07-03 evaluation).
 4. **std never uses its own Iter library.** Zero combinator/collect use across
@@ -268,9 +268,9 @@ acceptance tests below:
 
 ### 6. Structured spans: a named follow-up, not in scope
 
-`TypeError` has no span fields (typeck.rs:320-322); location is prose-prefixed
+`TypeError` has no span fields ([`typeck.rs:320-322`](../crates/witchy-types/src/typeck.rs)); location is prose-prefixed
 by `at_loc`, and the LSP regexes line numbers back out of the message
-(`extract_line`, src/lsp.rs:359). Dispatch-on-the-table makes span-carrying
+(`extract_line`, [`src/lsp.rs:359`](../src/lsp.rs)). Dispatch-on-the-table makes span-carrying
 errors *possible* (the table key is the expression; the expression knows its
 line), but threading spans through `TypeError` touches every error site and
 the LSP protocol surface — that is [RFC-0054](0054-structured-errors.md)'s
@@ -336,7 +336,7 @@ say so:
 - Rust's trait resolution operates on the inference context's `Ty`, never on
   rendered type strings; the "shadow type system that re-parses its own
   pretty-printer" is a known anti-pattern this RFC exits.
-- The project's own typed-lowering keystone (rfcs/language-evolution.md
+- The project's own typed-lowering keystone ([rfcs/language-evolution.md](language-evolution.md)
   Phase 0) built `annotate` for exactly this consumption; the five existing
   table fallback sites in traits.rs are its proof of concept.
 - CLAUDE.md's no-special-casing rule (and rfcs/0016's thesis): one general
