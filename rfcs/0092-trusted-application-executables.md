@@ -20,6 +20,10 @@ related:
 
 # RFC-0092: Trusted application executables
 
+The implementation lives in [`src/trusted_exe.rs`](../src/trusted_exe.rs), with
+end-to-end coverage in
+[`tests/rfc0092/trusted_application_executables.rs`](../tests/rfc0092/trusted_application_executables.rs).
+
 ## Summary
 
 Add a build target that produces a normal, self-contained executable from a
