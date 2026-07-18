@@ -1472,6 +1472,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .arg("--fast")
         .env("PATH", path)
         .env("CARGO_TARGET_DIR", temp.path().join("target"))
+        .env_remove("WITCHY_GATE_QUEUE_INFRA")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .output()
         .expect("run fast gate with fake tools");
@@ -1537,6 +1538,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .arg("--fast")
         .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default()))
         .env("CARGO_TARGET_DIR", temp.path().join("target-red"))
+        .env_remove("WITCHY_GATE_QUEUE_INFRA")
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .env("FAKE_CARGO_FAIL_NEXTEST", "1")
         .env("FAKE_CLIPPY_PID_FILE", &clippy_pid_file)
