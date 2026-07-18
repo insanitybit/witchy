@@ -508,12 +508,18 @@ The first source-compatible slice is implemented:
   `meta.type_fn_with_conventions`, and the frozen/unique/local-unique builders
   compiler-owned. Convention counts and names fail loudly, while parameter,
   return, and qualified child types retain their origin ancestry.
+- The fifty-second slice makes definition-site `meta.pattern_ctor`, tuple,
+  exact-list, list-rest, and or-pattern builders compiler-owned. Nested pattern
+  nodes retain their origin ancestry, including call-site constructors beneath
+  definition-site aggregates. A call-site identifier remains reference-only
+  and is rejected when used as a list-rest binding.
 
 This is intentionally not the full RFC. Every quotation category and its typed
-hole placement is now compiler-owned. General `meta.*` builder composition may
-still project canonical source, but let/expression/return statement builders,
-`meta.block`, and `meta.function_block` retain owned child nodes when
-constructing statements, blocks, and items. Compiler-owned typed tag expressions preserve
+hole placement is now compiler-owned. Some `meta.*` compatibility builders may
+still project canonical source, but these pattern-composition builders,
+let/expression/return statement builders, `meta.block`, and
+`meta.function_block` retain owned child nodes when constructing statements,
+blocks, and items. Compiler-owned typed tag expressions preserve
 definition-site direct function, type, constructor, and constructor-pattern
 references, and
 `meta.call_site("name")`, consumed through `meta.expr_name`, `meta.type_named`,

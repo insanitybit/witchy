@@ -388,8 +388,13 @@ pub fn pattern_range(lo: Int, hi: Int, inclusive: Bool) -> PatternSyntax:
 
 pub fn pattern_ctor(name: Ident, args: List(PatternSyntax)) -> PatternSyntax:
     match name:
-        Ident(source) -> pattern_with_head(source, args)
+        Ident(source) -> __meta_pattern_ctor(source, args)
         CallSiteIdent(source) -> __meta_call_site_pattern(source, args)
+
+// Compiler-owned definition-site constructor-pattern construction. Arguments
+// retain their own origin and structure.
+fn __meta_pattern_ctor(name: String, args: List(PatternSyntax)) -> PatternSyntax:
+    __meta_pattern_ctor(name, args)
 
 // Interpreter-owned compile-time hook. It retains an invocation-site
 // constructor-pattern identity plus structurally decoded arguments.
@@ -405,27 +410,33 @@ pub fn pattern_anon_ctor(tag: Ident, args: List(PatternSyntax)) -> PatternSyntax
 
 // A tuple pattern.
 pub fn pattern_tuple(patterns: List(PatternSyntax)) -> PatternSyntax:
-    PatternSyntax("(" + list.join(pattern_sources(patterns), ", ") + ")")
+    __meta_pattern_tuple(patterns)
+
+fn __meta_pattern_tuple(patterns: List(PatternSyntax)) -> PatternSyntax:
+    __meta_pattern_tuple(patterns)
 
 // An exact-length list pattern.
 pub fn pattern_list(patterns: List(PatternSyntax)) -> PatternSyntax:
-    PatternSyntax("[" + list.join(pattern_sources(patterns), ", ") + "]")
+    __meta_pattern_list(patterns)
+
+fn __meta_pattern_list(patterns: List(PatternSyntax)) -> PatternSyntax:
+    __meta_pattern_list(patterns)
 
 // A list pattern with `..` or `..rest`.
 pub fn pattern_list_rest(patterns: List(PatternSyntax), rest: Option(Ident)) -> PatternSyntax:
-    var parts = pattern_sources(patterns)
-    let tail = match rest:
-        Some(name) -> ".." + ident_source(name)
-        None -> ".."
+    __meta_pattern_list_rest(patterns, rest)
 
-    list.push(parts, tail)
-    PatternSyntax("[" + list.join(parts, ", ") + "]")
+fn __meta_pattern_list_rest(patterns: List(PatternSyntax), rest: Option(Ident)) -> PatternSyntax:
+    __meta_pattern_list_rest(patterns, rest)
 
 // An or-pattern. Every alternative must bind the same names when type-checked.
 pub fn pattern_or(patterns: List(PatternSyntax)) -> PatternSyntax:
     if list.is_empty(patterns):
         fail("meta.pattern_or: at least one alternative is required")
-    PatternSyntax(list.join(pattern_sources(patterns), " | "))
+    __meta_pattern_or(patterns)
+
+fn __meta_pattern_or(patterns: List(PatternSyntax)) -> PatternSyntax:
+    __meta_pattern_or(patterns)
 
 // Join parser-checked pattern quote fragments with typed pattern holes.
 pub fn pattern_join(parts: List(String), holes: List(PatternSyntax)) -> PatternSyntax:

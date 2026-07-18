@@ -1162,6 +1162,10 @@ fn compiler_pattern_holes(
         .collect()
 }
 
+fn compiler_ctor_tail(name: &str) -> &str {
+    name.rsplit_once('.').map_or(name, |(_, tail)| tail)
+}
+
 fn mock_normalize(rel: &str) -> Result<String, RuntimeError> {
     let path = Path::new(rel);
     if path.is_absolute() {
@@ -3146,6 +3150,28 @@ impl Interpreter {
         })
     }
 
+    fn store_compiler_pattern_syntax(
+        &mut self,
+        category: &str,
+        pattern: Pattern,
+        hole_ancestry: Vec<ComptimeHoleOrigin>,
+    ) -> Result<Value, RuntimeError> {
+        let source = witchy_syntax::format::pattern_str(&pattern);
+        let handle = self.next_compiler_syntax_handle(category)?;
+        self.compiler_pattern_syntax.insert(handle.clone(), pattern);
+        self.compiler_pattern_origins.insert(
+            handle.clone(),
+            ComptimeSyntaxOrigin {
+                definition_line: self.cur_line,
+                hole_ancestry,
+            },
+        );
+        Ok(Value::Ctor {
+            name: "meta.CompilerPatternSyntax".into(),
+            fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+        })
+    }
+
     fn call_builtin(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>, RuntimeError> {
         let catalog = intrinsics::lookup(name);
         if let Some(spec) = catalog {
@@ -3477,6 +3503,147 @@ impl Interpreter {
                 _ => {
                     err("meta.call_site pattern construction expects a name and pattern arguments")
                 }
+            },
+            name if intrinsics::is_meta_pattern_ctor(name) => match args {
+                [Value::Str(name), Value::List(args)] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.pattern_ctor is available only during compile-time expansion",
+                        );
+                    }
+                    let hole_ancestry = compiler_direct_hole_origins(
+                        args,
+                        SyntaxCategory::Pattern,
+                        "CompilerPatternSyntax",
+                        &self.compiler_pattern_origins,
+                        self.cur_line,
+                    );
+                    let args = compiler_pattern_holes(args, &self.compiler_pattern_syntax)?;
+                    Ok(Some(self.store_compiler_pattern_syntax(
+                        "constructor-pattern",
+                        Pattern::Ctor { name: name.to_string(), args },
+                        hole_ancestry,
+                    )?))
+                }
+                _ => err("meta.pattern_ctor expects a name and pattern arguments"),
+            },
+            name if intrinsics::is_meta_pattern_tuple(name) => match args {
+                [Value::List(patterns)] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.pattern_tuple is available only during compile-time expansion",
+                        );
+                    }
+                    let hole_ancestry = compiler_direct_hole_origins(
+                        patterns,
+                        SyntaxCategory::Pattern,
+                        "CompilerPatternSyntax",
+                        &self.compiler_pattern_origins,
+                        self.cur_line,
+                    );
+                    let patterns =
+                        compiler_pattern_holes(patterns, &self.compiler_pattern_syntax)?;
+                    Ok(Some(self.store_compiler_pattern_syntax(
+                        "tuple-pattern",
+                        Pattern::Tuple(patterns),
+                        hole_ancestry,
+                    )?))
+                }
+                _ => err("meta.pattern_tuple expects pattern arguments"),
+            },
+            name if intrinsics::is_meta_pattern_list(name) => match args {
+                [Value::List(patterns)] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.pattern_list is available only during compile-time expansion",
+                        );
+                    }
+                    let hole_ancestry = compiler_direct_hole_origins(
+                        patterns,
+                        SyntaxCategory::Pattern,
+                        "CompilerPatternSyntax",
+                        &self.compiler_pattern_origins,
+                        self.cur_line,
+                    );
+                    let elems = compiler_pattern_holes(patterns, &self.compiler_pattern_syntax)?;
+                    Ok(Some(self.store_compiler_pattern_syntax(
+                        "list-pattern",
+                        Pattern::List { elems, rest: None },
+                        hole_ancestry,
+                    )?))
+                }
+                _ => err("meta.pattern_list expects pattern arguments"),
+            },
+            name if intrinsics::is_meta_pattern_list_rest(name) => match args {
+                [Value::List(patterns), rest] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.pattern_list_rest is available only during compile-time expansion",
+                        );
+                    }
+                    let hole_ancestry = compiler_direct_hole_origins(
+                        patterns,
+                        SyntaxCategory::Pattern,
+                        "CompilerPatternSyntax",
+                        &self.compiler_pattern_origins,
+                        self.cur_line,
+                    );
+                    let elems = compiler_pattern_holes(patterns, &self.compiler_pattern_syntax)?;
+                    let rest = match rest {
+                        Value::Ctor { name, fields }
+                            if compiler_ctor_tail(name) == "None" && fields.is_empty() =>
+                        {
+                            Some(None)
+                        }
+                        Value::Ctor { name, fields }
+                            if compiler_ctor_tail(name) == "Some"
+                                && matches!(fields.as_slice(), [Value::Ctor { .. }]) =>
+                        {
+                            Some(Some(compiler_binding_ident_name(
+                                &fields[0],
+                                "meta.pattern_list_rest",
+                            )?))
+                        }
+                        _ => {
+                            return err(
+                                "meta.pattern_list_rest expected Option(Ident) rest binding",
+                            );
+                        }
+                    };
+                    Ok(Some(self.store_compiler_pattern_syntax(
+                        "list-rest-pattern",
+                        Pattern::List { elems, rest },
+                        hole_ancestry,
+                    )?))
+                }
+                _ => err("meta.pattern_list_rest expects patterns and a rest binding"),
+            },
+            name if intrinsics::is_meta_pattern_or(name) => match args {
+                [Value::List(patterns)] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.pattern_or is available only during compile-time expansion",
+                        );
+                    }
+                    let hole_ancestry = compiler_direct_hole_origins(
+                        patterns,
+                        SyntaxCategory::Pattern,
+                        "CompilerPatternSyntax",
+                        &self.compiler_pattern_origins,
+                        self.cur_line,
+                    );
+                    let patterns =
+                        compiler_pattern_holes(patterns, &self.compiler_pattern_syntax)?;
+                    if patterns.is_empty() {
+                        return err("meta.pattern_or requires at least one alternative");
+                    }
+                    Ok(Some(self.store_compiler_pattern_syntax(
+                        "or-pattern",
+                        Pattern::Or(patterns),
+                        hole_ancestry,
+                    )?))
+                }
+                _ => err("meta.pattern_or expects pattern alternatives"),
             },
             name if intrinsics::is_meta_expr_call(name) => match args {
                 [callee, Value::List(args)] => {

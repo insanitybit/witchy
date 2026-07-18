@@ -42,6 +42,11 @@ pub enum IntrinsicId {
     MetaCallSiteExpr,
     MetaCallSiteType,
     MetaCallSitePattern,
+    MetaPatternCtor,
+    MetaPatternTuple,
+    MetaPatternList,
+    MetaPatternListRest,
+    MetaPatternOr,
     MetaTypeNamed,
     MetaTypeTuple,
     MetaTypeFn,
@@ -440,6 +445,11 @@ pub const META_FRESH_IDENT: &str = "__meta_fresh_ident";
 pub const META_CALL_SITE_EXPR: &str = "__meta_call_site_expr";
 pub const META_CALL_SITE_TYPE: &str = "__meta_call_site_type";
 pub const META_CALL_SITE_PATTERN: &str = "__meta_call_site_pattern";
+pub const META_PATTERN_CTOR: &str = "__meta_pattern_ctor";
+pub const META_PATTERN_TUPLE: &str = "__meta_pattern_tuple";
+pub const META_PATTERN_LIST: &str = "__meta_pattern_list";
+pub const META_PATTERN_LIST_REST: &str = "__meta_pattern_list_rest";
+pub const META_PATTERN_OR: &str = "__meta_pattern_or";
 pub const META_TYPE_NAMED: &str = "__meta_type_named";
 pub const META_TYPE_TUPLE: &str = "__meta_type_tuple";
 pub const META_TYPE_FN: &str = "__meta_type_fn";
@@ -1057,6 +1067,81 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "meta.call_site",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaPatternCtor,
+        name: META_PATTERN_CTOR,
+        arity: 2,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.pattern_ctor",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaPatternTuple,
+        name: META_PATTERN_TUPLE,
+        arity: 1,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.pattern_tuple",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaPatternList,
+        name: META_PATTERN_LIST,
+        arity: 1,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.pattern_list",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaPatternListRest,
+        name: META_PATTERN_LIST_REST,
+        arity: 2,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.pattern_list_rest",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaPatternOr,
+        name: META_PATTERN_OR,
+        arity: 1,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.pattern_or",
         private_callers: META_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
@@ -2623,6 +2708,26 @@ pub fn is_meta_call_site_pattern(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaCallSitePattern)
 }
 
+pub fn is_meta_pattern_ctor(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaPatternCtor)
+}
+
+pub fn is_meta_pattern_tuple(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaPatternTuple)
+}
+
+pub fn is_meta_pattern_list(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaPatternList)
+}
+
+pub fn is_meta_pattern_list_rest(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaPatternListRest)
+}
+
+pub fn is_meta_pattern_or(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaPatternOr)
+}
+
 pub fn is_meta_type_named(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaTypeNamed)
 }
@@ -2719,6 +2824,11 @@ mod tests {
         assert_eq!(private_intrinsic_callers(META_CALL_SITE_EXPR), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_CALL_SITE_TYPE), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_CALL_SITE_PATTERN), Some(META_BRIDGE_CALLERS));
+        assert_eq!(private_intrinsic_callers(META_PATTERN_CTOR), Some(META_BRIDGE_CALLERS));
+        assert_eq!(private_intrinsic_callers(META_PATTERN_TUPLE), Some(META_BRIDGE_CALLERS));
+        assert_eq!(private_intrinsic_callers(META_PATTERN_LIST), Some(META_BRIDGE_CALLERS));
+        assert_eq!(private_intrinsic_callers(META_PATTERN_LIST_REST), Some(META_BRIDGE_CALLERS));
+        assert_eq!(private_intrinsic_callers(META_PATTERN_OR), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_TYPE_NAMED), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_TYPE_TUPLE), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_TYPE_FN), Some(META_BRIDGE_CALLERS));
@@ -2740,6 +2850,11 @@ mod tests {
             lookup("meta.__meta_call_site_pattern"),
             lookup(META_CALL_SITE_PATTERN)
         );
+        assert_eq!(lookup("meta.__meta_pattern_ctor"), lookup(META_PATTERN_CTOR));
+        assert_eq!(lookup("meta.__meta_pattern_tuple"), lookup(META_PATTERN_TUPLE));
+        assert_eq!(lookup("meta.__meta_pattern_list"), lookup(META_PATTERN_LIST));
+        assert_eq!(lookup("meta.__meta_pattern_list_rest"), lookup(META_PATTERN_LIST_REST));
+        assert_eq!(lookup("meta.__meta_pattern_or"), lookup(META_PATTERN_OR));
         assert_eq!(lookup("meta.__meta_type_named"), lookup(META_TYPE_NAMED));
         assert_eq!(lookup("meta.__meta_type_tuple"), lookup(META_TYPE_TUPLE));
         assert_eq!(lookup("meta.__meta_type_fn"), lookup(META_TYPE_FN));
@@ -2791,6 +2906,11 @@ mod tests {
             META_CALL_SITE_EXPR,
             META_CALL_SITE_TYPE,
             META_CALL_SITE_PATTERN,
+            META_PATTERN_CTOR,
+            META_PATTERN_TUPLE,
+            META_PATTERN_LIST,
+            META_PATTERN_LIST_REST,
+            META_PATTERN_OR,
             META_TYPE_NAMED,
             META_TYPE_TUPLE,
             META_TYPE_FN,

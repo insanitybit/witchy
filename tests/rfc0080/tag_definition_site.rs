@@ -33,6 +33,12 @@ type HiddenRecord:
 type HiddenAlias = HiddenValue
 type ImportedAlias = support.ImportedValue
 
+type LocalPatternValue:
+    LocalPatternValue(String)
+
+type PatternEnvelope(a):
+    PatternEnvelope(a)
+
 comptime fn answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     quote expr:
         hidden() + 2
@@ -64,6 +70,19 @@ comptime fn composed_match_selected(parts: List(String), holes: List(String)) ->
     let arm = meta.match_arm(meta.pattern_int(42), meta.expr_call(selected, []))
     let fallback = meta.match_arm(meta.pattern_wildcard(), meta.expr_int(0))
     meta.expr_match(value, [arm, fallback])
+
+comptime fn composed_pattern_selected(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+    let first = meta.pattern_ctor(meta.call_site("LocalPatternValue"), [meta.pattern_var(meta.ident("left"))])
+    let exact = meta.pattern_list([first])
+    let second = meta.pattern_ctor(meta.call_site("LocalPatternValue"), [meta.pattern_var(meta.ident("right"))])
+    let alternative = meta.pattern_or([second])
+    let rest = meta.pattern_list_rest([alternative], Some(meta.ident("tail")))
+    let tuple = meta.pattern_tuple([exact, rest])
+    let pattern = meta.pattern_ctor(meta.ident("PatternEnvelope"), [tuple])
+    let local = meta.expr_name(meta.call_site("LocalPatternValue"))
+    quote expr:
+        match PatternEnvelope(([${local}(20)], [${local}(22), ${local}(0)])):
+            ${pattern} -> left + right
 
 comptime fn construct_hidden(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     quote expr:
@@ -120,6 +139,9 @@ type HiddenAlias = HiddenRecord
 type LocalSelectedRecord:
     value: Int
 
+type LocalPatternValue:
+    LocalPatternValue(Int)
+
 fn main(console: Console):
     let hidden = fn() -> Int:
         1
@@ -135,6 +157,7 @@ fn main(console: Console):
     console.print("${composed_call_selected"ignored"}")
     console.print("${composed_field_selected"ignored"}")
     console.print("${composed_match_selected"ignored"}")
+    console.print("${composed_pattern_selected"ignored"}")
     console.print("${construct_hidden"ignored"}")
     console.print("${type_hidden"ignored"}")
     console.print("${record_hidden"ignored"}")
@@ -165,6 +188,7 @@ fn linked() -> ast::Module {
 fn typed_tag_names_resolve_at_definition_site_on_both_backends() {
     let linked = linked();
     let expected = vec![
+        "42".to_string(),
         "42".to_string(),
         "42".to_string(),
         "42".to_string(),
@@ -226,6 +250,26 @@ comptime:
         .to_string();
     assert!(
         error.contains("meta.call_site") && error.contains("expected an identifier"),
+        "{error}"
+    );
+}
+
+#[test]
+fn call_site_pattern_identifiers_cannot_become_rest_bindings() {
+    let source = r#"
+import meta
+
+comptime:
+    let _ = meta.pattern_list_rest([], Some(meta.call_site("rest")))
+"#;
+    let parsed = parser::parse_module(source).expect("parse invalid call-site rest binding");
+    let error = pipeline::link(vec![("main".into(), parsed)], "main")
+        .expect_err("call-site pattern identifiers are reference-only")
+        .to_string();
+    assert!(
+        error.contains("meta.pattern_list_rest")
+            && error.contains("binding identifier")
+            && error.contains("reference-only"),
         "{error}"
     );
 }
