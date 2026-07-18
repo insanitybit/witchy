@@ -7,15 +7,14 @@ std/dict.witchy	21	auxiliary-result-discard	dict.insert	-	-
 std/dict.witchy	27	auxiliary-result-discard	dict.__insert_extract	-	-
 std/dict.witchy	63	auxiliary-result-discard	dict.remove	-	-
 std/dict.witchy	66	auxiliary-result-discard	dict.__remove_extract	-	-
-std/list.witchy	37	auxiliary-result-discard	list.__pop_extract	-	-
-std/list.witchy	742	auxiliary-result-discard	list.__pop_extract	-	-
-std/prng.witchy	71	expression-position-mutator	prng.next_below	-	-
-std/prng.witchy	56	expression-position-mutator	prng.next	-	-
-std/prng.witchy	60	expression-position-mutator	prng.next	-	-
-std/prng.witchy	84	auxiliary-result-discard	prng.choice	-	-
-std/prng.witchy	75	auxiliary-result-discard	prng.next	-	-
-std/prng.witchy	78	auxiliary-result-discard	prng.next_below	-	-
-std/prng.witchy	81	auxiliary-result-discard	prng.next_bool	-	-
+std/list.witchy	38	auxiliary-result-discard	list.__pop_extract	-	-
+std/list.witchy	83	auxiliary-result-discard	list.__pop_extract	-	-
+std/prng.witchy	92	expression-position-mutator	prng.advance	-	-
+std/prng.witchy	67	expression-position-mutator	prng.draw_below	-	-
+std/prng.witchy	52	expression-position-mutator	prng.advance	-	-
+std/prng.witchy	97	auxiliary-result-discard	prng.choice	-	-
+std/prng.witchy	76	auxiliary-result-discard	prng.advance	-	-
+std/prng.witchy	88	auxiliary-result-discard	prng.draw_below	-	-
 book/src/mutating-methods.md#block-1	7	expression-position-mutator	main.take_last	-	-
 book/src/mutating-methods.md#block-1	2	auxiliary-result-discard	list.pop	-	-
 book/src/mutating-methods.md#block-4	3	expression-position-mutator	dict.insert__String__Int	-	-
@@ -24,13 +23,13 @@ book/src/mutating-methods.md#block-4	5	expression-position-mutator	dict.remove__
 spec/language.md#block-15	7	expression-position-mutator	main.bump	-	-
 
 witchy-files	271
-markdown-blocks	176
-checked	447
+markdown-blocks	173
+checked	444
 rejected	0
-var-declarations	26
-resolved-var-calls	469
+var-declarations	20
+resolved-var-calls	443
 mechanical-self-reassignment	0
 expression-position-mutator	9
 immutable-var-argument	0
 temporary-var-argument	0
-auxiliary-result-discard	14
+auxiliary-result-discard	13
