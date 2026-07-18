@@ -6,8 +6,8 @@ created: 2026-06-28
 tracking: "The unified facts/escape oracle is delivered and is the substrate every
   optimization consumes: `analyze` → `Facts` (uniqueness/dirty/accumulators) and
   `Summaries` (interprocedural may_alias_out/conventions/own_abi) in
-  crates/witchy-lower/src/analysis.rs, plus the consolidated confinement walker
-  `scan_uses` (escape.rs) parameterized on assign-handling × call-exemption policies —
+  [`crates/witchy-lower/src/analysis.rs`](../crates/witchy-lower/src/analysis.rs), plus the consolidated confinement walker
+  `scan_uses` ([`crates/witchy-lower/src/escape.rs`](../crates/witchy-lower/src/escape.rs)) parameterized on assign-handling × call-exemption policies —
   the formerly-separate collect_whole_uses / mark_reuse_escapes / mark_leaking_uses
   walkers folded into one. Each knob (inplace/views/sroa/region/rc-elide/rc-floor/unbox)
   is a pure consumer that passes the differential de-opt sweep + a `witchy stats`
@@ -40,7 +40,7 @@ who else can observe it?* — is currently computed in at least six places, in s
 representations:
 
 1. the uniqueness pass's **share events** (storing a value into a structure
-   escapes it) — `crates/witchy-lower/src/analysis.rs`
+   escapes it) — [`crates/witchy-lower/src/analysis.rs`](../crates/witchy-lower/src/analysis.rs)
 2. **`loop_body_escape_free`** (an escape-free loop body permits a per-iteration
    watermark reset) — codegen
 3. **`borrow_escape_check`** (a `let`-borrow parameter may not be returned) —
@@ -110,7 +110,7 @@ Frame  ⊑  Loop(n)  ⊑  Region(r)  ⊑  Call  ⊑  Module  ⊑  Escapes
 - `Loop(n)` — confined to loop body `n` (watermark-reset candidate).
 - `Region(r)` — confined to region `r` (the `region:` copy-out / reclaim story).
 - `Call` — may be returned to the immediate caller but no further by this
-  function (this is `local unique`'s confinement — see [0026](0026-unique-qualifier.md)).
+  function (this is `local unique`'s confinement — see [0026](./0026-unique-qualifier.md)).
 - `Module` / `Escapes` — stored somewhere globally reachable / passed to an
   unknown callee.
 
@@ -143,7 +143,7 @@ single annotation on a hot helper still helps every call site.
 ### The six consumers, rewritten
 
 Each existing computation becomes a thin query. No behavior changes — this is
-proven by the differential de-opt framework (`WITCHY_OPT`, [RFC-0030](0030-perf-correctness-infra.md)) plus
+proven by the differential de-opt framework (`WITCHY_OPT`, [RFC-0030](./0030-perf-correctness-infra.md)) plus
 the parity suite.
 
 | Today | Becomes |
