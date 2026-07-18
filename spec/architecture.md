@@ -37,7 +37,7 @@ definition and invocation spans, and ordered syntax-hole ancestry. This table
 is allocated and remapped by compiler passes; formatted source is never a node
 identity.
 
-### Workspace layout (RFC-0018)
+### Workspace layout ([RFC-0018](../rfcs/0018-compiler-architecture.md))
 
 The compiler is a **Cargo workspace**: seven stage-aligned library crates under
 `crates/`, plus the `witchy` binary package (the CLI, the wasm-playground
