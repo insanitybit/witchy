@@ -22,6 +22,10 @@ tracking: >
 
 # RFC-0091: Browser-runnable capability examples
 
+The host implementation is in [`web/witchy-runtime/witchy-runtime.mjs`](../web/witchy-runtime/witchy-runtime.mjs),
+with parity coverage in [`tests/browser/shim.rs`](../tests/browser/shim.rs) and
+[`web/witchy-runtime/capability-host.test.mjs`](../web/witchy-runtime/capability-host.test.mjs).
+
 ## Problem
 
 The docs app (this book) turns fenced `witchy` blocks into editable, executable
