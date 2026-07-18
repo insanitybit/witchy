@@ -17,7 +17,7 @@ tracking: "module-scoped types + from-imports; iter+chan coexist; full migration
 Functions are already module-scoped — `import iter` gives you `iter.map`, and
 two modules exporting `map` coexist without a thought. Types are not: every
 `type` in the whole link set lands in **one flat global namespace**, imported
-unqualified (spec/language.md:821–824). This RFC makes types module-scoped
+unqualified ([spec/language.md](../spec/language.md):821–824). This RFC makes types module-scoped
 exactly like functions: `import iter` makes `iter.Step` a valid type name in
 annotations, constructor patterns, and expressions; a new `from X import Y`
 binds a name (type or function) unqualified, Python-style; two unqualified
@@ -186,7 +186,7 @@ identically-rendered-names confusion above.
 ### 6. Where the implementation enters
 
 The linker already does whole-program linking with per-module context
-(crates/witchy-syntax/src/linker.rs); today functions get qualified as
+([crates/witchy-syntax/src/linker.rs](../crates/witchy-syntax/src/linker.rs)); today functions get qualified as
 `{module}.{name}` at merge (linker.rs:546) while types are pushed into the
 merged module **untouched and untagged** (`Item::Type(t) =>
 items.push(Item::Type(t.clone()))`, linker.rs:556) — that one line is where
@@ -210,7 +210,7 @@ the flat namespace is manufactured. The change, at a design level:
    to "is this bare name unambiguous across the link set" (with the ambiguity
    error naming the candidates).
 4. **Trait dispatch follows.** `head_type_name` / `recover_generic_call`
-   (crates/witchy-types/src/traits.rs:1035, :539) traffic in type-name strings;
+   ([crates/witchy-types/src/traits.rs](../crates/witchy-types/src/traits.rs):1035, :539) traffic in type-name strings;
    those strings become canonical qualified names. This RFC deliberately does
    not restructure that machinery — RFC-0046 (typed trait dispatch)
    does — but qualified names remove a whole class of its wrong-guesses (two
