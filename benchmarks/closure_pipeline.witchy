@@ -6,10 +6,9 @@
 // environment and reload their capture per element; with it on, no environment is
 // allocated and the captures thread as call arguments.
 //
-// (The lazy `iter.map(...).filter(...).fold(...)` form stores its stage closures into
+// (The lazy `it.map(...).filter(...).fold(...)` form stores its stage closures into
 // `Iter`/`Step` records — those ESCAPE by construction and stay boxed; eliding them is
 // a closure-specialization problem, out of scope for this RFC.)
-
 fn main(console: Console, clock: Clock):
     var xs = []
     var i = 0
@@ -19,7 +18,7 @@ fn main(console: Console, clock: Clock):
     let n = list.length(xs)
 
     let bias = 10
-    let mapper = fn(v: Int): (v * 2) + bias
+    let mapper = fn(v: Int): v * 2 + bias
     let threshold = 150000
     let keeper = fn(v: Int): v < threshold
 

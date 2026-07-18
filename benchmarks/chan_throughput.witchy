@@ -21,9 +21,10 @@
 // is truncated to 32 bits on the compiled backend (a PRE-EXISTING executor-slot
 // defect, independent of this lowering — see bugs/), so a larger fold would fail
 // the parity gate for a reason this RFC does not own.
+
 from chan import Receiver, Sender
 
-async fn producer(tx: Sender(Int), n: Int) -> Nil:
+async fn producer(tx: Sender(Int), n: Int):
     var i = 0
     while i < n:
         chan.send(tx, i).await

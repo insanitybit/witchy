@@ -209,8 +209,8 @@ fn caret_matches(r: Version, precision: Int, v: Version) -> Bool:
 // The highest version in `versions` that satisfies `req`, or None if none do.
 // Keep the matching versions and fold to the highest — dogfoods std/iter.
 pub fn best(versions: List(Version), req: Req) -> Option(Version):
-    let ok = iter.filter(iter.from_list(versions), fn(v: Version): matches(req, v))
-    iter.fold(ok, None, fn(chosen: Option(Version), v: Version): if higher_than(v, chosen): Some(v) else: chosen)
+    let ok = iter.from_list(versions).filter(fn(v: Version): matches(req, v))
+    ok.fold(None, fn(chosen: Option(Version), v: Version): if higher_than(v, chosen): Some(v) else: chosen)
 
 fn higher_than(v: Version, current: Option(Version)) -> Bool:
     match current:

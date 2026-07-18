@@ -8,6 +8,14 @@
 // (`take`/`take_while`/`find`). Pure and capability-free; runs on both backends.
 // `gen fn`/`yield` lower to this representation; `from_gen` is the low-level
 // desugaring target for compiler-generated iterators.
+//
+// Adapters and consumers are METHODS on `Iter` (`it.map(f).take(3)`), so
+// pipelines read left-to-right. The module level keeps only what has no
+// receiver — the constructors (`iter.range`, `iter.from_list`, ...) — plus
+// `iter.collect` (whose polymorphic return type dispatches on the EXPECTED
+// type; keeping it a free function also avoids a measured mono-pass blowup)
+// and the pull primitive `iter.next` (also a method; the free form drives the
+// module's own generic internals).
 
 import option
 import set
@@ -21,6 +29,9 @@ type Step:
 type Iter:
     Iter(fn() -> Step(a))
 
+// The pull primitive. Kept at module level (the method delegates to it):
+// internal step helpers pull from pattern-bound iterators, whose method
+// dispatch the quiet pre-mono pass cannot resolve.
 pub fn next(it: Iter(a)) -> Step(a):
     match it:
         Iter(thunk) -> thunk()
@@ -80,10 +91,12 @@ fn from_gen_step(f: fn(Int) -> Option(a), i: Int) -> Step(a):
         Some(x) -> Item(x, from_gen_at(f, i + 1))
         None -> Empty
 
-// ---- adapters (lazy) ----
-
-// Apply `f` to every element.
-pub fn map(it: Iter(a), f: fn(a) -> b) -> Iter(b):
+// ---- lazy adapter cores (private) ----
+// Each adapter method delegates to one of these free functions, which rebuild
+// the lazy tail by calling THEMSELVES — the quiet pre-mono pass cannot resolve
+// a method on a pattern-bound `rest`, so the recursion must be a direct call.
+// The scans are iterative loops, so the pipeline stays stack-safe.
+fn map(it: Iter(a), f: fn(a) -> b) -> Iter(b):
     Iter(fn(): map_step(next(it), f))
 
 fn map_step(s: Step(a), f: fn(a) -> b) -> Step(b):
@@ -91,8 +104,7 @@ fn map_step(s: Step(a), f: fn(a) -> b) -> Step(b):
         Empty -> Empty
         Item(x, rest) -> Item(f(x), map(rest, f))
 
-// Keep only the elements for which `keep` holds.
-pub fn filter(it: Iter(a), keep: fn(a) -> Bool) -> Iter(a):
+fn filter(it: Iter(a), keep: fn(a) -> Bool) -> Iter(a):
     Iter(fn(): filter_step(next(it), keep))
 
 fn filter_step(s: Step(a), keep: fn(a) -> Bool) -> Step(a):
@@ -110,9 +122,7 @@ fn filter_step(s: Step(a), keep: fn(a) -> Bool) -> Step(a):
                     cur = next(rest)
     out
 
-// Apply `f` to each element, keeping every `Some(y)` and dropping every `None` —
-// a `map` and `filter` fused into one pass (Rust's `Iterator::filter_map`).
-pub fn filter_map(it: Iter(a), f: fn(a) -> Option(b)) -> Iter(b):
+fn filter_map(it: Iter(a), f: fn(a) -> Option(b)) -> Iter(b):
     Iter(fn(): filter_map_step(next(it), f))
 
 fn filter_map_step(s: Step(a), f: fn(a) -> Option(b)) -> Step(b):
@@ -130,8 +140,7 @@ fn filter_map_step(s: Step(a), f: fn(a) -> Option(b)) -> Step(b):
                     None -> cur = next(rest)
     out
 
-// The first `k` elements (fewer if the iterator is shorter).
-pub fn take(it: Iter(a), k: Int) -> Iter(a):
+fn take(it: Iter(a), k: Int) -> Iter(a):
     Iter(fn(): take_step(it, k))
 
 fn take_step(it: Iter(a), k: Int) -> Step(a):
@@ -142,8 +151,7 @@ fn take_step(it: Iter(a), k: Int) -> Step(a):
             Empty -> Empty
             Item(x, rest) -> Item(x, take(rest, k - 1))
 
-// Elements up to (not including) the first one failing `pred`.
-pub fn take_while(it: Iter(a), pred: fn(a) -> Bool) -> Iter(a):
+fn take_while(it: Iter(a), pred: fn(a) -> Bool) -> Iter(a):
     Iter(fn(): take_while_step(next(it), pred))
 
 fn take_while_step(s: Step(a), pred: fn(a) -> Bool) -> Step(a):
@@ -154,10 +162,6 @@ fn take_while_step(s: Step(a), pred: fn(a) -> Bool) -> Step(a):
                 Item(x, take_while(rest, pred))
             else:
                 Empty
-
-// Skip the leading elements while `pred` holds, then yield the rest.
-pub fn drop_while(it: Iter(a), pred: fn(a) -> Bool) -> Iter(a):
-    Iter(fn(): drop_while_step(it, pred))
 
 fn drop_while_step(it: Iter(a), pred: fn(a) -> Bool) -> Step(a):
     var cur = it
@@ -173,15 +177,6 @@ fn drop_while_step(it: Iter(a), pred: fn(a) -> Bool) -> Step(a):
                     out = Item(x, rest)
                     scanning = false
     out
-
-// Skip the first `k` elements. Lazy like every adapter: nothing is pulled from
-// the source at construction — the skip runs inside the returned iterator's
-// thunk on first pull, and iteratively, so a large `k` cannot exhaust the stack.
-pub fn drop(it: Iter(a), k: Int) -> Iter(a):
-    if k <= 0:
-        it
-    else:
-        Iter(fn(): drop_step(it, k))
 
 fn drop_step(it: Iter(a), k: Int) -> Step(a):
     var cur = it
@@ -200,10 +195,6 @@ fn drop_step(it: Iter(a), k: Int) -> Step(a):
                     remaining = remaining - 1
     out
 
-// Pair each element with its index: (0, x0), (1, x1), ...
-pub fn enumerate(it: Iter(a)) -> Iter((Int, a)):
-    enumerate_from(it, 0)
-
 fn enumerate_from(it: Iter(a), i: Int) -> Iter((Int, a)):
     Iter(fn(): enumerate_step(next(it), i))
 
@@ -212,9 +203,8 @@ fn enumerate_step(s: Step(a), i: Int) -> Step((Int, a)):
         Empty -> Empty
         Item(x, rest) -> Item((i, x), enumerate_from(rest, i + 1))
 
-// Zip two iterators into pairs, stopping at the shorter one.
-pub fn zip(a: Iter(x), b: Iter(y)) -> Iter((x, y)):
-    Iter(fn(): zip_step(next(a), b))
+fn zip(a2: Iter(x), b: Iter(y)) -> Iter((x, y)):
+    Iter(fn(): zip_step(next(a2), b))
 
 fn zip_step(sa: Step(x), b: Iter(y)) -> Step((x, y)):
     match sa:
@@ -224,8 +214,7 @@ fn zip_step(sa: Step(x), b: Iter(y)) -> Step((x, y)):
                 Empty -> Empty
                 Item(xb, restb) -> Item((xa, xb), zip(resta, restb))
 
-// The elements of `first`, then the elements of `second`.
-pub fn chain(first: Iter(a), second: Iter(a)) -> Iter(a):
+fn chain(first: Iter(a), second: Iter(a)) -> Iter(a):
     Iter(fn(): chain_step(next(first), second))
 
 fn chain_step(s: Step(a), second: Iter(a)) -> Step(a):
@@ -233,8 +222,7 @@ fn chain_step(s: Step(a), second: Iter(a)) -> Step(a):
         Empty -> next(second)
         Item(x, rest) -> Item(x, chain(rest, second))
 
-// Map each element to an iterator and concatenate the results.
-pub fn flat_map(it: Iter(a), f: fn(a) -> Iter(b)) -> Iter(b):
+fn flat_map(it: Iter(a), f: fn(a) -> Iter(b)) -> Iter(b):
     Iter(fn(): flat_map_step(next(it), f))
 
 fn flat_map_step(s: Step(a), f: fn(a) -> Iter(b)) -> Step(b):
@@ -252,19 +240,31 @@ fn flat_map_step(s: Step(a), f: fn(a) -> Iter(b)) -> Step(b):
                         scanning = false
     out
 
-// Call `f` on every element for its effect (drives to exhaustion). The right
-// consumer for a generator when you don't need to early-exit — no list is built.
-pub fn for_each(it: Iter(a), f: fn(a) -> Nil):
+fn scan(it: Iter(a), state: s, f: fn(s, a) -> (s, b)) -> Iter(b):
+    Iter(fn(): scan_step(it, state, f))
+
+fn scan_step(it: Iter(a), state: s, f: fn(s, a) -> (s, b)) -> Step(b):
+    match next(it):
+        Empty -> Empty
+        Item(x, rest) ->
+            match f(state, x):
+                (next_state, y) -> Item(y, scan(rest, next_state, f))
+
+// The consumer core shared by `count`/`sum`/`min`/`max` and the `fold`
+// method — free so it can run on pattern-bound tails.
+fn fold(it: Iter(a), init: b, f: fn(b, a) -> b) -> b:
+    var acc = init
     var cur = it
     var more = true
     while more:
         match next(cur):
             Empty -> more = false
             Item(x, rest) ->
-                f(x)
+                acc = f(acc, x)
                 cur = rest
+    acc
 
-// ---- consumers ----
+// ---- collecting ----
 
 // A type an iterator can be collected INTO. `from_iter` mentions the
 // implementing type only in its result, so a call dispatches on the EXPECTED
@@ -333,264 +333,209 @@ impl FromIterator(String) for String:
 //     let xs: List(Int) = iter.collect(it)
 //     let joined: String = iter.collect(pieces)
 //     let s: Set(Int) = iter.collect(it)        # de-duplicates; needs `a: Eq`
+// Free-function-only ON PURPOSE: the polymorphic return type in an impl block
+// causes a measured mono-pass performance explosion.
 pub fn collect(it: Iter(a)) -> c where c: FromIterator(a):
     from_iter(it)
 
-// Left fold over the elements.
-pub fn fold(it: Iter(a), init: b, f: fn(b, a) -> b) -> b:
-    var acc = init
-    var cur = it
-    var more = true
-    while more:
-        match next(cur):
-            Empty -> more = false
-            Item(x, rest) ->
-                acc = f(acc, x)
-                cur = rest
-    acc
-
-// Number of elements (drives to exhaustion).
-pub fn count(it: Iter(a)) -> Int:
-    fold(it, 0, fn(n: Int, _x): n + 1)
-
-// Sum of an Int iterator.
-pub fn sum(it: Iter(Int)) -> Int:
-    fold(it, 0, fn(acc: Int, x: Int): acc + x)
-
-// Split an iterator into its first element and the rest, or None if it is
-// empty. The building block for writing your own recursive iterator transforms
-// (e.g. a prime sieve): pair it with `unfold`, which threads the "rest" as its
-// seed.
-pub fn split_first(it: Iter(a)) -> Option((a, Iter(a))):
-    match next(it):
-        Empty -> None
-        Item(x, rest) -> Some((x, rest))
-
-// The first element satisfying `pred`, or None (stops at the first match, so it
-// is safe on an unbounded iterator if a match exists).
-pub fn find(it: Iter(a), pred: fn(a) -> Bool) -> Option(a):
-    var cur = it
-    var more = true
-    while more:
-        match next(cur):
-            Empty -> more = false
-            Item(x, rest) ->
-                if pred(x):
-                    return Some(x)
-                cur = rest
-    None
-
-// Whether at least one element satisfies `pred` — stops (short-circuits) at the
-// first match, so it terminates on an unbounded iterator once one is found.
-// `false` for the empty iterator.
-pub fn any(it: Iter(a), pred: fn(a) -> Bool) -> Bool:
-    var cur = it
-    var found = false
-    var searching = true
-    while searching:
-        match next(cur):
-            Empty -> searching = false
-            Item(x, rest) ->
-                if pred(x):
-                    found = true
-                    searching = false
-                else:
-                    cur = rest
-    found
-
-// Whether every element satisfies `pred` — stops at the first failure. `true`
-// for the empty iterator (vacuously). Don't call on an unbounded iterator whose
-// elements all satisfy `pred`: it never stops.
-pub fn all(it: Iter(a), pred: fn(a) -> Bool) -> Bool:
-    var cur = it
-    var ok = true
-    var checking = true
-    while checking:
-        match next(cur):
-            Empty -> checking = false
-            Item(x, rest) ->
-                if pred(x):
-                    cur = rest
-                else:
-                    ok = false
-                    checking = false
-    ok
-
-// The last element (drives the iterator to exhaustion), or None if it is empty.
-// Don't call on an unbounded iterator — it never stops.
-pub fn last(it: Iter(a)) -> Option(a):
-    last_from(it, None)
-
-fn last_from(it: Iter(a), acc: Option(a)) -> Option(a):
-    var cur = it
-    var result = acc
-    var going = true
-    while going:
-        match next(cur):
-            Empty -> going = false
-            Item(x, rest) ->
-                result = Some(x)
-                cur = rest
-    result
-
-// The 0-based index of the first element satisfying `pred`, or None. Stops at
-// the first match, so it is safe on an unbounded iterator if a match exists.
-pub fn position(it: Iter(a), pred: fn(a) -> Bool) -> Option(Int):
-    position_from(it, pred, 0)
-
-fn position_from(it: Iter(a), pred: fn(a) -> Bool, i: Int) -> Option(Int):
-    var cur = it
-    var idx = i
-    var more = true
-    while more:
-        match next(cur):
-            Empty -> more = false
-            Item(x, rest) ->
-                if pred(x):
-                    return Some(idx)
-                idx = idx + 1
-                cur = rest
-    None
-
-// The smallest element by the type's `Ord`, or None if the iterator is empty
-// (drives to exhaustion; don't call on an unbounded iterator).
-pub fn min(it: Iter(a)) -> Option(a) where a: Ord:
-    match next(it):
-        Empty -> None
-        Item(x, rest) -> Some(min_from(rest, x))
-
-fn min_from(it: Iter(a), best: a) -> a where a: Ord:
-    var cur = it
-    var b = best
-    var going = true
-    while going:
-        match next(cur):
-            Empty -> going = false
-            Item(x, rest) ->
-                if x < b:
-                    b = x
-                cur = rest
-    b
-
-// The largest element by the type's `Ord`, or None if the iterator is empty
-// (drives to exhaustion; don't call on an unbounded iterator).
-pub fn max(it: Iter(a)) -> Option(a) where a: Ord:
-    match next(it):
-        Empty -> None
-        Item(x, rest) -> Some(max_from(rest, x))
-
-fn max_from(it: Iter(a), best: a) -> a where a: Ord:
-    var cur = it
-    var b = best
-    var going = true
-    while going:
-        match next(cur):
-            Empty -> going = false
-            Item(x, rest) ->
-                if x > b:
-                    b = x
-                cur = rest
-    b
-
-// A lazy STATEFUL map: thread `state` through `f`, which returns the new state
-// and the value to emit. `scan(xs, 0, fn(s, x): (s + x, s + x))` yields the
-// running sums. Unlike `fold`, it produces an iterator, so it is lazy and
-// composable, and unlike `map` it can carry state between elements.
-pub fn scan(it: Iter(a), state: s, f: fn(s, a) -> (s, b)) -> Iter(b):
-    Iter(fn(): scan_step(it, state, f))
-
-fn scan_step(it: Iter(a), state: s, f: fn(s, a) -> (s, b)) -> Step(b):
-    match next(it):
-        Empty -> Empty
-        Item(x, rest) ->
-            match f(state, x):
-                (next_state, y) -> Item(y, scan(rest, next_state, f))
-
-// Concatenate an iterator OF iterators into one flat iterator, lazily and in
-// order — `flatten` is `flat_map` with the identity function.
-pub fn flatten(it: Iter(Iter(a))) -> Iter(a):
-    flat_map(it, fn(inner): inner)
-
-// ---- method surface ----
-// `collect` is intentionally free-function-only: its return type is polymorphic
-// (List, Set, String) via the FromIterator trait, and placing it in the impl
-// block causes a mono-pass performance explosion.
+// ---- the method surface: adapters (lazy), then consumers ----
 impl Iter(a):
+    // One pull: `Empty`, or `Item(value, rest)`.
     pub fn next(self) -> Step(a):
         next(self)
 
+    // Apply `f` to every element.
     pub fn map(self, f: fn(a) -> b) -> Iter(b):
-        map(self, f)
+        Iter(fn(): map_step(next(self), f))
 
+    // Keep only the elements for which `keep` holds.
     pub fn filter(self, keep: fn(a) -> Bool) -> Iter(a):
-        filter(self, keep)
+        Iter(fn(): filter_step(next(self), keep))
 
+    // Apply `f` to each element, keeping every `Some(y)` and dropping every
+    // `None` — a `map` and `filter` fused into one pass (Rust's
+    // `Iterator::filter_map`).
     pub fn filter_map(self, f: fn(a) -> Option(b)) -> Iter(b):
-        filter_map(self, f)
+        Iter(fn(): filter_map_step(next(self), f))
 
+    // The first `k` elements (fewer if the iterator is shorter).
     pub fn take(self, k: Int) -> Iter(a):
         take(self, k)
 
+    // Elements up to (not including) the first one failing `pred`.
     pub fn take_while(self, pred: fn(a) -> Bool) -> Iter(a):
-        take_while(self, pred)
+        Iter(fn(): take_while_step(next(self), pred))
 
+    // Skip the first `k` elements. Lazy like every adapter: nothing is pulled
+    // from the source at construction — the skip runs inside the returned
+    // iterator's thunk on first pull, and iteratively, so a large `k` cannot
+    // exhaust the stack.
     pub fn drop(self, k: Int) -> Iter(a):
-        drop(self, k)
+        if k <= 0:
+            self
+        else:
+            Iter(fn(): drop_step(self, k))
 
+    // Skip the leading elements while `pred` holds, then yield the rest.
     pub fn drop_while(self, pred: fn(a) -> Bool) -> Iter(a):
-        drop_while(self, pred)
+        Iter(fn(): drop_while_step(self, pred))
 
+    // Pair each element with its index: (0, x0), (1, x1), ...
     pub fn enumerate(self) -> Iter((Int, a)):
-        enumerate(self)
+        enumerate_from(self, 0)
 
+    // Zip with another iterator into pairs, stopping at the shorter one.
     pub fn zip(self, other: Iter(b)) -> Iter((a, b)):
-        zip(self, other)
+        Iter(fn(): zip_step(next(self), other))
 
+    // The elements of `self`, then the elements of `other`.
     pub fn chain(self, other: Iter(a)) -> Iter(a):
-        chain(self, other)
+        Iter(fn(): chain_step(next(self), other))
 
+    // Map each element to an iterator and concatenate the results.
     pub fn flat_map(self, f: fn(a) -> Iter(b)) -> Iter(b):
-        flat_map(self, f)
+        Iter(fn(): flat_map_step(next(self), f))
 
+    // Concatenate an iterator OF iterators into one flat iterator, lazily and
+    // in order — `flatten` is `flat_map` with the identity function.
     pub fn flatten(self: Iter(Iter(b))) -> Iter(b):
-        flatten(self)
+        flat_map(self, fn(inner): inner)
 
+    // A lazy STATEFUL map: thread `state` through `f`, which returns the new
+    // state and the value to emit. `xs.scan(0, fn(s, x): (s + x, s + x))`
+    // yields the running sums. Unlike `fold`, it produces an iterator, so it is
+    // lazy and composable, and unlike `map` it can carry state between elements.
     pub fn scan(self, state: s, f: fn(s, a) -> (s, b)) -> Iter(b):
         scan(self, state, f)
 
+    // Call `f` on every element for its effect (drives to exhaustion). The
+    // right consumer for a generator when you don't need to early-exit — no
+    // list is built.
     pub fn for_each(self, f: fn(a) -> Nil):
-        for_each(self, f)
+        var cur = self
+        var more = true
+        while more:
+            match next(cur):
+                Empty -> more = false
+                Item(x, rest) ->
+                    f(x)
+                    cur = rest
 
+    // Left fold over the elements.
     pub fn fold(self, init: b, f: fn(b, a) -> b) -> b:
         fold(self, init, f)
 
+    // Number of elements (drives to exhaustion).
     pub fn count(self) -> Int:
-        count(self)
+        fold(self, 0, fn(n: Int, _x): n + 1)
 
+    // Sum of an Int iterator.
     pub fn sum(self: Iter(Int)) -> Int:
-        sum(self)
+        fold(self, 0, fn(acc: Int, x: Int): acc + x)
 
-    pub fn find(self, pred: fn(a) -> Bool) -> Option(a):
-        find(self, pred)
-
-    pub fn any(self, pred: fn(a) -> Bool) -> Bool:
-        any(self, pred)
-
-    pub fn all(self, pred: fn(a) -> Bool) -> Bool:
-        all(self, pred)
-
-    pub fn last(self) -> Option(a):
-        last(self)
-
-    pub fn position(self, pred: fn(a) -> Bool) -> Option(Int):
-        position(self, pred)
-
+    // Split an iterator into its first element and the rest, or None if it is
+    // empty. The building block for writing your own recursive iterator
+    // transforms (e.g. a prime sieve): pair it with `unfold`, which threads the
+    // "rest" as its seed.
     pub fn split_first(self) -> Option((a, Iter(a))):
-        split_first(self)
+        match next(self):
+            Empty -> None
+            Item(x, rest) -> Some((x, rest))
+
+    // The first element satisfying `pred`, or None (stops at the first match,
+    // so it is safe on an unbounded iterator if a match exists).
+    pub fn find(self, pred: fn(a) -> Bool) -> Option(a):
+        var cur = self
+        var more = true
+        while more:
+            match next(cur):
+                Empty -> more = false
+                Item(x, rest) ->
+                    if pred(x):
+                        return Some(x)
+                    cur = rest
+        None
+
+    // Whether at least one element satisfies `pred` — stops (short-circuits) at
+    // the first match, so it terminates on an unbounded iterator once one is
+    // found. `false` for the empty iterator.
+    pub fn any(self, pred: fn(a) -> Bool) -> Bool:
+        var cur = self
+        var found = false
+        var searching = true
+        while searching:
+            match next(cur):
+                Empty -> searching = false
+                Item(x, rest) ->
+                    if pred(x):
+                        found = true
+                        searching = false
+                    else:
+                        cur = rest
+        found
+
+    // Whether every element satisfies `pred` — stops at the first failure.
+    // `true` for the empty iterator (vacuously). Don't call on an unbounded
+    // iterator whose elements all satisfy `pred`: it never stops.
+    pub fn all(self, pred: fn(a) -> Bool) -> Bool:
+        var cur = self
+        var ok = true
+        var checking = true
+        while checking:
+            match next(cur):
+                Empty -> checking = false
+                Item(x, rest) ->
+                    if pred(x):
+                        cur = rest
+                    else:
+                        ok = false
+                        checking = false
+        ok
+
+    // The last element (drives the iterator to exhaustion), or None if it is
+    // empty. Don't call on an unbounded iterator — it never stops.
+    pub fn last(self) -> Option(a):
+        var cur = self
+        var result = None
+        var going = true
+        while going:
+            match next(cur):
+                Empty -> going = false
+                Item(x, rest) ->
+                    result = Some(x)
+                    cur = rest
+        result
+
+    // The 0-based index of the first element satisfying `pred`, or None. Stops
+    // at the first match, so it is safe on an unbounded iterator if a match
+    // exists.
+    pub fn position(self, pred: fn(a) -> Bool) -> Option(Int):
+        var cur = self
+        var idx = 0
+        var more = true
+        while more:
+            match next(cur):
+                Empty -> more = false
+                Item(x, rest) ->
+                    if pred(x):
+                        return Some(idx)
+                    idx = idx + 1
+                    cur = rest
+        None
 
 impl Iter(a) where a: Ord:
+    // The smallest element by the type's `Ord`, or None if the iterator is
+    // empty (drives to exhaustion; don't call on an unbounded iterator).
     pub fn min(self) -> Option(a):
-        min(self)
+        match next(self):
+            Empty -> None
+            Item(x, rest) ->
+                Some(fold(rest, x, fn(best: a, y: a): if y < best: y else: best))
 
+    // The largest element by the type's `Ord`, or None if the iterator is
+    // empty (drives to exhaustion; don't call on an unbounded iterator).
     pub fn max(self) -> Option(a):
-        max(self)
+        match next(self):
+            Empty -> None
+            Item(x, rest) ->
+                Some(fold(rest, x, fn(best: a, y: a): if y > best: y else: best))

@@ -57,7 +57,7 @@ gen fn fibs() -> Iter(Int):
         b = nxt
 
 fn main(console: Console):
-    let first8 = iter.collect(iter.take(fibs(), 8))
+    let first8 = iter.collect(fibs().take(8))
     console.print(list.join(list.map(first8, fn(n: Int): "\${n}"), " "))
 `,
   "Errors as values": `import result

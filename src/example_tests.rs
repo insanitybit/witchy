@@ -531,22 +531,22 @@
         let cases = [
             (
                 "filter",
-                "import iter\n\nfn even_after(n: Int) -> Bool:\n    n >= 1000 && n % 2 == 0\n\nfn main(console: Console):\n    match iter.split_first(iter.filter(iter.range(0, 1002), even_after)):\n        Some(pair) ->\n            let (x, _rest) = pair\n            console.print(\"${x}\")\n        None -> console.print(\"missing\")\n",
+                "import iter\n\nfn even_after(n: Int) -> Bool:\n    n >= 1000 && n % 2 == 0\n\nfn main(console: Console):\n    match iter.range(0, 1002).filter(even_after).split_first():\n        Some(pair) ->\n            let (x, _rest) = pair\n            console.print(\"${x}\")\n        None -> console.print(\"missing\")\n",
                 ["1000"],
             ),
             (
                 "filter_map",
-                "import iter\nimport option\n\nfn only_after(n: Int) -> Option(Int):\n    if n >= 1000:\n        Some(n + 1)\n    else:\n        None\n\nfn main(console: Console):\n    match iter.split_first(iter.filter_map(iter.range(0, 1001), only_after)):\n        Some(pair) ->\n            let (x, _rest) = pair\n            console.print(\"${x}\")\n        None -> console.print(\"missing\")\n",
+                "import iter\nimport option\n\nfn only_after(n: Int) -> Option(Int):\n    if n >= 1000:\n        Some(n + 1)\n    else:\n        None\n\nfn main(console: Console):\n    match iter.range(0, 1001).filter_map(only_after).split_first():\n        Some(pair) ->\n            let (x, _rest) = pair\n            console.print(\"${x}\")\n        None -> console.print(\"missing\")\n",
                 ["1001"],
             ),
             (
                 "drop_while",
-                "import iter\n\nfn main(console: Console):\n    match iter.split_first(iter.drop_while(iter.range(0, 1002), fn(n: Int): n < 1000)):\n        Some(pair) ->\n            let (x, _rest) = pair\n            console.print(\"${x}\")\n        None -> console.print(\"missing\")\n",
+                "import iter\n\nfn main(console: Console):\n    match iter.range(0, 1002).drop_while(fn(n: Int): n < 1000).split_first():\n        Some(pair) ->\n            let (x, _rest) = pair\n            console.print(\"${x}\")\n        None -> console.print(\"missing\")\n",
                 ["1000"],
             ),
             (
                 "flat_map",
-                "import iter\n\nfn empty_until_last(n: Int) -> Iter(Int):\n    if n < 1000:\n        iter.empty()\n    else:\n        iter.once(n)\n\nfn main(console: Console):\n    match iter.split_first(iter.flat_map(iter.range(0, 1001), empty_until_last)):\n        Some(pair) ->\n            let (x, _rest) = pair\n            console.print(\"${x}\")\n        None -> console.print(\"missing\")\n",
+                "import iter\n\nfn empty_until_last(n: Int) -> Iter(Int):\n    if n < 1000:\n        iter.empty()\n    else:\n        iter.once(n)\n\nfn main(console: Console):\n    match iter.range(0, 1001).flat_map(empty_until_last).split_first():\n        Some(pair) ->\n            let (x, _rest) = pair\n            console.print(\"${x}\")\n        None -> console.print(\"missing\")\n",
                 ["1000"],
             ),
         ];
@@ -3200,12 +3200,12 @@ fn main(console: Console):
         };
 
         let rejected = [
-            "import dict\n\ntype Key:\n    Key(Int)\n\nfn main(console: Console):\n    let d: Dict(Key, Int) = dict.new()\n    let _x = dict.get(d, Key(1))\n    console.print(\"bad\")\n",
+            "import dict\n\ntype Key:\n    Key(Int)\n\nfn main(console: Console):\n    let d: Dict(Key, Int) = dict.new()\n    let _x = d.get(Key(1))\n    console.print(\"bad\")\n",
             "import dict\n\ntype Key:\n    Key(Int)\n\nfn main(console: Console):\n    let _x = dict.from_pairs([(Key(1), 1)])\n    console.print(\"bad\")\n",
-            "import dict\n\ntype Key:\n    Key(Int)\n\nfn id(x: Int) -> Int:\n    x\n\nfn main(console: Console):\n    let d: Dict(Key, Int) = dict.new()\n    let _x = dict.map_values(d, id)\n    console.print(\"bad\")\n",
-            "import dict\n\ntype Key:\n    Key(Int)\n\nfn keep(_k: Key, _v: Int) -> Bool:\n    true\n\nfn main(console: Console):\n    let d: Dict(Key, Int) = dict.new()\n    let _x = dict.filter(d, keep)\n    console.print(\"bad\")\n",
-            "import dict\n\ntype Key:\n    Key(Int)\n\nfn main(console: Console):\n    let d: Dict(Key, Int) = dict.new()\n    let _x = dict.merge(d, d)\n    console.print(\"bad\")\n",
-            "import dict\n\ntype Value:\n    Value(Int)\n\nfn main(console: Console):\n    let d: Dict(String, Value) = dict.new()\n    let _x = dict.invert(d)\n    console.print(\"bad\")\n",
+            "import dict\n\ntype Key:\n    Key(Int)\n\nfn id(x: Int) -> Int:\n    x\n\nfn main(console: Console):\n    let d: Dict(Key, Int) = dict.new()\n    let _x = d.map_values(id)\n    console.print(\"bad\")\n",
+            "import dict\n\ntype Key:\n    Key(Int)\n\nfn keep(_k: Key, _v: Int) -> Bool:\n    true\n\nfn main(console: Console):\n    let d: Dict(Key, Int) = dict.new()\n    let _x = d.filter(keep)\n    console.print(\"bad\")\n",
+            "import dict\n\ntype Key:\n    Key(Int)\n\nfn main(console: Console):\n    let d: Dict(Key, Int) = dict.new()\n    let _x = d.merge(d)\n    console.print(\"bad\")\n",
+            "import dict\n\ntype Value:\n    Value(Int)\n\nfn main(console: Console):\n    let d: Dict(String, Value) = dict.new()\n    let _x = d.invert()\n    console.print(\"bad\")\n",
         ];
         for src in rejected {
             let linked = resolve_fs_std(src);
@@ -3225,16 +3225,16 @@ fn main(console: Console):
             }
         }
 
-        let erased_wrapper = "import dict\n\npub fn wrapped(d: Dict(k, v), key: k) -> Option(v):\n    dict.get(d, key)\n";
+        let erased_wrapper = "import dict\n\npub fn wrapped(d: Dict(k, v), key: k) -> Option(v):\n    d.get(key)\n";
         let linked = resolve_fs_std(erased_wrapper);
         let err = typeck::check(&linked).expect_err("generic wrapper must forward dict.get's Eq bound");
         assert!(err.message.contains("requires `k: Eq`"), "expected forwarded Eq-bound error, got: {}", err.message);
 
-        let bounded_wrapper = "import dict\n\npub fn wrapped(d: Dict(k, v), key: k) -> Option(v) where k: Eq:\n    dict.get(d, key)\n";
+        let bounded_wrapper = "import dict\n\npub fn wrapped(d: Dict(k, v), key: k) -> Option(v) where k: Eq:\n    d.get(key)\n";
         let linked = resolve_fs_std(bounded_wrapper);
         typeck::check(&linked).expect("generic wrapper can forward dict.get's Eq bound");
 
-        let accepted = "import dict\n\nfn id(x: Int) -> Int:\n    x\n\nfn keep(_k: String, _v: Int) -> Bool:\n    true\n\nfn main(console: Console):\n    let d: Dict(String, Int) = dict.new()\n    let values: Dict(String, Int) = dict.new()\n    let _a = dict.get(d, \"one\")\n    let _b = dict.from_pairs([(\"one\", 1)])\n    let _c = dict.map_values(d, id)\n    let _d = dict.filter(d, keep)\n    let _e = dict.merge(d, d)\n    let _f = dict.invert(values)\n    console.print(\"ok\")\n";
+        let accepted = "import dict\n\nfn id(x: Int) -> Int:\n    x\n\nfn keep(_k: String, _v: Int) -> Bool:\n    true\n\nfn main(console: Console):\n    let d: Dict(String, Int) = dict.new()\n    let values: Dict(String, Int) = dict.new()\n    let _a = d.get(\"one\")\n    let _b = dict.from_pairs([(\"one\", 1)])\n    let _c = d.map_values(id)\n    let _d = d.filter(keep)\n    let _e = d.merge(d)\n    let _f = values.invert()\n    console.print(\"ok\")\n";
         let linked = resolve_fs_std(accepted);
         typeck::check(&linked).expect("bounded dict wrappers type-check");
         codegen::compile_module_binary(&linked)
@@ -4235,7 +4235,7 @@ fn main(console: Console):
     /// `v` forever. `return <value>` is rejected against the declared `-> Iter(a)`.
     #[test]
     fn gen_fn_bare_return_ends_stream_on_both_backends() {
-        let src = "import iter\n\ngen fn firstn(n: Int) -> Iter(Int):\n    var i = 0\n    while true:\n        if i >= n:\n            return\n        yield i\n        i = i + 1\n\nfn main(console: Console):\n    let xs: List(Int) = iter.collect(iter.take(firstn(3), 10))\n    console.print(\"${xs}\")\n";
+        let src = "import iter\n\ngen fn firstn(n: Int) -> Iter(Int):\n    var i = 0\n    while true:\n        if i >= n:\n            return\n        yield i\n        i = i + 1\n\nfn main(console: Console):\n    let xs: List(Int) = iter.collect(firstn(3).take(10))\n    console.print(\"${xs}\")\n";
         let expected = ["[0, 1, 2]"];
         assert_eq!(link_run(src), expected, "interp: bare return ends the stream");
         assert_eq!(
@@ -4252,7 +4252,7 @@ fn main(console: Console):
     fn gen_fn_return_value_is_rejected() {
         for tail in ["return 5", "return Some(99)"] {
             let src = format!(
-                "import iter\n\ngen fn g() -> Iter(Int):\n    yield 1\n    {tail}\n\nfn main(console: Console):\n    let xs: List(Int) = iter.collect(iter.take(g(), 3))\n    console.print(\"${{xs}}\")\n"
+                "import iter\n\ngen fn g() -> Iter(Int):\n    yield 1\n    {tail}\n\nfn main(console: Console):\n    let xs: List(Int) = iter.collect(g().take(3))\n    console.print(\"${{xs}}\")\n"
             );
             let module = parser::parse_module(&src).expect("parse");
             let err = crate::pipeline::link(vec![("main".into(), module)], "main")
@@ -7068,7 +7068,7 @@ fn main() -> Int:
     /// this guards that they stay in sync.
     #[test]
     fn coalesce_fallback_both_backends() {
-        let src = "import option\n\nfn find(b: Bool) -> Option(String):\n    if b: Some(\"hit\") else: None\n\nfn parse(s: String) -> Result(Int, String):\n    match s.parse_int():\n        Some(n) -> Ok(n)\n        None -> Err(\"bad int\")\n\nfn main(console: Console):\n    console.print(find(true) ?? \"fallback\")\n    console.print(find(false) ?? \"fallback\")\n    console.print(\"${parse(\"41\") ?? 0}\")\n    console.print(\"${parse(\"x\") ?? 9}\")\n    var d = dict.new()\n    dict.insert(d, \"a\", 1)\n    console.print(\"${dict.get(d, \"a\") ?? dict.get(d, \"b\") ?? 0}\")\n    console.print(\"${dict.get(d, \"z\") ?? dict.get(d, \"b\") ?? 5}\")\n    console.print(\"${Some(\"\") ?? \"x\"}\")\n    console.print(\"${false || true}\")\n";
+        let src = "import option\n\nfn find(b: Bool) -> Option(String):\n    if b: Some(\"hit\") else: None\n\nfn parse(s: String) -> Result(Int, String):\n    match s.parse_int():\n        Some(n) -> Ok(n)\n        None -> Err(\"bad int\")\n\nfn main(console: Console):\n    console.print(find(true) ?? \"fallback\")\n    console.print(find(false) ?? \"fallback\")\n    console.print(\"${parse(\"41\") ?? 0}\")\n    console.print(\"${parse(\"x\") ?? 9}\")\n    var d = dict.new()\n    dict.insert(d, \"a\", 1)\n    console.print(\"${d.get(\"a\") ?? d.get(\"b\") ?? 0}\")\n    console.print(\"${d.get(\"z\") ?? d.get(\"b\") ?? 5}\")\n    console.print(\"${Some(\"\") ?? \"x\"}\")\n    console.print(\"${false || true}\")\n";
         let want: Vec<String> = ["hit", "fallback", "41", "9", "1", "5", "", "true"]
             .iter()
             .map(|s| s.to_string())
@@ -7300,7 +7300,7 @@ fn main(console: Console):
     /// pointer-compare and return None.
     #[test]
     fn runtime_built_dict_keys_compare_by_content() {
-        let src = "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, \"  host  \".trim(), \"localhost\")\n    let parts = \"port=8080\".split(\"=\")\n    dict.insert(d, list.at(parts, 0), list.at(parts, 1))\n    dict.insert(d, \"lit\" + \"eral\", \"joined\")\n    match dict.get(d, \"host\"):\n        Some(v) -> console.print(\"host=\" + v)\n        None -> console.print(\"host MISSING\")\n    match dict.get(d, \"port\"):\n        Some(v) -> console.print(\"port=\" + v)\n        None -> console.print(\"port MISSING\")\n    console.print(\"${dict.contains_key(d, \"literal\")}\")\n    console.print(\"${dict.length(d)}\")\n";
+        let src = "import dict\n\nfn main(console: Console):\n    var d = dict.new()\n    dict.insert(d, \"  host  \".trim(), \"localhost\")\n    let parts = \"port=8080\".split(\"=\")\n    dict.insert(d, list.at(parts, 0), list.at(parts, 1))\n    dict.insert(d, \"lit\" + \"eral\", \"joined\")\n    match d.get(\"host\"):\n        Some(v) -> console.print(\"host=\" + v)\n        None -> console.print(\"host MISSING\")\n    match d.get(\"port\"):\n        Some(v) -> console.print(\"port=\" + v)\n        None -> console.print(\"port MISSING\")\n    console.print(\"${dict.contains_key(d, \"literal\")}\")\n    console.print(\"${dict.length(d)}\")\n";
         let want: Vec<String> = ["host=localhost", "port=8080", "true", "3"]
             .iter()
             .map(|s| s.to_string())
@@ -7329,7 +7329,7 @@ fn main(console: Console):
     /// return — renders identically on both backends.
     #[test]
     fn interpolation_of_mono_typed_values_agrees() {
-        let src = "import iter\n\ntype Msg:\n    Text(String)\n    Silence\n\nfn main(console: Console):\n    match Text(\"hi\"):\n        Text(s) -> console.print(\"got: ${s}\")\n        Silence -> console.print(\"none\")\n    let collected: List(Int) = iter.collect(iter.take(iter.range(1, 100), 3))\n    console.print(\"collected: ${collected}\")\n";
+        let src = "import iter\n\ntype Msg:\n    Text(String)\n    Silence\n\nfn main(console: Console):\n    match Text(\"hi\"):\n        Text(s) -> console.print(\"got: ${s}\")\n        Silence -> console.print(\"none\")\n    let collected: List(Int) = iter.collect(iter.range(1, 100).take(3))\n    console.print(\"collected: ${collected}\")\n";
         let want: Vec<String> = ["got: hi", "collected: [1, 2, 3]"]
             .iter()
             .map(|s| s.to_string())
@@ -7635,7 +7635,7 @@ fn main(console: Console):
     /// DIFFERENT negative offset than a plain record. Read into a binding that outlives the set_at.
     #[test]
     fn rc_corpus_dict_element_survives_set_at() {
-        let src = "import list\nimport dict\nfn mkd(v: Int) -> Dict(String, Int):\n    var d = dict.new()\n    dict.insert(d, \"k\", v)\n    d\nfn main(console: Console):\n    var xs = [mkd(1), mkd(2), mkd(3)]\n    let held = list.at(xs, 1)\n    list.set_at(xs, 1, mkd(9))\n    console.print(\"${dict.get(held, \"k\")}\")\n    console.print(\"${dict.get(list.at(xs, 1), \"k\")}\")\n";
+        let src = "import list\nimport dict\nfn mkd(v: Int) -> Dict(String, Int):\n    var d = dict.new()\n    dict.insert(d, \"k\", v)\n    d\nfn main(console: Console):\n    var xs = [mkd(1), mkd(2), mkd(3)]\n    let held = list.at(xs, 1)\n    list.set_at(xs, 1, mkd(9))\n    console.print(\"${held.get(\"k\")}\")\n    let replaced: Dict(String, Int) = list.at(xs, 1)\n    console.print(\"${replaced.get(\"k\")}\")\n";
         assert_rc_corpus_stable(src, &["Some(2)", "Some(9)"]);
     }
 
@@ -10150,7 +10150,7 @@ fn main(console: Console):
     let head_wire = server.render_for(server.text(200, "body"), "HEAD")
     let get_wire = server.render_for(server.text(200, "body"), "GET")
     console.print("${head_wire.contains("Content-Length: 4")}|${head_wire.ends_with("\r\n\r\n")}|${get_wire.ends_with("body")}")
-    let tail: List(Int) = iter.collect(iter.drop(iter.range(0, 100000), 99997))
+    let tail: List(Int) = iter.collect(iter.range(0, 100000).drop(99997))
     console.print("${tail}")
 "#;
         let interpreted = link_run(src);
@@ -10185,7 +10185,7 @@ fn explode(i: Int) -> Option(Int):
     None
 
 fn main(console: Console):
-    let dropped = iter.drop(iter.from_gen(explode), 1)
+    let dropped = iter.from_gen(explode).drop(1)
     console.print("constructed")
 "#;
         assert_eq!(link_run(src), vec!["constructed"], "interpreter must not pull at construction");
@@ -12026,15 +12026,16 @@ fn yn(b: Bool) -> String:
 fn main(console: Console):
     let d = dict.from_pairs([("a", 1), ("b", 2), ("c", 3)])
     console.print("${dict.length(d)}")
-    console.print(oi(dict.get(d, "b")))
-    console.print(oi(dict.get(d, "z")))
-    let m = dict.merge(d, dict.from_pairs([("b", 20), ("d", 4)]))
+    console.print(oi(d.get("b")))
+    console.print(oi(d.get("z")))
+    let m = d.merge(dict.from_pairs([("b", 20), ("d", 4)]))
     console.print("${dict.get_or(m, "b", 0)}" + "," + "${dict.get_or(m, "d", 0)}")
-    let tens = dict.map_values(d, fn(v: Int): v * 10)
-    console.print(oi(dict.get(tens, "c")))
-    let evens = dict.filter(d, fn(k: String, v: Int): v % 2 == 0)
+    let tens = d.map_values(fn(v: Int): v * 10)
+    console.print(oi(tens.get("c")))
+    let evens = d.filter(fn(k: String, v: Int): v % 2 == 0)
     console.print("${dict.length(evens)}")
-    console.print(bs(dict.is_empty(dict.new())))
+    let fresh: Dict(String, Int) = dict.new()
+    console.print(bs(fresh.is_empty()))
 
 fn oi(o: Option(Int)) -> String:
     match o:
@@ -19075,11 +19076,11 @@ fn main(console: Console):
         let client = r#"
 import iter
 fn main(console: Console):
-    match iter.next(iter.from_list([1, 2])):
+    match iter.from_list([1, 2]).next():
         Empty -> console.print("empty")
         Item(x, rest) ->
             console.print("${x}")
-            match iter.next(rest):
+            match rest.next():
                 Empty -> console.print("empty")
                 Item(y, _more) -> console.print("${y}")
 "#;
@@ -19098,14 +19099,14 @@ import iter
 import func
 fn main(console: Console):
     var es = []
-    let ps: List((Int, String)) = iter.collect(iter.enumerate(iter.from_list(["a", "b", "c"])))
+    let ps: List((Int, String)) = iter.collect(iter.from_list(["a", "b", "c"]).enumerate())
     for p in ps:
         list.push(es, "${func.first(p)}" + func.second(p))
     console.print(list.join(es, " "))
-    console.print("${iter.count(iter.zip(iter.count_from(1), iter.from_list([0, 0, 0])))}")
-    console.print("${iter.sum(iter.chain(iter.range(0, 4), iter.range(10, 13)))}")
-    console.print("${iter.sum(iter.flat_map(iter.range(1, 4), fn(n: Int): iter.from_list([n, n])))}")
-    iter.for_each(iter.take(iter.count_from(100), 3), fn(n: Int): console.print("${n}"))
+    console.print("${iter.count_from(1).zip(iter.from_list([0, 0, 0])).count()}")
+    console.print("${iter.range(0, 4).chain(iter.range(10, 13)).sum()}")
+    console.print("${iter.range(1, 4).flat_map(fn(n: Int): iter.from_list([n, n])).sum()}")
+    iter.count_from(100).take(3).for_each(fn(n: Int): console.print("${n}"))
 "#;
         let sources = [
             ("iter", crate::bundled_module("iter").unwrap()),
@@ -19193,16 +19194,16 @@ fn main(console: Console):
 import iter
 fn main(console: Console):
     // squares of 1.. while < 100, kept odd, summed: 1+9+25+49+81 = 165
-    let sq = iter.map(iter.count_from(1), fn(n: Int): n * n)
-    let small = iter.take_while(sq, fn(s: Int): s < 100)
-    console.print("${iter.sum(iter.filter(small, fn(s: Int): s % 2 == 1))}")
+    let sq = iter.count_from(1).map(fn(n: Int): n * n)
+    let small = sq.take_while(fn(s: Int): s < 100)
+    console.print("${small.filter(fn(s: Int): s % 2 == 1).sum()}")
     // first multiple of 7 above 50, from an infinite iterator
-    match iter.find(iter.count_from(51), fn(n: Int): n % 7 == 0):
+    match iter.count_from(51).find(fn(n: Int): n % 7 == 0):
         Some(n) -> console.print("${n}")
         None -> console.print("none")
     // a finite range, doubled and collected
-    console.print("${iter.count(iter.range(0, 5))}")
-    let vs: List(Int) = iter.collect(iter.map(iter.range(0, 3), fn(n: Int): n * 10))
+    console.print("${iter.range(0, 5).count()}")
+    let vs: List(Int) = iter.collect(iter.range(0, 3).map(fn(n: Int): n * 10))
     for v in vs:
         console.print("${v}")
 "#;
@@ -19222,13 +19223,13 @@ fn main(console: Console):
         let client = r#"
 import iter
 fn main(console: Console):
-    console.print("${iter.any(iter.from_list([2, 4, 6, 7]), fn(x: Int): x % 2 == 1)}")
-    console.print("${iter.all(iter.from_list([2, 4, 6]), fn(x: Int): x % 2 == 0)}")
-    console.print("${iter.all(iter.from_list([2, 4, 7]), fn(x: Int): x % 2 == 0)}")
-    console.print("${iter.any(iter.empty(), fn(x: Int): true)}")
-    console.print("${iter.all(iter.empty(), fn(x: Int): false)}")
+    console.print("${iter.from_list([2, 4, 6, 7]).any(fn(x: Int): x % 2 == 1)}")
+    console.print("${iter.from_list([2, 4, 6]).all(fn(x: Int): x % 2 == 0)}")
+    console.print("${iter.from_list([2, 4, 7]).all(fn(x: Int): x % 2 == 0)}")
+    console.print("${iter.empty().any(fn(x: Int): true)}")
+    console.print("${iter.empty().all(fn(x: Int): false)}")
     // any short-circuits on an unbounded iterator once a match exists
-    console.print("${iter.any(iter.count_from(1), fn(n: Int): n > 100)}")
+    console.print("${iter.count_from(1).any(fn(n: Int): n > 100)}")
 "#;
         let sources = [("iter", crate::bundled_module("iter").unwrap()), ("main", client)];
         let interpreted = interpreter::run_program(&sources, "main").expect("interp");
@@ -22550,7 +22551,7 @@ fn main(console: Console):
     /// `iter.collect`") before the fixpoint landed.
     #[test]
     fn rfc0046_accept_a_iter_collect_infers_through_generic_helper() {
-        let src = "import iter\n\nfn firsts(xs: List(a)) -> List(a):\n    iter.collect(iter.take(iter.from_list(xs), 2))\n\nfn main(console: Console):\n    let ys = firsts([1, 2, 3])\n    console.print(\"${ys}\")\n";
+        let src = "import iter\n\nfn firsts(xs: List(a)) -> List(a):\n    iter.collect(iter.from_list(xs).take(2))\n\nfn main(console: Console):\n    let ys = firsts([1, 2, 3])\n    console.print(\"${ys}\")\n";
         let want = vec!["[1, 2]".to_string()];
         assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
@@ -22562,7 +22563,7 @@ fn main(console: Console):
     /// monomorphization fixpoint is not single-shot.
     #[test]
     fn rfc0046_accept_a_generic_helper_specializes_per_element_type() {
-        let src = "import iter\n\ntype Point derive(Show):\n    Point(Int, Int)\n\nfn firsts(xs: List(a)) -> List(a):\n    iter.collect(iter.take(iter.from_list(xs), 2))\n\nfn main(console: Console):\n    let ps = firsts([Point(1, 2), Point(3, 4), Point(5, 6)])\n    console.print(\"${ps}\")\n    let ss = firsts([\"a\", \"b\", \"c\"])\n    console.print(\"${ss}\")\n";
+        let src = "import iter\n\ntype Point derive(Show):\n    Point(Int, Int)\n\nfn firsts(xs: List(a)) -> List(a):\n    iter.collect(iter.from_list(xs).take(2))\n\nfn main(console: Console):\n    let ps = firsts([Point(1, 2), Point(3, 4), Point(5, 6)])\n    console.print(\"${ps}\")\n    let ss = firsts([\"a\", \"b\", \"c\"])\n    console.print(\"${ss}\")\n";
         let want = vec!["[Point(1, 2), Point(3, 4)]".to_string(), "[a, b]".to_string()];
         assert_eq!(link_run(src), want, "interpreter");
         assert_eq!(wasm_run(src), want, "wasm");
@@ -22601,7 +22602,7 @@ fn main(console: Console):
     /// what lets them monomorphize.
     #[test]
     fn rfc0046_iter_combinators_min_max_last_position_scan_flatten() {
-        let src = "import iter\nimport option\n\nfn main(console: Console):\n    console.print(\"${option.unwrap_or(iter.min(iter.from_list([3, 1, 4, 1, 5])), 0)}\")\n    console.print(\"${option.unwrap_or(iter.max(iter.from_list([3, 1, 4, 1, 5])), 0)}\")\n    console.print(\"${option.unwrap_or(iter.last(iter.from_list([10, 20, 30])), 0)}\")\n    console.print(\"${option.unwrap_or(iter.position(iter.from_list([3, 1, 4, 1, 5]), fn(n: Int): n == 4), 0 - 1)}\")\n    let sums: List(Int) = iter.collect(iter.scan(iter.from_list([1, 2, 3, 4]), 0, fn(s: Int, x: Int): (s + x, s + x)))\n    console.print(\"${sums}\")\n    let flat: List(Int) = iter.collect(iter.flatten(iter.from_list([iter.from_list([1, 2]), iter.from_list([3, 4])])))\n    console.print(\"${flat}\")\n    console.print(\"${option.unwrap_or(iter.min(iter.from_list([\"pear\", \"apple\", \"kiwi\"])), \"?\")}\")\n";
+        let src = "import iter\nimport option\n\nfn main(console: Console):\n    console.print(\"${option.unwrap_or(iter.from_list([3, 1, 4, 1, 5]).min(), 0)}\")\n    console.print(\"${option.unwrap_or(iter.from_list([3, 1, 4, 1, 5]).max(), 0)}\")\n    console.print(\"${option.unwrap_or(iter.from_list([10, 20, 30]).last(), 0)}\")\n    console.print(\"${option.unwrap_or(iter.from_list([3, 1, 4, 1, 5]).position(fn(n: Int): n == 4), 0 - 1)}\")\n    let sums: List(Int) = iter.collect(iter.from_list([1, 2, 3, 4]).scan(0, fn(s: Int, x: Int): (s + x, s + x)))\n    console.print(\"${sums}\")\n    let flat: List(Int) = iter.collect(iter.from_list([iter.from_list([1, 2]), iter.from_list([3, 4])]).flatten())\n    console.print(\"${flat}\")\n    console.print(\"${option.unwrap_or(iter.from_list([\"pear\", \"apple\", \"kiwi\"]).min(), \"?\")}\")\n";
         let want = vec![
             "1".to_string(),
             "5".to_string(),
@@ -23064,7 +23065,7 @@ import chan
 from chan import Sender, Receiver
 
 fn doubled(xs: List(Int)) -> List(Int):
-    iter.collect(iter.map(iter.from_list(xs), fn(x): x * 2))
+    iter.collect(iter.from_list(xs).map(fn(x): x * 2))
 
 async fn producer(tx: Sender(Int)) -> Nil:
     chan.send(tx, 41).await

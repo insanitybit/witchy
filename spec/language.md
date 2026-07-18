@@ -1353,13 +1353,13 @@ their ordinary ownership cleanup.
 to a bare `T` (§4): `Some(x) ?? d` is `x`, `None ?? d` is `d` (with `d` evaluated
 only when absent). `Result(T, e) ?? T` unwraps `Ok` likewise, discarding the
 error. It is `unwrap_or` with operator syntax — handy on the `Option`-returning
-lookups (`dict.get`, `list.head`, …).
+lookups (`d.get(key)`, `list.head`, …).
 
 ```witchy
 fn main(console: Console):
     let ages = dict.from_pairs([("ada", 36)])
-    console.print("${dict.get(ages, "ada") ?? 0}")
-    console.print("${dict.get(ages, "bob") ?? 0}")
+    console.print("${ages.get("ada") ?? 0}")
+    console.print("${ages.get("bob") ?? 0}")
 ```
 
 ## 10. Comprehensions
@@ -1401,7 +1401,7 @@ gen fn fibs() -> Iter(Int):
         b = nxt
 
 fn main(console: Console):
-    let first8 = iter.collect(iter.take(fibs(), 8))
+    let first8 = iter.collect(fibs().take(8))
     console.print(list.join(list.map(first8, fn(n: Int): "${n}"), " "))
 
 // 0 1 1 2 3 5 8 13
@@ -1630,7 +1630,7 @@ deterministic — identical output on the interpreter and the compiled WebAssemb
 ```witchy
 from chan import Sender
 
-async fn producer(tx: Sender(Int)) -> Nil:
+async fn producer(tx: Sender(Int)):
     for n in [1, 2, 3]:
         chan.send(tx, n).await
 

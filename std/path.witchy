@@ -112,4 +112,4 @@ fn last(xs: List(String)) -> String:
 fn drop_last(xs: List(String)) -> List(String):
     // Everything but the final element — `take` of one fewer (empty when `xs`
     // is, since `take` of a non-positive count is empty). Dogfoods std/iter.
-    iter.collect(iter.take(iter.from_list(xs), list.length(xs) - 1))
+    iter.collect(iter.from_list(xs).take(list.length(xs) - 1))

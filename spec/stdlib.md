@@ -741,41 +741,17 @@ The (key, value) pairs, in insertion order.
 
 The number of entries.
 
-#### `fn get(d: Dict(k, v), key: k) -> Option(v) where k: Eq`
-
-A lookup that says whether the key was present, rather than forcing a default.
-
-#### `fn is_empty(d: Dict(k, v)) -> Bool`
-
 #### `fn from_pairs(entries: List((k, v))) -> Dict(k, v) where k: Eq`
 
 Build a Dict from (key, value) pairs; a later pair overrides an earlier one.
-
-#### `fn map_values(d: Dict(k, v), f: fn(v) -> w) -> Dict(k, w) where k: Eq`
-
-A new Dict with every value passed through `f` (keys unchanged).
-
-#### `fn filter(d: Dict(k, v), keep: fn(k, v) -> Bool) -> Dict(k, v) where k: Eq`
-
-Keep only the entries for which `keep(key, value)` holds.
-
-#### `fn merge(a: Dict(k, v), b: Dict(k, v)) -> Dict(k, v) where k: Eq`
-
-`a` with `b`'s entries laid over it (on a key collision, `b` wins).
-
-#### `fn invert(d: Dict(k, v)) -> Dict(v, k) where v: Eq`
-
-Swap keys and values. With duplicate values, a later entry wins.
-
-#### `fn values_where(d: Dict(k, v), pred: fn(k) -> Bool) -> List(v)`
-
-The values whose keys satisfy `pred`, in the Dict's iteration order.
 
 #### `Dict.length() -> Int`
 
 The number of entries.
 
 #### `Dict.is_empty() -> Bool`
+
+Whether the dict has no entries.
 
 #### `Dict.keys() -> List(k)`
 
@@ -788,6 +764,10 @@ The values, in insertion order.
 #### `Dict.pairs() -> List((k, v))`
 
 The (key, value) pairs, in insertion order.
+
+#### `Dict.values_where(pred: fn(k) -> Bool) -> List(v)`
+
+The values whose keys satisfy `pred`, in the Dict's iteration order.
 
 #### `Dict.insert(key: k, val: v) -> Option(v)`
 
@@ -825,7 +805,11 @@ Keep only the entries for which `keep(key, value)` holds.
 
 #### `Dict.merge(other: Dict(k, v)) -> Dict(k, v)`
 
-`a` with `b`'s entries laid over it (on a key collision, `b` wins).
+`self` with `other`'s entries laid over it (on a key collision, `other` wins).
+
+#### `Dict.invert() -> Dict(v, k)`
+
+Swap keys and values. With duplicate values, a later entry wins.
 
 ## `duration`
 
@@ -1427,6 +1411,8 @@ Strict response parsing for public client paths. In particular, malformed `Trans
 
 std/iter — lazy, pull-based iterators: the witchy take on Rust's Iterator, minus the part Rust most regrets. Because witchy values are "data" (no borrowing), there is no lending-iterator / GAT complexity: an `Iter(a)` is just a thunk that produces the next `Step`. Adapters (`map`/`filter`/ `take_while`/...) are lazy and compose without building intermediate lists; consumers (`collect`/`fold`/`find`/`count`) drive the pulling. Infinite iterators are fine (`count_from`, `repeat`) as long as something bounds them (`take`/`take_while`/`find`). Pure and capability-free; runs on both backends. `gen fn`/`yield` lower to this representation; `from_gen` is the low-level desugaring target for compiler-generated iterators.
 
+Adapters and consumers are METHODS on `Iter` (`it.map(f).take(3)`), so pipelines read left-to-right. The module level keeps only what has no receiver — the constructors (`iter.range`, `iter.from_list`, ...) — plus `iter.collect` (whose polymorphic return type dispatches on the EXPECTED type; keeping it a free function also avoids a measured mono-pass blowup) and the pull primitive `iter.next` (also a method; the free form drives the module's own generic internals).
+
 #### `type Step`
 
 One pull: either exhausted, or a value plus the rest of the iterator.
@@ -1447,6 +1433,8 @@ A type an iterator can be collected INTO. `from_iter` mentions the implementing 
 - `fn from_iter(it: Iter(e)) -> Self`
 
 #### `fn next(it: Iter(a)) -> Step(a)`
+
+The pull primitive. Kept at module level (the method delegates to it): internal step helpers pull from pattern-bound iterators, whose method dispatch the quiet pre-mono pass cannot resolve.
 
 #### `fn empty() -> Iter(a)`
 
@@ -1480,111 +1468,13 @@ A list's elements, in order.
 
 Build an iterator from an index function: `f(0)`, `f(1)`, ... each `Some(x)` is the next element and the first `None` ends it. This is the de-sugaring target for the `gen`/`yield` syntax: a generator body becomes a function from "which yield" to its value, and pulling element i re-runs it to the i-th yield (so the body may use any control flow, including unbounded loops).
 
-#### `fn map(it: Iter(a), f: fn(a) -> b) -> Iter(b)`
-
-Apply `f` to every element.
-
-#### `fn filter(it: Iter(a), keep: fn(a) -> Bool) -> Iter(a)`
-
-Keep only the elements for which `keep` holds.
-
-#### `fn filter_map(it: Iter(a), f: fn(a) -> Option(b)) -> Iter(b)`
-
-Apply `f` to each element, keeping every `Some(y)` and dropping every `None` — a `map` and `filter` fused into one pass (Rust's `Iterator::filter_map`).
-
-#### `fn take(it: Iter(a), k: Int) -> Iter(a)`
-
-The first `k` elements (fewer if the iterator is shorter).
-
-#### `fn take_while(it: Iter(a), pred: fn(a) -> Bool) -> Iter(a)`
-
-Elements up to (not including) the first one failing `pred`.
-
-#### `fn drop_while(it: Iter(a), pred: fn(a) -> Bool) -> Iter(a)`
-
-Skip the leading elements while `pred` holds, then yield the rest.
-
-#### `fn drop(it: Iter(a), k: Int) -> Iter(a)`
-
-Skip the first `k` elements. Lazy like every adapter: nothing is pulled from the source at construction — the skip runs inside the returned iterator's thunk on first pull, and iteratively, so a large `k` cannot exhaust the stack.
-
-#### `fn enumerate(it: Iter(a)) -> Iter((Int, a))`
-
-Pair each element with its index: (0, x0), (1, x1), ...
-
-#### `fn zip(a: Iter(x), b: Iter(y)) -> Iter((x, y))`
-
-Zip two iterators into pairs, stopping at the shorter one.
-
-#### `fn chain(first: Iter(a), second: Iter(a)) -> Iter(a)`
-
-The elements of `first`, then the elements of `second`.
-
-#### `fn flat_map(it: Iter(a), f: fn(a) -> Iter(b)) -> Iter(b)`
-
-Map each element to an iterator and concatenate the results.
-
-#### `fn for_each(it: Iter(a), f: fn(a) -> Nil)`
-
-Call `f` on every element for its effect (drives to exhaustion). The right consumer for a generator when you don't need to early-exit — no list is built.
-
 #### `fn collect(it: Iter(a)) -> c where c: FromIterator(a)`
 
-Collect into any FromIterator type, chosen by the call site's expected type (drives the iterator to exhaustion — don't call on an unbounded one):     let xs: List(Int) = iter.collect(it)     let joined: String = iter.collect(pieces)     let s: Set(Int) = iter.collect(it)        # de-duplicates; needs `a: Eq`
-
-#### `fn fold(it: Iter(a), init: b, f: fn(b, a) -> b) -> b`
-
-Left fold over the elements.
-
-#### `fn count(it: Iter(a)) -> Int`
-
-Number of elements (drives to exhaustion).
-
-#### `fn sum(it: Iter(Int)) -> Int`
-
-Sum of an Int iterator.
-
-#### `fn split_first(it: Iter(a)) -> Option((a, Iter(a)))`
-
-Split an iterator into its first element and the rest, or None if it is empty. The building block for writing your own recursive iterator transforms (e.g. a prime sieve): pair it with `unfold`, which threads the "rest" as its seed.
-
-#### `fn find(it: Iter(a), pred: fn(a) -> Bool) -> Option(a)`
-
-The first element satisfying `pred`, or None (stops at the first match, so it is safe on an unbounded iterator if a match exists).
-
-#### `fn any(it: Iter(a), pred: fn(a) -> Bool) -> Bool`
-
-Whether at least one element satisfies `pred` — stops (short-circuits) at the first match, so it terminates on an unbounded iterator once one is found. `false` for the empty iterator.
-
-#### `fn all(it: Iter(a), pred: fn(a) -> Bool) -> Bool`
-
-Whether every element satisfies `pred` — stops at the first failure. `true` for the empty iterator (vacuously). Don't call on an unbounded iterator whose elements all satisfy `pred`: it never stops.
-
-#### `fn last(it: Iter(a)) -> Option(a)`
-
-The last element (drives the iterator to exhaustion), or None if it is empty. Don't call on an unbounded iterator — it never stops.
-
-#### `fn position(it: Iter(a), pred: fn(a) -> Bool) -> Option(Int)`
-
-The 0-based index of the first element satisfying `pred`, or None. Stops at the first match, so it is safe on an unbounded iterator if a match exists.
-
-#### `fn min(it: Iter(a)) -> Option(a) where a: Ord`
-
-The smallest element by the type's `Ord`, or None if the iterator is empty (drives to exhaustion; don't call on an unbounded iterator).
-
-#### `fn max(it: Iter(a)) -> Option(a) where a: Ord`
-
-The largest element by the type's `Ord`, or None if the iterator is empty (drives to exhaustion; don't call on an unbounded iterator).
-
-#### `fn scan(it: Iter(a), state: s, f: fn(s, a) -> (s, b)) -> Iter(b)`
-
-A lazy STATEFUL map: thread `state` through `f`, which returns the new state and the value to emit. `scan(xs, 0, fn(s, x): (s + x, s + x))` yields the running sums. Unlike `fold`, it produces an iterator, so it is lazy and composable, and unlike `map` it can carry state between elements.
-
-#### `fn flatten(it: Iter(Iter(a))) -> Iter(a)`
-
-Concatenate an iterator OF iterators into one flat iterator, lazily and in order — `flatten` is `flat_map` with the identity function.
+Collect into any FromIterator type, chosen by the call site's expected type (drives the iterator to exhaustion — don't call on an unbounded one):     let xs: List(Int) = iter.collect(it)     let joined: String = iter.collect(pieces)     let s: Set(Int) = iter.collect(it)        # de-duplicates; needs `a: Eq` Free-function-only ON PURPOSE: the polymorphic return type in an impl block causes a measured mono-pass performance explosion.
 
 #### `Iter.next() -> Step(a)`
+
+One pull: `Empty`, or `Item(value, rest)`.
 
 #### `Iter.map(f: fn(a) -> b) -> Iter(b)`
 
@@ -1620,11 +1510,11 @@ Pair each element with its index: (0, x0), (1, x1), ...
 
 #### `Iter.zip(other: Iter(b)) -> Iter((a, b))`
 
-Zip two iterators into pairs, stopping at the shorter one.
+Zip with another iterator into pairs, stopping at the shorter one.
 
 #### `Iter.chain(other: Iter(a)) -> Iter(a)`
 
-The elements of `first`, then the elements of `second`.
+The elements of `self`, then the elements of `other`.
 
 #### `Iter.flat_map(f: fn(a) -> Iter(b)) -> Iter(b)`
 
@@ -1636,7 +1526,7 @@ Concatenate an iterator OF iterators into one flat iterator, lazily and in order
 
 #### `Iter.scan(state: s, f: fn(s, a) -> (s, b)) -> Iter(b)`
 
-A lazy STATEFUL map: thread `state` through `f`, which returns the new state and the value to emit. `scan(xs, 0, fn(s, x): (s + x, s + x))` yields the running sums. Unlike `fold`, it produces an iterator, so it is lazy and composable, and unlike `map` it can carry state between elements.
+A lazy STATEFUL map: thread `state` through `f`, which returns the new state and the value to emit. `xs.scan(0, fn(s, x): (s + x, s + x))` yields the running sums. Unlike `fold`, it produces an iterator, so it is lazy and composable, and unlike `map` it can carry state between elements.
 
 #### `Iter.for_each(f: fn(a) -> Nil)`
 
@@ -1653,6 +1543,10 @@ Number of elements (drives to exhaustion).
 #### `Iter.sum() -> Int`
 
 Sum of an Int iterator.
+
+#### `Iter.split_first() -> Option((a, Iter(a)))`
+
+Split an iterator into its first element and the rest, or None if it is empty. The building block for writing your own recursive iterator transforms (e.g. a prime sieve): pair it with `unfold`, which threads the "rest" as its seed.
 
 #### `Iter.find(pred: fn(a) -> Bool) -> Option(a)`
 
@@ -1673,10 +1567,6 @@ The last element (drives the iterator to exhaustion), or None if it is empty. Do
 #### `Iter.position(pred: fn(a) -> Bool) -> Option(Int)`
 
 The 0-based index of the first element satisfying `pred`, or None. Stops at the first match, so it is safe on an unbounded iterator if a match exists.
-
-#### `Iter.split_first() -> Option((a, Iter(a)))`
-
-Split an iterator into its first element and the rest, or None if it is empty. The building block for writing your own recursive iterator transforms (e.g. a prime sieve): pair it with `unfold`, which threads the "rest" as its seed.
 
 #### `Iter.min() -> Option(a)`
 
