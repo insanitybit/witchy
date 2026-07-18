@@ -7,7 +7,7 @@ predecessors:
   - "0016 (reference-counted memory — the design this implements)"
   - "0034 (closing the compute gap — the executor leak diagnosed here)"
   - "spec/performance.md (the perf thesis; tracing GC rejected)"
-tracking: "Implements the per-object refcount floor RFC-0016 scoped but left planned:
+tracking: "Implements the per-object refcount floor [RFC-0016](./0016-reference-counted-memory.md) scoped but left planned:
   the last_use(v,p) lattice + dec-at-last-use that bounds generally-escaping garbage.
   RFC-0016 shipped the analysis-driven elision rungs (rc-elide reuse, region/watermark)
   + the free-at-overwrite var floor; this completes it to the full Perceus floor."
@@ -141,7 +141,7 @@ needed to go from the shipped floor to the complete floor:
   post-async-lowering AST — the same IR the uniqueness pass already consumes. For
   each heap-typed value `v` and program point `p`, `last_use(v,p)` is true iff no use
   of `v` is reachable after `p`. A fourth projection of the one `Facts` oracle
-  RFC-0016 Part I describes, alongside `uniq`/`confine`/`borrow`.
+  [RFC-0016](./0016-reference-counted-memory.md) Part I describes, alongside `uniq`/`confine`/`borrow`.
 - **Inter-procedural via summaries, not whole-program liveness.** The seam is handled
   *compositionally*: a value passed `own` threads its count into the callee (the
   existing `own_abi` summary), a `let`/borrowed param is never counted (R1), an owned
@@ -241,7 +241,7 @@ agree on every value and error, never on the byte at which a cell is reclaimed. 
 *exhaustion* (the OOM trap) is a resource limit, not program semantics, and already
 differs between the tiers. The leak oracle (`__witchy_live_cells == 0` at exit), the
 double-free trap (rc below zero traps), and the `WITCHY_NO_RC_ELISION`/`NO_REUSE`/
-`NO_FREE` differentials are RFC-0016's verification contract and apply here verbatim.
+`NO_FREE` differentials are [RFC-0016](./0016-reference-counted-memory.md)'s verification contract and apply here verbatim.
 
 ## Migration (from the shipped floor)
 
