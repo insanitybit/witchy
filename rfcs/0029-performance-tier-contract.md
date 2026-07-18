@@ -8,6 +8,11 @@ tracking:
 
 # RFC-0029: The performance-tier contract
 
+The shipped tier contract is specified in
+[`spec/performance.md`](../spec/performance.md), with mode enforcement and
+deterministic counter/de-optimization evidence in [`src/stats.rs`](../src/stats.rs)
+and [`src/diagnostic_golden_tests.rs`](../src/diagnostic_golden_tests.rs).
+
 ## Summary
 
 The capstone that ties the performance and ergonomics work into one plan. witchy
