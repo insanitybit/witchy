@@ -908,7 +908,7 @@ composes with an explicit `where` clause. The std library uses it for
 module is preluded; `from show import say` is needed only when you want the bare
 `say(...)` spelling.
 
-### Existential trait types — `dyn Trait` (RFC-0081)
+### Existential trait types — `dyn Trait` ([RFC-0081](../rfcs/0081-existential-trait-values.md))
 
 `dyn Render` / `dyn Convert(Int)` is an existential trait type: a value whose
 concrete type is hidden behind a trait's callable surface. It is an owned value:
