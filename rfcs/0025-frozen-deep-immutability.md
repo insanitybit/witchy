@@ -8,6 +8,11 @@ tracking:
 
 # RFC-0025: `frozen` — deep immutability, the dual of uniqueness
 
+The shipped `frozen` qualifier and its mutability checks are implemented in
+[`crates/witchy-syntax/src/parser.rs`](../crates/witchy-syntax/src/parser.rs) and
+[`crates/witchy-types/src/typeck.rs`](../crates/witchy-types/src/typeck.rs), with
+qualifier coverage in the type-checker tests.
+
 ## Summary
 
 Add a `frozen` qualifier asserting a value is **deep-immutable forever**. Where
