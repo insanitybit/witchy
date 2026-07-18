@@ -302,12 +302,12 @@ a self-contained synchronous implementation needing none.
   `instantiate(wasmBytes, { onPrint })` returns `{ instance, output, run }`.
   See `web/witchy-runtime/README.md`.
 
-The spike `web/witchy-runtime/spike.mjs` (driven by the Rust test
-`tests/browser_shim.rs`) compiles a pure rune, runs it under the JS host, asserts
+The spike [`web/witchy-runtime/spike.mjs`](../web/witchy-runtime/spike.mjs) (driven by the Rust test
+[`tests/browser/shim.rs`](../tests/browser/shim.rs)) compiles a pure rune, runs it under the JS host, asserts
 its output equals the native interpreter run byte-for-byte, and confirms a
 capability rune is refused with a `LinkError`.
 
-## Runtime aborts (RFC-0045)
+## Runtime aborts ([RFC-0045](../rfcs/0045-compiled-trap-diagnostics.md))
 
 Every runtime abort on the compiled backend — an out-of-bounds `list`/`bytes`
 index, `string.to_int` on junk or overflow, integer division/modulo failure,
@@ -319,8 +319,8 @@ message, not merely on the fact of erroring.
   authority: it reads only guest-memory strings named by `str_ptr` and the
   packed site, returns nothing to the guest, and its only effect is to terminate
   execution with a diagnostic label — an ability the guest already has via
-  `unreachable`. Like the checked-heap
-  imports (`heap_register`, RFC-0023), it is therefore defined unconditionally on
+  `unreachable`. Like the checked-heap imports
+  (`heap_register`, [RFC-0023](../rfcs/0023-checked-heap.md)), it is therefore defined unconditionally on
   every host (the pure-compute shim included) and is **excluded from the
   capability footprint** (`witchy caps` and the coven widening gate never see it).
 - **Rust message text has one owner** in `crates/witchy-syntax/src/diag.rs`
