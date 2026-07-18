@@ -18,6 +18,11 @@ tracking:
 
 # RFC-0019: Interactive documentation — the runnable book
 
+The reusable browser engine/host core retained by RFC-0041 lives in
+[`web/witchy-runnable.js`](../web/witchy-runnable.js) and
+[`web/witchy-host.js`](../web/witchy-host.js), with playground validation in
+[`tests/browser/shim.rs`](../tests/browser/shim.rs); the mdBook shell itself remains superseded.
+
 ## Summary
 
 Turn "The witchy Book" from static, read-only Markdown into a beautiful,
