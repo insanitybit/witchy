@@ -114,7 +114,7 @@ recommendation for its review workflow) and a new test file
 1. **Filename in link/type errors**: prefix becomes
    `` type error: pm.witchy: `main`, line 5: … `` (linker already knows the
    module→file map; thread it into `at_loc` /
-   `crates/witchy-types/src/typeck.rs:351`).
+   [`crates/witchy-types/src/typeck.rs:351`](../crates/witchy-types/src/typeck.rs)).
 2. **Position on the import-hint error** (the one probed stray).
 3. **Arity errors show the signature**:
    `` `add` expects 2 arguments (`fn add(a: Int, b: Int) -> Int`) but got 3 ``
