@@ -47,7 +47,7 @@ standardize `grim` as an executable alias.
 
 ### `trusted-exe` solved the artifact, not discovery or installation
 
-RFC-0092 made it possible to build one ordinary executable containing a Witchy
+[`RFC-0092`](0092-trusted-application-executables.md) made it possible to build one ordinary executable containing a Witchy
 application, its compiled WASM, and the Witchy runtime. That closes the runtime
 UX gap: an installed application needs neither Witchy nor launch-time grant
 flags.
@@ -94,7 +94,7 @@ A useful package manager needs real authority. It reads and writes projects,
 contacts registries, writes an installation directory, reads authentication
 material, and may invoke the Witchy compiler for build, run, test, and doc
 commands. Asking users to spell grants for those resources on every invocation
-would recreate the friction RFC-0092 removed.
+would recreate the friction [`RFC-0092`](0092-trusted-application-executables.md) removed.
 
 Grimoire is therefore an intended `trusted-exe` consumer. Its root receives
 only the resources selected by its trusted target binding plan. Capability
@@ -216,7 +216,7 @@ The standalone Grimoire application's root needs these authority classes:
 | `Exec` | drive the colocated Witchy compiler for build/run/test/doc | allow only the `witchy` program through the toolchain `Dir` |
 | `Env`, `Clock`, `Console`, argv | configuration, cooldowns, diagnostics | conventional process providers |
 
-This requires two additive directory providers in the RFC-0092 binding
+This requires two additive directory providers in the [`RFC-0092`](0092-trusted-application-executables.md) binding
 vocabulary:
 
 ```toml
@@ -475,7 +475,7 @@ This is closer to `cargo install` and gives the recipient a stronger connection
 between reviewed source and output. It also requires a compatible Witchy
 toolchain, repeats compilation on every machine, cannot install onto a machine
 that only wants the resulting application, and does not exercise the
-distribution artifact RFC-0092 introduced. A future `--from-source` mode may be
+distribution artifact [`RFC-0092`](0092-trusted-application-executables.md) introduced. A future `--from-source` mode may be
 valuable, but it is not the default proposed here.
 
 ### Have Coven build every artifact
@@ -494,7 +494,7 @@ may contain source only or source plus trusted application artifacts.
 ### Install portable WASM and generate a wrapper
 
 Rejected. That preserves the consumer-granted sandbox model and recreates the
-multi-file wrapper/runtime UX RFC-0092 intentionally replaced. Portable WASM
+multi-file wrapper/runtime UX [`RFC-0092`](0092-trusted-application-executables.md) intentionally replaced. Portable WASM
 remains available for applications the recipient does not trust.
 
 ### Use a specialized native installer implementation
@@ -559,7 +559,7 @@ This RFC is implemented when:
 
 ## Conclusion
 
-RFC-0092 made a Witchy application look like a normal executable. This RFC
+[`RFC-0092`](0092-trusted-application-executables.md) made a Witchy application look like a normal executable. This RFC
 makes it install like one without abandoning Witchy's package trust model:
 
 ```text
