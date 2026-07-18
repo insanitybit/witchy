@@ -614,6 +614,39 @@ fn compiler_optional_type_syntax_value(
     }
 }
 
+fn compiler_function_conventions(
+    value: &Value,
+    parameter_count: usize,
+) -> Result<Vec<Convention>, RuntimeError> {
+    let Value::List(conventions) = value else {
+        return err("meta.type_fn expected List(String) conventions");
+    };
+    if conventions.is_empty() {
+        return Ok(vec![Convention::Let; parameter_count]);
+    }
+    if conventions.len() != parameter_count {
+        return err(format!(
+            "meta.type_fn expected {parameter_count} conventions, got {}",
+            conventions.len()
+        ));
+    }
+    conventions
+        .iter()
+        .map(|convention| match convention {
+            Value::Str(name) if name.is_empty() || name.as_str() == "let" => {
+                Ok(Convention::Let)
+            }
+            Value::Str(name) if name.as_str() == "borrow" => Ok(Convention::Borrow),
+            Value::Str(name) if name.as_str() == "var" => Ok(Convention::Var),
+            Value::Str(name) if name.as_str() == "own" => Ok(Convention::Own),
+            Value::Str(name) => err(format!(
+                "meta.type_fn unknown parameter convention `{name}`"
+            )),
+            _ => err("meta.type_fn expected String conventions"),
+        })
+        .collect()
+}
+
 fn compiler_stmt_syntax_value(
     value: &Value,
     compiler_stmt_syntax: &HashMap<String, Stmt>,
@@ -3341,6 +3374,69 @@ impl Interpreter {
                     )?))
                 }
                 _ => err("meta.type_tuple expects List(TypeSyntax)"),
+            },
+            name if intrinsics::is_meta_type_fn(name) => match args {
+                [Value::List(params), conventions, ret] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.type_fn is available only during compile-time expansion",
+                        );
+                    }
+                    let mut inputs = params.to_vec();
+                    inputs.push(ret.clone());
+                    let hole_ancestry = compiler_direct_hole_origins(
+                        &inputs,
+                        SyntaxCategory::Type,
+                        "CompilerTypeSyntax",
+                        &self.compiler_type_origins,
+                        self.cur_line,
+                    );
+                    let params = compiler_type_holes(params, &self.compiler_type_syntax)?;
+                    let conventions =
+                        compiler_function_conventions(conventions, params.len())?;
+                    let ret = compiler_type_syntax_value(ret, &self.compiler_type_syntax)?;
+                    Ok(Some(self.store_compiler_type_syntax(
+                        "function-type",
+                        Type::Fn(params, Box::new(ret), conventions),
+                        hole_ancestry,
+                    )?))
+                }
+                _ => err(
+                    "meta.type_fn expects List(TypeSyntax), List(String), and TypeSyntax",
+                ),
+            },
+            name if intrinsics::is_meta_type_qualified(name) => match args {
+                [Value::Str(qualifier), ty] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.type_qualified is available only during compile-time expansion",
+                        );
+                    }
+                    let hole_ancestry = compiler_direct_hole_origins(
+                        std::slice::from_ref(ty),
+                        SyntaxCategory::Type,
+                        "CompilerTypeSyntax",
+                        &self.compiler_type_origins,
+                        self.cur_line,
+                    );
+                    let qualifier = match qualifier.as_str() {
+                        "frozen" => TypeQual::Frozen,
+                        "unique" => TypeQual::Unique,
+                        "local unique" => TypeQual::LocalUnique,
+                        other => {
+                            return err(format!(
+                                "meta.type_qualified unknown qualifier `{other}`"
+                            ));
+                        }
+                    };
+                    let ty = compiler_type_syntax_value(ty, &self.compiler_type_syntax)?;
+                    Ok(Some(self.store_compiler_type_syntax(
+                        "qualified-type",
+                        Type::Qualified(qualifier, Box::new(ty)),
+                        hole_ancestry,
+                    )?))
+                }
+                _ => err("meta.type_qualified expects a qualifier and TypeSyntax"),
             },
             name if intrinsics::is_meta_call_site_pattern(name) => match args {
                 [Value::Str(name), Value::List(args)] => {

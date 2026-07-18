@@ -215,33 +215,31 @@ fn __meta_type_tuple(types: List(TypeSyntax)) -> TypeSyntax:
 
 // A function type such as `fn(Int) -> String`.
 pub fn type_fn(params: List(TypeSyntax), ret: TypeSyntax) -> TypeSyntax:
-    TypeSyntax("fn(" + list.join(type_syntax_sources(params), ", ") + ") -> " + type_syntax_source(ret))
+    __meta_type_fn(params, [], ret)
 
 pub fn type_fn_with_conventions(params: List(TypeSyntax), conventions: List(String), ret: TypeSyntax) -> TypeSyntax:
-    var rendered = []
-    var i = 0
-    for param in params:
-        let prefix = match list.at(conventions, i):
-            "borrow" -> "let "
-            "var" -> "var "
-            "own" -> "own "
-            _ -> ""
+    __meta_type_fn(params, conventions, ret)
 
-        list.push(rendered, prefix + type_syntax_source(param))
-        i = i + 1
-    TypeSyntax("fn(" + list.join(rendered, ", ") + ") -> " + type_syntax_source(ret))
+// Compiler-owned function type construction. An empty convention list means
+// default `let` parameters; otherwise it must align with params.
+fn __meta_type_fn(params: List(TypeSyntax), conventions: List(String), ret: TypeSyntax) -> TypeSyntax:
+    __meta_type_fn(params, conventions, ret)
 
 // A deeply immutable type qualifier.
 pub fn type_frozen(ty: TypeSyntax) -> TypeSyntax:
-    TypeSyntax("frozen " + type_syntax_source(ty))
+    __meta_type_qualified("frozen", ty)
 
 // A unique-reference type qualifier.
 pub fn type_unique(ty: TypeSyntax) -> TypeSyntax:
-    TypeSyntax("unique " + type_syntax_source(ty))
+    __meta_type_qualified("unique", ty)
 
 // A local unique-reference type qualifier.
 pub fn type_local_unique(ty: TypeSyntax) -> TypeSyntax:
-    TypeSyntax("local unique " + type_syntax_source(ty))
+    __meta_type_qualified("local unique", ty)
+
+// Compiler-owned ownership qualifier construction.
+fn __meta_type_qualified(qualifier: String, ty: TypeSyntax) -> TypeSyntax:
+    __meta_type_qualified(qualifier, ty)
 
 // A capability type with rights, such as `Dir[Read]`.
 pub fn type_capability(name: Ident, rights: List(TypeSyntax)) -> TypeSyntax:

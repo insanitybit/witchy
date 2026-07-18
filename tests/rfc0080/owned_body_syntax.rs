@@ -53,6 +53,16 @@ comptime:
     let identity_body = meta.block([], Some(meta.expr_name(input)))
     let identity_param = meta.param(input, composite)
     emit_item(meta.function_block(true, meta.ident("generated_identity"), [identity_param], Some(composite), identity_body))
+    let callback = meta.ident("callback")
+    let callback_type = meta.type_fn([number], number)
+    let callback_param = meta.param(callback, callback_type)
+    let callback_body = meta.block([], Some(meta.expr_call(meta.expr_name(callback), [meta.expr_int(42)])))
+    emit_item(meta.function_block(true, meta.ident("generated_apply"), [callback_param], Some(number), callback_body))
+    let frozen_input = meta.ident("frozen_input")
+    let frozen_number = meta.type_frozen(number)
+    let frozen_param = meta.param(frozen_input, frozen_number)
+    let frozen_body = meta.block([], Some(meta.expr_name(frozen_input)))
+    emit_item(meta.function_block(true, meta.ident("generated_frozen_identity"), [frozen_param], Some(number), frozen_body))
 
 fn main(console: Console):
     console.print("${composed()}")
@@ -60,6 +70,8 @@ fn main(console: Console):
     console.print("${generated_selected()}")
     console.print("${statement_generated()}")
     console.print("${generated_identity(([42], 42))}")
+    console.print("${generated_apply(fn(value: Number): value)}")
+    console.print("${generated_frozen_identity(42)}")
 "#;
 
 #[test]
@@ -78,6 +90,11 @@ fn owned_body_syntax_survives_function_builders_on_both_backends() {
     assert!(expanded_source.contains("pub fn statement_generated() -> Int:"), "{expanded_source}");
     assert!(
         expanded_source.contains("List(@call_site_type:Number)"),
+        "{expanded_source}"
+    );
+    assert!(expanded_source.contains("fn(@call_site_type:Number)"), "{expanded_source}");
+    assert!(
+        expanded_source.contains("frozen @call_site_type:Number"),
         "{expanded_source}"
     );
     assert!(!expanded_source.contains("@quote_stmt"), "{expanded_source}");
@@ -101,6 +118,8 @@ fn owned_body_syntax_survives_function_builders_on_both_backends() {
         "42".to_string(),
         "42".to_string(),
         "([42], 42)".to_string(),
+        "42".to_string(),
+        "42".to_string(),
     ];
     assert_eq!(
         interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interpret"),
