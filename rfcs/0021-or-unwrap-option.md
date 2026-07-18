@@ -50,7 +50,7 @@ surviving `Some` is the intuitive completion of the feature.
 
 ## Current behavior
 
-- Typecheck (`crates/witchy-types/src/typeck.rs`, the `Or` arm): `unify(lt, rt)` —
+- Typecheck ([`crates/witchy-types/src/typeck.rs`](../crates/witchy-types/src/typeck.rs), the `Or` arm): `unify(lt, rt)` —
   forces both operands to one type — then requires that type be
   `Bool` / `String` / `List` / `Option`. Result type = that operand type.
 - Lowering: `||` stays a runtime `BinOp::Or`. The interpreter checks
@@ -122,7 +122,7 @@ This is a **type-directed desugar**, not a runtime tweak, because the runtime
 4. **Parity test** (`crates/.../example_tests.rs`): differential coverage for
    `Some(x) || d`, `None || d`, `Some("") || d`, plus the homogeneous
    `Option||Option` case, so the interpreter and compiled backend agree.
-5. **Docs**: update `spec/language.md` §4 (the `||` row + the falsy-fallback
+5. **Docs**: update [`spec/language.md`](../spec/language.md) §4 (the `||` row + the falsy-fallback
    paragraph) and the relevant book chapter once implemented.
 
 ## Alternatives considered
@@ -148,7 +148,7 @@ This is a **type-directed desugar**, not a runtime tweak, because the runtime
 
 ## Rollout
 
-`proposed`. Land **after** the compiler workspace refactor (RFC-0018) settles, to
+`proposed`. Land **after** the compiler workspace refactor ([RFC-0018](./0018-compiler-architecture.md)) settles, to
 avoid editing `typeck.rs` / both lowerings while they are in motion. Sibling
 ergonomic proposal: index-assignment sugar (`d[k] = v`, `xs[i] = v`) over the same
 value-semantic, in-place-optimized collections — to be captured in its own RFC.
