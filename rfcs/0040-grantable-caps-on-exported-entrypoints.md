@@ -23,7 +23,7 @@ tracking:
 > end-to-end by a node value round-trip (`user-cap-export.test.mjs`, gate-wired via
 > `user_cap_export_mints_uiroot_in_the_browser_host`): the minted `UiRoot`'s policy
 > reaches the rune, and a missing grant traps (parity with the wasmtime host).
-> Behavior lives in `spec/capabilities.md` + the code. Unblocks RFC-0039's browser
+> Behavior lives in [`spec/capabilities.md`](../spec/capabilities.md) + the code. Unblocks RFC-0039's browser
 > token-gating.
 >
 > Provisional syntax below is a design record. Code blocks are intentionally **not**
