@@ -12,7 +12,7 @@ tracking:
 
 ## Motivation
 
-witchy's copy-elision / linear-update optimization (RFC-0016 reuse, the `*_cap`
+witchy's copy-elision / linear-update optimization ([RFC-0016](./0016-reference-counted-memory.md) reuse, the `*_cap`
 in-place arms, and the own-ABI cross-function threading) currently applies only
 to the three builtin collection types — `List`, `Dict`, `String`. A user
 abstraction over a collection does **not** get the same treatment:
@@ -32,16 +32,16 @@ boundary, so it does not compound. This RFC threads it through.
 
 ## Current mechanism (where it stops)
 
-- **Uniqueness analysis** (`analysis.rs`) tracks accumulator *variables* and a
+- **Uniqueness analysis** ([`crates/witchy-lower/src/analysis.rs`](../crates/witchy-lower/src/analysis.rs)) tracks accumulator *variables* and a
   compile-time ownership token (`__cap`). Sound by default: a value is copied
   unless uniqueness is proven, and one copy re-establishes ownership.
 - **`self_inplace_op`** — name-matched in-place arms for the 6 builtin leaf ops
   (`list.push/set_at/update_at`, `dict.insert/update`, string concat).
 - **`self_own_call` / own-ABI** — threads the token across a user *function*
   boundary, but eligibility is gated to `List|Dict|String` params
-  (`analysis.rs:323`).
+  ([`crates/witchy-lower/src/analysis.rs`](../crates/witchy-lower/src/analysis.rs):323).
 - **Records** — `Expr::RecordUpdate` lowers in place **only when the record is
-  SROA-active** (`codegen/mod.rs:2344`): a frame-confined record keeps its fields
+  SROA-active** ([`crates/witchy-lower/src/codegen/mod.rs`](../crates/witchy-lower/src/codegen/mod.rs):2344): a frame-confined record keeps its fields
   in `${name}$<i>` locals, so an update just rewrites a local. A record that
   *escapes* (returned out, stored in a collection, or received as a function
   parameter) is a heap object, and `RecordUpdate` reallocates it.
