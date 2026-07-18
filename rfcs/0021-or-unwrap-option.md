@@ -9,6 +9,10 @@ tracking:
 
 # RFC-0021: `||` unwraps an `Option` to its inner type
 
+This proposal is superseded by [RFC-0048](0048-fallback-operator.md), which
+replaced the overloaded `||` behavior with the dedicated `??` fallback and
+restored `||`/`&&` to Bool-only logic.
+
 > Code blocks here are intentionally **not** tagged `witchy` (per RFC-0002's
 > convention): they are illustrative sketches, not complete programs, and must
 > not be executed by the doc-test harness. This matters more than usual here —
