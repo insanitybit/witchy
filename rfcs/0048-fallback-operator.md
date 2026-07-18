@@ -11,7 +11,7 @@ tracking: "merged to master 2661b23"
 > 2026-07-03: implemented and merged (2661b23). `??` (right-associative,
 > short-circuit) unwraps Option(T)/Result(T,e); `||`/`&&` are Bool-only; the
 > truthy-fallback machinery and the RFC-0021 Option||T unwrap were deleted.
-> Behavior lives in spec/language.md.
+> Behavior lives in [spec/language.md](../spec/language.md).
 
 # RFC-0048: A dedicated `??` fallback; `||` returns to Bool
 
@@ -24,7 +24,7 @@ tracking: "merged to master 2661b23"
 `||` is currently three operators in one spelling: short-circuit logical-or on
 Bool, a same-typed *truthy fallback* on String/Option/List (falsy = `""` /
 `None` / `[]`), and the RFC-0021 `Option(T) || T` unwrap
-(spec/language.md:196). This RFC splits the roles: `||` becomes **Bool-only
+([`spec/language.md:196`](../spec/language.md)). This RFC splits the roles: `||` becomes **Bool-only
 logical-or**, and a new `??` operator is **the** fallback —
 `Option(T) ?? T -> T` (None-coalescing) and `Result(T, e) ?? T -> T`
 (Err-coalescing). Truthiness leaves the language entirely: an empty string or
@@ -87,10 +87,10 @@ error: `||` is logical-or on Bool. For a fallback value use `??`:
 ```
 
 `&&` is untouched. The truthy-fallback machinery — `value_truthy`
-(crates/witchy-interp/src/interpreter.rs:2604), the compiled truthy lowering
-(crates/witchy-lower/src/codegen/mod.rs:4395), the typeck allowlist
-(crates/witchy-types/src/typeck.rs:2733–2748), and the RFC-0021 rewrite
-(crates/witchy-types/src/traits.rs:739–780) — is **deleted**, not gated.
+([`crates/witchy-interp/src/interpreter.rs:2604`](../crates/witchy-interp/src/interpreter.rs)), the compiled truthy lowering
+([`crates/witchy-lower/src/codegen/mod.rs:4395`](../crates/witchy-lower/src/codegen/mod.rs)), the typeck allowlist
+([`crates/witchy-types/src/typeck.rs:2733–2748`](../crates/witchy-types/src/typeck.rs)), and the RFC-0021 rewrite
+([`crates/witchy-types/src/traits.rs:739–780`](../crates/witchy-types/src/traits.rs)) — is **deleted**, not gated.
 
 ### 2. `??` — the fallback operator
 
@@ -153,15 +153,14 @@ Grepped 2026-07-03, fallback-form `||` (non-Bool operands) across the repo:
   changing nothing.
 - **examples/**: **0** — all 13 occurrences boolean.
 - **projects/**: **1** — `req.uploaded_by || "anonymous"`
-  (projects/coven/src/coven.witchy:328, a String truthy fallback) → an
+  ([`projects/coven/src/coven.witchy:328`](../projects/coven/src/coven.witchy), a String truthy fallback) → an
   explicit `is_empty` conditional (or an Option-returning accessor, which is
   the RFC-0044-correct shape anyway).
-- **book/**: 2 executable usages (book/src/tour-errors.md:65–66) plus the
+- **book/**: 2 executable usages ([`book/src/tour-errors.md:65–66`](../book/src/tour-errors.md)) plus the
   prose section teaching truthiness (:53–77) — rewritten to teach `??`.
-- **spec/**: 3 executable usages (spec/language.md:217, :752–753) plus the
+- **spec/**: 3 executable usages ([`spec/language.md:217, :752–753`](../spec/language.md)) plus the
   operator-table row (:196) and the RFC-0021 section (:742) — rewritten.
-- **tests**: 2 differential-test programs (src/example_tests.rs:1600,
-  :10750–10754, ~11 usages between them) — become the `??` differential tests,
+- **tests**: 2 differential-test programs ([`src/example_tests.rs:1600, :10750–10754`](../src/example_tests.rs), ~11 usages between them) — become the `??` differential tests,
   plus new negative tests pinning the `||`-on-String error message.
 
 Total: about a dozen call sites outside the tests that exist to test the old
