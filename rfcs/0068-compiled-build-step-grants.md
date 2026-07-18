@@ -4,11 +4,11 @@ title: "Unify build caps onto the runtime capability set (finish Exec/Env refine
 status: implemented
 created: 2026-07-06
 related:
-  - "0001 (the parity prime directive: interpreter = differential-testing oracle only)"
-  - "0004 (self-hosted CLI — pm/coven now run compiled; this closes the remaining holdout)"
-  - "0011 (capability refinement — established the typed narrow-by-method pattern, but for
+  - "[0001](0001-documentation-structure.md) (the parity prime directive: interpreter = differential-testing oracle only)"
+  - "[0004](0004-self-hosted-cli.md) (self-hosted CLI — pm/coven now run compiled; this closes the remaining holdout)"
+  - "[0011](0011-capability-refinement.md) (capability refinement — established the typed narrow-by-method pattern, but for
      Net/Dir ONLY; this RFC extends it to Exec/Env, which 0011 did not cover)"
-  - "0012 (kept Exec a distinct, coarse capability — an exec allow-list is new, undecided design)"
+  - "[0012](0012-file-capability.md) (kept Exec a distinct, coarse capability — an exec allow-list is new, undecided design)"
 tracking:
 ---
 
@@ -165,7 +165,7 @@ site* is needed, only a guard in the host function:
     }
 
 This is the same shape as the net allow-list check already performed on `connect`. The
-abort message must match the interpreter's for message parity (RFC-0045 root-cause routing).
+abort message must match the interpreter's for message parity ([RFC-0045](0045-compiled-trap-diagnostics.md) root-cause routing).
 
 ### 3. Route the build caps + remove the `sandboxable` split
 
@@ -202,7 +202,7 @@ strictness as a compatibility wrapper over the compiled path with empty allow-li
 2. **Coarsen build grants to bools to match today's `Capabilities`.** Rejected: it throws
    away the build model's confinement (a step could spawn any tool / read any env var),
    which is a security regression, not a simplification.
-3. **A capability-carrying externref per build tool (cf. RFC-0005).** Heavier than needed:
+3. **A capability-carrying externref per build tool (cf. [RFC-0005](0005-unforgeable-capabilities.md)).** Heavier than needed:
    exec/env grants are small static allow-lists checked host-side by name; a string
    allow-list on `Capabilities` is sufficient and matches the proven `net_allow` design.
 
