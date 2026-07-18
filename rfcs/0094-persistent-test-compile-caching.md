@@ -17,6 +17,9 @@ related:
 
 # RFC-0094: Persistent test-compile caching
 
+The cache implementation is in [`crates/witchy-syntax/src/linker.rs`](../crates/witchy-syntax/src/linker.rs),
+with behavior coverage in [`tests/misc/rfc0094_persistent_std_cache.rs`](../tests/misc/rfc0094_persistent_std_cache.rs).
+
 ## Measurement (2026-07-15, gate log 20260715-210751, 2089 tests, 1023s CPU)
 
 | category | CPU | tests |
