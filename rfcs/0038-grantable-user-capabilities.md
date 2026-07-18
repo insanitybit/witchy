@@ -13,6 +13,11 @@ tracking:
 
 # RFC-0038: Grantable user-defined capabilities at root entrypoints
 
+The shipped grantable-capability rules are specified in
+[`spec/capabilities.md`](../spec/capabilities.md), with grant parsing/minting in
+[`crates/witchy-caps/src/grants.rs`](../crates/witchy-caps/src/grants.rs) and
+cross-backend coverage in [`src/example_tests.rs`](../src/example_tests.rs).
+
 > **2026-07-01 — implemented.** `grantable capability X:` ships: the surface (a
 > contextual-ident prefix, `TypeDef.grantable`), the **bareness rule**
 > (`check_grantable_caps` in typeck rejects any transitive host taint),
