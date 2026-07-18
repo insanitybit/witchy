@@ -14,6 +14,11 @@ tracking: "Net./Dir. policy constructors; std/confine deleted, std/policy home; 
 
 # RFC-0057: Capability policy constructors
 
+The shipped constructors and their type-associated resolution are implemented in
+[`std/policy.witchy`](../std/policy.witchy), with linker coverage in
+[`crates/witchy-syntax/src/linker.rs`](../crates/witchy-syntax/src/linker.rs) and
+sealing/parity coverage in [`tests/misc/policy_sealing.rs`](../tests/misc/policy_sealing.rs).
+
 > Provisional syntax throughout. Code blocks are intentionally **not** tagged
 > `witchy` so the doc-examples sweep does not try to compile pre-implementation
 > snippets.
