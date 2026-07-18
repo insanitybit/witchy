@@ -51,9 +51,8 @@ impl PreparedExistentials {
 
 /// Lower every concrete-to-existential construction in one final typed module.
 ///
-/// The public RFC-0081 stage gate remains closed while the interpreter and Wasm
-/// implementations are incomplete. This function is the shared internal seam
-/// those backends consume. `typed` must be the exact, trait-lowered and
+/// This function is the shared internal seam both backends consume. `typed`
+/// must be the exact, trait-lowered and
 /// monomorphized executable module whose expression identities produced the
 /// type table. `catalog` is captured from the resolved linked module before
 /// trait lowering removes its declarations.

@@ -17,6 +17,7 @@ integration/rfc0081-root-recovery
   -> integration/rfc0081-receiver-conventions
   -> integration/rfc0081-supertrait-upcasts-recovery
   -> integration/rfc0081-receiver-safety
+  -> integration/rfc0081-public-contract
 ```
 
 Statuses:
@@ -45,11 +46,11 @@ Statuses:
 | 8 | **READY** | `integration/rfc0081-receiver-safety` proves bare, `let`, `var`, and `own` direct/interpreter/Wasm agreement in one differential program. Dynamic receiver and explicit-argument write-backs now reuse the ordinary typed nested-place reconstruction path. |
 | 9 | **READY** | The receiver-safety differential covers tail-call, explicit-return, and `?` write-back, two non-overlapping projections of one root, alias rejection, `own` use-after-move rejection, and traps in both backends. Interpreter commits only after `run_callable`; Wasm commits only after `CallIndirectStoreMulti`, so a trap cannot expose a partial caller update. |
 | 10 | **READY** | `integration/rfc0081-supertrait-upcasts-recovery` carries authenticated projection, interpreter and Wasm execution, qualified-identity diagnostics, a positive differential, and unrelated-upcast rejection. Focused type/interpreter/lower/root shards are green; merge evidence remains required. |
-| 11 | **BROKEN** | Lowering refuses structural equality for `dyn`, but there is no complete adversarial rejection matrix for equality, ordering, hashing, reflection, serialization, type names, addresses, witnesses, or downcasts. |
-| 12 | **BROKEN** | Existing construction reachability is conservative, but no checked-in footprint test proves every reachable witness adapter is included or that a reachable authority-using construction widens deterministically. |
-| 13 | **BROKEN** | No normal-versus-`mode opt` existential differential matrix proves identical values and traps or documents the allocation/devirtualization non-promise. |
-| 14 | **BROKEN** | Formatter frontend coverage exists, but `spec/language.md` and `book/src/backends.md` still say runtime dispatch is unavailable. There is no runnable heterogeneous-list or `var self` book example, migration guidance, or complete runtime diagnostic evidence. |
-| 15 | **BROKEN** | No complete implementing stack has passed focused backend/adversarial shards and the serialized full gate. Prior root attempts were red, timed out, or failed fast-forward. |
+| 11 | **READY** | `integration/rfc0081-public-contract` adds a checked rejection matrix for equality, ordering, hashing, reflection, serialization, type names, addresses, witness identity, and downcasts. Equality now rejects `dyn` at every container depth and explicitly forbids payload-address/witness fallbacks. |
+| 12 | **READY** | A WIR footprint test proves one adapter per reachable closed construction, excludes an unreachable authority-using witness, includes every reachable adapter, widens to the `Console.print` host import when that witness becomes reachable, and reproduces byte-identical WAT. |
+| 13 | **READY** | A four-way normal/`mode opt` interpreter/Wasm differential proves identical heterogeneous dispatch values and divide-by-zero traps. Spec and book state that opt mode promises neither allocation removal nor devirtualization. |
+| 14 | **READY** | The public `witchy check` stage gate is removed while safety validation remains. Formatter coverage, `expand`, LSP display/diagnostics, operation/missing-witness diagnostics, spec language, runnable heterogeneous-list and `var self` book programs, and migration guidance are checked in on the public-contract branch. |
+| 15 | **READY** | The complete implementing stack has focused type/interpreter/lowerer/differential/adversarial evidence, and `./scripts/check.sh --wasm` is green with all 127 runnable book blocks agreeing. Browser coverage and the serialized full gate remain required merge evidence before this row or the RFC status may become **DONE** / `implemented`. |
 
 ## Preserved branch and queue disposition
 
@@ -73,6 +74,7 @@ Statuses:
 | `integration/rfc0081-receiver-conventions` | **READY** | Canonical basic `var self`, `own self`, and explicit `var` argument adapter slice, queued after runtime witnesses. |
 | `integration/rfc0081-supertrait-upcasts-recovery` | **READY** | Canonical authenticated-upcast slice, queued after receiver conventions. |
 | `integration/rfc0081-receiver-safety` | **READY** | Canonical nested-place, alias/move, tail/explicit/`?`/trap parity slice, stacked after authenticated upcasts; the merge-queue journal remains authoritative for landing state. |
+| `integration/rfc0081-public-contract` | **READY** | Canonical operation-absence, footprint, normal/opt, tooling, spec/book, migration, and public-checker closure stacked after receiver safety; merge-queue and full-gate evidence remain authoritative. |
 
 ## Reconstructed semantic graph
 

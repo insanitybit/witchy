@@ -3220,45 +3220,27 @@ fn main():
     // std-linked path by a runnable `book/` example instead.
 
     // ------------------------------------------------------------------
-    // RFC-0081 slice 1: existential trait values — frontend contract.
+    // RFC-0081: existential trait values — public frontend contract.
     // ------------------------------------------------------------------
 
-    /// The one canonical feature-stage diagnostic (see
-    /// `existential_stage_error`); every fully valid `dyn` program must fail
-    /// with EXACTLY this string, from every path. `check_str` stringifies
-    /// through `Display for TypeError`, hence the `type error: ` prefix here.
-    fn rfc0081_stage_gate(canonical: &str) -> String {
-        format!(
-            "type error: `{canonical}`: existential values cannot be constructed or \
-             dispatched yet — RFC-0081's witness/runtime slice has not landed; the \
-             frontend contract (parsing, identity, existential safety) is checked"
-        )
-    }
-
     #[test]
-    fn rfc0081_valid_dyn_signature_fails_with_exactly_the_feature_stage_gate() {
-        // Everything about this program is valid under the slice-1 contract:
-        // the trait exists, is existential-safe, the arity matches, and no
-        // v1 exclusion applies. Equality (not contains) proves every specific
-        // check passed and only the staging gate fired — LAST.
-        let err = check_str(
+    fn rfc0081_valid_dyn_signature_is_publicly_checkable() {
+        check_str(
             "trait Render:\n    fn render(let self) -> String\n\n\
              fn describe(part: dyn Render) -> String:\n    \"static\"\n\n\
              fn main(console: Console):\n    console.print(\"hi\")\n",
         )
-        .expect_err("dyn programs are staged until the witness slice lands");
-        assert_eq!(err, rfc0081_stage_gate("dyn Render"));
+        .expect("a valid existential signature must pass the public checker");
     }
 
     #[test]
-    fn rfc0081_stage_gate_renders_trait_arguments_canonically() {
-        let err = check_str(
+    fn rfc0081_closed_trait_arguments_are_publicly_checkable() {
+        check_str(
             "trait Convert(t):\n    fn convert(let self) -> t\n\n\
              fn f(x: dyn Convert(Int)) -> Int:\n    1\n\n\
              fn main(console: Console):\n    console.print(\"hi\")\n",
         )
-        .expect_err("dyn programs are staged");
-        assert_eq!(err, rfc0081_stage_gate("dyn Convert(Int)"));
+        .expect("a closed generic existential signature must check");
     }
 
     #[test]
@@ -3551,11 +3533,8 @@ fn main():
     }
 
     #[test]
-    fn rfc0081_cap_free_as_dyn_reaches_the_feature_stage_gate() {
-        // The cast itself type-checks (no `check_narrow`, no cap complaint):
-        // the only error left is the staging gate, proving the erasure form
-        // is a legal cast in the frontend contract.
-        let err = check_str(
+    fn rfc0081_cap_free_as_dyn_is_publicly_checkable() {
+        check_str(
             "trait Render:\n    fn render(let self) -> String\n\n\
              type Plain:\n    tag: String\n\n\
              impl Render for Plain:\n    fn render(let self) -> String:\n        self.tag\n\n\
@@ -3564,21 +3543,19 @@ fn main():
              \x20   let r = p as dyn Render\n\
              \x20   console.print(\"hi\")\n",
         )
-        .expect_err("dyn construction is staged");
-        assert_eq!(err, rfc0081_stage_gate("dyn Render"));
+        .expect("explicit cap-free existential construction must check");
     }
 
     #[test]
-    fn rfc0081_cap_free_implicit_dyn_reaches_the_feature_stage_gate() {
-        let err = check_str(
+    fn rfc0081_cap_free_implicit_dyn_is_publicly_checkable() {
+        check_str(
             "trait Render:\n    fn render(let self) -> String\n\n\
              type Plain:\n    tag: String\n\n\
              impl Render for Plain:\n    fn render(let self) -> String:\n        self.tag\n\n\
              fn erase(p: Plain) -> dyn Render:\n    p\n\n\
              fn main(console: Console):\n    console.print(\"hi\")\n",
         )
-        .expect_err("implicit dyn construction is staged");
-        assert_eq!(err, rfc0081_stage_gate("dyn Render"));
+        .expect("directed cap-free existential construction must check");
     }
 
     #[test]
@@ -3635,7 +3612,7 @@ fn main():
     }
 
     #[test]
-    fn rfc0081_unrelated_dyn_conversion_fails_before_feature_staging() {
+    fn rfc0081_unrelated_dyn_conversion_fails_at_check_time() {
         let err = check_str(
             "trait Render:\n    fn render(let self) -> String\n\n\
              trait Inspect:\n    fn inspect(let self) -> String\n\n\
@@ -3669,16 +3646,81 @@ fn main():
     }
 
     #[test]
-    fn rfc0081_method_call_on_dyn_receiver_is_the_feature_stage_gate() {
-        // Dynamic dispatch is the witness slice's job: the diagnostic must be
-        // the SAME canonical staging message, not "no method on `dyn Render`".
-        let err = check_str(
+    fn rfc0081_method_call_on_dyn_receiver_is_publicly_checkable() {
+        check_str(
             "trait Render:\n    fn render(let self) -> String\n\n\
              fn describe(part: dyn Render) -> String:\n    part.render()\n\n\
              fn main(console: Console):\n    console.print(\"hi\")\n",
         )
-        .expect_err("dyn dispatch is staged");
-        assert_eq!(err, rfc0081_stage_gate("dyn Render"));
+        .expect("declared existential methods must pass the public checker");
+    }
+
+    #[test]
+    fn rfc0081_operations_deliberately_absent_have_no_fallback_surface() {
+        let binary = |operator: &str| {
+            check_str(&format!(
+                "trait Render:\n    fn render(let self) -> String\n\n\
+                 fn probe(left: dyn Render, right: dyn Render) -> Bool:\n    left {operator} right\n\n\
+                 fn main(console: Console):\n    console.print(\"hi\")\n"
+            ))
+            .expect_err("an existential has no automatic comparison protocol")
+        };
+        for operator in ["==", "<"] {
+            let error = binary(operator);
+            assert!(
+                error.contains("dyn Render")
+                    || error.contains("PartialEq")
+                    || error.contains("ordering"),
+                "operator `{operator}` unexpectedly exposed an existential fallback: {error}"
+            );
+        }
+
+        let nested = check_str(
+            "trait Render:\n    fn render(let self) -> String\n\n\
+             fn same(left: List(dyn Render), right: List(dyn Render)) -> Bool:\n    left == right\n\n\
+             fn main(console: Console):\n    console.print(\"hi\")\n",
+        )
+        .expect_err("containers must not restore automatic existential equality");
+        assert!(
+            nested.contains("List(dyn Render)")
+                && nested.contains("witness identity")
+                && nested.contains("not observable"),
+            "{nested}"
+        );
+
+        for method in [
+            "hash",
+            "reflect",
+            "serialize",
+            "type_name",
+            "address",
+            "witness_id",
+            "downcast",
+        ] {
+            let error = check_str(&format!(
+                "trait Render:\n    fn render(let self) -> String\n\n\
+                 fn probe(value: dyn Render) -> Int:\n    value.{method}()\n\n\
+                 fn main(console: Console):\n    console.print(\"hi\")\n"
+            ))
+            .expect_err("an absent existential operation must fail at check time");
+            assert!(
+                error.contains(method)
+                    && (error.contains("Render") || error.contains("trait")),
+                "method `.{method}` unexpectedly exposed an existential fallback: {error}"
+            );
+        }
+
+        let downcast = check_str(
+            "trait Render:\n    fn render(let self) -> String\n\n\
+             type Label:\n    Label(String)\n\n\
+             fn narrow(value: dyn Render) -> Label:\n    value as Label\n\n\
+             fn main(console: Console):\n    console.print(\"hi\")\n",
+        )
+        .expect_err("a dyn-to-concrete cast must not become an implicit downcast");
+        assert!(
+            downcast.contains("dyn Render") && downcast.contains("Label"),
+            "{downcast}"
+        );
     }
 
     #[test]

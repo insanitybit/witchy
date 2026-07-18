@@ -1894,22 +1894,7 @@ fn check_trait_names(module: &Module) -> Result<(), TypeError> {
     Ok(())
 }
 
-/// (RFC-0081 slice 1) The feature-stage diagnostic every `dyn`-mentioning
-/// program fails with until the witness/runtime slice lands. One canonical
-/// string from every path (the end-of-`check` gate and the dyn-receiver
-/// method-call intercepts in `crate::traits` and the checker), so no backend
-/// is ever reached with a `dyn` type.
-pub(crate) fn existential_stage_error(canonical_dyn: &str) -> TypeError {
-    TypeError {
-        message: format!(
-            "`{canonical_dyn}`: existential values cannot be constructed or dispatched yet — \
-             RFC-0081's witness/runtime slice has not landed; the frontend contract \
-             (parsing, identity, existential safety) is checked"
-        ),
-    }
-}
-
-/// (RFC-0081 slice 1) Validate every `dyn Trait(args…)` occurrence in the
+/// Validate every `dyn Trait(args…)` occurrence in the
 /// module — in function/method signatures, record/sum fields, type-alias
 /// right-hand sides, where-clause trait arguments, and body type positions
 /// (`let` annotations, `as` targets, lambda parameter/return types) — against
@@ -1917,19 +1902,16 @@ pub(crate) fn existential_stage_error(canonical_dyn: &str) -> TypeError {
 /// trait type parameter must be fixed by a concrete type, the trait must be
 /// existential-safe, and borrowed existentials are excluded in v1.
 ///
-/// Returns the canonical rendering (`dyn Render`, `dyn Convert(Int)`) of the
-/// FIRST `dyn` occurrence when any exists (`None` for dyn-free modules); the
-/// caller uses it for the feature-stage gate once the rest of `check`
-/// succeeds. Runs right after `check_trait_names`, before trait lowering, so
-/// `Item::Trait` declarations are still present.
-fn check_existential_types(items: &[Item]) -> Result<Option<String>, TypeError> {
+/// Runs right after `check_trait_names`, before trait lowering, so `Item::Trait`
+/// declarations are still present.
+fn check_existential_types(items: &[Item]) -> Result<(), TypeError> {
     let mut traits: HashMap<&str, &ast::TraitDef> = HashMap::new();
     for item in items {
         if let Item::Trait(tr) = item {
             traits.insert(tr.name.as_str(), tr);
         }
     }
-    let mut check = ExistentialCheck { traits, first: None };
+    let mut check = ExistentialCheck { traits };
     for item in items {
         match item {
             Item::Function(f) => check.visit_function(f)?,
@@ -1973,7 +1955,7 @@ fn check_existential_types(items: &[Item]) -> Result<Option<String>, TypeError> 
             Item::Comptime(block) => check.visit_block(block)?,
         }
     }
-    Ok(check.first)
+    Ok(())
 }
 
 fn existential_bare(name: &str) -> &str {
@@ -1996,8 +1978,6 @@ fn type_mentions_self(t: &ast::Type) -> bool {
 struct ExistentialCheck<'a> {
     /// Declared traits, keyed by resolved declaration identity.
     traits: HashMap<&'a str, &'a ast::TraitDef>,
-    /// Canonical rendering of the first `dyn` occurrence (feature-stage gate).
-    first: Option<String>,
 }
 
 impl<'a> ExistentialCheck<'a> {
@@ -2210,9 +2190,6 @@ impl<'a> ExistentialCheck<'a> {
             )
         };
         let rendered = format!("dyn {display_name}{args_rendered}");
-        if self.first.is_none() {
-            self.first = Some(rendered.clone());
-        }
         let Some(tr) = self.traits.get(name).copied() else {
             // The ambient built-in comparison traits exist without a local
             // declaration; every one of them is Self-binary, which the RFC
@@ -2642,13 +2619,15 @@ pub(crate) fn is_capability_type(t: &ast::Type) -> bool {
 }
 
 /// (RFC-0047) The kind of an un-comparable component of a type: `==`/`!=` reject
-/// function and capability types at every depth (top level or nested inside a
-/// container). Returns the FIRST such component found (searching the shared type
-/// of an equality's operands), or `None` if the whole type is comparable.
+/// function, capability, and existential types at every depth (top level or
+/// nested inside a container). Returns the FIRST such component found (searching
+/// the shared type of an equality's operands), or `None` if the whole type is
+/// comparable.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Uncomparable {
     Function,
     Capability,
+    Existential,
 }
 
 // `uncomparable_kind` is a `Checker` method (it must consult the record/enum type
@@ -2754,6 +2733,12 @@ fn equality_reject_message(kind: Uncomparable, ty: &Ty) -> String {
             "`==` is not defined on capability types{where_} — capabilities are \
              authority, not data; there is no meaningful equality between two \
              authorities"
+        ),
+        Uncomparable::Existential => format!(
+            "`==` is not defined on existential type `{ty}` — `dyn` values expose \
+             only their declared trait methods; payload address and witness identity \
+             are not observable. Declare an existential-safe comparison method with \
+             explicit domain semantics"
         ),
     }
 }
@@ -5531,8 +5516,9 @@ impl Checker {
         Ok(())
     }
 
-    /// (RFC-0047 / BUG-302) Whether `t` (a resolved [`Ty`]) contains a function or
-    /// capability type at any depth — the two kinds `==`/`!=` refuse. Containers
+    /// (RFC-0047 / RFC-0081 / BUG-302) Whether `t` (a resolved [`Ty`]) contains a
+    /// function, capability, or existential type at any depth — the three kinds
+    /// `==`/`!=` refuse. Containers
     /// (List/Tuple/Dict/Result/Option) are transparent through their generic
     /// arguments; a record or enum is transparent through its DECLARED FIELD /
     /// variant-payload types too (a `type H: run: fn(Int) -> Int` is `Named("H",
@@ -5545,6 +5531,7 @@ impl Checker {
     fn uncomparable_kind(&self, t: &Ty, seen: &mut HashSet<String>) -> Option<Uncomparable> {
         match t {
             Ty::Fn(_, _, _) => Some(Uncomparable::Function),
+            Ty::Dyn(_, _) => Some(Uncomparable::Existential),
             Ty::Console | Ty::Clock | Ty::Rand | Ty::Env | Ty::Secret | Ty::Exec | Ty::Socket
             | Ty::Listener | Ty::Dir(_) | Ty::File(_) | Ty::Net(_) | Ty::BuildOut | Ty::BuildRead
             | Ty::BuildEnv | Ty::BuildNet | Ty::BuildExec => Some(Uncomparable::Capability),
@@ -6341,9 +6328,9 @@ impl Checker {
     }
 
     /// Re-validate the convention contract carried by a compiler-owned dynamic
-    /// call. Final existential preparation resolves the method after the public
-    /// source-stage gate, so this is the point where both backends must receive
-    /// identical place, alias, and move guarantees.
+    /// call. Final existential preparation resolves the method into a
+    /// compiler-owned node, so this is the point where both backends must
+    /// receive identical place, alias, and move guarantees.
     fn enforce_existential_conventions(
         &mut self,
         owner_trait: &str,
@@ -6718,14 +6705,15 @@ impl Checker {
                 // Trait lowering resolves every method call (impl, trait
                 // bound, or static); one that survives is unresolvable.
                 let receiver_ty = self.infer(receiver)?;
-                // (RFC-0081 slice 1) A method call on an existential receiver
-                // is the witness slice's runtime dispatch — not a resolution
-                // failure. Trait lowering deliberately leaves dyn receivers
-                // alone (`nominal_type_name` returns None for `Type::Dyn`), so
-                // they all funnel here; emit the one canonical feature-stage
-                // diagnostic instead of a misleading "cannot resolve" error.
+                // Trait lowering resolves every valid existential call into a
+                // compiler-owned `ExistentialCall`. A dyn receiver surviving
+                // here therefore names a method outside its statically declared
+                // trait surface; do not fall back to reflection or a guessed
+                // method-name lookup.
                 if let dyn_ty @ Ty::Dyn(_, _) = self.resolve(&receiver_ty) {
-                    return Err(existential_stage_error(&dyn_ty.to_string()));
+                    return terr(format!(
+                        "cannot resolve `.{method}(…)` on `{dyn_ty}` — existential calls are limited to the trait's declared method surface"
+                    ));
                 }
                 terr(format!(
                     "cannot resolve the method call `.{method}(…)` — methods come from \
@@ -8476,11 +8464,9 @@ fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) ->
         check_compiler_syntax_declarations(&recs)?;
     }
     check_trait_names(&recs)?;
-    // (RFC-0081 slice 1) Validate every `dyn Trait` occurrence (identity,
-    // existential safety, v1 exclusions) while trait declarations are still
-    // present. The returned first occurrence drives the feature-stage gate
-    // after the rest of the check succeeds.
-    let first_dyn = check_existential_types(&recs.items)?;
+    // Validate every `dyn Trait` occurrence (identity, existential safety, and
+    // v1 exclusions) while trait declarations are still present.
+    check_existential_types(&recs.items)?;
     let trait_method_names = collect_trait_method_names(&recs);
     let trait_supertraits = recs
         .items
@@ -8513,13 +8499,6 @@ fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) ->
             // lowered module (method calls are plain `Call`s and the borrow
             // signatures survive lowering as `Qualified(Borrow, _)`).
             crate::loans::check(&lowered)?;
-            // (RFC-0081 slice 1) Feature-stage gate, deliberately LAST: a
-            // program mentioning `dyn` fails with the one canonical staging
-            // diagnostic only after every specific contract above passed, so
-            // neither backend ever lowers an existential type.
-            if let Some(canonical) = first_dyn {
-                return Err(existential_stage_error(&canonical));
-            }
             Ok(())
         }
         Err(message) => {
@@ -8794,7 +8773,21 @@ pub fn annotate(module: Module) -> TypedModule {
 /// their diagnostics with an empty table would turn a required rejection into a
 /// later generic "unsupported lowering" error.
 pub fn annotate_checked(module: Module) -> Result<TypedModule, TypeError> {
-    let table = run_check_selected(&module, true, None, None, None, None, false)?
+    // Frontend checking already enforced the compiler-syntax boundary before
+    // linking and comptime expansion. The executable AST can legitimately retain
+    // std/meta declarations (and an isolated `comptime` entry needs their values),
+    // so backend reannotation must not reapply that phase-sensitive source rule.
+    // All ordinary type checks, including existential obligations introduced by
+    // compiler-owned nodes, still run and their failures remain observable.
+    let table = run_check_selected(
+        &module,
+        true,
+        None,
+        None,
+        None,
+        None,
+        true,
+    )?
         .unwrap_or_default();
     Ok(TypedModule { module, table })
 }

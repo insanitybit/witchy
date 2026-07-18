@@ -430,8 +430,8 @@
       "Console"
     ],
     "output": [
-      "Point(1, 2)",
-      "true"
+      "number=7",
+      "label=ready"
     ],
     "runnable": true
   },
@@ -445,7 +445,8 @@
       "Console"
     ],
     "output": [
-      "{\"files\":[[\"a.txt\",\"hi\"]]}"
+      "Point(1, 2)",
+      "true"
     ],
     "runnable": true
   },
@@ -459,7 +460,7 @@
       "Console"
     ],
     "output": [
-      "5"
+      "{\"files\":[[\"a.txt\",\"hi\"]]}"
     ],
     "runnable": true
   },
@@ -473,7 +474,7 @@
       "Console"
     ],
     "output": [
-      "0 7 14"
+      "5"
     ],
     "runnable": true
   },
@@ -487,12 +488,26 @@
       "Console"
     ],
     "output": [
-      "Hello, witch"
+      "0 7 14"
     ],
     "runnable": true
   },
   {
     "block": 28,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "Hello, witch"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 29,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -507,7 +522,7 @@
     "runnable": true
   },
   {
-    "block": 29,
+    "block": 30,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -521,7 +536,7 @@
     "runnable": true
   },
   {
-    "block": 30,
+    "block": 31,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -536,7 +551,7 @@
     "runnable": true
   },
   {
-    "block": 31,
+    "block": 32,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -551,7 +566,7 @@
     "runnable": true
   },
   {
-    "block": 32,
+    "block": 33,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -565,7 +580,7 @@
     "runnable": true
   },
   {
-    "block": 33,
+    "block": 34,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -579,7 +594,7 @@
     "runnable": true
   },
   {
-    "block": 34,
+    "block": 35,
     "browser_runnable": false,
     "console_only": false,
     "expect_error": false,
@@ -592,24 +607,12 @@
     "runnable": false
   },
   {
-    "block": 35,
+    "block": 36,
     "browser_runnable": false,
     "console_only": true,
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [],
-    "output": [],
-    "runnable": false
-  },
-  {
-    "block": 36,
-    "browser_runnable": false,
-    "console_only": false,
-    "expect_error": false,
-    "file": "spec/language.md",
-    "footprint": [
-      "Net[Connect,Tcp]"
-    ],
     "output": [],
     "runnable": false
   },
@@ -632,6 +635,18 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
+      "Net[Connect,Tcp]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 39,
+    "browser_runnable": false,
+    "console_only": false,
+    "expect_error": false,
+    "file": "spec/language.md",
+    "footprint": [
       "Console",
       "Net[Connect,Listen,Tcp,Udp,Uds]"
     ],
@@ -639,7 +654,7 @@
     "runnable": false
   },
   {
-    "block": 39,
+    "block": 40,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -655,7 +670,7 @@
     "runnable": true
   },
   {
-    "block": 40,
+    "block": 41,
     "browser_runnable": false,
     "console_only": true,
     "expect_error": false,
@@ -845,6 +860,36 @@
     ],
     "output": [
       "<article class=\"post\"><h1>Hello from a rune</h1><p>Glamour renders &lt;script&gt; as text.</p></article>"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 1,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/backends.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "number=7",
+      "label=safe"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 2,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/backends.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "5",
+      "6"
     ],
     "runnable": true
   },

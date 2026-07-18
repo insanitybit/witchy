@@ -908,19 +908,14 @@ composes with an explicit `where` clause. The std library uses it for
 module is preluded; `from show import say` is needed only when you want the bare
 `say(...)` spelling.
 
-### Existential trait types — `dyn Trait` (RFC-0081, frontend only)
+### Existential trait types — `dyn Trait` (RFC-0081)
 
 `dyn Render` / `dyn Convert(Int)` is an existential trait type: a value whose
-concrete type is hidden behind a trait's callable surface. The frontend
-contract is implemented; the runtime is not — a program that mentions a `dyn`
-type parses, formats, and type-checks (identity, existential safety, authority)
-and then fails with one feature-stage diagnostic before either backend lowers
-it. Internally, expected-type checking records each directed concrete-to-`dyn`
-construction, and final monomorphic preparation selects its deterministic
-witness and rewrites it to one compiler-owned typed pack. This is the shared
-preparation contract for the runtime work, not executable language surface.
-Concrete payload boxing and dispatch are still unavailable, so no `dyn` value
-can be constructed or called by a program yet.
+concrete type is hidden behind a trait's callable surface. It is an owned value:
+the interpreter carries the concrete value plus an authenticated witness, while
+compiled Wasm uses a typed payload box plus an immutable witness-table index.
+Both backends select witnesses from the same closed linked program and agree on
+dispatch, write-back, failures, and supertrait upcasts.
 
 - `dyn` is contextual and only in type position: it must be followed by an
   uppercase trait name or a lowercase module plus uppercase trait name, so a
@@ -957,17 +952,49 @@ can be constructed or called by a program yet.
   tuples, containers): a directed or explicit conversion whose concrete type
   contains a `Dir`/`File`/`Net`/… fails at check time. Borrowed existentials
   (`View(dyn T, 'a)`) are excluded from v1.
+- Bare, `let`, `var`, and `own` receivers keep their ordinary conventions.
+  `var self` and explicit `var` arguments move in and write back together on a
+  structured return; nested places are rebuilt only after success, overlapping
+  caller places are rejected, and a trap exposes no partial write-back. `own`
+  consumes the existential and later use is a check-time error.
+- `dyn Sub` converts to `dyn Super` only when `Super` is a declared transitive
+  supertrait. The conversion projects an authenticated witness while retaining
+  the same hidden payload; unrelated conversions and forged witness selection
+  fail before execution.
+- Existential values have no automatic equality, ordering, hashing, reflection,
+  serialization, type-name/address/witness inspection, or downcast. Only methods
+  explicitly declared on the existential-safe trait are callable. A domain that
+  needs comparison or a stable key declares that operation as a trait method.
+- Constructing an owned existential may allocate its payload box. `mode opt`
+  preserves exactly the same values and traps but does not promise allocation
+  removal or devirtualization; either optimization is optional and unobservable.
 
-Example (not runnable until RFC-0081's witness/runtime slice lands):
+Heterogeneous values dispatch through their own witnesses:
 
-```sh
+```witchy
 trait Render:
-    fn render(let self, context: Context) -> Result(String, RenderError)
+    fn render(let self) -> String
 
-fn page(parts: List(dyn Render)) -> Int:   # parses + checks, then:
-# error: `dyn Render`: existential values cannot be constructed or dispatched
-# yet — RFC-0081's witness/runtime slice has not landed; the frontend contract
-# (parsing, identity, existential safety) is checked
+type Number:
+    Number(Int)
+
+type Label:
+    Label(String)
+
+impl Render for Number:
+    fn render(let self) -> String:
+        match self:
+            Number(value) -> "number=${value}"
+
+impl Render for Label:
+    fn render(let self) -> String:
+        match self:
+            Label(value) -> "label=${value}"
+
+fn main(console: Console):
+    let parts: List(dyn Render) = [Number(7), Label("ready")]
+    for part in parts:
+        console.print(part.render())
 ```
 
 ### Deriving the standard traits

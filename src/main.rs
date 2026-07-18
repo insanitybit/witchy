@@ -4197,6 +4197,28 @@ mod expand_command_tests {
     }
 
     #[test]
+    fn rfc0081_expand_preserves_existential_types_and_calls() {
+        let dir = unique_dir("expand_rfc0081");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("app.witchy");
+        std::fs::write(
+            &file,
+            "trait Render:\n    fn render(let self) -> String\n\n\
+             type Label:\n    Label(String)\n\n\
+             impl Render for Label:\n    fn render(let self) -> String:\n        match self:\n            Label(value) -> value\n\n\
+             fn main(console: Console):\n    let value: dyn Render = Label(\"ready\")\n    console.print(value.render())\n",
+        )
+        .unwrap();
+
+        let expanded = expand_file_source(file.to_str().unwrap()).expect("expand source");
+        assert!(expanded.contains("let value: dyn Render = Label(\"ready\")"), "{expanded}");
+        assert!(expanded.contains("console.print(value.render())"), "{expanded}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn expand_file_uses_sibling_modules_for_imported_tags() {
         let dir = unique_dir("expand_imported_tag");
         let _ = std::fs::remove_dir_all(&dir);

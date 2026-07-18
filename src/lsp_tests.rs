@@ -165,6 +165,33 @@ fn main(console: Console):
     }
 
     #[test]
+    fn rfc0081_lsp_accepts_and_displays_existential_signatures() {
+        let mut docs = HashMap::new();
+        let src = "trait Render:\n    fn render(let self) -> String\n\nfn render_one(value: dyn Render) -> String:\n    value.render()\n\nfn main(console: Console):\n    console.print(\"ready\")\n";
+        let uri = "file:///rfc0081-hover.witchy";
+        docs.insert(uri.to_string(), src.to_string());
+        assert!(
+            compute_diagnostics(uri, src, &HashMap::new()).is_empty(),
+            "valid existential signatures must not retain the old feature-stage diagnostic"
+        );
+
+        let line = 3u64;
+        let col = src.lines().nth(3).unwrap().find("render_one").unwrap() as u64;
+        let response = hover_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": line, "character": col },
+            }),
+        );
+        let contents = response["contents"]["value"].as_str().expect("hover text");
+        assert!(
+            contents.contains("fn render_one(value: dyn Render) -> String"),
+            "{contents}"
+        );
+    }
+
+    #[test]
     fn hover_resolves_imported_module_functions() {
         let mut docs = HashMap::new();
         let src = "import string\n\nfn main(console: Console):\n    console.print(string.repeat(\"ab\", 2))\n";

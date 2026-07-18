@@ -6554,6 +6554,85 @@ fn main() -> Int:
         );
     }
 
+    #[test]
+    fn rfc0081_normal_and_opt_modes_have_identical_values_and_traps() {
+        let values = r#"
+trait Render:
+    fn render(let self) -> String
+
+type Number:
+    Number(Int)
+
+type Label:
+    Label(String)
+
+impl Render for Number:
+    fn render(let self) -> String:
+        match self:
+            Number(value) -> "number=${value}"
+
+impl Render for Label:
+    fn render(let self) -> String:
+        match self:
+            Label(value) -> "label=${value}"
+
+fn main(console: Console):
+    let values: List(dyn Render) = [Number(7), Label("safe")]
+    for value in values:
+        console.print(value.render())
+"#;
+        let run = |source: &str| {
+            let linked = resolve_std_src(source);
+            let interpreted =
+                interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interpreter");
+            let bytes = codegen::compile_module_binary(&linked).expect_lowered("compile wasm");
+            let compiled = crate::run_wasm_bytes(&bytes).expect("wasm");
+            assert_eq!(compiled, interpreted);
+            interpreted
+        };
+        let normal = run(values);
+        let opt = run(&format!("mode opt\n{values}"));
+        assert_eq!(normal, vec!["number=7", "label=safe"]);
+        assert_eq!(opt, normal);
+
+        let trap = r#"
+trait Explode:
+    fn explode(let self) -> Int
+
+type Bomb:
+    Bomb
+
+impl Explode for Bomb:
+    fn explode(let self) -> Int:
+        1 / 0
+
+fn main() -> Int:
+    let value: dyn Explode = Bomb
+    value.explode()
+"#;
+        let fail = |source: &str| {
+            let linked = resolve_std_src(source);
+            let interpreted = interpreter::run_module(linked.clone(), ".", Vec::new())
+                .expect_err("interpreter trap")
+                .to_string();
+            let bytes = codegen::compile_module_binary(&linked).expect_lowered("compile wasm");
+            let compiled = crate::run_wasm_bytes(&bytes).expect_err("wasm trap");
+            assert!(interpreted.contains("division by zero"), "{interpreted}");
+            assert!(
+                compiled.contains("divide by zero") || compiled.contains("division by zero"),
+                "{compiled}"
+            );
+            (interpreted, compiled)
+        };
+        let normal_traps = fail(trap);
+        let opt_traps = fail(&format!("mode opt\n{trap}"));
+        assert_eq!(normal_traps.0, normal_traps.1);
+        assert_eq!(opt_traps.0, opt_traps.1);
+        let normal_kind = normal_traps.0.rsplit(": ").next().unwrap_or(&normal_traps.0);
+        let opt_kind = opt_traps.0.rsplit(": ").next().unwrap_or(&opt_traps.0);
+        assert_eq!(normal_kind, opt_kind);
+    }
+
     /// `wasm_run` that also reads the exported `__witchy_reowns` counter —
     /// the timing-free proof of whether accumulation ran in place (O(1)
     /// re-owns) or fell to the copying path (O(n) re-owns).

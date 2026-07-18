@@ -1,8 +1,7 @@
-//! RFC-0081 slice 1: the existential (`dyn Trait`) FRONTEND contract on the
+//! RFC-0081 existential (`dyn Trait`) public frontend contract on the
 //! full linked pipeline — resolved type identity across aliases and modules,
 //! existential-safety diagnostics, transitive capability-payload rejection,
-//! and the feature-stage gate that keeps every `dyn` program away from both
-//! backends until the witness/runtime slice lands.
+//! and successful public checking after runtime dispatch landed.
 
 use std::collections::HashSet;
 
@@ -33,22 +32,11 @@ fn link_modules(modules: Vec<(&str, &str)>) -> Result<witchy::ast::Module, Strin
         .map_err(|error| error.message)
 }
 
-/// The canonical feature-stage diagnostic, as rendered through
-/// `Display for TypeError` (the `type error: ` prefix).
-fn stage_gate(canonical: &str) -> String {
-    format!(
-        "type error: `{canonical}`: existential values cannot be constructed or \
-         dispatched yet — RFC-0081's witness/runtime slice has not landed; the \
-         frontend contract (parsing, identity, existential safety) is checked"
-    )
-}
-
 /// (a) One existential identity across an alias and across modules: module
 /// `boxed` names `dyn Render` through `type Boxed = …` (the trait lives in a
 /// third, shared module), while `main` spells `dyn Render` directly. The two
-/// spellings must interchange as parameter and return types WITHOUT any
-/// unification/type error — so the only diagnostic left is the staging gate
-/// in its canonical form.
+/// spellings must interchange as parameter and return types without any
+/// unification/type error.
 #[test]
 fn rfc0081_dyn_identity_is_stable_across_aliases_and_modules() {
     let modules = vec![
@@ -98,9 +86,7 @@ fn rfc0081_dyn_identity_is_stable_across_aliases_and_modules() {
         assert_eq!(name, "render.Render");
     }
 
-    let err = link_and_check(modules)
-    .expect_err("dyn programs are staged until the witness slice lands");
-    assert_eq!(err, stage_gate("dyn Render"));
+    link_and_check(modules).expect("the linked existential identities must check");
 }
 
 #[test]
@@ -205,24 +191,23 @@ fn rfc0081_same_spelled_traits_dispatch_independently_on_both_backends() {
 
 /// (b) Equivalent trait arguments give the same identity: `type P =
 /// dyn Convert(Int)` and a directly spelled `dyn Convert(Int)` interchange as
-/// parameter/return with no mismatch, leaving only the gate.
+/// parameter/return with no mismatch.
 #[test]
 fn rfc0081_dyn_identity_with_arguments_matches_its_alias() {
-    let err = check(
+    check(
         "trait Convert(t):\n    fn convert(let self) -> t\n\n\
          type P = dyn Convert(Int)\n\n\
          fn through(x: P) -> dyn Convert(Int):\n    x\n\n\
          fn back(x: dyn Convert(Int)) -> P:\n    x\n\n\
          fn main(console: Console):\n    console.print(\"hi\")\n",
     )
-    .expect_err("dyn programs are staged");
-    assert_eq!(err, stage_gate("dyn Convert(Int)"));
+    .expect("equivalent closed existential arguments must check");
 }
 
 /// (c) A specific existential-safety violation in a linked multi-module
-/// program surfaces the safety diagnostic — the specific error beats the gate.
+/// program surfaces the safety diagnostic.
 #[test]
-fn rfc0081_safety_violation_in_linked_module_beats_the_stage_gate() {
+fn rfc0081_safety_violation_in_linked_module_is_rejected() {
     let err = link_and_check(vec![
         (
             "shapes",
@@ -240,10 +225,6 @@ fn rfc0081_safety_violation_in_linked_module_beats_the_stage_gate() {
         err.contains("is not existential-safe as `dyn Maker`")
             && err.contains("method `make` has no receiver"),
         "{err}"
-    );
-    assert!(
-        !err.contains("cannot be constructed or dispatched yet"),
-        "the specific safety diagnostic must beat the stage gate: {err}"
     );
 }
 
@@ -277,19 +258,15 @@ fn rfc0081_transitive_cap_payload_from_another_module_is_rejected() {
     );
 }
 
-/// (e) The gate fires from `typeck::check` ITSELF — the shared frontend —
-/// which both backends sit behind. Because `check` errors here, neither
-/// `interpreter::run_module` nor `codegen::compile_module_binary` is ever
-/// reached with a `dyn` type: no backend can lower an existential before the
-/// witness slice lands, and no parity divergence is possible.
+/// (e) The shared public checker accepts a valid `dyn` signature. Backend
+/// preparation still rechecks compiler-owned calls and preserves any failure.
 #[test]
-fn rfc0081_stage_gate_fires_in_typeck_before_any_backend() {
+fn rfc0081_public_check_accepts_valid_existential_signatures() {
     let linked = witchy::resolve_std_only(
         "trait Render:\n    fn render(let self) -> String\n\n\
          fn describe(part: dyn Render) -> String:\n    \"static\"\n\n\
          fn main(console: Console):\n    console.print(\"hi\")\n",
     )
     .expect("the program links");
-    let err = witchy::typeck::check(&linked).expect_err("check gates dyn programs");
-    assert_eq!(err.to_string(), stage_gate("dyn Render"));
+    witchy::typeck::check(&linked).expect("check accepts valid dyn programs");
 }

@@ -1068,6 +1068,65 @@ fn main() -> Int:
     }
 
     #[test]
+    fn existential_footprint_tracks_every_reachable_adapter_and_its_authority() {
+        let source = |constructions: &str| format!(r#"
+trait Work:
+    fn run(let self, console: Console) -> Int
+
+type Quiet:
+    Quiet
+
+type Loud:
+    Loud
+
+impl Work for Quiet:
+    fn run(let self, console: Console) -> Int:
+        1
+
+impl Work for Loud:
+    fn run(let self, console: Console) -> Int:
+        console.print("loud")
+        2
+
+fn main(console: Console) -> Int:
+{constructions}
+"#);
+        let wat = |source: String| {
+            let module = parse_module(&source).expect("parse existential footprint fixture");
+            let wir = assemble_wir_module(&module)
+                .expect_lowered("reachable witness adapters lower to WIR");
+            witchy_wir::wir::to_wat(&wir)
+        };
+
+        let quiet = wat(source(
+            "    let item: dyn Work = Quiet\n    item.run(console)\n",
+        ));
+        assert_eq!(quiet.match_indices("(func $__dynw").count(), 1, "{quiet}");
+        assert!(
+            !quiet.contains("(import \"witchy\" \"print\""),
+            "an unreachable authority-using witness must not widen imports: {quiet}"
+        );
+
+        let all = wat(source(
+            "    let items: List(dyn Work) = [Quiet, Loud]\n    items[0].run(console) + items[1].run(console)\n",
+        ));
+        assert_eq!(
+            all.match_indices("(func $__dynw").count(),
+            2,
+            "each reachable closed construction needs one adapter: {all}"
+        );
+        assert!(
+            all.contains("(import \"witchy\" \"print\""),
+            "the reachable Loud witness must widen the compiled authority footprint: {all}"
+        );
+
+        let again = wat(source(
+            "    let items: List(dyn Work) = [Quiet, Loud]\n    items[0].run(console) + items[1].run(console)\n",
+        ));
+        assert_eq!(all, again, "witness and authority footprint must be deterministic");
+    }
+
+    #[test]
     fn existential_var_receiver_writes_back_a_reboxed_payload() {
         let src = r#"
 trait Counter:
