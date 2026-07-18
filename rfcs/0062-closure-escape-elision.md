@@ -8,6 +8,10 @@ tracking: tier-1 implemented and promoted into the default release set; conserva
 
 # RFC-0062: Closure escape elision — closures that don't escape don't allocate
 
+The escape analysis and candidate facts are implemented in
+[`crates/witchy-lower/src/escape.rs`](../crates/witchy-lower/src/escape.rs) and
+[`crates/witchy-syntax/src/opt.rs`](../crates/witchy-syntax/src/opt.rs).
+
 ## Summary
 
 Extend the existing escape/uniqueness analysis to closure environments, so
