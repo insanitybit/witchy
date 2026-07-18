@@ -84,7 +84,7 @@ pub fn from_list(xs: List(a)) -> Set(a):
   way out-of-module code obtains the value, so any invariant they enforce
   (dedup, range check, field validation) holds for every value that exists.
 - **One mechanism, not a new one.** Enforcement reuses the existing sealing pass
-  (`seal_block` in `crates/witchy-syntax/src/linker.rs`, driven by the `sealed`
+  (`seal_block` in [`crates/witchy-syntax/src/linker.rs`](../crates/witchy-syntax/src/linker.rs), driven by the `sealed`
   flag on a type). RFC-0002 already sets that flag for `capability`; this RFC
   lets the `sealed` keyword set it for any `type`. No new analysis, no
   per-type special-casing — the general convention the codebase already runs.
