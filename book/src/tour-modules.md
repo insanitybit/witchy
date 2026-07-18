@@ -7,10 +7,10 @@ declared `pub`.
 ```text
 // parser.witchy
 fn digit_value(s: String) -> Int:
-    string.to_int(s)
+    s.to_int()
 
 pub fn parse_count(s: String) -> Result(Int, String):
-    match string.parse_int(s):
+    match s.parse_int():
         Some(n) -> Ok(n)
         None -> Err("not an integer: ${s}")
 ```
