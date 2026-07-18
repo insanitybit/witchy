@@ -7,6 +7,11 @@ tracking: "L1–L4 shipped; L5/L6 deferred"
 ---
 # RFC-0034 — Closing the compute gap: codegen & runtime performance levers
 
+The shipped L1–L4 levers are implemented across
+[`crates/witchy-syntax/src/opt.rs`](../crates/witchy-syntax/src/opt.rs) and
+[`crates/witchy-lower/src/codegen`](../crates/witchy-lower/src/codegen), with
+measurements in [`src/stats.rs`](../src/stats.rs); L5/L6 remain deferred as stated.
+
 - Status: implemented (L1-L4; L5/L6 deferred)
 - Predecessors: [RFC-0029](0029-performance-tier-contract.md) (perf tier contract),
   [RFC-0033](0033-place-based-uniqueness.md) (in-place through user types),
