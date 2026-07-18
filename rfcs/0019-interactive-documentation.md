@@ -38,14 +38,14 @@ the program and re-runs it in place than when they read a frozen snippet.
 
 The pieces are already built; they are just not connected:
 
-- **The engine exists.** `scripts/build-playground.sh` compiles the witchy
-  library to `wasm32-unknown-unknown` → `web/witchy.wasm` (3.26 MB after
+- **The engine exists.** [`scripts/build-playground.sh`](../scripts/build-playground.sh) compiles the witchy
+  library to `wasm32-unknown-unknown` → [`web/witchy.wasm`](../web/witchy.wasm) (3.26 MB after
   `wasm-opt -Oz`). It exports a C ABI (`witchy_alloc`/`witchy_free`/
   `witchy_compile`, plus the intrinsic shims). `web/witchy-host.js` drives it:
   it compiles a snippet to a wasm module and runs that module in-browser. This
   is the real codegen path, not a re-implementation.
-- **It is already validated.** `scripts/pg_validate.mjs` loads the very same
-  `web/witchy.wasm` + `web/witchy-host.js` and diffs their output against the
+- **It is already validated.** [`scripts/pg_validate.mjs`](../scripts/pg_validate.mjs) loads the very same
+  [`web/witchy.wasm`](../web/witchy.wasm) + [`web/witchy-host.js`](../web/witchy-host.js) and diffs their output against the
   interpreter oracle (`WITCHY_INTERP=1`) for every example. CI builds the wasm
   on every push ("Playground wasm build").
 - **Every `witchy` block in the docs is already a complete, correct program.**
@@ -59,9 +59,9 @@ What is *missing* is the connection, and the connection has rotted:
 
 - **The book has no interactivity at all** — `book/witchy-hljs.js` only adds
   syntax highlighting.
-- **The standalone playground page is currently broken.** `web/playground.js`
+- **The standalone playground page is currently broken.** [`web/playground.js`](../web/playground.js)
   (loaded by `web/index.html`) still calls `witchy_run`, an export that the
-  oracle-only migration *removed* from `src/lib.rs` (the library now exports
+  oracle-only migration *removed* from [`src/lib.rs`](../src/lib.rs) (the library now exports
   `witchy_compile`). The working compile-and-run path lives only in
   `web/witchy-host.js`, which today is consumed solely by the Node validator —
   not by any browser page. The user-facing playground would throw
@@ -240,10 +240,10 @@ it so the cell frames the outcome correctly. Everything else is automatic.
   real compiler as wasm, run client-side" pattern this RFC leans on.
 - **Pyodide / PyScript docs** — in-browser execution of the actual language
   runtime inside documentation.
-- In-repo: RFC-0007 (the witchy-WASM browser target and its deny-by-omission
-  shim), `rfcs/oracle-only-migration.md` (Phase 4 made the playground compile to
+- In-repo: [RFC-0007](./0007-witchy-wasm-browser-target.md) (the witchy-WASM browser target and its deny-by-omission
+  shim), [`rfcs/oracle-only-migration.md`](./oracle-only-migration.md) (Phase 4 made the playground compile to
   a wasm binary and validate against the oracle — the engine this RFC surfaces),
-  and `scripts/pg_validate.mjs` (the validation harness Phase 3 extends).
+  and [`scripts/pg_validate.mjs`](../scripts/pg_validate.mjs) (the validation harness Phase 3 extends).
 
 ---
 
