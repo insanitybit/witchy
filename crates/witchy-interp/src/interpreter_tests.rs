@@ -1556,7 +1556,6 @@ fn main(console: Console, net: Net, root: Dir):
         let r2 = request("GET /files/nope.txt HTTP/1.1\r\nHost: x\r\n\r\n");
         assert!(r2.contains("404 "), "r2: {r2}");
 
-        drop(request);
         server.join().unwrap().unwrap();
     }
 
