@@ -9,6 +9,11 @@ tracking:
 
 # RFC-0023: Checked heap
 
+The shipped checked-heap shadow and redzone instrumentation are implemented in
+[`crates/witchy-runtime/src/runtime.rs`](../crates/witchy-runtime/src/runtime.rs)
+and [`crates/witchy-wir/src/wir_helpers`](../crates/witchy-wir/src/wir_helpers),
+with runtime-unit coverage in [`crates/witchy-runtime/src/runtime_tests.rs`](../crates/witchy-runtime/src/runtime_tests.rs).
+
 > Code blocks here are intentionally **not** tagged `witchy` (per RFC-0002's
 > convention): they are illustrative sketches, not complete programs.
 
