@@ -44,7 +44,7 @@ creates all by itself.
 Independent smaller gaps compound it:
 
 - `sealed type` appears ~5 times in the generated `spec/stdlib.md`
-  (`Rng`, `Version`, `DateTime`, …) and in `spec/capabilities.md`, but no
+  (`Rng`, `Version`, `DateTime`, …) and in [`spec/capabilities.md`](../spec/capabilities.md), but no
   spec section defines the construct (RFC-0065 shipped it; the spec never
   caught up — the RFC is history, not reference, per rfcs/README.md's
   cardinal rule).
@@ -55,7 +55,7 @@ Independent smaller gaps compound it:
 - Generator re-run semantics — the one shipped semantic a Rust/Python reader
   will mispredict (state persists across `yield` because the body *re-runs*,
   not because a continuation is captured) — lives as an aside in the
-  mutation-scope section (`spec/language.md:524-526`) instead of leading the
+  mutation-scope section ([`spec/language.md:524-526`](../spec/language.md)) instead of leading the
   generators section.
 
 Doc *drift* items (stale claims, broken links) stay in the bug ledger and the
