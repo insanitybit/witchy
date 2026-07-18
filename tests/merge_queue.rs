@@ -66,6 +66,23 @@ fn process_is_alive(pid: i32) -> bool {
         .is_ok_and(|status| status.success())
 }
 
+fn process_group(pid: i32) -> i32 {
+    let output = Command::new("perl")
+        .args(["-e", "print getpgrp($ARGV[0])"])
+        .arg(pid.to_string())
+        .output()
+        .expect("query process group with Perl");
+    assert!(
+        output.status.success(),
+        "could not query process group for {pid}: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    String::from_utf8(output.stdout)
+        .expect("process group output is utf8")
+        .parse()
+        .expect("process group is numeric")
+}
+
 fn git(repo: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .current_dir(repo)
@@ -270,21 +287,23 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
     fs::write(held_lock.join("what"), "focused external check\n")
         .expect("write lock description");
     let prepared_worktree = gate_worktree.clone();
+    let lock_wait_marker = state.join("lock-wait-started");
+    let lock_wait_marker_for_thread = lock_wait_marker.clone();
     let lock_releaser = thread::spawn(move || {
-        // Git worktree checkout/rebase can take several seconds on a loaded
-        // developer machine. Keep the lock held until preparation is visible;
-        // the assertion still fails if preparation actually waits on the lock.
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(20);
         while !prepared_worktree.join("new-patch").exists() && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(25));
         }
         let prepared_while_lock_held = prepared_worktree.join("new-patch").exists();
-        // Leave enough margin for a cold worktree preparation on a loaded
-        // machine; the assertion is about lock separation, not a race with
-        // the fixture's release timer.
-        thread::sleep(Duration::from_millis(4_100));
+        while !lock_wait_marker_for_thread.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(25));
+        }
+        let coordinator_waited_for_lock = lock_wait_marker_for_thread.exists();
+        // The journal uses whole seconds, so hold one complete timing bucket
+        // after the explicit lock-wait handshake.
+        thread::sleep(Duration::from_millis(1_100));
         fs::remove_dir_all(held_lock).expect("release externally held gate lock");
-        prepared_while_lock_held
+        (prepared_while_lock_held, coordinator_waited_for_lock)
     });
 
     let output = Command::new(&queue)
@@ -293,9 +312,11 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
         .env("MERGE_QUEUE_STATE_DIR", &state)
         .env("MERGE_QUEUE_GATE_WT", &gate_worktree)
         .env("MERGE_QUEUE_GATE_CMD", &gate_command)
+        .env("MERGE_QUEUE_TEST_LOCK_WAIT_MARKER", &lock_wait_marker)
         .output()
         .expect("run isolated coordinator");
-    let prepared_outside_lock = lock_releaser.join().expect("join gate lock releaser");
+    let (prepared_outside_lock, waited_for_external_lock) =
+        lock_releaser.join().expect("join gate lock releaser");
     assert!(
         output.status.success(),
         "coordinator failed: {}",
@@ -305,6 +326,10 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
     assert!(
         prepared_outside_lock,
         "coordinator did not prepare the gate worktree while an external gate lock was held",
+    );
+    assert!(
+        waited_for_external_lock,
+        "coordinator never attempted to acquire the external gate lock",
     );
     assert!(
         !landed_worktree.exists(),
@@ -449,6 +474,9 @@ impl QueueFixture {
         for (index, file) in files.iter().enumerate() {
             let branch = ((b'a' + index as u8) as char).to_string();
             run_git(&root, &["switch", "-c", &branch, &parent]);
+            if let Some(parent_dir) = root.join(file).parent() {
+                fs::create_dir_all(parent_dir).expect("create stack file parent");
+            }
             fs::write(root.join(file), format!("{branch}\n")).expect("write stack file");
             run_git(&root, &["add", file]);
             run_git(&root, &["commit", "-m", &format!("add {file}")]);
@@ -818,6 +846,68 @@ fn green_dependency_stack_gates_the_tip_once_and_lands_the_whole_stack() {
 }
 
 #[test]
+fn markdown_only_stack_can_exceed_the_semantic_batch_limit() {
+    let fixture = QueueFixture::stack(&[
+        "a.md", "b.md", "c.md", "d.md", "e.md", "f.md",
+    ]);
+    submit_stack(&fixture, &["a", "b", "c", "d", "e", "f"]);
+    let output = fixture
+        .mq_command(&["run", "--once"], "true")
+        .env("MERGE_QUEUE_BATCH_MAX", "5")
+        .env("MERGE_QUEUE_DOCS_BATCH_MAX", "20")
+        .output()
+        .expect("run documentation batch");
+    assert!(
+        output.status.success(),
+        "documentation batch failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(run_git(&fixture.root, &["show", "master:f.md"]).status.success());
+    let merged: Vec<_> = fixture
+        .journal()
+        .into_iter()
+        .filter(|event| event["event"] == "merged")
+        .collect();
+    assert_eq!(merged.len(), 6);
+    assert!(merged.iter().all(|event| event["batch"] == "6"));
+}
+
+#[test]
+fn documentation_batch_rejects_a_non_markdown_candidate() {
+    let fixture = QueueFixture::stack(&["a.md", "b.txt", "c.md"]);
+    submit_stack(&fixture, &["a", "b", "c"]);
+    fixture.mq_ok(&["run", "--once"], "true");
+
+    assert!(run_git(&fixture.root, &["show", "master:a.md"]).status.success());
+    let merged: Vec<_> = fixture
+        .journal()
+        .into_iter()
+        .filter(|event| event["event"] == "merged")
+        .collect();
+    assert_eq!(merged.len(), 3);
+    assert_eq!(merged[0]["batch"], "1");
+    assert_ne!(merged[0]["log"], merged[1]["log"]);
+    assert_eq!(merged[1]["batch"], "2");
+    assert_eq!(merged[1]["log"], merged[2]["log"]);
+}
+
+#[test]
+fn queue_substrate_change_requests_the_isolated_fixture_shard() {
+    let fixture = QueueFixture::stack(&["scripts/merge-queue.sh"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+    fixture.mq_ok(
+        &["run", "--once"],
+        "test \"$WITCHY_GATE_QUEUE_INFRA\" = 1",
+    );
+    assert!(
+        run_git(&fixture.root, &["show", "master:scripts/merge-queue.sh"])
+            .status
+            .success()
+    );
+}
+
+#[test]
 fn dirty_main_master_defers_the_queue_before_running_the_gate() {
     let fixture = QueueFixture::stack(&["a.txt"]);
     fixture.mq_ok(&["submit", "a"], "true");
@@ -931,9 +1021,9 @@ fn daemon_enters_an_independent_process_group() {
     let launcher_group = launcher.id() as i32;
 
     let pid_path = state.join("coordinator.pid");
-    // Daemon startup may contend with a cold workspace build; keep this
-    // readiness timeout separate from the later shutdown assertions.
-    let deadline = Instant::now() + Duration::from_secs(15);
+    // The daemon command has its own readiness handshake. This outer bound is
+    // only deadlock protection and remains below nextest's hard timeout.
+    let deadline = Instant::now() + Duration::from_secs(90);
     let pid = loop {
         if let Ok(text) = fs::read_to_string(&pid_path) {
             break text.trim().parse::<i32>().expect("parse coordinator pid");
@@ -947,19 +1037,17 @@ fn daemon_enters_an_independent_process_group() {
         process_is_alive(pid),
         "coordinator {pid} did not survive daemon return"
     );
+    assert_ne!(
+        process_group(pid),
+        launcher_group,
+        "coordinator {pid} remained in the launcher's process group"
+    );
     let killed = Command::new("kill")
         .args(["-TERM", "--", &format!("-{launcher_group}")])
         .status()
         .expect("terminate daemon launcher process group");
     assert!(killed.success(), "could not terminate daemon launcher group");
     let _ = launcher.wait();
-    // Allow signal delivery and process-group teardown to settle on loaded
-    // developer machines before checking that the coordinator survived.
-    thread::sleep(Duration::from_millis(250));
-    assert!(
-        process_is_alive(pid),
-        "coordinator {pid} remained in the launcher's process group"
-    );
 
     drop(guard);
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -1382,6 +1470,37 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     assert!(
         timings[1]["elapsed_s"].as_u64().unwrap() <= 2,
         "background timing included time spent waiting for foreground collection: {stdout}",
+    );
+
+    let isolated = Command::new("bash")
+        .arg(root.join("scripts/check.sh"))
+        .arg("--fast")
+        .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default()))
+        .env("CARGO_TARGET_DIR", temp.path().join("target-isolated"))
+        .env("WITCHY_GATE_QUEUE_INFRA", "1")
+        .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
+        .output()
+        .expect("run fast gate with isolated queue fixtures");
+    assert!(
+        isolated.status.success(),
+        "isolated fake fast gate failed: {}",
+        String::from_utf8_lossy(&isolated.stderr)
+    );
+    let isolated_stdout = String::from_utf8(isolated.stdout).expect("check output is utf8");
+    let isolated_names: Vec<_> = isolated_stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("WITCHY_TIMING "))
+        .map(|json| serde_json::from_str::<serde_json::Value>(json).expect("timing is JSON"))
+        .map(|timing| timing["name"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        isolated_names,
+        [
+            "queue infrastructure (isolated)",
+            "tests (workspace, minus e2e)",
+            "clippy (deny warnings)",
+        ],
+        "queue fixtures did not run alone before product work: {isolated_stdout}",
     );
 
     let clippy_pid_file = temp.path().join("red-clippy.pid");

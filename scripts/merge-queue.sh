@@ -585,6 +585,10 @@ acquire_lock() { # acquire_lock <description> [branch] [log]
         fi
         if [ "$waited" -eq 0 ]; then
             note "gate lock held by pid ${pid:-?} ($(cat "$lock/what" 2>/dev/null || echo '?')); waiting"
+            if [ -n "${MERGE_QUEUE_STATE_DIR:-}" ] \
+                && [ -n "${MERGE_QUEUE_TEST_LOCK_WAIT_MARKER:-}" ]; then
+                : >"$MERGE_QUEUE_TEST_LOCK_WAIT_MARKER"
+            fi
         fi
         waited=1
         sleep "$monitor_interval"
@@ -637,11 +641,12 @@ group_is_busy() { # group_is_busy <pgid>
 # Sets gate_result to "green", "red", or "timeout: <why>". Never returns nonzero.
 gate_result=""
 gate_attempt=0
-run_gate() { # run_gate <log> [fuzz-mode] [gate-scope]
+run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra]
     local log="$1"
     local progress_file="${log}.progress"
     local fuzz_mode="${2:-full}"
     local gate_scope="${3:-all}"
+    local queue_infra="${4:-0}"
     local start; start="$(date +%s)"
     # `set -m` puts the background job in its own process group, so a timeout
     # can kill the WHOLE cargo/nextest tree, not just the top shell.
@@ -661,7 +666,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope]
     # execution as well doubled gate wall-clock (measured 2026-07-16: ~20.6 min
     # at width 4 vs the historical 8-10 min).
     rm -f "$progress_file"
-    ( cd "$gate_wt" && exec env CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" bash -c "$gate_cmd" ) >"$log" 2>&1 &
+    ( cd "$gate_wt" && exec env CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" bash -c "$gate_cmd" ) >"$log" 2>&1 &
     local gpid=$!
     set +m
     local why=""
@@ -1169,13 +1174,26 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     local batch_submitted_shas=("$submitted_sha")
     local batch_attempt_ids=("$attempt_id")
     local qf cand cand_id cand_attempt cdiff csha tip added stack_mode=0
-    local batch_max="${MERGE_QUEUE_BATCH_MAX:-5}" batch_limit
-    batch_limit="$batch_max"
+    local batch_max="${MERGE_QUEUE_BATCH_MAX:-5}"
+    local docs_batch_max="${MERGE_QUEUE_DOCS_BATCH_MAX:-25}"
+    local batch_ceiling="$batch_max" batch_limit docs_batch_mode=0 initial_diff=""
+    case "$docs_batch_max" in '' | *[!0-9]* | 0) docs_batch_max="$batch_max" ;; esac
+    # Raise only the documentation ceiling. The classifier is intentionally
+    # stricter than gate_scope=docs: spec/book/README Markdown still receives
+    # the full product gate, but may be integrated in one large compatible
+    # batch. Any code/config/non-Markdown path keeps the semantic ceiling.
+    initial_diff="$(git -C "$gate_wt" diff --name-only --no-renames "$base..HEAD" 2>/dev/null || true)"
+    if [ -n "$initial_diff" ] \
+        && ! printf '%s\n' "$initial_diff" | grep -cEv '\.md$' >/dev/null; then
+        docs_batch_mode=1
+        batch_ceiling="$docs_batch_max"
+    fi
+    batch_limit="$batch_ceiling"
     if [ -f "$f.batch-limit" ]; then
         batch_limit="$(cat "$f.batch-limit" 2>/dev/null || echo 1)"
         case "$batch_limit" in '' | *[!0-9]*) batch_limit=1 ;; esac
         [ "$batch_limit" -ge 1 ] || batch_limit=1
-        [ "$batch_limit" -le "$batch_max" ] || batch_limit="$batch_max"
+        [ "$batch_limit" -le "$batch_ceiling" ] || batch_limit="$batch_ceiling"
     fi
 
     # Explicit dependency stacks take priority over unrelated opportunistic
@@ -1199,6 +1217,10 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
                 git -C "$root" cat-file -e "$csha^{commit}" 2>/dev/null || continue
                 cdiff="$(git -C "$root" diff --name-only "master...$csha" 2>/dev/null | sort -u)"
                 [ -n "$cdiff" ] || continue
+                if [ "$docs_batch_mode" -eq 1 ] \
+                    && printf '%s\n' "$cdiff" | grep -cEv '\.md$' >/dev/null; then
+                    continue
+                fi
                 tip="$(git -C "$gate_wt" rev-parse HEAD)"
                 if replay_unrepresented_patches "$tip" "$csha"; then
                     batch_files+=("$qf"); batch_branches+=("$cand"); batch_ids+=("$cand_id")
@@ -1232,6 +1254,10 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             git -C "$root" cat-file -e "$csha^{commit}" 2>/dev/null || continue
             cdiff="$(git -C "$root" diff --name-only "master...$csha" 2>/dev/null | sort -u)"
             [ -n "$cdiff" ] || continue
+            if [ "$docs_batch_mode" -eq 1 ] \
+                && printf '%s\n' "$cdiff" | grep -cEv '\.md$' >/dev/null; then
+                continue
+            fi
             tip="$(git -C "$gate_wt" rev-parse HEAD)"
             if replay_unrepresented_patches "$tip" "$csha"; then
                 batch_files+=("$qf"); batch_branches+=("$cand"); batch_ids+=("$cand_id")
@@ -1246,7 +1272,11 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     fi
     if [ "${#batch_branches[@]}" -gt 1 ]; then
         local batch_kind="batch"
-        [ "$stack_mode" -eq 1 ] && batch_kind="dependency stack"
+        if [ "$docs_batch_mode" -eq 1 ]; then
+            batch_kind="documentation batch"
+        elif [ "$stack_mode" -eq 1 ]; then
+            batch_kind="dependency stack"
+        fi
         note "$batch_kind: gating ${#batch_branches[@]} branches at the tip: ${batch_branches[*]}"
     fi
     local sha; sha="$(git -C "$gate_wt" rev-parse HEAD)"
@@ -1306,6 +1336,18 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     if [ -n "$changed" ] && [ -z "$unsafe_paths" ] \
         && ! echo "$changed" | grep -cx 'rfcs/performance-modes\.md' >/dev/null; then
         gate_scope="docs"
+    fi
+
+    # Queue fixtures manipulate process groups, detached daemons, file locks,
+    # and nested Git repositories. Run that binary in check.sh's isolated,
+    # serial shard only when this batch can change the queue substrate. The
+    # ordinary product suite always excludes it, avoiding load-induced false
+    # reds without weakening validation of relevant infrastructure changes.
+    local queue_infra=0
+    if [ -n "$changed" ] \
+        && printf '%s\n' "$changed" \
+            | grep -cE '^(\.config/nextest\.toml|scripts/(check|gate-report|merge-queue|nextest-list-wrapper|state-paths|test-for-paths|worktree-status|worktree-warm)\.sh|tests/(merge_queue|test_for_paths)\.rs)$' >/dev/null; then
+        queue_infra=1
     fi
 
     gate_attempt=$((gate_attempt + 1))
@@ -1379,9 +1421,9 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         return 2
     fi
 
-    note "gating $branch (rebased to $sha on $base; fuzz=$fuzz_mode; scope=$gate_scope); log: $log"
+    note "gating $branch (rebased to $sha on $base; fuzz=$fuzz_mode; scope=$gate_scope; queue-infra=$queue_infra); log: $log"
     local gate_started; gate_started="$(date +%s)"
-    run_gate "$log" "$fuzz_mode" "$gate_scope"
+    run_gate "$log" "$fuzz_mode" "$gate_scope" "$queue_infra"
     local gate_finished; gate_finished="$(date +%s)"
     local gate_took=$((gate_finished - gate_started))
 
@@ -1861,6 +1903,9 @@ cmd_daemon() {
             }
             close $reader;
             defined POSIX::setsid() or die "setsid: $!\n";
+            my $daemon = fork();
+            defined $daemon or die "daemon fork: $!\n";
+            exit 0 if $daemon;
             fcntl($writer, F_SETFD, 0) or die "clear close-on-exec: $!\n";
             $ENV{MERGE_QUEUE_DAEMON_READY_FD} = fileno($writer);
             exec @ARGV;

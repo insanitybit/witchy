@@ -87,6 +87,37 @@ fn router_changes_run_router_regressions() {
     let output = route(&["scripts/test-for-paths.sh"]);
     assert!(output.contains("for f in scripts/*.sh; do bash -n"));
     assert!(output.contains("cargo nextest run --test test_for_paths"));
+    assert!(output.contains("./scripts/check.sh --queue-infra"));
+}
+
+#[test]
+fn queue_substrate_changes_use_the_hermetic_queue_shard() {
+    assert_eq!(
+        selected(&["scripts/merge-queue.sh"]),
+        [
+            "for f in scripts/*.sh; do bash -n \"$f\"; done",
+            "./scripts/check.sh --queue-infra",
+        ]
+    );
+}
+
+#[test]
+fn queue_fixture_keeps_fast_product_checks_and_the_hermetic_shard() {
+    assert_eq!(
+        selected(&["tests/merge_queue.rs"]),
+        ["./scripts/check.sh --fast", "./scripts/check.sh --queue-infra"]
+    );
+}
+
+#[test]
+fn worktree_module_and_script_route_to_the_real_integration_binary() {
+    assert_eq!(
+        selected(&["tests/worktree/status.rs"]),
+        ["./scripts/check.sh --fast"]
+    );
+    let commands = selected(&["scripts/worktree-status.sh"]);
+    assert!(commands.contains(&"cargo nextest run --test worktree".to_owned()));
+    assert!(!commands.iter().any(|command| command.contains("worktree_status")));
 }
 
 #[test]

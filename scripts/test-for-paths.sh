@@ -95,6 +95,12 @@ for p in "${paths[@]}"; do
             add "cargo nextest run --test wasm_abi_catalog" ;;
         web/witchy-runtime/witchy-runtime.mjs)
             add "cargo nextest run --test browser_shim --test browser_encoding --test glamour_dom --test wasm_abi_catalog" ;;
+        tests/merge_queue.rs | tests/test_for_paths.rs)
+            any_rust=1
+            add "./scripts/check.sh --queue-infra" ;;
+        tests/worktree/*.rs)
+            any_rust=1
+            add "cargo nextest run --test worktree" ;;
         tests/e2e.rs)
             add "./scripts/check.sh --e2e" ;;
         tests/*.rs)
@@ -108,21 +114,32 @@ for p in "${paths[@]}"; do
         scripts/zizmor.sh)
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
             add "./scripts/zizmor.sh --quiet --no-progress --persona=pedantic .github/workflows" ;;
+        .config/nextest.toml | \
+        scripts/check.sh | \
+        scripts/gate-report.sh | \
+        scripts/merge-queue.sh | \
+        scripts/nextest-list-wrapper.sh | \
+        scripts/state-paths.sh)
+            add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
+            add "./scripts/check.sh --queue-infra" ;;
         scripts/worktree-status.sh)
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
-            add "cargo nextest run --test worktree_status" ;;
+            add "cargo nextest run --test worktree"
+            add "./scripts/check.sh --queue-infra" ;;
         scripts/worktree-warm.sh)
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
-            add "cargo nextest run --test worktree_warm" ;;
+            add "cargo nextest run --test worktree"
+            add "./scripts/check.sh --queue-infra" ;;
         scripts/worktree-create.sh)
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
-            add "cargo nextest run --test worktree_create" ;;
+            add "cargo nextest run --test worktree" ;;
         scripts/check-spec-freshness.sh)
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
             add "./scripts/check-spec-freshness.sh" ;;
         scripts/test-for-paths.sh)
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
-            add "cargo nextest run --test test_for_paths" ;;
+            add "cargo nextest run --test test_for_paths"
+            add "./scripts/check.sh --queue-infra" ;;
         scripts/*.sh)
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done" ;;
         justfile)

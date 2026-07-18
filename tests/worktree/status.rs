@@ -112,6 +112,37 @@ fn disk_usage_is_opt_in() {
 }
 
 #[test]
+fn prunable_worktree_metadata_is_reported_without_aborting_the_dashboard() {
+    let repo = TempRepo::new();
+    let root = repo.path();
+    let stale = root.join(".worktrees/stale");
+    git(
+        root,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "stale-worktree",
+            stale.to_str().expect("stale path"),
+            "master",
+        ],
+    );
+    fs::remove_dir_all(&stale).expect("remove worktree without pruning metadata");
+
+    let output = run_status(root, &[]);
+    assert!(
+        output.status.success(),
+        "dashboard aborted on prunable metadata: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(stale.to_str().expect("stale path")));
+    assert!(stdout.contains("PRUNABLE metadata"));
+    assert!(stdout.contains("local branches not checked out anywhere"));
+}
+
+#[test]
 fn branch_pruning_is_relative_to_master_and_never_deletes_master() {
     let repo = TempRepo::new();
     let root = repo.path();

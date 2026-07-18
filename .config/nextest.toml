@@ -71,14 +71,13 @@ registry-serial = { max-threads = 2 }
 perf-serial = { max-threads = 1 }
 wasm-heavy = { max-threads = 2 }
 
-# Long-running regression guards: the three at-scale perf tests (50k-element
-# programs on both backends) run 60-80s on an idle machine — under a busy gate
-# (concurrent agents, deep merge queue) they can exceed the default 135s
-# slow-kill and false-red a healthy branch (observed 2026-07-07: two gates red
-# with 1494/1495 and 1490/1493 passed). Serialize them in their own group with
-# a longer window; assertions are unchanged.
+# Long-running regression guards: the at-scale perf programs and the
+# type-resolved repository census can exceed the default 135s slow-kill under
+# a busy gate (the census was the sole timeout after 2,284 tests passed on
+# 2026-07-18). Serialize them in their own group, start them early, and retain
+# a bounded 360s hard cap; assertions are unchanged.
 [[profile.default.overrides]]
-filter = 'test(/list_reverse_flatten_flat_map_are_linear_at_scale|inplace_set_at_is_fast_and_alias_safe|inplace_update_at_is_fast_and_alias_safe/)'
+filter = 'test(/list_reverse_flatten_flat_map_are_linear_at_scale|inplace_set_at_is_fast_and_alias_safe|inplace_update_at_is_fast_and_alias_safe|repository_census_matches_the_checked_in_type_resolved_snapshot/)'
 test-group = 'perf-serial'
 slow-timeout = { period = "120s", terminate-after = 3 }
 priority = 90

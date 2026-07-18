@@ -78,6 +78,10 @@ branch_inventory() {
 
 printf '%s\n' "worktrees (master @ ${master_sha:0:9}):"
 git -C "$root" worktree list --porcelain | awk '/^worktree /{print $2}' | while IFS= read -r wt; do
+    if ! git -C "$wt" rev-parse --git-dir >/dev/null 2>&1; then
+        printf '  %s\n    PRUNABLE metadata — worktree path or gitdir is missing\n' "$wt"
+        continue
+    fi
     branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
     dirty="clean"
     n="$(git -C "$wt" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
@@ -121,6 +125,10 @@ if [ "$prune" -eq 1 ]; then
     echo "pruning fully-merged clean worktrees:"
     git -C "$root" worktree list --porcelain | awk '/^worktree /{print $2}' | while IFS= read -r wt; do
         [ "$wt" = "$root" ] && continue
+        if ! git -C "$wt" rev-parse --git-dir >/dev/null 2>&1; then
+            printf '  SKIP %s (prunable metadata; run git worktree prune explicitly)\n' "$wt"
+            continue
+        fi
         branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
         counts="$(git -C "$wt" rev-list --left-right --count "master...HEAD" 2>/dev/null || echo '? ?')"
         ahead="${counts##*[[:space:]]}"

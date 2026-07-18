@@ -155,6 +155,8 @@ compiling/testing, not hung, so silence alone never kills it; see the stall
 note below), `MERGE_QUEUE_BUSY_SILENCE_MAX` (3× the stall window: the ceiling on
 silence even for a *busy* group, so a CPU-burning runaway is reclaimed here
 rather than at GATE_TIMEOUT), `MERGE_QUEUE_BATCH_MAX` (5),
+`MERGE_QUEUE_DOCS_BATCH_MAX` (25, activated only when every path in every
+candidate ends in `.md`),
 `WITCHY_STATE_DIR` (override the canonical local state root),
 `MERGE_QUEUE_STATE_DIR` +
 `MERGE_QUEUE_GATE_WT` (isolated state for TESTING the coordinator itself),
@@ -175,9 +177,20 @@ There is no time-based fail-open that can turn slow healthy discovery back into
 an unbounded loader herd. `WITCHY_NEXTEST_LIST_JOBS` permits local retuning;
 production defaults to two because four simultaneous distinct cold binaries
 measured no faster in aggregate, while one-wide developed a long tail.
-an unbounded loader herd. Each successful slot acquire/release also touches a
+Each successful slot acquire/release also touches a
 coordinator-owned progress sidecar, so healthy waves reset the idle watchdog
 without treating synthetic log heartbeats as liveness.
+
+**Diff-scoped queue infrastructure.** `tests/merge_queue.rs` launches detached
+coordinators, process groups, lock holders, and nested Git repositories. It is
+excluded from the concurrent workspace test stage and runs first as an isolated,
+one-thread shard when the batch changes the queue substrate. The coordinator
+sets `WITCHY_GATE_QUEUE_INFRA=1` for changes to the queue/check scripts, their
+nextest configuration, or their focused tests. Operators can run the same shard
+directly with `./scripts/check.sh --queue-infra`, or force it into an exact-master
+baseline with `WITCHY_GATE_QUEUE_INFRA=1 ./scripts/check.sh`. Product and semantic
+validation is unchanged; only the machine-sensitive queue fixtures move out of
+contention with it.
 
 **Diff-scoped fuzzing.** The differential fuzzer is the gate's single biggest
 test (~57s, a fixed-seed parity regression suite). `process_one` classifies the
@@ -224,10 +237,13 @@ shards ignore the scope.
    descendant joins, walk other ready entries for the existing opportunistic
    batch. Every candidate contributes only patches not already represented by
    the current stack tip (detached — the agent's branch ref is never moved).
-   Clean replay → joins (up to
-   `MERGE_QUEUE_BATCH_MAX`). Textual overlap is fine; only a failed rebase
-   excludes. `.nobatch` applies to unrelated red-batch recovery. A
-   `.batch-limit` marker bounds the next dependency-prefix retry.
+   Clean replay → joins. Semantic and mixed batches stop at
+   `MERGE_QUEUE_BATCH_MAX`; a batch whose every changed path ends in `.md`
+   may grow to `MERGE_QUEUE_DOCS_BATCH_MAX`. Every candidate is reclassified
+   before joining, so one code/config path restores the semantic ceiling.
+   Textual overlap is fine; only a failed rebase excludes. `.nobatch` applies
+   to unrelated red-batch recovery. A `.batch-limit` marker bounds the next
+   dependency-prefix retry.
 4. Classify the prepared batch diff, then acquire `gate.lock`. Re-check every
    immutable queue attempt and verify master is still `base`; if submission or
    master moved during preparation, release and rebuild without gating. When
@@ -356,7 +372,8 @@ shards ignore the scope.
   Git refused at the final fast-forward; the gate result remains valid and only
   the landing needs help.
 - **check.sh shards:** `--fast` (commit gate: build+clippy+tests minus e2e),
-  `--e2e`, `--examples`, `--wasm` — agents' pre-submit validation.
+  `--e2e`, `--examples`, `--wasm`, `--queue-infra` — agents' pre-submit
+  validation. The queue-infrastructure shard is serial and hermetic by design.
   `test-for-paths.sh` maps a diff to the right shards. The `witchy` e2e
   tests live in the `registry-serial` nextest group (width 2, retries 1,
   priority 100 so the long pole starts first); the keyword filter in

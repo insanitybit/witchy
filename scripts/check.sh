@@ -18,6 +18,7 @@
 #   ./scripts/check.sh --e2e       just the e2e nextest binary (coven/pm/glamour)
 #   ./scripts/check.sh --examples  just the example differential matrix (example_tests::*)
 #   ./scripts/check.sh --wasm      just the wasm playground build
+#   ./scripts/check.sh --queue-infra  merge-queue fixtures, isolated and serial
 #
 # rustfmt is deliberately NOT part of the gate: the Rust in this repo is
 # hand-formatted, so `cargo fmt` would fight the intended style.
@@ -71,9 +72,9 @@ for arg in "$@"; do
     case "$arg" in
         --full) full=1 ;;
         --fast) fast=1 ;;
-        --e2e | --examples | --wasm) shard="${arg#--}" ;;
-        -h | --help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-        *) echo "check.sh: unknown argument '$arg' (try --fast, --full, --e2e, --examples, --wasm, or --help)" >&2; exit 2 ;;
+        --e2e | --examples | --wasm | --queue-infra) shard="${arg#--}" ;;
+        -h | --help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "check.sh: unknown argument '$arg' (try --fast, --full, --e2e, --examples, --wasm, --queue-infra, or --help)" >&2; exit 2 ;;
     esac
 done
 if [ -n "$shard" ] && { [ "$full" -eq 1 ] || [ "$fast" -eq 1 ]; }; then
@@ -147,6 +148,19 @@ case "$gate_scope" in
 esac
 if [ "$full" -eq 1 ] || [ "$fast" -eq 1 ]; then gate_scope="all"; fi
 
+# Queue fixtures spawn detached coordinators, process groups, lock holders, and
+# nested throwaway Git repositories. Running them beside 2,000 product tests
+# makes their bounded readiness assertions measure machine contention instead
+# of queue behavior. The coordinator enables this shard only when the batch
+# touches queue infrastructure; operators can force it for exact-master
+# reliability baselines. It runs before any background clippy/wasm leg.
+queue_infra="${WITCHY_GATE_QUEUE_INFRA:-0}"
+case "$queue_infra" in
+    0 | 1) ;;
+    *) echo "check.sh: WITCHY_GATE_QUEUE_INFRA must be 0 or 1" >&2; exit 2 ;;
+esac
+[ "$queue_infra" -eq 0 ] || gate_scope="all"
+
 # Prefer nextest (the project's runner); fall back to plain `cargo test`.
 # By default, exclude the load-flaky e2e binary (coven/glamour publish tests)
 # from the merge gate. It runs explicitly via `--e2e` and as part of `--full`.
@@ -158,8 +172,9 @@ if cargo nextest --version >/dev/null 2>&1; then
     scripts/nextest-list-wrapper.sh --validate-ignore-policy "$PWD"
     # Combine the e2e exclusion (default/--fast) and the fuzz-skip exclusion into one
     # filterset (nextest ANDs, so join with ` and `).
-    excl=""
-    [ "$full" -eq 0 ] && excl="not binary(e2e)"
+    # Queue-infrastructure fixtures run only in their isolated shard below.
+    excl="not binary(merge_queue)"
+    [ "$full" -eq 0 ] && excl="$excl and not binary(e2e)"
     if [ -n "$fuzz_excl" ]; then
         excl="${excl:+$excl and }$fuzz_excl"
     fi
@@ -168,8 +183,12 @@ if cargo nextest --version >/dev/null 2>&1; then
     else
         test_cmd=(cargo nextest run --workspace)
     fi
+    queue_infra_cmd=(cargo nextest run --test merge_queue -j 1)
 else
+    # Plain cargo test runs integration binaries sequentially, so the queue
+    # fixture is already isolated from other binaries in this fallback mode.
     test_cmd=(cargo test --workspace)
+    queue_infra_cmd=(cargo test --test merge_queue -- --test-threads=1)
 fi
 
 # Progress channel for the bounded macOS list phase: the list wrapper appends
@@ -240,6 +259,10 @@ if [ -n "$shard" ]; then
             # validating a book/classifier change with `--wasm` catches a false
             # Run button in their focused shard, not only at full-gate time.
             validate_runnable_book
+            ;;
+        queue-infra)
+            cargo nextest --version >/dev/null 2>&1 || { echo "check.sh: --queue-infra requires cargo-nextest" >&2; exit 2; }
+            "${queue_infra_cmd[@]}"
             ;;
     esac
     printf '\n\033[1;32mshard %s green\033[0m in %ds\n' "$shard" "$(( $(date +%s) - shard_t0 ))"
@@ -430,6 +453,7 @@ if [ "$fast" -eq 1 ]; then
     # The fast commit gate: tests in the foreground, clippy overlapped behind
     # them (collected — and able to fail the gate — before green). nextest
     # compiles+links its own test binaries, so no standalone build step.
+    [ "$queue_infra" -eq 0 ] || run "queue infrastructure (isolated)" "${queue_infra_cmd[@]}"
     launch_clippy_leg
     # Run the witchy fmt check IF any .witchy files are dirty — catches formatting
     # mistakes without the cost of always building the binary + sweeping 200 files.
@@ -465,6 +489,7 @@ fi
 # A background-leg failure still fails the gate — it just surfaces at collect
 # time instead of up front; the restructure optimizes the common all-green
 # path.
+[ "$queue_infra" -eq 0 ] || run "queue infrastructure (isolated)" "${queue_infra_cmd[@]}"
 launch_clippy_leg
 
 wasm_log="$(mktemp "${TMPDIR:-/tmp}/witchy-wasm-XXXXXX")"
