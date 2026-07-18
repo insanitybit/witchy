@@ -115,9 +115,9 @@ The gate becomes: **the full suite + the differential fuzzer pass under
 is the *depth* oracle (it catches corruption the fuzzer's output comparison would miss).
 The two compose: fuzz for breadth, check for the property.
 
-Touch points: the WIR heap helpers and `ensure()` (`crates/witchy-wir`), the lowering
-that emits heap accesses (`crates/witchy-lower`), and the runtime heap/shadow
-(`crates/witchy-runtime`). A `checked: bool` already threads through the engine (cf. the
+Touch points: the WIR heap helpers and `ensure()` ([`crates/witchy-wir`](../crates/witchy-wir)), the lowering
+that emits heap accesses ([`crates/witchy-lower`](../crates/witchy-lower)), and the runtime heap/shadow
+([`crates/witchy-runtime`](../crates/witchy-runtime)). A `checked: bool` already threads through the engine (cf. the
 `preempt` flag), so the mode selection has a precedent.
 
 ## Alternatives
@@ -151,9 +151,9 @@ that emits heap accesses (`crates/witchy-lower`), and the runtime heap/shadow
   on the cost/precision curve.
 - **The WASM linear-memory model + wasmtime bounds checks** — layer (A), the half we
   already have.
-- **RFC-0016 (reference-counted memory)** — the design this is built to validate;
+- **[RFC-0016](./0016-reference-counted-memory.md) (reference-counted memory)** — the design this is built to validate;
   `free()` is what makes a checked heap urgent.
-- **The differential fuzzer** (`tests/differential_fuzz.rs`, commit `510e57f`) — the
+- **The differential fuzzer** ([`tests/differential_fuzz.rs`](../tests/differential_fuzz.rs), commit `510e57f`) — the
   coverage engine this depth-checks.
 - witchy's own **`ensure()`** heap-growth discipline — the missing call was the
   `int_to_string` OOB, the motivating bug.
