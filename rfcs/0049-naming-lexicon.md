@@ -12,6 +12,11 @@ tracking:
 
 # RFC-0049: The naming lexicon — conventions and the rename cut
 
+The naming policy is reflected in [`CONTRIBUTING.md`](../CONTRIBUTING.md), with
+the shipped rename and place-assignment coverage in
+[`std/list.witchy`](../std/list.witchy), [`std/dict.witchy`](../std/dict.witchy),
+and [`src/example_tests.rs`](../src/example_tests.rs).
+
 ## Summary
 
 std's naming has strong systems the audit could not find a violation of
