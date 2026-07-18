@@ -35,17 +35,17 @@ destination designs.
 
 ## Motivation
 
-RFC-0061 defines the mechanical release gate: drain blocking RFCs, close open
-bugs above LOW, and complete launch hygiene. RFC-0063 raises the bar to a proud
+[`RFC-0061`](0061-release-versioning.md) defines the mechanical release gate: drain blocking RFCs, close open
+bugs above LOW, and complete launch hygiene. [`RFC-0063`](0063-strong-state-coherence-gate.md) raises the bar to a proud
 coherence gate. The missing piece is operational: when the bug ledger and RFC
 set disagree or overlap, which direction wins?
 
 Without a coherence map, agents can make individually reasonable fixes that pull
 Witchy toward different languages:
 
-- making structural `__render` smarter while RFC-0053 is trying to make
+- making structural `__render` smarter while [`RFC-0053`](0053-one-rendering.md) is trying to make
   interpolation go through `Show`;
-- hardening integer capability handles while RFC-0005 is trying to remove that
+- hardening integer capability handles while [`RFC-0005`](0005-unforgeable-capabilities.md) is trying to remove that
   representation;
 - adding more parsing of rendered type strings while the metaprogramming model
   needs structured type facts;
@@ -137,7 +137,7 @@ Invalidated fixes:
 
 ### 4. Rendering Means `Show`
 
-RFC-0053 is the destination: interpolation and `show.say` should be two spellings
+[`RFC-0053`](0053-one-rendering.md) is the destination: interpolation and `show.say` should be two spellings
 of the same display model.
 
 Destination design:
@@ -308,15 +308,15 @@ implementation accident.
 
 ## Relationship To Existing RFCs
 
-- RFC-0061 remains the release-versioning gate.
-- RFC-0063 remains the proud-release coherence gate.
-- RFC-0005 is the destination for compiled capability representation.
-- RFC-0053 is the destination for rendering.
-- RFC-0047 is the destination for equality.
-- RFC-0044 and RFC-0054 define the current and future error-shape direction.
-- RFC-0059 and RFC-0036 define the async/executor direction; their 0.1 residual
+- [`RFC-0061`](0061-release-versioning.md) remains the release-versioning gate.
+- [`RFC-0063`](0063-strong-state-coherence-gate.md) remains the proud-release coherence gate.
+- [`RFC-0005`](0005-unforgeable-capabilities.md) is the destination for compiled capability representation.
+- [`RFC-0053`](0053-one-rendering.md) is the destination for rendering.
+- [`RFC-0047`](0047-one-equality.md) is the destination for equality.
+- [`RFC-0044`](0044-std-error-policy.md) and [`RFC-0054`](0054-structured-errors.md) define the current and future error-shape direction.
+- [`RFC-0059`](0059-state-machine-async.md) and [`RFC-0036`](0036-bounding-the-async-executor.md) define the async/executor direction; their 0.1 residual
   is documented publicly and the remaining memory work is deferred.
-- RFC-0065 is the destination for stdlib/domain invariants.
+- [`RFC-0065`](0065-sealed-type-constructors.md) is the destination for stdlib/domain invariants.
 
 This RFC does not supersede those decisions. It orders them.
 
