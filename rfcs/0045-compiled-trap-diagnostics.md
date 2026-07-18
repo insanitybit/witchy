@@ -44,7 +44,7 @@ Every runtime abort on the compiled backend — out-of-bounds index,
 `wasm trap: wasm `unreachable` instruction executed`. The interpreter says
 ``runtime error: `p20.test_fail`, line 4: the reason``; the backend users
 actually run says nothing. `fail(msg)` literally **evaluates and drops its
-message** (`crates/witchy-lower/src/codegen/builtins.rs:358-368`, comment:
+message** ([`crates/witchy-lower/src/codegen/builtins.rs:358-368`](../crates/witchy-lower/src/codegen/builtins.rs), comment:
 "evaluate (and drop) the message, then `unreachable`"). This RFC adds one
 always-linked, authority-free host import, `__witchy_abort`, called before the
 trap; routes every abort through it with the interpreter's exact diagnostic; and
@@ -63,8 +63,8 @@ Probed at HEAD (PATH binary):
   (``list index 5 out of bounds (length 2)``, ``cannot parse `junk` as an
   Int``). Division by zero is the one abort with its own trap text — because
   wasm itself supplies it.
-- `WITCHY_WASM_BACKTRACE=1` exists (`src/main.rs:1811-1816`; the emitted name
-  section — `crates/witchy-wir/src/wir_encode.rs:295-309` — makes frames
+- `WITCHY_WASM_BACKTRACE=1` exists ([`src/main.rs:1811-1816`](../src/main.rs); the emitted name
+  section — [`crates/witchy-wir/src/wir_encode.rs:295-309`](../crates/witchy-wir/src/wir_encode.rs) — makes frames
   readable) but adds only *frames*, not the message, and is documented in no
   user-facing place.
 
