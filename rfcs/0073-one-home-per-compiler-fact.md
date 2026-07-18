@@ -25,11 +25,11 @@ comments and tribal knowledge in three places where it could be enforced by the
 compiler itself:
 
 1. **Layout constants are duplicated across crates and synced by prose.**
-   `HEAP_REDZONE` is defined twice — `witchy-wir/src/wir_helpers/mod.rs:156`
-   and `witchy-runtime/src/runtime.rs:271` — with a doc-comment saying "MUST
+   `HEAP_REDZONE` is defined twice — [`witchy-wir/src/wir_helpers/mod.rs:156`](../crates/witchy-wir/src/wir_helpers/mod.rs)
+   and [`witchy-runtime/src/runtime.rs:271`](../crates/witchy-runtime/src/runtime.rs) — with a doc-comment saying "MUST
    equal `witchy_runtime`'s". Nothing checks it.
 2. **The frontend's type-name table is written twice.** `Checker::to_ty`
-   (`typeck.rs:2105`) and `Checker::to_ty_generic` (`typeck.rs:2174`) carry
+   (`Checker::to_ty` in [`typeck.rs:2105`](../crates/witchy-types/src/typeck.rs)) and `Checker::to_ty_generic` ([`typeck.rs:2174`](../crates/witchy-types/src/typeck.rs)) carry
    near-identical 30-arm builtin-name matches (plus three copy-pasted rights
    parsers, `typeck.rs:51-230`); adding a builtin type means editing twin
    matches in lockstep.
@@ -53,7 +53,7 @@ mechanical guard:
 - If a refactor bumps `HEAP_REDZONE` in `witchy-runtime` but not
   `witchy-wir`, heap poisoning and allocation math disagree silently: the
   exact class of bug the redzone exists to catch.
-- `type_tag_of` (`witchy-lower/src/codegen/mod.rs:130`, FNV-1a with inline
+- `type_tag_of` ([`witchy-lower/src/codegen/mod.rs:130`](../crates/witchy-lower/src/codegen/mod.rs), FNV-1a with inline
   magic constants) computes the RFC-0037 type tag **only in codegen** — the
   interpreter has no dual and no shared reference. Any future
   interpreter-side tag check must independently re-derive the same hash, the
