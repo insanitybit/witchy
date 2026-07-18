@@ -40,6 +40,11 @@ implementation-notes: |
 
 # RFC-0053: One rendering system — interpolation and `say` through `Show`
 
+The shipped rewrite and `Show` dispatch live in
+[`crates/witchy-types/src/traits.rs`](../crates/witchy-types/src/traits.rs) and
+[`std/show.witchy`](../std/show.witchy), with parity coverage in
+[`src/example_tests.rs`](../src/example_tests.rs).
+
 ## Summary
 
 Before this RFC, "How does my type print?" had two answers: `"${x}"` was always
