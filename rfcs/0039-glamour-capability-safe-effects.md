@@ -275,5 +275,5 @@ of the package-manager footprint gate.
   DoD met: empty host footprint; a fetch without `UiFetch` and a port without
   `CredentialPort` fail to compile; a sibling that tries to unwrap a `SecretRef` fails to
   compile; the secret wire is byte-identical on both backends. The behavior now lives in
-  `spec/capabilities.md` (§ Framework effect authority) + the code
+  [`spec/capabilities.md`](../spec/capabilities.md) (§ Framework effect authority) + the code
   (`projects/glamour/src/glamour.witchy`, `web/witchy-runtime/glamour-dom.mjs`).
