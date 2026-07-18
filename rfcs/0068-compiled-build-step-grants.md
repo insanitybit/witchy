@@ -14,6 +14,9 @@ tracking:
 
 # RFC-0068: Unify build caps onto the runtime capability set
 
+The production build-step path is implemented in [`src/main.rs`](../src/main.rs),
+with end-to-end grant and audit coverage in [`tests/e2e.rs`](../tests/e2e.rs).
+
 > Code blocks are intentionally **not** tagged `witchy` so the doc-examples sweep does
 > not compile design snippets.
 
