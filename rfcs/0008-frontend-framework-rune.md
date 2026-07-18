@@ -36,7 +36,7 @@ A thin, capability-holding host shell — TypeScript today — diffs the `VNode`
 into the real DOM and marshals DOM events back into the program as `Msg` values.
 The framework is published **to coven itself**, so the empty footprint is a
 public, machine-checked record rather than a claim. coven-web (the registry's web
-frontend, `projects/coven-web/`) is the proving ground.
+frontend, [`projects/coven-web/`](../projects/coven-web/)) is the proving ground.
 
 This RFC is the *design*; the build milestone is **WS-I** in
 [`projects/coven-web/PLAN.md`](../projects/coven-web/PLAN.md). It is the capstone
