@@ -1434,6 +1434,28 @@ fn main() -> Int:
     }
 
     #[test]
+    fn compiles_nested_var_place_with_annotated_element_kind() {
+        // A value-returning `var` call has a multi-result ABI. Local inference
+        // must use the checker-resolved RHS type so the ordinary result and a
+        // nested-place write-back retain their distinct WIR kinds.
+        let src = r#"
+type State:
+    rows: List(List(Int))
+
+fn bump(var n: Int) -> Int:
+    n = n + 10
+    n * 2
+
+fn main() -> Int:
+    var state = State([[1, 2], [3, 4]])
+    let result: Int = bump(state.rows[0][1])
+    let updated: Int = state.rows[0][1]
+    if updated == 12 && result == 24: 1 else: 0
+"#;
+        assert_eq!(run_int(src), 1);
+    }
+
+    #[test]
     fn compiles_deep_self_tail_recursion_without_wasm_stack_growth() {
         let src = r#"
 fn swap_down(n: Int, a: Int, b: Int) -> Int:
