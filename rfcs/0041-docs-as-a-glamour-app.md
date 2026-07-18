@@ -17,6 +17,10 @@ tracking:
 
 # RFC-0041: The witchy docs as a glamour app — a self-hosted, runnable book
 
+The shipped docs app and bundle are implemented in
+[`projects/docs`](../projects/docs) and [`scripts/build-docs.sh`](../scripts/build-docs.sh),
+with real-book/browser coverage in [`tests/glamour/dom.rs`](../tests/glamour/dom.rs).
+
 > Provisional syntax/paths. Code blocks are intentionally **not** tagged `witchy`
 > so the doc-examples test does not try to compile partial snippets.
 
