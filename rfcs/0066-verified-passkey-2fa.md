@@ -21,7 +21,7 @@ factor" is asserted, not verified. This RFC makes the registry verify an actual
 WebAuthn assertion, bound to the specific operation, before it will release;
 makes credential registration verify the create-ceremony before trusting a
 public key; and gives glamour's secret/port slots an authority token instead of
-raw host capability. The verifier already exists (`std/webauthn.verify_assertion`);
+raw host capability. The verifier already exists ([`std/webauthn.verify_assertion`](../std/webauthn.witchy));
 the gap is that the trust boundary doesn't call it.
 
 ## Motivation
@@ -32,7 +32,7 @@ only true if the registry checks the factor. Three holes make it a promise the
 code doesn't keep:
 
 - **BUG-219**: `coven do_promote` checks `!is_empty(req.second_factor)` and signs
-  the marker into the release record; `pm.witchy` sends the literal `"webauthn"`.
+  the marker into the release record; [`pm.witchy`](../projects/coven/src/coven.witchy) sends the literal `"webauthn"`.
   Nothing verifies a signature over a challenge — a direct API caller releases
   by sending any non-empty string. The separation-of-duties gate is decorative.
 - **BUG-412**: registration (`h_wa_register`) stores the submitted `publicKey`
