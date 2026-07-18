@@ -82,7 +82,7 @@ conventions from those declarations, and type-checks 271 Witchy sources plus
 checked in at [`0087-migration-census.tsv`](0087-migration-census.tsv) and
 freshness-tested by `tests/rfc0087_migration_census.rs`.
 
-The current resolved totals are 25 entry-source `var` declarations and 472
+The current resolved totals are 25 entry-source `var` declarations and 469
 lowered `var` call instances inspected. The obsolete migration-error classes
 are empty: zero mechanical self-reassignments, zero immutable arguments passed
 to `var`, and zero temporary `var` arguments. Nine expression-position calls

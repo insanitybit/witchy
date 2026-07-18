@@ -542,6 +542,8 @@ fn is_interpreter_builtin(name: &str) -> bool {
                 | "int_to_duration"
                 | "secretstore.get"
                 | "secretstore.require"
+                | "frozen"
+                | "unique"
                 | "vm.par_map"
         )
 }
