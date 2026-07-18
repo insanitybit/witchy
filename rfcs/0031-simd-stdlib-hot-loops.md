@@ -84,7 +84,7 @@ can run `-simd == +simd == none` and prove byte-identical output, and so the
 scalar path stays exercised. The "it fired and helped" proof is a **wall-clock
 bench** (`bench/`) rather than a `witchy stats` allocation counter, because SIMD
 saves cycles, not bytes — a per-helper microbench (e.g. search over a 1 MB
-buffer) on the bench machine, tracked against `bench/BASELINE.md`.
+buffer) on the bench machine, tracked against [`bench/BASELINE.md`](../bench/BASELINE.md).
 
 ## Alternatives
 
