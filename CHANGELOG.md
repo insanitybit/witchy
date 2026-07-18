@@ -57,7 +57,7 @@ only the requested capability imports and explicit launch roots. The module is
 not authenticated merely because Witchy can execute it; consumers must establish
 the module's provenance separately.
 
-### Trusted executable trust model
+### Trusted executable trust model ([RFC-0092](rfcs/0092-trusted-application-executables.md))
 
 `trusted-exe` appends compiled application WASM and a checked capability-binding
 plan to the complete Witchy native runtime. The resulting executable needs no
