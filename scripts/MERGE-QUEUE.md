@@ -180,6 +180,12 @@ There is no time-based fail-open that can turn slow healthy discovery back into
 an unbounded loader herd. `WITCHY_NEXTEST_LIST_JOBS` permits local retuning;
 production defaults to two because four simultaneous distinct cold binaries
 measured no faster in aggregate, while one-wide developed a long tail.
+Serialized gates also default `CARGO_PROFILE_TEST_STRIP=symbols`. This removes
+the large local-symbol table that macOS otherwise pages in for every discovery
+and test invocation; it does not alter the test inventory, debug assertions, or
+overflow checks. Focused developer runs retain symbols. Set
+`CARGO_PROFILE_TEST_STRIP=none` explicitly when a symbolic native backtrace is
+required in a coordinator gate.
 Each successful slot acquire/release also touches a
 coordinator-owned progress sidecar, so healthy waves reset the idle watchdog
 without treating synthetic log heartbeats as liveness.

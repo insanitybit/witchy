@@ -40,6 +40,13 @@ cd "$(dirname "$0")/.."
 if [ -n "${WITCHY_GATE_SCOPE+x}" ]; then
     export RUSTC_WRAPPER=
     export CARGO_BUILD_RUSTC_WRAPPER=
+    # nextest discovers tests by executing every test binary. macOS otherwise
+    # pages large local-symbol tables into memory before any test runs. Strip
+    # only serialized-gate test artifacts; developer builds retain symbols and
+    # an explicit Cargo profile override remains authoritative.
+    if [ -z "${CARGO_PROFILE_TEST_STRIP+x}" ]; then
+        export CARGO_PROFILE_TEST_STRIP=symbols
+    fi
     # Re-enable incremental compilation in the gate. The coordinator sets
     # CARGO_INCREMENTAL=0 (merge-queue.sh run_gate) — but that existed ONLY
     # because sccache rejects incremental compiles, and sccache is cleared

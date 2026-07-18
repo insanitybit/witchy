@@ -1443,6 +1443,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         &tool,
         "#!/bin/sh\n\
          if [ -n \"${FAKE_CARGO_ARGS_FILE:-}\" ]; then printf '%s\\n' \"$*\" >>\"$FAKE_CARGO_ARGS_FILE\"; fi\n\
+         if [ -n \"${FAKE_CARGO_ENV_FILE:-}\" ]; then printf '%s\\n' \"${CARGO_PROFILE_TEST_STRIP-unset}\" >>\"$FAKE_CARGO_ENV_FILE\"; fi\n\
          if [ \"$1\" = clippy ]; then\n\
            if [ -n \"${FAKE_CLIPPY_PID_FILE:-}\" ]; then printf '%s\\n' \"$$\" >\"$FAKE_CLIPPY_PID_FILE\"; sleep 30; exit 0; fi\n\
            sleep 1; exit 0\n\
@@ -1469,15 +1470,18 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
 
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
     let cargo_args_file = temp.path().join("cargo-args");
+    let cargo_env_file = temp.path().join("cargo-env");
     let output = Command::new("bash")
         .arg(root.join("scripts/check.sh"))
         .arg("--fast")
         .env("PATH", path)
         .env("CARGO_TARGET_DIR", temp.path().join("target"))
         .env_remove("WITCHY_GATE_QUEUE_INFRA")
+        .env_remove("CARGO_PROFILE_TEST_STRIP")
         .env("WITCHY_GATE_SCOPE", "all")
         .env("WITCHY_GATE_TEST_JOBS", "4")
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
+        .env("FAKE_CARGO_ENV_FILE", &cargo_env_file)
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .output()
         .expect("run fast gate with fake tools");
@@ -1492,6 +1496,50 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
             .lines()
             .any(|line| line.starts_with("nextest run -j 4 --workspace")),
         "serialized gate did not bound nextest execution: {cargo_args}",
+    );
+    let cargo_env = fs::read_to_string(&cargo_env_file).expect("read fake cargo environment");
+    assert!(
+        !cargo_env.trim().is_empty() && cargo_env.lines().all(|value| value == "symbols"),
+        "serialized gate did not strip test symbols: {cargo_env}",
+    );
+
+    fs::write(&cargo_env_file, "").expect("clear fake cargo environment");
+    let local = Command::new("bash")
+        .arg(root.join("scripts/check.sh"))
+        .arg("--wasm")
+        .env("PATH", &path)
+        .env("CARGO_TARGET_DIR", temp.path().join("target-local"))
+        .env_remove("WITCHY_GATE_SCOPE")
+        .env_remove("CARGO_PROFILE_TEST_STRIP")
+        .env("FAKE_CARGO_ENV_FILE", &cargo_env_file)
+        .output()
+        .expect("run local shard with fake tools");
+    assert!(local.status.success(), "fake local shard failed");
+    let local_env =
+        fs::read_to_string(&cargo_env_file).expect("read local cargo environment");
+    assert!(
+        !local_env.trim().is_empty() && local_env.lines().all(|value| value == "unset"),
+        "local builds must retain their normal test-symbol policy: {local_env}",
+    );
+
+    fs::write(&cargo_env_file, "").expect("clear fake cargo environment");
+    let overridden = Command::new("bash")
+        .arg(root.join("scripts/check.sh"))
+        .arg("--wasm")
+        .env("PATH", &path)
+        .env("CARGO_TARGET_DIR", temp.path().join("target-overridden"))
+        .env("WITCHY_GATE_SCOPE", "all")
+        .env("CARGO_PROFILE_TEST_STRIP", "none")
+        .env("FAKE_CARGO_ENV_FILE", &cargo_env_file)
+        .output()
+        .expect("run overridden gate shard with fake tools");
+    assert!(overridden.status.success(), "fake overridden shard failed");
+    let overridden_env =
+        fs::read_to_string(&cargo_env_file).expect("read overridden cargo environment");
+    assert!(
+        !overridden_env.trim().is_empty()
+            && overridden_env.lines().all(|value| value == "none"),
+        "an explicit Cargo strip policy must remain authoritative: {overridden_env}",
     );
 
     let stdout = String::from_utf8(output.stdout).expect("check output is utf8");
