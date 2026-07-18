@@ -11,7 +11,7 @@ tracking:
 
 > **Status: partially implemented** (2026-06-25). Shipped: the grant-document
 > format + TOML parser (`[files]`/`[dirs]`/`[net]`/`[secrets]`) and the
-> **footprint cross-check** — the feature of this RFC — in `src/grants.rs`. A
+> **footprint cross-check** — the feature of this RFC — in [`src/grants.rs`](../src/grants.rs). A
 > grant's conferred authority (`GrantDoc::cap_set`) is diffed against the program's
 > computed footprint (`capabilities::analyze`): an over-request warns, an
 > under-grant is fatal, a match is clean; `Net` is compared at presence level (the
@@ -165,11 +165,11 @@ ambient) authority, and let safe programs drop and refine as they execute.
 
 ## Prior art
 
-- RFC-0003 (network address scoping) — "the host decides what authority to hand over,"
+- [RFC-0003](./0003-network-address-scoping.md) (network address scoping) — "the host decides what authority to hand over,"
   the invariant a shipped grant-request must respect.
 - `witchy.toml [capabilities]` + the coven publish footprint gate — the declared-footprint
   side this mirrors on the grant side, and the source of the cross-check.
-- RFC-0011 (capability refinement) / RFC-0012 (File) — the policy values and `File`/`Dir`
+- [RFC-0011](./0011-capability-refinement.md) (capability refinement) / [RFC-0012](./0012-file-capability.md) (File) — the policy values and `File`/`Dir`
   grants the document enumerates; the refine-after-grant model.
 - Mobile/OS permission manifests — prior art *and* cautionary tale; the footprint
   cross-check is the deliberate answer to their blind-approval failure mode.
