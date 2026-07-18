@@ -14,6 +14,11 @@ tracking:
 
 # RFC-0040: Grantable capabilities on exported root entrypoints
 
+The shipped cap-gated export ABI is specified in
+[`spec/capabilities.md`](../spec/capabilities.md), implemented in
+[`crates/witchy-lower/src/codegen/assembly.rs`](../crates/witchy-lower/src/codegen/assembly.rs),
+and covered by the browser-host test in [`tests/glamour/dom.rs`](../tests/glamour/dom.rs).
+
 > **2026-07-01 — implemented.** `is_string_export` accepts `[bare grantable cap,
 > String]`; the `__export_*` wrapper mints the cap host-side (`mk{N}(build_user_cap_field…)`,
 > the RFC-0038 machinery pointed at one more site); a typeck guard
