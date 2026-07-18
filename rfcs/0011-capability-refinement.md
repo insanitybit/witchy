@@ -9,6 +9,11 @@ tracking: commits 4bc6d35, 3b84546, b612d25, 246b71a
 
 # RFC-0011: Capability refinement — carried state, library-defined methods, two tiers
 
+The shipped policy vocabulary is implemented in
+[`crates/witchy-caps/src/capabilities.rs`](../crates/witchy-caps/src/capabilities.rs)
+and [`std/policy.witchy`](../std/policy.witchy), with cross-backend policy coverage
+in [`src/example_tests.rs`](../src/example_tests.rs); the RFC’s TLS-policy caveat remains explicit.
+
 > Code blocks here are intentionally **not** tagged `witchy` so the doc-examples
 > test does not try to compile partial snippets.
 
