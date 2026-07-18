@@ -64,7 +64,8 @@ and the sync escapes (a blocking `XMLHttpRequest`, or a worker with
 re-architecting how modules are instantiated. Backing `Net` honestly therefore
 waits on an async-suspending host-call ABI (Asyncify / JSPI) plus a socket-shaped
 transport; until then, faking it would break the parity guarantee, so it is left
-denied. RFC-0091 records this as an explicit later phase.
+denied. [RFC-0091](https://github.com/insanitybit/witchy/blob/master/rfcs/0091-browser-virtual-capabilities.md)
+records this as an explicit later phase.
 
 ## UI authority is a capability, too
 
@@ -101,7 +102,7 @@ code runs, but it cannot touch the network, the parent origin, or the DOM outsid
 its frame.
 
 Spawning foreign code is a real authority — the **`Js`** capability, the browser
-sibling of `Exec` (RFC-0015). As with every other effect, the app only emits a
+sibling of `Exec` ([RFC-0015](https://github.com/insanitybit/witchy/blob/master/rfcs/0015-secure-web-by-construction.md)). As with every other effect, the app only emits a
 *description*; the host shell, which alone holds `Js`, performs the spawn, and
 emitting a compartment is what puts `Js` in the app's footprint (so `witchy caps`
 surfaces "this rune runs third-party JS"). A component builds the node with
