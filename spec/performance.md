@@ -55,7 +55,7 @@ complexities. Their public `var` receivers are typed `unique`: normal mode uses
 the copy-correct fallback when that proof misses, while `mode opt` rejects the
 call and reports the statement that aliased, moved, or loaned the owner. Fresh
 storage, a direct call returning a `unique` collection, and `var` parameters
-typed `unique` / `local unique` satisfy the contract; an active RFC-0083 loan
+typed `unique` / `local unique` satisfy the contract; an active [RFC-0083](../rfcs/0083-opt-mode-lifetimes.md) loan
 never does. A direct `unique` result carries its capacity token as part of the
 compiled result ABI. Fresh list/dict tails and direct `unique` calls establish
 that token; control-flow results spell an explicit `return` on each reachable
@@ -77,7 +77,7 @@ facts rather than timing inferences.
 
 ## Functional-in-place state kernels
 
-RFC-0089 strengthens the ownership and proper-tail-call machinery for a narrow
+[RFC-0089](../rfcs/0089-functional-in-place.md) strengthens the ownership and proper-tail-call machinery for a narrow
 class of `mode opt` state machines. A directly self-recursive function with one
 `own unique T` parameter and the same `unique T` result may update fields of that
 owner, do scalar computation, and tail-call itself while remaining functional at
