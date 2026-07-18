@@ -17,8 +17,8 @@ related:
   - "0083 (opt-mode lifetimes - returned views must block write-back to their live owner)"
   - "0088 (ownership-aware extraction - optional no-copy implementation after semantics land)"
 tracking: "Shipped with direct backend-parity conformance, compiler-resolved
-  migration census, RFC-0051 seven-kernel performance evidence, and public
-  guidance; closeout is recorded in rfcs/0087-acceptance-ledger.md"
+  migration census, [RFC-0051](0051-memory-safety-invariants.md) seven-kernel performance evidence, and public
+  guidance; closeout is recorded in [the RFC-0087 acceptance ledger](0087-acceptance-ledger.md)"
 ---
 
 # RFC-0087: Uniform `var` write-back
@@ -67,7 +67,7 @@ A bare statement may discard a call's ordinary result when the resolved call
 has at least one `var` write-back. The write-back is the statement's effect. A
 non-`var`, non-`Nil` call still requires an explicit `let _ =` discard.
 
-This RFC supersedes RFC-0043's return-shape table and RFC-0064's row-3 error.
+This RFC supersedes [RFC-0043](0043-declared-mutation-writeback.md)'s return-shape table and [RFC-0064](0064-complete-mutation-classification.md)'s row-3 error.
 It retains their central lesson: mutation is declared, resolved per concrete
 callee, and never inferred from a method name or whole-program census. The
 declaration is simply `var`; its meaning no longer changes with return type or
@@ -405,7 +405,7 @@ one structured return commits together, and the caller cannot observe a subset.
 This is commit atomicity, not rollback of mutations merely because the ordinary
 result is `Err` or `None`.
 
-#### RFC-0088 amendment disposition
+#### [RFC-0088](0088-ownership-aware-extraction.md) amendment disposition
 
 Implementation feedback first recorded alongside RFC-0088 is resolved in this
 RFC, so one semantic fact never has two normative homes:
@@ -414,7 +414,7 @@ RFC, so one semantic fact never has two normative homes:
   behavior; an invalidated projection takes the ordinary assignment trap.
 - This section owns structured completion; callee-side `?` commits exactly like
   its explicit-return desugaring.
-- RFC-0083 owns borrowed-view lifetime and loan rules. RFC-0088 may consume
+- [RFC-0083](0083-opt-mode-lifetimes.md) owns borrowed-view lifetime and loan rules. [RFC-0088](0088-ownership-aware-extraction.md) may consume
   those facts for optimization but cannot extend their source semantics.
 
 RFC-0088 is consequently an optimization RFC only. Future view-lifetime or
