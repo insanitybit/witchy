@@ -18,6 +18,12 @@ fn hidden() -> Int:
 fn selected() -> Int:
     0
 
+type SelectedRecord:
+    SelectedRecord(value: Int)
+
+fn selected_record() -> SelectedRecord:
+    SelectedRecord(value: 0)
+
 type HiddenValue:
     HiddenValue(Int)
 
@@ -46,6 +52,11 @@ comptime fn reference_selected(parts: List(String), holes: List(String)) -> meta
 comptime fn composed_call_selected(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     let selected = meta.expr_name(meta.call_site("selected"))
     meta.expr_call(selected, [])
+
+comptime fn composed_field_selected(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+    let selected = meta.expr_name(meta.call_site("selected_record"))
+    let record = meta.expr_call(selected, [])
+    meta.expr_field(record, meta.ident("value"))
 
 comptime fn construct_hidden(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     quote expr:
@@ -99,17 +110,23 @@ type ImportedValue:
 
 type HiddenAlias = HiddenRecord
 
+type LocalSelectedRecord:
+    LocalSelectedRecord(value: Int)
+
 fn main(console: Console):
     let hidden = fn() -> Int:
         1
     let selected = fn() -> Int:
         42
+    let selected_record = fn() -> LocalSelectedRecord:
+        LocalSelectedRecord(value: 42)
     console.print("${answer"ignored"}")
     console.print("${lexical"ignored"}")
     console.print("${call_selected"ignored"}")
     let selected_fn = reference_selected"ignored"
     console.print("${selected_fn()}")
     console.print("${composed_call_selected"ignored"}")
+    console.print("${composed_field_selected"ignored"}")
     console.print("${construct_hidden"ignored"}")
     console.print("${type_hidden"ignored"}")
     console.print("${record_hidden"ignored"}")
@@ -140,6 +157,7 @@ fn linked() -> ast::Module {
 fn typed_tag_names_resolve_at_definition_site_on_both_backends() {
     let linked = linked();
     let expected = vec![
+        "42".to_string(),
         "42".to_string(),
         "42".to_string(),
         "42".to_string(),

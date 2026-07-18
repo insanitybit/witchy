@@ -467,6 +467,10 @@ The first source-compatible slice is implemented:
   captured by the definition module. Source-backed `ExprSyntax` inputs remain a
   compatibility fallback and are parsed individually; the enclosing call is
   always represented by one compiler-owned AST node.
+- The forty-second slice makes `meta.expr_field` structural for the same
+  reason: an owned base expression, including `meta.call_site`, stays attached
+  to the constructed `Field` node. Field names remain validated identifiers,
+  because member selection is not a lexical binding position.
 
 This is intentionally not the full RFC. Every quotation category and its typed
 hole placement is now compiler-owned. General `meta.*` builder composition may

@@ -567,6 +567,22 @@ fn compiler_expr_syntax_value(
     }
 }
 
+fn compiler_ident_name(value: &Value, operation: &str) -> Result<String, RuntimeError> {
+    fn tail(name: &str) -> &str {
+        name.rsplit_once('.').map_or(name, |(_, tail)| tail)
+    }
+
+    match value {
+        Value::Ctor { name, fields }
+            if matches!(tail(name), "Ident" | "CallSiteIdent") && matches!(fields.as_slice(), [Value::Str(_)]) =>
+        {
+            let Value::Str(name) = &fields[0] else { unreachable!() };
+            Ok(name.to_string())
+        }
+        _ => err(format!("{operation} expected an Ident field name")),
+    }
+}
+
 fn compiler_item_holes(
     values: &[Value],
     compiler_expr_syntax: &HashMap<String, Expr>,
@@ -3031,6 +3047,37 @@ impl Interpreter {
                     }))
                 }
                 _ => err("meta.expr_call expects an ExprSyntax callee and List(ExprSyntax) arguments"),
+            },
+            name if intrinsics::is_meta_expr_field(name) => match args {
+                [base, field] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.expr_field is available only during compile-time expansion",
+                        );
+                    }
+                    let hole_ancestry = compiler_direct_hole_origins(
+                        std::slice::from_ref(base),
+                        SyntaxCategory::Expr,
+                        "CompilerExprSyntax",
+                        &self.compiler_expr_origins,
+                        self.cur_line,
+                    );
+                    let base = compiler_expr_syntax_value(base, &self.compiler_expr_syntax)?;
+                    let field = compiler_ident_name(field, "meta.expr_field")?;
+                    let expr = Expr::Field { base: Box::new(base), field };
+                    let source = witchy_syntax::format::expr_str(&expr);
+                    let handle = self.next_compiler_syntax_handle("expression-field")?;
+                    self.compiler_expr_syntax.insert(handle.clone(), expr);
+                    self.compiler_expr_origins.insert(
+                        handle.clone(),
+                        ComptimeSyntaxOrigin { definition_line: self.cur_line, hole_ancestry },
+                    );
+                    Ok(Some(Value::Ctor {
+                        name: "meta.CompilerExprSyntax".into(),
+                        fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+                    }))
+                }
+                _ => err("meta.expr_field expects an ExprSyntax base and Ident field"),
             },
             name if name == intrinsics::COMPILER_QUOTE_EXPR => {
                 if self.fresh_ident_scope.is_none() {

@@ -287,7 +287,12 @@ fn __meta_expr_call(callee: ExprSyntax, args: List(ExprSyntax)) -> ExprSyntax:
     __meta_expr_call(callee, args)
 
 pub fn expr_field(base: ExprSyntax, field: Ident) -> ExprSyntax:
-    ExprSyntax(expr_source(base) + "." + ident_source(field))
+    __meta_expr_field(base, field)
+
+// Compiler-owned structural composition for `expr_field`. The base keeps its
+// expression origin; fields are validated identifiers rather than bindings.
+fn __meta_expr_field(base: ExprSyntax, field: Ident) -> ExprSyntax:
+    __meta_expr_field(base, field)
 
 pub fn expr_int(n: Int) -> ExprSyntax:
     ExprSyntax("${n}")
