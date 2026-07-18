@@ -21,8 +21,8 @@ optimized (the `DirectCall` lever), the allocation side is not.
 ## Motivation
 
 Closure creation always heap-allocates an environment record
-(`crates/witchy-lower/src/codegen/mod.rs:133` — env pointer as implicit first
-param; `crates/witchy-lower/src/analysis.rs:857` — captures taken at
+([`crates/witchy-lower/src/codegen/mod.rs:133`](../crates/witchy-lower/src/codegen/mod.rs) — env pointer as implicit first
+param; [`crates/witchy-lower/src/analysis.rs:857`](../crates/witchy-lower/src/analysis.rs) — captures taken at
 creation), even when the closure provably never survives the expression that
 uses it. The dominant closure pattern in witchy is exactly that ephemeral
 shape:
@@ -124,7 +124,7 @@ Constraints and properties:
 
 ## Prior art
 
-- The repo's own uniqueness/escape oracle (`analysis.rs`) and its convention:
+- The repo's own uniqueness/escape oracle ([`analysis.rs`](../crates/witchy-lower/src/analysis.rs)) and its convention:
   one general mechanism, no per-method cases (RFC-0016/0033/0051 lineage).
 - Lambda lifting (Johnsson) and closure conversion literature; escape
   analysis as used by GC'd languages to stack-allocate non-escaping closures.
