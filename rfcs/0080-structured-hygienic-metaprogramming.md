@@ -9,6 +9,10 @@ tracking: "source-backed compatibility builders, comptime emit_item/fn helpers, 
 
 # RFC-0080: Structured hygienic metaprogramming
 
+The implemented syntax-expansion surface is exercised by
+[`tests/rfc0080.rs`](../tests/rfc0080.rs) and the compiler-owned expansion path
+in [`crates/witchy-interp/src/tagged.rs`](../crates/witchy-interp/src/tagged.rs).
+
 ## Summary
 
 Extend witchy's implemented `comptime`, custom-derive, and tagged-literal
