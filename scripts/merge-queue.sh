@@ -201,6 +201,15 @@ record_attempt() { # event branch start prepared locked gate-start gate-end fini
 }
 
 branch_key() { printf '%s\n' "$1" | tr '/' '~'; }
+
+# Urgent submissions sort ahead of both ordinary epoch-prefixed entries and
+# legacy 0front entries. Inverting the epoch also makes the newest explicit
+# reprioritization win instead of accumulating behind every older --front.
+front_stamp() {
+    local epoch
+    epoch="$(date +%s)"
+    printf '00front-%010d-%d' "$((9999999999 - epoch))" "$$"
+}
 change_file_for_branch() { printf '%s/%s.json\n' "$changes_dir" "$(branch_key "$1")"; }
 
 new_change_id() { # new_change_id <branch>
@@ -868,9 +877,10 @@ cmd_submit() {
     attempt_id="$(new_attempt_id "$branch")"
     write_change_record "$branch" "$change_id" "$sha" "$after" queued "$attempt_id"
 
-    # Queue position is the filename's sort order. Normal: epoch seconds.
-    # --front: sort before every epoch timestamp (queue files start with a digit).
-    local stamp fname existing_qf="" tmp after_words
+    # Queue position is the filename's sort order. Normal submissions use
+    # epoch seconds. --front uses a reverse timestamp ahead of both normal and
+    # legacy front entries, and reprioritizes an already queued change.
+    local stamp fname existing_qf="" tmp after_words front_qf
     after_words="$(jq -r 'join(" ")' <<<"$after")"
     for qf in "$queue_dir"/*.json; do
         [ -f "$qf" ] || continue
@@ -895,10 +905,17 @@ cmd_submit() {
         mv "$tmp" "$existing_qf"
         record resubmitted "$branch" change_id "$change_id" attempt_id "$attempt_id" \
             submitted_sha "$sha" after "$after_words" by "${USER:-unknown}"
-        note "updated queued change $change_id for $branch ($fname); queue position preserved"
+        if [ "$front" -eq 1 ]; then
+            front_qf="$queue_dir/$(front_stamp)-$(branch_key "$branch").json"
+            mv "$existing_qf" "$front_qf"
+            fname="$(basename "$front_qf")"
+            note "updated queued change $change_id for $branch ($fname); moved to queue head"
+        else
+            note "updated queued change $change_id for $branch ($fname); queue position preserved"
+        fi
     else
         stamp="$(date +%s)"
-        [ "$front" -eq 1 ] && stamp="0front-$stamp"
+        [ "$front" -eq 1 ] && stamp="$(front_stamp)"
         fname="$stamp-$(branch_key "$branch").json"
         jq -cn --arg branch "$branch" --arg ts "$(now)" --arg sha "$sha" \
             --arg by "${USER:-unknown}" --arg note "$msg" --arg id "$change_id" --arg attempt "$attempt_id" \

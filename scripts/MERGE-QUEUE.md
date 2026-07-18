@@ -58,7 +58,10 @@ and handoff notes. It is observational, not a locking or file-ownership system.
 
 - `queue/*.json` — one pending submission per file. **Queue order = filename
   sort order.** Files are named `<epoch>-<branch-with-slashes-as-~>.json`;
-  `submit --front` prefixes `0front-` which sorts before any epoch digit.
+  `submit --front` uses a reverse-timestamped `00front-` prefix, so it sorts
+  before ordinary and legacy front entries. Re-submitting an already queued
+  change with `--front` moves it to the actual head; the newest urgent
+  reprioritization sorts first.
   Reordering the queue by renaming files is legitimate and was done live.
   Schema-2 entries carry a stable `change_id`, a per-submission `attempt_id`,
   and an `after` array of parent change IDs. The coordinator skips
@@ -420,7 +423,7 @@ you didn't drop a real commit that landed meanwhile.
 | journal says `blocked` | gate was GREEN: `git merge --ff-only <sha from journal>` in the main worktree, then `merge-queue.sh resolve <branch>` |
 | queue item says dependency `blocked` | fix and resubmit the terminal parent branch; its stable change ID is reused and the child remains linked. Do not resubmit the child merely to bypass the parent. |
 | branch red repeatedly, uniform ~32s e2e failures | environmental (server readiness under load), not the branch: check what else is hammering the machine, resubmit |
-| need to reorder the queue | rename files in `queue/` (sort order = order) or use `submit --front` |
+| need to reorder the queue | use `submit --front`; it also reprioritizes an existing queued change |
 | queue file for an already-merged branch | harmless: the rebase collapses to master, gate passes, ff is a no-op; or just `rm` the file |
 | two coordinators running | fixed class (pid-file guard), but if seen: `kill` the older, verify `coordinator.pid` names the survivor |
 ```

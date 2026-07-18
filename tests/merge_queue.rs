@@ -628,6 +628,21 @@ fn dependency_submission_keeps_stable_ids_reports_readiness_and_rejects_cycles()
 }
 
 #[test]
+fn front_resubmission_moves_an_existing_change_to_the_actual_queue_head() {
+    let fixture = QueueFixture::stack(&["a.txt", "b.txt"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+    fixture.mq_ok(&["submit", "b"], "true");
+
+    fixture.mq_ok(&["submit", "--front", "b"], "true");
+
+    let status = fixture.status();
+    let queue = status["queue"].as_array().expect("queue is an array");
+    assert_eq!(queue.len(), 2);
+    assert_eq!(queue[0]["branch"], "b");
+    assert_eq!(queue[1]["branch"], "a");
+}
+
+#[test]
 fn reused_branch_gets_a_new_change_id_without_forgetting_old_dependencies() {
     let fixture = QueueFixture::stack(&["a.txt", "b.txt"]);
     fixture.mq_ok(&["submit", "a"], "true");
