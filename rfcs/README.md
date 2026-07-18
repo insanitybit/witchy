@@ -17,6 +17,11 @@ to actually reflect what the end result will be." Python PEPs become "a
 historical document rather than a living specification" once resolved. We are
 deliberately copying that separation.)
 
+For the current implementation and release view, use the [acceptance
+ledger](./0087-acceptance-ledger.md) and the [release-readiness
+ledger](../RELEASE-READINESS.md); both record executable evidence rather than
+RFC intent.
+
 ## Status lifecycle
 
 ```
