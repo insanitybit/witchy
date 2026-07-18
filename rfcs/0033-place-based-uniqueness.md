@@ -7,6 +7,11 @@ tracking:
 ---
 # RFC-0033 — Place-based uniqueness: thread in-place optimization through user types
 
+The shipped place/own-ABI analysis and lowering are implemented in
+[`crates/witchy-lower/src/analysis.rs`](../crates/witchy-lower/src/analysis.rs) and
+[`crates/witchy-lower/src/codegen/mod.rs`](../crates/witchy-lower/src/codegen/mod.rs),
+with benchmark probes in [`src/stats.rs`](../src/stats.rs).
+
 - Status: implemented
 - Motivating principle: *optimizations must thread, that's how they compound.*
 
