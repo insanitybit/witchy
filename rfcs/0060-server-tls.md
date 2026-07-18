@@ -8,6 +8,10 @@ tracking: "serve_tls/serve_tls_n both backends; use-only secrets; rustls"
 
 # RFC-0060: Server-side TLS — HTTPS serving with capability-guarded keys
 
+The host-side listener path is implemented in
+[`crates/witchy-interp/src/interpreter.rs`](../crates/witchy-interp/src/interpreter.rs),
+with end-to-end TLS coverage in [`tests/e2e.rs`](../tests/e2e.rs).
+
 ## Summary
 
 Add TLS serving to `std/server`: `serve_tls` (and pool variants) accepts a
