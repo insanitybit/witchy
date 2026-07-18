@@ -20,6 +20,11 @@ tracking: "The unified facts/escape oracle is delivered and is the substrate eve
 
 # RFC-0024: Unified facts / escape lattice
 
+The shipped facts and confinement substrate is implemented in
+[`crates/witchy-lower/src/analysis.rs`](../crates/witchy-lower/src/analysis.rs) and
+[`crates/witchy-lower/src/escape.rs`](../crates/witchy-lower/src/escape.rs), with
+consumer evidence recorded by [`src/stats.rs`](../src/stats.rs).
+
 ## Summary
 
 Consolidate the half-dozen disconnected analyses that today answer "does this
