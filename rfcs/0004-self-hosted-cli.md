@@ -88,7 +88,7 @@ foo.witchy` already lexes/typechecks/runs a module with host caps minted from
 ### 2. The `Exec` capability (the one new runtime primitive)
 
 `Exec` is a runtime capability, the runtime analog of the existing build-time
-`BuildExec` (see `rfcs/build-time-execution-plan.md`). It is the **only** new
+`BuildExec` (see [the build-time execution plan](build-time-execution-plan.md)). It is the **only** new
 language/runtime surface this RFC introduces.
 
 **`Exec` is unparameterized; `Dir[Read]` names and confines the executable.**
@@ -355,15 +355,15 @@ Phases 0 and 1 are independent; 2–3 depend on 1; 4 depends on 2–3.
 - The compiler-primitive / workflow-front-end split in mainstream toolchains —
   but those front-ends are written in the host's implementation language; this
   RFC writes the front-end in the *target* language (a self-hosted toolchain).
-- `rfcs/build-time-execution-plan.md` — `BuildExec`, the build-time exec
+- [`rfcs/build-time-execution-plan.md`](build-time-execution-plan.md) — `BuildExec`, the build-time exec
   capability `Exec` is the runtime analog of.
-- `rfcs/0002-user-definable-capabilities.md` — the `capability X from U` sealed
+- [RFC-0002](0002-user-definable-capabilities.md) — the `capability X from U` sealed
   brand used for `Compiler from (Exec, Dir[Read])`, and the "footprint sees
   through" rule.
-- `spec/capabilities.md` — `Dir`-subtree confinement and rights-parameterization
+- [`spec/capabilities.md`](../spec/capabilities.md) — `Dir`-subtree confinement and rights-parameterization
   (`Dir[Read]`), reused to name and bound what `Exec` may run instead of a
   bespoke allow-list.
-- `rfcs/package-manager.md` §9 — the original "PM as a `Net`-confined witchy
+- [`rfcs/package-manager.md`](package-manager.md) §9 — the original "PM as a `Net`-confined witchy
   program" intent this RFC fulfills; §8/§8.1 (coven, two-phase publish) are
   unchanged and now hosted entirely in witchy.
 - cap-std / capability-based process execution generally.
