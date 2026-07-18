@@ -152,7 +152,7 @@ a concurrent local symlink swap. See [CHANGELOG.md](CHANGELOG.md) for the exact
 0.1.0 surface and known limitations.
 
 Portable `.wasm` artifacts remain untrusted guests run by a separately installed
-Witchy host. A `trusted-exe`, by contrast, embeds the application, checked root
+Witchy host. A [`trusted-exe`](rfcs/0092-trusted-application-executables.md), by contrast, embeds the application, checked root
 capability bindings, and the native Witchy runtime in one executable. Running it
 trusts that complete artifact and its distributor; capabilities constrain
 delegation inside the trusted application, not the trusted root's authority over
