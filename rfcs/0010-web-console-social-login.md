@@ -21,7 +21,7 @@ Let a human sign in to coven-web with **"Log in with GitHub"** / **"Log in with
 Google"** via the OAuth 2.0 Authorization-Code flow, establishing the same
 server-issued session that already gates the write console (promote / yank). This
 is the **human-identity** counterpart to the machine-publish identity in
-`rfcs/coven-namespaces-plan.md`: publishing is proven by a CI OIDC token; releasing
+[`rfcs/coven-namespaces-plan.md`](coven-namespaces-plan.md): publishing is proven by a CI OIDC token; releasing
 is gated by a human who signed in. It is also the concrete realization of that
 plan's §4.5 promote gate — "a human, via any login method, with a second factor" —
 and a dogfood: a capability-secure OAuth client written in witchy on `std/server` +
@@ -209,8 +209,8 @@ The proposal's intent shipped; these specifics differ from the prose above:
 ## Prior art
 
 - OAuth 2.0 Authorization Code + OIDC; GitHub OAuth Apps; Google Identity (OIDC).
-- `rfcs/coven-namespaces-plan.md` — the machine-publish identity model and the §4.5
+- [`rfcs/coven-namespaces-plan.md`](coven-namespaces-plan.md) — the machine-publish identity model and the §4.5
   promote gate this fulfills.
-- `rfcs/0009-https-tls-client.md` — the transport this requires.
+- [RFC-0009](0009-https-tls-client.md) — the transport this requires.
 - coven-web's existing passkey session (`projects/coven-web/`): the session token,
   `require_session` gate, and `setToken`/`sessionStorage` this reuses.
