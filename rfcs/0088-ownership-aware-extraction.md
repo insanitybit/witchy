@@ -18,6 +18,9 @@ tracking: move-out is shipped for List.pop, Dict.insert, and Dict.remove with
 
 # RFC-0088: Ownership-aware update and extraction
 
+The lowering and measurement surfaces are exercised by the RFC-0088 cases in
+[`src/example_tests.rs`](../src/example_tests.rs) and [`src/stats.rs`](../src/stats.rs).
+
 ## Summary
 
 Add a general ownership-aware lowering mechanism for operations that update a
