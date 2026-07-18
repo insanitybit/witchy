@@ -683,6 +683,10 @@ fn main(console: Console):
     #[test]
     fn match_with_constructors_and_guards() {
         let src = r#"
+type Event:
+    Click(Int, Int)
+    Closed
+
 fn describe(e: Event) -> String:
     match e:
         Click(x, _) if (x > 0) -> "right click"
@@ -751,8 +755,8 @@ fn main(console: Console):
 "#;
         let e = run(src).unwrap_err();
         assert!(
-            e.message.contains("Console capability"),
-            "expected a capability error, got: {}",
+            e.message.contains("method-only") && e.message.contains("console.print"),
+            "expected a capability-method error, got: {}",
             e.message
         );
     }

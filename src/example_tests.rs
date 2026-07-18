@@ -704,7 +704,7 @@
     fn vm_par_map_backends_agree() {
         let src = "import vm\n\nfn dbl(n: Int) -> Int:\n    n * 2\n\nfn main(console: Console):\n    let prior: List(fn(Int) -> Int) = [fn(n: Int): n + 1]\n    console.print(\"${list.at(prior, 0)(6)}\")\n    let ys = vm.par_map([1, 2, 3, 4, 5], dbl)\n    console.print(\"${ys}\")\n    console.print(\"${list.length(ys)}\")\n";
         let expected = ["7", "[2, 4, 6, 8, 10]", "5"];
-        assert_eq!(interpreter::run(src).expect("interp"), expected, "interp");
+        assert_eq!(link_run(src), expected, "interp");
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
@@ -717,12 +717,12 @@
         // par_map with the function in a LOCAL and as an inline LAMBDA -> fallback.
         let par = "import vm\n\nfn dbl(n: Int) -> Int:\n    n * 2\n\nfn main(console: Console):\n    let f = dbl\n    console.print(\"${vm.par_map([1, 2, 3], f)}\")\n    console.print(\"${vm.par_map([4, 5], fn(n: Int): n + 1)}\")\n";
         let par_expected = ["[2, 4, 6]", "[5, 6]"];
-        assert_eq!(interpreter::run(par).expect("interp"), par_expected, "interp par_map indirect");
+        assert_eq!(link_run(par), par_expected, "interp par_map indirect");
         assert_eq!(run_linked_on_wasm(&[("main", par)], "main"), par_expected, "wasm par_map indirect");
 
         // A bare TOP-LEVEL function still takes the fast path and agrees.
         let direct = "import vm\n\nfn dbl(n: Int) -> Int:\n    n * 2\n\nfn main(console: Console):\n    console.print(\"${vm.par_map([1, 2, 3], dbl)}\")\n";
-        assert_eq!(interpreter::run(direct).expect("interp"), ["[2, 4, 6]"], "interp direct");
+        assert_eq!(link_run(direct), ["[2, 4, 6]"], "interp direct");
         assert_eq!(run_linked_on_wasm(&[("main", direct)], "main"), ["[2, 4, 6]"], "wasm direct");
     }
 
@@ -4941,7 +4941,7 @@ fn main(console: Console):
     fn vm_par_map_string_backends_agree() {
         let src = "import vm\n\nfn shout(s: String) -> String:\n    s + \"!\"\n\nfn main(console: Console):\n    let prior: List(fn(String) -> String) = [fn(s: String): s + \"?\"]\n    console.print(list.at(prior, 0)(\"warm\"))\n    let ys = vm.par_map([\"a\", \"bb\", \"ccc\"], shout)\n    console.print(\"${ys}\")\n";
         let expected = ["warm?", "[a!, bb!, ccc!]"];
-        assert_eq!(interpreter::run(src).expect("interp"), expected, "interp");
+        assert_eq!(link_run(src), expected, "interp");
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
@@ -5368,7 +5368,7 @@ fn main(console: Console, root: Dir[Read]):
     fn vm_par_map_capturing_closure_agrees() {
         let src = "import vm\n\nfn main(console: Console):\n    let base = 100\n    let ys = vm.par_map([1, 2, 3], fn(n): n + base)\n    console.print(\"${ys}\")\n";
         let expected = ["[101, 102, 103]"];
-        assert_eq!(interpreter::run(src).expect("interp"), expected, "interp");
+        assert_eq!(link_run(src), expected, "interp");
         assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), expected, "wasm");
     }
 
@@ -10648,7 +10648,7 @@ fn main(console: Console, root: Dir):
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
 
         // args "a\0b" -> argv [a, b]; stdin "hi". Payload: "0\nargs=a,b\nhi".
-        let src = "fn main(console: Console, runner: Exec, dir: Dir):\n    console.print(exec(runner, dir, \"greet\", \"a\\0b\", \"hi\"))\n";
+        let src = "fn main(console: Console, runner: Exec, dir: Dir):\n    console.print(runner.exec(dir, \"greet\", \"a\\0b\", \"hi\"))\n";
 
         let interp_out = interpreter::run_in(src, &root).expect("interp");
         let module = parser::parse_module(src).expect("parse");
@@ -10679,7 +10679,7 @@ fn main(console: Console, root: Dir):
         );
 
         // An executable outside the granted subtree is rejected on both backends.
-        let esc = "fn main(console: Console, runner: Exec, dir: Dir):\n    console.print(exec(runner, dir, \"../escape\", \"\", \"\"))\n";
+        let esc = "fn main(console: Console, runner: Exec, dir: Dir):\n    console.print(runner.exec(dir, \"../escape\", \"\", \"\"))\n";
         assert!(interpreter::run_in(esc, &root).is_err(), "interp must reject escape");
         let m = parser::parse_module(esc).expect("parse");
         let wbytes = codegen::compile_module_binary(&m)

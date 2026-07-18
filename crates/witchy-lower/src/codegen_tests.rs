@@ -807,7 +807,8 @@ fn main() -> Int:
         let err = compile_module_binary(&module)
             .expect_rejected("should reject outer assignment");
         assert!(
-            err.to_string().contains("assigns `total`"),
+            err.to_string()
+                .contains("closure cannot assign to the captured variable `total`"),
             "unexpected error: {err}"
         );
     }
