@@ -13,7 +13,7 @@ implementation-notes: |
   - Interpolation still desugars at lex time to an internal render intrinsic,
     now spelled `@render(x)` in the compiler AST/token stream so user source
     cannot call the generated seam directly. The lexer remains type-free.
-  - The semantic flip lives in `crates/witchy-types/src/traits.rs`, inside
+  - The semantic flip lives in [`crates/witchy-types/src/traits.rs`](../crates/witchy-types/src/traits.rs), inside
     `Mono::walk_expr`, after RFC-0046's TypeTable can report the concrete type of
     `x`. That is the only place generated render calls are rewritten.
   - Source-spellable `__render(x)` is rejected as compiler-private; the corpus
@@ -60,7 +60,7 @@ fails class is eliminated by giving every first-class value a stable rendering
 
 Baseline probes recorded before implementation:
 
-- **Two answers to one question.** `spec/language.md:67-76` teaches "reach for
+- **Two answers to one question.** [`spec/language.md:67-76`](../spec/language.md) teaches "reach for
   interpolation first: `"${x}"` renders *any* value" and positions `Show` as
   the custom-rendering route — but interpolation never consults the impl, so
   writing a `Show` changes `say` and `show_list` output while every `"${x}"`
@@ -70,7 +70,7 @@ Baseline probes recorded before implementation:
   for `"${set}"`, `"${closure}"`, `"${console}"`, `"${bytes}"` — all four
   with one shared, mostly-wrong diagnostic ("typically a generic record such
   as `Set`… call `set.show(s)`", emitted at
-  `crates/witchy-lower/src/codegen/builtins.rs:288-300`) — and `"${Nil}"`
+  [`crates/witchy-lower/src/codegen/builtins.rs:288-300`](../crates/witchy-lower/src/codegen/builtins.rs)) — and `"${Nil}"`
   fails with the barer "reached a construct the compiled backend does not
   support". This is exactly the interpreter-only-features-at-zero class the
   project forbids. (The consistency report also listed ranges here; re-probed
