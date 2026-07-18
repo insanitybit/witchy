@@ -8,6 +8,11 @@ tracking:
 
 # RFC-0026: `unique` / `local unique` — uniqueness as a surface type
 
+The shipped qualifier syntax and escape checks are implemented in
+[`crates/witchy-syntax/src/parser.rs`](../crates/witchy-syntax/src/parser.rs) and
+[`crates/witchy-types/src/typeck.rs`](../crates/witchy-types/src/typeck.rs), with
+qualifier diagnostics covered by the type-checker tests.
+
 ## Summary
 
 Promote witchy's affine ownership from an *inferred, best-effort* property into a
