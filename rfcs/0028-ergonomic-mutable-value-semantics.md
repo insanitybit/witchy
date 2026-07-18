@@ -40,7 +40,7 @@ for references they do not actually need:
 
 - **Accumulation reads as reassignment.** `nodes = list.push(nodes, x)` is the
   in-place fast path, but it *looks* like a functional rebuild. The natural form
-  is `nodes.push(x)`. RFC-0022 already gave `xs[i] = v` / `d[k] = v` /
+  is `nodes.push(x)`. [RFC-0022](./0022-index-assignment.md) already gave `xs[i] = v` / `d[k] = v` /
   `acct.f = v` this treatment; the method-call mutator was simply left out.
 - **You cannot mutate elements in a `for` loop.** `for x in xs: x.balance += 50`
   silently mutates a copy. The workaround — an index loop with `xs[i] = …` —
@@ -123,7 +123,7 @@ for __i in 0..accounts.length():
 - **Write-back is loss-free across early exit.** `continue` writes back the
   current element before advancing; `break`/`return` write back the current
   element before transferring control — the same "mutations are never silently
-  lost" rule that `var` *parameters* already follow (spec §7).
+  lost" rule that `var` *parameters* already follow ([`spec/language.md`](../spec/language.md) §7).
 - `for x in xs:` (no `var`) is unchanged: read-only, and an assignment to `x`
   inside it stays the existing check-time error.
 - Because it lowers to the indexed place-write both backends already implement,
@@ -150,7 +150,7 @@ fn main(console: Console):
     console.print("${sum3([1, 2, 3, 4, 5])}")
 ```
 
-**Soundness — two invariants, both discharged by the [RFC-0024](0024-unified-facts-lattice.md) escape lattice:**
+**Soundness — two invariants, both discharged by the [RFC-0024](./0024-unified-facts-lattice.md) escape lattice:**
 
 1. **A view may not outlive its buffer.** A `View(a)`'s confinement must be ⊑ the
    scope of the value it borrows. Returning a view, storing it in a longer-lived
@@ -249,8 +249,8 @@ the in-place machinery.
 - **Rust** — `slice::windows`/`chunks` returning `&[T]` (read-only for
   overlapping) is the exact model for confined `View`; `chunks_mut` is the
   deferred non-overlapping mutable case.
-- [RFC-0022](0022-index-assignment.md) (place assignment — the sugar family this
-  completes), [RFC-0024](0024-unified-facts-lattice.md) (the escape lattice that
+- [RFC-0022](./0022-index-assignment.md) (place assignment — the sugar family this
+  completes), [RFC-0024](./0024-unified-facts-lattice.md) (the escape lattice that
   discharges view soundness), [ownership-analysis.md](ownership-analysis.md) (the
   in-place machinery the statements lower onto).
 
