@@ -13,6 +13,12 @@ tracking: "merged to master 7ee6323"
 
 # RFC-0047: One equality: `==` through PartialEq at every depth
 
+The shipped equality rules are specified in
+[`spec/language.md`](../spec/language.md), with type-checking/lowering coverage in
+[`crates/witchy-types/src/typeck.rs`](../crates/witchy-types/src/typeck.rs) and
+[`crates/witchy-lower/src/codegen`](../crates/witchy-lower/src/codegen), plus parity
+regressions in [`src/example_tests.rs`](../src/example_tests.rs).
+
 > Provisional syntax throughout. Code blocks are intentionally **not** tagged
 > `witchy` so the doc-examples sweep does not compile pre-implementation
 > snippets.
