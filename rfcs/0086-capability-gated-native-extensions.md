@@ -27,7 +27,7 @@ arbitrary machine code loaded into the host process.
 ## Motivation
 
 Witchy should be a general-purpose language rather than an island. Its standard
-library can cover common work, and RFC-0085 can load isolated Witchy modules,
+library can cover common work, and [RFC-0085](0085-capability-bounded-dynamic-code.md) can load isolated Witchy modules,
 but neither gives an application access to the decades of useful native
 libraries that exist behind C ABIs.
 
@@ -55,7 +55,7 @@ library.
 
 Therefore the platform has two extension tiers:
 
-1. Untrusted or least-trust extensions use RFC-0085 isolated Witchy/WASM
+1. Untrusted or least-trust extensions use [RFC-0085](0085-capability-bounded-dynamic-code.md) isolated Witchy/WASM
    modules, a WASM component, or a separate process with a typed message
    boundary.
 2. Native extensions are an explicit host trust decision for code whose
@@ -67,8 +67,8 @@ confinement contains a malicious native library.
 
 ### Typed loading surface
 
-The eventual surface composes with RFC-0081 existential interfaces and
-RFC-0085's compile-time `Interface(T)` descriptions:
+The eventual surface composes with [RFC-0081](0081-existential-trait-values.md) existential interfaces and
+[RFC-0085](0085-capability-bounded-dynamic-code.md)'s compile-time `Interface(T)` descriptions:
 
 ```witchy
 trait ImageCodec:
@@ -93,7 +93,7 @@ checked against the trait. Loader errors distinguish an unapproved module,
 unsupported target, digest mismatch, signature or provenance failure, ABI
 mismatch, missing export, and interface mismatch.
 
-Before RFC-0081 ships, the first implementation may generalize the existing
+Before [RFC-0081](0081-existential-trait-values.md) ships, the first implementation may generalize the existing
 native registry behind typed `.witchy` stubs. That phase is host-registered and
 statically linked; it does not expose arbitrary path loading or invent a second
 untyped dynamic-call API.
@@ -202,7 +202,7 @@ semantics.
 Version one copies strings, bytes, and aggregates across the boundary. This is
 not always fastest, but it is a coherent safe baseline and works in normal mode.
 
-After RFC-0083, `mode opt` may add borrowed buffers whose lifetime is tied to an
+After [RFC-0083](0083-opt-mode-lifetimes.md), `mode opt` may add borrowed buffers whose lifetime is tied to an
 opaque native lease. The lease prevents owner mutation, module unload, and
 foreign release until all views expire. Borrowed data cannot enter normal owned
 APIs without `.owned()`, escape through `Dynamic`, or cross a VM boundary.
@@ -247,7 +247,7 @@ adapter code is a proof obligation reviewed independently from Witchy source.
 3. Add `NativeLoader` and trusted dynamic modules for owned scalar/aggregate
    values only.
 4. Add opaque handles with strict lifecycle tests.
-5. Consider RFC-0083 borrowed-buffer adapters and a separate callback RFC after
+5. Consider [RFC-0083](0083-opt-mode-lifetimes.md) borrowed-buffer adapters and a separate callback RFC after
    the owned ABI is stable.
 
 Each stage is useful without exposing the unsafe surface of later stages.
