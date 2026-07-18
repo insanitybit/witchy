@@ -12,6 +12,11 @@ tracking: "I1 + I2 shipped; I3 rejected-in-part"
 
 # RFC-0051: Memory safety by construction — rc invariants, one allocator, and deleting the per-method zoo
 
+The shipped I1/I2 invariants and their structural checks live in
+[`crates/witchy-wir/src/wir_helpers`](../crates/witchy-wir/src/wir_helpers),
+[`crates/witchy-wir/src/wir_tests.rs`](../crates/witchy-wir/src/wir_tests.rs), and
+[`src/example_tests.rs`](../src/example_tests.rs); I3 remains explicitly rejected-in-part.
+
 ## Summary
 
 The compiled backend's memory safety currently rests on three **conventions**
