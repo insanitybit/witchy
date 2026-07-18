@@ -58,12 +58,26 @@ fi
 # at a time by default in scripts/nextest-list-wrapper.sh (.config/nextest.toml),
 # which can take longer than the three-pulse standalone startup window. Keep
 # the heartbeat bounded while extending the serialized gate's observable-
-# progress window to sixteen minutes. Test EXECUTION is deliberately unbounded:
-# the dyld stall only ever hit cold first-exec of the ~100 MB binaries, and by
-# run time every binary has already been exec'd once by the list phase.
+# progress window to sixteen minutes.
 if [ -n "${WITCHY_GATE_SCOPE+x}" ] && [ -z "${WITCHY_STAGE_HEARTBEAT_LIMIT+x}" ]; then
     export WITCHY_STAGE_HEARTBEAT_LIMIT=8
 fi
+
+# Under host memory pressure, macOS can evict a listed test binary before its
+# nextest execution and wedge many concurrent copies in dyld for 30-60 seconds.
+# Bound only compiler-affecting serialized gates; docs/infrastructure gates,
+# exact-master baselines (`WITCHY_GATE_FUZZ=skip`), and focused/local nextest
+# retain the machine default. The override supports controlled benchmarking.
+gate_test_jobs="${WITCHY_GATE_TEST_JOBS:-}"
+if [ -z "$gate_test_jobs" ] && [ -n "${WITCHY_GATE_SCOPE+x}" ] \
+    && [ "${WITCHY_GATE_FUZZ:-full}" != skip ] && [ "$(uname -s)" = Darwin ]; then
+    gate_test_jobs=4
+fi
+case "$gate_test_jobs" in
+    "") ;;
+    *[!0-9]*) echo "check.sh: WITCHY_GATE_TEST_JOBS must be a positive integer" >&2; exit 2 ;;
+    *) [ "$gate_test_jobs" -gt 0 ] || { echo "check.sh: WITCHY_GATE_TEST_JOBS must be a positive integer" >&2; exit 2; } ;;
+esac
 
 full=0
 fast=0
@@ -153,7 +167,8 @@ if [ "$full" -eq 1 ] || [ "$fast" -eq 1 ]; then gate_scope="all"; fi
 # makes their bounded readiness assertions measure machine contention instead
 # of queue behavior. The coordinator enables this shard only when the batch
 # touches queue infrastructure; operators can force it for exact-master
-# reliability baselines. It runs before any background clippy/wasm leg.
+# reliability baselines. It runs after product/background work so process and
+# timing assertions see an idle compiler and reuse the already-built test binary.
 queue_infra="${WITCHY_GATE_QUEUE_INFRA:-0}"
 case "$queue_infra" in
     0 | 1) ;;
@@ -178,7 +193,11 @@ if cargo nextest --version >/dev/null 2>&1; then
     if [ -n "$fuzz_excl" ]; then
         excl="${excl:+$excl and }$fuzz_excl"
     fi
-    if [ -n "$excl" ]; then
+    if [ -n "$gate_test_jobs" ] && [ -n "$excl" ]; then
+        test_cmd=(cargo nextest run -j "$gate_test_jobs" --workspace -E "$excl")
+    elif [ -n "$gate_test_jobs" ]; then
+        test_cmd=(cargo nextest run -j "$gate_test_jobs" --workspace)
+    elif [ -n "$excl" ]; then
         test_cmd=(cargo nextest run --workspace -E "$excl")
     else
         test_cmd=(cargo nextest run --workspace)
@@ -453,7 +472,6 @@ if [ "$fast" -eq 1 ]; then
     # The fast commit gate: tests in the foreground, clippy overlapped behind
     # them (collected — and able to fail the gate — before green). nextest
     # compiles+links its own test binaries, so no standalone build step.
-    [ "$queue_infra" -eq 0 ] || run "queue infrastructure (isolated)" "${queue_infra_cmd[@]}"
     launch_clippy_leg
     # Run the witchy fmt check IF any .witchy files are dirty — catches formatting
     # mistakes without the cost of always building the binary + sweeping 200 files.
@@ -466,6 +484,10 @@ if [ "$fast" -eq 1 ]; then
     run "tests (workspace, minus e2e)" "${test_cmd[@]}"
     collect_bg "clippy (deny warnings)" "$clippy_pid" "$clippy_log" "$clippy_started"
     clippy_pid=""
+    # Product discovery already builds the excluded merge_queue test binary.
+    # Run its hermetic shard after all product work so it reuses that artifact
+    # and no background compiler load can distort process/timing assertions.
+    [ "$queue_infra" -eq 0 ] || run "queue infrastructure (isolated)" "${queue_infra_cmd[@]}"
     printf '\n\033[1;32mfast gate green\033[0m — run without --fast before push (fmt + wasm), --full for e2e\n'
     exit 0
 fi
@@ -489,7 +511,6 @@ fi
 # A background-leg failure still fails the gate — it just surfaces at collect
 # time instead of up front; the restructure optimizes the common all-green
 # path.
-[ "$queue_infra" -eq 0 ] || run "queue infrastructure (isolated)" "${queue_infra_cmd[@]}"
 launch_clippy_leg
 
 wasm_log="$(mktemp "${TMPDIR:-/tmp}/witchy-wasm-XXXXXX")"
@@ -504,6 +525,12 @@ collect_bg "clippy (deny warnings)"   "$clippy_pid" "$clippy_log" "$clippy_start
 clippy_pid=""
 collect_bg "wasm playground build"    "$wasm_pid"   "$wasm_log" "$wasm_started"
 wasm_pid=""
+
+# Product nextest compiles every integration binary before applying its
+# filterset, including merge_queue. Reuse that artifact only after every
+# compiler leg has stopped, keeping fixture timing isolated without paying a
+# duplicate workspace build at the front of the gate.
+[ "$queue_infra" -eq 0 ] || run "queue infrastructure (isolated)" "${queue_infra_cmd[@]}"
 
 run "runnable book (browser)"  validate_runnable_book
 if [ "$full" -eq 1 ]; then

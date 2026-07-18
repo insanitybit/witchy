@@ -118,10 +118,25 @@ retries = 1
 # order; priority range is -100..=100, higher starts earlier).
 priority = 100
 
+# Interpreter server tests perform the same bind/spawn/connect readiness loop
+# as the registry e2e tests. Under a compiler-heavy gate, running four of them
+# at once can exhaust their one-second startup window even though the server is
+# healthy. Share the existing two-wide server group instead of retrying the
+# entire semantic batch after a load-only connect failure.
+[[profile.default.overrides]]
+filter = 'test(/^interpreter::tests::(net_server_listen_accept_roundtrip|serve_loopback_roundtrip|http_client_builder_loopback|serve_status_constructors_roundtrip|serve_method_not_allowed_vs_not_found|serve_var_receiver_method_resolution|serve_any_method_route_roundtrip|serve_middleware_nest_and_notfound_roundtrip|serve_json_handler_roundtrip|serve_json_body_decode_roundtrip|serve_form_field_roundtrip|serve_static_files_roundtrip)$/)'
+test-group = 'registry-serial'
+retries = 1
+priority = 100
+
 [[profile.default.scripts]]
 filter = 'binary_id(witchy::e2e)'
 setup = 'warm-witchy-caches'
 
 [[profile.ci.overrides]]
 filter = 'binary_id(witchy::e2e) & test(/coven|publish|promote|resolv|lifecycle|release|widen|glamour_publishes|pm_add|yank|trusted|api_docs|diamond|cool_down|consent|serves|tuf|vendored|registry|provenance|outdated|tree_shows|std_shadowing|module_name_collision|update_single|upgrade|transitive/)'
+test-group = 'registry-serial'
+
+[[profile.ci.overrides]]
+filter = 'test(/^interpreter::tests::(net_server_listen_accept_roundtrip|serve_loopback_roundtrip|http_client_builder_loopback|serve_status_constructors_roundtrip|serve_method_not_allowed_vs_not_found|serve_var_receiver_method_resolution|serve_any_method_route_roundtrip|serve_middleware_nest_and_notfound_roundtrip|serve_json_handler_roundtrip|serve_json_body_decode_roundtrip|serve_form_field_roundtrip|serve_static_files_roundtrip)$/)'
 test-group = 'registry-serial'

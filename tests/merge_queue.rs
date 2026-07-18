@@ -1442,6 +1442,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     fs::write(
         &tool,
         "#!/bin/sh\n\
+         if [ -n \"${FAKE_CARGO_ARGS_FILE:-}\" ]; then printf '%s\\n' \"$*\" >>\"$FAKE_CARGO_ARGS_FILE\"; fi\n\
          if [ \"$1\" = clippy ]; then\n\
            if [ -n \"${FAKE_CLIPPY_PID_FILE:-}\" ]; then printf '%s\\n' \"$$\" >\"$FAKE_CLIPPY_PID_FILE\"; sleep 30; exit 0; fi\n\
            sleep 1; exit 0\n\
@@ -1467,12 +1468,16 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .expect("chmod fake rustup");
 
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+    let cargo_args_file = temp.path().join("cargo-args");
     let output = Command::new("bash")
         .arg(root.join("scripts/check.sh"))
         .arg("--fast")
         .env("PATH", path)
         .env("CARGO_TARGET_DIR", temp.path().join("target"))
         .env_remove("WITCHY_GATE_QUEUE_INFRA")
+        .env("WITCHY_GATE_SCOPE", "all")
+        .env("WITCHY_GATE_TEST_JOBS", "4")
+        .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .output()
         .expect("run fast gate with fake tools");
@@ -1480,6 +1485,13 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         output.status.success(),
         "fake fast gate failed: {}",
         String::from_utf8_lossy(&output.stderr)
+    );
+    let cargo_args = fs::read_to_string(&cargo_args_file).expect("read fake cargo arguments");
+    assert!(
+        cargo_args
+            .lines()
+            .any(|line| line.starts_with("nextest run -j 4 --workspace")),
+        "serialized gate did not bound nextest execution: {cargo_args}",
     );
 
     let stdout = String::from_utf8(output.stdout).expect("check output is utf8");
@@ -1525,11 +1537,11 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     assert_eq!(
         isolated_names,
         [
-            "queue infrastructure (isolated)",
             "tests (workspace, minus e2e)",
             "clippy (deny warnings)",
+            "queue infrastructure (isolated)",
         ],
-        "queue fixtures did not run alone before product work: {isolated_stdout}",
+        "queue fixtures did not run alone after product work: {isolated_stdout}",
     );
 
     let clippy_pid_file = temp.path().join("red-clippy.pid");
