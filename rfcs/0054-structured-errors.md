@@ -50,6 +50,10 @@ tracking: >
 
 # RFC-0054: Structured errors (design-first)
 
+The shipped `Error`/`From` protocol is exercised by
+[`src/example_tests.rs`](../src/example_tests.rs), with standard-library error
+definitions and conversions under [`std/`](../std/).
+
 > Design-first, in the manner of `rfcs/externref-implementation-plan.md`:
 > this RFC decides the *direction* for error types; implementation is a
 > separate, later decision with its own sequencing. No code ships from it.
