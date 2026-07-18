@@ -1474,7 +1474,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     let output = Command::new("bash")
         .arg(root.join("scripts/check.sh"))
         .arg("--fast")
-        .env("PATH", path)
+        .env("PATH", &path)
         .env("CARGO_TARGET_DIR", temp.path().join("target"))
         .env_remove("WITCHY_GATE_QUEUE_INFRA")
         .env_remove("CARGO_PROFILE_TEST_STRIP")
