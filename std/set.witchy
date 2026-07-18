@@ -1,10 +1,10 @@
 // Set(a) — an unordered collection of distinct values. Members are compared by
 // value equality (a `where a: Eq` bound on every operation that compares), so
 // sets of Ints, Strings, tuples, or your own `Eq` types all work. Build one with
-// `set.new()` / `set.from_list(xs)`, test membership with `set.contains`, and
+// `set.new()` / `set.from_list(xs)`, test membership with `s.contains(x)`, and
 // reach for `union`/`intersection`/`difference` for the algebra. A `Set` whose
 // members are `Show` renders as `{a, b, c}` through interpolation or `show.say`;
-// `set.to_list(s)` returns the members in insertion order.
+// `s.to_list()` returns the members in insertion order.
 
 import cmp
 import list
@@ -19,159 +19,141 @@ sealed type Set(a):
 // and unresolvable on the compiled backend), which is not set equality.
 impl PartialEq for Set(a) where a: Eq:
     fn eq(self, other: Self) -> Bool:
-        is_subset(self, other) && is_subset(other, self)
+        subset_of(self, other) && subset_of(other, self)
 
 impl Eq for Set(a) where a: Eq
+
+// --- Receiver-less constructors and the compiler-referenced `to_list` stay
+// module-level; every other operation lives on the methods below (RFC-0099). ---
 
 // The empty set.
 pub fn new() -> Set(a):
     Set([])
 
-// A set of the distinct values in `xs` (duplicates collapse).
+// A set of the distinct values in `xs` (duplicates collapse, keeping the first
+// occurrence of each member).
 pub fn from_list(xs: List(a)) -> Set(a) where a: Eq:
-    var s = new()
+    var items = []
     for x in xs:
-        insert(s, x)
-    s
+        if !list.contains(items, x):
+            list.push(items, x)
+    Set(items)
 
-// Add `x`, returning whether it was newly inserted.
-pub fn insert(var s: Set(a), x: a) -> Bool where a: Eq:
-    let items = s.items
-    if list.contains(items, x):
-        false
-    else:
-        var out = items
-        list.push(out, x)
-        s = Set(out)
-        true
+// The members as a list, in insertion order. (Module-level because the compiler
+// renders a `Show`able Set through `set.to_list`; the method delegates here.)
+pub fn to_list(s: Set(a)) -> List(a):
+    s.items
 
-// Remove `x`, returning whether it was present.
-pub fn remove(var s: Set(a), x: a) -> Bool where a: Eq:
-    let items = s.items
-    var out = []
-    var removed = false
-    for y in items:
-        if !removed && y == x:
-            removed = true
-        else:
-            list.push(out, y)
-    s = Set(out)
-    removed
+// Whether every member of `s` is also in `t` — the private core behind both the
+// `is_subset` method and set equality above (the pre-mono pass cannot resolve a
+// method call inside the generic `PartialEq` impl, so this stays a free
+// function with a non-colliding name).
+fn subset_of(s: Set(a), t: Set(a)) -> Bool where a: Eq:
+    let sitems = s.items
+    let titems = t.items
+    var ok = true
+    for x in sitems:
+        if !list.contains(titems, x):
+            ok = false
+    ok
 
-// Real methods mirror the primary mutator surface while the module functions
-// remain as stable, first-class values.
+// Methods are the primary surface (RFC-0099). A method whose name matches a
+// kept module function delegates to it; the rest own their implementation.
 impl Set(a):
+    // The number of distinct members.
     pub fn length(self) -> Int:
-        length(self)
+        list.length(self.items)
 
+    // Whether the set has no members.
     pub fn is_empty(self) -> Bool:
-        is_empty(self)
+        list.length(self.items) == 0
 
+    // The members as a list, in insertion order.
     pub fn to_list(self) -> List(a):
         to_list(self)
 
 impl Set(a) where a: Eq:
+    // Add `x`, returning whether it was newly inserted.
     pub fn insert(var self, x: a) -> Bool:
-        insert(self, x)
+        let items = self.items
+        if list.contains(items, x):
+            false
+        else:
+            var out = items
+            list.push(out, x)
+            self = Set(out)
+            true
 
+    // Remove `x`, returning whether it was present.
     pub fn remove(var self, x: a) -> Bool:
-        remove(self, x)
+        let items = self.items
+        var out = []
+        var removed = false
+        for y in items:
+            if !removed && y == x:
+                removed = true
+            else:
+                list.push(out, y)
+        self = Set(out)
+        removed
 
+    // Whether `x` is a member of the set.
     pub fn contains(self, x: a) -> Bool:
-        contains(self, x)
+        let items = self.items
+        list.contains(items, x)
 
+    // Every member of either set.
     pub fn union(self, other: Set(a)) -> Set(a):
-        union(self, other)
+        let titems = other.items
+        var out = self.items
+        for x in titems:
+            if !list.contains(out, x):
+                list.push(out, x)
+        Set(out)
 
+    // The members in both sets.
     pub fn intersection(self, other: Set(a)) -> Set(a):
-        intersection(self, other)
+        let sitems = self.items
+        let titems = other.items
+        var out = []
+        for x in sitems:
+            if list.contains(titems, x):
+                list.push(out, x)
+        Set(out)
 
+    // The members of this set that are not in `other`.
     pub fn difference(self, other: Set(a)) -> Set(a):
-        difference(self, other)
+        let sitems = self.items
+        let titems = other.items
+        var out = []
+        for x in sitems:
+            if !list.contains(titems, x):
+                list.push(out, x)
+        Set(out)
 
+    // The members in exactly one of the two sets.
     pub fn symmetric_difference(self, other: Set(a)) -> Set(a):
-        symmetric_difference(self, other)
+        let sitems = self.items
+        let titems = other.items
+        var out = []
+        for x in sitems:
+            if !list.contains(titems, x):
+                list.push(out, x)
+        for y in titems:
+            if !list.contains(sitems, y):
+                list.push(out, y)
+        Set(out)
 
+    // Whether every member of this set is also in `other`.
     pub fn is_subset(self, other: Set(a)) -> Bool:
-        is_subset(self, other)
+        subset_of(self, other)
 
+    // Whether the two sets share no members.
     pub fn is_disjoint(self, other: Set(a)) -> Bool:
-        is_disjoint(self, other)
-
-// Whether `x` is a member of `s`.
-pub fn contains(s: Set(a), x: a) -> Bool where a: Eq:
-    let items = s.items
-    list.contains(items, x)
-
-// The number of distinct members.
-pub fn length(s: Set(a)) -> Int:
-    list.length(s.items)
-
-// Whether the set has no members.
-pub fn is_empty(s: Set(a)) -> Bool:
-    list.length(s.items) == 0
-
-// The members as a list, in insertion order.
-pub fn to_list(s: Set(a)) -> List(a):
-    s.items
-
-// Every member of either set.
-pub fn union(s: Set(a), t: Set(a)) -> Set(a) where a: Eq:
-    let titems = t.items
-    var out = s
-    for x in titems:
-        insert(out, x)
-    out
-
-// The members in both sets.
-pub fn intersection(s: Set(a), t: Set(a)) -> Set(a) where a: Eq:
-    let sitems = s.items
-    let titems = t.items
-    var out = []
-    for x in sitems:
-        if list.contains(titems, x):
-            list.push(out, x)
-    Set(out)
-
-// The members of `s` that are not in `t`.
-pub fn difference(s: Set(a), t: Set(a)) -> Set(a) where a: Eq:
-    let sitems = s.items
-    let titems = t.items
-    var out = []
-    for x in sitems:
-        if !list.contains(titems, x):
-            list.push(out, x)
-    Set(out)
-
-// The members in exactly one of the two sets.
-pub fn symmetric_difference(s: Set(a), t: Set(a)) -> Set(a) where a: Eq:
-    let sitems = s.items
-    let titems = t.items
-    var out = []
-    for x in sitems:
-        if !list.contains(titems, x):
-            list.push(out, x)
-    for y in titems:
-        if !list.contains(sitems, y):
-            list.push(out, y)
-    Set(out)
-
-// Whether every member of `s` is also in `t`.
-pub fn is_subset(s: Set(a), t: Set(a)) -> Bool where a: Eq:
-    let sitems = s.items
-    let titems = t.items
-    var ok = true
-    for x in sitems:
-        if !list.contains(titems, x):
-            ok = false
-    ok
-
-// Whether the two sets share no members.
-pub fn is_disjoint(s: Set(a), t: Set(a)) -> Bool where a: Eq:
-    let sitems = s.items
-    let titems = t.items
-    var ok = true
-    for x in sitems:
-        if list.contains(titems, x):
-            ok = false
-    ok
+        let sitems = self.items
+        let titems = other.items
+        var ok = true
+        for x in sitems:
+            if list.contains(titems, x):
+                ok = false
+        ok

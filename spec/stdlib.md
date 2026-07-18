@@ -65,35 +65,17 @@ Build raw bytes from integers in `0..=255`, or Err on the first invalid byte.
 
 #### `fn from_list_string(xs: List(Int)) -> Result(Bytes, String)`
 
-#### `fn to_string_lossy(b: Bytes) -> String`
-
-Decode bytes as UTF-8 text, replacing invalid sequences with U+FFFD. This is explicit about being lossy; use `decode_utf8` when invalid bytes must be an Err.
-
 #### `fn to_string(b: Bytes) -> String`
 
 Decode bytes as UTF-8 text. Invalid sequences are replaced with U+FFFD (lossy), so this never fails; round-tripping a string is exact because witchy strings are always valid UTF-8. Prefer `to_string_lossy` when the lossy boundary matters.
-
-#### `fn decode_utf8(b: Bytes) -> Result(String, BytesError)`
-
-Strict UTF-8 decode. Returns Err instead of replacing invalid byte sequences.
-
-#### `fn decode_utf8_string(b: Bytes) -> Result(String, String)`
 
 #### `fn length(b: Bytes) -> Int`
 
 The number of bytes.
 
-#### `fn is_empty(b: Bytes) -> Bool`
-
-Whether `b` has no bytes.
-
 #### `fn at(b: Bytes, index: Int) -> Int`
 
 The byte at `index`, as an Int in `0..=255`.
-
-#### `fn get(b: Bytes, index: Int) -> Option(Int)`
-
-The byte at `index`, or None when out of range.
 
 #### `fn concat(first: Bytes, second: Bytes) -> Bytes`
 
@@ -102,26 +84,6 @@ The two byte buffers joined.
 #### `fn slice(b: Bytes, start: Int, end: Int) -> Bytes`
 
 The bytes in `start..end` (clamped to the buffer; `start >= end` yields empty).
-
-#### `fn to_list(b: Bytes) -> List(Int)`
-
-The bytes as a list of Ints in `0..=255`.
-
-#### `fn contains(b: Bytes, needle: Bytes) -> Bool`
-
-Whether `needle` appears in `b`. The empty needle is always present.
-
-#### `fn index_of(b: Bytes, needle: Bytes) -> Option(Int)`
-
-The first byte index where `needle` appears, or None when absent. The empty needle is found at 0, matching string/list search conventions.
-
-#### `fn starts_with(b: Bytes, prefix: Bytes) -> Bool`
-
-Whether `b` starts with `prefix`.
-
-#### `fn ends_with(b: Bytes, suffix: Bytes) -> Bool`
-
-Whether `b` ends with `suffix`.
 
 #### `Bytes.to_string_lossy() -> String`
 
@@ -143,7 +105,7 @@ The number of bytes.
 
 #### `Bytes.is_empty() -> Bool`
 
-Whether `b` has no bytes.
+Whether the buffer has no bytes.
 
 #### `Bytes.at(index: Int) -> Int`
 
@@ -167,7 +129,7 @@ The bytes as a list of Ints in `0..=255`.
 
 #### `Bytes.contains(needle: Bytes) -> Bool`
 
-Whether `needle` appears in `b`. The empty needle is always present.
+Whether `needle` appears in the buffer. The empty needle is always present.
 
 #### `Bytes.index_of(needle: Bytes) -> Option(Int)`
 
@@ -175,11 +137,11 @@ The first byte index where `needle` appears, or None when absent. The empty need
 
 #### `Bytes.starts_with(prefix: Bytes) -> Bool`
 
-Whether `b` starts with `prefix`.
+Whether the buffer starts with `prefix`.
 
 #### `Bytes.ends_with(suffix: Bytes) -> Bool`
 
-Whether `b` ends with `suffix`.
+Whether the buffer ends with `suffix`.
 
 ### Trait implementations
 
@@ -2663,72 +2625,24 @@ GET `url` with a `Bearer` access token and parse the JSON body — the "read the
 
 ## `option`
 
-The witchy standard `Option` type and helpers. `Option`, `Some`, and `None` are prelude names and never need an import; `import option` brings in the qualified helper functions such as `option.map`. Pure and capability-free.
+The witchy standard `Option` type and helpers. `Option`, `Some`, and `None` are prelude names and never need an import; `import option` brings in the qualified helper forms such as `option.map`. Pure and capability-free.
 
 #### `type Option`
 
 - `Some(a)`
 - `None`
 
-#### `fn is_some(o: Option(a)) -> Bool`
-
-#### `fn unwrap_or(o: Option(a), default: a) -> a`
-
-The Some value, or `default` if it's None.
-
-#### `fn map(o: Option(a), f: fn(a) -> b) -> Option(b)`
-
-Transform the Some value, leaving None untouched.
-
-#### `fn is_none(o: Option(a)) -> Bool`
-
-True if the option holds no value.
-
-#### `fn and_then(o: Option(a), f: fn(a) -> Option(b)) -> Option(b)`
-
-Chain a fallible step: apply `f` (which itself yields an Option) to the Some value, or short-circuit on None.
-
-#### `fn filter(o: Option(a), keep: fn(a) -> Bool) -> Option(a)`
-
-Keep the Some value only if it satisfies `keep`; otherwise None.
-
-#### `fn unwrap_or_else(o: Option(a), f: fn() -> a) -> a`
-
-The Some value, or the result of calling `f` (a lazily-computed default).
-
-#### `fn or(o: Option(a), alt: Option(a)) -> Option(a)`
-
-The option if it is Some, otherwise the `alt` option.
-
-#### `fn or_else(o: Option(a), f: fn() -> Option(a)) -> Option(a)`
-
-The option if it is Some, otherwise the option produced by `f` (lazy).
-
-#### `fn map_or(o: Option(a), default: b, f: fn(a) -> b) -> b`
-
-Apply `f` to the Some value, or return `default` for None — `map` then `unwrap_or` in one step.
-
 #### `fn ok_or(o: Option(a), err: e) -> Result(a, e)`
 
 Turn an Option into a Result: `Some(v)` becomes `Ok(v)`, `None` becomes `Err(err)` — the inverse of `result.ok`.
-
-#### `fn ok_or_else(o: Option(a), f: fn() -> e) -> Result(a, e)`
-
-Like `ok_or`, but the error for `None` is produced lazily by `f`.
-
-#### `fn flatten(oo: Option(Option(a))) -> Option(a)`
-
-Collapse one layer of nesting: `Some(Some(v))` becomes `Some(v)`, and both `Some(None)` and `None` become `None`.
-
-#### `fn zip(oa: Option(a), ob: Option(b)) -> Option((a, b))`
-
-Combine two options into an option of a pair: `Some((x, y))` only when both are `Some`, otherwise `None`.
 
 #### `fn all(xs: List(Option(a))) -> Option(List(a))`
 
 Collect a list of Options into an Option of the list: `Some` of every value in order, or `None` if any element is `None`.
 
 #### `Option.is_some() -> Bool`
+
+True if the option holds a value.
 
 #### `Option.is_none() -> Bool`
 
@@ -2866,21 +2780,9 @@ A small deterministic PRNG: the Park-Miller "minimal standard" LCG, `state' = st
 
 A generator from seed `s` (any Int is mapped into the valid range 1..modulus).
 
-#### `fn next(var r: Rng) -> Int`
-
-Advance the generator and return a pseudo-random Int in [1, 2^31-1). The incoming state is normalized first, so a hand-built `Rng(0)` / `Rng(-5)` (which bypasses `seed`) still yields an in-range draw instead of sticking at 0 or going negative.
-
-#### `fn next_below(var r: Rng, bound: Int) -> Int`
-
-A pseudo-random Int in [0, bound). `bound` must be positive (RFC-0044 rule 3): a non-positive bound has no valid range, so it fails loudly naming the bad argument rather than dividing by zero. It must also be below the generator range `2^31-1` (`next`'s cardinality): the reducer is `n % bound`, so a `bound` at or above that range cannot produce every value in `[0, bound)` and would silently under-cover it — that impossible case fails loudly too. For a `bound` well below the range the modulo bias is negligible; for a strictly uniform bounded draw, use the `Rand` capability's byte-oriented helpers.
-
-#### `fn next_bool(var r: Rng) -> Bool`
-
-A pseudo-random Bool (true ~half the time).
-
 #### `fn choice(xs: List(a), var r: Rng) -> Option(a)`
 
-A pseudo-randomly chosen element of `xs` (`None` if empty). The index comes from `next_below`, whose `% len` reducer carries a negligible modulo bias for ordinary list lengths — plenty for tests, sampling, and games, but not a strict uniform distribution (see `next_below`).
+A pseudo-randomly chosen element of `xs` (`None` if empty). The index comes from `next_below`, whose `% len` reducer carries a negligible modulo bias for ordinary list lengths — plenty for tests, sampling, and games, but not a strict uniform distribution (see `next_below`). Module-level with the list FIRST for historical callers: the method form is `r.choice(xs)`, and deleting this function would flip the qualified call's argument order to the alias's `prng.choice(r, xs)`, silently breaking existing `prng.choice(xs, r)` call sites.
 
 #### `Rng.next() -> Int`
 
@@ -2896,7 +2798,7 @@ A pseudo-random Bool (true ~half the time).
 
 #### `Rng.choice(xs: List(a)) -> Option(a)`
 
-A pseudo-randomly chosen element of `xs` (`None` if empty). The index comes from `next_below`, whose `% len` reducer carries a negligible modulo bias for ordinary list lengths — plenty for tests, sampling, and games, but not a strict uniform distribution (see `next_below`).
+A pseudo-randomly chosen element of `xs` (`None` if empty) — see the module-level `choice`.
 
 ## `rand`
 
@@ -3092,66 +2994,16 @@ The matched substrings, leftmost first: extract("\\d+", "a1b22") is ["1", "22"].
 
 ## `result`
 
-The witchy standard `Result` type and helpers. `Result`, `Ok`, and `Err` are prelude names and never need an import; `import result` brings in the qualified helper functions such as `result.map_ok`. Pure and capability-free.
+The witchy standard `Result` type and helpers. `Result`, `Ok`, and `Err` are prelude names and never need an import; `import result` brings in the qualified helper forms such as `result.map_ok`. Pure and capability-free.
 
 #### `type Result`
 
 - `Ok(a)`
 - `Err(e)`
 
-#### `fn is_ok(r: Result(a, e)) -> Bool`
-
-#### `fn unwrap_or(r: Result(a, e), default: a) -> a`
-
-The Ok value, or `default` if it's an Err.
-
-#### `fn map_ok(r: Result(a, e), f: fn(a) -> b) -> Result(b, e)`
-
-Transform the Ok value, leaving an Err untouched.
-
-#### `fn is_err(r: Result(a, e)) -> Bool`
-
-True if the result is an Err.
-
-#### `fn and_then(r: Result(a, e), f: fn(a) -> Result(b, e)) -> Result(b, e)`
-
-Chain a fallible step: apply `f` (which itself yields a Result) to the Ok value, or propagate the Err unchanged.
-
 #### `fn map_err(r: Result(a, e), f: fn(e) -> g) -> Result(a, g)`
 
 Transform the Err value, leaving an Ok untouched.
-
-#### `fn unwrap_err_or(r: Result(a, e), default: e) -> e`
-
-The Err value, or `default` if it's Ok. This is the error-side counterpart of `unwrap_or`: it is a defaulting helper, not a strict assertion that `r` is Err.
-
-#### `fn unwrap_or_else(r: Result(a, e), f: fn() -> a) -> a`
-
-The Ok value, or the result of calling `f` (a lazily-computed default).
-
-#### `fn or(r: Result(a, e), alt: Result(a, e)) -> Result(a, e)`
-
-The result if it is Ok, otherwise the `alt` result.
-
-#### `fn or_else(r: Result(a, e), f: fn(e) -> Result(a, e)) -> Result(a, e)`
-
-The result if it is Ok, otherwise the result produced by applying `f` to the error — a lazy, error-aware recovery step.
-
-#### `fn map_or(r: Result(a, e), default: b, f: fn(a) -> b) -> b`
-
-Apply `f` to the Ok value, or return `default` for an Err — `map_ok` then `unwrap_or` in one step.
-
-#### `fn flatten(rr: Result(Result(a, e), e)) -> Result(a, e)`
-
-Collapse one layer of nesting: `Ok(Ok(v))` becomes `Ok(v)`; `Ok(Err(e))` and `Err(e)` become `Err(e)`. The Result counterpart of `option.flatten`.
-
-#### `fn ok(r: Result(a, e)) -> Option(a)`
-
-The Ok value as `Some`, or `None` for an Err — discards the error, turning a Result into an Option.
-
-#### `fn err(r: Result(a, e)) -> Option(e)`
-
-The Err value as `Some`, or `None` for an Ok.
 
 #### `fn all(xs: List(Result(a, e))) -> Result(List(a), e)`
 
@@ -3162,6 +3014,8 @@ Collect a list of Results into a Result of the list: `Ok` of every value in orde
 Split a list of Results into the Ok values and the Err values, each in order — for batch work that reports every failure, not just the first.
 
 #### `Result.is_ok() -> Bool`
+
+True if the result is an Ok.
 
 #### `Result.is_err() -> Bool`
 
@@ -3177,7 +3031,7 @@ The Ok value, or the result of calling `f` (a lazily-computed default).
 
 #### `Result.unwrap_err_or(default: e) -> e`
 
-The Err value, or `default` if it's Ok. This is the error-side counterpart of `unwrap_or`: it is a defaulting helper, not a strict assertion that `r` is Err.
+The Err value, or `default` if it's Ok. This is the error-side counterpart of `unwrap_or`: it is a defaulting helper, not a strict assertion that the result is Err.
 
 #### `Result.map_ok(f: fn(a) -> b) -> Result(b, e)`
 
@@ -3540,7 +3394,7 @@ Serve exactly `n` HTTPS requests then return — `serve_tls`'s one-shot/test twi
 
 ## `set`
 
-Set(a) — an unordered collection of distinct values. Members are compared by value equality (a `where a: Eq` bound on every operation that compares), so sets of Ints, Strings, tuples, or your own `Eq` types all work. Build one with `set.new()` / `set.from_list(xs)`, test membership with `set.contains`, and reach for `union`/`intersection`/`difference` for the algebra. A `Set` whose members are `Show` renders as `{a, b, c}` through interpolation or `show.say`; `set.to_list(s)` returns the members in insertion order.
+Set(a) — an unordered collection of distinct values. Members are compared by value equality (a `where a: Eq` bound on every operation that compares), so sets of Ints, Strings, tuples, or your own `Eq` types all work. Build one with `set.new()` / `set.from_list(xs)`, test membership with `s.contains(x)`, and reach for `union`/`intersection`/`difference` for the algebra. A `Set` whose members are `Show` renders as `{a, b, c}` through interpolation or `show.say`; `s.to_list()` returns the members in insertion order.
 
 #### `sealed type Set(a)`
 
@@ -3552,55 +3406,11 @@ The empty set.
 
 #### `fn from_list(xs: List(a)) -> Set(a) where a: Eq`
 
-A set of the distinct values in `xs` (duplicates collapse).
-
-#### `fn insert(var s: Set(a), x: a) -> Bool where a: Eq`
-
-Add `x`, returning whether it was newly inserted.
-
-#### `fn remove(var s: Set(a), x: a) -> Bool where a: Eq`
-
-Remove `x`, returning whether it was present.
-
-#### `fn contains(s: Set(a), x: a) -> Bool where a: Eq`
-
-Whether `x` is a member of `s`.
-
-#### `fn length(s: Set(a)) -> Int`
-
-The number of distinct members.
-
-#### `fn is_empty(s: Set(a)) -> Bool`
-
-Whether the set has no members.
+A set of the distinct values in `xs` (duplicates collapse, keeping the first occurrence of each member).
 
 #### `fn to_list(s: Set(a)) -> List(a)`
 
-The members as a list, in insertion order.
-
-#### `fn union(s: Set(a), t: Set(a)) -> Set(a) where a: Eq`
-
-Every member of either set.
-
-#### `fn intersection(s: Set(a), t: Set(a)) -> Set(a) where a: Eq`
-
-The members in both sets.
-
-#### `fn difference(s: Set(a), t: Set(a)) -> Set(a) where a: Eq`
-
-The members of `s` that are not in `t`.
-
-#### `fn symmetric_difference(s: Set(a), t: Set(a)) -> Set(a) where a: Eq`
-
-The members in exactly one of the two sets.
-
-#### `fn is_subset(s: Set(a), t: Set(a)) -> Bool where a: Eq`
-
-Whether every member of `s` is also in `t`.
-
-#### `fn is_disjoint(s: Set(a), t: Set(a)) -> Bool where a: Eq`
-
-Whether the two sets share no members.
+The members as a list, in insertion order. (Module-level because the compiler renders a `Show`able Set through `set.to_list`; the method delegates here.)
 
 #### `Set.length() -> Int`
 
@@ -3624,7 +3434,7 @@ Remove `x`, returning whether it was present.
 
 #### `Set.contains(x: a) -> Bool`
 
-Whether `x` is a member of `s`.
+Whether `x` is a member of the set.
 
 #### `Set.union(other: Set(a)) -> Set(a)`
 
@@ -3636,7 +3446,7 @@ The members in both sets.
 
 #### `Set.difference(other: Set(a)) -> Set(a)`
 
-The members of `s` that are not in `t`.
+The members of this set that are not in `other`.
 
 #### `Set.symmetric_difference(other: Set(a)) -> Set(a)`
 
@@ -3644,7 +3454,7 @@ The members in exactly one of the two sets.
 
 #### `Set.is_subset(other: Set(a)) -> Bool`
 
-Whether every member of `s` is also in `t`.
+Whether every member of this set is also in `other`.
 
 #### `Set.is_disjoint(other: Set(a)) -> Bool`
 

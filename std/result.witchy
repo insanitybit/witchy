@@ -1,6 +1,6 @@
 // The witchy standard `Result` type and helpers. `Result`, `Ok`, and `Err` are
 // prelude names and never need an import; `import result` brings in the qualified
-// helper functions such as `result.map_ok`. Pure and capability-free.
+// helper forms such as `result.map_ok`. Pure and capability-free.
 
 // For the `ok`/`err` conversions to Option.
 
@@ -10,35 +10,10 @@ type Result:
     Ok(a)
     Err(e)
 
-pub fn is_ok(r: Result(a, e)) -> Bool:
-    match r:
-        Ok(_) -> true
-        Err(_) -> false
-
-// The Ok value, or `default` if it's an Err.
-pub fn unwrap_or(r: Result(a, e), default: a) -> a:
-    match r:
-        Ok(v) -> v
-        Err(_) -> default
-
-// Transform the Ok value, leaving an Err untouched.
-pub fn map_ok(r: Result(a, e), f: fn(a) -> b) -> Result(b, e):
-    match r:
-        Ok(v) -> Ok(f(v))
-        Err(x) -> Err(x)
-
-// True if the result is an Err.
-pub fn is_err(r: Result(a, e)) -> Bool:
-    match r:
-        Ok(_) -> false
-        Err(_) -> true
-
-// Chain a fallible step: apply `f` (which itself yields a Result) to the Ok
-// value, or propagate the Err unchanged.
-pub fn and_then(r: Result(a, e), f: fn(a) -> Result(b, e)) -> Result(b, e):
-    match r:
-        Ok(v) -> f(v)
-        Err(x) -> Err(x)
+// --- The compiler-referenced `map_err` (the `?`-operator desugar lowers
+// through `result.map_err`) and the receiver-less List collectors `all` and
+// `partition` stay module-level; every other helper is methods-only
+// (RFC-0099). ---
 
 // Transform the Err value, leaving an Ok untouched.
 pub fn map_err(r: Result(a, e), f: fn(e) -> g) -> Result(a, g):
@@ -46,104 +21,98 @@ pub fn map_err(r: Result(a, e), f: fn(e) -> g) -> Result(a, g):
         Ok(v) -> Ok(v)
         Err(x) -> Err(f(x))
 
-// The Err value, or `default` if it's Ok. This is the error-side counterpart of
-// `unwrap_or`: it is a defaulting helper, not a strict assertion that `r` is Err.
-pub fn unwrap_err_or(r: Result(a, e), default: e) -> e:
-    match r:
-        Ok(_) -> default
-        Err(x) -> x
-
-// The Ok value, or the result of calling `f` (a lazily-computed default).
-pub fn unwrap_or_else(r: Result(a, e), f: fn() -> a) -> a:
-    match r:
-        Ok(v) -> v
-        Err(_) -> f()
-
-// The result if it is Ok, otherwise the `alt` result.
-pub fn or(r: Result(a, e), alt: Result(a, e)) -> Result(a, e):
-    match r:
-        Ok(v) -> Ok(v)
-        Err(_) -> alt
-
-// The result if it is Ok, otherwise the result produced by applying `f` to the
-// error — a lazy, error-aware recovery step.
-pub fn or_else(r: Result(a, e), f: fn(e) -> Result(a, e)) -> Result(a, e):
-    match r:
-        Ok(v) -> Ok(v)
-        Err(x) -> f(x)
-
-// Apply `f` to the Ok value, or return `default` for an Err — `map_ok` then
-// `unwrap_or` in one step.
-pub fn map_or(r: Result(a, e), default: b, f: fn(a) -> b) -> b:
-    match r:
-        Ok(v) -> f(v)
-        Err(_) -> default
-
-// Collapse one layer of nesting: `Ok(Ok(v))` becomes `Ok(v)`; `Ok(Err(e))` and
-// `Err(e)` become `Err(e)`. The Result counterpart of `option.flatten`.
-pub fn flatten(rr: Result(Result(a, e), e)) -> Result(a, e):
-    match rr:
-        Ok(inner) -> inner
-        Err(x) -> Err(x)
-
-// The Ok value as `Some`, or `None` for an Err — discards the error, turning a
-// Result into an Option.
-pub fn ok(r: Result(a, e)) -> Option(a):
-    match r:
-        Ok(v) -> Some(v)
-        Err(_) -> None
-
-// The Err value as `Some`, or `None` for an Ok.
-pub fn err(r: Result(a, e)) -> Option(e):
-    match r:
-        Ok(_) -> None
-        Err(x) -> Some(x)
-
-// Real methods mirror the primary Result helper surface while the module
-// functions remain as stable, first-class values.
+// Methods are the primary surface (RFC-0099). `map_err` delegates to the kept
+// module function; the rest own their implementation.
 impl Result(a, e):
+    // True if the result is an Ok.
     pub fn is_ok(self) -> Bool:
-        result.is_ok(self)
+        match self:
+            Ok(_) -> true
+            Err(_) -> false
 
+    // True if the result is an Err.
     pub fn is_err(self) -> Bool:
-        result.is_err(self)
+        match self:
+            Ok(_) -> false
+            Err(_) -> true
 
+    // The Ok value, or `default` if it's an Err.
     pub fn unwrap_or(self, default: a) -> a:
-        result.unwrap_or(self, default)
+        match self:
+            Ok(v) -> v
+            Err(_) -> default
 
+    // The Ok value, or the result of calling `f` (a lazily-computed default).
     pub fn unwrap_or_else(self, f: fn() -> a) -> a:
-        result.unwrap_or_else(self, f)
+        match self:
+            Ok(v) -> v
+            Err(_) -> f()
 
+    // The Err value, or `default` if it's Ok. This is the error-side counterpart
+    // of `unwrap_or`: it is a defaulting helper, not a strict assertion that the
+    // result is Err.
     pub fn unwrap_err_or(self, default: e) -> e:
-        result.unwrap_err_or(self, default)
+        match self:
+            Ok(_) -> default
+            Err(x) -> x
 
+    // Transform the Ok value, leaving an Err untouched.
     pub fn map_ok(self, f: fn(a) -> b) -> Result(b, e):
-        result.map_ok(self, f)
+        match self:
+            Ok(v) -> Ok(f(v))
+            Err(x) -> Err(x)
 
+    // Transform the Err value, leaving an Ok untouched.
     pub fn map_err(self, f: fn(e) -> g) -> Result(a, g):
         result.map_err(self, f)
 
+    // Apply `f` to the Ok value, or return `default` for an Err — `map_ok` then
+    // `unwrap_or` in one step.
     pub fn map_or(self, default: b, f: fn(a) -> b) -> b:
-        result.map_or(self, default, f)
+        match self:
+            Ok(v) -> f(v)
+            Err(_) -> default
 
+    // Chain a fallible step: apply `f` (which itself yields a Result) to the Ok
+    // value, or propagate the Err unchanged.
     pub fn and_then(self, f: fn(a) -> Result(b, e)) -> Result(b, e):
-        result.and_then(self, f)
+        match self:
+            Ok(v) -> f(v)
+            Err(x) -> Err(x)
 
+    // The result if it is Ok, otherwise the `alt` result.
     pub fn or(self, alt: Result(a, e)) -> Result(a, e):
-        result.or(self, alt)
+        match self:
+            Ok(v) -> Ok(v)
+            Err(_) -> alt
 
+    // The result if it is Ok, otherwise the result produced by applying `f` to
+    // the error — a lazy, error-aware recovery step.
     pub fn or_else(self, f: fn(e) -> Result(a, e)) -> Result(a, e):
-        result.or_else(self, f)
+        match self:
+            Ok(v) -> Ok(v)
+            Err(x) -> f(x)
 
+    // The Ok value as `Some`, or `None` for an Err — discards the error, turning
+    // a Result into an Option.
     pub fn ok(self) -> Option(a):
-        result.ok(self)
+        match self:
+            Ok(v) -> Some(v)
+            Err(_) -> None
 
+    // The Err value as `Some`, or `None` for an Ok.
     pub fn err(self) -> Option(e):
-        result.err(self)
+        match self:
+            Ok(_) -> None
+            Err(x) -> Some(x)
 
 impl Result(Result(a, e), e):
+    // Collapse one layer of nesting: `Ok(Ok(v))` becomes `Ok(v)`; `Ok(Err(e))`
+    // and `Err(e)` become `Err(e)`. The Result counterpart of `option.flatten`.
     pub fn flatten(self) -> Result(a, e):
-        result.flatten(self)
+        match self:
+            Ok(inner) -> inner
+            Err(x) -> Err(x)
 
 // Collect a list of Results into a Result of the list: `Ok` of every value in
 // order, or the first `Err` encountered (the "sequence" of fallible steps).
