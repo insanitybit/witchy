@@ -150,7 +150,8 @@ impl Renamer {
             Expr::Unary { expr, .. }
             | Expr::Try(expr)
             | Expr::As { expr, .. }
-            | Expr::ExistentialPack { expr, .. } => self.rename_expr(expr),
+            | Expr::ExistentialPack { expr, .. }
+            | Expr::ExistentialUpcast { expr, .. } => self.rename_expr(expr),
             // The field name is not a local.
             Expr::Field { base, .. } => self.rename_expr(base),
             Expr::RecordUpdate { name: _, base, fields } => {
@@ -329,6 +330,7 @@ pub(crate) fn flip_string_add_module(m: &mut Module, table: &witchy_types::typec
             | Expr::Try(expr)
             | Expr::As { expr, .. }
             | Expr::ExistentialPack { expr, .. }
+            | Expr::ExistentialUpcast { expr, .. }
             | Expr::Field { base: expr, .. } => walk_expr(expr, table),
             Expr::Range { lo, hi, .. } => {
                 walk_expr(lo, table);
@@ -501,6 +503,7 @@ pub(crate) fn rewrite_try_ctx_module(m: &mut Module, table: &witchy_types::typec
             | Expr::Try(expr)
             | Expr::As { expr, .. }
             | Expr::ExistentialPack { expr, .. }
+            | Expr::ExistentialUpcast { expr, .. }
             | Expr::Field { base: expr, .. } => walk_expr(expr, table, changed),
             Expr::Range { lo, hi, .. } => {
                 walk_expr(lo, table, changed);

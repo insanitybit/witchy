@@ -7578,21 +7578,21 @@ impl<'types> Codegen<'types> {
                     let fallback = selected.take().map_or_else(
                         || W::Control(Box::new(N::Block {
                             label: "__witchy_bad_existential_upcast".into(),
-                            result: Some(witchy_wir::wir::WirTy::Int),
+                            result: Some(witchy_wir::wir::WirTy::Bool),
                             body: vec![N::Unreachable],
                         })),
                         |value| value,
                     );
                     selected = Some(W::Control(Box::new(N::If {
                         cond: W::Binary {
-                            op: BinOp::Eq,
-                            kind: Kind::I32,
+                            op: witchy_wir::wir::BinOp::Eq,
+                            kind: witchy_wir::wir::Kind::I32,
                             lhs: Box::new(source_witness()),
                             rhs: Box::new(W::ConstI32(i32::try_from(from).ok()?)),
                         },
                         then_: vec![N::Push(W::ConstI32(i32::try_from(to).ok()?))],
                         els: vec![N::Push(fallback)],
-                        result: Some(witchy_wir::wir::WirTy::Int),
+                        result: Some(witchy_wir::wir::WirTy::Bool),
                     })));
                 }
                 let payload = W::StructGet {
@@ -10478,6 +10478,7 @@ impl<'types> Codegen<'types> {
             | Expr::Try(expr)
             | Expr::As { expr, .. }
             | Expr::ExistentialPack { expr, .. }
+            | Expr::ExistentialUpcast { expr, .. }
             | Expr::Field { base: expr, .. } => self.scan_escapes_expr(expr, inner, ok),
             Expr::Call { name, args } => {
                 if self.call_writes_outer_heap(name, args, inner) {
@@ -11205,7 +11206,8 @@ impl DevirtScan {
             Expr::Unary { expr, .. }
             | Expr::Try(expr)
             | Expr::As { expr, .. }
-            | Expr::ExistentialPack { expr, .. } => {
+            | Expr::ExistentialPack { expr, .. }
+            | Expr::ExistentialUpcast { expr, .. } => {
                 self.walk_expr(expr)
             }
             Expr::Field { base, .. } => self.walk_expr(base),
@@ -11426,6 +11428,7 @@ fn nested_var_place_roots(
             | Expr::Try(expr)
             | Expr::As { expr, .. }
             | Expr::ExistentialPack { expr, .. }
+            | Expr::ExistentialUpcast { expr, .. }
             | Expr::Field { base: expr, .. } => scan_expr(expr, conventions, roots),
             Expr::RecordUpdate { base, fields, .. } => {
                 scan_expr(base, conventions, roots);
@@ -11543,6 +11546,7 @@ fn collect_fn_refs_expr(e: &Expr, out: &mut HashSet<String>) {
         | Expr::Try(expr)
         | Expr::As { expr, .. }
         | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. }
         | Expr::Field { base: expr, .. } => {
             collect_fn_refs_expr(expr, out)
         }
@@ -11823,6 +11827,7 @@ fn collect_loan_event_keys_expr(
         | Expr::Try(expr)
         | Expr::As { expr, .. }
         | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. }
         | Expr::Field { base: expr, .. } => collect_loan_event_keys_expr(expr, facts, out),
         Expr::Binary { lhs, rhs, .. }
         | Expr::Index { base: lhs, index: rhs }
@@ -11903,7 +11908,8 @@ fn collect_loan_roots_expr(
         Expr::Unary { expr, .. }
         | Expr::Try(expr)
         | Expr::As { expr, .. }
-        | Expr::ExistentialPack { expr, .. } => {
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. } => {
             collect_loan_roots_expr(expr, facts, out);
         }
         Expr::Field { base, .. } => collect_loan_roots_expr(base, facts, out),
@@ -12040,6 +12046,7 @@ fn collect_let_names_expr(expr: &Expr, out: &mut Vec<String>) {
         | Expr::Try(expr)
         | Expr::As { expr, .. }
         | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. }
         | Expr::Field { base: expr, .. } => {
             collect_let_names_expr(expr, out)
         }

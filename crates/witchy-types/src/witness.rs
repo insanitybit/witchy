@@ -1278,6 +1278,7 @@ mod tests {
                     slots: vec![slot("show_right"), slot("debug_right")],
                 },
             ],
+            upcasts: Vec::new(),
         };
         let index = plan.dispatch_index().expect("dense index");
         assert_eq!(index.stride(), 2);

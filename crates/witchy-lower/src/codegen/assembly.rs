@@ -709,13 +709,26 @@ fn register_module_items(
     // real field kinds after the ordinary nominal layouts have been assigned.
     cg.gc_structs.push(witchy_wir::wir::closure_wrapper_struct());
     cg.gc_structs.push(witchy_wir::wir::existential_wrapper_struct());
+    // Every witness for the same concrete type must name the same payload-box
+    // layout. A supertrait upcast changes only the authenticated witness ID and
+    // deliberately reuses the owned payload reference; allocating one nominal
+    // box type per witness would make the target adapter's `ref.cast` fail even
+    // though the concrete payload is unchanged.
+    let mut existential_payload_boxes = HashMap::new();
     for witness in &witnesses.witnesses {
-        let payload_id = cg.gc_structs.len() as u32;
+        let key = cg.gc_lookup_type_key(&witness.concrete);
+        let payload_id = if let Some(payload_id) = existential_payload_boxes.get(&key) {
+            *payload_id
+        } else {
+            let payload_id = cg.gc_structs.len() as u32;
+            cg.gc_structs.push(witchy_wir::wir::WirStructDef {
+                fields: Vec::new(),
+                mutable: false,
+            });
+            existential_payload_boxes.insert(key, payload_id);
+            payload_id
+        };
         cg.existential_payload_ids.insert(witness.id, payload_id);
-        cg.gc_structs.push(witchy_wir::wir::WirStructDef {
-            fields: Vec::new(),
-            mutable: false,
-        });
     }
     let mut lambda_keys = Vec::new();
     for item in &module.items {

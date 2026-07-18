@@ -6676,7 +6676,8 @@ impl Interpreter {
                 let target = self.witnesses.upcast(witness, ty).ok_or_else(|| {
                     Flow::from(RuntimeError {
                         message: format!(
-                            "internal: no authenticated existential upcast from witness {witness} to {ty}"
+                            "internal: no authenticated existential upcast from witness {witness} to {}",
+                            witchy_syntax::format::type_str(ty)
                         ),
                     })
                 })?;

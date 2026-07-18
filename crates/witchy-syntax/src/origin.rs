@@ -387,7 +387,13 @@ fn record_expr(table: &mut OriginTable, module: &str, item: u32, path: &[u32], e
         Expr::Lambda { params, body, ret } => { for param in params { let child = child_path(path, &mut next); record_param(table, module, item, &child, param, origin); } if let Some(ret) = ret { let child = child_path(path, &mut next); record_type(table, module, item, &child, ret, origin); } let child = child_path(path, &mut next); record_block(table, module, item, &child, body, origin); }
         Expr::RecordUpdate { base, fields, .. } => { record_expr_child(table, module, item, path, &mut next, base, origin); for (_, value) in fields { record_expr_child(table, module, item, path, &mut next, value, origin); } }
         Expr::Record { fields, spread, .. } => { for (_, value) in fields { record_expr_child(table, module, item, path, &mut next, value, origin); } if let Some(spread) = spread { record_expr_child(table, module, item, path, &mut next, spread, origin); } }
-        Expr::As { expr, ty } | Expr::ExistentialPack { expr, ty, .. } => { record_expr_child(table, module, item, path, &mut next, expr, origin); let child = child_path(path, &mut next); record_type(table, module, item, &child, ty, origin); }
+        Expr::As { expr, ty }
+        | Expr::ExistentialPack { expr, ty, .. }
+        | Expr::ExistentialUpcast { expr, ty } => {
+            record_expr_child(table, module, item, path, &mut next, expr, origin);
+            let child = child_path(path, &mut next);
+            record_type(table, module, item, &child, ty, origin);
+        }
         Expr::ExistentialCall { receiver, args, ty, result, .. } => {
             record_expr_child(table, module, item, path, &mut next, receiver, origin);
             for arg in args {

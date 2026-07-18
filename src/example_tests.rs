@@ -6324,14 +6324,16 @@ fn main() -> Int:
             .expect_err("interpreter must reject unrelated upcast")
             .to_string();
         assert!(
-            interpreter_error.contains("invalid existential upcast request `Render` to `Inspect`"),
+            interpreter_error
+                .contains("invalid existential upcast request `main.Render` to `main.Inspect`"),
             "unexpected interpreter error: {interpreter_error}"
         );
         let codegen_error = codegen::compile_module_binary(&linked)
             .expect_rejected("compiled backend must reject unrelated upcast")
             .to_string();
         assert!(
-            codegen_error.contains("invalid existential upcast request `Render` to `Inspect`"),
+            codegen_error
+                .contains("invalid existential upcast request `main.Render` to `main.Inspect`"),
             "unexpected codegen error: {codegen_error}"
         );
     }

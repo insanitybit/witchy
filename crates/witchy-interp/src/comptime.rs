@@ -668,6 +668,7 @@ fn stamp_expr(e: &mut Expr, line: u32) {
         | Expr::Try(expr)
         | Expr::As { expr, .. }
         | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. }
         | Expr::Field { base: expr, .. } => stamp_expr(expr, line),
         Expr::ExistentialCall { receiver, args, .. } => {
             stamp_expr(receiver, line);

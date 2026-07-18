@@ -413,7 +413,8 @@ fn walk_children(
         }
         Expr::Try(e) => recur(e)?,
         Expr::As { expr, .. } => recur(expr)?,
-        Expr::ExistentialPack { expr, .. } => recur(expr)?,
+        Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. } => recur(expr)?,
         Expr::ExistentialCall { receiver, args, .. } => {
             recur(receiver)?;
             for arg in args {
@@ -1103,7 +1104,8 @@ fn substitute_holes_children(
         }
         Expr::Try(e) => substitute_holes(e, holes, where_)?,
         Expr::As { expr, .. } => substitute_holes(expr, holes, where_)?,
-        Expr::ExistentialPack { expr, .. } => substitute_holes(expr, holes, where_)?,
+        Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. } => substitute_holes(expr, holes, where_)?,
         Expr::ExistentialCall { receiver, args, .. } => {
             substitute_holes(receiver, holes, where_)?;
             for arg in args {

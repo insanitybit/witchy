@@ -728,6 +728,7 @@ fn collect_accumulators_expr(
         | Expr::Try(expr)
         | Expr::As { expr, .. }
         | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. }
         | Expr::Field { base: expr, .. } => {
             collect_accumulators_expr(expr, summaries, accs, loop_ptrs, loop_sites)
         }
@@ -1148,7 +1149,9 @@ impl<'a> Walker<'a> {
             }
             Expr::Unary { expr, .. } => self.scan(expr, false, reason, out),
             // `?` unwraps a payload (a part-alias); `as` is identity.
-            Expr::Try(expr) | Expr::As { expr, .. } => self.scan(expr, live, reason, out),
+            Expr::Try(expr)
+            | Expr::As { expr, .. }
+            | Expr::ExistentialUpcast { expr, .. } => self.scan(expr, live, reason, out),
             Expr::ExistentialPack { expr, .. } => {
                 self.scan(expr, live, "stored in an existential value", out)
             }
@@ -1276,6 +1279,7 @@ fn expr(e: &Expr, accs: &HashSet<String>, out: &mut HashSet<String>) {
             | Expr::Try(e2)
             | Expr::As { expr: e2, .. }
             | Expr::ExistentialPack { expr: e2, .. }
+            | Expr::ExistentialUpcast { expr: e2, .. }
             | Expr::Field { base: e2, .. } => expr(e2, accs, out),
             Expr::Call { args, .. }
             | Expr::Ctor { args, .. }
@@ -1434,6 +1438,7 @@ fn collect_candidates_in_expr(e: &Expr, out: &mut HashSet<(String, String)>) {
         | Expr::Try(expr)
         | Expr::As { expr, .. }
         | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. }
         | Expr::Field { base: expr, .. } => collect_candidates_in_expr(expr, out),
         Expr::Call { args, .. }
         | Expr::Ctor { args, .. }
@@ -1530,7 +1535,8 @@ fn field_escapes_expr(e: &Expr, var: &str, field: &str) -> bool {
         Expr::Unary { expr, .. }
         | Expr::Try(expr)
         | Expr::As { expr, .. }
-        | Expr::ExistentialPack { expr, .. } => {
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. } => {
             field_escapes_expr(expr, var, field)
         }
         Expr::Field { base, .. } => field_escapes_expr(base, var, field),
@@ -1623,6 +1629,7 @@ fn collect_moved_accs(e: &Expr, accs: &HashSet<String>, out: &mut Vec<String>) {
         | Expr::Try(expr)
         | Expr::As { expr, .. }
         | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. }
         | Expr::Field { base: expr, .. } => collect_moved_accs(expr, accs, out),
         Expr::Binary { lhs, rhs, .. }
         | Expr::Range { lo: lhs, hi: rhs, .. }
@@ -2011,7 +2018,8 @@ fn rc_lets_expr(e: &Expr, confined: bool, out: &mut HashSet<String>) {
         Expr::Unary { expr, .. }
         | Expr::Try(expr)
         | Expr::As { expr, .. }
-        | Expr::ExistentialPack { expr, .. } => {
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. } => {
             rc_lets_expr(expr, confined, out)
         }
         Expr::Field { base, .. } => rc_lets_expr(base, confined, out),
@@ -2170,7 +2178,8 @@ fn each_value_child(e: &Expr, f: &mut impl FnMut(&Expr)) {
         Expr::Unary { expr, .. }
         | Expr::Try(expr)
         | Expr::As { expr, .. }
-        | Expr::ExistentialPack { expr, .. } => f(expr),
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. } => f(expr),
         Expr::Field { base, .. } => f(base),
         Expr::Binary { lhs, rhs, .. }
         | Expr::Index { base: lhs, index: rhs }
@@ -2280,7 +2289,8 @@ fn expr_read_count(e: &Expr, name: &str) -> usize {
         Expr::Unary { expr, .. }
         | Expr::Try(expr)
         | Expr::As { expr, .. }
-        | Expr::ExistentialPack { expr, .. } => {
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. } => {
             n += expr_read_count(expr, name);
         }
         Expr::Field { base, .. } => n += expr_read_count(base, name),
@@ -2428,7 +2438,8 @@ fn each_block_in_expr(e: &Expr, f: &mut impl FnMut(&Block)) {
         Expr::Unary { expr, .. }
         | Expr::Try(expr)
         | Expr::As { expr, .. }
-        | Expr::ExistentialPack { expr, .. } => {
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. } => {
             each_block_in_expr(expr, f)
         }
         Expr::Field { base, .. } => each_block_in_expr(base, f),
@@ -2874,6 +2885,7 @@ impl<'a> FipChecker<'a> {
                 self.value(expr);
                 self.miss("existential construction allocates inside the FIP kernel");
             }
+            Expr::ExistentialUpcast { expr, .. } => self.value(expr),
             Expr::Try(_) => self.miss("early propagation is not part of the initial FIP contract"),
             Expr::As { expr, .. } => self.value(expr),
             Expr::While { .. }
@@ -2973,7 +2985,8 @@ fn fip_expr_calls(expr: &Expr, function: &str) -> bool {
         | Expr::Field { base: expr, .. }
         | Expr::Try(expr)
         | Expr::As { expr, .. }
-        | Expr::ExistentialPack { expr, .. } => fip_expr_calls(expr, function),
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. } => fip_expr_calls(expr, function),
         Expr::Lambda { body, .. } | Expr::Block(body) => fip_block_calls(body, function),
         Expr::RecordUpdate { base, fields, .. } => {
             fip_expr_calls(base, function)
@@ -3576,6 +3589,7 @@ impl<'a> NoCopyWalker<'a> {
             | Expr::Try(expr)
             | Expr::As { expr, .. }
             | Expr::ExistentialPack { expr, .. }
+            | Expr::ExistentialUpcast { expr, .. }
             | Expr::Field { base: expr, .. } => self.expr(expr, stmt, env),
             Expr::Tuple(items) | Expr::Ctor { args: items, .. } | Expr::AnonCtor { args: items, .. } => {
                 for item in items {

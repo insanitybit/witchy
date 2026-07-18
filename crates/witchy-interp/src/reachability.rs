@@ -221,7 +221,8 @@ fn collect_refs_expr(e: &Expr, out: &mut HashSet<String>) {
             collect_refs_expr(expr, out);
             collect_type_names(ty, out);
         }
-        Expr::ExistentialPack { expr, ty, .. } => {
+        Expr::ExistentialPack { expr, ty, .. }
+        | Expr::ExistentialUpcast { expr, ty } => {
             collect_refs_expr(expr, out);
             collect_type_names(ty, out);
         }

@@ -3620,7 +3620,7 @@ fn main():
     }
 
     #[test]
-    fn rfc0081_dyn_to_dyn_casts_fail_until_authenticated_upcasts_land() {
+    fn rfc0081_redundant_dyn_cast_is_not_an_upcast() {
         let err = check_str(
             "trait Render:\n    fn render(let self) -> String\n\n\
              fn recast(value: dyn Render) -> dyn Render:\n    value as dyn Render\n\n\
@@ -3628,8 +3628,8 @@ fn main():
         )
         .expect_err("even a redundant dyn cast must not bypass preparation");
         assert!(
-            err.contains("existential-to-existential casts require the authenticated")
-                && err.contains("omit a redundant same-type cast"),
+            err.contains("cannot cast `dyn Render` to `dyn Render`")
+                && err.contains("may only upcast to one of its transitive supertraits"),
             "{err}"
         );
     }
