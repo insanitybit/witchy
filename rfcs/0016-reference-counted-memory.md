@@ -14,6 +14,12 @@ tracking: "RC-floor reclamation shipped (free-at-overwrite + size-classed free-l
 
 # RFC-0016: Reference-counted memory — RC floor, arena/region/in-place as elision
 
+The shipped RC-floor allocation/reclamation paths are implemented in
+[`crates/witchy-lower/src/codegen/mod.rs`](../crates/witchy-lower/src/codegen/mod.rs)
+and [`crates/witchy-runtime/src/runtime.rs`](../crates/witchy-runtime/src/runtime.rs),
+with deterministic reuse evidence in [`src/stats.rs`](../src/stats.rs); the remaining
+cleanup items are retained as non-mechanism debt.
+
 ## Summary
 
 Make **precise reference counting with reuse (Perceus/FBIP)** the default
