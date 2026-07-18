@@ -8,6 +8,11 @@ tracking: "module-scoped types + from-imports; iter+chan coexist; full migration
 
 # RFC-0042: Module namespaces and Python-style imports
 
+The shipped namespace resolution is implemented in
+[`crates/witchy-syntax/src/type_resolve.rs`](../crates/witchy-syntax/src/type_resolve.rs)
+and [`crates/witchy-syntax/src/linker.rs`](../crates/witchy-syntax/src/linker.rs),
+with collision/coexistence coverage in [`src/example_tests.rs`](../src/example_tests.rs).
+
 > Provisional syntax throughout. Code blocks are intentionally **not** tagged
 > `witchy` so the doc-examples sweep does not compile pre-implementation
 > snippets.
