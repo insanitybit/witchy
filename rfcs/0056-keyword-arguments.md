@@ -12,6 +12,11 @@ tracking:
 
 # RFC-0056: Keyword arguments — generalize labeled construction to every call
 
+The shipped call lowering and validation are covered by
+[`src/example_tests.rs`](../src/example_tests.rs), with parser/linker lowering in
+[`crates/witchy-syntax/src`](../crates/witchy-syntax/src) and runtime defense-in-depth in
+[`crates/witchy-interp/src/interpreter.rs`](../crates/witchy-interp/src/interpreter.rs).
+
 > Provisional syntax throughout. Code blocks are intentionally **not** tagged
 > `witchy` so the doc-examples sweep does not compile pre-implementation
 > snippets.
