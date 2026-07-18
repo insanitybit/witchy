@@ -23,7 +23,8 @@ calls made through an explicitly interceptable interface or dynamic boundary.
 
 Ruby's open classes, refinements, delegation, and method interception make
 frameworks unusually expressive. Witchy's current coherence model intentionally
-binds methods to trait impls or the type's owning module, and RFC-0077 rejects a
+binds methods to trait impls or the type's owning module, and
+[RFC-0077](0077-testability-without-monkeypatching.md) rejects a
 test-only monkeypatch dispatch model.
 
 That rejection should not imply that adaptation and interception are undesirable.
@@ -65,7 +66,7 @@ capability intrinsic operations cannot be extended.
 
 ### Interceptable interfaces
 
-Interception operates on RFC-0081 existential trait values or RFC-0082 dynamic
+Interception operates on [RFC-0081](0081-existential-trait-values.md) existential trait values or [RFC-0082](0082-runtime-dynamic-values.md) dynamic
 methods, never on arbitrary statically bound free functions:
 
 ```witchy
