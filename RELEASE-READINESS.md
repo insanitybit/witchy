@@ -18,10 +18,10 @@ Candidate commit: `d7bee035f521429868240cdf4d55fccae4814311`.
 | `witchy test` | PASS | Extracted binary runs a temporary project's in-language test. |
 | Project `build` / `run` | PASS | Embedded package front end builds and runs a temporary local project using no checkout inputs. |
 | Portable WASM compile / sandbox | PASS | Extracted binary emits `.wasm`; the same binary runs it with expected output. |
-| `trusted-exe` | PASS | Source-deleted, moved artifact works with empty `PATH`; argv, binding failures, `Dir` escapes, and corruption are exercised. |
+| [`trusted-exe`](rfcs/0092-trusted-application-executables.md) | PASS | Source-deleted, moved artifact works with empty `PATH`; argv, binding failures, `Dir` escapes, and corruption are exercised. |
 | Backend parity | FAIL | The exact candidate passed the landing gate's browser parity check (123 runnable blocks, zero divergence), but its serialized full release gate is red and the private candidate workflow has not run. |
 | Remote Coven lifecycle | EXCLUDED | Existing implementation remains available but is not part of the 0.1 installability promise. |
-| Grimoire/Coven integrated install | EXCLUDED | Proposed RFC-0095 behavior is not independently implemented and proven. |
+| Grimoire/Coven integrated install ([RFC-0095](rfcs/0095-grimoire-trusted-application-installation.md)) | EXCLUDED | Proposed behavior is not independently implemented and proven. |
 | Proposed existential / `Dynamic` / lexical extensions | EXCLUDED | No proposed semantic is advertised by this release. |
 
 ## Platform matrix
@@ -44,7 +44,7 @@ Candidate commit: `d7bee035f521429868240cdf4d55fccae4814311`.
   behavior requires the method form `console.print(...)`. This acceptance
   fixture mismatch is owned outside the release-engineering slice and blocks
   publication until fixed and the exact-master full gate is rerun.
-- **BLOCKER — merge queue:** `impl/rfc0081-wasm-witness-adapters` remains queued
+- **BLOCKER — merge queue:** [`impl/rfc0081-wasm-witness-adapters`](rfcs/0081-existential-trait-values.md) remains queued
   but blocked by the red compiler-owned `impl/rfc0081-wasm-witness-dispatch`
   attempt. Proposed existential work is excluded from 0.1 and has not landed,
   but the final release procedure requires an empty queue.
