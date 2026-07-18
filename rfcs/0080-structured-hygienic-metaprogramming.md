@@ -460,6 +460,13 @@ The first source-compatible slice is implemented:
   preserve those paths as item indices move. This gives diagnostics and tooling
   persistent per-node expansion provenance without adding rendered-source IDs or
   changing the runtime AST.
+- The forty-first slice makes `meta.expr_call` structural when composing
+  compiler-owned expression values. In particular, an explicit
+  `meta.call_site` callee remains an invocation-site reference through the
+  constructed `Apply` node instead of being projected to source and accidentally
+  captured by the definition module. Source-backed `ExprSyntax` inputs remain a
+  compatibility fallback and are parsed individually; the enclosing call is
+  always represented by one compiler-owned AST node.
 
 This is intentionally not the full RFC. Every quotation category and its typed
 hole placement is now compiler-owned. General `meta.*` builder composition may

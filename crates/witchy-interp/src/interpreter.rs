@@ -536,6 +536,37 @@ fn err<T, E: From<RuntimeError>>(message: impl Into<String>) -> Result<T, E> {
     }))
 }
 
+/// Decode one `meta.ExprSyntax` value for compiler-owned structural builders.
+/// A compatibility payload is parsed in isolation; an owned payload transfers
+/// its AST directly so definition-site and call-site markers cannot be erased
+/// by an intermediate source projection.
+fn compiler_expr_syntax_value(
+    value: &Value,
+    compiler_expr_syntax: &HashMap<String, Expr>,
+) -> Result<Expr, RuntimeError> {
+    fn tail(name: &str) -> &str {
+        name.rsplit_once('.').map_or(name, |(_, tail)| tail)
+    }
+
+    let Value::Ctor { name, fields } = value else {
+        return err("meta.expr_call expected ExprSyntax values");
+    };
+    match (tail(name), fields.as_slice()) {
+        ("CompilerExprSyntax", [Value::Str(handle), Value::Str(_source)]) => compiler_expr_syntax
+            .get(handle.as_str())
+            .cloned()
+            .ok_or_else(|| RuntimeError {
+                message: "CompilerExprSyntax carried an invalid syntax handle".into(),
+            }),
+        ("ExprSyntax", [Value::Str(source)]) => {
+            witchy_syntax::syntax_holes::parse_expr_payload(source).map_err(|message| RuntimeError { message })
+        }
+        ("CompilerExprSyntax", _) => err("CompilerExprSyntax carried an invalid payload"),
+        ("ExprSyntax", _) => err("ExprSyntax carried an invalid source payload"),
+        (other, _) => err(format!("meta.expr_call expected ExprSyntax, got `{other}`")),
+    }
+}
+
 fn compiler_item_holes(
     values: &[Value],
     compiler_expr_syntax: &HashMap<String, Expr>,
@@ -2963,6 +2994,43 @@ impl Interpreter {
                 _ => {
                     err("meta.call_site pattern construction expects a name and pattern arguments")
                 }
+            },
+            name if intrinsics::is_meta_expr_call(name) => match args {
+                [callee, Value::List(args)] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.expr_call is available only during compile-time expansion",
+                        );
+                    }
+                    let mut inputs = Vec::with_capacity(args.len() + 1);
+                    inputs.push(callee.clone());
+                    inputs.extend(args.iter().cloned());
+                    let hole_ancestry = compiler_direct_hole_origins(
+                        &inputs,
+                        SyntaxCategory::Expr,
+                        "CompilerExprSyntax",
+                        &self.compiler_expr_origins,
+                        self.cur_line,
+                    );
+                    let callee = compiler_expr_syntax_value(callee, &self.compiler_expr_syntax)?;
+                    let args = args
+                        .iter()
+                        .map(|arg| compiler_expr_syntax_value(arg, &self.compiler_expr_syntax))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let expr = Expr::Apply { func: Box::new(callee), args };
+                    let source = witchy_syntax::format::expr_str(&expr);
+                    let handle = self.next_compiler_syntax_handle("expression-call")?;
+                    self.compiler_expr_syntax.insert(handle.clone(), expr);
+                    self.compiler_expr_origins.insert(
+                        handle.clone(),
+                        ComptimeSyntaxOrigin { definition_line: self.cur_line, hole_ancestry },
+                    );
+                    Ok(Some(Value::Ctor {
+                        name: "meta.CompilerExprSyntax".into(),
+                        fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+                    }))
+                }
+                _ => err("meta.expr_call expects an ExprSyntax callee and List(ExprSyntax) arguments"),
             },
             name if name == intrinsics::COMPILER_QUOTE_EXPR => {
                 if self.fresh_ident_scope.is_none() {

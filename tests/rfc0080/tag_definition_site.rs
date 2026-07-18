@@ -43,6 +43,10 @@ comptime fn call_selected(parts: List(String), holes: List(String)) -> meta.Expr
 comptime fn reference_selected(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     meta.expr_name(meta.call_site("selected"))
 
+comptime fn composed_call_selected(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+    let selected = meta.expr_name(meta.call_site("selected"))
+    meta.expr_call(selected, [])
+
 comptime fn construct_hidden(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     quote expr:
         match HiddenValue(41):
@@ -105,6 +109,7 @@ fn main(console: Console):
     console.print("${call_selected"ignored"}")
     let selected_fn = reference_selected"ignored"
     console.print("${selected_fn()}")
+    console.print("${composed_call_selected"ignored"}")
     console.print("${construct_hidden"ignored"}")
     console.print("${type_hidden"ignored"}")
     console.print("${record_hidden"ignored"}")
@@ -135,6 +140,7 @@ fn linked() -> ast::Module {
 fn typed_tag_names_resolve_at_definition_site_on_both_backends() {
     let linked = linked();
     let expected = vec![
+        "42".to_string(),
         "42".to_string(),
         "42".to_string(),
         "42".to_string(),

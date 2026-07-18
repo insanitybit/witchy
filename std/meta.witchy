@@ -278,7 +278,13 @@ pub fn expr_name(name: Ident) -> ExprSyntax:
     expr_ident(name)
 
 pub fn expr_call(callee: ExprSyntax, args: List(ExprSyntax)) -> ExprSyntax:
-    ExprSyntax(expr_source(callee) + "(" + list.join(expr_sources(args), ", ") + ")")
+    __meta_expr_call(callee, args)
+
+// Compiler-owned structural composition for `expr_call`. It preserves syntax
+// identity such as `meta.call_site` through a constructed call; source-backed
+// syntax values remain supported by the compatibility path in the intrinsic.
+fn __meta_expr_call(callee: ExprSyntax, args: List(ExprSyntax)) -> ExprSyntax:
+    __meta_expr_call(callee, args)
 
 pub fn expr_field(base: ExprSyntax, field: Ident) -> ExprSyntax:
     ExprSyntax(expr_source(base) + "." + ident_source(field))
