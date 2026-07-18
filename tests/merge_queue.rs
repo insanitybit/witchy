@@ -1153,6 +1153,12 @@ fn doctor_treats_denied_process_inspection_as_advisory() {
     let state = temp.path().join("state");
     let bin = temp.path().join("bin");
     fs::create_dir_all(&state).expect("create isolated coordinator state");
+    let queue = state.join("queue");
+    fs::create_dir(&queue).expect("create isolated queue");
+    fs::write(queue.join("0001.json"), "{}\n").expect("write logical queue entry");
+    fs::write(queue.join("0001.json.nobatch"), "").expect("write no-batch sidecar");
+    fs::write(queue.join("0001.json.batch-limit"), "2\n")
+        .expect("write batch-limit sidecar");
     fs::create_dir(&bin).expect("create fake tool directory");
     fs::write(
         state.join("coordinator.pid"),
@@ -1180,6 +1186,15 @@ fn doctor_treats_denied_process_inspection_as_advisory() {
     assert!(
         String::from_utf8_lossy(&output.stdout).contains("coordinator : RUNNING"),
         "doctor lost coordinator health output",
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("queue       : 1 pending — 0001.json"),
+        "doctor counted queue sidecars as logical entries: {stdout}",
+    );
+    assert!(
+        !stdout.contains("0001.json.nobatch") && !stdout.contains("0001.json.batch-limit"),
+        "doctor exposed internal queue sidecars: {stdout}",
     );
 }
 

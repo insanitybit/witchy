@@ -992,9 +992,13 @@ cmd_doctor() {
     else
         echo "coordinator : NOT RUNNING${cpid:+ (last pid $cpid is dead)} — start (detached): ./scripts/merge-queue.sh daemon"
     fi
-    local n; n="$(ls -1 "$queue_dir" 2>/dev/null | wc -l | tr -d ' ')"
+    local queue_files=() qf
+    while IFS= read -r qf; do
+        queue_files+=("$(basename "$qf")")
+    done < <(find "$queue_dir" -maxdepth 1 -name '*.json' -type f -print | sort)
+    local n="${#queue_files[@]}"
     if [ "$n" -gt 0 ]; then
-        echo "queue       : $n pending — $(ls -1 "$queue_dir" | sort | paste -sd' ' -)"
+        echo "queue       : $n pending — ${queue_files[*]}"
     else
         echo "queue       : empty"
     fi
