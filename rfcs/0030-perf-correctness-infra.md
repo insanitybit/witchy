@@ -78,10 +78,10 @@ the slowest run and the ground truth every other setting is diffed against.
 | name | optimization | off ⇒ | owning RFC |
 |---|---|---|---|
 | `inplace` | uniqueness-driven in-place mutation | copy-per-update | [ownership-analysis.md](ownership-analysis.md) |
-| `views` | confined zero-copy borrows | materialize to a copy | [0028] |
-| `sroa` | non-escaping aggregates in locals | heap-allocate | [0027] |
-| `unbox` | packed/unboxed layouts | uniform boxed slot | [0027] |
-| `rc-elide` | RC inc/dec/free elision to the floor | full RC every op | [0016] |
+| `views` | confined zero-copy borrows | materialize to a copy | [RFC-0028](./0028-ergonomic-mutable-value-semantics.md) |
+| `sroa` | non-escaping aggregates in locals | heap-allocate | [RFC-0027](./0027-packed-layouts-sroa.md) |
+| `unbox` | packed/unboxed layouts | uniform boxed slot | [RFC-0027](./0027-packed-layouts-sroa.md) |
+| `rc-elide` | RC inc/dec/free elision to the floor | full RC every op | [RFC-0016](./0016-reference-counted-memory.md) |
 | `region` | region / loop-watermark reclamation | no early reclaim | [regions.md](regions.md) |
 | `fold` | AST const-fold + propagation | evaluate at runtime | [performance-modes.md](performance-modes.md) |
 | `wasm-opt` | Binaryen post-pass | skip it | [spec/performance.md](../spec/performance.md) |
@@ -116,7 +116,7 @@ for each program P in the differential corpus:
 - Generalizes the existing forced-copy oracle from one optimization to all of
   them with no new env vars.
 - A new optimization is **not done** until it is in the registry and passes
-  `-O == all`. This is the gate clause [0029] step 0 enforces.
+  `-O == all`. This is the gate clause [RFC-0029](./0029-performance-tier-contract.md) step 0 enforces.
 - **Mode-opt equivalence** rides the same harness: an `opt`-mode program and its
   normal-mode twin must produce identical output (a mode changes implementation,
   never behavior).
@@ -141,13 +141,13 @@ assert stats(opt_centroid).allocs == 0             # SROA + packed worked
 assert stats(server_soak).peak_heap < BUDGET       # never-OOM holds
 ```
 
-This is what turns [0029]'s scorecard from a hope into a regression suite, and it
+This is what turns [RFC-0029](./0029-performance-tier-contract.md)'s scorecard from a hope into a regression suite, and it
 is immune to the flakiness that wall-clock benchmarks suffer.
 
 ### 4. Gated benchmarking, soak tests, and checked-heap for RC
 
-- **Wire `bench/` into the green gate.** `bench/run.sh` already diffs against
-  `bench/BASELINE.md`; add a `--bench` leg to `scripts/check.sh --full` so a
+- **Wire `bench/` into the green gate.** [`bench/run.sh`](../bench/run.sh) already diffs against
+  [`bench/BASELINE.md`](../bench/BASELINE.md); add a `--bench` leg to `scripts/check.sh --full` so a
   wall-time regression fails loudly. Keep timing benchmarks for *trend*, counters
   (§3) for *correctness of the optimization*.
 - **Memory + soak legs.** Track peak RSS, and add a soak/eviction corpus (a cache
@@ -206,7 +206,7 @@ is immune to the flakiness that wall-clock benchmarks suffer.
 > *violates this RFC's own contract*: toggling it passes the differential de-opt
 > sweep trivially (it changes nothing) and it can never satisfy the §2 "counter
 > proving it fired" half of the definition of done — so it reports coverage it
-> does not have. The live registry (`crates/witchy-syntax/src/opt.rs`, `Opt::ALL`)
+> does not have. The live registry ([`crates/witchy-syntax/src/opt.rs`](../crates/witchy-syntax/src/opt.rs), `Opt::ALL`)
 > therefore contains only the six SHIPPED optimizations — `inplace`, `views`,
 > `sroa`, `region`, `fold`, and opt-in `wasm-opt` — each with a passing sweep entry
 > AND a `witchy stats` counter assertion. The three deferred levers are re-added,
