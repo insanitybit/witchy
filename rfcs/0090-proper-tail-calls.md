@@ -16,6 +16,10 @@ tracking: stages 1-3 are implemented. The typed closure ABI landed in commit cb9
 
 # RFC-0090: Guaranteed proper tail calls
 
+The implementation spans the interpreter and WIR lowering; the conformance
+surface is collected in [`tests/rfc0090.rs`](../tests/rfc0090.rs) and its
+criterion-specific modules under [`tests/rfc0090/`](../tests/rfc0090/).
+
 ## Summary
 
 Witchy guarantees that a proper tail call consumes constant control stack. The
