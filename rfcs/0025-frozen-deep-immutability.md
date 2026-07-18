@@ -77,7 +77,7 @@ frozen T   ──/──▶        T               (no thaw; would reintroduce t
 - From an ordinary (possibly `Shared`) value, `freeze` is a deep copy *then*
   seal — you pay one copy to enter, then never again. The interpreter models this
   as a plain deep copy (value-neutral); the compiled backend, when the source is
-  `Unique` (per [0024](0024-unified-facts-lattice.md)), seals in place with zero
+  `Unique` (per [RFC-0024](./0024-unified-facts-lattice.md)), seals in place with zero
   copy.
 - `frozen` is **deep**: `frozen List(Atlas)` guarantees the list *and every
   element and their fields* are immutable, so a borrow into any depth
@@ -129,7 +129,7 @@ that join — a frozen value shared into a longer-lived task is `confined_to` th
 task, not the builder's frame. This is the same escape query everything else
 uses; `frozen` does not need its own reclamation mechanism, only an honest escape
 level. (It explicitly does **not** introduce reference counting — picking one
-memory identity, per [0016](0016-reference-counted-memory.md), stands.)
+memory identity, per [RFC-0016](./0016-reference-counted-memory.md), stands.)
 
 ## Alternatives
 
@@ -180,7 +180,7 @@ memory identity, per [0016](0016-reference-counted-memory.md), stands.)
 
 > 2026-06-29: **Implemented — as a CONTRACT, the optimization being subsumed by
 > witchy's existing value semantics.** `frozen T` (and `unique`/`local unique`, see
-> [0026]) parse as a `Type::Qualified` qualifier, format/round-trip, thread through
+> [RFC-0026](./0026-unique-qualifier.md)) parse as a `Type::Qualified` qualifier, format/round-trip, thread through
 > generics/aliases/traits, and lower to the inner type (no runtime representation →
 > parity-neutral). Enforcement (RFC-0025's teeth): a `frozen` value is deeply
 > immutable, so the checker rejects declaring one mutable — `var x: frozen T` and a
