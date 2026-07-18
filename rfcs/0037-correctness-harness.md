@@ -29,12 +29,12 @@ This RFC specifies a layered upgrade so critical errors — use-after-free, out-
 type confusion, leaks, and optimization-order divergence — are caught **automatically,
 early, and minimally**. The design leans on witchy's specific strengths: the memory-safe
 oracle, the **acyclic value-semantics heap** (RC is complete → a leak is *always* a bug),
-the universal `[rc][size]` header ([RFC-0035](0035-completing-the-rc-floor.md)) as a place
+the universal `[rc][size]` header ([RFC-0035](./0035-completing-the-rc-floor.md)) as a place
 to hang type tags, and the capability model as a fuzzable invariant.
 
 ## Baseline — what the harness already has
 
-- **Differential fuzzer** (`tests/differential_fuzz.rs`): generates random well-typed
+- **Differential fuzzer** ([`tests/differential_fuzz.rs`](../tests/differential_fuzz.rs)): generates random well-typed
   programs, runs `witchy parity` (interp vs compiled), fails on `DIVERGE` or a host crash,
   under `WITCHY_HEAP_CHECK=1` (redzones). Runs one opt config: `WITCHY_OPT=all,-wasm-opt`.
 - **Oracle example sweeps** (`verify_file`): every example agrees interp-vs-compiled — under
@@ -42,9 +42,9 @@ to hang type tags, and the capability model as a fuzzable invariant.
   under **every opt-in lever** (`assert_examples_agree_under`).
 - **Metamorphic force-copy** (`examples_agree_under_inplace_and_forced_copy`): in-place ==
   forced-copy output, NO oracle.
-- **Checked heap / redzones** ([RFC-0023](0023-checked-heap.md)): a poisoned 8-byte redzone
+- **Checked heap / redzones** ([RFC-0023](./0023-checked-heap.md)): a poisoned 8-byte redzone
   after each allocation; a post-run sweep proves no overrun.
-- **`__witchy_live_cells`** (RFC-0035): a leak metric.
+- **`__witchy_live_cells`** ([RFC-0035](./0035-completing-the-rc-floor.md)): a leak metric.
 - The heap-type-matrix corpus (`rc_corpus_*`).
 
 ## The gaps (root-caused from the UAF, plus general)
@@ -202,8 +202,8 @@ CAUGHT **SEC-037** (a real `$rc_dup` use-after-free that crashed minigrep/pm), w
 rather than shipped. Both levers are now promoted: `release() == all()` with `check.sh --fast`
 green (974ccee). A fuzzer/sweep alone did not catch SEC-037 — only the whole gate did.
 
-Shipped (in `tests/differential_fuzz.rs`, `crates/witchy-wir/src/wir_helpers/mod.rs`,
-`crates/witchy-lower/src/codegen/mod.rs`, `scripts/check.sh`):
+Shipped (in [`tests/differential_fuzz.rs`](../tests/differential_fuzz.rs), [`crates/witchy-wir/src/wir_helpers/mod.rs`](../crates/witchy-wir/src/wir_helpers/mod.rs),
+[`crates/witchy-lower/src/codegen/mod.rs`](../crates/witchy-lower/src/codegen/mod.rs), [`scripts/check.sh`](../scripts/check.sh)):
 
 - **§3 type-confusion sanitizer (`WITCHY_TYPE_CHECK`).** An 8-bit type id is packed into the
   HIGH BYTE of each `$rc_alloc` object's size header (`p-4`; the low 24 bits are the size, and
