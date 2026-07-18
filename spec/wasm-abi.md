@@ -72,7 +72,7 @@ A compiled module exports:
 A `pub fn` whose name starts with `export_` and has the shape
 `(String) -> String` is a **JS-callable string export**: the compiler emits a
 stable export wrapper plus a bump allocator so a host (the browser pure-compute
-shim, the glamour DOM shell — RFC-0008) can call a pure witchy function with a
+shim, the glamour DOM shell — [RFC-0008](../rfcs/0008-frontend-framework-rune.md) can call a pure witchy function with a
 JSON string in and a JSON string out. These are **exports, not imports**: they
 grant **no** authority — the wrapper only reads/writes guest memory.
 
@@ -297,7 +297,7 @@ a self-contained synchronous implementation needing none.
   corresponding grant is present; it is the reference implementation of every
   signature and the pending-buffer protocol above.
 - **`web/witchy-runtime/witchy-runtime.mjs`** — the JavaScript pure-compute host
-  (RFC-0007). Provides exactly the imports marked `browser: provided` above and
+  ([RFC-0007](../rfcs/0007-witchy-wasm-browser-target.md)). Provides exactly the imports marked `browser: provided` above and
   omits every capability-authority import. Its
   `instantiate(wasmBytes, { onPrint })` returns `{ instance, output, run }`.
   See the [browser runtime guide](../web/witchy-runtime/README.md).
