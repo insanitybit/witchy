@@ -12,6 +12,11 @@ tracking: "Part 2 (module functions as values) shipped; Part 1 (method calls fro
 
 # RFC-0050: Method calls from type ownership, not an allowlist; module functions as values
 
+The shipped ownership resolution and module-function eta-expansion are implemented in
+[`crates/witchy-types/src/traits.rs`](../crates/witchy-types/src/traits.rs) and
+[`crates/witchy-syntax/src/linker.rs`](../crates/witchy-syntax/src/linker.rs), with
+parity/regression coverage in [`src/example_tests.rs`](../src/example_tests.rs).
+
 > Provisional snippets; code blocks are deliberately **not** tagged `witchy`
 > so the doc-examples sweep does not execute pre-implementation code.
 
