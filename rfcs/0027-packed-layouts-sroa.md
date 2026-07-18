@@ -21,6 +21,12 @@ tracking: "Both parts shipped. Part 2 (escape-driven SROA): a frame-confined rec
 
 # RFC-0027: Packed layouts and escape-driven SROA
 
+The shipped escape analysis and packed/SROA lowering are implemented in
+[`crates/witchy-lower/src/escape.rs`](../crates/witchy-lower/src/escape.rs) and
+[`crates/witchy-lower/src/codegen/mod.rs`](../crates/witchy-lower/src/codegen/mod.rs),
+with DoD counters in [`src/stats.rs`](../src/stats.rs); cross-boundary packed ABI
+remains the documented future scope.
+
 ## Summary
 
 Add the one optimization axis witchy has **no** knobs for today: data
