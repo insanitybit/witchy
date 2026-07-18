@@ -24,6 +24,11 @@ correction: "This RFC was assumed to gate the rc-floor promotion (release==all).
 
 # RFC-0036: Bounding the async executor — ownership-threaded state and recursive drop
 
+The shipped Design B ownership-threaded scheduler is implemented in
+[`std/task.witchy`](../std/task.witchy), with its measured bounded-churn status
+recorded in [`src/stats.rs`](../src/stats.rs); recursive drop remains deferred as
+described by this RFC.
+
 ## Summary
 
 The RC floor ([RFC-0035](0035-completing-the-rc-floor.md)) reclaims churn when the
