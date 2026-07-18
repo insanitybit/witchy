@@ -19,7 +19,7 @@ tracking: "Part 2 (module functions as values) shipped; Part 1 (method calls fro
 
 Two closures of the same gap. (1) UFCS method syntax on built-in types is a
 **hardcoded allowlist** — `builtin_method_module`
-(crates/witchy-types/src/traits.rs:1213-1228) maps exactly
+([`crates/witchy-types/src/traits.rs:1213-1228`](../crates/witchy-types/src/traits.rs)) maps exactly
 List/Dict/String/Set/Option/Result/Iter (+ Secret/SecretStore) to their std
 modules, so `s.length()` works while `b.length()` on a Bytes is a type error.
 Replace it with a **derived type→module ownership map**: a type declared in
@@ -38,13 +38,13 @@ type's methods"; the declaration is the type's own `type` item in its module;
 the allowlist is the census to delete. The Bytes hole is not an oversight to
 patch — it is what allowlists *do*: every type not in the table is silently
 second-class, exactly the per-case special-casing CLAUDE.md forbids
-(`dict.remove` leaked for the same structural reason).
+([`dict.remove`](../std/dict.witchy) leaked for the same structural reason).
 
 ## Motivation (all probed 2026-07-03)
 
 - `bytes.from_string("hi")` then `b.length()` → ``type error: no method
   `length` on `Bytes` …`` while the same call shape on String works. Bytes is
-  documented (std/bytes.witchy:5-6) as *sharing String's memory layout*; it is
+  documented ([`std/bytes.witchy:5-6`](../std/bytes.witchy)) as *sharing String's memory layout*; it is
   second-class purely because `builtin_method_module` (traits.rs:1213-1228)
   has no `"Bytes"` arm. Also
   probed: `d.human()` on Duration and `n.abs()` on Int fail identically;
@@ -85,8 +85,8 @@ for the last step:
 "Declared in" is derived, not tabulated: [RFC-0042](0042-module-namespaces.md)
 gives every type a home module as part of namespacing (its `aliases::resolve`
 machinery knows, for every type name in scope, which module's `type` item it
-names). `Set` is declared in std/set.witchy:12 → `set` owns it; `Iter` in
-std/iter.witchy:20 → `iter`; a third-party rune's `type Matrix` in module
+names). `Set` is declared in [`std/set.witchy:12`](../std/set.witchy) → `set` owns it; `Iter` in
+[`std/iter.witchy:20`](../std/iter.witchy) → `iter`; a third-party rune's `type Matrix` in module
 `matrix` gets `matrix.*` as methods with **zero** compiler involvement — the
 map is a projection of the program, so it can never have a Bytes-shaped hole.
 **Dependency: this derivation rides on RFC-0042's module-scoped types.**
@@ -95,7 +95,7 @@ allowlist.
 
 **Builtins that predate modules.** Int, Float, Bool, String, List, Dict,
 Bytes, Duration, Option, Result are checker-native (`Ty` variants in
-typeck.rs), declared nowhere. Each gets **one explicit ownership
+[`typeck.rs`](../crates/witchy-types/src/typeck.rs)), declared nowhere. Each gets **one explicit ownership
 declaration**, in the std module that is already its de-facto API home, via a
 module-level annotation the linker reads (one line, in the owning module,
 next to the functions it blesses):
