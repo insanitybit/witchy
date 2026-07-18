@@ -9,6 +9,10 @@ tracking:
 
 # RFC-0018: Compiler architecture — a workspace of stage-aligned crates
 
+The shipped workspace boundary is declared in [`Cargo.toml`](../Cargo.toml) and
+documented in [`spec/architecture.md`](../spec/architecture.md), with each stage
+crate exposed through the `crates/` workspace members.
+
 > **Implemented.** The workspace is the seven library crates `witchy-syntax`,
 > `witchy-types`, `witchy-wir`, `witchy-lower`, `witchy-runtime`, `witchy-interp`,
 > and `witchy-caps` under `crates/`, plus the `witchy` binary package (the CLI +
