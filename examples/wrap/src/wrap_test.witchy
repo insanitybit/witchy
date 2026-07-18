@@ -3,17 +3,16 @@
 // message). Run them with `witchy test examples/wrap`.
 
 import wrap
-import string
 import testing
 
 fn test_wrap_packs_words():
     let lines = wrap.wrap("the quick brown fox", 9)
-    testing.assert_eq(list.join(lines, "|"), "the quick|brown fox")
+    testing.assert_eq(lines.join("|"), "the quick|brown fox")
 
 fn test_wrap_breaks_on_overflow():
     let lines = wrap.wrap("aaa bbb ccc ddd", 7)
-    testing.assert_eq(list.join(lines, "|"), "aaa bbb|ccc ddd")
+    testing.assert_eq(lines.join("|"), "aaa bbb|ccc ddd")
 
 fn test_wrap_long_word_alone():
     let lines = wrap.wrap("hi superlongword no", 5)
-    testing.assert_eq(list.join(lines, "|"), "hi|superlongword|no")
+    testing.assert_eq(lines.join("|"), "hi|superlongword|no")

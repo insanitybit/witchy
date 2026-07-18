@@ -1,8 +1,5 @@
 // `any`/`all` test a predicate (a closure) against a list and short-circuit via
 // early return. Generic over the element type.
-
-import list
-
 fn main(console: Console):
     let nums = [2, 4, 6, 8]
 

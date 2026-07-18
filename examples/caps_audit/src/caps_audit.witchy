@@ -6,7 +6,6 @@
 //   witchy examples/caps_audit/src/caps_audit.witchy
 
 import compiler
-import string
 from json import Json
 
 fn main(console: Console, root: Dir[Read]):
@@ -31,7 +30,7 @@ fn error_message(doc: Json) -> String:
 
 fn render_total(doc: Json) -> String:
     match json.get(doc, "total"):
-        Some(total) -> list.join(string_items(total), ", ")
+        Some(total) -> string_items(total).join(", ")
         None -> "(none)"
 
 // Collect a JSON array of strings into a witchy List(String).

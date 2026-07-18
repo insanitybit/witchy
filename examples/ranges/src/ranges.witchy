@@ -7,8 +7,6 @@
 //   witchy parity examples/ranges/src/ranges.witchy
 //   witchy sandbox examples/ranges/src/ranges.witchy
 
-import string
-
 // Classify an HTTP status code by its class (inclusive ranges).
 pub fn http_class(code: Int) -> String:
     match code:

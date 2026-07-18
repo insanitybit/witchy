@@ -4,7 +4,6 @@
 // (only the rows you take are built). Runs on both backends.
 
 import iter
-import string
 
 gen fn pascal() -> Iter(List(Int)):
     var row = [1]
@@ -29,6 +28,6 @@ pub fn show_row(row: List(Int)) -> String:
     parts.join(" ")
 
 fn main(console: Console):
-    let rows: List(List(Int)) = iter.collect(iter.take(pascal(), 6))
+    let rows: List(List(Int)) = iter.collect(pascal().take(6))
     for row in rows:
         console.print(show_row(row))

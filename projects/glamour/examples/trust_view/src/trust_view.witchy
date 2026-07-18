@@ -19,12 +19,12 @@ fn check(label: String, value: String, pass: Bool) -> List(VNode(Msg)):
 
 fn view(model: Int) -> VNode(Msg):
     var rows = []
-    rows = list.concat(rows, check("root key", "ed25519:3a9f…c0", true))
-    rows = list.concat(rows, check("snapshot version", "42", true))
-    rows = list.concat(rows, check("targets", "318 runes", true))
-    rows = list.concat(rows, check("snapshot signature", "valid", true))
-    rows = list.concat(rows, check("timestamp freshness", "fresh (2m ago)", true))
-    rows = list.concat(rows, check("rollback check", "ok", true))
+    rows = rows.concat(check("root key", "ed25519:3a9f…c0", true))
+    rows = rows.concat(check("snapshot version", "42", true))
+    rows = rows.concat(check("targets", "318 runes", true))
+    rows = rows.concat(check("snapshot signature", "valid", true))
+    rows = rows.concat(check("timestamp freshness", "fresh (2m ago)", true))
+    rows = rows.concat(check("rollback check", "ok", true))
     glamour.element("article", [glamour.prop("class", "trust")], [glamour.element("h1", [], [glamour.text("Registry trust (TUF)")]), glamour.element("dl", [glamour.prop("class", "record")], rows)])
 
 fn update(model: Int, msg: Msg) -> (Int, Cmd(Msg)):

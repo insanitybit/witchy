@@ -7,13 +7,12 @@
 //   witchy caps src/todo.witchy
 
 import tasklib
-import string
 
 fn main(console: Console, root: Dir[Read]):
     let tasks = tasklib.parse(root.read("tasks.md"))
     console.print("TODO")
     console.print(tasklib.render(tasks))
     console.print("")
-    let summary = list.join(["${tasklib.done_count(tasks)}", "/", "${tasklib.count(tasks)}", "done"], " ")
+    let summary = ["${tasklib.done_count(tasks)}", "/", "${tasklib.count(tasks)}", "done"].join(" ")
 
     console.print(summary)

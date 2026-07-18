@@ -3,8 +3,6 @@
 // depend on it without granting filesystem or network authority. `witchy caps`
 // on a consumer confirms this dependency contributes nothing to the footprint.
 
-import string
-
 // A checklist item: whether it is done, and its title.
 type Task:
     Task(Bool, String)
@@ -20,18 +18,18 @@ pub fn title(task: Task) -> String:
 // Parse one line: "- [x] Title" is done, "- [ ] Title" is pending; anything else
 // (a heading, a blank line) is not a task and yields None.
 pub fn parse_line(line: String) -> Option(Task):
-    let t = string.trim(line)
-    if string.starts_with(t, "- [x] "):
-        Some(Task(true, string.strip_prefix(t, "- [x] ")))
-    else if string.starts_with(t, "- [ ] "):
-        Some(Task(false, string.strip_prefix(t, "- [ ] ")))
+    let t = line.trim()
+    if t.starts_with("- [x] "):
+        Some(Task(true, t.strip_prefix("- [x] ")))
+    else if t.starts_with("- [ ] "):
+        Some(Task(false, t.strip_prefix("- [ ] ")))
     else:
         None
 
 // Parse a whole document into its tasks (non-task lines are skipped).
 pub fn parse(text: String) -> List(Task):
     var out = []
-    for line in string.lines(text):
+    for line in text.lines():
         if let Some(task) = parse_line(line):
             list.push(out, task)
     out
@@ -57,4 +55,4 @@ pub fn render(tasks: List(Task)) -> String:
     for task in tasks:
         let mark = if is_done(task): "[x]" else: "[ ]"
         list.push(out, mark + " " + title(task))
-    list.join(out, "\n")
+    out.join("\n")

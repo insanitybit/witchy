@@ -56,7 +56,7 @@ meaning "error" — the polarity is inverted and `?` can't compose with it.
 import result
 
 fn parse_port(s: String) -> Result(Int, String):
-    match string.parse_int(s):
+    match s.parse_int():
         Some(n) -> if n > 0 && n < 65536: Ok(n) else: Err("port ${n} out of range")
         None -> Err("`${s}` is not a number")
 

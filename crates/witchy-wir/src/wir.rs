@@ -108,7 +108,7 @@ pub enum WirTy {
     Float,
     Bool,
     Str,
-    Nil,
+    Unit,
     Capability,
     List(Box<WirTy>),
     /// The universal untyped i64 slot (generic/monomorphized boundaries).
@@ -136,7 +136,7 @@ impl WirTy {
             WirTy::Extern => Kind::ExternRef,
             WirTy::StructRef => Kind::StructRef,
             WirTy::GcRef(id) => Kind::GcRef(*id),
-            // Bool, Str (ptr), Nil, Capability (handle/placeholder), List (ptr).
+            // Bool, Str (ptr), Unit, Capability (handle/placeholder), List (ptr).
             _ => Kind::I32,
         }
     }

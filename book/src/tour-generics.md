@@ -240,7 +240,7 @@ type Version derive(Show, PartialEq, Eq, PartialOrd, Ord):
 
 fn parse(s: String) -> Option(Version):
     match s.split("."):
-        [major, minor] -> Some(Version(string.to_int(major), string.to_int(minor)))
+        [major, minor] -> Some(Version(major.to_int(), minor.to_int()))
         _ -> None
 
 fn main(console: Console):

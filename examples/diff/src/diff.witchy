@@ -5,7 +5,6 @@
 // or an insertion ("+ ", only in new). Pure (Console only); identical on both
 // backends. Run:  witchy examples/diff/src/diff.witchy
 
-import list
 import math
 
 fn main(console: Console):
@@ -24,7 +23,7 @@ pub fn diff(old: List(String), new: List(String)) -> List(String):
             out.push("  " + old.at(i - 1))
             i = i - 1
             j = j - 1
-        else if list.at(table.at(i - 1), j) >= list.at(table.at(i), j - 1):
+        else if table.at(i - 1).at(j) >= table.at(i).at(j - 1):
             out.push("- " + old.at(i - 1))
             i = i - 1
         else:

@@ -24,8 +24,8 @@ type Msg derive(Reflect):
 
 // The slug for a route: `/p/<slug>` -> `<slug>`; anything else is the home page.
 fn slug_of(route: String) -> String:
-    if string.starts_with(route, "/p/"):
-        string.drop(route, 3)
+    if route.starts_with("/p/"):
+        route.drop(3)
     else:
         "introduction"
 
@@ -41,20 +41,20 @@ type Nav:
 // Markdown link (the `# Summary` header, blanks) are skipped. Pure string surgery — no cap.
 fn parse_nav(summary: String) -> List(Nav):
     var out = []
-    for line in string.lines(summary):
-        if string.trim(line) == "---":
+    for line in summary.lines():
+        if line.trim() == "---":
             out.push(Divider)
-        else if string.contains(line, "](") && string.contains(line, ".md)"):
-            let (_pre, after_lb) = string.split_once(line, "[")
-            let (title, after_bracket) = string.split_once(after_lb, "](")
-            let (slug, _rest) = string.split_once(after_bracket, ".md)")
+        else if line.contains("](") && line.contains(".md)"):
+            let (_pre, after_lb) = line.split_once("[")
+            let (title, after_bracket) = after_lb.split_once("](")
+            let (slug, _rest) = after_bracket.split_once(".md)")
             out.push(Item(nav_depth(line), title, slug))
     out
 
 // A nav line's indentation depth: bulleted sub-pages nest by a 2-space indent (`  - `); a
 // chapter (`- `) or an un-bulleted part link (the cover, the appendices) sits at depth 0.
 fn nav_depth(line: String) -> Int:
-    (string.length(line) - string.length(string.trim_start(line))) / 2
+    (line.length() - line.trim_start().length()) / 2
 
 // The flat reading-order list of real pages (dropping depth + dividers). Prev/next and the
 // active-page lookup walk the book in order, independent of how it nests in the sidebar.
@@ -78,7 +78,7 @@ fn update(m: Model, msg: Msg, fetch: UiFetch, route_cap: UiRoute) -> (Model, Cmd
                 Route(path) ->
                     let slug = slug_of(path)
                     let page = glamour.http_get(fetch, "/content/${slug}.md", "GotPage")
-                    let cmd = if string.is_empty(summary): Batch([glamour.http_get(fetch, "/content/SUMMARY.md", "GotNav"), page]) else: page
+                    let cmd = if summary.is_empty(): Batch([glamour.http_get(fetch, "/content/SUMMARY.md", "GotNav"), page]) else: page
                     (Model(path, summary, content), cmd)
                 GotNav(_status, body) -> (Model(route, body, content), NoCmd)
                 GotPage(_status, body) -> (Model(route, summary, body), NoCmd)
@@ -110,8 +110,8 @@ fn index_of_route(entries: List((String, String)), route: String) -> Int:
     idx
 
 fn edge_link(entries: List((String, String)), i: Int, cls: String, label: String) -> VNode(Msg):
-    if i >= 0 && i < list.length(entries):
-        let (title, slug) = list.at(entries, i)
+    if i >= 0 && i < entries.length():
+        let (title, slug) = entries.at(i)
         glamour.element("button", [glamour.prop("class", "nav-chapter ${cls}"), glamour.on("click", Visit("/p/${slug}"))], [glamour.element("span", [glamour.prop("class", "dir")], [glamour.text(label)]), glamour.element("span", [glamour.prop("class", "title")], [glamour.text(title)])])
     else:
         glamour.element("span", [glamour.prop("class", "nav-spacer")], [])
@@ -120,13 +120,13 @@ fn sidebar(route: String, summary: String) -> VNode(Msg):
     let nav = parse_nav(summary)
     // The first entry is the book's cover (the un-bulleted title link); the sidebar header IS
     // its link, so it isn't repeated in the list below.
-    let items = list.drop(nav, 1).map(fn(entry: Nav): nav_node(entry, route))
+    let items = nav.drop(1).map(fn(entry: Nav): nav_node(entry, route))
     glamour.element("nav", [glamour.prop("class", "sidebar")], [glamour.element("button", [glamour.prop("class", "sidebar-brand"), glamour.on("click", Visit(cover_path(nav)))], [glamour.text("The witchy Book")]), glamour.element("ul", [], items)])
 
 // The route of the cover page (the first nav entry), so the sidebar header links to it.
 fn cover_path(nav: List(Nav)) -> String:
-    if list.length(nav) >= 1:
-        match list.at(nav, 0):
+    if nav.length() >= 1:
+        match nav.at(0):
             Item(_d, _t, slug) -> "/p/${slug}"
             Divider -> "/p/introduction"
     else:
@@ -150,7 +150,7 @@ fn nav_node(entry: Nav, route: String) -> VNode(Msg):
 // only remap the div's immediate children. Everything else renders exactly as before.
 fn runnable_markdown(md: String) -> VNode(Msg):
     match markdown.to_vnode(md):
-        Element(tag, attrs, blocks) -> Element(tag, attrs, list.map(blocks, to_runnable))
+        Element(tag, attrs, blocks) -> Element(tag, attrs, blocks.map(to_runnable))
         other -> other
 
 fn to_runnable(block: VNode(Msg)) -> VNode(Msg):
@@ -165,8 +165,8 @@ fn to_runnable(block: VNode(Msg)) -> VNode(Msg):
         // `text` (program output / diagrams) and untagged fences stay
         // as plain styled blocks — not code to syntax-highlight.
         Element(tag, _attrs, kids) ->
-            if tag == "pre" && list.length(kids) == 1:
-                match list.at(kids, 0):
+            if tag == "pre" && kids.length() == 1:
+                match kids.at(0):
                     Element(ctag, cattrs, ckids) ->
                         if ctag == "code":
                             let code = code_text(ckids)
@@ -179,7 +179,7 @@ fn to_runnable(block: VNode(Msg)) -> VNode(Msg):
                             else if lang == "toml":
                                 glamour.slot("toml-static", code)
                             else if lang == "glamour-app":
-                                glamour.slot("glamour-app", string.trim(code))
+                                glamour.slot("glamour-app", code.trim())
                             else:
                                 block
                         else:
@@ -204,19 +204,19 @@ fn to_runnable(block: VNode(Msg)) -> VNode(Msg):
 // offer Run for those families. We keep the denied host here so the guarantee stays: no
 // affordance the book's own engine can't honor.
 fn runs_in_browser(code: String) -> Bool:
-    string.contains(code, "fn main(") && !names_denied_capability(code)
+    code.contains("fn main(") && !names_denied_capability(code)
 
 fn names_denied_capability(code: String) -> Bool:
     let denied = ["Dir", "Net", "File", "Secret", "SecretStore", "Clock", "Rand", "Env", "Exec", "UiRoot", "UiFetch", "UiRoute", "UiTimer", "CredentialPort", "SecretInput", "SecretRef"]
-    denied.any(fn(cap: String): string.contains(code, cap))
+    denied.any(fn(cap: String): code.contains(cap))
 
 // The fence language from a `<code>`'s `language-<lang>` class (markdown preserves the fence's
 // info string there), or "" if none — so the app can slot each fence to the right highlighter.
 fn attr_language(a: Attr(Msg)) -> String:
     match a:
         Prop(name, value) ->
-            if name == "class" && string.starts_with(value, "language-"):
-                string.drop(value, 9)
+            if name == "class" && value.starts_with("language-"):
+                value.drop(9)
             else:
                 ""
         On(_e, _m) -> ""
@@ -225,7 +225,7 @@ fn attr_language(a: Attr(Msg)) -> String:
 fn code_language(attrs: List(Attr(Msg))) -> String:
     attrs.fold("", fn(language: String, a: Attr(Msg)):
         let l = attr_language(a)
-        if string.is_empty(l):
+        if l.is_empty():
             language
         else:
             l
@@ -233,8 +233,8 @@ fn code_language(attrs: List(Attr(Msg))) -> String:
 
 // The source text inside a `<code>` (its single child text node).
 fn code_text(kids: List(VNode(Msg))) -> String:
-    if list.length(kids) >= 1:
-        match list.at(kids, 0):
+    if kids.length() >= 1:
+        match kids.at(0):
             Text(s) -> s
             _ -> ""
     else:

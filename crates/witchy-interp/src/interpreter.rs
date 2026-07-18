@@ -121,7 +121,7 @@ pub enum Value {
     /// carrying its confined grant (an output/read directory, or an allow-list).
     /// The build sandbox is where these enter — never `main`.
     Build(BuildCap),
-    Nil,
+    Unit,
 }
 
 impl Value {
@@ -248,7 +248,7 @@ impl fmt::Display for Value {
             Value::Str(s) => write!(f, "{s}"),
             Value::Bytes(b) => write!(f, "Bytes(len={})", b.len()),
             Value::Bool(b) => write!(f, "{b}"),
-            Value::Nil => write!(f, "Nil"),
+            Value::Unit => write!(f, "()"),
             Value::List(items) => {
                 write!(f, "[")?;
                 for (i, v) in items.iter().enumerate() {
@@ -2855,7 +2855,7 @@ impl Interpreter {
                     // (`host_print` in runtime.rs), so the backends agree when a
                     // printed string ends in `\n` (e.g. `s + "\n"`).
                     self.output.push(msg.to_string().trim_end_matches('\n').to_string());
-                    Ok(Some(Value::Nil))
+                    Ok(Some(Value::Unit))
                 }
                 [_, _] => err("print requires a Console capability as its first argument"),
                 _ => err("print expects a Console capability and a message: console.print(msg)"),
@@ -3535,7 +3535,7 @@ impl Interpreter {
                     output_position: self.output.len(),
                     emission,
                 });
-                Ok(Some(Value::Nil))
+                Ok(Some(Value::Unit))
             }
             name if name == intrinsics::COMPILER_EMIT_EXPR => {
                 if self.fresh_ident_scope.is_none() {
@@ -3571,7 +3571,7 @@ impl Interpreter {
                     _ => return err("expression emission expects meta.ExprSyntax"),
                 };
                 self.comptime_expr_output.push(emission);
-                Ok(Some(Value::Nil))
+                Ok(Some(Value::Unit))
             }
             // Pure builtins need no capability.
             name if is_render_intrinsic(name) => Ok(Some(Value::str(self.render_value(&one(args)?)))),
@@ -4085,12 +4085,12 @@ impl Interpreter {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
                     }
                     write_file_value(&dir_file_value(base, rel, true)?, contents)?;
-                    Ok(Some(Value::Nil))
+                    Ok(Some(Value::Unit))
                 }
                 // A `File` is already a confined path; write it directly (RFC-0012).
                 [Value::File(file), Value::Str(contents)] => {
                     write_file_value(file, contents)?;
-                    Ok(Some(Value::Nil))
+                    Ok(Some(Value::Unit))
                 }
                 _ => err("write expects a Dir + path + contents, or a File + contents"),
             },
@@ -4110,7 +4110,7 @@ impl Interpreter {
                                 .open(&path)
                                 .and_then(|mut f| f.write_all(contents.as_bytes()));
                             match res {
-                                Ok(()) => Ok(Some(Value::Nil)),
+                                Ok(()) => Ok(Some(Value::Unit)),
                                 Err(e) => err(format!("append failed for `{}`: {e}", path.display())),
                             }
                         }
@@ -4200,7 +4200,7 @@ impl Interpreter {
                         DirValue::Fs(base) => {
                             let path = resolve_write(base, name)?;
                             match std::fs::create_dir_all(&path) {
-                                Ok(()) => Ok(Some(Value::Nil)),
+                                Ok(()) => Ok(Some(Value::Unit)),
                                 Err(e) => err(format!("make_dir failed for `{}`: {e}", path.display())),
                             }
                         }
@@ -4261,7 +4261,7 @@ impl Interpreter {
                 [Value::Build(BuildCap::Out(base)), Value::Str(rel), Value::Str(contents)] => {
                     let path = resolve_write(base, rel)?;
                     match std::fs::write(&path, contents.as_bytes()) {
-                        Ok(()) => Ok(Some(Value::Nil)),
+                        Ok(()) => Ok(Some(Value::Unit)),
                         Err(e) => err(format!("write_out failed for `{}`: {e}", path.display())),
                     }
                 }
@@ -4522,7 +4522,7 @@ impl Interpreter {
                         .write_all(line.as_bytes())
                         .and_then(|_| sock.get_mut().write_all(b"\n"))
                         .map_err(|e| RuntimeError { message: format!("send failed: {e}") })?;
-                    Ok(Some(Value::Nil))
+                    Ok(Some(Value::Unit))
                 }
                 _ => err("send_line expects a Socket and a String"),
             },
@@ -4553,7 +4553,7 @@ impl Interpreter {
                     sock.get_mut()
                         .write_all(s.as_bytes())
                         .map_err(|e| RuntimeError { message: format!("send failed: {e}") })?;
-                    Ok(Some(Value::Nil))
+                    Ok(Some(Value::Unit))
                 }
                 _ => err("send_bytes expects a Socket and a String"),
             },
@@ -4693,7 +4693,7 @@ impl Interpreter {
             // fall through to their own accept loop, single-core — the same observable
             // request/response behavior, minus the scale-out.
             "serve_pool" => match args {
-                [Value::Listener(_)] => Ok(Some(Value::Nil)),
+                [Value::Listener(_)] => Ok(Some(Value::Unit)),
                 _ => err("serve_pool expects a Listener"),
             },
             // Close a connected socket (e.g. after sending a `Connection: close`
@@ -4703,7 +4703,7 @@ impl Interpreter {
                     if let Some(sock) = self.sockets.get_mut(*id) {
                         sock.get_mut().shutdown();
                     }
-                    Ok(Some(Value::Nil))
+                    Ok(Some(Value::Unit))
                 }
                 _ => err("close expects a Socket"),
             },
@@ -4825,7 +4825,7 @@ impl Interpreter {
                 // Own the buffer while accumulating: unwrapping a unique Rc
                 // keeps the in-place append fast path; a shared one is copied
                 // once (copy-on-write — observationally identical).
-                let mut acc = match std::mem::replace(slot, Value::Nil) {
+                let mut acc = match std::mem::replace(slot, Value::Unit) {
                     Value::Str(s) => Rc::try_unwrap(s).unwrap_or_else(|rc| (*rc).clone()),
                     _ => unreachable!("slot checked above"),
                 };
@@ -4878,7 +4878,7 @@ impl Interpreter {
             env.push();
         }
         let last = block.stmts.len().saturating_sub(1);
-        let mut result = Value::Nil;
+        let mut result = Value::Unit;
         for (index, stmt) in block.stmts.iter().enumerate() {
             if let Some(line) = block.lines.get(index) {
                 self.cur_line = *line;
@@ -4888,7 +4888,7 @@ impl Interpreter {
                     let value = self.eval(value, env)?;
                     let name = self.intern(name);
                     env.define(name, value, *mutable);
-                    Ok(Value::Nil)
+                    Ok(Value::Unit)
                 }
                 Stmt::Assign { name, value } => {
                     if !self.try_inplace_assign(name, value, env)?
@@ -4907,7 +4907,7 @@ impl Interpreter {
                             }
                         }
                     }
-                    Ok(Value::Nil)
+                    Ok(Value::Unit)
                 }
                 Stmt::LetPattern { pattern, value } => {
                     let value = self.eval(value, env)?;
@@ -4916,12 +4916,12 @@ impl Interpreter {
                             "irrefutable `let` pattern did not match the value `{value}`"
                         ));
                     }
-                    Ok(Value::Nil)
+                    Ok(Value::Unit)
                 }
                 Stmt::Return(value) => {
                     let value = match value {
                         Some(expr) => self.eval_tail_expr(expr, function, env)?,
-                        None => Value::Nil,
+                        None => Value::Unit,
                     };
                     Err(Flow::Return(value))
                 }
@@ -5070,7 +5070,7 @@ impl Interpreter {
                 Value::Bool(true) => self.eval_function_block(then_block, function, env),
                 Value::Bool(false) => match else_block {
                     Some(block) => self.eval_function_block(block, function, env),
-                    None => Ok(Value::Nil),
+                    None => Ok(Value::Unit),
                 },
                 other => err(format!("`if` condition must be a Bool, got `{other}`")),
             },
@@ -5123,7 +5123,7 @@ impl Interpreter {
         if needs_scope {
             env.push();
         }
-        let mut result = Value::Nil;
+        let mut result = Value::Unit;
         for (i, stmt) in block.stmts.iter().enumerate() {
             if let Some(line) = block.lines.get(i) {
                 self.cur_line = *line;
@@ -5133,7 +5133,7 @@ impl Interpreter {
                     let v = self.eval(value, env)?;
                     let name = self.intern(name);
                     env.define(name, v, *mutable);
-                    result = Value::Nil;
+                    result = Value::Unit;
                 }
                 Stmt::Assign { name, value } => {
                     if !self.try_inplace_assign(name, value, env)?
@@ -5152,7 +5152,7 @@ impl Interpreter {
                             }
                         }
                     }
-                    result = Value::Nil;
+                    result = Value::Unit;
                 }
                 Stmt::LetPattern { pattern, value } => {
                     let v = self.eval(value, env)?;
@@ -5169,7 +5169,7 @@ impl Interpreter {
                             "irrefutable `let` pattern did not match the value `{v}`"
                         ));
                     }
-                    result = Value::Nil;
+                    result = Value::Unit;
                 }
                 Stmt::Return(opt) => {
                     let v = match opt {
@@ -5177,7 +5177,7 @@ impl Interpreter {
                             Some(function) => self.eval_tail_expr(e, &function, env)?,
                             None => self.eval(e, env)?,
                         },
-                        None => Value::Nil,
+                        None => Value::Unit,
                     };
                     if needs_scope {
                         env.pop();
@@ -5325,6 +5325,9 @@ impl Interpreter {
                 self.apply_closure_call(clo, argvals, places, env)
             }
             Expr::Ctor { name, args } => {
+                if name == "Nil" && args.is_empty() {
+                    return Ok(Value::Unit);
+                }
                 let fields = args
                     .iter()
                     .map(|a| self.eval(a, env))
@@ -5501,7 +5504,7 @@ impl Interpreter {
                 Value::Bool(true) => self.eval_block(then_block, env),
                 Value::Bool(false) => match else_block {
                     Some(b) => self.eval_block(b, env),
-                    None => Ok(Value::Nil),
+                    None => Ok(Value::Unit),
                 },
                 other => err(format!("`if` condition must be a Bool, got `{other}`")),
             },
@@ -5534,7 +5537,7 @@ impl Interpreter {
                             None => break,
                         }
                     }
-                    return Ok(Value::Nil);
+                    return Ok(Value::Unit);
                 }
                 let items = match self.eval(iter, env)? {
                     Value::List(items) => items,
@@ -5552,7 +5555,7 @@ impl Interpreter {
                         Err(e) => return Err(e),
                     }
                 }
-                Ok(Value::Nil)
+                Ok(Value::Unit)
             }
             Expr::Block(block) => self.eval_block(block, env),
             Expr::While { cond, body } => {
@@ -5569,7 +5572,7 @@ impl Interpreter {
                         }
                     }
                 }
-                Ok(Value::Nil)
+                Ok(Value::Unit)
             }
             Expr::Match { scrutinee, arms } => {
                 let value = self.eval(scrutinee, env)?;
@@ -5601,6 +5604,8 @@ fn match_pattern(pat: &Pattern, value: &Value, env: &mut Env) -> bool {
             env.define(Rc::from(name.as_str()), v.clone(), false);
             true
         }
+        (Pattern::Ctor { name, args }, Value::Unit) if name == "Nil" && args.is_empty() => true,
+        (Pattern::Tuple(pats), Value::Unit) if pats.is_empty() => true,
         (Pattern::Int(a), Value::Int(b)) => a == b,
         (Pattern::Str(a), Value::Str(b)) => *a == **b,
         (Pattern::Bool(a), Value::Bool(b)) => a == b,
@@ -6189,7 +6194,7 @@ fn run_module_inner_limited(
     // A non-`Int`, non-`Nil` result (e.g. a `Float`) is still surfaced when the
     // program printed nothing — for a compiled `main -> Float` this is the only
     // way to show the value (the WASM backend has no float `to_string`).
-    if interp.output.is_empty() && !matches!(ret, Value::Nil | Value::Int(_)) {
+    if interp.output.is_empty() && !matches!(ret, Value::Unit | Value::Int(_)) {
         interp.output.push(format!("{ret}"));
     }
     Ok(InterpreterOutcome {

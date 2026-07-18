@@ -2,9 +2,6 @@
 // identity, printed with right-aligned columns. Multiplication is the textbook
 // triple loop (dot each row of A with each column of B). Pure (Console only);
 // identical on both backends. Run:  witchy examples/matrix/src/matrix.witchy
-
-import string
-
 fn main(console: Console):
     let a = [[1, 2, 3], [4, 5, 6]]
     let b = [[7, 8], [9, 10], [11, 12]]
@@ -20,7 +17,7 @@ fn show(console: Console, m: List(List(Int))):
     for row in m:
         var cells = []
         for value in row:
-            cells.push(string.pad_left("${value}", width, " "))
+            cells.push("${value}".pad_left(width, " "))
         console.print("[ " + cells.join(" ") + " ]")
 
 // The widest decimal cell, so every column lines up.
@@ -28,21 +25,21 @@ pub fn cell_width(m: List(List(Int))) -> Int:
     var width = 1
     for row in m:
         for value in row:
-            let len = string.length("${value}")
+            let len = "${value}".length()
             if len > width:
                 width = len
     width
 
 pub fn transpose(m: List(List(Int))) -> List(List(Int)):
     let rows = m.length()
-    let cols = list.length(m.at(0))
+    let cols = m.at(0).length()
     var out = []
     var c = 0
     while c < cols:
         var column = []
         var r = 0
         while r < rows:
-            column.push(list.at(m.at(r), c))
+            column.push(m.at(r).at(c))
             r = r + 1
         out.push(column)
         c = c + 1
@@ -50,7 +47,7 @@ pub fn transpose(m: List(List(Int))) -> List(List(Int)):
 
 pub fn multiply(a: List(List(Int)), b: List(List(Int))) -> List(List(Int)):
     let rows = a.length()
-    let cols = list.length(b.at(0))
+    let cols = b.at(0).length()
     let inner = b.length()
     var out = []
     var i = 0
@@ -61,7 +58,7 @@ pub fn multiply(a: List(List(Int)), b: List(List(Int))) -> List(List(Int)):
             var sum = 0
             var k = 0
             while k < inner:
-                sum = sum + list.at(a.at(i), k) * list.at(b.at(k), j)
+                sum = sum + a.at(i).at(k) * b.at(k).at(j)
                 k = k + 1
             row.push(sum)
             j = j + 1

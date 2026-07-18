@@ -9,7 +9,7 @@ pub fn classify(n: Int) -> String:
         0 -> "zero"
         _ -> if n > 0: "positive" else: "negative"
 
-fn greet(console: Console, name: String) -> Nil:
+fn greet(console: Console, name: String):
     console.print("hello, " + name)
 
 fn main(console: Console):

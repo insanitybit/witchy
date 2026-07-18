@@ -8,15 +8,15 @@
 
 from chan import Receiver, Selected, Sender
 
-async fn ticks(tx: Sender(Int)) -> Nil:
+async fn ticks(tx: Sender(Int)):
     for n in [1, 2, 3]:
         chan.send(tx, n).await
 
-async fn beats(tx: Sender(Int)) -> Nil:
+async fn beats(tx: Sender(Int)):
     chan.send(tx, 100).await
     chan.send(tx, 200).await
 
-async fn collector(console: Console, a: Receiver(Int), b: Receiver(Int)) -> Nil:
+async fn collector(console: Console, a: Receiver(Int), b: Receiver(Int)):
     let s = chan.select(a, b).await
     match s:
         First(x) ->

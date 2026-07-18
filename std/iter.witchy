@@ -510,3 +510,87 @@ fn scan_step(it: Iter(a), state: s, f: fn(s, a) -> (s, b)) -> Step(b):
 // order — `flatten` is `flat_map` with the identity function.
 pub fn flatten(it: Iter(Iter(a))) -> Iter(a):
     flat_map(it, fn(inner): inner)
+
+// ---- method surface ----
+// `collect` is intentionally free-function-only: its return type is polymorphic
+// (List, Set, String) via the FromIterator trait, and placing it in the impl
+// block causes a mono-pass performance explosion.
+impl Iter(a):
+    pub fn next(self) -> Step(a):
+        next(self)
+
+    pub fn map(self, f: fn(a) -> b) -> Iter(b):
+        map(self, f)
+
+    pub fn filter(self, keep: fn(a) -> Bool) -> Iter(a):
+        filter(self, keep)
+
+    pub fn filter_map(self, f: fn(a) -> Option(b)) -> Iter(b):
+        filter_map(self, f)
+
+    pub fn take(self, k: Int) -> Iter(a):
+        take(self, k)
+
+    pub fn take_while(self, pred: fn(a) -> Bool) -> Iter(a):
+        take_while(self, pred)
+
+    pub fn drop(self, k: Int) -> Iter(a):
+        drop(self, k)
+
+    pub fn drop_while(self, pred: fn(a) -> Bool) -> Iter(a):
+        drop_while(self, pred)
+
+    pub fn enumerate(self) -> Iter((Int, a)):
+        enumerate(self)
+
+    pub fn zip(self, other: Iter(b)) -> Iter((a, b)):
+        zip(self, other)
+
+    pub fn chain(self, other: Iter(a)) -> Iter(a):
+        chain(self, other)
+
+    pub fn flat_map(self, f: fn(a) -> Iter(b)) -> Iter(b):
+        flat_map(self, f)
+
+    pub fn flatten(self: Iter(Iter(b))) -> Iter(b):
+        flatten(self)
+
+    pub fn scan(self, state: s, f: fn(s, a) -> (s, b)) -> Iter(b):
+        scan(self, state, f)
+
+    pub fn for_each(self, f: fn(a) -> Nil):
+        for_each(self, f)
+
+    pub fn fold(self, init: b, f: fn(b, a) -> b) -> b:
+        fold(self, init, f)
+
+    pub fn count(self) -> Int:
+        count(self)
+
+    pub fn sum(self: Iter(Int)) -> Int:
+        sum(self)
+
+    pub fn find(self, pred: fn(a) -> Bool) -> Option(a):
+        find(self, pred)
+
+    pub fn any(self, pred: fn(a) -> Bool) -> Bool:
+        any(self, pred)
+
+    pub fn all(self, pred: fn(a) -> Bool) -> Bool:
+        all(self, pred)
+
+    pub fn last(self) -> Option(a):
+        last(self)
+
+    pub fn position(self, pred: fn(a) -> Bool) -> Option(Int):
+        position(self, pred)
+
+    pub fn split_first(self) -> Option((a, Iter(a))):
+        split_first(self)
+
+impl Iter(a) where a: Ord:
+    pub fn min(self) -> Option(a):
+        min(self)
+
+    pub fn max(self) -> Option(a):
+        max(self)

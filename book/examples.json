@@ -1114,6 +1114,20 @@
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
+    "file": "book/src/getting-started.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "hello"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 1,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
     "file": "book/src/idioms.md",
     "footprint": [
       "Console"

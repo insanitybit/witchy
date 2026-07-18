@@ -5,7 +5,6 @@
 //   witchy run
 
 import stats
-import string
 from json import Json
 
 fn main(console: Console, root: Dir[Read]):
@@ -21,7 +20,7 @@ fn render(records: List(Json)) -> String:
     var scores = []
     for r in records:
         list.push(scores, score_of(r))
-    list.join(["records: " + "${stats.count(scores)}", "total:   " + "${stats.total(scores)}", "max:     " + "${stats.max(scores)}", "average: " + "${stats.average(scores)}"], "\n")
+    ["records: " + "${stats.count(scores)}", "total:   " + "${stats.total(scores)}", "max:     " + "${stats.max(scores)}", "average: " + "${stats.average(scores)}"].join("\n")
 
 // The integer "score" field of one record, defaulting to 0 if absent / non-int.
 fn score_of(record: Json) -> Int:

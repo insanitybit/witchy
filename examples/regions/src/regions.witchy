@@ -4,9 +4,6 @@
 // which are shared rather than copied. A region never changes behavior, only
 // when memory is freed, so it runs identically interpreted and compiled.
 // Run:  witchy examples/regions/src/regions.witchy
-
-import string
-
 pub fn summarize(let words: List(String)) -> String:
     "${words.length()}" + " words, first: " + words.at(0)
 

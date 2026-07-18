@@ -22,7 +22,7 @@ fn chip(label: String) -> VNode(Msg):
     glamour.element("span", [glamour.prop("class", "chip cap")], [glamour.text(label)])
 
 fn footprint_chips(caps: List(String)) -> VNode(Msg):
-    if list.is_empty(caps):
+    if caps.is_empty():
         glamour.element("span", [glamour.prop("class", "chip cap-none")], [glamour.text("no authority")])
     else:
         var cs = []
@@ -32,12 +32,12 @@ fn footprint_chips(caps: List(String)) -> VNode(Msg):
 
 fn view(model: Int) -> VNode(Msg):
     var rows = []
-    rows = list.concat(rows, row("state", "released"))
-    rows = list.concat(rows, row("hash", "sha256:9f2c…a13b"))
-    rows = list.concat(rows, row("uploaded_by", "repo:acme/charts:ref:refs/heads/main"))
-    rows = list.concat(rows, row("promoted_by", "alice"))
-    rows = list.concat(rows, row("provenance", "trusted-publisher|issuer=token.actions.githubusercontent.com"))
-    rows = list.concat(rows, row("released_at", "2026-06-26"))
+    rows = rows.concat(row("state", "released"))
+    rows = rows.concat(row("hash", "sha256:9f2c…a13b"))
+    rows = rows.concat(row("uploaded_by", "repo:acme/charts:ref:refs/heads/main"))
+    rows = rows.concat(row("promoted_by", "alice"))
+    rows = rows.concat(row("provenance", "trusted-publisher|issuer=token.actions.githubusercontent.com"))
+    rows = rows.concat(row("released_at", "2026-06-26"))
     glamour.element("article", [glamour.prop("class", "version")], [glamour.element("h1", [], [glamour.text("acme/charts@1.2.0")]), glamour.element("span", [glamour.prop("class", "chip state-released")], [glamour.text("released")]), footprint_chips(["Net[Connect, Tls]", "Js{d3-runes-chart}"]), glamour.element("dl", [glamour.prop("class", "record")], rows), glamour.element("div", [glamour.prop("class", "promote")], [glamour.element("button", [glamour.prop("class", "button"), glamour.on("click", Promote)], [glamour.text("promote")]), glamour.element("button", [glamour.prop("class", "button"), glamour.on("click", Yank)], [glamour.text("yank")])])])
 
 fn update(model: Int, msg: Msg) -> (Int, Cmd(Msg)):

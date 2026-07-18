@@ -9,7 +9,6 @@
 
 import toml
 import compiler
-import string
 import rights
 from json import Json
 
@@ -24,7 +23,7 @@ fn main(console: Console, root: Dir[Read]) -> Int:
         Ok(demanded) ->
             // The demanded capabilities the manifest does not admit, rights-precisely
             // (std/rights): a declared `Net[Connect]` does NOT cover a demanded full `Net`.
-            let missing = list.join(rights.uncovered(declared, demanded), ", ")
+            let missing = rights.uncovered(declared, demanded).join(", ")
             if missing.is_empty():
                 console.print("OK: manifest admits everything the code demands")
                 0

@@ -3,7 +3,6 @@
 // with a message). Run them with `witchy test examples/dijkstra`.
 
 import dijkstra
-import string
 import list
 import testing
 
@@ -12,7 +11,7 @@ let names = ["A", "B", "C", "D", "E"]
 let edges = [(0, 1, 4), (0, 2, 1), (2, 1, 2), (1, 3, 1), (2, 3, 5), (3, 4, 3)]
 
 fn render_ints(xs: List(Int)) -> String:
-    list.join(xs.map(fn(n: Int): "${n}"), " ")
+    xs.map(fn(n: Int): "${n}").join(" ")
 
 fn test_distances():
     let (dist, prev) = dijkstra.dijkstra(names.length(), edges, 0)
@@ -24,4 +23,4 @@ fn test_predecessors():
 
 fn test_path_to_target():
     let (dist, prev) = dijkstra.dijkstra(names.length(), edges, 0)
-    testing.assert_eq(list.join(dijkstra.path_to(names, prev, 4), " -> "), "A -> C -> B -> D -> E")
+    testing.assert_eq(dijkstra.path_to(names, prev, 4).join(" -> "), "A -> C -> B -> D -> E")

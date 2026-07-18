@@ -37,7 +37,7 @@ run afterward.
 ```witchy
 import chan
 
-async fn ticker(console: Console, name: String, n: Int) -> Nil:
+async fn ticker(console: Console, name: String, n: Int):
     if n <= 0:
         console.print("${name} done")
     else:
@@ -67,7 +67,7 @@ value can ever be used again.
 ```witchy
 from chan import Sender, Receiver
 
-async fn source(tx: Sender(String)) -> Nil:
+async fn source(tx: Sender(String)):
     chan.send(tx, "first").await
     chan.send(tx, "second").await
 
@@ -92,7 +92,7 @@ type Msg:
     Get(Sender(Msg))
     Total(Int)
 
-async fn accumulator(inbox: Receiver(Msg)) -> Nil:
+async fn accumulator(inbox: Receiver(Msg)):
     chan.serve(inbox, 0, fn(sum, m):
         match m:
             Add(n) -> chan.done(sum + n)
@@ -100,7 +100,7 @@ async fn accumulator(inbox: Receiver(Msg)) -> Nil:
             Total(_t) -> chan.done(sum)
     ).await
 
-async fn client(console: Console, srv: Sender(Msg)) -> Nil:
+async fn client(console: Console, srv: Sender(Msg)):
     chan.send(srv, Add(5)).await
     chan.send(srv, Add(2)).await
     let (reply_tx, reply_rx) = chan.channel(1).await
@@ -133,7 +133,7 @@ express. Results flow back on a second channel.
 ```witchy
 from chan import Sender, Receiver
 
-async fn worker(jobs: Receiver(Int), out: Sender(Int)) -> Nil:
+async fn worker(jobs: Receiver(Int), out: Sender(Int)):
     chan.consume(jobs, fn(n): chan.send(out, n * n)).await
 
 async fn main(console: Console):
@@ -173,7 +173,7 @@ from chan import Sender
 async fn square(n: Int) -> Int:
     n * n
 
-async fn announce(tx: Sender(Int), n: Int) -> Nil:
+async fn announce(tx: Sender(Int), n: Int):
     chan.send(tx, n).await
 
 async fn main(console: Console):
@@ -190,7 +190,7 @@ async fn main(console: Console):
     chan.scope([announce(tx, 10), announce(tx, 20)]).await
     let a = chan.recv(rx).await
     let b = chan.recv(rx).await
-    console.print("scoped: ${list.length([a, b])} workers ran")
+    console.print("scoped: ${[a, b].length()} workers ran")
 ```
 
 ```text
@@ -218,11 +218,11 @@ too, so a stage can receive, transform, and forward in a few plain lines:
 ```witchy
 from chan import Sender, Receiver
 
-async fn producer(tx: Sender(Int)) -> Nil:
+async fn producer(tx: Sender(Int)):
     for n in [1, 2, 3]:
         chan.send(tx, n).await
 
-async fn squares(rx: Receiver(Int), out: Sender(Int)) -> Nil:
+async fn squares(rx: Receiver(Int), out: Sender(Int)):
     for await n in rx:
         chan.send(out, n * n).await
 
@@ -243,13 +243,13 @@ the total once the channel closes.
 ```witchy
 from chan import Sender, Receiver
 
-async fn counter(tx: Sender(Int), n: Int) -> Nil:
+async fn counter(tx: Sender(Int), n: Int):
     var i = 0
     while i < n:
         chan.send(tx, i).await
         i = i + 1
 
-async fn total(console: Console, rx: Receiver(Int)) -> Nil:
+async fn total(console: Console, rx: Receiver(Int)):
     var sum = 0
     for await v in rx:
         sum = sum + v
@@ -335,5 +335,5 @@ surface over that task executor. No scheduler state lives in the
 runtime, no operating-system threads are involved, and nothing is shared mutably —
 so the interleaving is identical on both backends. Each channel carries its own
 message type (the executor moves messages erased and every endpoint recovers its
-type), and a spawned task returns `Nil` (it reports results by sending them),
+type), and a spawned task returns `()` (it reports results by sending them),
 which is what keeps the whole executor expressible in pure witchy.

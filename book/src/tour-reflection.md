@@ -8,7 +8,7 @@ never seen, with no per-type encoder.
 
 ## Making a type reflectable
 
-The scalars (`Int`, `Float`, `Bool`, `String`), `Bytes`, `Nil`, `Duration`,
+The scalars (`Int`, `Float`, `Bool`, `String`), `Bytes`, `()`, `Duration`,
 `Ordering`, the built-in containers (`List`, `Option`, `Result`, `Set`, tuples
 through arity 8, `Dict`), and [anonymous records](tour-data.md) are reflectable
 out of the box. A `type` of your own becomes reflectable when you add
@@ -90,10 +90,10 @@ fn kind(value: impl Reflect) -> String:
     match reflect(value):
         MInt(_n) -> "int"
         MString(_s) -> "string"
-        MRecord(name, fields) -> "${name} with ${list.length(fields)} fields"
-        MVariant(_t, v, payload) -> "variant ${v}/${list.length(payload)}"
-        MList(xs) -> "list of ${list.length(xs)}"
-        MTuple(xs) -> "tuple of ${list.length(xs)}"
+        MRecord(name, fields) -> "${name} with ${fields.length()} fields"
+        MVariant(_t, v, payload) -> "variant ${v}/${payload.length()}"
+        MList(xs) -> "list of ${xs.length()}"
+        MTuple(xs) -> "tuple of ${xs.length()}"
         _ -> "other"
 
 fn main(console: Console):

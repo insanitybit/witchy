@@ -2,26 +2,24 @@
 // lookup returns `Result(String, String)` (an Err naming a missing key), so
 // callers can compose lookups with the `?` operator. No host capabilities.
 
-import string
-
 // Parse "key = value" lines into (key, value) pairs. Blank lines and lines
 // starting with "#" are ignored; only the first "=" splits a line.
 pub fn parse(text: String) -> List((String, String)):
     var out = []
-    for line in string.lines(text):
-        let t = string.trim(line)
+    for line in text.lines():
+        let t = line.trim()
         if is_entry(t):
-            let (k, v) = string.split_once(t, "=")
-            list.push(out, (string.trim(k), string.trim(v)))
+            let (k, v) = t.split_once("=")
+            list.push(out, (k.trim(), v.trim()))
     out
 
 fn is_entry(line: String) -> Bool:
-    if string.is_empty(line):
+    if line.is_empty():
         false
-    else if string.starts_with(line, "#"):
+    else if line.starts_with("#"):
         false
     else:
-        string.contains(line, "=")
+        line.contains("=")
 
 // Look up a key's value, or an Err naming the missing key.
 pub fn lookup(pairs: List((String, String)), key: String) -> Result(String, String):

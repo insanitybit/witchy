@@ -5,7 +5,6 @@
 
 import json
 import compiler
-import string
 import show
 import error
 import convert
@@ -26,7 +25,7 @@ pub fn computed_footprint(files: List((String, String))) -> Result(List(String),
     Ok(out)
 
 fn is_src_module(path: String) -> Bool:
-    string.starts_with(path, "src/") && string.ends_with(path, ".witchy")
+    path.starts_with("src/") && path.ends_with(".witchy")
 
 // The `total` array of a `compiler.footprint` report, or an Err if the report does not
 // parse or is an `{"error":..}` report (the source did not compile). Never silently [].
@@ -79,16 +78,16 @@ pub fn compartments_in(files: List((String, String))) -> List(String):
 
 fn scan_compartments(s: String) -> List(String):
     let marker = "compartment(\""
-    let i = string.index_of(s, marker) ?? -1
+    let i = s.index_of(marker) ?? -1
     if i < 0:
         []
     else:
-        let after = string.drop(s, i + string.char_count(marker))
-        let close = string.index_of(after, "\"") ?? -1
+        let after = s.drop(i + marker.char_count())
+        let close = after.index_of("\"") ?? -1
         if close < 0:
             []
         else:
-            let id = string.substring(after, 0, close)
-            var out = scan_compartments(string.drop(after, close))
+            let id = after.substring(0, close)
+            var out = scan_compartments(after.drop(close))
             out.push(id)
             out

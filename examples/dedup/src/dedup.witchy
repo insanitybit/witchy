@@ -1,5 +1,4 @@
 import iter
-import string
 
 // Remove consecutive duplicates — a user-defined iterator transform built from
 // split_first (peek the head) and drop_while (skip the equal run after it).
@@ -7,11 +6,11 @@ pub fn dedup(it: Iter(Int)) -> Iter(Int):
     iter.unfold(it, fn(s: Iter(Int)): dedup_step(s))
 
 fn dedup_step(s: Iter(Int)) -> Option((Int, Iter(Int))):
-    match iter.split_first(s):
+    match s.split_first():
         None -> None
         Some(pair) ->
             match pair:
-                (x, rest) -> Some((x, iter.drop_while(rest, fn(y: Int): y == x)))
+                (x, rest) -> Some((x, rest.drop_while(fn(y: Int): y == x)))
 
 pub fn show(xs: List(Int)) -> String:
     var parts = []

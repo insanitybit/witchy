@@ -2,12 +2,11 @@
 // passes by returning, and fails by aborting. Run with `witchy test examples/toposort`.
 
 import toposort
-import string
 import testing
 
 fn order_or_err(nodes: List(String), edges: List((String, String))) -> String:
     match toposort.toposort(nodes, edges):
-        Ok(order) -> list.join(order, " -> ")
+        Ok(order) -> order.join(" -> ")
         Err(message) -> "error: " + message
 
 fn test_linear_chain():

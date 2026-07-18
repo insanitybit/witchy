@@ -8,7 +8,6 @@ import coven_validate
 import coven_proto
 import coven_footprint
 import coven_trust
-import string
 import reflect
 import result
 import option
@@ -76,7 +75,7 @@ fn test_runtime_footprint_payload_is_injective():
     let one = coven_record.signing_payload("acme/net", "1.0.0", "released", "sha256:x", ["Net[Connect, Tcp]"], "ci", "alice", "webauthn", "prov", 1)
     let split = coven_record.signing_payload("acme/net", "1.0.0", "released", "sha256:x", ["Net[Connect", " Tcp]"], "ci", "alice", "webauthn", "prov", 1)
     testing.assert(one != split, "different footprint list shapes must produce different signed payloads")
-    testing.assert(string.contains(one, "rt=[\"Net[Connect, Tcp]\"]"), "the runtime footprint is encoded as a JSON array")
+    testing.assert(one.contains("rt=[\"Net[Connect, Tcp]\"]"), "the runtime footprint is encoded as a JSON array")
 
 fn test_record_parse_errors_are_typed():
     match coven_record.parse("{"):
@@ -109,7 +108,7 @@ fn test_publish_body_round_trips_id_token():
 
 fn test_publish_body_omits_id_token_when_anonymous():
     let body = coven_proto.publish_body("[rune]\n", [], "ci-bot", None)
-    testing.assert(!string.contains(body, "id_token"), "an anonymous publish body omits id_token")
+    testing.assert(!body.contains("id_token"), "an anonymous publish body omits id_token")
 
 fn test_yank_body_carries_id_token():
     let body = coven_proto.yank_body("acme/x", "1.0.0", Some("ytok"))
@@ -193,7 +192,7 @@ fn test_computed_footprint_fails_closed_on_bad_source():
 
 fn test_computed_footprint_ok_for_pure_source():
     match coven_footprint.computed_footprint([("src/x.witchy", "pub fn f(n: Int) -> Int:\n    n\n")]):
-        Ok(caps) -> testing.assert(list.length(caps) == 0, "a pure library has an empty footprint")
+        Ok(caps) -> testing.assert(caps.length() == 0, "a pure library has an empty footprint")
         Err(e) -> testing.assert(false, "a valid pure source should compute: ${coven_footprint.footprint_error_message(e)}")
 
 // --- encode (reflection) + derive(Deserialize) round-trip ------
@@ -209,7 +208,7 @@ fn test_json_roundtrip():
         Ok(b) ->
             testing.assert_eq(b.name, "acme/json")
             testing.assert_int_eq(b.count, 2)
-            testing.assert_int_eq(list.length(b.versions), 2)
+            testing.assert_int_eq(b.versions.length(), 2)
             testing.assert(option.is_some(b.note), "the optional note round-trips as Some")
         Err(e) -> testing.assert(false, "round-trip failed: ${e}")
 

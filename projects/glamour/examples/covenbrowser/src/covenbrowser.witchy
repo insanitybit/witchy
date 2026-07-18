@@ -32,7 +32,6 @@
 // `witchy caps .../covenbrowser.witchy` reports `export_step (none)`.
 
 import reflect
-import string
 import list
 from glamour import VNode, Cmd
 from json import Json
@@ -114,10 +113,10 @@ fn init() -> Model:
 fn view(model: Model) -> VNode(Msg):
     match model:
         Model(runes, selected) ->
-            if selected < 0 || selected >= list.length(runes):
+            if selected < 0 || selected >= runes.length():
                 index_view(runes)
             else:
-                detail_view(list.at(runes, selected))
+                detail_view(runes.at(selected))
 
 // The INDEX: a `<div class="coven-index">` of clickable rune cards. Each card is
 // the runecard structure, but the OUTER `<div class="rune-card">` additionally
@@ -198,7 +197,7 @@ fn card_body(name: String, version: String, caps: List(String), label: String) -
 // per capability; an EMPTY footprint becomes a single distinct
 // `<span class="cap-none">no capabilities</span>` — the state witchy celebrates.
 fn cap_row(caps: List(String)) -> VNode(Msg):
-    if list.is_empty(caps):
+    if caps.is_empty():
         let none_badge = glamour.element("span", [glamour.prop("class", "cap-none")], [glamour.text("no capabilities")])
 
         glamour.element("div", [glamour.prop("class", "cap-row")], [none_badge])
@@ -227,15 +226,15 @@ fn keywords() -> List(String):
     ["fn", "let", "var", "if", "else", "match", "type", "import", "pub", "for", "while", "return", "in", "where", "derive", "and", "or", "not", "true", "false"]
 
 fn is_keyword(word: String) -> Bool:
-    list.contains(keywords(), word)
+    keywords().contains(word)
 
 fn tokenize(src: String) -> List(Token):
-    let cs = string.chars(src)
-    let n = list.length(cs)
+    let cs = src.chars()
+    let n = cs.length()
     var toks: List(Token) = []
     var i = 0
     while i < n:
-        let c = list.at(cs, i)
+        let c = cs.at(i)
         if is_slash_slash(cs, i, n):
             let (text, j) = read_line_comment(cs, i, n)
             toks.push(Tok("com", text))
@@ -260,13 +259,13 @@ fn tokenize(src: String) -> List(Token):
     toks
 
 fn is_slash_slash(cs: List(String), i: Int, n: Int) -> Bool:
-    list.at(cs, i) == "/" && i + 1 < n && list.at(cs, i + 1) == "/"
+    cs.at(i) == "/" && i + 1 < n && cs.at(i + 1) == "/"
 
 fn read_line_comment(cs: List(String), start: Int, n: Int) -> (String, Int):
     var i = start
     var out = ""
-    while i < n && list.at(cs, i) != "\n":
-        out = out + list.at(cs, i)
+    while i < n && cs.at(i) != "\n":
+        out = out + cs.at(i)
         i = i + 1
     (out, i)
 
@@ -275,9 +274,9 @@ fn read_string(cs: List(String), start: Int, n: Int) -> (String, Int):
     var out = "\""
     var done = false
     while i < n && !done:
-        let c = list.at(cs, i)
+        let c = cs.at(i)
         if c == "\\" && i + 1 < n:
-            out = out + c + list.at(cs, i + 1)
+            out = out + c + cs.at(i + 1)
             i = i + 2
         else:
             out = out + c
@@ -289,16 +288,16 @@ fn read_string(cs: List(String), start: Int, n: Int) -> (String, Int):
 fn read_number(cs: List(String), start: Int, n: Int) -> (String, Int):
     var i = start
     var out = ""
-    while i < n && is_number_char(list.at(cs, i)):
-        out = out + list.at(cs, i)
+    while i < n && is_number_char(cs.at(i)):
+        out = out + cs.at(i)
         i = i + 1
     (out, i)
 
 fn read_ident(cs: List(String), start: Int, n: Int) -> (String, Int):
     var i = start
     var out = ""
-    while i < n && is_ident_cont(list.at(cs, i)):
-        out = out + list.at(cs, i)
+    while i < n && is_ident_cont(cs.at(i)):
+        out = out + cs.at(i)
         i = i + 1
     (out, i)
 
@@ -307,7 +306,7 @@ fn read_plain(cs: List(String), start: Int, n: Int) -> (String, Int):
     var out = ""
     var done = false
     while i < n && !done:
-        let c = list.at(cs, i)
+        let c = cs.at(i)
         if c == "\"" || is_digit(c) || is_ident_start(c) || is_slash_slash(cs, i, n):
             done = true
         else:
@@ -328,7 +327,7 @@ fn is_ident_cont(c: String) -> Bool:
     is_alpha(c) || is_digit(c) || c == "_"
 
 fn is_alpha(c: String) -> Bool:
-    let lower = string.to_lower(c)
+    let lower = c.to_lower()
     lower >= "a" && lower <= "z"
 
 // Tokens to a `<pre><code>` VNode of classed `<span>` runs. A classed token
@@ -344,7 +343,7 @@ fn highlight(src: String) -> VNode(Msg):
 fn render_token(t: Token) -> VNode(Msg):
     match t:
         Tok(kind, text) ->
-            if string.is_empty(kind):
+            if kind.is_empty():
                 glamour.text(text)
             else:
                 glamour.element("span", [glamour.prop("class", kind)], [glamour.text(text)])
@@ -394,10 +393,10 @@ fn parse_msg(j: Json) -> Msg:
 fn first_int(vals: Json) -> Int:
     match vals:
         JsonArray(items) ->
-            if list.is_empty(items):
+            if items.is_empty():
                 no_selection()
             else:
-                match json.as_int(list.at(items, 0)):
+                match json.as_int(items.at(0)):
                     Some(n) -> n
                     None -> no_selection()
         _ -> no_selection()

@@ -7,7 +7,6 @@
 // regrets. Runs on both the interpreter and the compiled WASM backend.
 
 import iter
-import string
 
 // Fibonacci, written the way most people reach for — an imperative loop that
 // yields. (Infinite; the caller takes a prefix.)
@@ -39,8 +38,8 @@ pub fn show(xs: List(Int)) -> String:
     parts.join(", ")
 
 fn main(console: Console):
-    let fib10: List(Int) = iter.collect(iter.take(fibs(), 10))
+    let fib10: List(Int) = iter.collect(fibs().take(10))
     console.print("fib[0..10): " + show(fib10))
     let path: List(Int) = iter.collect(collatz(6))
     console.print("collatz(6): " + show(path))
-    console.print("collatz(27) length: " + "${iter.count(collatz(27))}")
+    console.print("collatz(27) length: " + "${collatz(27).count()}")

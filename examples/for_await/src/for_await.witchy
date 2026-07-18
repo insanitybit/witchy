@@ -8,11 +8,11 @@
 
 from chan import Receiver, Sender
 
-async fn producer(tx: Sender(Int)) -> Nil:
+async fn producer(tx: Sender(Int)):
     for n in [2, 3, 4]:
         chan.send(tx, n).await
 
-async fn worker(console: Console, rx: Receiver(Int)) -> Nil:
+async fn worker(console: Console, rx: Receiver(Int)):
     for await n in rx:
         console.print("n*n = ${n * n}")
 

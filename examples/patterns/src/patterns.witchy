@@ -7,7 +7,6 @@
 //   witchy sandbox examples/patterns/src/patterns.witchy
 
 import regex
-import string
 
 fn check(console: Console, pattern: String, text: String):
     let mark = if regex.matches(pattern, text): "match" else: "no   "

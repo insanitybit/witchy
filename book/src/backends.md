@@ -88,7 +88,7 @@ The loud boundaries are part of the current language state:
   entries, open generic call boundaries, `region:` copy-out, and isolated-worker
   callbacks remain rejected until they have fixed typed representations.
 - `await` works in loop bodies and may carry mutable locals, but not in branch or
-  loop conditions or in match scrutinees. Spawned tasks return `Nil`; structured
+  loop conditions or in match scrutinees. Spawned tasks return `()`; structured
   combinators and channels carry results.
 - The current compiled async executor is intended for bounded task graphs and
   streams. Long-lived producer/consumer loops eventually exhaust the linear

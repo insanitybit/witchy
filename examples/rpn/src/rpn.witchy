@@ -5,8 +5,6 @@
 // `Result`. Pure (Console only); identical on both backends. Run:
 //   witchy examples/rpn/src/rpn.witchy
 
-import string
-
 // The evaluator's state: a stack of operands, or the first error encountered.
 type Outcome:
     Stack(List(Int))
@@ -14,10 +12,10 @@ type Outcome:
 
 fn main(console: Console):
     for expr in ["3 4 +", "5 1 2 + 4 * + 3 -", "10 2 /", "1 0 /", "1 +"]:
-        console.print(string.pad_right(expr, 20, " ") + "=> " + run(expr))
+        console.print(expr.pad_right(20, " ") + "=> " + run(expr))
 
 pub fn run(expr: String) -> String:
-    match eval(string.words(expr)):
+    match eval(expr.words()):
         Ok(value) -> "${value}"
         Err(message) -> "error: " + message
 
@@ -33,7 +31,7 @@ fn step(outcome: Outcome, token: String) -> Outcome:
         Stack(stack) -> push_or_apply(stack, token)
 
 fn push_or_apply(stack: List(Int), token: String) -> Outcome:
-    match string.parse_int(token):
+    match token.parse_int():
         Some(n) ->
             var next = stack
             next.push(n)
@@ -41,12 +39,12 @@ fn push_or_apply(stack: List(Int), token: String) -> Outcome:
         None -> apply_operator(stack, token)
 
 fn apply_operator(stack: List(Int), op: String) -> Outcome:
-    let n = list.length(stack)
+    let n = stack.length()
     if n < 2:
         Failure("stack underflow at `" + op + "`")
     else:
-        let b = list.at(stack, n - 1)
-        let a = list.at(stack, n - 2)
+        let b = stack.at(n - 1)
+        let a = stack.at(n - 2)
         match compute(op, a, b):
             Ok(result) ->
                 var next = prefix(stack, n - 2)
@@ -73,10 +71,10 @@ fn finish(outcome: Outcome) -> Result(Int, String):
     match outcome:
         Failure(message) -> Err(message)
         Stack(stack) ->
-            if list.length(stack) == 1:
-                Ok(list.at(stack, 0))
+            if stack.length() == 1:
+                Ok(stack.at(0))
             else:
-                Err("expected a single result, the stack has " + "${list.length(stack)}")
+                Err("expected a single result, the stack has " + "${stack.length()}")
 
 // The first `k` elements of `xs` (the stack below the two consumed operands).
 fn prefix(xs: List(Int), k: Int) -> List(Int):
@@ -84,6 +82,6 @@ fn prefix(xs: List(Int), k: Int) -> List(Int):
     var i = 0
     for x in xs:
         if i < k:
-            list.push(out, x)
+            out.push(x)
         i = i + 1
     out

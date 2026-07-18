@@ -4,9 +4,6 @@
 // rule (a smaller value before a larger one is subtracted). The conversions are
 // `pub` so `roman_test` can exercise them; only `main` touches the Console, so it
 // runs identically interpreted, compiled, and inside the capability sandbox.
-
-import string
-
 pub fn to_roman(n: Int) -> String:
     let values = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1]
     let symbols = ["M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I"]

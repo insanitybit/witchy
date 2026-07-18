@@ -8,11 +8,11 @@
 
 from chan import Receiver, Sender
 
-async fn producer(tx: Sender(Int)) -> Nil:
+async fn producer(tx: Sender(Int)):
     for n in [1, 2, 3]:
         chan.send(tx, n).await
 
-async fn consumer(console: Console, rx: Receiver(Int)) -> Nil:
+async fn consumer(console: Console, rx: Receiver(Int)):
     chan.consume(rx, fn(v): chan.done(console.print("got ${v}"))).await
 
 async fn main(console: Console):

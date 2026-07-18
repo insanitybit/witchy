@@ -8,7 +8,6 @@
 
 import reflect
 import crypto
-import string
 import result
 import option
 import show
@@ -72,7 +71,7 @@ pub fn signing_payload(name: String, version: String, state: String, hash: Strin
     "coven-v1\nname=" + name + "\nversion=" + version + "\nstate=" + state + "\nhash=" + hash + "\nrt=" + string_list_payload(rt) + "\nbuild=\nuploaded_by=" + uploaded_by + "\npromoted_by=" + promoted_by + "\nfactor=" + factor + "\nprovenance=" + provenance + "\nreleased_at=" + "${released_at}"
 
 fn string_list_payload(xs: List(String)) -> String:
-    json.encode(JsonArray(list.map(xs, fn(x: String): JsonString(x))))
+    json.encode(JsonArray(xs.map(fn(x: String): JsonString(x))))
 
 // Build + sign a record, returning its coven.json text. `released_at` (unix seconds;
 // 0 = not yet released) is part of the signed payload — tamper-evident.
@@ -129,7 +128,7 @@ fn corrupt_record(reason: String) -> String:
 
 // Empty string <-> absent (`null`): keeps the optional fields' JSON byte-identical.
 fn opt_str(s: String) -> Option(String):
-    if string.is_empty(s):
+    if s.is_empty():
         None
     else:
         Some(s)

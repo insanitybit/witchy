@@ -8,7 +8,6 @@
 
 import cmp
 import list
-import string
 
 sealed type Set(a):
     items: List(a)
@@ -61,12 +60,43 @@ pub fn remove(var s: Set(a), x: a) -> Bool where a: Eq:
 
 // Real methods mirror the primary mutator surface while the module functions
 // remain as stable, first-class values.
+impl Set(a):
+    pub fn length(self) -> Int:
+        length(self)
+
+    pub fn is_empty(self) -> Bool:
+        is_empty(self)
+
+    pub fn to_list(self) -> List(a):
+        to_list(self)
+
 impl Set(a) where a: Eq:
     pub fn insert(var self, x: a) -> Bool:
         insert(self, x)
 
     pub fn remove(var self, x: a) -> Bool:
         remove(self, x)
+
+    pub fn contains(self, x: a) -> Bool:
+        contains(self, x)
+
+    pub fn union(self, other: Set(a)) -> Set(a):
+        union(self, other)
+
+    pub fn intersection(self, other: Set(a)) -> Set(a):
+        intersection(self, other)
+
+    pub fn difference(self, other: Set(a)) -> Set(a):
+        difference(self, other)
+
+    pub fn symmetric_difference(self, other: Set(a)) -> Set(a):
+        symmetric_difference(self, other)
+
+    pub fn is_subset(self, other: Set(a)) -> Bool:
+        is_subset(self, other)
+
+    pub fn is_disjoint(self, other: Set(a)) -> Bool:
+        is_disjoint(self, other)
 
 // Whether `x` is a member of `s`.
 pub fn contains(s: Set(a), x: a) -> Bool where a: Eq:

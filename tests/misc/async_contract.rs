@@ -49,7 +49,7 @@ async fn main(console: Console) -> Result(Int, String):
     assert!(
         error.contains("async fn `main`")
             && error.contains("Result(Int, String)")
-            && error.contains("Task(Nil)"),
+            && error.contains("Task(())"),
         "async main diagnostic should explain the executor contract: {error}",
     );
 }

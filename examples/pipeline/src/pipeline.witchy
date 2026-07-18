@@ -6,16 +6,15 @@
 // Run: witchy examples/pipeline/src/pipeline.witchy
 
 import list
-import string
 
 fn main(console: Console):
     // Sum of the squares of the even numbers in 0..10.
-    let evens = list.filter(list.range(10), fn(n: Int): n % 2 == 0)
+    let evens = list.range(10).filter(fn(n: Int): n % 2 == 0)
     let total = list.sum(evens.map(fn(n: Int): n * n))
 
     console.print("${total}")
 
     // The first five numbers, doubled, rendered and comma-joined.
-    let doubled = list.map(list.map(list.range(5), fn(n: Int): n * 2), fn(n: Int): "${n}")
+    let doubled = list.range(5).map(fn(n: Int): n * 2).map(fn(n: Int): "${n}")
 
     console.print(doubled.join(","))

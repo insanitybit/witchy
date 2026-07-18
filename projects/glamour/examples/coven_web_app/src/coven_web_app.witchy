@@ -43,15 +43,15 @@ type Caps:
 
 // --- routing + effects -------------------------------------------------------
 fn fetch_for(fetch: UiFetch, path: String) -> Cmd(Msg):
-    if string.starts_with(path, "/trust"):
+    if path.starts_with("/trust"):
         glamour.http_get(fetch, "/api/coven/rootpub", "GotData")
-    else if string.starts_with(path, "/d/"):
+    else if path.starts_with("/d/"):
         let (name, ver) = name_ver(path)
         glamour.http_get(fetch, "/api/coven/doc?name=${name}&version=${ver}", "GotData")
-    else if string.starts_with(path, "/s/"):
+    else if path.starts_with("/s/"):
         let (name, ver) = name_ver(path)
         glamour.http_get(fetch, "/api/coven/source?name=${name}&version=${ver}", "GotData")
-    else if string.starts_with(path, "/v/"):
+    else if path.starts_with("/v/"):
         let (name, ver) = name_ver(path)
         glamour.http_get(fetch, "/api/coven/record?name=${name}&version=${ver}", "GotData")
     else:
@@ -83,18 +83,18 @@ fn view(m: Model) -> VNode(Msg):
             glamour.element("div", [glamour.prop("class", "app")], [header(sess, notice), body(route, data, sess, query)])
 
 fn header(sess: String, notice: String) -> VNode(Msg):
-    let auth = if string.is_empty(sess): glamour.element("span", [glamour.prop("class", "nav-auth")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Login)], [glamour.text("sign in with passkey")]), glamour.element("button", [glamour.prop("class", "button link ghost"), glamour.on("click", Register)], [glamour.text("register")])]) else: glamour.element("span", [glamour.prop("class", "nav-auth")], [glamour.element("span", [glamour.prop("class", "session-id")], [glamour.text("● signed in as ${sess}")])])
+    let auth = if sess.is_empty(): glamour.element("span", [glamour.prop("class", "nav-auth")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Login)], [glamour.text("sign in with passkey")]), glamour.element("button", [glamour.prop("class", "button link ghost"), glamour.on("click", Register)], [glamour.text("register")])]) else: glamour.element("span", [glamour.prop("class", "nav-auth")], [glamour.element("span", [glamour.prop("class", "session-id")], [glamour.text("● signed in as ${sess}")])])
 
     glamour.element("nav", [glamour.prop("class", "topnav")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/"))], [glamour.text("Runes")]), glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/trust"))], [glamour.text("Trust")]), auth, glamour.element("span", [glamour.prop("class", "muted notice")], [glamour.text(notice)])])
 
 fn body(route: String, data: String, sess: String, query: String) -> VNode(Msg):
-    if string.starts_with(route, "/trust"):
+    if route.starts_with("/trust"):
         trust_view(data)
-    else if string.starts_with(route, "/d/"):
+    else if route.starts_with("/d/"):
         docs_view(data)
-    else if string.starts_with(route, "/s/"):
+    else if route.starts_with("/s/"):
         source_view(route, data)
-    else if string.starts_with(route, "/v/"):
+    else if route.starts_with("/v/"):
         version_view(route, data, sess)
     else:
         catalog_view(data, query)
@@ -106,7 +106,7 @@ fn body(route: String, data: String, sess: String, query: String) -> VNode(Msg):
 // is pure (the model holds the query, no fetch per keystroke).
 fn catalog_view(data: String, query: String) -> VNode(Msg):
     let all = parse_runes(data)
-    let q = string.to_lower(query)
+    let q = query.to_lower()
     var items = []
     for r in all:
         let name = json.get_string(r, "name").unwrap_or("?")
@@ -114,11 +114,11 @@ fn catalog_view(data: String, query: String) -> VNode(Msg):
         let caps = json.get_strings(r, "runtime_footprint")
         let author = json.get_string(r, "uploaded_by").unwrap_or("unknown")
         let st = json.get_string(r, "state").unwrap_or("staged")
-        if string.is_empty(q) || rune_matches(name, caps, author, q):
+        if q.is_empty() || rune_matches(name, caps, author, q):
             items.push(glamour.keyed(name, rune_card(name, ver, caps, author, st, gi(r, "released_at"))))
-    let shown = list.length(items)
-    let total = list.length(all)
-    let label = if string.is_empty(query): "${total} runes" else: "${shown} of ${total} runes"
+    let shown = items.length()
+    let total = all.length()
+    let label = if query.is_empty(): "${total} runes" else: "${shown} of ${total} runes"
     glamour.element("section", [glamour.prop("class", "catalog")], [glamour.element("h1", [], [glamour.text("Runes")]), glamour.element("input", [glamour.prop("class", "field search"), glamour.prop("type", "search"), glamour.prop("placeholder", "search runes by name, author, or capability"), glamour.on_input("input", "Search")], []), glamour.element("p", [glamour.prop("class", "muted count")], [glamour.text(label)]), glamour.element("ul", [glamour.prop("class", "rune-list")], items)])
 
 // One catalog row (crates.io card): name + version is the link; the right rail carries the
@@ -129,7 +129,7 @@ fn rune_card(name: String, ver: String, caps: List(String), author: String, st: 
 
 // the quiet, secondary footprint line: small chips, still color-coded by danger but low-key.
 fn needs(caps: List(String)) -> VNode(Msg):
-    if list.is_empty(caps):
+    if caps.is_empty():
         glamour.element("span", [glamour.prop("class", "needs")], [glamour.element("span", [glamour.prop("class", "chip-sm cap-none")], [glamour.text("no authority")])])
     else:
         var cs = []
@@ -156,12 +156,12 @@ fn parse_runes(data: String) -> List(Json):
 
 // A rune matches the filter if its name, author, or any footprint capability contains the query.
 fn rune_matches(name: String, caps: List(String), author: String, q: String) -> Bool:
-    if string.contains(string.to_lower(name), q) || string.contains(string.to_lower(author), q):
+    if name.to_lower().contains(q) || author.to_lower().contains(q):
         true
     else:
         var hit = false
         for c in caps:
-            if string.contains(string.to_lower(c), q):
+            if c.to_lower().contains(q):
                 hit = true
         hit
 
@@ -169,7 +169,7 @@ fn rune_matches(name: String, caps: List(String), author: String, q: String) -> 
 fn version_view(route: String, data: String, sess: String) -> VNode(Msg):
     let (name, ver) = name_ver(route)
     let rows = record_rows(data)
-    let controls = if string.is_empty(sess): glamour.element("p", [glamour.prop("class", "muted")], [glamour.text("sign in to promote or yank")]) else: glamour.element("div", [glamour.prop("class", "promote")], [glamour.element("button", [glamour.prop("class", "button"), glamour.on("click", Promote)], [glamour.text("promote")]), glamour.element("button", [glamour.prop("class", "button"), glamour.on("click", Yank)], [glamour.text("yank")])])
+    let controls = if sess.is_empty(): glamour.element("p", [glamour.prop("class", "muted")], [glamour.text("sign in to promote or yank")]) else: glamour.element("div", [glamour.prop("class", "promote")], [glamour.element("button", [glamour.prop("class", "button"), glamour.on("click", Promote)], [glamour.text("promote")]), glamour.element("button", [glamour.prop("class", "button"), glamour.on("click", Yank)], [glamour.text("yank")])])
 
     glamour.element("article", [glamour.prop("class", "version")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/"))], [glamour.text("← all runes")]), glamour.element("h1", [], [glamour.text(unwire(name)), glamour.element("span", [glamour.prop("class", "ver")], [glamour.text("v${ver}")])]), record_subhead(data), glamour.element("dl", [glamour.prop("class", "record")], rows), controls, glamour.element("div", [glamour.prop("class", "viewlinks")], [glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/d/${name}/${ver}"))], [glamour.text("API documentation →")]), glamour.element("button", [glamour.prop("class", "button link"), glamour.on("click", Visit("/s/${name}/${ver}"))], [glamour.text("source →")])])])
 
@@ -209,10 +209,10 @@ fn record_rows(data: String) -> List(VNode(Msg)):
     match json.decode(data):
         Ok(doc) ->
             var rows = []
-            rows = list.concat(rows, dt_chips("footprint", json.get_strings(doc, "runtime_footprint")))
-            rows = list.concat(rows, row("determinism", json.get_string(doc, "determinism").unwrap_or("?")))
-            rows = list.concat(rows, row("provenance", json.get_string(doc, "provenance").unwrap_or("?")))
-            rows = list.concat(rows, row("hash", json.get_string(doc, "hash").unwrap_or("?")))
+            rows = rows.concat(dt_chips("footprint", json.get_strings(doc, "runtime_footprint")))
+            rows = rows.concat(row("determinism", json.get_string(doc, "determinism").unwrap_or("?")))
+            rows = rows.concat(row("provenance", json.get_string(doc, "provenance").unwrap_or("?")))
+            rows = rows.concat(row("hash", json.get_string(doc, "hash").unwrap_or("?")))
             rows
         Err(_e) -> []
 
@@ -224,7 +224,7 @@ fn docs_view(data: String) -> VNode(Msg):
     glamour.element("article", [glamour.prop("class", "apidocs")], [markdown.to_vnode(md)])
 
 fn trust_view(data: String) -> VNode(Msg):
-    let rootpub = if string.is_empty(data): "loading…" else: data
+    let rootpub = if data.is_empty(): "loading…" else: data
     glamour.element("article", [glamour.prop("class", "trust")], [glamour.element("h1", [], [glamour.text("Registry trust (TUF)")]), glamour.element("dl", [glamour.prop("class", "record")], row("root key", rootpub))])
 
 // --- small view helpers ------------------------------------------------------
@@ -235,7 +235,7 @@ fn dt_chips(label: String, caps: List(String)) -> List(VNode(Msg)):
     [glamour.element("dt", [], [glamour.text(label)]), glamour.element("dd", [], [chips(caps)])]
 
 fn chips(caps: List(String)) -> VNode(Msg):
-    if list.is_empty(caps):
+    if caps.is_empty():
         glamour.element("span", [glamour.prop("class", "chip cap-none")], [glamour.text("no authority")])
     else:
         var cs = []
@@ -247,32 +247,32 @@ fn chips(caps: List(String)) -> VNode(Msg):
 // (foreign Js code, Exec, Net egress, filesystem, secrets) get their own conspicuous hue,
 // the benign ambient ones (Console/Clock/Env/Random) read as plain.
 fn cap_kind(c: String) -> String:
-    let lc = string.to_lower(c)
-    if string.starts_with(lc, "js"):
+    let lc = c.to_lower()
+    if lc.starts_with("js"):
         "js"
-    else if string.starts_with(lc, "exec"):
+    else if lc.starts_with("exec"):
         "exec"
-    else if string.starts_with(lc, "net"):
+    else if lc.starts_with("net"):
         "net"
-    else if string.starts_with(lc, "file") || string.starts_with(lc, "dir"):
+    else if lc.starts_with("file") || lc.starts_with("dir"):
         "fs"
-    else if string.starts_with(lc, "secret"):
+    else if lc.starts_with("secret"):
         "secret"
     else:
         "plain"
 
 // --- path helpers ------------------------------------------------------------
 fn wire(name: String) -> String:
-    string.replace(name, "/", "~")
+    name.replace("/", "~")
 
 fn unwire(w: String) -> String:
-    string.replace(w, "~", "/")
+    w.replace("~", "/")
 
 // "/v/<name>/<version>" or "/d/<name>/<version>" -> (name, version). `name` stays wire-encoded.
 fn name_ver(path: String) -> (String, String):
-    let rest = string.drop(path, 3)
-    if string.contains(rest, "/"):
-        string.split_once(rest, "/")
+    let rest = path.drop(3)
+    if rest.contains("/"):
+        rest.split_once("/")
     else:
         (rest, "")
 

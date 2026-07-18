@@ -3,27 +3,24 @@
 // A staple of text formatting, in a few lines of pure string handling. Pure
 // (Console only); identical interpreted and compiled. Run:
 //   witchy examples/wrap/src/wrap.witchy
-
-import string
-
 fn main(console: Console):
     let text = "The quick brown fox jumps over the lazy dog and then keeps on running far away"
     let width = 20
     console.print("wrapped to ${width} columns:")
     for line in wrap(text, width):
-        console.print("| " + string.pad_right(line, width, " ") + " |")
+        console.print("| " + line.pad_right(width, " ") + " |")
 
 pub fn wrap(text: String, width: Int) -> List(String):
     var lines = []
     var current = ""
-    for word in string.words(text):
-        if string.length(current) == 0:
+    for word in text.words():
+        if current.length() == 0:
             current = word
-        else if string.char_count(current) + 1 + string.char_count(word) <= width:
+        else if current.char_count() + 1 + word.char_count() <= width:
             current = current + " " + word
         else:
-            list.push(lines, current)
+            lines.push(current)
             current = word
-    if string.length(current) > 0:
-        list.push(lines, current)
+    if current.length() > 0:
+        lines.push(current)
     lines

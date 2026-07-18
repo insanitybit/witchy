@@ -134,8 +134,8 @@ fn main(console: Console):
     let ps = [Point(1, 2), Point(3, 4), Point(5, 6)]
     var total = 0
     var i = 0
-    while i < list.length(ps):
-        total = total + list.at(ps, i).x + list.at(ps, i).y
+    while i < ps.length():
+        total = total + ps.at(i).x + ps.at(i).y
         i = i + 1
     console.print("${total}")
 ```

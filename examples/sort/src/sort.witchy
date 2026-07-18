@@ -1,12 +1,8 @@
-// Sorting with a comparator closure. `list.sort_by` is generic over the element
+// Sorting with a comparator closure. `.sort_by` is generic over the element
 // type and takes an "is-less-than" function, so the same sort produces ascending
 // or descending order depending on the closure passed in.
-
-import list
-import string
-
 pub fn show(xs: List(Int)) -> String:
-    list.join(xs.map(fn(n: Int): "${n}"), ",")
+    xs.map(fn(n: Int): "${n}").join(",")
 
 fn main(console: Console):
     let nums = [3, 1, 4, 1, 5]

@@ -4,9 +4,6 @@
 // graph has a cycle. The graph is just a node list and an edge list, so it stays
 // pure data — and pure (Console only), so it runs identically on both backends.
 // Run:  witchy examples/toposort/src/toposort.witchy
-
-import string
-
 fn main(console: Console):
     let nodes = ["boot", "config", "db", "cache", "api", "web"]
     let edges = [("boot", "config"), ("config", "db"), ("config", "cache"), ("db", "api"), ("cache", "api"), ("api", "web")]
@@ -19,7 +16,7 @@ fn main(console: Console):
 
 fn show(result: Result(List(String), String)) -> String:
     match result:
-        Ok(order) -> list.join(order, " -> ")
+        Ok(order) -> order.join(" -> ")
         Err(message) -> "error: " + message
 
 // Emit nodes whose prerequisites are all already emitted, one at a time in node
@@ -27,12 +24,12 @@ fn show(result: Result(List(String), String)) -> String:
 pub fn toposort(nodes: List(String), edges: List((String, String))) -> Result(List(String), String):
     var order = []
     var stuck = false
-    while list.length(order) < list.length(nodes) && !stuck:
+    while order.length() < nodes.length() && !stuck:
         match next_ready(nodes, edges, order):
-            Some(node) -> list.push(order, node)
+            Some(node) -> order.push(node)
             None -> stuck = true
     if stuck:
-        Err("cycle among " + list.join(remaining(nodes, order), ", "))
+        Err("cycle among " + remaining(nodes, order).join(", "))
     else:
         Ok(order)
 
@@ -57,7 +54,7 @@ fn remaining(nodes: List(String), emitted: List(String)) -> List(String):
     var out = []
     for node in nodes:
         if !member(emitted, node):
-            list.push(out, node)
+            out.push(node)
     out
 
 fn member(xs: List(String), x: String) -> Bool:

@@ -20,7 +20,6 @@ import crypto
 import secretstore
 import fs
 import toml
-import string
 import rights
 import coven_validate
 import coven_footprint
@@ -213,7 +212,7 @@ fn main(console: Console, net: Net, root: Dir, secrets: SecretStore, clock: Cloc
     serve(console, net, root, secrets.require("signing"), clock, args)
 
 fn serve(console: Console, net: Net, root: Dir, key: Secret, clock: Clock, args: List(String)):
-    let addr = if list.length(args) > 0: list.at(args, 0) else: "127.0.0.1:8787"
+    let addr = if args.length() > 0: args.at(0) else: "127.0.0.1:8787"
     let issuers = parse_issuers(args)
     fs.ensure_dir(root, "registry")
     let c = Coven(root.subtree("registry"), key, clock, issuers)
@@ -231,13 +230,13 @@ fn serve(console: Console, net: Net, root: Dir, key: Secret, clock: Clock, args:
         .post("/coven/publish", c.route_publish())
         .post("/coven/promote", c.route_promote())
         .post("/coven/yank", c.route_yank())
-    console.print("coven serving at http://${addr}  (root key ${crypto.public_key(key)}; ${list.length(issuers)} trusted issuer(s))")
+    console.print("coven serving at http://${addr}  (root key ${crypto.public_key(key)}; ${issuers.length()} trusted issuer(s))")
 
     server.serve(net, addr, app)
 
 fn parse_issuers(args: List(String)) -> List(Issuer):
     var out = []
-    for a in list.drop(args, 1):
+    for a in args.drop(1):
         out.push(parse_issuer_arg(a))
     out
 
@@ -245,11 +244,11 @@ fn parse_issuers(args: List(String)) -> List(Issuer):
 // unparseable JWKS) must FAIL LOUDLY rather than parse to nothing and silently start the
 // registry with fewer — or zero — trusted issuers (which would quietly make it anonymous).
 fn parse_issuer_arg(a: String) -> Issuer:
-    if !string.contains(a, "="):
+    if !a.contains("="):
         fail("coven: malformed trusted-issuer argument `${a}` (expected `issuer=pubkeyhex` or `issuer=jwks:<json>`)")
-    let (id, value) = string.split_once(a, "=")
-    if string.starts_with(value, "jwks:"):
-        let (_tag, jwks_json) = string.split_once(value, ":")
+    let (id, value) = a.split_once("=")
+    if value.starts_with("jwks:"):
+        let (_tag, jwks_json) = value.split_once(":")
         match json.decode(jwks_json):
             Ok(jwks) -> Issuer(id, "", Some(jwks))
             Err(e) -> bad_issuer("coven: malformed JWKS for issuer `${id}`: ${json.decode_error_message(e)}")
@@ -349,7 +348,7 @@ impl Coven:
         // the under-declaration gate.
         let computed = coven_footprint.computed_footprint(files).map_err(fn(e: coven_footprint.FootprintError): CovenError(400, "coven could not compute the capability footprint from source: ${coven_footprint.footprint_error_message(e)}"))?
         let gap = rights.uncovered(toml.get_array(manifest, "capabilities.runtime"), computed)
-        require(string.is_empty(list.join(gap, ", ")), 400, "declared [capabilities] does not cover what the source demands (${list.join(gap, ", ")}) — coven recomputes and will not publish an under-declared rune")?
+        require(gap.join(", ").is_empty(), 400, "declared [capabilities] does not cover what the source demands (${gap.join(", ")}) — coven recomputes and will not publish an under-declared rune")?
         let hash = coven_store.content_hash(files)
         // idiom-exempt: the anonymous branch defines signed provenance bytes.
         let provenance = match claims:
@@ -374,8 +373,8 @@ impl Coven:
         require(coven_validate.valid_version(req.version), 400, "invalid version `${req.version}`")?
         require(coven_store.record_exists(self.store, req.name, req.version), 404, "${req.name}@${req.version} not found")?
         let (promoter, claims, factor) = self.authorized_promoter(req, self.clock.now() / 1000)?
-        require(!string.is_empty(promoter), 400, "promotion requires an authenticated promoter identity")?
-        require(!string.is_empty(factor), 400, "promotion requires a second factor (the out-of-band 2FA event) — refusing to release")?
+        require(!promoter.is_empty(), 400, "promotion requires an authenticated promoter identity")?
+        require(!factor.is_empty(), 400, "promotion requires a second factor (the out-of-band 2FA event) — refusing to release")?
         let resp = self.promote_checked(req.name, req.version, factor, promoter, claims)?
         // BUG-281: bind the TOFU maintainer only now the promote has actually succeeded.
         if let Some(c) = claims:
@@ -428,14 +427,14 @@ impl Coven:
         coven_meta.rebuild(self.store, self.key, self.clock.now() / 1000)
 
     fn authorized_publisher(self, req: PublishRequest, now: Int, name: String) -> Result((String, Option(Json)), CovenError):
-        if list.length(self.issuers) == 0:
+        if self.issuers.length() == 0:
             Ok((if req.uploaded_by.is_empty(): "anonymous" else: req.uploaded_by, None))
         else:
             let claims = verified_claims(self.issuers, req.id_token, now, "publishing to a trusted registry requires a short-lived identity token (long-lived API tokens are not accepted)")?
             // SEC/BUG-411: the publisher identity is the token's `sub`; an empty subject is
             // not an identity — refuse it (it would also collapse separation-of-duties, as
             // `promoter != "" == uploaded_by` could be trivially satisfied).
-            require(!string.is_empty(coven_json.str(claims, "sub")), 403, "identity token carries no subject (`sub`) claim")?
+            require(!coven_json.str(claims, "sub").is_empty(), 403, "identity token carries no subject (`sub`) claim")?
             // SEC-022/BUG-419: the single-use replay check runs BEFORE any namespace-policy
             // binding, so a REPLAYED token can never bind (or rebind) namespace trust state —
             // the write only happens for a token that is fresh.
@@ -449,7 +448,7 @@ impl Coven:
         // a jti-less token replayable). The marker is keyed by sha256(jti) so an issuer-chosen
         // id can never escape `_policy/` via path traversal.
         let jti = coven_trust.claim(claims, "jti")
-        require(!string.is_empty(jti), 403, "identity token has no `jti` claim — a single-use token id is required (replay defense)")?
+        require(!jti.is_empty(), 403, "identity token has no `jti` claim — a single-use token id is required (replay defense)")?
         let marker = "_policy/_jti/${crypto.sha256(jti)}"
         require(!self.store.exists(marker), 403, "identity token already used — single-use replay refused")?
         fs.ensure_dir(self.store, "_policy/_jti")
@@ -462,8 +461,8 @@ impl Coven:
         if !self.store.exists(pubfile):
             let repo = coven_trust.claim(claims, "repository")
             let wf = coven_trust.claim(claims, "workflow_ref")
-            require(!string.is_empty(repo) && !string.is_empty(wf), 403, "cannot bind `${ns}`: the identity token carries no repository/workflow_ref claims (trusted publishing requires a CI identity)")?
-            require(!string.contains(repo, "/") || ns == coven_trust.namespace_of(repo), 403, "namespace `${ns}` does not match the token's repository org `${coven_trust.namespace_of(repo)}`")?
+            require(!repo.is_empty() && !wf.is_empty(), 403, "cannot bind `${ns}`: the identity token carries no repository/workflow_ref claims (trusted publishing requires a CI identity)")?
+            require(!repo.contains("/") || ns == coven_trust.namespace_of(repo), 403, "namespace `${ns}` does not match the token's repository org `${coven_trust.namespace_of(repo)}`")?
             fs.ensure_dir(self.store, "_policy/${ns}")
             self.store.write(pubfile, json.encode(JsonObject([("issuer", JsonString(coven_json.str(claims, "iss"))), ("repository", JsonString(repo)), ("workflow_ref", JsonString(wf))])))
             Ok(coven_json.str(claims, "sub"))
@@ -476,7 +475,7 @@ impl Coven:
                 Ok(policy) -> enforce_publish_policy(policy, claims, ns)
 
     fn authorized_promoter(self, req: PromoteRequest, now: Int) -> Result((String, Option(Json), String), CovenError):
-        if list.length(self.issuers) == 0:
+        if self.issuers.length() == 0:
             Ok((req.promoted_by, None, req.second_factor))
         else:
             let claims = verified_claims(self.issuers, req.id_token, now, "promoting on a trusted registry requires a short-lived identity token")?
@@ -512,7 +511,7 @@ impl Coven:
             self.store.write(mfile, json.encode(JsonArray([JsonString(id)])))
 
     fn authorized_yanker(self, name: String, id_token: Option(String), now: Int) -> Result(String, CovenError):
-        if list.length(self.issuers) == 0:
+        if self.issuers.length() == 0:
             Ok("anonymous")
         else:
             let claims = verified_claims(self.issuers, id_token, now, "yanking on a trusted registry requires a short-lived identity token")?
@@ -548,7 +547,7 @@ impl Coven:
         var md = ""
         // idiom-exempt: docs are accumulated as byte-exact rendered chunks.
         for path, text in files:
-            if string.ends_with(path, ".witchy"):
+            if path.ends_with(".witchy"):
                 md = md + compiler.doc(name, text) + "\n"
         Ok(server.send(200, .{markdown: md}))
 
@@ -557,7 +556,7 @@ fn verified_claims(issuers: List(Issuer), id_token: Option(String), now: Int, mi
     coven_trust.verify_token(issuers, token, now).map_err(fn(e: coven_trust.TokenError): CovenError(401, coven_trust.token_error_message(e)))
 
 fn enforce_publish_policy(policy: Json, claims: Json, ns: String) -> Result(String, CovenError):
-    if string.is_empty(coven_json.str(policy, "repository")) || string.is_empty(coven_json.str(policy, "workflow_ref")):
+    if coven_json.str(policy, "repository").is_empty() || coven_json.str(policy, "workflow_ref").is_empty():
         Err(CovenError(403, "namespace `${ns}` has an incomplete trust policy; rebind it from a CI identity"))
     else if coven_json.str(policy, "issuer") != coven_json.str(claims, "iss"):
         Err(CovenError(403, "namespace `${ns}` trusts issuer `${coven_json.str(policy, "issuer")}`, not `${coven_json.str(claims, "iss")}`"))

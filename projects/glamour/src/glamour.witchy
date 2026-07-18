@@ -334,7 +334,7 @@ pub fn http_post(fetch: UiFetch, url: String, body: String, on_done: String) -> 
 fn fetch_cmd(fetch: UiFetch, method: String, url: String, body: String, on_done: String) -> Cmd(msg):
     match fetch:
         UiFetch(_scope, methods, prefix) ->
-            if method_allowed(methods, method) && string.starts_with(url, prefix):
+            if method_allowed(methods, method) && url.starts_with(prefix):
                 Http(fetch, method, url, body, on_done)
             else:
                 NoCmd
@@ -356,7 +356,7 @@ pub fn navigate(route: UiRoute, path: String) -> Cmd(msg):
     // authorized base is FAIL CLOSED to `NoCmd`. The host re-checks the wired `base`.
     match route:
         UiRoute(base, _rights) ->
-            if string.starts_with(path, base):
+            if path.starts_with(base):
                 Nav(route, path)
             else:
                 NoCmd
@@ -433,7 +433,7 @@ fn render_element(tag: String, attrs: List(Attr(msg)), children: List(VNode(msg)
         out = out + " data-glamour-invalid-tag=\"" + escape_attr(tag) + "\""
     for a in attrs:
         out = out + render_attr(a)
-    if list.is_empty(children):
+    if children.is_empty():
         out + "></" + emit_tag + ">"
     else:
         out = out + ">"
@@ -479,15 +479,15 @@ fn valid_attr_name(name: String) -> Bool:
     valid_name_with(name, name_alpha() + "0123456789-_:.")
 
 fn valid_name_with(name: String, allowed_rest: String) -> Bool:
-    if string.is_empty(name):
+    if name.is_empty():
         false
     else:
-        let cs = string.chars(name)
-        var ok = string.contains(name_alpha(), list.at(cs, 0))
+        let cs = name.chars()
+        var ok = name_alpha().contains(cs.at(0))
         var i = 1
-        let n = list.length(cs)
+        let n = cs.length()
         while i < n:
-            if !string.contains(allowed_rest, list.at(cs, i)):
+            if !allowed_rest.contains(cs.at(i)):
                 ok = false
             i = i + 1
         ok
@@ -502,15 +502,15 @@ fn valid_name_with(name: String, allowed_rest: String) -> Bool:
 // Escape text content: the four characters that could otherwise be parsed as
 // markup. This is the load-bearing line for XSS-immunity being observable.
 fn escape_text(s: String) -> String:
-    var out = string.replace(s, "&", "&amp;")
-    out = string.replace(out, "<", "&lt;")
-    out = string.replace(out, ">", "&gt;")
+    var out = s.replace("&", "&amp;")
+    out = out.replace("<", "&lt;")
+    out = out.replace(">", "&gt;")
     out
 
 // Escape an attribute value: as text, plus the quote that delimits the value.
 fn escape_attr(s: String) -> String:
     var out = escape_text(s)
-    out = string.replace(out, "\"", "&quot;")
+    out = out.replace("\"", "&quot;")
     out
 
 // (BUG-272) A compartment renderer id must be a REGISTRY KEY, never URL path material:
@@ -520,17 +520,17 @@ fn escape_attr(s: String) -> String:
 // host re-checks the same grammar at the live iframe sink.
 fn valid_renderer_id(id: String) -> Bool:
     // idiom-exempt: these literals define the renderer-id character set.
-    if string.is_empty(id):
+    if id.is_empty():
         false
     else:
-        let cs = string.chars(id)
+        let cs = id.chars()
         let lead = "abcdefghijklmnopqrstuvwxyz0123456789"
         let rest = lead + "-_"
-        var ok = string.contains(lead, list.at(cs, 0))
+        var ok = lead.contains(cs.at(0))
         var i = 1
-        let n = list.length(cs)
+        let n = cs.length()
         while i < n:
-            if !string.contains(rest, list.at(cs, i)):
+            if !rest.contains(cs.at(i)):
                 ok = false
             i = i + 1
         ok
@@ -545,8 +545,8 @@ fn slot_encode(form: String, field: String) -> String:
     slot_escape(form) + "/" + slot_escape(field)
 
 fn slot_escape(s: String) -> String:
-    var out = string.replace(s, "%", "%25")
-    out = string.replace(out, "/", "%2F")
+    var out = s.replace("%", "%25")
+    out = out.replace("/", "%2F")
     out
 
 // (BUG-017) A fetch token's method-set membership test. `methods` is a set spelled with any of
@@ -554,8 +554,8 @@ fn slot_escape(s: String) -> String:
 // if it appears as a whole token. Case-normalized to the uppercase HTTP-verb convention.
 fn method_allowed(methods: String, method: String) -> Bool:
     // idiom-exempt: delimiters make the comma-separated membership check exact.
-    let norm = string.replace(string.replace(string.to_upper(methods), " ", ","), "|", ",")
-    string.contains("," + norm + ",", "," + string.to_upper(method) + ",")
+    let norm = methods.to_upper().replace(" ", ",").replace("|", ",")
+    ("," + norm + ",").contains("," + method.to_upper() + ",")
 
 // ===========================================================================
 // The WIRE FORMAT — serialize a VNode tree to JSON the JS DOM host shell
@@ -749,7 +749,7 @@ pub fn html(parts: List(String), holes: List(String)) -> String:
 fn reject_static_nul(parts: List(String)) -> Bool:
     let nul = string.from_code(0)
     for part in parts:
-        if string.contains(part, nul):
+        if part.contains(nul):
             let _bad = fail("glamour html: NUL is not allowed in static template text")
     true
 
@@ -758,11 +758,11 @@ fn reject_static_nul(parts: List(String)) -> Bool:
 // (indentation/newlines around the template) are ignored. Returns `true` when clean; `fail`s
 // at comptime otherwise.
 fn no_trailing_tokens(toks: List(HtmlTok), from: Int) -> Bool:
-    let n = list.length(toks)
+    let n = toks.length()
     var i = from
     while i < n:
-        if let TextRun(s) = list.at(toks, i):
-            if !string.is_empty(string.trim(s)):
+        if let TextRun(s) = toks.at(i):
+            if !s.trim().is_empty():
                 let _b = fail("glamour html: content after the root element — a template must have a single root")
         else:
             let _b2 = fail("glamour html: more than one root element — wrap the roots in a single parent")
@@ -777,7 +777,7 @@ fn weave(parts: List(String)) -> String:
     let nul = string.from_code(0)
     var out = ""
     var i = 0
-    let n = list.length(parts)
+    let n = parts.length()
     for p in parts:
         out = out + p
         if i < n - 1:
@@ -817,24 +817,24 @@ type HAttr:
 // `on:event=${N}` written with a static literal is rejected at parse time;
 // a forbidden attribute shape becomes `Bad(message)`.
 fn lex_html(s: String) -> List(HtmlTok):
-    let cs = string.chars(s)
-    let n = list.length(cs)
+    let cs = s.chars()
+    let n = cs.length()
     var out = []
     var i = 0
     var text = ""
     let nul = string.from_code(0)
     while i < n:
-        let c = list.at(cs, i)
+        let c = cs.at(i)
         if c == nul:
             // A hole marker `<NUL>N<NUL>` in TEXT position.
-            if string.length(text) > 0:
+            if text.length() > 0:
                 out.push(TextRun(text))
                 text = ""
             let (idx, j) = read_marker(cs, i, nul)
             out.push(HoleNode(idx))
             i = j
         else if c == "<":
-            if string.length(text) > 0:
+            if text.length() > 0:
                 out.push(TextRun(text))
                 text = ""
             let (tok, j) = lex_tag(cs, i, nul)
@@ -843,7 +843,7 @@ fn lex_html(s: String) -> List(HtmlTok):
         else:
             text = text + c
             i = i + 1
-    if string.length(text) > 0:
+    if text.length() > 0:
         out.push(TextRun(text))
     out
 
@@ -852,39 +852,39 @@ fn lex_html(s: String) -> List(HtmlTok):
 fn read_marker(cs: List(String), i: Int, nul: String) -> (Int, Int):
     var j = i + 1
     var digits = ""
-    let n = list.length(cs)
-    while j < n && list.at(cs, j) != nul:
-        digits = digits + list.at(cs, j)
+    let n = cs.length()
+    while j < n && cs.at(j) != nul:
+        digits = digits + cs.at(j)
         j = j + 1
-    (string.to_int(digits), j + 1)
+    (digits.to_int(), j + 1)
 
 // Lex a `<...>` tag starting at the `<`. Returns (token, index after `>`).
 fn lex_tag(cs: List(String), start: Int, nul: String) -> (HtmlTok, Int):
-    let n = list.length(cs)
+    let n = cs.length()
     var i = start + 1
     // Closing tag `</name>`.
-    if i < n && list.at(cs, i) == "/":
+    if i < n && cs.at(i) == "/":
         i = i + 1
         var name = ""
-        while i < n && list.at(cs, i) != ">":
-            name = name + list.at(cs, i)
+        while i < n && cs.at(i) != ">":
+            name = name + cs.at(i)
             i = i + 1
-        (Close(string.trim(name)), i + 1)
+        (Close(name.trim()), i + 1)
     else:
         // Opening tag: read the name (up to whitespace, `>`, or `/`). A name that
         // is or contains a hole marker is FORBIDDEN.
         var name = ""
-        if i < n && list.at(cs, i) == nul:
+        if i < n && cs.at(i) == nul:
             // Tag name is a hole — forbidden. Emit an empty-named Open carrying a
             // marker the parser turns into a comptime `fail`.
             let (_idx, j) = read_marker(cs, i, nul)
             (Open("", [], false), j)
         else:
-            while i < n && !is_name_end(list.at(cs, i)):
-                name = name + list.at(cs, i)
+            while i < n && !is_name_end(cs.at(i)):
+                name = name + cs.at(i)
                 i = i + 1
             let (attrs, j, self_close) = lex_attrs(cs, i, nul)
-            (Open(string.trim(name), attrs, self_close), j)
+            (Open(name.trim(), attrs, self_close), j)
 
 fn is_name_end(c: String) -> Bool:
     c == " " || c == "\t" || c == "\n" || c == "\r" || c == ">" || c == "/"
@@ -895,11 +895,11 @@ fn is_ws(c: String) -> Bool:
 // Lex the attribute list after the tag name, up to (and consuming) `>` or `/>`.
 // Returns (attrs, index after `>`, self_closing?).
 fn lex_attrs(cs: List(String), start: Int, nul: String) -> (List(HAttr), Int, Bool):
-    let n = list.length(cs)
+    let n = cs.length()
     var i = start
     var attrs = []
     while i < n:
-        let c = list.at(cs, i)
+        let c = cs.at(i)
         if is_ws(c):
             i = i + 1
         else if c == ">":
@@ -915,30 +915,30 @@ fn lex_attrs(cs: List(String), start: Int, nul: String) -> (List(HAttr), Int, Bo
 
 // Lex a single `name=value` (or `on:event=value`) attribute.
 fn lex_one_attr(cs: List(String), start: Int, nul: String) -> (HAttr, Int):
-    let n = list.length(cs)
+    let n = cs.length()
     var i = start
     var name = ""
-    while i < n && !is_attr_name_end(list.at(cs, i)):
-        name = name + list.at(cs, i)
+    while i < n && !is_attr_name_end(cs.at(i)):
+        name = name + cs.at(i)
         i = i + 1
     // No `=value`: a bare/boolean attribute (unsupported in this subset).
-    if i >= n || list.at(cs, i) != "=":
+    if i >= n || cs.at(i) != "=":
         (Bad("attribute `${name}` has no value — boolean attributes are unsupported"), i)
     else:
         i = i + 1
         // Value: a bare `${N}` hole, a `"quoted"` value (static OR a single `"${N}"` hole),
         // or a bare token.
-        if i < n && list.at(cs, i) == nul:
+        if i < n && cs.at(i) == nul:
             let (idx, j) = read_marker(cs, i, nul)
             (hole_attr(name, idx), j)
-        else if i < n && list.at(cs, i) == "\"":
+        else if i < n && cs.at(i) == "\"":
             // (BUG-405) A quoted value: recognize the natural `href="${url}"` spelling as a
             // hole, not static text (which used to capture the NUL marker literally).
             lex_quoted_attr(cs, i, nul, name)
         else:
             let (value, j) = lex_attr_value(cs, i, nul)
             // A static value for an `on:` handler is rejected — events are data.
-            if string.starts_with(name, "on:"):
+            if name.starts_with("on:"):
                 (Bad("event `${name}` needs a \${msg} hole, not a static value"), j)
             else:
                 (SProp(name, value), j)
@@ -951,12 +951,12 @@ fn lex_one_attr(cs: List(String), start: Int, nul: String) -> (HAttr, Int):
 //                 expressions are intentionally designed.
 // Returns (attr, index after the closing quote).
 fn lex_quoted_attr(cs: List(String), start: Int, nul: String, name: String) -> (HAttr, Int):
-    let n = list.length(cs)
+    let n = cs.length()
     let body_start = start + 1
-    if body_start < n && list.at(cs, body_start) == nul:
+    if body_start < n && cs.at(body_start) == nul:
         // Leads with a hole marker: valid only if the closing quote immediately follows it.
         let (idx, after_marker) = read_marker(cs, body_start, nul)
-        if after_marker < n && list.at(cs, after_marker) == "\"":
+        if after_marker < n && cs.at(after_marker) == "\"":
             (hole_attr(name, idx), after_marker + 1)
         else:
             (Bad("attribute `${name}` mixes static text and a \${hole} in a quoted value — unsupported"), scan_to_quote(cs, after_marker))
@@ -966,15 +966,15 @@ fn lex_quoted_attr(cs: List(String), start: Int, nul: String, name: String) -> (
         var v = ""
         var has_hole = false
         var k = body_start
-        while k < n && list.at(cs, k) != "\"":
-            if list.at(cs, k) == nul:
+        while k < n && cs.at(k) != "\"":
+            if cs.at(k) == nul:
                 has_hole = true
-            v = v + list.at(cs, k)
+            v = v + cs.at(k)
             k = k + 1
         let after = k + 1
         if has_hole:
             (Bad("attribute `${name}` mixes static text and a \${hole} in a quoted value — unsupported"), after)
-        else if string.starts_with(name, "on:"):
+        else if name.starts_with("on:"):
             (Bad("event `${name}` needs a \${msg} hole, not a static value"), after)
         else:
             (SProp(name, v), after)
@@ -982,9 +982,9 @@ fn lex_quoted_attr(cs: List(String), start: Int, nul: String, name: String) -> (
 // Advance past the next closing `"` from `start` (used to resynchronize after a rejected
 // mixed quoted value). Returns the index just after the quote.
 fn scan_to_quote(cs: List(String), start: Int) -> Int:
-    let n = list.length(cs)
+    let n = cs.length()
     var i = start
-    while i < n && list.at(cs, i) != "\"":
+    while i < n && cs.at(i) != "\"":
         i = i + 1
     i + 1
 
@@ -992,27 +992,27 @@ fn is_attr_name_end(c: String) -> Bool:
     c == "=" || is_ws(c) || c == ">" || c == "/"
 
 fn hole_attr(name: String, idx: Int) -> HAttr:
-    if string.starts_with(name, "on:"):
-        HOn(string.drop(name, 3), idx)
+    if name.starts_with("on:"):
+        HOn(name.drop(3), idx)
     else:
         HProp(name, idx)
 
 // Read a static attribute value: `"quoted"` (may contain a hole marker? no — a
 // holed value is handled by the caller) or a bare token up to whitespace/`>`.
 fn lex_attr_value(cs: List(String), start: Int, nul: String) -> (String, Int):
-    let n = list.length(cs)
+    let n = cs.length()
     var i = start
-    if i < n && list.at(cs, i) == "\"":
+    if i < n && cs.at(i) == "\"":
         i = i + 1
         var v = ""
-        while i < n && list.at(cs, i) != "\"":
-            v = v + list.at(cs, i)
+        while i < n && cs.at(i) != "\"":
+            v = v + cs.at(i)
             i = i + 1
         (v, i + 1)
     else:
         var v = ""
-        while i < n && !is_name_end(list.at(cs, i)):
-            v = v + list.at(cs, i)
+        while i < n && !is_name_end(cs.at(i)):
+            v = v + cs.at(i)
             i = i + 1
         (v, i)
 
@@ -1020,12 +1020,12 @@ fn lex_attr_value(cs: List(String), start: Int, nul: String) -> (String, Int):
 
 // Parse the node starting at token `at`. Returns (source, index after the node).
 fn parse_node(toks: List(HtmlTok), at: Int, holes: List(String)) -> (String, Int):
-    let n = list.length(toks)
+    let n = toks.length()
     if at >= n:
         fail("glamour html: empty template — expected a single root element")
         ("", at)
     else:
-        match list.at(toks, at):
+        match toks.at(at):
             TextRun(s) -> (emit_text_literal(s), at + 1)
             HoleNode(idx) -> (emit_text_hole(idx, holes), at + 1)
             Close(name) ->
@@ -1035,7 +1035,7 @@ fn parse_node(toks: List(HtmlTok), at: Int, holes: List(String)) -> (String, Int
 
 fn parse_element(toks: List(HtmlTok), at: Int, name: String, attrs: List(HAttr), self_close: Bool, holes: List(String)) -> (String, Int):
     // idiom-exempt: this parser emits Witchy source and must preserve quoting byte-for-byte.
-    if string.length(name) == 0:
+    if name.length() == 0:
         let _bad = fail("glamour html: a tag NAME may not be a \${hole} — the element name must be static")
         ("", at + 1)
     else:
@@ -1049,7 +1049,7 @@ fn parse_element(toks: List(HtmlTok), at: Int, name: String, attrs: List(HAttr),
 // Parse children until the matching `</name>`. Returns (comma-joined child
 // sources, index after the close tag).
 fn parse_children(toks: List(HtmlTok), at: Int, name: String, holes: List(String)) -> (String, Int):
-    let n = list.length(toks)
+    let n = toks.length()
     var i = at
     var kids = []
     var done = false
@@ -1059,7 +1059,7 @@ fn parse_children(toks: List(HtmlTok), at: Int, name: String, holes: List(String
         // ANY `</…>`, so `<div><span>x</div>` (mismatched) and `<div><span>x` (missing close,
         // ending at EOF) both silently "succeeded". Compare the name and fail on a mismatch;
         // an unterminated element (EOF before its close) is caught by `!closed` below.
-        if let Close(close_name) = list.at(toks, i):
+        if let Close(close_name) = toks.at(i):
             if close_name == name:
                 closed = true
             else:
@@ -1072,7 +1072,7 @@ fn parse_children(toks: List(HtmlTok), at: Int, name: String, holes: List(String
             i = j
     if !closed:
         let _bad2 = fail("glamour html: unclosed <${name}> — missing its </${name}>")
-    (list.join(kids, ", "), i)
+    (kids.join(", "), i)
 
 // ---- emitters: produce witchy expression SOURCE ----
 
@@ -1083,7 +1083,7 @@ fn parse_children(toks: List(HtmlTok), at: Int, name: String, holes: List(String
 fn emit_text_literal(s: String) -> String:
     "glamour.text(\"" + escape_src(s) + "\")"
 
-// A text-position hole -> `glamour.text(<marker>)`. `list.at(holes, idx)` is the
+// A text-position hole -> `glamour.text(<marker>)`. `holes.at(idx)` is the
 // opaque `__witchy_hole_idx` token; `tagged::expand` substitutes the real hole
 // expression there. This is the SIMPLEST CORRECT rule and the security crux: the
 // hole is ALWAYS wrapped in `glamour.text(...)`, so a String hole becomes an inert
@@ -1093,19 +1093,19 @@ fn emit_text_literal(s: String) -> String:
 // `${node}` — is a documented later refinement (it needs the tag to emit the hole
 // unwrapped when its type is `VNode`).
 fn emit_text_hole(idx: Int, holes: List(String)) -> String:
-    "glamour.text(" + list.at(holes, idx) + ")"
+    "glamour.text(" + holes.at(idx) + ")"
 
 fn emit_attrs(attrs: List(HAttr), holes: List(String)) -> String:
     var srcs = []
     for a in attrs:
         srcs.push(emit_attr(a, holes))
-    list.join(srcs, ", ")
+    srcs.join(", ")
 
 fn emit_attr(a: HAttr, holes: List(String)) -> String:
     match a:
         SProp(name, value) -> "glamour.prop(\"" + escape_src(name) + "\", \"" + escape_src(value) + "\")"
-        HProp(name, idx) -> "glamour.prop(\"" + escape_src(name) + "\", " + list.at(holes, idx) + ")"
-        HOn(event, idx) -> "glamour.on(\"" + escape_src(event) + "\", " + list.at(holes, idx) + ")"
+        HProp(name, idx) -> "glamour.prop(\"" + escape_src(name) + "\", " + holes.at(idx) + ")"
+        HOn(event, idx) -> "glamour.on(\"" + escape_src(event) + "\", " + holes.at(idx) + ")"
         Bad(msg) ->
             let _bad = fail("glamour html: ${msg}")
             ""
@@ -1113,6 +1113,6 @@ fn emit_attr(a: HAttr, holes: List(String)) -> String:
 // Escape a string so it can be re-parsed as a witchy string LITERAL (the emitted
 // source is parsed by the compiler). Backslash first, then quote.
 fn escape_src(s: String) -> String:
-    var out = string.replace(s, "\\", "\\\\")
-    out = string.replace(out, "\"", "\\\"")
+    var out = s.replace("\\", "\\\\")
+    out = out.replace("\"", "\\\"")
     out

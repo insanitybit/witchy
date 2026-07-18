@@ -27,8 +27,8 @@ fn update(m: Model, msg: Msg, fetch: UiFetch, route_cap: UiRoute) -> (Model, Cmd
         Model(route, cat, pkg) ->
             match msg:
                 Route(path) ->
-                    if string.starts_with(path, "/p/"):
-                        let name = string.drop(path, 3)
+                    if path.starts_with("/p/"):
+                        let name = path.drop(3)
                         (Model(path, cat, pkg), glamour.http_get(fetch, "/api/coven/doc?name=${name}", "GotPackage"))
                     else:
                         (Model("/", cat, pkg), glamour.http_get(fetch, "/api/coven/catalog", "GotCatalog"))
@@ -67,7 +67,7 @@ fn package_view(pkg: String) -> VNode(Msg):
 fn view(m: Model) -> VNode(Msg):
     match m:
         Model(route, cat, pkg) ->
-            if string.starts_with(route, "/p/"):
+            if route.starts_with("/p/"):
                 package_view(pkg)
             else:
                 catalog_view(cat)

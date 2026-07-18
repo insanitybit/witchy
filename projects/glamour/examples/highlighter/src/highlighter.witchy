@@ -16,7 +16,6 @@
 // shell (web/witchy-runtime/glamour-dom.mjs) diffs into the DOM. The rune holds NO
 // capability — `witchy caps .../highlighter.witchy` reports `export_render (none)`.
 
-import string
 import list
 from glamour import VNode
 from json import Json
@@ -50,7 +49,7 @@ type Token:
 // highlighter doesn't need the full grammar, just the words a reader expects in
 // a color. Looked up per identifier; plain identifiers fall through to "".
 fn is_keyword(word: String) -> Bool:
-    list.contains(keywords(), word)
+    keywords().contains(word)
 
 fn keywords() -> List(String):
     ["fn", "let", "var", "if", "else", "match", "type", "import", "pub", "for", "while", "return", "in", "where", "derive", "and", "or", "not", "true", "false", "async", "await", "spawn", "comptime", "gen", "yield", "as", "capability", "from", "test"]
@@ -60,19 +59,19 @@ fn keywords() -> List(String):
 // exactly the tokens that carry authority — fitting for coven-web, whose whole
 // job is making a rune's capability footprint visible.
 fn is_capability(word: String) -> Bool:
-    list.contains(capabilities(), word)
+    capabilities().contains(word)
 
 fn capabilities() -> List(String):
     ["Console", "Clock", "Env", "Secret", "SecretStore", "Dir", "Net", "Exec"]
 
 // Scan the whole source into a flat list of classed tokens.
 fn tokenize(src: String) -> List(Token):
-    let cs = string.chars(src)
-    let n = list.length(cs)
+    let cs = src.chars()
+    let n = cs.length()
     var toks: List(Token) = []
     var i = 0
     while i < n:
-        let c = list.at(cs, i)
+        let c = cs.at(i)
         if is_slash_slash(cs, i, n):
             // `//` line comment to end of line (the newline is left for plain text).
             let (text, j) = read_line_comment(cs, i, n)
@@ -103,14 +102,14 @@ fn tokenize(src: String) -> List(Token):
 
 // `//` at position `i`?
 fn is_slash_slash(cs: List(String), i: Int, n: Int) -> Bool:
-    list.at(cs, i) == "/" && i + 1 < n && list.at(cs, i + 1) == "/"
+    cs.at(i) == "/" && i + 1 < n && cs.at(i + 1) == "/"
 
 // Read `//` to the end of the line (not including the newline).
 fn read_line_comment(cs: List(String), start: Int, n: Int) -> (String, Int):
     var i = start
     var out = ""
-    while i < n && list.at(cs, i) != "\n":
-        out = out + list.at(cs, i)
+    while i < n && cs.at(i) != "\n":
+        out = out + cs.at(i)
         i = i + 1
     (out, i)
 
@@ -120,10 +119,10 @@ fn read_string(cs: List(String), start: Int, n: Int) -> (String, Int):
     var out = "\""
     var done = false
     while i < n && !done:
-        let c = list.at(cs, i)
+        let c = cs.at(i)
         if c == "\\" && i + 1 < n:
             // An escape: take the backslash and the escaped char verbatim.
-            out = out + c + list.at(cs, i + 1)
+            out = out + c + cs.at(i + 1)
             i = i + 2
         else:
             out = out + c
@@ -136,8 +135,8 @@ fn read_string(cs: List(String), start: Int, n: Int) -> (String, Int):
 fn read_number(cs: List(String), start: Int, n: Int) -> (String, Int):
     var i = start
     var out = ""
-    while i < n && is_number_char(list.at(cs, i)):
-        out = out + list.at(cs, i)
+    while i < n && is_number_char(cs.at(i)):
+        out = out + cs.at(i)
         i = i + 1
     (out, i)
 
@@ -145,8 +144,8 @@ fn read_number(cs: List(String), start: Int, n: Int) -> (String, Int):
 fn read_ident(cs: List(String), start: Int, n: Int) -> (String, Int):
     var i = start
     var out = ""
-    while i < n && is_ident_cont(list.at(cs, i)):
-        out = out + list.at(cs, i)
+    while i < n && is_ident_cont(cs.at(i)):
+        out = out + cs.at(i)
         i = i + 1
     (out, i)
 
@@ -156,7 +155,7 @@ fn read_plain(cs: List(String), start: Int, n: Int) -> (String, Int):
     var out = ""
     var done = false
     while i < n && !done:
-        let c = list.at(cs, i)
+        let c = cs.at(i)
         if c == "\"" || is_digit(c) || is_ident_start(c) || is_slash_slash(cs, i, n):
             done = true
         else:
@@ -178,7 +177,7 @@ fn is_ident_cont(c: String) -> Bool:
     is_alpha(c) || is_digit(c) || c == "_"
 
 fn is_alpha(c: String) -> Bool:
-    let lower = string.to_lower(c)
+    let lower = c.to_lower()
     lower >= "a" && lower <= "z"
 
 // ---------------------------------------------------------------------------
@@ -203,7 +202,7 @@ fn render_token(t: Token) -> VNode(Msg):
 
         // A classed run — `<span class="kind">text</span>`.
         Tok(kind, text) ->
-            if string.is_empty(kind):
+            if kind.is_empty():
                 glamour.text(text)
             else:
                 glamour.element("span", [glamour.prop("class", kind)], [glamour.text(text)])

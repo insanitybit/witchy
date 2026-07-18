@@ -1,9 +1,5 @@
 // `enumerate` pairs each element with its index; `zip` pairs two lists
 // element-wise. Both return lists of tuples, destructured in the loop.
-
-import list
-import string
-
 fn main(console: Console):
     let names = ["alice", "bob", "carol"]
 

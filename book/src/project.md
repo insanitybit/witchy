@@ -14,17 +14,17 @@ as plain functions, and we can run and test them immediately:
 // Lines of `contents` that contain `query`.
 fn matches(query: String, contents: String) -> List(String):
     var hits = []
-    for line in string.lines(contents):
-        if string.contains(line, query):
+    for line in contents.lines():
+        if line.contains(query):
             hits.push(line)
     hits
 
 // Case-insensitive variant: fold both sides to lower case first.
 fn matches_ci(query: String, contents: String) -> List(String):
     var hits = []
-    let needle = string.to_lower(query)
-    for line in string.lines(contents):
-        if string.contains(string.to_lower(line), needle):
+    let needle = query.to_lower()
+    for line in contents.lines():
+        if line.to_lower().contains(needle):
             hits.push(line)
     hits
 
@@ -55,24 +55,24 @@ This part needs authority, and its signature says exactly which:
 ```witchy
 fn matches(query: String, contents: String) -> List(String):
     var hits = []
-    for line in string.lines(contents):
-        if string.contains(line, query):
+    for line in contents.lines():
+        if line.contains(query):
             hits.push(line)
     hits
 
 fn matches_ci(query: String, contents: String) -> List(String):
     var hits = []
-    let needle = string.to_lower(query)
-    for line in string.lines(contents):
-        if string.contains(string.to_lower(line), needle):
+    let needle = query.to_lower()
+    for line in contents.lines():
+        if line.to_lower().contains(needle):
             hits.push(line)
     hits
 
 // The entry point: Console to print, Dir[Read] to read the log, Env to check a
 // setting, and the command-line arguments. Returns an Int exit code.
 fn main(console: Console, dir: Dir[Read], env: Env, args: List(String)) -> Int:
-    let query = list.at(args, 0)
-    let path = list.at(args, 1)
+    let query = args.at(0)
+    let path = args.at(1)
     let contents = dir.read(path)
     let insensitive = match env.get_env("SCAN_IGNORE_CASE"):
         Some(_) -> true

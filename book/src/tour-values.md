@@ -60,10 +60,10 @@ n is 3, doubled 6
 dicts, and any nesting. Tuple `Show` and `Reflect` impls are provided through
 arity 8; for wider heterogeneous data, use a named record so the protocol
 surface stays explicit.
-Strings are UTF-8 and the common operations
-(`string.length`, `string.char_count`, `string.split`, `string.contains`, …)
-live in the `string` module — part of the prelude, so no import line is
-needed; the [stdlib reference](appendix-stdlib.md) has the full list.
+Strings are UTF-8 and the common operations (`.length()`, `.char_count()`,
+`.split(sep)`, `.contains(sub)`, …) are methods on `String` — part of the
+prelude, so no import line is needed; the [stdlib reference](appendix-stdlib.md)
+has the full list.
 
 ## Conversions
 
@@ -74,7 +74,7 @@ fn main(console: Console):
     console.print("${7}")
     console.print("${math.to_float(7)}")
     console.print("${math.to_int(7.9)}")
-    console.print("${string.to_int("123")}")
+    console.print("${"123".to_int()}")
 ```
 
 ```text

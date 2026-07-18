@@ -6,7 +6,6 @@
 // Pure (no HTTP, no store): the server maps these results to status codes.
 
 import jwt
-import string
 import coven_json
 import show
 import error
@@ -24,8 +23,8 @@ type Issuer:
 
 // The namespace (first path segment) of a rune name.
 pub fn namespace_of(name: String) -> String:
-    if string.contains(name, "/"):
-        let (ns, _rest) = string.split_once(name, "/")
+    if name.contains("/"):
+        let (ns, _rest) = name.split_once("/")
         ns
     else:
         name

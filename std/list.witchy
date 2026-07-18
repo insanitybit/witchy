@@ -37,7 +37,7 @@ fn __pop_extract(var xs: List(a)) -> Option(a):
     list.__pop_extract(xs)
 
 // Append `x` in place.
-pub fn push(var xs: List(a), x: a) -> Nil:
+pub fn push(var xs: List(a), x: a):
     xs = list.__push(xs, x)
     return
 
@@ -49,7 +49,7 @@ pub fn concat(xs: List(a), ys: List(a)) -> List(a):
 // where their source bodies still live; selected names such as `map` are
 // compiler aliases to the method implementation.
 impl List(a):
-    pub fn push(var self, x: a) -> Nil:
+    pub fn push(var self, x: a):
         list.push(self, x)
 
     pub fn concat(self, ys: List(a)) -> List(a):
@@ -70,16 +70,16 @@ impl List(a):
                 list.push(out, x)
         out
 
-    pub fn reverse(var self) -> Nil:
+    pub fn reverse(var self):
         list.reverse(self)
 
-    pub fn sort_by(var self, less: fn(a, a) -> Bool) -> Nil:
+    pub fn sort_by(var self, less: fn(a, a) -> Bool):
         list.sort_by(self, less)
 
-    pub fn set_at(var self, index: Int, value: a) -> Nil:
+    pub fn set_at(var self, index: Int, value: a):
         list.set_at(self, index, value)
 
-    pub fn update_at(var self, index: Int, f: fn(a) -> a) -> Nil:
+    pub fn update_at(var self, index: Int, f: fn(a) -> a):
         list.update_at(self, index, f)
 
     pub fn pop(var self: unique List(a)) -> Option(a):
@@ -88,16 +88,83 @@ impl List(a):
     pub fn pop_front(var self) -> Option(a):
         list.pop_front(self)
 
-    pub fn swap(var self, i: Int, j: Int) -> Nil:
+    pub fn swap(var self, i: Int, j: Int):
         list.swap(self, i, j)
 
+    pub fn length(self) -> Int:
+        list.length(self)
+
+    pub fn is_empty(self) -> Bool:
+        list.is_empty(self)
+
+    pub fn at(self, index: Int) -> a:
+        list.at(self, index)
+
+    pub fn get(self, index: Int) -> Option(a):
+        list.get(self, index)
+
+    pub fn head(self) -> Option(a):
+        list.head(self)
+
+    pub fn last(self) -> Option(a):
+        list.last(self)
+
+    pub fn find(self, pred: fn(a) -> Bool) -> Option(a):
+        list.find(self, pred)
+
+    pub fn any(self, pred: fn(a) -> Bool) -> Bool:
+        list.any(self, pred)
+
+    pub fn all(self, pred: fn(a) -> Bool) -> Bool:
+        list.all(self, pred)
+
+    pub fn position(self, pred: fn(a) -> Bool) -> Option(Int):
+        list.position(self, pred)
+
+    pub fn fold(self, init: b, f: fn(b, a) -> b) -> b:
+        list.fold(self, init, f)
+
+    pub fn flat_map(self, f: fn(a) -> List(b)) -> List(b):
+        list.flat_map(self, f)
+
+    pub fn take(self, n: Int) -> List(a):
+        list.take(self, n)
+
+    pub fn drop(self, n: Int) -> List(a):
+        list.drop(self, n)
+
+    pub fn enumerate(self) -> List((Int, a)):
+        list.enumerate(self)
+
+    pub fn zip(self, ys: List(b)) -> List((a, b)):
+        list.zip(self, ys)
+
 impl List(a) where a: Eq:
+    pub fn contains(self, target: a) -> Bool:
+        list.contains(self, target)
+
+    pub fn index_of(self, target: a) -> Option(Int):
+        list.index_of(self, target)
+
     pub fn remove(var self, target: a) -> Bool:
         list.remove(self, target)
 
+    pub fn unique(self) -> List(a):
+        list.unique(self)
+
 impl List(a) where a: Ord:
-    pub fn sort(var self) -> Nil:
+    pub fn sort(var self):
         list.sort(self)
+
+    pub fn min(self) -> Option(a):
+        list.min(self)
+
+    pub fn max(self) -> Option(a):
+        list.max(self)
+
+impl List(String):
+    pub fn join(self, sep: String) -> String:
+        list.join(self, sep)
 
 // Concatenate the strings in `parts`, inserting `sep` between adjacent
 // elements: `["a", "b", "c"].join("-")` is `"a-b-c"`, and `[].join(sep)` is `""`.
@@ -480,11 +547,11 @@ fn sorted_by(xs: List(a), less: fn(a, a) -> Bool) -> List(a):
         let mid = n / 2
         merge(sorted_by(take(xs, mid), less), sorted_by(drop(xs, mid), less), less)
 
-pub fn reverse(var xs: List(a)) -> Nil:
+pub fn reverse(var xs: List(a)):
     xs = reversed(xs)
     return
 
-pub fn sort_by(var xs: List(a), less: fn(a, a) -> Bool) -> Nil:
+pub fn sort_by(var xs: List(a), less: fn(a, a) -> Bool):
     xs = sorted_by(xs, less)
     return
 
@@ -493,7 +560,7 @@ pub fn sort_by(var xs: List(a), less: fn(a, a) -> Bool) -> Nil:
 // `xs.sort()` works for `Int`, `String`, `Duration`, or your own derived-`Ord`
 // records, content-correct on both backends (RFC-0046). A merely-partial type
 // like `Float` (not `Ord`) is rejected at the bound; sort those with `sort_by`.
-pub fn sort(var xs: List(a)) -> Nil where a: Ord:
+pub fn sort(var xs: List(a)) where a: Ord:
     xs = sorted_by(xs, fn(x: a, y: a): before(x, y))
     return
 
@@ -644,7 +711,7 @@ fn __set_at(xs: List(a), index: Int, value: a) -> List(a):
 
 // Store `value` at `index`. An out-of-range (or negative) index is a runtime
 // error on both backends, symmetric with `list.at` and `xs[i]`.
-pub fn set_at(var xs: List(a), index: Int, value: a) -> Nil:
+pub fn set_at(var xs: List(a), index: Int, value: a):
     xs = list.__set_at(xs, index, value)
     return
 
@@ -652,7 +719,7 @@ pub fn set_at(var xs: List(a), index: Int, value: a) -> Nil:
 // out-of-range (or negative) index is a runtime error on both backends, exactly
 // like `list.at` — a silently discarded update is a contract violation (RFC-0044
 // rule 3), so it aborts rather than leaving the list unchanged.
-pub fn update_at(var xs: List(a), index: Int, f: fn(a) -> a) -> Nil:
+pub fn update_at(var xs: List(a), index: Int, f: fn(a) -> a):
     if index < 0 || index >= list.length(xs):
         fail("list index ${index} out of bounds (length ${list.length(xs)})")
     var out = []
@@ -682,7 +749,7 @@ pub fn pop_front(var xs: List(a)) -> Option(a):
         xs = drop(xs, 1)
         Some(value)
 
-pub fn swap(var xs: List(a), i: Int, j: Int) -> Nil:
+pub fn swap(var xs: List(a), i: Int, j: Int):
     let left = list.at(xs, i)
     let right = list.at(xs, j)
     list.set_at(xs, i, right)

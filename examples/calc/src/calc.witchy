@@ -4,7 +4,6 @@
 // matching, recursion, and `Result`-typed error handling — all pure (its
 // footprint is just `Console`). Run:  witchy examples/calc/src/calc.witchy
 
-import string
 import ascii
 
 type Token:

@@ -11,8 +11,6 @@
 //   witchy parity examples/plugin_host/src/plugin_host.witchy     # backends agree
 //   witchy sandbox examples/plugin_host/src/plugin_host.witchy    # granted exactly: Console
 
-import string
-
 // --- untrusted plugins: pure, authority-free transforms ---
 fn double(x: Int) -> Int:
     x * 2

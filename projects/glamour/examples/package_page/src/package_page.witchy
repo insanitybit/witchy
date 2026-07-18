@@ -44,7 +44,7 @@ fn chip(label: String) -> VNode(Msg):
     glamour.element("span", [glamour.prop("class", "chip cap")], [glamour.text(label)])
 
 fn footprint_chips(caps: List(String)) -> VNode(Msg):
-    if list.is_empty(caps):
+    if caps.is_empty():
         glamour.element("div", [glamour.prop("class", "chips")], [glamour.element("span", [glamour.prop("class", "chip cap-none")], [glamour.text("no authority")])])
     else:
         var cs = []

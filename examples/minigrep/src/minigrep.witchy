@@ -7,23 +7,21 @@
 //   witchy examples/minigrep/src/minigrep.witchy nobody examples/data/poem.txt
 //   IGNORE_CASE=1 witchy examples/minigrep/src/minigrep.witchy BODY examples/data/poem.txt
 
-import string
-
 // The lines of `contents` that contain `query`.
 pub fn search(query: String, contents: String) -> List(String):
     var hits = []
-    for line in string.lines(contents):
-        if string.contains(line, query):
-            list.push(hits, line)
+    for line in contents.lines():
+        if line.contains(query):
+            hits.push(line)
     hits
 
 // Case-insensitive variant: fold both sides to lower case before comparing.
 pub fn search_insensitive(query: String, contents: String) -> List(String):
-    let needle = string.to_lower(query)
+    let needle = query.to_lower()
     var hits = []
-    for line in string.lines(contents):
-        if string.contains(string.to_lower(line), needle):
-            list.push(hits, line)
+    for line in contents.lines():
+        if line.to_lower().contains(needle):
+            hits.push(line)
     hits
 
 // Case-insensitive search is on when IGNORE_CASE is set (to any value).
@@ -33,12 +31,12 @@ fn ignore_case(env: Env) -> Bool:
         None -> false
 
 fn main(console: Console, root: Dir[Read], env: Env, args: List(String)) -> Int:
-    if list.length(args) < 2:
+    if args.length() < 2:
         console.print("usage: minigrep <query> <file>")
         1
     else:
-        let query = list.at(args, 0)
-        let contents = root.read(list.at(args, 1))
+        let query = args.at(0)
+        let contents = root.read(args.at(1))
         let hits = if ignore_case(env): search_insensitive(query, contents) else: search(query, contents)
         for line in hits:
             console.print(line)

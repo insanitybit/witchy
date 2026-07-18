@@ -7,12 +7,11 @@
 
 import http
 import crypto
-import string
 import coven_proto
 from json import Json
 
 fn main(console: Console, net: Net, clock: Clock, args: List(String)):
-    let addr = if list.length(args) > 0: list.at(args, 0) else: "127.0.0.1:8787"
+    let addr = if args.length() > 0: args.at(0) else: "127.0.0.1:8787"
     let (host, port) = hostport(addr)
 
     let rp = http.get(net, host, port, "/coven/rootpub")
@@ -107,8 +106,8 @@ fn leak_files() -> List((String, String)):
 
 // --- response parsing --------------------------------------------------------
 fn hostport(addr: String) -> (String, Int):
-    let (host, portstr) = string.split_once(addr, ":")
-    (host, string.to_int(portstr))
+    let (host, portstr) = addr.split_once(":")
+    (host, portstr.to_int())
 
 fn nested_state(doc: Json) -> String:
     match json.get(doc, "record"):

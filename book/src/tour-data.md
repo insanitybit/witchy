@@ -190,7 +190,7 @@ fn head(xs: List(Int)) -> String:
     match xs:
         [] -> "empty"
         [only] -> "one: ${only}"
-        [first, ..rest] -> "first ${first} then ${list.length(rest)}"
+        [first, ..rest] -> "first ${first} then ${rest.length()}"
 
 fn sign(n: Int) -> String:
     match n:

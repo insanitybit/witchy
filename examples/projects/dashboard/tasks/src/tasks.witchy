@@ -2,8 +2,7 @@
 // the shared `bars` base (a path dependency). Pure: no host capabilities.
 
 import bars
-import string
 
 // "tasks    [####----]  50%"
 pub fn summary(done: Int, total: Int) -> String:
-    string.pad_right("tasks", 9, " ") + bars.bar(done, total, 8) + " " + string.pad_left("${bars.pct(done, total)}", 3, " ") + "%"
+    "tasks".pad_right(9, " ") + bars.bar(done, total, 8) + " " + "${bars.pct(done, total)}".pad_left(3, " ") + "%"

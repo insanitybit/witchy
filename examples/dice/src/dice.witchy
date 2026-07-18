@@ -5,8 +5,6 @@
 // Run: witchy examples/dice/src/dice.witchy
 
 import prng
-import string
-import list
 
 fn main(console: Console):
     var r = prng.seed(7)
@@ -16,5 +14,5 @@ fn main(console: Console):
         let face = r.next_below(6)
         rolls.push(face + 1)
         i = i + 1
-    console.print(list.join(rolls.map(fn(n: Int): "${n}"), " "))
+    console.print(rolls.map(fn(n: Int): "${n}").join(" "))
     console.print("total: " + "${rolls.sum()}")

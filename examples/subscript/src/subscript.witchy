@@ -6,8 +6,6 @@
 //   witchy parity examples/subscript/src/subscript.witchy
 //   witchy sandbox examples/subscript/src/subscript.witchy
 
-import string
-
 // Dot product of two equal-length vectors, read by index.
 pub fn dot(a: List(Int), b: List(Int)) -> Int:
     var sum = 0

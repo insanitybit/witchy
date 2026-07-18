@@ -12,14 +12,14 @@ type Msg:
     Square(Int, Sender(Msg))
     Result(Int)
 
-async fn server(inbox: Receiver(Msg)) -> Nil:
+async fn server(inbox: Receiver(Msg)):
     chan.serve(inbox, 0, fn(seen, m):
         match m:
             Square(n, reply_to) -> chan.and_then(chan.send(reply_to, Result(n * n)), fn(_u): chan.done(seen + 1))
             Result(_r) -> chan.done(seen)
     ).await
 
-async fn client(console: Console, srv: Sender(Msg)) -> Nil:
+async fn client(console: Console, srv: Sender(Msg)):
     let (reply_tx, reply_rx) = chan.channel(1).await
     chan.send(srv, Square(9, reply_tx)).await
     let r = chan.recv(reply_rx).await

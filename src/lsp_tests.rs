@@ -88,7 +88,7 @@ fn main(console: Console):
         let (fibs_line, fibs_source) = generators
             .lines()
             .enumerate()
-            .find(|(_, line)| line.contains("iter.take(fibs"))
+            .find(|(_, line)| line.contains("fibs().take("))
             .expect("fibs call");
         let fibs_col = fibs_source.find("fibs").unwrap() as u64;
         let fibs = hover_response(
@@ -137,11 +137,11 @@ fn main(console: Console):
         let ticker_contents = ticker["contents"]["value"].as_str().expect("ticker hover");
         assert!(
             ticker_contents
-                .contains("async fn ticker(console: Console, name: String, n: Int) -> Nil"),
+                .contains("async fn ticker(console: Console, name: String, n: Int)"),
             "{ticker_contents}"
         );
 
-        assert_eq!(fn_decl_line(generators, "fibs"), Some(13));
+        assert_eq!(fn_decl_line(generators, "fibs"), Some(12));
         assert_eq!(fn_decl_line(async_tasks, "ticker"), Some(14));
     }
 

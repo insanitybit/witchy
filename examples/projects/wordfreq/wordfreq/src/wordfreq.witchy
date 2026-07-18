@@ -4,11 +4,10 @@
 // `Console, Dir[Read]`. Run with:  witchy run
 
 import wordlib
-import string
 
 fn main(console: Console, root: Dir[Read]):
     let text = root.read("sample.txt")
     console.print("Top words:")
     for entry in wordlib.top_words(text, 5):
         let (word, count) = entry
-        console.print("  " + string.pad_right(word, 10, " ") + "${count}")
+        console.print("  " + word.pad_right(10, " ") + "${count}")

@@ -1222,6 +1222,9 @@ impl Parser {
                 }
             }
             self.expect(&Tok::RParen)?;
+            if types.is_empty() {
+                return Ok(Type::Named("Nil".into(), Vec::new()));
+            }
             return Ok(Type::Tuple(types));
         }
         let mut name = self.ident()?;
@@ -1829,6 +1832,9 @@ impl Parser {
             Tok::Dot => self.anon_union_injection(),
             Tok::LParen => {
                 self.advance();
+                if self.eat(&Tok::RParen) {
+                    return Ok(Expr::Ctor { name: "Nil".into(), args: Vec::new() });
+                }
                 let first = self.expr(0)?;
                 if self.at(&Tok::Comma) {
                     let mut elems = vec![first];

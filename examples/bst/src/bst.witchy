@@ -7,7 +7,6 @@
 //   witchy sandbox examples/bst/src/bst.witchy
 
 import list
-import string
 
 type Tree:
     Leaf
@@ -39,7 +38,7 @@ pub fn contains(t: Tree, x: Int) -> Bool:
 pub fn inorder(t: Tree) -> List(Int):
     match t:
         Leaf -> []
-        Node(l, v, r) -> list.concat(inorder(l), list.concat([v], inorder(r)))
+        Node(l, v, r) -> inorder(l).concat([v].concat(inorder(r)))
 
 pub fn from_list(xs: List(Int)) -> Tree:
     var t = Leaf
@@ -50,6 +49,6 @@ pub fn from_list(xs: List(Int)) -> Tree:
 fn main(console: Console):
     let tree = from_list([5, 3, 8, 1, 4, 7, 9, 2, 6])
     let sorted = inorder(tree)
-    console.print(list.join(sorted.map(fn(n: Int): "${n}"), " "))
+    console.print(sorted.map(fn(n: Int): "${n}").join(" "))
     console.print("contains 7: " + "${contains(tree, 7)}")
     console.print("contains 10: " + "${contains(tree, 10)}")

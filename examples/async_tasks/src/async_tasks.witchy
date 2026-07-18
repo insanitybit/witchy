@@ -12,7 +12,7 @@
 
 import chan
 
-async fn ticker(console: Console, name: String, n: Int) -> Nil:
+async fn ticker(console: Console, name: String, n: Int):
     if n <= 0:
         console.print(name + " done")
     else:

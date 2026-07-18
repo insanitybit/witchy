@@ -24,9 +24,9 @@ fn show(xs: List(Int)) -> String:
 
 fn main(console: Console):
     // "the even numbers in [1, 20), each doubled" — built lazily, then realized.
-    let evens = iter.filter(iter.range(1, 20), fn(n: Int): n % 2 == 0)
-    let doubled = iter.map(evens, fn(n: Int): n * 2)
-    let firsts: List(Int) = iter.collect(iter.take(doubled, 5))
+    let evens = iter.range(1, 20).filter(fn(n: Int): n % 2 == 0)
+    let doubled = evens.map(fn(n: Int): n * 2)
+    let firsts: List(Int) = iter.collect(doubled.take(5))
     console.print(show(firsts))
 ```
 
@@ -65,7 +65,7 @@ fn show(xs: List(Int)) -> String:
     parts.join(", ")
 
 fn main(console: Console):
-    let first10: List(Int) = iter.collect(iter.take(fibs(), 10))
+    let first10: List(Int) = iter.collect(fibs().take(10))
     console.print(show(first10))
 ```
 
@@ -73,7 +73,7 @@ fn main(console: Console):
 0, 1, 1, 2, 3, 5, 8, 13, 21, 34
 ```
 
-The `while true` loop never finishes on its own; `iter.take(fibs(), 10)` stops
+The `while true` loop never finishes on its own; `fibs().take(10)` stops
 pulling after ten values, so only ten Fibonacci numbers are ever computed. A
 generator can branch and loop as freely as any function. The Collatz sequence is
 finite, but its length is not known before iteration:
@@ -99,7 +99,7 @@ fn show(xs: List(Int)) -> String:
 
 fn main(console: Console):
     console.print("collatz(6): ${show(iter.collect(collatz(6)))}")
-    console.print("collatz(27) steps: ${iter.count(collatz(27))}")
+    console.print("collatz(27) steps: ${collatz(27).count()}")
 ```
 
 ```text

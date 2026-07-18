@@ -21,14 +21,14 @@ fn catalog() -> List((String, String, List(String))):
     [("acme/charts", "1.2.0", ["Net[Connect, Tls]", "Js{d3-runes-chart}"]), ("acme/log", "0.3.0", []), ("std/json", "1.0.0", [])]
 
 fn matches(name: String, caps: List(String), q: String) -> Bool:
-    if string.is_empty(q):
+    if q.is_empty():
         true
-    else if string.contains(name, q):
+    else if name.contains(q):
         true
     else:
         var hit = false
         for c in caps:
-            if string.contains(c, q):
+            if c.contains(q):
                 hit = true
         hit
 
@@ -36,7 +36,7 @@ fn chip(label: String) -> VNode(Msg):
     glamour.element("span", [glamour.prop("class", "chip cap")], [glamour.text(label)])
 
 fn caps_row(caps: List(String)) -> VNode(Msg):
-    if list.is_empty(caps):
+    if caps.is_empty():
         glamour.element("span", [glamour.prop("class", "chip cap-none")], [glamour.text("no authority")])
     else:
         var cs = []

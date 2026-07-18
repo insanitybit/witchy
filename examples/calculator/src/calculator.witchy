@@ -7,9 +7,6 @@
 //   witchy examples/calculator/src/calculator.witchy   # interpret
 //   witchy parity examples/calculator/src/calculator.witchy
 //   witchy sandbox examples/calculator/src/calculator.witchy
-
-import string
-
 fn is_digit(c: String) -> Bool:
     c >= "0" && c <= "9"
 
@@ -25,7 +22,7 @@ fn read_number(s: String, i: Int) -> (Int, Int):
     var j = i
     while j < s.length() && is_digit(s.char_at(j) ?? ""):
         j = j + 1
-    (string.to_int(s.substring(i, j)), j)
+    (s.substring(i, j).to_int(), j)
 
 // factor := number | "(" expr ")"
 fn factor(s: String, i: Int) -> (Int, Int):

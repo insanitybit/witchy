@@ -1022,12 +1022,13 @@ fn lower_async_fn_with(
             .as_ref()
             .is_some_and(|ret| {
                 !matches!(ret.unqualified(), Type::Named(name, args) if name == "Nil" && args.is_empty())
+                && !matches!(ret.unqualified(), Type::Tuple(ts) if ts.is_empty())
             })
     {
         let ret = crate::format::type_str(declared_ret.as_ref().unwrap());
         return Err(format!(
-            "async fn `main` returns `{ret}`, but the async executor drives `Task(Nil)` and \
-             cannot surface a completed value; handle the value inside `main` and return `Nil`"
+            "async fn `main` returns `{ret}`, but the async executor drives `Task(())` and \
+             cannot surface a completed value; handle the value inside `main` and omit the return type"
         ));
     }
 
@@ -1579,7 +1580,7 @@ mod tests {
         let error = lower(module).expect_err("the executor cannot surface an async root value");
 
         assert!(error.contains("async fn `main` returns `Int`"), "{error}");
-        assert!(error.contains("Task(Nil)"), "{error}");
+        assert!(error.contains("Task(())"), "{error}");
     }
 
     #[test]

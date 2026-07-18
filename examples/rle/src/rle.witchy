@@ -5,7 +5,6 @@
 // over Console only, so it runs identically on both backends. Run:
 //   witchy examples/rle/src/rle.witchy
 
-import string
 import ascii
 
 fn main(console: Console):
@@ -41,7 +40,7 @@ pub fn decode(encoded: String) -> String:
             count = count * 10 + (ascii.to_digit(chars.at(i)) ?? 0)
             i = i + 1
         if i < n:
-            out = out + string.repeat(chars.at(i), count)
+            out = out + chars.at(i).repeat(count)
             i = i + 1
     out
 

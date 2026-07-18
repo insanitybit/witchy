@@ -13,7 +13,7 @@ pub fn total(let xs: List(Int)) -> Int:
     acc
 
 pub fn count(let xs: List(Int)) -> Int:
-    list.length(xs)
+    xs.length()
 
 // Integer mean (floor); 0 for an empty list rather than dividing by zero.
 pub fn mean(let xs: List(Int)) -> Int:

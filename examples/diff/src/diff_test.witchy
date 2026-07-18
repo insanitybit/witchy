@@ -3,11 +3,10 @@
 // message). Run them with `witchy test examples/diff`.
 
 import diff
-import string
 import testing
 
 fn render(old: List(String), new: List(String)) -> String:
-    list.join(diff.diff(old, new), "\n")
+    diff.diff(old, new).join("\n")
 
 fn test_insert_delete():
     let old = ["apple", "banana", "cherry", "date", "fig"]

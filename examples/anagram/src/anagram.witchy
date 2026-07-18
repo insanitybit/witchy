@@ -4,14 +4,10 @@
 // and groups (no Dict, so it compiles on both backends). Exercises sorting
 // characters (string `<`) and signature equality (string `==`). Pure (Console
 // only); identical interpreted and compiled. Run:  witchy examples/anagram/src/anagram.witchy
-
-import string
-import list
-
 fn main(console: Console):
     let words = ["listen", "silent", "enlist", "cat", "act", "dog", "god", "tac"]
     for group in group_anagrams(words):
-        console.print(list.join(group, ", "))
+        console.print(group.join(", "))
 
 pub fn group_anagrams(words: List(String)) -> List(List(String)):
     var signatures = []
@@ -20,17 +16,17 @@ pub fn group_anagrams(words: List(String)) -> List(List(String)):
         let sig = signature(word)
         let index = index_of(signatures, sig)
         if index < 0:
-            list.push(signatures, sig)
-            list.push(groups, [word])
+            signatures.push(sig)
+            groups.push([word])
         else:
             groups = append_at(groups, index, word)
     groups
 
 // A word's characters sorted and rejoined — equal exactly for anagrams.
 pub fn signature(word: String) -> String:
-    var chars = string.chars(word)
+    var chars = word.chars()
     chars.sort_by(fn(a: String, b: String): a < b)
-    list.join(chars, "")
+    chars.join("")
 
 // The index of `target` in `xs`, or -1 if absent.
 pub fn index_of(xs: List(String), target: String) -> Int:
@@ -52,6 +48,6 @@ fn append_at(groups: List(List(String)), index: Int, word: String) -> List(List(
             updated.push(word)
             out.push(updated)
         else:
-            list.push(out, group)
+            out.push(group)
         i = i + 1
     out

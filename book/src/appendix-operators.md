@@ -15,7 +15,7 @@ has the precise semantics; this is the cheat sheet.
 | `??` | fallback: `Option(T) ?? T` / `Result(T, e) ?? T` **unwraps** (`Some(x)`/`Ok(x)` is `x`, else the right side, evaluated lazily) — right-associative, so `d.get(k1) ?? d.get(k2) ?? 0` chains |
 | `!` | boolean not |
 | `& \| ^ ~ << >>` | bitwise on `Int` (shift counts masked to 6 bits) |
-| `xs[i]`, `d[k]` | strict indexing (sugar for `list.at(xs, i)` / `dict.at(d, k)`); out of bounds or missing-key reads error |
+| `xs[i]`, `d[k]` | strict indexing (sugar for `xs.at(i)` / `d.at(k)`); out of bounds or missing-key reads error |
 | `xs[i] = v`, `d[k] = v`, `x.f = v` | assign to a place — sugar for a value update (`set_at` / record spread); the binding must be `var`. Compound `+=` etc. work |
 | `lo..hi` | half-open range, for iteration only |
 | `lo..=hi` | inclusive integer range in a pattern |

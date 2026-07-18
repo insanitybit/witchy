@@ -9,10 +9,10 @@
 
 from chan import Receiver, Sender
 
-async fn worker(jobs: Receiver(Int), results: Sender(Int)) -> Nil:
+async fn worker(jobs: Receiver(Int), results: Sender(Int)):
     chan.consume(jobs, fn(n): chan.send(results, n * n)).await
 
-async fn printer(console: Console, results: Receiver(Int)) -> Nil:
+async fn printer(console: Console, results: Receiver(Int)):
     chan.consume(results, fn(r): chan.done(console.print("result ${r}"))).await
 
 async fn main(console: Console):

@@ -377,6 +377,8 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                     (im.type_name.clone(), method.name.clone()),
                     mangled.clone(),
                 );
+                let mut bounds = im.bounds.clone();
+                bounds.extend(method.bounds.iter().cloned());
                 generated.push(method_fn(
                     mangled,
                     params,
@@ -384,7 +386,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                     method.body.clone(),
                     &im.type_name,
                     &im.target_args,
-                    im.bounds.clone(),
+                    bounds,
                 ));
                 continue;
             }
@@ -409,6 +411,8 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                 inherent_impl_table
                     .insert((method.name.clone(), im.type_name.clone()), mangled.clone());
             }
+            let mut bounds = im.bounds.clone();
+            bounds.extend(method.bounds.iter().cloned());
             generated.push(method_fn(
                 mangled,
                 params,
@@ -416,7 +420,7 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                 method.body.clone(),
                 &im.type_name,
                 &im.target_args,
-                im.bounds.clone(),
+                bounds,
             ));
         }
         // Methods the impl omits but the trait provides a default for. Only
@@ -921,8 +925,8 @@ fn display_type(t: &Type) -> String {
     }
 }
 
-fn nil_type() -> Type {
-    Type::Named("Nil".to_string(), Vec::new())
+fn unit_type() -> Type {
+    Type::Tuple(Vec::new())
 }
 
 pub(crate) fn impl_self_type(im: &ImplDef) -> Type {
@@ -970,7 +974,7 @@ pub(crate) fn ret_type(
 ) -> Type {
     ret.as_ref()
         .map(|t| expected_method_type(t, im, trait_params))
-        .unwrap_or_else(nil_type)
+        .unwrap_or_else(unit_type)
 }
 
 fn edit_distance(a: &str, b: &str) -> usize {
@@ -2208,7 +2212,7 @@ fn local_expr_type(
                 .collect::<Option<Vec<_>>>()?;
             let ret = ret.clone().or_else(|| match body.stmts.last() {
                 Some(Stmt::Expr(expr) | Stmt::Return(Some(expr))) => type_of(expr),
-                Some(Stmt::Return(None)) => Some(named_type("Nil")),
+                Some(Stmt::Return(None)) => Some(unit_type()),
                 _ => None,
             })?;
             Some(Type::Fn(params, Box::new(ret), conventions))
@@ -2230,7 +2234,7 @@ fn cap_op_result_type(e: &Expr, type_of: &dyn Fn(&Expr) -> Option<Type>) -> Opti
     let Expr::Call { name, args } = e else { return None };
     match cap_ops::result_shape(name, args.len())? {
         cap_ops::ResultShape::SameReceiver => args.first().and_then(type_of),
-        cap_ops::ResultShape::Nil => Some(named_type("Nil")),
+        cap_ops::ResultShape::Nil => Some(unit_type()),
         cap_ops::ResultShape::Int => Some(named_type("Int")),
         cap_ops::ResultShape::String => Some(named_type("String")),
         cap_ops::ResultShape::Bool => Some(named_type("Bool")),
@@ -3591,7 +3595,7 @@ fn build_mutation_tables(
             }
             let nil = match f.ret.as_ref() {
                 None => true,
-                Some(t) => matches!(t.unqualified(), Type::Named(n, _) if n == "Nil"),
+                Some(t) => matches!(t.unqualified(), Type::Named(n, _) if n == "Nil") || matches!(t.unqualified(), Type::Tuple(ts) if ts.is_empty()),
             };
             returns_nil.insert(f.name.clone(), nil);
         }

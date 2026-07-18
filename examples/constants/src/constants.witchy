@@ -6,9 +6,6 @@
 //   witchy examples/constants/src/constants.witchy
 //   witchy parity examples/constants/src/constants.witchy
 //   witchy sandbox examples/constants/src/constants.witchy
-
-import string
-
 let SECONDS_PER_MINUTE = 60
 
 let MINUTES_PER_HOUR = 60

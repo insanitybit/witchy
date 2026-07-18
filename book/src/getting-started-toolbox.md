@@ -30,7 +30,7 @@ change more than you expect the first time you run it.
 ```sh
 witchy caps program.witchy                  # the capability footprint (runtime + build)
 witchy caps-diff old.witchy new.witchy      # exit 2 if authority widened on either axis
-witchy which split                          # where a function lives: string.split(s, sep), with its doc
+witchy which split                          # where a method lives: String.split(sep), with its doc
 
 witchy sandbox program.witchy               # run confined in the WASM VM
 witchy grants-check program.witchy app.grants.toml   # check a grant doc against the footprint

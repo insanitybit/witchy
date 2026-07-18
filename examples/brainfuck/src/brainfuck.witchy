@@ -5,9 +5,6 @@
 // of printable ASCII (index = value - 32), since the language has no chr/ord
 // builtin. Pure (Console only); identical on both backends. Run:
 //   witchy examples/brainfuck/src/brainfuck.witchy
-
-import string
-
 fn main(console: Console):
     // The canonical "Hello World!" program.
     console.print(run("++++++++[>++++[>++>+++>+++>+<<<<-]>+>+>->>+[<]<-]>>.>---.+++++++..+++.>>.<-.<.+++.------.--------.>>+.>++."))
@@ -85,7 +82,7 @@ fn chr(value: Int) -> String:
         ""
     else:
         let printable = " !\"#\$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
-        list.at(printable.chars(), value - 32)
+        printable.chars().at(value - 32)
 
 fn set(xs: List(Int), index: Int, value: Int) -> List(Int):
     var out = []

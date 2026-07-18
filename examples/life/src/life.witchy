@@ -3,9 +3,6 @@
 // with exactly 3 live neighbours and survives with 2 or 3). A glider drifts down
 // and to the right. Pure (Console only), so it runs identically on the
 // interpreter and compiled to WASM. Run:  witchy examples/life/src/life.witchy
-
-import string
-
 fn main(console: Console):
     var grid = glider(8)
     var generation = 0
@@ -38,7 +35,7 @@ fn glider_cell(r: Int, c: Int) -> Bool:
 // Advance the board one generation.
 pub fn step(grid: List(List(Bool))) -> List(List(Bool)):
     let height = grid.length()
-    let width = list.length(grid.at(0))
+    let width = grid.at(0).length()
     var next = []
     var r = 0
     while r < height:

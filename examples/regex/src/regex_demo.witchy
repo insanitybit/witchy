@@ -5,13 +5,10 @@
 // zero-or-more repetition. Every comparison is between two `list.at(..)` characters,
 // so it's a thorough both-backends exercise of content comparison. Pure (Console
 // only); identical interpreted and compiled. Run: witchy examples/regex/src/regex_demo.witchy
-
-import string
-
 fn main(console: Console):
     for probe in cases():
         let (pattern, text) = probe
-        let shown = string.pad_right("/" + pattern + "/", 10, " ") + string.pad_right("\"" + text + "\"", 16, " ")
+        let shown = ("/" + pattern + "/").pad_right(10, " ") + ("\"" + text + "\"").pad_right(16, " ")
         console.print(shown + verdict(matches(pattern, text)))
 
 fn cases() -> List((String, String)):

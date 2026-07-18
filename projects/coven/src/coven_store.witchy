@@ -7,7 +7,6 @@
 import crypto
 import fs
 import semver
-import string
 import vm
 from json import Json
 from coven_record import Record, State
@@ -64,8 +63,8 @@ pub fn read_source(store: Dir, name: String, version: String) -> List((String, S
 
 // The content address of a rune's source (matches crypto.rune_hash / pm/store.rs).
 pub fn content_hash(files: List((String, String))) -> String:
-    let paths = list.map(files, fn(file: (String, String)): file.0)
-    let texts = list.map(files, fn(file: (String, String)): file.1)
+    let paths = files.map(fn(file: (String, String)): file.0)
+    let texts = files.map(fn(file: (String, String)): file.1)
     crypto.rune_hash(paths, texts)
 
 // --- walking -----------------------------------------------------------------
@@ -81,7 +80,7 @@ pub fn versions_of(store: Dir, name: String) -> List(String):
 pub fn all_names(store: Dir) -> List(String):
     var out = []
     for ns in store.list():
-        if !string.ends_with(ns, ".json") && !string.starts_with(ns, "_"):
+        if !ns.ends_with(".json") && !ns.starts_with("_"):
             for nm in store.subtree(ns).list():
                 out.push("${ns}/${nm}")
     out
@@ -115,9 +114,9 @@ pub fn latest_released_footprint(store: Dir, name: String, version: String) -> L
     for v in versions_of(store, name):
         if v != version:
             if let Some(rec) = read_record_typed(store, name, v):
-                if coven_record.state_of(rec.state) == Released && (string.is_empty(best) || version_newer(v, best)):
+                if coven_record.state_of(rec.state) == Released && (best.is_empty() || version_newer(v, best)):
                     best = v
-    if string.is_empty(best):
+    if best.is_empty():
         []
     else:
         match read_record_typed(store, name, best):
@@ -129,9 +128,9 @@ pub fn latest_released_footprint(store: Dir, name: String, version: String) -> L
 pub fn latest_record(store: Dir, name: String) -> Option(Record):
     var best = ""
     for v in versions_of(store, name):
-        if string.is_empty(best) || version_newer(v, best):
+        if best.is_empty() || version_newer(v, best):
             best = v
-    if string.is_empty(best):
+    if best.is_empty():
         None
     else:
         read_record_typed(store, name, best)

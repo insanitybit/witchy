@@ -9,7 +9,7 @@ type Op:
     Deposit(Int)
     Withdraw(Int)
 
-async fn account(console: Console, rx: Receiver(Op)) -> Nil:
+async fn account(console: Console, rx: Receiver(Op)):
     chan.serve(rx, 0, fn(cents, op):
         match op:
             Deposit(amount) ->
@@ -22,7 +22,7 @@ async fn account(console: Console, rx: Receiver(Op)) -> Nil:
                 chan.done(bal)
     ).await
 
-async fn driver(tx: Sender(Op)) -> Nil:
+async fn driver(tx: Sender(Op)):
     chan.send(tx, Deposit(1250)).await
     chan.send(tx, Deposit(375)).await
     chan.send(tx, Withdraw(500)).await

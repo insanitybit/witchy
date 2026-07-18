@@ -13,7 +13,7 @@ from chan import Sender
 async fn square(n: Int) -> Int:
     n * n
 
-async fn announce(tx: Sender(Int), n: Int) -> Nil:
+async fn announce(tx: Sender(Int), n: Int):
     chan.send(tx, n).await
 
 async fn main(console: Console):
@@ -43,4 +43,4 @@ async fn main(console: Console):
     let a = chan.recv(rx).await
     let b = chan.recv(rx).await
     let c = chan.recv(rx).await
-    console.print("announced: ${list.length([a, b, c])} workers")
+    console.print("announced: ${[a, b, c].length()} workers")

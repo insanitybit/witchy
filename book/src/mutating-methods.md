@@ -24,7 +24,7 @@ fn main(console: Console):
 Free and method calls are equivalent: `xs.push(3)` resolves to the same
 `var`-declared operation as `list.push(xs, 3)`. Statement position may discard a
 `var` call's independent result because the write-back is already an effect. A
-non-`var`, non-`Nil` result still requires a binding or `let _ =`.
+non-`var`, non-`()` result still requires a binding or `let _ =`.
 
 An immutable binding or temporary cannot be a write-back target:
 

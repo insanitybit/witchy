@@ -4,7 +4,6 @@
 // `decode`, `get` / `index`, and `encode`. Pure (Console only); identical on both
 // backends. Run:  witchy examples/jq/src/jq.witchy
 
-import string
 from json import Json
 
 fn main(console: Console):

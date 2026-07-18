@@ -183,7 +183,7 @@ fn main(console: Console, secrets: SecretStore):
     // enter the program — the host signs on its behalf and returns the signature.
     let signing = secrets.require("signing")
     let sig = crypto.sign(signing, "release v1.2.3")
-    console.print("signature length ${string.length(sig)}")
+    console.print("signature length ${sig.length()}")
 
     // An optional, revealable value secret. `reveal` works here because this is
     // an ordinary named secret — it would error on the signing key above.

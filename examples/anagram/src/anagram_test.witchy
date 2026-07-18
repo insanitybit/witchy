@@ -2,7 +2,6 @@
 // by returning, and fails by aborting. Run them with `witchy test examples/anagram`.
 
 import anagram
-import string
 import testing
 
 fn test_signature():
@@ -17,6 +16,6 @@ fn test_index_of():
 fn test_group_anagrams():
     let groups = anagram.group_anagrams(["listen", "silent", "cat", "act"])
     // Two buckets: {listen, silent} and {cat, act}, in first-seen order.
-    testing.assert_int_eq(list.length(groups), 2)
-    testing.assert_eq(list.join(list.at(groups, 0), ","), "listen,silent")
-    testing.assert_eq(list.join(list.at(groups, 1), ","), "cat,act")
+    testing.assert_int_eq(groups.length(), 2)
+    testing.assert_eq(groups.at(0).join(","), "listen,silent")
+    testing.assert_eq(groups.at(1).join(","), "cat,act")

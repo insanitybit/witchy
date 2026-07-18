@@ -1,14 +1,14 @@
 path	line	category	callee	parameter	root
 benchmarks/dict_count.witchy	5	auxiliary-result-discard	dict.insert	-	-
-examples/dice/src/dice.witchy	16	expression-position-mutator	prng.Rng__next_below	-	-
-examples/maze/src/maze.witchy	84	auxiliary-result-discard	dict.insert	-	-
-examples/wordcount/src/wordcount.witchy	10	auxiliary-result-discard	dict.insert	-	-
+examples/dice/src/dice.witchy	14	expression-position-mutator	prng.Rng__next_below	-	-
+examples/maze/src/maze.witchy	83	auxiliary-result-discard	dict.insert	-	-
+examples/wordcount/src/wordcount.witchy	9	auxiliary-result-discard	dict.insert	-	-
 std/dict.witchy	21	auxiliary-result-discard	dict.insert	-	-
 std/dict.witchy	27	auxiliary-result-discard	dict.__insert_extract	-	-
 std/dict.witchy	63	auxiliary-result-discard	dict.remove	-	-
 std/dict.witchy	66	auxiliary-result-discard	dict.__remove_extract	-	-
 std/list.witchy	37	auxiliary-result-discard	list.__pop_extract	-	-
-std/list.witchy	675	auxiliary-result-discard	list.__pop_extract	-	-
+std/list.witchy	742	auxiliary-result-discard	list.__pop_extract	-	-
 std/prng.witchy	71	expression-position-mutator	prng.next_below	-	-
 std/prng.witchy	56	expression-position-mutator	prng.next	-	-
 std/prng.witchy	60	expression-position-mutator	prng.next	-	-
@@ -24,8 +24,8 @@ book/src/mutating-methods.md#block-4	5	expression-position-mutator	dict.remove__
 spec/language.md#block-15	7	expression-position-mutator	main.bump	-	-
 
 witchy-files	271
-markdown-blocks	172
-checked	443
+markdown-blocks	173
+checked	444
 rejected	0
 var-declarations	25
 resolved-var-calls	472

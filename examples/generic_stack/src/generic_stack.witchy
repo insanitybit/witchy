@@ -10,7 +10,6 @@
 //   witchy sandbox examples/generic_stack/src/generic_stack.witchy
 
 import option
-import string
 
 type Stack:
     Empty

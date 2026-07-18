@@ -232,7 +232,7 @@ pub enum Ty {
     /// user `type Msg`.
     Msg,
     Bool,
-    Nil,
+    Unit,
     Console,
     Clock,
     /// The runtime authority to draw cryptographic randomness (`rand_u64`).
@@ -287,7 +287,7 @@ impl fmt::Display for Ty {
             Ty::Bytes => write!(f, "Bytes"),
             Ty::Msg => write!(f, "__Msg"),
             Ty::Bool => write!(f, "Bool"),
-            Ty::Nil => write!(f, "Nil"),
+            Ty::Unit => write!(f, "()"),
             Ty::Console => write!(f, "Console"),
             Ty::Clock => write!(f, "Clock"),
             Ty::Rand => write!(f, "Rand"),
@@ -3668,7 +3668,7 @@ impl Checker {
             "Bytes" => Ty::Bytes,
             "__Msg" => Ty::Msg,
             "Bool" => Ty::Bool,
-            "Nil" => Ty::Nil,
+            "Nil" => Ty::Unit,
             "Console" => Ty::Console,
             "Clock" => Ty::Clock,
             "Rand" => Ty::Rand,
@@ -3706,6 +3706,9 @@ impl Checker {
             ast::Type::Qualified(_, inner) => return self.to_ty(inner),
             ast::Type::Named(name, args) => (name, args),
             ast::Type::Tuple(ts) => {
+                if ts.is_empty() {
+                    return Ty::Unit;
+                }
                 return Ty::Tuple(ts.iter().map(|t| self.to_ty(t)).collect());
             }
             ast::Type::Fn(params, ret, conventions) => {
@@ -3751,6 +3754,9 @@ impl Checker {
         match t {
             ast::Type::Qualified(_, inner) => self.to_ty_generic(inner, vars),
             ast::Type::Tuple(ts) => {
+                if ts.is_empty() {
+                    return Ty::Unit;
+                }
                 Ty::Tuple(ts.iter().map(|t| self.to_ty_generic(t, vars)).collect())
             }
             ast::Type::Fn(params, ret, conventions) => Ty::Fn(
@@ -3975,7 +3981,7 @@ impl Checker {
                     hit
                 }
                 Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
-                | Ty::Bool | Ty::Nil | Ty::Console | Ty::Clock | Ty::Rand | Ty::Env
+                | Ty::Bool | Ty::Unit | Ty::Console | Ty::Clock | Ty::Rand | Ty::Env
                 | Ty::Secret | Ty::Exec | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
                 | Ty::Socket | Ty::Listener | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv
                 | Ty::BuildNet | Ty::BuildExec | Ty::Var(_) => None,
@@ -4013,7 +4019,7 @@ impl Checker {
                     record_hit || variant_hit
                 }
                 Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
-                | Ty::Bool | Ty::Nil | Ty::Console | Ty::Clock | Ty::Rand | Ty::Env
+                | Ty::Bool | Ty::Unit | Ty::Console | Ty::Clock | Ty::Rand | Ty::Env
                 | Ty::Secret | Ty::Exec | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
                 | Ty::Socket | Ty::Listener | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv
                 | Ty::BuildNet | Ty::BuildExec | Ty::Var(_) => false,
@@ -4097,7 +4103,7 @@ impl Checker {
                     hit
                 }
                 Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
-                | Ty::Bool | Ty::Nil | Ty::Var(_) => None,
+                | Ty::Bool | Ty::Unit | Ty::Var(_) => None,
                 // Direct capabilities were handled by `direct` above.
                 Ty::Console | Ty::Clock | Ty::Rand | Ty::Env | Ty::Secret | Ty::Exec
                 | Ty::Dir(_) | Ty::File(_) | Ty::Net(_) | Ty::Socket | Ty::Listener
@@ -4176,7 +4182,7 @@ impl Checker {
                 hit
             }
             Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
-            | Ty::Bool | Ty::Nil | Ty::Var(_) => None,
+            | Ty::Bool | Ty::Unit | Ty::Var(_) => None,
         }
     }
 
@@ -4208,7 +4214,7 @@ impl Checker {
                 args.iter().try_for_each(|arg| self.reject_structural_authority_ty(arg, ctx))
             }
             Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
-            | Ty::Bool | Ty::Nil | Ty::Console | Ty::Clock | Ty::Rand | Ty::Env
+            | Ty::Bool | Ty::Unit | Ty::Console | Ty::Clock | Ty::Rand | Ty::Env
             | Ty::Secret | Ty::Exec | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
             | Ty::Socket | Ty::Listener | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv
             | Ty::BuildNet | Ty::BuildExec | Ty::Var(_) => Ok(()),
@@ -4228,7 +4234,7 @@ impl Checker {
                 compiler_syntax_type_name(&name).or_else(|| args.iter().find_map(|arg| self.compiler_syntax_ty(arg)))
             }
             Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
-            | Ty::Bool | Ty::Nil | Ty::Console | Ty::Clock | Ty::Rand | Ty::Env
+            | Ty::Bool | Ty::Unit | Ty::Console | Ty::Clock | Ty::Rand | Ty::Env
             | Ty::Secret | Ty::Exec | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
             | Ty::Socket | Ty::Listener | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv
             | Ty::BuildNet | Ty::BuildExec | Ty::Var(_) => None,
@@ -4564,11 +4570,11 @@ impl Checker {
             )),
             S::CompilerEmitItem => Some((
                 vec![Ty::Named("meta.ItemSyntax".into(), Vec::new())],
-                Ty::Nil,
+                Ty::Unit,
             )),
             S::CompilerEmitExpr => Some((
                 vec![Ty::Named("meta.ExprSyntax".into(), Vec::new())],
-                Ty::Nil,
+                Ty::Unit,
             )),
             S::GenericToMessage => {
                 let m = self.fresh();
@@ -4757,7 +4763,7 @@ impl Checker {
             return Some(signature);
         }
         match name {
-            "print" => Some((vec![Ty::Console, Ty::String], Ty::Nil)),
+            "print" => Some((vec![Ty::Console, Ty::String], Ty::Unit)),
             "now" => Some((vec![Ty::Clock], Ty::Int)),
             // Monotonic elapsed nanoseconds (a steady clock, immune to wall-clock
             // jumps) — for measuring durations. Like `now`, the Clock arg is the
@@ -4768,7 +4774,7 @@ impl Checker {
             // Build-time host operations (the build sandbox provides these). Each
             // consumes a build capability; the specific tool/dir/host/var is the
             // consumer's grant, not part of the type.
-            "write_out" => Some((vec![Ty::BuildOut, Ty::String, Ty::String], Ty::Nil)),
+            "write_out" => Some((vec![Ty::BuildOut, Ty::String, Ty::String], Ty::Unit)),
             "read_build" => Some((vec![Ty::BuildRead, Ty::String], Ty::String)),
             "get_build_env" => {
                 Some((vec![Ty::BuildEnv, Ty::String], Ty::Named("Option".into(), vec![Ty::String])))
@@ -4776,22 +4782,22 @@ impl Checker {
             "fetch_build" => Some((vec![Ty::BuildNet, Ty::String, Ty::String], Ty::String)),
             "run_tool" => Some((vec![Ty::BuildExec, Ty::String, Ty::String], Ty::String)),
             // Abort with a message (the primitive behind std/testing).
-            "fail" => Some((vec![Ty::String], Ty::Nil)),
+            "fail" => Some((vec![Ty::String], Ty::Unit)),
             // Duration <-> Int(milliseconds) bridge for the std `duration` module.
             "int_to_duration" => Some((vec![Ty::Int], Ty::Duration)),
             "duration_to_int" => Some((vec![Ty::Duration], Ty::Int)),
             // `read`/`write`/`exists`/`subdir`/`read_only`/`write_only` are handled
             // by `check_dir_op`; `connect`/`listen`/`restrict`/`connect_only`/
             // `listen_only` by `check_net_op` (their rights are enforced per-op).
-            "send_line" => Some((vec![Ty::Socket, Ty::String], Ty::Nil)),
-            "send_bytes" => Some((vec![Ty::Socket, Ty::String], Ty::Nil)),
+            "send_line" => Some((vec![Ty::Socket, Ty::String], Ty::Unit)),
+            "send_bytes" => Some((vec![Ty::Socket, Ty::String], Ty::Unit)),
             "recv_line" => Some((vec![Ty::Socket], Ty::String)),
             "recv_all" => Some((vec![Ty::Socket], Ty::String)),
             "recv_bytes" => Some((vec![Ty::Socket, Ty::Int], Ty::String)),
             "accept" => Some((vec![Ty::Listener], Ty::Socket)),
             // (RFC-0032) Spin up the `server.serve` worker pool over a bound listener.
-            "serve_pool" => Some((vec![Ty::Listener], Ty::Nil)),
-            "close" => Some((vec![Ty::Socket], Ty::Nil)),
+            "serve_pool" => Some((vec![Ty::Listener], Ty::Unit)),
+            "close" => Some((vec![Ty::Socket], Ty::Unit)),
             // User functions: instantiate generic type parameters fresh per call.
             _ => match self.fn_sigs.get(name).cloned() {
                 Some((params, ret)) => {
@@ -4873,7 +4879,7 @@ impl Checker {
                 if !rights.write {
                     return terr(format!("`write` needs `Write` but the file is `{rights}`"));
                 }
-                Ty::Nil
+                Ty::Unit
             }
             _ => unreachable!(),
         };
@@ -5013,7 +5019,7 @@ impl Checker {
                         "`{name}` needs `Write` but the capability is `{rights}`"
                     ));
                 }
-                Ty::Nil
+                Ty::Unit
             }
             "make_dir" => {
                 if !rights.write {
@@ -5021,7 +5027,7 @@ impl Checker {
                         "`make_dir` needs `Write` but the capability is `{rights}`"
                     ));
                 }
-                Ty::Nil
+                Ty::Unit
             }
             // RFC-0012 navigation: a `Dir` opens a confined `File` (the leaf). The
             // name states the conferred right: `read_file` needs `Read` and yields
@@ -5515,7 +5521,7 @@ impl Checker {
 
     fn infer_block_inner(&mut self, block: &Block, expected: Option<&Ty>) -> Result<Ty, TypeError> {
         self.push();
-        let mut ty = Ty::Nil;
+        let mut ty = Ty::Unit;
         let tail = block.stmts.len().saturating_sub(1);
         for (i, stmt) in block.stmts.iter().enumerate() {
             if let Some(line) = block.lines.get(i) {
@@ -5561,7 +5567,7 @@ impl Checker {
                         self.infer(value)?
                     };
                     self.define(name.clone(), vt, *mutable);
-                    ty = Ty::Nil;
+                    ty = Ty::Unit;
                 }
                 Stmt::Assign { name, value } => {
                     let Some(existing) = self.lookup(name) else {
@@ -5587,7 +5593,7 @@ impl Checker {
                         self.unify(&existing, &vt)?;
                     }
                     self.consumed.remove(name); // reassignment re-initializes
-                    ty = Ty::Nil;
+                    ty = Ty::Unit;
                 }
                 Stmt::LetPattern { pattern, value } => {
                     // (RFC-0052) `let PAT = e` — ONE pattern grammar for every
@@ -5605,7 +5611,7 @@ impl Checker {
                         return terr(reason);
                     }
                     self.check_pattern(pattern, &vt)?;
-                    ty = Ty::Nil;
+                    ty = Ty::Unit;
                 }
                 Stmt::Return(opt) => {
                     let t = match opt {
@@ -5613,7 +5619,7 @@ impl Checker {
                             Some(ret) => self.infer_expected(e, &ret)?,
                             None => self.infer(e)?,
                         },
-                        None => Ty::Nil,
+                        None => Ty::Unit,
                     };
                     if let Some(ret) = self.current_ret.clone() {
                         self.coerce_arg(&ret, &t).map_err(|e| TypeError {
@@ -5772,7 +5778,7 @@ impl Checker {
                          an existential value — add an explicit `else` branch"
                     );
                 } else {
-                    self.coerce_arg(expected, &Ty::Nil).map_err(|e| TypeError {
+                    self.coerce_arg(expected, &Ty::Unit).map_err(|e| TypeError {
                         message: format!("`if` without `else` produces `Nil`: {}", e.message),
                     })?;
                 }
@@ -6692,7 +6698,7 @@ impl Checker {
                             args.len()
                         ));
                     }
-                    return Ok(Ty::Nil);
+                    return Ok(Ty::Unit);
                 }
                 if let Some((fields, result)) = self.ctor_sigs.get(name).cloned() {
                     let typarams = self.ctor_typarams.get(name).cloned().unwrap_or_default();
@@ -6989,7 +6995,7 @@ impl Checker {
                         })?;
                     }
                     None => {
-                        self.unify(&tt, &Ty::Nil)?;
+                        self.unify(&tt, &Ty::Unit)?;
                     }
                 }
                 // A binding consumed on either path is treated as consumed after.
@@ -7003,7 +7009,7 @@ impl Checker {
                     message: format!("`while` condition: {}", e.message),
                 })?;
                 self.infer_block(body)?;
-                Ok(Ty::Nil)
+                Ok(Ty::Unit)
             }
             Expr::For { var, iter, body } => {
                 let it = self.infer(iter)?;
@@ -7015,7 +7021,7 @@ impl Checker {
                 self.define(var.clone(), elem, false);
                 self.infer_block(body)?;
                 self.pop();
-                Ok(Ty::Nil)
+                Ok(Ty::Unit)
             }
             Expr::Match { scrutinee, arms } => self.infer_match(scrutinee, arms),
         }
@@ -7286,14 +7292,14 @@ impl Checker {
             Pattern::Wildcard | Pattern::Var(_) => None,
             Pattern::Tuple(ps) => {
                 // Recover each slot type if the expected type is a concrete tuple;
-                // otherwise a placeholder (`Ty::Nil`) — only used to type sub-tuple
+                // otherwise a placeholder (`Ty::Unit`) — only used to type sub-tuple
                 // slots, and refutability never depends on a slot's exact type.
                 let slots = match self.resolve(ty) {
                     Ty::Tuple(ts) if ts.len() == ps.len() => Some(ts),
                     _ => None,
                 };
                 for (i, sub) in ps.iter().enumerate() {
-                    let sub_ty = slots.as_ref().map(|s| s[i].clone()).unwrap_or(Ty::Nil);
+                    let sub_ty = slots.as_ref().map(|s| s[i].clone()).unwrap_or(Ty::Unit);
                     if let Some(r) = self.pattern_refutable(sub, &sub_ty) {
                         return Some(r);
                     }
@@ -7328,7 +7334,7 @@ impl Checker {
                     // fresh vars, which never themselves report refutable).
                     _ => {
                         for sub in args {
-                            if let Some(r) = self.pattern_refutable(sub, &Ty::Nil) {
+                            if let Some(r) = self.pattern_refutable(sub, &Ty::Unit) {
                                 return Some(r);
                             }
                         }
@@ -8381,7 +8387,7 @@ pub fn ty_to_ast(t: &Ty) -> Option<witchy_syntax::ast::Type> {
         Ty::Bytes => T::Named("Bytes".into(), Vec::new()),
         Ty::Msg => T::Named("__Msg".into(), Vec::new()),
         Ty::Bool => T::Named("Bool".into(), Vec::new()),
-        Ty::Nil => T::Named("Nil".into(), Vec::new()),
+        Ty::Unit => T::Named("Nil".into(), Vec::new()),
         Ty::Console => T::Named("Console".into(), Vec::new()),
         Ty::Clock => T::Named("Clock".into(), Vec::new()),
         Ty::Rand => T::Named("Rand".into(), Vec::new()),

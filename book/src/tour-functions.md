@@ -251,7 +251,7 @@ the pattern each turn and stopping the first time it doesn't — the loop form o
 ```witchy
 fn main(console: Console):
     var stack = [1, 2, 3]
-    while let Some(x) = list.last(stack):
+    while let Some(x) = stack.last():
         console.print("${x}")
         stack = list.drop_last(stack)
 ```

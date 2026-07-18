@@ -9,9 +9,6 @@
 //   witchy examples/aliases/src/aliases.witchy
 //   witchy parity examples/aliases/src/aliases.witchy
 //   witchy sandbox examples/aliases/src/aliases.witchy
-
-import string
-
 type Celsius = Int
 
 type Fahrenheit = Int

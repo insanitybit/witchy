@@ -16,13 +16,13 @@ pub fn total(xs: List(Int)) -> Int:
 
 // Largest value, or 0 when the list is empty.
 pub fn max(xs: List(Int)) -> Int:
-    match list.max(xs):
+    match xs.max():
         Some(m) -> m
         None -> 0
 
 // Integer (floor) average, or 0 when the list is empty.
 pub fn average(xs: List(Int)) -> Int:
-    if list.is_empty(xs):
+    if xs.is_empty():
         0
     else:
         total(xs) / count(xs)

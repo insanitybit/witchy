@@ -75,7 +75,7 @@ fn card(name: String, version: String, caps: List(String), provenance: String) -
 // `<span class="cap-none">no capabilities</span>` — the state witchy celebrates,
 // given its own class so the shell can style it as a reward rather than a warning.
 fn cap_row(caps: List(String)) -> VNode(Msg):
-    if list.is_empty(caps):
+    if caps.is_empty():
         let none_badge = glamour.element("span", [glamour.prop("class", "cap-none")], [glamour.text("no capabilities")])
 
         glamour.element("div", [glamour.prop("class", "cap-row")], [none_badge])

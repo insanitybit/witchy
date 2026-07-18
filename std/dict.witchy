@@ -49,7 +49,7 @@ pub fn at(d: Dict(k, v), key: k) -> v where k: Eq:
 fn __update(d: Dict(k, v), key: k, default: v, f: fn(v) -> v) -> Dict(k, v) where k: Eq:
     dict.__update(d, key, default, f)
 
-pub fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) -> Nil where k: Eq:
+pub fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) where k: Eq:
     d = dict.__update(d, key, default, f)
     return
 
@@ -73,17 +73,54 @@ fn __remove_extract(var d: Dict(k, v), key: k) -> Option(v) where k: Eq:
 pub fn remove(var d: unique Dict(k, v), key: k) -> Option(v) where k: Eq:
     dict.__remove_extract(d, key)
 
-// Real methods mirror the primary mutator surface while the module functions
-// remain as stable, first-class values.
+// Real methods mirror the primary surface while the module functions remain as
+// stable, first-class values.
+impl Dict(k, v):
+    pub fn length(self) -> Int:
+        dict.length(self)
+
+    pub fn is_empty(self) -> Bool:
+        dict.is_empty(self)
+
+    pub fn keys(self) -> List(k):
+        dict.keys(self)
+
+    pub fn values(self) -> List(v):
+        dict.values(self)
+
+    pub fn pairs(self) -> List((k, v)):
+        dict.pairs(self)
+
 impl Dict(k, v) where k: Eq:
     pub fn insert(var self: unique Dict(k, v), key: k, val: v) -> Option(v):
         dict.insert(self, key, val)
 
-    pub fn update(var self, key: k, default: v, f: fn(v) -> v) -> Nil:
+    pub fn update(var self, key: k, default: v, f: fn(v) -> v):
         dict.update(self, key, default, f)
 
     pub fn remove(var self: unique Dict(k, v), key: k) -> Option(v):
         dict.remove(self, key)
+
+    pub fn get(self, key: k) -> Option(v):
+        dict.get(self, key)
+
+    pub fn get_or(self, key: k, default: v) -> v:
+        dict.get_or(self, key, default)
+
+    pub fn at(self, key: k) -> v:
+        dict.at(self, key)
+
+    pub fn contains_key(self, key: k) -> Bool:
+        dict.contains_key(self, key)
+
+    pub fn map_values(self, f: fn(v) -> w) -> Dict(k, w):
+        dict.map_values(self, f)
+
+    pub fn filter(self, keep: fn(k, v) -> Bool) -> Dict(k, v):
+        dict.filter(self, keep)
+
+    pub fn merge(self, other: Dict(k, v)) -> Dict(k, v):
+        dict.merge(self, other)
 
 // The keys, in insertion order.
 pub fn keys(d: Dict(k, v)) -> List(k):

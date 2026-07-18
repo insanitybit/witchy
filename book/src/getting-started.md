@@ -15,17 +15,20 @@ The three sections:
 - [**The Toolbox**](getting-started-toolbox.md) — `run`, `check`, `parity`,
   `caps`, `sandbox`, `fmt`, `test`, and friends.
 
-## Why capabilities matter (the one idea to hold onto)
+## Capabilities
 
-witchy's capability model shapes the rest of the language: **authority is a value you receive, never
-something you can summon.** Your first program's `main` takes a `Console`
-parameter, and *that is why* it's allowed to print — a function that isn't
-handed a `Console` cannot print, a function without a `Dir` cannot touch the
-filesystem, and there is no `import` or global that grants those powers behind
-your back. You can read any witchy function's signature and know the complete
-set of effects it can have.
+A function can only do what its signature says. `main` takes a `Console` — that's
+why it can print. A function without a `Console` cannot print. A function without
+a `Dir` cannot touch the filesystem. There is no import or global that grants
+these powers.
 
-The tour first covers values, functions, data, and errors. The
-[Capabilities](capabilities.md) chapters then use this rule for sandboxing,
-supply-chain review, and effect-free APIs. A signature states the authority a
-function can receive.
+```witchy
+import show
+
+fn main(c: Console):
+    show.say(c, "hello")  // c is why this works
+```
+
+The signature is the complete set of effects. The
+[Capabilities](capabilities.md) chapter covers sandboxing, supply-chain safety,
+and effect-free guarantees that follow from this.

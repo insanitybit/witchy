@@ -11,9 +11,9 @@ fn test_pop_head():
         Some(pair) ->
             let (head, rest) = pair
             testing.assert_int_eq(head, 7)
-            testing.assert_int_eq(list.length(rest), 2)
-            testing.assert_int_eq(list.at(rest, 0), 8)
-            testing.assert_int_eq(list.at(rest, 1), 9)
+            testing.assert_int_eq(rest.length(), 2)
+            testing.assert_int_eq(rest.at(0), 8)
+            testing.assert_int_eq(rest.at(1), 9)
         None -> testing.fail_with("expected Some")
 
 fn test_pop_empty():

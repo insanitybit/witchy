@@ -16,7 +16,7 @@ parameter list:
 // the network, or read the clock — there is no parameter that would let it.
 fn first_line(dir: Dir[Read], name: String) -> String:
     let contents = dir.read(name)
-    string.split_once(contents, "\n").0
+    contents.split_once("\n").0
 
 fn main(console: Console, dir: Dir[Read]):
     console.print(first_line(dir, "notes.txt"))
@@ -74,7 +74,7 @@ type Msg:
     Report(Sender(Msg))
     Summary(Int, Int)
 
-async fn server(inbox: Receiver(Msg)) -> Nil:
+async fn server(inbox: Receiver(Msg)):
     chan.serve(inbox, (0, 0), fn(state: (Int, Int), m):
         match m:
             Reading(v) -> chan.done((state.0 + 1, state.1 + v))
@@ -125,7 +125,7 @@ gen fn squares() -> Iter(Int):
         n = n + 1
 
 fn main(console: Console):
-    let first5: List(Int) = iter.collect(iter.take(squares(), 5))
+    let first5: List(Int) = iter.collect(squares().take(5))
     console.print(json.stringify(.{squares: first5}))
 ```
 

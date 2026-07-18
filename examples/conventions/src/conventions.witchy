@@ -1,4 +1,3 @@
-import list
 from chan import Receiver, Sender
 
 fn bump(var n: Int):
@@ -27,14 +26,14 @@ impl Bag:
 // An accumulator server: its running `sum` threads through `chan.serve`, and each
 // batch of numbers arrives as a message (channels move values, so the task owns
 // each batch — the `own` convention, made concrete).
-async fn adder(console: Console, rx: Receiver(List(Int))) -> Nil:
+async fn adder(console: Console, rx: Receiver(List(Int))):
     chan.serve(rx, 0, fn(sum, batch):
         let running = sum + sum_from(batch, 0)
         console.print("running sum: " + "${running}")
         chan.done(running)
     ).await
 
-async fn feeder(tx: Sender(List(Int))) -> Nil:
+async fn feeder(tx: Sender(List(Int))):
     chan.send(tx, [100, 200]).await
     chan.send(tx, [1, 2, 3]).await
 

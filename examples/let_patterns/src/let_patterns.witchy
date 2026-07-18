@@ -9,7 +9,6 @@
 //   witchy sandbox examples/let_patterns/src/let_patterns.witchy
 
 import option
-import string
 
 // Pop the head off a list, returning the value and the rest — or None if empty.
 pub fn pop(xs: List(Int)) -> Option((Int, List(Int))):

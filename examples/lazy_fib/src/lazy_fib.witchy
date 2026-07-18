@@ -5,7 +5,6 @@
 // — witchy's value semantics mean there's no lending-iterator complexity.
 
 import iter
-import string
 
 // The Fibonacci numbers 0, 1, 1, 2, 3, 5, 8, ... as an infinite iterator.
 // `unfold` threads the pair (current, next) as its state, yielding `current`.
@@ -24,17 +23,17 @@ fn show(xs: List(Int)) -> String:
 
 fn main(console: Console):
     // The first 10 Fibonacci numbers (take, then collect into a list).
-    let first10: List(Int) = iter.collect(iter.take(fibs(), 10))
+    let first10: List(Int) = iter.collect(fibs().take(10))
     console.print("first 10: " + show(first10))
 
     // The sum of the even Fibonacci numbers below 1000 — take_while / filter /
     // sum, all lazy over the infinite stream.
-    let small = iter.take_while(fibs(), fn(n: Int): n < 1000)
-    let evens = iter.filter(small, fn(n: Int): n % 2 == 0)
-    console.print("even fib sum < 1000: " + "${iter.sum(evens)}")
+    let small = fibs().take_while(fn(n: Int): n < 1000)
+    let evens = small.filter(fn(n: Int): n % 2 == 0)
+    console.print("even fib sum < 1000: " + "${evens.sum()}")
 
     // The first Fibonacci number past 1000 — found by scanning an infinite
     // iterator that stops at the first match.
-    match iter.find(fibs(), fn(n: Int): n > 1000):
+    match fibs().find(fn(n: Int): n > 1000):
         Some(n) -> console.print("first fib > 1000: " + "${n}")
         None -> console.print("none")

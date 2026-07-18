@@ -715,7 +715,7 @@ The value for `key`, or `default` when absent.
 
 The value for `key`, or a runtime error when absent. This is the read half of the `d[key]` subscript surface; use `get`/`get_or` when absence is ordinary.
 
-#### `fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) -> Nil where k: Eq`
+#### `fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) where k: Eq`
 
 #### `fn contains_key(d: Dict(k, v), key: k) -> Bool where k: Eq`
 
@@ -771,15 +771,61 @@ Swap keys and values. With duplicate values, a later entry wins.
 
 The values whose keys satisfy `pred`, in the Dict's iteration order.
 
+#### `Dict.length() -> Int`
+
+The number of entries.
+
+#### `Dict.is_empty() -> Bool`
+
+#### `Dict.keys() -> List(k)`
+
+The keys, in insertion order.
+
+#### `Dict.values() -> List(v)`
+
+The values, in insertion order.
+
+#### `Dict.pairs() -> List((k, v))`
+
+The (key, value) pairs, in insertion order.
+
 #### `Dict.insert(key: k, val: v) -> Option(v)`
 
 Insert `key` with `val`, returning the displaced value when the key existed. The dictionary performs one semantic key search. A uniquely owned dictionary preserves its hash index and updates or grows geometrically; a shared root is copied before repair so aliases keep their old contents in normal mode. The `unique` receiver makes that cost a checked contract in `mode opt`: a call whose dictionary was aliased or loaned is rejected with the ownership reason.
 
-#### `Dict.update(key: k, default: v, f: fn(v) -> v) -> Nil`
+#### `Dict.update(key: k, default: v, f: fn(v) -> v)`
 
 #### `Dict.remove(key: k) -> Option(v)`
 
 Remove `key`, returning its old value when present. The dictionary performs one semantic key search. Unique storage moves the old value out and repairs insertion order in place; shared storage uses copy-on-write in normal mode. In `mode opt`, the `unique` receiver rejects a shared or loaned call site instead of silently taking that copy.
+
+#### `Dict.get(key: k) -> Option(v)`
+
+A lookup that says whether the key was present, rather than forcing a default.
+
+#### `Dict.get_or(key: k, default: v) -> v`
+
+The value for `key`, or `default` when absent.
+
+#### `Dict.at(key: k) -> v`
+
+The value for `key`, or a runtime error when absent. This is the read half of the `d[key]` subscript surface; use `get`/`get_or` when absence is ordinary.
+
+#### `Dict.contains_key(key: k) -> Bool`
+
+Whether `key` is present. The `_key` suffix is deliberate: a Dict contains key/value pairs, so bare `contains` would be ambiguous between keys and values.
+
+#### `Dict.map_values(f: fn(v) -> w) -> Dict(k, w)`
+
+A new Dict with every value passed through `f` (keys unchanged).
+
+#### `Dict.filter(keep: fn(k, v) -> Bool) -> Dict(k, v)`
+
+Keep only the entries for which `keep(key, value)` holds.
+
+#### `Dict.merge(other: Dict(k, v)) -> Dict(k, v)`
+
+`a` with `b`'s entries laid over it (on a key collision, `b` wins).
 
 ## `duration`
 
@@ -1538,6 +1584,108 @@ A lazy STATEFUL map: thread `state` through `f`, which returns the new state and
 
 Concatenate an iterator OF iterators into one flat iterator, lazily and in order — `flatten` is `flat_map` with the identity function.
 
+#### `Iter.next() -> Step(a)`
+
+#### `Iter.map(f: fn(a) -> b) -> Iter(b)`
+
+Apply `f` to every element.
+
+#### `Iter.filter(keep: fn(a) -> Bool) -> Iter(a)`
+
+Keep only the elements for which `keep` holds.
+
+#### `Iter.filter_map(f: fn(a) -> Option(b)) -> Iter(b)`
+
+Apply `f` to each element, keeping every `Some(y)` and dropping every `None` — a `map` and `filter` fused into one pass (Rust's `Iterator::filter_map`).
+
+#### `Iter.take(k: Int) -> Iter(a)`
+
+The first `k` elements (fewer if the iterator is shorter).
+
+#### `Iter.take_while(pred: fn(a) -> Bool) -> Iter(a)`
+
+Elements up to (not including) the first one failing `pred`.
+
+#### `Iter.drop(k: Int) -> Iter(a)`
+
+Skip the first `k` elements. Lazy like every adapter: nothing is pulled from the source at construction — the skip runs inside the returned iterator's thunk on first pull, and iteratively, so a large `k` cannot exhaust the stack.
+
+#### `Iter.drop_while(pred: fn(a) -> Bool) -> Iter(a)`
+
+Skip the leading elements while `pred` holds, then yield the rest.
+
+#### `Iter.enumerate() -> Iter((Int, a))`
+
+Pair each element with its index: (0, x0), (1, x1), ...
+
+#### `Iter.zip(other: Iter(b)) -> Iter((a, b))`
+
+Zip two iterators into pairs, stopping at the shorter one.
+
+#### `Iter.chain(other: Iter(a)) -> Iter(a)`
+
+The elements of `first`, then the elements of `second`.
+
+#### `Iter.flat_map(f: fn(a) -> Iter(b)) -> Iter(b)`
+
+Map each element to an iterator and concatenate the results.
+
+#### `Iter.flatten() -> Iter(b)`
+
+Concatenate an iterator OF iterators into one flat iterator, lazily and in order — `flatten` is `flat_map` with the identity function.
+
+#### `Iter.scan(state: s, f: fn(s, a) -> (s, b)) -> Iter(b)`
+
+A lazy STATEFUL map: thread `state` through `f`, which returns the new state and the value to emit. `scan(xs, 0, fn(s, x): (s + x, s + x))` yields the running sums. Unlike `fold`, it produces an iterator, so it is lazy and composable, and unlike `map` it can carry state between elements.
+
+#### `Iter.for_each(f: fn(a) -> Nil)`
+
+Call `f` on every element for its effect (drives to exhaustion). The right consumer for a generator when you don't need to early-exit — no list is built.
+
+#### `Iter.fold(init: b, f: fn(b, a) -> b) -> b`
+
+Left fold over the elements.
+
+#### `Iter.count() -> Int`
+
+Number of elements (drives to exhaustion).
+
+#### `Iter.sum() -> Int`
+
+Sum of an Int iterator.
+
+#### `Iter.find(pred: fn(a) -> Bool) -> Option(a)`
+
+The first element satisfying `pred`, or None (stops at the first match, so it is safe on an unbounded iterator if a match exists).
+
+#### `Iter.any(pred: fn(a) -> Bool) -> Bool`
+
+Whether at least one element satisfies `pred` — stops (short-circuits) at the first match, so it terminates on an unbounded iterator once one is found. `false` for the empty iterator.
+
+#### `Iter.all(pred: fn(a) -> Bool) -> Bool`
+
+Whether every element satisfies `pred` — stops at the first failure. `true` for the empty iterator (vacuously). Don't call on an unbounded iterator whose elements all satisfy `pred`: it never stops.
+
+#### `Iter.last() -> Option(a)`
+
+The last element (drives the iterator to exhaustion), or None if it is empty. Don't call on an unbounded iterator — it never stops.
+
+#### `Iter.position(pred: fn(a) -> Bool) -> Option(Int)`
+
+The 0-based index of the first element satisfying `pred`, or None. Stops at the first match, so it is safe on an unbounded iterator if a match exists.
+
+#### `Iter.split_first() -> Option((a, Iter(a)))`
+
+Split an iterator into its first element and the rest, or None if it is empty. The building block for writing your own recursive iterator transforms (e.g. a prime sieve): pair it with `unfold`, which threads the "rest" as its seed.
+
+#### `Iter.min() -> Option(a)`
+
+The smallest element by the type's `Ord`, or None if the iterator is empty (drives to exhaustion; don't call on an unbounded iterator).
+
+#### `Iter.max() -> Option(a)`
+
+The largest element by the type's `Ord`, or None if the iterator is empty (drives to exhaustion; don't call on an unbounded iterator).
+
 ### Trait implementations
 
 #### `impl FromIterator(a) for List(a)`
@@ -1849,7 +1997,7 @@ The number of elements.
 
 The element at `index` (0-based). Out of bounds is a runtime error on every backend.
 
-#### `fn push(var xs: List(a), x: a) -> Nil`
+#### `fn push(var xs: List(a), x: a)`
 
 Append `x` in place.
 
@@ -1991,11 +2139,11 @@ Combine two lists element-wise with `f`, stopping at the shorter one.
 
 Insert `sep` between adjacent elements: [a, b, c] -> [a, sep, b, sep, c].
 
-#### `fn reverse(var xs: List(a)) -> Nil`
+#### `fn reverse(var xs: List(a))`
 
-#### `fn sort_by(var xs: List(a), less: fn(a, a) -> Bool) -> Nil`
+#### `fn sort_by(var xs: List(a), less: fn(a, a) -> Bool)`
 
-#### `fn sort(var xs: List(a)) -> Nil where a: Ord`
+#### `fn sort(var xs: List(a)) where a: Ord`
 
 Sort any list whose elements are `Ord` ascending — a stable merge sort (O(n log n)) that dispatches through the element type's total order, so `xs.sort()` works for `Int`, `String`, `Duration`, or your own derived-`Ord` records, content-correct on both backends (RFC-0046). A merely-partial type like `Float` (not `Ord`) is rejected at the bound; sort those with `sort_by`.
 
@@ -2055,11 +2203,11 @@ Split `xs` into consecutive sublists of length `n` (the final one may be shorter
 
 The elements in the half-open index range [start, end), clamped to bounds. `slice(xs, 1, 3)` of [a,b,c,d] is [b,c].
 
-#### `fn set_at(var xs: List(a), index: Int, value: a) -> Nil`
+#### `fn set_at(var xs: List(a), index: Int, value: a)`
 
 Store `value` at `index`. An out-of-range (or negative) index is a runtime error on both backends, symmetric with `list.at` and `xs[i]`.
 
-#### `fn update_at(var xs: List(a), index: Int, f: fn(a) -> a) -> Nil`
+#### `fn update_at(var xs: List(a), index: Int, f: fn(a) -> a)`
 
 A copy of `xs` with the function `f` applied to the element at `index`. An out-of-range (or negative) index is a runtime error on both backends, exactly like `list.at` — a silently discarded update is a contract violation (RFC-0044 rule 3), so it aborts rather than leaving the list unchanged.
 
@@ -2069,7 +2217,7 @@ Remove and return the final element. A uniquely owned non-empty list moves the l
 
 #### `fn pop_front(var xs: List(a)) -> Option(a)`
 
-#### `fn swap(var xs: List(a), i: Int, j: Int) -> Nil`
+#### `fn swap(var xs: List(a), i: Int, j: Int)`
 
 #### `fn windows(xs: List(a), n: Int) -> List(List(a))`
 
@@ -2087,7 +2235,7 @@ Split a list of pairs into a pair of lists — the inverse of `zip`.
 
 Pair each element with its index: `[a, b]` -> `[(0, a), (1, b)]`.
 
-#### `List.push(x: a) -> Nil`
+#### `List.push(x: a)`
 
 Append `x` in place.
 
@@ -2103,15 +2251,15 @@ Apply `f` to every element, collecting the results.
 
 Keep only the elements for which `keep` returns true.
 
-#### `List.reverse() -> Nil`
+#### `List.reverse()`
 
-#### `List.sort_by(less: fn(a, a) -> Bool) -> Nil`
+#### `List.sort_by(less: fn(a, a) -> Bool)`
 
-#### `List.set_at(index: Int, value: a) -> Nil`
+#### `List.set_at(index: Int, value: a)`
 
 Store `value` at `index`. An out-of-range (or negative) index is a runtime error on both backends, symmetric with `list.at` and `xs[i]`.
 
-#### `List.update_at(index: Int, f: fn(a) -> a) -> Nil`
+#### `List.update_at(index: Int, f: fn(a) -> a)`
 
 A copy of `xs` with the function `f` applied to the element at `index`. An out-of-range (or negative) index is a runtime error on both backends, exactly like `list.at` — a silently discarded update is a contract violation (RFC-0044 rule 3), so it aborts rather than leaving the list unchanged.
 
@@ -2121,15 +2269,103 @@ Remove and return the final element. A uniquely owned non-empty list moves the l
 
 #### `List.pop_front() -> Option(a)`
 
-#### `List.swap(i: Int, j: Int) -> Nil`
+#### `List.swap(i: Int, j: Int)`
+
+#### `List.length() -> Int`
+
+The number of elements.
+
+#### `List.is_empty() -> Bool`
+
+Whether the list has no elements.
+
+#### `List.at(index: Int) -> a`
+
+The element at `index` (0-based). Out of bounds is a runtime error on every backend.
+
+#### `List.get(index: Int) -> Option(a)`
+
+The element at `index` as `Some`, or `None` when `index` is out of range — a total, bounds-checked alternative to the `at` builtin.
+
+#### `List.head() -> Option(a)`
+
+The first element as `Some`, or `None` for the empty list.
+
+#### `List.last() -> Option(a)`
+
+The last element as `Some`, or `None` for the empty list.
+
+#### `List.find(pred: fn(a) -> Bool) -> Option(a)`
+
+The first element satisfying `pred` as `Some`, or `None` if none do.
+
+#### `List.any(pred: fn(a) -> Bool) -> Bool`
+
+Whether at least one element satisfies `pred`.
+
+#### `List.all(pred: fn(a) -> Bool) -> Bool`
+
+Whether every element satisfies `pred` (true for the empty list).
+
+#### `List.position(pred: fn(a) -> Bool) -> Option(Int)`
+
+The index of the first element satisfying `pred` as `Some`, or `None` if none do — the by-predicate search (`index_of` is the by-value search). One name per axis, both `Option`, no sentinel (RFC-0044/0049).
+
+#### `List.fold(init: b, f: fn(b, a) -> b) -> b`
+
+Reduce the list to a single value, left to right.
+
+#### `List.flat_map(f: fn(a) -> List(b)) -> List(b)`
+
+Map each element to a list, then concatenate the results.
+
+#### `List.take(n: Int) -> List(a)`
+
+The first `n` elements (fewer if the list is shorter).
+
+#### `List.drop(n: Int) -> List(a)`
+
+All but the first `n` elements.
+
+#### `List.enumerate() -> List((Int, a))`
+
+Pair each element with its index: `[a, b]` -> `[(0, a), (1, b)]`.
+
+#### `List.zip(ys: List(b)) -> List((a, b))`
+
+Pair up two lists element-wise, stopping at the shorter one.
+
+#### `List.contains(target: a) -> Bool`
+
+Whether `target` appears in the list, by the element type's `Eq` impl. The `where a: Eq` bound monomorphizes the equality per element type, so the comparison is content-correct on both backends — including user record element types, which the compiled backend cannot compare through an unbounded generic `==` (RFC-0046).
+
+#### `List.index_of(target: a) -> Option(Int)`
+
+The index of the first element equal to `target` as `Some`, or `None` if absent (RFC-0044 rule 1: absence is `Option`, never a -1 sentinel). The `where a: Eq` bound makes the equality content-correct on both backends.
 
 #### `List.remove(target: a) -> Bool`
 
 A new list with the first occurrence of `target` removed; unchanged when absent. To remove every occurrence, use `filter(xs, fn(y): y != target)`.
 
-#### `List.sort() -> Nil`
+#### `List.unique() -> List(a)`
+
+The list with duplicates removed, keeping the first occurrence of each element (by the element type's `Eq`), in original order. `contains` here is this module's own list function — a same-module function shadows the like-named string builtin.
+
+#### `List.sort()`
 
 Sort any list whose elements are `Ord` ascending — a stable merge sort (O(n log n)) that dispatches through the element type's total order, so `xs.sort()` works for `Int`, `String`, `Duration`, or your own derived-`Ord` records, content-correct on both backends (RFC-0046). A merely-partial type like `Float` (not `Ord`) is rejected at the bound; sort those with `sort_by`.
+
+#### `List.min() -> Option(a)`
+
+The smallest element as `Some`, or `None` for the empty list. Generic over any `Ord` element type (like `sort`), dispatching through the total order — so `xs.min()` works for `Int`, `String`, `Duration`, or a derived-`Ord` record. For a merely-partial type or a custom criterion, use `min_by`.
+
+#### `List.max() -> Option(a)`
+
+The largest element as `Some`, or `None` for the empty list. Generic over any `Ord` element type — see `min`.
+
+#### `List.join(sep: String) -> String`
+
+Concatenate the strings in `parts`, inserting `sep` between adjacent elements: `["a", "b", "c"].join("-")` is `"a-b-c"`, and `[].join(sep)` is `""`.
 
 ## `math`
 
@@ -3556,6 +3792,18 @@ Whether every member of `s` is also in `t`.
 
 Whether the two sets share no members.
 
+#### `Set.length() -> Int`
+
+The number of distinct members.
+
+#### `Set.is_empty() -> Bool`
+
+Whether the set has no members.
+
+#### `Set.to_list() -> List(a)`
+
+The members as a list, in insertion order.
+
 #### `Set.insert(x: a) -> Bool`
 
 Add `x`, returning whether it was newly inserted.
@@ -3563,6 +3811,34 @@ Add `x`, returning whether it was newly inserted.
 #### `Set.remove(x: a) -> Bool`
 
 Remove `x`, returning whether it was present.
+
+#### `Set.contains(x: a) -> Bool`
+
+Whether `x` is a member of `s`.
+
+#### `Set.union(other: Set(a)) -> Set(a)`
+
+Every member of either set.
+
+#### `Set.intersection(other: Set(a)) -> Set(a)`
+
+The members in both sets.
+
+#### `Set.difference(other: Set(a)) -> Set(a)`
+
+The members of `s` that are not in `t`.
+
+#### `Set.symmetric_difference(other: Set(a)) -> Set(a)`
+
+The members in exactly one of the two sets.
+
+#### `Set.is_subset(other: Set(a)) -> Bool`
+
+Whether every member of `s` is also in `t`.
+
+#### `Set.is_disjoint(other: Set(a)) -> Bool`
+
+Whether the two sets share no members.
 
 ### Trait implementations
 

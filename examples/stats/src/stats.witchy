@@ -5,7 +5,6 @@
 // (Console only); identical interpreted and compiled. Run:
 //   witchy examples/stats/src/stats.witchy
 
-import string
 import math
 
 fn main(console: Console):
