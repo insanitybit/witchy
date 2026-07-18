@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed compatibility builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned item/expression/type/pattern/statement/block quotations with structural typed holes, direct AST transport for typed tags, definition-site function/type/constructor/pattern resolution, explicit meta.call_site value/function/type/constructor references, and nested tagged-expansion diagnostics carrying invocation, definition, generated-parent, and hole ancestry landed; general qualified/compatibility-builder/item origins and persistent per-node spans remain proposed"
+tracking: "source-backed compatibility builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned item/expression/type/pattern/statement/block quotations with structural typed holes, direct AST transport for typed tags and function bodies, definition-site function/type/constructor/pattern resolution, explicit meta.call_site value/function/type/constructor references, and nested tagged-expansion diagnostics carrying invocation, definition, generated-parent, and hole ancestry landed; general qualified/compatibility-builder/item origins and persistent per-node spans remain proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -475,11 +475,16 @@ The first source-compatible slice is implemented:
   scrutinee. `MatchArmSyntax` deliberately remains source-backed until its own
   node representation exists; each arm is parsed as an individual compatibility
   payload, never by projecting and reparsing the scrutinee or enclosing match.
+- The forty-fourth slice makes `meta.function_block` produce a compiler-owned
+  `Item::Function`. Its compatibility signature is parsed once, while an owned
+  `BlockSyntax` body is transferred directly into the function item. Explicit
+  call-site references and nested syntax identity therefore survive library
+  generators instead of being erased by rendering the body to source.
 
 This is intentionally not the full RFC. Every quotation category and its typed
 hole placement is now compiler-owned. General `meta.*` builder composition may
-still project canonical source, and current body builders use that compatibility
-surface when constructing an item. Compiler-owned typed tag expressions preserve
+still project canonical source, but `meta.function_block` retains an owned body
+when constructing an item. Compiler-owned typed tag expressions preserve
 definition-site direct function, type, constructor, and constructor-pattern
 references, and
 `meta.call_site("name")`, consumed through `meta.expr_name`, `meta.type_named`,

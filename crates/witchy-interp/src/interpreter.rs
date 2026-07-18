@@ -604,6 +604,44 @@ fn compiler_match_arm_sources(value: &Value) -> Result<Vec<String>, RuntimeError
         .collect()
 }
 
+fn compiler_block_syntax_value(
+    value: &Value,
+    compiler_block_syntax: &HashMap<String, Block>,
+) -> Result<Block, RuntimeError> {
+    fn tail(name: &str) -> &str {
+        name.rsplit_once('.').map_or(name, |(_, tail)| tail)
+    }
+
+    let Value::Ctor { name, fields } = value else {
+        return err("meta.function_block expected a BlockSyntax body");
+    };
+    match (tail(name), fields.as_slice()) {
+        ("CompilerBlockSyntax", [Value::Str(handle), Value::Str(_source)]) => {
+            compiler_block_syntax.get(handle.as_str()).cloned().ok_or_else(|| RuntimeError {
+                message: "CompilerBlockSyntax carried an invalid syntax handle".into(),
+            })
+        }
+        ("BlockSyntax", [Value::Str(source)]) => {
+            let body = source.replace('\n', "\n    ");
+            let module = parse_module(&format!(
+                "fn __witchy_meta_block_payload():\n    {body}\n"
+            ))
+            .map_err(|error| RuntimeError {
+                message: format!("invalid BlockSyntax payload: {error}"),
+            })?;
+            let [Item::Function(function)] = module.items.as_slice() else {
+                return err("invalid BlockSyntax payload: expected one function wrapper");
+            };
+            Ok(function.body.clone())
+        }
+        ("CompilerBlockSyntax", _) => err("CompilerBlockSyntax carried an invalid payload"),
+        ("BlockSyntax", _) => err("BlockSyntax carried an invalid source payload"),
+        (other, _) => err(format!(
+            "meta.function_block expected BlockSyntax, got `{other}`"
+        )),
+    }
+}
+
 fn compiler_item_holes(
     values: &[Value],
     compiler_expr_syntax: &HashMap<String, Expr>,
@@ -3145,6 +3183,37 @@ impl Interpreter {
                     }))
                 }
                 _ => err("meta.expr_match expects an ExprSyntax scrutinee and List(MatchArmSyntax) arms"),
+            },
+            name if intrinsics::is_meta_function_block(name) => match args {
+                [Value::Str(header), body] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.function_block is available only during compile-time expansion",
+                        );
+                    }
+                    let body = compiler_block_syntax_value(body, &self.compiler_block_syntax)?;
+                    let module = parse_module(&format!("{header}\n    ()\n")).map_err(|error| {
+                        RuntimeError {
+                            message: format!("meta.function_block produced an invalid signature: {error}"),
+                        }
+                    })?;
+                    let [Item::Function(parsed)] = module.items.as_slice() else {
+                        return err("meta.function_block expected one function signature");
+                    };
+                    let mut function = parsed.clone();
+                    function.body = body;
+                    let item = Item::Function(function);
+                    let handle = self.next_compiler_syntax_handle("function-item")?;
+                    self.compiler_item_syntax.insert(handle.clone(), item);
+                    Ok(Some(Value::Ctor {
+                        name: OWNED_ITEM_SYNTAX_CTOR.into(),
+                        fields: Rc::new(vec![
+                            Value::str(handle),
+                            Value::Int(i64::from(self.cur_line)),
+                        ]),
+                    }))
+                }
+                _ => err("meta.function_block expects a signature header and BlockSyntax body"),
             },
             name if name == intrinsics::COMPILER_QUOTE_EXPR => {
                 if self.fresh_ident_scope.is_none() {

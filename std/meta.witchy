@@ -11,8 +11,8 @@
 // RFC-0080's typed boundary for whole generated items. `quote item:` and literal
 // whole-item `meta.item("...")` values retain compiler-owned item AST. For an
 // item quote with holes, the compiler substitutes typed expression, type, and
-// pattern nodes into that AST; those hole payload types and dynamic item builders
-// retain their source-backed compatibility representation for now.
+// pattern nodes into that AST. `function_block` also transfers an owned block
+// directly; other dynamic item builders retain source compatibility for now.
 sealed type ItemSyntax:
     ItemSyntax(String)
 
@@ -25,8 +25,8 @@ sealed type TypeSyntax:
 
 // Hole-free `quote expr:` and literal `meta.expr_raw("...")` values retain a
 // compiler-owned expression AST. The second constructor is compiler-internal;
-// existing builders deliberately project its canonical source when composing a
-// new compatibility value.
+// structural call, field, and match builders retain it, while remaining
+// compatibility builders may still project canonical source.
 sealed type ExprSyntax:
     ExprSyntax(String)
     CompilerExprSyntax(String, String)
@@ -620,7 +620,13 @@ pub fn function_block(public: Bool, name: Ident, params: List(ParamSyntax), ret:
         Some(ty) -> " -> " + type_syntax_source(ty)
         None -> ""
 
-    item(visibility + "fn " + ident_source(name) + "(" + list.join(param_sources(params), ", ") + ")" + ret_source + ":\n" + indent(block_source(body)))
+    let header = visibility + "fn " + ident_source(name) + "(" + list.join(param_sources(params), ", ") + ")" + ret_source + ":"
+    __meta_function_block(header, body)
+
+// Compiler-owned function construction. The signature remains the compatibility
+// surface for ParamSyntax; the body is transferred as a Block AST.
+fn __meta_function_block(header: String, body: BlockSyntax) -> ItemSyntax:
+    __meta_function_block(header, body)
 
 // A declared type expression, exposed as data so generators do not have to parse
 // source-looking type strings.

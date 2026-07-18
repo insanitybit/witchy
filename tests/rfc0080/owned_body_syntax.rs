@@ -15,23 +15,34 @@ comptime fn direct_body() -> meta.BlockSyntax:
         let x = 40
         x + 2
 
+fn selected() -> Int:
+    42
+
+comptime fn call_site_body() -> meta.BlockSyntax:
+    let selected = meta.expr_name(meta.call_site("selected"))
+    let call = meta.expr_call(selected, [])
+    quote block:
+        ${call}
+
 comptime:
     let int = quote type:
         Int
     let composed = meta.block([local_stmt()], Some(meta.expr_int(7)))
     emit_item(meta.function_block(true, meta.ident("composed"), [], Some(int), composed))
     emit_item(meta.function_block(true, meta.ident("direct"), [], Some(int), direct_body()))
+    emit_item(meta.function_block(true, meta.ident("generated_selected"), [], Some(int), call_site_body()))
 
 fn main(console: Console):
     console.print("${composed()}")
     console.print("${direct()}")
+    console.print("${generated_selected()}")
 "#;
 
 #[test]
-fn owned_body_syntax_projects_through_builders_on_both_backends() {
+fn owned_body_syntax_survives_function_builders_on_both_backends() {
     let parsed = parser::parse_module(SOURCE).expect("parse compiler-owned body program");
     assert_eq!(parsed.compiler_stmt_syntax.len(), 1);
-    assert_eq!(parsed.compiler_block_syntax.len(), 1);
+    assert_eq!(parsed.compiler_block_syntax.len(), 2);
 
     let mut expanded_for_tooling = parsed.clone();
     comptime::expand_compile_time("main", &mut expanded_for_tooling, &[])
@@ -39,8 +50,11 @@ fn owned_body_syntax_projects_through_builders_on_both_backends() {
     let expanded_source = format::module(&expanded_for_tooling, &[]);
     assert!(expanded_source.contains("pub fn composed() -> Int:"), "{expanded_source}");
     assert!(expanded_source.contains("pub fn direct() -> Int:"), "{expanded_source}");
+    assert!(expanded_source.contains("pub fn generated_selected() -> Int:"), "{expanded_source}");
     assert!(!expanded_source.contains("@quote_stmt"), "{expanded_source}");
     assert!(!expanded_source.contains("@quote_block"), "{expanded_source}");
+    let expanded_debug = format!("{expanded_for_tooling:?}");
+    assert!(expanded_debug.contains("@call_site:"), "{expanded_debug}");
 
     let linked = pipeline::link(vec![("main".into(), parsed)], "main")
         .expect("expand and link compiler-owned body program");
@@ -48,7 +62,10 @@ fn owned_body_syntax_projects_through_builders_on_both_backends() {
     assert!(linked.compiler_stmt_syntax.is_empty());
     assert!(linked.compiler_block_syntax.is_empty());
 
-    let expected = vec!["7".to_string(), "42".to_string()];
+    let linked_debug = format!("{linked:?}");
+    assert!(!linked_debug.contains("@call_site:"), "{linked_debug}");
+
+    let expected = vec!["7".to_string(), "42".to_string(), "42".to_string()];
     assert_eq!(
         interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interpret"),
         expected
