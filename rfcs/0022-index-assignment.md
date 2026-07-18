@@ -9,6 +9,11 @@ tracking:
 
 # RFC-0022: Place-assignment sugar (`d[k] = v`, `xs[i] = v`, `u.field = v`)
 
+The shipped place-assignment parser/desugar and formatter support are implemented
+in [`crates/witchy-syntax/src/parser.rs`](../crates/witchy-syntax/src/parser.rs) and
+[`crates/witchy-syntax/src/format.rs`](../crates/witchy-syntax/src/format.rs), with
+cross-backend coverage in [`src/example_tests.rs`](../src/example_tests.rs).
+
 > Code blocks here are intentionally **not** tagged `witchy` (per RFC-0002's
 > convention): illustrative sketches, not executed by the doc-test harness. The
 > proposed `d[k] = v` form does **not** parse today.
