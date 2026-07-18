@@ -24,6 +24,10 @@ tracking: |
 
 # RFC-0065: Sealed type constructors — smart constructors that enforce invariants
 
+The linker enforcement and parity evidence are covered by the sealed-type cases
+in [`src/example_tests.rs`](../src/example_tests.rs) and
+[`crates/witchy-syntax/src/linker.rs`](../crates/witchy-syntax/src/linker.rs).
+
 ## Summary
 
 Let any `type` seal its data constructor(s), so a value of that type can only be
