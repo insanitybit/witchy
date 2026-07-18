@@ -388,6 +388,16 @@ fn record_expr(table: &mut OriginTable, module: &str, item: u32, path: &[u32], e
         Expr::RecordUpdate { base, fields, .. } => { record_expr_child(table, module, item, path, &mut next, base, origin); for (_, value) in fields { record_expr_child(table, module, item, path, &mut next, value, origin); } }
         Expr::Record { fields, spread, .. } => { for (_, value) in fields { record_expr_child(table, module, item, path, &mut next, value, origin); } if let Some(spread) = spread { record_expr_child(table, module, item, path, &mut next, spread, origin); } }
         Expr::As { expr, ty } | Expr::ExistentialPack { expr, ty, .. } => { record_expr_child(table, module, item, path, &mut next, expr, origin); let child = child_path(path, &mut next); record_type(table, module, item, &child, ty, origin); }
+        Expr::ExistentialCall { receiver, args, ty, result, .. } => {
+            record_expr_child(table, module, item, path, &mut next, receiver, origin);
+            for arg in args {
+                record_expr_child(table, module, item, path, &mut next, arg, origin);
+            }
+            let child = child_path(path, &mut next);
+            record_type(table, module, item, &child, ty, origin);
+            let child = child_path(path, &mut next);
+            record_type(table, module, item, &child, result, origin);
+        }
         Expr::Binary { lhs, rhs, .. } | Expr::Range { lo: lhs, hi: rhs, .. } => { record_expr_child(table, module, item, path, &mut next, lhs, origin); record_expr_child(table, module, item, path, &mut next, rhs, origin); }
         Expr::If { cond, then_block, else_block } => { record_expr_child(table, module, item, path, &mut next, cond, origin); let child = child_path(path, &mut next); record_block(table, module, item, &child, then_block, origin); if let Some(block) = else_block { let child = child_path(path, &mut next); record_block(table, module, item, &child, block, origin); } }
         Expr::Match { scrutinee, arms } => { record_expr_child(table, module, item, path, &mut next, scrutinee, origin); for arm in arms { let child = child_path(path, &mut next); record_arm(table, module, item, &child, arm, origin); } }
