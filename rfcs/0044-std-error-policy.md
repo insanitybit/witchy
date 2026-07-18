@@ -17,7 +17,7 @@ std has a real error/return policy — lookup miss → `Option`, invalid input �
 `Result`, programmer error → abort, ergonomics via `_or` — but it is written
 down nowhere and followed only ~70% of the time. This RFC writes the policy
 down as five normative rules (destined for `CONTRIBUTING.md` and a new
-`spec/error-policy.md`), decides the contested cases (regex, crypto verify,
+[`spec/error-policy.md`](../spec/error-policy.md)), decides the contested cases (regex, crypto verify,
 toml's fake `Result`), and migrates every violator to its policy shape in one
 cut. This RFC changes **shapes**; [RFC-0049](0049-naming-lexicon.md) changes
 **names** — where a function gets both (e.g. `index_of`), the two land in the
@@ -25,7 +25,7 @@ same cut but each decision lives in its own RFC.
 
 ## Motivation
 
-The book disavows sentinels in its second paragraph (`book/src/tour-errors.md:8-9`:
+The book disavows sentinels in its second paragraph ([`book/src/tour-errors.md`](../book/src/tour-errors.md):8-9:
 "without inventing a sentinel like `-1` or `null`") while six std functions
 return `-1` today (`string.index_of`, `string.last_index_of`, `list.index_of`,
 `list.find_index`, `cmp.index_of`, `ascii.to_digit`) — and `std/list.witchy:280`
@@ -145,7 +145,7 @@ rules on `E`'s rendering).
 | `json.get_strings`, `toml.get_array` | `[]` | **grandfathered** under rule 5: they are `get_or`-family conveniences whose default-to-empty *is* the useful total behavior; their doc-comments must say "lenient by design" and name the strict alternative (`get` + `as_array`) | 5 |
 
 Every changed function's doc-comment is updated in `std/*.witchy` and
-`spec/stdlib.md` regenerated (`witchy doc std/*.witchy > spec/stdlib.md`) —
+[`spec/stdlib.md`](../spec/stdlib.md) regenerated (`witchy doc std/*.witchy > spec/stdlib.md`) —
 never hand-edited. Every migrated function gets a differential test on both
 backends; the abort rows depend on RFC-0045 for message-level parity but not
 for the shape change itself.
@@ -191,7 +191,7 @@ for the shape change itself.
 - Go: one error idiom held by convention and review; witchy's newer stratum
   already beats comma-ok for composition (`?`), which is why finishing the
   migration beats freezing it.
-- `book/src/tour-errors.md` — the policy's rules 1–2 were already user-facing
+- [`book/src/tour-errors.md`](../book/src/tour-errors.md) — the policy's rules 1–2 were already user-facing
   promises; this RFC makes std keep them.
 
 ## Review note (2026-07-04)
