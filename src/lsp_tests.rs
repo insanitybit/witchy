@@ -214,6 +214,52 @@ fn main(console: Console):
         );
     }
 
+    /// The methods-first hover preference applies ONLY to the `receiver.name`
+    /// shape. A bare name that the document itself defines must keep resolving
+    /// to the document's own function, even when a std impl method shares the
+    /// name; an explicit module qualifier must keep meaning the module function.
+    #[test]
+    fn hover_bare_and_module_qualified_names_are_not_shadowed_by_methods() {
+        let mut docs = HashMap::new();
+        // `count` collides with String.count; the bare call must hover the
+        // local free function.
+        let src = "// How many widgets.\nfn count(n: Int) -> Int:\n    n\n\nfn main(console: Console):\n    console.print(\"${count(3)}\")\n";
+        docs.insert("file:///t.witchy".to_string(), src.to_string());
+        let col = src.lines().nth(5).unwrap().find("count").unwrap() as u64;
+        let resp = hover_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": "file:///t.witchy" },
+                "position": { "line": 5, "character": col },
+            }),
+        );
+        let contents = resp["contents"]["value"].as_str().expect("hover text");
+        assert!(
+            contents.contains("fn count(n: Int) -> Int"),
+            "bare name must prefer the document's own function, got: {contents}"
+        );
+        assert!(!contents.contains("String.count"), "{contents}");
+
+        // `list.repeat` is module-qualified: the module free function, not
+        // String.repeat.
+        let src2 = "\nfn main(console: Console):\n    console.print(\"${list.repeat(0, 2)}\")\n";
+        docs.insert("file:///t2.witchy".to_string(), src2.to_string());
+        let col2 = src2.lines().nth(2).unwrap().find("repeat").unwrap() as u64;
+        let resp2 = hover_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": "file:///t2.witchy" },
+                "position": { "line": 2, "character": col2 },
+            }),
+        );
+        let contents2 = resp2["contents"]["value"].as_str().expect("hover text");
+        assert!(
+            contents2.contains("fn list.repeat("),
+            "module-qualified name must stay the module function, got: {contents2}"
+        );
+        assert!(!contents2.contains("String.repeat"), "{contents2}");
+    }
+
     #[test]
     fn associated_std_function_hover_uses_type_owner() {
         let mut docs = HashMap::new();

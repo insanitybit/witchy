@@ -366,6 +366,7 @@ fn hover_response(docs: &HashMap<String, String>, params: &Value) -> Value {
     let mut sources: Vec<(String, String)> = Vec::new();
     let mut associated_owner: Option<String> = None;
     let mut module_qualified = false;
+    let mut bare_name = false;
     let bare = match word.split_once('.') {
         Some((head, tail)) => {
             // `head.tail`: `head` is a module (`string.repeat`) or a receiver
@@ -390,6 +391,7 @@ fn hover_response(docs: &HashMap<String, String>, params: &Value) -> Value {
             name
         }
         None => {
+            bare_name = true;
             sources.push((text.to_string(), String::new()));
             sources.extend(visible_module_sources(text, uri, docs));
             word.clone()
@@ -406,6 +408,20 @@ fn hover_response(docs: &HashMap<String, String>, params: &Value) -> Value {
             }
         }
         return Value::Null;
+    }
+    // A bare name the DOCUMENT ITSELF defines wins outright: a user's own
+    // `fn count(...)` must not be shadowed by a std impl-method namesake
+    // (String.count). Note a literal receiver (`"ab".repeat`) also reads as a
+    // bare word — the quote stops the word scan — so this check must be
+    // document-only, leaving std methods to the pass below.
+    if bare_name {
+        if let Some((src, prefix)) = sources.first() {
+            if let Some((sig, doc)) = signature_doc(src, &bare) {
+                let contents =
+                    format!("```witchy\n{}\n```\n{}", qualify_signature(&sig, prefix), doc);
+                return json!({ "contents": { "kind": "markdown", "value": contents } });
+            }
+        }
     }
     // Methods-first (RFC-0099): an impl instance method owns the operation, so
     // a receiver spelling (`"ab".repeat`, `xs.push`) reports the Type-qualified
