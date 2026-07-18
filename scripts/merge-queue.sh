@@ -556,15 +556,16 @@ coordinator_pid() {
 }
 
 # Legacy versions had no lifetime lock, so an unnamed detached loop can still
-# be alive when the first fixed coordinator starts. Reap only sleeping siblings
-# whose command names this exact repository script, and never the PID-file
-# keeper or gate-lock holder. Custom MERGE_QUEUE_STATE_DIR instances are skipped
-# so an isolated test/dev queue can never be mistaken for the production queue.
+# be alive when the first fixed coordinator starts. Reap only sleeping Bash
+# siblings whose command names this exact repository script; the Perl readiness
+# parent also carries that script in argv and must not match. Never reap the
+# PID-file keeper or gate-lock holder. Custom MERGE_QUEUE_STATE_DIR instances
+# are skipped so an isolated test/dev queue cannot be mistaken for production.
 coordinator_siblings() {
     [ -z "${MERGE_QUEUE_STATE_DIR:-}" ] || return 0
-    ps -axo pid=,state=,command= 2>/dev/null | awk \
+    ps -axo pid=,state=,comm=,command= 2>/dev/null | awk \
         -v self="$$" -v needle="$coordinator_script run" '
-            $1 != self && $2 ~ /^[SI]/ && index($0, needle) { print $1 }
+            $1 != self && $2 ~ /^[SI]/ && $3 ~ /(^|\/)bash$/ && index($0, needle) { print $1 }
         ' || true
 }
 reap_orphan_coordinators() {

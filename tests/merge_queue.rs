@@ -703,7 +703,10 @@ fn resubmission_during_gate_is_not_deleted_or_falsely_marked_merged() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("start paused queue gate");
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // Checkout and replay are outside the gate lock and can take several
+    // seconds on a loaded shared machine. Wait for the explicit gate marker;
+    // this outer bound is deadlock protection, not the synchronization rule.
+    let deadline = Instant::now() + Duration::from_secs(30);
     while !started.exists() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(10));
     }
@@ -1007,7 +1010,18 @@ fn red_dependency_stack_bisects_and_lands_only_the_green_prefix() {
 fn daemon_enters_an_independent_process_group() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let temp = TempDir::new();
-    let state = temp.path().join("state");
+    let isolated_root = temp.path().join("isolated-root");
+    let isolated_scripts = isolated_root.join("scripts");
+    fs::create_dir_all(&isolated_scripts).expect("create isolated script directory");
+    let queue = isolated_scripts.join("merge-queue.sh");
+    fs::copy(root.join("scripts/merge-queue.sh"), &queue).expect("copy queue script");
+    fs::copy(
+        root.join("scripts/state-paths.sh"),
+        isolated_scripts.join("state-paths.sh"),
+    )
+    .expect("copy state path script");
+    let state_root = temp.path().join("state-root");
+    let state = state_root.join("merge-queue");
     let gate_worktree = temp.path().join("unused-gate-worktree");
 
     // Keep the daemon command's launcher alive in a dedicated process group so
@@ -1020,14 +1034,13 @@ fn daemon_enters_an_independent_process_group() {
             r#""$1" daemon || exit $?; sleep 30"#,
             "merge-queue-daemon-launcher",
         ])
-        .arg(root.join("scripts/merge-queue.sh"))
-        .env("MERGE_QUEUE_STATE_DIR", &state)
+        .arg(&queue)
+        .env("MERGE_QUEUE_TEST_ROOT", &root)
+        .env("MERGE_QUEUE_ALLOW_TEST_ROOT", "1")
+        .env("WITCHY_STATE_DIR", &state_root)
         .env("MERGE_QUEUE_GATE_WT", &gate_worktree)
         .env("MERGE_QUEUE_GATE_CMD", "true")
-        .env(
-            "MERGE_QUEUE_COORDINATOR_SCRIPT",
-            root.join("scripts/merge-queue.sh"),
-        )
+        .env("MERGE_QUEUE_COORDINATOR_SCRIPT", &queue)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .process_group(0)
