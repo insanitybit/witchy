@@ -32,7 +32,7 @@ which witchy already **beats** Go where its design shines (allocation + recursio
 
 ## Status of the measurement
 
-`benchmarks/baseline.md` — 13 benchmarksgame-style benchmarks, witchy-wasm (run
+[`benchmarks/baseline.md`](../benchmarks/baseline.md) — 13 benchmarksgame-style benchmarks, witchy-wasm (run
 end-to-end via `witchy sandbox`, including process start + wasm instantiation)
 racing a prebuilt Go binary. Current standing:
 
@@ -260,7 +260,7 @@ the rest are tracked here until scheduled.
 
 ## Prior art
 
-- RFC-0016 (reference-counted memory) — R6 already sketches unboxed monomorphized
+- [RFC-0016](./0016-reference-counted-memory.md) (reference-counted memory) — R6 already sketches unboxed monomorphized
   layouts and the `mode opt` unlocks; this RFC is the codegen-side companion and
   pulls O1 forward as a standalone lever.
 - The `let`/`var`/`own`/`move` conventions + the uniqueness pass — the existing
