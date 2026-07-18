@@ -25,7 +25,7 @@ tracking: "Both parts shipped. Part 2 (escape-driven SROA): a frame-confined rec
 
 Add the one optimization axis witchy has **no** knobs for today: data
 *representation*. Two changes, both opt-in and both pure consumers of the escape
-oracle ([0024](0024-unified-facts-lattice.md)): (1) a `packed` qualifier on a
+oracle ([RFC-0024](./0024-unified-facts-lattice.md)): (1) a `packed` qualifier on a
 type that makes `List(Point)` a flat `[len][cap][x0,y0,x1,y1,…]` buffer instead
 of an array of pointers to boxed records — the only lever that changes cache
 *asymptotics*; and (2) escape-driven **SROA** (scalar replacement of
@@ -116,12 +116,12 @@ fn dist(a: Point, b: Point) -> Int:
 ### Interaction with the rest of the cluster
 
 - **SROA needs no new analysis** — it is the first real consumer that proves
-  [0024](0024-unified-facts-lattice.md) pays for itself, so it should land first
+  [RFC-0024](./0024-unified-facts-lattice.md) pays for itself, so it should land first
   in this RFC.
-- **`packed` composes with [0026](0026-unique-qualifier.md)**: a `unique
+- **`packed` composes with [RFC-0026](./0026-unique-qualifier.md)**: a `unique
   packed List(Point)` is the near-Rust case — flat layout, in-place reuse,
   cache-dense, SIMD-eligible — and is the headline `mode opt` capability.
-- **`packed` composes with [0025](0025-frozen-deep-immutability.md)**: a `frozen
+- **`packed` composes with [RFC-0025](./0025-frozen-deep-immutability.md)**: a `frozen
   packed` table is a shareable, cache-dense, read-only array — the ideal lookup
   structure.
 
