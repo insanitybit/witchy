@@ -21,8 +21,11 @@ related:
 # RFC-0092: Trusted application executables
 
 The implementation lives in [`src/trusted_exe.rs`](../src/trusted_exe.rs), with
-end-to-end coverage in
-[`tests/rfc0092/trusted_application_executables.rs`](../tests/rfc0092/trusted_application_executables.rs).
+the integration harness in [`tests/rfc0092.rs`](../tests/rfc0092.rs), end-to-end
+coverage in
+[`tests/rfc0092/trusted_application_executables.rs`](../tests/rfc0092/trusted_application_executables.rs),
+and trusted-`minigrep` distribution coverage in
+[`tests/rfc0092/trusted_minigrep_distribution.rs`](../tests/rfc0092/trusted_minigrep_distribution.rs).
 
 ## Summary
 
