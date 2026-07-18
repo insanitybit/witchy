@@ -21,8 +21,7 @@ fn selected() -> Int:
 comptime fn call_site_body() -> meta.BlockSyntax:
     let selected = meta.expr_name(meta.call_site("selected"))
     let call = meta.expr_call(selected, [])
-    quote block:
-        ${call}
+    meta.block([], Some(call))
 
 comptime:
     let int = quote type:
@@ -42,7 +41,7 @@ fn main(console: Console):
 fn owned_body_syntax_survives_function_builders_on_both_backends() {
     let parsed = parser::parse_module(SOURCE).expect("parse compiler-owned body program");
     assert_eq!(parsed.compiler_stmt_syntax.len(), 1);
-    assert_eq!(parsed.compiler_block_syntax.len(), 2);
+    assert_eq!(parsed.compiler_block_syntax.len(), 1);
 
     let mut expanded_for_tooling = parsed.clone();
     comptime::expand_compile_time("main", &mut expanded_for_tooling, &[])

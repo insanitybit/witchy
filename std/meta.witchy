@@ -538,10 +538,14 @@ pub fn stmt_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> StmtSyn
     StmtSyntax(out)
 
 pub fn block(stmts: List(StmtSyntax), tail: Option(ExprSyntax)) -> BlockSyntax:
-    let lines = block_lines(stmts, tail)
-    if list.is_empty(lines):
+    if list.is_empty(stmts) && option.is_none(tail):
         fail("meta.block: body must contain at least one statement or tail expression")
-    BlockSyntax(list.join(lines, "\n"))
+    __meta_block(stmts, tail)
+
+// Compiler-owned block construction. Owned statements and the optional tail
+// expression are transferred directly instead of being projected to source.
+fn __meta_block(stmts: List(StmtSyntax), tail: Option(ExprSyntax)) -> BlockSyntax:
+    __meta_block(stmts, tail)
 
 // A source-backed block wrapper for parser-checked `quote block:`.
 pub fn block_raw(source: String) -> BlockSyntax:

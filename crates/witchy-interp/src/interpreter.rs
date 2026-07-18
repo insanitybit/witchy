@@ -567,6 +567,65 @@ fn compiler_expr_syntax_value(
     }
 }
 
+fn compiler_stmt_syntax_value(
+    value: &Value,
+    compiler_stmt_syntax: &HashMap<String, Stmt>,
+) -> Result<Stmt, RuntimeError> {
+    fn tail(name: &str) -> &str {
+        name.rsplit_once('.').map_or(name, |(_, tail)| tail)
+    }
+
+    let Value::Ctor { name, fields } = value else {
+        return err("meta.block expected StmtSyntax values");
+    };
+    match (tail(name), fields.as_slice()) {
+        ("CompilerStmtSyntax", [Value::Str(handle), Value::Str(_source)]) => {
+            compiler_stmt_syntax.get(handle.as_str()).cloned().ok_or_else(|| RuntimeError {
+                message: "CompilerStmtSyntax carried an invalid syntax handle".into(),
+            })
+        }
+        ("StmtSyntax", [Value::Str(source)]) => {
+            let body = source.replace('\n', "\n    ");
+            let module = parse_module(&format!(
+                "fn __witchy_meta_stmt_payload():\n    {body}\n"
+            ))
+            .map_err(|error| RuntimeError {
+                message: format!("invalid StmtSyntax payload: {error}"),
+            })?;
+            let [Item::Function(function)] = module.items.as_slice() else {
+                return err("invalid StmtSyntax payload: expected one function wrapper");
+            };
+            let [stmt] = function.body.stmts.as_slice() else {
+                return err("invalid StmtSyntax payload: expected exactly one statement");
+            };
+            Ok(stmt.clone())
+        }
+        ("CompilerStmtSyntax", _) => err("CompilerStmtSyntax carried an invalid payload"),
+        ("StmtSyntax", _) => err("StmtSyntax carried an invalid source payload"),
+        (other, _) => err(format!("meta.block expected StmtSyntax, got `{other}`")),
+    }
+}
+
+fn compiler_optional_expr_syntax_value(
+    value: &Value,
+    compiler_expr_syntax: &HashMap<String, Expr>,
+) -> Result<Option<Expr>, RuntimeError> {
+    fn tail(name: &str) -> &str {
+        name.rsplit_once('.').map_or(name, |(_, tail)| tail)
+    }
+
+    match value {
+        Value::Ctor { name, fields } if tail(name) == "Some" && fields.len() == 1 => {
+            Ok(Some(compiler_expr_syntax_value(
+                &fields[0],
+                compiler_expr_syntax,
+            )?))
+        }
+        Value::Ctor { name, fields } if tail(name) == "None" && fields.is_empty() => Ok(None),
+        _ => err("meta.block expected Option(ExprSyntax) tail"),
+    }
+}
+
 fn compiler_ident_name(value: &Value, operation: &str) -> Result<String, RuntimeError> {
     fn tail(name: &str) -> &str {
         name.rsplit_once('.').map_or(name, |(_, tail)| tail)
@@ -3183,6 +3242,42 @@ impl Interpreter {
                     }))
                 }
                 _ => err("meta.expr_match expects an ExprSyntax scrutinee and List(MatchArmSyntax) arms"),
+            },
+            name if intrinsics::is_meta_block(name) => match args {
+                [Value::List(stmts), tail] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err("meta.block is available only during compile-time expansion");
+                    }
+                    let mut stmts = stmts
+                        .iter()
+                        .map(|stmt| {
+                            compiler_stmt_syntax_value(stmt, &self.compiler_stmt_syntax)
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    if let Some(tail) =
+                        compiler_optional_expr_syntax_value(tail, &self.compiler_expr_syntax)?
+                    {
+                        stmts.push(Stmt::Expr(tail));
+                    }
+                    if stmts.is_empty() {
+                        return err(
+                            "meta.block body must contain at least one statement or tail expression",
+                        );
+                    }
+                    let block = Block {
+                        lines: vec![self.cur_line; stmts.len()],
+                        stmts,
+                        region: None,
+                    };
+                    let source = witchy_syntax::format::block_str(&block);
+                    let handle = self.next_compiler_syntax_handle("block-builder")?;
+                    self.compiler_block_syntax.insert(handle.clone(), block);
+                    Ok(Some(Value::Ctor {
+                        name: "meta.CompilerBlockSyntax".into(),
+                        fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+                    }))
+                }
+                _ => err("meta.block expects List(StmtSyntax) and Option(ExprSyntax)"),
             },
             name if intrinsics::is_meta_function_block(name) => match args {
                 [Value::Str(header), body] => {
