@@ -11,6 +11,11 @@ tracking:
 
 # RFC-0044: A written error and return-shape policy for std
 
+The shipped return-shape migrations are recorded in
+[`CONTRIBUTING.md`](../CONTRIBUTING.md) and the standard-library modules under
+[`std/`](../std/), with cross-backend contract coverage in
+[`src/example_tests.rs`](../src/example_tests.rs).
+
 ## Summary
 
 std has a real error/return policy — lookup miss → `Option`, invalid input →
