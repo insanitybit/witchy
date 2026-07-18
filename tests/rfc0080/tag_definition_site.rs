@@ -62,7 +62,8 @@ comptime fn composed_match_selected(parts: List(String), holes: List(String)) ->
     let selected = meta.expr_name(meta.call_site("selected"))
     let value = meta.expr_call(selected, [])
     let arm = meta.match_arm(meta.pattern_int(42), meta.expr_int(42))
-    meta.expr_match(value, [arm])
+    let fallback = meta.match_arm(meta.pattern_wildcard(), meta.expr_int(0))
+    meta.expr_match(value, [arm, fallback])
 
 comptime fn construct_hidden(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     quote expr:
