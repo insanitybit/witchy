@@ -70,16 +70,16 @@ pub fn remove(var xs: List(a), target: a) -> List(a) where a: Eq:
   remove "the" entry — at most one exists there; "at most one removed" is the
   common contract).
 - Absent target → unchanged input, exactly like `dict.remove`
-  (`std/dict.witchy:36`: "unchanged when absent") — RFC-0044's lookup-miss-
+  ([`std/dict.witchy:36`](../std/dict.witchy): "unchanged when absent") — RFC-0044's lookup-miss-
   is-not-an-error rule.
 - `var` receiver so the statement form (`xs.remove(v)`) writes back like its
   dict/set siblings (RFC-0022/0043).
-- `Eq` bound, matching `list.contains` (`std/list.witchy:454`).
+- `Eq` bound, matching `list.contains` ([`std/list.witchy:454`](../std/list.witchy)).
 - Doc-comment written to render correctly in the generated `spec/stdlib.md`
   (regenerate with `witchy doc std/*.witchy > spec/stdlib.md`; never
   hand-edit).
 - Both backends get it for free (pure witchy), but per house rules it still
-  ships with a differential test in `src/example_tests.rs` (present / absent
+  ships with a differential test in [`src/example_tests.rs`](../src/example_tests.rs) (present / absent
   / duplicate-element cases) and a line in the book's collections material if
   one lists the removal family.
 
