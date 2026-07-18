@@ -793,20 +793,28 @@ cmd_submit() {
 
     # Overlap warning is advisory and can run before the short metadata
     # critical section; branch editing and diffing never need a shared lock.
-    local qf other overlap
-    for qf in "$queue_dir"/*.json; do
-        [ -f "$qf" ] || continue
-        other="$(jq -r .branch "$qf")"
-        [ "$other" = "$branch" ] && continue
-        git -C "$root" rev-parse --verify --quiet "refs/heads/$other" >/dev/null || continue
-        overlap="$(comm -12 \
-            <(git -C "$root" diff --name-only "master...$branch" 2>/dev/null | sort) \
-            <(git -C "$root" diff --name-only "master...$other" 2>/dev/null | sort) \
-            | head -5 | paste -sd' ' -)"
-        if [ -n "$overlap" ]; then
-            note "WARNING: overlaps queued '$other' on: $overlap"
-        fi
-    done
+    # It is deliberately bounded: under a large queue a diff against every
+    # pending branch makes submission itself unavailable. The coordinator still
+    # performs the authoritative replay/conflict check before landing.
+    local qf other overlap queue_count
+    queue_count="$(find "$queue_dir" -maxdepth 1 -name '*.json' -type f -print | wc -l | tr -d ' ')"
+    if [ "$queue_count" -le 96 ]; then
+        for qf in "$queue_dir"/*.json; do
+            [ -f "$qf" ] || continue
+            other="$(jq -r .branch "$qf")"
+            [ "$other" = "$branch" ] && continue
+            git -C "$root" rev-parse --verify --quiet "refs/heads/$other" >/dev/null || continue
+            overlap="$(comm -12 \
+                <(git -C "$root" diff --name-only "master...$branch" 2>/dev/null | sort) \
+                <(git -C "$root" diff --name-only "master...$other" 2>/dev/null | sort) \
+                | head -5 | paste -sd' ' -)"
+            if [ -n "$overlap" ]; then
+                note "WARNING: overlaps queued '$other' on: $overlap"
+            fi
+        done
+    else
+        note "overlap warning skipped: queue has $queue_count pending changes (authoritative gate conflict check remains enabled)"
+    fi
 
     # A change ID is stable across updated SHAs and red-parent resubmissions.
     # Dependencies store IDs rather than branch names, so a child cannot become
@@ -1281,7 +1289,8 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     # example_tests::public_sources_do_not_call_legacy_render_intrinsic reads —
     # it panics if that path vanishes), wiki/ and bugs/ (tracked, but read by
     # no test or gate stage — if a test ever starts reading them, REMOVE them
-    # from this list), and scratch//security-eval/ (gitignored). Everything
+    # from this list), external-refs/ (vendored research notes, never build
+    # inputs), and scratch//security-eval/ (gitignored). Everything
     # else — book/, spec/, README.md, std/, scripts/, .claude/, .github/,
     # Cargo metadata — runs the full gate. Fail SAFE: errored/empty diff ->
     # all. The --no-renames above matters doubly here: without it a rename
@@ -1292,7 +1301,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     local gate_scope="all"
     local unsafe_paths=""
     if [ -n "$changed" ]; then
-        unsafe_paths="$(echo "$changed" | grep -vE '^(rfcs/|wiki/|bugs/|scratch/|security-eval/)' || true)"
+        unsafe_paths="$(echo "$changed" | grep -vE '^(rfcs/|wiki/|bugs/|external-refs/|scratch/|security-eval/)' || true)"
     fi
     if [ -n "$changed" ] && [ -z "$unsafe_paths" ] \
         && ! echo "$changed" | grep -cx 'rfcs/performance-modes\.md' >/dev/null; then
