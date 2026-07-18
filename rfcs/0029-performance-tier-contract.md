@@ -101,7 +101,7 @@ The promises normal code makes to the programmer:
 | Promise | Mechanism |
 |---|---|
 | Never forces an annotation | conventions optional; analysis opportunistic |
-| Reads like Go/Swift | [0028]: `xs.push(v)`, `for var x`, confined `View`s |
+| Reads like Go/Swift | [RFC-0028](./0028-ergonomic-mutable-value-semantics.md): `xs.push(v)`, `for var x`, confined `View`s |
 | A miss is a copy, never a bug | self-healing `__cap` token; forced-copy oracle |
 | **Never OOMs** | RC floor ([0016]) reclaims escaping / long-lived / evicted values |
 | Always safe | capabilities, bounds checks, no data races, determinism |
@@ -120,9 +120,9 @@ non-negotiable in the normal-mode tier.
 | You pay (the promise) | You get (the categorical win) |
 |---|---|
 | mandatory conventions; cliffs are errors | guaranteed in-place reuse — no copy fallback |
-| `unique` / `local unique` ([0026]) | destination-passing, eager-free — contract, not hope |
-| `packed` + SROA ([0027]) | unboxed, cache-dense, SIMD-eligible layout — the asymptotic lever |
-| `frozen` ([0025]) | zero-copy sharing across value boundaries |
+| `unique` / `local unique` ([RFC-0026](./0026-unique-qualifier.md)) | destination-passing, eager-free — contract, not hope |
+| `packed` + SROA ([RFC-0027](./0027-packed-layouts-sroa.md)) | unboxed, cache-dense, SIMD-eligible layout — the asymptotic lever |
+| `frozen` ([RFC-0025](./0025-frozen-deep-immutability.md)) | zero-copy sharing across value boundaries |
 | transitive (`opt` imports only `opt`; std exempt) | the guarantee holds over the whole reachable graph |
 
 **Speed target: Rust-class on compute/struct; beats GC on concurrency.** Each bit
@@ -155,8 +155,8 @@ decisively in opt mode — and beats Go on safety and ergonomics regardless.
 | Axis | Normal mode | Opt mode | Evidence |
 |---|---|---|---|
 | Cold start | beats Go | beats Go | validated optimized-wasm + Wasmtime compilation caches |
-| Strings | **~4–5.7× Go** | ≥ that | measured, `bench/BASELINE.md` (single workload) |
-| Lists / dicts / compute | parity with Go | ≥ parity | measured, `bench/BASELINE.md` |
+| Strings | **~4–5.7× Go** | ≥ that | measured, [`bench/BASELINE.md`](../bench/BASELINE.md) (single workload) |
+| Lists / dicts / compute | parity with Go | ≥ parity | measured, [`bench/BASELINE.md`](../bench/BASELINE.md) |
 | Concurrency throughput | beats GC | beats GC | design (no pauses, bulk free, `frozen`); to be benched |
 | Struct / numeric | ~Go or a bit below | **Rust-class** | *target* — requires [0027]; not yet measured |
 | Safety (capabilities) | wins | wins | n/a — categorical |
@@ -171,7 +171,7 @@ the struct-numeric win is a promise the bucket-3 work must still cash.
 
 Order matters, because each tier's promise has a prerequisite:
 
-0. **Infrastructure first ([0030]) — the gate.** The `WITCHY_OPT` differential
+0. **Infrastructure first ([RFC-0030](./0030-perf-correctness-infra.md)) — the gate.** The `WITCHY_OPT` differential
    de-opt lever, the deterministic `witchy stats` counters, and gated
    benchmarking/soak tests must exist *before* any optimization below. The rule:
    no feature in steps 1–4 ships until it is in the `WITCHY_OPT` registry (passes
