@@ -9,6 +9,11 @@ tracking:
 
 # RFC-0015: Web apps secure by construction — the `Js` capability and foreign-code compartments
 
+The shipped DOM/compartment surfaces are implemented in
+[`projects/glamour/src/glamour.witchy`](../projects/glamour/src/glamour.witchy),
+with XSS, compartment, and host-shell coverage in
+[`tests/glamour/dom.rs`](../tests/glamour/dom.rs).
+
 ## Summary
 
 Two claims, made true by the shape of the language rather than by careful coding:
