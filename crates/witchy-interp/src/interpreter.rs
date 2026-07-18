@@ -2907,6 +2907,20 @@ impl Interpreter {
         Ok(format!("\0compiler-syntax-instance\0{category}\0{ordinal}"))
     }
 
+    fn store_compiler_stmt_syntax(
+        &mut self,
+        category: &str,
+        stmt: Stmt,
+    ) -> Result<Value, RuntimeError> {
+        let source = witchy_syntax::format::stmt_str(&stmt);
+        let handle = self.next_compiler_syntax_handle(category)?;
+        self.compiler_stmt_syntax.insert(handle.clone(), stmt);
+        Ok(Value::Ctor {
+            name: "meta.CompilerStmtSyntax".into(),
+            fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+        })
+    }
+
     fn call_builtin(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>, RuntimeError> {
         let catalog = intrinsics::lookup(name);
         if let Some(spec) = catalog {
@@ -3242,6 +3256,38 @@ impl Interpreter {
                     }))
                 }
                 _ => err("meta.expr_match expects an ExprSyntax scrutinee and List(MatchArmSyntax) arms"),
+            },
+            name if intrinsics::is_meta_stmt_expr(name) => match args {
+                [expr] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.stmt_expr is available only during compile-time expansion",
+                        );
+                    }
+                    let expr =
+                        compiler_expr_syntax_value(expr, &self.compiler_expr_syntax)?;
+                    Ok(Some(self.store_compiler_stmt_syntax(
+                        "expression-statement",
+                        Stmt::Expr(expr),
+                    )?))
+                }
+                _ => err("meta.stmt_expr expects ExprSyntax"),
+            },
+            name if intrinsics::is_meta_stmt_return(name) => match args {
+                [expr] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.stmt_return is available only during compile-time expansion",
+                        );
+                    }
+                    let expr =
+                        compiler_expr_syntax_value(expr, &self.compiler_expr_syntax)?;
+                    Ok(Some(self.store_compiler_stmt_syntax(
+                        "return-statement",
+                        Stmt::Return(Some(expr)),
+                    )?))
+                }
+                _ => err("meta.stmt_return expects ExprSyntax"),
             },
             name if intrinsics::is_meta_block(name) => match args {
                 [Value::List(stmts), tail] => {

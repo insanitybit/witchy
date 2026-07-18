@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed compatibility builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned item/expression/type/pattern/statement/block quotations with structural typed holes, direct AST transport for typed tags, block builders, and function bodies, definition-site function/type/constructor/pattern resolution, explicit meta.call_site value/function/type/constructor references, and nested tagged-expansion diagnostics carrying invocation, definition, generated-parent, and hole ancestry landed; general qualified/remaining compatibility-builder/item origins and persistent per-node spans remain proposed"
+tracking: "source-backed compatibility builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned item/expression/type/pattern/statement/block quotations with structural typed holes, direct AST transport for typed tags, expression-bearing statement builders, block builders, and function bodies, definition-site function/type/constructor/pattern resolution, explicit meta.call_site value/function/type/constructor references, and nested tagged-expansion diagnostics carrying invocation, definition, generated-parent, and hole ancestry landed; general qualified/remaining compatibility-builder/item origins and persistent per-node spans remain proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -484,12 +484,16 @@ The first source-compatible slice is implemented:
   Owned `StmtSyntax` elements and the optional owned tail `ExprSyntax` transfer
   directly into that block, preserving their internal origin markers across
   composition and subsequent `meta.function_block` construction.
+- The forty-sixth slice makes `meta.stmt_expr` and `meta.stmt_return` produce
+  compiler-owned `Stmt` nodes. Their owned child expressions transfer directly,
+  so explicit call-site identity survives statement, block, and function
+  construction without a source round trip.
 
 This is intentionally not the full RFC. Every quotation category and its typed
 hole placement is now compiler-owned. General `meta.*` builder composition may
-still project canonical source, but `meta.block` and `meta.function_block`
-retain owned child nodes when constructing blocks and items. Compiler-owned
-typed tag expressions preserve
+still project canonical source, but expression-bearing statement builders,
+`meta.block`, and `meta.function_block` retain owned child nodes when
+constructing statements, blocks, and items. Compiler-owned typed tag expressions preserve
 definition-site direct function, type, constructor, and constructor-pattern
 references, and
 `meta.call_site("name")`, consumed through `meta.expr_name`, `meta.type_named`,

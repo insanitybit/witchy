@@ -46,6 +46,8 @@ pub enum IntrinsicId {
     MetaExprField,
     MetaExprMatch,
     MetaBlock,
+    MetaStmtExpr,
+    MetaStmtReturn,
     MetaFunctionBlock,
     CompilerFootprint,
     CompilerDiff,
@@ -435,6 +437,8 @@ pub const META_EXPR_CALL: &str = "__meta_expr_call";
 pub const META_EXPR_FIELD: &str = "__meta_expr_field";
 pub const META_EXPR_MATCH: &str = "__meta_expr_match";
 pub const META_BLOCK: &str = "__meta_block";
+pub const META_STMT_EXPR: &str = "__meta_stmt_expr";
+pub const META_STMT_RETURN: &str = "__meta_stmt_return";
 pub const META_FUNCTION_BLOCK: &str = "__meta_function_block";
 
 pub const COMPILER_FOOTPRINT: &str = "compiler.footprint";
@@ -1084,6 +1088,36 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "meta.expr_match",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaStmtExpr,
+        name: META_STMT_EXPR,
+        arity: 1,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.stmt_expr",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaStmtReturn,
+        name: META_STMT_RETURN,
+        arity: 1,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.stmt_return",
         private_callers: META_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
@@ -2486,6 +2520,14 @@ pub fn is_meta_block(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaBlock)
 }
 
+pub fn is_meta_stmt_expr(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaStmtExpr)
+}
+
+pub fn is_meta_stmt_return(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaStmtReturn)
+}
+
 pub fn is_meta_function_block(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaFunctionBlock)
 }
@@ -2534,6 +2576,8 @@ mod tests {
         assert_eq!(private_intrinsic_callers(META_EXPR_FIELD), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_EXPR_MATCH), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_BLOCK), Some(META_BRIDGE_CALLERS));
+        assert_eq!(private_intrinsic_callers(META_STMT_EXPR), Some(META_BRIDGE_CALLERS));
+        assert_eq!(private_intrinsic_callers(META_STMT_RETURN), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_FUNCTION_BLOCK), Some(META_BRIDGE_CALLERS));
         assert_eq!(lookup("meta.__meta_fresh_ident"), lookup(META_FRESH_IDENT));
         assert_eq!(lookup("meta.__meta_call_site_expr"), lookup(META_CALL_SITE_EXPR));
@@ -2546,6 +2590,8 @@ mod tests {
         assert_eq!(lookup("meta.__meta_expr_field"), lookup(META_EXPR_FIELD));
         assert_eq!(lookup("meta.__meta_expr_match"), lookup(META_EXPR_MATCH));
         assert_eq!(lookup("meta.__meta_block"), lookup(META_BLOCK));
+        assert_eq!(lookup("meta.__meta_stmt_expr"), lookup(META_STMT_EXPR));
+        assert_eq!(lookup("meta.__meta_stmt_return"), lookup(META_STMT_RETURN));
         assert_eq!(lookup("meta.__meta_function_block"), lookup(META_FUNCTION_BLOCK));
         assert_eq!(lookup("other.__meta_fresh_ident"), None);
     }
@@ -2588,6 +2634,8 @@ mod tests {
             META_EXPR_FIELD,
             META_EXPR_MATCH,
             META_BLOCK,
+            META_STMT_EXPR,
+            META_STMT_RETURN,
             META_FUNCTION_BLOCK,
             COMPILER_FOOTPRINT,
             COMPILER_DIFF,

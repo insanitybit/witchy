@@ -506,10 +506,18 @@ pub fn stmt_let(mutable: Bool, name: Ident, ty: Option(TypeSyntax), value: ExprS
     StmtSyntax(binding + ident_source(name) + ty_source + " = " + expr_source(value))
 
 pub fn stmt_expr(expr: ExprSyntax) -> StmtSyntax:
-    StmtSyntax(expr_source(expr))
+    __meta_stmt_expr(expr)
+
+// Compiler-owned expression statement construction.
+fn __meta_stmt_expr(expr: ExprSyntax) -> StmtSyntax:
+    __meta_stmt_expr(expr)
 
 pub fn stmt_return(value: ExprSyntax) -> StmtSyntax:
-    StmtSyntax("return " + expr_source(value))
+    __meta_stmt_return(value)
+
+// Compiler-owned return statement construction.
+fn __meta_stmt_return(value: ExprSyntax) -> StmtSyntax:
+    __meta_stmt_return(value)
 
 pub fn stmt_return_none() -> StmtSyntax:
     StmtSyntax("return")
