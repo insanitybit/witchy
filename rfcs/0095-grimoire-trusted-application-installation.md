@@ -434,8 +434,8 @@ Land this in narrow, reviewable cuts:
    cases.
 
 The protocol and installer should not be implemented by expanding into compiler
-lowering, monomorphization, RFC-0090, or unrelated capability representation
-work. If a required byte or aggregate operation is blocked on active RFC-0005
+lowering, monomorphization, [RFC-0090](0090-proper-tail-calls.md), or unrelated capability representation
+work. If a required byte or aggregate operation is blocked on active [RFC-0005](0005-unforgeable-capabilities.md)
 work, report that boundary rather than adding a second representation.
 
 ## Security properties
