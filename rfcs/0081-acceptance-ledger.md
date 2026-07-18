@@ -55,7 +55,7 @@ Statuses:
 | 12 | **READY** | A WIR footprint test proves one adapter per reachable closed construction, excludes an unreachable authority-using witness, includes every reachable adapter, widens to the `Console.print` host import when that witness becomes reachable, and reproduces byte-identical WAT. |
 | 13 | **READY** | A four-way normal/`mode opt` interpreter/Wasm differential proves identical heterogeneous dispatch values and divide-by-zero traps. Spec and book state that opt mode promises neither allocation removal nor devirtualization. |
 | 14 | **READY** | The public `witchy check` stage gate is removed while safety validation remains. Formatter coverage, `expand`, LSP display/diagnostics, operation/missing-witness diagnostics, spec language, runnable heterogeneous-list and `var self` book programs, and migration guidance are checked in on the public-contract branch. |
-| 15 | **READY** | The complete implementing stack has focused type/interpreter/lowerer/differential/adversarial evidence, and `./scripts/check.sh --wasm` is green with all 127 runnable book blocks agreeing. Browser coverage and the serialized full gate remain required merge evidence before this row or the RFC status may become **DONE** / `implemented`. |
+| 15 | **READY** | The complete implementing stack has focused type/interpreter/lowerer/differential/adversarial evidence; `./scripts/check.sh --wasm` is green with all 127 runnable book blocks agreeing, and all 8 focused browser tests pass. The serialized full gate on the current stack remains required merge evidence before this row or the RFC status may become **DONE** / `implemented`. |
 
 ## Preserved branch and queue disposition
 
@@ -80,7 +80,7 @@ Statuses:
 | `integration/rfc0081-receivers-current` | **READY** | Canonical basic `var self`, `own self`, and explicit `var` argument adapter slice, queued only after current runtime witnesses. |
 | `integration/rfc0081-upcasts-current` | **READY** | Canonical authenticated-upcast slice, queued only after current receiver conventions. |
 | `integration/rfc0081-safety-current` | **READY** | Canonical nested-place, alias/move, tail/explicit/`?`/trap parity slice; the merge-queue journal remains authoritative for landing state. |
-| `integration/rfc0081-public-current` | **READY** | Canonical operation-absence, footprint, normal/opt, tooling, spec/book, migration, and public-checker closure; focused type/RFC/Clippy/docs/Wasm shards are green. |
+| `integration/rfc0081-public-current` | **READY** | Canonical operation-absence, footprint, normal/opt, tooling, spec/book, migration, and public-checker closure; focused type/RFC/Clippy/docs/Wasm/browser shards are green. |
 | `integration/rfc0081-tracking-current` | **READY** | Docs-only truth reconciliation after the dependency repair. It does not claim implementation until the complete current stack is merged and a fresh-master gate proves it. |
 
 ## Reconstructed semantic graph
