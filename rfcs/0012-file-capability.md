@@ -9,6 +9,12 @@ tracking:
 
 # RFC-0012: File as a first-class capability
 
+The shipped `File` capability and direct-grant path are implemented across
+[`crates/witchy-types/src/typeck.rs`](../crates/witchy-types/src/typeck.rs),
+[`crates/witchy-runtime/src/runtime.rs`](../crates/witchy-runtime/src/runtime.rs),
+and [`src/main.rs`](../src/main.rs), with end-to-end coverage in
+[`tests/e2e.rs`](../tests/e2e.rs); the RFC’s separate `Exec` rejection remains intentional.
+
 > **Status: implemented** (2026-06-25), with one part **rejected**. Shipped on BOTH
 > backends: `File`/`File[Read]`/`File[Write]` as a host capability (right-typed like
 > `Dir`, footprint-visible, `as` facets + implicit narrowing); `f.read() -> String` /
