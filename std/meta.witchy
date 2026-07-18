@@ -54,6 +54,7 @@ sealed type BlockSyntax:
 
 sealed type MatchArmSyntax:
     MatchArmSyntax(String)
+    CompilerMatchArmSyntax(String, String)
 
 sealed type ParamSyntax:
     ParamSyntax(String)
@@ -482,11 +483,17 @@ fn string_literal(value: String) -> String:
     out + "\""
 
 pub fn match_arm(pattern: PatternSyntax, body: ExprSyntax) -> MatchArmSyntax:
-    MatchArmSyntax(pattern_source(pattern) + " -> " + expr_source(body))
+    __meta_match_arm(pattern, body)
+
+// Compiler-owned match-arm construction. Pattern and body retain their AST
+// identity until the enclosing match is built.
+fn __meta_match_arm(pattern: PatternSyntax, body: ExprSyntax) -> MatchArmSyntax:
+    __meta_match_arm(pattern, body)
 
 fn match_arm_source(arm: MatchArmSyntax) -> String:
     match arm:
         MatchArmSyntax(source) -> source
+        CompilerMatchArmSyntax(_, source) -> source
 
 fn match_arm_sources(arms: List(MatchArmSyntax)) -> List(String):
     var out = []

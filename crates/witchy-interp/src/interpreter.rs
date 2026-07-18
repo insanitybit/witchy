@@ -708,7 +708,37 @@ fn compiler_binding_ident_name(value: &Value, operation: &str) -> Result<String,
     }
 }
 
-fn compiler_match_arm_sources(value: &Value) -> Result<Vec<String>, RuntimeError> {
+fn compiler_pattern_syntax_value(
+    value: &Value,
+    compiler_pattern_syntax: &HashMap<String, Pattern>,
+) -> Result<Pattern, RuntimeError> {
+    fn tail(name: &str) -> &str {
+        name.rsplit_once('.').map_or(name, |(_, tail)| tail)
+    }
+
+    let Value::Ctor { name, fields } = value else {
+        return err("meta.match_arm expected PatternSyntax");
+    };
+    match (tail(name), fields.as_slice()) {
+        ("CompilerPatternSyntax", [Value::Str(handle), Value::Str(_source)]) => {
+            compiler_pattern_syntax.get(handle.as_str()).cloned().ok_or_else(|| RuntimeError {
+                message: "CompilerPatternSyntax carried an invalid syntax handle".into(),
+            })
+        }
+        ("PatternSyntax", [Value::Str(source)]) => {
+            witchy_syntax::syntax_holes::parse_pattern_payload(source)
+                .map_err(|message| RuntimeError { message })
+        }
+        ("CompilerPatternSyntax", _) => err("CompilerPatternSyntax carried an invalid payload"),
+        ("PatternSyntax", _) => err("PatternSyntax carried an invalid source payload"),
+        (other, _) => err(format!("meta.match_arm expected PatternSyntax, got `{other}`")),
+    }
+}
+
+fn compiler_match_arms(
+    value: &Value,
+    compiler_match_arm_syntax: &HashMap<String, MatchArm>,
+) -> Result<Vec<MatchArm>, RuntimeError> {
     fn tail(name: &str) -> &str {
         name.rsplit_once('.').map_or(name, |(_, tail)| tail)
     }
@@ -719,10 +749,32 @@ fn compiler_match_arm_sources(value: &Value) -> Result<Vec<String>, RuntimeError
     arms.iter()
         .map(|arm| match arm {
             Value::Ctor { name, fields }
+                if tail(name) == "CompilerMatchArmSyntax"
+                    && matches!(fields.as_slice(), [Value::Str(_), Value::Str(_)]) =>
+            {
+                let Value::Str(handle) = &fields[0] else { unreachable!() };
+                compiler_match_arm_syntax.get(handle.as_str()).cloned().ok_or_else(|| {
+                    RuntimeError {
+                        message: "CompilerMatchArmSyntax carried an invalid syntax handle".into(),
+                    }
+                })
+            }
+            Value::Ctor { name, fields }
                 if tail(name) == "MatchArmSyntax" && matches!(fields.as_slice(), [Value::Str(_)]) =>
             {
                 let Value::Str(source) = &fields[0] else { unreachable!() };
-                Ok(source.to_string())
+                let source = source.replace('\n', "\n    ");
+                let expr = witchy_syntax::syntax_holes::parse_expr_payload(&format!(
+                    "match 0:\n    {source}"
+                ))
+                .map_err(|message| RuntimeError { message })?;
+                let Expr::Match { arms, .. } = expr else {
+                    return err("meta.expr_match failed to parse a compatibility arm");
+                };
+                let [arm] = arms.as_slice() else {
+                    return err("meta.expr_match expected exactly one compatibility arm");
+                };
+                Ok(arm.clone())
             }
             _ => err("meta.expr_match expected MatchArmSyntax arms"),
         })
@@ -1560,6 +1612,7 @@ pub struct Interpreter {
     compiler_expr_syntax: HashMap<String, Expr>,
     compiler_type_syntax: HashMap<String, Type>,
     compiler_pattern_syntax: HashMap<String, Pattern>,
+    compiler_match_arm_syntax: HashMap<String, MatchArm>,
     compiler_expr_origins: HashMap<String, ComptimeSyntaxOrigin>,
     compiler_type_origins: HashMap<String, ComptimeSyntaxOrigin>,
     compiler_pattern_origins: HashMap<String, ComptimeSyntaxOrigin>,
@@ -2004,6 +2057,7 @@ impl Interpreter {
             compiler_expr_syntax,
             compiler_type_syntax,
             compiler_pattern_syntax,
+            compiler_match_arm_syntax: HashMap::new(),
             compiler_expr_origins,
             compiler_type_origins,
             compiler_pattern_origins,
@@ -3277,6 +3331,38 @@ impl Interpreter {
                 }
                 _ => err("meta.expr_field expects an ExprSyntax base and Ident field"),
             },
+            name if intrinsics::is_meta_match_arm(name) => match args {
+                [pattern, body] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.match_arm is available only during compile-time expansion",
+                        );
+                    }
+                    let pattern = compiler_pattern_syntax_value(
+                        pattern,
+                        &self.compiler_pattern_syntax,
+                    )?;
+                    let body = compiler_expr_syntax_value(body, &self.compiler_expr_syntax)?;
+                    let source = format!(
+                        "{} -> {}",
+                        witchy_syntax::format::pattern_str(&pattern),
+                        witchy_syntax::format::expr_str(&body),
+                    );
+                    let arm = MatchArm {
+                        line: self.cur_line,
+                        pattern,
+                        guard: None,
+                        body,
+                    };
+                    let handle = self.next_compiler_syntax_handle("match-arm")?;
+                    self.compiler_match_arm_syntax.insert(handle.clone(), arm);
+                    Ok(Some(Value::Ctor {
+                        name: "meta.CompilerMatchArmSyntax".into(),
+                        fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+                    }))
+                }
+                _ => err("meta.match_arm expects PatternSyntax and ExprSyntax"),
+            },
             name if intrinsics::is_meta_expr_match(name) => match args {
                 [scrutinee, arms] => {
                     if self.fresh_ident_scope.is_none() {
@@ -3293,21 +3379,7 @@ impl Interpreter {
                     );
                     let scrutinee =
                         compiler_expr_syntax_value(scrutinee, &self.compiler_expr_syntax)?;
-                    let arm_sources = compiler_match_arm_sources(arms)?;
-                    let source = format!(
-                        "match __witchy_meta_match_scrutinee:\n{}",
-                        arm_sources
-                            .iter()
-                            .map(|arm| format!("    {arm}"))
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    );
-                    let Expr::Match { arms, .. } =
-                        witchy_syntax::syntax_holes::parse_expr_payload(&source)
-                            .map_err(|message| RuntimeError { message })?
-                    else {
-                        return err("meta.expr_match failed to parse its arms");
-                    };
+                    let arms = compiler_match_arms(arms, &self.compiler_match_arm_syntax)?;
                     let expr = Expr::Match { scrutinee: Box::new(scrutinee), arms };
                     let canonical_source = witchy_syntax::format::expr_str(&expr);
                     let handle = self.next_compiler_syntax_handle("expression-match")?;
