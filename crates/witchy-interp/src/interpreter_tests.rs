@@ -1526,16 +1526,21 @@ fn main(console: Console, net: Net, root: Dir):
         let server = std::thread::spawn(move || run_module(linked, concat!(env!("CARGO_MANIFEST_DIR"), "/../.."), allow));
 
         let request = |raw: &str| -> String {
-            for _ in 0..100 {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
                 if let Ok(mut s) = TcpStream::connect(&addr) {
                     s.write_all(raw.as_bytes()).unwrap();
                     let mut resp = String::new();
                     s.read_to_string(&mut resp).unwrap();
                     return resp;
                 }
+                assert!(!server.is_finished(), "server exited before accepting a request");
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "server did not accept a request within 10 seconds",
+                );
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            panic!("could not connect to server");
         };
 
         let r1 = request("GET /files/greeting.txt HTTP/1.1\r\nHost: x\r\n\r\n");
@@ -1543,6 +1548,7 @@ fn main(console: Console, net: Net, root: Dir):
         let r2 = request("GET /files/nope.txt HTTP/1.1\r\nHost: x\r\n\r\n");
         assert!(r2.contains("404 "), "r2: {r2}");
 
+        drop(request);
         server.join().unwrap().unwrap();
     }
 
