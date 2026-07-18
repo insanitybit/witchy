@@ -12,6 +12,11 @@ tracking:
 
 # RFC-0043: Declared mutation — write-back by declaration, not inference
 
+The shipped declaration-driven write-back and discarded-result diagnostics are
+implemented in [`crates/witchy-types/src/traits.rs`](../crates/witchy-types/src/traits.rs)
+and [`crates/witchy-syntax/src/linker.rs`](../crates/witchy-syntax/src/linker.rs),
+with regression coverage in [`src/example_tests.rs`](../src/example_tests.rs).
+
 > Provisional snippets; code blocks are deliberately **not** tagged `witchy`
 > so the doc-examples sweep does not execute pre-implementation code.
 
