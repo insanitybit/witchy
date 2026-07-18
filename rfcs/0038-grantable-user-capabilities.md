@@ -33,9 +33,9 @@ tracking:
 
 Today authority enters a program in exactly one place — the typed parameters of
 `main` — but the *set* of admissible root types is closed: `check_main_signature`
-(`crates/witchy-types/src/typeck.rs`) accepts only the built-in host capabilities
+([`crates/witchy-types/src/typeck.rs`](../crates/witchy-types/src/typeck.rs)) accepts only the built-in host capabilities
 (`Console`, `Clock`, `Rand`, `Env`, `Dir`, `File`, `Net`, `Exec`, `Secret`,
-`SecretStore`) plus `List(String)`, and grant documents ([RFC-0013](0013-capability-grant-documents.md))
+`SecretStore`) plus `List(String)`, and grant documents ([RFC-0013](./0013-capability-grant-documents.md))
 mint only `Dir`/`File`/`Net`/`Secret`/`SecretStore`. This RFC lets a **library**
 declare a sealed capability as `grantable` so it can be a root parameter of `main`
 (and of other root entrypoints) and be minted by the host from a new `[user_caps]`
@@ -62,12 +62,12 @@ options today:
    opposite of Witchy's thesis that *authority is a value you can see in a
    signature and diff in a footprint*.
 
-The language already has the two halves this needs. [RFC-0002](0002-user-definable-capabilities.md)
+The language already has the two halves this needs. [RFC-0002](./0002-user-definable-capabilities.md)
 gives sealed, unforgeable user capabilities (a link-time sealing pass in
-`crates/witchy-syntax/src/linker.rs` makes a sealed type constructible/destructurable
-*only* in its declaring module). [RFC-0013](0013-capability-grant-documents.md)
+[`crates/witchy-syntax/src/linker.rs`](../crates/witchy-syntax/src/linker.rs) makes a sealed type constructible/destructurable
+*only* in its declaring module). [RFC-0013](./0013-capability-grant-documents.md)
 gives a reviewable, cross-checked launch grant (`GrantDoc` in
-`crates/witchy-caps/src/grants.rs`, bound by name into `main`, diffed against the
+[`crates/witchy-caps/src/grants.rs`](../crates/witchy-caps/src/grants.rs), bound by name into `main`, diffed against the
 computed footprint). The **only** missing piece is admitting a *bare* sealed user
 capability at the root and teaching the grant document to mint it.
 
@@ -76,7 +76,7 @@ granting it to `main` would be an *invisible* `Net` grant, and a later version t
 adds a `net:` field would silently widen root authority with no change to the
 `main` signature. The capability analyzer already computes transitive host-cap
 taint to a fixpoint (`type_caps`/`caps_in` in
-`crates/witchy-caps/src/capabilities.rs`, which deliberately "sees through" a
+[`crates/witchy-caps/src/capabilities.rs`](../crates/witchy-caps/src/capabilities.rs), which deliberately "sees through" a
 wrapper to stay sound). We reuse exactly that to *require* the taint be empty for
 anything grantable at the root.
 
