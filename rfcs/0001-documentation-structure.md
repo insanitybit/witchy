@@ -148,14 +148,16 @@ a doc can be part-spec, part-rfc and may need splitting.
 
 > **2026-06-20 — full migration executed.** All 24 `docs/` files were relocated
 > (`docs/` removed); ~24 path tokens were rewritten across 39 main-tree files
-> (README, CONTRIBUTING, `book/`, `justfile`, source comments, and the
-> `spec/stdlib.md` test/regen path in `src/example_tests.rs` + `justfile`). The
+> (README, CONTRIBUTING, `book/`, [`justfile`](../justfile), source comments, and the
+> [`spec/stdlib.md`](../spec/stdlib.md) test/regen path in
+> [`src/example_tests.rs`](../src/example_tests.rs) + [`justfile`](../justfile)). The
 > `stdlib_docs_are_current` test passes at the new path.
 >
 > Three `(verify)` docs landed in `rfcs/` rather than the `spec/` cell proposed
 > above, on inspection: **`capability-rights.md`** (it is a *design* doc — the
-> user-facing model lives in `spec/capabilities.md`), **`regions.md`** and
-> **`ownership-analysis.md`** (both phased *design/analysis* records of shipped
+> user-facing model lives in [`spec/capabilities.md`](../spec/capabilities.md)),
+> **[`regions.md`](./regions.md)** and **[`ownership-analysis.md`](./ownership-analysis.md)** (both phased *design/analysis*
+> records of shipped
 > machinery, not current-state reference). `local-registry.md` stayed `spec/`
 > (it's a how-to). No docs were split; any genuinely mixed doc can be split in a
 > follow-up RFC. Worktree copies under `.claude/worktrees/` were deliberately not
