@@ -143,17 +143,12 @@ jobs:
         run: ./scripts/e2e-full.sh --quick
 
   # RFC-0041: the book IS a witchy/glamour app (empty host footprint), compiled to
-  # wasm and served client-side. Build the deployable bundle and publish it to GitHub
-  # Pages. NOTE (reviewed trade-off): GitHub Pages does NOT honor the bundle's `_headers`,
-  # so the strict COOP/COEP/CORP isolation it ships is inert here. The runnable cells run
-  # a capability-DENIED pure-compute wasm (deny-by-omission), so they are contained by
-  # wasm isolation rather than by cross-origin isolation; the compiler is single-threaded
-  # (no SharedArrayBuffer), so it needs no isolation to run. To restore strict isolation,
-  # deploy the same bundle to a `_headers`-honoring host (Cloudflare Pages / Netlify).
-  # Split privilege (house rule): docs-build holds only `contents: read` and emits the
-  # artifact; the privileged deploy is a separate job.
+  # wasm and served client-side. Build the complete bundle as a private workflow
+  # artifact so authorized collaborators can verify the eventual public site without
+  # publishing it. Public documentation deployment remains disabled until the owner
+  # explicitly approves launch.
   docs-build:
-    name: Build the docs bundle
+    name: Build private docs bundle
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/master'
     permissions:
@@ -174,29 +169,13 @@ jobs:
           cp target/wasm32-unknown-unknown/release/witchy.wasm web/witchy.wasm
       - name: Assemble the deployable bundle
         run: ./scripts/build-docs.sh dist
-      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
+      - name: Upload private docs preview artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
+          name: witchy-docs-private-preview
           path: dist
-
-  docs-deploy:
-    name: Deploy the docs to GitHub Pages
-    if: github.ref == 'refs/heads/master'
-    needs: docs-build
-    runs-on: ubuntu-latest
-    # The ONLY job with write authority — and only the two rights a Pages deploy needs.
-    permissions:
-      pages: write
-      id-token: write
-    # Serialize Pages deploys without blocking the rest of CI.
-    concurrency:
-      group: pages
-      cancel-in-progress: false
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
+          if-no-files-found: error
+          retention-days: 5
 
   playground:
     name: Playground wasm build
