@@ -8,6 +8,11 @@ tracking: accepted in principle but not scheduled; revive only with a numeric-ke
 
 # RFC-0031: SIMD acceleration for stdlib hot loops
 
+This RFC remains intentionally deferred: the current performance contract is
+tracked in [`spec/performance.md`](../spec/performance.md), while parallelism
+trade-offs are recorded in [RFC-0032](0032-multi-core-execution.md). No SIMD
+implementation is claimed by this design record.
+
 ## Summary
 
 Exploit **data parallelism within a single core** by emitting wasm `v128`
