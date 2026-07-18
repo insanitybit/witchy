@@ -104,8 +104,8 @@ No parity-gate change ships without demonstrating, via the seeded control, that 
 still fail.
 
 ## References
-- `bugs/BUG-002-parity-sweep-swallows-failures.md`, `bugs/BUG-003-differential-fuzzer-traps-early.md`
-- `scratch/deep-eval/MERGED-TRIAGE.md` §Tier-2 (both evaluations, cross-verified)
+- [`bugs/BUG-002-parity-sweep-swallows-failures.md`](../bugs/BUG-002-parity-sweep-swallows-failures.md), [`bugs/BUG-003-differential-fuzzer-traps-early.md`](../bugs/BUG-003-differential-fuzzer-traps-early.md)
+- [`scratch/deep-eval/MERGED-TRIAGE.md`](../scratch/deep-eval/MERGED-TRIAGE.md) §Tier-2 (both evaluations, cross-verified)
 
 ## Review note (2026-07-04)
 
