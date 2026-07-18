@@ -250,7 +250,7 @@ and Cyclone region typing inform this design.
 >   erases it to the owned inner type before either backend, so a view lowers
 >   exactly as its owner and value semantics are unchanged (RFC-0029 consistency;
 >   the differential/`parity` runs and a runnable `book/` example confirm it).
-> - **Criteria 1–4, 7 (checker):** met by `crates/witchy-types/src/loans.rs` —
+> - **Criteria 1–4, 7 (checker):** met by [`crates/witchy-types/src/loans.rs`](../crates/witchy-types/src/loans.rs) —
 >   signature validation (views are `mode opt`-only; every output lifetime must be
 >   bound by an input of the same name), an output→input relation read off the
 >   signature (so it survives direct/trait/indirect calls, function values, and
