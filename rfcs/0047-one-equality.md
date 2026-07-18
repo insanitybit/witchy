@@ -27,7 +27,7 @@ a `List(P)`, an `Option(P)`, a tuple, or a `Dict` value. `derive(PartialEq)`
 a custom impl are bit-for-bit unchanged. `==` on function types and capability
 types becomes a **compile-time error** — which fixes a live, confirmed backend
 parity violation by construction. `Dict`/`Set` keys require `Eq`, closing the
-NaN-key hole. The spec's equality claims (spec/language.md:193, :1032) are
+NaN-key hole. The spec's equality claims ([`spec/language.md:193, :1032`](../spec/language.md)) are
 corrected as part of implementation.
 
 ## Motivation
@@ -47,12 +47,12 @@ Some(P(1)) == Some(P(2)) // false
 
 Parity-consistent, so no backend warns — this is exactly the
 silent-misbehavior class the project forbids. The cause is visible in
-`operator_dispatches` (crates/witchy-types/src/traits.rs:597): the operator
+`operator_dispatches` ([`crates/witchy-types/src/traits.rs:597`](../crates/witchy-types/src/traits.rs)): the operator
 desugars to the trait method only when the *operand's own head type* has an
 impl; a container head (`List`, `Option`, tuples — tuples are even explicitly
 excluded at traits.rs:604) keeps the native structural path, which never
 consults element impls (the compound-shape helper in
-crates/witchy-lower/src/codegen/mod.rs:4514 is pure structure).
+[`crates/witchy-lower/src/codegen/mod.rs:4514`](../crates/witchy-lower/src/codegen/mod.rs) is pure structure).
 
 **2. The spec is wrong on both counts.** spec/language.md:193 claims `==` is
 "**structural** equality — deep … on every backend." It is not structural at
@@ -67,7 +67,7 @@ and capability equality are specified nowhere (the spec's operator table and
 
 **4. NaN is accepted as a dict key** (probed: `d[0.0/0.0] = "nan"` then
 `d.get_or(0.0/0.0, "missing")` → `"missing"`, both backends) — an unretrievable
-entry, despite std/cmp.witchy:27–29's own doctrine: "Types usable as `Set` /
+entry, despite [`std/cmp.witchy:27–29`](../std/cmp.witchy)'s own doctrine: "Types usable as `Set` /
 `Dict` keys are `Eq`" and Float is explicitly *not* `Eq`.
 
 **5. Stale spec claim the other way**: spec/language.md:1032 says
@@ -153,7 +153,7 @@ doctrine std/cmp.witchy:27–29 already states. Consequences:
 ### 4. Ordering operators follow (small, same shape)
 
 `< <= > >=` already dispatch through `PartialOrd` for non-primitives
-(traits.rs:782–806). The one change for coherence: the same
+([`traits.rs:782–806`](../crates/witchy-types/src/traits.rs)). The one change for coherence: the same
 depth-uniformity rule applies (a custom `PartialOrd` inside a compared
 container is honored once containers gain ordering impls) — but **no new
 container orderings are introduced by this RFC**; today's "ordering on
@@ -162,10 +162,10 @@ doesn't create an equality/ordering asymmetry in the trait story.
 
 ### 5. Spec corrections (part of the implementation, not follow-up)
 
-- spec/language.md:193 → "`==`/`!=` desugar through `PartialEq`; the derived/
+- [`spec/language.md:193`](../spec/language.md) → "`==`/`!=` desugar through `PartialEq`; the derived/
   default impl is deep structural equality; custom impls are honored at every
   depth; function and capability types do not compare."
-- spec/language.md:1032 → drop the stale Result-rejection claim; state the
+- [`spec/language.md:1032`](../spec/language.md) → drop the stale Result-rejection claim; state the
   function/capability rejection in the §16 parity contract instead.
 - std/cmp.witchy doc-comments already say the right thing; they become true.
 
