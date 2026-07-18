@@ -1557,6 +1557,17 @@ cmd_run() {
         fi
     fi
     note "coordinator up (pid $$, gate: '$gate_cmd', timeouts: ${gate_timeout}s total / ${stall_timeout}s stall); state: $qdir"
+    if [ -n "${MERGE_QUEUE_DAEMON_READY_FD:-}" ]; then
+        case "$MERGE_QUEUE_DAEMON_READY_FD" in
+            *[!0-9]*) note "invalid daemon readiness descriptor"; return 1 ;;
+        esac
+        local ready_fd="$MERGE_QUEUE_DAEMON_READY_FD"
+        printf 'ready\n' >&"$ready_fd"
+        # macOS ships Bash 3.2, before `exec {var}>&-` dynamic descriptors.
+        # The value was constrained to digits above before this small eval.
+        eval "exec ${ready_fd}>&-"
+        unset MERGE_QUEUE_DAEMON_READY_FD
+    fi
     while :; do
         if ! coordinator_lock_owned; then
             note "lost coordinator singleton ownership; exiting instead of becoming an unnamed sibling"
@@ -1728,23 +1739,35 @@ cmd_daemon() {
         # a process-group leader (a group leader cannot call setsid directly).
         nohup setsid -f "$coordinator_script" run \
             >>"$qdir/coordinator.log" 2>&1 </dev/null &
+        disown || true
     elif command -v perl >/dev/null 2>&1; then
         # macOS has no setsid(1), but its system Perl exposes POSIX::setsid.
+        # Keep the Perl parent in the foreground until the detached child has
+        # claimed the singleton and acknowledged readiness over a pipe. Under
+        # macOS utility scheduling, a background-only child can otherwise be
+        # starved while every concurrent caller waits for coordinator.pid.
         # Fork once so the child cannot be a process-group leader, then replace
-        # it with the coordinator. All descriptors are already detached below.
-        nohup perl -MPOSIX -e '
+        # it with the coordinator. All ordinary descriptors are detached.
+        nohup perl -MPOSIX -MFcntl=F_SETFD -e '
+            pipe(my $reader, my $writer) or die "pipe: $!\n";
             my $pid = fork();
             defined $pid or die "fork: $!\n";
-            exit 0 if $pid;
+            if ($pid) {
+                close $writer;
+                my $ready = <$reader>;
+                exit(defined($ready) && $ready eq "ready\n" ? 0 : 1);
+            }
+            close $reader;
             defined POSIX::setsid() or die "setsid: $!\n";
+            fcntl($writer, F_SETFD, 0) or die "clear close-on-exec: $!\n";
+            $ENV{MERGE_QUEUE_DAEMON_READY_FD} = fileno($writer);
             exec @ARGV;
             die "exec: $!\n";
-        ' "$coordinator_script" run >>"$qdir/coordinator.log" 2>&1 </dev/null &
+        ' "$coordinator_script" run >>"$qdir/coordinator.log" 2>&1 </dev/null || true
     else
         note "daemon requires setsid(1) or Perl POSIX::setsid to detach safely"
         return 1
     fi
-    disown || true
     # Concurrent daemon callers may all fork before the winning child publishes
     # coordinator.pid. Give that child a bounded window instead of reporting a
     # false startup failure after one fixed sleep; the singleton lock still
