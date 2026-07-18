@@ -267,7 +267,7 @@ documents intent in the type, the IP remains a runtime confinement. The RFC does
   untrusted code (DNS rebinding); IP/CIDR is the rebinding-proof primary, hostnames
   are an ergonomic option with resolve-and-recheck semantics.
 - **A full egress-policy DSL** (protocols, rate limits, time windows). Out of scope
-  — those are library/runtime policy (the caretaker pattern in `secrets-design.md`),
+  — those are library/runtime policy (the caretaker pattern in [`secrets-design.md`](./secrets-design.md)),
   not a host capability primitive. Keep `peer` to address-set intersection.
 
 ## Drawbacks
@@ -290,7 +290,7 @@ documents intent in the type, the IP remains a runtime confinement. The RFC does
 
 ## Prior art
 
-- `subdir` and `Dir` subtree confinement (`src/typeck.rs` `check_dir_op`) — the
+- `subdir` and `Dir` subtree confinement ([`src/typeck.rs`](../src/typeck.rs) `check_dir_op`) — the
   direct structural analog this RFC mirrors for `Net`.
 - [`capability-rights.md`](./capability-rights.md) — the `Net[v, t]` verb/transport
   rights this scope axis sits beside.
