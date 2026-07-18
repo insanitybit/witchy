@@ -54,7 +54,7 @@ a differential test (`assert_eq!(interp(src), ...); assert_eq!(run_on_wasm(src),
 in `src/example_tests.rs`). If a backend genuinely can't support it
 yet, make it a **loud error** there — never a silently different answer.
 Behavior that errors should error on *both* backends (the parity tool checks
-error paths too) — and with the **same complete diagnostic** (RFC-0045): a
+error paths too) — and with the **same complete diagnostic** ([RFC-0045](rfcs/0045-compiled-trap-diagnostics.md)): a
 runtime abort (out-of-bounds index, integer division/modulo failure,
 `string.to_int` junk, `NaN` ordering, `fail(msg)`) carries the interpreter's
 exact text on the compiled backend via the always-linked, authority-free
