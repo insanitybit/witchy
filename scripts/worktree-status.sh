@@ -26,7 +26,7 @@ for arg in "$@"; do
 done
 
 here="$(cd "$(dirname "$0")/.." && pwd)"
-root="$(git -C "$here" worktree list --porcelain | head -1 | sed 's/^worktree //')"
+root="$(git -C "$here" worktree list --porcelain | sed -n '1p' | sed 's/^worktree //')"
 . "$here/scripts/state-paths.sh"
 merge_queue_state="$(witchy_merge_queue_state_dir "$root")"
 queue_dir="$merge_queue_state/queue"

@@ -173,7 +173,7 @@ dest="${1:-$(pwd)}"
 dest="$(cd "$dest" && pwd)"
 
 # The main worktree is the first entry in `git worktree list`.
-main="$(git -C "$dest" worktree list --porcelain | head -1 | sed 's/^worktree //')"
+main="$(git -C "$dest" worktree list --porcelain | sed -n '1p' | sed 's/^worktree //')"
 
 if [[ "$dest" == "$main" ]]; then
     echo "worktree-warm: $dest is the main worktree; nothing to seed" >&2
