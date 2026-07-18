@@ -519,6 +519,11 @@ The first source-compatible slice is implemented:
   zero-field constructor value. Ordinary function values continue to produce
   `Apply`, and call-site constructor references retain their existing
   consumer-scope resolution path.
+- The fifty-fourth slice makes `meta.type_expr` a recursive compiler-owned
+  conversion from reflected `TypeExpr` data to `Type` AST. Named/generic,
+  tuple, function-convention, and ownership-qualified forms no longer render
+  and reparse source; malformed arities, conventions, and qualifiers fail at
+  the builder boundary.
 
 This is intentionally not the full RFC. Every quotation category and its typed
 hole placement is now compiler-owned. Some `meta.*` compatibility builders may

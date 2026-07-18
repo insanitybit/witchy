@@ -63,6 +63,14 @@ comptime:
     let frozen_param = meta.param(frozen_input, frozen_number)
     let frozen_body = meta.block([], Some(meta.expr_name(frozen_input)))
     emit_item(meta.function_block(true, meta.ident("generated_frozen_identity"), [frozen_param], Some(number), frozen_body))
+    let reflected_number = meta.TNamed("Number", [])
+    let reflected_list = meta.TNamed("List", [reflected_number])
+    let reflected_callback = meta.TFn([reflected_number], reflected_number, ["let"])
+    let reflected_frozen = meta.TQualified("frozen", reflected_number)
+    let reflected_input = meta.type_expr(meta.TTuple([reflected_list, reflected_callback, reflected_frozen]))
+    let reflected_param = meta.param(meta.ident("reflected"), reflected_input)
+    let reflected_body = meta.block([], Some(meta.expr_int(42)))
+    emit_item(meta.function_block(true, meta.ident("generated_reflected"), [reflected_param], Some(number), reflected_body))
 
 fn main(console: Console):
     console.print("${composed()}")
@@ -72,6 +80,7 @@ fn main(console: Console):
     console.print("${generated_identity(([42], 42))}")
     console.print("${generated_apply(fn(value: Number): value)}")
     console.print("${generated_frozen_identity(42)}")
+    console.print("${generated_reflected(([42], fn(value: Number): value, 42))}")
 "#;
 
 #[test]
@@ -97,6 +106,8 @@ fn owned_body_syntax_survives_function_builders_on_both_backends() {
         expanded_source.contains("frozen @call_site_type:Number"),
         "{expanded_source}"
     );
+    assert!(expanded_source.contains("pub fn generated_reflected("), "{expanded_source}");
+    assert!(expanded_source.contains("fn(Number) -> Number"), "{expanded_source}");
     assert!(!expanded_source.contains("@quote_stmt"), "{expanded_source}");
     assert!(!expanded_source.contains("@quote_block"), "{expanded_source}");
     let expanded_debug = format!("{expanded_for_tooling:?}");
@@ -120,6 +131,7 @@ fn owned_body_syntax_survives_function_builders_on_both_backends() {
         "([42], 42)".to_string(),
         "42".to_string(),
         "42".to_string(),
+        "42".to_string(),
     ];
     assert_eq!(
         interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interpret"),
@@ -137,4 +149,22 @@ fn owned_body_syntax_survives_function_builders_on_both_backends() {
         .expect("spawn");
     actor.run().expect("run compiled program");
     assert_eq!(actor.output(), expected);
+}
+
+#[test]
+fn reflected_type_builder_rejects_unknown_qualifiers() {
+    let source = r#"
+import meta
+
+comptime:
+    let _ = meta.type_expr(meta.TQualified("shared", meta.TNamed("Int", [])))
+"#;
+    let parsed = parser::parse_module(source).expect("parse invalid reflected type");
+    let error = pipeline::link(vec![("main".into(), parsed)], "main")
+        .expect_err("unknown reflected qualifier must fail during expansion")
+        .to_string();
+    assert!(
+        error.contains("meta.type_expr") && error.contains("unknown qualifier `shared`"),
+        "{error}"
+    );
 }

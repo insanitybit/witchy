@@ -255,7 +255,12 @@ fn type_with_head(head: String, args: List(TypeSyntax)) -> TypeSyntax:
         TypeSyntax(head + "(" + list.join(type_syntax_sources(args), ", ") + ")")
 
 pub fn type_expr(ty: TypeExpr) -> TypeSyntax:
-    TypeSyntax(type_source(ty))
+    __meta_type_expr(ty)
+
+// Compiler-owned conversion from reflection data to type syntax. Rendering is
+// reserved for generators that explicitly need source text.
+fn __meta_type_expr(ty: TypeExpr) -> TypeSyntax:
+    __meta_type_expr(ty)
 
 // Join parser-checked type quote fragments with typed type holes.
 pub fn type_join(parts: List(String), holes: List(TypeSyntax)) -> TypeSyntax:

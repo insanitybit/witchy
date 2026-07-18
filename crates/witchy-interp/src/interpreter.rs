@@ -617,16 +617,17 @@ fn compiler_optional_type_syntax_value(
 fn compiler_function_conventions(
     value: &Value,
     parameter_count: usize,
+    operation: &str,
 ) -> Result<Vec<Convention>, RuntimeError> {
     let Value::List(conventions) = value else {
-        return err("meta.type_fn expected List(String) conventions");
+        return err(format!("{operation} expected List(String) conventions"));
     };
     if conventions.is_empty() {
         return Ok(vec![Convention::Let; parameter_count]);
     }
     if conventions.len() != parameter_count {
         return err(format!(
-            "meta.type_fn expected {parameter_count} conventions, got {}",
+            "{operation} expected {parameter_count} conventions, got {}",
             conventions.len()
         ));
     }
@@ -640,9 +641,9 @@ fn compiler_function_conventions(
             Value::Str(name) if name.as_str() == "var" => Ok(Convention::Var),
             Value::Str(name) if name.as_str() == "own" => Ok(Convention::Own),
             Value::Str(name) => err(format!(
-                "meta.type_fn unknown parameter convention `{name}`"
+                "{operation} unknown parameter convention `{name}`"
             )),
-            _ => err("meta.type_fn expected String conventions"),
+            _ => err(format!("{operation} expected String conventions")),
         })
         .collect()
 }
@@ -1118,6 +1119,65 @@ fn compiler_type_holes(
             }
         })
         .collect()
+}
+
+fn compiler_reflected_type(value: &Value) -> Result<Type, RuntimeError> {
+    fn tail(name: &str) -> &str {
+        name.rsplit_once('.').map_or(name, |(_, tail)| tail)
+    }
+
+    let Value::Ctor { name, fields } = value else {
+        return err("meta.type_expr expected TypeExpr");
+    };
+    match (tail(name), fields.as_slice()) {
+        ("TNamed", [Value::Str(name), Value::List(args)]) => {
+            let args = args
+                .iter()
+                .map(compiler_reflected_type)
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Type::Named(name.to_string(), args))
+        }
+        ("TTuple", [Value::List(items)]) => {
+            let items = items
+                .iter()
+                .map(compiler_reflected_type)
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Type::Tuple(items))
+        }
+        ("TFn", [Value::List(params), ret, conventions]) => {
+            let params = params
+                .iter()
+                .map(compiler_reflected_type)
+                .collect::<Result<Vec<_>, _>>()?;
+            let conventions = compiler_function_conventions(
+                conventions,
+                params.len(),
+                "meta.type_expr function",
+            )?;
+            let ret = compiler_reflected_type(ret)?;
+            Ok(Type::Fn(params, Box::new(ret), conventions))
+        }
+        ("TQualified", [Value::Str(qualifier), inner]) => {
+            let qualifier = match qualifier.as_str() {
+                "frozen" => TypeQual::Frozen,
+                "unique" => TypeQual::Unique,
+                "local unique" => TypeQual::LocalUnique,
+                other => {
+                    return err(format!(
+                        "meta.type_expr unknown qualifier `{other}`"
+                    ));
+                }
+            };
+            Ok(Type::Qualified(
+                qualifier,
+                Box::new(compiler_reflected_type(inner)?),
+            ))
+        }
+        (kind, _) if matches!(kind, "TNamed" | "TTuple" | "TFn" | "TQualified") => {
+            err(format!("meta.type_expr `{kind}` carried an invalid payload"))
+        }
+        (kind, _) => err(format!("meta.type_expr expected TypeExpr, got `{kind}`")),
+    }
 }
 
 fn compiler_pattern_holes(
@@ -3419,7 +3479,7 @@ impl Interpreter {
                     );
                     let params = compiler_type_holes(params, &self.compiler_type_syntax)?;
                     let conventions =
-                        compiler_function_conventions(conventions, params.len())?;
+                        compiler_function_conventions(conventions, params.len(), "meta.type_fn")?;
                     let ret = compiler_type_syntax_value(ret, &self.compiler_type_syntax)?;
                     Ok(Some(self.store_compiler_type_syntax(
                         "function-type",
@@ -3463,6 +3523,22 @@ impl Interpreter {
                     )?))
                 }
                 _ => err("meta.type_qualified expects a qualifier and TypeSyntax"),
+            },
+            name if intrinsics::is_meta_type_expr(name) => match args {
+                [ty] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.type_expr is available only during compile-time expansion",
+                        );
+                    }
+                    let ty = compiler_reflected_type(ty)?;
+                    Ok(Some(self.store_compiler_type_syntax(
+                        "reflected-type",
+                        ty,
+                        Vec::new(),
+                    )?))
+                }
+                _ => err("meta.type_expr expects TypeExpr"),
             },
             name if intrinsics::is_meta_call_site_pattern(name) => match args {
                 [Value::Str(name), Value::List(args)] => {
