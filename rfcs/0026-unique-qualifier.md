@@ -86,7 +86,7 @@ conventions* (they describe the calling protocol). They compose:
 
 The interprocedural backbone is unchanged: `unique` on a parameter is a
 *declared* `may_alias_out[i] = false` plus a *requirement* that the argument is
-`Unique` at the call — checked against [0024](0024-unified-facts-lattice.md)'s
+`Unique` at the call — checked against [RFC-0024](./0024-unified-facts-lattice.md)'s
 lattice instead of inferred. So annotating a hot stdlib helper `unique` both
 documents the contract and certifies every call site at once.
 
@@ -149,7 +149,7 @@ written in.
   — `uniq` / `local uniq`; this RFC adopts the local-vs-returnable distinction
   directly, minus Ante's reachability check (witchy needs none — values aren't
   shared-mutable).
-- [performance-modes.md](performance-modes.md) — lists the `unique` surface
+- [`performance-modes.md`](./performance-modes.md) — lists the `unique` surface
   qualifier as tier 3; this RFC is its concrete form.
 - Clean/Mercury uniqueness types; Koka/Lean 4 Perceus reuse — affine ownership as
   a checked type enabling in-place reuse.
@@ -158,7 +158,7 @@ written in.
 
 > 2026-06-29: **Implemented — as a CONTRACT; the optimization it gates is already
 > delivered by uniqueness inference + the RC-floor reuse rung.** `unique T` /
-> `local unique T` parse as `Type::Qualified` qualifiers (shared with [0025]),
+> `local unique T` parse as `Type::Qualified` qualifiers (shared with [RFC-0025](./0025-frozen-deep-immutability.md)),
 > format/round-trip, thread through signatures, and lower to the inner type
 > (parity-neutral). Enforcement: a `local unique` value is valid only within the
 > call, so it may not escape — a `local unique` RETURN type is a check-time error
