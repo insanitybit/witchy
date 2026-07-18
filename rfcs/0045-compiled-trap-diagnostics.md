@@ -37,6 +37,13 @@ tracking:
 
 # RFC-0045: Aborts carry their message on the compiled backend
 
+The shared diagnostic templates and compiled abort routing are implemented in
+[`crates/witchy-syntax/src/diag.rs`](../crates/witchy-syntax/src/diag.rs) and
+[`crates/witchy-runtime/src/runtime.rs`](../crates/witchy-runtime/src/runtime.rs),
+with parity and browser-host coverage in
+[`src/diagnostic_golden_tests.rs`](../src/diagnostic_golden_tests.rs) and
+[`tests/browser/shim.rs`](../tests/browser/shim.rs).
+
 ## Summary
 
 Every runtime abort on the compiled backend — out-of-bounds index,
