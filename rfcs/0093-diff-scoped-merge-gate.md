@@ -20,6 +20,9 @@ related:
 
 # RFC-0093: Diff-scoped merge gate
 
+The implementation lives in [`scripts/merge-queue.sh`](../scripts/merge-queue.sh)
+and is documented for operators in [`scripts/MERGE-QUEUE.md`](../scripts/MERGE-QUEUE.md).
+
 ## Problem
 
 Every merge, regardless of content, paid the same pre-merge gate: a serial
