@@ -57,7 +57,7 @@ A `Dir` is not "the filesystem" — it is one subtree. `dir.read(path)` resolves
 `path` relative to the capability and rejects `..`, absolute paths, and
 symlinks that point outside the subtree. `dir.subtree("sub")` mints a new,
 smaller capability — handing a callee `dir.subtree("uploads")` gives it that
-folder and nothing else. A `Dir` also carries an **entry policy** (RFC-0011) in two dimensions:
+folder and nothing else. A `Dir` also carries an **entry policy** ([RFC-0011](../rfcs/0011-capability-refinement.md)) in two dimensions:
 name-suffix (`dir.only(Dir.ext(".txt"))` — only `.txt` entries) and entry-kind
 (`dir.only(Dir.files())` — only file access, no sub-directory open/create;
 `Dir.dirs()` — the mirror). They AND-compose: `dir.only(Dir.files()).only(Dir.ext(".txt"))`
@@ -68,7 +68,7 @@ file names, not directories), so `kind` is additive. This is the filesystem anal
 `net.only`/`net.deny`; like `Net`, the raw-string form is a `--net`/config grant, not
 a language builtin.
 
-A **`File`** is the *leaf* of the same hierarchy (RFC-0012): authority to one
+A **`File`** is the *leaf* of the same hierarchy ([RFC-0012](../rfcs/0012-file-capability.md)): authority to one
 file, right-typed like `Dir` (`File[Read]`/`File[Write]`). A `Dir` navigates to
 one with `dir.read_file("x.txt") -> File[Read]` (must exist) or `dir.write_file("x.txt")
 -> File[Write]` (need not), both rejecting `..`/absolute escape exactly as `read`
