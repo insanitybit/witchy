@@ -87,7 +87,7 @@ CI as the unscoped backstop. Three mechanisms:
   5,000,000-transition constant-stack proofs): reducing counts weakens the
   proof margin; the run phase stays CPU-bound and unscoped.
 
-## Measured effect (2026-07-15, scratch/gate-perf-2026-07-15.md)
+## Measured effect (2026-07-15, [`scratch/gate-perf-2026-07-15.md`](../scratch/gate-perf-2026-07-15.md))
 
 Controlled like-for-like gate runs: 261s and 356s against a 413-472s
 baseline (-25..-42%); the serial front (95-413s observed) is eliminated in
