@@ -151,7 +151,7 @@ handle.
 
 The sealed-construction relaxation is available only when the entry ran through
 `witchy test`, following the `mode opt` precedent (a linker-enforced mode —
-`crates/witchy-syntax/src/linker.rs`). A production `run`/`check`/`compile`/
+[`crates/witchy-syntax/src/linker.rs`](../crates/witchy-syntax/src/linker.rs)). A production `run`/`check`/`compile`/
 `build`/comptime path that constructs a sealed type from outside its module is
 the same error it is today. Imported dependency modules linked into a test are
 also production-strict; only the entry test module gets the privilege.
