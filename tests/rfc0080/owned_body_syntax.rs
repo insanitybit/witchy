@@ -46,12 +46,18 @@ comptime:
     emit_item(meta.function_block(true, meta.ident("direct"), [], Some(int), direct_body()))
     emit_item(meta.function_block(true, meta.ident("generated_selected"), [], Some(int), call_site_body()))
     emit_item(meta.function_block(true, meta.ident("statement_generated"), [], Some(int), statement_body()))
+    let input = meta.ident("input")
+    let number = meta.type_named(meta.call_site("Number"), [])
+    let identity_body = meta.block([], Some(meta.expr_name(input)))
+    let identity_param = meta.param(input, number)
+    emit_item(meta.function_block(true, meta.ident("generated_identity"), [identity_param], Some(number), identity_body))
 
 fn main(console: Console):
     console.print("${composed()}")
     console.print("${direct()}")
     console.print("${generated_selected()}")
     console.print("${statement_generated()}")
+    console.print("${generated_identity(42)}")
 "#;
 
 #[test]
@@ -68,6 +74,12 @@ fn owned_body_syntax_survives_function_builders_on_both_backends() {
     assert!(expanded_source.contains("pub fn direct() -> Int:"), "{expanded_source}");
     assert!(expanded_source.contains("pub fn generated_selected() -> Int:"), "{expanded_source}");
     assert!(expanded_source.contains("pub fn statement_generated() -> Int:"), "{expanded_source}");
+    assert!(
+        expanded_source.contains(
+            "pub fn generated_identity(input: @call_site_type:Number) -> @call_site_type:Number:"
+        ),
+        "{expanded_source}"
+    );
     assert!(!expanded_source.contains("@quote_stmt"), "{expanded_source}");
     assert!(!expanded_source.contains("@quote_block"), "{expanded_source}");
     let expanded_debug = format!("{expanded_for_tooling:?}");
@@ -81,9 +93,11 @@ fn owned_body_syntax_survives_function_builders_on_both_backends() {
 
     let linked_debug = format!("{linked:?}");
     assert!(!linked_debug.contains("@call_site:"), "{linked_debug}");
+    assert!(!linked_debug.contains("@call_site_type:"), "{linked_debug}");
 
     let expected = vec![
         "7".to_string(),
+        "42".to_string(),
         "42".to_string(),
         "42".to_string(),
         "42".to_string(),

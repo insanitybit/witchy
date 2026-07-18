@@ -781,6 +781,54 @@ fn compiler_match_arms(
         .collect()
 }
 
+fn compiler_params(
+    value: &Value,
+    compiler_param_syntax: &HashMap<String, Param>,
+) -> Result<Vec<Param>, RuntimeError> {
+    fn tail(name: &str) -> &str {
+        name.rsplit_once('.').map_or(name, |(_, tail)| tail)
+    }
+
+    let Value::List(params) = value else {
+        return err("meta.function_block expected List(ParamSyntax)");
+    };
+    params
+        .iter()
+        .map(|param| match param {
+            Value::Ctor { name, fields }
+                if tail(name) == "CompilerParamSyntax"
+                    && matches!(fields.as_slice(), [Value::Str(_), Value::Str(_)]) =>
+            {
+                let Value::Str(handle) = &fields[0] else { unreachable!() };
+                compiler_param_syntax.get(handle.as_str()).cloned().ok_or_else(|| {
+                    RuntimeError {
+                        message: "CompilerParamSyntax carried an invalid syntax handle".into(),
+                    }
+                })
+            }
+            Value::Ctor { name, fields }
+                if tail(name) == "ParamSyntax" && matches!(fields.as_slice(), [Value::Str(_)]) =>
+            {
+                let Value::Str(source) = &fields[0] else { unreachable!() };
+                let module = parse_module(&format!(
+                    "fn __witchy_meta_param_payload({source}):\n    ()\n"
+                ))
+                .map_err(|error| RuntimeError {
+                    message: format!("invalid ParamSyntax payload: {error}"),
+                })?;
+                let [Item::Function(function)] = module.items.as_slice() else {
+                    return err("invalid ParamSyntax payload: expected one function wrapper");
+                };
+                let [param] = function.params.as_slice() else {
+                    return err("invalid ParamSyntax payload: expected exactly one parameter");
+                };
+                Ok(param.clone())
+            }
+            _ => err("meta.function_block expected ParamSyntax values"),
+        })
+        .collect()
+}
+
 fn compiler_block_syntax_value(
     value: &Value,
     compiler_block_syntax: &HashMap<String, Block>,
@@ -1613,6 +1661,7 @@ pub struct Interpreter {
     compiler_type_syntax: HashMap<String, Type>,
     compiler_pattern_syntax: HashMap<String, Pattern>,
     compiler_match_arm_syntax: HashMap<String, MatchArm>,
+    compiler_param_syntax: HashMap<String, Param>,
     compiler_expr_origins: HashMap<String, ComptimeSyntaxOrigin>,
     compiler_type_origins: HashMap<String, ComptimeSyntaxOrigin>,
     compiler_pattern_origins: HashMap<String, ComptimeSyntaxOrigin>,
@@ -2058,6 +2107,7 @@ impl Interpreter {
             compiler_type_syntax,
             compiler_pattern_syntax,
             compiler_match_arm_syntax: HashMap::new(),
+            compiler_param_syntax: HashMap::new(),
             compiler_expr_origins,
             compiler_type_origins,
             compiler_pattern_origins,
@@ -3486,23 +3536,60 @@ impl Interpreter {
                 }
                 _ => err("meta.block expects List(StmtSyntax) and Option(ExprSyntax)"),
             },
+            name if intrinsics::is_meta_param(name) => match args {
+                [binding, ty] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err("meta.param is available only during compile-time expansion");
+                    }
+                    let name = compiler_binding_ident_name(binding, "meta.param")?;
+                    let ty = compiler_type_syntax_value(ty, &self.compiler_type_syntax)?;
+                    let source = format!(
+                        "{name}: {}",
+                        witchy_syntax::format::type_str(&ty),
+                    );
+                    let param = Param {
+                        name,
+                        ty: Some(ty),
+                        convention: Convention::Let,
+                        default: None,
+                    };
+                    let handle = self.next_compiler_syntax_handle("parameter")?;
+                    self.compiler_param_syntax.insert(handle.clone(), param);
+                    Ok(Some(Value::Ctor {
+                        name: "meta.CompilerParamSyntax".into(),
+                        fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+                    }))
+                }
+                _ => err("meta.param expects Ident and TypeSyntax"),
+            },
             name if intrinsics::is_meta_function_block(name) => match args {
-                [Value::Str(header), body] => {
+                [Value::Bool(public), name, params, ret, body] => {
                     if self.fresh_ident_scope.is_none() {
                         return err(
                             "meta.function_block is available only during compile-time expansion",
                         );
                     }
+                    let name = compiler_binding_ident_name(name, "meta.function_block")?;
+                    let params = compiler_params(params, &self.compiler_param_syntax)?;
+                    let ret = compiler_optional_type_syntax_value(
+                        ret,
+                        &self.compiler_type_syntax,
+                    )?;
                     let body = compiler_block_syntax_value(body, &self.compiler_block_syntax)?;
-                    let module = parse_module(&format!("{header}\n    ()\n")).map_err(|error| {
-                        RuntimeError {
-                            message: format!("meta.function_block produced an invalid signature: {error}"),
-                        }
-                    })?;
+                    let module = parse_module("fn __witchy_meta_generated():\n    ()\n")
+                        .map_err(|error| RuntimeError {
+                            message: format!(
+                                "meta.function_block failed to build a function skeleton: {error}"
+                            ),
+                        })?;
                     let [Item::Function(parsed)] = module.items.as_slice() else {
-                        return err("meta.function_block expected one function signature");
+                        return err("meta.function_block failed to build one function skeleton");
                     };
                     let mut function = parsed.clone();
+                    function.public = *public;
+                    function.name = name;
+                    function.params = params;
+                    function.ret = ret;
                     function.body = body;
                     let item = Item::Function(function);
                     let handle = self.next_compiler_syntax_handle("function-item")?;
@@ -3515,7 +3602,9 @@ impl Interpreter {
                         ]),
                     }))
                 }
-                _ => err("meta.function_block expects a signature header and BlockSyntax body"),
+                _ => err(
+                    "meta.function_block expects Bool, Ident, List(ParamSyntax), Option(TypeSyntax), and BlockSyntax",
+                ),
             },
             name if name == intrinsics::COMPILER_QUOTE_EXPR => {
                 if self.fresh_ident_scope.is_none() {

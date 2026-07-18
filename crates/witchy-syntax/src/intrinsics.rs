@@ -50,6 +50,7 @@ pub enum IntrinsicId {
     MetaStmtExpr,
     MetaStmtReturn,
     MetaStmtLet,
+    MetaParam,
     MetaFunctionBlock,
     CompilerFootprint,
     CompilerDiff,
@@ -443,6 +444,7 @@ pub const META_BLOCK: &str = "__meta_block";
 pub const META_STMT_EXPR: &str = "__meta_stmt_expr";
 pub const META_STMT_RETURN: &str = "__meta_stmt_return";
 pub const META_STMT_LET: &str = "__meta_stmt_let";
+pub const META_PARAM: &str = "__meta_param";
 pub const META_FUNCTION_BLOCK: &str = "__meta_function_block";
 
 pub const COMPILER_FOOTPRINT: &str = "compiler.footprint";
@@ -1170,9 +1172,24 @@ pub const ALL: &[IntrinsicSpec] = &[
         private_callers: META_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
+        id: IntrinsicId::MetaParam,
+        name: META_PARAM,
+        arity: 2,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.param",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
         id: IntrinsicId::MetaFunctionBlock,
         name: META_FUNCTION_BLOCK,
-        arity: 2,
+        arity: 5,
         signature: IntrinsicSignature::DeclaredInSource,
         effect: IntrinsicEffect::Toolchain,
         capability_effect: CapabilityEffect::None,
@@ -2570,6 +2587,10 @@ pub fn is_meta_stmt_let(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaStmtLet)
 }
 
+pub fn is_meta_param(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaParam)
+}
+
 pub fn is_meta_function_block(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaFunctionBlock)
 }
@@ -2622,6 +2643,7 @@ mod tests {
         assert_eq!(private_intrinsic_callers(META_STMT_EXPR), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_STMT_RETURN), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_STMT_LET), Some(META_BRIDGE_CALLERS));
+        assert_eq!(private_intrinsic_callers(META_PARAM), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_FUNCTION_BLOCK), Some(META_BRIDGE_CALLERS));
         assert_eq!(lookup("meta.__meta_fresh_ident"), lookup(META_FRESH_IDENT));
         assert_eq!(lookup("meta.__meta_call_site_expr"), lookup(META_CALL_SITE_EXPR));
@@ -2638,6 +2660,7 @@ mod tests {
         assert_eq!(lookup("meta.__meta_stmt_expr"), lookup(META_STMT_EXPR));
         assert_eq!(lookup("meta.__meta_stmt_return"), lookup(META_STMT_RETURN));
         assert_eq!(lookup("meta.__meta_stmt_let"), lookup(META_STMT_LET));
+        assert_eq!(lookup("meta.__meta_param"), lookup(META_PARAM));
         assert_eq!(lookup("meta.__meta_function_block"), lookup(META_FUNCTION_BLOCK));
         assert_eq!(lookup("other.__meta_fresh_ident"), None);
     }
@@ -2684,6 +2707,7 @@ mod tests {
             META_STMT_EXPR,
             META_STMT_RETURN,
             META_STMT_LET,
+            META_PARAM,
             META_FUNCTION_BLOCK,
             COMPILER_FOOTPRINT,
             COMPILER_DIFF,
