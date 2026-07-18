@@ -15,6 +15,11 @@ tracking: "Implements the per-object refcount floor [RFC-0016](./0016-reference-
 
 # RFC-0035: Completing the RC floor — last-use reclamation + the lifetime model for reachable data
 
+The shipped RC-floor analysis and emission are implemented in
+[`crates/witchy-lower/src/analysis.rs`](../crates/witchy-lower/src/analysis.rs) and
+[`crates/witchy-lower/src/codegen/mod.rs`](../crates/witchy-lower/src/codegen/mod.rs),
+with corpus/metamorphic coverage in [`src/example_tests.rs`](../src/example_tests.rs).
+
 ## Implementation status (2026-07-01)
 
 **The mechanism has shipped; the executor residual is re-scoped.** Under
