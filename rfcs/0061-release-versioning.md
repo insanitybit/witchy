@@ -8,6 +8,9 @@ tracking: the 0.1.0 gate is the active release plan; tagged builds embed and ver
 
 # RFC-0061: Release versioning — 0.x policy and the 0.1.0 gate
 
+The version invariant is checked by [`scripts/release-version.sh`](../scripts/release-version.sh)
+and the private release workflow in [`.github/workflows/release.yml`](../.github/workflows/release.yml).
+
 ## Summary
 
 witchy is currently unversioned in practice: `Cargo.toml` says `0.1.0` but
