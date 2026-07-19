@@ -5,5 +5,5 @@
 name = "bars"
 version = "0.1.0"
 source = "path:bars"
-hash = "sha256:ada85087fb4dc3fdbc9b7fcc3cc77d121abbc79cb5d2118225f7b0fc17436013"
+hash = "sha256:149d2f813917b6c4c49517a86f9f702e846ed125bffb06ef9c8cbcefb6aa58c2"
 runtime_footprint = []

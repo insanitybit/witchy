@@ -5,5 +5,5 @@
 name = "wordlib"
 version = "0.1.0"
 source = "path:wordlib"
-hash = "sha256:c4d931dda9df71f2b4fc3862425ac8db04aecdbabef8c77acb0b5ff09ba8f76f"
+hash = "sha256:00d66ffe76d3d82eda3ce0f818c6a5036de05f2488863e7dd012c6fafc17f3ed"
 runtime_footprint = []

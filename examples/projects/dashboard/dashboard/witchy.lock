@@ -5,19 +5,19 @@
 name = "tasks"
 version = "0.1.0"
 source = "path:tasks"
-hash = "sha256:8007dcac37c1d975d9e77b3c7f05ea9ec0db89425eadbfb8704822e7f27a9840"
+hash = "sha256:91a5d85a48b802bd16a713501092bdf87a7b207e980951d3e4ce395edc0c03ca"
 runtime_footprint = []
 
 [[rune]]
 name = "bars"
 version = "0.1.0"
 source = "path:bars"
-hash = "sha256:ada85087fb4dc3fdbc9b7fcc3cc77d121abbc79cb5d2118225f7b0fc17436013"
+hash = "sha256:149d2f813917b6c4c49517a86f9f702e846ed125bffb06ef9c8cbcefb6aa58c2"
 runtime_footprint = []
 
 [[rune]]
 name = "coverage"
 version = "0.1.0"
 source = "path:coverage"
-hash = "sha256:f45c28e5992871d4ea860fb7d035370380a3cd052809a9850b10d9d4766bcdbc"
+hash = "sha256:4f81eee2acd9dd52acec8d57554692fa85ebc71dd4b70d8be9a24e424f81338b"
 runtime_footprint = []
