@@ -68,16 +68,14 @@ queue-settled master commit that passes every gate below.
   run until the default branch is intentionally synchronized. Pushing that
   history is authorized only after the exact queue-settled master is green; no
   tag push is authorized.
-- **BLOCKER — Pages visibility before remote sync:** the ordinary
-  [CI workflow](.github/workflows/ci.yml) already on `origin/master` deploys the
-  docs bundle with `pages: write` after a master push. The canonical public
-  Pages endpoint returned HTTP 404 on 2026-07-18, so no public exposure was
-  observed. The live GitHub repository record identifies Witchy as a private
-  personal-account repository, while [GitHub documents private Pages access
-  control only for organization-owned private or internal project
-  sites](https://docs.github.com/en/enterprise-cloud@latest/pages/getting-started-with-github-pages/changing-the-visibility-of-your-github-pages-site).
-  Disable the Pages deployment through its owning lane before synchronizing
-  master; fail closed rather than risk creating a public documentation host.
+- **RESOLVED — public Pages path removed before remote sync:** commit
+  `0cba062f77417e93bfe17611787436734c977258` landed after a green serialized
+  coordinator gate. The ordinary [CI workflow](.github/workflows/ci.yml) now
+  retains the built documentation only as a five-day private repository Actions
+  artifact. It has no `pages: write` or `id-token: write` permission, Pages
+  artifact/deployment action, deployment job, or `github-pages` environment.
+  The separate exact-candidate, authentication, and remote-reachability blockers
+  still prohibit synchronizing master or triggering remote verification.
 - **BLOCKER — publication authority:** no tag or release may be created until the
   user approves the exact green commit. The tag workflow creates a draft; final
   publication is a separate explicit workflow dispatch.
