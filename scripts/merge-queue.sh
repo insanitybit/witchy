@@ -131,6 +131,25 @@ now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 note() { printf 'merge-queue: %s\n' "$*" >&2; }
 strip_ansi() { sed "s/$(printf '\033')\[[0-9;]*m//g"; }
 
+# `git merge-tree --write-tree` reports conflicts through its exit status, but
+# normally writes the synthetic result into the repository object DB. Submit is
+# otherwise metadata-only and must work when `.git` is readable but not
+# writable, so keep the result in a temporary object DB and read repository
+# objects through an alternate.
+branch_merges_cleanly() { # branch_merges_cleanly <branch>
+    local branch="$1" object_dir alternates rc=0
+    object_dir="$(mktemp -d "${TMPDIR:-/tmp}/witchy-merge-tree-XXXXXX")"
+    alternates="$(git -C "$root" rev-parse --absolute-git-dir)/objects"
+    if [ -n "${GIT_ALTERNATE_OBJECT_DIRECTORIES:-}" ]; then
+        alternates="$alternates:$GIT_ALTERNATE_OBJECT_DIRECTORIES"
+    fi
+    GIT_OBJECT_DIRECTORY="$object_dir" GIT_ALTERNATE_OBJECT_DIRECTORIES="$alternates" \
+        git -C "$root" merge-tree --write-tree --name-only master \
+            "refs/heads/$branch" >/dev/null 2>&1 || rc=$?
+    rm -rf "$object_dir"
+    return "$rc"
+}
+
 # Managed sandboxes can deny signalling a live process with EPERM. Every
 # coordinator/lock decision must distinguish that from a missing PID; otherwise
 # agents spawn duplicate coordinators and steal live gate locks.
@@ -837,7 +856,7 @@ cmd_submit() {
     # touching any worktree. Advisory-fail: refuse with the reason; --force to
     # override (e.g. master is about to change under you anyway).
     if [ "${MERGE_QUEUE_SKIP_PRECHECK:-}" != "1" ]; then
-        if ! git -C "$root" merge-tree --write-tree --name-only master "refs/heads/$branch" >/dev/null 2>&1; then
+        if ! branch_merges_cleanly "$branch"; then
             note "REFUSED: $branch does not merge cleanly with current master — rebase it first"
             note "(the gate would only journal 'conflict'; MERGE_QUEUE_SKIP_PRECHECK=1 to submit anyway)"
             exit 1
@@ -1616,7 +1635,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     local non_queue_core=""
     if [ "$queue_infra" -eq 1 ] && [ -n "$changed" ]; then
         non_queue_core="$(printf '%s\n' "$changed" \
-            | grep -vE '^(scripts/(merge-queue|state-paths)\.sh|tests/merge_queue\.rs|rfcs/|wiki/|bugs/|external-refs/|scratch/|security-eval/)' \
+            | grep -vE '^(scripts/(merge-queue|state-paths)\.sh|scripts/MERGE-QUEUE\.md|tests/merge_queue\.rs|rfcs/|wiki/|bugs/|external-refs/|scratch/|security-eval/)' \
             || true)"
         if [ -z "$non_queue_core" ] \
             && printf '%s\n' "$changed" \
@@ -1923,6 +1942,11 @@ prewarm_gate() {
         rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
         tc_bin="$(dirname "$(rustup which --toolchain stable rustc)")"
     fi
+    # Prewarm is opportunistic. A submission arriving after the under-lock
+    # recheck must preempt it instead of waiting behind a cold multi-profile
+    # Cargo build. Put the complete tree in its own process group, watch the
+    # queue, and terminate only the prewarm process group we started.
+    set -m
     ( cd "$gate_wt" \
         && cargo build --workspace >/dev/null 2>&1 \
         && cargo test --workspace --no-run >/dev/null 2>&1 \
@@ -1938,8 +1962,26 @@ prewarm_gate() {
         && { [ -d target-check ] \
                  && CARGO_TARGET_DIR=target-check cargo check --workspace --all-targets >/dev/null 2>&1 \
                  || true; } \
-        && { [ -x scripts/warm-witchy-caches.sh ] && ./scripts/warm-witchy-caches.sh >/dev/null 2>&1 || true; } ) \
-        && echo "$m" >"$qdir/prewarmed" || true
+        && { [ -x scripts/warm-witchy-caches.sh ] && ./scripts/warm-witchy-caches.sh >/dev/null 2>&1 || true; } ) &
+    local prewarm_pid=$!
+    set +m
+    local cancelled=0
+    while pid_is_alive "$prewarm_pid"; do
+        if ls "$queue_dir"/*.json >/dev/null 2>&1; then
+            cancelled=1
+            note "queue work arrived; cancelling idle prewarm (pgid $prewarm_pid)"
+            kill -TERM -- "-$prewarm_pid" 2>/dev/null \
+                || kill -TERM "$prewarm_pid" 2>/dev/null \
+                || true
+            break
+        fi
+        sleep 1
+    done
+    local prewarm_status=0
+    wait "$prewarm_pid" || prewarm_status=$?
+    if [ "$cancelled" -eq 0 ] && [ "$prewarm_status" -eq 0 ]; then
+        echo "$m" >"$qdir/prewarmed"
+    fi
     release_lock
 }
 

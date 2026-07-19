@@ -638,6 +638,48 @@ fn dependency_submission_keeps_stable_ids_reports_readiness_and_rejects_cycles()
 }
 
 #[test]
+fn submit_precheck_writes_only_to_an_ephemeral_object_database() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    let bin = fixture._temp.path().join("git-wrapper-bin");
+    fs::create_dir(&bin).expect("create fake git bin");
+    let real_git = Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .expect("locate real git");
+    assert!(real_git.status.success(), "git is required by the queue harness");
+    let real_git = String::from_utf8(real_git.stdout)
+        .expect("git path is utf8")
+        .trim()
+        .to_owned();
+    let wrapper = bin.join("git");
+    fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\ncase \" $* \" in\n  *\" merge-tree --write-tree \"*)\n    [ -n \"${{GIT_OBJECT_DIRECTORY:-}}\" ] || exit 73\n    [ -n \"${{GIT_ALTERNATE_OBJECT_DIRECTORIES:-}}\" ] || exit 74\n    ;;\nesac\nexec {real_git} \"$@\"\n"
+        ),
+    )
+    .expect("write git wrapper");
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755))
+        .expect("chmod git wrapper");
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let output = fixture
+        .mq_command(&["submit", "a"], "true")
+        .env("PATH", path)
+        .output()
+        .expect("submit through read-only-object precheck fixture");
+    assert!(
+        output.status.success(),
+        "submit precheck required repository object writes:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn front_resubmission_moves_an_existing_change_to_the_actual_queue_head() {
     let fixture = QueueFixture::stack(&["a.txt", "b.txt"]);
     fixture.mq_ok(&["submit", "a"], "true");
@@ -1053,6 +1095,15 @@ fn queue_core_only_change_runs_the_hermetic_shard_instead_of_the_product_gate() 
         .expect("make fixture queue shard executable");
     run_git(&fixture.root, &["add", "scripts/check.sh"]);
     run_git(&fixture.root, &["commit", "-m", "add fixture product gate"]);
+    run_git(&fixture.root, &["switch", "a"]);
+    fs::write(
+        fixture.root.join("scripts/MERGE-QUEUE.md"),
+        "queue operator documentation\n",
+    )
+    .expect("write queue operator documentation");
+    run_git(&fixture.root, &["add", "scripts/MERGE-QUEUE.md"]);
+    run_git(&fixture.root, &["commit", "-m", "document queue substrate"]);
+    run_git(&fixture.root, &["switch", "master"]);
     fixture.mq_ok(&["submit", "a"], "true");
 
     let marker = fixture._temp.path().join("queue-shard-ran");
@@ -1292,6 +1343,134 @@ fn concurrent_daemon_starts_create_exactly_one_coordinator() {
         thread::sleep(Duration::from_millis(25));
     }
     assert!(!process_is_alive(pid), "winning coordinator ignored termination");
+}
+
+#[test]
+fn queued_work_preempts_an_idle_prewarm_process_group() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    run_git(
+        &fixture.root,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            fixture.gate_worktree.to_str().unwrap(),
+            "master",
+        ],
+    );
+    let bin = fixture._temp.path().join("prewarm-bin");
+    fs::create_dir(&bin).expect("create fake prewarm bin");
+    let started = fixture._temp.path().join("prewarm-started");
+    let cancelled = fixture._temp.path().join("prewarm-cancelled");
+    let gate_ran = fixture._temp.path().join("gate-ran");
+    let gate_proceed = fixture._temp.path().join("gate-proceed");
+    let cargo = bin.join("cargo");
+    fs::write(
+        &cargo,
+        format!(
+            "#!/bin/sh\nif [ ! -e \"{}\" ]; then\n  trap 'printf cancelled >\"{}\"; exit 143' TERM INT\n  printf started >\"{}\"\n  while :; do /bin/sleep 1; done\nfi\nexit 0\n",
+            started.display(),
+            cancelled.display(),
+            started.display(),
+        ),
+    )
+    .expect("write blocking prewarm cargo");
+    fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755))
+        .expect("chmod fake cargo");
+    let rustup = bin.join("rustup");
+    fs::write(
+        &rustup,
+        "#!/bin/sh\ncase \"$1\" in\n  target) exit 0 ;;\n  which) printf '/usr/bin/rustc\\n'; exit 0 ;;\nesac\nexit 1\n",
+    )
+    .expect("write fake rustup");
+    fs::set_permissions(&rustup, fs::Permissions::from_mode(0o755))
+        .expect("chmod fake rustup");
+
+    let queue_script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/merge-queue.sh");
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let gate = format!(
+        "printf ran >{}; while [ ! -e {} ]; do /bin/sleep 0.05; done",
+        gate_ran.display(),
+        gate_proceed.display(),
+    );
+    let mut coordinator = Command::new("bash")
+        .arg(&queue_script)
+        .arg("run")
+        .env("PATH", path)
+        .env("MERGE_QUEUE_TEST_ROOT", &fixture.root)
+        .env("MERGE_QUEUE_ALLOW_TEST_ROOT", "1")
+        .env("MERGE_QUEUE_STATE_DIR", &fixture.state)
+        .env("MERGE_QUEUE_GATE_WT", &fixture.gate_worktree)
+        .env("MERGE_QUEUE_GATE_CMD", gate)
+        .env("MERGE_QUEUE_ALLOW_MERGE", "1")
+        .env("MERGE_QUEUE_POLL_INTERVAL", "1")
+        .env("MERGE_QUEUE_RETRY_INTERVAL", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .expect("start persistent coordinator");
+    let coordinator_pid = coordinator.id() as i32;
+    let guard = ProcessGroupGuard(coordinator_pid);
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !started.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(started.exists(), "coordinator never entered prewarm");
+    assert!(
+        fixture.state.join("gate.lock").exists(),
+        "prewarm did not retain the serialized gate lock"
+    );
+
+    fixture.mq_ok(&["submit", "a"], "true");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while (!cancelled.exists() || !gate_ran.exists()) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(cancelled.exists(), "queued work did not cancel idle prewarm");
+    assert!(gate_ran.exists(), "coordinator did not advance queued work after prewarm");
+    assert!(
+        !fixture.state.join("prewarmed").exists(),
+        "cancelled prewarm was recorded as complete"
+    );
+    fs::write(&gate_proceed, "go\n").expect("release fake gate");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !git_output(&fixture.root, &["show", "master:a.txt"])
+        .status
+        .success()
+        && Instant::now() < deadline
+    {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        git_output(&fixture.root, &["show", "master:a.txt"])
+            .status
+            .success(),
+        "queued branch did not land"
+    );
+
+    drop(guard);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while coordinator
+        .try_wait()
+        .expect("poll terminated coordinator")
+        .is_none()
+        && Instant::now() < deadline
+    {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        coordinator
+            .try_wait()
+            .expect("reap terminated coordinator")
+            .is_some(),
+        "coordinator ignored process-group termination"
+    );
 }
 
 #[test]

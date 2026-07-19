@@ -338,7 +338,9 @@ shards ignore the scope.
      own solo gate, and nothing lands unvalidated (invariant 4 holds).
 7. Queue empty → idle prewarm: under the lock, move the gate worktree to
    master, `cargo build --workspace`, run `warm-witchy-caches.sh`, record
-   the sha in `prewarmed`. The next gate starts hot.
+   the sha in `prewarmed`. The next gate starts hot. A submission arriving
+   during this opportunistic work terminates only the prewarm process group;
+   the coordinator releases the same lock and advances the queue immediately.
 
 ## Invariants (the load-bearing rules — do not break these when extending)
 
