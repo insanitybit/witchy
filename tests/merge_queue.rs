@@ -287,6 +287,7 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
     fs::write(held_lock.join("what"), "focused external check\n")
         .expect("write lock description");
     let prepared_worktree = gate_worktree.clone();
+    let landed_worktree_during_prepare = landed_worktree.clone();
     let lock_wait_marker = state.join("lock-wait-started");
     let lock_wait_marker_for_thread = lock_wait_marker.clone();
     let lock_releaser = thread::spawn(move || {
@@ -295,6 +296,7 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
             thread::sleep(Duration::from_millis(25));
         }
         let prepared_while_lock_held = prepared_worktree.join("new-patch").exists();
+        let duplicate_sweep_was_deferred = landed_worktree_during_prepare.exists();
         while !lock_wait_marker_for_thread.exists() && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(25));
         }
@@ -303,7 +305,11 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
         // after the explicit lock-wait handshake.
         thread::sleep(Duration::from_millis(1_100));
         fs::remove_dir_all(held_lock).expect("release externally held gate lock");
-        (prepared_while_lock_held, coordinator_waited_for_lock)
+        (
+            prepared_while_lock_held,
+            duplicate_sweep_was_deferred,
+            coordinator_waited_for_lock,
+        )
     });
 
     let output = Command::new(&queue)
@@ -315,7 +321,7 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
         .env("MERGE_QUEUE_TEST_LOCK_WAIT_MARKER", &lock_wait_marker)
         .output()
         .expect("run isolated coordinator");
-    let (prepared_outside_lock, waited_for_external_lock) =
+    let (prepared_outside_lock, duplicate_sweep_was_deferred, waited_for_external_lock) =
         lock_releaser.join().expect("join gate lock releaser");
     assert!(
         output.status.success(),
@@ -326,6 +332,10 @@ fn coordinator_skips_only_fully_patch_equivalent_submissions() {
     assert!(
         prepared_outside_lock,
         "coordinator did not prepare the gate worktree while an external gate lock was held",
+    );
+    assert!(
+        duplicate_sweep_was_deferred,
+        "patch-equivalent entry ran an eager worktree sweep before the next merge",
     );
     assert!(
         waited_for_external_lock,

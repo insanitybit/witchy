@@ -118,6 +118,10 @@ poll_interval="${MERGE_QUEUE_POLL_INTERVAL:-15}"
 
 mkdir -p "$queue_dir" "$changes_dir" "$logs"
 
+# Patch-equivalent submissions are often consumed in long runs after an
+# integration tip lands. Coalesce their worktree reclamation into one sweep.
+deferred_sweep=0
+
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 note() { printf 'merge-queue: %s\n' "$*" >&2; }
 strip_ansi() { sed "s/$(printf '\033')\[[0-9;]*m//g"; }
@@ -1137,7 +1141,12 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             reason "all submitted patches already represented on master"
         set_change_state "$change_id" merged "$submitted_sha" "$attempt_id" || true
         if consume_queue_entry "$f" "$change_id" "$submitted_sha" "$attempt_id"; then
-            cmd_sweep || true
+            # Duplicate-heavy queues can contain hundreds of patch-equivalent
+            # submissions after an integration tip lands. Sweeping every one
+            # rescans the full journal and worktree list for each entry. Defer
+            # reclamation to the next successful merge (or explicit `sweep`),
+            # which coalesces all consumed duplicates into one scan.
+            deferred_sweep=1
             return 0
         fi
         return 1
@@ -1673,6 +1682,12 @@ next_ready_queue_file() {
     return 1
 }
 
+flush_deferred_sweep() {
+    [ "$deferred_sweep" -eq 1 ] || return 0
+    cmd_sweep || true
+    deferred_sweep=0
+}
+
 cmd_run() {
     local once=0
     [ "${1:-}" = "--once" ] && once=1
@@ -1733,6 +1748,7 @@ cmd_run() {
         # when a busy queue has enough entries to fill the pipe.
         first="$(find "$queue_dir" -maxdepth 1 -name '*.json' -print | sort | sed -n '1p')"
         if [ -z "$first" ]; then
+            flush_deferred_sweep
             if [ "$once" -eq 1 ]; then note "queue drained"; break; fi
             prewarm_gate
             sleep "$poll_interval"
@@ -1740,6 +1756,7 @@ cmd_run() {
         fi
         f="$(next_ready_queue_file || true)"
         if [ -z "$f" ]; then
+            flush_deferred_sweep
             if [ "$once" -eq 1 ]; then
                 note "queue has no ready changes (dependencies are waiting or blocked)"
                 break
