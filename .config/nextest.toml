@@ -70,6 +70,17 @@ path = "junit.xml"
 registry-serial = { max-threads = 2 }
 perf-serial = { max-threads = 1 }
 wasm-heavy = { max-threads = 2 }
+queue-concurrency-serial = { max-threads = 1 }
+
+# These two hermetic fixtures each create concurrent coordinator/metadata
+# writers. Running both races at once has no additional coverage, but doubles
+# process and lock pressure enough to make both hit nextest's 135s hard timeout
+# on an otherwise green gate. Keep every assertion and the existing timeout;
+# serialize only the two nested-concurrency fixtures while the rest of the
+# queue-infrastructure shard retains width two.
+[[profile.default.overrides]]
+filter = 'binary_id(witchy::merge_queue) & test(/^concurrent_daemon_starts_create_exactly_one_coordinator$|^concurrent_dependency_updates_cannot_commit_opposite_cycle_edges$/)'
+test-group = 'queue-concurrency-serial'
 
 # Long-running regression guards: the at-scale perf programs and the
 # type-resolved repository census can exceed the default 135s slow-kill under
