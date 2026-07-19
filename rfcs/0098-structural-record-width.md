@@ -1,11 +1,19 @@
 ---
 rfc: 0098
 title: Structural record conformance and shape composition
-status: accepted
+status: implemented
 created: 2026-07-19
-tracking: implementation in progress; syntax/normalized-shape checkpoint
-  merged as 9ab02e93 through mq-126f5826842b74196b346920b0be2a2b6b5355c5;
-  checked shared projection lowering is rebased immediately after it
+implemented: 2026-07-19
+tracking: >
+  Implemented on master by syntax/normalization commit 9ab02e93 and checked
+  conformance/projection commit 81920124. The latter merged in full-gate batch
+  032e6f53 through mq-160d9333399ce52303aca5a80143c8c99f8be36c on
+  2026-07-19. The shipped contract includes exact record composition; directed
+  expected-site width conformance; authenticated source-once exact projection;
+  invariant var and consuming own conventions; interpreter/compiled-Wasm
+  parity; target-only reflection/rendering/JSON/equality/hash behavior;
+  browser-visible operation counters; tooling, diagnostics, and executable
+  documentation. See 0098-acceptance-ledger.md.
 related:
   - "0078 (anonymous tagged unions and the structural tier — exact-record rule amended here)"
   - "0033 (place-based uniqueness — caller-place identity remains exact)"
