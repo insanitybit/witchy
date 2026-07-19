@@ -2504,6 +2504,48 @@ fn main(console: Console):
         );
     }
 
+    /// (RFC-0098 slice 1) Type-position record spread normalizes through aliases
+    /// and generic arguments to the same exact structural identity as a directly
+    /// spelled shape before either backend sees it.
+    #[test]
+    fn structural_record_type_composition_runs_on_both_backends() {
+        let src = r#"type Value(a) = .{value: a}
+type Located(a) = .{..Value(a), line: Int, label: String}
+
+fn describe(row: .{label: String, value: String, line: Int}) -> String:
+    "${row.line}:${row.label}:${row.value}"
+
+fn main(console: Console):
+    let row: Located(String) = .{label: "ready", value: "payload", line: 7}
+    console.print(describe(row))
+    console.print("${row}")
+"#;
+        let expected = ["7:ready:payload", ".{label: ready, line: 7, value: payload}"];
+        assert_eq!(link_run(src), expected, "interp record type composition");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled record type composition must agree",
+        );
+    }
+
+    #[test]
+    fn structural_record_type_composition_rejects_invalid_shapes_before_backends() {
+        let conflict = "type Base = .{a: Int}\ntype Bad = .{..Base, a: String}\nfn main():\n    ()\n";
+        let conflict_error = try_link_std(conflict).expect_err("conflicting field types fail");
+        assert!(
+            conflict_error.contains("field `a` has conflicting types"),
+            "{conflict_error}"
+        );
+
+        let nominal = "type User:\n    a: Int\ntype Bad = .{..User, b: String}\nfn main():\n    ()\n";
+        let nominal_error = try_link_std(nominal).expect_err("nominal base fails");
+        assert!(
+            nominal_error.contains("type spread requires an anonymous record shape"),
+            "{nominal_error}"
+        );
+    }
+
     /// (RFC-0078) Anonymous records support the same spread/update spelling as
     /// named records. The spread preserves the base shape exactly; it does not
     /// introduce width subtyping or new fields.

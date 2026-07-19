@@ -397,6 +397,10 @@ fn type_mentions_view(ty: &Type) -> bool {
         Type::Qualified(_, inner) => type_mentions_view(inner),
         Type::Named(_, args) | Type::Tuple(args) => args.iter().any(type_mentions_view),
         Type::Dyn(_, args) => args.iter().any(type_mentions_view),
+        Type::RecordCompose { base, fields } => {
+            type_mentions_view(base)
+                || fields.iter().any(|(_, ty)| type_mentions_view(ty))
+        }
         Type::Fn(params, ret, _) => {
             params.iter().any(type_mentions_view) || type_mentions_view(ret)
         }
@@ -433,6 +437,13 @@ fn validate_nested_fn_borrows(ty: &Type, context: &str) -> Result<(), TypeError>
         Type::Dyn(_, args) => {
             for arg in args {
                 validate_nested_fn_borrows(arg, context)?;
+            }
+            Ok(())
+        }
+        Type::RecordCompose { base, fields } => {
+            validate_nested_fn_borrows(base, context)?;
+            for (_, ty) in fields {
+                validate_nested_fn_borrows(ty, context)?;
             }
             Ok(())
         }

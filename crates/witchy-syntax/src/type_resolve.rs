@@ -367,7 +367,8 @@ pub fn resolve_definition_site_expr(
             "compiler-owned syntax refers to unknown definition module `{definition_module}`"
         ));
     };
-    crate::aliases::resolve_expr_aliases(expr, owner);
+    crate::aliases::resolve_expr_aliases(expr, owner)
+        .map_err(|message| LinkError { message, location: None })?;
     let world = World::build(modules);
     let mut scope = Scope::build(
         definition_module,
@@ -710,6 +711,12 @@ impl<'a> Scope<'a> {
         match ty {
             Type::Qualified(_, inner) => self.resolve_type(inner),
             Type::Tuple(ts) => ts.iter_mut().try_for_each(|t| self.resolve_type(t)),
+            Type::RecordCompose { base, fields } => {
+                self.resolve_type(base)?;
+                fields
+                    .iter_mut()
+                    .try_for_each(|(_, field)| self.resolve_type(field))
+            }
             Type::Fn(ps, r, _) => {
                 ps.iter_mut().try_for_each(|p| self.resolve_type(p))?;
                 self.resolve_type(r)

@@ -1926,29 +1926,6 @@ fn parse_fixed_width_usize(s: &str, pos: &mut usize, width: usize) -> Option<usi
     part.parse().ok()
 }
 
-fn decode_anon_record_type_name(name: &str) -> Option<Vec<String>> {
-    let mut pos = "__anon".len();
-    let rest = name.strip_prefix("__anon")?;
-    if rest.len() < 10 {
-        return None;
-    }
-    let count = parse_fixed_width_usize(name, &mut pos, 10)?;
-    let mut fields = Vec::with_capacity(count);
-    for _ in 0..count {
-        let len = parse_fixed_width_usize(name, &mut pos, 10)?;
-        let mut bytes = Vec::with_capacity(len);
-        for _ in 0..len {
-            let byte = parse_fixed_width_usize(name, &mut pos, 3)?;
-            if byte > u8::MAX as usize {
-                return None;
-            }
-            bytes.push(byte as u8);
-        }
-        fields.push(String::from_utf8(bytes).ok()?);
-    }
-    if pos == name.len() { Some(fields) } else { None }
-}
-
 fn decode_anon_union_type_name(name: &str) -> Option<Vec<(String, usize)>> {
     let mut pos = "__union".len();
     let rest = name.strip_prefix("__union")?;
@@ -1993,6 +1970,15 @@ pub fn type_str(t: &Type) -> String {
                 format!("dyn {n}({})", inner.join(", "))
             }
         }
+        Type::RecordCompose { base, fields } => {
+            let mut parts = vec![format!("..{}", type_str(base))];
+            parts.extend(
+                fields
+                    .iter()
+                    .map(|(field, ty)| format!("{field}: {}", type_str(ty))),
+            );
+            format!(".{{{}}}", parts.join(", "))
+        }
         Type::Named(n, args) => {
             if let Some(variants) = decode_anon_union_type_name(n) {
                 let total: usize = variants.iter().map(|(_, arity)| *arity).sum();
@@ -2018,7 +2004,7 @@ pub fn type_str(t: &Type) -> String {
                     return format!(".[{rendered}]");
                 }
             }
-            if let Some(fields) = decode_anon_record_type_name(n) {
+            if let Some(fields) = crate::ast::anon_record_field_names(n) {
                 if fields.len() == args.len() {
                     let rendered = fields
                         .iter()

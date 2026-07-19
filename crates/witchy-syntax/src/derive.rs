@@ -22,6 +22,10 @@ fn contains_concrete_float(ty: &Type) -> bool {
     match ty {
         Type::Named(n, args) => n == "Float" || args.iter().any(contains_concrete_float),
         Type::Tuple(slots) => slots.iter().any(contains_concrete_float),
+        Type::RecordCompose { base, fields } => {
+            contains_concrete_float(base)
+                || fields.iter().any(|(_, field)| contains_concrete_float(field))
+        }
         Type::Fn(params, ret, _) => {
             params.iter().any(contains_concrete_float) || contains_concrete_float(ret)
         }
@@ -40,6 +44,7 @@ fn unsupported_deserialize_shape(ty: &Type) -> Option<&'static str> {
     match ty {
         Type::Named(_, args) => args.iter().find_map(unsupported_deserialize_shape),
         Type::Tuple(_) => Some("tuple"),
+        Type::RecordCompose { .. } => Some("unresolved structural record composition"),
         Type::Fn(_, _, _) => Some("function"),
         Type::Qualified(_, inner) => unsupported_deserialize_shape(inner),
         Type::Dyn(_, _) => Some("existential `dyn` trait"),
@@ -102,7 +107,7 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
     let mut needs_deserialize = false;
     let mut needs_reflect = false;
     let mut needs_show = false;
-    let aliases = crate::aliases::resolved_map(module);
+    let aliases = crate::aliases::resolved_map(module)?;
     let user_derive_outputs = user_derive_outputs(module);
     let explicit_partial_eq_targets: HashSet<String> = module
         .items
@@ -125,7 +130,7 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                 ));
             }
         }
-        let derive_type = crate::reflect::normalized_type_for_typeinfo(t, &aliases);
+        let derive_type = crate::reflect::normalized_type_for_typeinfo(t, &aliases)?;
         let has_explicit_partial_eq = explicit_partial_eq_targets.contains(&t.name);
         // (RFC-0047) Record that this type's PartialEq is the STRUCTURAL derive,
         // so whole-program container equality can keep its structural fast path.

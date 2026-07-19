@@ -519,6 +519,10 @@ fn is_expr_syntax_type(ty: &Type) -> bool {
             args.is_empty() && (name == "ExprSyntax" || name == "meta.ExprSyntax")
         }
         Type::Dyn(_, _) | Type::Tuple(_) | Type::Fn(_, _, _) => false,
+        Type::RecordCompose { base, fields } => {
+            is_expr_syntax_type(base)
+                || fields.iter().any(|(_, field)| is_expr_syntax_type(field))
+        }
     }
 }
 

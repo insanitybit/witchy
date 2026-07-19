@@ -193,6 +193,10 @@ impl RuntimeTypeIdentity {
     ) -> Result<Self, RuntimeTypeError> {
         match ty {
             Type::Qualified(_, inner) => Self::from_resolved_type(inner, resolve),
+            Type::RecordCompose { .. } => Err(RuntimeTypeError::MalformedStructuralType(
+                "compiler invariant violated: structural record composition reached runtime type identity before records::lower normalized it"
+                    .to_string(),
+            )),
             Type::Tuple(items) if items.is_empty() => Ok(Self::Primitive(PrimitiveType::Unit)),
             Type::Tuple(items) => Ok(Self::Tuple(
                 items

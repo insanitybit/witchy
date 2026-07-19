@@ -36,6 +36,11 @@ pub fn lower_lenient(module: Module) -> Result<Module, String> {
 }
 
 fn lower_impl(mut module: Module, lenient: bool) -> Result<Module, String> {
+    // RFC-0098 type-position record spread must become one ordinary exact
+    // anonymous shape before derive expansion. This is the shared fallible
+    // funnel used by checking, linking, the interpreter, and compiled lowering,
+    // so no deferred composition can leak into a backend.
+    module = crate::aliases::normalize_record_compositions(module)?;
     // `derive(...)` expands FIRST (additive impl items), so the generated
     // impls flow through every later stage exactly like handwritten ones.
     // This is the single funnel every entry point (link, check, compile,

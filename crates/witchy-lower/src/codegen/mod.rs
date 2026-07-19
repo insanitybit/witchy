@@ -655,6 +655,9 @@ fn rc_leaf_bias(t: &Type) -> Option<i32> {
             Some(-1)
         }
         Type::Named(_, _) => Some(0),
+        Type::RecordCompose { .. } => unreachable!(
+            "compiler invariant violated: record composition must be normalized before Wasm ownership classification"
+        ),
     }
 }
 
@@ -1650,6 +1653,9 @@ impl<'types> Codegen<'types> {
                     self.gc_lookup_type_key(result)
                 )
             }
+            Type::RecordCompose { .. } => unreachable!(
+                "compiler invariant violated: record composition must be normalized before Wasm layout key generation"
+            ),
             Type::Qualified(_, _) => unreachable!("unqualified above"),
         }
     }
@@ -1760,6 +1766,9 @@ impl<'types> Codegen<'types> {
                 }
                 self.collect_unit_gc_ids_type(result, ids);
             }
+            Type::RecordCompose { .. } => unreachable!(
+                "compiler invariant violated: record composition must be normalized before Wasm GC layout collection"
+            ),
             Type::Qualified(_, _) => unreachable!("unqualified above"),
         }
     }
@@ -10767,6 +10776,10 @@ impl<'types> Codegen<'types> {
                 Type::Fn(params, ret, _) => {
                     params.iter().any(|p| mentions(p, name)) || mentions(ret, name)
                 }
+                Type::RecordCompose { base, fields } => {
+                    mentions(base, name)
+                        || fields.iter().any(|(_, field)| mentions(field, name))
+                }
             }
         }
         self.adt_variants
@@ -10903,6 +10916,9 @@ impl<'types> Codegen<'types> {
                 .collect::<Option<Vec<_>>>()
                 .map(EqShape::Tuple),
             Type::Fn(..) => None,
+            Type::RecordCompose { .. } => unreachable!(
+                "compiler invariant violated: record composition must be normalized before Wasm equality-shape lowering"
+            ),
         }
     }
 
@@ -11087,6 +11103,9 @@ fn type_has_var(t: &Type) -> bool {
         Type::Dyn(_, args) => args.iter().any(type_has_var),
         Type::Tuple(ts) => ts.iter().any(type_has_var),
         Type::Fn(ps, r, _) => ps.iter().any(type_has_var) || type_has_var(r),
+        Type::RecordCompose { base, fields } => {
+            type_has_var(base) || fields.iter().any(|(_, field)| type_has_var(field))
+        }
     }
 }
 

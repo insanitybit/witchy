@@ -124,6 +124,9 @@ impl<'a> ReferenceStorageClassifier<'a> {
     ) -> Option<ReferenceLeaf> {
         match ty {
             Type::Qualified(_, inner) => self.classify(inner, bindings, seen, functions),
+            Type::RecordCompose { .. } => unreachable!(
+                "compiler invariant violated: structural record composition reached storage classification before records::lower normalized it"
+            ),
             Type::Tuple(items) => {
                 items
                     .iter()
@@ -274,6 +277,13 @@ fn substitute(
         Type::Tuple(items) => {
             Type::Tuple(items.iter().map(|item| substitute(item, bindings, resolving)).collect())
         }
+        Type::RecordCompose { base, fields } => Type::RecordCompose {
+            base: Box::new(substitute(base, bindings, resolving)),
+            fields: fields
+                .iter()
+                .map(|(name, ty)| (name.clone(), substitute(ty, bindings, resolving)))
+                .collect(),
+        },
         Type::Dyn(name, args) => Type::Dyn(
             name.clone(),
             args.iter().map(|arg| substitute(arg, bindings, resolving)).collect(),
@@ -402,6 +412,12 @@ fn storage_dependencies<'a>(
                 storage_dependencies(item, defs, aliases, def_summaries, alias_summaries)
             })
             .collect(),
+        Type::RecordCompose { base, fields } => std::iter::once(base.as_ref())
+            .chain(fields.iter().map(|(_, ty)| ty))
+            .flat_map(|ty| {
+                storage_dependencies(ty, defs, aliases, def_summaries, alias_summaries)
+            })
+            .collect(),
         Type::Dyn(_, args) => args
             .iter()
             .flat_map(|arg| {
@@ -489,6 +505,12 @@ fn collect_implicit_params(ty: &Type, out: &mut Vec<String>) {
         Type::Tuple(items) => {
             for item in items {
                 collect_implicit_params(item, out);
+            }
+        }
+        Type::RecordCompose { base, fields } => {
+            collect_implicit_params(base, out);
+            for (_, ty) in fields {
+                collect_implicit_params(ty, out);
             }
         }
         Type::Dyn(_, args) => {

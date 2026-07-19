@@ -204,6 +204,13 @@ fn subst_self(t: &Type, self_ty: &Type) -> Type {
             Type::Dyn(n.clone(), args.iter().map(|a| subst_self(a, self_ty)).collect())
         }
         Type::Tuple(ts) => Type::Tuple(ts.iter().map(|a| subst_self(a, self_ty)).collect()),
+        Type::RecordCompose { base, fields } => Type::RecordCompose {
+            base: Box::new(subst_self(base, self_ty)),
+            fields: fields
+                .iter()
+                .map(|(name, ty)| (name.clone(), subst_self(ty, self_ty)))
+                .collect(),
+        },
         Type::Fn(ps, r, conventions) => Type::Fn(
             ps.iter().map(|a| subst_self(a, self_ty)).collect(),
             Box::new(subst_self(r, self_ty)),
@@ -258,7 +265,11 @@ fn mono_timing_start() -> Option<std::time::Instant> {
 fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     // Expand type aliases and inline module-level constants first (a no-op once
     // the linker has done so, but covers single-module paths like `check_str`).
-    let module = witchy_syntax::aliases::resolve(witchy_syntax::consts::inline(module));
+    let inlined = witchy_syntax::consts::inline(module);
+    let module = match witchy_syntax::aliases::resolve(inlined.clone()) {
+        Ok(module) => module,
+        Err(message) => return (inlined, vec![message]),
+    };
     // Retain the resolved trait/impl universe while ordinary trait lowering
     // erases declarations. Existential method calls use this to resolve their
     // static slot before either backend receives the compiler-owned node.
@@ -907,6 +918,9 @@ fn display_type(t: &Type) -> String {
         Type::Tuple(ts) => {
             format!("({})", ts.iter().map(display_type).collect::<Vec<_>>().join(", "))
         }
+        Type::RecordCompose { .. } => unreachable!(
+            "compiler invariant violated: structural record composition reached trait diagnostics before records::lower normalized it"
+        ),
         Type::Fn(ps, r, conventions) => {
             let rendered = ps
                 .iter()
@@ -957,6 +971,13 @@ pub(crate) fn subst_trait_params(t: &Type, vars: &HashMap<String, Type>) -> Type
             Type::Dyn(n.clone(), args.iter().map(|a| subst_trait_params(a, vars)).collect())
         }
         Type::Tuple(ts) => Type::Tuple(ts.iter().map(|a| subst_trait_params(a, vars)).collect()),
+        Type::RecordCompose { base, fields } => Type::RecordCompose {
+            base: Box::new(subst_trait_params(base, vars)),
+            fields: fields
+                .iter()
+                .map(|(name, ty)| (name.clone(), subst_trait_params(ty, vars)))
+                .collect(),
+        },
         Type::Fn(ps, r, conventions) => Type::Fn(
             ps.iter().map(|a| subst_trait_params(a, vars)).collect(),
             Box::new(subst_trait_params(r, vars)),
@@ -1306,6 +1327,12 @@ fn collect_anon_union_heads_type(ty: &Type, out: &mut HashMap<String, usize>) {
                 collect_anon_union_heads_type(param, out);
             }
             collect_anon_union_heads_type(ret, out);
+        }
+        Type::RecordCompose { base, fields } => {
+            collect_anon_union_heads_type(base, out);
+            for (_, ty) in fields {
+                collect_anon_union_heads_type(ty, out);
+            }
         }
         Type::Qualified(_, inner) => collect_anon_union_heads_type(inner, out),
     }
@@ -1843,6 +1870,9 @@ fn refine_ast_scope_type(scope: &mut Scope<Type>, name: &str, refined: &Type) {
         Type::Named(_, args) => !args.is_empty(),
         Type::Dyn(_, args) => !args.is_empty(),
         Type::Tuple(_) | Type::Fn(_, _, _) => true,
+        Type::RecordCompose { .. } => unreachable!(
+            "compiler invariant violated: structural record composition reached trait scope refinement before records::lower normalized it"
+        ),
         Type::Qualified(_, _) => unreachable!("unqualified strips qualifiers"),
     };
     if existing != refined && same_head && carries_arguments {
@@ -3323,6 +3353,9 @@ fn nominal_type_name(ty: &Type) -> Option<&str> {
         // it must never enter impl lookup by name.
         Type::Dyn(..) => None,
         Type::Tuple(_) | Type::Fn(_, _, _) => None,
+        Type::RecordCompose { .. } => unreachable!(
+            "compiler invariant violated: structural record composition reached nominal trait lookup before records::lower normalized it"
+        ),
         Type::Qualified(_, _) => unreachable!("unqualified strips qualifiers"),
     }
 }
@@ -3552,6 +3585,9 @@ fn type_key(t: &Type) -> String {
                 stack.push(Part::Text(")->"));
                 push_items(&mut stack, params);
             }
+            Part::Ty(Type::RecordCompose { .. }) => unreachable!(
+                "compiler invariant violated: structural record composition reached trait type keys before records::lower normalized it"
+            ),
             Part::Char(ch) => key.push(ch),
             Part::Text(text) => key.push_str(text),
         }
@@ -4235,6 +4271,9 @@ fn type_head_key(ty: &Type) -> Option<String> {
         // (RFC-0081) A dyn head is a trait name, not a nominal head key.
         Type::Dyn(..) => None,
         Type::Fn(_, _, _) => None,
+        Type::RecordCompose { .. } => unreachable!(
+            "compiler invariant violated: structural record composition reached trait receiver lookup before records::lower normalized it"
+        ),
         Type::Qualified(_, _) => unreachable!("unqualified strips qualifiers"),
     }
 }

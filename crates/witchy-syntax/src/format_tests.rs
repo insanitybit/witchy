@@ -320,6 +320,14 @@
     }
 
     #[test]
+    fn structural_record_type_spread_round_trips_canonically() {
+        let src = "type Base = .{a: Int, b: String}\ntype Extended = .{..Base, z: Bool, c: Int}\n";
+        let out = reformat(src).expect("record type spread round-trips");
+        assert!(out.contains("type Extended = .{..Base, c: Int, z: Bool}"), "{out}");
+        assert_eq!(reformat(&out).expect("idempotent"), out);
+    }
+
+    #[test]
     fn anonymous_record_spread_round_trips_through_formatting() {
         // RFC-0078 gives anonymous records the same update/spread surface as named
         // records. Formatting should keep the structural spelling, not leak the

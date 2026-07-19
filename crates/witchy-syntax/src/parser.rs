@@ -22,17 +22,6 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
-fn anon_record_type_name(fields: &[String]) -> String {
-    let mut suffix = format!("{:010}", fields.len());
-    for field in fields {
-        suffix.push_str(&format!("{:010}", field.len()));
-        for byte in field.as_bytes() {
-            suffix.push_str(&format!("{byte:03}"));
-        }
-    }
-    format!("__anon{suffix}")
-}
-
 fn anon_union_type_name(variants: &[(String, usize)]) -> String {
     let mut suffix = format!("{:010}", variants.len());
     for (tag, arity) in variants {
@@ -71,20 +60,12 @@ pub fn parse_module(src: &str) -> Result<Module, ParseError> {
     // modules cannot collide after linking. Generic-record derive makes `.{…}`
     // ordinary reflectable data with no special builtin.
     if !parser.anon_records.is_empty() {
-        let mut defs = String::new();
-        for fields in &parser.anon_records {
-            let name = anon_record_type_name(fields);
-            let params: Vec<String> = (0..fields.len()).map(|i| format!("t{i}")).collect();
-            defs.push_str(&format!("type {name}({}) derive(Reflect):\n", params.join(", ")));
-            for (i, f) in fields.iter().enumerate() {
-                defs.push_str(&format!("    {f}: t{i}\n"));
-            }
-            defs.push('\n');
-        }
-        // `defs` has no `.{…}`, so this does not recurse further.
-        let synth = parse_module(&defs)?;
-        let n = synth.items.len();
-        let mut items = synth.items;
+        let n = parser.anon_records.len();
+        let mut items = parser
+            .anon_records
+            .iter()
+            .map(|fields| Item::Type(synthetic_anon_record_def(fields)))
+            .collect::<Vec<_>>();
         items.append(&mut module.items);
         module.items = items;
         let mut item_lines = vec![u32::MAX; n];
@@ -3300,11 +3281,20 @@ impl Parser {
         Ok(Expr::Record { name: anon_record_type_name(&names), fields, spread })
     }
 
-    /// `.{ field: Type, … }` in type position. This is the type-level mirror of
-    /// anonymous records in value position: it names an instantiation of the same
-    /// shape-keyed synthetic generic record, so aliases/signatures/fields all use
-    /// the existing nominal machinery after parsing.
+    /// `.{ field: Type, … }` or `.{..Base, field: Type}` in type position.
+    /// Exact shapes immediately name the ordinary shape-keyed synthetic record;
+    /// RFC-0098 composition retains its base until alias normalization can see
+    /// the base's complete field map.
     fn anon_record_type(&mut self) -> Result<Type, ParseError> {
+        let base = if self.eat(&Tok::DotDot) {
+            let base = self.ty()?;
+            if !self.at(&Tok::RBrace) {
+                self.expect(&Tok::Comma)?;
+            }
+            Some(Box::new(base))
+        } else {
+            None
+        };
         let mut fields = Vec::new();
         let mut seen = HashSet::default();
         while !self.at(&Tok::RBrace) {
@@ -3322,6 +3312,9 @@ impl Parser {
         }
         self.expect(&Tok::RBrace)?;
         fields.sort_by(|a, b| a.0.cmp(&b.0));
+        if let Some(base) = base {
+            return Ok(Type::RecordCompose { base, fields });
+        }
         let names: Vec<String> = fields.iter().map(|(n, _)| n.clone()).collect();
         if !self.anon_records.contains(&names) {
             self.anon_records.push(names.clone());

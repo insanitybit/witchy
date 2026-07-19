@@ -82,6 +82,10 @@ fn build_caps_in(ty: &Type, out: &mut CapSet) {
         // (RFC-0081) A dyn value is never itself a capability; scan args only.
         Type::Dyn(_, args) => args.iter().for_each(|a| build_caps_in(a, out)),
         Type::Tuple(ts) => ts.iter().for_each(|t| build_caps_in(t, out)),
+        Type::RecordCompose { base, fields } => {
+            build_caps_in(base, out);
+            fields.iter().for_each(|(_, ty)| build_caps_in(ty, out));
+        }
         Type::Fn(params, ret, _) => {
             params.iter().for_each(|p| build_caps_in(p, out));
             build_caps_in(ret, out);
@@ -518,6 +522,12 @@ fn caps_in(ty: &Type, taint: &HashMap<String, CapSet>, out: &mut CapSet) {
         Type::Tuple(ts) => {
             for t in ts {
                 caps_in(t, taint, out);
+            }
+        }
+        Type::RecordCompose { base, fields } => {
+            caps_in(base, taint, out);
+            for (_, ty) in fields {
+                caps_in(ty, taint, out);
             }
         }
         Type::Fn(params, ret, _) => {

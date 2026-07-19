@@ -188,7 +188,7 @@
     fn structural_types_reject_user_impl_targets() {
         fn check_resolved(src: &str) -> Result<(), String> {
             let module = witchy_syntax::parser::parse_module(src).map_err(|e| e.to_string())?;
-            let module = witchy_syntax::aliases::resolve(module);
+            let module = witchy_syntax::aliases::resolve(module).expect("resolve aliases");
             check(&module).map_err(|e| e.to_string())
         }
 

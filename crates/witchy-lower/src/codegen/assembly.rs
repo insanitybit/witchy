@@ -55,6 +55,12 @@ fn ast_type_mentions_compiler_syntax(ty: &Type) -> bool {
             params.iter().any(ast_type_mentions_compiler_syntax)
                 || ast_type_mentions_compiler_syntax(ret)
         }
+        Type::RecordCompose { base, fields } => {
+            ast_type_mentions_compiler_syntax(base)
+                || fields
+                    .iter()
+                    .any(|(_, field)| ast_type_mentions_compiler_syntax(field))
+        }
         Type::Qualified(_, inner) => ast_type_mentions_compiler_syntax(inner),
     }
 }
@@ -102,6 +108,9 @@ fn collect_gc_tuple_type(
             }
             collect_gc_tuple_type(cg, ret, layouts);
         }
+        Type::RecordCompose { .. } => unreachable!(
+            "compiler invariant violated: record composition must be normalized before Wasm layout collection"
+        ),
     }
 }
 
@@ -252,6 +261,9 @@ fn type_has_planned_reference(
                     )
                 })
         }
+        Type::RecordCompose { .. } => unreachable!(
+            "compiler invariant violated: record composition must be normalized before Wasm reference planning"
+        ),
         Type::Qualified(_, _) => unreachable!("unqualified above"),
     }
 }
@@ -390,6 +402,9 @@ fn collect_gc_type_plans(
                 reference_lists,
             );
         }
+        Type::RecordCompose { .. } => unreachable!(
+            "compiler invariant violated: record composition must be normalized before Wasm layout planning"
+        ),
         Type::Qualified(_, _) => unreachable!("unqualified above"),
     }
 }

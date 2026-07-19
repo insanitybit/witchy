@@ -1037,6 +1037,12 @@ fn validate_type(
             args.iter().try_for_each(|a| validate_type(a, known, arities))
         }
         ast::Type::Tuple(ts) => ts.iter().try_for_each(|x| validate_type(x, known, arities)),
+        ast::Type::RecordCompose { base, fields } => {
+            validate_type(base, known, arities)?;
+            fields
+                .iter()
+                .try_for_each(|(_, ty)| validate_type(ty, known, arities))
+        }
         ast::Type::Fn(params, ret, _) => {
             params.iter().try_for_each(|p| validate_type(p, known, arities))?;
             validate_type(ret, known, arities)
@@ -1147,6 +1153,12 @@ fn compiler_syntax_in_ast_type(t: &ast::Type) -> Option<&'static str> {
             .chain(std::iter::once(ret.as_ref()))
             .find_map(compiler_syntax_in_ast_type),
         ast::Type::Dyn(_, args) => args.iter().find_map(compiler_syntax_in_ast_type),
+        ast::Type::RecordCompose { base, fields } => compiler_syntax_in_ast_type(base)
+            .or_else(|| {
+                fields
+                    .iter()
+                    .find_map(|(_, ty)| compiler_syntax_in_ast_type(ty))
+            }),
         ast::Type::Named(name, args) => {
             compiler_syntax_type_name(name).or_else(|| args.iter().find_map(compiler_syntax_in_ast_type))
         }
@@ -1299,6 +1311,9 @@ fn authority_taint_type(
             .iter()
             .chain(std::iter::once(ret.as_ref()))
             .find_map(|t| authority_taint_type(t, defs, seen)),
+        ast::Type::RecordCompose { base, fields } => std::iter::once(base.as_ref())
+            .chain(fields.iter().map(|(_, ty)| ty))
+            .find_map(|ty| authority_taint_type(ty, defs, seen)),
         ast::Type::Named(name, args) => {
             if is_builtin_authority_type_name(name) {
                 return Some(name.clone());
@@ -1339,6 +1354,20 @@ fn reject_structural_authority_type(
         ast::Type::Fn(params, ret, _) => {
             params.iter().try_for_each(|param| reject_structural_authority_type(param, defs))?;
             reject_structural_authority_type(ret, defs)
+        }
+        ast::Type::RecordCompose { base, fields } => {
+            let components = || {
+                std::iter::once(base.as_ref()).chain(fields.iter().map(|(_, ty)| ty))
+            };
+            if let Some(cap) = components()
+                .find_map(|ty| authority_taint_type(ty, defs, &mut HashSet::new()))
+            {
+                return terr(format!(
+                    "anonymous record types cannot contain capability `{cap}` — structural values \
+                     cannot carry authority; name a capability type or pass the capability directly"
+                ));
+            }
+            components().try_for_each(|ty| reject_structural_authority_type(ty, defs))
         }
         ast::Type::Named(name, args) => {
             if let Some(kind) = structural_type_kind(name) {
@@ -1971,6 +2000,9 @@ fn type_mentions_self(t: &ast::Type) -> bool {
         ast::Type::Fn(params, ret, _) => {
             params.iter().any(type_mentions_self) || type_mentions_self(ret)
         }
+        ast::Type::RecordCompose { base, fields } => {
+            type_mentions_self(base) || fields.iter().any(|(_, ty)| type_mentions_self(ty))
+        }
         ast::Type::Qualified(_, inner) => type_mentions_self(inner),
     }
 }
@@ -2162,6 +2194,10 @@ impl<'a> ExistentialCheck<'a> {
             ast::Type::Fn(params, ret, _) => {
                 params.iter().try_for_each(|p| self.visit_type(p))?;
                 self.visit_type(ret)
+            }
+            ast::Type::RecordCompose { base, fields } => {
+                self.visit_type(base)?;
+                fields.iter().try_for_each(|(_, ty)| self.visit_type(ty))
             }
             ast::Type::Named(_, args) => args.iter().try_for_each(|a| self.visit_type(a)),
             ast::Type::Dyn(name, args) => {
@@ -2397,6 +2433,12 @@ fn packed_list_in_type(t: &ast::Type, packed_names: &HashSet<&str>) -> Option<St
             .iter()
             .find_map(|a| packed_list_in_type(a, packed_names))
             .or_else(|| packed_list_in_type(ret, packed_names)),
+        ast::Type::RecordCompose { base, fields } => packed_list_in_type(base, packed_names)
+            .or_else(|| {
+                fields
+                    .iter()
+                    .find_map(|(_, ty)| packed_list_in_type(ty, packed_names))
+            }),
         ast::Type::Qualified(_, inner) => packed_list_in_type(inner, packed_names),
     }
 }
@@ -2476,6 +2518,9 @@ fn transparent_externref_brand_field_cap(
         // (RFC-0081) A dyn type is never a transparent externref brand.
         ast::Type::Named(_, _) | ast::Type::Dyn(_, _) | ast::Type::Tuple(_)
         | ast::Type::Fn(_, _, _) => None,
+        ast::Type::RecordCompose { .. } => unreachable!(
+            "compiler invariant violated: structural record composition reached externref representation selection before records::lower normalized it"
+        ),
     }
 }
 
@@ -2557,6 +2602,12 @@ fn reject_cap_slot_boundary(
             items
                 .iter()
                 .try_for_each(|a| reject_cap_slot_boundary(a, _defs, storage, ctx, position))
+        }
+        ast::Type::RecordCompose { base, fields } => {
+            reject_cap_slot_boundary(base, _defs, storage, ctx, position)?;
+            fields.iter().try_for_each(|(_, ty)| {
+                reject_cap_slot_boundary(ty, _defs, storage, ctx, position)
+            })
         }
         ast::Type::Fn(args, ret, _) => {
             // Function signatures may mention capabilities: the typed closure ABI
@@ -2913,6 +2964,9 @@ fn type_host_taint<'a>(
             .iter()
             .chain(std::iter::once(ret.as_ref()))
             .find_map(|t| type_host_taint(t, types, seen)),
+        ast::Type::RecordCompose { base, fields } => std::iter::once(base.as_ref())
+            .chain(fields.iter().map(|(_, ty)| ty))
+            .find_map(|ty| type_host_taint(ty, types, seen)),
     }
 }
 
@@ -3344,6 +3398,12 @@ fn collect_type_params(t: &ast::Type, acc: &mut Vec<String>) {
         ast::Type::Tuple(ts) => {
             for x in ts {
                 collect_type_params(x, acc);
+            }
+        }
+        ast::Type::RecordCompose { base, fields } => {
+            collect_type_params(base, acc);
+            for (_, ty) in fields {
+                collect_type_params(ty, acc);
             }
         }
         ast::Type::Dyn(_, args) => {
@@ -3779,6 +3839,9 @@ impl Checker {
                     args.iter().map(|a| self.to_ty(a)).collect(),
                 );
             }
+            ast::Type::RecordCompose { .. } => unreachable!(
+                "compiler invariant violated: structural record composition reached type conversion before records::lower normalized it"
+            ),
         };
         if let Some(t) = self.named_builtin(name, args, &mut |c, a| c.to_ty(a)) {
             return t;
@@ -3822,6 +3885,9 @@ impl Checker {
             ast::Type::Dyn(name, args) => Ty::Dyn(
                 name.clone(),
                 args.iter().map(|a| self.to_ty_generic(a, vars)).collect(),
+            ),
+            ast::Type::RecordCompose { .. } => unreachable!(
+                "compiler invariant violated: structural record composition reached generic type conversion before records::lower normalized it"
             ),
             ast::Type::Named(name, args) => {
                 if let Some(t) =

@@ -160,6 +160,12 @@ pub fn call_site_type_source(name: &str, args: &[Type]) -> String {
                     project(item);
                 }
             }
+            Type::RecordCompose { base, fields } => {
+                project(base);
+                for (_, field) in fields {
+                    project(field);
+                }
+            }
             Type::Fn(params, ret, _) => {
                 for param in params {
                     project(param);
@@ -1148,9 +1154,11 @@ pub fn link_with_user_modules_with_mode_and_origins(
                 }).collect();
                 origins.retain_items(&n, &retained);
             }
-            (n, crate::aliases::resolve(crate::consts::inline(m)))
+            crate::aliases::resolve(crate::consts::inline(m))
+                .map(|module| (n, module))
+                .map_err(|message| LinkError { message, location: None })
         })
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
 
     // (RFC-0042) Canonicalize every user TYPE and CONSTRUCTOR name to
     // `module.Name`, per module — the type-side twin of the function
@@ -3079,6 +3087,12 @@ fn check_reserved_type(
         Type::Tuple(items) => {
             for item in items {
                 check_reserved_type(module_name, item, generated_anon_types)?;
+            }
+        }
+        Type::RecordCompose { base, fields } => {
+            check_reserved_type(module_name, base, generated_anon_types)?;
+            for (_, field) in fields {
+                check_reserved_type(module_name, field, generated_anon_types)?;
             }
         }
         Type::Fn(params, ret, _) => {

@@ -12,11 +12,14 @@ use crate::ast::*;
 // foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
 use foldhash::HashMap;
 
-pub(crate) fn normalized_type_for_typeinfo(t: &TypeDef, aliases: &HashMap<String, crate::aliases::Alias>) -> TypeDef {
+pub(crate) fn normalized_type_for_typeinfo(
+    t: &TypeDef,
+    aliases: &HashMap<String, crate::aliases::Alias>,
+) -> Result<TypeDef, String> {
     let mut out = t.clone();
     for variant in &mut out.variants {
         for field in &mut variant.fields {
-            crate::aliases::resolve_type_aliases(field, aliases);
+            crate::aliases::resolve_type_aliases(field, aliases)?;
         }
     }
     if out.params.is_empty() {
@@ -28,7 +31,7 @@ pub(crate) fn normalized_type_for_typeinfo(t: &TypeDef, aliases: &HashMap<String
         }
         out.params = params;
     }
-    out
+    Ok(out)
 }
 
 /// Build normalized `meta.TypeInfo` expressions for every type in `module`.
@@ -37,15 +40,14 @@ pub(crate) fn normalized_type_for_typeinfo(t: &TypeDef, aliases: &HashMap<String
 /// reflected field types and omitted generic parameters are inferred from the
 /// fields, matching the type checker's later view without mutating the source
 /// module or consuming alias declarations.
-pub fn module_type_info_exprs(module: &Module) -> Vec<Expr> {
-    let aliases = crate::aliases::resolved_map(module);
+pub fn module_type_info_exprs(module: &Module) -> Result<Vec<Expr>, String> {
+    let aliases = crate::aliases::resolved_map(module)?;
     module
         .items
         .iter()
         .filter_map(|it| match it {
             Item::Type(t) => {
-                let normalized = normalized_type_for_typeinfo(t, &aliases);
-                Some(type_info_expr(&normalized))
+                Some(normalized_type_for_typeinfo(t, &aliases).map(|ty| type_info_expr(&ty)))
             }
             _ => None,
         })
@@ -126,6 +128,10 @@ fn type_expr(t: &Type) -> Expr {
         // Unobservable from runnable programs — dyn-carrying modules fail the
         // typeck feature gate before either backend lowers them.
         Type::Dyn(..) => Expr::Ctor {
+            name: "meta.TNamed".into(),
+            args: vec![s(&crate::format::type_str(t)), Expr::List(Vec::new())],
+        },
+        Type::RecordCompose { .. } => Expr::Ctor {
             name: "meta.TNamed".into(),
             args: vec![s(&crate::format::type_str(t)), Expr::List(Vec::new())],
         },

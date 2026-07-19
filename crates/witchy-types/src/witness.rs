@@ -729,6 +729,9 @@ fn type_key(ty: &Type) -> String {
             type_key(result)
         ),
         Type::Qualified(qualifier, inner) => format!("{qualifier:?}:{}", type_key(inner)),
+        Type::RecordCompose { .. } => unreachable!(
+            "compiler invariant violated: structural record composition reached witness type keys before records::lower normalized it"
+        ),
     }
 }
 
@@ -745,6 +748,10 @@ fn has_free_type_variable(ty: &Type) -> bool {
             params.iter().any(has_free_type_variable) || has_free_type_variable(result)
         }
         Type::Qualified(_, inner) => has_free_type_variable(inner),
+        Type::RecordCompose { base, fields } => {
+            has_free_type_variable(base)
+                || fields.iter().any(|(_, ty)| has_free_type_variable(ty))
+        }
     }
 }
 

@@ -163,7 +163,7 @@ fn expand_with_item_limit_and_origins(
                 ty: None,
                 name: "module_types".into(),
                 mutable: false,
-                value: Expr::List(witchy_syntax::reflect::module_type_info_exprs(module)),
+                value: Expr::List(witchy_syntax::reflect::module_type_info_exprs(module)?),
             },
         );
         if let Some(first) = body.lines.first().copied() {

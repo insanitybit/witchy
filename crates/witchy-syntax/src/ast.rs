@@ -377,6 +377,14 @@ impl Convention {
 pub enum Type {
     Named(String, Vec<Type>),
     Tuple(Vec<Type>),
+    /// (RFC-0098) A type-position structural-record spread retained until
+    /// aliases and generic arguments are resolved. Alias normalization replaces
+    /// this with the ordinary shape-keyed [`Type::Named`] anonymous record; it
+    /// must never reach type checking or either runtime backend.
+    RecordCompose {
+        base: Box<Type>,
+        fields: Vec<(String, Type)>,
+    },
     /// A function type: parameter types, return type, and one convention per
     /// parameter. An empty convention vector is tolerated only for legacy
     /// compiler-generated values and means all-default `let` parameters.
@@ -863,6 +871,12 @@ pub fn collect_type_names<S: Extend<String>>(t: &Type, out: &mut S) {
                 collect_type_names(t, out);
             }
         }
+        Type::RecordCompose { base, fields } => {
+            collect_type_names(base, out);
+            for (_, field) in fields {
+                collect_type_names(field, out);
+            }
+        }
         Type::Fn(params, ret, _) => {
             for p in params {
                 collect_type_names(p, out);
@@ -876,6 +890,84 @@ pub fn collect_type_names<S: Extend<String>>(t: &Type, out: &mut S) {
                 collect_type_names(a, out);
             }
         }
+    }
+}
+
+/// Canonical compiler-private name of an anonymous record field set. Field
+/// names must already be sorted. The field types remain ordinary generic
+/// arguments on the returned head.
+pub fn anon_record_type_name(fields: &[String]) -> String {
+    let mut suffix = format!("{:010}", fields.len());
+    for field in fields {
+        suffix.push_str(&format!("{:010}", field.len()));
+        for byte in field.as_bytes() {
+            suffix.push_str(&format!("{byte:03}"));
+        }
+    }
+    format!("__anon{suffix}")
+}
+
+/// Decode the canonical anonymous-record head into its sorted field names.
+/// Malformed compiler-private names fail closed.
+pub fn anon_record_field_names(name: &str) -> Option<Vec<String>> {
+    fn fixed_width(s: &str, pos: &mut usize, width: usize) -> Option<usize> {
+        let end = pos.checked_add(width)?;
+        let part = s.get(*pos..end)?;
+        if !part.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        *pos = end;
+        part.parse().ok()
+    }
+
+    let mut pos = "__anon".len();
+    let rest = name.strip_prefix("__anon")?;
+    if rest.len() < 10 {
+        return None;
+    }
+    let count = fixed_width(name, &mut pos, 10)?;
+    let mut fields = Vec::with_capacity(count);
+    for _ in 0..count {
+        let len = fixed_width(name, &mut pos, 10)?;
+        let mut bytes = Vec::with_capacity(len);
+        for _ in 0..len {
+            let byte = fixed_width(name, &mut pos, 3)?;
+            if byte > u8::MAX as usize {
+                return None;
+            }
+            bytes.push(byte as u8);
+        }
+        fields.push(String::from_utf8(bytes).ok()?);
+    }
+    if pos == name.len() { Some(fields) } else { None }
+}
+
+/// Generic compiler-owned record declaration backing one anonymous shape.
+/// Both direct parser synthesis and post-alias RFC-0098 composition use this
+/// constructor so the identity, field order, and reflection contract cannot
+/// drift.
+pub fn synthetic_anon_record_def(fields: &[String]) -> TypeDef {
+    let name = anon_record_type_name(fields);
+    let params: Vec<String> = (0..fields.len()).map(|i| format!("t{i}")).collect();
+    TypeDef {
+        name: name.clone(),
+        params: params.clone(),
+        variants: vec![Variant {
+            name,
+            line: u32::MAX,
+            fields: params
+                .into_iter()
+                .map(|param| Type::Named(param, Vec::new()))
+                .collect(),
+            field_names: fields.to_vec(),
+            field_lines: vec![u32::MAX; fields.len()],
+        }],
+        derives: vec!["Reflect".into()],
+        sealed: false,
+        is_capability: false,
+        grantable: false,
+        packed: false,
+        partial_eq_derived: false,
     }
 }
 
@@ -944,6 +1036,12 @@ pub fn collect_type_vars(t: &Type, out: &mut Vec<String>) {
         Type::Tuple(ts) => {
             for t in ts {
                 collect_type_vars(t, out);
+            }
+        }
+        Type::RecordCompose { base, fields } => {
+            collect_type_vars(base, out);
+            for (_, field) in fields {
+                collect_type_vars(field, out);
             }
         }
         Type::Fn(params, ret, _) => {

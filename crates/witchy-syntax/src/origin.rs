@@ -344,6 +344,14 @@ fn record_type(table: &mut OriginTable, module: &str, item: u32, path: &[u32], t
         Type::Named(_, args) | Type::Dyn(_, args) | Type::Tuple(args) => {
             for ty in args { let child = child_path(path, &mut next); record_type(table, module, item, &child, ty, origin); }
         }
+        Type::RecordCompose { base, fields } => {
+            let child = child_path(path, &mut next);
+            record_type(table, module, item, &child, base, origin);
+            for (_, ty) in fields {
+                let child = child_path(path, &mut next);
+                record_type(table, module, item, &child, ty, origin);
+            }
+        }
         Type::Fn(params, ret, _) => {
             for ty in params { let child = child_path(path, &mut next); record_type(table, module, item, &child, ty, origin); }
             let child = child_path(path, &mut next); record_type(table, module, item, &child, ret, origin);

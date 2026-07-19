@@ -606,6 +606,20 @@ fn f():
         };
         assert!(matches!(&record.ty, Type::Named(name, _) if name.starts_with("__anon")));
 
+        let compositions = parse_module(
+            "fn f():\n    quote type:\n        .{..Base, y: String}\n",
+        )
+        .expect("structural record composition quote should parse");
+        let [composition] = compositions.compiler_type_syntax.as_slice() else {
+            panic!("expected one record composition type payload");
+        };
+        assert!(matches!(
+            &composition.ty,
+            Type::RecordCompose { base, fields }
+                if base.as_ref() == &Type::Named("Base".into(), vec![])
+                    && fields == &vec![("y".into(), Type::Named("String".into(), vec![]))]
+        ));
+
         let unions = parse_module("fn f():\n    quote type:\n        .[Ready | Failed(String)]\n")
             .expect("anonymous union type quote should parse");
         let [union] = unions.compiler_type_syntax.as_slice() else {
