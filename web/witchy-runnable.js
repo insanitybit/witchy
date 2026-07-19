@@ -19,6 +19,12 @@
 
 import { runWitchy } from "./witchy-host.js";
 
+function formatOptimizationStats(stats) {
+  const entries = Object.entries(stats || {});
+  if (entries.length === 0) return "";
+  return ["compiled resource counters", ...entries.map(([name, value]) => `${name} ${value}`)].join("\n");
+}
+
 // A `<code>` element in either DOM flavour (FakeElement uses `.el`, the browser `.tagName`).
 function isCode(n) {
   const tag = n.el || (typeof n.tagName === "string" ? n.tagName.toLowerCase() : "");
@@ -80,7 +86,7 @@ function buildCopyButton(doc, getText) {
  * @param {object} opts
  * @param {function} opts.loadCompiler  async `() => wasmExports` — the instantiated
  *   `web/witchy.wasm` exports; called lazily on the first Run and cached per cell.
- * @returns {{ element, codePre, runButton, output, run }}
+ * @returns {{ element, editor, runButton, output, statsOutput, run }}
  */
 export function buildRunnableCell(doc, source, opts = {}) {
   if (typeof opts.loadCompiler !== "function") {
@@ -108,6 +114,8 @@ export function buildRunnableCell(doc, source, opts = {}) {
   runButton.textContent = "Run";
   const output = doc.createElement("pre");
   output.setAttribute("class", "witchy-output");
+  const statsOutput = doc.createElement("pre");
+  statsOutput.setAttribute("class", "witchy-stats");
 
   const run = async () => {
     // Run the CURRENT editor contents (the reader's edits), falling back to the seed source.
@@ -115,12 +123,19 @@ export function buildRunnableCell(doc, source, opts = {}) {
     runButton.textContent = "Running…";
     try {
       const wasm = await compiler();
-      const { ok, text } = await runWitchy(wasm, src);
+      const { ok, text, stats } = await runWitchy(wasm, src);
       output.textContent = text || (ok ? "(no output)" : "(empty error)");
       output.setAttribute("class", ok ? "witchy-output ok" : "witchy-output err");
+      // `mode opt` makes resource behavior part of the checked source contract.
+      // Surface the compiled module's exact counters for those examples while
+      // keeping ordinary introductory cells focused on program output.
+      statsOutput.textContent = /^\s*mode\s+opt\s*$/m.test(src)
+        ? formatOptimizationStats(stats)
+        : "";
     } catch (e) {
       output.textContent = "playground error: " + ((e && e.message) || e);
       output.setAttribute("class", "witchy-output err");
+      statsOutput.textContent = "";
     }
     runButton.textContent = "Run";
   };
@@ -171,9 +186,10 @@ export function buildRunnableCell(doc, source, opts = {}) {
   element.appendChild(editable);
   element.appendChild(runButton);
   element.appendChild(output);
+  element.appendChild(statsOutput);
   // A copy affordance over the code — reads the live editor value at click time.
   element.appendChild(buildCopyButton(doc, () => (typeof editor.value === "string" ? editor.value : source)));
-  return { element, editor, runButton, output, run };
+  return { element, editor, runButton, output, statsOutput, run };
 }
 
 /**

@@ -82,6 +82,7 @@ try {
   await cells[0].run();
   ok(cells[0].output.textContent === "hello from a runnable cell", "Run compiles + runs the code and shows its output");
   ok((cells[0].output.getAttribute("class") || "").includes("ok"), "a successful run is marked ok");
+  ok(cells[0].statsOutput.textContent === "", "ordinary cells do not show optimization counters");
 
   // Editing the textarea and re-running runs the READER'S edited source, not the seed.
   cells[0].editor.value = 'fn main(console: Console):\n    console.print("the reader edited this")';
@@ -99,7 +100,34 @@ try {
   ok((badCells[0].output.getAttribute("class") || "").includes("err"), "a compile error marks the cell err");
   ok(badCells[0].output.textContent.length > 0, "the error message is shown");
 
-  // 4. A non-witchy code block is left alone.
+  // 4. RFC-0089: the browser reads the same compiled-Wasm resource counters as
+  // native `witchy stats`. A 50,000-transition FIP kernel performs only its four
+  // fixed setup allocations and no per-transition reuse/free/rewind work.
+  const fip = pageWith(`mode opt
+
+type State:
+    count: Int
+
+fn run(own state: unique State, n: Int) -> unique State:
+    if n == 0:
+        return state
+    state.count = state.count + 1
+    run(state, n - 1)
+
+fn main(console: Console):
+    let done = run(State(0), 50000)
+    console.print("\${done.count}")`);
+  const fipCells = enhanceRunnableCells(fip, { document: doc, loadCompiler });
+  await fipCells[0].run();
+  ok(fipCells[0].output.textContent === "50000", "the browser completes 50,000 FIP transitions");
+  const proof = fipCells[0].statsOutput.textContent;
+  ok(proof.includes("rc_alloc_calls 4"), "the browser reports four fixed RC allocations");
+  ok(proof.includes("bump_alloc_calls 4"), "the browser reports four fixed bump allocations");
+  ok(proof.includes("rc_reuse_calls 0"), "FIP depth adds no free-list reuse");
+  ok(proof.includes("rc_free_calls 0"), "FIP depth adds no frees");
+  ok(proof.includes("region_rewind_calls 0"), "FIP depth adds no region rewinds");
+
+  // 5. A non-witchy code block is left alone.
   const other = new FakeElement("div");
   const pre = new FakeElement("pre");
   const code = new FakeElement("code");

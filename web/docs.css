@@ -125,6 +125,8 @@ body {
 .witchy-output { margin: 0; padding: 0.75rem; white-space: pre-wrap; background: #17171f; font-family: ui-monospace, monospace; font-size: 0.85rem; }
 .witchy-output.ok { background: #16301c; }
 .witchy-output.err { background: #3a1a1a; }
+.witchy-stats { margin: 0; padding: 0.75rem; white-space: pre-wrap; background: #111822; color: #b9d7ff; border-top: 1px solid #2a2a3a; font-family: ui-monospace, monospace; font-size: 0.82rem; }
+.witchy-stats:empty { display: none; }
 
 /* A NON-runnable witchy example (a capability demo): highlighted, read-only — no Run cell. */
 .witchy-static { position: relative; margin: 1.25rem 0; padding: 0.75rem; border: 1px solid #2a2a3a; border-radius: 8px; background: #1e1e2e; overflow-x: auto; }

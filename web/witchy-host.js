@@ -32,8 +32,31 @@ export function compile(wasm, source) {
   return payload;
 }
 
+// RFC-0089's resource proof is already embedded in every heap-using compiled
+// module as exported monotonic globals. Native `witchy stats` reads the same
+// globals through wasmtime; the browser can read them directly from the
+// WebAssembly instance. Keep the public names independent of the compiler's
+// reserved export spellings so the book/UI never has to know that ABI detail.
+const OPTIMIZATION_COUNTER_EXPORTS = Object.freeze([
+  ["rc_alloc_calls", "__witchy_rc_alloc_calls"],
+  ["bump_alloc_calls", "__witchy_bump_alloc_calls"],
+  ["rc_reuse_calls", "__witchy_rc_reuse_calls"],
+  ["rc_free_calls", "__witchy_rc_free_calls"],
+  ["region_rewind_calls", "__witchy_region_rewind_calls"],
+]);
+
+export function readOptimizationStats(exports) {
+  const stats = {};
+  for (const [name, exportName] of OPTIMIZATION_COUNTER_EXPORTS) {
+    const counter = exports[exportName];
+    if (counter != null && "value" in counter) stats[name] = BigInt(counter.value);
+  }
+  return stats;
+}
+
 // Compile + instantiate + run `source` on the browser's own engine; return
-// `{ ok, text }` (text is the joined output, or the error / trap message).
+// `{ ok, text, stats }` (text is the joined output, or the error / trap message;
+// stats are the compiled module's deterministic RFC-0089 resource counters).
 export async function runWitchy(wasm, source) {
   // Fresh views — any lib call that allocates may grow (and detach) the buffer.
   const libU8 = () => new Uint8Array(wasm.memory.buffer);
@@ -165,13 +188,15 @@ export async function runWitchy(wasm, source) {
     },
   });
 
+  let instance = null;
   try {
-    const { instance } = await WebAssembly.instantiate(binary, { witchy });
+    ({ instance } = await WebAssembly.instantiate(binary, { witchy }));
     innerMem = instance.exports.memory;
     instance.exports.run();
   } catch (e) {
     const msg = `runtime error: ${String((e && e.message) || e)}`;
-    return { ok: false, text: out.concat(msg).join("\n") };
+    const stats = instance == null ? {} : readOptimizationStats(instance.exports);
+    return { ok: false, text: out.concat(msg).join("\n"), stats };
   }
-  return { ok: true, text: out.join("\n") };
+  return { ok: true, text: out.join("\n"), stats: readOptimizationStats(instance.exports) };
 }

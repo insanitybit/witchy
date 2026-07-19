@@ -41,4 +41,5 @@
 [Appendix: Operators and Keywords](appendix-operators.md)
 [Appendix: Recipes](appendix-recipes.md)
 [Appendix: Performance — the Ownership Knobs](appendix-performance.md)
+  - [Functional-in-Place State Kernels](functional-in-place.md)
 [Appendix: The Standard Library](appendix-stdlib.md)
