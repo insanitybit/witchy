@@ -13,6 +13,7 @@ pub mod loans;
 pub mod existential;
 pub mod migration;
 mod record_projection;
+pub mod pipeline;
 pub mod runtime_type;
 pub mod storage;
 pub mod traits;

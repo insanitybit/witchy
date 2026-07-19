@@ -166,6 +166,15 @@ missing lowerings entirely (BUG-434), and the `lines:[0]` diagnostic class
 (BUG-312, 327). The RFC-0064 trio (209/213/242) lands as part of this — the
 checks finally have a place to live that nothing bypasses.
 
+Implementation tracking: the first slice introduces a private `CheckedModule`
+proof wrapper and shared `link_checked` entry points, and moves one production
+runtime path plus the embedded `pm` and `coven` compiler paths onto that
+boundary. Their codegen inputs now have to come from a `CheckedModule`; callers
+cannot accidentally omit the check while reconstructing the pipeline. This
+slice intentionally preserves the existing link-then-check order. D6 remains
+incomplete until the frontend checks the source AST before destructive lowering
+and routes comptime-emitted nodes back through that same checked boundary.
+
 ### D7 — Identity fails closed
 
 RFC-0066 is accepted and implemented for 0.1: promote (and yank /

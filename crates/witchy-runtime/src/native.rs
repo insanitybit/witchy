@@ -719,9 +719,8 @@ mod compiler {
             }
         }
 
-        let linked = witchy_syntax::linker::link(modules, "main", no_comptime_expand)
+        witchy_types::pipeline::link_checked(modules, "main", no_comptime_expand)
             .map_err(|e| e.to_string())?;
-        witchy_types::typeck::check(&linked).map_err(|e| e.to_string())?;
         // The public source-string footprint is the submitted module's footprint,
         // not the linked program's transitive std footprint. Linking/type-checking
         // above is the validity gate; analyzing `entry` preserves the established

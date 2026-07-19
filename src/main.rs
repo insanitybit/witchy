@@ -201,7 +201,7 @@ fn run_embedded_pm(raw: Vec<String>) -> ! {
             }
             modules.push((name, module));
         }
-        pipeline::link(modules, "pm").map_err(|e| e.to_string())
+        pipeline::link_checked(modules, "pm").map_err(|e| e.to_string())
     });
     let wasm = match wasm {
         Ok(bytes) => bytes,
@@ -821,7 +821,7 @@ fn main() -> wasmtime::Result<()> {
                 }
                 modules.push((name, module));
             }
-            pipeline::link(modules, "coven").map_err(|e| e.to_string())
+            pipeline::link_checked(modules, "coven").map_err(|e| e.to_string())
         });
         let wasm = match wasm_result {
             Ok(bytes) => bytes,
@@ -2915,7 +2915,7 @@ fn active_opt_key() -> String {
 /// changes no authority decision.
 fn embedded_wasm_cached(
     name: &str,
-    link: impl FnOnce() -> Result<ast::Module, String>,
+    link: impl FnOnce() -> Result<pipeline::CheckedModule, String>,
 ) -> Result<Vec<u8>, String> {
     let key = {
         let mut h = blake3::Hasher::new();
@@ -2941,9 +2941,8 @@ fn embedded_wasm_cached(
             }
         }
     }
-    let module = link()?;
-    typeck::check(&module).map_err(|e| e.to_string())?;
-    let wasm = match codegen::compile_module_binary(&module) {
+    let checked = link()?;
+    let wasm = match codegen::compile_module_binary(checked.module()) {
         codegen::LoweringOutcome::Lowered(bytes) => bytes,
         codegen::LoweringOutcome::Unsupported(reason) => {
             return Err(format!("the embedded {name} {reason}"));
