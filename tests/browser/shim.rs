@@ -152,6 +152,37 @@ fn docs_bundle_asset_urls_resolve_against_the_bundle_root() {
     assert!(stdout.contains("DOCS-ASSET-URL OK"), "docs asset-url test did not report success:\n{stdout}");
 }
 
+/// A wasm asset fetch that gets an HTML 404/index-fallback page must fail LOUDLY. Guards the
+/// bug where a bundle served without `witchy.wasm` (a `--allow-missing-compiler` / `just book`
+/// build) surfaced only the raw engine throw — `WebAssembly.instantiate(): expected magic word
+/// 00 61 73 6d, found 3c 21 44 4f` (`<!DO…`, the server's HTML error page). The committed Node
+/// driver (`web/wasm-fetch.test.mjs`) unit-tests the shared checked fetch (`web/wasm-fetch.js`)
+/// used by the playground (`web/playground.js`) and the docs boot (`web/docs-boot.js`).
+#[test]
+fn wasm_asset_fetch_fails_loudly_on_an_html_response() {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let driver = manifest.join("web/wasm-fetch.test.mjs");
+    assert!(driver.exists(), "the wasm-fetch test must exist at {}", driver.display());
+
+    let out = Command::new("node")
+        .arg(&driver)
+        .current_dir(manifest)
+        .output()
+        .expect("spawn node wasm-fetch test");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the wasm-fetch test failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("WASM-FETCH OK"), "wasm-fetch test did not report success:\n{stdout}");
+}
+
 /// RFC-0041 Phase 2: the RUNNABLE CELL, end to end and headless. The committed Node driver
 /// (`web/witchy-runtime/witchy-runnable.test.mjs`) builds a fake DOM with a
 /// `<pre><code class="language-witchy">` block (what `markdown.to_vnode` emits), enhances it

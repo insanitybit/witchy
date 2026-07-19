@@ -7,6 +7,7 @@
 import { mount } from "./glamour-dom.mjs";
 import { runnableSlot, staticSlot } from "./witchy-runnable.js";
 import { assetUrl, contentUrl } from "./docs-asset-url.js";
+import { fetchWasm } from "./wasm-fetch.js";
 import { highlightWitchy, highlightShell, highlightToml } from "./witchy-highlight.js";
 
 // Every bundle asset resolves against THIS module's URL — the bundle root — never the current
@@ -16,12 +17,15 @@ import { highlightWitchy, highlightShell, highlightToml } from "./witchy-highlig
 const here = import.meta.url;
 
 // The browser compiler (`witchy.wasm`) is fetched + instantiated ONCE, lazily, on the first Run
-// on the page, then shared by every cell (the browser HTTP-caches the 4 MB module).
+// on the page, then shared by every cell (the browser HTTP-caches the 4 MB module). `fetchWasm`
+// fails LOUDLY when the server answers with an HTML 404/index page instead of wasm — the mark
+// of a bundle built WITHOUT the browser compiler (`--allow-missing-compiler` / `just book`).
+const COMPILER_HINT =
+  "This bundle was built without the browser compiler; rebuild the complete bundle with `just book-serve` (or ./scripts/build-docs.sh dist).";
 const loadCompiler = (() => {
   let p = null;
   return () =>
-    (p ||= fetch(assetUrl("witchy.wasm", here))
-      .then((r) => r.arrayBuffer())
+    (p ||= fetchWasm(assetUrl("witchy.wasm", here), { hint: COMPILER_HINT })
       .then((b) => WebAssembly.instantiate(b, {}))
       .then(({ instance }) => instance.exports));
 })();
@@ -47,7 +51,9 @@ const glamourAppSlot = (doc, name) => {
   }
   (async () => {
     try {
-      const bytes = await fetch(assetUrl(name + ".wasm", here)).then((r) => r.arrayBuffer());
+      const bytes = await fetchWasm(assetUrl(name + ".wasm", here), {
+        hint: "Rebuild the bundle with `just book-serve` (or ./scripts/build-docs.sh dist).",
+      });
       await mount(bytes, host, {
         initialModel: cfg.initialModel,
         // NO `fetch` (network denied). A timer is safe and enables `after` Cmds.
@@ -86,7 +92,9 @@ const onPopState = (fire) => {
   });
 };
 
-const wasm = await fetch(assetUrl("docs.wasm", here)).then((r) => r.arrayBuffer());
+const wasm = await fetchWasm(assetUrl("docs.wasm", here), {
+  hint: "Rebuild the bundle with `just book-serve` (or ./scripts/build-docs.sh dist).",
+});
 await mount(wasm, document.getElementById("app"), {
   initialModel: { route: hashPath(), summary: "", content: "" },
   fetch: contentFetch,

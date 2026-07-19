@@ -4,6 +4,7 @@
 // the shared `web/witchy-highlight.js`. No server: the compiler runs in your browser.
 import { runWitchy } from "./witchy-host.js";
 import { highlightWitchy } from "./witchy-highlight.js";
+import { fetchWasm } from "./wasm-fetch.js";
 
 // The example programs — each a complete, CURRENT witchy program (compile-checked by
 // `playground-examples.test.mjs`). "Capabilities" is INTENTIONALLY a compile error: that is the
@@ -94,8 +95,12 @@ fn main(console: Console, dir: Dir[Read]):
 
 let wasm = null;
 async function loadCompiler() {
-  const resp = await fetch("witchy.wasm");
-  const bytes = await resp.arrayBuffer();
+  // fetchWasm fails LOUDLY on an HTML 404/index-fallback response — without the
+  // check, the only signal is the engine's raw "expected magic word 00 61 73 6d,
+  // found 3c 21 44 4f" (`<!DO…`, the server's HTML error page).
+  const bytes = await fetchWasm("witchy.wasm", {
+    hint: "Build it with ./scripts/build-playground.sh, then serve the web/ directory over HTTP.",
+  });
   const { instance } = await WebAssembly.instantiate(bytes, {});
   wasm = instance.exports;
 }
@@ -174,9 +179,7 @@ function init() {
       runBtn.textContent = "Run  (⌘/Ctrl+Enter)";
     })
     .catch((e) => {
-      output.textContent =
-        "failed to load witchy.wasm — run ./scripts/build-playground.sh and serve over HTTP\n\n" +
-        ((e && e.message) || e);
+      output.textContent = "failed to load witchy.wasm\n\n" + ((e && e.message) || e);
       output.className = "err";
     });
 }
