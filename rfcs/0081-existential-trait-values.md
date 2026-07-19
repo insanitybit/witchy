@@ -1,10 +1,18 @@
 ---
 rfc: 0081
 title: Existential trait values and dynamic dispatch
-status: proposed
+status: implemented
 created: 2026-07-12
+implemented: 2026-07-18
 superseded-by:
-tracking: "Implementation recovery stack complete and queued in dependency order: resolved trait identity and safety; deterministic witnesses and typed payload boxes; interpreter and compiled-Wasm construction/dispatch; bare, let, var, and own receiver conventions; nested var write-back and move/alias safety; authenticated supertrait upcasts; operation-absence, footprint, normal/opt parity, tooling, and executable documentation evidence. Status remains proposed until every dependent slice lands on master through the serialized full gate."
+tracking: >
+  Implemented on master at 111b4236 through the serialized full gate on
+  2026-07-18. The landed contract includes resolved trait identity and safety;
+  deterministic witnesses and typed payload boxes; interpreter and compiled-Wasm
+  construction and dispatch; bare, let, var, and own receiver conventions;
+  nested var write-back and move/alias safety; authenticated supertrait upcasts;
+  operation-absence, footprint, normal/opt parity, tooling, diagnostics, and
+  executable documentation evidence. See 0081-acceptance-ledger.md.
 related:
   - "0005 (capability-safe aggregate representation and typed callable ABI)"
   - "0038 (grantable capabilities and transitive authority checks)"
@@ -249,8 +257,8 @@ dispatch adds no transaction or rollback semantics.
 
 ## Implementation plan
 
-Implementation proceeds as small vertical slices, but the RFC remains proposed
-until the whole public contract is complete.
+Implementation landed as the following vertical slices; the acceptance ledger
+records the checked-in evidence and the serialized landing gate.
 
 1. **Type identity and safety.** Add contextual `dyn` parsing, resolved
    existential type identity, object-safety diagnostics, coherent concrete-to-dyn

@@ -24,7 +24,7 @@ queue-settled master commit that passes every gate below.
 | Backend parity | FAIL | The exact candidate passed the landing gate's browser parity check (123 runnable blocks, zero divergence), but its serialized full release gate is red and the private candidate workflow has not run. |
 | Remote Coven lifecycle | EXCLUDED | Existing implementation remains available but is not part of the 0.1 installability promise. |
 | Grimoire/Coven integrated install ([RFC-0095](rfcs/0095-grimoire-trusted-application-installation.md)) | EXCLUDED | Proposed behavior is not independently implemented and proven. |
-| Proposed existential / `Dynamic` / lexical extensions | EXCLUDED | No proposed semantic is advertised by this release. |
+| Post-candidate existential / `Dynamic` / lexical extensions | EXCLUDED | RFC-0081 is implemented on current master, but it and other semantic additions after the pinned packaged-evidence commit are not advertised by this release snapshot. |
 
 ## Platform matrix
 
@@ -48,10 +48,11 @@ queue-settled master commit that passes every gate below.
   landing gate. Publication remains blocked until `./scripts/check.sh --full`
   passes on the exact final master commit.
 - **BLOCKER — merge queue:** the repository still has a large active queue and
-  the coordinator is gating it serially. Proposed semantic work, including
+  the coordinator is gating it serially. Semantic work after the pinned
+  packaged-evidence commit, including the now-implemented
   [RFC-0081 existential trait values](rfcs/0081-existential-trait-values.md), is
-  excluded from this release-engineering scope, but the final release procedure
-  requires an empty queue and no pending release blocker.
+  excluded from this release snapshot, but the final release procedure requires
+  an empty queue and no pending release blocker.
 - **BLOCKER — native artifacts:** all three native workflow jobs and canonical
   archive smoke tests must pass. GitHub documents `macos-15-intel` as a
   standard Intel runner label for private repositories, but this repository has
