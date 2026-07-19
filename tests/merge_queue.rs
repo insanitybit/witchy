@@ -1520,15 +1520,17 @@ fn queued_work_preempts_an_idle_prewarm_process_group() {
     fs::create_dir(&bin).expect("create fake prewarm bin");
     let started = fixture._temp.path().join("prewarm-started");
     let cancelled = fixture._temp.path().join("prewarm-cancelled");
+    let cargo_env = fixture._temp.path().join("prewarm-cargo-env");
     let gate_ran = fixture._temp.path().join("gate-ran");
     let gate_proceed = fixture._temp.path().join("gate-proceed");
     let cargo = bin.join("cargo");
     fs::write(
         &cargo,
         format!(
-            "#!/bin/sh\nif [ ! -e \"{}\" ]; then\n  trap 'printf cancelled >\"{}\"; exit 143' TERM INT\n  printf started >\"{}\"\n  while :; do /bin/sleep 1; done\nfi\nexit 0\n",
+            "#!/bin/sh\nif [ ! -e \"{}\" ]; then\n  trap 'printf cancelled >\"{}\"; exit 143' TERM INT\n  printf '%s|%s|%s' \"${{CARGO_INCREMENTAL-unset}}\" \"${{RUSTC_WRAPPER-unset}}\" \"${{CARGO_BUILD_RUSTC_WRAPPER-unset}}\" >\"{}\"\n  printf started >\"{}\"\n  while :; do /bin/sleep 1; done\nfi\nexit 0\n",
             started.display(),
             cancelled.display(),
+            cargo_env.display(),
             started.display(),
         ),
     )
@@ -1567,6 +1569,9 @@ fn queued_work_preempts_an_idle_prewarm_process_group() {
         .env("MERGE_QUEUE_ALLOW_MERGE", "1")
         .env("MERGE_QUEUE_POLL_INTERVAL", "1")
         .env("MERGE_QUEUE_RETRY_INTERVAL", "1")
+        .env("CARGO_INCREMENTAL", "1")
+        .env("RUSTC_WRAPPER", "forbidden-wrapper")
+        .env("CARGO_BUILD_RUSTC_WRAPPER", "forbidden-wrapper")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .process_group(0)
@@ -1580,6 +1585,11 @@ fn queued_work_preempts_an_idle_prewarm_process_group() {
         thread::sleep(Duration::from_millis(25));
     }
     assert!(started.exists(), "coordinator never entered prewarm");
+    assert_eq!(
+        fs::read_to_string(&cargo_env).expect("read prewarm Cargo environment"),
+        "0||",
+        "idle prewarm did not match the full gate Cargo profile",
+    );
     assert!(
         fixture.state.join("gate.lock").exists(),
         "prewarm did not retain the serialized gate lock"
@@ -2424,7 +2434,15 @@ fn prepare_rebaselines_stale_generated_snapshots_onto_the_gated_sha() {
     let bin = fixture._temp.path().join("regen-bin");
     fs::create_dir(&bin).expect("create fake cargo dir");
     let cargo = bin.join("cargo");
-    fs::write(&cargo, "#!/bin/sh\nexit 0\n").expect("write fake cargo");
+    let incremental = fixture._temp.path().join("regen-cargo-incremental");
+    fs::write(
+        &cargo,
+        format!(
+            "#!/bin/sh\nprintf '%s' \"${{CARGO_INCREMENTAL-unset}}\" >{}\nexit 0\n",
+            incremental.display(),
+        ),
+    )
+    .expect("write fake cargo");
     fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755)).expect("chmod fake cargo");
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
 
@@ -2452,6 +2470,11 @@ fn prepare_rebaselines_stale_generated_snapshots_onto_the_gated_sha() {
             .iter()
             .any(|event| event["event"] == "merged" && event["branch"] == "census-branch"),
         "amended candidate did not land: {journal:?}",
+    );
+    assert_eq!(
+        fs::read_to_string(&incremental).expect("read preparation Cargo profile"),
+        "0",
+        "preparation did not match the full gate's incremental setting",
     );
     assert_eq!(
         git(&root, &["show", "master:rfcs/0087-migration-census.tsv"]),

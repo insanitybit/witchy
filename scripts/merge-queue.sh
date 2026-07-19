@@ -1281,8 +1281,10 @@ submission_is_represented() { # submission_is_represented <submitted-sha>
 #     (same set as the gate-scope classifier) and does not touch the census
 #     snapshot: a docs-only gate must stay seconds, not pay a build. For code
 #     diffs the `cargo build` here is not wasted work — nextest needs the same
-#     dev-profile `witchy` bin artifacts inside the gate, so the cost mostly
-#     MOVES into prepare rather than adding to the green-gate total.
+#     dev-profile `witchy` bin artifacts inside the gate. Keep Cargo's
+#     incremental setting identical to run_gate as well; changing that flag in
+#     one shared target invalidates the preparation artifacts and forces the
+#     full gate to rebuild every workspace crate.
 rebaseline_generated_snapshots() { # rebaseline_generated_snapshots <base> <branch> <change-id> <attempt-id>
     local rb_base="$1" rb_branch="$2" rb_change_id="$3" rb_attempt_id="$4"
     local pre_diff unsafe tmp files=""
@@ -1301,7 +1303,7 @@ rebaseline_generated_snapshots() { # rebaseline_generated_snapshots <base> <bran
     # Clear the globally configured sccache wrapper exactly like run_gate does:
     # a detached daemon's sandbox EPERMs it, and a silently failing build here
     # would neuter the whole re-baseline path for daemon coordinators.
-    if ! ( cd "$gate_wt" && env RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= \
+    if ! ( cd "$gate_wt" && env CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= \
         cargo build --bin witchy --bin rfc0087-census ) >/dev/null 2>&1; then
         note "rebaseline: generator build failed; skipping regen (the gate adjudicates)"
         return 0
@@ -2046,8 +2048,11 @@ prewarm_gate() {
     # recheck must preempt it instead of waiting behind a cold multi-profile
     # Cargo build. Put the complete tree in its own process group, watch the
     # queue, and terminate only the prewarm process group we started.
+    # Match run_gate once for every Cargo phase below. Detached daemons cannot
+    # use the checkout's configured compiler wrapper.
     set -m
     ( cd "$gate_wt" \
+        && export CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= \
         && cargo build --workspace >/dev/null 2>&1 \
         && cargo test --workspace --no-run >/dev/null 2>&1 \
         && { if [ -n "$tc_bin" ]; then
