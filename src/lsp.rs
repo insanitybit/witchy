@@ -416,6 +416,10 @@ fn hover_response(docs: &HashMap<String, String>, params: &Value) -> Value {
     // document-only, leaving std methods to the pass below.
     if bare_name {
         if let Some((src, prefix)) = sources.first() {
+            if let Some((sig, doc)) = type_alias_signature_doc(src, &bare) {
+                let contents = format!("```witchy\n{sig}\n```\n{doc}");
+                return json!({ "contents": { "kind": "markdown", "value": contents } });
+            }
             if let Some((sig, doc)) = signature_doc(src, &bare) {
                 let contents =
                     format!("```witchy\n{}\n```\n{}", qualify_signature(&sig, prefix), doc);
@@ -445,6 +449,37 @@ fn hover_response(docs: &HashMap<String, String>, params: &Value) -> Value {
         }
     }
     Value::Null
+}
+
+/// Find a one-line structural alias declaration and its contiguous `//` docs.
+/// Type-position record composition is intentionally surfaced in source form:
+/// hovering `Detailed` should show `.{..Summary, revision: Int}`, while the
+/// compiler's normalized exact anonymous identity remains an implementation
+/// detail available through type quotes and diagnostics.
+fn type_alias_signature_doc(src: &str, name: &str) -> Option<(String, String)> {
+    let lines: Vec<&str> = src.lines().collect();
+    for (index, line) in lines.iter().enumerate() {
+        let signature = line.trim();
+        let Some(rest) = signature.strip_prefix("type ") else { continue };
+        let Some(declared) = rest
+            .split(|character: char| character == '(' || character == '=' || character.is_whitespace())
+            .next()
+        else {
+            continue;
+        };
+        if declared != name || !rest.contains('=') {
+            continue;
+        }
+        let mut docs = Vec::new();
+        for previous in (0..index).rev() {
+            let line = lines[previous].trim_start();
+            let Some(comment) = line.strip_prefix("//") else { break };
+            docs.push(comment.trim());
+        }
+        docs.reverse();
+        return Some((signature.to_string(), docs.join("\n")));
+    }
+    None
 }
 
 /// Render a signature line qualified by `prefix` (e.g. `string.`). The qualifier

@@ -2546,6 +2546,201 @@ fn main(console: Console):
         );
     }
 
+    /// (RFC-0098 slice 2) Directed expected-type sites authenticate one shared
+    /// exact projection before the interpreter/Wasm split. Rendering proves the
+    /// target loses extra fields while a borrowed call leaves the richer source
+    /// unchanged.
+    #[test]
+    fn structural_record_width_projection_runs_on_both_backends() {
+        let src = r#"type Summary = .{id: Int, label: String}
+type Detailed = .{id: Int, label: String, note: String}
+
+fn summarize(row: Summary) -> String:
+    "${row}"
+
+fn inspect(let row: Summary) -> String:
+    "${row.label}"
+
+fn consume(own row: Summary) -> String:
+    "${row}"
+
+fn mark_int(console: Console, marker: String, value: Int) -> Int:
+    console.print(marker)
+    value
+
+fn mark_string(console: Console, marker: String, value: String) -> String:
+    console.print(marker)
+    value
+
+fn make(console: Console) -> Detailed:
+    .{
+        id: mark_int(console, "source-id", 8),
+        label: mark_string(console, "source-label", "made"),
+        note: mark_string(console, "source-note", "discarded")
+    }
+
+fn main(console: Console):
+    let detailed: Detailed = .{id: 7, label: "ready", note: "kept"}
+    console.print(summarize(detailed))
+    console.print(inspect(detailed))
+    console.print("${detailed}")
+    let assigned: Summary = detailed
+    console.print("${assigned}")
+    let cast = detailed as Summary
+    console.print("${cast}")
+    let owned: Detailed = .{id: 9, label: "owned", note: "gone"}
+    console.print(consume(move owned))
+    console.print(summarize(make(console)))
+"#;
+        let expected = [
+            ".{id: 7, label: ready}",
+            "ready",
+            ".{id: 7, label: ready, note: kept}",
+            ".{id: 7, label: ready}",
+            ".{id: 7, label: ready}",
+            ".{id: 9, label: owned}",
+            "source-id",
+            "source-label",
+            "source-note",
+            ".{id: 8, label: made}",
+        ];
+        assert_eq!(link_run(src), expected, "interpreter record width projection");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled record width projection must agree",
+        );
+    }
+
+    #[test]
+    fn structural_record_width_rejections_are_shared_before_backends() {
+        let missing = r#"type Need = .{a: Int, b: String}
+fn take(row: Need):
+    ()
+fn main():
+    take(.{a: 1})
+"#;
+        let linked = resolve_std_src(missing);
+        let error = typeck::check(&linked)
+            .expect_err("missing field must fail")
+            .to_string();
+        assert!(error.contains("missing required field `b`"), "{error}");
+
+        let mismatch = r#"type Need = .{a: Int, b: String}
+fn take(row: Need):
+    ()
+fn bad(row: .{a: Int, b: Int, c: Int}):
+    take(row)
+fn main():
+    bad(.{a: 1, b: 2, c: 3})
+"#;
+        let linked = resolve_std_src(mismatch);
+        let error = typeck::check(&linked)
+            .expect_err("mismatched field must fail")
+            .to_string();
+        assert!(error.contains("field `b` has incompatible type"), "{error}");
+    }
+
+    #[test]
+    fn structural_record_width_expected_site_matrix_agrees_on_both_backends() {
+        let src = r#"type Small = .{a: Int}
+type Large = .{a: Int, b: String}
+
+type Slot:
+    row: Small
+
+fn returned(row: Large) -> Small:
+    return row
+
+fn tailed(row: Large) -> Small:
+    row
+
+fn defaulted(row: Small = .{a: 6, b: "default"}) -> Small:
+    row
+
+fn main(console: Console):
+    let large: Large = .{a: 1, b: "kept"}
+    var assigned: Small = .{a: 0}
+    assigned = large
+    let rows: List(Small) = [large]
+    let pair: (Small, Int) = (large, 2)
+    let slot = Slot(large)
+    let conditional: Small = if true:
+        large
+    else:
+        .{a: 9}
+    console.print("${assigned}")
+    console.print("${list.at(rows, 0)}")
+    console.print("${pair.0}")
+    console.print("${slot.row}")
+    console.print("${conditional}")
+    console.print("${returned(large)}")
+    console.print("${tailed(large)}")
+    console.print("${defaulted()}")
+"#;
+        let expected = [
+            ".{a: 1}",
+            ".{a: 1}",
+            ".{a: 1}",
+            ".{a: 1}",
+            ".{a: 1}",
+            ".{a: 1}",
+            ".{a: 1}",
+            ".{a: 6}",
+        ];
+        assert_eq!(link_run(src), expected, "interpreter expected-site matrix");
+        assert_eq!(
+            run_linked_on_wasm(&[("main", src)], "main"),
+            expected,
+            "compiled expected-site matrix must agree",
+        );
+    }
+
+    /// RFC-0098 AC7/12: once projected, every reflective and exact-shape
+    /// consumer sees only the authenticated target record. A String field also
+    /// exercises the compiled reference-bearing slot path; dictionary lookup
+    /// proves exact target equality/key comparison rather than source-layout
+    /// relabeling.
+    #[test]
+    fn structural_record_projection_observability_agrees_on_both_backends() {
+        let src = r#"import dict
+import json
+import reflect
+
+type Summary = .{id: Int, label: String}
+type Detailed = .{..Summary, revision: Int}
+
+fn main(console: Console):
+    let detailed: Detailed = .{id: 7, label: "ready", revision: 3}
+    let summary: Summary = detailed
+    let expected: Summary = .{id: 7, label: "ready"}
+    console.print("${summary}")
+    console.print(json.stringify(summary))
+    console.print(reflect.debug(summary))
+    console.print("${summary == expected}")
+    var keyed = dict.new()
+    keyed.insert(summary, "hit")
+    console.print("${keyed.contains_key(expected)}")
+    console.print("${detailed}")
+"#;
+        let expected = [
+            ".{id: 7, label: ready}",
+            "{\"id\":7,\"label\":\"ready\"}",
+            "true",
+            "true",
+            ".{id: 7, label: ready, revision: 3}",
+        ];
+        let interpreter = link_run(src);
+        let compiled = run_linked_on_wasm(&[("main", src)], "main");
+        assert_eq!(compiled, interpreter, "compiled projected observability must agree");
+        assert_eq!(interpreter[0], expected[0]);
+        assert_eq!(interpreter[1], expected[1]);
+        assert!(interpreter[2].contains("id: 7"), "{}", interpreter[2]);
+        assert!(interpreter[2].contains("label: \"ready\""), "{}", interpreter[2]);
+        assert!(!interpreter[2].contains("revision"), "{}", interpreter[2]);
+        assert_eq!(&interpreter[3..], &expected[2..]);
+    }
+
     /// (RFC-0078) Anonymous records support the same spread/update spelling as
     /// named records. The spread preserves the base shape exactly; it does not
     /// introduce width subtyping or new fields.

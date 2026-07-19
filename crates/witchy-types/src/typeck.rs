@@ -1289,7 +1289,8 @@ fn is_compiler_generated_structural_impl(im: &ast::ImplDef) -> bool {
         .as_deref()
         .map(|name| name.rsplit('.').next().unwrap_or(name))
     {
-        Some("Reflect") if is_anon_record_synthetic_name(&im.type_name) => true,
+        Some("Reflect" | "PartialEq" | "Eq")
+            if is_anon_record_synthetic_name(&im.type_name) => true,
         Some("Show" | "Reflect" | "PartialEq")
             if anon_union_synthetic_variants(&im.type_name).is_some() => true,
         _ => false,
@@ -3534,6 +3535,10 @@ struct Checker {
     /// source)`; lowering converts the source witness to the target witness
     /// without exposing the concrete payload.
     existential_upcast_record: Option<HashMap<usize, (Ty, Ty)>>,
+    /// Directed richer-to-poorer anonymous-record conversions discovered at
+    /// explicit expected-type sites. The pair is `(target, source)` and is
+    /// finalized only after the ending substitution is known.
+    record_projection_record: Option<HashMap<usize, (Ty, Ty)>>,
     fn_sigs: HashMap<String, (Vec<Ty>, Ty)>,
     /// Functions selected by trait lowering as actual `From.from` impls.
     /// Generated function names are an ABI detail, not semantic evidence.
@@ -5447,10 +5452,88 @@ impl Checker {
             }
             _ => false,
         };
-        if coercible || self.anon_union_widening_ok(expected, actual)? {
+        if coercible
+            || self.anon_union_widening_ok(expected, actual)?
+            || self.record_width_conformance(expected, actual)?
+        {
             Ok(())
         } else {
             self.unify(expected, actual)
+        }
+    }
+
+    /// Check one directed structural-record conversion. Only compiler-owned
+    /// anonymous record heads participate: nominal records and all other types
+    /// fall through to exact unification. Same-shape records also fall through,
+    /// preserving ordinary generic inference without manufacturing a projection.
+    fn record_width_conformance(
+        &mut self,
+        expected: &Ty,
+        actual: &Ty,
+    ) -> Result<bool, TypeError> {
+        let expected = self.resolve(expected);
+        let actual = self.resolve(actual);
+        let (Ty::Named(expected_name, expected_types), Ty::Named(actual_name, actual_types)) =
+            (&expected, &actual)
+        else {
+            return Ok(false);
+        };
+        let Some(expected_fields) = witchy_syntax::ast::anon_record_field_names(expected_name)
+        else {
+            return Ok(false);
+        };
+        let Some(actual_fields) = witchy_syntax::ast::anon_record_field_names(actual_name) else {
+            return Ok(false);
+        };
+        if expected_fields == actual_fields {
+            return Ok(false);
+        }
+        if expected_fields.len() != expected_types.len()
+            || actual_fields.len() != actual_types.len()
+        {
+            return terr("malformed compiler-owned anonymous record type");
+        }
+
+        let saved_subst = self.subst.clone();
+        for (field, expected_type) in expected_fields.iter().zip(expected_types) {
+            let Some(index) = actual_fields.iter().position(|candidate| candidate == field) else {
+                self.subst = saved_subst;
+                return terr(format!(
+                    "structural record `{actual}` does not conform to `{expected}`: missing required field `{field}`"
+                ));
+            };
+            if let Err(error) = self.unify(expected_type, &actual_types[index]) {
+                self.subst = saved_subst;
+                return terr(format!(
+                    "structural record `{actual}` does not conform to `{expected}`: field `{field}` has incompatible type: {}",
+                    error.message
+                ));
+            }
+        }
+        Ok(true)
+    }
+
+    fn record_record_projection(&mut self, expr: &Expr, expected: &Ty, actual: &Ty) {
+        let target = self.resolve(expected);
+        let source = self.resolve(actual);
+        let (Ty::Named(target_name, _), Ty::Named(source_name, _)) = (&target, &source) else {
+            return;
+        };
+        let (Some(target_fields), Some(source_fields)) = (
+            witchy_syntax::ast::anon_record_field_names(target_name),
+            witchy_syntax::ast::anon_record_field_names(source_name),
+        ) else {
+            return;
+        };
+        if source_fields.len() <= target_fields.len()
+            || !target_fields
+                .iter()
+                .all(|field| source_fields.contains(field))
+        {
+            return;
+        }
+        if let Some(record) = &mut self.record_projection_record {
+            record.insert(expr as *const Expr as usize, (target, source));
         }
     }
 
@@ -5558,22 +5641,34 @@ impl Checker {
         Ok(())
     }
 
-    fn reject_var_existential_coercion(
-        &self,
+    fn reject_var_directed_coercion(
+        &mut self,
         callable: &str,
         index: usize,
         convention: Option<&Convention>,
         expected: &Ty,
         actual: &Ty,
     ) -> Result<(), TypeError> {
-        if matches!(convention, Some(Convention::Var))
-            && self.existential_coercion(expected, actual)?
-        {
+        if !matches!(convention, Some(Convention::Var)) {
+            return Ok(());
+        }
+        if self.existential_coercion(expected, actual)? {
             return terr(format!(
                 "argument {} to `var` parameter of `{callable}` cannot implicitly convert \
                  `{}` to `{}` — the callee may replace the existential with a different \
                  concrete witness, which cannot be written back into the concrete caller \
                  place; bind a `var` of the existential type before this call",
+                index + 1,
+                self.resolve(actual),
+                self.resolve(expected)
+            ));
+        }
+        if self.record_width_conformance(expected, actual)? {
+            return terr(format!(
+                "argument {} to `var` parameter of `{callable}` cannot project `{}` to `{}` — \
+                 `var` arguments are invariant because the callee may replace target fields and \
+                 write-back cannot reconstruct the caller's omitted fields; bind a `var` of the \
+                 exact target shape before this call",
                 index + 1,
                 self.resolve(actual),
                 self.resolve(expected)
@@ -5728,8 +5823,9 @@ impl Checker {
                                 e,
                             )
                         })?;
-                        let existential = self.existential_coercion(&want, &vt)?;
-                        if existential {
+                        let directed = self.existential_coercion(&want, &vt)?
+                            || self.record_width_conformance(&want, &vt)?;
+                        if directed {
                             want
                         } else {
                             self.unify(&want, &vt).map_err(|e| TypeError {
@@ -5766,7 +5862,9 @@ impl Checker {
                         }
                     }
                     let vt = self.infer_expected(value, &existing)?;
-                    if !self.existential_coercion(&existing, &vt)? {
+                    if !self.existential_coercion(&existing, &vt)?
+                        && !self.record_width_conformance(&existing, &vt)?
+                    {
                         self.unify(&existing, &vt)?;
                     }
                     self.consumed.remove(name); // reassignment re-initializes
@@ -5866,6 +5964,7 @@ impl Checker {
         let actual = self.infer_expected_inner(expr, expected)?;
         self.record_existential_pack(expr, expected, &actual)?;
         self.record_existential_upcast(expr, expected, &actual)?;
+        self.record_record_projection(expr, expected, &actual);
         Ok(actual)
     }
 
@@ -6039,7 +6138,7 @@ impl Checker {
                     for (index, (arg, pty)) in args.iter().zip(&param_tys).enumerate() {
                         let at = self.infer_expected(arg, pty)
                             .map_err(|e| in_call_context(&display, e))?;
-                        self.reject_var_existential_coercion(
+                        self.reject_var_directed_coercion(
                             &display,
                             index,
                             conventions.get(index),
@@ -6121,6 +6220,19 @@ impl Checker {
             .is_none()
             .then(|| (!is_cap_op).then(|| self.user_call_sig_with_bounds(name)).flatten())
             .flatten();
+        let exact_generic_positions = if user_sig.is_some()
+            && self
+                .fn_typarams
+                .get(name)
+                .is_some_and(|parameters| !parameters.is_empty())
+        {
+            self.fn_sigs
+                .get(name)
+                .map(|(parameters, _)| parameters.iter().map(ty_has_var).collect::<Vec<_>>())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         if catalog_contract.is_none() && user_sig.is_none() {
             if !is_cap_op && let Some(msg) = bare_cap_op_error(call_name, args.len()) {
                 return terr(msg);
@@ -6193,9 +6305,14 @@ impl Checker {
             || call_name == "list.pop";
         let call_conventions = self.fn_conventions.get(name).cloned();
         for (index, (arg, param_ty)) in args.iter().zip(&params).enumerate() {
-            let at = self.infer_expected(arg, param_ty)
-                .map_err(|e| in_call_context(&display, e))?;
-            self.reject_var_existential_coercion(
+            let exact_generic = exact_generic_positions.get(index).copied().unwrap_or(false);
+            let at = if exact_generic {
+                self.infer(arg)
+            } else {
+                self.infer_expected(arg, param_ty)
+            }
+            .map_err(|e| in_call_context(&display, e))?;
+            self.reject_var_directed_coercion(
                 &display,
                 index,
                 call_conventions
@@ -6239,8 +6356,14 @@ impl Checker {
                 ));
             }
             self.reject_externref_cap_aggregate_ty(&at, &format!("argument to `{display}`"))?;
-            self.coerce_arg(param_ty, &at)
-                .map_err(|e| TypeError { message: format!("in call to `{display}`: {}", e.message) })?;
+            let result = if exact_generic {
+                self.unify(param_ty, &at)
+            } else {
+                self.coerce_arg(param_ty, &at)
+            };
+            result.map_err(|e| TypeError {
+                message: format!("in call to `{display}`: {}", e.message),
+            })?;
         }
         for (bound_ty, trait_name) in &call_bounds {
             self.require_call_bound(call_name, bound_ty, trait_name)?;
@@ -6964,7 +7087,7 @@ impl Checker {
                     }
                     for (index, (arg, pty)) in args.iter().zip(&param_tys).enumerate() {
                         let at = self.infer_expected(arg, pty)?;
-                        self.reject_var_existential_coercion(
+                        self.reject_var_directed_coercion(
                             "function value",
                             index,
                             conventions.get(index),
@@ -7286,6 +7409,10 @@ impl Checker {
                         ));
                     }
                     self.record_existential_pack(expr, &target, &src)?;
+                    return Ok(target);
+                }
+                if self.record_width_conformance(&target, &src)? {
+                    self.record_record_projection(expr, &target, &src);
                     return Ok(target);
                 }
                 self.check_narrow(&src, &target)?;
@@ -8617,6 +8744,7 @@ pub struct TypeTable {
     types: HashMap<usize, Ty>,
     existential_packs: HashMap<usize, (Ty, Ty)>,
     existential_upcasts: HashMap<usize, (Ty, Ty)>,
+    record_projections: HashMap<usize, (Ty, Ty)>,
 }
 
 impl TypeTable {
@@ -8643,6 +8771,17 @@ impl TypeTable {
     pub fn existential_upcast(&self, e: &Expr) -> Option<&(Ty, Ty)> {
         self.existential_upcasts
             .get(&(e as *const Expr as usize))
+    }
+
+    /// The finalized `(target, source)` exact-record projection requested at
+    /// this expression node.
+    pub fn record_projection(&self, e: &Expr) -> Option<&(Ty, Ty)> {
+        self.record_projections
+            .get(&(e as *const Expr as usize))
+    }
+
+    pub(crate) fn record_projection_count(&self) -> usize {
+        self.record_projections.len()
     }
 }
 
@@ -8996,6 +9135,7 @@ fn run_check_selected(
         // rejected before annotation or lowering.
         existential_pack_record: Some(HashMap::new()),
         existential_upcast_record: Some(HashMap::new()),
+        record_projection_record: Some(HashMap::new()),
         fn_sigs: HashMap::new(),
         from_conversion_fns: from_conversion_fns.cloned().unwrap_or_default(),
         fn_conventions: HashMap::new(),
@@ -9266,6 +9406,16 @@ fn run_check_selected(
             }
         }
     }
+    let mut record_projections = HashMap::new();
+    if let Some(records) = c.record_projection_record.take() {
+        for (key, (target, source)) in records {
+            let target = c.resolve(&target);
+            let source = c.resolve(&source);
+            if record {
+                record_projections.insert(key, (target, source));
+            }
+        }
+    }
     if let Some(rec) = c.type_record.take() {
         let mut types = HashMap::new();
         for (k, ty) in rec {
@@ -9278,6 +9428,7 @@ fn run_check_selected(
             types,
             existential_packs,
             existential_upcasts,
+            record_projections,
         }));
     }
     Ok(None)

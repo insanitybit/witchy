@@ -1755,6 +1755,36 @@
       "Console"
     ],
     "output": [
+      "ready",
+      ".{id: 7, label: ready}",
+      ".{id: 7, label: ready, note: kept}"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 6,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-data.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "7 3"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 7,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/tour-data.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
       "true",
       "12",
       "12"
@@ -1762,7 +1792,7 @@
     "runnable": true
   },
   {
-    "block": 6,
+    "block": 8,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -1778,7 +1808,7 @@
     "runnable": true
   },
   {
-    "block": 7,
+    "block": 9,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -1797,7 +1827,7 @@
     "runnable": true
   },
   {
-    "block": 8,
+    "block": 10,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
@@ -1814,7 +1844,7 @@
     "runnable": true
   },
   {
-    "block": 9,
+    "block": 11,
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,

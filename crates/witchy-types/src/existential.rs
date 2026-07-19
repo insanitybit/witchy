@@ -71,6 +71,7 @@ pub fn lower_explicit_packs(
                 .to_string(),
         );
     }
+    let typed = crate::record_projection::lower_explicit_projections(typed)?;
     let (requests, upcasts) = collect_requests(typed.module(), typed.table())?;
     let witnesses = witness::build_from_catalog_with_upcasts(catalog, requests, upcasts)?;
     let (module, table, result) = typed.rewrite_into_module(|table, module| {

@@ -153,18 +153,32 @@ of types that are named by shape instead of by declaration: tuples `(A, B)`,
 function types `fn(A) -> B`, anonymous records `.{field: Type}`, and anonymous
 tagged unions `.[Tag | Tag(Payload)]`.
 
-Anonymous records are exact-shape records. You can write their type in
-parameters, returns, fields, aliases, and generic arguments; field order does
-not affect identity, but there is no width subtyping. `.{x: Int, y: Int}` and
-`.{y: Int, x: Int}` are the same shape; `.{x: Int}` is not a smaller subtype.
-Use spread (`.{x: ..., ..base}`) to make updated values.
+Anonymous-record identity remains exact. You can write the type in parameters,
+returns, fields, aliases, and generic arguments, and field order does not affect
+identity: `.{x: Int, y: Int}` and `.{y: Int, x: Int}` are the same type.
+
+A richer anonymous record may flow to a poorer expected anonymous-record type
+when every required field has exactly the required type. This is a directed
+projection at an explicit expected-type site—an annotation, assignment,
+argument, return/tail, typed aggregate slot, or `as`—not general subtyping. It
+evaluates the source once and constructs the exact target shape, so rendering,
+reflection, JSON, equality, and runtime type information cannot observe the
+discarded fields. Unconstrained inference, branch joins, containers, function
+types, and equality remain exact. A `var` argument is invariant and never uses
+record projection because write-back could not reconstruct omitted fields.
+
+Compose a new exact record shape with one type spread:
+`type Located = .{..Point, line: Int}`. The base must resolve to an anonymous
+record. Identical duplicate fields collapse; conflicting duplicates and
+non-record bases are errors. This type-level form is distinct from value update
+spread (`.{x: ..., ..base}`), which updates one already-exact value shape.
 
 Anonymous tagged unions are closed tag sets. A value is injected with a leading
 dot (`.Missing`, `.BadPort(70000)`) and must have an expected union type from a
 return annotation, `let` annotation, call argument, or enclosing constructor.
-The only implicit width rule is union widening: `.[A | B]` may flow into
-`.[A | B | C]` at argument, return/tail, and `?` propagation sites. Records do
-not widen.
+Anonymous unions have their own representation-preserving widening rule:
+`.[A | B]` may flow into `.[A | B | C]` at argument, return/tail, and `?`
+propagation sites. Record conformance instead constructs a new exact value.
 
 Capabilities cannot appear anywhere inside anonymous record fields or anonymous
 union payloads. Structural types also cannot receive user `impl`s, even through

@@ -162,6 +162,58 @@ mod tests {
         );
     }
 
+    fn record_projection_kernel(iterations: usize) -> String {
+        format!(
+            "mode opt\n\n\
+             type Summary = .{{id: Int, label: String}}\n\
+             type Detailed = .{{..Summary, revision: Int}}\n\n\
+             fn main(console: Console):\n\
+             \x20   let row: Detailed = .{{id: 7, label: \"ready\", revision: 3}}\n\
+             \x20   var i = 0\n\
+             \x20   var total = 0\n\
+             \x20   while i < {iterations}:\n\
+             \x20       let summary: Summary = row\n\
+             \x20       total = total + summary.id\n\
+             \x20       i = i + 1\n\
+             \x20   console.print(\"${{total}} ${{row.revision}}\")\n"
+        )
+    }
+
+    /// RFC-0098 AC13: the same deterministic counters displayed by browser
+    /// runnable cells prove that projection-heavy code has a linear resource
+    /// bound. The current lowering uses at most one target-record allocation
+    /// and one loop-region rewind per additional projection; future scalar
+    /// replacement may lower either count without weakening the contract.
+    #[test]
+    fn record_projection_resource_bound_is_browser_checkable() {
+        opt::set_for_tests(Some(OptSet::default_set()));
+        let shallow = compute(&record_projection_kernel(1)).expect("one checked projection");
+        let heavy = compute(&record_projection_kernel(64)).expect("64 checked projections");
+        opt::set_for_tests(None);
+
+        assert_eq!(shallow.output, ["7 3"]);
+        assert_eq!(heavy.output, ["448 3"]);
+        assert_eq!(shallow.reowns, 0);
+        assert_eq!(heavy.reowns, 0);
+        assert!(
+            heavy.rc_alloc_calls - shallow.rc_alloc_calls <= 63,
+            "63 additional projections must add at most 63 RC allocations: shallow={}, heavy={}",
+            shallow.rc_alloc_calls,
+            heavy.rc_alloc_calls
+        );
+        assert!(
+            heavy.bump_alloc_calls - shallow.bump_alloc_calls <= 63,
+            "63 additional projections must add at most 63 bump allocations: shallow={}, heavy={}",
+            shallow.bump_alloc_calls,
+            heavy.bump_alloc_calls
+        );
+        assert_eq!(
+            heavy.region_rewind_calls - shallow.region_rewind_calls,
+            63,
+            "each additional loop iteration must close exactly one projection region"
+        );
+    }
+
     #[test]
     fn no_mutation_fip_kernel_returns_its_incoming_ownership_token() {
         const DIRECT: &str = "mode opt\n\ntype State:\n    count: Int\n\nfn main(console: Console):\n    var state = State(1)\n    state.count = 2\n    console.print(\"${state.count}\")\n";

@@ -365,6 +365,13 @@ toward named errors under RFC-0054.
 
 ## Implementation record
 
+> **2026-07-19 change note (RFC-0098):** RFC-0098 supersedes only this
+> RFC's no-record-width rule. Anonymous-record identity remains exact, but a
+> richer closed record may now be projected to a poorer exact shape at an
+> explicit expected-type site; `.{..Base, field: Type}` composes exact record
+> aliases. Anonymous-union semantics and the rest of the structural-tier
+> contract are unchanged.
+
 1. **BUG-562 fixed:** anonymous record identity is shape-keyed across
    modules, removing the `__anon0` collision and matching the structural
    identity rule.

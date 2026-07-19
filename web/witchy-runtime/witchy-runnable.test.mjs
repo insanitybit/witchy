@@ -7,7 +7,8 @@
 // an error cell, and that enhancement is idempotent. No browser needed: `witchy-host.js` runs
 // under Node/V8 (that is what `pg_validate.mjs` uses).
 //
-// Usage:  node web/witchy-runtime/witchy-runnable.test.mjs
+// Usage:  WITCHY_WASM_PATH=target/wasm32-unknown-unknown/debug/witchy.wasm \
+//           node web/witchy-runtime/witchy-runnable.test.mjs
 
 import { enhanceRunnableCells } from "../witchy-runnable.js";
 import { readFileSync } from "node:fs";
@@ -16,6 +17,7 @@ import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../..");
+const COMPILER_WASM = process.env.WITCHY_WASM_PATH || resolve(REPO, "web/witchy.wasm");
 
 // A minimal DOM, matching the glamour drivers' FakeElement shape.
 class FakeNode {
@@ -61,7 +63,7 @@ function pageWith(source) {
 // The compiler: instantiate `web/witchy.wasm` (no imports) — the very module the playground
 // and pg_validate use. Lazily, exactly as a browser would fetch it on first Run.
 const loadCompiler = async () => {
-  const bytes = readFileSync(resolve(REPO, "web/witchy.wasm"));
+  const bytes = readFileSync(COMPILER_WASM);
   const { instance } = await WebAssembly.instantiate(bytes, {});
   return instance.exports;
 };
@@ -127,7 +129,51 @@ fn main(console: Console):
   ok(proof.includes("rc_free_calls 0"), "FIP depth adds no frees");
   ok(proof.includes("region_rewind_calls 0"), "FIP depth adds no region rewinds");
 
-  // 5. A non-witchy code block is left alone.
+  // 5. RFC-0098: browser-visible counters compare a shallow projection with a
+  // projection-heavy loop. Sixty-three additional exact target constructions
+  // add at most sixty-three allocator calls; output proves the richer source is
+  // still intact. This is an operation-count bound, never a timing assertion.
+  const projectionKernel = (iterations) => `mode opt
+
+type Summary = .{id: Int, label: String}
+type Detailed = .{..Summary, revision: Int}
+
+fn main(console: Console):
+    let row: Detailed = .{id: 7, label: "ready", revision: 3}
+    var i = 0
+    var total = 0
+    while i < ${iterations}:
+        let summary: Summary = row
+        total = total + summary.id
+        i = i + 1
+    console.print("\${total} \${row.revision}")`;
+  const counterValue = (proofText, name) => {
+    const line = proofText.split("\n").find((entry) => entry.startsWith(`${name} `));
+    if (!line) throw new Error(`missing browser counter ${name}: ${proofText}`);
+    return BigInt(line.slice(name.length + 1));
+  };
+  const shallowProjection = enhanceRunnableCells(pageWith(projectionKernel(1)), { document: doc, loadCompiler })[0];
+  const heavyProjection = enhanceRunnableCells(pageWith(projectionKernel(64)), { document: doc, loadCompiler })[0];
+  await shallowProjection.run();
+  await heavyProjection.run();
+  ok(shallowProjection.output.textContent === "7 3", "the shallow projection preserves its richer source");
+  ok(heavyProjection.output.textContent === "448 3", "the projection-heavy loop preserves semantics");
+  const shallowProof = shallowProjection.statsOutput.textContent;
+  const heavyProof = heavyProjection.statsOutput.textContent;
+  ok(
+    counterValue(heavyProof, "rc_alloc_calls") - counterValue(shallowProof, "rc_alloc_calls") <= 63n,
+    "63 additional projections add at most 63 RC allocations",
+  );
+  ok(
+    counterValue(heavyProof, "bump_alloc_calls") - counterValue(shallowProof, "bump_alloc_calls") <= 63n,
+    "63 additional projections add at most 63 bump allocations",
+  );
+  ok(
+    counterValue(heavyProof, "region_rewind_calls") - counterValue(shallowProof, "region_rewind_calls") === 63n,
+    "the browser observes one closed loop region per additional projection",
+  );
+
+  // 6. A non-witchy code block is left alone.
   const other = new FakeElement("div");
   const pre = new FakeElement("pre");
   const code = new FakeElement("code");

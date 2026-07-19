@@ -192,6 +192,39 @@ fn main(console: Console):
     }
 
     #[test]
+    fn rfc0098_hover_displays_structural_record_composition() {
+        let mut docs = HashMap::new();
+        let src = "type Summary = .{id: Int, label: String}\n// Stored rows add a revision.\ntype Detailed = .{..Summary, revision: Int}\n\nfn keep(row: Detailed) -> Detailed:\n    row\n";
+        let uri = "file:///rfc0098-hover.witchy";
+        docs.insert(uri.to_string(), src.to_string());
+        let line = 4u64;
+        let col = src.lines().nth(4).unwrap().find("Detailed").unwrap() as u64;
+        let response = hover_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": line, "character": col },
+            }),
+        );
+        let contents = response["contents"]["value"].as_str().expect("alias hover text");
+        assert!(
+            contents.contains("type Detailed = .{..Summary, revision: Int}"),
+            "{contents}"
+        );
+        assert!(contents.contains("Stored rows add a revision."), "{contents}");
+    }
+
+    #[test]
+    fn rfc0098_lsp_width_error_points_at_the_projection_site() {
+        let src = "type Need = .{a: Int, b: String}\n\nfn take(row: Need):\n    ()\n\nfn main():\n    take(.{a: 1})\n";
+        let diagnostics = diags(src);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0]["range"]["start"]["line"], json!(6));
+        let message = diagnostics[0]["message"].as_str().expect("diagnostic message");
+        assert!(message.contains("missing required field `b`"), "{message}");
+    }
+
+    #[test]
     fn hover_resolves_imported_module_functions() {
         let mut docs = HashMap::new();
         let src = "\nfn main(console: Console):\n    console.print(\"ab\".repeat(2))\n";

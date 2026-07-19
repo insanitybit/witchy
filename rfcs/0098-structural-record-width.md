@@ -1,9 +1,11 @@
 ---
 rfc: 0098
 title: Structural record conformance and shape composition
-status: proposed
+status: accepted
 created: 2026-07-19
-tracking: implementation not started
+tracking: implementation in progress; syntax/normalized-shape checkpoint
+  merged as 9ab02e93 through mq-126f5826842b74196b346920b0be2a2b6b5355c5;
+  checked shared projection lowering is rebased immediately after it
 related:
   - "0078 (anonymous tagged unions and the structural tier — exact-record rule amended here)"
   - "0033 (place-based uniqueness — caller-place identity remains exact)"

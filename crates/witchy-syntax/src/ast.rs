@@ -962,7 +962,12 @@ pub fn synthetic_anon_record_def(fields: &[String]) -> TypeDef {
             field_names: fields.to_vec(),
             field_lines: vec![u32::MAX; fields.len()],
         }],
-        derives: vec!["Reflect".into()],
+        // Anonymous records are exact closed shapes. Reflection supplies their
+        // rendering/serialization contract; structural Eq authenticates the
+        // same exact field set for dictionary-key comparison and hashing. The
+        // generated generic impl keeps field types bounded by Eq, so a record
+        // containing a non-Eq field is still rejected rather than laundered.
+        derives: vec!["Reflect".into(), "Eq".into()],
         sealed: false,
         is_capability: false,
         grantable: false,

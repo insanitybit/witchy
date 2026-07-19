@@ -112,12 +112,85 @@ bad port 70000
 missing host
 ```
 
-Anonymous records are exact shapes: `.{x: Int, y: Int}` and
-`.{y: Int, x: Int}` are the same type, but `.{x: Int}` is not a smaller version
-of that record. Anonymous unions are closed tag sets: `.BadPort(70000)` is only
-valid where a `.[BadPort(Int) | ...]` type is expected, and matching must cover
-the tags. Union values may widen into a larger tag set at calls, returns, and
-`?` propagation; records do not widen.
+Anonymous-record identity is exact: `.{x: Int, y: Int}` and
+`.{y: Int, x: Int}` are the same type. At a place that explicitly expects a
+smaller anonymous shape, however, Witchy can project a richer record to that
+exact target. Extra fields are really removed; they are not hidden dynamic
+properties.
+
+Use `.{..Base, field: Type}` to compose a new exact type from an existing
+structural-record alias:
+
+```witchy
+type Summary = .{id: Int, label: String}
+type Detailed = .{..Summary, note: String}
+
+fn label(row: Summary) -> String:
+    row.label
+
+fn main(console: Console):
+    let detailed: Detailed = .{id: 7, label: "ready", note: "kept"}
+    console.print(label(detailed))
+
+    let summary: Summary = detailed
+    console.print("${summary}")
+    console.print("${detailed}")
+```
+
+```text
+ready
+.{id: 7, label: ready}
+.{id: 7, label: ready, note: kept}
+```
+
+Projection is directed by an expected type: annotations, assignments, ordinary
+and `let`/`own` arguments, returns, typed aggregate slots, and `as Summary` can
+request it. Inference remains exact—lists and function values do not become
+covariant, and unannotated branch joins do not silently drop fields. A borrowed
+call leaves `detailed` unchanged; an `own` call consumes it. `var` arguments
+stay invariant because a callee could replace the smaller record and there is
+no sound way to write that replacement back while restoring omitted fields.
+
+Type spread and value spread are different operations. `.{..Summary, note:
+String}` composes a type; `.{label: "new", ..detailed}` updates a value of one
+already-exact shape. Repeating a field with the identical type is harmless,
+but a conflicting type, a cyclic base, or a non-record base is a compile error.
+
+### Proving projection cost in the browser
+
+`mode opt` runnable cells show deterministic compiled-resource counters below
+their ordinary output. They are operation counts, not timings. Run this shallow
+case, then change `1` to `64`: the additional 63 projections add at most 63
+`rc_alloc_calls` and 63 `bump_alloc_calls`, while the output proves the richer
+source remains unchanged. The current baseline constructs one exact target
+record per iteration; a future scalar-replacement optimization may reduce the
+counts without changing that upper bound.
+
+```witchy
+mode opt
+
+type Summary = .{id: Int, label: String}
+type Detailed = .{..Summary, revision: Int}
+
+fn main(console: Console):
+    let row: Detailed = .{id: 7, label: "ready", revision: 3}
+    var i = 0
+    var total = 0
+    while i < 1:
+        let summary: Summary = row
+        total = total + summary.id
+        i = i + 1
+    console.print("${total} ${row.revision}")
+```
+
+```text
+7 3
+```
+
+Anonymous unions remain closed tag sets: `.BadPort(70000)` is only valid where
+a `.[BadPort(Int) | ...]` type is expected, and matching must cover the tags.
+Union values may widen into a larger tag set at calls, returns, and `?`
+propagation.
 
 ## Enums and sum types
 
