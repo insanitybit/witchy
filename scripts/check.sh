@@ -182,9 +182,16 @@ if [ "$full" -eq 1 ] || [ "$fast" -eq 1 ]; then gate_scope="all"; fi
 # reliability baselines. It runs after product/background work so process and
 # timing assertions see an idle compiler and reuse the already-built test binary.
 queue_infra="${WITCHY_GATE_QUEUE_INFRA:-0}"
+queue_infra_jobs="${WITCHY_QUEUE_INFRA_JOBS:-2}"
 case "$queue_infra" in
     0 | 1) ;;
     *) echo "check.sh: WITCHY_GATE_QUEUE_INFRA must be 0 or 1" >&2; exit 2 ;;
+esac
+case "$queue_infra_jobs" in
+    '' | *[!0-9]* | 0)
+        echo "check.sh: WITCHY_QUEUE_INFRA_JOBS must be a positive integer" >&2
+        exit 2
+        ;;
 esac
 [ "$queue_infra" -eq 0 ] || gate_scope="all"
 
@@ -214,7 +221,10 @@ if cargo nextest --version >/dev/null 2>&1; then
     else
         test_cmd=(cargo nextest run --workspace)
     fi
-    queue_infra_cmd=(cargo nextest run --test merge_queue -j 1)
+    # Every queue fixture owns a distinct temporary repository, state root, and
+    # process group. Width two removes the serialized 31-fixture floor while
+    # retaining an operator override for repeated reliability measurements.
+    queue_infra_cmd=(cargo nextest run --test merge_queue -j "$queue_infra_jobs")
 else
     # Plain cargo test runs integration binaries sequentially, so the queue
     # fixture is already isolated from other binaries in this fallback mode.

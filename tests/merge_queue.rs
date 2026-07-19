@@ -1909,6 +1909,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default()))
         .env("CARGO_TARGET_DIR", temp.path().join("target-isolated"))
         .env("WITCHY_GATE_QUEUE_INFRA", "1")
+        .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
         .output()
         .expect("run fast gate with isolated queue fixtures");
@@ -1932,6 +1933,26 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
             "queue infrastructure (isolated)",
         ],
         "queue fixtures did not run alone after product work: {isolated_stdout}",
+    );
+    let isolated_args =
+        fs::read_to_string(&cargo_args_file).expect("read isolated fake cargo arguments");
+    assert!(
+        isolated_args
+            .lines()
+            .any(|line| line == "nextest run --test merge_queue -j 2"),
+        "queue fixtures did not use the bounded hermetic width: {isolated_args}",
+    );
+    let invalid_width = Command::new("bash")
+        .arg(root.join("scripts/check.sh"))
+        .arg("--queue-infra")
+        .env("PATH", &path)
+        .env("WITCHY_QUEUE_INFRA_JOBS", "0")
+        .output()
+        .expect("reject invalid queue fixture width");
+    assert!(!invalid_width.status.success());
+    assert!(
+        String::from_utf8_lossy(&invalid_width.stderr)
+            .contains("WITCHY_QUEUE_INFRA_JOBS must be a positive integer")
     );
 
     let clippy_pid_file = temp.path().join("red-clippy.pid");
