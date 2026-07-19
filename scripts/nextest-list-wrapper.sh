@@ -36,6 +36,7 @@ root="${TMPDIR:-/tmp}/witchy-nextest-list-${NEXTEST_RUN_ID:-$PPID}"
 jobs="${WITCHY_NEXTEST_LIST_JOBS:-2}"
 cache_enabled="${WITCHY_NEXTEST_LIST_CACHE:-1}"
 runner_pid="$PPID"
+run_id="${NEXTEST_RUN_ID:-$runner_pid}"
 binary_name="$(basename "$1")"
 normal_done="$root/normal-done-$binary_name"
 normal_owner="$root/normal-owner-$binary_name"
@@ -143,6 +144,11 @@ if [ "$ignored" -eq 1 ]; then
         # lets the ignored peer fail closed instead of waiting forever.
         owner="$(readlink "$normal_owner" 2>/dev/null || true)"
         if [ -n "$owner" ] && ! pid_is_alive "$owner"; then
+            # The ordinary peer publishes done immediately before it exits. It
+            # can complete between this loop's first marker check and the PID
+            # probe above, so recheck the authoritative marker before treating
+            # a dead owner as an untrappable failure.
+            [ -e "$normal_done" ] && continue
             echo "nextest-list-wrapper: ordinary list process died for $binary_name" >&2
             exit 1
         fi
@@ -175,6 +181,7 @@ fi
 slot=""
 cache_lock=""
 cache_lock_owned=0
+cache_lock_token="$run_id:$$"
 cache_entry=""
 cache_key=""
 cache_started="$(date +%s)"
@@ -189,7 +196,7 @@ cleanup() {
         rm -f "$slot" 2>/dev/null || true
     fi
     if [ "$cache_lock_owned" -eq 1 ] && [ -n "$cache_lock" ] \
-        && [ "$(readlink "$cache_lock" 2>/dev/null || true)" = "$$" ]; then
+        && [ "$(readlink "$cache_lock" 2>/dev/null || true)" = "$cache_lock_token" ]; then
         rm -f "$cache_lock" 2>/dev/null || true
     fi
     if [ "$ignored" -eq 0 ]; then
@@ -253,8 +260,15 @@ if [ "$cache_enabled" -eq 1 ] && [ "$cacheable" -eq 1 ]; then
             fi
 
             while [ "$cache_lock_owned" -eq 0 ]; do
-                if ln -s "$$" "$cache_lock" 2>/dev/null; then
+                if ln -s "$cache_lock_token" "$cache_lock" 2>/dev/null; then
                     cache_lock_owned=1
+                    # A producer may have published and released between this
+                    # waiter's last validity check and its successful claim.
+                    # Consume that entry instead of redundantly cold-executing.
+                    if cache_entry_is_valid "$cache_entry" "$cache_key" \
+                        && use_cache_entry "$cache_entry" cache_wait_hit; then
+                        exit 0
+                    fi
                     break
                 fi
                 if cache_entry_is_valid "$cache_entry" "$cache_key" \
@@ -262,10 +276,29 @@ if [ "$cache_enabled" -eq 1 ] && [ "$cacheable" -eq 1 ]; then
                     exit 0
                 fi
                 owner="$(readlink "$cache_lock" 2>/dev/null || true)"
-                if [ -n "$owner" ] && ! pid_is_alive "$owner"; then
-                    rm -f "$cache_lock" 2>/dev/null || true
-                    continue
-                fi
+                case "$owner" in
+                    "$run_id":*)
+                        owner_pid="${owner#*:}"
+                        case "$owner_pid" in
+                            '' | *[!0-9]* | 0)
+                                # A malformed same-run token is not trustworthy
+                                # enough to reclaim or wait on. Discovery remains
+                                # correct without cache participation.
+                                break
+                                ;;
+                        esac
+                        if ! pid_is_alive "$owner_pid"; then
+                            rm -f "$cache_lock" 2>/dev/null || true
+                            continue
+                        fi
+                        ;;
+                    *)
+                        # Persistent cache state can outlive its originating
+                        # nextest run. Never wait on a foreign-run, legacy PID,
+                        # or non-symlink lock: bypass caching for this command.
+                        break
+                        ;;
+                esac
                 # Never let a cache producer outlive the nextest run it serves.
                 if ! pid_is_alive "$runner_pid"; then
                     echo "nextest-list-wrapper: nextest parent exited while waiting for discovery cache" >&2

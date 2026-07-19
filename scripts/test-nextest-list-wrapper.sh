@@ -88,15 +88,16 @@ COUNT_FILE="$corrupt_count" NEXTEST_RUN_ID=corrupt-recover TMPDIR="$tmp" \
 [ "$(wc -l <"$corrupt_count" | tr -d ' ')" -eq 2 ]
 [ "$(cat "$tmp/corrupt-recover.out")" = "cached_test: test" ]
 
-# Concurrent nextest runs share one producer for an identical proof key. The
-# waiter consumes the atomically published entry without taking a cold slot.
+# Concurrent wrappers in one nextest run share one producer for an identical
+# proof key. The waiter consumes the atomically published entry without taking
+# a cold slot.
 shared_cache="$tmp/shared-cache"
 shared_count="$tmp/shared-runs"
-COUNT_FILE="$shared_count" SLOW_DISCOVERY=1 NEXTEST_RUN_ID=shared-a TMPDIR="$tmp" \
+COUNT_FILE="$shared_count" SLOW_DISCOVERY=1 NEXTEST_RUN_ID=shared TMPDIR="$tmp" \
     WITCHY_NEXTEST_LIST_CACHE_DIR="$shared_cache" \
     "$wrapper" "$fake_list" --list >"$tmp/shared-a.out" &
 shared_a=$!
-COUNT_FILE="$shared_count" SLOW_DISCOVERY=1 NEXTEST_RUN_ID=shared-b TMPDIR="$tmp" \
+COUNT_FILE="$shared_count" SLOW_DISCOVERY=1 NEXTEST_RUN_ID=shared TMPDIR="$tmp" \
     WITCHY_NEXTEST_LIST_CACHE_DIR="$shared_cache" \
     "$wrapper" "$fake_list" --list >"$tmp/shared-b.out" &
 shared_b=$!
@@ -105,6 +106,74 @@ wait "$shared_b"
 [ "$(wc -l <"$shared_count" | tr -d ' ')" -eq 1 ]
 [ "$(cat "$tmp/shared-a.out")" = "cached_test: test" ]
 [ "$(cat "$tmp/shared-b.out")" = "cached_test: test" ]
+
+# A lock from another nextest run cannot block this run. The second wrapper
+# bypasses cache participation and performs ordinary discovery while the
+# foreign producer is still active.
+foreign_cache="$tmp/foreign-cache"
+foreign_count="$tmp/foreign-runs"
+COUNT_FILE="$foreign_count" SLOW_DISCOVERY=1 NEXTEST_RUN_ID=foreign-a TMPDIR="$tmp" \
+    WITCHY_NEXTEST_LIST_CACHE_DIR="$foreign_cache" \
+    "$wrapper" "$fake_list" --list >"$tmp/foreign-a.out" &
+foreign_a=$!
+deadline=$((SECONDS + 5))
+while ! find "$foreign_cache" -maxdepth 1 -type l -name '*.lock' -print -quit 2>/dev/null \
+    | grep -q . && [ "$SECONDS" -lt "$deadline" ]; do sleep 0.01; done
+find "$foreign_cache" -maxdepth 1 -type l -name '*.lock' -print -quit | grep -q .
+COUNT_FILE="$foreign_count" NEXTEST_RUN_ID=foreign-b TMPDIR="$tmp" \
+    WITCHY_NEXTEST_LIST_CACHE_DIR="$foreign_cache" \
+    "$wrapper" "$fake_list" --list >"$tmp/foreign-b.out"
+wait "$foreign_a"
+[ "$(wc -l <"$foreign_count" | tr -d ' ')" -eq 2 ]
+[ "$(cat "$tmp/foreign-a.out")" = "cached_test: test" ]
+[ "$(cat "$tmp/foreign-b.out")" = "cached_test: test" ]
+
+# Malformed persistent locks also bypass promptly. A regular file cannot name
+# a producer and must never turn a cache optimization into a gate deadlock.
+malformed_cache="$tmp/malformed-cache"
+malformed_count="$tmp/malformed-runs"
+COUNT_FILE="$malformed_count" NEXTEST_RUN_ID=malformed-prime TMPDIR="$tmp" \
+    WITCHY_NEXTEST_LIST_CACHE_DIR="$malformed_cache" \
+    "$wrapper" "$fake_list" --list >/dev/null
+malformed_entry="$(find "$malformed_cache" -maxdepth 1 -type d ! -path "$malformed_cache" -print -quit)"
+[ -n "$malformed_entry" ]
+malformed_key="$(basename "$malformed_entry")"
+rm -rf "$malformed_entry"
+printf '%s\n' 'not a symlink' >"$malformed_cache/$malformed_key.lock"
+COUNT_FILE="$malformed_count" NEXTEST_RUN_ID=malformed-next TMPDIR="$tmp" \
+    WITCHY_NEXTEST_LIST_CACHE_DIR="$malformed_cache" \
+    "$wrapper" "$fake_list" --list >"$tmp/malformed.out" &
+malformed_pid=$!
+deadline=$((SECONDS + 5))
+while kill -0 "$malformed_pid" 2>/dev/null && [ "$SECONDS" -lt "$deadline" ]; do sleep 0.01; done
+if kill -0 "$malformed_pid" 2>/dev/null; then
+    kill -TERM "$malformed_pid" 2>/dev/null || true
+    wait "$malformed_pid" 2>/dev/null || true
+    echo "malformed cache lock blocked discovery" >&2
+    exit 1
+fi
+wait "$malformed_pid"
+[ "$(wc -l <"$malformed_count" | tr -d ' ')" -eq 2 ]
+[ "$(cat "$tmp/malformed.out")" = "cached_test: test" ]
+
+# A dead owner from this run is reclaimable. This is the only stale-lock class
+# the wrapper removes; foreign state remains untouched and is merely bypassed.
+dead_cache="$tmp/dead-cache"
+dead_count="$tmp/dead-runs"
+COUNT_FILE="$dead_count" NEXTEST_RUN_ID=dead-prime TMPDIR="$tmp" \
+    WITCHY_NEXTEST_LIST_CACHE_DIR="$dead_cache" \
+    "$wrapper" "$fake_list" --list >/dev/null
+dead_entry="$(find "$dead_cache" -maxdepth 1 -type d ! -path "$dead_cache" -print -quit)"
+[ -n "$dead_entry" ]
+dead_key="$(basename "$dead_entry")"
+rm -rf "$dead_entry"
+ln -s 'dead-reclaim:999999' "$dead_cache/$dead_key.lock"
+COUNT_FILE="$dead_count" NEXTEST_RUN_ID=dead-reclaim TMPDIR="$tmp" \
+    WITCHY_NEXTEST_LIST_CACHE_DIR="$dead_cache" \
+    "$wrapper" "$fake_list" --list >"$tmp/dead-reclaim.out"
+[ "$(wc -l <"$dead_count" | tr -d ' ')" -eq 2 ]
+[ "$(cat "$tmp/dead-reclaim.out")" = "cached_test: test" ]
+[ ! -e "$dead_cache/$dead_key.lock" ]
 
 # Same-binary ignored discovery waits for normal completion, then derives the
 # audited ignored names from the cached ordinary output without a second exec.
@@ -122,6 +191,30 @@ wait "$ignored_pid"
 [ "$(sed -n '1p' "$tmp/normal.out")" = "normal_test: test" ]
 [ "$(sed -n '2p' "$tmp/normal.out")" = "example_tests::binary_path_coverage_report: test" ]
 [ "$(cat "$tmp/ignored.out")" = "example_tests::binary_path_coverage_report: test" ]
+
+# Completion can race the ignored peer's owner liveness probe. Override the
+# shell builtin only for this child so the probe publishes the done marker and
+# then reports the old owner dead. The wrapper must recheck done and consume the
+# completed output instead of reporting an ordinary-process death.
+owner_race_root="$tmp/witchy-nextest-list-owner-race"
+mkdir -p "$owner_race_root"
+owner_race_done="$owner_race_root/normal-done-true"
+owner_race_output="$owner_race_root/normal-output-true"
+printf '%s\n' 'example_tests::binary_path_coverage_report: test' >"$owner_race_output"
+ln -s 999999 "$owner_race_root/normal-owner-true"
+owner_race_env="$tmp/owner-race.bash-env"
+printf '%s\n' \
+    'kill() {' \
+    '    if [ "$1" = "-0" ] && [ "$2" = "999999" ]; then' \
+    '        : >"$OWNER_RACE_DONE"' \
+    '        return 1' \
+    '    fi' \
+    '    builtin kill "$@"' \
+    '}' >"$owner_race_env"
+BASH_ENV="$owner_race_env" OWNER_RACE_DONE="$owner_race_done" \
+    NEXTEST_RUN_ID=owner-race TMPDIR="$tmp" \
+    "$wrapper" /bin/true --ignored >"$tmp/owner-race.out"
+[ "$(cat "$tmp/owner-race.out")" = "example_tests::binary_path_coverage_report: test" ]
 
 # A failing ordinary invocation still publishes its cached output and completion
 # from its EXIT trap, so the ignored peer cannot deadlock or execute the binary.
