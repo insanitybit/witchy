@@ -129,11 +129,11 @@ and has executable evidence for the supported-preview path above.
 ## Remaining public-credibility work
 
 The classification is necessary but not sufficient. Before presenting the
-supported preview broadly, Witchy still needs:
+supported preview broadly, Witchy still needs the following. The five-example
+curated path is now documented in [`examples/README.md`](examples/README.md),
+separately from the exhaustive development inventory.
 
 - one tracked and internally consistent source of product defects and maturity;
-- a five-example curated showcase instead of relying on the exhaustive example
-  inventory as the product narrative;
 - an independent first-hour trial in which unfamiliar users complete the
   supported journey without author assistance;
 - a README and top-level help pass that foregrounds only the supported journey

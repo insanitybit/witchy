@@ -17,21 +17,76 @@ Or from inside a rune: `cd examples/hello && witchy run`.
 For a guided introduction to the language before diving into individual
 examples, see the [book tour](../book/src/tour.md).
 
-## Start here
+## Supported-preview showcase
 
-| Example | Shows |
+Start with these five runes. Together they exercise the deliberately supported
+preview path without requiring the package registry, browser applications, or
+experimental language features. See [Witchy product status](../PRODUCT-STATUS.md)
+for the promise and trust boundaries behind that label.
+
+| Order | Example | Why it is here |
+|---:|---|---|
+| 1 | [hello](hello/) | A small first program: functions, pattern matching, interpolation, tests, and a capability-gated `Console`. |
+| 2 | [generic_stack](generic_stack/) | Generic recursive ADTs and `Option`, with interpreter/WASM parity and sandbox execution. |
+| 3 | [capability_rights](capability_rights/) | Auditable per-function authority and explicit narrowing from broader to narrower rights. |
+| 4 | [file_capability](file_capability/) | Least-authority file handles and the `Dir`/`File` confinement boundary. |
+| 5 | [minigrep](minigrep/) | A useful capability-typed CLI with tests and a checked `trusted-exe` binding plan. |
+
+From the repository root, the following sequence checks the source, runs its
+tests, compares both backends, emits and executes portable WASM, inspects
+authority, and exercises a real file-reading application:
+
+```sh
+witchy check examples/hello/src/hello.witchy
+witchy fmt --check examples/hello/src/hello.witchy
+witchy examples/hello/src/hello.witchy
+witchy test examples/hello
+
+witchy parity examples/generic_stack/src/generic_stack.witchy
+showcase_tmp="$(mktemp -d)"
+witchy compile examples/generic_stack/src/generic_stack.witchy --out "$showcase_tmp/generic_stack.wasm"
+witchy sandbox "$showcase_tmp/generic_stack.wasm"
+
+witchy caps examples/capability_rights/src/capability_rights.witchy
+witchy examples/capability_rights/src/capability_rights.witchy
+witchy examples/file_capability/src/file_capability.witchy
+
+witchy examples/minigrep/src/minigrep.witchy nobody examples/data/poem.txt
+witchy test examples/minigrep
+```
+
+`minigrep` also has a checked `trusted-exe` binding plan:
+
+```sh
+witchy --release build --target trusted-exe examples/minigrep
+```
+
+Running that native result is a whole-artifact trust decision: it embeds the
+application, its checked root bindings, and the Witchy runtime. Use the portable
+WASM path above when the application is not trusted and the consumer should
+supply its authority.
+
+## Broader development catalog
+
+The remaining examples are useful implementation evidence and demonstrations,
+but the catalog intentionally extends beyond the supported-preview product
+story. An example's presence here does not promote its subsystem; use the
+maturity labels in [Witchy product status](../PRODUCT-STATUS.md).
+
+### Core language demonstrations
+
+| Examples | Shows |
 |---|---|
-| [hello](hello/) | Functions, pattern matching, method-call sugar, the Console capability |
 | [fizzbuzz](fizzbuzz/), [loops](loops/), [ranges](ranges/) | Control flow, `for`/`while`, ranges |
 | [strings](strings/), [tuples](tuples/), [records](records/), [list_ops](list_ops/) | The core data types |
 | [patterns](patterns/), [listmatch](listmatch/), [guard](guard/), [let_patterns](let_patterns/) | `match`: ADTs, list patterns, guards, exhaustiveness |
 | [result](result/), [try](try/), [option_std](option_std/) | `Option`/`Result` and the `?` operator |
 | [closures](closures/), [higher_order](higher_order/), [pipeline](pipeline/) | First-class functions |
-| [generics](generics/), [generic_stack](generic_stack/), [traits](traits/), [shapes](shapes/) | Generics, traits, `where` bounds |
+| [generics](generics/), [traits](traits/), [shapes](shapes/) | Generics, traits, `where` bounds |
 | [ownership](ownership/), [conventions](conventions/), [mutate](mutate/) | `let`/`var`/`own` parameter conventions |
 | [durations](durations/), [time_and_encoding](time_and_encoding/) | Duration literals, time, hex/base64 |
 
-## The capability system
+### The capability system
 
 | Example | Shows |
 |---|---|
@@ -47,14 +102,14 @@ examples, see the [book tour](../book/src/tour.md).
 | [minigrep](minigrep/) | argv + Env + Dir together; build and install a trusted standalone executable |
 | [serve_hello](serve_hello/), [serve_api](serve_api/), [serve_static](serve_static/) | `Net[Listen]` HTTP servers (routing, middleware, static files) |
 
-## Performance modes
+### Performance modes
 
 | Example | Shows |
 |---|---|
 | [opt_mode](opt_mode/) | `mode opt`: explicit ownership, checked in-place accumulation, and an allocation-free constant-stack functional state kernel |
 | [projects/opt_pipeline](projects/opt_pipeline/) | `mode opt` is **transitive** — an `opt` module may only import other `opt` modules (std is exempt), so the discipline covers the whole program |
 
-## Algorithms & programs
+### Algorithms & programs
 
 | Example | Shows |
 |---|---|
@@ -67,7 +122,7 @@ examples, see the [book tour](../book/src/tour.md).
 | [lazy_fib](lazy_fib/), [generators](generators/) | Lazy iterators |
 | [regions](regions/) | User-controlled allocation scopes (`region:`) |
 
-## Concurrency
+### Concurrency
 
 `async`/`await`, `spawn`, and first-class channels — the Go/CSP model, on a
 cooperative executor written in pure witchy (`std/task`, `std/chan`).
@@ -77,7 +132,7 @@ cooperative executor written in pure witchy (`std/task`, `std/chan`).
 | [async_tasks](async_tasks/), [channels](channels/), [for_await](for_await/) | `async fn`/`await`, spawning tasks, sending/receiving over channels |
 | [worker_pool](worker_pool/), [select](select/), [request_reply](request_reply/) | A worker pool (mpmc), `select` over channels, request/reply |
 
-## Multi-package projects ([projects/](projects/))
+### Multi-package projects ([projects/](projects/))
 
 Each is a workspace of several runes (witchy packages) with path dependencies,
 lockfiles, and capability manifests — built and run through the package manager
