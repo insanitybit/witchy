@@ -12,6 +12,7 @@
 pub mod loans;
 pub mod existential;
 pub mod migration;
+pub mod runtime_type;
 pub mod storage;
 pub mod traits;
 pub mod typeck;
