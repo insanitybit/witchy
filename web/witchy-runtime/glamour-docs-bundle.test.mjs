@@ -11,7 +11,7 @@
 import { mount } from "./glamour-dom.mjs";
 import { runnableSlot } from "../witchy-runnable.js";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,6 +53,7 @@ let failures = 0;
 const ok = (cond, msg) => { console.log(`  ${cond ? "ok" : "FAIL"}: ${msg}`); if (!cond) failures++; };
 
 const dist = mkdtempSync(join(tmpdir(), "witchy-dist-"));
+const browserBuild = mkdtempSync(join(tmpdir(), "witchy-browser-build-"));
 try {
   // 1. Missing browser compiler assets fail closed unless the caller explicitly
   // opts out. This render smoke test does not execute runnable cells, so it opts out.
@@ -68,6 +69,38 @@ try {
     rejectedMissingCompiler = true;
   }
   ok(rejectedMissingCompiler, "the bundle build rejects a missing browser compiler by default");
+
+  // A normal complete build generates its browser compiler from this checkout;
+  // it must not copy a possibly stale gitignored web/witchy.wasm. Use a fake
+  // Cargo that emits a recognizable artifact to test the build contract without
+  // recursively compiling Rust from inside the Rust test suite.
+  const fakeCargo = join(browserBuild, "cargo");
+  const fakeTarget = join(browserBuild, "target");
+  const completeDist = join(browserBuild, "complete-dist");
+  writeFileSync(fakeCargo, `#!/bin/sh
+set -eu
+out="$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/witchy.wasm"
+mkdir -p "$(dirname "$out")"
+printf 'fresh browser compiler' >"$out"
+`);
+  chmodSync(fakeCargo, 0o755);
+  execFileSync("bash", [join(REPO, "scripts/build-docs.sh"), completeDist], {
+    cwd: REPO,
+    env: {
+      ...process.env,
+      PATH: "/usr/bin:/bin",
+      WITCHY: BIN,
+      WITCHY_BROWSER_WASM: "",
+      CARGO: fakeCargo,
+      CARGO_TARGET_DIR: fakeTarget,
+      WITCHY_SKIP_WASM_OPT: "1",
+    },
+    stdio: "pipe",
+  });
+  ok(
+    readFileSync(join(completeDist, "witchy.wasm"), "utf8") === "fresh browser compiler",
+    "a complete bundle builds its browser compiler instead of copying stale web/witchy.wasm",
+  );
 
   // 2. Build the deployable bundle with the docs app pointed at the REAL book.
   execFileSync("bash", [join(REPO, "scripts/build-docs.sh"), "--allow-missing-compiler", dist], {
@@ -133,6 +166,7 @@ try {
   ok(sawCell, "a real book page's witchy fence became an editable runnable cell (a textarea)");
 } finally {
   rmSync(dist, { recursive: true, force: true });
+  rmSync(browserBuild, { recursive: true, force: true });
 }
 
 if (failures > 0) {

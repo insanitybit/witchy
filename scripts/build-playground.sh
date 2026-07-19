@@ -8,17 +8,24 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# The standalone playground writes beside the static page. Bundle builders can
+# request a private output path so they never trust or overwrite an older
+# gitignored web/witchy.wasm from another checkout/build.
+OUT="${WITCHY_PLAYGROUND_OUT:-web/witchy.wasm}"
+
 # Prefer the rustup toolchain: a Homebrew rustc can't supply the wasm std
 # ("can't find crate for `core`"). `rustup run stable cargo` is not enough on its
 # own — if a Homebrew cargo/rustc is first on PATH, cargo still reaches for it and
 # fails. Force the toolchain's own bin dir to the front of PATH and clear any
 # RUSTC/RUSTFLAGS override so the wasm-capable rustc is the one that runs.
-if command -v rustup >/dev/null; then
+if [ -n "${CARGO:-}" ]; then
+    RUN=(env RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= "$CARGO")
+elif command -v rustup >/dev/null; then
     rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
     TC_BIN="$(dirname "$(rustup which --toolchain stable rustc)")"
-    RUN=(env -u RUSTC -u RUSTFLAGS "PATH=$TC_BIN:$PATH" cargo)
+    RUN=(env -u RUSTC -u RUSTFLAGS RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= "PATH=$TC_BIN:$PATH" cargo)
 else
-    RUN=(cargo)
+    RUN=(env RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= cargo)
 fi
 
 echo "building the witchy interpreter for wasm32-unknown-unknown..."
@@ -26,16 +33,16 @@ echo "building the witchy interpreter for wasm32-unknown-unknown..."
 
 # Honor a custom CARGO_TARGET_DIR — the cargo build above wrote the module there.
 WASM="${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/release/witchy.wasm"
-mkdir -p web
-if command -v wasm-opt >/dev/null; then
+mkdir -p "$(dirname "$OUT")"
+if [ "${WITCHY_SKIP_WASM_OPT:-0}" != "1" ] && command -v wasm-opt >/dev/null; then
     echo "optimizing with wasm-opt..."
-    wasm-opt -Oz "$WASM" -o web/witchy.wasm
+    wasm-opt -Oz "$WASM" -o "$OUT"
 else
-    cp "$WASM" web/witchy.wasm
+    cp "$WASM" "$OUT"
 fi
 
-SIZE=$(awk "BEGIN{printf \"%.2f\", $(wc -c < web/witchy.wasm)/1048576}")
-echo "wrote web/witchy.wasm (${SIZE} MB)"
+SIZE=$(awk "BEGIN{printf \"%.2f\", $(wc -c < "$OUT")/1048576}")
+echo "wrote $OUT (${SIZE} MB)"
 echo
 echo "serve it with:   python3 -m http.server -d web 8000"
 echo "then open:       http://localhost:8000"

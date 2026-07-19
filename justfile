@@ -189,8 +189,9 @@ playground:
 book-validate: playground
     node scripts/validate_book_examples.mjs
 
-# Build the deployable docs bundle into ./dist (CI `docs-build` job).
-docs-build: build-release playground
+# Build the deployable docs bundle into ./dist (CI `docs-build` job). The bundle
+# builder generates its browser compiler from the same checkout.
+docs-build: build-release
     ./scripts/build-docs.sh dist
 
 # Build just the wasm interpreter the way CI does (no native deps).

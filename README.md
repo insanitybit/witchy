@@ -196,8 +196,7 @@ dogfood). Build the static bundle and serve it locally:
 ```sh
 git clone https://github.com/insanitybit/witchy && cd witchy
 cargo build --release            # the toolchain (compiler + native host)
-./scripts/build-playground.sh    # the in-browser compiler behind the Run buttons
-./scripts/build-docs.sh dist     # assemble the static bundle
+./scripts/build-docs.sh dist     # assemble the bundle + a current browser compiler
 python3 -m http.server -d dist 8000   # then open http://localhost:8000
 ```
 
