@@ -554,6 +554,10 @@ pub type ComptimeExpander = fn(
 pub struct LinkedModule {
     pub module: Module,
     pub origins: crate::origin::OriginTable,
+    /// Resolved type/trait declaration provenance retained for RFC-0082 runtime
+    /// descriptor identity. Compiler names remain lookup keys only; package
+    /// ownership is joined by the loader-facing pipeline.
+    pub declarations: crate::type_resolve::ResolvedDeclarations,
 }
 
 /// Process-lifetime cache of bundled std modules pulled into a link set, in
@@ -1166,7 +1170,10 @@ pub fn link_with_user_modules_with_mode_and_origins(
     // is already a concrete reference) and before the merge, while each item
     // still knows its home module and imports. Dissolves the flat-type-namespace
     // collisions (iter+chan's `Step`, task+future's `Step`/`Task`).
-    crate::type_resolve::resolve_with_user_modules(&mut modules, user_modules)?;
+    let declarations = crate::type_resolve::resolve_with_user_modules_and_declarations(
+        &mut modules,
+        user_modules,
+    )?;
 
     // RFC-0002 sealing: a `capability` (a sealed type) may be CONSTRUCTED or
     // DESTRUCTURED only inside the module that declares it. Run AFTER
@@ -1488,7 +1495,7 @@ pub fn link_with_user_modules_with_mode_and_origins(
     // point where an unknown record type is caught, whether or not a later stage
     // (typeck/backend) re-runs the idempotent lowering.
     let module = crate::records::lower(module).map_err(|message| LinkError { message, location: None })?;
-    Ok(LinkedModule { module, origins })
+    Ok(LinkedModule { module, origins, declarations })
 }
 
 fn expansion_sibling(runtime: &Module, source: &Module) -> Module {

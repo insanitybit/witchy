@@ -181,6 +181,78 @@ struct World {
     ambient_traits: HashMap<String, HashSet<String>>,
 }
 
+/// Declaration provenance captured while source modules still have distinct
+/// loader-assigned homes. RFC-0082 joins this with immutable package ownership;
+/// the canonical compiler name is only a lookup key and is never parsed back
+/// into package or module identity.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ResolvedDeclarations {
+    pub declarations: Vec<ResolvedDeclaration>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedDeclaration {
+    pub compiler_name: String,
+    pub source_module: String,
+    pub local_name: String,
+    pub kind: ResolvedDeclarationKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResolvedDeclarationKind {
+    Type,
+    Trait,
+}
+
+impl ResolvedDeclarations {
+    fn from_modules(modules: &[(String, Module)]) -> Self {
+        let mut declarations = Vec::new();
+        for (source_module, module) in modules {
+            for item in &module.items {
+                let (local_name, kind, ambient) = match item {
+                    Item::Type(definition) if is_synthetic_type(&definition.name) => continue,
+                    Item::Type(definition) => (
+                        definition.name.as_str(),
+                        ResolvedDeclarationKind::Type,
+                        is_ambient_type(&definition.name),
+                    ),
+                    Item::Trait(definition) => (
+                        definition.name.as_str(),
+                        ResolvedDeclarationKind::Trait,
+                        is_ambient_trait(&definition.name),
+                    ),
+                    _ => continue,
+                };
+                declarations.push(ResolvedDeclaration {
+                    compiler_name: if ambient {
+                        local_name.to_string()
+                    } else {
+                        format!("{source_module}.{local_name}")
+                    },
+                    source_module: source_module.clone(),
+                    local_name: local_name.to_string(),
+                    kind,
+                });
+            }
+        }
+        declarations.sort_by(|left, right| {
+            left.compiler_name
+                .cmp(&right.compiler_name)
+                .then_with(|| left.source_module.cmp(&right.source_module))
+                .then_with(|| left.local_name.cmp(&right.local_name))
+                .then_with(|| declaration_kind_order(left.kind).cmp(&declaration_kind_order(right.kind)))
+        });
+        Self { declarations }
+    }
+}
+
+fn declaration_kind_order(kind: ResolvedDeclarationKind) -> u8 {
+    match kind {
+        ResolvedDeclarationKind::Type => 0,
+        ResolvedDeclarationKind::Trait => 1,
+    }
+}
+
 impl World {
     fn build(modules: &[(String, Module)]) -> World {
         let mut types: HashMap<String, ModTypes> = HashMap::new();
@@ -334,6 +406,18 @@ pub fn resolve_with_user_modules(
     modules: &mut [(String, Module)],
     user_modules: &std::collections::HashSet<String>,
 ) -> Result<(), LinkError> {
+    resolve_with_user_modules_and_declarations(modules, user_modules).map(|_| ())
+}
+
+/// Canonicalize types and retain the source declaration behind each resulting
+/// compiler key. Package identity is deliberately supplied later by the loader;
+/// this pass records facts it uniquely knows and does not guess filesystem or
+/// package ownership.
+pub fn resolve_with_user_modules_and_declarations(
+    modules: &mut [(String, Module)],
+    user_modules: &std::collections::HashSet<String>,
+) -> Result<ResolvedDeclarations, LinkError> {
+    let declarations = ResolvedDeclarations::from_modules(modules);
     let world = World::build(modules);
     // Split the borrow: build each scope from `world`, then rewrite that module.
     #[allow(clippy::needless_range_loop)] // index needed: read modules[idx] then mutate modules[idx].1
@@ -351,7 +435,7 @@ pub fn resolve_with_user_modules(
         )?;
         scope.rewrite_module(&mut modules[idx].1)?;
     }
-    Ok(())
+    Ok(declarations)
 }
 
 /// Resolve the type and constructor syntax written inside one compiler-owned
@@ -1786,6 +1870,43 @@ mod tests {
             err.message
         );
         assert!(!err.message.contains("(`module."), "leaked placeholder: {}", err.message);
+    }
+
+    #[test]
+    fn resolved_declarations_retain_source_home_without_parsing_compiler_names() {
+        let mut modules = vec![
+            (
+                "model_alias".to_string(),
+                parse_module(
+                    "type User:\n    name: String\n\ntrait Render:\n    fn render(self) -> String\n",
+                )
+                .expect("parse dependency declarations"),
+            ),
+            (
+                "main".to_string(),
+                parse_module(
+                    "import model_alias\n\nfn use(user: model_alias.User) -> String:\n    user.name\n",
+                )
+                .expect("parse importer"),
+            ),
+        ];
+        let resolved = resolve_with_user_modules_and_declarations(
+            &mut modules,
+            &std::collections::HashSet::new(),
+        )
+        .expect("resolve with declaration provenance");
+        assert!(resolved.declarations.contains(&ResolvedDeclaration {
+            compiler_name: "model_alias.User".to_string(),
+            source_module: "model_alias".to_string(),
+            local_name: "User".to_string(),
+            kind: ResolvedDeclarationKind::Type,
+        }));
+        assert!(resolved.declarations.contains(&ResolvedDeclaration {
+            compiler_name: "model_alias.Render".to_string(),
+            source_module: "model_alias".to_string(),
+            local_name: "Render".to_string(),
+            kind: ResolvedDeclarationKind::Trait,
+        }));
     }
 }
 
