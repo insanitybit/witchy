@@ -14753,7 +14753,7 @@ fn main(console: Console):
         std::fs::write(schema.join("svc.txt"), "Greeter").unwrap();
 
         let module = parser::parse_module(
-            "fn build(out: BuildOut, schema: BuildRead):\n    let nl = \"\\n\"\n    write_out(out, \"api.witchy\", \"pub fn service() -> String:\" + nl + \"    \\\"\" + read_build(schema, \"svc.txt\") + \"\\\"\" + nl)\n",
+            "fn build(out: BuildOut, schema: BuildRead):\n    let nl = \"\\n\"\n    out.write_out(\"api.witchy\", \"pub fn service() -> String:\" + nl + \"    \\\"\" + schema.read_build(\"svc.txt\") + \"\\\"\" + nl)\n",
         )
         .expect("parse");
         let generated = crate::run_build_step_sandboxed(
@@ -14768,7 +14768,7 @@ fn main(console: Console):
 
         // A `..` escape traps inside the sandbox, exactly like a runtime Dir.
         let escaper = parser::parse_module(
-            "fn build(out: BuildOut):\n    write_out(out, \"../escape.txt\", \"nope\")\n",
+            "fn build(out: BuildOut):\n    out.write_out(\"../escape.txt\", \"nope\")\n",
         )
         .unwrap();
         let err = crate::run_build_step_sandboxed(escaper, root.join("out2"), Vec::new())

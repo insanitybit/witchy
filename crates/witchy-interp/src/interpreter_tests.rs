@@ -1417,7 +1417,7 @@ fn name_of(doc: Json) -> String:
         Some(v) -> option.unwrap_or(json.as_string(v), "?")
         None -> "?"
 fn echo_name(req: Request) -> Response:
-    match server.json_body(req):
+    match server.json_body_string(req):
         Ok(doc) -> server.text(200, name_of(doc))
         Err(e) -> server.text(400, e)
 fn main(console: Console, net: Net):
@@ -1522,7 +1522,7 @@ fn serve_file(dir: Dir, p: String) -> Response:
         server.not_found()
 fn main(console: Console, net: Net, root: Dir):
     let examples = root.subtree("examples")
-    let data = subtree(examples, "data")
+    let data = examples.subtree("data")
     let app = server.router().get("/files/*path", file_server(data))
     server.serve_n(net, "{addr}", app, 2)
 "#
