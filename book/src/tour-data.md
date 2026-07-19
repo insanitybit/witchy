@@ -166,6 +166,12 @@ source remains unchanged. The current baseline constructs one exact target
 record per iteration; a future scalar-replacement optimization may reduce the
 counts without changing that upper bound.
 
+The dedicated [Structural Records and Width
+Conformance](structural-records.md) chapter covers every expected-type site,
+observable target-shape behavior, exact inference boundaries, `let`/`own`/`var`
+calling conventions, rejected conversions, and migration from manual field
+selection.
+
 ```witchy
 mode opt
 

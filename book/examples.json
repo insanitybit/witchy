@@ -1404,6 +1404,88 @@
   },
   {
     "block": 1,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/structural-records.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "7:ready:payload",
+      ".{label: ready, line: 7, value: payload}"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 2,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/structural-records.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      ".{id: 7, label: ready}",
+      ".{id: 7, label: ready}",
+      ".{id: 7, label: ready}",
+      ".{id: 7, label: ready}",
+      ".{id: 7, label: ready}",
+      ".{id: 7, label: ready, secret: kept}"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 3,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/structural-records.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      ".{id: 7, label: ready}",
+      "{\"id\":7,\"label\":\"ready\"}",
+      "true",
+      ".{id: 7, label: ready, revision: 3}"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 4,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/structural-records.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "borrow ready",
+      "let ready",
+      ".{id: 7, label: ready, secret: kept}",
+      "own done"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 5,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/structural-records.md",
+    "footprint": [
+      "Console"
+    ],
+    "output": [
+      "7 3"
+    ],
+    "runnable": true
+  },
+  {
+    "block": 1,
     "browser_runnable": false,
     "console_only": true,
     "expect_error": false,
