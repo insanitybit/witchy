@@ -74,12 +74,17 @@ if [ -n "${WITCHY_GATE_SCOPE+x}" ] && [ -z "${WITCHY_STAGE_HEARTBEAT_LIMIT+x}" ]
     export WITCHY_STAGE_HEARTBEAT_LIMIT=8
 fi
 
-# Test discovery is bounded separately by scripts/nextest-list-wrapper.sh.
-# Keep execution at nextest's machine-wide default: the four-job cap made the
-# 2,000+ test product suite take more than twenty minutes after discovery.
-# Retain the explicit override for controlled benchmarking and constrained
-# developer machines.
+# Test discovery is bounded separately by scripts/nextest-list-wrapper.sh. Four
+# execution jobs made the 2,000+ test suite take more than twenty minutes, but
+# the machine-wide default overloaded the first production gate: ten otherwise
+# fast capability tests simultaneously hit nextest's 135s timeout. Use eight as
+# the measured midpoint for serialized macOS gates; retain the explicit override
+# for controlled benchmarking and constrained developer machines.
 gate_test_jobs="${WITCHY_GATE_TEST_JOBS:-}"
+if [ -n "${WITCHY_GATE_SCOPE+x}" ] && [ "$(uname -s)" = "Darwin" ] \
+    && [ -z "$gate_test_jobs" ]; then
+    gate_test_jobs=8
+fi
 case "$gate_test_jobs" in
     "") ;;
     *[!0-9]*) echo "check.sh: WITCHY_GATE_TEST_JOBS must be a positive integer" >&2; exit 2 ;;
