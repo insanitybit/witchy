@@ -114,11 +114,14 @@ for p in "${paths[@]}"; do
         scripts/zizmor.sh)
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
             add "./scripts/zizmor.sh --quiet --no-progress --persona=pedantic .github/workflows" ;;
+        scripts/nextest-list-wrapper.sh | scripts/test-nextest-list-wrapper.sh)
+            add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
+            add "./scripts/test-nextest-list-wrapper.sh"
+            add "./scripts/check.sh --queue-infra" ;;
         .config/nextest.toml | \
         scripts/check.sh | \
         scripts/gate-report.sh | \
         scripts/merge-queue.sh | \
-        scripts/nextest-list-wrapper.sh | \
         scripts/state-paths.sh)
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
             add "./scripts/check.sh --queue-infra" ;;
