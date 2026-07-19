@@ -191,6 +191,16 @@ plan. No source-level `Dynamic`, payload envelope, conversion operation, or
 backend runtime behavior exists until the remaining stage-1 slices land; the
 identity plan alone is not presented as an implemented user feature.
 
+The linker now retains each declaration's compiler key, source-module key,
+local name, and kind before flattening, and the descriptor catalog can join
+that record to loader-assigned ownership without parsing names. The production
+package path does not yet supply the required ownership map: the self-hosted PM
+currently reduces a selected dependency to `--dep alias=path`, discarding its
+package name, version, and source before Rust loading. Until a richer loader
+contract carries those authenticated coordinates (including toolchain-owned
+std modules), catalog construction fails on a missing module owner rather than
+deriving identity from an alias or filesystem path.
+
 ## Representation and failure invariants
 
 - A descriptor identity is immutable and compares by resolved identity, never

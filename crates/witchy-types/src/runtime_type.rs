@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use witchy_syntax::ast::{Convention, Type};
+use witchy_syntax::type_resolve::{ResolvedDeclarationKind, ResolvedDeclarations};
 
 /// The immutable package coordinate that owns a declaration.
 ///
@@ -180,6 +181,34 @@ pub struct RuntimeDeclarationCatalog {
 }
 
 impl RuntimeDeclarationCatalog {
+    /// Join linker-retained declaration provenance with loader-authenticated
+    /// module ownership. Every source module must have an owner; compiler names
+    /// are lookup keys and are never parsed to recover package identity.
+    pub fn from_resolved_declarations(
+        declarations: &ResolvedDeclarations,
+        module_owners: &BTreeMap<String, ModuleLoadIdentity>,
+    ) -> Result<Self, RuntimeTypeError> {
+        let mut catalog = Self::default();
+        for declaration in &declarations.declarations {
+            let owner = module_owners.get(&declaration.source_module).ok_or_else(|| {
+                RuntimeTypeError::MissingModuleOwner {
+                    module: declaration.source_module.clone(),
+                }
+            })?;
+            let kind = match declaration.kind {
+                ResolvedDeclarationKind::Type => DeclarationKind::Type,
+                ResolvedDeclarationKind::Trait => DeclarationKind::Trait,
+            };
+            catalog.insert_resolved(
+                &declaration.compiler_name,
+                owner,
+                &declaration.local_name,
+                kind,
+            )?;
+        }
+        Ok(catalog)
+    }
+
     /// Authenticate one linker-resolved compiler name from loader provenance.
     /// The compiler name is deliberately not parsed to recover package, module,
     /// or local declaration identity.
@@ -595,6 +624,7 @@ pub enum RuntimeTypeError {
     InvalidPackageCoordinate(String),
     InvalidDeclarationIdentity(String),
     CapabilityType(String),
+    MissingModuleOwner { module: String },
     ConflictingDeclaration { kind: DeclarationKind, name: String },
     UnresolvedDeclaration { kind: DeclarationKind, name: String },
     ConventionArity { params: usize, conventions: usize },
@@ -611,6 +641,10 @@ impl std::fmt::Display for RuntimeTypeError {
             Self::CapabilityType(name) => {
                 write!(f, "capability type `{name}` cannot have a runtime descriptor")
             }
+            Self::MissingModuleOwner { module } => write!(
+                f,
+                "runtime descriptor declarations from module `{module}` lack loader ownership"
+            ),
             Self::ConflictingDeclaration { kind, name } => write!(
                 f,
                 "resolved {kind:?} declaration `{name}` maps to conflicting package identities"
@@ -634,6 +668,7 @@ impl std::error::Error for RuntimeTypeError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use witchy_syntax::type_resolve::ResolvedDeclaration;
 
     fn package(source: PackageSource, name: &str, version: &str) -> PackageCoordinate {
         PackageCoordinate::new(source, name, version).expect("valid test package")
@@ -850,6 +885,81 @@ mod tests {
                 name,
             } if name == "model.User"
         ));
+    }
+
+    #[test]
+    fn declaration_catalog_joins_linker_provenance_with_loader_ownership() {
+        let owner = ModuleLoadIdentity::new(
+            package(
+                PackageSource::Registry("coven".into()),
+                "acme/model",
+                "1.0.0",
+            ),
+            ["src", "model"],
+        )
+        .expect("module owner");
+        let declarations = ResolvedDeclarations {
+            declarations: vec![
+                ResolvedDeclaration {
+                    compiler_name: "dependency_alias.User".into(),
+                    source_module: "dependency_alias".into(),
+                    local_name: "User".into(),
+                    kind: ResolvedDeclarationKind::Type,
+                },
+                ResolvedDeclaration {
+                    compiler_name: "dependency_alias.Render".into(),
+                    source_module: "dependency_alias".into(),
+                    local_name: "Render".into(),
+                    kind: ResolvedDeclarationKind::Trait,
+                },
+            ],
+        };
+        let owners = BTreeMap::from([("dependency_alias".to_string(), owner.clone())]);
+
+        let catalog = RuntimeDeclarationCatalog::from_resolved_declarations(
+            &declarations,
+            &owners,
+        )
+        .expect("authenticated catalog");
+        let expected_type = owner
+            .declaration(DeclarationKind::Type, "User")
+            .expect("type identity");
+        let expected_trait = owner
+            .declaration(DeclarationKind::Trait, "Render")
+            .expect("trait identity");
+
+        assert_eq!(
+            catalog.resolve("dependency_alias.User", DeclarationKind::Type),
+            Some(&expected_type)
+        );
+        assert_eq!(
+            catalog.resolve("dependency_alias.Render", DeclarationKind::Trait),
+            Some(&expected_trait)
+        );
+    }
+
+    #[test]
+    fn declaration_catalog_rejects_missing_loader_ownership() {
+        let declarations = ResolvedDeclarations {
+            declarations: vec![ResolvedDeclaration {
+                compiler_name: "unowned.User".into(),
+                source_module: "unowned".into(),
+                local_name: "User".into(),
+                kind: ResolvedDeclarationKind::Type,
+            }],
+        };
+
+        let error = RuntimeDeclarationCatalog::from_resolved_declarations(
+            &declarations,
+            &BTreeMap::new(),
+        )
+        .expect_err("unowned declarations must fail closed");
+        assert_eq!(
+            error,
+            RuntimeTypeError::MissingModuleOwner {
+                module: "unowned".into(),
+            }
+        );
     }
 
     #[test]
