@@ -195,8 +195,20 @@ fn glamour_runtime_changes_get_javascript_and_integration_checks() {
         selected(&["web/witchy-runtime/glamour-dom.mjs"]),
         [
             "find web/witchy-runtime -type f -name '*.mjs' -exec node --check {} \\;",
-            "cargo nextest run --test glamour_dom",
+            "cargo nextest run --test glamour -E 'test(/^dom::/)'",
         ]
+    );
+}
+
+#[test]
+fn browser_runtime_modules_route_to_their_consolidated_binary_modules() {
+    assert_eq!(
+        selected(&["web/witchy-runtime/witchy-runnable.test.mjs"])[1],
+        "cargo nextest run --test browser -E 'test(/^shim::/)'"
+    );
+    assert_eq!(
+        selected(&["web/witchy-runtime/encoding-abi.test.mjs"])[1],
+        "cargo nextest run --test browser -E 'test(/^encoding::/)'"
     );
 }
 
@@ -207,7 +219,18 @@ fn shared_browser_host_runs_every_dependent_integration_binary() {
     assert!(commands[0].contains("node --check"), "{commands:?}");
     assert_eq!(
         commands[1],
-        "cargo nextest run --test browser_shim --test browser_encoding --test glamour_dom --test wasm_abi_catalog"
+        "cargo nextest run --test browser --test glamour --test misc -E 'binary(browser) or (binary(glamour) and test(/^dom::/)) or (binary(misc) and test(/^wasm_abi_catalog::/))'"
+    );
+}
+
+#[test]
+fn import_catalog_change_runs_only_its_consolidated_module() {
+    let commands = selected(&["web/witchy-runtime/import-catalog.test.mjs"]);
+    assert_eq!(commands.len(), 2, "{commands:?}");
+    assert!(commands[0].contains("node --check"), "{commands:?}");
+    assert_eq!(
+        commands[1],
+        "cargo nextest run --test misc -E 'test(/^wasm_abi_catalog::/)'"
     );
 }
 

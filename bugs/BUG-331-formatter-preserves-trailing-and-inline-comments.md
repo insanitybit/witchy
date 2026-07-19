@@ -22,7 +22,7 @@ Covered by:
 
 ```sh
 CARGO_TARGET_DIR=target-codex-d8 cargo test -p witchy-syntax preserves_trailing_and_inline_comments
-CARGO_TARGET_DIR=target-codex-d8 cargo test --test fmt_cli fmt_preserves_trailing_comments
+CARGO_TARGET_DIR=target-codex-d8 cargo test --test misc fmt_cli::fmt_preserves_trailing_comments
 CARGO_TARGET_DIR=target-codex-d8 cargo test -p witchy-syntax reformats_every_std_and_example_to_an_equal_ast
 ```
 

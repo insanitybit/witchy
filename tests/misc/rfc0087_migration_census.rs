@@ -1,3 +1,5 @@
+//! RFC-0087 checked-in migration-census proof.
+
 use std::process::Command;
 
 #[test]
@@ -13,7 +15,7 @@ fn repository_census_matches_the_checked_in_type_resolved_snapshot() {
     );
     assert_eq!(
         String::from_utf8(output.stdout).expect("UTF-8 census output"),
-        include_str!("../rfcs/0087-migration-census.tsv")
+        include_str!("../../rfcs/0087-migration-census.tsv")
     );
     assert_eq!(
         String::from_utf8(output.stderr).expect("UTF-8 census diagnostics"),

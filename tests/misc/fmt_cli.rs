@@ -1,4 +1,4 @@
-//! CLI regression test for BUG-012: `witchy fmt a.witchy b.witchy …` must format
+//! CLI regressions for BUG-012: `witchy fmt a.witchy b.witchy …` must format
 //! EVERY file argument, not just the first. A shell glob (`witchy fmt std/*.witchy`)
 //! expands to many paths, and the old single-arg handler silently dropped all but
 //! the first while exiting 0 — a no-op that fooled callers (and the fmt gate).

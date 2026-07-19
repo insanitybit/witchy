@@ -80,7 +80,7 @@ links, lowers methods/traits to their exact callee declarations, reads `var`
 conventions from those declarations, and type-checks 271 Witchy sources plus
 176 Witchy blocks from the README, spec, and book. Its complete stable output is
 checked in at [`0087-migration-census.tsv`](0087-migration-census.tsv) and
-freshness-tested by `tests/rfc0087_migration_census.rs`.
+freshness-tested by `tests/misc/rfc0087_migration_census.rs`.
 
 The current resolved totals are 26 entry-source `var` declarations and 469
 lowered `var` call instances inspected. The obsolete migration-error classes

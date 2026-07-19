@@ -82,19 +82,19 @@ for p in "${paths[@]}"; do
         web/witchy-runtime/heap-reset.test.mjs | \
         web/witchy-runtime/highlighter.test.mjs | \
         web/witchy-runtime/user-cap-export.test.mjs)
-            add "cargo nextest run --test glamour_dom" ;;
+            add "cargo nextest run --test glamour -E 'test(/^dom::/)'" ;;
         web/witchy-runtime/abort-message.test.mjs | \
         web/witchy-runtime/playground-examples.test.mjs | \
         web/witchy-runtime/spike.mjs | \
         web/witchy-runtime/witchy-highlight.test.mjs | \
         web/witchy-runtime/witchy-runnable.test.mjs)
-            add "cargo nextest run --test browser_shim" ;;
+            add "cargo nextest run --test browser -E 'test(/^shim::/)'" ;;
         web/witchy-runtime/encoding-abi.test.mjs)
-            add "cargo nextest run --test browser_encoding" ;;
+            add "cargo nextest run --test browser -E 'test(/^encoding::/)'" ;;
         web/witchy-runtime/import-catalog.test.mjs)
-            add "cargo nextest run --test wasm_abi_catalog" ;;
+            add "cargo nextest run --test misc -E 'test(/^wasm_abi_catalog::/)'" ;;
         web/witchy-runtime/witchy-runtime.mjs)
-            add "cargo nextest run --test browser_shim --test browser_encoding --test glamour_dom --test wasm_abi_catalog" ;;
+            add "cargo nextest run --test browser --test glamour --test misc -E 'binary(browser) or (binary(glamour) and test(/^dom::/)) or (binary(misc) and test(/^wasm_abi_catalog::/))'" ;;
         tests/merge_queue.rs | tests/test_for_paths.rs)
             any_rust=1
             add "./scripts/check.sh --queue-infra" ;;

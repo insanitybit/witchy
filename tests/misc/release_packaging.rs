@@ -1,4 +1,4 @@
-//! Release packaging is deterministic and fails closed before native smoke tests run.
+//! Release-packaging proofs: deterministic and fail-closed before native smoke tests run.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

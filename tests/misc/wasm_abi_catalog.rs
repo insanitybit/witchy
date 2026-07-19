@@ -1,3 +1,4 @@
+//! Native and browser host conformance to the compiler-owned WASM ABI catalog.
 #![cfg(feature = "native")]
 
 use std::path::Path;
@@ -115,7 +116,7 @@ fn native_host_links_every_catalog_import_with_the_declared_signature() {
 
 #[test]
 fn public_spec_contains_the_generated_complete_catalog() {
-    let spec = include_str!("../spec/wasm-abi.md");
+    let spec = include_str!("../../spec/wasm-abi.md");
     assert!(
         spec.contains(&format!("The current ABI version is **{WITCHY_ABI_VERSION}**.")),
         "the public spec must name the compiler-owned ABI version"
