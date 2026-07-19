@@ -4,7 +4,7 @@ title: Runtime Dynamic values and checked reflection
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking:
+tracking: stage 1 in progress — canonical package/declaration/type identities and deterministic closed descriptor plans live in witchy-types::runtime_type; source Dynamic conversion is not implemented yet
 ---
 
 # RFC-0082: Runtime `Dynamic` values and checked reflection
@@ -181,6 +181,15 @@ Implementation proceeds in these independently mergeable stages:
 4. **Trait bridge and tooling:** add `implements`/`as_trait`, `witchy caps`,
    LSP presentation, generated documentation, and migration guidance only after
    stages 1-3 agree across both backends.
+
+The first stage is split at an explicit backend-neutral boundary. As currently
+built, `witchy-types::runtime_type` owns immutable package coordinates, resolved
+declaration identities, structural identities, authenticated import-alias
+mapping, and deterministic descriptor IDs closed over nested types. Unknown or
+conflicting declarations and direct capability types fail while building that
+plan. No source-level `Dynamic`, payload envelope, conversion operation, or
+backend runtime behavior exists until the remaining stage-1 slices land; the
+identity plan alone is not presented as an implemented user feature.
 
 ## Representation and failure invariants
 

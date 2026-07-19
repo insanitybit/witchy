@@ -68,6 +68,52 @@ impl PackageCoordinate {
     }
 }
 
+/// Immutable ownership assigned by the loader before a module enters linking.
+///
+/// `module_path` is the module's logical path inside its package, not the local
+/// import alias chosen by a dependent package.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ModuleLoadIdentity {
+    package: PackageCoordinate,
+    module_path: Vec<String>,
+}
+
+impl ModuleLoadIdentity {
+    pub fn new(
+        package: PackageCoordinate,
+        module_path: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Result<Self, RuntimeTypeError> {
+        let module_path: Vec<String> = module_path.into_iter().map(Into::into).collect();
+        if module_path.is_empty() || module_path.iter().any(String::is_empty) {
+            return Err(RuntimeTypeError::InvalidDeclarationIdentity(
+                "loaded module has an empty logical module path".to_string(),
+            ));
+        }
+        Ok(Self { package, module_path })
+    }
+
+    pub fn package(&self) -> &PackageCoordinate {
+        &self.package
+    }
+
+    pub fn module_path(&self) -> &[String] {
+        &self.module_path
+    }
+
+    pub fn declaration(
+        &self,
+        kind: DeclarationKind,
+        local_name: impl Into<String>,
+    ) -> Result<DeclarationIdentity, RuntimeTypeError> {
+        DeclarationIdentity::new(
+            self.package.clone(),
+            self.module_path.clone(),
+            kind,
+            local_name,
+        )
+    }
+}
+
 /// Resolved identity of one nominal type or trait declaration.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DeclarationIdentity {
@@ -119,6 +165,71 @@ impl DeclarationIdentity {
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+}
+
+/// Authenticated mapping from the compiler's resolved declaration keys to
+/// package-stable identities.
+///
+/// The keys are compile-time names only. They never enter a runtime descriptor;
+/// import aliases may map to the same declaration identity, while one resolved
+/// key may not be rebound to a different declaration.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RuntimeDeclarationCatalog {
+    declarations: BTreeMap<DeclarationKind, BTreeMap<String, DeclarationIdentity>>,
+}
+
+impl RuntimeDeclarationCatalog {
+    /// Authenticate one linker-resolved compiler name from loader provenance.
+    /// The compiler name is deliberately not parsed to recover package, module,
+    /// or local declaration identity.
+    pub fn insert_resolved(
+        &mut self,
+        resolved_name: impl Into<String>,
+        owner: &ModuleLoadIdentity,
+        local_name: impl Into<String>,
+        kind: DeclarationKind,
+    ) -> Result<(), RuntimeTypeError> {
+        self.insert(resolved_name, owner.declaration(kind, local_name)?)
+    }
+
+    pub fn insert(
+        &mut self,
+        resolved_name: impl Into<String>,
+        identity: DeclarationIdentity,
+    ) -> Result<(), RuntimeTypeError> {
+        let resolved_name = resolved_name.into();
+        if resolved_name.is_empty() {
+            return Err(RuntimeTypeError::InvalidDeclarationIdentity(
+                "resolved declaration name is empty".to_string(),
+            ));
+        }
+        let declarations = self.declarations.entry(identity.kind).or_default();
+        if let Some(existing) = declarations.get(&resolved_name) {
+            if existing == &identity {
+                return Ok(());
+            }
+            return Err(RuntimeTypeError::ConflictingDeclaration {
+                kind: identity.kind,
+                name: resolved_name,
+            });
+        }
+        declarations.insert(resolved_name, identity);
+        Ok(())
+    }
+
+    pub fn resolve(
+        &self,
+        resolved_name: &str,
+        kind: DeclarationKind,
+    ) -> Option<&DeclarationIdentity> {
+        self.declarations.get(&kind)?.get(resolved_name)
+    }
+
+    pub fn type_identity(&self, ty: &Type) -> Result<RuntimeTypeIdentity, RuntimeTypeError> {
+        RuntimeTypeIdentity::from_resolved_type(ty, &|name, kind| {
+            self.resolve(name, kind).cloned()
+        })
     }
 }
 
@@ -407,7 +518,11 @@ impl RuntimeTypePlan {
     pub fn build(
         identities: impl IntoIterator<Item = RuntimeTypeIdentity>,
     ) -> Result<Self, RuntimeTypeError> {
-        let identities: BTreeSet<_> = identities.into_iter().collect();
+        let mut identities = identities.into_iter().collect::<BTreeSet<_>>();
+        let roots = identities.iter().cloned().collect::<Vec<_>>();
+        for root in &roots {
+            collect_nested_identities(root, &mut identities);
+        }
         let mut descriptors = Vec::with_capacity(identities.len());
         let mut by_identity = BTreeMap::new();
         for (index, identity) in identities.into_iter().enumerate() {
@@ -417,6 +532,21 @@ impl RuntimeTypePlan {
             descriptors.push(RuntimeTypeDescriptor { id, identity });
         }
         Ok(Self { descriptors, by_identity })
+    }
+
+    /// Build the backend-neutral descriptor constants for resolved compiler
+    /// types. Every nominal and existential head must already be authenticated
+    /// by `catalog`; unresolved names and capabilities fail before a backend can
+    /// observe a partial plan.
+    pub fn from_resolved_types<'a>(
+        types: impl IntoIterator<Item = &'a Type>,
+        catalog: &RuntimeDeclarationCatalog,
+    ) -> Result<Self, RuntimeTypeError> {
+        let identities = types
+            .into_iter()
+            .map(|ty| catalog.type_identity(ty))
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::build(identities)
     }
 
     pub fn descriptors(&self) -> &[RuntimeTypeDescriptor] {
@@ -434,11 +564,38 @@ impl RuntimeTypePlan {
     }
 }
 
+fn collect_nested_identities(
+    identity: &RuntimeTypeIdentity,
+    identities: &mut BTreeSet<RuntimeTypeIdentity>,
+) {
+    let children: Vec<&RuntimeTypeIdentity> = match identity {
+        RuntimeTypeIdentity::Primitive(_) => Vec::new(),
+        RuntimeTypeIdentity::List(item) => vec![item],
+        RuntimeTypeIdentity::Tuple(items) => items.iter().collect(),
+        RuntimeTypeIdentity::Function { params, result, .. } => {
+            params.iter().chain(std::iter::once(result.as_ref())).collect()
+        }
+        RuntimeTypeIdentity::Nominal { arguments, .. }
+        | RuntimeTypeIdentity::Existential { arguments, .. } => arguments.iter().collect(),
+        RuntimeTypeIdentity::Record(fields) => fields.iter().map(|(_, ty)| ty).collect(),
+        RuntimeTypeIdentity::Union(variants) => variants
+            .iter()
+            .flat_map(|variant| variant.payloads.iter())
+            .collect(),
+    };
+    for child in children {
+        if identities.insert(child.clone()) {
+            collect_nested_identities(child, identities);
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RuntimeTypeError {
     InvalidPackageCoordinate(String),
     InvalidDeclarationIdentity(String),
     CapabilityType(String),
+    ConflictingDeclaration { kind: DeclarationKind, name: String },
     UnresolvedDeclaration { kind: DeclarationKind, name: String },
     ConventionArity { params: usize, conventions: usize },
     MalformedStructuralType(String),
@@ -454,6 +611,10 @@ impl std::fmt::Display for RuntimeTypeError {
             Self::CapabilityType(name) => {
                 write!(f, "capability type `{name}` cannot have a runtime descriptor")
             }
+            Self::ConflictingDeclaration { kind, name } => write!(
+                f,
+                "resolved {kind:?} declaration `{name}` maps to conflicting package identities"
+            ),
             Self::UnresolvedDeclaration { kind, name } => {
                 write!(f, "runtime type references unresolved {kind:?} declaration `{name}`")
             }
@@ -636,5 +797,95 @@ mod tests {
                 .expect("right structural identity");
             assert_eq!(left, right);
         }
+    }
+
+    #[test]
+    fn declaration_catalog_authenticates_aliases_and_rejects_rebinding() {
+        let owner = ModuleLoadIdentity::new(
+            package(
+                PackageSource::Registry("coven".into()),
+                "acme/model",
+                "1.0.0",
+            ),
+            ["model"],
+        )
+        .expect("module owner");
+        let mut catalog = RuntimeDeclarationCatalog::default();
+        catalog
+            .insert_resolved("model.User", &owner, "User", DeclarationKind::Type)
+            .expect("canonical declaration");
+        catalog
+            .insert_resolved(
+                "dependency_alias.User",
+                &owner,
+                "User",
+                DeclarationKind::Type,
+            )
+            .expect("import alias for same declaration");
+
+        let canonical = catalog
+            .type_identity(&Type::Named("model.User".into(), Vec::new()))
+            .expect("canonical identity");
+        let aliased = catalog
+            .type_identity(&Type::Named("dependency_alias.User".into(), Vec::new()))
+            .expect("aliased identity");
+        assert_eq!(canonical, aliased);
+
+        let impostor = declaration(
+            package(
+                PackageSource::Registry("other-coven".into()),
+                "acme/model",
+                "1.0.0",
+            ),
+            "model",
+            "User",
+        );
+        let error = catalog
+            .insert("model.User", impostor)
+            .expect_err("one resolved key cannot be rebound");
+        assert!(matches!(
+            error,
+            RuntimeTypeError::ConflictingDeclaration {
+                kind: DeclarationKind::Type,
+                name,
+            } if name == "model.User"
+        ));
+    }
+
+    #[test]
+    fn resolved_type_plan_fails_atomically_on_unknown_or_capability_types() {
+        let coordinate = package(PackageSource::Workspace, "app", "0.1.0");
+        let user = declaration(coordinate, "main", "User");
+        let mut catalog = RuntimeDeclarationCatalog::default();
+        catalog.insert("main.User", user).expect("user declaration");
+        let good = Type::Named("main.User".into(), Vec::new());
+        let unknown = Type::Named("other.User".into(), Vec::new());
+        let capability = Type::Named("Console".into(), Vec::new());
+
+        let unknown_error = RuntimeTypePlan::from_resolved_types([&good, &unknown], &catalog)
+            .expect_err("unknown declaration fails the complete plan");
+        assert!(matches!(
+            unknown_error,
+            RuntimeTypeError::UnresolvedDeclaration { name, .. } if name == "other.User"
+        ));
+        let capability_error =
+            RuntimeTypePlan::from_resolved_types([&good, &capability], &catalog)
+                .expect_err("capability fails the complete plan");
+        assert_eq!(
+            capability_error,
+            RuntimeTypeError::CapabilityType("Console".to_string())
+        );
+    }
+
+    #[test]
+    fn descriptor_plan_is_closed_over_nested_type_identities() {
+        let int = RuntimeTypeIdentity::Primitive(PrimitiveType::Int);
+        let tuple = RuntimeTypeIdentity::Tuple(vec![int.clone()]);
+        let list = RuntimeTypeIdentity::List(Box::new(tuple.clone()));
+        let plan = RuntimeTypePlan::build([list.clone()]).expect("closed plan");
+        assert_eq!(plan.descriptors().len(), 3);
+        assert!(plan.id(&int).is_some());
+        assert!(plan.id(&tuple).is_some());
+        assert!(plan.id(&list).is_some());
     }
 }
