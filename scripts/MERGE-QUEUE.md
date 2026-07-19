@@ -81,7 +81,10 @@ and handoff notes. It is observational, not a locking or file-ownership system.
 - `journal.jsonl` — append-only event log, the system's ground truth.
   Events: `submitted`, `merged`, `red`, `timeout`, `conflict` (won't rebase),
   `blocked` (gate GREEN but ff-merge refused — see below), `requeued`
-  (master moved mid-gate), `dropped` (branch deleted), `batch_red`,
+  (master moved mid-gate), `dropped` (branch deleted), `batch_red`
+  (strategy `prefix_split` / `culprit_evict` / `individual`), `evicted`
+  (culprit member sent to a solo gate — see batch red below), `rebaselined`
+  (prepare regenerated a stale generated snapshot onto the candidate),
   `validated` (test-mode green, merge skipped), `swept`. `merged`/`red`/
   `timeout` carry the gate log path, elapsed seconds, and a stage-timing
   summary parsed from check.sh's `==> [N] stage (t+Ns)` markers.
@@ -201,6 +204,20 @@ baseline with `WITCHY_GATE_QUEUE_INFRA=1 ./scripts/check.sh`. Product and semant
 validation is unchanged; only the machine-sensitive queue fixtures move out of
 contention with it.
 
+**Gate fail-fast (check.sh).** The merge-gate profile runs the tests as the
+only foreground stage with three background legs — `cargo check --workspace
+--all-targets` (surfaces plain compile errors in minutes), clippy, and the
+wasm playground build — each in its own CoW-seeded target dir
+(`target-check`, `target-clippy`). While the tests run, check.sh polls the
+legs' logs (`WITCHY_FAILFAST_POLL`, default 5s) and, the moment a leg records
+a failure, ABORTS the foreground tests, prints the red leg's full output, and
+exits red — a clippy/compile failure costs ~2-4 min instead of surfacing only
+after ~20+ min of doomed tests. The aborted tests stage is emitted as
+`WITCHY_TIMING … "status":"aborted"`; consumers that only read green records
+(gate-report.sh) ignore it. Green gates are unchanged: overlap, not
+serialization, and all legs are still collected — and can still fail the
+gate — before green. Idle prewarm also warms `target-check`.
+
 **Diff-scoped fuzzing.** The differential fuzzer is the gate's single biggest
 test (~57s, a fixed-seed parity regression suite). `process_one` classifies the
 batch diff (`base..sha`) and passes `WITCHY_GATE_FUZZ` to check.sh: `skip` when
@@ -253,6 +270,21 @@ shards ignore the scope.
    Textual overlap is fine; only a failed rebase excludes. `.nobatch` applies
    to unrelated red-batch recovery. A `.batch-limit` marker bounds the next
    dependency-prefix retry.
+3b. **Snapshot re-baseline:** deterministic generated artifacts (the RFC-0087
+   census TSV `rfcs/0087-migration-census.tsv` and `witchy doc`-rendered
+   `spec/stdlib.md`) go stale whenever an unrelated branch lands first, and a
+   stale snapshot turns a correct candidate into a ~28-min red. After the
+   batch is prepared, the coordinator builds the two generator bins in the
+   gate worktree, re-runs them, and — if either committed output drifted —
+   commits ONLY those two whitelisted files onto the candidate as
+   `chore(gate): re-baseline generated artifacts`, journaling `rebaselined`.
+   The gated sha is captured AFTER this step, so the amended sha is exactly
+   what is classified, gated, and fast-forwarded. A generator build/run
+   failure never fails the candidate (regen is skipped; the gate
+   adjudicates), and regen is skipped entirely for docs-safe-set-only diffs
+   so docs gates stay seconds. For code diffs the prepare-time `cargo build`
+   mostly warms artifacts nextest needs anyway, so green-gate totals barely
+   move.
 4. Classify the prepared batch diff, then acquire `gate.lock`. Re-check every
    immutable queue attempt and verify master is still `base`; if submission or
    master moved during preparation, release and rebuild without gating. When
@@ -292,8 +324,18 @@ shards ignore the scope.
      stack prefix. A green prefix lands and unblocks the suffix; another red
      halves again. This locates and lands the green prefix without accepting an
      unvalidated commit.
-   - **red/timeout, unrelated batch:** journal `batch_red`; every member keeps
-     its queue file and gains `.nobatch` so each re-gates individually.
+   - **red/timeout, unrelated batch:** journal `batch_red`; every member
+     keeps its queue file. On a RED with a parsable failing target (a nextest
+     FAIL/TIMEOUT line, or a rustc `-->`/`could not compile` context), the
+     coordinator scores each member's own diff by name overlap with that
+     target (failing test's source file, binary/test-path name stems, the
+     failing crate's directory). A unique positive top score journals
+     `evicted` and marks ONLY that member `.nobatch` (solo gate); the
+     remaining N-1 re-batch together next loop — 2 follow-up gates instead
+     of N. No signal or a tie falls back to marking every member `.nobatch`
+     (strategy `individual`). Eviction never blames terminally: it only
+     chooses who re-gates alone; a terminal red still requires that member's
+     own solo gate, and nothing lands unvalidated (invariant 4 holds).
 7. Queue empty → idle prewarm: under the lock, move the gate worktree to
    master, `cargo build --workspace`, run `warm-witchy-caches.sh`, record
    the sha in `prewarmed`. The next gate starts hot.

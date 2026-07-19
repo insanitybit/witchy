@@ -1787,3 +1787,363 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     assert_eq!(timing["name"], "tests (workspace, minus e2e)");
     assert_eq!(timing["status"], "red");
 }
+
+/// Change 1 (gate fail-fast): the full merge-gate profile overlaps a compile
+/// check, clippy, and the wasm build behind the foreground tests, and aborts
+/// the tests the moment a background leg records a failure. Green path first:
+/// stage order and timing records are pinned so observability consumers
+/// (gate-report.sh, the journal stage summaries) keep parsing.
+#[test]
+fn full_gate_fail_fast_aborts_tests_when_a_background_leg_goes_red() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let temp = TempDir::new();
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).expect("create fake tool directory");
+
+    let tool = bin.join("cargo");
+    fs::write(
+        &tool,
+        "#!/bin/sh\n\
+         if [ \"$1\" = check ]; then sleep \"${FAKE_CARGO_CHECK_SECS:-0}\"; exit 0; fi\n\
+         if [ \"$1\" = clippy ]; then\n\
+           sleep 1\n\
+           if [ \"${FAKE_CARGO_FAIL_CLIPPY:-0}\" = 1 ]; then echo 'error: fake lint failure'; exit 5; fi\n\
+           exit 0\n\
+         fi\n\
+         if [ \"$1\" = nextest ] && [ \"$2\" = run ]; then\n\
+           if [ -n \"${FAKE_NEXTEST_PID_FILE:-}\" ]; then printf '%s\\n' \"$$\" >\"$FAKE_NEXTEST_PID_FILE\"; fi\n\
+           exec sleep \"${FAKE_CARGO_NEXTEST_SECS:-3}\"\n\
+         fi\n\
+         exit 0\n",
+    )
+    .expect("write fake cargo");
+    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).expect("chmod fake cargo");
+    let git = bin.join("git");
+    fs::write(&git, "#!/bin/sh\nexit 0\n").expect("write fake git");
+    fs::set_permissions(&git, fs::Permissions::from_mode(0o755)).expect("chmod fake git");
+    let rustup = bin.join("rustup");
+    fs::write(
+        &rustup,
+        "#!/bin/sh\nif [ \"$1\" = which ]; then echo /usr/bin/true; fi\nexit 0\n",
+    )
+    .expect("write fake rustup");
+    fs::set_permissions(&rustup, fs::Permissions::from_mode(0o755))
+        .expect("chmod fake rustup");
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+
+    // The fmt stage runs the nextest-built binary from the target dir; give
+    // the fake toolchain one.
+    let target = temp.path().join("target-full");
+    fs::create_dir_all(target.join("debug")).expect("create fake target dir");
+    let witchy = target.join("debug/witchy");
+    fs::write(&witchy, "#!/bin/sh\nexit 0\n").expect("write fake witchy");
+    fs::set_permissions(&witchy, fs::Permissions::from_mode(0o755))
+        .expect("chmod fake witchy");
+
+    let green = Command::new("bash")
+        .arg(root.join("scripts/check.sh"))
+        .env("PATH", &path)
+        .env("CARGO_TARGET_DIR", &target)
+        .env_remove("WITCHY_GATE_SCOPE")
+        .env_remove("WITCHY_GATE_QUEUE_INFRA")
+        .env_remove("WITCHY_FAILFAST_POLL")
+        .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
+        .output()
+        .expect("run green full gate with fake tools");
+    assert!(
+        green.status.success(),
+        "fake full gate failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&green.stdout),
+        String::from_utf8_lossy(&green.stderr),
+    );
+    let stdout = String::from_utf8(green.stdout).expect("green output is utf8");
+    let names: Vec<_> = stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("WITCHY_TIMING "))
+        .map(|json| serde_json::from_str::<serde_json::Value>(json).expect("timing is JSON"))
+        .map(|timing| timing["name"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "tests (workspace)",
+            "witchy fmt (std+examples)",
+            "compile check (cargo check)",
+            "clippy (deny warnings)",
+            "wasm playground build",
+            "runnable book (browser)",
+        ],
+        "full-gate stage/timing order changed: {stdout}",
+    );
+
+    // Red leg: clippy fails at ~1s while the tests would run 60s. Fail-fast
+    // must abort the foreground stage, surface clippy's output, and exit red
+    // in seconds, not after the test stage.
+    let target_red = temp.path().join("target-full-red");
+    fs::create_dir_all(target_red.join("debug")).expect("create red fake target dir");
+    let witchy_red = target_red.join("debug/witchy");
+    fs::write(&witchy_red, "#!/bin/sh\nexit 0\n").expect("write red fake witchy");
+    fs::set_permissions(&witchy_red, fs::Permissions::from_mode(0o755))
+        .expect("chmod red fake witchy");
+    let nextest_pid_file = temp.path().join("nextest.pid");
+    let started = Instant::now();
+    let red = Command::new("bash")
+        .arg(root.join("scripts/check.sh"))
+        .env("PATH", &path)
+        .env("CARGO_TARGET_DIR", &target_red)
+        .env_remove("WITCHY_GATE_SCOPE")
+        .env_remove("WITCHY_GATE_QUEUE_INFRA")
+        .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
+        .env("WITCHY_FAILFAST_POLL", "1")
+        .env("FAKE_CARGO_FAIL_CLIPPY", "1")
+        .env("FAKE_CARGO_NEXTEST_SECS", "60")
+        .env("FAKE_NEXTEST_PID_FILE", &nextest_pid_file)
+        .output()
+        .expect("run red full gate with fake tools");
+    let elapsed = started.elapsed();
+    assert!(!red.status.success(), "red clippy leg did not fail the gate");
+    assert!(
+        elapsed < Duration::from_secs(45),
+        "fail-fast did not abort the 60s test stage promptly: {elapsed:?}",
+    );
+    let stdout = String::from_utf8(red.stdout).expect("red output is utf8");
+    assert!(
+        stdout.contains("aborting the foreground stage (fail-fast)"),
+        "missing fail-fast abort marker: {stdout}",
+    );
+    assert!(
+        stdout.contains("fake lint failure"),
+        "red leg output was not surfaced: {stdout}",
+    );
+    let timings: Vec<serde_json::Value> = stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("WITCHY_TIMING "))
+        .map(|json| serde_json::from_str(json).expect("timing record is JSON"))
+        .collect();
+    let tests = timings
+        .iter()
+        .find(|timing| timing["name"] == "tests (workspace)")
+        .expect("aborted foreground timing was emitted");
+    assert_eq!(tests["status"], "aborted");
+    let clippy = timings
+        .iter()
+        .find(|timing| timing["name"] == "clippy (deny warnings)")
+        .expect("red clippy timing was emitted");
+    assert_eq!(clippy["kind"], "background");
+    assert_eq!(clippy["status"], "red");
+    let nextest_pid = fs::read_to_string(&nextest_pid_file)
+        .expect("fake nextest recorded its pid")
+        .trim()
+        .parse::<i32>()
+        .expect("parse fake nextest pid");
+    assert!(
+        !process_is_alive(nextest_pid),
+        "fail-fast abort orphaned the foreground test process {nextest_pid}",
+    );
+}
+
+/// Change 3 (culprit eviction): an unrelated red batch whose failure names a
+/// file only one member touches evicts THAT member to a solo gate and lands
+/// the remaining members as one green batch — two follow-up gates instead of
+/// one per member.
+#[test]
+fn unrelated_red_batch_evicts_the_culprit_and_rebatches_the_rest() {
+    let fixture = QueueFixture::stack(&[]);
+    let root = fixture.root.clone();
+    for (branch, file) in [
+        ("notes-a", "notes-a.txt"),
+        ("widget-fix", "tests/foo_widget.rs"),
+        ("notes-b", "notes-b.txt"),
+    ] {
+        run_git(&root, &["switch", "-c", branch, "master"]);
+        if let Some(parent) = root.join(file).parent() {
+            fs::create_dir_all(parent).expect("create branch file parent");
+        }
+        fs::write(root.join(file), format!("{branch}\n")).expect("write branch file");
+        run_git(&root, &["add", file]);
+        run_git(&root, &["commit", "-m", &format!("add {file}")]);
+        run_git(&root, &["switch", "master"]);
+    }
+    fixture.mq_ok(&["submit", "notes-a"], "true");
+    fixture.mq_ok(&["submit", "widget-fix"], "true");
+    fixture.mq_ok(&["submit", "notes-b"], "true");
+
+    // Red exactly while the culprit's file is in the candidate tree, with a
+    // nextest-shaped FAIL line naming the culprit's test binary.
+    let gate = "test ! -f tests/foo_widget.rs || { printf 'FAIL [   0.42s] witchy::foo_widget foo_widget::renders_the_widget\\n'; exit 1; }";
+    fixture.mq_ok(&["run", "--once"], gate);
+
+    let journal = fixture.journal();
+    let batch_reds: Vec<_> = journal
+        .iter()
+        .filter(|event| event["event"] == "batch_red")
+        .collect();
+    assert_eq!(batch_reds.len(), 1, "expected exactly one red batch: {journal:?}");
+    assert_eq!(batch_reds[0]["strategy"], "culprit_evict");
+    let evicted = journal
+        .iter()
+        .find(|event| event["event"] == "evicted")
+        .expect("eviction decision was journaled");
+    assert_eq!(evicted["branch"], "widget-fix");
+    assert!(
+        evicted["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("failing target")),
+        "eviction reason is missing: {evicted}",
+    );
+    let merged: Vec<_> = journal
+        .iter()
+        .filter(|event| event["event"] == "merged")
+        .collect();
+    let merged_branches: BTreeSet<_> = merged
+        .iter()
+        .map(|event| event["branch"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        merged_branches,
+        BTreeSet::from(["notes-a", "notes-b"]),
+        "innocent members did not land: {journal:?}",
+    );
+    assert!(
+        merged.iter().all(|event| event["batch"] == "2"),
+        "remaining members were not re-gated as ONE batch: {merged:?}",
+    );
+    let merged_logs: BTreeSet<_> = merged
+        .iter()
+        .map(|event| event["log"].as_str().unwrap())
+        .collect();
+    assert_eq!(merged_logs.len(), 1, "remaining members used more than one gate");
+    assert!(
+        journal
+            .iter()
+            .any(|event| event["event"] == "red" && event["branch"] == "widget-fix"),
+        "evicted culprit was not solo-gated to a terminal red: {journal:?}",
+    );
+    assert!(run_git(&root, &["show", "master:notes-a.txt"]).status.success());
+    assert!(run_git(&root, &["show", "master:notes-b.txt"]).status.success());
+    let culprit_on_master = Command::new("git")
+        .args(["-C", root.to_str().unwrap(), "show", "master:tests/foo_widget.rs"])
+        .output()
+        .expect("inspect culprit on master");
+    assert!(!culprit_on_master.status.success(), "the red culprit landed");
+}
+
+/// Change 2 (snapshot re-baseline): a candidate whose generated snapshot went
+/// stale is amended with `chore(gate): re-baseline generated artifacts` during
+/// prepare; the amended sha is what gets gated and fast-forwarded. A failing
+/// generator never fails the candidate — regen is skipped and the gate
+/// adjudicates.
+#[test]
+fn prepare_rebaselines_stale_generated_snapshots_onto_the_gated_sha() {
+    let fixture = QueueFixture::stack(&[]);
+    let root = fixture.root.clone();
+
+    // A committed (stale) snapshot on master, and a branch touching a census
+    // input (std/ is outside the docs-safe set, so regen triggers).
+    fs::create_dir_all(root.join("rfcs")).expect("create rfcs dir");
+    fs::write(root.join("rfcs/0087-migration-census.tsv"), "stale\n").expect("write stale tsv");
+    run_git(&root, &["add", "rfcs/0087-migration-census.tsv"]);
+    run_git(&root, &["commit", "-m", "stale census snapshot"]);
+    run_git(&root, &["switch", "-c", "census-branch", "master"]);
+    fs::create_dir_all(root.join("std")).expect("create std dir");
+    fs::write(root.join("std/foo.witchy"), "## doc\n").expect("write std input");
+    run_git(&root, &["add", "std/foo.witchy"]);
+    run_git(&root, &["commit", "-m", "touch census input"]);
+    run_git(&root, &["switch", "master"]);
+
+    // Pre-create the coordinator's gate worktree and plant fake generator
+    // binaries plus a fake `cargo` so the regen build step succeeds.
+    let gate = fixture.gate_worktree.clone();
+    run_git(
+        &root,
+        &["worktree", "add", "--detach", gate.to_str().unwrap(), "master"],
+    );
+    fs::create_dir_all(gate.join("target/debug")).expect("create fake gate target");
+    let census = gate.join("target/debug/rfc0087-census");
+    fs::write(&census, "#!/bin/sh\nprintf 'fresh\\n'\n").expect("write fake census generator");
+    fs::set_permissions(&census, fs::Permissions::from_mode(0o755))
+        .expect("chmod fake census generator");
+    let bin = fixture._temp.path().join("regen-bin");
+    fs::create_dir(&bin).expect("create fake cargo dir");
+    let cargo = bin.join("cargo");
+    fs::write(&cargo, "#!/bin/sh\nexit 0\n").expect("write fake cargo");
+    fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755)).expect("chmod fake cargo");
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+
+    fixture.mq_ok(&["submit", "census-branch"], "true");
+    let output = fixture
+        .mq_command(&["run", "--once"], "true")
+        .env("PATH", &path)
+        .output()
+        .expect("run rebaselining coordinator");
+    assert!(
+        output.status.success(),
+        "rebaselining run failed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let journal = fixture.journal();
+    let rebaselined = journal
+        .iter()
+        .find(|event| event["event"] == "rebaselined")
+        .expect("rebaseline was journaled");
+    assert_eq!(rebaselined["branch"], "census-branch");
+    assert_eq!(rebaselined["files"], "rfcs/0087-migration-census.tsv");
+    assert!(
+        journal
+            .iter()
+            .any(|event| event["event"] == "merged" && event["branch"] == "census-branch"),
+        "amended candidate did not land: {journal:?}",
+    );
+    assert_eq!(
+        git(&root, &["show", "master:rfcs/0087-migration-census.tsv"]),
+        "fresh",
+        "master does not carry the regenerated snapshot",
+    );
+    assert_eq!(
+        git(&root, &["log", "-1", "--format=%s", "master"]),
+        "chore(gate): re-baseline generated artifacts",
+        "the gated+merged tip is not the amended sha",
+    );
+
+    // A broken generator must not fail the candidate: regen is skipped.
+    fs::write(&census, "#!/bin/sh\nexit 1\n").expect("break fake census generator");
+    fs::set_permissions(&census, fs::Permissions::from_mode(0o755))
+        .expect("chmod broken census generator");
+    run_git(&root, &["switch", "-c", "census-broken", "master"]);
+    fs::write(root.join("std/bar.witchy"), "## doc\n").expect("write second std input");
+    run_git(&root, &["add", "std/bar.witchy"]);
+    run_git(&root, &["commit", "-m", "touch census input again"]);
+    run_git(&root, &["switch", "master"]);
+    fixture.mq_ok(&["submit", "census-broken"], "true");
+    let output = fixture
+        .mq_command(&["run", "--once"], "true")
+        .env("PATH", &path)
+        .output()
+        .expect("run coordinator with broken generator");
+    assert!(
+        output.status.success(),
+        "broken generator failed the queue run: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let journal = fixture.journal();
+    assert!(
+        journal
+            .iter()
+            .any(|event| event["event"] == "merged" && event["branch"] == "census-broken"),
+        "broken generator blocked an unrelated candidate: {journal:?}",
+    );
+    assert_eq!(
+        journal
+            .iter()
+            .filter(|event| event["event"] == "rebaselined")
+            .count(),
+        1,
+        "a failing generator still produced a rebaseline commit",
+    );
+    assert_eq!(
+        git(&root, &["show", "master:rfcs/0087-migration-census.tsv"]),
+        "fresh",
+        "a failing generator modified the snapshot",
+    );
+}

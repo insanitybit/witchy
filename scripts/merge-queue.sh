@@ -40,8 +40,8 @@
 # elsewhere would be invisible to the coordinator):
 #   queue/*.json    one pending submission per file (FIFO by filename)
 #   journal.jsonl   append-only events: submitted/merged/already_merged/red/
-#                   timeout/conflict/requeued/blocked/dropped (red+timeout carry
-#                   the log path)
+#                   timeout/conflict/requeued/blocked/dropped/rebaselined/
+#                   evicted (red+timeout carry the log path)
 #   logs/           full gate output per attempt (check.sh stage markers carry
 #                   t+<seconds> offsets, so per-stage timing is in every log)
 #   coordinator.lock/ lifetime singleton for the persistent coordinator loop
@@ -1145,6 +1145,173 @@ submission_is_represented() { # submission_is_represented <submitted-sha>
         && ! printf '%s\n' "$cherry_status" | grep -c '^+' >/dev/null
 }
 
+# Deterministic generated snapshots (the RFC-0087 census TSV and the
+# `witchy doc`-rendered spec/stdlib.md) go stale whenever an unrelated branch
+# lands first: the candidate regenerated them against an older master, the
+# rebase keeps its now-incomplete snapshot, and the drift test turns a correct
+# change into a ~28-min red gate plus a resubmission. After the candidate (and
+# any batch) is fully prepared, re-run the two generators and, if the committed
+# outputs drifted, commit the regenerated files onto the candidate as
+# `chore(gate): re-baseline generated artifacts`. process_one captures the
+# gated sha AFTER this step, so the amended sha is exactly what gets gated and
+# fast-forwarded. Strict limits:
+#   * ONLY the two whitelisted files are ever regenerated or committed;
+#   * a generator BUILD or RUN failure never fails the candidate — regen is
+#     skipped and the gate adjudicates as before;
+#   * regen is skipped when the batch diff stays inside the docs-safe set
+#     (same set as the gate-scope classifier) and does not touch the census
+#     snapshot: a docs-only gate must stay seconds, not pay a build. For code
+#     diffs the `cargo build` here is not wasted work — nextest needs the same
+#     dev-profile `witchy` bin artifacts inside the gate, so the cost mostly
+#     MOVES into prepare rather than adding to the green-gate total.
+rebaseline_generated_snapshots() { # rebaseline_generated_snapshots <base> <branch> <change-id> <attempt-id>
+    local rb_base="$1" rb_branch="$2" rb_change_id="$3" rb_attempt_id="$4"
+    local pre_diff unsafe tmp files=""
+    pre_diff="$(git -C "$gate_wt" diff --name-only --no-renames "$rb_base..HEAD" 2>/dev/null || true)"
+    [ -n "$pre_diff" ] || return 0
+    unsafe="$(printf '%s\n' "$pre_diff" | grep -vE '^(rfcs/|wiki/|bugs/|external-refs/|scratch/|security-eval/)' || true)"
+    if [ -z "$unsafe" ] \
+        && ! printf '%s\n' "$pre_diff" | grep -cx 'rfcs/0087-migration-census\.tsv' >/dev/null; then
+        return 0
+    fi
+    # Never regenerate over TRACKED modifications (impossible after a clean
+    # replay, but a stray edit must not be swept into the re-baseline commit).
+    # Untracked files (target/, logs, progress sidecars) are normal in the
+    # gate worktree and must not disable regen.
+    [ -z "$(git -C "$gate_wt" status --porcelain --untracked-files=no 2>/dev/null)" ] || return 0
+    # Clear the globally configured sccache wrapper exactly like run_gate does:
+    # a detached daemon's sandbox EPERMs it, and a silently failing build here
+    # would neuter the whole re-baseline path for daemon coordinators.
+    if ! ( cd "$gate_wt" && env RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= \
+        cargo build --bin witchy --bin rfc0087-census ) >/dev/null 2>&1; then
+        note "rebaseline: generator build failed; skipping regen (the gate adjudicates)"
+        return 0
+    fi
+    tmp="$(mktemp "${TMPDIR:-/tmp}/witchy-rebaseline-XXXXXX")"
+    # Each generator writes to a temp file first: a mid-run failure must never
+    # truncate the committed snapshot, and an identical output must not dirty
+    # the tree.
+    if [ -f "$gate_wt/rfcs/0087-migration-census.tsv" ] \
+        && ( cd "$gate_wt" && ./target/debug/rfc0087-census . ) >"$tmp" 2>/dev/null \
+        && ! cmp -s "$tmp" "$gate_wt/rfcs/0087-migration-census.tsv"; then
+        cat "$tmp" >"$gate_wt/rfcs/0087-migration-census.tsv"
+        files="rfcs/0087-migration-census.tsv"
+    fi
+    if [ -f "$gate_wt/spec/stdlib.md" ] && ls "$gate_wt"/std/*.witchy >/dev/null 2>&1 \
+        && ( cd "$gate_wt" && ./target/debug/witchy doc std/*.witchy ) >"$tmp" 2>/dev/null \
+        && ! cmp -s "$tmp" "$gate_wt/spec/stdlib.md"; then
+        cat "$tmp" >"$gate_wt/spec/stdlib.md"
+        files="${files:+$files }spec/stdlib.md"
+    fi
+    rm -f "$tmp"
+    [ -n "$files" ] || return 0
+    # shellcheck disable=SC2086 — the whitelisted paths never contain spaces.
+    if git -C "$gate_wt" add -- $files \
+        && git -C "$gate_wt" commit --quiet -m "chore(gate): re-baseline generated artifacts"; then
+        note "re-baselined generated artifacts for $rb_branch: $files"
+        record rebaselined "$rb_branch" change_id "$rb_change_id" attempt_id "$rb_attempt_id" \
+            files "$files" base "$rb_base"
+    else
+        note "rebaseline: commit failed; restoring the pristine candidate"
+        git -C "$gate_wt" reset --quiet -- $files 2>/dev/null || true
+        git -C "$gate_wt" checkout --quiet -- $files 2>/dev/null || true
+    fi
+    return 0
+}
+
+# Culprit eviction for an UNRELATED (non-stack) red batch. The historical
+# behavior re-queued all N members for N individual full gates. Most red
+# batches have one plausible culprit: the member whose diff touches the files
+# the failure names. Parse the failing target out of the gate log (a nextest
+# FAIL/TIMEOUT line, or a rustc `-->` / `could not compile` context), then
+# score every member's own diff by name overlap with it. A unique positive
+# top score evicts ONLY that member to an individual gate while the remaining
+# N-1 re-gate together as ONE batch — 2 follow-up gates instead of N. Any
+# ambiguity (no parsable target, nobody touches related files, or a tie)
+# falls back to the split-all behavior. Soundness is untouched either way:
+# eviction only changes which members re-gate TOGETHER; nothing lands without
+# a green gate, and no member reaches a terminal red state except via its own
+# solo gate (invariant 4).
+evict_normalize() { printf '%s\n' "$1" | tr 'A-Z-' 'a-z_'; }
+
+evict_candidate_index() { # evict_candidate_index <log> <base>; echoes "<index> <score>" on a clear signal
+    local log="$1" ev_base="$2" plain fail_line rest="" target="" binary="" crate="" test_path="" err_path="" compile_crate=""
+    plain="$(strip_ansi <"$log" 2>/dev/null || true)"
+    [ -n "$plain" ] || return 0
+    fail_line="$(printf '%s\n' "$plain" \
+        | { grep -E '^[[:space:]]*(TRY [0-9]+ )?(FAIL|TIMEOUT|ABORT|SIGABRT|SIGSEGV|LEAK) \[' || true; } \
+        | sed -n '1p')"
+    if [ -n "$fail_line" ]; then
+        # `FAIL [   1.234s] crate[::binary] test::path`
+        # shellcheck disable=SC2046 — word splitting is the parse here.
+        set -- $(printf '%s\n' "$fail_line" | sed -E 's/^[[:space:]]*(TRY [0-9]+ )?[A-Z]+ \[[^]]*\][[:space:]]*//')
+        target="${1:-}"; test_path="${2:-}"
+        crate="${target%%::*}"
+        binary="${target##*::}"
+    fi
+    err_path="$(printf '%s\n' "$plain" | sed -n 's/^[[:space:]]*--> \([^:][^:]*\):.*/\1/p' | sed -n '1p')"
+    compile_crate="$(printf '%s\n' "$plain" | sed -n 's/^error: could not compile `\([^`]*\)`.*/\1/p' | sed -n '1p')"
+    [ -n "$crate" ] || crate="$compile_crate"
+    [ -n "$binary$err_path$crate" ] || return 0
+
+    # Name tokens worth matching: the failing binary and the test path's
+    # segments. Short/generic tokens (mod names like `tests`, the root crate)
+    # only produce noise, so they are dropped.
+    local tokens="" tok seg
+    for tok in "$binary" "$crate"; do
+        [ -n "$tok" ] || continue
+        tok="$(evict_normalize "$tok")"
+        case "$tok" in witchy | tests | test | main | src) continue ;; esac
+        [ "${#tok}" -ge 4 ] || continue
+        tokens="$tokens $tok"
+    done
+    rest="$test_path"
+    while [ -n "$rest" ]; do
+        seg="${rest%%::*}"
+        if [ "$seg" = "$rest" ]; then rest=""; else rest="${rest#*::}"; fi
+        [ -n "$seg" ] || continue
+        seg="$(evict_normalize "$seg")"
+        case "$seg" in witchy | tests | test | main | src) continue ;; esac
+        [ "${#seg}" -ge 4 ] || continue
+        tokens="$tokens $seg"
+    done
+
+    local best=0 best_index="" tie=0 mi f nf stem score
+    for mi in "${!batch_submitted_shas[@]}"; do
+        score=0
+        while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            nf="$(evict_normalize "$f")"
+            stem="${f##*/}"; stem="${stem%%.*}"; stem="$(evict_normalize "$stem")"
+            if [ -n "$err_path" ] && [ "$f" = "$err_path" ]; then
+                score=$((score + 4))
+            fi
+            for tok in $tokens; do
+                if [ "$stem" = "$tok" ]; then
+                    score=$((score + 3))
+                else
+                    case "$nf" in *"$tok"*) score=$((score + 1)) ;; esac
+                fi
+            done
+            case "$crate" in
+                "" | witchy)
+                    [ -n "$crate" ] && case "$f" in src/* | tests/*) score=$((score + 1)) ;; esac
+                    ;;
+                *)
+                    case "$f" in "crates/$crate/"*) score=$((score + 2)) ;; esac
+                    ;;
+            esac
+        done < <(git -C "$root" diff --name-only --no-renames "$ev_base...${batch_submitted_shas[$mi]}" 2>/dev/null || true)
+        if [ "$score" -gt "$best" ]; then
+            best="$score"; best_index="$mi"; tie=0
+        elif [ "$score" -eq "$best" ] && [ "$best" -gt 0 ]; then
+            tie=1
+        fi
+    done
+    [ -n "$best_index" ] && [ "$best" -gt 0 ] && [ "$tie" -eq 0 ] || return 0
+    printf '%s %s\n' "$best_index" "$best"
+}
+
 process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     local f="$1"
     local branch change_id submitted_sha attempt_id
@@ -1360,6 +1527,14 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         fi
         note "$batch_kind: gating ${#batch_branches[@]} branches at the tip: ${batch_branches[*]}"
     fi
+
+    # Re-baseline deterministic generated snapshots on the prepared candidate:
+    # a snapshot gone stale under it costs ~2 min of prepare here instead of a
+    # ~28-min red gate + resubmission. Runs BEFORE the sha capture and the diff
+    # classification below, so the amended sha (and its spec/ paths) is what
+    # gets classified, gated, and fast-forwarded.
+    rebaseline_generated_snapshots "$base" "$branch" "$change_id" "$attempt_id" || true
+
     local sha; sha="$(git -C "$gate_wt" rev-parse HEAD)"
 
     # Fuzz policy from the diff (see check.sh's WITCHY_GATE_FUZZ). The differential
@@ -1538,11 +1713,24 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             if [ "${#batch_branches[@]}" -gt 1 ]; then
                 # A red batch indicts no one member. Keep every queue file;
                 # ordered dependency stacks bisect by prefix, while unrelated
-                # changes re-gate individually.
+                # changes evict a clear culprit (see evict_candidate_index) or
+                # fall back to individual re-gates.
                 [ "$why" = "red" ] && extra="$(failure_summary "$log")"
+                local evict_pick="" evict_index="" evict_score="" split_strategy="individual"
+                if [ "$stack_mode" -eq 1 ]; then
+                    split_strategy="prefix_split"
+                elif [ "$why" = "red" ]; then
+                    evict_pick="$(evict_candidate_index "$log" "$base" || true)"
+                    evict_index="${evict_pick%% *}"
+                    evict_score="${evict_pick##* }"
+                    case "$evict_index" in '' | *[!0-9]*) evict_index="" ;; esac
+                    [ -z "$evict_index" ] || split_strategy="culprit_evict"
+                fi
                 note "batch of ${#batch_branches[@]} is $(echo "$why" | tr a-z A-Z) after ${gate_took}s — $extra"
                 if [ "$stack_mode" -eq 1 ]; then
                     note "  splitting dependency stack at a validated prefix boundary; log: $log"
+                elif [ -n "$evict_index" ]; then
+                    note "  evicting likely culprit '${batch_branches[$evict_index]}' (score $evict_score) to an individual gate; the remaining $(( ${#batch_branches[@]} - 1 )) re-gate as one batch; log: $log"
                 else
                     note "  re-queueing unrelated members for individual gates; log: $log"
                 fi
@@ -1550,7 +1738,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
                 record_attempt batch_red "$branch" "$attempt_start" "$prepare_finished" \
                     "$lock_acquired" "$gate_started" "$gate_finished" "$batch_red_finished" \
                     change_id "$change_id" members "${batch_branches[*]}" log "$log" reason "$extra" \
-                    strategy "$([ "$stack_mode" -eq 1 ] && echo prefix_split || echo individual)" \
+                    strategy "$split_strategy" \
                     stages "$(stage_summary "$log")"
                 local bf bi
                 for bi in "${!batch_ids[@]}"; do
@@ -1566,8 +1754,20 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
                     local next_prefix=$(( (${#batch_branches[@]} + 1) / 2 ))
                     set_queue_batch_limit "$f" "$change_id" "$submitted_sha" "$attempt_id" "$next_prefix" || true
                     note "  dependency stack will re-gate prefix of $next_prefix before the blocked suffix"
+                elif [ -n "$evict_index" ]; then
+                    # Only the evicted member gates alone; everyone else keeps
+                    # batching eligibility and re-gates together next loop.
+                    mark_queue_entry "${batch_files[$evict_index]}" "${batch_ids[$evict_index]}" \
+                        "${batch_submitted_shas[$evict_index]}" "${batch_attempt_ids[$evict_index]}" nobatch || true
+                    record evicted "${batch_branches[$evict_index]}" \
+                        change_id "${batch_ids[$evict_index]}" \
+                        attempt_id "${batch_attempt_ids[$evict_index]}" \
+                        submitted_sha "${batch_submitted_shas[$evict_index]}" \
+                        score "$evict_score" log "$log" \
+                        reason "diff overlaps failing target: $extra"
                 else
-                    # An unrelated red batch has no ordered prefix to trust.
+                    # No clear culprit: an unrelated red batch has no ordered
+                    # prefix to trust, so every member re-gates individually.
                     for bi in "${!batch_files[@]}"; do
                         mark_queue_entry "${batch_files[$bi]}" "${batch_ids[$bi]}" \
                             "${batch_submitted_shas[$bi]}" "${batch_attempt_ids[$bi]}" nobatch || true
@@ -1734,6 +1934,9 @@ prewarm_gate() {
              fi || true; } \
         && { [ -d target-clippy ] \
                  && CARGO_TARGET_DIR=target-clippy cargo clippy --workspace --all-targets -- -D warnings >/dev/null 2>&1 \
+                 || true; } \
+        && { [ -d target-check ] \
+                 && CARGO_TARGET_DIR=target-check cargo check --workspace --all-targets >/dev/null 2>&1 \
                  || true; } \
         && { [ -x scripts/warm-witchy-caches.sh ] && ./scripts/warm-witchy-caches.sh >/dev/null 2>&1 || true; } ) \
         && echo "$m" >"$qdir/prewarmed" || true

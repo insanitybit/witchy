@@ -8,8 +8,12 @@
 #                              plus witchy-fmt IF any .witchy files changed —
 #                              the fast inner loop
 #   ./scripts/check.sh         the MERGE gate: tests + fmt in the foreground with
-#                              clippy and the wasm playground build overlapped in
-#                              the background (collected before the gate goes green)
+#                              a compile check (cargo check), clippy, and the wasm
+#                              playground build overlapped in the background
+#                              (collected before the gate goes green). Fail-fast:
+#                              a background leg that finishes RED aborts the
+#                              foreground tests immediately instead of hiding
+#                              behind ~20 min of green tests
 #   ./scripts/check.sh --full  the PUSH gate: also the e2e suite + from-scratch acceptance
 #
 # Shards — ONE named section, for a focused pre-queue run in your own worktree.
@@ -94,7 +98,7 @@ for arg in "$@"; do
         --full) full=1 ;;
         --fast) fast=1 ;;
         --e2e | --examples | --wasm | --queue-infra) shard="${arg#--}" ;;
-        -h | --help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h | --help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "check.sh: unknown argument '$arg' (try --fast, --full, --e2e, --examples, --wasm, --queue-infra, or --help)" >&2; exit 2 ;;
     esac
 done
@@ -388,30 +392,47 @@ run() {
 # so it checks in its OWN target dir (CoW-cloned from the main one on first
 # use, warm thereafter) instead of serializing ~60-75s (warm; minutes under
 # contention) in front of the tests. Same-dir invocations would serialize on
-# cargo's build lock. A leg failure still fails the gate — it just surfaces at
-# collect time, after tests, instead of up front; compile errors still fail
-# fast via nextest's own build.
+# cargo's build lock. A leg failure still fails the gate — via run_watched's
+# fail-fast while the tests run (the foreground stage is aborted the moment a
+# leg reports red), or at collect time at the latest.
 clippy_dir="${target_dir}-clippy"
-seed_clippy_dir() {
+seed_cow_target() { # seed_cow_target <dir>
     # `mkdir` is the atomic claim: exactly one concurrent run seeds; any other
     # sees the dir and uses it as-is (a dir left partially seeded by a killed
     # cp is safe — cargo treats missing artifacts as a cold cache, so the dir
     # self-heals on the next run). APFS clonefile (`cp -c`) or reflink where
     # available: seconds, ~zero disk. Where neither works, the dir stays
-    # empty — a one-time cold clippy.
-    [ -d "$clippy_dir" ] && return 0
-    mkdir "$clippy_dir" 2>/dev/null || return 0
+    # empty — a one-time cold run.
+    local dir="$1"
+    [ -d "$dir" ] && return 0
+    mkdir "$dir" 2>/dev/null || return 0
     if [ -d "$target_dir" ]; then
-        cp -Rc "$target_dir/." "$clippy_dir/" 2>/dev/null \
-            || cp -R --reflink=auto "$target_dir/." "$clippy_dir/" 2>/dev/null \
+        cp -Rc "$target_dir/." "$dir/" 2>/dev/null \
+            || cp -R --reflink=auto "$target_dir/." "$dir/" 2>/dev/null \
             || true
     fi
 }
 launch_clippy_leg() {
     clippy_log="$(mktemp "${TMPDIR:-/tmp}/witchy-clippy-XXXXXX")"
     clippy_started=$(date +%s)
-    ( seed_clippy_dir && background_leg env CARGO_TARGET_DIR="$clippy_dir" cargo clippy --workspace --all-targets -- -D warnings ) >"$clippy_log" 2>&1 &
+    ( seed_cow_target "$clippy_dir" && background_leg env CARGO_TARGET_DIR="$clippy_dir" cargo clippy --workspace --all-targets -- -D warnings ) >"$clippy_log" 2>&1 &
     clippy_pid=$!
+}
+
+# The compile check is a third background leg in the MERGE gate only (not
+# --fast, whose contract is pinned to two legs): `cargo check --workspace
+# --all-targets` is the cheapest command that surfaces a plain rustc compile
+# error in ANY target (warm: 1-3 min), long before nextest's own test-profile
+# build reports it (observed t+1004s in a red gate). Combined with
+# run_watched's fail-fast, a compile error now kills the gate in minutes.
+# Like clippy it runs in its own CoW-seeded target dir so it never serializes
+# on cargo's build lock against the tests or the clippy leg.
+check_dir="${target_dir}-check"
+launch_check_leg() {
+    check_log="$(mktemp "${TMPDIR:-/tmp}/witchy-check-XXXXXX")"
+    check_started=$(date +%s)
+    ( seed_cow_target "$check_dir" && background_leg env CARGO_TARGET_DIR="$check_dir" cargo check --workspace --all-targets ) >"$check_log" 2>&1 &
+    check_pid=$!
 }
 
 # Preserve the command's real finish time without a sidecar file. The marker is
@@ -427,8 +448,46 @@ background_leg() { # background_leg <command...>
     wait "$child" || command_status=$?
     trap - TERM INT
     finished=$(date +%s)
-    printf 'WITCHY_BG_FINISHED %d\n' "$finished"
+    # The marker carries finish time AND exit status: run_watched's fail-fast
+    # scan reads the status from the log (never `wait`), so collect_bg still
+    # owns the pid's single wait.
+    printf 'WITCHY_BG_FINISHED %d %d\n' "$finished" "$command_status"
     return "$command_status"
+}
+
+# Has a background leg already finished RED? Judged from its log marker only —
+# no `wait`, no pid liveness games — so a green leg is still collected (and
+# reported) exactly as before by collect_bg.
+leg_finished_red() { # leg_finished_red <log>
+    local status
+    [ -n "${1:-}" ] && [ -f "$1" ] || return 1
+    status="$(sed -n 's/^WITCHY_BG_FINISHED [0-9][0-9]* \([0-9][0-9]*\)$/\1/p' "$1" | tail -1)"
+    [ -n "$status" ] && [ "$status" -ne 0 ]
+}
+
+# Scan every launched leg for a recorded failure; on the first hit, publish it
+# via failfast_* and clear its pid variable (collect ownership moves to the
+# abort path, and reap_bg must not signal a pid another wait will reap).
+failfast_scan() {
+    if [ -n "${check_pid:-}" ] && leg_finished_red "${check_log:-}"; then
+        failfast_label="compile check (cargo check)"; failfast_pid="$check_pid"
+        failfast_log="$check_log"; failfast_started="$check_started"
+        check_pid=""
+        return 0
+    fi
+    if [ -n "${clippy_pid:-}" ] && leg_finished_red "${clippy_log:-}"; then
+        failfast_label="clippy (deny warnings)"; failfast_pid="$clippy_pid"
+        failfast_log="$clippy_log"; failfast_started="$clippy_started"
+        clippy_pid=""
+        return 0
+    fi
+    if [ -n "${wasm_pid:-}" ] && leg_finished_red "${wasm_log:-}"; then
+        failfast_label="wasm playground build"; failfast_pid="$wasm_pid"
+        failfast_log="$wasm_log"; failfast_started="$wasm_started"
+        wasm_pid=""
+        return 0
+    fi
+    return 1
 }
 
 # Reap the background legs on ANY exit — green, red at tests/fmt, or a failed
@@ -442,8 +501,11 @@ background_leg() { # background_leg <command...>
 # nothing-launched-yet, so modes that skip the legs exit through it safely.
 reap_bg() {
     [ -n "${stage_heartbeat_pid:-}" ] && kill "$stage_heartbeat_pid" 2>/dev/null || true
+    [ -n "${failfast_fg_pid:-}" ] && kill "$failfast_fg_pid" 2>/dev/null || true
+    [ -n "${check_pid:-}" ] && kill "$check_pid" 2>/dev/null || true
     [ -n "${clippy_pid:-}" ] && kill "$clippy_pid" 2>/dev/null || true
     [ -n "${wasm_pid:-}" ] && kill "$wasm_pid" 2>/dev/null || true
+    [ -n "${check_log:-}" ] && rm -f "$check_log" || true
     [ -n "${clippy_log:-}" ] && rm -f "$clippy_log" || true
     [ -n "${wasm_log:-}" ] && rm -f "$wasm_log" || true
     return 0
@@ -461,11 +523,11 @@ collect_bg() { # collect_bg <label> <pid> <log> <started>
     local command_status=0
     wait "$pid" || command_status=$?
     local t_finished
-    t_finished=$(sed -n 's/^WITCHY_BG_FINISHED \([0-9][0-9]*\)$/\1/p' "$log" | tail -1)
+    t_finished=$(sed -n 's/^WITCHY_BG_FINISHED \([0-9][0-9]*\).*$/\1/p' "$log" | tail -1)
     case "$t_finished" in '' | *[!0-9]*) t_finished=$(date +%s) ;; esac
     if [ "$command_status" -ne 0 ]; then
         emit_timing background "$step" "$label" red "$started" "$t_finished"
-        sed '/^WITCHY_BG_FINISHED [0-9][0-9]*$/d' "$log"
+        sed '/^WITCHY_BG_FINISHED /d' "$log"
         rm -f "$log"
         printf '\033[1;31m%s FAILED\033[0m\n' "$label"
         exit 1
@@ -473,6 +535,60 @@ collect_bg() { # collect_bg <label> <pid> <log> <started>
     emit_timing background "$step" "$label" green "$started" "$t_finished"
     rm -f "$log"
     printf '\033[1;34m    [%d] %s took %ds\033[0m\n' "$step" "$label" "$(( t_finished - started ))"
+}
+
+# Like `run`, but FAIL-FAST: while the foreground stage executes, poll the
+# background legs' logs; the moment one records a failure, abort the foreground
+# stage, surface the red leg's full output via collect_bg, and exit red. This
+# is what turns a 1-3 min clippy/compile failure into a ~2-4 min red gate
+# instead of one that only surfaces after ~20 min of doomed tests. On the
+# all-green path it is byte-identical to `run` (same marker, heartbeat, and
+# WITCHY_TIMING record; the poll adds at most WITCHY_FAILFAST_POLL seconds of
+# latency after the stage finishes). The aborted foreground stage is emitted
+# with status "aborted" — consumers that only read "green" (gate-report.sh)
+# ignore it, and the red leg's own record carries the failure.
+run_watched() {
+    step=$((step + 1))
+    local t_stage; t_stage=$(date +%s)
+    printf '\n\033[1;34m==> [%d] %s (t+%ds)\033[0m\n' "$step" "$1" "$(( t_stage - t_start ))"
+    local label="$1"
+    shift
+    stage_heartbeat "$step" "$label" "$t_stage" &
+    stage_heartbeat_pid=$!
+    "$@" &
+    failfast_fg_pid=$!
+    local poll="${WITCHY_FAILFAST_POLL:-5}"
+    case "$poll" in '' | *[!0-9]* | 0) poll=5 ;; esac
+    while kill -0 "$failfast_fg_pid" 2>/dev/null; do
+        if failfast_scan; then
+            printf '\n\033[1;31m%s FAILED while %s ran — aborting the foreground stage (fail-fast)\033[0m\n' \
+                "$failfast_label" "$label"
+            kill "$failfast_fg_pid" 2>/dev/null || true
+            wait "$failfast_fg_pid" 2>/dev/null || true
+            failfast_fg_pid=""
+            kill "$stage_heartbeat_pid" 2>/dev/null || true
+            wait "$stage_heartbeat_pid" 2>/dev/null || true
+            stage_heartbeat_pid=""
+            emit_timing foreground "$step" "$label" aborted "$t_stage" "$(date +%s)"
+            # collect_bg prints the red leg's output, emits its red timing
+            # record, and exits 1 (the EXIT trap reaps the remaining legs).
+            collect_bg "$failfast_label" "$failfast_pid" "$failfast_log" "$failfast_started"
+            exit 1
+        fi
+        sleep "$poll"
+    done
+    local command_status=0
+    wait "$failfast_fg_pid" || command_status=$?
+    failfast_fg_pid=""
+    kill "$stage_heartbeat_pid" 2>/dev/null || true
+    wait "$stage_heartbeat_pid" 2>/dev/null || true
+    stage_heartbeat_pid=""
+    local t_finished; t_finished=$(date +%s)
+    local stage_status="green"
+    [ "$command_status" -eq 0 ] || stage_status="red"
+    emit_timing foreground "$step" "$label" "$stage_status" "$t_stage" "$t_finished"
+    [ "$command_status" -eq 0 ] || return "$command_status"
+    printf '\033[1;34m    [%d] %s took %ds\033[0m\n' "$step" "$label" "$(( t_finished - t_stage ))"
 }
 
 if [ "$fast" -eq 1 ]; then
@@ -488,7 +604,7 @@ if [ "$fast" -eq 1 ]; then
         run "build (binary)"           cargo build -p witchy
         run "witchy fmt (changed .witchy files)" witchy_fmt_check
     fi
-    run "tests (workspace, minus e2e)" "${test_cmd[@]}"
+    run_watched "tests (workspace, minus e2e)" "${test_cmd[@]}"
     collect_bg "clippy (deny warnings)" "$clippy_pid" "$clippy_log" "$clippy_started"
     clippy_pid=""
     # Product discovery already builds the excluded merge_queue test binary.
@@ -505,19 +621,23 @@ if [ "$gate_scope" = "docs" ]; then
     exit 0
 fi
 
-# The full gate runs three independent legs CONCURRENTLY and collects the
-# background two after the foreground one finishes:
+# The full gate runs four independent legs CONCURRENTLY and collects the
+# background three after the foreground one finishes:
 #   [fg] tests  — nextest builds the workspace itself, including a fresh `witchy`
 #                 binary: the integration tests name it via CARGO_BIN_EXE_witchy,
 #                 so cargo must (re)build the bin before compiling them. That
 #                 makes a standalone pre-build redundant, and the fmt check below
 #                 can run AFTER the tests against the nextest-built binary.
+#   [bg] check  — see launch_check_leg above (own CoW-cloned target dir);
+#                 surfaces plain compile errors in minutes.
 #   [bg] clippy — see launch_clippy_leg above (own CoW-cloned target dir).
 #   [bg] wasm   — targets wasm32-unknown-unknown, shares no native artifacts
 #                 (this leg overlapped tests before this restructure too).
-# A background-leg failure still fails the gate — it just surfaces at collect
-# time instead of up front; the restructure optimizes the common all-green
-# path.
+# A background-leg failure fails the gate FAST: run_watched polls the legs
+# while the tests run and aborts them the moment a leg records a failure, so
+# a red check/clippy/wasm surfaces in minutes instead of after the full test
+# stage. The all-green path is unchanged (overlap, not serialization).
+launch_check_leg
 launch_clippy_leg
 
 wasm_log="$(mktemp "${TMPDIR:-/tmp}/witchy-wasm-XXXXXX")"
@@ -525,9 +645,11 @@ wasm_started=$(date +%s)
 ( background_leg "${wasm_cargo[@]}" build --lib --no-default-features --target wasm32-unknown-unknown ) >"$wasm_log" 2>&1 &
 wasm_pid=$!
 
-run "tests (workspace)"        "${test_cmd[@]}"
+run_watched "tests (workspace)"        "${test_cmd[@]}"
 run "witchy fmt (std+examples)" witchy_fmt_check
 
+collect_bg "compile check (cargo check)" "$check_pid" "$check_log" "$check_started"
+check_pid=""
 collect_bg "clippy (deny warnings)"   "$clippy_pid" "$clippy_log" "$clippy_started"
 clippy_pid=""
 collect_bg "wasm playground build"    "$wasm_pid"   "$wasm_log" "$wasm_started"

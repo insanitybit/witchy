@@ -94,3 +94,25 @@ baseline (-25..-42%); the serial front (95-413s observed) is eliminated in
 production gates (stage timings show fmt/clippy/wasm collects at 0-1s).
 Docs-only gates drop from ~450s to seconds once the coordinator daemon is
 restarted onto this code.
+
+## Follow-up (2026-07-18): red-gate cost reduction
+
+An 8-hour journal window showed 5.2h burned in 11 red gates (~28 min each):
+background-leg failures only surfaced at collect time after the tests, stale
+generated snapshots (census TSV / spec/stdlib.md) turned correct candidates
+red, and a red batch of N re-gated all N members individually. Three
+extensions, documented operationally in `scripts/MERGE-QUEUE.md`:
+
+1. **Gate fail-fast** (`check.sh`): a `cargo check --workspace --all-targets`
+   background leg (own CoW target dir) plus fail-fast polling — the moment
+   any background leg records a failure the foreground tests are aborted and
+   the leg's output fails the gate. Red clippy/compile gates cost ~2-4 min
+   instead of the full test stage; green gates keep the pure-overlap shape.
+2. **Snapshot re-baseline** (`merge-queue.sh` prepare): the coordinator
+   re-runs the two whitelisted generators on the prepared candidate and
+   commits drift as `chore(gate): re-baseline generated artifacts` before
+   capturing the gated sha; journal event `rebaselined`.
+3. **Culprit eviction on unrelated batch red**: the member whose diff
+   uniquely overlaps the failing target is evicted to a solo gate and the
+   remaining N-1 re-gate as one batch (journal `evicted`, strategy
+   `culprit_evict`); ambiguity falls back to the split-all behavior.
