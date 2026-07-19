@@ -851,6 +851,109 @@ fn red_parent_blocks_child_until_the_same_change_is_resubmitted_green() {
 }
 
 #[test]
+fn represented_child_does_not_wait_for_an_obsolete_red_parent() {
+    let fixture = QueueFixture::stack(&["a.txt", "b.txt", "c.txt"]);
+    submit_stack(&fixture, &["a", "b", "c"]);
+
+    fixture.mq_ok(&["run", "--once"], "false");
+    assert_eq!(fixture.change("a")["state"], "red");
+    assert_eq!(fixture.change("b")["state"], "queued");
+
+    // Model a canonical integration tip landing the parent and child patches
+    // without rewriting this obsolete queue graph.
+    run_git(&fixture.root, &["cherry-pick", "a"]);
+    run_git(&fixture.root, &["cherry-pick", "b"]);
+
+    fixture.mq_ok(&["run", "--once"], "true");
+    assert_eq!(fixture.change("a")["state"], "red");
+    assert_eq!(fixture.change("b")["state"], "merged");
+    assert_eq!(fixture.change("c")["state"], "queued");
+    assert!(fixture.journal().iter().any(|event| {
+        event["event"] == "already_merged" && event["branch"] == "b"
+    }));
+    assert!(
+        !git_output(&fixture.root, &["show", "master:c.txt"])
+            .status
+            .success(),
+        "unrepresented grandchild bypassed its red dependency",
+    );
+}
+
+#[test]
+fn operator_drop_retires_only_the_pending_attempt_and_preserves_its_branch() {
+    let fixture = QueueFixture::stack(&["a.txt", "b.txt"]);
+    submit_stack(&fixture, &["a", "b"]);
+    let branch_sha = git(&fixture.root, &["rev-parse", "a"]);
+
+    fixture.mq_ok(
+        &["drop", "a", "superseded by canonical integration tip"],
+        "true",
+    );
+
+    assert_eq!(git(&fixture.root, &["rev-parse", "a"]), branch_sha);
+    assert_eq!(fixture.change("a")["state"], "dropped");
+    assert_eq!(
+        fixture.change("a")["drop_reason"],
+        "superseded by canonical integration tip"
+    );
+    assert_eq!(fixture.change("b")["state"], "queued");
+    let status = fixture.status();
+    let queued = status["queue"].as_array().expect("queue is an array");
+    assert!(queued.iter().all(|entry| entry["branch"] != "a"));
+    assert!(queued.iter().any(|entry| {
+        entry["branch"] == "b"
+            && entry["readiness"] == "blocked"
+            && entry["blocked_by"][0]["state"] == "dropped"
+    }));
+    assert!(fixture.journal().iter().any(|event| {
+        event["event"] == "dropped"
+            && event["branch"] == "a"
+            && event["reason"] == "superseded by canonical integration tip"
+            && event["via"] == "operator drop"
+    }));
+}
+
+#[test]
+fn operator_drop_refuses_an_attempt_that_has_entered_the_gate() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+    let started = fixture._temp.path().join("drop-gate-started");
+    let proceed = fixture._temp.path().join("drop-gate-proceed");
+    let gate = format!(
+        "touch '{}'; while [ ! -f '{}' ]; do sleep 0.01; done; true",
+        started.display(),
+        proceed.display(),
+    );
+    let mut runner = fixture.mq_command(&["run", "--once"], &gate);
+    let runner = runner
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start paused queue gate");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !started.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(started.exists(), "gate did not reach its pause point");
+
+    let drop = fixture.mq(&["drop", "a", "too late"], "true");
+    assert!(!drop.status.success(), "active gate was dropped");
+    assert!(
+        String::from_utf8_lossy(&drop.stderr).contains("current attempt is gating"),
+        "drop refusal did not name the active state: {}",
+        String::from_utf8_lossy(&drop.stderr),
+    );
+    fs::write(&proceed, "go\n").expect("release paused gate");
+    let output = runner.wait_with_output().expect("wait for queue drain");
+    assert!(
+        output.status.success(),
+        "queue run failed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(fixture.change("a")["state"], "merged");
+}
+
+#[test]
 fn green_dependency_stack_gates_the_tip_once_and_lands_the_whole_stack() {
     let fixture = QueueFixture::stack(&["a.txt", "b.txt", "c.txt"]);
     fixture.mq_ok(&["submit", "a"], "true");
@@ -933,6 +1036,41 @@ fn queue_substrate_change_requests_the_isolated_fixture_shard() {
             .status
             .success()
     );
+}
+
+#[test]
+fn queue_core_only_change_runs_the_hermetic_shard_instead_of_the_product_gate() {
+    let fixture = QueueFixture::stack(&["scripts/merge-queue.sh"]);
+    let check = fixture.root.join("scripts/check.sh");
+    fs::create_dir_all(check.parent().expect("check script has a parent"))
+        .expect("create fixture scripts directory");
+    fs::write(
+        &check,
+        "#!/bin/sh\nset -eu\ntest \"$1\" = --queue-infra\ntest \"$WITCHY_GATE_QUEUE_INFRA\" = 1\n: >\"$QUEUE_SHARD_MARKER\"\n",
+    )
+    .expect("write fixture queue shard");
+    fs::set_permissions(&check, fs::Permissions::from_mode(0o755))
+        .expect("make fixture queue shard executable");
+    run_git(&fixture.root, &["add", "scripts/check.sh"]);
+    run_git(&fixture.root, &["commit", "-m", "add fixture product gate"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+
+    let marker = fixture._temp.path().join("queue-shard-ran");
+    let mut command = fixture.mq_command(&["run", "--once"], "false");
+    let output = command
+        .env_remove("MERGE_QUEUE_GATE_CMD")
+        .env("QUEUE_SHARD_MARKER", &marker)
+        .output()
+        .expect("run queue-core-only gate");
+    assert!(
+        output.status.success(),
+        "queue-only gate failed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(marker.exists(), "full product command replaced the queue shard");
+    assert!(run_git(&fixture.root, &["show", "master:scripts/merge-queue.sh"])
+        .status
+        .success());
 }
 
 #[test]

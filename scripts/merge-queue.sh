@@ -60,6 +60,9 @@
 #                                                   print it as JSON; exit 0 iff merged.
 #                                                   Default timeout 3600s
 #   scripts/merge-queue.sh status                   queue + in-flight gate + recent journal (JSON)
+#   scripts/merge-queue.sh drop <branch> <reason>   retire a pending submission without deleting
+#                                                   its branch; the reason is journaled and
+#                                                   dependents remain blocked until resubmitted
 #   scripts/merge-queue.sh doctor                   human health check: coordinator alive?
 #                                                   lock stale? current stage? log fresh?
 #   scripts/merge-queue.sh run [--once]             coordinator loop (--once: drain and exit)
@@ -109,6 +112,8 @@ lock="$qdir/gate.lock"
 coordinator_lock="$qdir/coordinator.lock"
 gate_wt="${MERGE_QUEUE_GATE_WT:-$root/.claude/worktrees/merge-gate}"
 gate_cmd="${MERGE_QUEUE_GATE_CMD:-./scripts/check.sh}"
+gate_cmd_is_default=1
+[ -z "${MERGE_QUEUE_GATE_CMD+x}" ] || gate_cmd_is_default=0
 coordinator_script="${MERGE_QUEUE_COORDINATOR_SCRIPT:-$root/scripts/merge-queue.sh}"
 gate_timeout="${MERGE_QUEUE_GATE_TIMEOUT:-2700}"
 stall_timeout="${MERGE_QUEUE_STALL_TIMEOUT:-600}"
@@ -290,6 +295,30 @@ queue_entry_matches() { # queue_entry_matches <queue-file> <change-id> <sha> <at
     jq -e --arg id "$2" --arg sha "$3" --arg attempt "$4" \
         'select((.change_id // "")==$id and (.sha // "")==$sha and
           (.attempt_id // "")==$attempt)' "$1" >/dev/null 2>&1
+}
+
+claim_queue_entry_for_gate() { # claim_queue_entry_for_gate <queue-file> <change-id> <sha> <attempt-id>
+    local qf="$1" id="$2" sha="$3" attempt="$4" cf tmp
+    acquire_change_lock
+    if ! queue_entry_matches "$qf" "$id" "$sha" "$attempt"; then
+        release_change_lock
+        return 1
+    fi
+    for cf in "$changes_dir"/*.json; do
+        [ -f "$cf" ] || continue
+        jq -e --arg id "$id" --arg sha "$sha" --arg attempt "$attempt" \
+            'select(.change_id==$id and (.current_sha // "")==$sha and
+              (.current_attempt // "")==$attempt and .state=="queued")' \
+            "$cf" >/dev/null 2>&1 || continue
+        tmp="$cf.tmp.$$"
+        jq --arg state gating --arg updated "$(now)" \
+            '.state=$state | .updated=$updated' "$cf" >"$tmp"
+        mv "$tmp" "$cf"
+        release_change_lock
+        return 0
+    done
+    release_change_lock
+    return 1
 }
 
 consume_queue_entry() { # consume_queue_entry <queue-file> <change-id> <sha> <attempt-id>
@@ -655,12 +684,17 @@ group_is_busy() { # group_is_busy <pgid>
 # Sets gate_result to "green", "red", or "timeout: <why>". Never returns nonzero.
 gate_result=""
 gate_attempt=0
-run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra]
+run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infra-only]
     local log="$1"
     local progress_file="${log}.progress"
     local fuzz_mode="${2:-full}"
     local gate_scope="${3:-all}"
     local queue_infra="${4:-0}"
+    local queue_infra_only="${5:-0}"
+    local selected_gate_cmd="$gate_cmd"
+    if [ "$queue_infra_only" -eq 1 ] && [ "$gate_cmd_is_default" -eq 1 ]; then
+        selected_gate_cmd="./scripts/check.sh --queue-infra"
+    fi
     local start; start="$(date +%s)"
     # `set -m` puts the background job in its own process group, so a timeout
     # can kill the WHOLE cargo/nextest tree, not just the top shell.
@@ -680,7 +714,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra]
     # execution as well doubled gate wall-clock (measured 2026-07-16: ~20.6 min
     # at width 4 vs the historical 8-10 min).
     rm -f "$progress_file"
-    ( cd "$gate_wt" && exec env CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" bash -c "$gate_cmd" ) >"$log" 2>&1 &
+    ( cd "$gate_wt" && exec env CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
     local gpid=$!
     set +m
     local why=""
@@ -1101,6 +1135,16 @@ replay_unrepresented_patches() { # replay_unrepresented_patches <onto> <target>
     git -C "$gate_wt" cherry-pick "${patches[@]}" >/dev/null 2>&1
 }
 
+submission_is_represented() { # submission_is_represented <submitted-sha>
+    local submitted_sha="$1" cherry_status="" merge_commits=""
+    [ -n "$submitted_sha" ] \
+        && git -C "$root" rev-parse --verify --quiet "$submitted_sha^{commit}" >/dev/null \
+        && merge_commits="$(git -C "$root" rev-list --merges "master..$submitted_sha" 2>/dev/null)" \
+        && [ -z "$merge_commits" ] \
+        && cherry_status="$(git -C "$root" cherry master "$submitted_sha" 2>/dev/null)" \
+        && ! printf '%s\n' "$cherry_status" | grep -c '^+' >/dev/null
+}
+
 process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     local f="$1"
     local branch change_id submitted_sha attempt_id
@@ -1128,13 +1172,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     # intentionally ignores merge commits, so branches with an unlanded merge
     # commit also fail safe into the normal rebase + gate path, as does missing
     # or invalid queue metadata and any git error.
-    local cherry_status="" merge_commits=""
-    if [ -n "$submitted_sha" ] \
-        && git -C "$root" rev-parse --verify --quiet "$submitted_sha^{commit}" >/dev/null \
-        && merge_commits="$(git -C "$root" rev-list --merges "master..$submitted_sha" 2>/dev/null)" \
-        && [ -z "$merge_commits" ] \
-        && cherry_status="$(git -C "$root" cherry master "$submitted_sha" 2>/dev/null)" \
-        && ! printf '%s\n' "$cherry_status" | grep -c '^+' >/dev/null; then
+    if submission_is_represented "$submitted_sha"; then
         note "$branch is already represented on master; skipping duplicate gate"
         record already_merged "$branch" change_id "$change_id" attempt_id "$attempt_id" \
             submitted_sha "$submitted_sha" sha "$submitted_sha" \
@@ -1191,7 +1229,13 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         consume_queue_entry "$f" "$change_id" "$submitted_sha" "$attempt_id" && return 0
         return 1
     fi
-    set_change_state "$change_id" gating "$submitted_sha" "$attempt_id" || true
+    # Preparation can take long enough for an operator drop or resubmission to
+    # win. Revalidate both the queue attempt and its metadata transition before
+    # admitting it to the gate; once state is `gating`, cmd_drop rejects it.
+    if ! claim_queue_entry_for_gate "$f" "$change_id" "$submitted_sha" "$attempt_id"; then
+        note "$branch changed or was dropped during preparation; discarding the stale candidate"
+        return 1
+    fi
 
     # BATCHING: stack further queued branches onto this candidate so ONE gate
     # validates them all. A branch joins the batch if it rebases CLEANLY onto
@@ -1254,12 +1298,15 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
                 fi
                 tip="$(git -C "$gate_wt" rev-parse HEAD)"
                 if replay_unrepresented_patches "$tip" "$csha"; then
-                    batch_files+=("$qf"); batch_branches+=("$cand"); batch_ids+=("$cand_id")
-                    batch_submitted_shas+=("$csha")
-                    batch_attempt_ids+=("$cand_attempt")
-                    set_change_state "$cand_id" gating "$csha" "$cand_attempt" || true
-                    stack_mode=1
-                    added=1
+                    if claim_queue_entry_for_gate "$qf" "$cand_id" "$csha" "$cand_attempt"; then
+                        batch_files+=("$qf"); batch_branches+=("$cand"); batch_ids+=("$cand_id")
+                        batch_submitted_shas+=("$csha")
+                        batch_attempt_ids+=("$cand_attempt")
+                        stack_mode=1
+                        added=1
+                    else
+                        git -C "$gate_wt" checkout --detach --quiet "$tip"
+                    fi
                 else
                     git -C "$gate_wt" cherry-pick --abort >/dev/null 2>&1 || true
                     git -C "$gate_wt" checkout --detach --quiet "$tip"
@@ -1291,10 +1338,13 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             fi
             tip="$(git -C "$gate_wt" rev-parse HEAD)"
             if replay_unrepresented_patches "$tip" "$csha"; then
-                batch_files+=("$qf"); batch_branches+=("$cand"); batch_ids+=("$cand_id")
-                batch_submitted_shas+=("$csha")
-                batch_attempt_ids+=("$cand_attempt")
-                set_change_state "$cand_id" gating "$csha" "$cand_attempt" || true
+                if claim_queue_entry_for_gate "$qf" "$cand_id" "$csha" "$cand_attempt"; then
+                    batch_files+=("$qf"); batch_branches+=("$cand"); batch_ids+=("$cand_id")
+                    batch_submitted_shas+=("$csha")
+                    batch_attempt_ids+=("$cand_attempt")
+                else
+                    git -C "$gate_wt" checkout --detach --quiet "$tip"
+                fi
             else
                 git -C "$gate_wt" cherry-pick --abort >/dev/null 2>&1 || true
                 git -C "$gate_wt" checkout --detach --quiet "$tip"
@@ -1381,6 +1431,25 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         queue_infra=1
     fi
 
+    # Queue-core changes are validated by their process-isolated fixture shard,
+    # not by re-running an unrelated product tree already green on master. Keep
+    # this allowlist intentionally narrower than queue_infra above: check.sh,
+    # nextest configuration, reporting, and worktree tooling can affect general
+    # product-gate behavior and therefore retain the complete gate. Documentation
+    # may ride with a queue-core fix because it is not executable input.
+    local queue_infra_only=0
+    local non_queue_core=""
+    if [ "$queue_infra" -eq 1 ] && [ -n "$changed" ]; then
+        non_queue_core="$(printf '%s\n' "$changed" \
+            | grep -vE '^(scripts/(merge-queue|state-paths)\.sh|tests/merge_queue\.rs|rfcs/|wiki/|bugs/|external-refs/|scratch/|security-eval/)' \
+            || true)"
+        if [ -z "$non_queue_core" ] \
+            && printf '%s\n' "$changed" \
+                | grep -cE '^(scripts/(merge-queue|state-paths)\.sh|tests/merge_queue\.rs)$' >/dev/null; then
+            queue_infra_only=1
+        fi
+    fi
+
     gate_attempt=$((gate_attempt + 1))
     local log; log="$logs/$(date +%Y%m%d-%H%M%S)-$(branch_key "$branch")-$$-$gate_attempt.log"
     local prepare_finished; prepare_finished="$(date +%s)"
@@ -1452,9 +1521,9 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         return 2
     fi
 
-    note "gating $branch (rebased to $sha on $base; fuzz=$fuzz_mode; scope=$gate_scope; queue-infra=$queue_infra); log: $log"
+    note "gating $branch (rebased to $sha on $base; fuzz=$fuzz_mode; scope=$gate_scope; queue-infra=$queue_infra; queue-infra-only=$queue_infra_only); log: $log"
     local gate_started; gate_started="$(date +%s)"
-    run_gate "$log" "$fuzz_mode" "$gate_scope" "$queue_infra"
+    run_gate "$log" "$fuzz_mode" "$gate_scope" "$queue_infra" "$queue_infra_only"
     local gate_finished; gate_finished="$(date +%s)"
     local gate_took=$((gate_finished - gate_started))
 
@@ -1672,8 +1741,16 @@ prewarm_gate() {
 }
 
 next_ready_queue_file() {
-    local qf readiness
+    local qf readiness submitted_sha
     while IFS= read -r qf; do
+        # Dependency state is irrelevant when the submission has no work left:
+        # integration tips often make whole obsolete chains patch-equivalent to
+        # master while their historical parents remain red or conflicted.
+        submitted_sha="$(jq -r '.sha // empty' "$qf")"
+        if submission_is_represented "$submitted_sha"; then
+            basename "$qf"
+            return 0
+        fi
         readiness="$(queue_readiness "$qf")"
         [ "$readiness" = ready ] || continue
         basename "$qf"
@@ -1879,6 +1956,59 @@ cmd_stats() {
                 | sed -E 's/^[[:space:]]*(FAIL|TIMEOUT) \[[^]]*\] \([^)]*\) //'
           done | sort | uniq -c | sort -rn)"
     if [ -n "$names" ]; then echo "$names" | head -15; else echo "  (none recorded)"; fi
+}
+
+# Retire a superseded pending submission without deleting or rewriting its
+# branch. This is deliberately explicit and audited: shared worktrees often
+# still own the ref, while an integration tip on master has made the queued
+# attempt obsolete in a way patch-id comparison cannot prove automatically.
+cmd_drop() {
+    local branch="${1:?usage: merge-queue.sh drop <branch> <reason>}"
+    shift
+    local reason="$*"
+    [ -n "$reason" ] || { note "drop requires an auditable reason"; exit 2; }
+
+    local cf change_id submitted_sha attempt_id state qf="" candidate tmp
+    cf="$(change_file_for_branch "$branch")"
+    acquire_change_lock
+    if [ ! -f "$cf" ]; then
+        release_change_lock
+        note "no known change for '$branch'"
+        exit 2
+    fi
+    change_id="$(jq -r '.change_id // empty' "$cf")"
+    submitted_sha="$(jq -r '.current_sha // empty' "$cf")"
+    attempt_id="$(jq -r '.current_attempt // empty' "$cf")"
+    state="$(jq -r '.state // empty' "$cf")"
+    case "$state" in
+        gating | validated)
+            release_change_lock
+            note "cannot drop '$branch' while its current attempt is $state"
+            exit 1
+            ;;
+    esac
+    for candidate in "$queue_dir"/*.json; do
+        [ -f "$candidate" ] || continue
+        if queue_entry_matches "$candidate" "$change_id" "$submitted_sha" "$attempt_id"; then
+            qf="$candidate"
+            break
+        fi
+    done
+    if [ -z "$qf" ]; then
+        release_change_lock
+        note "no pending queue entry for '$branch'"
+        exit 2
+    fi
+    tmp="$cf.tmp.$$"
+    jq --arg state dropped --arg updated "$(now)" --arg reason "$reason" \
+        '.state=$state | .updated=$updated | .drop_reason=$reason' "$cf" >"$tmp"
+    mv "$tmp" "$cf"
+    rm -f "$qf" "$qf.nobatch" "$qf.batch-limit"
+    release_change_lock
+
+    record dropped "$branch" change_id "$change_id" attempt_id "$attempt_id" \
+        submitted_sha "$submitted_sha" reason "$reason" via "operator drop"
+    note "dropped pending submission for $branch: $reason"
 }
 
 # After a `blocked` event (gate green, ff-merge refused by the main worktree)
@@ -2100,9 +2230,10 @@ case "${1:-}" in
     migrate-state) cmd_migrate_state ;;
     wait)      shift; cmd_wait "$@" ;;
     stats)     cmd_stats ;;
+    drop)      shift; cmd_drop "$@" ;;
     resolve)   shift; cmd_resolve "$@" ;;
     sweep)     shift; cmd_sweep "$@" ;;
     with-lock) shift; cmd_with_lock "$@" ;;
     -h | --help | "") sed -n '2,68p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) note "unknown subcommand '${1}' (try submit, status, doctor, run, daemon, migrate-state, sweep, with-lock)"; exit 2 ;;
+    *) note "unknown subcommand '${1}' (try submit, status, doctor, run, daemon, migrate-state, drop, sweep, with-lock)"; exit 2 ;;
 esac
