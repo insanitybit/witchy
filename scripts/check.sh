@@ -74,16 +74,12 @@ if [ -n "${WITCHY_GATE_SCOPE+x}" ] && [ -z "${WITCHY_STAGE_HEARTBEAT_LIMIT+x}" ]
     export WITCHY_STAGE_HEARTBEAT_LIMIT=8
 fi
 
-# Under host memory pressure, macOS can evict a listed test binary before its
-# nextest execution and wedge many concurrent copies in dyld for 30-60 seconds.
-# Bound only compiler-affecting serialized gates; docs/infrastructure gates,
-# exact-master baselines (`WITCHY_GATE_FUZZ=skip`), and focused/local nextest
-# retain the machine default. The override supports controlled benchmarking.
+# Test discovery is bounded separately by scripts/nextest-list-wrapper.sh.
+# Keep execution at nextest's machine-wide default: the four-job cap made the
+# 2,000+ test product suite take more than twenty minutes after discovery.
+# Retain the explicit override for controlled benchmarking and constrained
+# developer machines.
 gate_test_jobs="${WITCHY_GATE_TEST_JOBS:-}"
-if [ -z "$gate_test_jobs" ] && [ -n "${WITCHY_GATE_SCOPE+x}" ] \
-    && [ "${WITCHY_GATE_FUZZ:-full}" != skip ] && [ "$(uname -s)" = Darwin ]; then
-    gate_test_jobs=4
-fi
 case "$gate_test_jobs" in
     "") ;;
     *[!0-9]*) echo "check.sh: WITCHY_GATE_TEST_JOBS must be a positive integer" >&2; exit 2 ;;
