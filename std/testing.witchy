@@ -15,6 +15,60 @@
 import cmp
 import show
 
+// An injectable wall/monotonic clock protocol. Production code can accept a
+// generic `c: ClockSource`: real entrypoints pass their `Clock`, while unit
+// tests pass `fixed_clock` and need no host grant.
+trait ClockSource:
+    fn wall_ms(self) -> Int
+    fn monotonic_ns(self) -> Int
+
+type FixedClock:
+    FixedClock(Int, Int)
+
+impl ClockSource for Clock:
+    fn wall_ms(self) -> Int:
+        self.now()
+
+    fn monotonic_ns(self) -> Int:
+        self.now_monotonic()
+
+impl ClockSource for FixedClock:
+    fn wall_ms(self) -> Int:
+        match self:
+            FixedClock(wall_ms, _) -> wall_ms
+
+    fn monotonic_ns(self) -> Int:
+        match self:
+            FixedClock(_, monotonic_ns) -> monotonic_ns
+
+// A fixed, authority-free clock collaborator. This is ordinary data, not a
+// forged `Clock`; inject it through `ClockSource` in deterministic unit tests.
+pub fn fixed_clock(wall_ms: Int, monotonic_ns: Int) -> FixedClock:
+    FixedClock(wall_ms, monotonic_ns)
+
+// An injectable one-draw randomness protocol. Real entrypoints pass `Rand`;
+// deterministic unit tests can pass `fixed_rand` without a host grant.
+trait RandSource:
+    fn draw_u64(self) -> Int
+
+type FixedRand:
+    FixedRand(Int)
+
+impl RandSource for Rand:
+    fn draw_u64(self) -> Int:
+        self.rand_u64()
+
+impl RandSource for FixedRand:
+    fn draw_u64(self) -> Int:
+        match self:
+            FixedRand(draw) -> draw
+
+// A fixed, authority-free Rand collaborator. Every draw returns `value`, which
+// makes boundary/error paths reproducible without pretending to be a real
+// cryptographic randomness capability.
+pub fn fixed_rand(value: Int) -> FixedRand:
+    FixedRand(value)
+
 // A read-only in-memory directory for tests. Each entry is a `(path, contents)`
 // pair; paths are Dir-relative file paths. The returned capability supports the
 // ordinary Dir[Read] surface (`read`, `exists`, `is_dir`, `subtree`, `list`,

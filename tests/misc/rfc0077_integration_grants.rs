@@ -3,6 +3,8 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use witchy::runtime::{Capabilities, Runtime};
+use witchy::{capabilities, codegen, interpreter, parser, pipeline, typeck};
 
 const BIN: &str = env!("CARGO_BIN_EXE_witchy");
 
@@ -147,6 +149,68 @@ fn mock_capabilities_work_in_both_test_tiers_without_real_grants() {
         let output = run(command);
         assert!(output.status.success(), "mock failed with integration={integration}: {}", text(&output));
     }
+}
+
+#[test]
+fn fixed_clock_and_rand_collaborators_are_deterministic_and_authority_free() {
+    let source = r#"import testing
+
+fn clock_reading(source: c) -> String where c: ClockSource:
+    "${source.wall_ms()}:${source.monotonic_ns()}"
+
+fn rand_reading(source: r) -> Int where r: RandSource:
+    source.draw_u64()
+
+fn main():
+    let clock = testing.fixed_clock(1700000000123, 45000000)
+    let rand = testing.fixed_rand(-7)
+    testing.assert_eq(clock_reading(clock), "1700000000123:45000000")
+    testing.assert_int_eq(rand_reading(rand), -7)
+    testing.assert_int_eq(rand_reading(rand), -7)
+"#;
+    let module = parser::parse_module(source).expect("parse fixed collaborators");
+    let linked = pipeline::link(vec![("main".into(), module)], "main")
+        .expect("link fixed collaborators");
+    typeck::check(&linked).expect("typecheck fixed collaborators");
+    assert!(
+        capabilities::run_grant(&linked).is_empty(),
+        "the nullary test entry must not receive Clock, Rand, or any other authority",
+    );
+
+    assert_eq!(
+        interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interpret"),
+        Vec::<String>::new(),
+        "interpreter fixed collaborators",
+    );
+
+    let wasm = codegen::compile_module_binary(&linked)
+        .expect_lowered("fixed collaborators support compiled execution");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut actor = runtime
+        .spawn(&wasm, Capabilities::default(), 64)
+        .expect("spawn without host grants");
+    actor.run().expect("compiled fixed collaborators");
+    assert!(actor.output().is_empty(), "authority-free execution produces no output");
+}
+
+#[test]
+fn real_clock_and_rand_implement_the_same_injection_protocols() {
+    let source = r#"import testing
+
+fn clock_reading(source: c) -> Int where c: ClockSource:
+    source.wall_ms() + source.monotonic_ns()
+
+fn rand_reading(source: r) -> Int where r: RandSource:
+    source.draw_u64()
+
+fn main(clock: Clock, rand: Rand):
+    let _time = clock_reading(clock)
+    let _draw = rand_reading(rand)
+"#;
+    let module = parser::parse_module(source).expect("parse real capability adapters");
+    let linked = pipeline::link(vec![("main".into(), module)], "main")
+        .expect("link real capability adapters");
+    typeck::check(&linked).expect("real Clock and Rand satisfy the testing protocols");
 }
 
 #[test]

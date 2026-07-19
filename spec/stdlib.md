@@ -3861,6 +3861,35 @@ The witchy test support module. `witchy test <file>` discovers every zero-parame
 
   fn test_truth():       testing.assert(1 < 2, "one is less than two")
 
+#### `type FixedClock`
+
+- `FixedClock(Int, Int)`
+
+#### `type FixedRand`
+
+- `FixedRand(Int)`
+
+#### `trait ClockSource`
+
+An injectable wall/monotonic clock protocol. Production code can accept a generic `c: ClockSource`: real entrypoints pass their `Clock`, while unit tests pass `fixed_clock` and need no host grant.
+
+- `fn wall_ms(self) -> Int`
+- `fn monotonic_ns(self) -> Int`
+
+#### `trait RandSource`
+
+An injectable one-draw randomness protocol. Real entrypoints pass `Rand`; deterministic unit tests can pass `fixed_rand` without a host grant.
+
+- `fn draw_u64(self) -> Int`
+
+#### `fn fixed_clock(wall_ms: Int, monotonic_ns: Int) -> FixedClock`
+
+A fixed, authority-free clock collaborator. This is ordinary data, not a forged `Clock`; inject it through `ClockSource` in deterministic unit tests.
+
+#### `fn fixed_rand(value: Int) -> FixedRand`
+
+A fixed, authority-free Rand collaborator. Every draw returns `value`, which makes boundary/error paths reproducible without pretending to be a real cryptographic randomness capability.
+
 #### `fn mock_dir(entries: List((String, String))) -> Dir[Read]`
 
 A read-only in-memory directory for tests. Each entry is a `(path, contents)` pair; paths are Dir-relative file paths. The returned capability supports the ordinary Dir[Read] surface (`read`, `exists`, `is_dir`, `subtree`, `list`, `read_file`) without granting any real filesystem authority.
@@ -3892,6 +3921,26 @@ Abort unless the two Ints are equal, showing both.
 #### `fn fail_with(msg: String)`
 
 Unconditional failure with a message (e.g. an unreachable branch).
+
+### Trait implementations
+
+#### `impl ClockSource for Clock`
+
+- `fn wall_ms(self) -> Int`
+- `fn monotonic_ns(self) -> Int`
+
+#### `impl ClockSource for FixedClock`
+
+- `fn wall_ms(self) -> Int`
+- `fn monotonic_ns(self) -> Int`
+
+#### `impl RandSource for Rand`
+
+- `fn draw_u64(self) -> Int`
+
+#### `impl RandSource for FixedRand`
+
+- `fn draw_u64(self) -> Int`
 
 ## `time`
 
