@@ -203,7 +203,10 @@ fn __meta_call_site_type(name: String, args: List(TypeSyntax)) -> TypeSyntax:
     __meta_call_site_type(name, args)
 
 pub fn type_qualified(module: Ident, name: Ident, args: List(TypeSyntax)) -> TypeSyntax:
-    type_with_head(ident_source(module) + "." + ident_source(name), args)
+    let member = ident_source(name)
+    match module:
+        Ident(source) -> __meta_type_named(source + "." + member, args)
+        CallSiteIdent(source) -> __meta_call_site_type(source + "." + member, args)
 
 // A tuple type such as `(Int, String)`.
 pub fn type_tuple(types: List(TypeSyntax)) -> TypeSyntax:
@@ -408,7 +411,10 @@ fn __meta_call_site_pattern(name: String, args: List(PatternSyntax)) -> PatternS
 
 // A module-qualified constructor pattern such as `iter.Item(x)`.
 pub fn pattern_qualified_ctor(module: Ident, name: Ident, args: List(PatternSyntax)) -> PatternSyntax:
-    pattern_with_head(ident_source(module) + "." + ident_source(name), args)
+    let member = ident_source(name)
+    match module:
+        Ident(source) -> __meta_pattern_ctor(source + "." + member, args)
+        CallSiteIdent(source) -> __meta_call_site_pattern(source + "." + member, args)
 
 pub fn pattern_anon_ctor(tag: Ident, args: List(PatternSyntax)) -> PatternSyntax:
     pattern_with_head("." + ident_source(tag), args)

@@ -18,6 +18,8 @@ mod owned_item_syntax;
 mod owned_pattern_syntax;
 #[path = "rfc0080/owned_type_syntax.rs"]
 mod owned_type_syntax;
+#[path = "rfc0080/qualified_identities.rs"]
+mod qualified_identities;
 #[path = "rfc0080/structural_expr_holes.rs"]
 mod structural_expr_holes;
 #[path = "rfc0080/structural_item_holes.rs"]

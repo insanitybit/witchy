@@ -4,7 +4,7 @@ title: Structured hygienic metaprogramming
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed compatibility builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned item/expression/type/pattern/statement/block quotations with structural typed holes, direct AST transport for typed tags, named/tuple/function/qualified type builders, match-arm/let/expression/return statement builders, block builders, and complete function signatures/bodies, definition-site function/type/constructor/pattern resolution, explicit meta.call_site value/function/type/constructor references, and nested tagged-expansion diagnostics carrying invocation, definition, generated-parent, and hole ancestry landed; general qualified-name/remaining compatibility-builder/item origins and persistent per-node spans remain proposed"
+tracking: "source-backed compatibility builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned item/expression/type/pattern/statement/block quotations with structural typed holes, direct AST transport for typed tags, named/tuple/function/qualified type builders, match-arm/let/expression/return statement builders, block builders, complete function signatures/bodies, definition-site function/type/constructor/pattern resolution, explicit meta.call_site value/function/type/constructor/qualified-path references, persistent per-node expansion provenance, and nested tagged-expansion diagnostics carrying invocation, definition, generated-parent, and hole ancestry landed; remaining source-projecting compatibility-builder and item identities remain proposed"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
@@ -528,6 +528,13 @@ The first source-compatible slice is implemented:
   tuple, function-convention, and ownership-qualified forms no longer render
   and reparse source; malformed arities, conventions, and qualifiers fail at
   the builder boundary.
+- The fifty-fifth slice makes module-qualified type and constructor-pattern
+  builders compiler-owned. The qualifier identifier selects the path's origin:
+  `meta.ident("support")` resolves the imported module at the expansion
+  definition, while `meta.call_site("support")` resolves it in the consumer.
+  The member identifier is a validated selector rather than a second lexical
+  binding. Type arguments and nested patterns retain their own origins, and the
+  composed path remains an unspellable AST identity until consumer linking.
 
 This is intentionally not the full RFC. Every quotation category and its typed
 hole placement is now compiler-owned. Some `meta.*` compatibility builders may
@@ -540,9 +547,9 @@ references, and
 `meta.call_site("name")`, consumed through `meta.expr_name`, `meta.type_named`,
 or `meta.pattern_ctor`, explicitly selects invocation-site value, type, or
 constructor resolution. Direct tagged-expansion failures preserve the invocation
-and definition module/line pair. General qualified-name composition,
-source-projecting compatibility-builder origins, and item/field identities
-remain future work. The value is the
+and definition module/line pair. Source-projecting compatibility-builder and
+item identities remain future work; field selectors are validated members and
+do not introduce a lexical origin. The value is the
 migration seam: future work can move the
 payload behind these wrappers from parsed source to structured compiler nodes
 without changing the comptime append/merge path again.
