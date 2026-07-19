@@ -155,12 +155,13 @@ merge-queue.sh sweep                             remove worktrees whose branch t
 ```
 
 Environment knobs: `MERGE_QUEUE_GATE_CMD` (default `./scripts/check.sh`),
-`MERGE_QUEUE_GATE_TIMEOUT` (2700s), `MERGE_QUEUE_STALL_TIMEOUT` (600s of no log
+`MERGE_QUEUE_GATE_TIMEOUT` (optional emergency whole-gate ceiling; `0`, the
+default, disables it), `MERGE_QUEUE_STALL_TIMEOUT` (600s of no log
 output **while the gate's process group is idle** — a group still burning CPU is
 compiling/testing, not hung, so silence alone never kills it; see the stall
 note below), `MERGE_QUEUE_BUSY_SILENCE_MAX` (3× the stall window: the ceiling on
 silence even for a *busy* group, so a CPU-burning runaway is reclaimed here
-rather than at GATE_TIMEOUT), `MERGE_QUEUE_BATCH_MAX` (5),
+rather than relying on a whole-gate ceiling), `MERGE_QUEUE_BATCH_MAX` (5),
 `MERGE_QUEUE_DOCS_BATCH_MAX` (25, activated only when every path in every
 candidate ends in `.md`),
 `WITCHY_STATE_DIR` (override the canonical local state root),
@@ -400,6 +401,10 @@ shards ignore the scope.
   (kill pid → `daemon`). Editing in place risks bash reading a half-new file.
 - **Lock is stealable only on dead pid.** A live-but-stuck holder needs a
   human `kill`; `doctor` shows holder pid + what + elapsed + log age.
+- **Gate process groups are lock-owned.** While a full gate runs, `gate.lock`
+  records its PGID. A graceful coordinator exit terminates that group before
+  releasing the lock; after an untrappable coordinator death, the next lock
+  acquirer terminates the recorded orphan before preparing another candidate.
 - **Stall detection is CPU-gated, not log-only (2026-07-10).** The stall monitor
   once killed on 300s of no log output alone. But the gate legitimately goes
   silent for minutes — from t+0, since the tests stage now runs FIRST:
@@ -413,11 +418,10 @@ shards ignore the scope.
   `group_is_busy` (sum of `ps -g <pgid> -o %cpu`) and only kills on silence WITH
   an idle group. A real hang (deadlock/blocked syscall) consumes no CPU so it
   still trips; a CPU-burning runaway (busy-spin) that stays silent past
-  `BUSY_SILENCE_MAX` (6× stall = 1800s, well above any compile+enumeration, well
-  below `GATE_TIMEOUT`) is reclaimed there rather than blocking the serialized
-  queue for the full 45-min whole-gate ceiling. Raising `STALL_TIMEOUT` would
-  only move the cliff; the compile is genuinely long, so liveness is the right
-  signal.
+  `BUSY_SILENCE_MAX` (3× stall = 1800s, well above any compile+enumeration) is
+  reclaimed there without relying on an arbitrary whole-suite duration.
+  Raising `STALL_TIMEOUT` would only move the cliff; the compile is genuinely
+  long, so liveness is the right signal.
 - **Tracked edits on checked-out main `master` defer before a gate.** The queue
   keeps the submission queued and retries once the checkout is clean, avoiding
   a full gate that cannot safely fast-forward. A later `blocked` event usually
@@ -469,7 +473,7 @@ you didn't drop a real commit that landed meanwhile.
 |---|---|
 | doctor: coordinator NOT RUNNING | `./scripts/merge-queue.sh daemon` — state is on disk; nothing is lost between coordinators |
 | lock held, holder pid dead | next acquirer steals it automatically; or `rm -rf state/merge-queue/gate.lock` if nothing will acquire soon |
-| lock held, holder alive but gate silent | expected during the `test`-profile compile / test enumeration; the monitor now kills only after 300s of silence WITH an idle process group (a busy group is compiling, not hung). If it is genuinely wedged AND idle it self-kills; a spinning runaway is caught by `GATE_TIMEOUT`. Only `kill <holder>` by hand if both clocks are somehow not progressing. |
+| lock held, holder alive but gate silent | expected during the `test`-profile compile / test enumeration; the monitor kills after 600s of silence WITH an idle process group (a busy group is compiling, not hung), or after 1800s of busy silence. Only `kill <holder>` by hand if both clocks are somehow not progressing. |
 | journal says `blocked` | gate was GREEN: `git merge --ff-only <sha from journal>` in the main worktree, then `merge-queue.sh resolve <branch>` |
 | queue item says dependency `blocked` | fix and resubmit the terminal parent branch; its stable change ID is reused and the child remains linked. Do not resubmit the child merely to bypass the parent. |
 | branch red repeatedly, uniform ~32s e2e failures | environmental (server readiness under load), not the branch: check what else is hammering the machine, resubmit |

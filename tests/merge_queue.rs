@@ -66,6 +66,15 @@ fn process_is_alive(pid: i32) -> bool {
         .is_ok_and(|status| status.success())
 }
 
+fn process_group_is_alive(pgid: i32) -> bool {
+    Command::new("kill")
+        .args(["-0", "--", &format!("-{pgid}")])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 fn process_group(pid: i32) -> i32 {
     let output = Command::new("perl")
         .args(["-e", "print getpgrp($ARGV[0])"])
@@ -588,6 +597,155 @@ fn submit_stack(fixture: &QueueFixture, branches: &[&str]) {
             fixture.mq_ok(&["submit", "--after", branches[index - 1], branch], "true");
         }
     }
+}
+
+#[test]
+fn zero_whole_gate_timeout_does_not_kill_a_progressing_gate() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+
+    let output = fixture
+        .mq_command(&["run", "--once"], "printf 'gate started\\n'; sleep 2")
+        .env("MERGE_QUEUE_GATE_TIMEOUT", "0")
+        .output()
+        .expect("run gate with the whole-gate ceiling disabled");
+
+    assert!(
+        output.status.success(),
+        "disabled whole-gate ceiling rejected a progressing gate: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(fixture.root.join("a.txt").exists(), "green candidate did not land");
+    assert!(
+        fixture
+            .journal()
+            .iter()
+            .any(|event| event["event"] == "merged" && event["branch"] == "a"),
+        "green candidate was not journaled as merged",
+    );
+    assert!(
+        fixture
+            .journal()
+            .iter()
+            .all(|event| event["event"] != "timeout"),
+        "disabled whole-gate ceiling still produced a timeout",
+    );
+
+    let invalid = fixture
+        .mq_command(&["status"], "true")
+        .env("MERGE_QUEUE_GATE_TIMEOUT", "forever")
+        .output()
+        .expect("reject invalid whole-gate ceiling");
+    assert!(!invalid.status.success());
+    assert!(
+        String::from_utf8_lossy(&invalid.stderr)
+            .contains("MERGE_QUEUE_GATE_TIMEOUT must be a non-negative integer")
+    );
+}
+
+#[test]
+fn stale_gate_lock_reaps_its_recorded_process_group_before_regating() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+
+    let mut orphan = Command::new("sh")
+        .args(["-c", "sleep 30"])
+        .process_group(0)
+        .spawn()
+        .expect("start abandoned gate fixture");
+    let orphan_pgid = orphan.id() as i32;
+    let _guard = ProcessGroupGuard(orphan_pgid);
+    let gate_lock = fixture.state.join("gate.lock");
+    fs::create_dir(&gate_lock).expect("create stale gate lock");
+    fs::write(gate_lock.join("pid"), "999999\n").expect("write dead coordinator pid");
+    fs::write(gate_lock.join("gate_pgid"), format!("{orphan_pgid}\n"))
+        .expect("write abandoned gate process group");
+    fs::write(gate_lock.join("what"), "abandoned full gate\n")
+        .expect("write lock description");
+
+    fixture.mq_ok(&["run", "--once"], "true");
+    let status = orphan.wait().expect("reap abandoned gate fixture");
+    assert!(!status.success(), "abandoned gate process group was not terminated");
+    assert!(fixture.root.join("a.txt").exists(), "replacement gate did not land");
+}
+
+#[test]
+fn coordinator_start_recovers_an_orphaned_gating_claim() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+    let change_path = fixture.state.join("changes/a.json");
+    let mut change: serde_json::Value = serde_json::from_slice(
+        &fs::read(&change_path).expect("read queued change record"),
+    )
+    .expect("change record is JSON");
+    change["state"] = serde_json::Value::String("gating".to_owned());
+    fs::write(
+        &change_path,
+        serde_json::to_vec(&change).expect("serialize orphaned change record"),
+    )
+    .expect("write orphaned change record");
+
+    fixture.mq_ok(&["run", "--once"], "true");
+
+    assert!(fixture.root.join("a.txt").exists(), "recovered candidate did not land");
+    assert!(
+        fixture
+            .journal()
+            .iter()
+            .any(|event| event["event"] == "recovered" && event["branch"] == "a"),
+        "orphaned claim recovery was not journaled",
+    );
+}
+
+#[test]
+fn coordinator_exit_terminates_its_active_gate_process_group() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    fixture.mq_ok(&["submit", "a"], "true");
+    let gate_started = fixture._temp.path().join("gate-started");
+    let gate = format!(
+        "printf started >{}; while :; do /bin/sleep 1; done",
+        gate_started.display(),
+    );
+
+    let mut coordinator = fixture
+        .mq_command(&["run", "--once"], &gate)
+        .spawn()
+        .expect("start coordinator with a blocking gate");
+    let coordinator_pid = coordinator.id() as i32;
+
+    let gate_pgid_path = fixture.state.join("gate.lock/gate_pgid");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while (!gate_started.exists() || !gate_pgid_path.exists()) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(gate_started.exists(), "blocking gate never started");
+    let gate_pgid: i32 = fs::read_to_string(&gate_pgid_path)
+        .expect("active gate PGID was not recorded in the lock")
+        .trim()
+        .parse()
+        .expect("recorded gate PGID is numeric");
+    let _gate_guard = ProcessGroupGuard(gate_pgid);
+
+    let killed = Command::new("kill")
+        .args(["-TERM", &coordinator_pid.to_string()])
+        .status()
+        .expect("terminate coordinator");
+    assert!(killed.success(), "could not terminate coordinator");
+    let status = coordinator.wait().expect("reap terminated coordinator");
+    assert!(!status.success(), "terminated coordinator exited successfully");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while process_group_is_alive(gate_pgid) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        !process_group_is_alive(gate_pgid),
+        "gate process group survived coordinator exit"
+    );
+    assert!(
+        !fixture.state.join("gate.lock").exists(),
+        "coordinator exit left the serialized gate lock behind"
+    );
 }
 
 #[test]

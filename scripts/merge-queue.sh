@@ -27,10 +27,12 @@
 # incremental output is disabled for the gate worktree: it is repeatedly rebased
 # across unrelated branches, so that state has little reuse value and otherwise
 # grows without bound between gates. If the log goes quiet for
-# MERGE_QUEUE_STALL_TIMEOUT seconds (default 600) or the whole gate exceeds
-# MERGE_QUEUE_GATE_TIMEOUT seconds (default 2700), the process group is killed,
-# the candidate is journaled as timed out, the lock is released, and the queue
-# moves on. Logs are always preserved under state/merge-queue/logs/.
+# MERGE_QUEUE_STALL_TIMEOUT seconds (default 600), or stays busy without real
+# progress for MERGE_QUEUE_BUSY_SILENCE_MAX, the process group is killed. An
+# optional MERGE_QUEUE_GATE_TIMEOUT adds an emergency whole-gate ceiling; it is
+# disabled by default because a progressing cold gate is not a semantic red.
+# Timed-out candidates are journaled, the lock is released, and the queue moves
+# on. Logs are always preserved under state/merge-queue/logs/.
 # The bounded nextest list wrapper also records genuine discovery-wave progress
 # in a coordinator-owned sidecar; synthetic human heartbeats do not count as
 # liveness.
@@ -45,7 +47,8 @@
 #   logs/           full gate output per attempt (check.sh stage markers carry
 #                   t+<seconds> offsets, so per-stage timing is in every log)
 #   coordinator.lock/ lifetime singleton for the persistent coordinator loop
-#   gate.lock/      the lock: pid + what + branch + log + started epoch
+#   gate.lock/      the lock: pid + what + branch + log + started epoch, plus
+#                   gate_pgid while a full gate process group is active
 #                   (stale locks — dead pid — are stolen)
 #
 #   scripts/merge-queue.sh submit [--front] <branch> [note]
@@ -115,7 +118,7 @@ gate_cmd="${MERGE_QUEUE_GATE_CMD:-./scripts/check.sh}"
 gate_cmd_is_default=1
 [ -z "${MERGE_QUEUE_GATE_CMD+x}" ] || gate_cmd_is_default=0
 coordinator_script="${MERGE_QUEUE_COORDINATOR_SCRIPT:-$root/scripts/merge-queue.sh}"
-gate_timeout="${MERGE_QUEUE_GATE_TIMEOUT:-2700}"
+gate_timeout="${MERGE_QUEUE_GATE_TIMEOUT:-0}"
 stall_timeout="${MERGE_QUEUE_STALL_TIMEOUT:-600}"
 monitor_interval="${MERGE_QUEUE_MONITOR_INTERVAL:-10}"
 retry_interval="${MERGE_QUEUE_RETRY_INTERVAL:-5}"
@@ -126,6 +129,7 @@ mkdir -p "$queue_dir" "$changes_dir" "$logs"
 # Patch-equivalent submissions are often consumed in long runs after an
 # integration tip lands. Coalesce their worktree reclamation into one sweep.
 deferred_sweep=0
+active_gate_pgid=""
 
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 note() { printf 'merge-queue: %s\n' "$*" >&2; }
@@ -175,6 +179,19 @@ case "$stall_timeout" in
         exit 2
         ;;
 esac
+case "$gate_timeout" in
+    '' | *[!0-9]*)
+        note "MERGE_QUEUE_GATE_TIMEOUT must be a non-negative integer (0 disables it)"
+        exit 2
+        ;;
+esac
+gate_timeout_display() {
+    if [ "$gate_timeout" -eq 0 ]; then
+        printf 'disabled'
+    else
+        printf '%ss' "$gate_timeout"
+    fi
+}
 
 # The last `==> [N] stage (t+Ns)` marker in a gate log = the stage running now.
 current_stage() { { strip_ansi <"$1" 2>/dev/null || true; } | { grep -E '^==> \[' || true; } | tail -1 | sed 's/^==> //'; }
@@ -338,6 +355,43 @@ claim_queue_entry_for_gate() { # claim_queue_entry_for_gate <queue-file> <change
     done
     release_change_lock
     return 1
+}
+
+# A coordinator can die after atomically claiming an attempt but before it
+# returns that attempt to queued or records a terminal state. The queue file is
+# deliberately retained during gating, so a new singleton owner can prove the
+# claim is orphaned and make it eligible again. This runs only after acquiring
+# coordinator.lock; no live coordinator can be preparing or gating an attempt
+# concurrently.
+recover_orphaned_change_claims() {
+    local cf state id sha attempt branch qf tmp matched
+    acquire_change_lock
+    for cf in "$changes_dir"/*.json; do
+        [ -f "$cf" ] || continue
+        state="$(jq -r '.state // empty' "$cf")"
+        case "$state" in gating | validated) ;; *) continue ;; esac
+        id="$(jq -r '.change_id // empty' "$cf")"
+        sha="$(jq -r '.current_sha // empty' "$cf")"
+        attempt="$(jq -r '.current_attempt // empty' "$cf")"
+        branch="$(jq -r '.branch // empty' "$cf")"
+        matched=0
+        for qf in "$queue_dir"/*.json; do
+            [ -f "$qf" ] || continue
+            if queue_entry_matches "$qf" "$id" "$sha" "$attempt"; then
+                matched=1
+                break
+            fi
+        done
+        [ "$matched" -eq 1 ] || continue
+        tmp="$cf.tmp.$$"
+        jq --arg state queued --arg updated "$(now)" \
+            '.state=$state | .updated=$updated' "$cf" >"$tmp"
+        mv "$tmp" "$cf"
+        record recovered "$branch" change_id "$id" attempt_id "$attempt" \
+            submitted_sha "$sha" reason "orphaned coordinator claim"
+        note "recovered orphaned $state claim for $branch"
+    done
+    release_change_lock
 }
 
 consume_queue_entry() { # consume_queue_entry <queue-file> <change-id> <sha> <attempt-id>
@@ -560,7 +614,44 @@ release_coordinator_lock() {
     fi
     holding_coordinator_lock=0
 }
+process_group_is_alive() {
+    local pgid="${1:-}" error
+    case "$pgid" in '' | *[!0-9]* | 0) return 1 ;; esac
+    if error="$(kill -0 -- "-$pgid" 2>&1)"; then
+        return 0
+    fi
+    case "$error" in
+        *"Operation not permitted"* | *"operation not permitted"* | *"not permitted"*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+terminate_gate_process_group() {
+    local pgid="${1:-}" reason="${2:-abandoned gate}"
+    process_group_is_alive "$pgid" || return 0
+    note "terminating gate process group $pgid ($reason)"
+    kill -TERM -- "-$pgid" 2>/dev/null || true
+    sleep 1
+    process_group_is_alive "$pgid" || return 0
+    kill -KILL -- "-$pgid" 2>/dev/null || true
+}
+reap_stale_gate_lock() {
+    [ -d "$lock" ] || return 1
+    local pid orphan_pgid
+    pid="$(cat "$lock/pid" 2>/dev/null || true)"
+    [ -n "$pid" ] && ! pid_is_alive "$pid" || return 1
+    note "stealing stale gate lock (pid $pid is gone)"
+    orphan_pgid="$(cat "$lock/gate_pgid" 2>/dev/null || true)"
+    terminate_gate_process_group "$orphan_pgid" "stale gate lock owner $pid"
+    rm -rf "$lock"
+    return 0
+}
 cleanup() {
+    if [ -n "$active_gate_pgid" ]; then
+        terminate_gate_process_group "$active_gate_pgid" "coordinator exiting"
+        active_gate_pgid=""
+    fi
     release_migration_marker
     release_lock
     release_change_lock
@@ -639,12 +730,8 @@ reap_orphan_coordinators() {
 acquire_lock() { # acquire_lock <description> [branch] [log]
     local waited=0
     while ! mkdir "$lock" 2>/dev/null; do
+        reap_stale_gate_lock && continue
         local pid; pid="$(cat "$lock/pid" 2>/dev/null || true)"
-        if [ -n "$pid" ] && ! pid_is_alive "$pid"; then
-            note "stealing stale gate lock (pid $pid is gone)"
-            rm -rf "$lock"
-            continue
-        fi
         if [ "$waited" -eq 0 ]; then
             note "gate lock held by pid ${pid:-?} ($(cat "$lock/what" 2>/dev/null || echo '?')); waiting"
             if [ -n "${MERGE_QUEUE_STATE_DIR:-}" ] \
@@ -699,7 +786,8 @@ group_is_busy() { # group_is_busy <pgid>
     awk -v c="$total" 'BEGIN { exit !(c > 20) }'
 }
 
-# Run the gate in its own process group with a stall/overall-timeout monitor.
+# Run the gate in its own process group with a stall monitor and optional
+# emergency whole-gate timeout.
 # Sets gate_result to "green", "red", or "timeout: <why>". Never returns nonzero.
 gate_result=""
 gate_attempt=0
@@ -735,6 +823,11 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     rm -f "$progress_file"
     ( cd "$gate_wt" && exec env CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
     local gpid=$!
+    active_gate_pgid="$gpid"
+    if [ "$holding_lock" -eq 1 ] \
+        && [ "$(cat "$lock/pid" 2>/dev/null || true)" = "$$" ]; then
+        printf '%s\n' "$gpid" >"$lock/gate_pgid"
+    fi
     set +m
     local why=""
     # Liveness is measured from the last NON-heartbeat log write, NOT the file
@@ -754,6 +847,8 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     while :; do
         if ! pid_is_alive "$gpid"; then
             if wait "$gpid"; then gate_result="green"; else gate_result="red"; fi
+            active_gate_pgid=""
+            rm -f "$lock/gate_pgid" 2>/dev/null || true
             rm -f "$progress_file"
             return 0
         fi
@@ -775,7 +870,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
             last_real_time="$t"
         fi
         local age=$((t - last_real_time))
-        if [ "$elapsed" -gt "$gate_timeout" ]; then
+        if [ "$gate_timeout" -gt 0 ] && [ "$elapsed" -gt "$gate_timeout" ]; then
             why="gate exceeded ${gate_timeout}s (MERGE_QUEUE_GATE_TIMEOUT)"
             break
         fi
@@ -786,7 +881,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
         # all before the first streamed `PASS` line — and under CPU contention that
         # silent window blew the 300s stall clock, killing HEALTHY gates (every
         # observed "no log output" timeout was this false positive, never a real
-        # hang; the whole-gate limit above already backstops a true wedge). So
+        # hang; the idle and busy-silence guards below backstop real wedges). So
         # gate liveness on CPU, not log writes: a process group burning CPU is
         # compiling/testing; only silence WITH no CPU is a genuine stall. A real
         # hang (deadlock/blocked syscall) consumes no CPU, so it still trips —
@@ -796,11 +891,11 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
             # is fine (this is the false-positive fix). But a group that is busy
             # AND silent for far longer than any compile+enumeration takes is a
             # CPU-burning runaway (e.g. a busy-spin infinite loop in a test) — kill
-            # it well before the 45-min whole-gate ceiling so it doesn't block the
-            # serialized queue that long. `busy_silence_max` = 3× the active
+            # it without relying on an arbitrary whole-suite duration.
+            # `busy_silence_max` = 3× the active
             # stall window, comfortably above a cold test-profile compile or
-            # bounded discovery under contention; GATE_TIMEOUT remains the
-            # absolute ceiling.
+            # bounded discovery under contention. An operator-provided
+            # GATE_TIMEOUT can add a separate absolute ceiling.
             local busy_silence_max="${MERGE_QUEUE_BUSY_SILENCE_MAX:-$((stall_timeout * 3))}"
             if group_is_busy "$gpid" && [ "$age" -le "$busy_silence_max" ]; then
                 continue
@@ -818,6 +913,8 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     sleep 5
     kill -KILL -- "-$gpid" 2>/dev/null || true
     wait "$gpid" 2>/dev/null || true
+    active_gate_pgid=""
+    rm -f "$lock/gate_pgid" 2>/dev/null || true
     rm -f "$progress_file"
     gate_result="timeout: $why"
     return 0
@@ -1000,6 +1097,7 @@ inflight_vars() {
     lk_what="$(cat "$lock/what" 2>/dev/null || true)"
     lk_branch="$(cat "$lock/branch" 2>/dev/null || true)"
     lk_log="$(cat "$lock/log" 2>/dev/null || true)"
+    lk_gate_pgid="$(cat "$lock/gate_pgid" 2>/dev/null || true)"
     lk_started="$(cat "$lock/started" 2>/dev/null || true)"
     lk_elapsed=""; lk_log_age=""; lk_stage=""
     local t; t="$(date +%s)"
@@ -1019,12 +1117,13 @@ cmd_status() {
     jq -n \
         --argjson q "$queue_json" \
         --slurpfile j <(tail -20 "$journal" 2>/dev/null || true) \
-        --arg pid "$lk_pid" --arg what "$lk_what" --arg branch "$lk_branch" \
+        --arg pid "$lk_pid" --arg gate_pgid "$lk_gate_pgid" \
+        --arg what "$lk_what" --arg branch "$lk_branch" \
         --arg log "$lk_log" --arg stage "$lk_stage" \
         --arg elapsed "$lk_elapsed" --arg log_age "$lk_log_age" \
         '{queue: $q,
           gate_lock: (if $pid == "" then null else
-            {pid: $pid, what: $what, branch: $branch, log: $log,
+            {pid: $pid, gate_pgid: $gate_pgid, what: $what, branch: $branch, log: $log,
              stage: $stage, elapsed_s: $elapsed, log_age_s: $log_age} end),
           recent: $j}'
 }
@@ -1065,8 +1164,9 @@ cmd_doctor() {
         if [ -z "$lk_pid" ] || ! pid_is_alive "$lk_pid"; then health="STALE (holder dead — next acquire steals it)"; fi
         echo "gate lock   : held by pid ${lk_pid:-?} — $health"
         echo "  what      : ${lk_what:-?}"
+        if [ -n "$lk_gate_pgid" ]; then echo "  gate pgid : $lk_gate_pgid"; fi
         if [ -n "$lk_branch" ]; then echo "  branch    : $lk_branch"; fi
-        if [ -n "$lk_elapsed" ]; then echo "  elapsed   : ${lk_elapsed}s (timeout ${gate_timeout}s)"; fi
+        if [ -n "$lk_elapsed" ]; then echo "  elapsed   : ${lk_elapsed}s (whole-gate timeout $(gate_timeout_display))"; fi
         if [ -n "$lk_log" ]; then
             echo "  log       : $lk_log"
             echo "  log age   : ${lk_log_age:-?}s since last output (stall kill at ${stall_timeout}s)"
@@ -2040,6 +2140,10 @@ cmd_run() {
         note "a coordinator (pid ${cpid:-?}) won the startup race; refusing to start a second"
         exit 1
     fi
+    # Reap before preparation so an abandoned compile/test tree cannot compete
+    # with the replacement coordinator's rebase and focused checks.
+    reap_stale_gate_lock || true
+    recover_orphaned_change_claims
     if [ "$once" -eq 0 ]; then
         echo "$$" >"$qdir/coordinator.pid"
         reap_orphan_coordinators "$$"
@@ -2048,7 +2152,7 @@ cmd_run() {
             note "WARNING: persistent 'run' is session-bound (ppid $cppid); use './scripts/merge-queue.sh daemon' for a durable coordinator"
         fi
     fi
-    note "coordinator up (pid $$, gate: '$gate_cmd', timeouts: ${gate_timeout}s total / ${stall_timeout}s stall); state: $qdir"
+    note "coordinator up (pid $$, gate: '$gate_cmd', timeouts: $(gate_timeout_display) total / ${stall_timeout}s stall); state: $qdir"
     if [ -n "${MERGE_QUEUE_DAEMON_READY_FD:-}" ]; then
         case "$MERGE_QUEUE_DAEMON_READY_FD" in
             *[!0-9]*) note "invalid daemon readiness descriptor"; return 1 ;;
