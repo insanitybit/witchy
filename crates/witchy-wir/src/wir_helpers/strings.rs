@@ -1,5 +1,9 @@
 //! String comparison, byte/character indexing, and search helpers.
 
+mod transform;
+
+pub use transform::*;
+
 use crate::wir::*;
 
 /// `$str_eq(a: i32, b: i32) -> i32` — content equality of two `[len][bytes]`
