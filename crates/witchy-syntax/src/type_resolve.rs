@@ -9,8 +9,10 @@
 //! is rewritten to its canonical qualified name using the module's own
 //! declarations, its `from X import Y` bindings, and the ambient prelude.
 //!
-//! Resolution is per module, so it knows the home module and its imports — the
-//! same place `aliases::resolve` runs. Two moments, as RFC-0042 §6 describes:
+//! Resolution is per module, so it knows the home module and its imports. Alias
+//! declarations and uses receive that identity here while the alias item remains
+//! present; `aliases::resolve` erases it only after linked-source proof is
+//! consumed. Two moments, as RFC-0042 §6 describes:
 //! this pass (types, annotations, constructor expressions, and in-scope
 //! constructor patterns), then a post-merge sweep ([`resolve_residual_patterns`])
 //! that fixes bare constructor patterns whose type only becomes unambiguous once
@@ -28,6 +30,73 @@ use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 
 use crate::ast::*;
 use crate::linker::LinkError;
+
+/// Receiver-independent ownership facts gathered while source traits and impls
+/// still exist. Typed trait lowering remains responsible for selecting one of
+/// these candidates from the receiver type.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MethodOwnerCandidates {
+    candidates: std::collections::BTreeMap<String, Vec<MethodOwnerCandidate>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MethodOwnerCandidate {
+    pub owner: String,
+    pub kind: MethodOwnerKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MethodOwnerKind {
+    Trait,
+    Inherent,
+}
+
+impl MethodOwnerCandidates {
+    pub fn for_method(&self, method: &str) -> &[MethodOwnerCandidate] {
+        self.candidates.get(method).map(Vec::as_slice).unwrap_or_default()
+    }
+
+    fn from_modules(modules: &[(String, Module)]) -> Self {
+        let mut candidates: std::collections::BTreeMap<
+            String,
+            std::collections::BTreeSet<MethodOwnerCandidate>,
+        > = std::collections::BTreeMap::new();
+        for (_, module) in modules {
+            for item in &module.items {
+                match item {
+                    Item::Trait(definition) => {
+                        for method in &definition.methods {
+                            candidates.entry(method.name.clone()).or_default().insert(
+                                MethodOwnerCandidate {
+                                    owner: definition.name.clone(),
+                                    kind: MethodOwnerKind::Trait,
+                                },
+                            );
+                        }
+                    }
+                    Item::Impl(definition) => {
+                        let (owner, kind) = match &definition.trait_name {
+                            Some(owner) => (owner.clone(), MethodOwnerKind::Trait),
+                            None => (definition.type_name.clone(), MethodOwnerKind::Inherent),
+                        };
+                        for method in &definition.methods {
+                            candidates.entry(method.name.clone()).or_default().insert(
+                                MethodOwnerCandidate { owner: owner.clone(), kind },
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Self {
+            candidates: candidates
+                .into_iter()
+                .map(|(method, owners)| (method, owners.into_iter().collect()))
+                .collect(),
+        }
+    }
+}
 
 fn lerr<T>(message: impl Into<String>) -> Result<T, LinkError> {
     Err(LinkError {
@@ -166,6 +235,9 @@ struct ModTypes {
 /// and its exported function names (to validate `from X import <function>`).
 struct World {
     types: HashMap<String, ModTypes>,
+    /// Type aliases remain source-visible until the proof is consumed, but
+    /// references to them still receive canonical module identity.
+    aliases: HashMap<String, HashSet<String>>,
     /// Non-ambient trait declarations by module.
     traits: HashMap<String, HashSet<String>>,
     /// All functions declared by a module. Used for same-module collision checks.
@@ -188,6 +260,12 @@ struct World {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ResolvedDeclarations {
     pub declarations: Vec<ResolvedDeclaration>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ResolvedSourceNamespace {
+    pub declarations: ResolvedDeclarations,
+    pub method_owners: MethodOwnerCandidates,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -256,6 +334,7 @@ fn declaration_kind_order(kind: ResolvedDeclarationKind) -> u8 {
 impl World {
     fn build(modules: &[(String, Module)]) -> World {
         let mut types: HashMap<String, ModTypes> = HashMap::new();
+        let mut aliases: HashMap<String, HashSet<String>> = HashMap::new();
         let mut traits: HashMap<String, HashSet<String>> = HashMap::new();
         let mut fns: HashMap<String, HashSet<String>> = HashMap::new();
         let mut pub_fns: HashMap<String, HashSet<String>> = HashMap::new();
@@ -296,11 +375,18 @@ impl World {
                     Item::Trait(tr) => {
                         trset.insert(tr.name.clone());
                     }
+                    Item::TypeAlias { name: alias, .. } => {
+                        aliases.entry(name.clone()).or_default().insert(alias.clone());
+                    }
                     _ => {}
                 }
             }
         }
-        World { types, traits, fns, pub_fns, ambient, ambient_traits }
+        World { types, aliases, traits, fns, pub_fns, ambient, ambient_traits }
+    }
+
+    fn module_has_alias(&self, module: &str, alias: &str) -> bool {
+        self.aliases.get(module).is_some_and(|aliases| aliases.contains(alias))
     }
 
     /// Whether `module` declares a type spelled (bare) `ty`.
@@ -417,6 +503,18 @@ pub fn resolve_with_user_modules_and_declarations(
     modules: &mut [(String, Module)],
     user_modules: &std::collections::HashSet<String>,
 ) -> Result<ResolvedDeclarations, LinkError> {
+    resolve_source_namespace(modules, user_modules).map(|namespace| namespace.declarations)
+}
+
+/// Prove the complete source namespace after expansion and bundled-module
+/// discovery. This pass validates every import against one link set,
+/// canonicalizes all source-visible type and trait identities in place, and
+/// records method owners without choosing a receiver-directed dispatch target.
+pub fn resolve_source_namespace(
+    modules: &mut [(String, Module)],
+    user_modules: &std::collections::HashSet<String>,
+) -> Result<ResolvedSourceNamespace, LinkError> {
+    validate_link_set_imports(modules)?;
     let declarations = ResolvedDeclarations::from_modules(modules);
     let world = World::build(modules);
     // Split the borrow: build each scope from `world`, then rewrite that module.
@@ -435,7 +533,27 @@ pub fn resolve_with_user_modules_and_declarations(
         )?;
         scope.rewrite_module(&mut modules[idx].1)?;
     }
-    Ok(declarations)
+    let method_owners = MethodOwnerCandidates::from_modules(modules);
+    Ok(ResolvedSourceNamespace { declarations, method_owners })
+}
+
+fn validate_link_set_imports(modules: &[(String, Module)]) -> Result<(), LinkError> {
+    let known: HashSet<&str> = modules.iter().map(|(name, _)| name.as_str()).collect();
+    for (home, module) in modules {
+        for imported in &module.imports {
+            if !known.contains(imported.as_str()) {
+                return lerr(format!("module `{home}` imports unknown module `{imported}`"));
+            }
+        }
+        for (imported, _) in &module.from_imports {
+            if !known.contains(imported.as_str()) {
+                return lerr(format!(
+                    "module `{home}` imports names from unknown module `{imported}`"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Resolve the type and constructor syntax written inside one compiler-owned
@@ -486,6 +604,11 @@ impl<'a> Scope<'a> {
                 ctor_map.insert(c.clone(), format!("{home}.{c}"));
             }
         }
+        if let Some(aliases) = world.aliases.get(home) {
+            for alias in aliases {
+                type_map.insert(alias.clone(), format!("{home}.{alias}"));
+            }
+        }
         if let Some(traits) = world.traits.get(home) {
             for tr in traits {
                 trait_map.insert(tr.clone(), format!("{home}.{tr}"));
@@ -499,6 +622,11 @@ impl<'a> Scope<'a> {
         if let Some(mt) = world.types.get(home) {
             for t in &mt.types {
                 unqual.insert(t.clone(), format!("a local type `{t}`"));
+            }
+        }
+        if let Some(aliases) = world.aliases.get(home) {
+            for alias in aliases {
+                unqual.insert(alias.clone(), format!("a local type alias `{alias}`"));
             }
         }
         if let Some(traits) = world.traits.get(home) {
@@ -665,6 +793,9 @@ impl<'a> Scope<'a> {
                 return Ok(ty.to_string());
             }
             if !self.world.module_has_type(module, ty) {
+                if module == self.home && self.world.module_has_alias(module, ty) {
+                    return Ok(name.to_string());
+                }
                 return lerr(format!("module `{module}` has no type `{ty}`"));
             }
             return Ok(name.to_string());
@@ -1142,7 +1273,10 @@ impl<'a> Scope<'a> {
                     }
                 }
                 Item::Const { value, .. } => self.resolve_expr(value)?,
-                Item::TypeAlias { ty, .. } => self.resolve_type(ty)?,
+                Item::TypeAlias { name, ty, .. } => {
+                    self.resolve_type(ty)?;
+                    *name = format!("{}.{}", self.home, name);
+                }
                 // A `comptime:` block runs as its OWN pruned program (comptime
                 // auto-imports `meta`), where it is linked — and so type-resolved —
                 // in that program's scope, not this module's. Leftover blocks are

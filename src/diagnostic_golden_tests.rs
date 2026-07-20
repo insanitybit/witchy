@@ -281,6 +281,27 @@ mod link {
             "main",
         ));
     }
+
+    #[test]
+    fn ambiguous_imported_trait() {
+        insta::assert_snapshot!(multi_link_diag(
+            &[
+                (
+                    "left",
+                    "trait Render:\n    fn render(self) -> String\n",
+                ),
+                (
+                    "right",
+                    "trait Render:\n    fn render(self) -> String\n",
+                ),
+                (
+                    "main",
+                    "import left\nimport right\n\nfn use(value: dyn Render) -> Int:\n    0\n",
+                ),
+            ],
+            "main",
+        ));
+    }
 }
 
 // ===========================================================================

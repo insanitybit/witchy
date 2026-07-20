@@ -1,0 +1,5 @@
+---
+source: src/diagnostic_golden_tests.rs
+expression: "multi_link_diag(&[(\"left\", \"trait Render:\\n    fn render(self) -> String\\n\",),\n(\"right\", \"trait Render:\\n    fn render(self) -> String\\n\",),\n(\"main\",\n\"import left\\nimport right\\n\\nfn use(value: dyn Render) -> Int:\\n    0\\n\",),],\n\"main\",)"
+---
+link error: ambiguous trait `Render` in module `main` — qualify it as `left.Render` or `right.Render`

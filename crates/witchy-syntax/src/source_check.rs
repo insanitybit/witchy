@@ -6,6 +6,38 @@
 
 use crate::ast::Module;
 
+/// A complete expanded link set whose imports, aliases, type identities, trait
+/// identities, and method owners were resolved while all source-only nodes were
+/// still present. Its fields are private so destructive lowering can require the
+/// proof instead of accepting an arbitrary module vector.
+#[derive(Debug)]
+pub struct ResolvedSource {
+    modules: Vec<(String, Module)>,
+    declarations: crate::type_resolve::ResolvedDeclarations,
+    method_owners: crate::type_resolve::MethodOwnerCandidates,
+}
+
+impl ResolvedSource {
+    pub fn modules(&self) -> &[(String, Module)] {
+        &self.modules
+    }
+
+    pub fn method_owners(&self) -> &crate::type_resolve::MethodOwnerCandidates {
+        &self.method_owners
+    }
+
+    pub(crate) fn into_checked_modules(
+        self,
+    ) -> (Vec<(String, SourceCheckedModule)>, crate::type_resolve::ResolvedDeclarations) {
+        let modules = self
+            .modules
+            .into_iter()
+            .map(|(name, module)| (name, SourceCheckedModule { module }))
+            .collect();
+        (modules, self.declarations)
+    }
+}
+
 /// An owned module whose source-only generator and async rules have been
 /// checked without rewriting its AST.
 #[derive(Debug)]
@@ -89,9 +121,51 @@ impl SourceLoweredModule {
 
 /// Check source-only semantics before any pass can erase their syntax.
 pub fn check(module: Module) -> Result<SourceCheckedModule, String> {
-    crate::generators::validate_source(&module)?;
-    crate::async_lower::validate_source(&module)?;
+    validate_source(&module)?;
     Ok(SourceCheckedModule { module })
+}
+
+/// Construct the linked-source proof after expansion and std discovery but
+/// before any source module is destructively lowered.
+pub(crate) fn resolve_linked_source(
+    mut modules: Vec<(String, Module)>,
+    user_modules: &std::collections::HashSet<String>,
+) -> Result<ResolvedSource, crate::linker::LinkError> {
+    for (name, module) in &modules {
+        if let Some(constant) = crate::consts::find_cycle(module) {
+            return Err(crate::linker::LinkError {
+                message: format!(
+                    "module `{name}`: constant `{constant}` is defined cyclically"
+                ),
+                location: None,
+            });
+        }
+        if let Some(alias) = crate::aliases::find_cycle(module) {
+            return Err(crate::linker::LinkError {
+                message: format!(
+                    "module `{name}`: type alias `{alias}` is defined cyclically"
+                ),
+                location: None,
+            });
+        }
+    }
+    let namespace = crate::type_resolve::resolve_source_namespace(&mut modules, user_modules)?;
+    for (name, module) in &modules {
+        validate_source(module).map_err(|message| crate::linker::LinkError {
+            message: format!("module `{name}`: expanded source: {message}"),
+            location: None,
+        })?;
+    }
+    Ok(ResolvedSource {
+        modules,
+        declarations: namespace.declarations,
+        method_owners: namespace.method_owners,
+    })
+}
+
+fn validate_source(module: &Module) -> Result<(), String> {
+    crate::generators::validate_source(module)?;
+    crate::async_lower::validate_source(module)
 }
 
 #[cfg(test)]
@@ -126,6 +200,7 @@ mod tests {
         let generators = include_str!("generators.rs");
         let async_lower = include_str!("async_lower.rs");
         let records = include_str!("records.rs");
+        let linker = include_str!("linker.rs");
         assert!(generators.contains("pub fn lower(mut checked: SourceCheckedModule)"));
         assert!(generators.contains("Result<GeneratorsLoweredModule, String>"));
         assert!(async_lower.contains("pub fn lower(checked: GeneratorsLoweredModule)"));
@@ -133,6 +208,9 @@ mod tests {
         assert!(async_lower.contains("Result<AsyncLoweredModule, String>"));
         assert!(records.contains("pub fn lower(module: AsyncLoweredModule)"));
         assert!(records.contains("pub fn lower_lenient(module: AsyncLoweredModule)"));
+        assert!(linker.contains(
+            "fn lower_expanded_source(\n    resolved: crate::source_check::ResolvedSource"
+        ));
         assert!(source_check.contains("pub(crate) fn into_module(self) -> Module"));
         assert_eq!(
             source_check
@@ -140,5 +218,84 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn linked_source_proof_retains_and_resolves_source_nodes() {
+        let module = parse(
+            "type Alias = Widget\n\n\
+             trait Base:\n    fn base(self) -> Alias\n\n\
+             trait Child: Base:\n    fn child(self, other: Alias) -> Alias\n\n\
+             type Widget:\n    Widget(Int)\n\n\
+             impl Base for Widget:\n    fn base(self) -> Alias:\n        self\n\n\
+             impl Child for Widget:\n    fn child(self, other: Alias) -> Alias:\n        other\n\n\
+             impl Widget:\n    pub fn inherent(self) -> Alias:\n        self\n\n\
+             gen fn values(value: Alias) -> Iter(Alias):\n    yield value\n\n\
+             async fn later(value: Alias) -> Alias:\n    value\n\n\
+             fn bounded(value: a) -> a where a: Child:\n    value\n",
+        );
+        let source_item_count = module.items.len();
+        let proof = resolve_linked_source(
+            vec![("main".into(), module)],
+            &std::collections::HashSet::new(),
+        )
+        .expect("linked source resolves");
+        let resolved = &proof.modules()[0].1;
+
+        assert_eq!(resolved.items.len(), source_item_count, "proof must retain every item");
+        assert!(resolved.items.iter().any(|item| matches!(
+            item,
+            crate::ast::Item::TypeAlias { name, ty: crate::ast::Type::Named(target, _), .. }
+                if name == "main.Alias" && target == "main.Widget"
+        )));
+        assert!(resolved.items.iter().any(|item| matches!(
+            item,
+            crate::ast::Item::Type(definition)
+                if definition.name == "main.Widget"
+                    && definition.variants[0].name == "main.Widget"
+        )));
+        assert!(resolved.items.iter().any(|item| matches!(
+            item,
+            crate::ast::Item::Function(function) if function.is_gen && function.name == "values"
+        )));
+        assert!(resolved.items.iter().any(|item| matches!(
+            item,
+            crate::ast::Item::Function(function) if function.is_async && function.name == "later"
+        )));
+        let child_trait = resolved.items.iter().find_map(|item| match item {
+            crate::ast::Item::Trait(definition) if definition.name == "main.Child" => {
+                Some(definition)
+            }
+            _ => None,
+        }).expect("resolved Child trait");
+        assert_eq!(child_trait.supertraits, ["main.Base"]);
+        assert_eq!(
+            child_trait.methods[0].params[1].ty,
+            Some(crate::ast::Type::Named("main.Alias".into(), Vec::new()))
+        );
+        assert_eq!(
+            child_trait.methods[0].ret,
+            Some(crate::ast::Type::Named("main.Alias".into(), Vec::new()))
+        );
+        assert!(resolved.items.iter().any(|item| matches!(
+            item,
+            crate::ast::Item::Impl(definition)
+                if definition.trait_name.as_deref() == Some("main.Child")
+                    && definition.type_name == "main.Widget"
+        )));
+        assert!(resolved.items.iter().any(|item| matches!(
+            item,
+            crate::ast::Item::Function(function)
+                if function.name == "bounded" && function.bounds[0].1 == "main.Child"
+        )));
+
+        let child = proof.method_owners().for_method("child");
+        assert_eq!(child.len(), 1);
+        assert_eq!(child[0].owner, "main.Child");
+        assert_eq!(child[0].kind, crate::type_resolve::MethodOwnerKind::Trait);
+        let inherent = proof.method_owners().for_method("inherent");
+        assert_eq!(inherent.len(), 1);
+        assert_eq!(inherent[0].owner, "main.Widget");
+        assert_eq!(inherent[0].kind, crate::type_resolve::MethodOwnerKind::Inherent);
     }
 }

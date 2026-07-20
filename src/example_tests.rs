@@ -23603,6 +23603,50 @@ fn main(console: Console):
         assert_eq!(compiled, vec!["42", "N"]);
     }
 
+    #[test]
+    fn linked_source_namespace_alias_and_trait_backends_agree() {
+        let model = r#"
+trait Named:
+    fn named(self) -> String
+
+type Payload:
+    Payload(String)
+
+impl Named for Payload:
+    fn named(self) -> String:
+        match self:
+            Payload(text) -> text
+
+pub fn make(text: String) -> Payload:
+    Payload(text)
+"#;
+        let bridge = r#"
+from model import Payload
+
+type Message = Payload
+
+pub fn relay(value: Message) -> Message:
+    value
+"#;
+        let app = r#"
+import model
+import bridge
+from model import Payload
+
+fn render(value: Payload) -> String:
+    named(value)
+
+fn main(console: Console):
+    let value = bridge.relay(model.make("linked proof"))
+    console.print(render(value))
+"#;
+        let sources = [("model", model), ("bridge", bridge), ("app", app)];
+        let interpreted = interpreter::run_program(&sources, "app").expect("interp");
+        let compiled = run_linked_on_wasm(&sources, "app");
+        assert_eq!(interpreted, compiled, "linked namespace backends diverged");
+        assert_eq!(compiled, vec!["linked proof"]);
+    }
+
     // The standard comparison hierarchy: `import cmp` brings the `PartialEq` ->
     // `Eq` -> `PartialOrd` -> `Ord` traits into scope. The built-in Int impl, a
     // user type implementing the hierarchy, the `Ordering` result of `compare`,

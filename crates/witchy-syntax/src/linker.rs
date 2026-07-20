@@ -561,8 +561,8 @@ pub struct LinkedModule {
 }
 
 /// Process-lifetime cache of bundled std modules pulled into a link set, in
-/// their fully prepared form: parsed, records-lowered, and compile-time
-/// expanded. The expansion of a `derive`-carrying std module (json/meta/
+/// their fully prepared source form: parsed, derive-scheduled, and compile-time
+/// expanded, but not destructively lowered. The expansion of a `derive`-carrying std module (json/meta/
 /// reflect/semver) runs comptime programs that recursively link — ~200ms per
 /// link that imports `semver` — and recomputes byte-identical results every
 /// time, because the inputs are process-constants: the bundled sources are
@@ -574,8 +574,9 @@ pub struct LinkedModule {
 /// the expander fn pointer so a non-standard `ComptimeExpander` gets its own
 /// entries, never another expander's output. Native cargo test executables add
 /// a second, process-shared tier below this map; both tiers store the exact
-/// lowered `Module` and its compiler-only `OriginTable` in an executable-
-/// identity-keyed, integrity-checked envelope.
+/// expanded source `Module` and its compiler-only `OriginTable` in an executable-
+/// identity-keyed, integrity-checked envelope. Every cache hit therefore re-enters
+/// linked-source proof construction before destructive lowering.
 #[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone)]
 struct CachedStdExpansion {
@@ -628,7 +629,7 @@ fn pulled_std_cache_insert(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-const PERSISTENT_STD_CACHE_MAGIC: &[u8] = b"witchy-std-expansion-cache\x02";
+const PERSISTENT_STD_CACHE_MAGIC: &[u8] = b"witchy-std-expansion-cache\x03";
 
 #[cfg(not(target_arch = "wasm32"))]
 const PERSISTENT_STD_CACHE_MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -914,56 +915,66 @@ fn prepare_source_for_expansion(mut module: Module) -> Result<Module, String> {
 }
 
 fn lower_expanded_source(
-    module_name: &str,
-    mut module: Module,
-    origins: &mut crate::origin::OriginTable,
-    view_fns: &HashSet<String>,
-) -> Result<Module, LinkError> {
-    reclassify_module_members(&mut module);
-    let generator_mapping = crate::generators::lowered_item_mapping(&module);
-    let checked = crate::source_check::check(module).map_err(|message| LinkError {
-        message: format!("module `{module_name}`: expanded source: {message}"),
-        location: None,
-    })?;
-    let checked = crate::generators::lower(checked).map_err(|message| LinkError {
-        message: format!("module `{module_name}`: expanded source: {message}"),
-        location: None,
-    })?;
-    let (checked, async_mapping) =
-        crate::async_lower::lower_with_view_fns_and_item_mapping(checked, view_fns)
-            .map_err(|message| LinkError {
+    resolved: crate::source_check::ResolvedSource,
+    origin_tables: &mut HashMap<String, crate::origin::OriginTable>,
+) -> Result<
+    (Vec<(String, Module)>, crate::type_resolve::ResolvedDeclarations),
+    LinkError,
+> {
+    let view_fns = resolved
+        .modules()
+        .iter()
+        .map(|(name, module)| expanded_view_fns(resolved.modules(), name, module))
+        .collect::<Vec<_>>();
+    let (checked_modules, declarations) = resolved.into_checked_modules();
+    let mut lowered_modules = Vec::with_capacity(checked_modules.len());
+    for ((module_name, checked), view_fns) in checked_modules.into_iter().zip(view_fns) {
+        let generator_mapping = crate::generators::lowered_item_mapping(checked.module());
+        let checked = crate::generators::lower(checked).map_err(|message| LinkError {
             message: format!("module `{module_name}`: expanded source: {message}"),
             location: None,
         })?;
-    let mut final_mapping = Vec::with_capacity(generator_mapping.len());
-    for generator_targets in &generator_mapping {
-        let mut targets = Vec::new();
-        for intermediate in generator_targets {
-            let Some(async_targets) = async_mapping.get(*intermediate) else {
-                return Err(LinkError {
-                    message: format!(
-                        "module `{module_name}`: expanded source origins: generator mapping targets missing async input {intermediate}"
-                    ),
-                    location: None,
-                });
-            };
-            targets.extend(async_targets.iter().copied());
+        let (checked, async_mapping) =
+            crate::async_lower::lower_with_view_fns_and_item_mapping(checked, &view_fns)
+                .map_err(|message| LinkError {
+                message: format!("module `{module_name}`: expanded source: {message}"),
+                location: None,
+            })?;
+        let mut final_mapping = Vec::with_capacity(generator_mapping.len());
+        for generator_targets in &generator_mapping {
+            let mut targets = Vec::new();
+            for intermediate in generator_targets {
+                let Some(async_targets) = async_mapping.get(*intermediate) else {
+                    return Err(LinkError {
+                        message: format!(
+                            "module `{module_name}`: expanded source origins: generator mapping targets missing async input {intermediate}"
+                        ),
+                        location: None,
+                    });
+                };
+                targets.extend(async_targets.iter().copied());
+            }
+            final_mapping.push(targets);
         }
-        final_mapping.push(targets);
+        let lowered = crate::records::lower_lenient(checked)
+            .map(|module| module.into_module())
+            .map_err(|message| LinkError {
+                message: format!("module `{module_name}`: expanded source: {message}"),
+                location: None,
+            })?;
+        origin_tables
+            .entry(module_name.clone())
+            .or_default()
+            .rebuild_item_trees(&module_name, &final_mapping, &lowered.items)
+            .map_err(|message| LinkError {
+                message: format!(
+                    "module `{module_name}`: expanded source origins: {message}"
+                ),
+                location: None,
+            })?;
+        lowered_modules.push((module_name, lowered));
     }
-    let lowered = crate::records::lower_lenient(checked)
-        .map(|module| module.into_module())
-        .map_err(|message| LinkError {
-            message: format!("module `{module_name}`: expanded source: {message}"),
-            location: None,
-        })?;
-    origins
-        .rebuild_item_trees(module_name, &final_mapping, &lowered.items)
-        .map_err(|message| LinkError {
-            message: format!("module `{module_name}`: expanded source origins: {message}"),
-            location: None,
-        })?;
-    Ok(lowered)
+    Ok((lowered_modules, declarations))
 }
 
 fn reclassify_module_members(module: &mut Module) {
@@ -1360,11 +1371,10 @@ pub fn link_with_user_modules_with_mode_and_origins(
         }
     }
 
-    // Modules pulled in by the prelude/import passes below post-date the
-    // records-lowering + compile-time expansion above; index from here so we can
-    // run those same passes on just the new ones (see after the pull-in loop).
-    // Indices whose module came out of the expansion cache already carry both
-    // passes and are skipped below.
+    // Modules pulled in by the prelude/import passes below post-date initial
+    // source preparation and compile-time expansion; index from here so those
+    // passes run on just the new ones. Cached indices already carry both and are
+    // skipped until every module rejoins linked-source proof construction.
     let pulled_std_start = modules.len();
     let mut cached_pull_indices: HashSet<usize> = HashSet::new();
 
@@ -1451,59 +1461,44 @@ pub fn link_with_user_modules_with_mode_and_origins(
         origin_tables.insert(name, origins);
         pulled_imports_before.insert(k, imports_before);
     }
-    // Borrowed-view facts must see every generated declaration, including
-    // declarations emitted by later modules and modules discovered through the
-    // bundled std path. Lower all expanded source only after that complete link
-    // set exists, so async safety is independent of discovery order.
-    for k in 0..modules.len() {
+    // Cache expanded source, never lowered output. A comptime block may EMIT
+    // `import` lines after the pull-in loop has run, so cache only expansions
+    // whose imports stayed fixed. Warm hits then traverse the same linked-source
+    // proof and destructive lowering as cold source.
+    for (k, (name, module)) in modules.iter().enumerate().skip(pulled_std_start) {
         if cached_pull_indices.contains(&k) {
             continue;
         }
-        let name = modules[k].0.clone();
-        let view_fns = expanded_view_fns(&modules, &name, &modules[k].1);
-        let mut origins = origin_tables.remove(&name).unwrap_or_default();
-        modules[k].1 =
-            lower_expanded_source(&name, modules[k].1.clone(), &mut origins, &view_fns)?;
-        origin_tables.insert(name.clone(), origins);
-        // A comptime block may EMIT `import` lines, which merge into the module
-        // after the pull-in loop above has already run — a cached copy would
-        // feed them back into a later link's pull-in and pull modules this link
-        // never saw. Cache only expansions that left the import lists alone (no
-        // bundled module's expansion grows them today).
-        if k >= pulled_std_start {
-            let imports_before = pulled_imports_before
-                .remove(&k)
-                .expect("every uncached pulled module recorded its pre-expansion imports");
-            if imports_before.0 == modules[k].1.imports
-                && imports_before.1 == modules[k].1.from_imports
-            {
-                let origins = origin_tables
-                    .get(&name)
-                    .expect("every expanded module retains its origin table");
-                pulled_std_cache_insert(expand, &name, &modules[k].1, origins);
-            }
+        let imports_before = pulled_imports_before
+            .get(&k)
+            .expect("every uncached pulled module recorded its pre-expansion imports");
+        if imports_before.0 == module.imports
+            && imports_before.1 == module.from_imports
+        {
+            let origins = origin_tables
+                .get(name)
+                .expect("every expanded module retains its origin table");
+            pulled_std_cache_insert(expand, name, module, origins);
         }
     }
+
+    // The proof is built only after expansion and transitive std discovery are
+    // complete. It validates the full namespace and canonicalizes all
+    // source-visible identities while generators, async functions, records,
+    // traits, impls, aliases, and their method signatures are still intact.
+    for (_, module) in &mut modules {
+        reclassify_module_members(module);
+    }
+    let resolved = crate::source_check::resolve_linked_source(modules, user_modules)?;
+    let (mut modules, declarations) = lower_expanded_source(resolved, &mut origin_tables)?;
 
     // MethodCall nodes survive linking: `x.f(a)` resolves to a REAL method
     // (impl/trait/static) during trait lowering, not to arbitrary free
     // functions (rfcs/language-evolution.md Phase 3).
 
-    // Reject cyclic constant/alias definitions with a clear message before
-    // resolution turns them into dangling self-references.
-    for (name, m) in &modules {
-        if let Some(c) = crate::consts::find_cycle(m) {
-            return lerr(format!("module `{name}`: constant `{c}` is defined cyclically"));
-        }
-        if let Some(c) = crate::aliases::find_cycle(m) {
-            return lerr(format!("module `{name}`: type alias `{c}` is defined cyclically"));
-        }
-    }
-
     // Expand type aliases and inline top-level constants per module before
-    // merging, so their use sites (and any function calls inside constant values)
-    // are qualified along with the bodies they expand into — no `Item::TypeAlias`
-    // or `Item::Const` reaches later stages.
+    // merging. The linked-source proof already canonicalized each declaration,
+    // target, use site, and constant expression without erasing either item.
     modules = modules
         .into_iter()
         .map(|(n, m)| {
@@ -1518,17 +1513,6 @@ pub fn link_with_user_modules_with_mode_and_origins(
                 .map_err(|message| LinkError { message, location: None })
         })
         .collect::<Result<Vec<_>, _>>()?;
-
-    // (RFC-0042) Canonicalize every user TYPE and CONSTRUCTOR name to
-    // `module.Name`, per module — the type-side twin of the function
-    // qualification below. Runs after alias expansion (so `type Id = iter.Step`
-    // is already a concrete reference) and before the merge, while each item
-    // still knows its home module and imports. Dissolves the flat-type-namespace
-    // collisions (iter+chan's `Step`, task+future's `Step`/`Task`).
-    let declarations = crate::type_resolve::resolve_with_user_modules_and_declarations(
-        &mut modules,
-        user_modules,
-    )?;
 
     // RFC-0002 sealing: a `capability` (a sealed type) may be CONSTRUCTED or
     // DESTRUCTURED only inside the module that declares it. Run AFTER
@@ -3683,7 +3667,7 @@ mod tests {
     }
 
     #[test]
-    fn pulled_std_cache_preserves_cold_and_warm_origins() {
+    fn pulled_std_cache_preserves_cold_and_warm_proof_and_origins() {
         fn origin_expand(
             name: &str,
             module: &mut Module,
@@ -3693,11 +3677,21 @@ mod tests {
                 return Ok(crate::origin::OriginTable::default());
             }
             let mut generated = crate::parser::parse_module(
-                "pub fn cached_origin(text: String) -> String:\n    text\n",
+                "type CachedText = String\n\n\
+                 trait CachedIdentity:\n    fn cached_identity(self) -> CachedText\n\n\
+                 impl CachedIdentity for String:\n    fn cached_identity(self) -> CachedText:\n        self\n\n\
+                 pub fn cached_origin(text: CachedText) -> CachedText:\n    text\n",
             )
             .map_err(|error| error.to_string())?;
-            let index = module.items.len();
             module.items.append(&mut generated.items);
+            let index = module
+                .items
+                .iter()
+                .position(|item| matches!(
+                    item,
+                    Item::Function(function) if function.name == "cached_origin"
+                ))
+                .expect("generated cached function");
             let origin = crate::origin::ExpansionOrigin {
                 definition: crate::origin::SourceSpan::line("cache-definition", 7),
                 invocation: crate::origin::SourceSpan::line("cache-invocation", 11),
@@ -3706,6 +3700,17 @@ mod tests {
             let mut origins = crate::origin::OriginTable::default();
             origins.record_item_tree(name, index, &module.items[index], origin);
             Ok(origins)
+        }
+
+        if let Some(cache) = PULLED_STD_EXPANSION_CACHE.get() {
+            cache
+                .lock()
+                .expect("std expansion cache lock")
+                .remove(&(origin_expand as *const () as usize, "string".to_string()));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(path) = persistent_std_cache_path(origin_expand, "string") {
+            let _ = std::fs::remove_file(path);
         }
 
         let source = "fn main(console: Console):\n    console.print(string.cached_origin(\"x\"))\n";
@@ -3729,6 +3734,23 @@ mod tests {
         .expect("warm link succeeds");
 
         assert_eq!(warm.origins, cold.origins);
+        assert_eq!(warm.module, cold.module, "cold and warm proof output diverged");
+        assert_eq!(warm.declarations, cold.declarations);
+        assert!(cold.declarations.declarations.iter().any(|declaration| {
+            declaration.compiler_name == "string.CachedIdentity"
+                && declaration.kind == crate::type_resolve::ResolvedDeclarationKind::Trait
+        }));
+        assert!(!cold.module.items.iter().any(|item| matches!(item, Item::TypeAlias { .. })));
+        assert!(cold.module.items.iter().any(|item| matches!(
+            item,
+            Item::Trait(definition) if definition.name == "string.CachedIdentity"
+        )));
+        assert!(cold.module.items.iter().any(|item| matches!(
+            item,
+            Item::Impl(definition)
+                if definition.trait_name.as_deref() == Some("string.CachedIdentity")
+                    && definition.type_name == "String"
+        )));
         assert!(cold.origins.nodes().iter().any(|entry| {
             entry.origin.definition.module == "cache-definition"
         }));
