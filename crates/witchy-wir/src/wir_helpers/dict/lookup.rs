@@ -44,7 +44,6 @@ pub fn key_eq_helper() -> WirFunc {
         raw_body: None,
     }
 }
-
 /// `$dict_hash(k, mode) -> i32` — a 64-bit bit-mix for scalar keys (mode 0),
 /// FNV-1a over the bytes for string keys (mode 1, `k` = string pointer). Only
 /// consulted by `$dict_find`'s (binary-path-dormant) hash probe.
@@ -235,4 +234,3 @@ pub fn dict_find_helper() -> WirFunc {
         raw_body: None,
     }
 }
-
