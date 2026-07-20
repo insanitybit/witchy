@@ -71,6 +71,10 @@ comptime:
     let reflected_param = meta.param(meta.ident("reflected"), reflected_input)
     let reflected_body = meta.block([], Some(meta.expr_int(42)))
     emit_item(meta.function_block(true, meta.ident("generated_reflected"), [reflected_param], Some(number), reflected_body))
+    let read = meta.type_named(meta.ident("Read"), [])
+    let directory = meta.type_capability(meta.ident("Dir"), [read])
+    let directory_param = meta.param(meta.ident("directory"), directory)
+    emit_item(meta.function_block(true, meta.ident("generated_capability"), [directory_param], Some(number), reflected_body))
 
 fn main(console: Console):
     console.print("${composed()}")
@@ -108,6 +112,10 @@ fn owned_body_syntax_survives_function_builders_on_both_backends() {
     );
     assert!(expanded_source.contains("pub fn generated_reflected("), "{expanded_source}");
     assert!(expanded_source.contains("fn(Number) -> Number"), "{expanded_source}");
+    assert!(
+        expanded_source.contains("pub fn generated_capability(directory: Dir[Read])"),
+        "{expanded_source}"
+    );
     assert!(!expanded_source.contains("@quote_stmt"), "{expanded_source}");
     assert!(!expanded_source.contains("@quote_block"), "{expanded_source}");
     let expanded_debug = format!("{expanded_for_tooling:?}");

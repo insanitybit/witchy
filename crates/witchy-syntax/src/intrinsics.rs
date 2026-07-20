@@ -52,6 +52,7 @@ pub enum IntrinsicId {
     MetaTypeFn,
     MetaTypeQualified,
     MetaTypeExpr,
+    MetaTypeCapability,
     MetaExprCall,
     MetaExprField,
     MetaExprMatch,
@@ -456,6 +457,7 @@ pub const META_TYPE_TUPLE: &str = "__meta_type_tuple";
 pub const META_TYPE_FN: &str = "__meta_type_fn";
 pub const META_TYPE_QUALIFIED: &str = "__meta_type_qualified";
 pub const META_TYPE_EXPR: &str = "__meta_type_expr";
+pub const META_TYPE_CAPABILITY: &str = "__meta_type_capability";
 pub const META_EXPR_CALL: &str = "__meta_expr_call";
 pub const META_EXPR_FIELD: &str = "__meta_expr_field";
 pub const META_EXPR_MATCH: &str = "__meta_expr_match";
@@ -1219,6 +1221,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "meta.type_expr",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaTypeCapability,
+        name: META_TYPE_CAPABILITY,
+        arity: 2,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta.type_capability",
         private_callers: META_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
@@ -2765,6 +2782,10 @@ pub fn is_meta_type_expr(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaTypeExpr)
 }
 
+pub fn is_meta_type_capability(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaTypeCapability)
+}
+
 pub fn is_meta_expr_call(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprCall)
 }
@@ -2855,6 +2876,7 @@ mod tests {
         assert_eq!(private_intrinsic_callers(META_TYPE_FN), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_TYPE_QUALIFIED), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_TYPE_EXPR), Some(META_BRIDGE_CALLERS));
+        assert_eq!(private_intrinsic_callers(META_TYPE_CAPABILITY), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_EXPR_CALL), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_EXPR_FIELD), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_EXPR_MATCH), Some(META_BRIDGE_CALLERS));
@@ -2882,6 +2904,7 @@ mod tests {
         assert_eq!(lookup("meta.__meta_type_fn"), lookup(META_TYPE_FN));
         assert_eq!(lookup("meta.__meta_type_qualified"), lookup(META_TYPE_QUALIFIED));
         assert_eq!(lookup("meta.__meta_type_expr"), lookup(META_TYPE_EXPR));
+        assert_eq!(lookup("meta.__meta_type_capability"), lookup(META_TYPE_CAPABILITY));
         assert_eq!(lookup("meta.__meta_expr_call"), lookup(META_EXPR_CALL));
         assert_eq!(lookup("meta.__meta_expr_field"), lookup(META_EXPR_FIELD));
         assert_eq!(lookup("meta.__meta_expr_match"), lookup(META_EXPR_MATCH));
@@ -2939,6 +2962,7 @@ mod tests {
             META_TYPE_FN,
             META_TYPE_QUALIFIED,
             META_TYPE_EXPR,
+            META_TYPE_CAPABILITY,
             META_EXPR_CALL,
             META_EXPR_FIELD,
             META_EXPR_MATCH,

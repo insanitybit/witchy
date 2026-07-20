@@ -7,8 +7,8 @@ as `PROVEN`, `MISSING`, `FAILING`, `EXTERNALLY BLOCKED`, or `EXPLICITLY
 DEFERRED`, and every non-terminal implementation slice must be discoverable as
 `QUEUED`, `BLOCKED`, or `PICKUP` with a branch and commit.
 
-Evidence was refreshed from master `89b47e87` and the merge-queue journal on
-2026-07-19. Queue and branch facts are snapshots; the individual RFC tracking
+Evidence was refreshed from master `aa27f34b` and the merge-queue journal on
+2026-07-20. Queue and branch facts are snapshots; the individual RFC tracking
 field is updated when a terminal decision lands.
 
 ## Terminal-outcome matrix
@@ -22,16 +22,17 @@ field is updated when a terminal decision lands.
 | RFC-0070 D6 | User source is checked before destructive lowering and comptime output re-enters the same front door | MISSING | RFC-0070 explicitly records the merged seam as the first slice, not the full pipeline reorder. |
 | RFC-0077 | Test-only sealed data, zero-grant unit tests, mock Dir, explicit Dir/Net integration grants, and deterministic collaborators | PROVEN | Master contains linker/runner enforcement, compiled and interpreter mock-Dir support, integration-grant tests, `testing.fixed_clock` / `fixed_rand`, and the testing book chapter. |
 | RFC-0077 | Future capability mocks remain part of the accepted RFC | EXPLICITLY DEFERRED | Close the delivered RFC scope; any mock Net/Env or capability-valued Clock/Rand is a new proposal with its own backend and denial evidence. |
-| RFC-0079 | Durable unit state survives an agent session and cannot disappear as chat context | MISSING | The proposed `scripts/agent-queue.sh` and unit-loop workflow do not exist; the RFC's gitignored scratch layout is not a durable branch handoff. |
-| RFC-0079 | Smallest useful enforcement detects dropped RFC work | MISSING | Implement a report/lint surface for clean-ahead unqueued branches, dirty RFC worktrees without handoff, and vague non-terminal RFC metadata. |
+| RFC-0079 | Durable unit state survives an agent session and cannot disappear as chat context | EXTERNALLY BLOCKED | `impl/rfc0079-durable-status` owns the active implementation and test slice; resolve its queue outcome before changing the same files here. |
+| RFC-0079 | Smallest useful enforcement detects dropped RFC work | EXTERNALLY BLOCKED | The active slice reports clean-ahead unqueued branches, dirty RFC worktrees, queued branches, and vague non-terminal RFC metadata. Its focused `worktree` test suite is green; terminal queue evidence remains required. |
 | RFC-0080 | Structured quotation/builders and definition/call-site identity implemented to the recorded boundary | PROVEN | Current RFC tracking and `tests/rfc0080/` record the landed compiler-owned syntax categories and hygiene behavior. |
-| RFC-0080 | Qualified identity residual | EXTERNALLY BLOCKED | `impl/rfc0080-qualified-identities` was actively gating when this ledger snapshot was created; resolve from its terminal journal event, not by duplicating it. |
-| RFC-0080 | Persistent per-node origin slice | MISSING | A clean historical patch exists, but its branch is hundreds of commits behind and must be transplanted onto fresh master after overlapping RFC-0080 work lands. |
+| RFC-0080 | Qualified identity residual | PROVEN | `impl/rfc0080-qualified-identities` merged as `11664c11`; `tests/rfc0080/qualified_identities.rs` proves definition-site and explicit call-site module-qualified type and constructor-pattern identities on both backends. |
+| RFC-0080 | Persistent per-node origin slice | PROVEN | Current master records structural `GeneratedNodePath` entries through `record_item_tree`; `crates/witchy-syntax/src/origin.rs` and the comptime integration assertion in `crates/witchy-interp/src/comptime.rs` prove lookup and nested ancestry. The stale historical branch is superseded. |
+| RFC-0080 | Capability type builder preserves structural rights | PROVEN | `impl/rfc0080-capability-type-current` is a fresh-master transplant of the valid code and test hunks from the preserved dirty historical worktree. The RFC-0080 dual-backend test and intrinsic privacy/catalog guards pass; the bridge validates the capability head and retains each right as a structural `Type` child. |
 | RFC-0080 | Remaining compatibility-builder origins and item/field identities | EXPLICITLY DEFERRED | Keep only separately scoped, acceptance-tested follow-ups; do not retain a general `proposed` tail after the current slices settle. |
 | RFC-0082 | Backend-neutral canonical runtime type identity and descriptor plan | PROVEN | `impl/rfc0082-descriptor-catalog` merged in the green batch recorded at master `89b47e87`; the plan authenticates package/declaration identity, rejects capability types, and is closed over nested types. |
-| RFC-0082 | Source `Dynamic`, payload conversion, checked field/call operations, parity, tooling, and documentation | EXPLICITLY DEFERRED | These are post-0.1 stages and remain excluded from `RELEASE-READINESS.md`; revive only after the descriptor foundation lands and authenticated loader ownership is available. |
-| Implementation roadmap | Historical capability/identity sequence no longer claims active work | MISSING | It still says RFC-0011 is partial even though RFC-0011 and its tested policy surface are implemented. Freeze as historical. |
-| RFC execution plan | Operational pickup index matches current RFC truth | MISSING | It names RFC-0005 as the next pickup although RFC-0005 is implemented. Retire it as a live index in favor of generated/live status. |
+| RFC-0082 | Source `Dynamic`, payload conversion, checked field/call operations, parity, tooling, and documentation | EXTERNALLY BLOCKED | `impl/rfc0082-checked-catalog-seam` is active in a separate worktree on top of the merged descriptor foundation. Resolve that slice before deciding which later stages are completed or explicitly deferred. |
+| Implementation roadmap | Historical capability/identity sequence no longer claims active work | PROVEN | Merged in `cb9da148`: the document is marked implemented/historical and no longer claims RFC-0011 is partial. |
+| RFC execution plan | Operational pickup index matches current RFC truth | PROVEN | Merged in `cb9da148`: the document is explicitly superseded and directs readers to current RFC tracking plus the checked-in ledger. |
 | Coven namespaces plan | Provider-derived namespace model is implemented | EXPLICITLY DEFERRED | Current Coven implements two-segment namespace/repository binding, not the proposed provider/owner/name and declarative multi-provider model. Remote Coven lifecycle is excluded from 0.1. |
 | RFC-0084 | Scoped extensions/interception have an accepted, testable implementation contract | EXPLICITLY DEFERRED | No implementation branch or acceptance ledger; revive after RFC-0082 dynamic dispatch is implemented and the RFC gains explicit acceptance criteria. |
 | RFC-0085 | Capability-bounded dynamic compilation/loading has its prerequisite loader and isolation contracts | EXPLICITLY DEFERRED | No implementation branch; revive after RFC-0080/0082 and an authenticated loader/authority-ceiling contract are implemented. |
@@ -45,10 +46,13 @@ left as an unqualified `in progress` state.
 
 | Slice | Durable state | Branch / evidence | Next action |
 |---|---|---|---|
-| Acceptance ledger | PICKUP | `docs/stale-rfc-terminal-ledger` at master `89b47e87` | Validate as prose-only, submit through the merge queue, and record the terminal journal event. |
+| Acceptance ledger | terminal | merged in `28d84402`, then updated by subsequent slices | Keep this ledger synchronized as each requirement becomes terminal. |
 | RFC-0070 D6 checked-stage seam | terminal | merged `89b47e87` | Continue the full reorder only as independently checked slices. |
 | RFC-0082 descriptor foundation | terminal | merged in `89b47e87` | Source-level Dynamic stages remain explicitly deferred pending authenticated loader ownership and post-0.1 scheduling. |
-| RFC-0080 qualified identities | QUEUED | `impl/rfc0080-qualified-identities` at submission `11664c11` | Observe its terminal journal event before editing overlapping RFC-0080 tracking. |
+| RFC-0080 qualified identities | terminal | merged `11664c11` | No remaining action. |
+| RFC-0066 terminal split | terminal | merged `aa27f34b`; residual security contracts are RFC-0099 and RFC-0100 | Revive those deferred RFCs only at their recorded product-boundary triggers. |
+| RFC-0079 durable status | PICKUP | `impl/rfc0079-durable-status`; focused `worktree` suite green | Complete fast-shard review, submit through the merge queue, and record the terminal journal event. |
+| RFC-0080 structural capability type | PICKUP | `impl/rfc0080-capability-type-current` from master `aa27f34b` | Validate the transplanted code/test slice, submit it, and record its terminal journal event. |
 
 ## Completion rule
 

@@ -249,7 +249,12 @@ pub fn type_capability(name: Ident, rights: List(TypeSyntax)) -> TypeSyntax:
     let head = ident_source(name)
     if head != "Dir" && head != "File" && head != "Net":
         fail("meta.type_capability: expected Dir, File, or Net")
-    TypeSyntax(head + "[" + list.join(type_syntax_sources(rights), ", ") + "]")
+    __meta_type_capability(name, rights)
+
+// Compiler-owned capability type construction. Rights remain structural type
+// children; the ambient capability head is validated above and by the bridge.
+fn __meta_type_capability(name: Ident, rights: List(TypeSyntax)) -> TypeSyntax:
+    __meta_type_capability(name, rights)
 
 fn type_with_head(head: String, args: List(TypeSyntax)) -> TypeSyntax:
     if list.is_empty(args):

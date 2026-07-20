@@ -3705,6 +3705,33 @@ impl Interpreter {
                 }
                 _ => err("meta.type_expr expects TypeExpr"),
             },
+            name if intrinsics::is_meta_type_capability(name) => match args {
+                [head, Value::List(rights)] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.type_capability is available only during compile-time expansion",
+                        );
+                    }
+                    let head = compiler_ident_name(head, "meta.type_capability")?;
+                    if !matches!(head.as_str(), "Dir" | "File" | "Net") {
+                        return err("meta.type_capability expected Dir, File, or Net");
+                    }
+                    let hole_ancestry = compiler_direct_hole_origins(
+                        rights,
+                        SyntaxCategory::Type,
+                        "CompilerTypeSyntax",
+                        &self.compiler_type_origins,
+                        self.cur_line,
+                    );
+                    let rights = compiler_type_holes(rights, &self.compiler_type_syntax)?;
+                    Ok(Some(self.store_compiler_type_syntax(
+                        "capability-type",
+                        Type::Named(head, rights),
+                        hole_ancestry,
+                    )?))
+                }
+                _ => err("meta.type_capability expects an Ident and List(TypeSyntax) rights"),
+            },
             name if intrinsics::is_meta_call_site_pattern(name) => match args {
                 [Value::Str(name), Value::List(args)] => {
                     if self.fresh_ident_scope.is_none() {
