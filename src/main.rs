@@ -62,9 +62,11 @@ use cli::{
 pub(crate) use commands::capabilities::{
     report_capabilities, report_capability_diff, report_grant_check,
 };
+#[cfg(test)]
+pub(crate) use commands::frontend::check_file;
 use runtime::Runtime;
 pub(crate) use source::{
-    bundled_module, expand_file_source, link_file, link_file_checked,
+    bundled_module, link_file, link_file_checked,
     link_file_checked_with_deps, link_file_with_mode, linked_has_main, project_entry_file,
 };
 #[cfg(test)]
@@ -235,64 +237,10 @@ fn main() -> wasmtime::Result<()> {
             });
         }
     }
-    // `witchy doc <file>...` prints Markdown API docs (one section per file) to
-    // stdout — public functions, their signatures, and their doc comments.
-    if std::env::args().nth(1).as_deref() == Some("doc") {
-        use std::path::Path;
-        let files: Vec<String> = std::env::args().skip(2).collect();
-        if files.is_empty() {
-            eprintln!("usage: witchy doc <file.witchy>...");
-            std::process::exit(2);
-        }
-        let mut out = String::from("# API reference\n\n");
-        for f in &files {
-            let stem = Path::new(f)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or(f);
-            let src = match std::fs::read_to_string(f) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("cannot read `{f}`: {e}");
-                    std::process::exit(1);
-                }
-            };
-            let mut module = match parser::parse_module(&src) {
-                Ok(module) => module,
-                Err(e) => {
-                    eprintln!("{f}: {e}");
-                    std::process::exit(1);
-                }
-            };
-            if let Err(e) = comptime::expand(stem, &mut module) {
-                eprintln!("{f}: {e}");
-                std::process::exit(1);
-            }
-            match doc::render_module(stem, &src, &module) {
-                Ok(md) => out.push_str(&md),
-                Err(e) => {
-                    eprintln!("{f}: {e}");
-                    std::process::exit(1);
-                }
-            }
-        }
-        print!("{out}");
+    if commands::frontend::run_document() {
         return Ok(());
     }
-    // `witchy expand <file>` prints the entry module after compile-time frontend
-    // expansion (`comptime:` items and tagged literals), in canonical source form.
-    if std::env::args().nth(1).as_deref() == Some("expand") {
-        let Some(path) = std::env::args().nth(2) else {
-            eprintln!("usage: witchy expand <file.witchy>");
-            std::process::exit(2);
-        };
-        match expand_file_source(&path) {
-            Ok(src) => print!("{src}"),
-            Err(e) => {
-                eprintln!("{e}");
-                std::process::exit(1);
-            }
-        }
+    if commands::frontend::run_expand() {
         return Ok(());
     }
     // `witchy which <name>` — where does a function live in the standard
@@ -508,21 +456,7 @@ fn main() -> wasmtime::Result<()> {
         }
         return Ok(());
     }
-    // `witchy check <file>` parses, links, type-checks, and verifies compiled
-    // backend acceptance without running — exits non-zero on any error. Validates
-    // programs you can't run (servers).
-    if std::env::args().nth(1).as_deref() == Some("check") {
-        let Some(path) = std::env::args().nth(2) else {
-            eprintln!("usage: witchy check <file.witchy>");
-            std::process::exit(1);
-        };
-        match check_file(&path) {
-            Ok(()) => println!("{path}: ok"),
-            Err(e) => {
-                eprintln!("{e}");
-                std::process::exit(1);
-            }
-        }
+    if commands::frontend::run_check() {
         return Ok(());
     }
     // `witchy compile <entry> [--dep name=path]... [--out <file.wasm>]` links the
@@ -1359,20 +1293,6 @@ fn main() -> Int:
             "{name:14}  interpreter {i:8.2} ms   compiled {c:8.3} ms   ({:.0}x)",
             i / c
         );
-    }
-    Ok(())
-}
-
-
-/// Parse, link, type-check, and verify compiled-backend acceptance WITHOUT
-/// running the program (`witchy check`). Useful for CI and for validating
-/// programs you don't want to run — e.g. servers, which never return.
-fn check_file(path: &str) -> Result<(), String> {
-    let (checked, stem) = link_file_checked(path)?;
-    let linked = checked.module();
-    enforce_performance_modes(linked, &stem)?;
-    if linked_has_main(linked) {
-        let _ = compile_checked_to_wasm(&checked)?;
     }
     Ok(())
 }
@@ -2593,53 +2513,6 @@ fn compile_checked_to_wasm(checked: &pipeline::CheckedModule) -> Result<Vec<u8>,
         }
     };
     Ok(artifact::embed_launch_contract(bytes, checked.module()))
-}
-
-#[cfg(test)]
-mod checked_cli_pipeline_tests {
-    use super::*;
-
-    fn fixture_dir(label: &str) -> std::path::PathBuf {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "witchy_checked_pipeline_{label}_{}_{nonce}",
-            std::process::id(),
-        ));
-        std::fs::create_dir_all(&path).expect("create checked-pipeline directory");
-        path
-    }
-
-    #[test]
-    fn checked_file_pipeline_authenticates_the_module_given_to_codegen() {
-        let dir = fixture_dir("valid");
-        let path = dir.join("main.witchy");
-        std::fs::write(&path, "fn main() -> Int:\n    7\n")
-            .expect("write checked-pipeline fixture");
-
-        let (checked, stem) = link_file_checked(path.to_str().expect("UTF-8 path"))
-            .expect("link and check fixture");
-        assert_eq!(stem, "main");
-        let bytes = compile_checked_to_wasm(&checked).expect("compile checked fixture");
-        assert!(!bytes.is_empty());
-        std::fs::remove_dir_all(dir).expect("remove checked-pipeline directory");
-    }
-
-    #[test]
-    fn checked_file_pipeline_rejects_before_codegen() {
-        let dir = fixture_dir("invalid");
-        let path = dir.join("main.witchy");
-        std::fs::write(&path, "fn main() -> Int:\n    \"wrong\"\n")
-            .expect("write invalid checked-pipeline fixture");
-
-        let error = link_file_checked(path.to_str().expect("UTF-8 path"))
-            .expect_err("type-invalid source cannot construct checked codegen input");
-        assert!(error.contains("expected `Int`"), "{error}");
-        assert!(error.contains(path.to_str().expect("UTF-8 path")), "{error}");
-        std::fs::remove_dir_all(dir).expect("remove checked-pipeline directory");
-    }
 }
 
 /// A cheap fingerprint of the compiler build: the `witchy` binary's size + mtime.
