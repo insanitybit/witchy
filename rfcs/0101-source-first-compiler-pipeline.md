@@ -68,6 +68,11 @@ Implemented evidence:
 - Synthetic derive blocks inherit the annotated type's item line as their
   invocation site, so derive-generated implementations retain source ancestry
   through comptime expansion and final lowering.
+- The browser compiler and embedded-program compiler now carry the canonical
+  `CheckedModule` proof into a dedicated checked-codegen entrypoint. Raw AST
+  lowering remains available for lowerer tests and explicitly synthesized
+  compiler modules, but these production surfaces can no longer separate a
+  successful type check from the module passed to code generation.
 
 ## Required contract
 

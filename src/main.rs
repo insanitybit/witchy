@@ -2942,7 +2942,7 @@ fn embedded_wasm_cached(
         }
     }
     let checked = link()?;
-    let wasm = match codegen::compile_module_binary(checked.module()) {
+    let wasm = match codegen::compile_checked_module_binary(&checked) {
         codegen::LoweringOutcome::Lowered(bytes) => bytes,
         codegen::LoweringOutcome::Unsupported(reason) => {
             return Err(format!("the embedded {name} {reason}"));

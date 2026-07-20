@@ -56,6 +56,20 @@ pub use witchy_wir::{wir, wir_encode, wir_helpers, wir_opt, wir_prelude};
 /// (no filesystem — the browser has none): parse the entry, then breadth-first
 /// load each `import`ed std module from the embedded sources and link them.
 pub fn resolve_std_only(src: &str) -> Result<ast::Module, String> {
+    resolve_std_modules(src).and_then(|modules| {
+        pipeline::link(modules, "main").map_err(|e| e.to_string())
+    })
+}
+
+/// Resolve bundled standard-library imports and retain proof that the linked
+/// program passed the canonical type checker.
+pub fn resolve_std_only_checked(src: &str) -> Result<pipeline::CheckedModule, String> {
+    resolve_std_modules(src).and_then(|modules| {
+        pipeline::link_checked(modules, "main").map_err(|e| e.to_string())
+    })
+}
+
+fn resolve_std_modules(src: &str) -> Result<Vec<(String, ast::Module)>, String> {
     use std::collections::{HashSet, VecDeque};
     let entry = parser::parse_module(src).map_err(|e| e.to_string())?;
     let mut modules: Vec<(String, ast::Module)> = vec![("main".to_string(), entry.clone())];
@@ -77,7 +91,7 @@ pub fn resolve_std_only(src: &str) -> Result<ast::Module, String> {
             modules.push((name, parsed));
         }
     }
-    pipeline::link(modules, "main").map_err(|e| e.to_string())
+    Ok(modules)
 }
 
 /// Whether a linked function originated in the entry file. The linker keeps the
@@ -208,12 +222,12 @@ fn ownership_relevant_type(ty: &ast::Type) -> bool {
 /// supplies them (capabilities are granted as trapping stubs — the browser has
 /// none).
 pub fn compile_source(src: &str) -> Result<Vec<u8>, String> {
-    let linked = resolve_std_only(src)?;
-    typeck::check(&linked).map_err(|e| e.to_string())?;
-    enforce_performance_modes(&linked, "main")?;
+    let checked = resolve_std_only_checked(src)?;
+    let linked = checked.module();
+    enforce_performance_modes(linked, "main")?;
     // Compile through the WIR → wasm-binary pipeline (`wasmparser`/`wasm-encoder`,
     // pure Rust, so this runs on EVERY target including the browser playground).
-    let bytes = match codegen::compile_module_binary(&linked) {
+    let bytes = match codegen::compile_checked_module_binary(&checked) {
         codegen::LoweringOutcome::Lowered(bytes) => bytes,
         codegen::LoweringOutcome::Unsupported(reason) => {
             return Err(format!("cannot compile to WASM: {reason}"));
@@ -222,7 +236,7 @@ pub fn compile_source(src: &str) -> Result<Vec<u8>, String> {
             return Err(format!("cannot compile to WASM: {error}"));
         }
     };
-    Ok(artifact::embed_launch_contract(bytes, &linked))
+    Ok(artifact::embed_launch_contract(bytes, linked))
 }
 
 #[cfg(test)]

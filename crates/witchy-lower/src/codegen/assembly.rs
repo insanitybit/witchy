@@ -1385,6 +1385,17 @@ pub fn compile_module_binary(module: &Module) -> LoweringOutcome<Vec<u8>> {
     compile_module_binary_mode(module, false)
 }
 
+/// Compile a module that has crossed the canonical linked type-check boundary.
+///
+/// Production front ends should use this entrypoint. The raw-module variant is
+/// retained for lowerer unit tests and compiler-synthesized modules whose
+/// construction is intentionally below the source pipeline.
+pub fn compile_checked_module_binary(
+    checked: &witchy_types::pipeline::CheckedModule,
+) -> LoweringOutcome<Vec<u8>> {
+    compile_module_binary_mode(checked.module(), false)
+}
+
 fn compile_module_binary_mode(
     module: &Module,
     build_entrypoint: bool,
@@ -2867,6 +2878,52 @@ fn prepare_synthetic_diagnostic_sites(func: &mut witchy_wir::wir::WirFunc) -> bo
         return false;
     }
     attach_diagnostic_sites(&mut func.body, 0)
+}
+
+#[cfg(test)]
+mod checked_codegen_boundary_tests {
+    use super::*;
+
+    fn no_expand(
+        _name: &str,
+        _module: &mut witchy_syntax::ast::Module,
+        _siblings: &[(String, witchy_syntax::ast::Module)],
+    ) -> Result<witchy_syntax::origin::OriginTable, String> {
+        Ok(witchy_syntax::origin::OriginTable::default())
+    }
+
+    #[test]
+    fn checked_codegen_uses_the_authenticated_module() {
+        let module = witchy_syntax::parser::parse_module("fn main() -> Int:\n    7\n")
+            .expect("parse checked-codegen fixture");
+        let checked = witchy_types::pipeline::link_checked(
+            vec![("main".into(), module)],
+            "main",
+            no_expand,
+        )
+        .expect("link and check fixture");
+
+        assert_eq!(
+            compile_checked_module_binary(&checked),
+            compile_module_binary(checked.module()),
+        );
+    }
+
+    #[test]
+    fn invalid_source_cannot_construct_checked_codegen_input() {
+        let module = witchy_syntax::parser::parse_module(
+            "fn main() -> Int:\n    \"not an int\"\n",
+        )
+        .expect("parse invalid checked-codegen fixture");
+        let error = witchy_types::pipeline::link_checked(
+            vec![("main".into(), module)],
+            "main",
+            no_expand,
+        )
+        .expect_err("type-invalid source must stop before checked codegen");
+
+        assert!(error.to_string().contains("expected `Int`"), "{error}");
+    }
 }
 
 #[cfg(test)]
