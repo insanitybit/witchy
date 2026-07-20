@@ -1659,6 +1659,427 @@ fn queued_work_preempts_an_idle_prewarm_process_group() {
 }
 
 #[test]
+fn queued_work_cancels_inactive_prewarm_and_preserves_active_generation() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    run_git(
+        &fixture.root,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            fixture.gate_worktree.to_str().unwrap(),
+            "master",
+        ],
+    );
+    fs::create_dir_all(&fixture.state).expect("create generation state");
+    fs::create_dir_all(fixture.gate_worktree.join("target"))
+        .expect("create active gate target");
+    fs::write(
+        fixture.gate_worktree.join("target/generation-sentinel"),
+        "active\n",
+    )
+    .expect("write active generation sentinel");
+    fs::write(fixture.state.join("gate-target"), "target\n")
+        .expect("select active gate target");
+
+    let bin = fixture._temp.path().join("inactive-prewarm-bin");
+    fs::create_dir(&bin).expect("create fake prewarm bin");
+    let started = fixture._temp.path().join("inactive-prewarm-started");
+    let cancelled = fixture._temp.path().join("inactive-prewarm-cancelled");
+    let cargo_pid_file = fixture._temp.path().join("inactive-prewarm-cargo-pid");
+    let prewarm_target = fixture._temp.path().join("inactive-prewarm-target");
+    let gate_ran = fixture._temp.path().join("gate-ran");
+    let gate_release = fixture._temp.path().join("gate-release");
+    let gate_target = fixture._temp.path().join("gate-target-seen");
+    let gate_sentinel = fixture._temp.path().join("gate-sentinel-seen");
+    let cargo = bin.join("cargo");
+    fs::write(
+        &cargo,
+        format!(
+            "#!/bin/sh\ntarget_dir=\"${{CARGO_TARGET_DIR:-target}}\"\nprintf '%s' \"$target_dir\" >\"{}\"\ntrap 'printf cancelled >\"{}\"; exit 143' TERM INT\nmkdir -p \"$target_dir/debug/.fingerprint/inactive-prewarm\"\n: >\"$target_dir/debug/.fingerprint/inactive-prewarm/invoked.timestamp\"\nprintf '%s' \"$$\" >\"{}\"\nprintf started >\"{}\"\nwhile :; do /bin/sleep 1; done\n",
+            prewarm_target.display(),
+            cancelled.display(),
+            cargo_pid_file.display(),
+            started.display(),
+        ),
+    )
+    .expect("write blocking inactive prewarm Cargo");
+    fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755))
+        .expect("chmod blocking inactive prewarm Cargo");
+    let rustup = bin.join("rustup");
+    fs::write(
+        &rustup,
+        format!(
+            "#!/bin/sh\ncase \"$1\" in\n  target) exit 0 ;;\n  which) printf '{}/rustc\\n'; exit 0 ;;\nesac\nexit 1\n",
+            bin.display(),
+        ),
+    )
+    .expect("write fake prewarm rustup");
+    fs::set_permissions(&rustup, fs::Permissions::from_mode(0o755))
+        .expect("chmod fake prewarm rustup");
+
+    let queue_script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/merge-queue.sh");
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let gate = format!(
+        "printf '%s' \"${{CARGO_TARGET_DIR:-unset}}\" >{}; cat \"${{CARGO_TARGET_DIR:-target}}/generation-sentinel\" >{}; printf ran >{}; while [ ! -e {} ]; do /bin/sleep 0.05; done",
+        gate_target.display(),
+        gate_sentinel.display(),
+        gate_ran.display(),
+        gate_release.display(),
+    );
+    let mut coordinator = Command::new("bash")
+        .arg(&queue_script)
+        .arg("run")
+        .env("PATH", path)
+        .env("MERGE_QUEUE_TEST_ROOT", &fixture.root)
+        .env("MERGE_QUEUE_ALLOW_TEST_ROOT", "1")
+        .env("MERGE_QUEUE_STATE_DIR", &fixture.state)
+        .env("MERGE_QUEUE_GATE_WT", &fixture.gate_worktree)
+        .env("MERGE_QUEUE_GATE_CMD", gate)
+        .env("MERGE_QUEUE_ALLOW_MERGE", "1")
+        .env("MERGE_QUEUE_MONITOR_INTERVAL", "0.05")
+        .env("MERGE_QUEUE_POLL_INTERVAL", "0.05")
+        .env("MERGE_QUEUE_RETRY_INTERVAL", "0.05")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .expect("start persistent coordinator");
+    let coordinator_pid = coordinator.id() as i32;
+    let coordinator_guard = ProcessGroupGuard(coordinator_pid);
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !started.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(started.exists(), "coordinator never entered inactive Cargo prewarm");
+    assert_eq!(
+        fs::read_to_string(&prewarm_target).expect("read prewarm target"),
+        "target-prewarm",
+        "idle prewarm did not use the inactive generation",
+    );
+    let cargo_pid = fs::read_to_string(&cargo_pid_file)
+        .expect("read blocking Cargo pid")
+        .parse::<i32>()
+        .expect("parse blocking Cargo pid");
+    let cargo_pgid = process_group(cargo_pid);
+    let coordinator_pgid = process_group(coordinator_pid);
+    let cargo_guard = (cargo_pgid != coordinator_pgid).then(|| ProcessGroupGuard(cargo_pgid));
+
+    let submitted_at = Instant::now();
+    fixture.mq_ok(&["submit", "a"], "true");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !gate_ran.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(gate_ran.exists(), "queued gate waited behind inactive prewarm Cargo");
+    assert!(
+        submitted_at.elapsed() < Duration::from_secs(10),
+        "queued gate did not start promptly after cancelling inactive prewarm"
+    );
+    assert!(cancelled.exists(), "queued work did not cancel inactive prewarm Cargo");
+    assert_eq!(
+        fs::read_to_string(&gate_target).expect("read gate target"),
+        "target",
+        "gate did not retain the active target generation",
+    );
+    assert_eq!(
+        fs::read_to_string(&gate_sentinel).expect("read gate sentinel"),
+        "active\n",
+        "gate did not see the active target sentinel",
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.state.join("gate-target")).expect("read target pointer"),
+        "target\n",
+        "cancelled prewarm changed the active target pointer",
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.gate_worktree.join("target/generation-sentinel"))
+            .expect("read unchanged active sentinel"),
+        "active\n",
+        "inactive prewarm mutated the active target",
+    );
+    assert!(
+        !fixture
+            .gate_worktree
+            .join("target/debug/.fingerprint/inactive-prewarm/invoked.timestamp")
+            .exists(),
+        "inactive prewarm wrote a fingerprint into the active target",
+    );
+    assert!(
+        fixture
+            .gate_worktree
+            .join("target-prewarm/debug/.fingerprint/inactive-prewarm/invoked.timestamp")
+            .exists(),
+        "inactive prewarm never touched its target generation",
+    );
+    assert!(
+        !fixture.state.join("prewarmed").exists(),
+        "cancelled prewarm was recorded as complete",
+    );
+    assert!(
+        fixture.state.join("prewarm-incomplete").exists(),
+        "cancelled generation lost its incomplete marker",
+    );
+
+    fs::write(&gate_release, "go\n").expect("release fake gate");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !git_output(&fixture.root, &["show", "master:a.txt"])
+        .status
+        .success()
+        && Instant::now() < deadline
+    {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        git_output(&fixture.root, &["show", "master:a.txt"])
+            .status
+            .success(),
+        "queued branch did not land after inactive prewarm cancellation",
+    );
+    if cargo_pgid != coordinator_pgid {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while process_group_is_alive(cargo_pgid) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(25));
+        }
+        assert!(!process_group_is_alive(cargo_pgid), "cancelled Cargo group survived");
+        std::mem::forget(cargo_guard);
+    }
+    drop(coordinator_guard);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while coordinator
+        .try_wait()
+        .expect("poll terminated coordinator")
+        .is_none()
+        && Instant::now() < deadline
+    {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        coordinator
+            .try_wait()
+            .expect("reap terminated coordinator")
+            .is_some(),
+        "coordinator ignored process-group termination",
+    );
+}
+
+#[test]
+fn successful_prewarm_promotes_inactive_generation_for_next_gate() {
+    let fixture = QueueFixture::stack(&["a.txt"]);
+    run_git(
+        &fixture.root,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            fixture.gate_worktree.to_str().unwrap(),
+            "master",
+        ],
+    );
+    fs::create_dir_all(&fixture.state).expect("create generation state");
+    fs::create_dir_all(fixture.gate_worktree.join("target"))
+        .expect("create active gate target");
+    fs::create_dir_all(fixture.gate_worktree.join("target-clippy"))
+        .expect("create active clippy target");
+    fs::create_dir_all(fixture.gate_worktree.join("target-check"))
+        .expect("create active check target");
+    fs::create_dir_all(fixture.gate_worktree.join("target-prewarm-clippy"))
+        .expect("create inactive clippy target");
+    fs::create_dir_all(fixture.gate_worktree.join("target-prewarm-check"))
+        .expect("create inactive check target");
+    fs::write(
+        fixture.gate_worktree.join("target/generation-sentinel"),
+        "old-active\n",
+    )
+    .expect("write old active generation sentinel");
+    fs::write(fixture.state.join("gate-target"), "target\n")
+        .expect("select initial gate target");
+
+    let bin = fixture._temp.path().join("promoting-prewarm-bin");
+    fs::create_dir(&bin).expect("create fake promoting prewarm bin");
+    let started = fixture._temp.path().join("promoting-prewarm-started");
+    let prewarm_release = fixture._temp.path().join("promoting-prewarm-release");
+    let cargo_targets = fixture._temp.path().join("promoting-prewarm-targets");
+    let gate_ran = fixture._temp.path().join("promoted-gate-ran");
+    let gate_release = fixture._temp.path().join("promoted-gate-release");
+    let gate_target = fixture._temp.path().join("promoted-gate-target");
+    let gate_sentinel = fixture._temp.path().join("promoted-gate-sentinel");
+    let cargo = bin.join("cargo");
+    fs::write(
+        &cargo,
+        format!(
+            "#!/bin/sh\ntarget_dir=\"${{CARGO_TARGET_DIR:-target}}\"\nprintf '%s\\n' \"$target_dir\" >>\"{}\"\nif [ ! -e \"{}\" ]; then\n  mkdir -p \"$target_dir\"\n  printf promoted >\"$target_dir/generation-sentinel\"\n  printf started >\"{}\"\n  while [ ! -e \"{}\" ]; do /bin/sleep 0.05; done\nfi\nexit 0\n",
+            cargo_targets.display(),
+            started.display(),
+            started.display(),
+            prewarm_release.display(),
+        ),
+    )
+    .expect("write successful fake prewarm Cargo");
+    fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755))
+        .expect("chmod successful fake prewarm Cargo");
+    let rustup = bin.join("rustup");
+    fs::write(
+        &rustup,
+        format!(
+            "#!/bin/sh\ncase \"$1\" in\n  target) exit 0 ;;\n  which) printf '{}/rustc\\n'; exit 0 ;;\nesac\nexit 1\n",
+            bin.display(),
+        ),
+    )
+    .expect("write fake promoting rustup");
+    fs::set_permissions(&rustup, fs::Permissions::from_mode(0o755))
+        .expect("chmod fake promoting rustup");
+
+    let queue_script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/merge-queue.sh");
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let gate = format!(
+        "printf '%s' \"${{CARGO_TARGET_DIR:-unset}}\" >{}; cat \"${{CARGO_TARGET_DIR:-target}}/generation-sentinel\" >{}; printf ran >{}; while [ ! -e {} ]; do /bin/sleep 0.05; done",
+        gate_target.display(),
+        gate_sentinel.display(),
+        gate_ran.display(),
+        gate_release.display(),
+    );
+    let mut coordinator = Command::new("bash")
+        .arg(&queue_script)
+        .arg("run")
+        .env("PATH", path)
+        .env("MERGE_QUEUE_TEST_ROOT", &fixture.root)
+        .env("MERGE_QUEUE_ALLOW_TEST_ROOT", "1")
+        .env("MERGE_QUEUE_STATE_DIR", &fixture.state)
+        .env("MERGE_QUEUE_GATE_WT", &fixture.gate_worktree)
+        .env("MERGE_QUEUE_GATE_CMD", gate)
+        .env("MERGE_QUEUE_ALLOW_MERGE", "1")
+        .env("MERGE_QUEUE_MONITOR_INTERVAL", "0.05")
+        .env("MERGE_QUEUE_POLL_INTERVAL", "0.05")
+        .env("MERGE_QUEUE_RETRY_INTERVAL", "0.05")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .expect("start persistent coordinator");
+    let coordinator_pid = coordinator.id() as i32;
+    let coordinator_guard = ProcessGroupGuard(coordinator_pid);
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !started.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(started.exists(), "coordinator never started inactive prewarm");
+    assert_eq!(
+        fs::read_to_string(fixture.state.join("gate-target")).expect("read initial pointer"),
+        "target\n",
+        "target generation was promoted before prewarm completed",
+    );
+    assert!(
+        fixture.state.join("prewarm-incomplete").exists(),
+        "in-progress generation was not marked incomplete",
+    );
+    assert!(!fixture.state.join("prewarmed").exists());
+    assert_eq!(
+        fs::read_to_string(fixture.gate_worktree.join("target/generation-sentinel"))
+            .expect("read old active sentinel"),
+        "old-active\n",
+        "inactive prewarm mutated the old active generation",
+    );
+
+    fs::write(&prewarm_release, "go\n").expect("release successful prewarm");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while fs::read_to_string(fixture.state.join("gate-target"))
+        .is_ok_and(|target| target.trim() != "target-prewarm")
+        && Instant::now() < deadline
+    {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert_eq!(
+        fs::read_to_string(fixture.state.join("gate-target")).expect("read promoted pointer"),
+        "target-prewarm\n",
+        "successful prewarm did not atomically promote the inactive generation",
+    );
+    assert!(fixture.state.join("prewarmed").exists(), "prewarm completion was not recorded");
+    assert!(
+        !fixture.state.join("prewarm-incomplete").exists(),
+        "successful generation retained the incomplete marker",
+    );
+    let targets = fs::read_to_string(&cargo_targets).expect("read prewarm Cargo targets");
+    assert!(
+        targets.lines().any(|target| target == "target-prewarm"),
+        "main prewarm did not use target-prewarm: {targets}",
+    );
+    assert!(
+        targets.lines().any(|target| target == "target-prewarm-clippy"),
+        "clippy prewarm did not use the inactive suffix: {targets}",
+    );
+    assert!(
+        targets.lines().any(|target| target == "target-prewarm-check"),
+        "check prewarm did not use the inactive suffix: {targets}",
+    );
+
+    fixture.mq_ok(&["submit", "a"], "true");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !gate_ran.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(gate_ran.exists(), "gate did not run after successful promotion");
+    assert_eq!(
+        fs::read_to_string(&gate_target).expect("read promoted gate target"),
+        "target-prewarm",
+        "next gate did not receive the promoted CARGO_TARGET_DIR",
+    );
+    assert_eq!(
+        fs::read_to_string(&gate_sentinel).expect("read promoted gate sentinel"),
+        "promoted",
+        "next gate did not consume the promoted generation sentinel",
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.state.join("gate-target")).expect("read stable pointer"),
+        "target-prewarm\n",
+        "gate changed the promoted target pointer",
+    );
+
+    fs::write(&gate_release, "go\n").expect("release promoted gate");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !git_output(&fixture.root, &["show", "master:a.txt"])
+        .status
+        .success()
+        && Instant::now() < deadline
+    {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        git_output(&fixture.root, &["show", "master:a.txt"])
+            .status
+            .success(),
+        "queued branch did not land through the promoted generation",
+    );
+    drop(coordinator_guard);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while coordinator
+        .try_wait()
+        .expect("poll terminated coordinator")
+        .is_none()
+        && Instant::now() < deadline
+    {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        coordinator
+            .try_wait()
+            .expect("reap terminated coordinator")
+            .is_some(),
+        "coordinator ignored process-group termination",
+    );
+}
+
+#[test]
 fn doctor_treats_denied_process_inspection_as_advisory() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let temp = TempDir::new();
