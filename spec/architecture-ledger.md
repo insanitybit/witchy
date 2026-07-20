@@ -42,7 +42,7 @@ must shrink during the runtime-kernel phase.
 | Boundary | Current owner | Classification | Contract and evidence |
 |---|---|---|---|
 | Compiler trust boundary | lexer through type checking and lowering/codegen | KEEP | Source safety depends on these stages producing valid, capability-correct Wasm. Differential tests and Wasm validation adjudicate the result. |
-| Runtime enforcement TCB | `witchy-runtime::runtime`, confinement/network policy, capability host functions, Wasmtime | EXTRACT | After compilation it should admit imports, enforce grants/confinement/resource limits, and execute Wasm without compiler implementation dependencies. Capability denial and confinement tests must remain unchanged. |
+| Runtime enforcement TCB | `witchy-runtime::runtime`, `runtime::host::crypto`, confinement/network policy, remaining capability host functions, Wasmtime | EXTRACT | Crypto hash, verify, sign, public-key, and reveal imports now have one registrar and private handlers. Continue moving host families behind task-shaped registrars until the Wasm kernel only coordinates admission, grants, confinement, resource limits, and execution. Capability denial and confinement tests must remain unchanged. |
 | Compiler services offered to trusted Witchy programs | `witchy-runtime::native::compiler` owns parsing, docs, checking, and footprint implementation; `witchy-runtime::runtime::compiler` owns Wasmtime import registration, guest decoding, and result staging | EXTRACT | Replace their direct registry lookup with an injected service interface owned above the runtime kernel. Preserve compiler capability checks and exact diagnostics. |
 | Shared host ABI and runtime values | `witchy-runtime::{native,value}` plus representation constants in WIR/lowering | CONSOLIDATE | Define one narrow ABI/policy vocabulary. Do not duplicate representation catalogs while breaking the dependency cycle. |
 
@@ -150,7 +150,7 @@ distributed mechanically.
 | `witchy-syntax/linker.rs` | ~4,900 | NARROW | Module graph/linking versus bundled-source registry and expansion orchestration. |
 | `src/main.rs`, `src/{cli,source}.rs`, `src/commands/**` | ~3,208 + ~205 + ~272 + ~900 | EXTRACT | CLI presentation, source loading, frontend/capability commands, and compilation/cache/artifact emission have distinct owners. Continue separating execution/parity, sandbox/grants, build steps, and embedded product adapters from the composition root. |
 | `witchy-lower/analysis.rs` | ~4,300 | NARROW | Separate ownership facts/summaries from diagnostics and optimization consumers only where interfaces become smaller. |
-| `witchy-runtime/runtime{.rs,/compiler.rs}` | ~3,580 + ~105 | EXTRACT | Compiler-service imports have one adapter owner; continue separating host import families, grant admission, and execution policy from the Wasm kernel. |
+| `witchy-runtime/runtime{.rs,/compiler.rs,/host/**}` | ~3,290 + ~105 + ~350 | EXTRACT | Compiler-service imports and crypto host imports have distinct adapter/registrar owners. Continue separating filesystem/process, environment/time/random, network, VM-worker, and core diagnostic/memory families from grant admission and execution policy. |
 
 Active worktree overlap is an admission check, not checked-in ownership. Before
 every hotspot slice, run `scripts/worktree-status.sh`, inspect branch diffs, and
@@ -171,7 +171,7 @@ first structural work should use unowned contracts or WIR-helper domains.
 | `std_source` used as a general bundled lookup concept | NARROW | Standard and playground provenance represented separately. |
 | WIR helper implementation and dependency metadata | NARROW | Responsibility extraction is complete: one typed registry owns dependency metadata and domain modules own constructors. Narrow compatibility re-exports only through a separate resolved-call-site census; do not duplicate the catalog. |
 | Repeated test process/temp/server lifecycle code | CONSOLIDATE | Shared harnesses preserve explicit assertions and cleanup behavior. |
-| Obsolete runtime-spike and hand-written-Wasm binary header | DELETE | Removed by the first CLI ownership slice; the root now describes the native command application. |
+| Obsolete runtime-spike and hand-written-Wasm headers | DELETE | Removed from both the native command composition root and the Wasmtime runtime kernel; each module now states its current responsibility. |
 
 ## Mergeable execution order
 
@@ -182,7 +182,7 @@ first structural work should use unowned contracts or WIR-helper domains.
 | C. CLI shell and one command family at a time | `src/main.rs`, `src/cli.rs`, `src/commands/**` | active semantic ownership clear; presentation, source loading, frontend/capability, and compilation slices complete | medium | CLI test inventory, exact output/status tests, focused source-entrypoint shard |
 | D. Example-test shared harness and one domain at a time | `src/example_tests/**` plus driver | active semantic ownership clear | low-medium | before/after inventory and focused domain/parity execution |
 | E. E2E shared harness and workflow modules | `tests/e2e/**` plus driver | none after ownership check | medium | before/after inventory and e2e shard |
-| F. Runtime kernel dependency reduction | runtime/compiler adapter crates and manifests | A, stable ABI contracts | high | dependency test, security denials, confinement, parity, e2e, adversarial review |
+| F. Runtime kernel dependency reduction | `witchy-runtime/src/runtime{.rs,/**}` plus adapter crates and manifests | A, stable ABI contracts; crypto registrar complete | high | dependency test, security denials, confinement, parity, e2e, adversarial review |
 | G. Traits/interpreter/codegen contexts | one hotspot and new owner modules per slice | active semantics landed | high | owning stage, differential/Wasm evidence, adversarial review |
 | H. Bundled-source provenance | linker/provider/root/browser call sites | loader boundary stable | medium | std resolution, browser, LSP, runnable book, project tests |
 | I. Compatibility and stdlib API cleanup | façade or stdlib slice plus migration diagnostics/docs | resolved census and separate approval | high/source-breaking | compiler census, migration tests, runnable docs, both backends |
