@@ -123,7 +123,7 @@ distributed mechanically.
 | `witchy-lower/codegen/mod.rs` | ~12,100 | EXTRACT | Typed scope/local, representation/layout, helper, capability-import, ownership, and structural-metadata contexts. |
 | `witchy-types/typeck.rs` | ~9,700 | EXTRACT | Constraint/inference, checking, diagnostics, capability convention, and checked-output boundaries after active semantic work clears. |
 | `witchy-interp/interpreter.rs` | ~7,600 | EXTRACT | Environment, evaluator, reflection conversion, capability adapters, errors, and launch APIs. |
-| `witchy-wir/wir_helpers/mod.rs` | ~6,000 | EXTRACT | Memory/RC, collections, strings, numeric, encoding/crypto, host families, and one registry. |
+| `witchy-wir/wir_helpers/mod.rs` plus `registry.rs` | ~4,760 + ~1,200 | EXTRACT | The name/dependency dispatcher is isolated and re-exports only its spec and lookup; existing helper-constructor compatibility remains unchanged pending a separate census. Continue with domain modules. |
 | `witchy-types/traits.rs` | ~5,700 | EXTRACT | Validation, method resolution, anonymous unions, refinement/conversion, and monomorphization. |
 | `tests/e2e.rs` | ~5,100 | EXTRACT | Product workflow modules over one lifecycle harness. |
 | `witchy-syntax/linker.rs` | ~4,900 | NARROW | Module graph/linking versus bundled-source registry and expansion orchestration. |
@@ -148,7 +148,7 @@ first structural work should use unowned contracts or WIR-helper domains.
 | Checked versus unchecked compilation helpers | CONSOLIDATE | Public execution paths require checked input; unchecked helpers remain only where tests deliberately exercise rejection. |
 | Multiple Wasm execution wrappers | CONSOLIDATE | One executor owns instantiation, imports, results, and diagnostic observation. |
 | `std_source` used as a general bundled lookup concept | NARROW | Standard and playground provenance represented separately. |
-| WIR helper registration and helper-family dependency metadata in one large module | EXTRACT | Domain modules register through one typed registry without duplicated catalogs. |
+| WIR helper implementation and dependency metadata | EXTRACT | The typed name/dependency registry is isolated in `registry.rs`. Continue moving constructors into domain modules without duplicating the catalog; narrow their public compatibility surface only in a separate census-backed slice. |
 | Repeated test process/temp/server lifecycle code | CONSOLIDATE | Shared harnesses preserve explicit assertions and cleanup behavior. |
 | Obsolete runtime-spike and hand-written-Wasm binary header | DELETE | Replace when the first `main.rs` composition-root slice lands. |
 
@@ -157,7 +157,7 @@ first structural work should use unowned contracts or WIR-helper domains.
 | Slice | Files owned | Depends on | Risk | Acceptance evidence |
 |---|---|---|---|---|
 | A. Architecture contract | this ledger, `spec/architecture.md`, architecture integration test | none | low | Cargo metadata test, docs review, merge gate |
-| B. WIR helper registry/domain extraction | `witchy-wir/src/wir_helpers/**` | A | medium | WIR tests, differential matrix, Wasm shard, adversarial diff review |
+| B. WIR helper registry/domain extraction | `witchy-wir/src/wir_helpers/**` | A; registry/interface slice complete, domain slices pending | medium | WIR tests, differential matrix, Wasm shard, adversarial diff review |
 | C. CLI shell and one command family at a time | `src/main.rs`, new `src/cli/**` or native-service modules | active semantic ownership clear | medium | CLI test inventory, exact output/status tests, fast/e2e shards as routed |
 | D. Example-test shared harness and one domain at a time | `src/example_tests/**` plus driver | active semantic ownership clear | low-medium | before/after inventory and focused domain/parity execution |
 | E. E2E shared harness and workflow modules | `tests/e2e/**` plus driver | none after ownership check | medium | before/after inventory and e2e shard |
