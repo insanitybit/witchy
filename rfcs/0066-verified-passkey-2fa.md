@@ -1,15 +1,27 @@
 ---
 rfc: 0066
 title: Verified passkey 2FA — the registry checks a real WebAuthn assertion, not a marker
-status: proposed
+status: implemented
 created: 2026-07-05
 predecessors:
   - "0010 (web console social login), 0038 (grantable capabilities), coven promotion identity"
   - "bugs/BUG-219, BUG-412, BUG-360 (the marker-not-assertion gaps this RFC closes)"
-tracking:
+tracking: "operation-bound WebAuthn promote/yank assertions implemented and exercised by projects/coven-web/verify.py; registration/bootstrap hardening moved to deferred RFC-0099 and privileged Glamour slot authority moved to deferred RFC-0100"
 ---
 
 # RFC-0066: Verified passkey 2FA — the registry checks a real WebAuthn assertion, not a marker
+
+> **2026-07-19 terminal disposition:** the title promise is implemented:
+> coven-web verifies fresh, operation-bound WebAuthn assertions for promote and
+> yank, rejects replay/cross-operation/tampered assertions, and forwards a
+> verified factor to Coven; trusted publishing derives MFA from authenticated
+> issuer claims rather than a client marker. The original draft bundled two
+> independent boundaries that are not prerequisites for that delivered flow.
+> Registration ceremony, bootstrap authorization, and signature counters are
+> now deferred [RFC-0099](0099-webauthn-registration-bootstrap.md).
+> Authority-bearing Glamour renderers are deferred
+> [RFC-0100](0100-authorized-glamour-host-slots.md). Definition-of-done rows 2 and 3 below are preserved as historical
+> proposal text, not claimed implementation.
 
 ## Summary
 
