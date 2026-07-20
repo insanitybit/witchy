@@ -1,10 +1,9 @@
 ---
 rfc: 0070
 title: the 0.1 blocking set — decisions that close the coherence map
-status: accepted
+status: implemented
 created: 2026-07-06
-tracking: accepted decision record for the in/out calls RFC-0067 ordered; evidence base is the full
-  open-RFC + 273-open-bug read of 2026-07-06 (scratch/backlog-report-2026-07-06.md)
+tracking: "terminal 0.1 decision record: its shipped decisions are tracked by their owning RFCs; D6's checked codegen seam landed in 89b47e87 and the broader source-first reorder is explicitly deferred to RFC-0101"
 related:
   - "[0061](0061-release-versioning.md) (mechanical release gate)"
   - "[0063](0063-strong-state-coherence-gate.md) (coherence gate)"
@@ -16,6 +15,14 @@ related:
 ---
 
 # RFC-0070: the 0.1 blocking set
+
+> **2026-07-20 terminal disposition:** this decision record is implemented at
+> its release-contract boundary. The decisions that became independent language
+> or release contracts are terminal in their owning RFCs. D6's enforceable
+> checked-codegen seam landed in `89b47e87`; the stronger whole-pipeline reorder
+> is not claimed as implemented and is isolated in deferred RFC-0101. Keeping
+> this RFC `accepted` would imply an active implementation project that does not
+> exist.
 
 ## Summary
 
@@ -166,18 +173,19 @@ missing lowerings entirely (BUG-434), and the `lines:[0]` diagnostic class
 (BUG-312, 327). The RFC-0064 trio (209/213/242) lands as part of this — the
 checks finally have a place to live that nothing bypasses.
 
-Implementation tracking: the first slice introduces a private `CheckedModule`
+Implementation tracking: the shipped slice introduces a private `CheckedModule`
 proof wrapper and shared `link_checked` entry points, and moves one production
 runtime path plus the embedded `pm` and `coven` compiler paths onto that
 boundary. Their codegen inputs now have to come from a `CheckedModule`; callers
-cannot accidentally omit the check while reconstructing the pipeline. This
-slice intentionally preserves the existing link-then-check order. The wrapper
-also exposes linker-retained declaration provenance and is the sole pipeline
-seam that authenticates an RFC-0082 declaration catalog against loader-supplied
-module ownership; it never reconstructs package identity from a compiler name.
-D6 remains
-incomplete until the frontend checks the source AST before destructive lowering
-and routes comptime-emitted nodes back through that same checked boundary.
+cannot accidentally omit the check while reconstructing the pipeline. The
+wrapper also exposes linker-retained declaration provenance and is the sole
+pipeline seam that authenticates an RFC-0082 declaration catalog against
+loader-supplied module ownership; it never reconstructs package identity from a
+compiler name. The original erasure failures (BUG-428, BUG-429, BUG-434, and
+BUG-436) also have focused source-level rejection or re-entry guards. This slice
+intentionally preserves the existing link-then-check order. The stronger
+source-first invariant therefore remains unimplemented and is explicitly
+deferred to RFC-0101 rather than hidden behind this RFC's terminal status.
 
 ### D7 — Identity fails closed
 
