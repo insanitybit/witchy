@@ -9,10 +9,12 @@ mod support;
 mod registry;
 #[path = "support/package_manager.rs"]
 mod package_manager;
+#[path = "support/sandbox.rs"]
+mod sandbox;
 use support::coven::*;
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Stdio};
 
 /// The trusted-publishing token lifecycle over one registry, end to end. On the
 /// FIRST publish to a namespace the token's identity binds it (TOFU), and SEC-023
@@ -3111,132 +3113,19 @@ fn footprint_is_empty(json: &str) -> bool {
 /// and cross-checks it against the computed footprint, aborting on an under-grant.
 #[test]
 fn grant_document_run_binds_by_name_and_cross_checks() {
-    let dir = unique("grants");
-    let cfg = dir.join("cfg.txt");
-    std::fs::write(&cfg, "config-body").unwrap();
-    let prog = dir.join("prog.witchy");
-    std::fs::write(
-        &prog,
-        "fn main(console: Console, config: File[Read]):\n    console.print(config.read())\n",
-    )
-    .unwrap();
-
-    // A sufficient grant binds `config` by name and runs.
-    let ok = dir.join("ok.toml");
-    std::fs::write(
-        &ok,
-        format!("[files]\nconfig = {{ path = \"{}\", rights = [\"Read\"] }}\n", cfg.display()),
-    )
-    .unwrap();
-    let out = Command::new(BIN)
-        .args(["sandbox", "--grants", ok.to_str().unwrap(), prog.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "grant run failed: {}\n{}", stderr(&out), stdout(&out));
-    assert!(stdout(&out).contains("config-body"), "got: {}", stdout(&out));
-
-    // An under-grant (no `[files].config`) aborts with a clear error, nonzero exit.
-    let under = dir.join("under.toml");
-    std::fs::write(&under, "[net]\nx = [\"h:1\"]\n").unwrap();
-    let out = Command::new(BIN)
-        .args(["sandbox", "--grants", under.to_str().unwrap(), prog.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(!out.status.success(), "an under-grant must abort the run");
-    assert!(
-        stderr(&out).contains("insufficient") || stdout(&out).contains("insufficient"),
-        "expected an insufficiency error: out={} err={}",
-        stdout(&out),
-        stderr(&out)
-    );
-    let _ = std::fs::remove_dir_all(&dir);
+    sandbox::grant_document_run_binds_by_name_and_cross_checks();
 }
 
 #[test]
 fn grant_document_file_rights_are_parameter_exact() {
-    let dir = unique("grant-rights");
-    let input = dir.join("input.txt");
-    let output = dir.join("output.txt");
-    std::fs::write(&input, "in").unwrap();
-    let prog = dir.join("prog.witchy");
-    std::fs::write(
-        &prog,
-        "fn main(console: Console, input: File[Read], output: File[Write]):\n    console.print(input.read())\n    output.write(\"out\")\n",
-    )
-    .unwrap();
-
-    let swapped = dir.join("swapped.toml");
-    std::fs::write(
-        &swapped,
-        format!(
-            "[files]\ninput = {{ path = \"{}\", rights = [\"Write\"] }}\noutput = {{ path = \"{}\", rights = [\"Read\"] }}\n",
-            input.display(),
-            output.display()
-        ),
-    )
-    .unwrap();
-
-    let out = Command::new(BIN)
-        .args(["sandbox", "--grants", swapped.to_str().unwrap(), prog.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(!out.status.success(), "swapped grant rights must abort the run");
-    assert!(
-        stderr(&out).contains("do not match") || stdout(&out).contains("do not match"),
-        "expected exact-rights mismatch: out={} err={}",
-        stdout(&out),
-        stderr(&out)
-    );
-    let _ = std::fs::remove_dir_all(&dir);
+    sandbox::grant_document_file_rights_are_parameter_exact();
 }
 
 /// RFC-0005 Stage 2 / RFC-0012: direct `--file` grants are minted as File
 /// externrefs in the compiled sandbox path, for both read and write leaf ops.
 #[test]
 fn sandbox_direct_file_grants_read_and_write() {
-    let dir = unique("filegrant");
-    let input = dir.join("input.txt");
-    let output = dir.join("output.txt");
-    std::fs::write(&input, "direct-read").unwrap();
-
-    let read_prog = dir.join("read.witchy");
-    std::fs::write(
-        &read_prog,
-        "fn main(console: Console, config: File[Read]):\n    console.print(config.read())\n",
-    )
-    .unwrap();
-    let out = Command::new(BIN)
-        .args(["sandbox", "--file", input.to_str().unwrap(), read_prog.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "direct --file read failed: {}\n{}",
-        stderr(&out),
-        stdout(&out)
-    );
-    assert!(stdout(&out).contains("direct-read"), "got: {}", stdout(&out));
-
-    let write_prog = dir.join("write.witchy");
-    std::fs::write(
-        &write_prog,
-        "fn main(console: Console, log: File[Write]):\n    log.write(\"direct-write\")\n    console.print(\"wrote\")\n",
-    )
-    .unwrap();
-    let out = Command::new(BIN)
-        .args(["sandbox", "--file", output.to_str().unwrap(), write_prog.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "direct --file write failed: {}\n{}",
-        stderr(&out),
-        stdout(&out)
-    );
-    assert!(stdout(&out).contains("wrote"), "got: {}", stdout(&out));
-    assert_eq!(std::fs::read_to_string(&output).unwrap(), "direct-write");
-
-    let _ = std::fs::remove_dir_all(&dir);
+    sandbox::sandbox_direct_file_grants_read_and_write();
 }
 
 /// SEC-009 regression: `witchy sandbox` for a `Dir`-binding `main` must FAIL CLOSED
@@ -3246,32 +3135,7 @@ fn sandbox_direct_file_grants_read_and_write() {
 /// not a security boundary, so it is intentionally not covered here.)
 #[test]
 fn sandbox_dir_requires_explicit_grant() {
-    let dir = unique("dirgrant");
-    let prog = dir.join("prog.witchy");
-    std::fs::write(
-        &prog,
-        "fn main(console: Console, dir: Dir):\n    let ok = dir.exists(\"prog.witchy\")\n    console.print(\"${ok}\")\n",
-    )
-    .unwrap();
-
-    // No --dir: deny by omission — aborts with a clear error, nonzero exit.
-    let out = Command::new(BIN).args(["sandbox", prog.to_str().unwrap()]).output().unwrap();
-    assert!(!out.status.success(), "a Dir-binding main with no --dir must abort");
-    assert!(
-        stderr(&out).contains("no subtree was granted") || stdout(&out).contains("no subtree was granted"),
-        "expected a deny-by-omission error: out={} err={}",
-        stdout(&out),
-        stderr(&out)
-    );
-
-    // An explicit --dir runs.
-    let out = Command::new(BIN)
-        .args(["sandbox", "--dir", dir.to_str().unwrap(), prog.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "explicit --dir run failed: {}\n{}", stderr(&out), stdout(&out));
-    assert!(stdout(&out).contains("true"), "got: {}", stdout(&out));
-    let _ = std::fs::remove_dir_all(&dir);
+    sandbox::sandbox_dir_requires_explicit_grant();
 }
 
 /// RFC-0077 rider 2: authority-free mock constructors are a `witchy test`
@@ -3279,126 +3143,13 @@ fn sandbox_dir_requires_explicit_grant() {
 /// Pin every production entry that can otherwise reach linking or comptime.
 #[test]
 fn testing_mock_dir_is_rejected_by_production_entry_paths() {
-    let dir = unique("mock-dir-production-gate");
-    let source = dir.join("main.witchy");
-    std::fs::write(
-        &source,
-        "import testing\n\nfn main():\n    let _root = testing.mock_dir([(\"config.txt\", \"secret\")])\n",
-    )
-    .unwrap();
-    let source = source.to_str().unwrap();
-    let wasm = dir.join("main.wasm");
-
-    let assert_denied = |label: &str, out: Output| {
-        let diag = format!("{}{}", stdout(&out), stderr(&out));
-        assert!(!out.status.success(), "{label} unexpectedly enabled testing.mock_dir: {diag}");
-        assert!(
-            diag.contains("testing.mock_dir") && diag.contains("witchy test"),
-            "{label} failed for the wrong reason instead of the test-mode gate: {diag}"
-        );
-    };
-
-    assert_denied("direct run", Command::new(BIN).arg(source).output().unwrap());
-    assert_denied("check", Command::new(BIN).args(["check", source]).output().unwrap());
-    assert_denied("compile", Command::new(BIN).args(["compile", source]).output().unwrap());
-    assert_denied(
-        "emit-wasm",
-        Command::new(BIN)
-            .args(["emit-wasm", source, "-o", wasm.to_str().unwrap()])
-            .output()
-            .unwrap(),
-    );
-    assert_denied("pm build", Command::new(BIN).args(["pm", "build", source]).output().unwrap());
-
-    let build_step = dir.join("build.witchy");
-    std::fs::write(
-        &build_step,
-        "import testing\n\nfn build(out: BuildOut):\n    let _root = testing.mock_dir([(\"config.txt\", \"secret\")])\n",
-    )
-    .unwrap();
-    assert_denied(
-        "build step",
-        Command::new(BIN)
-            .args([
-                "build-step",
-                build_step.to_str().unwrap(),
-                "--out",
-                dir.join("build-out").to_str().unwrap(),
-            ])
-            .output()
-            .unwrap(),
-    );
-
-    let comptime = dir.join("comptime.witchy");
-    std::fs::write(
-        &comptime,
-        "import testing\n\ncomptime:\n    let _root = testing.mock_dir([(\"config.txt\", \"secret\")])\n\nfn main():\n    0\n",
-    )
-    .unwrap();
-    assert_denied(
-        "comptime check",
-        Command::new(BIN).args(["check", comptime.to_str().unwrap()]).output().unwrap(),
-    );
-
-    let _ = std::fs::remove_dir_all(&dir);
+    sandbox::testing_mock_dir_is_rejected_by_production_entry_paths();
 }
 
 #[cfg(unix)]
 #[test]
 fn sandbox_dir_list_rejects_non_utf8_names() {
-    use std::os::unix::ffi::OsStringExt;
-
-    let dir = unique("dir-list-nonutf8");
-    let grant = dir.join("grant");
-    std::fs::create_dir_all(&grant).unwrap();
-    std::fs::write(grant.join("normal.txt"), "ok").unwrap();
-    let bad = PathBuf::from(std::ffi::OsString::from_vec(vec![0xbd, 0xb2, b'=', 0xbc]));
-    if std::fs::write(grant.join(bad), "hidden").is_err() {
-        // Some Unix filesystems reject non-UTF-8 names at creation time. The
-        // runtime bug is only observable where such an entry can exist.
-        let _ = std::fs::remove_dir_all(&dir);
-        return;
-    }
-
-    let prog = dir.join("prog.witchy");
-    std::fs::write(
-        &prog,
-        "fn main(console: Console, root: Dir):\n    let names = root.list()\n    console.print(\"listed\")\n",
-    )
-    .unwrap();
-
-    let source = Command::new(BIN)
-        .args(["sandbox", "--dir", grant.to_str().unwrap(), prog.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(!source.status.success(), "source sandbox must reject non-UTF8 names");
-    assert!(
-        stdout(&source).contains("not valid UTF-8") || stderr(&source).contains("not valid UTF-8"),
-        "expected UTF-8 error from source sandbox: out={} err={}",
-        stdout(&source),
-        stderr(&source)
-    );
-
-    let wasm = dir.join("prog.wasm");
-    let emit = Command::new(BIN)
-        .args(["emit-wasm", prog.to_str().unwrap(), "-o", wasm.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(emit.status.success(), "emit-wasm failed: {}\n{}", stderr(&emit), stdout(&emit));
-
-    let artifact = Command::new(BIN)
-        .args(["sandbox", "--dir", grant.to_str().unwrap(), wasm.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(!artifact.status.success(), "wasm sandbox must reject non-UTF8 names");
-    assert!(
-        stdout(&artifact).contains("not valid UTF-8") || stderr(&artifact).contains("not valid UTF-8"),
-        "expected UTF-8 error from wasm sandbox: out={} err={}",
-        stdout(&artifact),
-        stderr(&artifact)
-    );
-
-    let _ = std::fs::remove_dir_all(&dir);
+    sandbox::sandbox_dir_list_rejects_non_utf8_names();
 }
 
 /// SEC-004: `crypto.reveal` gates the SIGNING key only. A named `--secret`
@@ -3407,62 +3158,7 @@ fn sandbox_dir_list_rejects_non_utf8_names() {
 /// hole while preserving the legitimate value-secret use.
 #[test]
 fn sandbox_reveal_gates_signing_key_only() {
-    let dir = unique("reveal");
-    // A named value-secret reveals fine.
-    let named = dir.join("named.witchy");
-    std::fs::write(
-        &named,
-        "import crypto\nimport secretstore\nfn main(console: Console, store: SecretStore):\n    console.print(crypto.reveal(secretstore.require(store, \"token\")))\n",
-    )
-    .unwrap();
-    let out = Command::new(BIN)
-        .args(["sandbox", "--secret", "token=s3cr3t", named.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "named-secret reveal failed: {}\n{}", stderr(&out), stdout(&out));
-    assert!(stdout(&out).contains("s3cr3t"), "got: {}", stdout(&out));
-
-    // The signing key is NOT revealable.
-    let seedfile = dir.join("seed.hex");
-    std::fs::write(&seedfile, "41".repeat(32)).unwrap();
-    let signing = dir.join("signing.witchy");
-    std::fs::write(
-        &signing,
-        "import crypto\nfn main(console: Console, key: Secret):\n    console.print(crypto.reveal(key))\n",
-    )
-    .unwrap();
-    let out = Command::new(BIN)
-        .args(["sandbox", "--signing-key", seedfile.to_str().unwrap(), signing.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(!out.status.success(), "revealing the signing key must abort");
-    assert!(
-        stderr(&out).contains("not revealable") || stdout(&out).contains("not revealable"),
-        "expected a not-revealable error: out={} err={}",
-        stdout(&out),
-        stderr(&out)
-    );
-
-    // RFC-0060: a NAMED secret granted `,use-only` is usable by opaque ref but
-    // NOT revealable — the same `token` program that reveals fine above must
-    // abort when the grant carries the use-only modifier.
-    let out = Command::new(BIN)
-        .args(["sandbox", "--secret", "token=s3cr3t,use-only", named.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(
-        !out.status.success(),
-        "revealing a use-only secret must abort: {}\n{}",
-        stderr(&out),
-        stdout(&out)
-    );
-    assert!(
-        stderr(&out).contains("use-only") || stdout(&out).contains("use-only"),
-        "expected a use-only-not-revealable error for the use-only secret: out={} err={}",
-        stdout(&out),
-        stderr(&out)
-    );
-    let _ = std::fs::remove_dir_all(&dir);
+    sandbox::sandbox_reveal_gates_signing_key_only();
 }
 
 /// RFC-0058 §1 positive control: the seeded-divergence lever is a fault injector for
