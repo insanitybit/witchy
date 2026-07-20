@@ -4720,6 +4720,14 @@ impl Checker {
                 vec![Ty::List(Box::new(Ty::Tuple(vec![Ty::String, Ty::String])))],
                 Ty::Dir(DirRights { read: true, write: false }),
             )),
+            S::SecretStoreStringToOptionSecret => Some((
+                vec![Ty::Named("SecretStore".into(), Vec::new()), Ty::String],
+                Ty::Named("Option".into(), vec![Ty::Secret]),
+            )),
+            S::SecretStoreStringToSecret => Some((
+                vec![Ty::Named("SecretStore".into(), Vec::new()), Ty::String],
+                Ty::Secret,
+            )),
             S::StringToString => Some((vec![Ty::String], Ty::String)),
             S::StringStringToString => Some((vec![Ty::String, Ty::String], Ty::String)),
             S::StringToInt => Some((vec![Ty::String], Ty::Int)),
@@ -9504,6 +9512,7 @@ pub fn intrinsic(name: &str) -> bool {
         || witchy_syntax::intrinsics::is_math_operation(name)
         || witchy_syntax::intrinsics::is_crypto_operation(name)
         || witchy_syntax::intrinsics::is_regex_operation(name)
+        || witchy_syntax::intrinsics::is_secretstore_operation(name)
 }
 
 

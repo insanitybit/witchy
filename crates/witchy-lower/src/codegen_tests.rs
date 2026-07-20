@@ -166,6 +166,24 @@
         assert!(witchy_wir::wir_helpers::wir_helper(helper).is_some());
     }
 
+    #[test]
+    fn secretstore_operation_catalog_names_the_lookup_helper() {
+        use witchy_syntax::intrinsics;
+
+        for name in intrinsics::SECRETSTORE_OPERATIONS {
+            let spec = intrinsics::lookup(name).expect("cataloged SecretStore operation");
+            assert!(
+                witchy_types::typeck::intrinsic(name),
+                "{} must not compile its intercepted std placeholder",
+                spec.name
+            );
+            let helper = intrinsics::sole_wir_helper(name)
+                .expect("SecretStore operation has one WIR helper");
+            assert_eq!(helper, "secretstore_lookup");
+            assert!(witchy_wir::wir_helpers::wir_helper(helper).is_some());
+        }
+    }
+
     /// (RFC-0045) Define the always-linked, authority-free `__witchy_abort` import
     /// so a module that routes an abort through it (float ordering, list/bytes OOB,
     /// str_to_int, `fail`) instantiates in these minimal test linkers. The body

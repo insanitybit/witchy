@@ -194,7 +194,7 @@ impl Codegen<'_> {
             (intrinsics::CRYPTO_HMAC_SHA256, 2) => {
                 call(intrinsic_helper(name), self.lower_args(&[&args[0], &args[1]])?)
             }
-            ("secretstore.require", 2) => {
+            (intrinsics::SECRETSTORE_REQUIRE, 2) => {
                 // `SecretStore.require(name)` returns the `Secret` directly (no
                 // `Option`): the host returns a nullable externref. An absent secret
                 // must fail EAGERLY here — matching the interpreter, which errors at
@@ -202,9 +202,9 @@ impl Codegen<'_> {
                 // use of a null Secret. The name is evaluated ONCE into a scratch slot
                 // and reused for the lookup and the not-granted message. The store
                 // argument carries no guest state — ignored.
-                let name = self.lower_expr(&args[1])?;
+                let secret_name = self.lower_expr(&args[1])?;
                 let name_of = || W::GetLocal(SECRET_NAME_TMP.to_string());
-                let lookup = call("secretstore_lookup", vec![name_of()]);
+                let lookup = call(intrinsic_helper(name), vec![name_of()]);
                 let secret = || W::GetLocal(SECRET_TMP.to_string());
                 let missing = W::RefIsNull(Box::new(secret()));
                 let guard = N::If {
@@ -219,16 +219,16 @@ impl Codegen<'_> {
                     result: None,
                 };
                 W::Seq(vec![
-                    N::SetLocal { local: SECRET_NAME_TMP.to_string(), value: name },
+                    N::SetLocal { local: SECRET_NAME_TMP.to_string(), value: secret_name },
                     N::SetLocal { local: SECRET_TMP.to_string(), value: lookup },
                     guard,
                     N::Push(secret()),
                 ])
             }
-            ("secretstore.get", 2) => {
+            (intrinsics::SECRETSTORE_GET, 2) => {
                 // `Option(Secret)` is nullable externref: a granted named secret is
                 // the `Some` payload, and `None` is `ref.null extern`.
-                call("secretstore_lookup", vec![self.lower_expr(&args[1])?])
+                call(intrinsic_helper(name), vec![self.lower_expr(&args[1])?])
             }
             (intrinsics::COMPILER_FOOTPRINT, 1) => {
                 self.uses_compiler_footprint = true;

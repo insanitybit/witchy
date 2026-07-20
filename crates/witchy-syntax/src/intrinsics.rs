@@ -38,6 +38,8 @@ pub enum IntrinsicId {
     ChannelRecv,
     ChannelSelect,
     TestingMockDir,
+    SecretStoreGet,
+    SecretStoreRequire,
     MetaFreshIdent,
     MetaCallSiteExpr,
     MetaCallSiteType,
@@ -163,6 +165,8 @@ pub enum IntrinsicSignature {
     BytesBytesToBytes,
     BytesIntIntToBytes,
     EntriesToReadOnlyDir,
+    SecretStoreStringToOptionSecret,
+    SecretStoreStringToSecret,
     StringToString,
     StringStringToString,
     StringToInt,
@@ -338,6 +342,7 @@ pub enum IntrinsicEffect {
 pub enum CapabilityEffect {
     None,
     ConstructsReadOnlyTestDir,
+    ReadsSecretStore,
     UsesSecret,
 }
 
@@ -443,6 +448,8 @@ pub const CHANNEL_RECV: &str = "__channel_recv";
 pub const CHANNEL_SELECT: &str = "__channel_select";
 
 pub const TESTING_MOCK_DIR: &str = "__mock_dir";
+pub const SECRETSTORE_GET: &str = "secretstore.get";
+pub const SECRETSTORE_REQUIRE: &str = "secretstore.require";
 pub const META_FRESH_IDENT: &str = "__meta_fresh_ident";
 pub const META_CALL_SITE_EXPR: &str = "__meta_call_site_expr";
 pub const META_CALL_SITE_TYPE: &str = "__meta_call_site_type";
@@ -1012,6 +1019,36 @@ pub const ALL: &[IntrinsicSpec] = &[
         wir_host_call: None,
         diagnostic_name: "testing.mock_dir",
         private_callers: TESTING_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::SecretStoreGet,
+        name: SECRETSTORE_GET,
+        arity: 2,
+        signature: IntrinsicSignature::SecretStoreStringToOptionSecret,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::ReadsSecretStore,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["secretstore_lookup"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: SECRETSTORE_GET,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::SecretStoreRequire,
+        name: SECRETSTORE_REQUIRE,
+        arity: 2,
+        signature: IntrinsicSignature::SecretStoreStringToSecret,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::ReadsSecretStore,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["secretstore_lookup"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: SECRETSTORE_REQUIRE,
+        private_callers: NO_PRIVATE_CALLERS,
     },
     IntrinsicSpec {
         id: IntrinsicId::MetaFreshIdent,
@@ -2433,6 +2470,8 @@ pub const CHANNEL_BRIDGES: &[&str] = &[
     CHANNEL_SELECT,
 ];
 
+pub const SECRETSTORE_OPERATIONS: &[&str] = &[SECRETSTORE_GET, SECRETSTORE_REQUIRE];
+
 pub const ENCODING_OPERATIONS: &[&str] = &[
     ENCODING_UTF8_LOSSY,
     ENCODING_HEX_ENCODE,
@@ -2715,6 +2754,12 @@ pub fn is_dict_operation(name: &str) -> bool {
                 | IntrinsicId::DictPairs
                 | IntrinsicId::DictLength
         )
+    })
+}
+
+pub fn is_secretstore_operation(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| {
+        matches!(spec.id, IntrinsicId::SecretStoreGet | IntrinsicId::SecretStoreRequire)
     })
 }
 
@@ -3125,6 +3170,82 @@ mod tests {
         assert_eq!(function.params[0].ty.as_ref(), Some(&bytes));
         assert_eq!(function.params[1].ty.as_ref(), Some(&int));
         assert_eq!(function.ret.as_ref(), Some(&int));
+    }
+
+    #[test]
+    fn secretstore_operation_family_has_complete_semantic_metadata() {
+        let expected: BTreeSet<_> = SECRETSTORE_OPERATIONS.iter().copied().collect();
+        let actual: BTreeSet<_> = ALL
+            .iter()
+            .filter(|spec| is_secretstore_operation(spec.name))
+            .map(|spec| spec.name)
+            .collect();
+        assert_eq!(actual, expected);
+        assert_eq!(actual.len(), 2);
+
+        for name in SECRETSTORE_OPERATIONS {
+            let spec = lookup(name).expect("SecretStore operation");
+            assert_eq!(spec.arity, 2);
+            assert_eq!(spec.effect, IntrinsicEffect::Pure);
+            assert_eq!(spec.capability_effect, CapabilityEffect::ReadsSecretStore);
+            assert_eq!(spec.lowering, IntrinsicLowering::Builtin);
+            assert_eq!(spec.runtime, IntrinsicRuntime::InterpreterBuiltin);
+            assert_eq!(sole_wir_helper(name), Some("secretstore_lookup"));
+            assert!(!spec.dynamic_wir_helpers);
+            assert!(spec.wir_host_call.is_none());
+            assert_eq!(spec.diagnostic_name, *name);
+            assert!(spec.private_callers.is_empty());
+        }
+        assert_eq!(
+            lookup(SECRETSTORE_GET).expect("secretstore.get").signature,
+            IntrinsicSignature::SecretStoreStringToOptionSecret
+        );
+        assert_eq!(
+            lookup(SECRETSTORE_REQUIRE).expect("secretstore.require").signature,
+            IntrinsicSignature::SecretStoreStringToSecret
+        );
+        assert_eq!(
+            arity_diagnostic(lookup(SECRETSTORE_REQUIRE).expect("secretstore.require"), 1),
+            "`secretstore.require` expects 2 arguments, got 1"
+        );
+    }
+
+    #[test]
+    fn secretstore_source_signatures_match_catalog() {
+        use crate::ast::{Item, Type};
+
+        let module = crate::parser::parse_module(include_str!("../../../std/secretstore.witchy"))
+            .expect("parse std/secretstore");
+        let store = Type::Named("SecretStore".into(), Vec::new());
+        let string = Type::Named("String".into(), Vec::new());
+        let secret = Type::Named("Secret".into(), Vec::new());
+
+        for name in SECRETSTORE_OPERATIONS {
+            let spec = lookup(name).expect("SecretStore operation");
+            let bare_name = name.rsplit_once('.').expect("qualified SecretStore name").1;
+            let function = module
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    Item::Function(function) if function.name == bare_name => Some(function),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{name} missing from std/secretstore"));
+            assert_eq!(function.params.len(), spec.arity, "arity drift for {name}");
+            assert_eq!(
+                function.params.iter().map(|param| param.ty.as_ref()).collect::<Vec<_>>(),
+                vec![Some(&store), Some(&string)],
+                "parameter drift for {name}"
+            );
+            let expected_result = match spec.signature {
+                IntrinsicSignature::SecretStoreStringToOptionSecret => {
+                    Type::Named("Option".into(), vec![secret.clone()])
+                }
+                IntrinsicSignature::SecretStoreStringToSecret => secret.clone(),
+                other => panic!("unexpected SecretStore signature {other:?}"),
+            };
+            assert_eq!(function.ret.as_ref(), Some(&expected_result), "return drift for {name}");
+        }
     }
 
     #[test]

@@ -529,7 +529,7 @@ fn desugared_assignment_plan<'a>(
 /// capability ops (`cap_ops::is_op_name` — bare surface names like `print`/`now`/
 /// `read`/`write`, dispatched by `match` in `call_builtin`, NOT in the intrinsic
 /// table), and the handful handled by neither table (`fail`, `duration_to_int`,
-/// `int_to_duration`, `secretstore.get`/`require`, `vm.par_map`). The test
+/// `int_to_duration`, `vm.par_map`). The test
 /// `interpreter_builtin_names_are_covered`
 /// (test) asserts every `call_builtin` dispatch arm is covered here.
 fn is_interpreter_builtin(name: &str) -> bool {
@@ -540,8 +540,6 @@ fn is_interpreter_builtin(name: &str) -> bool {
             "fail"
                 | "duration_to_int"
                 | "int_to_duration"
-                | "secretstore.get"
-                | "secretstore.require"
                 | "frozen"
                 | "unique"
                 | "vm.par_map"
@@ -3406,7 +3404,7 @@ impl Interpreter {
         }
         // `secret_store.get(name)` — a named lookup into the granted store. Handled
         // here (not in `native`) because a `SecretStore` is not a `NativeValue`.
-        if name == "secretstore.get" {
+        if name == intrinsics::SECRETSTORE_GET {
             return match args {
                 [Value::SecretStore(map), Value::Str(key)] => Ok(Some(match map.get(key.as_str()) {
                     Some((bytes, use_only)) => Value::Ctor {
@@ -3415,7 +3413,10 @@ impl Interpreter {
                     },
                     None => Value::ctor("None", Vec::new()),
                 })),
-                _ => err("secretstore.get expects (SecretStore, name)"),
+                _ => err(format!(
+                    "{} expects (SecretStore, name)",
+                    intrinsics::SECRETSTORE_GET
+                )),
             };
         }
         // `__try_ctx(value, msg)` — the `e ? "msg"` desugar. Turn the operand (an
@@ -3452,13 +3453,16 @@ impl Interpreter {
         }
         // `secret_store.require(name)` — a required secret: the `Secret` directly,
         // or a loud error if absent (a configuration mistake, not an `Option`).
-        if name == "secretstore.require" {
+        if name == intrinsics::SECRETSTORE_REQUIRE {
             return match args {
                 [Value::SecretStore(map), Value::Str(key)] => match map.get(key.as_str()) {
                     Some((bytes, use_only)) => Ok(Some(Value::Secret(bytes.clone(), *use_only))),
                     None => err(format!("required secret `{key}` was not granted")),
                 },
-                _ => err("secretstore.require expects (SecretStore, name)"),
+                _ => err(format!(
+                    "{} expects (SecretStore, name)",
+                    intrinsics::SECRETSTORE_REQUIRE
+                )),
             };
         }
         // `crypto.reveal` is gated: a `Secret` equal to the signing key (the bare

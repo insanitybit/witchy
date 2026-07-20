@@ -4,7 +4,7 @@ title: Strong-state coherence gate for a proud 0.1 release
 status: accepted
 created: 2026-07-04
 superseded-by:
-tracking: coherence gate accepted as the pre-tag bar; executed alongside RFC-0061; intrinsic-name, host-import authority, and Bytes/string/math/List/Dict/crypto/regex operation catalog slices landed
+tracking: coherence gate accepted as the pre-tag bar; executed alongside RFC-0061; intrinsic-name, host-import authority, and Bytes/string/math/List/Dict/crypto/regex/SecretStore operation catalog slices landed
 ---
 
 # RFC-0063: Strong-state coherence gate for a proud 0.1 release
@@ -211,6 +211,16 @@ an explicit alias of `__bytes_at`, so it cannot acquire a second signature or
 backend contract; catalog lookup, type checking, and lowering canonicalize it
 through the shared alias table. Coherence tests pin the complete family
 metadata, alias uniqueness, and exact twin-backend runtime results.
+
+The SecretStore authority boundary catalogs `secretstore.get` and
+`secretstore.require`. Their rows own the exact `SecretStore`/`Secret`
+signatures, explicit SecretStore-read capability effect, interpreter runtime
+ownership, builtin lowering, shared `secretstore_lookup` WIR helper, and
+diagnostic identities. Type checking suppresses both intercepted source
+placeholders, while interpreter dispatch and lowering consume the catalog names
+and helper declaration. Coherence tests compare both rows with
+`std/secretstore.witchy`; backend tests cover granted and absent lookup plus
+eager failure for an ungranted required secret.
 
 ### 4. Typed compiler facts, not string or address shadows
 
