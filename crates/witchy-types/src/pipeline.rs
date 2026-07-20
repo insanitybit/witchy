@@ -1,15 +1,17 @@
 //! The checked boundary between the front end and later compiler stages.
 //!
-//! This first RFC-0070 D6 seam deliberately preserves today's phase order:
-//! linking (including injected compile-time expansion) completes before the
-//! linked module is type-checked. Later slices can move work across this
-//! boundary without making downstream callers reconstruct the sequence.
+//! Linking performs expansion and source name resolution, then invokes the
+//! declaration-level checker before destructive source lowering. Complete body
+//! checking remains on the linked runtime module during the migration.
 
 use std::collections::HashSet;
 use std::fmt;
 
 use witchy_syntax::ast::Module;
-use witchy_syntax::linker::{self, ComptimeExpander, LinkError, LinkMode, LinkedModule};
+use witchy_syntax::linker::{
+    self, ComptimeExpander, LinkError, LinkMode, LinkedModule, SourceCheckError,
+    SourceLinkError,
+};
 use witchy_syntax::origin::OriginTable;
 use witchy_syntax::type_resolve::ResolvedDeclarations;
 
@@ -124,6 +126,25 @@ fn check_linked(
     Ok(CheckedModule { linked, module_owners })
 }
 
+fn source_checked_link(
+    result: Result<LinkedModule, SourceLinkError>,
+) -> Result<LinkedModule, PipelineError> {
+    match result {
+        Ok(linked) => Ok(linked),
+        Err(SourceLinkError::Link(error)) => Err(PipelineError::Link(error)),
+        Err(SourceLinkError::Source(error)) => {
+            Err(PipelineError::Type(TypeError { message: error.message }))
+        }
+    }
+}
+
+fn check_source_headers(
+    source: &witchy_syntax::source_check::ResolvedSource,
+) -> Result<(), SourceCheckError> {
+    typeck::check_linked_source_headers(source)
+        .map_err(|error| SourceCheckError::new(error.message))
+}
+
 /// Link with the injected compile-time expander, then type-check the result.
 pub fn link_checked(
     modules: Vec<(String, Module)>,
@@ -140,7 +161,13 @@ pub fn link_checked_with_mode(
     expand: ComptimeExpander,
     mode: LinkMode,
 ) -> Result<CheckedModule, PipelineError> {
-    let linked = linker::link_with_mode_and_origins(modules, entry, expand, mode)?;
+    let linked = source_checked_link(linker::link_with_mode_and_origins_and_source_check(
+        modules,
+        entry,
+        expand,
+        mode,
+        check_source_headers,
+    ))?;
     check_linked(linked, None)
 }
 
@@ -171,7 +198,13 @@ pub fn link_checked_authenticated_with_mode(
     module_owners: AuthenticatedModuleOwners,
     mode: LinkMode,
 ) -> Result<CheckedModule, PipelineError> {
-    let linked = linker::link_with_mode_and_origins(modules, entry, expand, mode)?;
+    let linked = source_checked_link(linker::link_with_mode_and_origins_and_source_check(
+        modules,
+        entry,
+        expand,
+        mode,
+        check_source_headers,
+    ))?;
     module_owners.validate_module_names(linked.module_names.iter().cloned())?;
     check_linked(linked, Some(module_owners))
 }
@@ -200,12 +233,15 @@ pub fn link_checked_with_user_modules_with_mode(
     user_modules: &HashSet<String>,
     mode: LinkMode,
 ) -> Result<CheckedModule, PipelineError> {
-    let linked = linker::link_with_user_modules_with_mode_and_origins(
-        modules,
-        entry,
-        expand,
-        user_modules,
-        mode,
+    let linked = source_checked_link(
+        linker::link_with_user_modules_with_mode_and_origins_and_source_check(
+            modules,
+            entry,
+            expand,
+            user_modules,
+            mode,
+            check_source_headers,
+        ),
     )?;
     check_linked(linked, None)
 }
@@ -237,12 +273,15 @@ pub fn link_checked_authenticated_with_user_modules_with_mode(
     module_owners: AuthenticatedModuleOwners,
     mode: LinkMode,
 ) -> Result<CheckedModule, PipelineError> {
-    let linked = linker::link_with_user_modules_with_mode_and_origins(
-        modules,
-        entry,
-        expand,
-        user_modules,
-        mode,
+    let linked = source_checked_link(
+        linker::link_with_user_modules_with_mode_and_origins_and_source_check(
+            modules,
+            entry,
+            expand,
+            user_modules,
+            mode,
+            check_source_headers,
+        ),
     )?;
     module_owners.validate_module_names(linked.module_names.iter().cloned())?;
     check_linked(linked, Some(module_owners))
@@ -326,6 +365,28 @@ mod tests {
 
         assert_eq!(new, PipelineError::Type(old.clone()));
         assert_eq!(new.to_string(), old.to_string());
+    }
+
+    #[test]
+    fn checked_link_rejects_generator_headers_at_the_source_boundary() {
+        let modules = vec![(
+            "main".to_string(),
+            parse(
+                "gen fn bad(value: Int, value: Int) -> Iter(Int):\n  yield value\n\nfn main() -> Int:\n  0\n",
+            ),
+        )];
+        let error = link_checked(modules, "main", no_expand)
+            .expect_err("duplicate generator parameters must fail source checking");
+        let PipelineError::Type(error) = error else {
+            panic!("source header failure must remain a type error: {error}");
+        };
+        assert!(
+            error.message.contains(
+                "parameter `value` is declared more than once in function `bad`"
+            ),
+            "{}",
+            error.message
+        );
     }
 
     #[test]

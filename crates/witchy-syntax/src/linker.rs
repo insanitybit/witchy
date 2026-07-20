@@ -41,11 +41,81 @@ impl fmt::Display for LinkError {
 
 impl std::error::Error for LinkError {}
 
+/// A semantic diagnostic produced while the expanded source AST is intact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceCheckError {
+    pub message: String,
+}
+
+impl SourceCheckError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for SourceCheckError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for SourceCheckError {}
+
+/// Failure from a checked link that validates the complete expanded source set
+/// before destructive lowering starts.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SourceLinkError {
+    Link(LinkError),
+    Source(SourceCheckError),
+}
+
+impl From<LinkError> for SourceLinkError {
+    fn from(error: LinkError) -> Self {
+        Self::Link(error)
+    }
+}
+
+impl fmt::Display for SourceLinkError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Link(error) => fmt::Display::fmt(error, f),
+            Self::Source(error) => fmt::Display::fmt(error, f),
+        }
+    }
+}
+
+impl std::error::Error for SourceLinkError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Link(error) => Some(error),
+            Self::Source(error) => Some(error),
+        }
+    }
+}
+
+pub type SourceChecker =
+    fn(&crate::source_check::ResolvedSource) -> Result<(), SourceCheckError>;
+
+fn accept_resolved_source(
+    _: &crate::source_check::ResolvedSource,
+) -> Result<(), SourceCheckError> {
+    Ok(())
+}
+
 fn lerr<T>(message: impl Into<String>) -> Result<T, LinkError> {
     Err(LinkError {
         message: message.into(),
         location: None,
     })
+}
+
+fn source_lerr<T>(message: impl Into<String>) -> Result<T, SourceLinkError> {
+    Err(SourceLinkError::Link(LinkError {
+        message: message.into(),
+        location: None,
+    }))
 }
 
 fn lerr_at<T>(message: impl Into<String>, module: &str, line: Option<u32>) -> Result<T, LinkError> {
@@ -620,7 +690,7 @@ fn pulled_std_cache_insert(
     // that point depends on the link set's pull order — so a std source that
     // even mentions `tag"` (in code, an emitted string, or a comment) is
     // conservatively left uncached. No bundled module does today.
-    if !std_source(name).is_some_and(|s| !s.contains("tag\"")) {
+    if std_source(name).is_none_or(|s| s.contains("tag\"")) {
         return;
     }
     let cache =
@@ -1306,6 +1376,29 @@ pub fn link_with_mode_and_origins(
     expand: ComptimeExpander,
     mode: LinkMode,
 ) -> Result<LinkedModule, LinkError> {
+    match link_with_mode_and_origins_and_source_check(
+        modules,
+        entry,
+        expand,
+        mode,
+        accept_resolved_source,
+    ) {
+        Ok(linked) => Ok(linked),
+        Err(SourceLinkError::Link(error)) => Err(error),
+        Err(SourceLinkError::Source(error)) => Err(LinkError {
+            message: error.message,
+            location: None,
+        }),
+    }
+}
+
+pub fn link_with_mode_and_origins_and_source_check(
+    modules: Vec<(String, Module)>,
+    entry: &str,
+    expand: ComptimeExpander,
+    mode: LinkMode,
+    check_source: SourceChecker,
+) -> Result<LinkedModule, SourceLinkError> {
     // Safe by default for in-memory callers that have no source-provenance map:
     // a supplied reserved module is canonical only when its parsed AST matches
     // the compiler-bundled source. Loaders with exact source identity should use
@@ -1328,7 +1421,14 @@ pub fn link_with_mode_and_origins(
             user_modules.insert(name.clone());
         }
     }
-    link_with_user_modules_with_mode_and_origins(modules, entry, expand, &user_modules, mode)
+    link_with_user_modules_with_mode_and_origins_and_source_check(
+        modules,
+        entry,
+        expand,
+        &user_modules,
+        mode,
+        check_source,
+    )
 }
 
 /// Like [`link`], but with the subset of module names that came from user
@@ -1367,6 +1467,34 @@ pub fn link_with_user_modules_with_mode_and_origins(
     user_modules: &std::collections::HashSet<String>,
     mode: LinkMode,
 ) -> Result<LinkedModule, LinkError> {
+    match link_with_user_modules_with_mode_and_origins_and_source_check(
+        modules,
+        entry,
+        expand,
+        user_modules,
+        mode,
+        accept_resolved_source,
+    ) {
+        Ok(linked) => Ok(linked),
+        Err(SourceLinkError::Link(error)) => Err(error),
+        Err(SourceLinkError::Source(error)) => Err(LinkError {
+            message: error.message,
+            location: None,
+        }),
+    }
+}
+
+/// Link while invoking `check_source` after expansion, transitive module
+/// discovery, and source name resolution, but before any source node is
+/// destructively lowered.
+pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
+    modules: Vec<(String, Module)>,
+    entry: &str,
+    expand: ComptimeExpander,
+    user_modules: &std::collections::HashSet<String>,
+    mode: LinkMode,
+    check_source: SourceChecker,
+) -> Result<LinkedModule, SourceLinkError> {
     let mut origin_tables: HashMap<String, crate::origin::OriginTable> = HashMap::new();
     check_reserved_source_names(&modules)?;
     if let Some(name) = user_modules
@@ -1374,7 +1502,7 @@ pub fn link_with_user_modules_with_mode_and_origins(
         .filter(|name| STD_MODULES.contains(&name.as_str()))
         .min()
     {
-        return lerr(format!(
+        return source_lerr(format!(
             "module `{name}` uses a reserved standard-library name — rename the local module; \
              bundled std modules have one canonical owner"
         ));
@@ -1558,6 +1686,7 @@ pub fn link_with_user_modules_with_mode_and_origins(
         reclassify_module_members(module);
     }
     let resolved = crate::source_check::resolve_linked_source(modules, user_modules)?;
+    check_source(&resolved).map_err(SourceLinkError::Source)?;
     let (mut modules, declarations) = lower_expanded_source(resolved, &mut origin_tables)?;
 
     // MethodCall nodes survive linking: `x.f(a)` resolves to a REAL method
@@ -1654,12 +1783,12 @@ pub fn link_with_user_modules_with_mode_and_origins(
     }
 
     if !modules.iter().any(|(n, _)| n == entry) {
-        return lerr(format!("entry module `{entry}` not found"));
+        return source_lerr(format!("entry module `{entry}` not found"));
     }
     for (name, m) in &modules {
         for imp in &m.imports {
             if !fns.contains_key(imp) {
-                return lerr(format!("module `{name}` imports unknown module `{imp}`"));
+                return source_lerr(format!("module `{name}` imports unknown module `{imp}`"));
             }
         }
     }
@@ -1682,7 +1811,7 @@ pub fn link_with_user_modules_with_mode_and_origins(
                 continue;
             }
             if opt_of.get(imp.as_str()) == Some(&false) {
-                return lerr(format!(
+                return source_lerr(format!(
                     "`mode opt` module `{name}` imports `{imp}`, which is not `mode opt` — \
                      optimization mode is transitive, so an `opt` module may depend only on \
                      other `opt` modules (the bundled std library is exempt). Add `mode opt` \
@@ -3764,6 +3893,51 @@ mod tests {
         assert_eq!(
             error.message,
             "module `main`: expanded source: generator `emitted` must declare exactly one element type as `-> Iter(a)`"
+        );
+    }
+
+    #[test]
+    fn injected_semantic_check_observes_expanded_source_before_lowering() {
+        fn emit_generator(
+            name: &str,
+            module: &mut Module,
+            _: &[(String, Module)],
+        ) -> Result<crate::origin::OriginTable, String> {
+            if name == "main" {
+                let mut emitted = crate::parser::parse_module(
+                    "gen fn emitted() -> Iter(Int):\n    yield 1\n",
+                )
+                .map_err(|error| error.to_string())?;
+                module.items.append(&mut emitted.items);
+            }
+            Ok(crate::origin::OriginTable::default())
+        }
+
+        fn reject_expanded_generator(
+            source: &crate::source_check::ResolvedSource,
+        ) -> Result<(), SourceCheckError> {
+            assert!(source.modules().iter().any(|(_, module)| {
+                module.items.iter().any(|item| {
+                    matches!(item, Item::Function(function) if function.is_gen)
+                })
+            }));
+            Err(SourceCheckError::new("stop before lowering"))
+        }
+
+        let module = crate::parser::parse_module("fn main() -> Int:\n    0\n")
+            .expect("parse source fixture");
+        let error = link_with_user_modules_with_mode_and_origins_and_source_check(
+            vec![("main".into(), module)],
+            "main",
+            emit_generator,
+            &std::collections::HashSet::new(),
+            LinkMode::Production,
+            reject_expanded_generator,
+        )
+        .expect_err("injected source failure must stop linking");
+        assert_eq!(
+            error,
+            SourceLinkError::Source(SourceCheckError::new("stop before lowering"))
         );
     }
 

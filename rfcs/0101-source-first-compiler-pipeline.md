@@ -3,7 +3,7 @@ rfc: 0101
 title: source-first compiler pipeline
 status: proposed
 created: 2026-07-20
-tracking: "implementation active: destructive source lowerings use staged proofs, expanded-source generator contracts are checked before lowering, and production codegen retains checked proofs; full linked type checking and trait lowering remain open"
+tracking: "implementation active: checked linking injects declaration checks at the complete expanded-source boundary, destructive lowerings use staged proofs, and production codegen retains checked proofs; body type checking and trait lowering remain open"
 related:
   - "[0070](0070-0-1-blocking-set.md) (terminal 0.1 decision record and checked-module seam)"
   - "BUG-428 / BUG-429 / BUG-434 / BUG-436 (closed regression classes)"
@@ -43,6 +43,12 @@ Implemented evidence:
   contract is checked before lowering for both handwritten declarations and
   declarations appended by compile-time expansion; the emitted-source test
   proves an invalid declaration cannot reach generator lowering.
+- Checked-link APIs inject the type layer at the resolved expanded-source
+  boundary. Duplicate callable, declaration, and parameter contracts now run
+  there while generator, async, record, trait, and impl nodes are intact;
+  legacy raw linking names its no-op path explicitly. An emitted-generator
+  probe proves the injected checker observes generated source and can stop the
+  pipeline before lowering.
 - Strict and lenient record lowering are proof-gated at linker, type-checker,
   interpreter, and Wasm assembly entrypoints; projection and record-update
   backend parity tests remain green.

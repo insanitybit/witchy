@@ -8632,6 +8632,19 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
     check_with_compiler_syntax(module, false)
 }
 
+/// Validate declaration-level semantics on the complete expanded source set
+/// before the linker lowers generators, async functions, records, or impls.
+pub fn check_linked_source_headers(
+    source: &witchy_syntax::source_check::ResolvedSource,
+) -> Result<(), TypeError> {
+    for (_, module) in source.modules() {
+        check_unique_functions(module)?;
+        check_unique_declarations(module)?;
+        check_unique_parameters(module)?;
+    }
+    Ok(())
+}
+
 /// Type-check the isolated program used to execute a `comptime:` block.
 ///
 /// This mode allows compiler syntax values such as `meta.ItemSyntax` to flow
