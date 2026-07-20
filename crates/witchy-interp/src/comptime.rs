@@ -799,6 +799,23 @@ mod tests {
     use witchy_syntax::ast::{Expr, Item, Stmt};
 
     #[test]
+    fn derive_generated_origin_inherits_source_type_line() {
+        let src = "type Display derive(Show):\n    value: Int\n\nfn main():\n    0\n";
+        let module = witchy_syntax::parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link_with_origins(vec![("main".into(), module)], "main")
+            .expect("derived program links with origins");
+        let derived = linked
+            .origins
+            .nodes()
+            .iter()
+            .find(|entry| entry.origin.invocation.start.line == 1)
+            .expect("derived implementation keeps the type declaration invocation");
+
+        assert_eq!(derived.origin.invocation.module, "main");
+        assert_ne!(derived.origin.definition.start.line, 0);
+    }
+
+    #[test]
     fn typed_item_origin_survives_expansion_and_linking() {
         let src = r#"
 import meta

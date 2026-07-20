@@ -104,6 +104,7 @@ fn user_derive_outputs(module: &Module) -> HashMap<String, UserDeriveOutput> {
 /// derive routes to a user-provided `derive_<name>` (a comptime error if absent).
 pub fn expand(module: &mut Module) -> Result<(), String> {
     let mut generated: Vec<Item> = Vec::new();
+    let mut generated_lines = Vec::new();
     let mut needs_deserialize = false;
     let mut needs_reflect = false;
     let mut needs_show = false;
@@ -117,7 +118,8 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
             (im.trait_name.as_deref() == Some("PartialEq")).then(|| im.type_name.clone())
         })
         .collect();
-    for item in &mut module.items {
+    let source_lines = module.item_lines.clone();
+    for (item_index, item) in module.items.iter_mut().enumerate() {
         let Item::Type(t) = item else { continue };
         // CONSUME the annotation: this pass runs at every pipeline entry
         // (records::lower is called per stage) and must be idempotent.
@@ -249,6 +251,10 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
                 }
             }
         }
+        generated_lines.resize(
+            generated.len(),
+            source_lines.get(item_index).copied().unwrap_or(u32::MAX),
+        );
     }
     // The generated `from_json` names `Json`'s decoders, so `json` must be
     // imported explicitly. `Result`, `Ok`/`Err`, `Option`, and `Some`/`None` are
@@ -275,14 +281,12 @@ pub fn expand(module: &mut Module) -> Result<(), String> {
     if needs_show && !module.imports.iter().any(|i| i == "show") {
         module.imports.push("show".to_string());
     }
-    let n = generated.len();
     module.items.extend(generated);
-    // Keep the comment/line bookkeeping parallel (appended items have no
-    // source lines).
-    for _ in 0..n {
-        if !module.item_lines.is_empty() {
-            module.item_lines.push(u32::MAX);
-        }
+    // A derive block is synthetic, but its invocation site is the source type
+    // carrying the annotation. Comptime provenance reads this parallel line
+    // table when it records the generated implementation.
+    if !module.item_lines.is_empty() {
+        module.item_lines.extend(generated_lines);
     }
     Ok(())
 }

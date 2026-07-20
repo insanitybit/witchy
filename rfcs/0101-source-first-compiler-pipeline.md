@@ -65,6 +65,9 @@ Implemented evidence:
 - Expanded bundled-module cache entries retain the lowered module and its
   `OriginTable` as one versioned artifact. Cold and warm links therefore expose
   identical generated-node provenance instead of dropping cached std origins.
+- Synthetic derive blocks inherit the annotated type's item line as their
+  invocation site, so derive-generated implementations retain source ancestry
+  through comptime expansion and final lowering.
 
 ## Required contract
 
@@ -105,7 +108,6 @@ complete source type checking before trait desugaring; then remove raw
 production `Module` escape hatches and promote the RFC only after backend and
 diagnostic-origin criteria are green.
 
-Expansion provenance still has one concrete residual: derive-synthetic
-`comptime` blocks must inherit their source type's origin. A labeled module call
-still requires its import to be present in parsed source; method labels remain
-rejected rather than being reinterpreted after an import appears.
+A labeled module call still requires its import to be present in parsed source;
+method labels remain rejected rather than being reinterpreted after an import
+appears.
