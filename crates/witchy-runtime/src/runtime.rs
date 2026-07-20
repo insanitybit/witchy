@@ -17,6 +17,8 @@ use wasmtime::{
 use witchy_syntax::intrinsics;
 use witchy_wir::layout::HEAP_REDZONE;
 
+mod compiler;
+
 /// An on-disk Cranelift compilation cache so re-running the same program skips
 /// recompiling its WAT (the ~3 ms compile cost). Keyed by wasm content +
 /// wasmtime version, so it is transparent and self-invalidating. Best-effort:
@@ -1065,10 +1067,7 @@ pub(crate) fn link_capability_imports(
     linker.func_wrap("witchy", "crypto_reveal_len", host_crypto_reveal_len)?;
     // The compiler's footprint analyses are pure functions of their source
     // arguments — the toolchain exposed to witchy, same registry bridge.
-    linker.func_wrap("witchy", "compiler_footprint_len", host_compiler_footprint_len)?;
-    linker.func_wrap("witchy", "compiler_diff_len", host_compiler_diff_len)?;
-    linker.func_wrap("witchy", "compiler_doc_len", host_compiler_doc_len)?;
-    linker.func_wrap("witchy", "compiler_doc_result_json_len", host_compiler_doc_result_json_len)?;
+    compiler::link(linker)?;
     linker.func_wrap("witchy", "user_cap_field_len", host_user_cap_field_len)?;
     linker.func_wrap("witchy", "regex_match_spans_len", host_regex_match_spans_len)?;
     // Float -> string formatting is pure; done in the host so it is byte-
@@ -1379,47 +1378,6 @@ fn host_crypto_rune_hash(
         .map_err(|e| Error::msg(format!("writing rune_hash result into guest memory: {e}")))
 }
 
-/// `compiler_footprint_len(src_ptr) -> Int`: compute the capability-footprint
-/// JSON of the guest's source string through the shared native registry, stage
-/// it for `fill_pending`, and report its byte length.
-fn host_compiler_footprint_len(mut caller: Caller<'_, VmState>, src_ptr: i32) -> Result<i32> {
-    use crate::value::NativeValue as Value;
-    let mem = memory_of(&mut caller)?;
-    let src = read_wstr(mem.data(&caller), src_ptr)?;
-    let f = crate::native::lookup(intrinsics::COMPILER_FOOTPRINT)
-        .ok_or_else(|| Error::msg("compiler.footprint is not registered"))?;
-    let json = match f(&[Value::Str(src)]).map_err(|e| Error::msg(e.message))? {
-        Value::Str(s) => s,
-        _ => return Err(Error::msg("compiler.footprint did not return a String")),
-    };
-    let len = json.len() as i32;
-    caller.data_mut().pending = Some(json.into_bytes());
-    Ok(len)
-}
-
-/// `compiler_diff_len(old_ptr, new_ptr) -> Int`: compute the footprint-diff
-/// JSON of two guest source strings, stage it for `fill_pending`, and report
-/// its byte length.
-fn host_compiler_diff_len(
-    mut caller: Caller<'_, VmState>,
-    old_ptr: i32,
-    new_ptr: i32,
-) -> Result<i32> {
-    use crate::value::NativeValue as Value;
-    let mem = memory_of(&mut caller)?;
-    let old_src = read_wstr(mem.data(&caller), old_ptr)?;
-    let new_src = read_wstr(mem.data(&caller), new_ptr)?;
-    let f = crate::native::lookup(intrinsics::COMPILER_DIFF)
-        .ok_or_else(|| Error::msg("compiler.diff is not registered"))?;
-    let json = match f(&[Value::Str(old_src), Value::Str(new_src)]).map_err(|e| Error::msg(e.message))? {
-        Value::Str(s) => s,
-        _ => return Err(Error::msg("compiler.diff did not return a String")),
-    };
-    let len = json.len() as i32;
-    caller.data_mut().pending = Some(json.into_bytes());
-    Ok(len)
-}
-
 /// `user_cap_field_len(param, field) -> Int` (RFC-0038): stage the (param, field)
 /// policy string of a bare grantable-capability grant for `fill_pending`, and
 /// report its byte length. Out of range is a launch/codegen mismatch — trap (the
@@ -1435,52 +1393,6 @@ fn host_user_cap_field_len(mut caller: Caller<'_, VmState>, param: i32, field: i
         .ok_or_else(|| Error::msg("a grantable-capability field is missing from the [user_caps] grant"))?;
     let len = s.len() as i32;
     caller.data_mut().pending = Some(s.into_bytes());
-    Ok(len)
-}
-
-/// `compiler_doc_len(name_ptr, src_ptr) -> Int`: render the guest's source string to
-/// Markdown API docs (the `compiler.doc` native — `witchy doc` output) under heading
-/// `name`, stage it for `fill_pending`, and report its byte length.
-fn host_compiler_doc_len(
-    mut caller: Caller<'_, VmState>,
-    name_ptr: i32,
-    src_ptr: i32,
-) -> Result<i32> {
-    use crate::value::NativeValue as Value;
-    let mem = memory_of(&mut caller)?;
-    let name = read_wstr(mem.data(&caller), name_ptr)?;
-    let src = read_wstr(mem.data(&caller), src_ptr)?;
-    let f = crate::native::lookup(intrinsics::COMPILER_DOC)
-        .ok_or_else(|| Error::msg("compiler.doc is not registered"))?;
-    let md = match f(&[Value::Str(name), Value::Str(src)]).map_err(|e| Error::msg(e.message))? {
-        Value::Str(s) => s,
-        _ => return Err(Error::msg("compiler.doc did not return a String")),
-    };
-    let len = md.len() as i32;
-    caller.data_mut().pending = Some(md.into_bytes());
-    Ok(len)
-}
-
-/// `compiler_doc_result_json_len(name_ptr, src_ptr) -> Int`: render the
-/// inspectable `compiler.try_doc` JSON result, stage it for `fill_pending`, and
-/// report its byte length.
-fn host_compiler_doc_result_json_len(
-    mut caller: Caller<'_, VmState>,
-    name_ptr: i32,
-    src_ptr: i32,
-) -> Result<i32> {
-    use crate::value::NativeValue as Value;
-    let mem = memory_of(&mut caller)?;
-    let name = read_wstr(mem.data(&caller), name_ptr)?;
-    let src = read_wstr(mem.data(&caller), src_ptr)?;
-    let f = crate::native::lookup(intrinsics::COMPILER_DOC_RESULT_JSON)
-        .ok_or_else(|| Error::msg(format!("{} is not registered", intrinsics::COMPILER_DOC_RESULT_JSON)))?;
-    let json = match f(&[Value::Str(name), Value::Str(src)]).map_err(|e| Error::msg(e.message))? {
-        Value::Str(s) => s,
-        _ => return Err(Error::msg(format!("{} did not return a String", intrinsics::COMPILER_DOC_RESULT_JSON))),
-    };
-    let len = json.len() as i32;
-    caller.data_mut().pending = Some(json.into_bytes());
     Ok(len)
 }
 
