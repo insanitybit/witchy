@@ -113,6 +113,8 @@ journal="$qdir/journal.jsonl"
 logs="$qdir/logs"
 lock="$qdir/gate.lock"
 coordinator_lock="$qdir/coordinator.lock"
+gate_target_file="$qdir/gate-target"
+prewarm_incomplete="$qdir/prewarm-incomplete"
 gate_wt="${MERGE_QUEUE_GATE_WT:-$root/.claude/worktrees/merge-gate}"
 gate_cmd="${MERGE_QUEUE_GATE_CMD:-./scripts/check.sh}"
 gate_cmd_is_default=1
@@ -134,6 +136,42 @@ active_gate_pgid=""
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 note() { printf 'merge-queue: %s\n' "$*" >&2; }
 strip_ansi() { sed "s/$(printf '\033')\[[0-9;]*m//g"; }
+
+# The selector is state, not a caller-controlled path. Only these two sibling
+# Cargo generations are valid; old state directories have no selector and use
+# the historical target/ generation.
+gate_target_generation() {
+    local selected="target"
+    if [ -f "$gate_target_file" ]; then
+        selected="$(cat "$gate_target_file" 2>/dev/null || true)"
+    fi
+    case "$selected" in
+        target | target-prewarm) ;;
+        *)
+            note "WARNING: invalid gate-target '$selected'; using target"
+            selected="target"
+            ;;
+    esac
+    printf '%s\n' "$selected"
+}
+
+inactive_gate_target_generation() { # inactive_gate_target_generation <active>
+    case "$1" in
+        target) printf 'target-prewarm\n' ;;
+        target-prewarm) printf 'target\n' ;;
+        *) return 1 ;;
+    esac
+}
+
+promote_gate_target() { # promote_gate_target <generation>
+    local generation="$1" tmp
+    case "$generation" in target | target-prewarm) ;; *) return 1 ;; esac
+    tmp="$(mktemp "$qdir/.gate-target-XXXXXX")" || return 1
+    if ! printf '%s\n' "$generation" >"$tmp" || ! mv -f "$tmp" "$gate_target_file"; then
+        rm -f "$tmp"
+        return 1
+    fi
+}
 
 # `git merge-tree --write-tree` reports conflicts through its exit status, but
 # normally writes the synthetic result into the repository object DB. Submit is
@@ -791,13 +829,14 @@ group_is_busy() { # group_is_busy <pgid>
 # Sets gate_result to "green", "red", or "timeout: <why>". Never returns nonzero.
 gate_result=""
 gate_attempt=0
-run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infra-only]
+run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infra-only] [cargo-target]
     local log="$1"
     local progress_file="${log}.progress"
     local fuzz_mode="${2:-full}"
     local gate_scope="${3:-all}"
     local queue_infra="${4:-0}"
     local queue_infra_only="${5:-0}"
+    local cargo_target_dir="${6:-target}"
     local selected_gate_cmd="$gate_cmd"
     if [ "$queue_infra_only" -eq 1 ] && [ "$gate_cmd_is_default" -eq 1 ]; then
         selected_gate_cmd="./scripts/check.sh --queue-infra"
@@ -821,7 +860,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     # execution as well doubled gate wall-clock (measured 2026-07-16: ~20.6 min
     # at width 4 vs the historical 8-10 min).
     rm -f "$progress_file"
-    ( cd "$gate_wt" && exec env CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
+    ( cd "$gate_wt" && exec env "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
     local gpid=$!
     active_gate_pgid="$gpid"
     if [ "$holding_lock" -eq 1 ] \
@@ -1285,8 +1324,9 @@ submission_is_represented() { # submission_is_represented <submitted-sha>
 #     incremental setting identical to run_gate as well; changing that flag in
 #     one shared target invalidates the preparation artifacts and forces the
 #     full gate to rebuild every workspace crate.
-rebaseline_generated_snapshots() { # rebaseline_generated_snapshots <base> <branch> <change-id> <attempt-id>
+rebaseline_generated_snapshots() { # rebaseline_generated_snapshots <base> <branch> <change-id> <attempt-id> <cargo-target>
     local rb_base="$1" rb_branch="$2" rb_change_id="$3" rb_attempt_id="$4"
+    local rb_target="${5:-target}"
     local pre_diff unsafe tmp files=""
     pre_diff="$(git -C "$gate_wt" diff --name-only --no-renames "$rb_base..HEAD" 2>/dev/null || true)"
     [ -n "$pre_diff" ] || return 0
@@ -1303,7 +1343,7 @@ rebaseline_generated_snapshots() { # rebaseline_generated_snapshots <base> <bran
     # Clear the globally configured sccache wrapper exactly like run_gate does:
     # a detached daemon's sandbox EPERMs it, and a silently failing build here
     # would neuter the whole re-baseline path for daemon coordinators.
-    if ! ( cd "$gate_wt" && env CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= \
+    if ! ( cd "$gate_wt" && env "CARGO_TARGET_DIR=$rb_target" CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= \
         cargo build --bin witchy --bin rfc0087-census ) >/dev/null 2>&1; then
         note "rebaseline: generator build failed; skipping regen (the gate adjudicates)"
         return 0
@@ -1313,13 +1353,13 @@ rebaseline_generated_snapshots() { # rebaseline_generated_snapshots <base> <bran
     # truncate the committed snapshot, and an identical output must not dirty
     # the tree.
     if [ -f "$gate_wt/rfcs/0087-migration-census.tsv" ] \
-        && ( cd "$gate_wt" && ./target/debug/rfc0087-census . ) >"$tmp" 2>/dev/null \
+        && ( cd "$gate_wt" && "./$rb_target/debug/rfc0087-census" . ) >"$tmp" 2>/dev/null \
         && ! cmp -s "$tmp" "$gate_wt/rfcs/0087-migration-census.tsv"; then
         cat "$tmp" >"$gate_wt/rfcs/0087-migration-census.tsv"
         files="rfcs/0087-migration-census.tsv"
     fi
     if [ -f "$gate_wt/spec/stdlib.md" ] && ls "$gate_wt"/std/*.witchy >/dev/null 2>&1 \
-        && ( cd "$gate_wt" && ./target/debug/witchy doc std/*.witchy ) >"$tmp" 2>/dev/null \
+        && ( cd "$gate_wt" && "./$rb_target/debug/witchy" doc std/*.witchy ) >"$tmp" 2>/dev/null \
         && ! cmp -s "$tmp" "$gate_wt/spec/stdlib.md"; then
         cat "$tmp" >"$gate_wt/spec/stdlib.md"
         files="${files:+$files }spec/stdlib.md"
@@ -1654,7 +1694,12 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     # ~28-min red gate + resubmission. Runs BEFORE the sha capture and the diff
     # classification below, so the amended sha (and its spec/ paths) is what
     # gets classified, gated, and fast-forwarded.
-    rebaseline_generated_snapshots "$base" "$branch" "$change_id" "$attempt_id" || true
+    # One selector snapshot covers both preparation and the eventual gate. An
+    # idle prewarm can promote only between attempts, never switch target dirs
+    # underneath a candidate already being prepared.
+    local cargo_target_dir; cargo_target_dir="$(gate_target_generation)"
+    rebaseline_generated_snapshots "$base" "$branch" "$change_id" "$attempt_id" \
+        "$cargo_target_dir" || true
 
     local sha; sha="$(git -C "$gate_wt" rev-parse HEAD)"
 
@@ -1817,9 +1862,10 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         return 2
     fi
 
-    note "gating $branch (rebased to $sha on $base; fuzz=$fuzz_mode; scope=$gate_scope; queue-infra=$queue_infra; queue-infra-only=$queue_infra_only); log: $log"
+    note "gating $branch (rebased to $sha on $base; target=$cargo_target_dir; fuzz=$fuzz_mode; scope=$gate_scope; queue-infra=$queue_infra; queue-infra-only=$queue_infra_only); log: $log"
     local gate_started; gate_started="$(date +%s)"
-    run_gate "$log" "$fuzz_mode" "$gate_scope" "$queue_infra" "$queue_infra_only"
+    run_gate "$log" "$fuzz_mode" "$gate_scope" "$queue_infra" "$queue_infra_only" \
+        "$cargo_target_dir"
     local gate_finished; gate_finished="$(date +%s)"
     local gate_took=$((gate_finished - gate_started))
 
@@ -2023,7 +2069,8 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
 prewarm_gate() {
     [ -d "$gate_wt" ] || return 0
     ls "$queue_dir"/*.json >/dev/null 2>&1 && return 0
-    local m; m="$(git -C "$root" rev-parse master)"
+    local m active_target inactive_target incomplete_target="" reset_inactive=0
+    m="$(git -C "$root" rev-parse master)"
     [ -f "$qdir/prewarmed" ] && [ "$(cat "$qdir/prewarmed")" = "$m" ] && return 0
     acquire_lock "prewarm: master @ ${m:0:9}"
     # Re-check under the lock — a submit may have raced us.
@@ -2031,14 +2078,34 @@ prewarm_gate() {
     note "idle: prewarming gate worktree at master ${m:0:9}"
     git -C "$gate_wt" rebase --abort >/dev/null 2>&1 || true
     git -C "$gate_wt" checkout --detach --quiet "$m" 2>/dev/null || { release_lock; return 0; }
-    # Warm ALL profiles the gate uses: dev (build), test (nextest), the wasm
-    # playground target, and — when it exists — the separate clippy check dir
-    # (target-clippy, where check.sh's background clippy leg runs; check.sh
-    # CoW-seeds it on first use). Without this, each cold profile adds 30-130s
-    # to the gate wall-clock. The clippy warm-up uses the EXACT gate flags
-    # (`-- -D warnings`) so its fingerprints match the gate's; `|| true` keeps a
-    # master-side lint from failing the prewarm. The wasm build needs the rustup
-    # toolchain's std (same PATH trick as check.sh).
+    active_target="$(gate_target_generation)"
+    inactive_target="$(inactive_gate_target_generation "$active_target")" \
+        || { release_lock; return 0; }
+    if [ -f "$prewarm_incomplete" ]; then
+        IFS=' ' read -r incomplete_target _ <"$prewarm_incomplete" || incomplete_target=""
+        case "$incomplete_target" in
+            target | target-prewarm) ;;
+            *)
+                note "idle: ignoring invalid prewarm-incomplete generation '$incomplete_target'"
+                incomplete_target=""
+                ;;
+        esac
+        [ "$incomplete_target" != "$inactive_target" ] || reset_inactive=1
+    fi
+    # This marker deliberately survives cancellation, failure, or coordinator
+    # death. gate-target still names the untouched active generation, while a
+    # later idle attempt can rebuild the marked inactive generation in place.
+    if ! printf '%s %s\n' "$inactive_target" "$m" >"$prewarm_incomplete"; then
+        note "idle: cannot mark $inactive_target prewarm incomplete"
+        release_lock
+        return 0
+    fi
+    # Warm ALL profiles the gate uses in the inactive generation: dev + test in
+    # $inactive_target, wasm there as well, and the fail-fast legs in the
+    # corresponding -clippy/-check siblings. Nothing copies or renames Cargo
+    # outputs between generations. Every Cargo phase must succeed before the
+    # selector can be promoted; a prewarm failure remains opportunistic and
+    # leaves the current active generation unchanged.
     # Prewarm is opportunistic. A submission arriving after the under-lock
     # recheck must preempt it instead of waiting behind a cold multi-profile
     # build. Put the complete tree, including rustup setup that can wait on its
@@ -2046,14 +2113,22 @@ prewarm_gate() {
     # only the prewarm process group we started.
     # Match run_gate once for every Cargo phase below. Detached daemons cannot
     # use the checkout's configured compiler wrapper.
+    # Cargo can trust a fingerprint whose executable was lost when an old
+    # prewarm was cancelled mid-write. Recover only the validated inactive
+    # generation, inside this cancellable process group; the active generation
+    # and all of its derived directories remain untouched.
     set -m
     ( cd "$gate_wt" \
+        && { if [ "$reset_inactive" -eq 1 ]; then
+                 rm -rf -- "$inactive_target" "${inactive_target}-check" "${inactive_target}-clippy" \
+                     && mkdir -p "$inactive_target" "${inactive_target}-check" "${inactive_target}-clippy"
+             fi; } \
         && tc_bin="" \
         && { if command -v rustup >/dev/null 2>&1; then
                  rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
                  tc_bin="$(dirname "$(rustup which --toolchain stable rustc)")"
              fi; } \
-        && export CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= \
+        && export CARGO_TARGET_DIR="$inactive_target" CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= \
         && cargo build --workspace >/dev/null 2>&1 \
         && cargo test --workspace --no-run >/dev/null 2>&1 \
         && { if [ -n "$tc_bin" ]; then
@@ -2061,32 +2136,42 @@ prewarm_gate() {
                      cargo build --lib --no-default-features --target wasm32-unknown-unknown >/dev/null 2>&1
              else
                  cargo build --lib --no-default-features --target wasm32-unknown-unknown >/dev/null 2>&1
-             fi || true; } \
-        && { [ -d target-clippy ] \
-                 && CARGO_TARGET_DIR=target-clippy cargo clippy --workspace --all-targets -- -D warnings >/dev/null 2>&1 \
-                 || true; } \
-        && { [ -d target-check ] \
-                 && CARGO_TARGET_DIR=target-check cargo check --workspace --all-targets >/dev/null 2>&1 \
-                 || true; } \
-        && { [ -x scripts/warm-witchy-caches.sh ] && ./scripts/warm-witchy-caches.sh >/dev/null 2>&1 || true; } ) &
+             fi; } \
+        && CARGO_TARGET_DIR="${inactive_target}-clippy" cargo clippy --workspace --all-targets -- -D warnings >/dev/null 2>&1 \
+        && CARGO_TARGET_DIR="${inactive_target}-check" cargo check --workspace --all-targets >/dev/null 2>&1 \
+        && { [ ! -x scripts/warm-witchy-caches.sh ] || ./scripts/warm-witchy-caches.sh >/dev/null 2>&1; } ) &
     local prewarm_pid=$!
+    active_gate_pgid="$prewarm_pid"
+    printf '%s\n' "$prewarm_pid" >"$lock/gate_pgid"
     set +m
     local cancelled=0
-    while pid_is_alive "$prewarm_pid"; do
+    while process_group_is_alive "$prewarm_pid"; do
         if ls "$queue_dir"/*.json >/dev/null 2>&1; then
             cancelled=1
             note "queue work arrived; cancelling idle prewarm (pgid $prewarm_pid)"
-            kill -TERM -- "-$prewarm_pid" 2>/dev/null \
-                || kill -TERM "$prewarm_pid" 2>/dev/null \
-                || true
+            terminate_gate_process_group "$prewarm_pid" "queued work arrived"
             break
         fi
         sleep 1
     done
     local prewarm_status=0
     wait "$prewarm_pid" || prewarm_status=$?
+    active_gate_pgid=""
+    rm -f "$lock/gate_pgid" 2>/dev/null || true
     if [ "$cancelled" -eq 0 ] && [ "$prewarm_status" -eq 0 ]; then
-        echo "$m" >"$qdir/prewarmed"
+        # At this point the inactive generation is complete. Clear its marker
+        # before promotion: a crash in between merely causes a later rebuild,
+        # while gate-target still points at the old validated generation.
+        rm -f "$prewarm_incomplete"
+        if promote_gate_target "$inactive_target"; then
+            if printf '%s\n' "$m" >"$qdir/prewarmed"; then
+                note "idle: promoted $inactive_target for master ${m:0:9}"
+            else
+                note "idle: promoted $inactive_target but could not record prewarmed sha"
+            fi
+        else
+            note "idle: $inactive_target is warm but gate-target promotion failed"
+        fi
     fi
     release_lock
 }

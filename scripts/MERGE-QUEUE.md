@@ -107,7 +107,12 @@ and handoff notes. It is observational, not a locking or file-ownership system.
 - `coordinator.log` — daemon stdout/stderr. `daemon` creates a new session
   (`setsid -f` on systems that provide it, POSIX::setsid via system Perl on
   macOS) so terminal or tool-host process-group cleanup cannot orphan a gate.
-- `prewarmed` — master sha the gate worktree was last idle-prewarmed to.
+- `gate-target` — active validated Cargo generation: exactly `target` or
+  `target-prewarm` (missing/invalid state falls back to `target`).
+- `prewarm-incomplete` — identifies an inactive generation whose opportunistic
+  build did not complete; it is never selected by a gate.
+- `prewarmed` — master sha whose completed inactive generation was last
+  promoted through `gate-target`.
 
 ## Command reference
 
@@ -208,8 +213,8 @@ contention with it.
 **Gate fail-fast (check.sh).** The merge-gate profile runs the tests as the
 only foreground stage with three background legs — `cargo check --workspace
 --all-targets` (surfaces plain compile errors in minutes), clippy, and the
-wasm playground build — each in its own CoW-seeded target dir
-(`target-check`, `target-clippy`). While the tests run, check.sh polls the
+wasm playground build — each in a target dir derived from the snapshotted
+active generation (`<target>-check`, `<target>-clippy`). While the tests run, check.sh polls the
 legs' logs (`WITCHY_FAILFAST_POLL`, default 5s) and, the moment a leg records
 a failure, ABORTS the foreground tests, prints the red leg's full output, and
 exits red — a clippy/compile failure costs ~2-4 min instead of surfacing only
@@ -217,7 +222,8 @@ after ~20+ min of doomed tests. The aborted tests stage is emitted as
 `WITCHY_TIMING … "status":"aborted"`; consumers that only read green records
 (gate-report.sh) ignore it. Green gates are unchanged: overlap, not
 serialization, and all legs are still collected — and can still fail the
-gate — before green. Idle prewarm also warms `target-check`.
+gate — before green. Idle prewarm also builds both derived directories for the
+inactive generation.
 
 **Diff-scoped fuzzing.** The differential fuzzer is the gate's single biggest
 test (~57s, a fixed-seed parity regression suite). `process_one` classifies the
@@ -285,7 +291,8 @@ shards ignore the scope.
    adjudicates), and regen is skipped entirely for docs-safe-set-only diffs
    so docs gates stay seconds. For code diffs the prepare-time `cargo build`
    mostly warms artifacts nextest needs anyway, so green-gate totals barely
-   move.
+   move. Preparation snapshots `gate-target`; both this generator build and
+   the later gate use that same `CARGO_TARGET_DIR` even if state changes.
 4. Classify the prepared batch diff, then acquire `gate.lock`. Re-check every
    immutable queue attempt and verify master is still `base`; if submission or
    master moved during preparation, release and rebuild without gating. When
@@ -338,10 +345,16 @@ shards ignore the scope.
      chooses who re-gates alone; a terminal red still requires that member's
      own solo gate, and nothing lands unvalidated (invariant 4 holds).
 7. Queue empty → idle prewarm: under the lock, move the gate worktree to
-   master, `cargo build --workspace`, run `warm-witchy-caches.sh`, record
-   the sha in `prewarmed`. The next gate starts hot. A submission arriving
-   during this opportunistic work terminates only the prewarm process group;
-   the coordinator releases the same lock and advances the queue immediately.
+   master, mark the generation not named by `gate-target` incomplete, and
+   build its dev/test/wasm plus corresponding `-check`/`-clippy` directories.
+   Completed outputs are never copied or renamed between generations. Only a
+   fully green prewarm atomically replaces `gate-target`, clears the incomplete
+   marker, and records the sha in `prewarmed`. A submission arriving during
+   this opportunistic work terminates only its process group; the active
+   generation remains untouched and the queue advances after bounded TERM/KILL
+   cleanup. The next attempt deletes and recreates a marked inactive
+   generation inside that same cancellable group before trusting Cargo
+   fingerprints again.
 
 ## Invariants (the load-bearing rules — do not break these when extending)
 
@@ -401,10 +414,11 @@ shards ignore the scope.
   (kill pid → `daemon`). Editing in place risks bash reading a half-new file.
 - **Lock is stealable only on dead pid.** A live-but-stuck holder needs a
   human `kill`; `doctor` shows holder pid + what + elapsed + log age.
-- **Gate process groups are lock-owned.** While a full gate runs, `gate.lock`
-  records its PGID. A graceful coordinator exit terminates that group before
-  releasing the lock; after an untrappable coordinator death, the next lock
-  acquirer terminates the recorded orphan before preparing another candidate.
+- **Gate-lock process groups are lock-owned.** While a full gate or idle
+  prewarm runs, `gate.lock` records its PGID. A graceful coordinator exit
+  terminates that group before releasing the lock; after an untrappable
+  coordinator death, the next lock acquirer terminates the recorded orphan
+  before preparing another candidate.
 - **Stall detection is CPU-gated, not log-only (2026-07-10).** The stall monitor
   once killed on 300s of no log output alone. But the gate legitimately goes
   silent for minutes — from t+0, since the tests stage now runs FIRST:
