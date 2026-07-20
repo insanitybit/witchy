@@ -235,6 +235,10 @@ struct ModTypes {
 /// and its exported function names (to validate `from X import <function>`).
 struct World {
     types: HashMap<String, ModTypes>,
+    /// Module-level constants remain source-visible until destructive lowering.
+    /// Uppercase references parse as nullary constructors, so resolution needs
+    /// this set to avoid misclassifying them before constant inlining.
+    constants: HashMap<String, HashSet<String>>,
     /// Type aliases remain source-visible until the proof is consumed, but
     /// references to them still receive canonical module identity.
     aliases: HashMap<String, HashSet<String>>,
@@ -334,6 +338,7 @@ fn declaration_kind_order(kind: ResolvedDeclarationKind) -> u8 {
 impl World {
     fn build(modules: &[(String, Module)]) -> World {
         let mut types: HashMap<String, ModTypes> = HashMap::new();
+        let mut constants: HashMap<String, HashSet<String>> = HashMap::new();
         let mut aliases: HashMap<String, HashSet<String>> = HashMap::new();
         let mut traits: HashMap<String, HashSet<String>> = HashMap::new();
         let mut fns: HashMap<String, HashSet<String>> = HashMap::new();
@@ -378,11 +383,23 @@ impl World {
                     Item::TypeAlias { name: alias, .. } => {
                         aliases.entry(name.clone()).or_default().insert(alias.clone());
                     }
+                    Item::Const { name: constant, .. } => {
+                        constants
+                            .entry(name.clone())
+                            .or_default()
+                            .insert(constant.clone());
+                    }
                     _ => {}
                 }
             }
         }
-        World { types, aliases, traits, fns, pub_fns, ambient, ambient_traits }
+        World { types, constants, aliases, traits, fns, pub_fns, ambient, ambient_traits }
+    }
+
+    fn module_has_constant(&self, module: &str, constant: &str) -> bool {
+        self.constants
+            .get(module)
+            .is_some_and(|constants| constants.contains(constant))
     }
 
     fn module_has_alias(&self, module: &str, alias: &str) -> bool {
@@ -1360,7 +1377,9 @@ impl<'a> Scope<'a> {
     fn resolve_expr(&self, e: &mut Expr) -> Result<(), LinkError> {
         match e {
             Expr::Ctor { name, args } => {
-                *name = self.resolve_ctor_expr_name(name)?;
+                if !(args.is_empty() && self.world.module_has_constant(self.home, name)) {
+                    *name = self.resolve_ctor_expr_name(name)?;
+                }
                 for a in args {
                     self.resolve_expr(a)?;
                 }
@@ -1748,6 +1767,44 @@ mod tests {
             ),
         ])
         .expect("no collision");
+    }
+
+    #[test]
+    fn source_namespace_retains_uppercase_constant_references() {
+        let modules = resolved_src(&[(
+            "main",
+            "let SECONDS_PER_MINUTE = 60\n\
+             let SECONDS_PER_HOUR = SECONDS_PER_MINUTE * 60\n\n\
+             fn seconds() -> Int:\n    SECONDS_PER_HOUR\n",
+        )])
+        .expect("constants resolve without being mistaken for constructors");
+        let module = &modules[0].1;
+
+        assert_eq!(
+            module
+                .items
+                .iter()
+                .filter(|item| matches!(item, Item::Const { .. }))
+                .count(),
+            2,
+            "linked-source proof must retain constant declarations"
+        );
+        assert!(module.items.iter().any(|item| matches!(
+            item,
+            Item::Const {
+                name,
+                value: Expr::Binary { lhs, .. },
+            } if name == "SECONDS_PER_HOUR"
+                && matches!(lhs.as_ref(), Expr::Ctor { name, args }
+                    if name == "SECONDS_PER_MINUTE" && args.is_empty())
+        )));
+        assert!(module.items.iter().any(|item| matches!(
+            item,
+            Item::Function(function)
+                if matches!(function.body.stmts.as_slice(),
+                    [Stmt::Expr(Expr::Ctor { name, args })]
+                        if name == "SECONDS_PER_HOUR" && args.is_empty())
+        )));
     }
 
     #[test]

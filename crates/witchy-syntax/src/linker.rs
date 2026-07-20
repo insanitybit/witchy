@@ -930,10 +930,12 @@ fn lower_expanded_source(
     let mut lowered_modules = Vec::with_capacity(checked_modules.len());
     for ((module_name, checked), view_fns) in checked_modules.into_iter().zip(view_fns) {
         let generator_mapping = crate::generators::lowered_item_mapping(checked.module());
-        let checked = crate::generators::lower(checked).map_err(|message| LinkError {
-            message: format!("module `{module_name}`: expanded source: {message}"),
-            location: None,
-        })?;
+        let checked = lower_generators_with_canonical_impls(&module_name, checked).map_err(
+            |message| LinkError {
+                message: format!("module `{module_name}`: expanded source: {message}"),
+                location: None,
+            },
+        )?;
         let (checked, async_mapping) =
             crate::async_lower::lower_with_view_fns_and_item_mapping(checked, &view_fns)
                 .map_err(|message| LinkError {
@@ -975,6 +977,68 @@ fn lower_expanded_source(
         lowered_modules.push((module_name, lowered));
     }
     Ok((lowered_modules, declarations))
+}
+
+fn lower_generators_with_canonical_impls(
+    module_name: &str,
+    mut checked: crate::source_check::SourceCheckedModule,
+) -> Result<crate::source_check::GeneratorsLoweredModule, String> {
+    let prefix = format!("{module_name}.");
+    let mut canonical_impls = Vec::new();
+    for item in &mut checked.module_mut().items {
+        let Item::Impl(definition) = item else {
+            continue;
+        };
+        if definition.trait_name.is_some() || !definition.methods.iter().any(|method| method.is_gen)
+        {
+            continue;
+        }
+        let Some(local_name) = definition.type_name.strip_prefix(&prefix) else {
+            continue;
+        };
+        let helper_names = definition
+            .methods
+            .iter()
+            .filter(|method| method.is_gen)
+            .map(|method| format!("__gen_{local_name}_{}", method.name))
+            .collect::<Vec<_>>();
+        canonical_impls.push((
+            local_name.to_string(),
+            definition.type_name.clone(),
+            helper_names,
+        ));
+        definition.type_name = local_name.to_string();
+    }
+
+    let mut lowered = crate::generators::lower(checked)?;
+    for item in &mut lowered.module_mut().items {
+        match item {
+            Item::Impl(definition) => {
+                if let Some((_, canonical, _)) = canonical_impls
+                    .iter()
+                    .find(|(local, _, _)| local == &definition.type_name)
+                {
+                    definition.type_name.clone_from(canonical);
+                }
+            }
+            Item::Function(function) => {
+                let Some((local, canonical, _)) = canonical_impls
+                    .iter()
+                    .find(|(_, _, helpers)| helpers.contains(&function.name))
+                else {
+                    continue;
+                };
+                if let Some(Type::Named(receiver, _)) =
+                    function.params.first_mut().and_then(|param| param.ty.as_mut())
+                    && receiver == local
+                {
+                    receiver.clone_from(canonical);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(lowered)
 }
 
 fn reclassify_module_members(module: &mut Module) {
@@ -3780,6 +3844,32 @@ mod tests {
         link(vec![("main".to_string(), module)], "main", noop_expand)
             .map(|_| ())
             .map_err(|e| e.message)
+    }
+
+    #[test]
+    fn canonicalized_generator_method_helper_stays_in_its_source_module() {
+        let source = "import iter\n\n\
+                      type Counter:\n    n: Int\n\n\
+                      impl Counter:\n    gen fn upto(self) -> Iter(Int):\n        yield self.n\n\n\
+                      fn main(console: Console):\n    let c = Counter(n: 1)\n    console.print(\"${iter.collect(c.upto())}\")\n";
+        let module = crate::parser::parse_module(source).expect("generator method parses");
+        let linked = link(vec![("main".to_string(), module)], "main", noop_expand)
+            .expect("canonical impl identity must not create a generated-module import");
+
+        let helper = linked
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) if function.name == "main.__gen_Counter_upto" => {
+                    Some(function)
+                }
+                _ => None,
+            })
+            .expect("generator helper remains a local function");
+        assert_eq!(
+            helper.params[0].ty,
+            Some(Type::Named("main.Counter".into(), Vec::new()))
+        );
     }
 
     #[test]
