@@ -184,7 +184,7 @@ impl RuntimeDeclarationCatalog {
     /// Join linker-retained declaration provenance with loader-authenticated
     /// module ownership. Every source module must have an owner; compiler names
     /// are lookup keys and are never parsed to recover package identity.
-    pub fn from_resolved_declarations(
+    pub(crate) fn from_resolved_declarations(
         declarations: &ResolvedDeclarations,
         module_owners: &BTreeMap<String, ModuleLoadIdentity>,
     ) -> Result<Self, RuntimeTypeError> {
@@ -212,7 +212,7 @@ impl RuntimeDeclarationCatalog {
     /// Authenticate one linker-resolved compiler name from loader provenance.
     /// The compiler name is deliberately not parsed to recover package, module,
     /// or local declaration identity.
-    pub fn insert_resolved(
+    pub(crate) fn insert_resolved(
         &mut self,
         resolved_name: impl Into<String>,
         owner: &ModuleLoadIdentity,
@@ -222,7 +222,7 @@ impl RuntimeDeclarationCatalog {
         self.insert(resolved_name, owner.declaration(kind, local_name)?)
     }
 
-    pub fn insert(
+    pub(crate) fn insert(
         &mut self,
         resolved_name: impl Into<String>,
         identity: DeclarationIdentity,

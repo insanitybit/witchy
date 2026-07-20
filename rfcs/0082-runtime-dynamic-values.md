@@ -194,8 +194,9 @@ identity plan alone is not presented as an implemented user feature.
 The linker now retains each declaration's compiler key, source-module key,
 local name, and kind before flattening, and the descriptor catalog can join
 that record to loader-assigned ownership without parsing names. `CheckedModule`
-is the pipeline-owned join point, so descriptor consumers cannot bypass successful
-type checking or reach into linker internals. The production package path does
+is the pipeline-owned join point, and catalog mutation is crate-private, so
+descriptor consumers cannot construct one without successful type checking.
+The production package path does
 not yet supply the required ownership map: the self-hosted PM
 currently reduces a selected dependency to `--dep alias=path`, discarding its
 package name, version, and source before Rust loading. Until a richer loader
