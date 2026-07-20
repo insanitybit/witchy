@@ -1505,6 +1505,8 @@ fn concurrent_daemon_starts_create_exactly_one_coordinator() {
 
 #[test]
 fn queued_work_preempts_an_idle_prewarm_process_group() {
+    // Keep rustup blocked before Cargo: the production stall occurred when
+    // this setup ran synchronously before the cancellable prewarm PGID existed.
     let fixture = QueueFixture::stack(&["a.txt"]);
     run_git(
         &fixture.root,
@@ -1520,6 +1522,7 @@ fn queued_work_preempts_an_idle_prewarm_process_group() {
     fs::create_dir(&bin).expect("create fake prewarm bin");
     let started = fixture._temp.path().join("prewarm-started");
     let cancelled = fixture._temp.path().join("prewarm-cancelled");
+    let rustup_pid_file = fixture._temp.path().join("prewarm-rustup-pid");
     let cargo_env = fixture._temp.path().join("prewarm-cargo-env");
     let gate_ran = fixture._temp.path().join("gate-ran");
     let gate_proceed = fixture._temp.path().join("gate-proceed");
@@ -1527,22 +1530,26 @@ fn queued_work_preempts_an_idle_prewarm_process_group() {
     fs::write(
         &cargo,
         format!(
-            "#!/bin/sh\nif [ ! -e \"{}\" ]; then\n  trap 'printf cancelled >\"{}\"; exit 143' TERM INT\n  printf '%s|%s|%s' \"${{CARGO_INCREMENTAL-unset}}\" \"${{RUSTC_WRAPPER-unset}}\" \"${{CARGO_BUILD_RUSTC_WRAPPER-unset}}\" >\"{}\"\n  printf started >\"{}\"\n  while :; do /bin/sleep 1; done\nfi\nexit 0\n",
-            started.display(),
-            cancelled.display(),
+            "#!/bin/sh\nif [ -e \"{}\" ]; then\n  printf '%s|%s|%s' \"${{CARGO_INCREMENTAL-unset}}\" \"${{RUSTC_WRAPPER-unset}}\" \"${{CARGO_BUILD_RUSTC_WRAPPER-unset}}\" >\"{}\"\nfi\nexit 0\n",
+            gate_proceed.display(),
             cargo_env.display(),
-            started.display(),
         ),
     )
-    .expect("write blocking prewarm cargo");
+    .expect("write fake prewarm cargo");
     fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755))
         .expect("chmod fake cargo");
     let rustup = bin.join("rustup");
     fs::write(
         &rustup,
-        "#!/bin/sh\ncase \"$1\" in\n  target) exit 0 ;;\n  which) printf '/usr/bin/rustc\\n'; exit 0 ;;\nesac\nexit 1\n",
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = target ] && [ ! -e \"{}\" ]; then\n  trap 'printf cancelled >\"{}\"; exit 143' TERM INT\n  printf '%s' \"$$\" >\"{}\"\n  printf started >\"{}\"\n  while :; do /bin/sleep 1; done\nfi\ncase \"$1\" in\n  target) exit 0 ;;\n  which) printf '/usr/bin/rustc\\n'; exit 0 ;;\nesac\nexit 1\n",
+            started.display(),
+            cancelled.display(),
+            rustup_pid_file.display(),
+            started.display(),
+        ),
     )
-    .expect("write fake rustup");
+    .expect("write blocking rustup");
     fs::set_permissions(&rustup, fs::Permissions::from_mode(0o755))
         .expect("chmod fake rustup");
 
@@ -1585,11 +1592,11 @@ fn queued_work_preempts_an_idle_prewarm_process_group() {
         thread::sleep(Duration::from_millis(25));
     }
     assert!(started.exists(), "coordinator never entered prewarm");
-    assert_eq!(
-        fs::read_to_string(&cargo_env).expect("read prewarm Cargo environment"),
-        "0||",
-        "idle prewarm did not match the full gate Cargo profile",
-    );
+    let rustup_pid = fs::read_to_string(&rustup_pid_file)
+        .expect("read blocking rustup pid")
+        .parse::<i32>()
+        .expect("parse blocking rustup pid");
+    let prewarm_guard = ProcessGroupGuard(process_group(rustup_pid));
     assert!(
         fixture.state.join("gate.lock").exists(),
         "prewarm did not retain the serialized gate lock"
@@ -1602,6 +1609,7 @@ fn queued_work_preempts_an_idle_prewarm_process_group() {
     }
     assert!(cancelled.exists(), "queued work did not cancel idle prewarm");
     assert!(gate_ran.exists(), "coordinator did not advance queued work after prewarm");
+    drop(prewarm_guard);
     assert!(
         !fixture.state.join("prewarmed").exists(),
         "cancelled prewarm was recorded as complete"
@@ -1620,6 +1628,15 @@ fn queued_work_preempts_an_idle_prewarm_process_group() {
             .status
             .success(),
         "queued branch did not land"
+    );
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !cargo_env.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert_eq!(
+        fs::read_to_string(&cargo_env).expect("read prewarm Cargo environment"),
+        "0||",
+        "idle prewarm did not match the full gate Cargo profile",
     );
 
     drop(guard);

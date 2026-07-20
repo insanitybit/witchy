@@ -2039,19 +2039,20 @@ prewarm_gate() {
     # (`-- -D warnings`) so its fingerprints match the gate's; `|| true` keeps a
     # master-side lint from failing the prewarm. The wasm build needs the rustup
     # toolchain's std (same PATH trick as check.sh).
-    local tc_bin=""
-    if command -v rustup >/dev/null 2>&1; then
-        rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
-        tc_bin="$(dirname "$(rustup which --toolchain stable rustc)")"
-    fi
     # Prewarm is opportunistic. A submission arriving after the under-lock
     # recheck must preempt it instead of waiting behind a cold multi-profile
-    # Cargo build. Put the complete tree in its own process group, watch the
-    # queue, and terminate only the prewarm process group we started.
+    # build. Put the complete tree, including rustup setup that can wait on its
+    # global lock, in its own process group before watching the queue. Terminate
+    # only the prewarm process group we started.
     # Match run_gate once for every Cargo phase below. Detached daemons cannot
     # use the checkout's configured compiler wrapper.
     set -m
     ( cd "$gate_wt" \
+        && tc_bin="" \
+        && { if command -v rustup >/dev/null 2>&1; then
+                 rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
+                 tc_bin="$(dirname "$(rustup which --toolchain stable rustc)")"
+             fi; } \
         && export CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= \
         && cargo build --workspace >/dev/null 2>&1 \
         && cargo test --workspace --no-run >/dev/null 2>&1 \
