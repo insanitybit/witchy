@@ -856,7 +856,7 @@ pub fn link_with_user_modules_with_mode(
 }
 
 pub fn link_with_user_modules_with_mode_and_origins(
-    mut modules: Vec<(String, Module)>,
+    modules: Vec<(String, Module)>,
     entry: &str,
     expand: ComptimeExpander,
     user_modules: &std::collections::HashSet<String>,
@@ -883,10 +883,19 @@ pub fn link_with_user_modules_with_mode_and_origins(
         .cloned()
         .collect();
 
+    // Check source-only semantics before any pass below can erase generator or
+    // async nodes. The opaque proof is preserved through both destructive
+    // lowerings (RFC-0101).
+    let modules: Vec<(String, crate::source_check::SourceCheckedModule)> = modules
+        .into_iter()
+        .map(|(name, module)| crate::source_check::check(module).map(|module| (name, module)))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|message| LinkError { message, location: None })?;
+
     // Lower `gen fn`/`yield` to ordinary functions over `std/iter` first — this
     // adds `import iter`/`import option` to any generator module, so the std
     // pull-in below resolves them.
-    modules = modules
+    let modules: Vec<(String, crate::source_check::SourceCheckedModule)> = modules
         .into_iter()
         .map(|(n, m)| crate::generators::lower(m).map(|m| (n, m)))
         .collect::<Result<_, _>>()
@@ -899,7 +908,7 @@ pub fn link_with_user_modules_with_mode_and_origins(
     let qualified_view_fns: HashSet<String> = modules
         .iter()
         .flat_map(|(module_name, module)| {
-            module.items.iter().flat_map(move |item| match item {
+            module.module().items.iter().flat_map(move |item| match item {
                 Item::Function(function) => {
                     let mut names = Vec::new();
                     if function.ret.as_ref().is_some_and(|ty| {
@@ -944,11 +953,11 @@ pub fn link_with_user_modules_with_mode_and_origins(
             })
         })
         .collect();
-    modules = modules
+    let modules: Vec<(String, crate::source_check::SourceCheckedModule)> = modules
         .into_iter()
         .map(|(n, m)| {
             let mut known = qualified_view_fns.clone();
-            for item in &m.items {
+            for item in &m.module().items {
                 if let Item::Function(function) = item {
                     if function.ret.as_ref().is_some_and(|ty| {
                         matches!(ty, Type::Qualified(TypeQual::Borrow(_), _))
@@ -966,7 +975,7 @@ pub fn link_with_user_modules_with_mode_and_origins(
                     }
                 }
             }
-            for (source, names) in &m.from_imports {
+            for (source, names) in &m.module().from_imports {
                 for name in names {
                     if known.contains(&format!("{source}.{name}")) {
                         known.insert(name.clone());
@@ -983,9 +992,9 @@ pub fn link_with_user_modules_with_mode_and_origins(
 
     // Lower named-field record construction (`Point(x: 1, ..p)`) to positional
     // constructors / record updates, so later stages never see `Expr::Record`.
-    modules = modules
+    let mut modules: Vec<(String, Module)> = modules
         .into_iter()
-        .map(|(n, m)| crate::records::lower_lenient(m).map(|m| (n, m)))
+        .map(|(n, m)| crate::records::lower_lenient(m.into_module()).map(|m| (n, m)))
         .collect::<Result<_, _>>()
         .map_err(|message| LinkError { message, location: None })?;
 

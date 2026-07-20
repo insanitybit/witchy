@@ -44,11 +44,13 @@
 //! through the loop segment's parameter).
 
 use crate::ast::*;
+use crate::source_check::SourceCheckedModule;
 // foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
 use foldhash::{HashSet, HashSetExt as _};
 
-pub fn lower(module: Module) -> Result<Module, String> {
-    let view_fns: HashSet<String> = module
+pub fn lower(checked: SourceCheckedModule) -> Result<SourceCheckedModule, String> {
+    let view_fns: HashSet<String> = checked
+        .module()
         .items
         .iter()
         .flat_map(|item| match item {
@@ -79,20 +81,21 @@ pub fn lower(module: Module) -> Result<Module, String> {
             _ => Vec::new(),
         })
         .collect();
-    lower_with_view_fns(module, &view_fns)
+    lower_with_view_fns(checked, &view_fns)
 }
 
 pub(crate) fn lower_with_view_fns(
-    mut module: Module,
+    mut checked: SourceCheckedModule,
     view_fns: &HashSet<String>,
-) -> Result<Module, String> {
-    if !has_async(&module) {
-        return Ok(module);
+) -> Result<SourceCheckedModule, String> {
+    if !has_async(checked.module()) {
+        return Ok(checked);
     }
+    let module = checked.module_mut();
     let mut counter: usize = 0;
     let mut items = Vec::with_capacity(module.items.len());
     let mut lifted: Vec<Function> = Vec::new();
-    for item in module.items {
+    for item in std::mem::take(&mut module.items) {
         match item {
             Item::Function(f) if f.is_async => {
                 let is_entry = f.name == "main";
@@ -147,7 +150,110 @@ pub(crate) fn lower_with_view_fns(
     while module.import_lines.len() < module.imports.len() {
         module.import_lines.push(0);
     }
-    Ok(module)
+    Ok(checked)
+}
+
+/// Validate source-only async rules before lowering removes `async` and
+/// rewrites its tail expressions.
+pub(crate) fn validate_source(module: &Module) -> Result<(), String> {
+    for item in &module.items {
+        match item {
+            Item::Function(function) if function.is_async => {
+                validate_async_source(function, function.name == "main")?;
+            }
+            Item::Impl(definition) => {
+                for method in &definition.methods {
+                    if method.is_async {
+                        validate_async_source(method, false)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_async_source(function: &Function, is_entry: bool) -> Result<(), String> {
+    let declared_ret = function.ret.as_ref();
+    if function
+        .params
+        .iter()
+        .filter_map(|param| param.ty.as_ref())
+        .any(type_is_borrowed_view)
+        || declared_ret.is_some_and(type_is_borrowed_view)
+    {
+        return Err(format!(
+            "async fn `{}` may not expose a borrowed-view parameter or result because its task \
+             can outlive the caller's loan — pass/return an owned value",
+            function.name,
+        ));
+    }
+    if is_entry
+        && declared_ret.is_some_and(|ret| {
+            !matches!(ret.unqualified(), Type::Named(name, args) if name == "Nil" && args.is_empty())
+                && !matches!(ret.unqualified(), Type::Tuple(types) if types.is_empty())
+        })
+    {
+        let ret = crate::format::type_str(declared_ret.expect("checked above"));
+        return Err(format!(
+            "async fn `main` returns `{ret}`, but the async executor drives `Task(())` and \
+             cannot surface a completed value; handle the value inside `main` and omit the return type"
+        ));
+    }
+    validate_async_statements(&function.body.stmts, &function.name)
+}
+
+fn validate_async_statements(statements: &[Stmt], name: &str) -> Result<(), String> {
+    for statement in statements {
+        match statement {
+            Stmt::Yield(_) => {
+                return Err(format!("async fn `{name}`: `yield` is not allowed in an async fn"));
+            }
+            Stmt::Break | Stmt::Continue => {
+                return Err(format!(
+                    "async fn `{name}`: `break`/`continue` across `await` is not yet supported"
+                ));
+            }
+            _ => {}
+        }
+    }
+    match statements.last() {
+        Some(Stmt::Return(Some(expr)) | Stmt::Expr(expr)) => validate_async_tail(expr, name),
+        _ => Ok(()),
+    }
+}
+
+fn validate_async_tail(expr: &Expr, name: &str) -> Result<(), String> {
+    match expr {
+        Expr::If { then_block, else_block, .. } => {
+            if then_block.region.is_some() || else_block.as_ref().is_some_and(|block| block.region.is_some()) {
+                return Err(format!(
+                    "async fn `{name}`: `region:` in an async tail branch is not yet supported"
+                ));
+            }
+            validate_async_statements(&then_block.stmts, name)?;
+            if let Some(block) = else_block {
+                validate_async_statements(&block.stmts, name)?;
+            }
+            Ok(())
+        }
+        Expr::Match { arms, .. } => {
+            for arm in arms {
+                validate_async_tail(&arm.body, name)?;
+            }
+            Ok(())
+        }
+        Expr::Block(block) => {
+            if block.region.is_some() {
+                return Err(format!(
+                    "async fn `{name}`: `region:` in an async tail expression is not yet supported"
+                ));
+            }
+            validate_async_statements(&block.stmts, name)
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Whether the module contains any `async fn` — top level or as an `impl` method.
@@ -1550,6 +1656,11 @@ fn next_line(lines: &[u32], fallback: u32) -> u32 {
 mod tests {
     use super::*;
 
+    fn lower_module(module: Module) -> Result<Module, String> {
+        let checked = crate::source_check::check(module)?;
+        lower(checked).map(SourceCheckedModule::into_module)
+    }
+
     fn int_type() -> Type {
         Type::Named("Int".to_string(), Vec::new())
     }
@@ -1558,7 +1669,7 @@ mod tests {
     fn lowering_preserves_explicit_async_return_contracts() {
         let source = "async fn value() -> Int:\n    1\n\nasync fn main(console: Console) -> Nil:\n    return\n";
         let module = crate::parser::parse_module(source).expect("parse async declarations");
-        let lowered = lower(module).expect("lower async declarations");
+        let lowered = lower_module(module).expect("lower async declarations");
 
         let value = lowered
             .items
@@ -1588,7 +1699,7 @@ mod tests {
     fn lowering_rejects_value_returning_async_main() {
         let source = "async fn main(console: Console) -> Int:\n    1\n";
         let module = crate::parser::parse_module(source).expect("parse async main");
-        let error = lower(module).expect_err("the executor cannot surface an async root value");
+        let error = lower_module(module).expect_err("the executor cannot surface an async root value");
 
         assert!(error.contains("async fn `main` returns `Int`"), "{error}");
         assert!(error.contains("Task(())"), "{error}");
@@ -1598,7 +1709,7 @@ mod tests {
     fn lowering_preserves_explicit_async_method_return_contract() {
         let source = "type Counter:\n    value: Int\n\nimpl Counter:\n    async fn value(self) -> Int:\n        self.value\n";
         let module = crate::parser::parse_module(source).expect("parse async method");
-        let lowered = lower(module).expect("lower async method");
+        let lowered = lower_module(module).expect("lower async method");
         let method = lowered
             .items
             .iter()
@@ -1621,7 +1732,7 @@ mod tests {
     fn lowering_rejects_a_borrowed_view_live_across_await() {
         let source = "mode opt\n\nfn view(text: let('a) String) -> View(String, 'a):\n    text\n\nasync fn bad(console: Console):\n    let text = \"x\"\n    let w = view(text)\n    let _ = task.done(0).await\n    console.print(w)\n";
         let module = crate::parser::parse_module(source).expect("parse borrowed async body");
-        let error = lower(module).expect_err("a view cannot be carried through a segment");
+        let error = lower_module(module).expect_err("a view cannot be carried through a segment");
         assert!(error.contains("borrowed view `w` remains live across `await`"), "{error}");
         assert!(error.contains("w.owned()"), "{error}");
     }
@@ -1630,7 +1741,7 @@ mod tests {
     fn lowering_preserves_a_view_relation_through_a_function_value() {
         let source = "mode opt\n\nfn view(text: let('a) String) -> View(String, 'a):\n    text\n\nasync fn bad(console: Console):\n    let text = \"x\"\n    let make_view = view\n    let w = make_view(text)\n    let _ = task.done(0).await\n    console.print(w)\n";
         let module = crate::parser::parse_module(source).expect("parse indirect borrowed async body");
-        let error = lower(module).expect_err("an indirect view cannot cross a segment");
+        let error = lower_module(module).expect_err("an indirect view cannot cross a segment");
         assert!(error.contains("borrowed view `w` remains live across `await`"), "{error}");
     }
 
@@ -1638,7 +1749,7 @@ mod tests {
     fn lowering_preserves_a_view_relation_through_a_returned_function_value() {
         let source = "mode opt\n\nfn view(text: let('a) String) -> View(String, 'a):\n    text\n\nfn make() -> fn(View(String, 'a)) -> View(String, 'a):\n    view\n\nasync fn bad(console: Console):\n    let text = \"x\"\n    let make_view = make()\n    let w = make_view(text)\n    let _ = task.done(0).await\n    console.print(w)\n";
         let module = crate::parser::parse_module(source).expect("parse returned callable");
-        let error = lower(module).expect_err("a returned callable's view cannot cross a segment");
+        let error = lower_module(module).expect_err("a returned callable's view cannot cross a segment");
         assert!(error.contains("borrowed view `w` remains live across `await`"), "{error}");
     }
 
@@ -1646,7 +1757,7 @@ mod tests {
     fn lowering_tracks_a_view_returning_method_across_await() {
         let source = "mode opt\n\ntype Holder:\n    text: String\n\nimpl Holder:\n    fn view(self: let('a) Holder) -> View(String, 'a):\n        self.text\n\nasync fn bad(console: Console):\n    let holder = Holder(\"x\")\n    let w = holder.view()\n    let _ = task.done(0).await\n    console.print(w)\n";
         let module = crate::parser::parse_module(source).expect("parse method borrowed async body");
-        let error = lower(module).expect_err("a method-returned view cannot cross a segment");
+        let error = lower_module(module).expect_err("a method-returned view cannot cross a segment");
         assert!(error.contains("borrowed view `w` remains live across `await`"), "{error}");
     }
 
@@ -1654,6 +1765,6 @@ mod tests {
     fn lowering_allows_a_view_whose_last_use_precedes_await() {
         let source = "mode opt\n\nfn view(text: let('a) String) -> View(String, 'a):\n    text\n\nasync fn okay(console: Console):\n    let text = \"x\"\n    let w = view(text)\n    console.print(w)\n    task.done(0).await\n";
         let module = crate::parser::parse_module(source).expect("parse borrowed async body");
-        lower(module).expect("a dead view is not carried across suspension");
+        lower_module(module).expect("a dead view is not carried across suspension");
     }
 }

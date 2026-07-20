@@ -19405,7 +19405,10 @@ fn main(console: Console):
     fn gen_fn_lowers_to_helper_and_wrapper() {
         let m = parser::parse_module("gen fn nums() -> Iter(Int):\n    yield 1\n    yield 2\n")
             .expect("parse");
-        let lowered = crate::generators::lower(m).expect("lower");
+        let checked = witchy_syntax::source_check::check(m).expect("source check");
+        let lowered = crate::generators::lower(checked)
+            .expect("lower")
+            .into_module();
         let fn_names: Vec<&str> = lowered
             .items
             .iter()

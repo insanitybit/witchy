@@ -485,10 +485,11 @@ fn normalize_generated_module(
     origins: &mut OriginTable,
 ) -> Result<Module, String> {
     let generator_mapping = generator_item_mapping(&module);
+    let module = witchy_syntax::source_check::check(module)?;
     let module = witchy_syntax::generators::lower(module)?;
     origins.remap_items(module_name, &generator_mapping);
     let module = witchy_syntax::async_lower::lower(module)?;
-    witchy_syntax::records::lower_lenient(module)
+    witchy_syntax::records::lower_lenient(module.into_module())
 }
 
 /// Mirror only the item-count/order part of generator lowering so side-table
@@ -1214,6 +1215,44 @@ fn main(console: Console):
         witchy_types::typeck::check(&linked).expect("typecheck");
         let out = crate::interpreter::run_module(linked, ".", Vec::new()).expect("run");
         assert_eq!(out, ["[1, 2]"]);
+    }
+
+    #[test]
+    fn emitted_generator_source_is_checked_before_lowering() {
+        let generated = r#"
+comptime:
+    emit("gen fn generated() -> Iter(Int):")
+    emit("    region:")
+    emit("        yield 1")
+    emit("        0")
+
+fn main(console: Console):
+    console.print("unreachable")
+"#;
+        let handwritten = r#"
+gen fn generated() -> Iter(Int):
+    region:
+        yield 1
+        0
+
+fn main(console: Console):
+    console.print("unreachable")
+"#;
+
+        let generated = witchy_syntax::parser::parse_module(generated).expect("parse generated fixture");
+        let generated_error = crate::pipeline::link(vec![("main".into(), generated)], "main")
+            .expect_err("generated source-only violation must fail before lowering");
+        let handwritten = witchy_syntax::parser::parse_module(handwritten).expect("parse handwritten fixture");
+        let handwritten_error = crate::pipeline::link(vec![("main".into(), handwritten)], "main")
+            .expect_err("handwritten source-only violation must fail before lowering");
+
+        let diagnostic = "cannot `yield` inside `region:`: the generator frame outlives the region";
+        assert!(generated_error.message.contains(diagnostic), "{generated_error}");
+        assert!(handwritten_error.message.contains(diagnostic), "{handwritten_error}");
+        assert!(
+            generated_error.message.contains("comptime generated source"),
+            "generated diagnostic must retain its expansion boundary: {generated_error}",
+        );
     }
 
     #[test]

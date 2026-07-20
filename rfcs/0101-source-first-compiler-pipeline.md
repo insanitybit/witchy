@@ -1,9 +1,9 @@
 ---
 rfc: 0101
 title: source-first compiler pipeline
-status: deferred
+status: proposed
 created: 2026-07-20
-tracking: "deferred architecture residual split from RFC-0070 D6; revive before adding a destructive pre-check lowering, or immediately if a source-only rejection can again be erased before the checked-module boundary"
+tracking: "implementation active: generator and async lowering now require a non-destructive source-check proof on handwritten and comptime-emitted paths; full linked semantic checking and the remaining destructive passes are still open"
 related:
   - "[0070](0070-0-1-blocking-set.md) (terminal 0.1 decision record and checked-module seam)"
   - "BUG-428 / BUG-429 / BUG-434 / BUG-436 (closed regression classes)"
@@ -11,19 +11,31 @@ related:
 
 # RFC-0101: source-first compiler pipeline
 
-## Status and revival condition
+## Status and implementation progress
 
-Deferred. The current pipeline still lowers generators, async functions, and
-records before the linked runtime module enters `typeck::check`. The
-`CheckedModule` boundary prevents selected production code generators from
-omitting that check, and focused guards cover the known erasure failures, but
-neither fact proves the stronger source-first invariant.
+Proposed, with the first proof boundary implemented. Generator and async
+lowering accept an opaque `SourceCheckedModule` produced by a non-destructive
+source check. Both the ordinary linker and compile-time emitted-item
+normalization cross that boundary before either lowering, and executable guards
+pin the function signatures and handwritten/generated diagnostic parity.
 
-Revive this RFC before introducing any new destructive transform ahead of the
-checked boundary. Revive it immediately if a regression demonstrates that a
-diagnostic expressible only on source syntax can again disappear during an
-existing transform. A release claim that all source is fully checked before
-lowering also requires this RFC to be implemented first.
+This does not yet prove the complete contract. Record lowering still accepts a
+raw `Module`; traits and method dispatch are checked only after linking; and the
+proof currently covers source-only generator/async safety rules rather than the
+full imported-name and type semantics. Those are the next implementation
+slices. The RFC remains proposed until every destructive pass is behind the
+proof and the linked source checker owns the complete semantic contract.
+
+Implemented evidence:
+
+- `witchy_syntax::source_check::check` is the sole constructor of the proof
+  consumed by generator and async lowering.
+- The production linker checks every initially supplied module before those
+  lowerings, while comptime normalization checks the merged emitted module
+  before lowering generated generator/async items.
+- Focused tests reject `yield` inside `region:` and async tail `region:` before
+  lowering, inspect the destructive entrypoint signatures, and prove emitted
+  and handwritten generators receive the same source diagnostic.
 
 ## Required contract
 
@@ -53,12 +65,13 @@ lowering also requires this RFC to be implemented first.
 - All production compiler entrypoints end at a checked codegen boundary; no raw
   `Module` escape hatch bypasses either proof.
 
-## Why this is deferred
+## Remaining migration
 
-The current linker interleaves standard-library discovery, compile-time
-expansion, name/type resolution, and destructive transforms. Moving only one
-transform would create a second partial pipeline and could weaken the existing
-fail-closed checks. The known security and correctness failures are covered by
-executable regressions today, so the safe terminal outcome is to preserve those
-guards and revive this architectural cut only under the concrete triggers
-above.
+The linker still interleaves standard-library discovery, compile-time
+expansion, name/type resolution, and destructive transforms. The remaining
+work must move those boundaries incrementally without creating a second
+semantic pipeline or weakening the existing fail-closed checks. In dependency
+order: put record lowering behind the proof; establish non-destructive linked
+name/trait/method resolution; move complete source type checking before trait
+desugaring; then remove raw production `Module` escape hatches and promote the
+RFC only after backend and diagnostic-origin criteria are green.

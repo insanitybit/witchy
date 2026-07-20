@@ -29,6 +29,7 @@
 //! Generators should be capability-free, since re-running repeats side effects.
 
 use crate::ast::*;
+use crate::source_check::SourceCheckedModule;
 
 const COUNTER: &str = "__i";
 const TARGET: &str = "__target";
@@ -36,12 +37,13 @@ const TARGET: &str = "__target";
 /// Rewrite every `gen fn` in the module into a helper + wrapper, and ensure the
 /// `iter`/`option` modules it relies on are imported. A no-op for modules
 /// without generators.
-pub fn lower(mut module: Module) -> Result<Module, String> {
-    if !has_generator(&module) {
-        return Ok(module);
+pub fn lower(mut checked: SourceCheckedModule) -> Result<SourceCheckedModule, String> {
+    if !has_generator(checked.module()) {
+        return Ok(checked);
     }
+    let module = checked.module_mut();
     let mut items = Vec::with_capacity(module.items.len() + 1);
-    for item in module.items {
+    for item in std::mem::take(&mut module.items) {
         match item {
             Item::Function(f) if f.is_gen => {
                 let (helper, wrapper) = lower_gen(f, None)?;
@@ -90,7 +92,75 @@ pub fn lower(mut module: Module) -> Result<Module, String> {
     while module.import_lines.len() < module.imports.len() {
         module.import_lines.push(0);
     }
-    Ok(module)
+    Ok(checked)
+}
+
+/// Validate the generator rules that lowering would otherwise erase.
+pub(crate) fn validate_source(module: &Module) -> Result<(), String> {
+    for item in &module.items {
+        match item {
+            Item::Function(function) if function.is_gen => {
+                validate_generator_block(&function.body, &function.name, false)?;
+            }
+            Item::Impl(definition) => {
+                for method in &definition.methods {
+                    if method.is_gen {
+                        validate_generator_block(&method.body, &method.name, false)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_generator_block(block: &Block, name: &str, in_region: bool) -> Result<(), String> {
+    let in_region = in_region || block.region.is_some();
+    for statement in &block.stmts {
+        match statement {
+            Stmt::Yield(_) if in_region => {
+                return Err(
+                    "cannot `yield` inside `region:`: the generator frame outlives the region"
+                        .to_string(),
+                );
+            }
+            Stmt::Return(Some(_)) => {
+                return Err(format!(
+                    "`return <value>` is not allowed in generator `{name}`: a `gen fn` \
+                     declares `-> Iter(a)` and produces its elements with `yield` — use a bare \
+                     `return` to end the stream early"
+                ));
+            }
+            Stmt::Let { value, .. }
+            | Stmt::LetPattern { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::Expr(value) => validate_generator_expr(value, name, in_region)?,
+            Stmt::Yield(_) | Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_generator_expr(expr: &Expr, name: &str, in_region: bool) -> Result<(), String> {
+    match expr {
+        Expr::If { then_block, else_block, .. } => {
+            validate_generator_block(then_block, name, in_region)?;
+            if let Some(block) = else_block {
+                validate_generator_block(block, name, in_region)?;
+            }
+        }
+        Expr::While { body, .. } | Expr::For { body, .. } | Expr::Block(body) => {
+            validate_generator_block(body, name, in_region)?;
+        }
+        Expr::Match { arms, .. } => {
+            for arm in arms {
+                validate_generator_expr(&arm.body, name, in_region)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Whether the module contains any `gen fn` — top level or as a method in an
