@@ -69,8 +69,8 @@ old path after its callers move.
 | Responsibility | Current owner | Classification | Target owner and acceptance evidence |
 |---|---|---|---|
 | Argument parsing, help, dispatch | `src/cli.rs` owns help/version presentation plus shared mode, value, and secret decoding; `src/main.rs` still owns command-specific parsing and dispatch | EXTRACT | Extend `src/cli` toward typed commands while preserving golden help/flag/exit behavior byte-for-byte. |
-| Project and source loading | `main.rs` (`load_file_modules`, `link_file*`) plus browser resolution in `lib.rs` and LSP loading | CONSOLIDATE | One loader with filesystem and bundled-source providers; linking/checking tests cover dependency and diagnostic behavior. |
-| Check, expand, docs, capability reports | command arms and helpers in `main.rs` | EXTRACT | Domain command modules calling stable compiler services. Preserve stdout/stderr and status. |
+| Project and source loading | `src/source.rs` owns native project discovery, bundled lookup, dependency-aware file loading, linking, checked linking, and expansion; browser resolution in `lib.rs` and LSP loading remain separate adapters | CONSOLIDATE | Introduce filesystem and bundled-source providers so browser and LSP reuse the canonical loader without importing CLI policy. Linking/checking tests cover dependency and diagnostic behavior. |
+| Check, expand, docs, capability reports | Expansion implementation lives in `src/source.rs`; command arms plus check/docs/capability helpers remain in `main.rs` | EXTRACT | Domain command modules calling stable compiler services. Preserve stdout/stderr and status. |
 | AST to Wasm compilation and cache | `main.rs` (`compile_*`, `embedded_wasm_cached`) | EXTRACT | Native compilation service with one checked input contract and cache adapter. Wasm/parity tests guard bytes and behavior. |
 | Compiled execution and parity | `main.rs` (`run_linked_compiled`, `run_wasm_*`, `parity_check`) | CONSOLIDATE | One execution service parameterized by grants and observation mode. Differential and exact-error tests remain authoritative. |
 | Sandbox, grants, trusted apps | `main.rs`, `trusted_exe`, `witchy-runtime::runtime` | EXTRACT | CLI policy adapters above a small runtime kernel. Existing denial, confinement, trust, and e2e tests remain unchanged. |
@@ -87,7 +87,7 @@ registration. Adapters may vary inputs; they must not copy the implementation.
 |---|---|---|---|
 | Differential language matrix | `src/example_tests.rs` (about 26k lines) | EXTRACT | Shared parity harness with frontend, types/traits, ownership, collections, capabilities, stdlib, diagnostics, and project-fixture modules. |
 | Product workflows | `tests/e2e.rs` (about 5k lines) | EXTRACT | Shared process/registry lifecycle harness with package, trust, Coven, sandbox, publishing, and self-hosted workflow modules. |
-| CLI tests | Version, mode-flag, and secret-decoding tests now live beside `src/cli.rs`; five command/service test modules remain inline in `main.rs` | EXTRACT | Move each remaining suite with its command/service owner; preserve assertions and test intent. |
+| CLI tests | Presentation and secret-decoding tests live beside `src/cli.rs`; expansion tests live beside `src/source.rs`; four command/service test modules remain inline in `main.rs` | EXTRACT | Move each remaining suite with its command/service owner; preserve assertions and test intent. |
 | Stage tests | Unit/integration suites under each owning crate | KEEP | New regressions live at the narrowest stage, plus differential evidence for observable semantics. |
 | Browser/Glamour/misc drivers | Consolidated integration binaries with domain files | KEEP | Preserve the compile-throughput-oriented driver pattern. |
 
@@ -105,6 +105,16 @@ The first CLI slice accounts for its complete test movement:
   are new unit contracts.
 - `cli_subcommands::{cli_help_version_and_bare_invocation_are_stable,missing_secret_values_are_exact_usage_errors,secret_file_argument_preserves_exact_bytes}`
   are new process-level contracts for stdout, stderr, exit status, and secret-file bytes.
+
+The source-loading slice preserves all three expansion tests while moving their
+ownership paths:
+
+- `expand_command_tests::expand_file_prints_generated_items_without_comptime_blocks`
+  moved to `source::tests::expand_file_prints_generated_items_without_comptime_blocks`.
+- `expand_command_tests::rfc0081_expand_preserves_existential_types_and_calls`
+  moved to `source::tests::rfc0081_expand_preserves_existential_types_and_calls`.
+- `expand_command_tests::expand_file_uses_sibling_modules_for_imported_tags`
+  moved to `source::tests::expand_file_uses_sibling_modules_for_imported_tags`.
 
 ## Bundled and product sources
 
@@ -138,7 +148,7 @@ distributed mechanically.
 | `witchy-types/traits.rs` | ~5,700 | EXTRACT | Validation, method resolution, anonymous unions, refinement/conversion, and monomorphization. |
 | `tests/e2e.rs` | ~5,100 | EXTRACT | Product workflow modules over one lifecycle harness. |
 | `witchy-syntax/linker.rs` | ~4,900 | NARROW | Module graph/linking versus bundled-source registry and expansion orchestration. |
-| `src/{main,cli}.rs` | ~4,155 + ~205 | EXTRACT | CLI presentation and shared argument decoding have one owner; continue separating dispatch, commands, and compiler/runtime services from the composition root. |
+| `src/{main,cli,source}.rs` | ~3,900 + ~205 + ~270 | EXTRACT | CLI presentation/argument decoding and native source loading now have distinct owners; continue separating dispatch, commands, compilation, and runtime services from the composition root. |
 | `witchy-lower/analysis.rs` | ~4,300 | NARROW | Separate ownership facts/summaries from diagnostics and optimization consumers only where interfaces become smaller. |
 | `witchy-runtime/runtime{.rs,/compiler.rs}` | ~3,580 + ~105 | EXTRACT | Compiler-service imports have one adapter owner; continue separating host import families, grant admission, and execution policy from the Wasm kernel. |
 
