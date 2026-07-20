@@ -61,6 +61,12 @@ for p in "${paths[@]}"; do
             any_rust=1
             add "cargo nextest run -p witchy-interp -p witchy-caps"
             add "cargo nextest run -E 'test(/^example_tests::/)'" ;;
+        src/main.rs | src/cli.rs | src/source.rs)
+            add "cargo check -p witchy --all-targets"
+            add "cargo clippy -p witchy --all-targets -- -D warnings"
+            add "cargo nextest run --bin witchy -E 'test(/^(checked_cli_pipeline_tests|cli::|runtime_parity_tests|source::tests|test_mode_link_tests)::/)'"
+            add "cargo nextest run --test cli_subcommands"
+            add "cargo nextest run -p witchy-syntax" ;;
         crates/* | src/*)
             any_rust=1 ;;
         std/*.witchy)
@@ -166,8 +172,11 @@ if [ "$any_rust" -eq 1 ]; then
         case "$c" in
             "cargo nextest run -p "* | \
             "cargo nextest run --test "* | \
+            "cargo nextest run --bin "* | \
             "cargo nextest run -E 'test(/^example_tests::/)'" | \
-            "cargo nextest run -E 'test(stdlib_docs_are_current)'") ;;
+            "cargo nextest run -E 'test(stdlib_docs_are_current)'" | \
+            "cargo check -p witchy --all-targets" | \
+            "cargo clippy -p witchy --all-targets -- -D warnings") ;;
             *) remaining+=("$c") ;;
         esac
     done

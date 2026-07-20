@@ -75,6 +75,36 @@ fn rust_integration_tests_use_fast_without_redundant_binary_run() {
 }
 
 #[test]
+fn native_cli_entrypoints_use_the_bounded_compiler_shard() {
+    let expected = [
+        "cargo check -p witchy --all-targets",
+        "cargo clippy -p witchy --all-targets -- -D warnings",
+        "cargo nextest run --bin witchy -E 'test(/^(checked_cli_pipeline_tests|cli::|runtime_parity_tests|source::tests|test_mode_link_tests)::/)'",
+        "cargo nextest run --test cli_subcommands",
+        "cargo nextest run -p witchy-syntax",
+    ];
+
+    for path in ["src/main.rs", "src/cli.rs", "src/source.rs"] {
+        assert_eq!(selected(&[path]), expected, "focused route for {path}");
+    }
+}
+
+#[test]
+fn native_cli_entrypoint_shard_does_not_expand_to_the_workspace_suite() {
+    let commands = selected(&["src/main.rs", "src/cli.rs", "src/source.rs"]);
+    assert!(!commands.iter().any(|command| command.contains("--workspace")), "{commands:?}");
+    assert!(!commands.iter().any(|command| command == "./scripts/check.sh --fast"), "{commands:?}");
+}
+
+#[test]
+fn broad_compiler_change_subsumes_the_native_cli_entrypoint_shard() {
+    assert_eq!(
+        selected(&["src/main.rs", "crates/witchy-types/src/typeck.rs"]),
+        ["./scripts/check.sh --fast"]
+    );
+}
+
+#[test]
 fn e2e_integration_test_keeps_its_dedicated_shard() {
     let output = route(&["tests/e2e.rs"]);
     assert!(output.contains("./scripts/check.sh --e2e"));
