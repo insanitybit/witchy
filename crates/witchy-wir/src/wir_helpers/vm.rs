@@ -4,7 +4,7 @@
 //! entry helpers. Split out of `wir_helpers/mod.rs`; re-exported by the parent.
 
 use super::host::{two_phase_helper, two_phase_helper_typed};
-use super::*;
+use crate::wir::*;
 
 /// `$vm_par_map(xs, f) -> i32` — scalar `vm.par_map`: results as a flat `List(Int)`.
 pub fn vm_par_map_helper() -> WirFunc {

@@ -39,7 +39,7 @@ pub(in crate::wir_helpers) fn two_phase_helper_typed(
     }
 }
 
-/// Like [`exec_helper`], but parameterized for build-only host operations that
+/// Like [`crate::wir_helpers::exec_helper`], but parameterized for build-only host operations that
 /// stage a Witchy `String`: `len = host(args...)`; allocate `[len][bytes]`;
 /// `fill_pending(res+4)`.
 pub(in crate::wir_helpers) fn staged_string_helper(name: &str, params: &[&str], run_import: &str) -> WirFunc {

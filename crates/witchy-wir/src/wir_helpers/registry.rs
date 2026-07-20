@@ -10,6 +10,7 @@ use super::host::{
     host_void_helper, host_void_helper_typed, net_recv_helper, staged_string_helper,
     two_phase_helper_typed,
 };
+use crate::wir::*;
 
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
