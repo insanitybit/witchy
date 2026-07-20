@@ -1,5 +1,9 @@
 //! List access and ownership-aware extraction helpers.
 
+mod operations;
+
+pub use operations::*;
+
 use super::abort_nodes;
 use crate::wir::*;
 use witchy_syntax::diag::DiagTemplate;
