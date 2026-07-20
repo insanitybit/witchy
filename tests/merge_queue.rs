@@ -2358,6 +2358,10 @@ fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
     assert_eq!(report["throughput"]["failed_attempts"], 2);
     assert_eq!(report["throughput"]["branches_per_green_gate"], 2.0);
     assert_eq!(report["throughput"]["batched_gates"], 1);
+    let failed_gate_minutes = report["throughput"]["failed_gate_minutes"]
+        .as_f64()
+        .expect("failed gate minutes is numeric");
+    assert!((failed_gate_minutes - (100.0 / 60.0)).abs() < f64::EPSILON);
     assert_eq!(report["schema"], 2);
     assert_eq!(report["attempt_s"]["p50"], 60);
     assert_eq!(report["attempt_s"]["p90"], 302);

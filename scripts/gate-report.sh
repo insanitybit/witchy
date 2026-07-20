@@ -182,7 +182,7 @@ jq -sn \
                     failed_attempts:($failed|length),
                     branches_per_green_gate:(if ($green|length)==0 then null else (($merged|length)/($green|length)) end),
                     batched_gates:($green|map(select((.batch//"1"|tonumber)>1))|length),
-                    failed_gate_minutes:($failed|map(numeric(.gate_elapsed_s // .elapsed_s))|add//0)/60},
+                    failed_gate_minutes:(($failed|map(numeric(.gate_elapsed_s // .elapsed_s))|add // 0) / 60)},
         outcomes:{red:($attempts|map(select(.event=="red"))|length),
                   timeout:($attempts|map(select(.event=="timeout"))|length),
                   batch_red:($attempts|map(select(.event=="batch_red"))|length),
