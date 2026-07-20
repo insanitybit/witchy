@@ -2901,44 +2901,116 @@ fn witchy_coven_trusted_publishing_verifies_a_rust_minted_token() {
     );
 }
 
+fn read_http_response(
+    stream: &mut std::net::TcpStream,
+    poll_timeout: std::time::Duration,
+    total_timeout: std::time::Duration,
+) -> String {
+    use std::io::{ErrorKind, Read};
+
+    stream.set_read_timeout(Some(poll_timeout)).unwrap();
+    let deadline = std::time::Instant::now() + total_timeout;
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "HTTP fixture response exceeded its total timeout after {} bytes",
+            bytes.len()
+        );
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => bytes.extend_from_slice(&chunk[..n]),
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(e)
+                if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+                    && std::time::Instant::now() < deadline =>
+            {
+                continue;
+            }
+            Err(e) => panic!("HTTP fixture response stopped after {} bytes: {e}", bytes.len()),
+        }
+    }
+    String::from_utf8(bytes).expect("HTTP fixture response is UTF-8")
+}
+
+fn parse_http_response(raw: String) -> (u16, String) {
+    let (headers, body) = raw
+        .split_once("\r\n\r\n")
+        .unwrap_or_else(|| panic!("HTTP fixture response has no header terminator: {raw:?}"));
+    let status = headers
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+        .unwrap_or_else(|| panic!("HTTP fixture response has no valid status: {headers:?}"));
+    if let Some(expected) = headers.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("content-length")
+            .then(|| value.trim().parse::<usize>().expect("valid Content-Length"))
+    }) {
+        assert_eq!(
+            body.len(),
+            expected,
+            "HTTP fixture response body is incomplete; refusing to mirror partial JSON"
+        );
+    }
+    (status, body.to_string())
+}
+
 /// Minimal HTTP/1.1 POST over a raw TCP socket (the test client). Returns
 /// (status code, body).
 fn http_post(addr: &str, path: &str, body: &str) -> (u16, String) {
-    use std::io::{Read, Write};
+    use std::io::Write;
     let mut s = std::net::TcpStream::connect(addr).unwrap();
-    s.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
     let req = format!(
         "POST {path} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     s.write_all(req.as_bytes()).unwrap();
-    let mut buf = String::new();
-    let _ = s.read_to_string(&mut buf);
-    let status = buf
-        .split_whitespace()
-        .nth(1)
-        .and_then(|c| c.parse::<u16>().ok())
-        .unwrap_or(0);
-    let body = buf.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
-    (status, body)
+    parse_http_response(read_http_response(
+        &mut s,
+        std::time::Duration::from_millis(250),
+        std::time::Duration::from_secs(10),
+    ))
 }
 
 /// GET a path from a coven server, returning (status, body).
 fn http_get(addr: &str, path: &str) -> (u16, String) {
-    use std::io::{Read, Write};
+    use std::io::Write;
     let mut s = std::net::TcpStream::connect(addr).unwrap();
-    s.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
     let req = format!("GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
     s.write_all(req.as_bytes()).unwrap();
-    let mut buf = String::new();
-    let _ = s.read_to_string(&mut buf);
-    let status = buf
-        .split_whitespace()
-        .nth(1)
-        .and_then(|c| c.parse::<u16>().ok())
-        .unwrap_or(0);
-    let body = buf.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
-    (status, body)
+    parse_http_response(read_http_response(
+        &mut s,
+        std::time::Duration::from_millis(250),
+        std::time::Duration::from_secs(10),
+    ))
+}
+
+#[test]
+fn raw_http_reader_reassembles_a_body_across_socket_timeouts() {
+    use std::io::Write;
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhello")
+            .unwrap();
+        stream.flush().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        stream.write_all(b" world").unwrap();
+    });
+
+    let mut client = std::net::TcpStream::connect(addr).unwrap();
+    let response = read_http_response(
+        &mut client,
+        std::time::Duration::from_millis(100),
+        std::time::Duration::from_secs(2),
+    );
+    assert_eq!(parse_http_response(response), (200, "hello world".to_string()));
+    server.join().unwrap();
 }
 
 /// GET a path and return the WHOLE raw HTTP response (status line + headers + body), so
