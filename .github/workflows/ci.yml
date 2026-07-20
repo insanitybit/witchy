@@ -38,7 +38,7 @@ jobs:
       - uses: ./.github/actions/install-rust
         with:
           components: clippy
-      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
+      - uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b # v2.83.4
         with:
           tool: nextest
       - name: Build
@@ -58,7 +58,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/install-rust
-      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
+      - uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b # v2.83.4
         with:
           tool: nextest
       # The opt-in checked heap (redzones + a post-run shadow sweep) makes
