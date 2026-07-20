@@ -1,7 +1,9 @@
 //! String comparison, byte/character indexing, and search helpers.
 
+mod host;
 mod transform;
 
+pub use host::*;
 pub use transform::*;
 
 use crate::wir::*;

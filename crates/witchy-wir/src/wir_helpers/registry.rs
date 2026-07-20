@@ -4,6 +4,12 @@
 //! module is the single name-to-spec dispatcher consumed by lowering.
 
 use super::*;
+use super::encoding::{crypto_hash_helper, crypto_keyed_helper};
+use super::host::{
+    compiler_introspect_helper, host_call_helper_ret, host_call_helper_typed,
+    host_void_helper, host_void_helper_typed, net_recv_helper, staged_string_helper,
+    two_phase_helper_typed,
+};
 
 /// A WIR-native prelude helper plus the module-level resources it needs (so a
 /// pruned module declares only the imports/globals/table its reached helpers
