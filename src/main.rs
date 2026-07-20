@@ -1455,6 +1455,7 @@ fn link_file_checked_with_deps(
     let (modules, entry_stem, user_modules) = load_file_modules(path, deps)?;
     let checked = pipeline::link_checked_with_user_modules(modules, &entry_stem, &user_modules)
         .map_err(|error| match error {
+            pipeline::PipelineError::Ownership(error) => format!("{path}: {error}"),
             pipeline::PipelineError::Link(error) => error.to_string(),
             pipeline::PipelineError::Type(error) => format!("{path}: {error}"),
         })?;

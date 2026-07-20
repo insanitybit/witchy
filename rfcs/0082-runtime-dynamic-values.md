@@ -4,7 +4,7 @@ title: Runtime Dynamic values and checked reflection
 status: deferred
 created: 2026-07-12
 superseded-by:
-tracking: "descriptor identity, retained declaration provenance, checked catalog construction, and fail-closed loader-owner joins are implemented; production package-coordinate transport and source Dynamic stages 1-4 are explicitly deferred until the authenticated loader contract is scheduled after 0.1"
+tracking: "descriptor identity, retained declaration provenance, opaque validated loader-owner maps, authenticated checked-link transport, and fail-closed retained catalog construction are implemented; production package-coordinate loading and source Dynamic stages 1-4 are explicitly deferred until the authenticated loader contract is scheduled after 0.1"
 ---
 
 # RFC-0082: Runtime `Dynamic` values and checked reflection
@@ -200,12 +200,17 @@ backend runtime behavior exists until the remaining stage-1 slices land; the
 identity plan alone is not presented as an implemented user feature.
 
 The linker now retains each declaration's compiler key, source-module key,
-local name, and kind before flattening, and the descriptor catalog can join
-that record to loader-assigned ownership without parsing names. `CheckedModule`
-is the pipeline-owned join point, and catalog mutation is crate-private, so
-descriptor consumers cannot construct one without successful type checking.
-The production package path does
-not yet supply the required ownership map: the self-hosted PM
+local name, and kind before flattening. An opaque owner map validates one
+loader-assigned package and logical module identity for linker module keys,
+rejects conflicting assignments, and must cover the linker's complete retained
+module-key set, including pulled function-only modules with no nominal
+declarations. It is retained by the authenticated checked-link APIs.
+`CheckedModule` is the
+pipeline-owned join point: catalog construction consumes only those retained
+owners, and legacy checked-link callers cannot add an ad hoc map later.
+Catalog mutation is crate-private, so descriptor consumers cannot construct one
+without successful type checking. The production package path does not yet
+supply the required ownership map: the self-hosted PM
 currently reduces a selected dependency to `--dep alias=path`, discarding its
 package name, version, and source before Rust loading. Until a richer loader
 contract carries those authenticated coordinates (including toolchain-owned

@@ -115,6 +115,68 @@ impl ModuleLoadIdentity {
     }
 }
 
+/// Opaque module ownership retained from an authenticated loader decision.
+///
+/// Module keys are the input names passed to the linker plus any canonical
+/// toolchain modules the linker adds. Package and logical module identities
+/// come from the resolved package graph, never from those keys. Construction
+/// rejects malformed or conflicting loader assignments, and checked-link APIs
+/// require coverage of the complete post-link set before retaining this map.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthenticatedModuleOwners {
+    owners: BTreeMap<String, ModuleLoadIdentity>,
+}
+
+impl AuthenticatedModuleOwners {
+    pub fn from_loader_assignments<A>(
+        assignments: A,
+    ) -> Result<Self, RuntimeTypeError>
+    where
+        A: IntoIterator<Item = (String, ModuleLoadIdentity)>,
+    {
+        let mut owners = BTreeMap::new();
+        for (module, owner) in assignments {
+            if module.is_empty() {
+                return Err(RuntimeTypeError::InvalidModuleOwner(
+                    "loader ownership has an empty linker module key".to_string(),
+                ));
+            }
+            if let Some(existing) = owners.get(&module) {
+                if existing != &owner {
+                    return Err(RuntimeTypeError::ConflictingModuleOwner { module });
+                }
+                continue;
+            }
+            owners.insert(module, owner);
+        }
+        Ok(Self { owners })
+    }
+
+    pub(crate) fn validate_module_names<M, N>(
+        &self,
+        module_names: M,
+    ) -> Result<(), RuntimeTypeError>
+    where
+        M: IntoIterator<Item = N>,
+        N: Into<String>,
+    {
+        let mut loaded = BTreeSet::new();
+        for module in module_names {
+            let module = module.into();
+            if module.is_empty() {
+                return Err(RuntimeTypeError::InvalidModuleOwner(
+                    "linked module has an empty loader key".to_string(),
+                ));
+            }
+            loaded.insert(module);
+        }
+        if let Some(module) = loaded.iter().find(|module| !self.owners.contains_key(*module)) {
+            return Err(RuntimeTypeError::MissingModuleOwner { module: module.to_string() });
+        }
+        Ok(())
+    }
+}
+
 /// Resolved identity of one nominal type or trait declaration.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DeclarationIdentity {
@@ -186,11 +248,11 @@ impl RuntimeDeclarationCatalog {
     /// are lookup keys and are never parsed to recover package identity.
     pub(crate) fn from_resolved_declarations(
         declarations: &ResolvedDeclarations,
-        module_owners: &BTreeMap<String, ModuleLoadIdentity>,
+        module_owners: &AuthenticatedModuleOwners,
     ) -> Result<Self, RuntimeTypeError> {
         let mut catalog = Self::default();
         for declaration in &declarations.declarations {
-            let owner = module_owners.get(&declaration.source_module).ok_or_else(|| {
+            let owner = module_owners.owners.get(&declaration.source_module).ok_or_else(|| {
                 RuntimeTypeError::MissingModuleOwner {
                     module: declaration.source_module.clone(),
                 }
@@ -623,8 +685,11 @@ fn collect_nested_identities(
 pub enum RuntimeTypeError {
     InvalidPackageCoordinate(String),
     InvalidDeclarationIdentity(String),
+    InvalidModuleOwner(String),
     CapabilityType(String),
+    MissingAuthenticatedModuleOwners,
     MissingModuleOwner { module: String },
+    ConflictingModuleOwner { module: String },
     ConflictingDeclaration { kind: DeclarationKind, name: String },
     UnresolvedDeclaration { kind: DeclarationKind, name: String },
     ConventionArity { params: usize, conventions: usize },
@@ -637,13 +702,21 @@ impl std::fmt::Display for RuntimeTypeError {
         match self {
             Self::InvalidPackageCoordinate(message)
             | Self::InvalidDeclarationIdentity(message)
+            | Self::InvalidModuleOwner(message)
             | Self::MalformedStructuralType(message) => f.write_str(message),
             Self::CapabilityType(name) => {
                 write!(f, "capability type `{name}` cannot have a runtime descriptor")
             }
+            Self::MissingAuthenticatedModuleOwners => f.write_str(
+                "checked module lacks authenticated loader ownership; use an authenticated checked-link API",
+            ),
             Self::MissingModuleOwner { module } => write!(
                 f,
                 "runtime descriptor declarations from module `{module}` lack loader ownership"
+            ),
+            Self::ConflictingModuleOwner { module } => write!(
+                f,
+                "loader supplied conflicting package identities for module `{module}`"
             ),
             Self::ConflictingDeclaration { kind, name } => write!(
                 f,
@@ -914,7 +987,10 @@ mod tests {
                 },
             ],
         };
-        let owners = BTreeMap::from([("dependency_alias".to_string(), owner.clone())]);
+        let owners = AuthenticatedModuleOwners::from_loader_assignments(
+            [("dependency_alias".to_string(), owner.clone())],
+        )
+        .expect("authenticated module ownership");
 
         let catalog = RuntimeDeclarationCatalog::from_resolved_declarations(
             &declarations,
@@ -949,16 +1025,66 @@ mod tests {
             }],
         };
 
-        let error = RuntimeDeclarationCatalog::from_resolved_declarations(
-            &declarations,
-            &BTreeMap::new(),
+        let owners = AuthenticatedModuleOwners::from_loader_assignments(
+            [(
+                "owned".to_string(),
+                ModuleLoadIdentity::new(
+                    package(PackageSource::Workspace, "app", "0.1.0"),
+                    ["owned"],
+                )
+                .expect("owner"),
+            )],
         )
+        .expect("authenticated ownership");
+        let error = RuntimeDeclarationCatalog::from_resolved_declarations(&declarations, &owners)
         .expect_err("unowned declarations must fail closed");
         assert_eq!(
             error,
             RuntimeTypeError::MissingModuleOwner {
                 module: "unowned".into(),
             }
+        );
+    }
+
+    #[test]
+    fn authenticated_module_owners_reject_missing_and_conflicting_assignments() {
+        let workspace = ModuleLoadIdentity::new(
+            package(PackageSource::Workspace, "app", "0.1.0"),
+            ["model"],
+        )
+        .expect("workspace owner");
+        let registry = ModuleLoadIdentity::new(
+            package(
+                PackageSource::Registry("https://packages.example".into()),
+                "acme/model",
+                "1.0.0",
+            ),
+            ["model"],
+        )
+        .expect("registry owner");
+
+        let incomplete = AuthenticatedModuleOwners::from_loader_assignments(
+            [("main".to_string(), workspace.clone())],
+        )
+        .expect("structurally valid owner map");
+        let missing = incomplete
+            .validate_module_names(["main", "model"])
+            .expect_err("every linked module requires an owner");
+        assert_eq!(
+            missing,
+            RuntimeTypeError::MissingModuleOwner { module: "model".into() }
+        );
+
+        let conflict = AuthenticatedModuleOwners::from_loader_assignments(
+            [
+                ("model".to_string(), workspace),
+                ("model".to_string(), registry),
+            ],
+        )
+        .expect_err("one linker module key cannot have two owners");
+        assert_eq!(
+            conflict,
+            RuntimeTypeError::ConflictingModuleOwner { module: "model".into() }
         );
     }
 

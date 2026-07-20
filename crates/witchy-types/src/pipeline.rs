@@ -5,7 +5,7 @@
 //! linked module is type-checked. Later slices can move work across this
 //! boundary without making downstream callers reconstruct the sequence.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::fmt;
 
 use witchy_syntax::ast::Module;
@@ -14,7 +14,7 @@ use witchy_syntax::origin::OriginTable;
 use witchy_syntax::type_resolve::ResolvedDeclarations;
 
 use crate::runtime_type::{
-    ModuleLoadIdentity, RuntimeDeclarationCatalog, RuntimeTypeError,
+    AuthenticatedModuleOwners, RuntimeDeclarationCatalog, RuntimeTypeError,
 };
 use crate::typeck::{self, TypeError};
 
@@ -25,6 +25,7 @@ use crate::typeck::{self, TypeError};
 #[derive(Debug, Clone, PartialEq)]
 pub struct CheckedModule {
     linked: LinkedModule,
+    module_owners: Option<AuthenticatedModuleOwners>,
 }
 
 impl CheckedModule {
@@ -43,13 +44,15 @@ impl CheckedModule {
         &self.linked.declarations
     }
 
-    /// Authenticate linked declarations against ownership supplied by the
-    /// loader. This is the only checked-pipeline path to an RFC-0082 catalog;
-    /// callers cannot recover package identity by parsing compiler names.
+    /// Build a catalog from the loader ownership retained during checked link.
+    /// Legacy checked-link APIs deliberately fail here rather than accepting
+    /// package identity after the fact.
     pub fn runtime_declaration_catalog(
         &self,
-        module_owners: &BTreeMap<String, ModuleLoadIdentity>,
     ) -> Result<RuntimeDeclarationCatalog, RuntimeTypeError> {
+        let module_owners = self.module_owners.as_ref().ok_or(
+            RuntimeTypeError::MissingAuthenticatedModuleOwners,
+        )?;
         RuntimeDeclarationCatalog::from_resolved_declarations(
             &self.linked.declarations,
             module_owners,
@@ -70,6 +73,7 @@ impl CheckedModule {
 /// The stage at which linking and checking failed.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PipelineError {
+    Ownership(RuntimeTypeError),
     Link(LinkError),
     Type(TypeError),
 }
@@ -77,6 +81,7 @@ pub enum PipelineError {
 impl fmt::Display for PipelineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Ownership(error) => fmt::Display::fmt(error, f),
             Self::Link(error) => fmt::Display::fmt(error, f),
             Self::Type(error) => fmt::Display::fmt(error, f),
         }
@@ -86,6 +91,7 @@ impl fmt::Display for PipelineError {
 impl std::error::Error for PipelineError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Ownership(error) => Some(error),
             Self::Link(error) => Some(error),
             Self::Type(error) => Some(error),
         }
@@ -98,15 +104,24 @@ impl From<LinkError> for PipelineError {
     }
 }
 
+impl From<RuntimeTypeError> for PipelineError {
+    fn from(error: RuntimeTypeError) -> Self {
+        Self::Ownership(error)
+    }
+}
+
 impl From<TypeError> for PipelineError {
     fn from(error: TypeError) -> Self {
         Self::Type(error)
     }
 }
 
-fn check_linked(linked: LinkedModule) -> Result<CheckedModule, PipelineError> {
+fn check_linked(
+    linked: LinkedModule,
+    module_owners: Option<AuthenticatedModuleOwners>,
+) -> Result<CheckedModule, PipelineError> {
     typeck::check(&linked.module)?;
-    Ok(CheckedModule { linked })
+    Ok(CheckedModule { linked, module_owners })
 }
 
 /// Link with the injected compile-time expander, then type-check the result.
@@ -126,7 +141,39 @@ pub fn link_checked_with_mode(
     mode: LinkMode,
 ) -> Result<CheckedModule, PipelineError> {
     let linked = linker::link_with_mode_and_origins(modules, entry, expand, mode)?;
-    check_linked(linked)
+    check_linked(linked, None)
+}
+
+/// Production-ready checked link with loader-authenticated package ownership.
+///
+/// `module_owners` must cover every linker module key. It is retained in the
+/// returned proof object so descriptor catalogs cannot substitute an ad hoc
+/// package map after linking or type checking.
+pub fn link_checked_authenticated(
+    modules: Vec<(String, Module)>,
+    entry: &str,
+    expand: ComptimeExpander,
+    module_owners: AuthenticatedModuleOwners,
+) -> Result<CheckedModule, PipelineError> {
+    link_checked_authenticated_with_mode(
+        modules,
+        entry,
+        expand,
+        module_owners,
+        LinkMode::Production,
+    )
+}
+
+pub fn link_checked_authenticated_with_mode(
+    modules: Vec<(String, Module)>,
+    entry: &str,
+    expand: ComptimeExpander,
+    module_owners: AuthenticatedModuleOwners,
+    mode: LinkMode,
+) -> Result<CheckedModule, PipelineError> {
+    let linked = linker::link_with_mode_and_origins(modules, entry, expand, mode)?;
+    module_owners.validate_module_names(linked.module_names.iter().cloned())?;
+    check_linked(linked, Some(module_owners))
 }
 
 /// Link with explicit user-module provenance, then type-check the result.
@@ -160,17 +207,55 @@ pub fn link_checked_with_user_modules_with_mode(
         user_modules,
         mode,
     )?;
-    check_linked(linked)
+    check_linked(linked, None)
+}
+
+/// Production-ready checked link with both exact source provenance and
+/// loader-authenticated package ownership.
+pub fn link_checked_authenticated_with_user_modules(
+    modules: Vec<(String, Module)>,
+    entry: &str,
+    expand: ComptimeExpander,
+    user_modules: &HashSet<String>,
+    module_owners: AuthenticatedModuleOwners,
+) -> Result<CheckedModule, PipelineError> {
+    link_checked_authenticated_with_user_modules_with_mode(
+        modules,
+        entry,
+        expand,
+        user_modules,
+        module_owners,
+        LinkMode::Production,
+    )
+}
+
+pub fn link_checked_authenticated_with_user_modules_with_mode(
+    modules: Vec<(String, Module)>,
+    entry: &str,
+    expand: ComptimeExpander,
+    user_modules: &HashSet<String>,
+    module_owners: AuthenticatedModuleOwners,
+    mode: LinkMode,
+) -> Result<CheckedModule, PipelineError> {
+    let linked = linker::link_with_user_modules_with_mode_and_origins(
+        modules,
+        entry,
+        expand,
+        user_modules,
+        mode,
+    )?;
+    module_owners.validate_module_names(linked.module_names.iter().cloned())?;
+    check_linked(linked, Some(module_owners))
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
     use crate::runtime_type::{
-        DeclarationKind, PackageCoordinate, PackageSource, RuntimeTypeError,
+        DeclarationKind, ModuleLoadIdentity, PackageCoordinate, PackageSource,
+        RuntimeTypeError,
     };
 
     static EXPANSIONS: AtomicUsize = AtomicUsize::new(0);
@@ -244,75 +329,188 @@ mod tests {
     }
 
     #[test]
-    fn checked_link_authenticates_its_retained_declarations() {
+    fn authenticated_checked_link_retains_package_distinct_and_toolchain_owners() {
+        let modules = vec![
+            (
+                "workspace_model".to_string(),
+                parse("type User:\n  User(Int)\n"),
+            ),
+            (
+                "registry_model".to_string(),
+                parse("type User:\n  User(Int)\n"),
+            ),
+            (
+                "std_model".to_string(),
+                parse("type StdThing:\n  StdThing(Int)\n"),
+            ),
+            (
+                "main".to_string(),
+                parse(
+                    "import workspace_model\nimport registry_model\nimport std_model\n\nfn main() -> Int:\n  1\n",
+                ),
+            ),
+        ];
+        let workspace_package = PackageCoordinate::new(
+            PackageSource::Workspace,
+            "acme/model",
+            "1.0.0",
+        )
+        .expect("workspace coordinate");
+        let registry_package = PackageCoordinate::new(
+            PackageSource::Registry("https://packages.example".into()),
+            "acme/model",
+            "1.0.0",
+        )
+        .expect("registry coordinate");
+        let toolchain_package = PackageCoordinate::new(
+            PackageSource::Toolchain,
+            "witchy/stdlib",
+            "0.1.0",
+        )
+        .expect("toolchain coordinate");
+        let workspace_owner = ModuleLoadIdentity::new(
+            workspace_package,
+            ["model"],
+        )
+        .expect("workspace owner");
+        let registry_owner = ModuleLoadIdentity::new(
+            registry_package,
+            ["model"],
+        )
+        .expect("registry owner");
+        let std_owner = ModuleLoadIdentity::new(
+            toolchain_package.clone(),
+            ["std", "model"],
+        )
+        .expect("toolchain std owner");
+        let main_owner = ModuleLoadIdentity::new(
+            PackageCoordinate::new(PackageSource::Workspace, "example/app", "0.1.0")
+                .expect("application coordinate"),
+            ["main"],
+        )
+        .expect("application owner");
+        let mut assignments = vec![
+            ("workspace_model".to_string(), workspace_owner.clone()),
+            ("registry_model".to_string(), registry_owner.clone()),
+            ("std_model".to_string(), std_owner.clone()),
+            ("main".to_string(), main_owner),
+        ];
+        assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|module| {
+            (
+                (*module).to_string(),
+                ModuleLoadIdentity::new(
+                    toolchain_package.clone(),
+                    ["std", *module],
+                )
+                .expect("toolchain std owner"),
+            )
+        }));
+        let module_owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)
+        .expect("exact authenticated owner map");
+
+        let checked = link_checked_authenticated(
+            modules,
+            "main",
+            no_expand,
+            module_owners,
+        )
+        .expect("authenticated checked link");
+        let provenance = checked.declarations();
+        assert!(provenance.declarations.iter().any(|declaration| {
+            declaration.source_module == "workspace_model"
+                && declaration.local_name == "User"
+        }));
+        assert!(provenance.declarations.iter().any(|declaration| {
+            declaration.source_module == "registry_model"
+                && declaration.local_name == "User"
+        }));
+        assert!(provenance.declarations.iter().any(|declaration| {
+            declaration.source_module == "std_model"
+                && declaration.local_name == "StdThing"
+        }));
+
+        let catalog = checked
+            .runtime_declaration_catalog()
+            .expect("catalog from retained owners");
+        let workspace_user = catalog
+            .resolve("workspace_model.User", DeclarationKind::Type)
+            .expect("workspace User");
+        let registry_user = catalog
+            .resolve("registry_model.User", DeclarationKind::Type)
+            .expect("registry User");
+        let std_thing = catalog
+            .resolve("std_model.StdThing", DeclarationKind::Type)
+            .expect("toolchain std declaration");
+
+        assert_ne!(workspace_user, registry_user);
+        assert_eq!(workspace_user.package().source(), &PackageSource::Workspace);
+        assert!(matches!(
+            registry_user.package().source(),
+            PackageSource::Registry(registry) if registry == "https://packages.example"
+        ));
+        assert_eq!(std_thing.package().source(), &PackageSource::Toolchain);
+        assert_eq!(workspace_user, &workspace_owner.declaration(DeclarationKind::Type, "User").expect("workspace identity"));
+        assert_eq!(registry_user, &registry_owner.declaration(DeclarationKind::Type, "User").expect("registry identity"));
+        assert_eq!(std_thing, &std_owner.declaration(DeclarationKind::Type, "StdThing").expect("std identity"));
+    }
+
+    #[test]
+    fn legacy_checked_link_cannot_add_ownership_at_catalog_use_site() {
         let modules = vec![(
             "main".to_string(),
             parse("type User:\n  User(Int)\n\nfn main() -> Int:\n  1\n"),
         )];
-        let checked = link_checked(modules, "main", no_expand).expect("checked link");
-        let user_compiler_name = checked
-            .declarations()
-            .declarations
-            .iter()
-            .find(|declaration| {
-                declaration.source_module == "main" && declaration.local_name == "User"
-            })
-            .expect("retained user declaration")
-            .compiler_name
-            .clone();
+        let checked = link_checked(modules, "main", no_expand).expect("legacy checked link");
+        let error = checked
+            .runtime_declaration_catalog()
+            .expect_err("legacy path has no authenticated loader ownership");
+        assert_eq!(error, RuntimeTypeError::MissingAuthenticatedModuleOwners);
+    }
 
-        let workspace = PackageCoordinate::new(
+    #[test]
+    fn authenticated_link_requires_owners_for_function_only_pulled_modules() {
+        let modules = vec![(
+            "main".to_string(),
+            parse("import math\n\nfn main() -> Int:\n  1\n"),
+        )];
+        let application = PackageCoordinate::new(
             PackageSource::Workspace,
             "example/app",
             "0.1.0",
         )
-        .expect("package coordinate");
+        .expect("application coordinate");
         let toolchain = PackageCoordinate::new(
             PackageSource::Toolchain,
             "witchy/stdlib",
             "0.1.0",
         )
         .expect("toolchain coordinate");
-        let mut owners = BTreeMap::new();
-        for declaration in &checked.declarations().declarations {
-            let package = if declaration.source_module == "main" {
-                workspace.clone()
-            } else {
-                toolchain.clone()
-            };
-            owners
-                .entry(declaration.source_module.clone())
-                .or_insert_with(|| {
-                    ModuleLoadIdentity::new(
-                        package,
-                        [declaration.source_module.clone()],
+        let mut assignments = vec![(
+            "main".to_string(),
+            ModuleLoadIdentity::new(application, ["main"]).expect("main owner"),
+        )];
+        assignments.extend(
+            witchy_syntax::linker::STD_MODULES
+                .iter()
+                .filter(|module| **module != "math")
+                .map(|module| {
+                    (
+                        (*module).to_string(),
+                        ModuleLoadIdentity::new(toolchain.clone(), ["std", *module])
+                            .expect("toolchain owner"),
                     )
-                    .expect("module owner")
-                });
-        }
-        let owner = owners.get("main").expect("main owner").clone();
-        let catalog = checked
-            .runtime_declaration_catalog(&owners)
-            .expect("authenticated declarations");
-        let expected = owner
-            .declaration(DeclarationKind::Type, "User")
-            .expect("declaration identity");
-
-        assert_eq!(
-            catalog.resolve(&user_compiler_name, DeclarationKind::Type),
-            Some(&expected)
+                }),
         );
+        let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)
+            .expect("authenticated owners");
 
-        let mut missing_main = owners;
-        missing_main.remove("main");
-        let error = checked
-            .runtime_declaration_catalog(&missing_main)
-            .expect_err("missing loader ownership must fail closed");
+        let error = link_checked_authenticated(modules, "main", no_expand, owners)
+            .expect_err("pulled math module has no authenticated owner");
         assert_eq!(
             error,
-            RuntimeTypeError::MissingModuleOwner {
-                module: "main".to_string(),
-            }
+            PipelineError::Ownership(RuntimeTypeError::MissingModuleOwner {
+                module: "math".into(),
+            })
         );
     }
 }

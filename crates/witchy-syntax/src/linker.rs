@@ -554,6 +554,10 @@ pub type ComptimeExpander = fn(
 pub struct LinkedModule {
     pub module: Module,
     pub origins: crate::origin::OriginTable,
+    /// Complete linker module-key set, including compiler-pulled modules that
+    /// contribute functions but no nominal declarations. Authenticated loaders
+    /// validate ownership against this set rather than inferring it from names.
+    pub module_names: Vec<String>,
     /// Resolved type/trait declaration provenance retained for RFC-0082 runtime
     /// descriptor identity. Compiler names remain lookup keys only; package
     /// ownership is joined by the loader-facing pipeline.
@@ -1842,6 +1846,7 @@ pub fn link_with_user_modules_with_mode_and_origins(
             origins.append_shifted(table, 0);
         }
     }
+    let module_names = modules.iter().map(|(name, _)| name.clone()).collect();
     let mut module = Module {
         // The entry module's performance modes carry onto the linked module;
         // enforcement applies to the entry file's own (unqualified) functions.
@@ -1903,7 +1908,12 @@ pub fn link_with_user_modules_with_mode_and_origins(
     let module = crate::records::lower(checked)
         .map_err(|message| LinkError { message, location: None })?
         .into_module();
-    Ok(LinkedModule { module, origins, declarations })
+    Ok(LinkedModule {
+        module,
+        origins,
+        module_names,
+        declarations,
+    })
 }
 
 fn expansion_sibling(runtime: &Module, source: &Module) -> Module {
