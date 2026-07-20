@@ -55,6 +55,7 @@ fn expand_with_item_limit_and_origins(
     let mut i = 0;
     let mut expanded = 0;
     let mut generated_items = 0usize;
+    let mut projected_item_count: Option<usize> = None;
     let mut origins = OriginTable::default();
     while i < module.items.len() {
         if !matches!(module.items[i], Item::Comptime(_)) {
@@ -240,26 +241,47 @@ fn expand_with_item_limit_and_origins(
             .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
         let emitted = decode_comptime_output(name, block_line, lines, item_output)
             .map_err(|e| format!("module `{name}`: comptime block: {e}"))?;
-        let items_before_merge = module.items.len();
+        let runtime_items_before_merge = match projected_item_count {
+            // `comptime` items are expansion work, not runtime items, so
+            // consuming the current block does not change this projection.
+            Some(previous) => previous,
+            None => {
+                let projected = validate_and_measure_generated_module(module.clone())
+                    .map_err(|e| format!("module `{name}`: comptime generated source: {e}"))?;
+                runtime_item_count(&projected)
+            }
+        };
         merge_emitted_module(module, &mut origins, emitted, block_line);
-        let normalized = normalize_generated_module(name, module.clone(), &mut origins)
+        // Schedule derives so generated comptime blocks participate in this
+        // same expansion pass, but retain generator/async/record source nodes
+        // until the linker finishes expansion and applies destructive lowering
+        // once. A lowered clone supplies the historical runtime-item accounting
+        // without replacing the source-shaped enclosing module.
+        witchy_syntax::derive::expand(module)
             .map_err(|e| format!("module `{name}`: comptime generated source: {e}"))?;
-        let generated_by_block = normalized
-            .items
-            .len()
-            .checked_sub(items_before_merge)
+        let normalized = validate_and_measure_generated_module(module.clone())
+            .map_err(|e| format!("module `{name}`: comptime generated source: {e}"))?;
+        // Generator/async lowering adds implicit std imports. Carry those
+        // dependency facts forward even though the source items themselves stay
+        // unlowered, so a later comptime block sees the same std namespace it
+        // saw when normalization replaced the whole module.
+        module.imports.clone_from(&normalized.imports);
+        module.import_lines.clone_from(&normalized.import_lines);
+        let normalized_item_count = runtime_item_count(&normalized);
+        let generated_by_block = normalized_item_count
+            .checked_sub(runtime_items_before_merge)
             .ok_or_else(|| {
                 format!("module `{name}`: comptime generated-item accounting underflow")
             })?;
+        projected_item_count = Some(normalized_item_count);
         generated_items = generated_items
             .checked_add(generated_by_block)
             .ok_or_else(|| item_limit_error(name, max_generated_items))?;
         if generated_items > max_generated_items {
             return Err(item_limit_error(name, max_generated_items));
         }
-        *module = normalized;
         // Do not increment `i`: removing the block shifted the next original item
-        // into this slot, and normalization may also have appended derive-generated
+        // into this slot, and derive scheduling may also have appended generated
         // comptime blocks for this same pass to consume.
     }
     Ok(origins)
@@ -479,35 +501,19 @@ fn reachable_local_items(items: &[Item], root: &Block) -> Vec<Item> {
     out
 }
 
-fn normalize_generated_module(
-    module_name: &str,
-    module: Module,
-    origins: &mut OriginTable,
-) -> Result<Module, String> {
-    let generator_mapping = generator_item_mapping(&module);
+fn validate_and_measure_generated_module(module: Module) -> Result<Module, String> {
     let module = witchy_syntax::source_check::check(module)?;
     let module = witchy_syntax::generators::lower(module)?;
-    origins.remap_items(module_name, &generator_mapping);
     let module = witchy_syntax::async_lower::lower(module)?;
     witchy_syntax::records::lower_lenient(module).map(|module| module.into_module())
 }
 
-/// Mirror only the item-count/order part of generator lowering so side-table
-/// addresses follow helper/wrapper fanout without coupling origins to names.
-fn generator_item_mapping(module: &Module) -> Vec<Vec<usize>> {
-    let mut next = 0usize;
-    module.items.iter().map(|item| {
-        let count = match item {
-            Item::Function(function) if function.is_gen => 2,
-            Item::Impl(block) => {
-                block.methods.iter().filter(|method| method.is_gen).count() + 1
-            }
-            _ => 1,
-        };
-        let mapped = (next..next + count).collect();
-        next += count;
-        mapped
-    }).collect()
+fn runtime_item_count(module: &Module) -> usize {
+    module
+        .items
+        .iter()
+        .filter(|item| !matches!(item, Item::Comptime(_)))
+        .count()
 }
 
 fn merge_emitted_module(
@@ -790,6 +796,8 @@ fn strip_comptime_only_functions(name: &str, module: &mut Module, origins: &mut 
 
 #[cfg(test)]
 mod tests {
+    use witchy_syntax::ast::{Expr, Item, Stmt};
+
     #[test]
     fn typed_item_origin_survives_expansion_and_linking() {
         let src = r#"
@@ -1022,6 +1030,64 @@ fn main():
     }
 
     #[test]
+    fn generated_item_budget_does_not_recount_retained_generators() {
+        let src = r#"
+comptime:
+    emit("gen fn generated() -> Iter(Int):")
+    emit("    yield 1")
+
+comptime:
+    emit("fn ordinary() -> Int:")
+    emit("    1")
+
+fn main():
+    0
+"#;
+
+        let mut module = witchy_syntax::parser::parse_module(src).expect("parse");
+        super::expand_with_item_limit("main", &mut module, 3)
+            .expect("the retained generator consumes its two runtime slots only once");
+    }
+
+    #[test]
+    fn later_blocks_see_imports_required_by_retained_generators() {
+        let src = r#"
+comptime:
+    emit("gen fn generated() -> Iter(Int):")
+    emit("    yield 1")
+
+comptime:
+    let xs: List(Int) = iter.collect(iter.range(0, 1))
+    for _ in xs:
+        emit("fn saw_iter() -> Bool:")
+        emit("    true")
+"#;
+
+        let mut module = witchy_syntax::parser::parse_module(src).expect("parse");
+        super::expand("main", &mut module)
+            .expect("the second block inherits the generator's implicit iter import");
+        assert!(module.items.iter().any(|item| {
+            matches!(item, Item::Function(function) if function.name == "saw_iter")
+        }));
+    }
+
+    #[test]
+    fn generated_item_budget_excludes_temporary_derive_blocks() {
+        let src = r#"
+comptime:
+    emit("type Generated derive(Show):")
+    emit("    value: Int")
+
+fn main():
+    0
+"#;
+
+        let mut module = witchy_syntax::parser::parse_module(src).expect("parse");
+        super::expand_with_item_limit("main", &mut module, 2)
+            .expect("the generated type and final impl consume two runtime slots");
+    }
+
+    #[test]
     fn module_types_include_types_emitted_by_earlier_comptime_blocks() {
         let src = r#"
 comptime:
@@ -1215,6 +1281,94 @@ fn main(console: Console):
         witchy_types::typeck::check(&linked).expect("typecheck");
         let out = crate::interpreter::run_module(linked, ".", Vec::new()).expect("run");
         assert_eq!(out, ["[1, 2]"]);
+    }
+
+    #[test]
+    fn expansion_retains_emitted_source_nodes_until_link_lowering() {
+        let src = r#"
+comptime:
+    emit("type Point:")
+    emit("    x: Int")
+    emit("gen fn generated() -> Iter(Int):")
+    emit("    yield 1")
+    emit("async fn delayed() -> Int:")
+    emit("    1")
+    emit("fn point() -> Point:")
+    emit("    Point(x: 1)")
+"#;
+
+        let mut module = witchy_syntax::parser::parse_module(src).expect("parse");
+        super::expand("main", &mut module).expect("expand source-shaped items");
+        assert!(module.items.iter().any(|item| {
+            matches!(
+                item,
+                Item::Function(function)
+                    if function.name == "generated" && function.is_gen
+            )
+        }));
+        assert!(module.items.iter().any(|item| {
+            matches!(
+                item,
+                Item::Function(function)
+                    if function.name == "delayed" && function.is_async
+            )
+        }));
+        assert!(module.items.iter().any(|item| {
+            matches!(
+                item,
+                Item::Function(function)
+                    if function.name == "point"
+                        && matches!(
+                            function.body.stmts.last(),
+                            Some(Stmt::Expr(Expr::Record { .. }))
+                        )
+            )
+        }));
+    }
+
+    #[test]
+    fn lowered_generator_and_async_fanout_keep_valid_item_origins() {
+        let src = r#"
+comptime:
+    emit("gen fn generated() -> Iter(Int):")
+    emit("    yield 1")
+    emit("async fn delayed() -> Int:")
+    emit("    let value = task.done(1).await")
+    emit("    value")
+"#;
+
+        let module = witchy_syntax::parser::parse_module(src).expect("parse");
+        let linked = crate::pipeline::link_with_origins(vec![("main".into(), module)], "main")
+            .expect("link generated fanout with origins");
+        let generated_items: Vec<_> = linked
+            .module
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| {
+                matches!(
+                    item,
+                    Item::Function(function) if {
+                        let name = function
+                            .name
+                            .rsplit_once('.')
+                            .map_or(function.name.as_str(), |(_, name)| name);
+                        name == "generated"
+                            || name.starts_with("__gen_generated")
+                            || name == "delayed"
+                            || name.starts_with("__async_delayed")
+                    }
+                )
+            })
+            .collect();
+        assert!(generated_items.len() >= 4, "both lowerings must fan out items");
+        for (index, _) in generated_items {
+            let origin = linked
+                .origins
+                .origin_for_item(index)
+                .expect("every lowered output inherits the emitted item trace");
+            assert_eq!(origin.origin.invocation.start.line, 2);
+        }
     }
 
     #[test]

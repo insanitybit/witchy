@@ -767,6 +767,414 @@ pub enum LinkMode {
     Test,
 }
 
+fn returns_borrowed_view(ty: Option<&Type>) -> bool {
+    ty.is_some_and(|ty| matches!(ty, Type::Qualified(TypeQual::Borrow(_), _)))
+}
+
+fn returns_view_callable(ty: Option<&Type>) -> bool {
+    ty.is_some_and(|ty| {
+        matches!(
+            ty.unqualified(),
+            Type::Fn(_, result, _)
+                if matches!(result.as_ref(), Type::Qualified(TypeQual::Borrow(_), _))
+        )
+    })
+}
+
+fn published_inherent_aliases(module: &Module) -> HashMap<&str, &crate::ast::Function> {
+    let top_level: HashSet<&str> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Function(function) => Some(function.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    let mut aliases = HashMap::new();
+    for item in &module.items {
+        let Item::Impl(definition) = item else { continue };
+        if definition.trait_name.is_some() {
+            continue;
+        }
+        for method in &definition.methods {
+            if method.public
+                && method.params.first().is_some_and(|param| param.name == "self")
+                && !top_level.contains(method.name.as_str())
+            {
+                aliases.entry(method.name.as_str()).or_insert(method);
+            }
+        }
+    }
+    aliases
+}
+
+fn expanded_view_fns(
+    modules: &[(String, Module)],
+    current_name: &str,
+    current: &Module,
+) -> HashSet<String> {
+    let mut known = HashSet::new();
+    for (module_name, stored) in modules {
+        let module = if module_name == current_name { current } else { stored };
+        for item in &module.items {
+            match item {
+                Item::Function(function) => {
+                    if returns_borrowed_view(function.ret.as_ref()) {
+                        known.insert(format!("{module_name}.{}", function.name));
+                    }
+                    if returns_view_callable(function.ret.as_ref()) {
+                        known.insert(format!("@callable:{module_name}.{}", function.name));
+                    }
+                }
+                Item::Impl(definition) => {
+                    for method in &definition.methods {
+                        if returns_borrowed_view(method.ret.as_ref()) {
+                            known.insert(format!("@method:{}", method.name));
+                        }
+                        if returns_view_callable(method.ret.as_ref()) {
+                            known.insert(format!("@callable-method:{}", method.name));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (name, method) in published_inherent_aliases(module) {
+            if returns_borrowed_view(method.ret.as_ref()) {
+                known.insert(format!("{module_name}.{name}"));
+            }
+            if returns_view_callable(method.ret.as_ref()) {
+                known.insert(format!("@callable:{module_name}.{name}"));
+            }
+        }
+    }
+    for item in &current.items {
+        match item {
+            Item::Function(function) => {
+                if returns_borrowed_view(function.ret.as_ref()) {
+                    known.insert(function.name.clone());
+                }
+                if returns_view_callable(function.ret.as_ref()) {
+                    known.insert(format!("@callable:{}", function.name));
+                }
+            }
+            Item::Impl(_) => {}
+            _ => {}
+        }
+    }
+    for (name, method) in published_inherent_aliases(current) {
+        if returns_borrowed_view(method.ret.as_ref()) {
+            known.insert(name.to_string());
+        }
+        if returns_view_callable(method.ret.as_ref()) {
+            known.insert(format!("@callable:{name}"));
+        }
+    }
+    for (source, names) in &current.from_imports {
+        for name in names {
+            if known.contains(&format!("{source}.{name}")) {
+                known.insert(name.clone());
+            }
+            if known.contains(&format!("@callable:{source}.{name}")) {
+                known.insert(format!("@callable:{name}"));
+            }
+        }
+    }
+    known
+}
+
+fn prepare_source_for_expansion(mut module: Module) -> Result<Module, String> {
+    crate::derive::expand(&mut module)?;
+    let checked = crate::source_check::check(module.clone())?;
+    let checked = crate::generators::lower(checked)?;
+    let checked = crate::async_lower::lower(checked)?;
+    let projected = crate::records::lower_lenient(checked)?.into_module();
+    module.imports = projected.imports;
+    module.import_lines = projected.import_lines;
+    module.from_imports = projected.from_imports;
+    Ok(module)
+}
+
+fn lower_expanded_source(
+    module_name: &str,
+    mut module: Module,
+    origins: &mut crate::origin::OriginTable,
+    view_fns: &HashSet<String>,
+) -> Result<Module, LinkError> {
+    reclassify_module_members(&mut module);
+    let generator_mapping = crate::generators::lowered_item_mapping(&module);
+    let checked = crate::source_check::check(module).map_err(|message| LinkError {
+        message: format!("module `{module_name}`: expanded source: {message}"),
+        location: None,
+    })?;
+    let checked = crate::generators::lower(checked).map_err(|message| LinkError {
+        message: format!("module `{module_name}`: expanded source: {message}"),
+        location: None,
+    })?;
+    let (checked, async_mapping) =
+        crate::async_lower::lower_with_view_fns_and_item_mapping(checked, view_fns)
+            .map_err(|message| LinkError {
+            message: format!("module `{module_name}`: expanded source: {message}"),
+            location: None,
+        })?;
+    let mut final_mapping = Vec::with_capacity(generator_mapping.len());
+    for generator_targets in &generator_mapping {
+        let mut targets = Vec::new();
+        for intermediate in generator_targets {
+            let Some(async_targets) = async_mapping.get(*intermediate) else {
+                return Err(LinkError {
+                    message: format!(
+                        "module `{module_name}`: expanded source origins: generator mapping targets missing async input {intermediate}"
+                    ),
+                    location: None,
+                });
+            };
+            targets.extend(async_targets.iter().copied());
+        }
+        final_mapping.push(targets);
+    }
+    let lowered = crate::records::lower_lenient(checked)
+        .map(|module| module.into_module())
+        .map_err(|message| LinkError {
+            message: format!("module `{module_name}`: expanded source: {message}"),
+            location: None,
+        })?;
+    origins
+        .rebuild_item_trees(module_name, &final_mapping, &lowered.items)
+        .map_err(|message| LinkError {
+            message: format!("module `{module_name}`: expanded source origins: {message}"),
+            location: None,
+        })?;
+    Ok(lowered)
+}
+
+fn reclassify_module_members(module: &mut Module) {
+    let imports: HashSet<String> = module
+        .imports
+        .iter()
+        .cloned()
+        .chain(PRELUDE_MODULES.iter().map(|name| (*name).to_string()))
+        .collect();
+    for item in &mut module.items {
+        match item {
+            Item::Function(function) => {
+                let bound = function
+                    .params
+                    .iter()
+                    .map(|param| param.name.clone())
+                    .collect();
+                for param in &mut function.params {
+                    if let Some(default) = &mut param.default {
+                        reclassify_expr_members(default, &imports, &bound);
+                    }
+                }
+                reclassify_block_members(&mut function.body, &imports, &bound);
+            }
+            Item::Trait(definition) => {
+                for method in &mut definition.methods {
+                    let bound = method
+                        .params
+                        .iter()
+                        .map(|param| param.name.clone())
+                        .collect();
+                    for param in &mut method.params {
+                        if let Some(default) = &mut param.default {
+                            reclassify_expr_members(default, &imports, &bound);
+                        }
+                    }
+                    if let Some(body) = &mut method.default {
+                        reclassify_block_members(body, &imports, &bound);
+                    }
+                }
+            }
+            Item::Impl(definition) => {
+                for method in &mut definition.methods {
+                    let bound = method
+                        .params
+                        .iter()
+                        .map(|param| param.name.clone())
+                        .collect();
+                    for param in &mut method.params {
+                        if let Some(default) = &mut param.default {
+                            reclassify_expr_members(default, &imports, &bound);
+                        }
+                    }
+                    reclassify_block_members(&mut method.body, &imports, &bound);
+                }
+            }
+            Item::Const { value, .. } => {
+                reclassify_expr_members(value, &imports, &HashSet::new());
+            }
+            Item::Comptime(body) => {
+                reclassify_block_members(body, &imports, &HashSet::new());
+            }
+            Item::Type(_) | Item::TypeAlias { .. } => {}
+        }
+    }
+}
+
+fn reclassify_block_members(
+    block: &mut Block,
+    imports: &HashSet<String>,
+    inherited: &HashSet<String>,
+) {
+    let mut bound = inherited.clone();
+    for statement in &mut block.stmts {
+        match statement {
+            Stmt::Let { name, value, .. } => {
+                reclassify_expr_members(value, imports, &bound);
+                bound.insert(name.clone());
+            }
+            Stmt::LetPattern { pattern, value } => {
+                reclassify_expr_members(value, imports, &bound);
+                collect_pattern_vars(pattern, &mut bound);
+            }
+            Stmt::Assign { value, .. } => reclassify_expr_members(value, imports, &bound),
+            Stmt::Return(Some(value)) | Stmt::Expr(value) | Stmt::Yield(value) => {
+                reclassify_expr_members(value, imports, &bound);
+            }
+            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+fn reclassify_expr_members(
+    expression: &mut Expr,
+    imports: &HashSet<String>,
+    bound: &HashSet<String>,
+) {
+    match expression {
+        Expr::MethodCall { receiver, method, args } => {
+            if let Expr::Var(module) = receiver.as_ref()
+                && imports.contains(module)
+                && !bound.contains(module)
+            {
+                for argument in args.iter_mut() {
+                    reclassify_expr_members(argument, imports, bound);
+                }
+                let args = std::mem::take(args);
+                *expression = Expr::Call {
+                    name: format!("{module}.{method}"),
+                    args,
+                };
+                return;
+            }
+            reclassify_expr_members(receiver, imports, bound);
+            for argument in args {
+                reclassify_expr_members(argument, imports, bound);
+            }
+        }
+        Expr::Call { args, .. }
+        | Expr::Ctor { args, .. }
+        | Expr::AnonCtor { args, .. }
+        | Expr::List(args)
+        | Expr::Tuple(args) => {
+            for argument in args {
+                reclassify_expr_members(argument, imports, bound);
+            }
+        }
+        Expr::LabeledCall { args, .. } => {
+            for (_, argument) in args {
+                reclassify_expr_members(argument, imports, bound);
+            }
+        }
+        Expr::Apply { func, args } => {
+            reclassify_expr_members(func, imports, bound);
+            for argument in args {
+                reclassify_expr_members(argument, imports, bound);
+            }
+        }
+        Expr::Unary { expr, .. } | Expr::Try(expr) | Expr::Field { base: expr, .. } => {
+            reclassify_expr_members(expr, imports, bound);
+        }
+        Expr::As { expr, .. }
+        | Expr::ExistentialPack { expr, .. }
+        | Expr::ExistentialUpcast { expr, .. } => {
+            reclassify_expr_members(expr, imports, bound);
+        }
+        Expr::ExistentialCall { receiver, args, .. } => {
+            reclassify_expr_members(receiver, imports, bound);
+            for argument in args {
+                reclassify_expr_members(argument, imports, bound);
+            }
+        }
+        Expr::RecordUpdate { base, fields, .. } => {
+            reclassify_expr_members(base, imports, bound);
+            for (_, value) in fields {
+                reclassify_expr_members(value, imports, bound);
+            }
+        }
+        Expr::Record { fields, spread, .. } => {
+            for (_, value) in fields {
+                reclassify_expr_members(value, imports, bound);
+            }
+            if let Some(spread) = spread {
+                reclassify_expr_members(spread, imports, bound);
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } | Expr::Range { lo: lhs, hi: rhs, .. } => {
+            reclassify_expr_members(lhs, imports, bound);
+            reclassify_expr_members(rhs, imports, bound);
+        }
+        Expr::Index { base, index } => {
+            reclassify_expr_members(base, imports, bound);
+            reclassify_expr_members(index, imports, bound);
+        }
+        Expr::WhileLet { pattern, scrutinee, body } => {
+            reclassify_expr_members(scrutinee, imports, bound);
+            let mut nested = bound.clone();
+            collect_pattern_vars(pattern, &mut nested);
+            reclassify_block_members(body, imports, &nested);
+        }
+        Expr::If { cond, then_block, else_block } => {
+            reclassify_expr_members(cond, imports, bound);
+            reclassify_block_members(then_block, imports, bound);
+            if let Some(else_block) = else_block {
+                reclassify_block_members(else_block, imports, bound);
+            }
+        }
+        Expr::Lambda { params, body, .. } => {
+            let mut nested = bound.clone();
+            nested.extend(params.iter().map(|param| param.name.clone()));
+            for param in params {
+                if let Some(default) = &mut param.default {
+                    reclassify_expr_members(default, imports, &nested);
+                }
+            }
+            reclassify_block_members(body, imports, &nested);
+        }
+        Expr::Block(block) => reclassify_block_members(block, imports, bound),
+        Expr::While { cond, body } => {
+            reclassify_expr_members(cond, imports, bound);
+            reclassify_block_members(body, imports, bound);
+        }
+        Expr::For { var, iter, body } => {
+            reclassify_expr_members(iter, imports, bound);
+            let mut nested = bound.clone();
+            nested.insert(var.clone());
+            reclassify_block_members(body, imports, &nested);
+        }
+        Expr::Match { scrutinee, arms } => {
+            reclassify_expr_members(scrutinee, imports, bound);
+            for arm in arms {
+                let mut nested = bound.clone();
+                collect_pattern_vars(&arm.pattern, &mut nested);
+                if let Some(guard) = &mut arm.guard {
+                    reclassify_expr_members(guard, imports, &nested);
+                }
+                reclassify_expr_members(&mut arm.body, imports, &nested);
+            }
+        }
+        Expr::Var(_)
+        | Expr::Int(_)
+        | Expr::Duration(_)
+        | Expr::Float(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::TaggedLit { .. } => {}
+    }
+}
+
 /// Link `modules` (each a name + parsed module) into one flat module, with
 /// `entry` the module holding `main`. `expand` runs each module's compile-time
 /// passes (see [`ComptimeExpander`]).
@@ -883,119 +1291,18 @@ pub fn link_with_user_modules_with_mode_and_origins(
         .cloned()
         .collect();
 
-    // Check source-only semantics before any pass below can erase generator or
-    // async nodes. Opaque typestates advance through each destructive lowering
-    // so no caller can skip a stage (RFC-0101).
-    let modules: Vec<(String, crate::source_check::SourceCheckedModule)> = modules
-        .into_iter()
-        .map(|(name, module)| crate::source_check::check(module).map(|module| (name, module)))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|message| LinkError { message, location: None })?;
-
-    // Lower `gen fn`/`yield` to ordinary functions over `std/iter` first — this
-    // adds `import iter`/`import option` to any generator module, so the std
-    // pull-in below resolves them.
-    let modules: Vec<(String, crate::source_check::GeneratorsLoweredModule)> = modules
-        .into_iter()
-        .map(|(n, m)| crate::generators::lower(m).map(|m| (n, m)))
-        .collect::<Result<_, _>>()
-        .map_err(|message| LinkError { message, location: None })?;
-
-    // Lower `async fn`/`await` to ordinary functions over `std/task` (CPS over
-    // closures), also before typeck — adds `import task`/`import chan` to any
-    // async module. Seed the pre-typeck lowering with linked signature facts so
-    // imported and method-returned views cannot disappear into a continuation.
-    let qualified_view_fns: HashSet<String> = modules
-        .iter()
-        .flat_map(|(module_name, module)| {
-            module.module().items.iter().flat_map(move |item| match item {
-                Item::Function(function) => {
-                    let mut names = Vec::new();
-                    if function.ret.as_ref().is_some_and(|ty| {
-                        matches!(ty, Type::Qualified(TypeQual::Borrow(_), _))
-                    }) {
-                        names.push(format!("{module_name}.{}", function.name));
-                    }
-                    if function.ret.as_ref().is_some_and(|ty| {
-                        matches!(
-                            ty.unqualified(),
-                            Type::Fn(_, ret, _)
-                                if matches!(ret.as_ref(), Type::Qualified(TypeQual::Borrow(_), _))
-                        )
-                    }) {
-                        names.push(format!("@callable:{module_name}.{}", function.name));
-                    }
-                    names
-                }
-                Item::Impl(definition) => definition
-                    .methods
-                    .iter()
-                    .flat_map(|method| {
-                        let mut names = Vec::new();
-                        if method.ret.as_ref().is_some_and(|ty| {
-                            matches!(ty, Type::Qualified(TypeQual::Borrow(_), _))
-                        }) {
-                            names.push(format!("@method:{}", method.name));
-                        }
-                        if method.ret.as_ref().is_some_and(|ty| {
-                            matches!(
-                                ty.unqualified(),
-                                Type::Fn(_, ret, _)
-                                    if matches!(ret.as_ref(), Type::Qualified(TypeQual::Borrow(_), _))
-                            )
-                        }) {
-                            names.push(format!("@callable-method:{}", method.name));
-                        }
-                        names
-                    })
-                    .collect(),
-                _ => Vec::new(),
-            })
-        })
-        .collect();
-    let modules: Vec<(String, crate::source_check::AsyncLoweredModule)> = modules
-        .into_iter()
-        .map(|(n, m)| {
-            let mut known = qualified_view_fns.clone();
-            for item in &m.module().items {
-                if let Item::Function(function) = item {
-                    if function.ret.as_ref().is_some_and(|ty| {
-                        matches!(ty, Type::Qualified(TypeQual::Borrow(_), _))
-                    }) {
-                        known.insert(function.name.clone());
-                    }
-                    if function.ret.as_ref().is_some_and(|ty| {
-                        matches!(
-                            ty.unqualified(),
-                            Type::Fn(_, ret, _)
-                                if matches!(ret.as_ref(), Type::Qualified(TypeQual::Borrow(_), _))
-                        )
-                    }) {
-                        known.insert(format!("@callable:{}", function.name));
-                    }
-                }
-            }
-            for (source, names) in &m.module().from_imports {
-                for name in names {
-                    if known.contains(&format!("{source}.{name}")) {
-                        known.insert(name.clone());
-                    }
-                    if known.contains(&format!("@callable:{source}.{name}")) {
-                        known.insert(format!("@callable:{name}"));
-                    }
-                }
-            }
-            crate::async_lower::lower_with_view_fns(m, &known).map(|m| (n, m))
-        })
-        .collect::<Result<_, _>>()
-        .map_err(|message| LinkError { message, location: None })?;
-
-    // Lower named-field record construction (`Point(x: 1, ..p)`) to positional
-    // constructors / record updates, so later stages never see `Expr::Record`.
+    // Check source-only semantics before expansion, but retain the source AST.
+    // A lowered projection contributes implicit imports needed for discovery;
+    // the real destructive sequence runs once, after the complete expanded link
+    // set exists and borrowed-view facts are final (RFC-0101).
     let mut modules: Vec<(String, Module)> = modules
         .into_iter()
-        .map(|(n, m)| crate::records::lower_lenient(m).map(|m| (n, m.into_module())))
-        .collect::<Result<_, _>>()
+        .map(|(name, mut module)| {
+            reclassify_module_members(&mut module);
+            crate::source_check::check(module.clone())?;
+            prepare_source_for_expansion(module).map(|module| (name, module))
+        })
+        .collect::<Result<Vec<_>, _>>()
         .map_err(|message| LinkError { message, location: None })?;
 
     // Compile-time expansion happens here, per module, BEFORE name resolution
@@ -1095,30 +1402,17 @@ pub fn link_with_user_modules_with_mode_and_origins(
         i += 1;
     }
 
-    // The std modules pulled in just above were appended AFTER the
-    // records-lowering + compile-time expansion passes ran, so run those same
-    // passes on them now — otherwise a std type's `derive(...)` (e.g. `semver`'s
-    // `Version`) would never desugar to its `meta.derive_*` comptime call, nor
-    // run it to generate the impl. `records::lower` (which runs `derive::expand`)
-    // is idempotent — it consumes the annotation — and comptime auto-imports
-    // `meta`, so this is a no-op for the derive-free modules and needs nothing
-    // extra in the link set. The entry modules already ran both passes above, so
-    // restrict to `pulled_std_start..` to avoid re-running comptime expansion
-    // (which, unlike derive desugaring, is not idempotent).
+    // Prepare newly discovered std source exactly like the initial modules:
+    // schedule derives and project implicit lowering imports while retaining
+    // every source node for the final whole-link lowering.
     for (k, (_, m)) in modules.iter_mut().enumerate().skip(pulled_std_start) {
         if cached_pull_indices.contains(&k) {
             continue;
         }
-        let checked = crate::source_check::check(m.clone())
+        *m = prepare_source_for_expansion(m.clone())
             .map_err(|message| LinkError { message, location: None })?;
-        let checked = crate::generators::lower(checked)
-            .map_err(|message| LinkError { message, location: None })?;
-        let checked = crate::async_lower::lower(checked)
-            .map_err(|message| LinkError { message, location: None })?;
-        *m = crate::records::lower_lenient(checked)
-            .map_err(|message| LinkError { message, location: None })?
-            .into_module();
     }
+    let mut pulled_imports_before = HashMap::new();
     for k in pulled_std_start..modules.len() {
         if cached_pull_indices.contains(&k) {
             continue;
@@ -1134,16 +1428,37 @@ pub fn link_with_user_modules_with_mode_and_origins(
             (modules[k].1.imports.clone(), modules[k].1.from_imports.clone());
         let origins = expand(&name, &mut modules[k].1, &siblings)
             .map_err(|message| LinkError { message, location: None })?;
+        origin_tables.insert(name, origins);
+        pulled_imports_before.insert(k, imports_before);
+    }
+    // Borrowed-view facts must see every generated declaration, including
+    // declarations emitted by later modules and modules discovered through the
+    // bundled std path. Lower all expanded source only after that complete link
+    // set exists, so async safety is independent of discovery order.
+    for k in 0..modules.len() {
+        if cached_pull_indices.contains(&k) {
+            continue;
+        }
+        let name = modules[k].0.clone();
+        let view_fns = expanded_view_fns(&modules, &name, &modules[k].1);
+        let mut origins = origin_tables.remove(&name).unwrap_or_default();
+        modules[k].1 =
+            lower_expanded_source(&name, modules[k].1.clone(), &mut origins, &view_fns)?;
         origin_tables.insert(name.clone(), origins);
         // A comptime block may EMIT `import` lines, which merge into the module
         // after the pull-in loop above has already run — a cached copy would
         // feed them back into a later link's pull-in and pull modules this link
         // never saw. Cache only expansions that left the import lists alone (no
         // bundled module's expansion grows them today).
-        if imports_before.0 == modules[k].1.imports
-            && imports_before.1 == modules[k].1.from_imports
-        {
-            pulled_std_cache_insert(expand, &name, &modules[k].1);
+        if k >= pulled_std_start {
+            let imports_before = pulled_imports_before
+                .remove(&k)
+                .expect("every uncached pulled module recorded its pre-expansion imports");
+            if imports_before.0 == modules[k].1.imports
+                && imports_before.1 == modules[k].1.from_imports
+            {
+                pulled_std_cache_insert(expand, &name, &modules[k].1);
+            }
         }
     }
 
@@ -1321,7 +1636,6 @@ pub fn link_with_user_modules_with_mode_and_origins(
                     for p in &f2.params {
                         bound.insert(p.name.clone());
                     }
-                    collect_bound_block(&f2.body, &mut bound);
                     rewrite_block(
                         &mut f2.body,
                         mname,
@@ -1364,7 +1678,6 @@ pub fn link_with_user_modules_with_mode_and_origins(
                             for p in &ms.params {
                                 bound.insert(p.name.clone());
                             }
-                            collect_bound_block(body, &mut bound);
                             rewrite_block(
                                 body,
                                 mname,
@@ -1393,7 +1706,6 @@ pub fn link_with_user_modules_with_mode_and_origins(
                         for p in &method.params {
                             bound.insert(p.name.clone());
                         }
-                        collect_bound_block(&method.body, &mut bound);
                         rewrite_block(
                             &mut method.body,
                             mname,
@@ -1841,141 +2153,6 @@ fn resolve_in_expr(
     }
 }
 
-/// Collect every name bound as a local within a block — `let`/`var` bindings,
-/// tuple destructurings, `for` loop variables, lambda parameters, and `match`
-/// pattern bindings (recursively, including nested blocks/expressions). Used so
-/// the linker never mistakes a local that shadows a same-module function name
-/// for a first-class reference to that function.
-fn collect_bound_block(b: &Block, out: &mut HashSet<String>) {
-    for stmt in &b.stmts {
-        match stmt {
-            Stmt::Let { name, value, .. } => {
-                out.insert(name.clone());
-                collect_bound_expr(value, out);
-            }
-            Stmt::LetPattern { pattern, value } => {
-                let mut names = Vec::new();
-                crate::ast::pattern_binds(pattern, &mut names);
-                for n in names {
-                    out.insert(n);
-                }
-                collect_bound_expr(value, out);
-            }
-            Stmt::Assign { value, .. } => collect_bound_expr(value, out),
-            Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => collect_bound_expr(e, out),
-            Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
-        }
-    }
-}
-
-fn collect_bound_expr(e: &Expr, out: &mut HashSet<String>) {
-    match e {
-        Expr::Lambda { params, body, .. } => {
-            for p in params {
-                out.insert(p.name.clone());
-            }
-            collect_bound_block(body, out);
-        }
-        Expr::For { var, iter, body } => {
-            out.insert(var.clone());
-            collect_bound_expr(iter, out);
-            collect_bound_block(body, out);
-        }
-        Expr::Match { scrutinee, arms } => {
-            collect_bound_expr(scrutinee, out);
-            for arm in arms {
-                collect_pattern_vars(&arm.pattern, out);
-                if let Some(g) = &arm.guard {
-                    collect_bound_expr(g, out);
-                }
-                collect_bound_expr(&arm.body, out);
-            }
-        }
-        Expr::If { cond, then_block, else_block } => {
-            collect_bound_expr(cond, out);
-            collect_bound_block(then_block, out);
-            if let Some(b) = else_block {
-                collect_bound_block(b, out);
-            }
-        }
-        Expr::While { cond, body } => {
-            collect_bound_expr(cond, out);
-            collect_bound_block(body, out);
-        }
-        Expr::Block(b) => collect_bound_block(b, out),
-        Expr::Call { args, .. }
-        | Expr::Ctor { args, .. }
-        | Expr::AnonCtor { args, .. }
-        | Expr::List(args)
-        | Expr::Tuple(args) => {
-            for a in args {
-                collect_bound_expr(a, out);
-            }
-        }
-        Expr::LabeledCall { args, .. } => {
-            for (_, a) in args {
-                collect_bound_expr(a, out);
-            }
-        }
-        Expr::Apply { func, args } => {
-            collect_bound_expr(func, out);
-            for a in args {
-                collect_bound_expr(a, out);
-            }
-        }
-        Expr::Binary { lhs, rhs, .. } => {
-            collect_bound_expr(lhs, out);
-            collect_bound_expr(rhs, out);
-        }
-        Expr::Range { lo, hi, .. } => {
-            collect_bound_expr(lo, out);
-            collect_bound_expr(hi, out);
-        }
-        Expr::Index { base, index } => {
-            collect_bound_expr(base, out);
-            collect_bound_expr(index, out);
-        }
-        Expr::MethodCall { receiver, args, .. } => {
-            collect_bound_expr(receiver, out);
-            for a in args {
-                collect_bound_expr(a, out);
-            }
-        }
-        Expr::WhileLet { pattern, scrutinee, body } => {
-            collect_bound_expr(scrutinee, out);
-            collect_pattern_vars(pattern, out);
-            collect_bound_block(body, out);
-        }
-        Expr::Unary { expr, .. }
-        | Expr::Try(expr)
-        | Expr::As { expr, .. }
-        | Expr::ExistentialPack { expr, .. }
-        | Expr::ExistentialUpcast { expr, .. }
-        | Expr::Field { base: expr, .. } => {
-            collect_bound_expr(expr, out)
-        }
-        Expr::ExistentialCall { receiver, args, .. } => {
-            collect_bound_expr(receiver, out);
-            for arg in args { collect_bound_expr(arg, out); }
-        }
-        Expr::RecordUpdate { name: _, base, fields } => {
-            collect_bound_expr(base, out);
-            for (_, v) in fields {
-                collect_bound_expr(v, out);
-            }
-        }
-        Expr::Record { fields, spread, .. } => {
-            for (_, v) in fields {
-                collect_bound_expr(v, out);
-            }
-            if let Some(s) = spread {
-                collect_bound_expr(s, out);
-            }
-        }
-        Expr::Var(_) | Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::TaggedLit { .. } => {}
-    }
-}
-
 #[derive(Clone, Copy)]
 struct RewriteContext<'a> {
     module: &'a str,
@@ -2066,8 +2243,7 @@ pub fn mark_definition_site_expr(
         }
     }
 
-    let mut bound = HashSet::new();
-    collect_bound_expr(expr, &mut bound);
+    let bound = HashSet::new();
     let user_std_shadows = HashSet::new();
     let context = RewriteContext {
         module: definition_module,
@@ -2105,14 +2281,24 @@ fn rewrite_block(
 }
 
 fn rewrite_block_with_context(b: &mut Block, context: &RewriteContext<'_>) -> Result<(), LinkError> {
+    let mut bound = context.bound.clone();
     for (index, stmt) in b.stmts.iter_mut().enumerate() {
         let line = b.lines.get(index).copied().filter(|line| *line > 0);
+        let scoped = RewriteContext { bound: &bound, ..*context };
         match stmt {
-            Stmt::Let { value, .. }
-            | Stmt::Assign { value, .. }
-            | Stmt::LetPattern { value, .. } => rewrite_expr(value, context, line)?,
+            Stmt::Let { name, value, .. } => {
+                rewrite_expr(value, &scoped, line)?;
+                bound.insert(name.clone());
+            }
+            Stmt::LetPattern { pattern, value } => {
+                rewrite_expr(value, &scoped, line)?;
+                let mut names = Vec::new();
+                crate::ast::pattern_binds(pattern, &mut names);
+                bound.extend(names);
+            }
+            Stmt::Assign { value, .. } => rewrite_expr(value, &scoped, line)?,
             Stmt::Return(Some(e)) | Stmt::Expr(e) | Stmt::Yield(e) => {
-                rewrite_expr(e, context, line)?
+                rewrite_expr(e, &scoped, line)?
             }
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
@@ -2336,16 +2522,20 @@ fn rewrite_expr(
             rewrite_expr(base, context, line)?;
             rewrite_expr(index, context, line)?;
         }
-        // Lowered to a plain `Call` before this runs; recurse for safety.
+        // Module/member classification has already been repaired against the
+        // final import scope before source checking and sealing.
         Expr::MethodCall { receiver, args, .. } => {
             rewrite_expr(receiver, context, line)?;
             for a in args {
                 rewrite_expr(a, context, line)?;
             }
         }
-        Expr::WhileLet { scrutinee, body, .. } => {
+        Expr::WhileLet { pattern, scrutinee, body } => {
             rewrite_expr(scrutinee, context, line)?;
-            rewrite_block_with_context(body, context)?;
+            let mut nested_bound = bound.clone();
+            collect_pattern_vars(pattern, &mut nested_bound);
+            let nested = RewriteContext { bound: &nested_bound, ..*context };
+            rewrite_block_with_context(body, &nested)?;
         }
         Expr::If {
             cond,
@@ -2358,23 +2548,34 @@ fn rewrite_expr(
                 rewrite_block_with_context(b, context)?;
             }
         }
-        Expr::Lambda { body, .. } => rewrite_block_with_context(body, context)?,
+        Expr::Lambda { params, body, .. } => {
+            let mut nested_bound = bound.clone();
+            nested_bound.extend(params.iter().map(|param| param.name.clone()));
+            let nested = RewriteContext { bound: &nested_bound, ..*context };
+            rewrite_block_with_context(body, &nested)?;
+        }
         Expr::Block(b) => rewrite_block_with_context(b, context)?,
         Expr::While { cond, body } => {
             rewrite_expr(cond, context, line)?;
             rewrite_block_with_context(body, context)?;
         }
-        Expr::For { iter, body, .. } => {
+        Expr::For { var, iter, body } => {
             rewrite_expr(iter, context, line)?;
-            rewrite_block_with_context(body, context)?;
+            let mut nested_bound = bound.clone();
+            nested_bound.insert(var.clone());
+            let nested = RewriteContext { bound: &nested_bound, ..*context };
+            rewrite_block_with_context(body, &nested)?;
         }
         Expr::Match { scrutinee, arms } => {
             rewrite_expr(scrutinee, context, line)?;
             for arm in arms {
+                let mut nested_bound = bound.clone();
+                collect_pattern_vars(&arm.pattern, &mut nested_bound);
+                let nested = RewriteContext { bound: &nested_bound, ..*context };
                 if let Some(g) = &mut arm.guard {
-                    rewrite_expr(g, context, line)?;
+                    rewrite_expr(g, &nested, line)?;
                 }
-                rewrite_expr(&mut arm.body, context, line)?;
+                rewrite_expr(&mut arm.body, &nested, line)?;
             }
         }
         Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::TaggedLit { .. } => {}
@@ -3690,6 +3891,318 @@ mod tests {
         let qualified = "import sealed_lib\n\n\
                          fn main(console: Console):\n    console.print(\"${sealed_lib.shown(1)}\")\n";
         link_lib_user(lib, qualified).expect("plain import keeps qualified calls available");
+    }
+
+    #[test]
+    fn linker_repairs_module_calls_for_imports_added_after_parsing() {
+        let lib = crate::parser::parse_module(
+            "pub fn shown(n: Int) -> Int:\n    n + 1\n",
+        )
+        .expect("library parses");
+        let mut user = crate::parser::parse_module(
+            "fn main(console: Console):\n    console.print(\"${sealed_lib.shown(1)}\")\n    let sealed_lib = 0\n",
+        )
+        .expect("entry parses without the compiler-added import");
+        assert!(has_method_call_on(&user, "sealed_lib", "shown"));
+        user.imports.push("sealed_lib".into());
+
+        let linked = link(
+            vec![("sealed_lib".into(), lib), ("user".into(), user)],
+            "user",
+            noop_expand,
+        )
+        .expect("the final import scope reclassifies the qualified call");
+        assert!(!has_method_call_on(&linked, "sealed_lib", "shown"));
+
+        let mut shadowed = crate::parser::parse_module(
+            "fn main():\n    let sealed_lib = 0\n    sealed_lib.shown()\n",
+        )
+        .expect("shadowing entry parses");
+        shadowed.imports.push("sealed_lib".into());
+        let linked = link(
+            vec![(
+                "sealed_lib".into(),
+                crate::parser::parse_module(
+                    "pub fn shown(n: Int) -> Int:\n    n + 1\n",
+                )
+                .expect("library parses"),
+            ), ("user".into(), shadowed)],
+            "user",
+            noop_expand,
+        )
+        .expect("a lexical local keeps method-call syntax");
+        let invocation = linked.items.iter().find_map(|item| match item {
+            Item::Function(function) if function.name == "main" => {
+                function.body.stmts.last()
+            }
+            _ => None,
+        });
+        assert!(
+            matches!(
+                invocation,
+                Some(Stmt::Expr(Expr::MethodCall { method, .. }))
+                    if method == "shown"
+            ) || matches!(
+                invocation,
+                Some(Stmt::Expr(Expr::Call { name, args }))
+                    if name == "sealed_lib.shown" && args.len() == 1
+            ),
+            "the lexical receiver must not become a zero-receiver module call: {invocation:?}"
+        );
+    }
+
+    #[test]
+    fn linker_validates_unknown_functions_for_imports_added_after_parsing() {
+        let lib = crate::parser::parse_module(
+            "pub fn shown(n: Int) -> Int:\n    n + 1\n",
+        )
+        .expect("library parses");
+        let mut user = crate::parser::parse_module(
+            "fn main():\n    sealed_lib.missing()\n",
+        )
+        .expect("entry parses without the compiler-added import");
+        user.imports.push("sealed_lib".into());
+        let error = link(
+            vec![("sealed_lib".into(), lib), ("user".into(), user)],
+            "user",
+            noop_expand,
+        )
+        .expect_err("late import classification must still validate the callee");
+        assert!(
+            error.message.contains("module `sealed_lib` has no function `missing`"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn linker_repairs_constructors_for_imports_added_after_parsing() {
+        let lib = crate::parser::parse_module(
+            "type Choice:\n    Pick(Int)\n",
+        )
+        .expect("library parses");
+        let mut user = crate::parser::parse_module(
+            "fn main():\n    sealed_lib.Pick(1)\n",
+        )
+        .expect("entry parses before the compiler-added import");
+        assert!(has_method_call_on(&user, "sealed_lib", "Pick"));
+        user.imports.push("sealed_lib".into());
+
+        link(
+            vec![("sealed_lib".into(), lib), ("user".into(), user)],
+            "user",
+            noop_expand,
+        )
+        .expect("constructor classification is repaired before type resolution and sealing");
+    }
+
+    #[test]
+    fn generated_async_uses_imported_borrowed_view_facts() {
+        fn append_async(
+            name: &str,
+            module: &mut Module,
+            _: &[(String, Module)],
+        ) -> Result<crate::origin::OriginTable, String> {
+            if name == "user" {
+                let mut generated = crate::parser::parse_module(
+                    "async fn bad(console: Console):\n    let text = \"x\"\n    let borrowed = views.view(text)\n    let _ = task.done(0).await\n    console.print(borrowed)\n",
+                )
+                .map_err(|error| error.to_string())?;
+                module.items.append(&mut generated.items);
+            }
+            Ok(crate::origin::OriginTable::default())
+        }
+
+        let views = crate::parser::parse_module(
+            "mode opt\n\npub fn view(text: let('a) String) -> View(String, 'a):\n    text\n",
+        )
+        .expect("view module parses");
+        let user = crate::parser::parse_module(
+            "mode opt\n\nimport views\n\nfn main():\n    0\n",
+        )
+        .expect("entry parses");
+        let error = link(
+            vec![("views".into(), views), ("user".into(), user)],
+            "user",
+            append_async,
+        )
+        .expect_err("generated async must enforce imported view lifetimes");
+        assert!(
+            error.message.contains("borrowed view `borrowed` remains live across `await`"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn generated_async_uses_view_facts_emitted_by_later_module() {
+        fn append_generated_items(
+            name: &str,
+            module: &mut Module,
+            _: &[(String, Module)],
+        ) -> Result<crate::origin::OriginTable, String> {
+            let source = match name {
+                "user" => {
+                    "async fn bad(console: Console):\n    let text = \"x\"\n    let borrowed = views.view(text)\n    let _ = task.done(0).await\n    console.print(borrowed)\n"
+                }
+                "views" => {
+                    "pub fn view(text: let('a) String) -> View(String, 'a):\n    text\n"
+                }
+                _ => return Ok(crate::origin::OriginTable::default()),
+            };
+            let mut generated =
+                crate::parser::parse_module(source).map_err(|error| error.to_string())?;
+            module.items.append(&mut generated.items);
+            Ok(crate::origin::OriginTable::default())
+        }
+
+        let user = crate::parser::parse_module(
+            "mode opt\n\nimport views\n\nfn main():\n    0\n",
+        )
+        .expect("entry parses");
+        let views = crate::parser::parse_module("mode opt\n")
+            .expect("view module parses");
+        let error = link(
+            vec![("user".into(), user), ("views".into(), views)],
+            "user",
+            append_generated_items,
+        )
+        .expect_err("generated view facts must not depend on module order");
+        assert!(
+            error.message.contains("borrowed view `borrowed` remains live across `await`"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn generated_async_uses_public_inherent_view_alias_facts() {
+        fn append_async(
+            name: &str,
+            module: &mut Module,
+            _: &[(String, Module)],
+        ) -> Result<crate::origin::OriginTable, String> {
+            if name == "user" {
+                let mut generated = crate::parser::parse_module(
+                    "async fn bad(holder: views.Holder):\n    let borrowed = views.view(holder)\n    let _ = task.done(0).await\n    let _ = borrowed\n",
+                )
+                .map_err(|error| error.to_string())?;
+                module.items.append(&mut generated.items);
+            }
+            Ok(crate::origin::OriginTable::default())
+        }
+
+        let views = crate::parser::parse_module(
+            "mode opt\n\ntype Holder:\n    Holder(String)\n\nimpl Holder:\n    pub fn view(self: let('a) Holder) -> View(Holder, 'a):\n        self\n",
+        )
+        .expect("view module parses");
+        let user = crate::parser::parse_module(
+            "mode opt\n\nimport views\n\nfn main():\n    0\n",
+        )
+        .expect("entry parses");
+        let error = link(
+            vec![("views".into(), views), ("user".into(), user)],
+            "user",
+            append_async,
+        )
+        .expect_err("module alias for a public inherent view must remain borrowed");
+        assert!(
+            error.message.contains("borrowed view `borrowed` remains live across `await`"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn handwritten_async_uses_public_inherent_view_alias_facts() {
+        let views = crate::parser::parse_module(
+            "mode opt\n\ntype Holder:\n    Holder(String)\n\nimpl Holder:\n    pub fn view(self: let('a) Holder) -> View(Holder, 'a):\n        self\n",
+        )
+        .expect("view module parses");
+        let user = crate::parser::parse_module(
+            "mode opt\n\nimport views\n\nasync fn bad(holder: views.Holder):\n    let borrowed = views.view(holder)\n    let _ = task.done(0).await\n    let _ = borrowed\n",
+        )
+        .expect("entry parses");
+        let error = link(
+            vec![("views".into(), views), ("user".into(), user)],
+            "user",
+            noop_expand,
+        )
+        .expect_err("handwritten and generated async must share alias facts");
+        assert!(
+            error.message.contains("borrowed view `borrowed` remains live across `await`"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn top_level_function_suppresses_inherent_view_alias_fact() {
+        let views = crate::parser::parse_module(
+            "mode opt\n\ntype Holder:\n    Holder(String)\n\npub fn view(holder: Holder) -> Holder:\n    holder\n\nimpl Holder:\n    pub fn view(self: let('a) Holder) -> View(Holder, 'a):\n        self\n",
+        )
+        .expect("view module parses");
+        let user = crate::parser::parse_module(
+            "mode opt\n\nimport views\n\nasync fn okay(holder: views.Holder):\n    let value = views.view(holder)\n    let _ = task.done(0).await\n    let _ = value\n",
+        )
+        .expect("entry parses");
+        link(
+            vec![("views".into(), views), ("user".into(), user)],
+            "user",
+            noop_expand,
+        )
+        .expect("the published top-level function determines the alias fact");
+    }
+
+    #[test]
+    fn first_inherent_method_determines_published_view_alias_fact() {
+        let views = crate::parser::parse_module(
+            "mode opt\n\ntype Owned:\n    Owned(String)\n\ntype Borrowed:\n    Borrowed(String)\n\nimpl Owned:\n    pub fn view(self: Owned) -> Owned:\n        self\n\nimpl Borrowed:\n    pub fn view(self: let('a) Borrowed) -> View(Borrowed, 'a):\n        self\n",
+        )
+        .expect("view module parses");
+        let user = crate::parser::parse_module(
+            "mode opt\n\nimport views\n\nasync fn okay(value: views.Owned):\n    let owned = views.view(value)\n    let _ = task.done(0).await\n    let _ = owned\n",
+        )
+        .expect("entry parses");
+        link(
+            vec![("views".into(), views), ("user".into(), user)],
+            "user",
+            noop_expand,
+        )
+        .expect("only the first published inherent alias contributes its view fact");
+    }
+
+    #[test]
+    fn generated_async_sees_view_provider_from_pulled_std_module() {
+        fn append_generated_items(
+            name: &str,
+            module: &mut Module,
+            _: &[(String, Module)],
+        ) -> Result<crate::origin::OriginTable, String> {
+            let source = match name {
+                "user" => {
+                    "async fn bad(console: Console):\n    let text = \"x\"\n    let borrowed = string.generated_view(text)\n    let _ = task.done(0).await\n    console.print(borrowed)\n"
+                }
+                "string" => {
+                    "pub fn generated_view(text: let('a) String) -> View(String, 'a):\n    text\n"
+                }
+                _ => return Ok(crate::origin::OriginTable::default()),
+            };
+            let mut generated =
+                crate::parser::parse_module(source).map_err(|error| error.to_string())?;
+            module.items.append(&mut generated.items);
+            Ok(crate::origin::OriginTable::default())
+        }
+
+        let user = crate::parser::parse_module("mode opt\n\nfn main():\n    0\n")
+            .expect("entry parses");
+        let error = link(vec![("user".into(), user)], "user", append_generated_items)
+            .expect_err("pulled std providers participate in whole-link view facts");
+        assert!(
+            error.message.contains("borrowed view `borrowed` remains live across `await`"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]

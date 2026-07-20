@@ -49,6 +49,12 @@ use crate::source_check::{AsyncLoweredModule, GeneratorsLoweredModule};
 use foldhash::{HashSet, HashSetExt as _};
 
 pub fn lower(checked: GeneratorsLoweredModule) -> Result<AsyncLoweredModule, String> {
+    lower_with_item_mapping(checked).map(|(module, _)| module)
+}
+
+pub(crate) fn lower_with_item_mapping(
+    checked: GeneratorsLoweredModule,
+) -> Result<(AsyncLoweredModule, Vec<Vec<usize>>), String> {
     let view_fns: HashSet<String> = checked
         .module()
         .items
@@ -81,27 +87,34 @@ pub fn lower(checked: GeneratorsLoweredModule) -> Result<AsyncLoweredModule, Str
             _ => Vec::new(),
         })
         .collect();
-    lower_with_view_fns(checked, &view_fns)
+    lower_with_view_fns_and_item_mapping(checked, &view_fns)
 }
 
-pub(crate) fn lower_with_view_fns(
+pub(crate) fn lower_with_view_fns_and_item_mapping(
     mut checked: GeneratorsLoweredModule,
     view_fns: &HashSet<String>,
-) -> Result<AsyncLoweredModule, String> {
+) -> Result<(AsyncLoweredModule, Vec<Vec<usize>>), String> {
     if !has_async(checked.module()) {
-        return Ok(AsyncLoweredModule::preserve(checked.into_module()));
+        let item_count = checked.module().items.len();
+        return Ok((
+            AsyncLoweredModule::preserve(checked.into_module()),
+            (0..item_count).map(|index| vec![index]).collect(),
+        ));
     }
     let module = checked.module_mut();
+    let source_item_count = module.items.len();
+    let mut mapping = vec![Vec::new(); source_item_count];
     let mut counter: usize = 0;
     let mut items = Vec::with_capacity(module.items.len());
-    let mut lifted: Vec<Function> = Vec::new();
-    for item in std::mem::take(&mut module.items) {
+    let mut lifted: Vec<(usize, Function)> = Vec::new();
+    for (source_index, item) in std::mem::take(&mut module.items).into_iter().enumerate() {
+        mapping[source_index].push(items.len());
         match item {
             Item::Function(f) if f.is_async => {
                 let is_entry = f.name == "main";
                 let (entry, mut segs) = lower_async_fn(f, is_entry, &mut counter, view_fns)?;
                 items.push(Item::Function(entry));
-                lifted.append(&mut segs);
+                lifted.extend(segs.drain(..).map(|segment| (source_index, segment)));
             }
             // An `async fn` METHOD in an inherent `impl Type:` block: the method
             // stays a method (so `value.method()` still resolves by receiver type
@@ -124,7 +137,7 @@ pub(crate) fn lower_with_view_fns(
                                 view_fns,
                             )?;
                         methods.push(entry);
-                        lifted.append(&mut segs);
+                        lifted.extend(segs.drain(..).map(|segment| (source_index, segment)));
                     } else {
                         methods.push(method);
                     }
@@ -136,7 +149,8 @@ pub(crate) fn lower_with_view_fns(
         }
     }
     // Emit the lifted segment functions at top level (after the entries).
-    for seg in lifted {
+    for (source_index, seg) in lifted {
+        mapping[source_index].push(items.len());
         items.push(Item::Function(seg));
     }
     module.items = items;
@@ -150,7 +164,7 @@ pub(crate) fn lower_with_view_fns(
     while module.import_lines.len() < module.imports.len() {
         module.import_lines.push(0);
     }
-    Ok(AsyncLoweredModule::preserve(checked.into_module()))
+    Ok((AsyncLoweredModule::preserve(checked.into_module()), mapping))
 }
 
 /// Validate source-only async rules before lowering removes `async` and
@@ -1694,6 +1708,25 @@ mod tests {
             })
             .expect("lowered main function");
         assert_eq!(main.ret, Some(Type::Named("Nil".to_string(), Vec::new())));
+    }
+
+    #[test]
+    fn lowering_maps_lifted_segments_back_to_their_source_item() {
+        let source = "fn before() -> Int:\n    0\n\nasync fn value() -> Int:\n    let x = task.done(1).await\n    x\n\nfn after() -> Int:\n    2\n";
+        let module = crate::parser::parse_module(source).expect("parse async mapping fixture");
+        let checked = crate::source_check::check(module).expect("source check");
+        let checked = crate::generators::lower(checked).expect("generator lowering");
+        let (lowered, mapping) =
+            lower_with_item_mapping(checked).expect("async lowering with item mapping");
+
+        assert_eq!(mapping[0], vec![0]);
+        assert_eq!(mapping[2], vec![2]);
+        assert_eq!(mapping[1][0], 1);
+        assert!(mapping[1].len() > 1, "an await must lift at least one segment");
+        let lowered_item_count = lowered.into_module().items.len();
+        assert!(mapping[1][1..]
+            .iter()
+            .all(|index| *index >= 3 && *index < lowered_item_count));
     }
 
     #[test]

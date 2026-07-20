@@ -34,6 +34,29 @@ use crate::source_check::{GeneratorsLoweredModule, SourceCheckedModule};
 const COUNTER: &str = "__i";
 const TARGET: &str = "__target";
 
+/// Map each source item to the item positions it occupies after generator
+/// lowering. Origin tables use this before the destructive rewrite so helper
+/// and wrapper items retain the source item's ancestry.
+pub(crate) fn lowered_item_mapping(module: &Module) -> Vec<Vec<usize>> {
+    let mut next = 0usize;
+    module
+        .items
+        .iter()
+        .map(|item| {
+            let count = match item {
+                Item::Function(function) if function.is_gen => 2,
+                Item::Impl(block) => {
+                    block.methods.iter().filter(|method| method.is_gen).count() + 1
+                }
+                _ => 1,
+            };
+            let mapped = (next..next + count).collect();
+            next += count;
+            mapped
+        })
+        .collect()
+}
+
 /// Rewrite every `gen fn` in the module into a helper + wrapper, and ensure the
 /// `iter`/`option` modules it relies on are imported. A no-op for modules
 /// without generators.

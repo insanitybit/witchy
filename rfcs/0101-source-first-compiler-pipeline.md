@@ -3,7 +3,7 @@ rfc: 0101
 title: source-first compiler pipeline
 status: proposed
 created: 2026-07-20
-tracking: "implementation active: generator, async, and record lowering require a non-destructive source-check proof on handwritten and comptime-emitted paths; full linked semantic checking and trait lowering remain open"
+tracking: "implementation active: destructive source lowerings use staged proofs, and handwritten plus comptime-emitted source remains unlowered through expansion; full linked semantic checking and trait lowering remain open"
 related:
   - "[0070](0070-0-1-blocking-set.md) (terminal 0.1 decision record and checked-module seam)"
   - "BUG-428 / BUG-429 / BUG-434 / BUG-436 (closed regression classes)"
@@ -32,9 +32,10 @@ Implemented evidence:
 - `witchy_syntax::source_check::check` is the sole constructor of the initial
   proof; generator, async, and record lowering each require the immediately
   preceding typestate, so no public caller can skip a destructive stage.
-- The production linker checks every initially supplied module before those
-  lowerings, while comptime normalization checks the merged emitted module
-  before lowering generated generator/async items.
+- The production linker checks every initially supplied module, projects only
+  the imports introduced by lowering, and retains handwritten source nodes
+  through expansion. Comptime normalization applies the same rule to merged
+  emitted source.
 - Focused tests reject `yield` inside `region:` and async tail `region:` before
   lowering, inspect the destructive entrypoint signatures, and prove emitted
   and handwritten generators receive the same source diagnostic.
@@ -44,6 +45,23 @@ Implemented evidence:
 - The source-check proof has no public raw-AST escape. Record lowering returns
   the terminal `SourceLoweredModule`, which is the only public recovery point
   for the runtime `Module`.
+- Compile-time emitted generator, async, and record nodes are validated after
+  each merge but remain source-shaped through the complete expansion pass.
+  The linker then applies the staged lowering sequence once and remaps origin
+  ancestry across generator helpers and async segments, rebuilding structural
+  child paths against the final lowered item trees. Runtime item-limit
+  accounting uses lowered projections without replacing the source AST, excludes temporary
+  derive blocks, and keeps projected implicit std imports visible to later
+  compile-time blocks. The linker reclassifies an unshadowed
+  positional `module.function(...)` or constructor against that final import
+  scope before source checking, type resolution, and sealing; lexical locals
+  still shadow the module only within their real scopes. Generated async
+  lowering receives the same whole-link borrowed-view facts as handwritten
+  async code. Expansion and bundled-module discovery complete across the link
+  set before handwritten or generated async is destructively lowered, so
+  module order cannot hide providers. The fact set includes qualified and
+  `from`-imported functions plus the exact source-visible alias selected from
+  public inherent methods.
 
 ## Required contract
 
@@ -83,3 +101,9 @@ order: establish non-destructive linked name/trait/method resolution; move
 complete source type checking before trait desugaring; then remove raw
 production `Module` escape hatches and promote the RFC only after backend and
 diagnostic-origin criteria are green.
+
+Expansion provenance also has two concrete residuals: derive-synthetic
+`comptime` blocks must inherit their source type's origin, and cached expanded
+std modules must retain the same `OriginTable` as a cold expansion. A labeled
+module call still requires its import to be present in parsed source; method
+labels remain rejected rather than being reinterpreted after an import appears.

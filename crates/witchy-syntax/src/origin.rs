@@ -209,6 +209,81 @@ impl OriginTable {
         self.nodes = remapped;
     }
 
+    /// Rebuild structural node addresses after a lowering changes item trees.
+    ///
+    /// Current expansion producers assign one trace to an emitted item and all
+    /// of its descendants. Lowerings may fan that item out and freely reshape
+    /// the descendants, so copying old child paths would leave stale addresses.
+    /// Rewalk each output tree with the source item's trace instead. If a future
+    /// producer assigns distinct traces within one item, fail loudly until that
+    /// lowering supplies a finer-grained mapping.
+    pub fn rebuild_item_trees(
+        &mut self,
+        module: &str,
+        mapping: &[Vec<usize>],
+        lowered_items: &[Item],
+    ) -> Result<(), String> {
+        let old = std::mem::take(&mut self.nodes);
+        let roots: std::collections::BTreeMap<u32, (GeneratedNodeId, ExpansionOrigin)> = old
+            .iter()
+            .filter(|entry| {
+                entry.node.path.is_empty() && entry.node.category == SyntaxCategory::Item
+            })
+            .map(|entry| (entry.node.item, (entry.id.clone(), entry.origin.clone())))
+            .collect();
+
+        for entry in &old {
+            let Some((_, root_origin)) = roots.get(&entry.node.item) else {
+                return Err(format!(
+                    "generated origin for item {} has no item-root trace",
+                    entry.node.item
+                ));
+            };
+            if &entry.origin != root_origin {
+                return Err(format!(
+                    "generated item {} has mixed nested origins; its lowering needs an explicit path mapping",
+                    entry.node.item
+                ));
+            }
+        }
+
+        for (source_item, (source_id, origin)) in roots {
+            let Some(targets) = mapping.get(source_item as usize) else { continue };
+            for (copy, target) in targets.iter().copied().enumerate() {
+                let Some(item) = lowered_items.get(target) else {
+                    return Err(format!(
+                        "generated origin mapping targets missing lowered item {target}"
+                    ));
+                };
+                let item_number = item_index(target);
+                let id = if copy == 0 {
+                    source_id.clone()
+                } else {
+                    self.allocate_id(module)
+                };
+                self.nodes.push(GeneratedNodeOrigin {
+                    id,
+                    node: GeneratedNodePath {
+                        item: item_number,
+                        path: Vec::new(),
+                        category: SyntaxCategory::Item,
+                    },
+                    origin: origin.clone(),
+                });
+                let mut children = 0;
+                record_item_children(
+                    self,
+                    module,
+                    item_number,
+                    item,
+                    &mut children,
+                    &origin,
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub fn retain_items(&mut self, module: &str, retained: &[bool]) {
         let mut mapping = vec![Vec::new(); retained.len()];
         let mut next = 0usize;
@@ -526,5 +601,32 @@ mod tests {
             .expect("nested expression origin");
         assert_eq!(table.origin_for_node(&nested.node).expect("lookup by path").id, nested.id);
         assert_eq!(nested.origin.invocation.start.line, 7);
+    }
+
+    #[test]
+    fn rebuilding_item_trees_replaces_stale_paths_after_fanout() {
+        let source = crate::parser::parse_module(
+            "fn generated(x: Int) -> Int:\n    x + 1\n",
+        )
+        .expect("source item parses");
+        let lowered = crate::parser::parse_module(
+            "fn helper(x: Int, target: Int) -> Option(Int):\n    Some(x + target)\n\nfn generated(x: Int) -> Iter(Int):\n    iter.from_gen(fn(target: Int): helper(x, target))\n",
+        )
+        .expect("lowered fanout parses");
+        let origin = trace("generated", 2, 7);
+        let mut table = OriginTable::default();
+        table.record_item_tree("generated", 0, &source.items[0], origin.clone());
+        table
+            .rebuild_item_trees("generated", &[vec![0, 1]], &lowered.items)
+            .expect("uniform item origin can be rebuilt after fanout");
+
+        let mut expected = OriginTable::default();
+        for (index, item) in lowered.items.iter().enumerate() {
+            expected.record_item_tree("generated", index, item, origin.clone());
+        }
+        let actual_paths: Vec<_> = table.nodes.iter().map(|entry| &entry.node).collect();
+        let expected_paths: Vec<_> = expected.nodes.iter().map(|entry| &entry.node).collect();
+        assert_eq!(actual_paths, expected_paths);
+        assert!(table.nodes.iter().all(|entry| entry.origin == origin));
     }
 }
