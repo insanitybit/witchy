@@ -1,13 +1,21 @@
 ---
 rfc: 0082
 title: Runtime Dynamic values and checked reflection
-status: proposed
+status: deferred
 created: 2026-07-12
 superseded-by:
-tracking: stage 1 in progress — canonical package/declaration/type identities and deterministic closed descriptor plans live in witchy-types::runtime_type, and CheckedModule authenticates retained declarations against loader ownership; production package-coordinate transport and source Dynamic conversion are not implemented yet
+tracking: "descriptor identity, retained declaration provenance, checked catalog construction, and fail-closed loader-owner joins are implemented; production package-coordinate transport and source Dynamic stages 1-4 are explicitly deferred until the authenticated loader contract is scheduled after 0.1"
 ---
 
 # RFC-0082: Runtime `Dynamic` values and checked reflection
+
+> **2026-07-20 terminal disposition:** the backend-neutral descriptor and
+> checked-catalog foundation is implemented and retained. The user-visible
+> `Dynamic` payload, conversion, field/call, trait, parity, and tooling stages
+> are explicitly deferred. Revive this RFC after 0.1 when the production loader
+> carries authenticated package coordinates through dependency loading; stage 1
+> may not resume by reconstructing identity from aliases, paths, or display
+> names.
 
 ## Summary
 
