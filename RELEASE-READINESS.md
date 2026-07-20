@@ -9,6 +9,11 @@ Last packaged evidence commit: `d7bee035f521429868240cdf4d55fccae4814311`.
 This is not yet the final release candidate; the final candidate is the exact
 queue-settled master commit that passes every gate below.
 
+Last live-state reconciliation: 2026-07-20. The merge queue was empty at that
+observation, but current `master` contains compiler and language work newer than
+the packaged-evidence commit. Queue settlement alone does not promote those
+changes into the release evidence below.
+
 ## Candidate command matrix
 
 | Surface | Status | Required evidence |
@@ -24,7 +29,7 @@ queue-settled master commit that passes every gate below.
 | Backend parity | FAIL | The exact candidate passed the landing gate's browser parity check (123 runnable blocks, zero divergence), but its serialized full release gate is red and the private candidate workflow has not run. |
 | Remote Coven lifecycle | EXCLUDED | Existing implementation remains available but is not part of the 0.1 installability promise. |
 | Grimoire/Coven integrated install ([RFC-0095](rfcs/0095-grimoire-trusted-application-installation.md)) | EXCLUDED | Proposed behavior is not independently implemented and proven. |
-| Post-candidate existential / `Dynamic` / lexical extensions | EXCLUDED | RFC-0081 is implemented on current master, but it and other semantic additions after the pinned packaged-evidence commit are not advertised by this release snapshot. |
+| Post-evidence compiler and language additions | EXCLUDED | RFC-0081 is implemented and RFC-0101/RFC-0082 foundation work exists on current master, but these additions postdate the pinned packaged-evidence commit. User-visible `Dynamic` values and lexical extensions remain deferred and are not advertised by this release snapshot. |
 
 ## Platform matrix
 
@@ -47,12 +52,12 @@ queue-settled master commit that passes every gate below.
   `./scripts/e2e-full.sh --quick` checks, and subsequently passed its serialized
   landing gate. Publication remains blocked until `./scripts/check.sh --full`
   passes on the exact final master commit.
-- **BLOCKER — merge queue:** the repository still has a large active queue and
-  the coordinator is gating it serially. Semantic work after the pinned
-  packaged-evidence commit, including the now-implemented
-  [RFC-0081 existential trait values](rfcs/0081-existential-trait-values.md), is
-  excluded from this release snapshot, but the final release procedure requires
-  an empty queue and no pending release blocker.
+- **PROCEDURAL GATE — queue settlement:** the previously recorded large active
+  queue had drained at the 2026-07-20 reconciliation. This is not durable release
+  evidence: candidate selection still requires rechecking that the live queue is
+  empty, no gate or READY semantic branch can move `master`, and the selected
+  commit contains every intended 0.1 change before starting the exact-commit
+  full gate.
 - **BLOCKER — native artifacts:** all three native workflow jobs and canonical
   archive smoke tests must pass. GitHub documents `macos-15-intel` as a
   standard Intel runner label for private repositories, but this repository has
