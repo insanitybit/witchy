@@ -30,7 +30,7 @@ stage crates have this maximum direct-dependency graph:
 | `witchy-wir` | `syntax` | NARROW | Retain only the shared diagnostic-template dependency; keep AST and type-system concepts out of WIR. |
 | `witchy-caps` | `syntax` | KEEP | Keep source-footprint analysis compiler-side; split reusable runtime policy data only when needed. |
 | `witchy-lower` | `syntax`, `types`, `wir` | KEEP | Lower typed source to WIR through explicit checked/type-information inputs. |
-| `witchy-runtime` | `caps`, `syntax`, `types`, `wir` | EXTRACT | Move compiler-service adapters out until post-compilation enforcement has no parser/type/WIR implementation dependency. |
+| `witchy-runtime` | `caps`, `syntax`, `types`, `wir` | EXTRACT | The `compiler.*` implementation has a named `native/compiler.rs` seam; move it behind an injected adapter until post-compilation enforcement has no parser/type/WIR implementation dependency. |
 | `witchy-interp` | `caps`, `runtime`, `syntax`, `types` | NARROW | Consume runtime values and policy interfaces without importing the native Wasm sandbox. |
 
 This graph describes allowed coupling, not desired coupling. In particular,
@@ -43,7 +43,7 @@ must shrink during the runtime-kernel phase.
 |---|---|---|---|
 | Compiler trust boundary | lexer through type checking and lowering/codegen | KEEP | Source safety depends on these stages producing valid, capability-correct Wasm. Differential tests and Wasm validation adjudicate the result. |
 | Runtime enforcement TCB | `witchy-runtime::runtime`, confinement/network policy, capability host functions, Wasmtime | EXTRACT | After compilation it should admit imports, enforce grants/confinement/resource limits, and execute Wasm without compiler implementation dependencies. Capability denial and confinement tests must remain unchanged. |
-| Compiler services offered to trusted Witchy programs | parsing, docs, checking, footprint and build-step adapters currently reached through root/runtime orchestration | EXTRACT | Put these behind an injected service interface owned above the runtime kernel. Preserve compiler capability checks and exact diagnostics. |
+| Compiler services offered to trusted Witchy programs | `witchy-runtime::native::compiler` now isolates parsing, docs, checking, and footprint implementation; root/runtime orchestration still owns invocation | EXTRACT | Move the isolated implementation behind an injected service interface owned above the runtime kernel. Preserve compiler capability checks and exact diagnostics. |
 | Shared host ABI and runtime values | `witchy-runtime::{native,value}` plus representation constants in WIR/lowering | CONSOLIDATE | Define one narrow ABI/policy vocabulary. Do not duplicate representation catalogs while breaking the dependency cycle. |
 
 The compiler remains part of Witchy's overall language-security TCB. Isolating
