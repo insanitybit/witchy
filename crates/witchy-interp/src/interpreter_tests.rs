@@ -1,5 +1,19 @@
     use super::*;
 
+    fn connect_loopback(addr: &str) -> std::net::TcpStream {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if let Ok(stream) = std::net::TcpStream::connect(addr) {
+                return stream;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "server did not accept a request within 10 seconds",
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     #[test]
     fn every_cataloged_string_operation_has_runtime_dispatch() {
         let module = witchy_syntax::parser::parse_module("fn main() -> Int:\n    0\n")
@@ -927,7 +941,7 @@ fn main(console: Console, net: Net):
     #[test]
     fn net_server_listen_accept_roundtrip() {
         use std::io::{Read, Write};
-        use std::net::{TcpListener, TcpStream};
+        use std::net::TcpListener;
         // A free port to hand the witchy server (bind+drop to discover it).
         let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let addr = format!("127.0.0.1:{port}");
@@ -946,15 +960,7 @@ fn main(console: Console, net: Net):
         let server = std::thread::spawn(move || run_with(&src, ".", allow));
 
         // Connect once the server has bound (retry through the bind race).
-        let mut stream = None;
-        for _ in 0..100 {
-            if let Ok(s) = TcpStream::connect(&addr) {
-                stream = Some(s);
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        let mut stream = stream.expect("connect to witchy server");
+        let mut stream = connect_loopback(&addr);
         stream.write_all(b"GET /hi HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
         let mut resp = String::new();
         stream.read_to_string(&mut resp).unwrap();
@@ -1007,7 +1013,7 @@ fn main(console: Console, net: Net):
     #[test]
     fn serve_loopback_roundtrip() {
         use std::io::{Read, Write};
-        use std::net::{TcpListener, TcpStream};
+        use std::net::TcpListener;
         let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let addr = format!("127.0.0.1:{port}");
         let src = format!(
@@ -1031,16 +1037,11 @@ fn main(console: Console, net: Net):
         let server = std::thread::spawn(move || run_module(linked, ".", allow));
 
         let request = |raw: &str| -> String {
-            for _ in 0..100 {
-                if let Ok(mut s) = TcpStream::connect(&addr) {
-                    s.write_all(raw.as_bytes()).unwrap();
-                    let mut resp = String::new();
-                    s.read_to_string(&mut resp).unwrap();
-                    return resp;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            panic!("could not connect to server");
+            let mut s = connect_loopback(&addr);
+            s.write_all(raw.as_bytes()).unwrap();
+            let mut resp = String::new();
+            s.read_to_string(&mut resp).unwrap();
+            resp
         };
 
         let r1 = request("GET / HTTP/1.1\r\nHost: x\r\n\r\n");
@@ -1112,7 +1113,7 @@ fn main(console: Console, net: Net):
         // The status-named response constructors (created/bad_request/
         // unauthorized/no_content) render the right status line and reason.
         use std::io::{Read, Write};
-        use std::net::{TcpListener, TcpStream};
+        use std::net::TcpListener;
         let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let addr = format!("127.0.0.1:{port}");
         let src = format!(
@@ -1132,16 +1133,11 @@ fn main(console: Console, net: Net):
         let server = std::thread::spawn(move || run_module(linked, ".", allow));
 
         let request = |raw: &str| -> String {
-            for _ in 0..100 {
-                if let Ok(mut s) = TcpStream::connect(&addr) {
-                    s.write_all(raw.as_bytes()).unwrap();
-                    let mut resp = String::new();
-                    s.read_to_string(&mut resp).unwrap();
-                    return resp;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            panic!("could not connect to server");
+            let mut s = connect_loopback(&addr);
+            s.write_all(raw.as_bytes()).unwrap();
+            let mut resp = String::new();
+            s.read_to_string(&mut resp).unwrap();
+            resp
         };
 
         let r1 = request("POST /make HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n");
@@ -1160,7 +1156,7 @@ fn main(console: Console, net: Net):
     fn serve_method_not_allowed_vs_not_found() {
         // A known path with the wrong method is a 405; an unknown path is a 404.
         use std::io::{Read, Write};
-        use std::net::{TcpListener, TcpStream};
+        use std::net::TcpListener;
         let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let addr = format!("127.0.0.1:{port}");
         let src = format!(
@@ -1180,16 +1176,11 @@ fn main(console: Console, net: Net):
         let server = std::thread::spawn(move || run_module(linked, ".", allow));
 
         let request = |raw: &str| -> String {
-            for _ in 0..100 {
-                if let Ok(mut s) = TcpStream::connect(&addr) {
-                    s.write_all(raw.as_bytes()).unwrap();
-                    let mut resp = String::new();
-                    s.read_to_string(&mut resp).unwrap();
-                    return resp;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            panic!("could not connect to server");
+            let mut s = connect_loopback(&addr);
+            s.write_all(raw.as_bytes()).unwrap();
+            let mut resp = String::new();
+            s.read_to_string(&mut resp).unwrap();
+            resp
         };
 
         let ok = request("POST /items HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n");
@@ -1208,7 +1199,7 @@ fn main(console: Console, net: Net):
         // resolve the overloaded `get`/`post` by the tracked variable type (Router),
         // even though http/server/json all export `get`.
         use std::io::{Read, Write};
-        use std::net::{TcpListener, TcpStream};
+        use std::net::TcpListener;
         let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let addr = format!("127.0.0.1:{port}");
         let src = format!(
@@ -1231,16 +1222,11 @@ fn main(console: Console, net: Net):
         let server = std::thread::spawn(move || run_module(linked, ".", allow));
 
         let request = |raw: &str| -> String {
-            for _ in 0..100 {
-                if let Ok(mut s) = TcpStream::connect(&addr) {
-                    s.write_all(raw.as_bytes()).unwrap();
-                    let mut resp = String::new();
-                    s.read_to_string(&mut resp).unwrap();
-                    return resp;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            panic!("could not connect to server");
+            let mut s = connect_loopback(&addr);
+            s.write_all(raw.as_bytes()).unwrap();
+            let mut resp = String::new();
+            s.read_to_string(&mut resp).unwrap();
+            resp
         };
 
         let g = request("GET / HTTP/1.1\r\nHost: x\r\n\r\n");
@@ -1255,7 +1241,7 @@ fn main(console: Console, net: Net):
     fn serve_any_method_route_roundtrip() {
         // An `any` route answers every verb (the `*` wildcard method).
         use std::io::{Read, Write};
-        use std::net::{TcpListener, TcpStream};
+        use std::net::TcpListener;
         let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let addr = format!("127.0.0.1:{port}");
         let src = format!(
@@ -1275,16 +1261,11 @@ fn main(console: Console, net: Net):
         let server = std::thread::spawn(move || run_module(linked, ".", allow));
 
         let request = |raw: &str| -> String {
-            for _ in 0..100 {
-                if let Ok(mut s) = TcpStream::connect(&addr) {
-                    s.write_all(raw.as_bytes()).unwrap();
-                    let mut resp = String::new();
-                    s.read_to_string(&mut resp).unwrap();
-                    return resp;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            panic!("could not connect to server");
+            let mut s = connect_loopback(&addr);
+            s.write_all(raw.as_bytes()).unwrap();
+            let mut resp = String::new();
+            s.read_to_string(&mut resp).unwrap();
+            resp
         };
 
         let g = request("GET /ping HTTP/1.1\r\nHost: x\r\n\r\n");
@@ -1298,7 +1279,7 @@ fn main(console: Console, net: Net):
     #[test]
     fn serve_middleware_nest_and_notfound_roundtrip() {
         use std::io::{Read, Write};
-        use std::net::{TcpListener, TcpStream};
+        use std::net::TcpListener;
         let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let addr = format!("127.0.0.1:{port}");
         let src = format!(
@@ -1327,16 +1308,11 @@ fn main(console: Console, net: Net):
         let server = std::thread::spawn(move || run_module(linked, ".", allow));
 
         let request = |raw: &str| -> String {
-            for _ in 0..100 {
-                if let Ok(mut s) = TcpStream::connect(&addr) {
-                    s.write_all(raw.as_bytes()).unwrap();
-                    let mut resp = String::new();
-                    s.read_to_string(&mut resp).unwrap();
-                    return resp;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            panic!("could not connect to server");
+            let mut s = connect_loopback(&addr);
+            s.write_all(raw.as_bytes()).unwrap();
+            let mut resp = String::new();
+            s.read_to_string(&mut resp).unwrap();
+            resp
         };
 
         // Middleware tagged the response; root handler ran.
@@ -1459,7 +1435,7 @@ fn main(console: Console, net: Net):
     #[test]
     fn serve_form_field_roundtrip() {
         use std::io::{Read, Write};
-        use std::net::{TcpListener, TcpStream};
+        use std::net::TcpListener;
         let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let addr = format!("127.0.0.1:{port}");
         let src = format!(
@@ -1478,15 +1454,7 @@ fn main(console: Console, net: Net):
         let allow = vec![addr.clone()];
         let server = std::thread::spawn(move || run_module(linked, ".", allow));
 
-        let mut stream = None;
-        for _ in 0..100 {
-            if let Ok(s) = TcpStream::connect(&addr) {
-                stream = Some(s);
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        let mut stream = stream.expect("connect");
+        let mut stream = connect_loopback(&addr);
         let body = "name=witchy&lang=rust";
         let req = format!(
             "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n{}",
