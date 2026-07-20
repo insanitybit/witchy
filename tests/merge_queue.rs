@@ -2295,14 +2295,20 @@ fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
     let green_log = logs.join("green.log");
     fs::write(
         &green_log,
-        "    Finished `test` profile [unoptimized] target(s) in 20s\n\
+        "==> [1] tests (workspace) (t+0s)\n\
+         Finished `test` profile [unoptimized] target(s) in 20s\n\
          Starting 100 tests across 10 binaries\n\
          Summary [ 30.000s] 100 tests run: 100 passed\n\
          [1] tests (workspace) took 70s\n\
          [2] witchy fmt (std+examples) took 2s\n\
          WITCHY_TIMING {\"schema\":1,\"kind\":\"foreground\",\"step\":1,\"name\":\"tests (workspace)\",\"status\":\"green\",\"started_epoch\":10,\"finished_epoch\":81,\"elapsed_s\":71,\"gate_elapsed_s\":71}\n\
          WITCHY_TIMING {\"schema\":1,\"kind\":\"foreground\",\"step\":2,\"name\":\"witchy fmt (std+examples)\",\"status\":\"green\",\"started_epoch\":81,\"finished_epoch\":84,\"elapsed_s\":3,\"gate_elapsed_s\":74}\n\
-         WITCHY_TIMING {\"schema\":1,\"kind\":\"background\",\"step\":3,\"name\":\"clippy (deny warnings)\",\"status\":\"green\",\"started_epoch\":10,\"finished_epoch\":60,\"elapsed_s\":50,\"gate_elapsed_s\":50}\n",
+         WITCHY_TIMING {\"schema\":1,\"kind\":\"background\",\"step\":3,\"name\":\"clippy (deny warnings)\",\"status\":\"green\",\"started_epoch\":10,\"finished_epoch\":60,\"elapsed_s\":50,\"gate_elapsed_s\":50}\n\
+         ==> [6] queue infrastructure (isolated) (t+74s)\n\
+         Finished `test` profile [unoptimized] target(s) in 1s\n\
+         Starting 37 tests across 1 binary\n\
+         Summary [ 73.000s] 37 tests run: 37 passed\n\
+         [6] queue infrastructure (isolated) took 74s\n",
     )
     .expect("write green fixture log");
     let timeout_log = logs.join("timeout.log");
@@ -2381,7 +2387,7 @@ fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
     assert_eq!(report["phases_s"]["discovery_estimate"]["p50"], 21);
     assert_eq!(report["phases_s"]["execution"]["p50"], 30.0);
     assert_eq!(report["phases_s"]["test_stage"]["p50"], 71);
-    assert_eq!(report["phases_s"]["auxiliary"]["p50"], 2);
+    assert_eq!(report["phases_s"]["auxiliary"]["p50"], 76);
     assert_eq!(report["structured_phases_s"]["tests"]["p50"], 71);
     assert_eq!(report["structured_phases_s"]["fmt"]["p50"], 3);
     assert_eq!(report["structured_phases_s"]["clippy"]["p50"], 50);

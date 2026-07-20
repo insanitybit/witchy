@@ -70,6 +70,7 @@ LC_ALL=C awk -v meta="$attempts" '
         function reset_values() {
             compile=discovery=execution=test_stage=auxiliary=tests=binaries=""
             exact_tests=exact_fmt=exact_clippy=exact_wasm=exact_book=""
+            saw_stage_marker=in_workspace_tests=0
         }
         function duration(s, parts, n, i, value, total) {
             total=0
@@ -84,14 +85,24 @@ LC_ALL=C awk -v meta="$attempts" '
         }
         function consume(line, value) {
             gsub(/\033\[[0-9;]*m/, "", line)
-            if (line ~ /Finished `test` profile .* in /) {
+            # A gate can invoke nextest again for queue infrastructure, fuzz,
+            # or another isolated shard. Attribute unstructured Cargo/nextest
+            # lines only to the primary workspace stage; otherwise the last
+            # auxiliary invocation silently overwrites the compile, execution,
+            # test-count, and binary-count figures. Historical logs without
+            # stage markers retain the old whole-log fallback.
+            if (line ~ /^==> \[[0-9]+\] /) {
+                saw_stage_marker=1
+                in_workspace_tests=(line ~ /^==> \[1\] tests \(workspace\)/)
+            }
+            if ((!saw_stage_marker || in_workspace_tests) && line ~ /Finished `test` profile .* in /) {
                 value=line; sub(/^.* in /, "", value); compile=duration(value)
             }
-            if (line ~ /Starting [0-9]+ tests across [0-9]+ binaries/) {
+            if ((!saw_stage_marker || in_workspace_tests) && line ~ /Starting [0-9]+ tests across [0-9]+ binaries/) {
                 value=line; sub(/^.*Starting /, "", value); sub(/^[[:space:]]*/, "", value); split(value, fields, " ")
                 tests=fields[1]; binaries=fields[4]
             }
-            if (line ~ /Summary \[ *[0-9.]+s\]/) {
+            if ((!saw_stage_marker || in_workspace_tests) && line ~ /Summary \[ *[0-9.]+s\]/) {
                 value=line; sub(/^.*Summary \[ */, "", value); sub(/s\].*$/, "", value)
                 execution=value
             }
