@@ -175,7 +175,7 @@ fn missing_secret_values_are_exact_usage_errors() {
 fn secret_file_argument_preserves_exact_bytes() {
     let dir = workdir("secret-file");
     let secret = dir.join("token.txt");
-    std::fs::write(&secret, b"hunter2").unwrap();
+    std::fs::write(&secret, b" hunter2 ").unwrap();
     let src = write(
         &dir,
         "secret_file.witchy",
@@ -190,7 +190,7 @@ fn secret_file_argument_preserves_exact_bytes() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "hunter2\n");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), " hunter2 \n");
     assert!(out.stderr.is_empty());
 }
 
