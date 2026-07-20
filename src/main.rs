@@ -636,10 +636,10 @@ fn main() -> wasmtime::Result<()> {
             std::process::exit(1);
         };
         let result = (|| -> Result<(), String> {
-            let (linked, stem) = link_file_with_deps(&entry, &deps)?;
-            typeck::check(&linked).map_err(|e| e.to_string())?;
-            enforce_performance_modes(&linked, &stem)?;
-            let bytes = compile_linked_to_wasm(&linked)?;
+            let (checked, stem) = link_file_checked_with_deps(&entry, &deps)?;
+            let linked = checked.module();
+            enforce_performance_modes(linked, &stem)?;
+            let bytes = compile_checked_to_wasm(&checked)?;
             match target.as_str() {
                 "wasm" => {
                     if manifest.is_some() {
@@ -658,7 +658,7 @@ fn main() -> wasmtime::Result<()> {
                     })?;
                     let source = std::fs::read_to_string(manifest)
                         .map_err(|e| format!("cannot read trusted-exe manifest `{manifest}`: {e}"))?;
-                    let bindings = trusted_exe::build_binding_plan(&linked, &source)?;
+                    let bindings = trusted_exe::build_binding_plan(linked, &source)?;
                     let launcher = std::env::current_exe()
                         .map_err(|e| format!("cannot locate trusted-exe launcher template: {e}"))?;
                     trusted_exe::package_file(
@@ -1436,11 +1436,29 @@ fn link_file_with_mode(path: &str, mode: linker::LinkMode) -> Result<(ast::Modul
 /// fallback. This is the hook the witchy CLI front-end uses to hand the compiler
 /// resolved coven-dependency sources via `witchy compile <entry> --dep name=path`
 /// (rfcs/0004-self-hosted-cli.md §4).
+#[cfg(test)]
 fn link_file_with_deps(
     path: &str,
     deps: &std::collections::HashMap<String, std::path::PathBuf>,
 ) -> Result<(ast::Module, String), String> {
     link_file_with_deps_mode(path, deps, linker::LinkMode::Production)
+}
+
+fn link_file_checked(path: &str) -> Result<(pipeline::CheckedModule, String), String> {
+    link_file_checked_with_deps(path, &std::collections::HashMap::new())
+}
+
+fn link_file_checked_with_deps(
+    path: &str,
+    deps: &std::collections::HashMap<String, std::path::PathBuf>,
+) -> Result<(pipeline::CheckedModule, String), String> {
+    let (modules, entry_stem, user_modules) = load_file_modules(path, deps)?;
+    let checked = pipeline::link_checked_with_user_modules(modules, &entry_stem, &user_modules)
+        .map_err(|error| match error {
+            pipeline::PipelineError::Link(error) => error.to_string(),
+            pipeline::PipelineError::Type(error) => format!("{path}: {error}"),
+        })?;
+    Ok((checked, entry_stem))
 }
 
 fn link_file_with_deps_mode(
@@ -1554,14 +1572,11 @@ fn expand_file_source(path: &str) -> Result<String, String> {
 /// running the program (`witchy check`). Useful for CI and for validating
 /// programs you don't want to run — e.g. servers, which never return.
 fn check_file(path: &str) -> Result<(), String> {
-    let (linked, stem) = link_file(path)?;
-    // Parse/link errors carry a `file:` prefix from `link_file`; give type
-    // errors the same file context here at the CLI boundary (RFC-0072 phase 2)
-    // — the library keeps messages path-free so goldens stay deterministic.
-    typeck::check(&linked).map_err(|e| format!("{path}: {e}"))?;
-    enforce_performance_modes(&linked, &stem)?;
-    if linked_has_main(&linked) {
-        let _ = compile_linked_to_wasm(&linked)?;
+    let (checked, stem) = link_file_checked(path)?;
+    let linked = checked.module();
+    enforce_performance_modes(linked, &stem)?;
+    if linked_has_main(linked) {
+        let _ = compile_checked_to_wasm(&checked)?;
     }
     Ok(())
 }
@@ -2866,6 +2881,66 @@ fn compile_linked_to_wasm(linked: &ast::Module) -> Result<Vec<u8>, String> {
     Ok(artifact::embed_launch_contract(bytes, linked))
 }
 
+fn compile_checked_to_wasm(checked: &pipeline::CheckedModule) -> Result<Vec<u8>, String> {
+    let bytes = match codegen::compile_checked_module_binary(checked) {
+        codegen::LoweringOutcome::Lowered(bytes) => bytes,
+        codegen::LoweringOutcome::Unsupported(reason) => {
+            return Err(format!("cannot compile to WASM: {reason}"));
+        }
+        codegen::LoweringOutcome::Rejected(error) => {
+            return Err(format!("cannot compile to WASM: {error}"));
+        }
+    };
+    Ok(artifact::embed_launch_contract(bytes, checked.module()))
+}
+
+#[cfg(test)]
+mod checked_cli_pipeline_tests {
+    use super::*;
+
+    fn fixture_dir(label: &str) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "witchy_checked_pipeline_{label}_{}_{nonce}",
+            std::process::id(),
+        ));
+        std::fs::create_dir_all(&path).expect("create checked-pipeline directory");
+        path
+    }
+
+    #[test]
+    fn checked_file_pipeline_authenticates_the_module_given_to_codegen() {
+        let dir = fixture_dir("valid");
+        let path = dir.join("main.witchy");
+        std::fs::write(&path, "fn main() -> Int:\n    7\n")
+            .expect("write checked-pipeline fixture");
+
+        let (checked, stem) = link_file_checked(path.to_str().expect("UTF-8 path"))
+            .expect("link and check fixture");
+        assert_eq!(stem, "main");
+        let bytes = compile_checked_to_wasm(&checked).expect("compile checked fixture");
+        assert!(!bytes.is_empty());
+        std::fs::remove_dir_all(dir).expect("remove checked-pipeline directory");
+    }
+
+    #[test]
+    fn checked_file_pipeline_rejects_before_codegen() {
+        let dir = fixture_dir("invalid");
+        let path = dir.join("main.witchy");
+        std::fs::write(&path, "fn main() -> Int:\n    \"wrong\"\n")
+            .expect("write invalid checked-pipeline fixture");
+
+        let error = link_file_checked(path.to_str().expect("UTF-8 path"))
+            .expect_err("type-invalid source cannot construct checked codegen input");
+        assert!(error.contains("expected `Int`"), "{error}");
+        assert!(error.contains(path.to_str().expect("UTF-8 path")), "{error}");
+        std::fs::remove_dir_all(dir).expect("remove checked-pipeline directory");
+    }
+}
+
 /// A cheap fingerprint of the compiler build: the `witchy` binary's size + mtime.
 /// Any recompile of the compiler (or its bundled std) changes it, so the source
 /// cache can never serve codegen from an older compiler. A `stat`, not a read, so
@@ -3588,10 +3663,9 @@ fn run_prepared_wasm(
 /// produced module is the Tier-1 distribution artifact: run it with `witchy
 /// <out>` under its source-derived launch contract and imported host families.
 fn emit_wasm_file(path: &str, out: &str) -> Result<(), String> {
-    let (linked, _stem) = link_file(path)?;
-    typeck::check(&linked).map_err(|e| e.to_string())?;
-    enforce_performance_modes(&linked, _stem.as_str())?;
-    let binary = compile_linked_to_wasm(&linked)?;
+    let (checked, stem) = link_file_checked(path)?;
+    enforce_performance_modes(checked.module(), stem.as_str())?;
+    let binary = compile_checked_to_wasm(&checked)?;
     std::fs::write(out, &binary).map_err(|e| format!("cannot write `{out}`: {e}"))?;
     Ok(())
 }

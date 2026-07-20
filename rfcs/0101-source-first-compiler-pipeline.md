@@ -73,6 +73,10 @@ Implemented evidence:
   lowering remains available for lowerer tests and explicitly synthesized
   compiler modules, but these production surfaces can no longer separate a
   successful type check from the module passed to code generation.
+- The file compiler's `compile`, `check`, and `emit-wasm` paths retain that same
+  proof from filesystem linking through artifact generation. Type-invalid files
+  therefore cannot construct the value accepted by their codegen entrypoint;
+  focused CLI tests pin both the accepted and rejected boundaries.
 
 ## Required contract
 
