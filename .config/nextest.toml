@@ -70,6 +70,7 @@ path = "junit.xml"
 registry-serial = { max-threads = 2 }
 perf-serial = { max-threads = 1 }
 wasm-heavy = { max-threads = 2 }
+gate-cold-heavy = { max-threads = 4 }
 queue-concurrency-serial = { max-threads = 1 }
 
 # These two hermetic fixtures each create concurrent coordinator/metadata
@@ -81,6 +82,11 @@ queue-concurrency-serial = { max-threads = 1 }
 [[profile.default.overrides]]
 filter = 'binary_id(witchy::merge_queue) & test(/^concurrent_daemon_starts_create_exactly_one_coordinator$|^concurrent_dependency_updates_cannot_commit_opposite_cycle_edges$/)'
 test-group = 'queue-concurrency-serial'
+
+# Bound cold, compiler-heavy test binaries without serializing unrelated tests.
+[[profile.default.overrides]]
+filter = 'binary_id(witchy::glamour) | (binary_id(witchy::misc) & not test(/repository_census_matches_the_checked_in_type_resolved_snapshot/)) | binary_id(witchy::rfc0005) | binary_id(witchy::rfc0080) | binary_id(witchy::rfc0090) | binary_id(witchy::rfc0092) | binary_id(witchy::test_for_paths) | binary_id(witchy::worktree) | (binary_id(witchy::bin/witchy) & test(/^(cli_flag_tests|compiled_build_step_tests)::/)) | (binary_id(witchy-lower) & test(/^analysis::(fip_tests|last_use_tests)::/)) | (binary_id(witchy-syntax) & test(/^aliases::tests::/))'
+test-group = 'gate-cold-heavy'
 
 # Long-running regression guards: the at-scale perf programs and the
 # type-resolved repository census can exceed the default 135s slow-kill under
