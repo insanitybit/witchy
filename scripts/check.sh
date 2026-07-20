@@ -75,14 +75,15 @@ if [ -n "${WITCHY_GATE_SCOPE+x}" ] && [ -z "${WITCHY_STAGE_HEARTBEAT_LIMIT+x}" ]
 fi
 
 # Test discovery is bounded separately by scripts/nextest-list-wrapper.sh.
-# Machine-wide and eight-job execution both made cold, subprocess-heavy tests
-# exceed nextest's 135s per-test limit in production gates. Four jobs takes
-# longer overall, but has enough per-test headroom for the deterministic gate;
-# retain the explicit override for controlled retuning.
+# Cold, subprocess-heavy tests previously exceeded nextest's 135s limit at
+# eight-job execution. They now stay in nextest's four-wide gate-cold-heavy
+# group, while three consecutive exact-master runs proved that eight global
+# jobs keep the rest of the suite below five minutes. Retain the explicit
+# override for controlled retuning.
 gate_test_jobs="${WITCHY_GATE_TEST_JOBS:-}"
 if [ -n "${WITCHY_GATE_SCOPE+x}" ] && [ "$(uname -s)" = "Darwin" ] \
     && [ -z "$gate_test_jobs" ]; then
-    gate_test_jobs=4
+    gate_test_jobs=8
 fi
 case "$gate_test_jobs" in
     "") ;;

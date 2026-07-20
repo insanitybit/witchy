@@ -2438,7 +2438,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env_remove("WITCHY_GATE_QUEUE_INFRA")
         .env_remove("CARGO_PROFILE_TEST_STRIP")
         .env("WITCHY_GATE_SCOPE", "all")
-        .env("WITCHY_GATE_TEST_JOBS", "4")
+        .env_remove("WITCHY_GATE_TEST_JOBS")
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
         .env("FAKE_CARGO_ENV_FILE", &cargo_env_file)
         .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
@@ -2453,8 +2453,8 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     assert!(
         cargo_args
             .lines()
-            .any(|line| line.starts_with("nextest run -j 4 --workspace")),
-        "serialized gate did not bound nextest execution: {cargo_args}",
+            .any(|line| line.starts_with("nextest run -j 8 --workspace")),
+        "serialized gate did not use the proven eight-job default: {cargo_args}",
     );
     let cargo_env = fs::read_to_string(&cargo_env_file).expect("read fake cargo environment");
     assert!(
