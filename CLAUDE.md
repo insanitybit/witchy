@@ -103,15 +103,19 @@ table **quiet pre-mono pass** still uses `head_type_name` for local judgment
 (bare intrinsics the checker types but the empty table can't surface); those are
 the documented residual, not an invitation to grow the shape tables.
 
-## Work selection (release push)
+## Work selection
 
-- **Work `scratch/RELEASE-QUEUE.md` top-down.** It is the 0.1 blocking set
-  (RFC-0070) as an ordered queue with verify commands and done criteria. Do
-  not self-select bugs from `bugs/README.md` outside it without asking — the
-  ledger does not encode priority; the queue does. Its §CLOSE-ONLY section
-  lists rows already verified fixed: close them, don't re-fix them.
-- **Do not touch `impl/rfc-0005-stage2` or any externref work** — main-loop-led
-  (RFC-0070 D1).
+- **Follow the active user goal and live merge queue.** For 0.1 release work,
+  [`RELEASE-READINESS.md`](RELEASE-READINESS.md) is the tracked evidence ledger;
+  recheck its claims against current `master`, `./scripts/merge-queue.sh status`,
+  and the exact candidate gate before reporting readiness. The gitignored
+  `scratch/RELEASE-QUEUE.md` is a historical 2026-07-09 worklist, not a current
+  ownership or priority source. Its reproducers remain useful, but do not restart
+  completed tiers from that snapshot. Do not self-select bugs from
+  `bugs/README.md` without asking — that local ledger does not encode priority.
+- **Do not revive stale RFC-0005 stage branches.** RFC-0005 is implemented on
+  `master`; new representation defects need a current repro and a fresh branch,
+  not continuation from `impl/rfc-0005-stage2` or another historical worktree.
 - **Fix the generator, not the output.** A mistake made twice by an agent is a
   prompt/docs bug: fix it with a line here, in the relevant RFC, or in the
   queue entry — never by only hand-patching the latest instance.
