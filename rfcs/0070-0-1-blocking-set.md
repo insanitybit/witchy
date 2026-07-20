@@ -171,7 +171,11 @@ proof wrapper and shared `link_checked` entry points, and moves one production
 runtime path plus the embedded `pm` and `coven` compiler paths onto that
 boundary. Their codegen inputs now have to come from a `CheckedModule`; callers
 cannot accidentally omit the check while reconstructing the pipeline. This
-slice intentionally preserves the existing link-then-check order. D6 remains
+slice intentionally preserves the existing link-then-check order. The wrapper
+also exposes linker-retained declaration provenance and is the sole pipeline
+seam that authenticates an RFC-0082 declaration catalog against loader-supplied
+module ownership; it never reconstructs package identity from a compiler name.
+D6 remains
 incomplete until the frontend checks the source AST before destructive lowering
 and routes comptime-emitted nodes back through that same checked boundary.
 

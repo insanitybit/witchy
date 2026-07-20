@@ -4,7 +4,7 @@ title: Runtime Dynamic values and checked reflection
 status: proposed
 created: 2026-07-12
 superseded-by:
-tracking: stage 1 in progress — canonical package/declaration/type identities and deterministic closed descriptor plans live in witchy-types::runtime_type; source Dynamic conversion is not implemented yet
+tracking: stage 1 in progress — canonical package/declaration/type identities and deterministic closed descriptor plans live in witchy-types::runtime_type, and CheckedModule authenticates retained declarations against loader ownership; production package-coordinate transport and source Dynamic conversion are not implemented yet
 ---
 
 # RFC-0082: Runtime `Dynamic` values and checked reflection
@@ -193,8 +193,10 @@ identity plan alone is not presented as an implemented user feature.
 
 The linker now retains each declaration's compiler key, source-module key,
 local name, and kind before flattening, and the descriptor catalog can join
-that record to loader-assigned ownership without parsing names. The production
-package path does not yet supply the required ownership map: the self-hosted PM
+that record to loader-assigned ownership without parsing names. `CheckedModule`
+is the pipeline-owned join point, so descriptor consumers cannot bypass successful
+type checking or reach into linker internals. The production package path does
+not yet supply the required ownership map: the self-hosted PM
 currently reduces a selected dependency to `--dep alias=path`, discarding its
 package name, version, and source before Rust loading. Until a richer loader
 contract carries those authenticated coordinates (including toolchain-owned

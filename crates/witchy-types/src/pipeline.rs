@@ -5,13 +5,17 @@
 //! linked module is type-checked. Later slices can move work across this
 //! boundary without making downstream callers reconstruct the sequence.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 
 use witchy_syntax::ast::Module;
 use witchy_syntax::linker::{self, ComptimeExpander, LinkError, LinkMode, LinkedModule};
 use witchy_syntax::origin::OriginTable;
+use witchy_syntax::type_resolve::ResolvedDeclarations;
 
+use crate::runtime_type::{
+    ModuleLoadIdentity, RuntimeDeclarationCatalog, RuntimeTypeError,
+};
 use crate::typeck::{self, TypeError};
 
 /// A linked module that has successfully passed the ordinary runtime checker.
@@ -32,6 +36,24 @@ impl CheckedModule {
     /// Borrow generated-node origins retained by the link stage.
     pub fn origins(&self) -> &OriginTable {
         &self.linked.origins
+    }
+
+    /// Borrow the declaration provenance retained by linking.
+    pub fn declarations(&self) -> &ResolvedDeclarations {
+        &self.linked.declarations
+    }
+
+    /// Authenticate linked declarations against ownership supplied by the
+    /// loader. This is the only checked-pipeline path to an RFC-0082 catalog;
+    /// callers cannot recover package identity by parsing compiler names.
+    pub fn runtime_declaration_catalog(
+        &self,
+        module_owners: &BTreeMap<String, ModuleLoadIdentity>,
+    ) -> Result<RuntimeDeclarationCatalog, RuntimeTypeError> {
+        RuntimeDeclarationCatalog::from_resolved_declarations(
+            &self.linked.declarations,
+            module_owners,
+        )
     }
 
     /// Consume the proof wrapper and return the checked linked AST.
@@ -143,9 +165,13 @@ pub fn link_checked_with_user_modules_with_mode(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+    use crate::runtime_type::{
+        DeclarationKind, PackageCoordinate, PackageSource, RuntimeTypeError,
+    };
 
     static EXPANSIONS: AtomicUsize = AtomicUsize::new(0);
 
@@ -215,5 +241,78 @@ mod tests {
 
         assert_eq!(new, PipelineError::Type(old.clone()));
         assert_eq!(new.to_string(), old.to_string());
+    }
+
+    #[test]
+    fn checked_link_authenticates_its_retained_declarations() {
+        let modules = vec![(
+            "main".to_string(),
+            parse("type User:\n  User(Int)\n\nfn main() -> Int:\n  1\n"),
+        )];
+        let checked = link_checked(modules, "main", no_expand).expect("checked link");
+        let user_compiler_name = checked
+            .declarations()
+            .declarations
+            .iter()
+            .find(|declaration| {
+                declaration.source_module == "main" && declaration.local_name == "User"
+            })
+            .expect("retained user declaration")
+            .compiler_name
+            .clone();
+
+        let workspace = PackageCoordinate::new(
+            PackageSource::Workspace,
+            "example/app",
+            "0.1.0",
+        )
+        .expect("package coordinate");
+        let toolchain = PackageCoordinate::new(
+            PackageSource::Toolchain,
+            "witchy/stdlib",
+            "0.1.0",
+        )
+        .expect("toolchain coordinate");
+        let mut owners = BTreeMap::new();
+        for declaration in &checked.declarations().declarations {
+            let package = if declaration.source_module == "main" {
+                workspace.clone()
+            } else {
+                toolchain.clone()
+            };
+            owners
+                .entry(declaration.source_module.clone())
+                .or_insert_with(|| {
+                    ModuleLoadIdentity::new(
+                        package,
+                        [declaration.source_module.clone()],
+                    )
+                    .expect("module owner")
+                });
+        }
+        let owner = owners.get("main").expect("main owner").clone();
+        let catalog = checked
+            .runtime_declaration_catalog(&owners)
+            .expect("authenticated declarations");
+        let expected = owner
+            .declaration(DeclarationKind::Type, "User")
+            .expect("declaration identity");
+
+        assert_eq!(
+            catalog.resolve(&user_compiler_name, DeclarationKind::Type),
+            Some(&expected)
+        );
+
+        let mut missing_main = owners;
+        missing_main.remove("main");
+        let error = checked
+            .runtime_declaration_catalog(&missing_main)
+            .expect_err("missing loader ownership must fail closed");
+        assert_eq!(
+            error,
+            RuntimeTypeError::MissingModuleOwner {
+                module: "main".to_string(),
+            }
+        );
     }
 }
