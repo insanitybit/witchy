@@ -1,9 +1,9 @@
 ---
 rfc: 0079
 title: "Queue-sharded agent fan-out: implementer/reviewer/fixer loops"
-status: proposed
+status: deferred
 created: 2026-07-08
-tracking: Bun-in-Rust methodology review (bun.com/blog/bun-in-rust, 2026-07-08)
+tracking: "durable prerequisite implemented by scripts/rfc-status.sh: vague statuses and dropped RFC branches are machine-visible; full homogeneous-work fan-out is deferred until a concrete greater-than-four-agent workload is scheduled"
 related:
   - "0071 (idiomatic-witchy dogfood cut — proposed pilot workload)"
   - "0005 (externref core — deep change previously judged not agent-feasible)"
@@ -11,6 +11,15 @@ related:
 ---
 
 # RFC-0079: Queue-sharded agent fan-out
+
+> **2026-07-19 terminal disposition:** the durable prerequisite is implemented:
+> `scripts/rfc-status.sh --check` rejects vague `in-progress` metadata, proposed
+> or planned RFCs with no live work, dirty RFC worktrees without a committed
+> slice, and clean-ahead RFC branches that were never queued. A queued branch or
+> an accepted policy with explicit tracking is visible without being mislabeled
+> stale. The larger queue materializer and multi-role fan-out below remain
+> deferred until Witchy has a concrete homogeneous workload requiring more than
+> four agents; they are not an implied active project.
 
 ## Summary
 

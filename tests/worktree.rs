@@ -8,5 +8,7 @@
 mod create;
 #[path = "worktree/status.rs"]
 mod status;
+#[path = "worktree/rfc_status.rs"]
+mod rfc_status;
 #[path = "worktree/warm.rs"]
 mod warm;

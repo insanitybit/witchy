@@ -129,6 +129,9 @@ for p in "${paths[@]}"; do
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
             add "cargo nextest run --test worktree"
             add "./scripts/check.sh --queue-infra" ;;
+        scripts/rfc-status.sh)
+            add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
+            add "cargo nextest run --test worktree" ;;
         scripts/worktree-warm.sh)
             add "for f in scripts/*.sh; do bash -n \"\$f\"; done"
             add "cargo nextest run --test worktree"
