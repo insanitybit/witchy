@@ -8,6 +8,7 @@
 //! `Record` node and prints the named form back.
 
 use crate::ast::*;
+use crate::source_check::{AsyncLoweredModule, SourceLoweredModule};
 // foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 
@@ -21,8 +22,8 @@ fn anonymous_record_name(name: &str) -> bool {
 /// a field that the type doesn't declare, a repeated field, or (for construction
 /// without a spread) a missing field. A no-op for modules with no named-field
 /// construction.
-pub fn lower(module: Module) -> Result<Module, String> {
-    lower_impl(module, false)
+pub fn lower(module: AsyncLoweredModule) -> Result<SourceLoweredModule, String> {
+    lower_impl(module.into_module(), false).map(SourceLoweredModule::preserve)
 }
 
 /// Like [`lower`], but LEAVE a named-field construction of a record type this
@@ -31,8 +32,8 @@ pub fn lower(module: Module) -> Result<Module, String> {
 /// are merged in (BUG-342). The strict [`lower`] on the merged module still
 /// catches a genuine typo (an unknown record name) and lowers every remaining
 /// `Expr::Record`.
-pub fn lower_lenient(module: Module) -> Result<Module, String> {
-    lower_impl(module, true)
+pub fn lower_lenient(module: AsyncLoweredModule) -> Result<SourceLoweredModule, String> {
+    lower_impl(module.into_module(), true).map(SourceLoweredModule::preserve)
 }
 
 fn lower_impl(mut module: Module, lenient: bool) -> Result<Module, String> {

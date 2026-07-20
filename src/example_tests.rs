@@ -19406,8 +19406,10 @@ fn main(console: Console):
         let m = parser::parse_module("gen fn nums() -> Iter(Int):\n    yield 1\n    yield 2\n")
             .expect("parse");
         let checked = witchy_syntax::source_check::check(m).expect("source check");
-        let lowered = crate::generators::lower(checked)
-            .expect("lower")
+        let lowered = crate::generators::lower(checked).expect("lower");
+        let lowered = witchy_syntax::async_lower::lower(lowered).expect("lower async");
+        let lowered = witchy_syntax::records::lower_lenient(lowered)
+            .expect("finish source lowering")
             .into_module();
         let fn_names: Vec<&str> = lowered
             .items

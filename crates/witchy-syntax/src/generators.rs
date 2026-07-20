@@ -29,7 +29,7 @@
 //! Generators should be capability-free, since re-running repeats side effects.
 
 use crate::ast::*;
-use crate::source_check::SourceCheckedModule;
+use crate::source_check::{GeneratorsLoweredModule, SourceCheckedModule};
 
 const COUNTER: &str = "__i";
 const TARGET: &str = "__target";
@@ -37,9 +37,9 @@ const TARGET: &str = "__target";
 /// Rewrite every `gen fn` in the module into a helper + wrapper, and ensure the
 /// `iter`/`option` modules it relies on are imported. A no-op for modules
 /// without generators.
-pub fn lower(mut checked: SourceCheckedModule) -> Result<SourceCheckedModule, String> {
+pub fn lower(mut checked: SourceCheckedModule) -> Result<GeneratorsLoweredModule, String> {
     if !has_generator(checked.module()) {
-        return Ok(checked);
+        return Ok(GeneratorsLoweredModule::preserve(checked.into_module()));
     }
     let module = checked.module_mut();
     let mut items = Vec::with_capacity(module.items.len() + 1);
@@ -92,7 +92,7 @@ pub fn lower(mut checked: SourceCheckedModule) -> Result<SourceCheckedModule, St
     while module.import_lines.len() < module.imports.len() {
         module.import_lines.push(0);
     }
-    Ok(checked)
+    Ok(GeneratorsLoweredModule::preserve(checked.into_module()))
 }
 
 /// Validate the generator rules that lowering would otherwise erase.

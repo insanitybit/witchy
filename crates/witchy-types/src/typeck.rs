@@ -8651,7 +8651,15 @@ fn check_with_compiler_syntax(module: &Module, compiler_syntax_allowed: bool) ->
 
     // Lower named-field record construction (a no-op once the linker has done so,
     // but covers single-module paths like `check_str`).
-    let recs = witchy_syntax::records::lower(module.clone()).map_err(|message| TypeError { message })?;
+    let checked = witchy_syntax::source_check::check(module.clone())
+        .map_err(|message| TypeError { message })?;
+    let checked = witchy_syntax::generators::lower(checked)
+        .map_err(|message| TypeError { message })?;
+    let checked = witchy_syntax::async_lower::lower(checked)
+        .map_err(|message| TypeError { message })?;
+    let recs = witchy_syntax::records::lower(checked)
+        .map_err(|message| TypeError { message })?
+        .into_module();
     check_type_names(&recs)?;
     if !compiler_syntax_allowed {
         check_compiler_syntax_declarations(&recs)?;

@@ -884,8 +884,8 @@ pub fn link_with_user_modules_with_mode_and_origins(
         .collect();
 
     // Check source-only semantics before any pass below can erase generator or
-    // async nodes. The opaque proof is preserved through both destructive
-    // lowerings (RFC-0101).
+    // async nodes. Opaque typestates advance through each destructive lowering
+    // so no caller can skip a stage (RFC-0101).
     let modules: Vec<(String, crate::source_check::SourceCheckedModule)> = modules
         .into_iter()
         .map(|(name, module)| crate::source_check::check(module).map(|module| (name, module)))
@@ -895,7 +895,7 @@ pub fn link_with_user_modules_with_mode_and_origins(
     // Lower `gen fn`/`yield` to ordinary functions over `std/iter` first — this
     // adds `import iter`/`import option` to any generator module, so the std
     // pull-in below resolves them.
-    let modules: Vec<(String, crate::source_check::SourceCheckedModule)> = modules
+    let modules: Vec<(String, crate::source_check::GeneratorsLoweredModule)> = modules
         .into_iter()
         .map(|(n, m)| crate::generators::lower(m).map(|m| (n, m)))
         .collect::<Result<_, _>>()
@@ -953,7 +953,7 @@ pub fn link_with_user_modules_with_mode_and_origins(
             })
         })
         .collect();
-    let modules: Vec<(String, crate::source_check::SourceCheckedModule)> = modules
+    let modules: Vec<(String, crate::source_check::AsyncLoweredModule)> = modules
         .into_iter()
         .map(|(n, m)| {
             let mut known = qualified_view_fns.clone();
@@ -994,7 +994,7 @@ pub fn link_with_user_modules_with_mode_and_origins(
     // constructors / record updates, so later stages never see `Expr::Record`.
     let mut modules: Vec<(String, Module)> = modules
         .into_iter()
-        .map(|(n, m)| crate::records::lower_lenient(m.into_module()).map(|m| (n, m)))
+        .map(|(n, m)| crate::records::lower_lenient(m).map(|m| (n, m.into_module())))
         .collect::<Result<_, _>>()
         .map_err(|message| LinkError { message, location: None })?;
 
@@ -1109,7 +1109,15 @@ pub fn link_with_user_modules_with_mode_and_origins(
         if cached_pull_indices.contains(&k) {
             continue;
         }
-        *m = crate::records::lower_lenient(m.clone()).map_err(|message| LinkError { message, location: None })?;
+        let checked = crate::source_check::check(m.clone())
+            .map_err(|message| LinkError { message, location: None })?;
+        let checked = crate::generators::lower(checked)
+            .map_err(|message| LinkError { message, location: None })?;
+        let checked = crate::async_lower::lower(checked)
+            .map_err(|message| LinkError { message, location: None })?;
+        *m = crate::records::lower_lenient(checked)
+            .map_err(|message| LinkError { message, location: None })?
+            .into_module();
     }
     for k in pulled_std_start..modules.len() {
         if cached_pull_indices.contains(&k) {
@@ -1503,7 +1511,15 @@ pub fn link_with_user_modules_with_mode_and_origins(
     // (`Bogus(x: 9, ..p)` → "not a record type") — so the merge is the single
     // point where an unknown record type is caught, whether or not a later stage
     // (typeck/backend) re-runs the idempotent lowering.
-    let module = crate::records::lower(module).map_err(|message| LinkError { message, location: None })?;
+    let checked = crate::source_check::check(module)
+        .map_err(|message| LinkError { message, location: None })?;
+    let checked = crate::generators::lower(checked)
+        .map_err(|message| LinkError { message, location: None })?;
+    let checked = crate::async_lower::lower(checked)
+        .map_err(|message| LinkError { message, location: None })?;
+    let module = crate::records::lower(checked)
+        .map_err(|message| LinkError { message, location: None })?
+        .into_module();
     Ok(LinkedModule { module, origins, declarations })
 }
 
@@ -3917,7 +3933,12 @@ mod tests {
             .expect("links without a false named-field construction error");
             // The merged strict pass (run by typeck/backends) must resolve the
             // leftover `Expr::Record` to a positional constructor.
-            let lowered = crate::records::lower(linked).expect("merged records pass lowers it");
+            let checked = crate::source_check::check(linked).expect("source check");
+            let checked = crate::generators::lower(checked).expect("generator lowering");
+            let checked = crate::async_lower::lower(checked).expect("async lowering");
+            let lowered = crate::records::lower(checked)
+                .expect("merged records pass lowers it")
+                .into_module();
             assert!(!has_record(&lowered), "{entry}: imported named-field construction must lower to a Ctor");
         }
     }

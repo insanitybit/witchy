@@ -7375,7 +7375,15 @@ fn run_module_inner(
 /// lowering erases declarations; the resulting plan is then carried alongside
 /// the lowered module instead of rediscovering dispatch at evaluation time.
 fn prepare_runtime_module(module: Module) -> Result<(Module, WitnessPlan), RuntimeError> {
-    let module = witchy_syntax::records::lower(module).map_err(|message| RuntimeError { message })?;
+    let checked = witchy_syntax::source_check::check(module)
+        .map_err(|message| RuntimeError { message })?;
+    let checked = witchy_syntax::generators::lower(checked)
+        .map_err(|message| RuntimeError { message })?;
+    let checked = witchy_syntax::async_lower::lower(checked)
+        .map_err(|message| RuntimeError { message })?;
+    let module = witchy_syntax::records::lower(checked)
+        .map_err(|message| RuntimeError { message })?
+        .into_module();
     let catalog = witchy_types::witness::WitnessCatalog::from_module(&module);
     // Keep this ordering aligned with the compiled backend: trait lowering
     // resolves dynamic method slots before the type table records the concrete

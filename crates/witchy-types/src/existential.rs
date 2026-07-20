@@ -653,7 +653,12 @@ fn erase_update(value: Label, base: Envelope) -> Envelope:
 "#;
         let mut module = parser::parse_module(source).expect("parse directed coercions");
         let catalog = WitnessCatalog::from_module(&module);
-        module = witchy_syntax::records::lower(module).expect("lower named record updates");
+        let checked = witchy_syntax::source_check::check(module).expect("source check");
+        let checked = witchy_syntax::generators::lower(checked).expect("generator lowering");
+        let checked = witchy_syntax::async_lower::lower(checked).expect("async lowering");
+        module = witchy_syntax::records::lower(checked)
+            .expect("lower named record updates")
+            .into_module();
         module
             .items
             .retain(|item| !matches!(item, Item::Trait(_) | Item::Impl(_)));

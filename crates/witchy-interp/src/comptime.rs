@@ -489,7 +489,7 @@ fn normalize_generated_module(
     let module = witchy_syntax::generators::lower(module)?;
     origins.remap_items(module_name, &generator_mapping);
     let module = witchy_syntax::async_lower::lower(module)?;
-    witchy_syntax::records::lower_lenient(module.into_module())
+    witchy_syntax::records::lower_lenient(module).map(|module| module.into_module())
 }
 
 /// Mirror only the item-count/order part of generator lowering so side-table

@@ -280,7 +280,12 @@ mod tests {
 
     fn lowered(source: &str) -> Module {
         let parsed = parser::parse_module(source).expect("parse");
-        let records = witchy_syntax::records::lower(parsed).expect("record lowering");
+        let checked = witchy_syntax::source_check::check(parsed).expect("source check");
+        let checked = witchy_syntax::generators::lower(checked).expect("generator lowering");
+        let checked = witchy_syntax::async_lower::lower(checked).expect("async lowering");
+        let records = witchy_syntax::records::lower(checked)
+            .expect("record lowering")
+            .into_module();
         crate::traits::lower(records)
     }
 

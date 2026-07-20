@@ -3,7 +3,7 @@ rfc: 0101
 title: source-first compiler pipeline
 status: proposed
 created: 2026-07-20
-tracking: "implementation active: generator and async lowering now require a non-destructive source-check proof on handwritten and comptime-emitted paths; full linked semantic checking and the remaining destructive passes are still open"
+tracking: "implementation active: generator, async, and record lowering require a non-destructive source-check proof on handwritten and comptime-emitted paths; full linked semantic checking and trait lowering remain open"
 related:
   - "[0070](0070-0-1-blocking-set.md) (terminal 0.1 decision record and checked-module seam)"
   - "BUG-428 / BUG-429 / BUG-434 / BUG-436 (closed regression classes)"
@@ -13,29 +13,37 @@ related:
 
 ## Status and implementation progress
 
-Proposed, with the first proof boundary implemented. Generator and async
-lowering accept an opaque `SourceCheckedModule` produced by a non-destructive
-source check. Both the ordinary linker and compile-time emitted-item
-normalization cross that boundary before either lowering, and executable guards
-pin the function signatures and handwritten/generated diagnostic parity.
+Proposed, with the first proof boundary implemented. The destructive sequence
+is represented by opaque `SourceCheckedModule`, `GeneratorsLoweredModule`,
+`AsyncLoweredModule`, and terminal `SourceLoweredModule` typestates. Both the
+ordinary linker and compile-time emitted-item normalization enter that sequence
+through the non-destructive source check, and executable guards pin the
+function signatures and handwritten/generated diagnostic parity.
 
-This does not yet prove the complete contract. Record lowering still accepts a
-raw `Module`; traits and method dispatch are checked only after linking; and the
-proof currently covers source-only generator/async safety rules rather than the
-full imported-name and type semantics. Those are the next implementation
-slices. The RFC remains proposed until every destructive pass is behind the
-proof and the linked source checker owns the complete semantic contract.
+This does not yet prove the complete contract. Traits and method dispatch are
+checked only after linking, and the proof currently covers source-only
+generator/async safety rules rather than the full imported-name and type
+semantics. Those are the next implementation slices. The RFC remains proposed
+until every destructive pass is behind the proof and the linked source checker
+owns the complete semantic contract.
 
 Implemented evidence:
 
-- `witchy_syntax::source_check::check` is the sole constructor of the proof
-  consumed by generator and async lowering.
+- `witchy_syntax::source_check::check` is the sole constructor of the initial
+  proof; generator, async, and record lowering each require the immediately
+  preceding typestate, so no public caller can skip a destructive stage.
 - The production linker checks every initially supplied module before those
   lowerings, while comptime normalization checks the merged emitted module
   before lowering generated generator/async items.
 - Focused tests reject `yield` inside `region:` and async tail `region:` before
   lowering, inspect the destructive entrypoint signatures, and prove emitted
   and handwritten generators receive the same source diagnostic.
+- Strict and lenient record lowering are proof-gated at linker, type-checker,
+  interpreter, and Wasm assembly entrypoints; projection and record-update
+  backend parity tests remain green.
+- The source-check proof has no public raw-AST escape. Record lowering returns
+  the terminal `SourceLoweredModule`, which is the only public recovery point
+  for the runtime `Module`.
 
 ## Required contract
 
@@ -71,7 +79,7 @@ The linker still interleaves standard-library discovery, compile-time
 expansion, name/type resolution, and destructive transforms. The remaining
 work must move those boundaries incrementally without creating a second
 semantic pipeline or weakening the existing fail-closed checks. In dependency
-order: put record lowering behind the proof; establish non-destructive linked
-name/trait/method resolution; move complete source type checking before trait
-desugaring; then remove raw production `Module` escape hatches and promote the
-RFC only after backend and diagnostic-origin criteria are green.
+order: establish non-destructive linked name/trait/method resolution; move
+complete source type checking before trait desugaring; then remove raw
+production `Module` escape hatches and promote the RFC only after backend and
+diagnostic-origin criteria are green.

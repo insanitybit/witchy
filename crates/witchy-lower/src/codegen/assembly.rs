@@ -1492,7 +1492,15 @@ fn assemble_wir_module_with_structs_mode(
     use witchy_wir::wir_prelude::WasmTy;
     // Front-end, identical to `compile_module_with`.
     let runtime_module = strip_compiler_syntax_items_for_runtime(module.clone());
-    let recs = witchy_syntax::records::lower(runtime_module).map_err(|message| CodegenError { message })?;
+    let checked = witchy_syntax::source_check::check(runtime_module)
+        .map_err(|message| CodegenError { message })?;
+    let checked = witchy_syntax::generators::lower(checked)
+        .map_err(|message| CodegenError { message })?;
+    let checked = witchy_syntax::async_lower::lower(checked)
+        .map_err(|message| CodegenError { message })?;
+    let recs = witchy_syntax::records::lower(checked)
+        .map_err(|message| CodegenError { message })?
+        .into_module();
     let eq_types = eq_impl_types(&recs);
     let witness_catalog = witchy_types::witness::WitnessCatalog::from_module(&recs);
     let mut lowered = witchy_types::traits::lower_for_wasm(recs);

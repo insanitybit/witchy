@@ -44,11 +44,11 @@
 //! through the loop segment's parameter).
 
 use crate::ast::*;
-use crate::source_check::SourceCheckedModule;
+use crate::source_check::{AsyncLoweredModule, GeneratorsLoweredModule};
 // foldhash: compiler-internal keys only — see witchy-types/src/typeck.rs.
 use foldhash::{HashSet, HashSetExt as _};
 
-pub fn lower(checked: SourceCheckedModule) -> Result<SourceCheckedModule, String> {
+pub fn lower(checked: GeneratorsLoweredModule) -> Result<AsyncLoweredModule, String> {
     let view_fns: HashSet<String> = checked
         .module()
         .items
@@ -85,11 +85,11 @@ pub fn lower(checked: SourceCheckedModule) -> Result<SourceCheckedModule, String
 }
 
 pub(crate) fn lower_with_view_fns(
-    mut checked: SourceCheckedModule,
+    mut checked: GeneratorsLoweredModule,
     view_fns: &HashSet<String>,
-) -> Result<SourceCheckedModule, String> {
+) -> Result<AsyncLoweredModule, String> {
     if !has_async(checked.module()) {
-        return Ok(checked);
+        return Ok(AsyncLoweredModule::preserve(checked.into_module()));
     }
     let module = checked.module_mut();
     let mut counter: usize = 0;
@@ -150,7 +150,7 @@ pub(crate) fn lower_with_view_fns(
     while module.import_lines.len() < module.imports.len() {
         module.import_lines.push(0);
     }
-    Ok(checked)
+    Ok(AsyncLoweredModule::preserve(checked.into_module()))
 }
 
 /// Validate source-only async rules before lowering removes `async` and
@@ -1658,7 +1658,8 @@ mod tests {
 
     fn lower_module(module: Module) -> Result<Module, String> {
         let checked = crate::source_check::check(module)?;
-        lower(checked).map(SourceCheckedModule::into_module)
+        let checked = crate::generators::lower(checked)?;
+        lower(checked).map(AsyncLoweredModule::into_module)
     }
 
     fn int_type() -> Type {
