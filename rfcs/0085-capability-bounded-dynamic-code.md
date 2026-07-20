@@ -1,10 +1,10 @@
 ---
 rfc: 0085
 title: Capability-bounded dynamic code compilation and loading
-status: proposed
+status: deferred
 created: 2026-07-12
 superseded-by:
-tracking:
+tracking: "deferred beyond 0.1; revive only after RFC-0080/RFC-0082 and an authenticated loader plus enforceable authority-ceiling/isolation contract are implemented"
 ---
 
 # RFC-0085: Capability-bounded dynamic code compilation and loading

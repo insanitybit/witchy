@@ -1,10 +1,10 @@
 ---
 rfc: 0086
 title: Capability-gated native extensions and foreign libraries
-status: proposed
+status: deferred
 created: 2026-07-13
 superseded-by:
-tracking:
+tracking: "deferred beyond 0.1; revive only as a separately approved ABI and security effort after the trusted-exe boundary can represent a fixed approved NativeLoader module set"
 ---
 
 # RFC-0086: Capability-gated native extensions and foreign libraries

@@ -1,10 +1,10 @@
 ---
 rfc: 0084
 title: Scoped extensions and explicit interception
-status: proposed
+status: deferred
 created: 2026-07-12
 superseded-by:
-tracking:
+tracking: "deferred beyond 0.1; revive only after RFC-0082 dynamic dispatch is implemented and this RFC has explicit acceptance criteria for resolution, authority, parity, and tooling"
 ---
 
 # RFC-0084: Scoped extensions and explicit interception

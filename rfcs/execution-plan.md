@@ -1,19 +1,20 @@
 ---
-status: in-progress
-note: The single execution-ready index of every ACTIONABLE (proposed/partial) RFC. For an agent picking up implementation. Read the referenced RFC for the design; this file is the concrete, file-anchored plan, ordering, and guardrails. Identity/capability-phase history lives in implementation-roadmap.md; perf history in the round-N plans.
-updated: 2026-07-01
+status: superseded
+note: Historical 2026-07-01 pickup index, superseded after its listed implementation work landed. Use numbered RFC status, the release queue, the stale-RFC terminal-outcome ledger, and live merge-queue/worktree reports for current selection.
+updated: 2026-07-19
 ---
 
 # RFC execution plan
 
-This is the operational companion to the RFC corpus: for each RFC that still has
+This was the operational companion to the RFC corpus: for each RFC that still had
 work, the concrete entry points, ordered steps, definition of done, size, and
 risks — distilled so an implementing agent can start without re-deriving the map.
 The **design rationale lives in the RFC**; this file is the *how* and the *order*.
 
-Implemented RFCs are not listed (they are frozen records). The full status audit
-that produced this list is reflected in each RFC's `status:` field (corrected
-2026-07-01).
+This file is now a historical record, not a live pickup source. Its named next
+item, RFC-0005, subsequently shipped. Current work selection comes from numbered
+RFC status plus live queue/worktree evidence; stale cross-RFC work is reconciled
+in [the terminal-outcome ledger](stale-rfc-acceptance-ledger.md).
 
 ## Global rules (read first — these are hard)
 

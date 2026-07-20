@@ -1,11 +1,11 @@
 ---
-status: in-progress
-note: Design accepted, not yet built. Implemented in witchy (the self-hosted coven), not Rust.
+status: deferred
+note: Current Coven implements two-segment namespace/repository binding, not this provider/owner/name multi-provider model. Deferred beyond 0.1; revive only when remote Coven lifecycle is in the release/product contract and the issuer-map plus multi-provider acceptance test are scheduled together.
 ---
 
 # Coven Namespaces — Provider-Derived Identity, written in witchy
 
-Status: design + implementation plan. Not yet built. Supersedes the author-chosen
+Status: explicitly deferred design + implementation plan. Not yet built. It would supersede the author-chosen
 `ns/name` + per-namespace TOFU model in `rfcs/package-manager.md` §8 for the
 *naming and trusted-publishing* surface; the rest of that spec (footprint gate,
 two-phase publish, TUF, content addressing) is unchanged.

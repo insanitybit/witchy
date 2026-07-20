@@ -1,17 +1,17 @@
 ---
-status: in-progress
-note: Master ordering across the capability-model RFCs (0011-0013) and the identity/login RFCs (0009/0010/namespaces). Detailed identity workstreams live in identity-stack-implementation-plan.md; this file is the sequence and the decision points.
-progress: The identity track (Phases 3-5) shipped — HTTPS/TLS, OIDC verification, GitHub+Google login, and OIDC trusted publishing are all live and dogfooded. Capability-model substrate: RFC-0012 (File) and RFC-0013 (grants) have since SHIPPED (both `status: implemented`). The one remaining tail is RFC-0011's carried-state record + Dir/File refinement methods + retiring the `restrict` builtin — now tracked with concrete steps in execution-plan.md. See "Status of the artifacts" at the bottom.
+status: implemented
+note: Historical ordering record for the shipped capability-model and identity/login work. It is not an active implementation queue; current truth lives in the numbered RFCs and executable evidence.
+progress: The identity track and RFC-0011/RFC-0012/RFC-0013 capability substrate shipped. Provider-derived Coven namespaces are a separately deferred plan rather than an unfinished phase of this roadmap.
 ---
 
 # Implementation roadmap
 
-> **Status (2026-06-25): the goal shipped on the identity side.** "Log in with
+> **Terminal status (2026-07-19): implemented.** "Log in with
 > GitHub/Google" and OIDC trusted publishing are live and dogfooded in coven-web /
 > coven. The fast-track deviation noted under Phase 1 is what happened: the identity
 > track (Phases 3→4→5) was built on the existing `restrict` string before the full
-> RFC-0011 substrate, and the deeper capability-model work (File, carried-state,
-> grant documents) is the remaining tail. Per-phase truth is in
+> RFC-0011 substrate; that substrate, File, and grant documents subsequently
+> shipped. Per-phase historical detail is in
 > [Status of the artifacts](#status-of-the-artifacts) at the bottom; the phase
 > descriptions below are preserved as the original plan of record.
 
@@ -152,12 +152,12 @@ refinement, because everything below sits on it.
 
 ## Status of the artifacts
 
-Updated 2026-06-25. The identity track is built; the capability-model substrate is
-partial. Per phase:
+Closed 2026-07-19. The identity track and capability-model substrate are built.
+Per phase:
 
 | Phase | RFC / artifact | State | Evidence |
 |---|---|---|---|
-| 1 | RFC-0011 refinement | **partial** | Net tier shipped: typed `NetPolicy` + `confine.tcp/any_port/cidr/cidr_any/union`, `net.only`/`net.deny`. **Not** built: `Dir`/`File` policy methods, the RFC-0002 carried-state *record* (so library caps like `Postgres.table`), and retiring `restrict`/`subdir`. `restrict` survives as the `--net` string form. |
+| 1 | RFC-0011 refinement | **shipped** | Carried-state capability records, typed Net/Dir policies, method-based refinement, and retirement of the source-level raw-string `restrict` builtin are implemented; the string form remains only in grant/config serialization. |
 | 2 | RFC-0012 File capability | **shipped** | `status: implemented`. `File` as a first-class read/write capability; the Exec→File fold was REJECTED (Exec stays its own capability — see the RFC title). |
 | 3 | RFC-0009 HTTPS/TLS + RS256 + base64url | **shipped** | rustls 0.23 + aws-lc-rs (not s2n-tls); `tls:` connect-time scheme; `std/crypto` RS256; `std/encoding` base64url. `status: implemented`. |
 | 4 | OIDC verification (JWT/JWKS) + dev IdP | **shipped** | `std/jwt` (`verify_rs256`/`verify_oidc`/JWKS) + `std/oauth`; dev IdP in `src/idp.rs`. |
@@ -170,9 +170,7 @@ realized in coven), `rfcs/identity-stack-implementation-plan.md` (the WS-1…WS-
 for Phases 3-5, now mostly executed), and `rfcs/0014-remove-capability-firewall.md`
 (`proposed`, independent cleanup — retire `retain`/`without`).
 
-**The remaining tail** (updated 2026-07-01): RFC-0012 (File) and RFC-0013 (grants)
-have since SHIPPED. The only capability-model work left is **RFC-0011's
-carried-state record + `Dir`/`File` refinement methods + retiring the `restrict`
-builtin** — deferred by the Phase-1 fast-track decision so the identity goal could
-ship on the existing `restrict` string first. Concrete file-anchored steps for it
-are in [execution-plan.md](execution-plan.md) (Track A, RFC-0011 remainder).
+**Terminal disposition** (2026-07-19): RFC-0011, RFC-0012, and RFC-0013 are
+implemented. This roadmap is preserved as history and must not be used as a
+pickup queue. Provider-derived Coven namespaces remain explicitly deferred in
+[their own plan](coven-namespaces-plan.md).

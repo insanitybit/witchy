@@ -1,13 +1,14 @@
 ---
 rfc: 0095
 title: "Grimoire and trusted application installation from Coven"
-status: proposed
+status: deferred
 created: 2026-07-15
 superseded-by:
 tracking: >
-  Proposed. Rename the self-hosted package-manager application to Grimoire,
-  ship it through the trusted-executable model, and extend Coven releases with
-  signed target-specific application artifacts consumed by `witchy install`.
+  Deferred beyond 0.1, whose release-readiness contract explicitly excludes
+  integrated Coven installation. Revive when Coven artifact publication,
+  byte-safe atomic installation, and the required trusted-exe bindings are
+  scheduled as one product slice.
 related:
   - "0004 (self-hosted CLI — Grimoire remains the package-management frontend)"
   - "0005 (unforgeable capabilities — Grimoire delegates authority explicitly)"

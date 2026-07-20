@@ -1,17 +1,19 @@
 ---
 rfc: 0077
 title: "Test doubles in witchy — tests are permissive; the VM sandbox is the only boundary"
-status: accepted
+status: implemented
 created: 2026-07-08
 tracking: >
-  Accepted in slices. Sealed domain-data construction is implemented for the
+  Implemented. Sealed domain-data construction is available for the
   entry module under `witchy test` and remains production-strict elsewhere.
   Plain tests run with zero real host grants; unused effectful production code
   is pruned from the synthesized test artifact. `testing.mock_dir` is
   implemented as a read-only in-memory `Dir[Read]` backend for both test tiers.
   The real-capability integration tier is implemented for explicit `Dir` and
   `Net` grants, with manifest/lock-resolved dependency tests held at zero real
-  authority. Other mock backends and real capability kinds remain later work.
+  authority. Additional capability mocks or integration grant kinds are not an
+  open tail of this RFC; each requires a separately accepted proposal with the
+  same backend-parity and zero-authority evidence.
 related:
   - "0002 (user-definable capabilities — sealing is a correctness contract, not the security boundary)"
   - "0005 (unforgeable capabilities — production invariant; the VM, not the seal, is the perimeter)"
