@@ -1050,6 +1050,31 @@
         )
         .expect_err("an imported view may not cross async suspension");
         assert!(err.to_string().contains("borrowed view `w` remains live across `await`"), "{err}");
+
+        let list_api = "mode opt\n\npub fn view(xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n";
+        let indirect_main = "import api\nimport list\n\nfn main(console: Console):\n    var xs = [1]\n    let make_view = api.view\n    let w = make_view(xs)\n    console.print(\"${list.length(w)}\")\n    list.push(xs, 2)\n    console.print(\"${list.length(xs)}\")\n";
+        let linked = crate::pipeline::link(
+            vec![
+                ("api".into(), parser::parse_module(list_api).expect("parse opt list API")),
+                (
+                    "main".into(),
+                    parser::parse_module(indirect_main).expect("parse normal indirect caller"),
+                ),
+            ],
+            "main",
+        )
+        .expect("link normal indirect caller");
+        typeck::check(&linked).expect("an imported function value preserves its loan relation");
+        assert_eq!(
+            interpreter::run_module(linked, ".", Vec::new()).expect("run indirect view"),
+            ["1", "2"],
+            "interpreter ends the indirect view loan at last use",
+        );
+        assert_eq!(
+            run_linked_on_wasm(&[("api", list_api), ("main", indirect_main)], "main"),
+            ["1", "2"],
+            "compiled backend ends the indirect view loan at last use",
+        );
     }
 
     /// RFC-0088 baseline: update-and-extract returns the exact old leaf while

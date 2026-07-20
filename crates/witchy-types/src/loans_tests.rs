@@ -2,8 +2,37 @@
     //! checker (`check_str`) over a small `mode opt` program and asserts the loan
     //! rule accepts or rejects it with the documented diagnostic.
 
-    use crate::{loans::facts, typeck::check_str};
+    use crate::{
+        loans::facts,
+        typeck::{check, check_str},
+    };
     use witchy_syntax::ast::Item;
+
+    fn linked_normal(main_body: &str) -> Result<(), crate::typeck::TypeError> {
+        fn no_comptime(
+            _name: &str,
+            _module: &mut witchy_syntax::ast::Module,
+            _siblings: &[(String, witchy_syntax::ast::Module)],
+        ) -> Result<witchy_syntax::origin::OriginTable, String> {
+            Ok(witchy_syntax::origin::OriginTable::default())
+        }
+
+        let api = witchy_syntax::parser::parse_module(
+            "mode opt\n\npub fn view(xs: let('a) List(Int)) -> View(List(Int), 'a):\n    xs\n",
+        )
+        .expect("parse opt API");
+        let main = witchy_syntax::parser::parse_module(&format!(
+            "import api\nimport list\n\nfn consume(own xs: List(Int)) -> Int:\n    list.length(xs)\n\nfn clear(var xs: List(Int)):\n    xs = []\n\nfn main(console: Console):\n{main_body}"
+        ))
+        .expect("parse normal caller");
+        let linked = witchy_syntax::linker::link(
+            vec![("main".into(), main), ("api".into(), api)],
+            "main",
+            no_comptime,
+        )
+        .expect("link normal caller to opt API");
+        check(&linked)
+    }
 
     /// A borrowed-view helper plus a `main` body, as a `mode opt` module. Includes
     /// LOCAL `owned`/`send` helpers so these checker tests need no std linking
@@ -82,6 +111,50 @@
         ))
         .expect_err("passing the owner to a `var` param while a view is live is rejected");
         assert!(err.contains("`var` parameter"), "{err}");
+    }
+
+    #[test]
+    fn normal_callers_enforce_every_owner_conflict_from_an_opt_result() {
+        let cases = [
+            (
+                "reassign",
+                "    var xs = [1]\n    let w = api.view(xs)\n    xs = [2]\n    console.print(\"${list.length(w)}\")\n",
+                "reassigned",
+            ),
+            (
+                "move",
+                "    let xs = [1]\n    let w = api.view(xs)\n    let moved = move xs\n    console.print(\"${list.length(w) + list.length(moved)}\")\n",
+                "moved (`move`)",
+            ),
+            (
+                "own argument",
+                "    let xs = [1]\n    let w = api.view(xs)\n    let n = consume(xs)\n    console.print(\"${list.length(w) + n}\")\n",
+                "`own` parameter",
+            ),
+            (
+                "var argument",
+                "    var xs = [1]\n    let w = api.view(xs)\n    clear(xs)\n    console.print(\"${list.length(w)}\")\n",
+                "`var` parameter",
+            ),
+            (
+                "indirect call and mutation",
+                "    var xs = [1]\n    let make_view = api.view\n    let w = make_view(xs)\n    list.push(xs, 2)\n    console.print(\"${list.length(w)}\")\n",
+                "reassigned",
+            ),
+        ];
+
+        for (case, body, conflict) in cases {
+            let error = linked_normal(body)
+                .expect_err(&format!("normal caller must reject {case} while its opt view is live"));
+            let message = error.to_string();
+            assert!(message.contains(conflict), "{case}: {message}");
+            assert!(message.contains("view"), "{case}: {message}");
+        }
+
+        linked_normal(
+            "    var xs = [1]\n    let make_view = api.view\n    let w = make_view(xs)\n    console.print(\"${list.length(w)}\")\n    list.push(xs, 2)\n    console.print(\"${list.length(xs)}\")\n",
+        )
+        .expect("an imported indirect view ends its owner loan at the view's last use");
     }
 
     // --- non-lexical last use + .owned() (acceptance 3) ---------------------

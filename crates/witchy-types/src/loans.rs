@@ -231,12 +231,14 @@ fn check_lambda_body(
     sigs: &HashMap<String, BorrowSig>,
     facts: &mut LoanFacts,
 ) -> Result<(), TypeError> {
-    let uses_view = params
+    let forwarded = forwarding_lambda_sig(params, body, sigs);
+    let forwarded = forwarded.as_ref();
+    let explicitly_uses_view = params
         .iter()
         .filter_map(|param| param.ty.as_ref())
         .any(type_mentions_view)
         || ret.is_some_and(type_mentions_view);
-    if uses_view && !opt {
+    if explicitly_uses_view && !opt {
         return Err(terr(format!("borrowed views in `{name}` require `mode opt`")));
     }
     for ty in params.iter().filter_map(|param| param.ty.as_ref()) {
@@ -246,17 +248,22 @@ fn check_lambda_body(
         validate_nested_fn_borrows(ret, name)?;
     }
     let ret_life = ret.and_then(view_lifetime);
-    let return_owners: Vec<String> = ret_life
-        .map(|life| {
-            params
-                .iter()
-                .filter(|param| {
-                    param.ty.as_ref().and_then(view_lifetime).is_some_and(|input| input == life)
-                })
-                .map(|param| param.name.clone())
-                .collect()
-        })
-        .unwrap_or_default();
+    let return_owners: Vec<String> = if let Some(life) = ret_life {
+        params
+            .iter()
+            .filter(|param| {
+                param.ty.as_ref().and_then(view_lifetime).is_some_and(|input| input == life)
+            })
+            .map(|param| param.name.clone())
+            .collect()
+    } else {
+        forwarded
+            .filter(|sig| sig.returns_view)
+            .into_iter()
+            .flat_map(|sig| sig.owner_params.iter())
+            .filter_map(|(index, _)| params.get(*index).map(|param| param.name.clone()))
+            .collect()
+    };
     if ret_life.is_some() && return_owners.is_empty() {
         return Err(terr(format!(
             "`{name}` returns a view whose lifetime is not bound by a lambda parameter"
@@ -287,13 +294,40 @@ fn check_lambda_body(
         sigs,
         fn_name: name,
         facts,
-        returns_view: ret_life.is_some(),
+        returns_view: ret_life.is_some() || forwarded.is_some_and(|sig| sig.returns_view),
         return_owners,
         block_results: HashMap::new(),
         input_borrows,
         return_callable: ret.and_then(borrow_sig_from_fn_type).map(Box::new),
     };
     ctx.check_block_with(body, &[], &callable_params, true)
+}
+
+/// Recover the typed contract of a pure forwarding lambda. The linker represents
+/// an imported function value such as `api.view` as
+/// `fn(__eta0): api.view(__eta0)`; the callee signature remains the authority for
+/// conventions and output-to-input loans.
+fn forwarding_lambda_sig(
+    params: &[Param],
+    body: &Block,
+    sigs: &HashMap<String, BorrowSig>,
+) -> Option<BorrowSig> {
+    let [Stmt::Expr(Expr::Call { name, args })] = body.stmts.as_slice() else {
+        return None;
+    };
+    let sig = sigs.get(name)?;
+    if params.len() != args.len() || params.len() != sig.conventions.len() {
+        return None;
+    }
+    let forwards_positionally = params
+        .iter()
+        .zip(args)
+        .zip(&sig.conventions)
+        .all(|((param, arg), convention)| {
+            param.convention == *convention
+                && matches!(arg, Expr::Var(name) if name == &param.name)
+        });
+    forwards_positionally.then(|| sig.clone())
 }
 
 fn collect_lambdas<'a>(
@@ -1037,15 +1071,24 @@ impl LoanCtx<'_> {
             Expr::As { ty, .. } => {
                 borrow_sig_from_fn_type(ty).map(|sig| ("indirect function".into(), sig))
             }
-            Expr::Lambda { params, ret: Some(ret), .. } => {
-                let conventions = params.iter().map(|param| param.convention).collect();
-                let params: Vec<Type> = params
-                    .iter()
-                    .map(|param| param.ty.clone().unwrap_or_else(|| Type::Named("a".into(), vec![])))
-                    .collect();
-                borrow_sig_from_fn_type(&Type::Fn(params, Box::new(ret.clone()), conventions))
-                    .map(|sig| ("closure".into(), sig))
-            }
+            Expr::Lambda { params, body, ret } => ret
+                .as_ref()
+                .and_then(|ret| {
+                    let conventions = params.iter().map(|param| param.convention).collect();
+                    let params: Vec<Type> = params
+                        .iter()
+                        .map(|param| {
+                            param.ty.clone().unwrap_or_else(|| Type::Named("a".into(), vec![]))
+                        })
+                        .collect();
+                    borrow_sig_from_fn_type(&Type::Fn(
+                        params,
+                        Box::new(ret.clone()),
+                        conventions,
+                    ))
+                })
+                .or_else(|| forwarding_lambda_sig(params, body, self.sigs))
+                .map(|sig| ("closure".into(), sig)),
             _ => None,
         }
     }
