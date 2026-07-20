@@ -2422,7 +2422,13 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     .expect("write fake cargo");
     fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).expect("chmod fake cargo");
     let git = bin.join("git");
-    fs::write(&git, "#!/bin/sh\nexit 0\n").expect("write fake git");
+    fs::write(
+        &git,
+        "#!/bin/sh\n\
+         if [ \"$1\" = rev-parse ] && [ \"$2\" = HEAD ]; then printf '%s\\n' \"${FAKE_GIT_HEAD:-}\"; fi\n\
+         exit 0\n",
+    )
+    .expect("write fake git");
     fs::set_permissions(&git, fs::Permissions::from_mode(0o755)).expect("chmod fake git");
     let rustup = bin.join("rustup");
     fs::write(
@@ -2436,6 +2442,7 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
     let cargo_args_file = temp.path().join("cargo-args");
     let cargo_env_file = temp.path().join("cargo-env");
+    let proof_sha = "0123456789abcdef0123456789abcdef01234567";
     let output = Command::new("bash")
         .arg(root.join("scripts/check.sh"))
         .arg("--fast")
@@ -2444,6 +2451,8 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
         .env_remove("WITCHY_GATE_QUEUE_INFRA")
         .env_remove("CARGO_PROFILE_TEST_STRIP")
         .env("WITCHY_GATE_SCOPE", "all")
+        .env("WITCHY_GATE_CENSUS_PROOF_SHA", proof_sha)
+        .env("FAKE_GIT_HEAD", proof_sha)
         .env_remove("WITCHY_GATE_TEST_JOBS")
         .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
         .env("FAKE_CARGO_ENV_FILE", &cargo_env_file)
@@ -2461,6 +2470,14 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
             .lines()
             .any(|line| line.starts_with("nextest run -j 8 --workspace")),
         "serialized gate did not use the proven eight-job default: {cargo_args}",
+    );
+    assert!(
+        cargo_args.lines().any(|line| {
+            line.contains(
+                "not test(/^rfc0087_migration_census::repository_census_matches_the_checked_in_type_resolved_snapshot$/)",
+            )
+        }),
+        "serialized gate did not reuse its exact census proof: {cargo_args}",
     );
     let cargo_env = fs::read_to_string(&cargo_env_file).expect("read fake cargo environment");
     assert!(
@@ -2890,6 +2907,18 @@ fn prepare_rebaselines_stale_generated_snapshots_onto_the_gated_sha() {
     fs::create_dir(&bin).expect("create fake cargo dir");
     let cargo = bin.join("cargo");
     let incremental = fixture._temp.path().join("regen-cargo-incremental");
+    let proof_marker = fixture._temp.path().join("census-proof-sha");
+    let proof_gate = fixture._temp.path().join("capture-census-proof");
+    fs::write(
+        &proof_gate,
+        format!(
+            "#!/bin/sh\nprintf '%s' \"${{WITCHY_GATE_CENSUS_PROOF_SHA:-missing}}\" >{}\n",
+            proof_marker.display(),
+        ),
+    )
+    .expect("write census-proof capture gate");
+    fs::set_permissions(&proof_gate, fs::Permissions::from_mode(0o755))
+        .expect("chmod census-proof capture gate");
     fs::write(
         &cargo,
         format!(
@@ -2903,7 +2932,7 @@ fn prepare_rebaselines_stale_generated_snapshots_onto_the_gated_sha() {
 
     fixture.mq_ok(&["submit", "census-branch"], "true");
     let output = fixture
-        .mq_command(&["run", "--once"], "true")
+        .mq_command(&["run", "--once"], proof_gate.to_str().unwrap())
         .env("PATH", &path)
         .output()
         .expect("run rebaselining coordinator");
@@ -2941,6 +2970,11 @@ fn prepare_rebaselines_stale_generated_snapshots_onto_the_gated_sha() {
         "chore(gate): re-baseline generated artifacts",
         "the gated+merged tip is not the amended sha",
     );
+    assert_eq!(
+        fs::read_to_string(&proof_marker).expect("read exact census proof"),
+        git(&root, &["rev-parse", "master"]),
+        "the gate did not receive preparation's exact amended-tree proof",
+    );
 
     // A broken generator must not fail the candidate: regen is skipped.
     fs::write(&census, "#!/bin/sh\nexit 1\n").expect("break fake census generator");
@@ -2953,7 +2987,7 @@ fn prepare_rebaselines_stale_generated_snapshots_onto_the_gated_sha() {
     run_git(&root, &["switch", "master"]);
     fixture.mq_ok(&["submit", "census-broken"], "true");
     let output = fixture
-        .mq_command(&["run", "--once"], "true")
+        .mq_command(&["run", "--once"], proof_gate.to_str().unwrap())
         .env("PATH", &path)
         .output()
         .expect("run coordinator with broken generator");
@@ -2981,5 +3015,10 @@ fn prepare_rebaselines_stale_generated_snapshots_onto_the_gated_sha() {
         git(&root, &["show", "master:rfcs/0087-migration-census.tsv"]),
         "fresh",
         "a failing generator modified the snapshot",
+    );
+    assert_eq!(
+        fs::read_to_string(&proof_marker).expect("read failed-generator proof marker"),
+        "missing",
+        "a failing generator incorrectly authorized census-proof reuse",
     );
 }

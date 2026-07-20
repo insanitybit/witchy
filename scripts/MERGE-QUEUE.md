@@ -225,6 +225,15 @@ serialization, and all legs are still collected — and can still fail the
 gate — before green. Idle prewarm also builds both derived directories for the
 inactive generation.
 
+**Exact census-proof reuse.** Candidate preparation already builds and runs
+`rfc0087-census` to re-baseline its checked-in snapshot before the candidate
+SHA is captured. When that run exits green, emits no diagnostics, and matches
+the snapshot byte-for-byte, the coordinator passes the exact candidate SHA to
+`check.sh`; nextest then omits only the identical RFC-0087 freshness test.
+`check.sh` rechecks `HEAD`, and any failed generator, stderr output, SHA
+mismatch, or change to the proof protocol keeps the ordinary test. The first
+gate that changes the protocol therefore proves the slow path, never itself.
+
 **Diff-scoped fuzzing.** The differential fuzzer is the gate's single biggest
 test (~57s, a fixed-seed parity regression suite). `process_one` classifies the
 batch diff (`base..sha`) and passes `WITCHY_GATE_FUZZ` to check.sh: `skip` when

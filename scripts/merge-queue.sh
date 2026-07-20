@@ -829,7 +829,7 @@ group_is_busy() { # group_is_busy <pgid>
 # Sets gate_result to "green", "red", or "timeout: <why>". Never returns nonzero.
 gate_result=""
 gate_attempt=0
-run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infra-only] [cargo-target]
+run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infra-only] [cargo-target] [census-proof-sha]
     local log="$1"
     local progress_file="${log}.progress"
     local fuzz_mode="${2:-full}"
@@ -837,6 +837,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     local queue_infra="${4:-0}"
     local queue_infra_only="${5:-0}"
     local cargo_target_dir="${6:-target}"
+    local census_proof_sha="${7:-}"
     local selected_gate_cmd="$gate_cmd"
     if [ "$queue_infra_only" -eq 1 ] && [ "$gate_cmd_is_default" -eq 1 ]; then
         selected_gate_cmd="./scripts/check.sh --queue-infra"
@@ -860,7 +861,7 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     # execution as well doubled gate wall-clock (measured 2026-07-16: ~20.6 min
     # at width 4 vs the historical 8-10 min).
     rm -f "$progress_file"
-    ( cd "$gate_wt" && exec env "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
+    ( cd "$gate_wt" && exec env "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
     local gpid=$!
     active_gate_pgid="$gpid"
     if [ "$holding_lock" -eq 1 ] \
@@ -1327,7 +1328,8 @@ submission_is_represented() { # submission_is_represented <submitted-sha>
 rebaseline_generated_snapshots() { # rebaseline_generated_snapshots <base> <branch> <change-id> <attempt-id> <cargo-target>
     local rb_base="$1" rb_branch="$2" rb_change_id="$3" rb_attempt_id="$4"
     local rb_target="${5:-target}"
-    local pre_diff unsafe tmp files=""
+    local pre_diff unsafe tmp census_tmp census_err files="" census_run_ok=0 census_stderr_clean=0
+    census_proof_ready=0
     pre_diff="$(git -C "$gate_wt" diff --name-only --no-renames "$rb_base..HEAD" 2>/dev/null || true)"
     [ -n "$pre_diff" ] || return 0
     unsafe="$(printf '%s\n' "$pre_diff" | grep -vE '^(rfcs/|wiki/|bugs/|external-refs/|scratch/|security-eval/)' || true)"
@@ -1349,14 +1351,19 @@ rebaseline_generated_snapshots() { # rebaseline_generated_snapshots <base> <bran
         return 0
     fi
     tmp="$(mktemp "${TMPDIR:-/tmp}/witchy-rebaseline-XXXXXX")"
+    census_tmp="$(mktemp "${TMPDIR:-/tmp}/witchy-census-proof-XXXXXX")"
+    census_err="$(mktemp "${TMPDIR:-/tmp}/witchy-census-proof-error-XXXXXX")"
     # Each generator writes to a temp file first: a mid-run failure must never
     # truncate the committed snapshot, and an identical output must not dirty
     # the tree.
     if [ -f "$gate_wt/rfcs/0087-migration-census.tsv" ] \
-        && ( cd "$gate_wt" && "./$rb_target/debug/rfc0087-census" . ) >"$tmp" 2>/dev/null \
-        && ! cmp -s "$tmp" "$gate_wt/rfcs/0087-migration-census.tsv"; then
-        cat "$tmp" >"$gate_wt/rfcs/0087-migration-census.tsv"
-        files="rfcs/0087-migration-census.tsv"
+        && ( cd "$gate_wt" && "./$rb_target/debug/rfc0087-census" . ) >"$census_tmp" 2>"$census_err"; then
+        census_run_ok=1
+        [ ! -s "$census_err" ] && census_stderr_clean=1
+        if ! cmp -s "$census_tmp" "$gate_wt/rfcs/0087-migration-census.tsv"; then
+            cat "$census_tmp" >"$gate_wt/rfcs/0087-migration-census.tsv"
+            files="rfcs/0087-migration-census.tsv"
+        fi
     fi
     if [ -f "$gate_wt/spec/stdlib.md" ] && ls "$gate_wt"/std/*.witchy >/dev/null 2>&1 \
         && ( cd "$gate_wt" && "./$rb_target/debug/witchy" doc std/*.witchy ) >"$tmp" 2>/dev/null \
@@ -1364,19 +1371,29 @@ rebaseline_generated_snapshots() { # rebaseline_generated_snapshots <base> <bran
         cat "$tmp" >"$gate_wt/spec/stdlib.md"
         files="${files:+$files }spec/stdlib.md"
     fi
-    rm -f "$tmp"
-    [ -n "$files" ] || return 0
-    # shellcheck disable=SC2086 — the whitelisted paths never contain spaces.
-    if git -C "$gate_wt" add -- $files \
-        && git -C "$gate_wt" commit --quiet -m "chore(gate): re-baseline generated artifacts"; then
-        note "re-baselined generated artifacts for $rb_branch: $files"
-        record rebaselined "$rb_branch" change_id "$rb_change_id" attempt_id "$rb_attempt_id" \
-            files "$files" base "$rb_base"
-    else
-        note "rebaseline: commit failed; restoring the pristine candidate"
-        git -C "$gate_wt" reset --quiet -- $files 2>/dev/null || true
-        git -C "$gate_wt" checkout --quiet -- $files 2>/dev/null || true
+    if [ -n "$files" ]; then
+        # shellcheck disable=SC2086 — the whitelisted paths never contain spaces.
+        if git -C "$gate_wt" add -- $files \
+            && git -C "$gate_wt" commit --quiet -m "chore(gate): re-baseline generated artifacts"; then
+            note "re-baselined generated artifacts for $rb_branch: $files"
+            record rebaselined "$rb_branch" change_id "$rb_change_id" attempt_id "$rb_attempt_id" \
+                files "$files" base "$rb_base"
+        else
+            note "rebaseline: commit failed; restoring the pristine candidate"
+            git -C "$gate_wt" reset --quiet -- $files 2>/dev/null || true
+            git -C "$gate_wt" checkout --quiet -- $files 2>/dev/null || true
+        fi
     fi
+    # The full gate's census test executes this same binary and requires this
+    # same byte-for-byte stdout plus empty stderr. Preserve that successful
+    # exact-candidate proof for reuse after the candidate SHA is captured. A
+    # failed build/run, diagnostic, or failed rebaseline leaves no proof and
+    # check.sh runs the test normally.
+    if [ "$census_run_ok" -eq 1 ] && [ "$census_stderr_clean" -eq 1 ] \
+        && cmp -s "$census_tmp" "$gate_wt/rfcs/0087-migration-census.tsv"; then
+        census_proof_ready=1
+    fi
+    rm -f "$tmp" "$census_tmp" "$census_err"
     return 0
 }
 
@@ -1698,6 +1715,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     # idle prewarm can promote only between attempts, never switch target dirs
     # underneath a candidate already being prepared.
     local cargo_target_dir; cargo_target_dir="$(gate_target_generation)"
+    census_proof_ready=0
     rebaseline_generated_snapshots "$base" "$branch" "$change_id" "$attempt_id" \
         "$cargo_target_dir" || true
 
@@ -1754,6 +1772,17 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     local unsafe_paths=""
     if [ -n "$changed" ]; then
         unsafe_paths="$(echo "$changed" | grep -vE '^(rfcs/|wiki/|bugs/|external-refs/|scratch/|security-eval/)' || true)"
+    fi
+
+    # Preparation already ran the exact RFC-0087 freshness proof. Reuse it
+    # only when the proof protocol itself is unchanged in this candidate; the
+    # candidate SHA is checked again inside check.sh. Missing or doubtful proof
+    # simply retains the ordinary nextest test.
+    local census_proof_sha=""
+    if [ "$census_proof_ready" -eq 1 ] && [ -n "$changed" ] \
+        && ! printf '%s\n' "$changed" \
+            | grep -cE '^(\.config/nextest\.toml|Cargo\.(toml|lock)|scripts/(check|merge-queue)\.sh|tests/misc\.rs|tests/misc/rfc0087_migration_census\.rs)$' >/dev/null; then
+        census_proof_sha="$sha"
     fi
     if [ -n "$changed" ] && [ -z "$unsafe_paths" ] \
         && ! echo "$changed" | grep -cx 'rfcs/performance-modes\.md' >/dev/null; then
@@ -1865,7 +1894,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     note "gating $branch (rebased to $sha on $base; target=$cargo_target_dir; fuzz=$fuzz_mode; scope=$gate_scope; queue-infra=$queue_infra; queue-infra-only=$queue_infra_only); log: $log"
     local gate_started; gate_started="$(date +%s)"
     run_gate "$log" "$fuzz_mode" "$gate_scope" "$queue_infra" "$queue_infra_only" \
-        "$cargo_target_dir"
+        "$cargo_target_dir" "$census_proof_sha"
     local gate_finished; gate_finished="$(date +%s)"
     local gate_took=$((gate_finished - gate_started))
 

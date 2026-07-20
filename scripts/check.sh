@@ -208,6 +208,12 @@ if cargo nextest --version >/dev/null 2>&1; then
     # filterset (nextest ANDs, so join with ` and `).
     # Queue-infrastructure fixtures run only in their isolated shard below.
     excl="not binary(merge_queue)"
+    census_proof_sha="${WITCHY_GATE_CENSUS_PROOF_SHA:-}"
+    if [ -n "$census_proof_sha" ] \
+        && [ "$(git rev-parse HEAD 2>/dev/null || true)" = "$census_proof_sha" ]; then
+        excl="$excl and not test(/^rfc0087_migration_census::repository_census_matches_the_checked_in_type_resolved_snapshot$/)"
+        printf 'check.sh: reusing exact RFC-0087 census proof for %.12s\n' "$census_proof_sha"
+    fi
     [ "$full" -eq 0 ] && excl="$excl and not binary(e2e)"
     if [ -n "$fuzz_excl" ]; then
         excl="${excl:+$excl and }$fuzz_excl"
