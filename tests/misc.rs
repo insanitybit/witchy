@@ -28,6 +28,8 @@ mod spec_freshness;
 mod url_components;
 #[path = "misc/async_contract.rs"]
 mod async_contract;
+#[path = "misc/architecture.rs"]
+mod architecture;
 #[path = "misc/policy_sealing.rs"]
 mod policy_sealing;
 #[path = "misc/rfc0063_bytes_catalog.rs"]

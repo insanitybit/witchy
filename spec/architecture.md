@@ -41,10 +41,11 @@ identity.
 
 The compiler is a **Cargo workspace**: seven stage-aligned library crates under
 `crates/`, plus the `witchy` binary package (the CLI, the wasm-playground
-`cdylib`, and the native-only LSP/PM/idp tooling). Crate privacy makes the stage
-boundaries **compiler-enforced** — a pass cannot reach into another stage's
-internals. The crate graph is a DAG rooted at `witchy-syntax` and `witchy-wir`;
-everything flows downstream to the binary. To change a stage, edit its crate.
+`cdylib`, and the native-only LSP/PM/idp tooling). Package dependencies enforce
+the coarse stage DAG. Some stage internals and migration re-exports remain
+public within the workspace, so module-level interfaces are not yet uniformly
+narrow. The executable dependency ceiling and the remaining decomposition work
+are tracked in the [architecture and redundancy ledger](architecture-ledger.md).
 
 | Crate | Modules | Role |
 |---|---|---|
@@ -55,7 +56,7 @@ everything flows downstream to the binary. To change a stage, edit its crate.
 | `witchy-runtime` | `value`, `native`, `net`, `confine`, `runtime` *(native-only)* | The runtime `Value` (shared by interpreter + host), the native-function registry (FFI-as-capability), address/path confinement (`..`/absolute/symlink rejection, address-set policy — shared by both backends), and the wasmtime sandbox (capability-gated host functions, memory caps, epoch preemption). The first four are wasm-safe; `runtime` sits behind the `native` feature. |
 | `witchy-interp` | `interpreter`, `comptime`, `tagged`, `pipeline` | The tree-walking reference semantics — the parity ORACLE (`witchy parity`, `comptime`, test runner, build steps; *not* a user run path) — plus compile-time `comptime:` / `tag"…"` evaluation and the linker's injected compile-time expander. |
 | `witchy-caps` | `capabilities`, `grants` | The footprint analyzer (`witchy caps`, `caps-diff`) — recomputed from source, never trusted metadata — and grant-document (`--grants` TOML) parsing + cross-check (`witchy grants-check`). |
-| `witchy` *(binary)* | `main`, `lib` (the wasm-playground `cdylib`), `lsp`, `idp` | The thin CLI that wires the stages; the in-browser playground entry; the diagnostics LSP (diagnostics/completion/hover); and the trusted-publishing IdP *test* simulator (`coven-gen-issuer`/`coven-mint-token`) standing in for an external CI identity provider. |
+| `witchy` *(root package)* | `main`, `lib` (the wasm-playground `cdylib`), `lsp`, `idp` | The composition package: browser entrypoints, diagnostics LSP, trusted-publishing IdP *test* simulator, and native CLI orchestration. The CLI orchestration is still concentrated in `main.rs`; its decomposition into command-owned modules is tracked in the architecture ledger rather than described here as already thin. |
 
 `std/` is the standard library, written in witchy; `projects/pm`, `projects/coven`
 are the package manager and registry, self-hosted in witchy.
