@@ -68,7 +68,7 @@ old path after its callers move.
 
 | Responsibility | Current owner | Classification | Target owner and acceptance evidence |
 |---|---|---|---|
-| Argument parsing, help, dispatch | `src/main.rs` | EXTRACT | `src/cli` parses into typed commands and dispatches; golden help/flag/exit tests remain byte-identical. |
+| Argument parsing, help, dispatch | `src/cli.rs` owns help/version presentation plus shared mode, value, and secret decoding; `src/main.rs` still owns command-specific parsing and dispatch | EXTRACT | Extend `src/cli` toward typed commands while preserving golden help/flag/exit behavior byte-for-byte. |
 | Project and source loading | `main.rs` (`load_file_modules`, `link_file*`) plus browser resolution in `lib.rs` and LSP loading | CONSOLIDATE | One loader with filesystem and bundled-source providers; linking/checking tests cover dependency and diagnostic behavior. |
 | Check, expand, docs, capability reports | command arms and helpers in `main.rs` | EXTRACT | Domain command modules calling stable compiler services. Preserve stdout/stderr and status. |
 | AST to Wasm compilation and cache | `main.rs` (`compile_*`, `embedded_wasm_cached`) | EXTRACT | Native compilation service with one checked input contract and cache adapter. Wasm/parity tests guard bytes and behavior. |
@@ -87,7 +87,7 @@ registration. Adapters may vary inputs; they must not copy the implementation.
 |---|---|---|---|
 | Differential language matrix | `src/example_tests.rs` (about 26k lines) | EXTRACT | Shared parity harness with frontend, types/traits, ownership, collections, capabilities, stdlib, diagnostics, and project-fixture modules. |
 | Product workflows | `tests/e2e.rs` (about 5k lines) | EXTRACT | Shared process/registry lifecycle harness with package, trust, Coven, sandbox, publishing, and self-hosted workflow modules. |
-| CLI inline tests | Six test modules interleaved through `main.rs` | EXTRACT | Tests beside command/service owners; preserve assertions and test intent. |
+| CLI tests | Version, mode-flag, and secret-decoding tests now live beside `src/cli.rs`; five command/service test modules remain inline in `main.rs` | EXTRACT | Move each remaining suite with its command/service owner; preserve assertions and test intent. |
 | Stage tests | Unit/integration suites under each owning crate | KEEP | New regressions live at the narrowest stage, plus differential evidence for observable semantics. |
 | Browser/Glamour/misc drivers | Consolidated integration binaries with domain files | KEEP | Preserve the compile-throughput-oriented driver pattern. |
 
@@ -127,7 +127,7 @@ distributed mechanically.
 | `witchy-types/traits.rs` | ~5,700 | EXTRACT | Validation, method resolution, anonymous unions, refinement/conversion, and monomorphization. |
 | `tests/e2e.rs` | ~5,100 | EXTRACT | Product workflow modules over one lifecycle harness. |
 | `witchy-syntax/linker.rs` | ~4,900 | NARROW | Module graph/linking versus bundled-source registry and expansion orchestration. |
-| `src/main.rs` | ~4,300 | EXTRACT | Composition root versus command and service modules. |
+| `src/{main,cli}.rs` | ~4,155 + ~205 | EXTRACT | CLI presentation and shared argument decoding have one owner; continue separating dispatch, commands, and compiler/runtime services from the composition root. |
 | `witchy-lower/analysis.rs` | ~4,300 | NARROW | Separate ownership facts/summaries from diagnostics and optimization consumers only where interfaces become smaller. |
 | `witchy-runtime/runtime{.rs,/compiler.rs}` | ~3,580 + ~105 | EXTRACT | Compiler-service imports have one adapter owner; continue separating host import families, grant admission, and execution policy from the Wasm kernel. |
 
@@ -150,7 +150,7 @@ first structural work should use unowned contracts or WIR-helper domains.
 | `std_source` used as a general bundled lookup concept | NARROW | Standard and playground provenance represented separately. |
 | WIR helper implementation and dependency metadata | EXTRACT | The typed registry and memory/RC constructors are isolated in `registry.rs` and `memory.rs`. Continue moving remaining constructors into domain modules without duplicating the catalog; narrow public compatibility only in a separate census-backed slice. |
 | Repeated test process/temp/server lifecycle code | CONSOLIDATE | Shared harnesses preserve explicit assertions and cleanup behavior. |
-| Obsolete runtime-spike and hand-written-Wasm binary header | DELETE | Replace when the first `main.rs` composition-root slice lands. |
+| Obsolete runtime-spike and hand-written-Wasm binary header | DELETE | Removed by the first CLI ownership slice; the root now describes the native command application. |
 
 ## Mergeable execution order
 
