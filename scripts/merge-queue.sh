@@ -666,11 +666,11 @@ process_group_is_alive() {
     return 1
 }
 terminate_gate_process_group() {
-    local pgid="${1:-}" reason="${2:-abandoned gate}"
+    local pgid="${1:-}" reason="${2:-abandoned gate}" term_grace="${3:-1}"
     process_group_is_alive "$pgid" || return 0
     note "terminating gate process group $pgid ($reason)"
     kill -TERM -- "-$pgid" 2>/dev/null || true
-    sleep 1
+    sleep "$term_grace"
     process_group_is_alive "$pgid" || return 0
     kill -KILL -- "-$pgid" 2>/dev/null || true
 }
@@ -2146,29 +2146,44 @@ prewarm_gate() {
     # prewarm was cancelled mid-write. Recover only the validated inactive
     # generation, inside this cancellable process group; the active generation
     # and all of its derived directories remain untouched.
+    # Lower priority at the process-group root so every descendant inherits it.
+    # macOS utility QoS is the measured fix; nice is a conservative portable
+    # fallback, and env preserves today's behavior on a minimal host.
+    local prewarm_runner=(env)
+    if command -v taskpolicy >/dev/null 2>&1; then
+        prewarm_runner=(taskpolicy -c utility)
+    elif command -v nice >/dev/null 2>&1; then
+        prewarm_runner=(nice -n 10)
+    fi
     set -m
-    ( cd "$gate_wt" \
-        && { if [ "$reset_inactive" -eq 1 ]; then
-                 rm -rf -- "$inactive_target" "${inactive_target}-check" "${inactive_target}-clippy" \
-                     && mkdir -p "$inactive_target" "${inactive_target}-check" "${inactive_target}-clippy"
-             fi; } \
-        && tc_bin="" \
-        && { if command -v rustup >/dev/null 2>&1; then
-                 rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
-                 tc_bin="$(dirname "$(rustup which --toolchain stable rustc)")"
-             fi; } \
-        && export CARGO_TARGET_DIR="$inactive_target" CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= \
-        && cargo build --workspace >/dev/null 2>&1 \
-        && cargo test --workspace --no-run >/dev/null 2>&1 \
-        && { if [ -n "$tc_bin" ]; then
-                 env -u RUSTC -u RUSTFLAGS PATH="$tc_bin:$PATH" \
-                     cargo build --lib --no-default-features --target wasm32-unknown-unknown >/dev/null 2>&1
-             else
-                 cargo build --lib --no-default-features --target wasm32-unknown-unknown >/dev/null 2>&1
-             fi; } \
-        && CARGO_TARGET_DIR="${inactive_target}-clippy" cargo clippy --workspace --all-targets -- -D warnings >/dev/null 2>&1 \
-        && CARGO_TARGET_DIR="${inactive_target}-check" cargo check --workspace --all-targets >/dev/null 2>&1 \
-        && { [ ! -x scripts/warm-witchy-caches.sh ] || ./scripts/warm-witchy-caches.sh >/dev/null 2>&1; } ) &
+    ( exec "${prewarm_runner[@]}" bash -c '
+        set -euo pipefail
+        gate_wt="$1"
+        reset_inactive="$2"
+        inactive_target="$3"
+        cd "$gate_wt"
+        if [ "$reset_inactive" -eq 1 ]; then
+            rm -rf -- "$inactive_target" "${inactive_target}-check" "${inactive_target}-clippy"
+            mkdir -p "$inactive_target" "${inactive_target}-check" "${inactive_target}-clippy"
+        fi
+        tc_bin=""
+        if command -v rustup >/dev/null 2>&1; then
+            rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
+            tc_bin="$(dirname "$(rustup which --toolchain stable rustc)")"
+        fi
+        export CARGO_TARGET_DIR="$inactive_target" CARGO_INCREMENTAL=0 RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER=
+        cargo build --workspace >/dev/null 2>&1
+        cargo test --workspace --no-run >/dev/null 2>&1
+        if [ -n "$tc_bin" ]; then
+            env -u RUSTC -u RUSTFLAGS PATH="$tc_bin:$PATH" \
+                cargo build --lib --no-default-features --target wasm32-unknown-unknown >/dev/null 2>&1
+        else
+            cargo build --lib --no-default-features --target wasm32-unknown-unknown >/dev/null 2>&1
+        fi
+        CARGO_TARGET_DIR="${inactive_target}-clippy" cargo clippy --workspace --all-targets -- -D warnings >/dev/null 2>&1
+        CARGO_TARGET_DIR="${inactive_target}-check" cargo check --workspace --all-targets >/dev/null 2>&1
+        [ ! -x scripts/warm-witchy-caches.sh ] || ./scripts/warm-witchy-caches.sh >/dev/null 2>&1
+    ' prewarm "$gate_wt" "$reset_inactive" "$inactive_target" ) &
     local prewarm_pid=$!
     active_gate_pgid="$prewarm_pid"
     printf '%s\n' "$prewarm_pid" >"$lock/gate_pgid"
@@ -2178,7 +2193,9 @@ prewarm_gate() {
         if ls "$queue_dir"/*.json >/dev/null 2>&1; then
             cancelled=1
             note "queue work arrived; cancelling idle prewarm (pgid $prewarm_pid)"
-            terminate_gate_process_group "$prewarm_pid" "queued work arrived"
+            # Utility-QoS descendants can need more than the default one-second
+            # cleanup grace to run their TERM handlers under machine pressure.
+            terminate_gate_process_group "$prewarm_pid" "queued work arrived" 3
             break
         fi
         sleep 1
