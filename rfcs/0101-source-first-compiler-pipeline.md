@@ -50,9 +50,9 @@ Implemented evidence:
   The linker then applies the staged lowering sequence once and remaps origin
   ancestry across generator helpers and async segments, rebuilding structural
   child paths against the final lowered item trees. Runtime item-limit
-  accounting uses lowered projections without replacing the source AST, excludes temporary
-  derive blocks, and keeps projected implicit std imports visible to later
-  compile-time blocks. The linker reclassifies an unshadowed
+  accounting uses lowered projections without replacing the source AST,
+  excludes temporary derive blocks, and keeps projected implicit std imports
+  visible to later compile-time blocks. The linker reclassifies an unshadowed
   positional `module.function(...)` or constructor against that final import
   scope before source checking, type resolution, and sealing; lexical locals
   still shadow the module only within their real scopes. Generated async
@@ -62,6 +62,9 @@ Implemented evidence:
   module order cannot hide providers. The fact set includes qualified and
   `from`-imported functions plus the exact source-visible alias selected from
   public inherent methods.
+- Expanded bundled-module cache entries retain the lowered module and its
+  `OriginTable` as one versioned artifact. Cold and warm links therefore expose
+  identical generated-node provenance instead of dropping cached std origins.
 
 ## Required contract
 
@@ -102,8 +105,7 @@ complete source type checking before trait desugaring; then remove raw
 production `Module` escape hatches and promote the RFC only after backend and
 diagnostic-origin criteria are green.
 
-Expansion provenance also has two concrete residuals: derive-synthetic
-`comptime` blocks must inherit their source type's origin, and cached expanded
-std modules must retain the same `OriginTable` as a cold expansion. A labeled
-module call still requires its import to be present in parsed source; method
-labels remain rejected rather than being reinterpreted after an import appears.
+Expansion provenance still has one concrete residual: derive-synthetic
+`comptime` blocks must inherit their source type's origin. A labeled module call
+still requires its import to be present in parsed source; method labels remain
+rejected rather than being reinterpreted after an import appears.

@@ -573,31 +573,44 @@ pub struct LinkedModule {
 /// mentions `tag"` is never cached (see `pulled_std_cache_insert`). Keyed by
 /// the expander fn pointer so a non-standard `ComptimeExpander` gets its own
 /// entries, never another expander's output. Native cargo test executables add
-/// a second, process-shared tier below this map; it stores this exact `Module`
-/// AST in an executable-identity-keyed, integrity-checked envelope.
+/// a second, process-shared tier below this map; both tiers store the exact
+/// lowered `Module` and its compiler-only `OriginTable` in an executable-
+/// identity-keyed, integrity-checked envelope.
+#[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]
+#[derive(Clone)]
+struct CachedStdExpansion {
+    module: Module,
+    origins: crate::origin::OriginTable,
+}
+
 static PULLED_STD_EXPANSION_CACHE: std::sync::OnceLock<
-    std::sync::Mutex<HashMap<(usize, String), Module>>,
+    std::sync::Mutex<HashMap<(usize, String), CachedStdExpansion>>,
 > = std::sync::OnceLock::new();
 
-fn pulled_std_cache_get(expand: ComptimeExpander, name: &str) -> Option<Module> {
-    if let Some(module) = PULLED_STD_EXPANSION_CACHE
+fn pulled_std_cache_get(expand: ComptimeExpander, name: &str) -> Option<CachedStdExpansion> {
+    if let Some(expansion) = PULLED_STD_EXPANSION_CACHE
         .get()
         .and_then(|cache| cache.lock().ok())
         .and_then(|map| map.get(&(expand as usize, name.to_string())).cloned())
     {
-        return Some(module);
+        return Some(expansion);
     }
 
-    let module = persistent_std_cache_get(expand, name)?;
+    let expansion = persistent_std_cache_get(expand, name)?;
     let cache =
         PULLED_STD_EXPANSION_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
     if let Ok(mut map) = cache.lock() {
-        map.insert((expand as usize, name.to_string()), module.clone());
+        map.insert((expand as usize, name.to_string()), expansion.clone());
     }
-    Some(module)
+    Some(expansion)
 }
 
-fn pulled_std_cache_insert(expand: ComptimeExpander, name: &str, module: &Module) {
+fn pulled_std_cache_insert(
+    expand: ComptimeExpander,
+    name: &str,
+    module: &Module,
+    origins: &crate::origin::OriginTable,
+) {
     // Tagged-literal expansion reads sibling modules, whose expansion state at
     // that point depends on the link set's pull order — so a std source that
     // even mentions `tag"` (in code, an emitted string, or a comment) is
@@ -607,14 +620,15 @@ fn pulled_std_cache_insert(expand: ComptimeExpander, name: &str, module: &Module
     }
     let cache =
         PULLED_STD_EXPANSION_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let expansion = CachedStdExpansion { module: module.clone(), origins: origins.clone() };
     if let Ok(mut map) = cache.lock() {
-        map.insert((expand as usize, name.to_string()), module.clone());
+        map.insert((expand as usize, name.to_string()), expansion.clone());
     }
-    persistent_std_cache_insert(expand, name, module);
+    persistent_std_cache_insert(expand, name, &expansion);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-const PERSISTENT_STD_CACHE_MAGIC: &[u8] = b"witchy-std-expansion-cache\x01";
+const PERSISTENT_STD_CACHE_MAGIC: &[u8] = b"witchy-std-expansion-cache\x02";
 
 #[cfg(not(target_arch = "wasm32"))]
 const PERSISTENT_STD_CACHE_MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -681,7 +695,7 @@ fn persistent_std_cache_path(expand: ComptimeExpander, name: &str) -> Option<std
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn persistent_std_cache_decode(bytes: &[u8]) -> Option<Module> {
+fn persistent_std_cache_decode(bytes: &[u8]) -> Option<CachedStdExpansion> {
     let header = PERSISTENT_STD_CACHE_MAGIC.len().checked_add(32)?;
     if bytes.len() < header
         || bytes.len() > header + PERSISTENT_STD_CACHE_MAX_BYTES
@@ -697,7 +711,7 @@ fn persistent_std_cache_decode(bytes: &[u8]) -> Option<Module> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn persistent_std_cache_get(expand: ComptimeExpander, name: &str) -> Option<Module> {
+fn persistent_std_cache_get(expand: ComptimeExpander, name: &str) -> Option<CachedStdExpansion> {
     let path = persistent_std_cache_path(expand, name)?;
     let max_envelope = PERSISTENT_STD_CACHE_MAGIC.len() + 32 + PERSISTENT_STD_CACHE_MAX_BYTES;
     if std::fs::metadata(&path).ok()?.len() > max_envelope as u64 {
@@ -715,11 +729,15 @@ fn persistent_std_cache_get(expand: ComptimeExpander, name: &str) -> Option<Modu
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn persistent_std_cache_insert(expand: ComptimeExpander, name: &str, module: &Module) {
+fn persistent_std_cache_insert(
+    expand: ComptimeExpander,
+    name: &str,
+    expansion: &CachedStdExpansion,
+) {
     let Some(path) = persistent_std_cache_path(expand, name) else {
         return;
     };
-    let Ok(payload) = postcard::to_stdvec(module) else {
+    let Ok(payload) = postcard::to_stdvec(expansion) else {
         return;
     };
     if payload.len() > PERSISTENT_STD_CACHE_MAX_BYTES {
@@ -747,12 +765,12 @@ fn persistent_std_cache_insert(expand: ComptimeExpander, name: &str, module: &Mo
 }
 
 #[cfg(target_arch = "wasm32")]
-fn persistent_std_cache_get(_: ComptimeExpander, _: &str) -> Option<Module> {
+fn persistent_std_cache_get(_: ComptimeExpander, _: &str) -> Option<CachedStdExpansion> {
     None
 }
 
 #[cfg(target_arch = "wasm32")]
-fn persistent_std_cache_insert(_: ComptimeExpander, _: &str, _: &Module) {}
+fn persistent_std_cache_insert(_: ComptimeExpander, _: &str, _: &CachedStdExpansion) {}
 
 /// Link-time policy for entry-specific privileges.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1360,9 +1378,10 @@ pub fn link_with_user_modules_with_mode_and_origins(
     // shadow bundled std names, so its dependencies always resolve canonically.
     for prelude in PRELUDE_MODULES {
         if !modules.iter().any(|(n, _)| n == prelude) {
-            if let Some(m) = pulled_std_cache_get(expand, prelude) {
+            if let Some(cached) = pulled_std_cache_get(expand, prelude) {
                 cached_pull_indices.insert(modules.len());
-                modules.push((prelude.to_string(), m));
+                origin_tables.insert(prelude.to_string(), cached.origins);
+                modules.push((prelude.to_string(), cached.module));
                 continue;
             }
             let src = std_source(prelude).ok_or_else(|| LinkError {
@@ -1387,9 +1406,10 @@ pub fn link_with_user_modules_with_mode_and_origins(
         let imports = modules[i].1.imports.clone();
         for imp in imports {
             if !modules.iter().any(|(n, _)| n == &imp) {
-                if let Some(m) = pulled_std_cache_get(expand, &imp) {
+                if let Some(cached) = pulled_std_cache_get(expand, &imp) {
                     cached_pull_indices.insert(modules.len());
-                    modules.push((imp.clone(), m));
+                    origin_tables.insert(imp.clone(), cached.origins);
+                    modules.push((imp.clone(), cached.module));
                 } else if let Some(src) = std_source(&imp) {
                     let m = crate::parser::parse_module(src).map_err(|e| LinkError {
                         message: format!("std module `{imp}`: {e}"),
@@ -1457,7 +1477,10 @@ pub fn link_with_user_modules_with_mode_and_origins(
             if imports_before.0 == modules[k].1.imports
                 && imports_before.1 == modules[k].1.from_imports
             {
-                pulled_std_cache_insert(expand, &name, &modules[k].1);
+                let origins = origin_tables
+                    .get(&name)
+                    .expect("every expanded module retains its origin table");
+                pulled_std_cache_insert(expand, &name, &modules[k].1, origins);
             }
         }
     }
@@ -3657,6 +3680,58 @@ mod tests {
         _: &[(String, Module)],
     ) -> Result<crate::origin::OriginTable, String> {
         Ok(crate::origin::OriginTable::default())
+    }
+
+    #[test]
+    fn pulled_std_cache_preserves_cold_and_warm_origins() {
+        fn origin_expand(
+            name: &str,
+            module: &mut Module,
+            _: &[(String, Module)],
+        ) -> Result<crate::origin::OriginTable, String> {
+            if name != "string" {
+                return Ok(crate::origin::OriginTable::default());
+            }
+            let mut generated = crate::parser::parse_module(
+                "pub fn cached_origin(text: String) -> String:\n    text\n",
+            )
+            .map_err(|error| error.to_string())?;
+            let index = module.items.len();
+            module.items.append(&mut generated.items);
+            let origin = crate::origin::ExpansionOrigin {
+                definition: crate::origin::SourceSpan::line("cache-definition", 7),
+                invocation: crate::origin::SourceSpan::line("cache-invocation", 11),
+                hole_ancestry: Vec::new(),
+            };
+            let mut origins = crate::origin::OriginTable::default();
+            origins.record_item_tree(name, index, &module.items[index], origin);
+            Ok(origins)
+        }
+
+        let source = "fn main(console: Console):\n    console.print(string.cached_origin(\"x\"))\n";
+        let cold = link_with_origins(
+            vec![(
+                "user".into(),
+                crate::parser::parse_module(source).expect("cold source parses"),
+            )],
+            "user",
+            origin_expand,
+        )
+        .expect("cold link succeeds");
+        let warm = link_with_origins(
+            vec![(
+                "user".into(),
+                crate::parser::parse_module(source).expect("warm source parses"),
+            )],
+            "user",
+            origin_expand,
+        )
+        .expect("warm link succeeds");
+
+        assert_eq!(warm.origins, cold.origins);
+        assert!(cold.origins.nodes().iter().any(|entry| {
+            entry.origin.definition.module == "cache-definition"
+        }));
     }
 
     /// Link `lib` (module `sealed_lib`) with `user` (module `user`, the entry) and
