@@ -186,6 +186,29 @@ mod tests {
     }
 
     #[test]
+    fn generator_return_contract_precedes_destructive_lowering() {
+        let error = check(parse("gen fn bad() -> Int:\n  yield 1\n"))
+            .expect_err("source check must reject a non-Iter generator result");
+        assert_eq!(
+            error,
+            "generator `bad` must declare exactly one element type as `-> Iter(a)`"
+        );
+    }
+
+    #[test]
+    fn linked_source_rechecks_generated_generator_return_contract() {
+        let error = resolve_linked_source(
+            vec![("main".into(), parse("gen fn emitted() -> Int:\n  yield 1\n"))],
+            &std::collections::HashSet::new(),
+        )
+        .expect_err("expanded source must re-enter the generator contract");
+        assert_eq!(
+            error.message,
+            "module `main`: expanded source: generator `emitted` must declare exactly one element type as `-> Iter(a)`"
+        );
+    }
+
+    #[test]
     fn async_tail_region_error_precedes_destructive_lowering() {
         let module = parse(
             "async fn bad() -> Int:\n  if true:\n    region:\n      1\n",

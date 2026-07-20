@@ -123,11 +123,13 @@ pub(crate) fn validate_source(module: &Module) -> Result<(), String> {
     for item in &module.items {
         match item {
             Item::Function(function) if function.is_gen => {
+                validate_generator_return(function)?;
                 validate_generator_block(&function.body, &function.name, false)?;
             }
             Item::Impl(definition) => {
                 for method in &definition.methods {
                     if method.is_gen {
+                        validate_generator_return(method)?;
                         validate_generator_block(&method.body, &method.name, false)?;
                     }
                 }
@@ -136,6 +138,16 @@ pub(crate) fn validate_source(module: &Module) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn validate_generator_return(function: &Function) -> Result<(), String> {
+    if iter_elem(&function.ret).is_some() {
+        return Ok(());
+    }
+    Err(format!(
+        "generator `{}` must declare exactly one element type as `-> Iter(a)`",
+        function.name
+    ))
 }
 
 fn validate_generator_block(block: &Block, name: &str, in_region: bool) -> Result<(), String> {

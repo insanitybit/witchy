@@ -3731,6 +3731,33 @@ mod tests {
     }
 
     #[test]
+    fn emitted_generator_reenters_source_return_check() {
+        fn emit_invalid_generator(
+            name: &str,
+            module: &mut Module,
+            _: &[(String, Module)],
+        ) -> Result<crate::origin::OriginTable, String> {
+            if name == "main" {
+                let mut emitted = crate::parser::parse_module(
+                    "gen fn emitted() -> Int:\n    yield 1\n",
+                )
+                .map_err(|error| error.to_string())?;
+                module.items.append(&mut emitted.items);
+            }
+            Ok(crate::origin::OriginTable::default())
+        }
+
+        let module = crate::parser::parse_module("fn main() -> Int:\n    0\n")
+            .expect("parse source fixture");
+        let error = link(vec![("main".into(), module)], "main", emit_invalid_generator)
+            .expect_err("emitted generator must re-enter the source checker");
+        assert_eq!(
+            error.message,
+            "module `main`: expanded source: generator `emitted` must declare exactly one element type as `-> Iter(a)`"
+        );
+    }
+
+    #[test]
     fn pulled_std_cache_preserves_cold_and_warm_proof_and_origins() {
         fn origin_expand(
             name: &str,

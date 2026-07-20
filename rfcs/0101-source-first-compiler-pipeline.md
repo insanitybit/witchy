@@ -3,7 +3,7 @@ rfc: 0101
 title: source-first compiler pipeline
 status: proposed
 created: 2026-07-20
-tracking: "implementation active: destructive source lowerings use staged proofs, and handwritten plus comptime-emitted source remains unlowered through expansion; full linked semantic checking and trait lowering remain open"
+tracking: "implementation active: destructive source lowerings use staged proofs, expanded-source generator contracts are checked before lowering, and production codegen retains checked proofs; full linked type checking and trait lowering remain open"
 related:
   - "[0070](0070-0-1-blocking-set.md) (terminal 0.1 decision record and checked-module seam)"
   - "BUG-428 / BUG-429 / BUG-434 / BUG-436 (closed regression classes)"
@@ -39,6 +39,10 @@ Implemented evidence:
 - Focused tests reject `yield` inside `region:` and async tail `region:` before
   lowering, inspect the destructive entrypoint signatures, and prove emitted
   and handwritten generators receive the same source diagnostic.
+- A generator's declared result must have the source shape `Iter(T)`. That
+  contract is checked before lowering for both handwritten declarations and
+  declarations appended by compile-time expansion; the emitted-source test
+  proves an invalid declaration cannot reach generator lowering.
 - Strict and lenient record lowering are proof-gated at linker, type-checker,
   interpreter, and Wasm assembly entrypoints; projection and record-update
   backend parity tests remain green.
