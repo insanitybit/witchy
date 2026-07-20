@@ -1,9 +1,7 @@
 //! Frontend inspection command services: `check`, `expand`, and `doc`.
 
-use crate::{
-    compile_checked_to_wasm, comptime, doc, enforce_performance_modes,
-    link_file_checked, linked_has_main, parser,
-};
+use super::compile::compile_checked_to_wasm;
+use crate::{comptime, doc, enforce_performance_modes, link_file_checked, linked_has_main, parser};
 use crate::source::expand_file_source;
 
 #[derive(Debug, PartialEq, Eq)]

@@ -63,6 +63,8 @@ pub(crate) use commands::capabilities::{
     report_capabilities, report_capability_diff, report_grant_check,
 };
 #[cfg(test)]
+pub(crate) use commands::compile::{emit_wasm_file, emit_wat_file};
+#[cfg(test)]
 pub(crate) use commands::frontend::check_file;
 use runtime::Runtime;
 pub(crate) use source::{
@@ -132,7 +134,7 @@ fn run_embedded_pm(raw: Vec<String>) -> ! {
     // The embedded front-end's wasm: whole-pipeline cached (parse+link+check+
     // codegen all skipped on a warm hit — the sources are include_str! constants,
     // so the binary fingerprint keys them exactly; see embedded_wasm_cached).
-    let wasm = embedded_wasm_cached("pm", || {
+    let wasm = commands::compile::embedded_wasm_cached("pm", || {
         let mut modules: Vec<(String, ast::Module)> = Vec::new();
         let mut loaded: HashSet<String> = HashSet::new();
         let mut queue: VecDeque<(String, String)> = VecDeque::new();
@@ -459,115 +461,8 @@ fn main() -> wasmtime::Result<()> {
     if commands::frontend::run_check() {
         return Ok(());
     }
-    // `witchy compile <entry> [--dep name=path]... [--out <file.wasm>]` links the
-    // entry with explicitly-provided dependency sources, type-checks, and compiles
-    // to a wasm binary — the low-level surface the witchy CLI front-end drives to
-    // build a multi-rune project (rfcs/0004-self-hosted-cli.md §4). Without `--out`
-    // it just verifies the program compiles.
-    if std::env::args().nth(1).as_deref() == Some("compile") {
-        let mut entry: Option<String> = None;
-        let mut deps: std::collections::HashMap<String, std::path::PathBuf> =
-            std::collections::HashMap::new();
-        let mut out: Option<String> = None;
-        let mut target = "wasm".to_string();
-        let mut manifest: Option<String> = None;
-        let mut argv = std::env::args().skip(2);
-        while let Some(a) = argv.next() {
-            match a.as_str() {
-                "--dep" => match argv.next().and_then(|s| s.split_once('=').map(|(n, p)| (n.to_string(), std::path::PathBuf::from(p)))) {
-                    Some((n, p)) => {
-                        deps.insert(n, p);
-                    }
-                    None => {
-                        eprintln!("--dep needs name=path");
-                        std::process::exit(1);
-                    }
-                },
-                "--out" => match argv.next() {
-                    Some(f) => out = Some(f),
-                    None => {
-                        eprintln!("--out needs a file");
-                        std::process::exit(1);
-                    }
-                },
-                "--target" => match argv.next() {
-                    Some(value) => target = value,
-                    None => {
-                        eprintln!("--target needs `wasm` or `trusted-exe`");
-                        std::process::exit(1);
-                    }
-                },
-                "--manifest" => match argv.next() {
-                    Some(value) => manifest = Some(value),
-                    None => {
-                        eprintln!("--manifest needs a witchy.toml path");
-                        std::process::exit(1);
-                    }
-                },
-                "--release" => {
-                    opt::configure("all").map_err(wasmtime::Error::msg)?;
-                }
-                "--debug" => {
-                    opt::configure("none").map_err(wasmtime::Error::msg)?;
-                }
-                _ if entry.is_none() => entry = Some(a),
-                _ => {}
-            }
-        }
-        let Some(entry) = entry else {
-            eprintln!("usage: witchy compile <entry.witchy> [--dep name=path]... [--target wasm|trusted-exe] [--manifest witchy.toml] [--out <file>]");
-            std::process::exit(1);
-        };
-        let result = (|| -> Result<(), String> {
-            let (checked, stem) = link_file_checked_with_deps(&entry, &deps)?;
-            let linked = checked.module();
-            enforce_performance_modes(linked, &stem)?;
-            let bytes = compile_checked_to_wasm(&checked)?;
-            match target.as_str() {
-                "wasm" => {
-                    if manifest.is_some() {
-                        return Err("--manifest applies only to `--target trusted-exe`".into());
-                    }
-                    if let Some(f) = &out {
-                        std::fs::write(f, &bytes).map_err(|e| format!("cannot write `{f}`: {e}"))?;
-                    }
-                }
-                "trusted-exe" => {
-                    let output = out.as_ref().ok_or_else(|| {
-                        "`witchy compile --target trusted-exe` requires `--out <executable>`".to_string()
-                    })?;
-                    let manifest = manifest.as_ref().ok_or_else(|| {
-                        "`witchy compile --target trusted-exe` requires `--manifest <witchy.toml>`".to_string()
-                    })?;
-                    let source = std::fs::read_to_string(manifest)
-                        .map_err(|e| format!("cannot read trusted-exe manifest `{manifest}`: {e}"))?;
-                    let bindings = trusted_exe::build_binding_plan(linked, &source)?;
-                    let launcher = std::env::current_exe()
-                        .map_err(|e| format!("cannot locate trusted-exe launcher template: {e}"))?;
-                    trusted_exe::package_file(
-                        &launcher,
-                        std::path::Path::new(output),
-                        &bytes,
-                        &bindings,
-                    )?;
-                }
-                other => return Err(format!("unknown compile target `{other}` (expected `wasm` or `trusted-exe`)")),
-            }
-            Ok(())
-        })();
-        match result {
-            Ok(()) => {
-                match &out {
-                    Some(f) => println!("{entry}: compiled {target} -> {f}"),
-                    None => println!("{entry}: ok"),
-                }
-                return Ok(());
-            }
-            Err(e) => {
-                eprintln!("{e}");
-                std::process::exit(1);
-            }
-        }
+    if commands::compile::run_compile()? {
+        return Ok(());
     }
     // `witchy pm <args...>` runs the EMBEDDED witchy package-manager front-end
     // (projects/pm/src/pm.witchy) — the cargo-equivalent CLI, itself written in
@@ -677,7 +572,7 @@ fn main() -> wasmtime::Result<()> {
             ("coven_meta", include_str!("../projects/coven/src/coven_meta.witchy")),
         ];
         // Whole-pipeline cached like `witchy pm` above (see embedded_wasm_cached).
-        let wasm_result = embedded_wasm_cached("coven", || {
+        let wasm_result = commands::compile::embedded_wasm_cached("coven", || {
             let embedded: std::collections::HashMap<&str, &str> = coven_modules.iter().copied().collect();
             let mut modules: Vec<(String, ast::Module)> = Vec::new();
             let mut loaded: HashSet<String> = HashSet::new();
@@ -934,53 +829,7 @@ fn main() -> wasmtime::Result<()> {
         }
         return Ok(());
     }
-    // `witchy emit-wat <file>` prints the compiled WebAssembly text — the same
-    // module `sandbox` runs — for inspecting/optimizing the generated code.
-    if std::env::args().nth(1).as_deref() == Some("emit-wat") {
-        let Some(path) = std::env::args().nth(2) else {
-            eprintln!("usage: witchy emit-wat <file.witchy>");
-            std::process::exit(1);
-        };
-        match emit_wat_file(&path) {
-            Ok(wat) => print!("{wat}"),
-            Err(e) => {
-                eprintln!("{e}");
-                std::process::exit(1);
-            }
-        }
-        return Ok(());
-    }
-    // `witchy emit-wasm <file.witchy> [-o out.wasm]` compiles a program to a wasm
-    // BINARY — the Tier-1 distribution artifact. Run it with `witchy <out.wasm>`,
-    // which grants its source-derived launch contract plus imported host families.
-    if std::env::args().nth(1).as_deref() == Some("emit-wasm") {
-        let mut argv = std::env::args().skip(2);
-        let mut path: Option<String> = None;
-        let mut out: Option<String> = None;
-        while let Some(a) = argv.next() {
-            match a.as_str() {
-                "-o" | "--out" => out = argv.next(),
-                _ => path = path.or(Some(a)),
-            }
-        }
-        let Some(path) = path else {
-            eprintln!("usage: witchy emit-wasm <file.witchy> [-o out.wasm]");
-            std::process::exit(1);
-        };
-        let out = out.unwrap_or_else(|| {
-            std::path::Path::new(&path)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(|s| format!("{s}.wasm"))
-                .unwrap_or_else(|| "out.wasm".to_string())
-        });
-        match emit_wasm_file(&path, &out) {
-            Ok(()) => eprintln!("wrote {out}"),
-            Err(e) => {
-                eprintln!("{e}");
-                std::process::exit(1);
-            }
-        }
+    if commands::compile::run_emit() {
         return Ok(());
     }
     // `witchy fmt <file>` rewrites a source file in canonical brace-free form.
@@ -2294,35 +2143,6 @@ mod runtime_parity_tests {
     }
 }
 
-/// Compile a program to WASM and run it inside the capability-sandboxed VM,
-/// granting exactly the authority its footprint declares. The compiled sandbox
-/// currently links only the console (`print`) host, so it supports Console-only
-/// (or pure) programs; anything needing `Dir`/`Net` is reported, not run.
-/// Returns the program's output lines.
-/// Compile a program to WebAssembly text (WAT) and return it — the same module
-/// `sandbox` would run. For inspecting and optimizing the generated code.
-fn emit_wat_file(path: &str) -> Result<String, String> {
-    let (linked, stem) = link_file(path)?;
-    typeck::check(&linked).map_err(|e| e.to_string())?;
-    // Honor `mode opt` (BUG-163): `emit-wat` renders the SAME module `sandbox` runs,
-    // so a copy-cliff / missing-convention that `check`, `emit-wasm`, and `sandbox`
-    // reject must not be quietly rendered here (exit 0 with a copy-cliff file).
-    enforce_performance_modes(&linked, &stem)?;
-    // The WIR-as-WAT: the actual module the backend encodes and runs
-    // (optimization passes included), rendered back to text for inspection —
-    // a display of the real WIR, not a separately generated WAT string.
-    let wir = match codegen::assemble_optimized_wir_module(&linked) {
-        codegen::LoweringOutcome::Lowered(wir) => wir,
-        codegen::LoweringOutcome::Unsupported(reason) => {
-            return Err(format!("cannot compile to WASM: {reason}"));
-        }
-        codegen::LoweringOutcome::Rejected(error) => {
-            return Err(format!("cannot compile to WASM: {error}"));
-        }
-    };
-    Ok(wir::to_wat(&wir))
-}
-
 /// Run an already-linked module on the compiled (WASM) backend with dev grants
 /// derived from its footprint: Console output and argv always, plus Clock / Env /
 /// Dir / Net / Secret each granted (at `dir_root` / `net_allow`) iff the footprint
@@ -2444,7 +2264,7 @@ fn run_linked_compiled(
         }
         caps.secrets.extend(named_secrets);
     }
-    let wasm = compile_linked_to_wasm_cached(linked)?;
+    let wasm = commands::compile::compile_linked_to_wasm_cached(linked)?;
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
     let mut vm = rt
         .spawn(&wasm, caps, RUN_MEMORY_PAGES)
@@ -2486,194 +2306,6 @@ fn run_linked_compiled(
     Ok((lines, exit_code))
 }
 
-/// Compile a linked module to a wasm BINARY through the WIR → wasm-binary
-/// pipeline (`compile_module_binary`). A program that doesn't fully lower
-/// surfaces as a hard "cannot compile" error — there is no WAT fallback.
-fn compile_linked_to_wasm(linked: &ast::Module) -> Result<Vec<u8>, String> {
-    let bytes = match codegen::compile_module_binary(linked) {
-        codegen::LoweringOutcome::Lowered(bytes) => bytes,
-        codegen::LoweringOutcome::Unsupported(reason) => {
-            return Err(format!("cannot compile to WASM: {reason}"));
-        }
-        codegen::LoweringOutcome::Rejected(error) => {
-            return Err(format!("cannot compile to WASM: {error}"));
-        }
-    };
-    Ok(artifact::embed_launch_contract(bytes, linked))
-}
-
-fn compile_checked_to_wasm(checked: &pipeline::CheckedModule) -> Result<Vec<u8>, String> {
-    let bytes = match codegen::compile_checked_module_binary(checked) {
-        codegen::LoweringOutcome::Lowered(bytes) => bytes,
-        codegen::LoweringOutcome::Unsupported(reason) => {
-            return Err(format!("cannot compile to WASM: {reason}"));
-        }
-        codegen::LoweringOutcome::Rejected(error) => {
-            return Err(format!("cannot compile to WASM: {error}"));
-        }
-    };
-    Ok(artifact::embed_launch_contract(bytes, checked.module()))
-}
-
-/// A cheap fingerprint of the compiler build: the `witchy` binary's size + mtime.
-/// Any recompile of the compiler (or its bundled std) changes it, so the source
-/// cache can never serve codegen from an older compiler. A `stat`, not a read, so
-/// it costs nothing; computed once per process.
-fn compiler_fingerprint() -> &'static str {
-    use std::sync::OnceLock;
-    static FP: OnceLock<String> = OnceLock::new();
-    FP.get_or_init(|| {
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| std::fs::metadata(&p).ok())
-            .map(|m| {
-                let mt = m
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0);
-                format!("{}-{mt}", m.len())
-            })
-            .unwrap_or_else(|| "unknown".to_string())
-    })
-}
-
-/// The active optimization set as a stable string — part of the source-cache key,
-/// since every `WITCHY_OPT` setting compiles to different wasm. Reads the same
-/// `opt::enabled` the compiler does, so a test override or the env both flow in.
-fn active_opt_key() -> String {
-    use crate::opt::{self, Opt};
-    Opt::ALL
-        .iter()
-        .filter(|o| opt::enabled(**o))
-        .map(|o| o.name())
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-/// The wasm for an EMBEDDED program (`witchy pm`, `coven-serve`), cached across
-/// the WHOLE front-end pipeline — parse, link, typecheck, AND codegen. The
-/// embedded sources are `include_str!` constants, so the binary fingerprint
-/// covers them exactly: a hit proves THIS binary already parsed/linked/checked/
-/// compiled THESE sources successfully, and the ~300ms front-end cost (which
-/// dominates a warm `pm` invocation — the source cache below only skips
-/// codegen, the last ~90ms) is skipped entirely. Sound by construction like
-/// the source cache: a stale key just misses. The capability grant is host
-/// policy (CLI flags), never derived from the AST, so skipping the front end
-/// changes no authority decision.
-fn embedded_wasm_cached(
-    name: &str,
-    link: impl FnOnce() -> Result<pipeline::CheckedModule, String>,
-) -> Result<Vec<u8>, String> {
-    let key = {
-        let mut h = blake3::Hasher::new();
-        h.update(name.as_bytes());
-        h.update(b"\0");
-        h.update(compiler_fingerprint().as_bytes());
-        h.update(b"\0");
-        h.update(active_opt_key().as_bytes());
-        h.finalize().to_hex().to_string()
-    };
-    let path = (|| -> Option<std::path::PathBuf> {
-        let base = std::env::var_os("XDG_CACHE_HOME")
-            .map(std::path::PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))?;
-        let dir = base.join("witchy").join("embedded");
-        std::fs::create_dir_all(&dir).ok()?;
-        Some(dir.join(format!("{key}.wasm")))
-    })();
-    if let Some(p) = &path {
-        if let Ok(bytes) = std::fs::read(p) {
-            if !bytes.is_empty() {
-                return Ok(bytes);
-            }
-        }
-    }
-    let checked = link()?;
-    let wasm = match codegen::compile_checked_module_binary(&checked) {
-        codegen::LoweringOutcome::Lowered(bytes) => bytes,
-        codegen::LoweringOutcome::Unsupported(reason) => {
-            return Err(format!("the embedded {name} {reason}"));
-        }
-        codegen::LoweringOutcome::Rejected(error) => return Err(error.to_string()),
-    };
-    if let Some(p) = &path {
-        // Write-then-rename, pid-tagged temp: same publish discipline as the
-        // source cache below.
-        let tmp = p.with_extension(format!("{}.tmp", std::process::id()));
-        if std::fs::write(&tmp, &wasm).is_ok() {
-            let _ = std::fs::rename(&tmp, p);
-        }
-    }
-    Ok(wasm)
-}
-
-/// Compile `linked` to wasm, reusing a SOURCE-keyed cache to skip codegen on warm
-/// runs. The key hashes the full linked AST + the compiler fingerprint + the active
-/// opt set — every input that determines the emitted wasm — so it is sound by
-/// construction: a key that fails to reflect some input simply MISSES and recompiles,
-/// it can never serve wrong code. Distinct from the runtime's post-Cranelift module
-/// caches (`~/.cache/witchy/{optimized-wasm,wasm}`); this one
-/// (`~/.cache/witchy/src`) caches the wasm bytes so the front-end's codegen is
-/// skipped, not just the native compile. The
-/// capability grant and every security check still run from `linked` on every run —
-/// only the wasm is cached.
-fn compile_linked_to_wasm_cached(linked: &ast::Module) -> Result<Vec<u8>, String> {
-    // The AST reaches the hasher STREAMING through a `fmt::Write` adapter: the
-    // Debug rendering of a std-linked module runs hundreds of KB, and `format!`
-    // used to materialize all of it as a heap String on EVERY run, warm or
-    // cold, just to be hashed and dropped. Each formatted fragment now goes
-    // straight into the hasher instead. blake3, not sha2: this key is an
-    // INTERNAL content-address — its soundness comes from what it depends on
-    // (AST + compiler fingerprint + opt set), not from adversarial collision
-    // resistance (the cache dir is user-writable anyway) — and blake3 hashes
-    // large inputs several times faster. Security-relevant hashing (crypto.*,
-    // signing, TUF) stays on sha2/aws-lc untouched.
-    struct HashWriter(blake3::Hasher);
-    impl std::fmt::Write for HashWriter {
-        fn write_str(&mut self, s: &str) -> std::fmt::Result {
-            self.0.update(s.as_bytes());
-            Ok(())
-        }
-    }
-    let key = {
-        use std::fmt::Write as _;
-        let mut w = HashWriter(blake3::Hasher::new());
-        // Infallible: the adapter never errors, and the AST's derived Debug has
-        // no failing formatter.
-        let _ = write!(w, "{linked:?}");
-        let mut h = w.0;
-        h.update(b"\0");
-        h.update(compiler_fingerprint().as_bytes());
-        h.update(b"\0");
-        h.update(active_opt_key().as_bytes());
-        h.finalize().to_hex().to_string()
-    };
-    let path = (|| -> Option<std::path::PathBuf> {
-        let base = std::env::var_os("XDG_CACHE_HOME")
-            .map(std::path::PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))?;
-        let dir = base.join("witchy").join("src");
-        std::fs::create_dir_all(&dir).ok()?;
-        Some(dir.join(format!("{key}.wasm")))
-    })();
-    if let Some(p) = &path {
-        if let Ok(bytes) = std::fs::read(p) {
-            return Ok(bytes);
-        }
-    }
-    let wasm = compile_linked_to_wasm(linked)?;
-    if let Some(p) = &path {
-        // Write-then-rename so a concurrent reader never sees a partial file; the
-        // pid-tagged temp keeps two processes from racing on one path.
-        let tmp = p.with_extension(format!("{}.tmp", std::process::id()));
-        if std::fs::write(&tmp, &wasm).is_ok() {
-            let _ = std::fs::rename(&tmp, p);
-        }
-    }
-    Ok(wasm)
-}
 
 fn fs_rights_from_type_args(args: &[ast::Type]) -> runtime::FsRights {
     if args.is_empty() {
@@ -3233,16 +2865,6 @@ fn run_prepared_wasm(
     Ok((lines, exit_code))
 }
 
-/// Compile a `.witchy` program to a wasm binary and write it to `out`. The
-/// produced module is the Tier-1 distribution artifact: run it with `witchy
-/// <out>` under its source-derived launch contract and imported host families.
-fn emit_wasm_file(path: &str, out: &str) -> Result<(), String> {
-    let (checked, stem) = link_file_checked(path)?;
-    enforce_performance_modes(checked.module(), stem.as_str())?;
-    let binary = compile_checked_to_wasm(&checked)?;
-    std::fs::write(out, &binary).map_err(|e| format!("cannot write `{out}`: {e}"))?;
-    Ok(())
-}
 
 /// Run a deterministic `build` step in the zero-ambient WASM sandbox. This keeps
 /// the old BuildOut/BuildRead-only helper shape used by tests and callers; the
