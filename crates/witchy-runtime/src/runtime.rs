@@ -1038,6 +1038,7 @@ pub(crate) fn link_capability_imports(
     // Resolving a named secret returns only an opaque nullable externref, so it
     // is always linkable; an ungranted store simply yields null for every name.
     linker.func_wrap("witchy", "secretstore_lookup", host_secretstore_lookup)?;
+    host::crypto::link_reveal(linker)?;
     // The compiler's footprint analyses are pure functions of their source
     // arguments — the toolchain exposed to witchy, same registry bridge.
     compiler::link(linker)?;

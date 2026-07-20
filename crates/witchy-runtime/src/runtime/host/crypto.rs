@@ -15,7 +15,7 @@ pub(in crate::runtime) fn link_keyed(linker: &mut Linker<VmState>) -> Result<()>
     Ok(())
 }
 
-/// Register authority-free crypto operations and the checked reveal bridge.
+/// Register authority-free crypto operations.
 pub(in crate::runtime) fn link_pure(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap(
         "witchy",
@@ -46,8 +46,13 @@ pub(in crate::runtime) fn link_pure(linker: &mut Linker<VmState>) -> Result<()> 
         intrinsics::CRYPTO_RUNE_HASH,
         host_crypto_rune_hash,
     )?;
-    // Revealing a value secret needs a non-null Secret ref and applies its own
-    // use-only/signing-key checks, so the import itself carries no authority.
+    Ok(())
+}
+
+/// Register the checked reveal bridge after secret-store lookup. Revealing a
+/// value needs a non-null Secret ref and applies its own use-only/signing-key
+/// checks, so the import itself carries no authority.
+pub(in crate::runtime) fn link_reveal(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "crypto_reveal_len", host_crypto_reveal_len)?;
     Ok(())
 }
