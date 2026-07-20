@@ -1692,11 +1692,12 @@ fn queued_work_cancels_inactive_prewarm_and_preserves_active_generation() {
     let gate_release = fixture._temp.path().join("gate-release");
     let gate_target = fixture._temp.path().join("gate-target-seen");
     let gate_sentinel = fixture._temp.path().join("gate-sentinel-seen");
+    let coordinator_log = fixture._temp.path().join("coordinator.log");
     let cargo = bin.join("cargo");
     fs::write(
         &cargo,
         format!(
-            "#!/bin/sh\ntarget_dir=\"${{CARGO_TARGET_DIR:-target}}\"\nprintf '%s' \"$target_dir\" >\"{}\"\ntrap 'printf cancelled >\"{}\"; exit 143' TERM INT\nmkdir -p \"$target_dir/debug/.fingerprint/inactive-prewarm\"\n: >\"$target_dir/debug/.fingerprint/inactive-prewarm/invoked.timestamp\"\nprintf '%s' \"$$\" >\"{}\"\nprintf started >\"{}\"\nwhile :; do /bin/sleep 1; done\n",
+            "#!/bin/sh\ntarget_dir=\"${{CARGO_TARGET_DIR:-target}}\"\nif [ \"$target_dir\" = target-prewarm ]; then\n  printf '%s' \"$target_dir\" >\"{}\"\n  trap 'printf cancelled >\"{}\"; exit 143' TERM INT\n  mkdir -p \"$target_dir/debug/.fingerprint/inactive-prewarm\"\n  : >\"$target_dir/debug/.fingerprint/inactive-prewarm/invoked.timestamp\"\n  printf '%s' \"$$\" >\"{}\"\n  printf started >\"{}\"\n  while :; do /bin/sleep 1; done\nfi\nexit 0\n",
             prewarm_target.display(),
             cancelled.display(),
             cargo_pid_file.display(),
@@ -1745,14 +1746,16 @@ fn queued_work_cancels_inactive_prewarm_and_preserves_active_generation() {
         .env("MERGE_QUEUE_POLL_INTERVAL", "0.05")
         .env("MERGE_QUEUE_RETRY_INTERVAL", "0.05")
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(
+            fs::File::create(&coordinator_log).expect("create coordinator diagnostic log"),
+        )
         .process_group(0)
         .spawn()
         .expect("start persistent coordinator");
     let coordinator_pid = coordinator.id() as i32;
     let coordinator_guard = ProcessGroupGuard(coordinator_pid);
 
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + Duration::from_secs(10);
     while !started.exists() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(25));
     }
@@ -1772,11 +1775,15 @@ fn queued_work_cancels_inactive_prewarm_and_preserves_active_generation() {
 
     let submitted_at = Instant::now();
     fixture.mq_ok(&["submit", "a"], "true");
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(20);
     while !gate_ran.exists() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(25));
     }
-    assert!(gate_ran.exists(), "queued gate waited behind inactive prewarm Cargo");
+    assert!(
+        gate_ran.exists(),
+        "queued gate waited behind inactive prewarm Cargo:\n{}",
+        fs::read_to_string(&coordinator_log).unwrap_or_default()
+    );
     assert!(
         submitted_at.elapsed() < Duration::from_secs(10),
         "queued gate did not start promptly after cancelling inactive prewarm"
