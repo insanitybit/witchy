@@ -123,7 +123,7 @@ distributed mechanically.
 | `witchy-lower/codegen/mod.rs` | ~12,100 | EXTRACT | Typed scope/local, representation/layout, helper, capability-import, ownership, and structural-metadata contexts. |
 | `witchy-types/typeck.rs` | ~9,700 | EXTRACT | Constraint/inference, checking, diagnostics, capability convention, and checked-output boundaries after active semantic work clears. |
 | `witchy-interp/interpreter.rs` | ~7,600 | EXTRACT | Environment, evaluator, reflection conversion, capability adapters, errors, and launch APIs. |
-| `witchy-wir/wir_helpers/{mod,memory,registry}.rs` | ~3,900 + ~860 + ~1,200 | EXTRACT | The dispatcher and memory/RC/ownership constructors have distinct owners with compatibility-preserving re-exports. Continue with collections, strings, numeric, encoding/crypto, and host-family modules. |
+| `witchy-wir/wir_helpers/{mod,collections,memory,registry}.rs` | ~3,650 + ~265 + ~860 + ~1,200 | EXTRACT | The dispatcher, memory/RC constructors, and bounds-checked list access/extraction have distinct owners with compatibility-preserving re-exports. Continue moving the remaining collection, string, numeric, encoding/crypto, and host-family helpers. |
 | `witchy-types/traits.rs` | ~5,700 | EXTRACT | Validation, method resolution, anonymous unions, refinement/conversion, and monomorphization. |
 | `tests/e2e.rs` | ~5,100 | EXTRACT | Product workflow modules over one lifecycle harness. |
 | `witchy-syntax/linker.rs` | ~4,900 | NARROW | Module graph/linking versus bundled-source registry and expansion orchestration. |
