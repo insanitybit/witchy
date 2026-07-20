@@ -142,6 +142,59 @@ fn run(args: &[&str]) -> std::process::Output {
 }
 
 #[test]
+fn cli_help_version_and_bare_invocation_are_stable() {
+    let expected_help = include_str!("fixtures/cli-help.txt");
+    for args in [vec!["--help"], Vec::new()] {
+        let out = run(&args);
+        assert_eq!(out.status.code(), Some(0), "{args:?}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), expected_help, "{args:?}");
+        assert!(out.stderr.is_empty(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    let out = run(&["--version"]);
+    assert_eq!(out.status.code(), Some(0));
+    let version = match option_env!("WITCHY_BUILD_COMMIT").filter(|commit| !commit.is_empty()) {
+        Some(commit) => format!("witchy {} (commit {commit})\n", env!("CARGO_PKG_VERSION")),
+        None => format!("witchy {}\n", env!("CARGO_PKG_VERSION")),
+    };
+    assert_eq!(String::from_utf8_lossy(&out.stdout), version);
+    assert!(out.stderr.is_empty());
+}
+
+#[test]
+fn missing_secret_values_are_exact_usage_errors() {
+    for flag in ["--secret", "--secret-file"] {
+        let out = run(&[flag]);
+        assert_eq!(out.status.code(), Some(1), "{flag}");
+        assert!(out.stdout.is_empty(), "{flag}");
+        assert_eq!(String::from_utf8_lossy(&out.stderr), format!("{flag} requires a value\n"));
+    }
+}
+
+#[test]
+fn secret_file_argument_preserves_exact_bytes() {
+    let dir = workdir("secret-file");
+    let secret = dir.join("token.txt");
+    std::fs::write(&secret, b"hunter2").unwrap();
+    let src = write(
+        &dir,
+        "secret_file.witchy",
+        "import secretstore\nimport crypto\n\nfn main(console: Console, store: SecretStore):\n    console.print(crypto.reveal(secretstore.require(store, \"token\")))\n",
+    );
+    let spec = format!("token={}", secret.display());
+    let out = run(&["--secret-file", &spec, &src]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hunter2\n");
+    assert!(out.stderr.is_empty());
+}
+
+#[test]
 fn crypto_verify_malformed_inputs_are_result_errors() {
     let dir = workdir("crypto-verify-result");
     let p256_basepoint = "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5";
