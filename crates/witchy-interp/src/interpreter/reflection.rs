@@ -4,9 +4,7 @@ use witchy_syntax::ast::*;
 use witchy_syntax::origin::SyntaxCategory;
 use witchy_syntax::parser::parse_module;
 
-use super::{
-    err, ComptimeHoleOrigin, ComptimeSyntaxOrigin, RuntimeError, Value, OWNED_ITEM_SYNTAX_CTOR,
-};
+use super::{err, ComptimeHoleOrigin, ComptimeSyntaxOrigin, RuntimeError, Value};
 
 /// Decode one `meta.ExprSyntax` value for compiler-owned structural builders.
 /// A compatibility payload is parsed in isolation; an owned payload transfers
@@ -697,4 +695,3 @@ pub(super) fn compiler_pattern_holes(
 pub(super) fn compiler_ctor_tail(name: &str) -> &str {
     name.rsplit_once('.').map_or(name, |(_, tail)| tail)
 }
-

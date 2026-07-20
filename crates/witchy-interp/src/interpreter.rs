@@ -43,6 +43,15 @@ use witchy_syntax::parser::parse_module;
 use witchy_types::witness::WitnessPlan;
 
 mod reflection;
+use reflection::{
+    compiler_binding_ident_name, compiler_block_syntax_value, compiler_ctor_tail,
+    compiler_direct_hole_origins, compiler_expr_syntax_value, compiler_function_conventions,
+    compiler_ident_name, compiler_item_hole_origins, compiler_item_holes,
+    compiler_match_arms, compiler_optional_expr_syntax_value,
+    compiler_optional_type_syntax_value, compiler_params, compiler_pattern_holes,
+    compiler_pattern_syntax_value, compiler_reflected_type, compiler_stmt_syntax_value,
+    compiler_type_holes, compiler_type_syntax_value,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DirValue {
@@ -559,16 +568,6 @@ fn err<T, E: From<RuntimeError>>(message: impl Into<String>) -> Result<T, E> {
         message: message.into(),
     }))
 }
-
-use reflection::{
-    compiler_binding_ident_name, compiler_block_syntax_value, compiler_ctor_tail,
-    compiler_direct_hole_origins, compiler_expr_syntax_value, compiler_function_conventions,
-    compiler_ident_name, compiler_item_hole_origins, compiler_item_holes,
-    compiler_match_arms, compiler_optional_expr_syntax_value,
-    compiler_optional_type_syntax_value, compiler_params, compiler_pattern_holes,
-    compiler_pattern_syntax_value, compiler_reflected_type, compiler_stmt_syntax_value,
-    compiler_type_holes, compiler_type_syntax_value,
-};
 
 fn mock_normalize(rel: &str) -> Result<String, RuntimeError> {
     let path = Path::new(rel);
