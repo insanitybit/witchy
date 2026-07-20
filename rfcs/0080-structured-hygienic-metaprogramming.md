@@ -1,13 +1,20 @@
 ---
 rfc: 0080
 title: Structured hygienic metaprogramming
-status: proposed
+status: deferred
 created: 2026-07-12
 superseded-by:
-tracking: "source-backed compatibility builders, comptime emit_item/fn helpers, typed custom derives and tags, parser-backed quotation/holes, witchy expand, deterministic compiler-owned meta.fresh identifiers, compiler-owned item/expression/type/pattern/statement/block quotations with structural typed holes, direct AST transport for typed tags, named/tuple/function/qualified type builders, match-arm/let/expression/return statement builders, block builders, complete function signatures/bodies, definition-site function/type/constructor/pattern resolution, explicit meta.call_site value/function/type/constructor/qualified-path references, persistent per-node expansion provenance, and nested tagged-expansion diagnostics carrying invocation, definition, generated-parent, and hole ancestry landed; remaining source-projecting compatibility-builder and item identities remain proposed"
+tracking: "implemented foundation through compiler-owned capability types, qualified identities, persistent per-node provenance, and typed structural quotation; remaining source-projecting compatibility builders, item identity, ModuleSyntax, Span, and tooling stages are explicitly deferred until a scheduled consumer requires them"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
+
+> **2026-07-20 terminal disposition:** the implemented structured-expansion
+> foundation is preserved and tested, including the recovered capability-type
+> slice. The remaining compatibility-builder, item-identity, `ModuleSyntax`,
+> `Span`, and tooling surface is deferred, not implicitly active. Revive this
+> RFC when a scheduled compiler/library consumer requires one of those missing
+> operations, or before promising a fully structural public metaprogramming API.
 
 The implemented syntax-expansion surface is exercised by
 [`tests/rfc0080.rs`](../tests/rfc0080.rs) and the compiler-owned expansion path
@@ -535,8 +542,13 @@ The first source-compatible slice is implemented:
   The member identifier is a validated selector rather than a second lexical
   binding. Type arguments and nested patterns retain their own origins, and the
   composed path remains an unspellable AST identity until consumer linking.
+- The fifty-sixth slice makes `meta.type_capability` compiler-owned. The
+  ambient `Dir`/`File`/`Net` head is validated at the public bridge and again
+  at the compiler-private intrinsic; capability rights remain structural type
+  children through generated signatures on both backends.
 
-This is intentionally not the full RFC. Every quotation category and its typed
+This is intentionally not the full RFC, and the residual is deferred rather
+than left proposed. Every quotation category and its typed
 hole placement is now compiler-owned. Some `meta.*` compatibility builders may
 still project canonical source, but these pattern-composition builders,
 let/expression/return statement builders, `meta.block`, and
@@ -548,8 +560,9 @@ references, and
 or `meta.pattern_ctor`, explicitly selects invocation-site value, type, or
 constructor resolution. Direct tagged-expansion failures preserve the invocation
 and definition module/line pair. Source-projecting compatibility-builder and
-item identities remain future work; field selectors are validated members and
-do not introduce a lexical origin. The value is the
+item identities remain deferred work; field selectors are validated members
+and do not introduce a lexical origin. `ModuleSyntax`, `Span`, and generated
+symbol navigation are likewise outside the implemented boundary. The value is the
 migration seam: future work can move the
 payload behind these wrappers from parsed source to structured compiler nodes
 without changing the comptime append/merge path again.
