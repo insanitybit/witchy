@@ -3,9 +3,10 @@ use std::sync::{Arc, Mutex};
 use wasmtime::{bail, Caller, Error, ExternRef, Linker, Result, Rooted};
 
 use super::super::{
-    listener_resource_ref, memory_of, read_wstr, secret_material_ref, ListenerResource,
-    NetAuthority, SocketResource, VmState,
+    memory_of, read_wstr, secret_material_ref, ListenerResource, NetAuthority,
+    SocketResource, VmState,
 };
+use super::vm_worker::listener_resource_ref;
 use crate::net::Stream;
 
 /// Register the root `Net` grant mint (RFC-0005 stage 3).
