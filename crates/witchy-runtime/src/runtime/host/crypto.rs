@@ -1,7 +1,8 @@
 use wasmtime::{bail, Caller, Error, ExternRef, Linker, Result, Rooted};
 use witchy_syntax::intrinsics;
 
-use super::super::{memory_of, read_wstr, read_wstr_list, secret_material_ref, VmState};
+use super::super::{memory_of, read_wstr, read_wstr_list, VmState};
+use super::secret::secret_material_ref;
 use crate::value::NativeValue as Value;
 
 /// Register crypto operations that consume opaque host-side secret material.

@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use wasmtime::{
-    bail, Cache, CacheConfig, Caller, Config, Engine, Error, Extern, ExternRef, Linker,
-    Memory, Module, Result, Rooted, Store, StoreLimits, StoreLimitsBuilder,
+    bail, Cache, CacheConfig, Caller, Config, Engine, Error, Extern, Linker, Memory,
+    Module, Result, Store, StoreLimits, StoreLimitsBuilder,
 };
 use witchy_syntax::intrinsics;
 use witchy_wir::layout::HEAP_REDZONE;
@@ -936,10 +936,8 @@ pub(crate) fn link_capability_imports(
     if net && (caps.net_connect || caps.net_listen) {
         host::network::link_socket_io(linker)?;
     }
-    // The root Secret capability: the signing-key seed never enters guest memory;
-    // `main(key: Secret)` receives an opaque host reference.
     if caps.signing_key.is_some() {
-        linker.func_wrap("witchy", "mint_secret", host_mint_secret)?;
+        host::secret::link_mint(linker)?;
     }
     // Any granted Secret (root signing key or named SecretStore secret) can be
     // consumed by the keyed crypto helpers while bytes stay host-side.
@@ -983,9 +981,7 @@ pub(crate) fn link_capability_imports(
     // available — the same `crypto` module the interpreter exposes, here as a
     // host import that bridges to the shared `native` registry.
     host::crypto::link_pure(linker)?;
-    // Resolving a named secret returns only an opaque nullable externref, so it
-    // is always linkable; an ungranted store simply yields null for every name.
-    linker.func_wrap("witchy", "secretstore_lookup", host_secretstore_lookup)?;
+    host::secret::link_lookup(linker)?;
     host::crypto::link_reveal(linker)?;
     // The compiler's footprint analyses are pure functions of their source
     // arguments — the toolchain exposed to witchy, same registry bridge.
@@ -1312,74 +1308,6 @@ fn vmstate_from_caps(
         engine: engine.clone(),
         module: module.clone(),
         preempt,
-    }
-}
-
-// --- the Secret capability family ---
-//
-// A guest `Secret` is an opaque externref carrying host-side bytes plus the
-// reveal policy. The compiled backend no longer exposes dense secret-table
-// integers to guest code: `SecretStore.get` returns a nullable externref,
-// `require` checks for null immediately, and the root `Secret` is minted only
-// from the signing-key grant.
-
-fn signing_secret_material(caller: &Caller<'_, VmState>, h: i32) -> Result<SecretMaterial> {
-    if h != 0 {
-        return Err(Error::msg(format!("invalid Secret grant index {h}")));
-    }
-    let caps = &caller.data().caps;
-    let signing = caps
-        .signing_key
-        .ok_or_else(|| Error::msg("root Secret is not granted"))?;
-    if let Some(grant) = caps.secrets.iter().find(|grant| {
-        grant.name == "signing"
-            && witchy_caps::capabilities::secret_is_signing_key(Some(signing.as_slice()), &grant.bytes)
-    }) {
-        return Ok(SecretMaterial::from_grant(grant));
-    }
-    Ok(SecretMaterial {
-        bytes: signing.to_vec(),
-        use_only: false,
-    })
-}
-
-fn secret_material_ref(
-    caller: &Caller<'_, VmState>,
-    secret: Option<Rooted<ExternRef>>,
-) -> Result<SecretMaterial> {
-    let secret = secret.ok_or_else(|| Error::msg("Secret externref is null"))?;
-    secret
-        .data(caller)?
-        .ok_or_else(|| Error::msg("Secret externref has no host data"))?
-        .downcast_ref::<SecretMaterial>()
-        .cloned()
-        .ok_or_else(|| Error::msg("Secret externref has wrong host data"))
-}
-
-fn host_mint_secret(mut caller: Caller<'_, VmState>, i: i32) -> Result<Option<Rooted<ExternRef>>> {
-    let secret = signing_secret_material(&caller, i)?;
-    ExternRef::new(&mut caller, secret).map(Some)
-}
-
-/// `secretstore_lookup(name_ptr) -> externref?`: the host-owned secret named
-/// `name`, or null if it was not granted. The bytes never cross into guest memory
-/// here; callers receive only an opaque `Secret` externref.
-fn host_secretstore_lookup(
-    mut caller: Caller<'_, VmState>,
-    name_ptr: i32,
-) -> Result<Option<Rooted<ExternRef>>> {
-    let mem = memory_of(&mut caller)?;
-    let name = read_wstr(mem.data(&caller), name_ptr)?;
-    let grant = caller
-        .data()
-        .caps
-        .secrets
-        .iter()
-        .find(|grant| grant.name == name)
-        .map(SecretMaterial::from_grant);
-    match grant {
-        Some(secret) => ExternRef::new(&mut caller, secret).map(Some),
-        None => Ok(None),
     }
 }
 

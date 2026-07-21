@@ -3,9 +3,9 @@ use std::sync::{Arc, Mutex};
 use wasmtime::{bail, Caller, Error, ExternRef, Linker, Result, Rooted};
 
 use super::super::{
-    memory_of, read_wstr, secret_material_ref, ListenerResource, NetAuthority,
-    SocketResource, VmState,
+    memory_of, read_wstr, ListenerResource, NetAuthority, SocketResource, VmState,
 };
+use super::secret::secret_material_ref;
 use super::vm_worker::listener_resource_ref;
 use crate::net::Stream;
 
