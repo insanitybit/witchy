@@ -8,7 +8,7 @@ use witchy_interp::interpreter;
 use witchy_runtime::runtime::{self, Runtime};
 use witchy_types::typeck;
 use crate::{
-    commands, link_file, linked_has_main, main_fs_param_rights, run_wasm_bytes,
+    commands, link_file, linked_has_main, run_wasm_bytes,
     RUN_MEMORY_PAGES,
 };
 
@@ -349,7 +349,7 @@ pub(crate) fn run_linked_compiled(
     if grant.contains_key("Exec") {
         caps.exec = true;
     }
-    let (dir_param_rights, file_param_rights) = main_fs_param_rights(linked);
+    let (dir_param_rights, file_param_rights) = crate::commands::sandbox::main_fs_param_rights(linked);
     if let Some(rights) = grant.get("Dir") {
         let mut roots = dir_roots;
         if roots.is_empty() {
