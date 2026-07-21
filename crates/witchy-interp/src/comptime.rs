@@ -34,7 +34,7 @@ pub fn expand(name: &str, module: &mut Module) -> Result<(), String> {
 
 /// Expand while retaining the typed source provenance that runtime linking and
 /// backend compilation intentionally ignore. Tooling uses this entry point.
-pub fn expand_with_origins(name: &str, module: &mut Module) -> Result<OriginTable, String> {
+pub(crate) fn expand_with_origins(name: &str, module: &mut Module) -> Result<OriginTable, String> {
     expand_with_item_limit_and_origins(name, module, MAX_COMPTIME_GENERATED_ITEMS)
 }
 

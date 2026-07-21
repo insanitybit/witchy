@@ -30,7 +30,7 @@ pub fn link_with_origins(
     )
 }
 
-pub fn link_with_mode(
+pub(crate) fn link_with_mode(
     modules: Vec<(String, Module)>,
     entry: &str,
     mode: LinkMode,

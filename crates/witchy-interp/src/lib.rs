@@ -17,5 +17,5 @@
 pub mod comptime;
 pub mod interpreter;
 pub mod pipeline;
-pub mod reachability;
-pub mod tagged;
+pub(crate) mod reachability;
+pub(crate) mod tagged;
