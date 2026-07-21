@@ -314,7 +314,7 @@ fn module_source(
     doc_uri: Option<&str>,
     docs: &HashMap<String, String>,
 ) -> Option<String> {
-    if let Some(src) = witchy_syntax::linker::std_source(name) {
+    if let Some(src) = witchy_syntax::linker::bundled_source(name) {
         return Some(src.to_string());
     }
     let dir = doc_uri.and_then(uri_to_path).and_then(|p| p.parent().map(PathBuf::from))?;

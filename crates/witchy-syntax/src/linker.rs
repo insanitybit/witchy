@@ -458,7 +458,7 @@ fn is_subsequence(needle: &str, hay: &str) -> bool {
 /// Every `pub fn` of one std module, as signature lines — `witchy which time`
 /// lists what the `time` module exports.
 pub fn module_exports(module: &str) -> Vec<String> {
-    let Some(src) = std_source(module) else {
+    let Some(src) = bundled_source(module) else {
         return Vec::new();
     };
     let mut out = Vec::new();
@@ -542,6 +542,27 @@ fn levenshtein(a: &str, b: &str) -> usize {
     prev[b.len()]
 }
 
+/// Playground/experiment bundled modules (RFC-0018: distinct provenance from the
+/// standard library). `projects/glamour` is a product experiment injected into
+/// playgrounds and doc examples, NOT part of `std`, so it resolves here rather
+/// than through `std_source`.
+pub fn playground_source(name: &str) -> Option<&'static str> {
+    match name {
+        "glamour" => Some(include_str!("../../../projects/glamour/src/glamour.witchy")),
+        "markdown" => Some(include_str!("../../../projects/glamour/src/markdown.witchy")),
+        _ => None,
+    }
+}
+
+/// The general bundled-module resolver: the standard library plus the
+/// playground experiments. Import resolution uses this so a program may
+/// `import glamour`, while `std_source` stays a pure standard-library registry.
+pub fn bundled_source(name: &str) -> Option<&'static str> {
+    std_source(name).or_else(|| playground_source(name))
+}
+
+/// Source for a bundled STANDARD-LIBRARY module (`std/*.witchy`). Does NOT
+/// include playground experiments — see `playground_source`/`bundled_source`.
 pub fn std_source(name: &str) -> Option<&'static str> {
     match name {
         "list" => Some(include_str!("../../../std/list.witchy")),
@@ -597,11 +618,9 @@ pub fn std_source(name: &str) -> Option<&'static str> {
         // SNIPPET — the browser playground and the book's runnable cells — where there is no
         // filesystem to resolve the rune. Authority-neutral: importing it only exposes types;
         // a `UiRoot`/`UiFetch` can still be minted only by the host, never obtained in a cell.
-        "glamour" => Some(include_str!("../../../projects/glamour/src/glamour.witchy")),
         // `markdown` rides on glamour's bundling rationale above: a glamour-provided PURE
         // module (it imports only `glamour`), bundled so `import markdown` resolves in a
         // standalone snippet and in the glamour examples / `projects/docs`.
-        "markdown" => Some(include_str!("../../../projects/glamour/src/markdown.witchy")),
         _ => None,
     }
 }
@@ -690,7 +709,7 @@ fn pulled_std_cache_insert(
     // that point depends on the link set's pull order — so a std source that
     // even mentions `tag"` (in code, an emitted string, or a comment) is
     // conservatively left uncached. No bundled module does today.
-    if std_source(name).is_none_or(|s| s.contains("tag\"")) {
+    if bundled_source(name).is_none_or(|s| s.contains("tag\"")) {
         return;
     }
     let cache =
@@ -1616,7 +1635,7 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
                     cached_pull_indices.insert(modules.len());
                     origin_tables.insert(imp.clone(), cached.origins);
                     modules.push((imp.clone(), cached.module));
-                } else if let Some(src) = std_source(&imp) {
+                } else if let Some(src) = bundled_source(&imp) {
                     let m = crate::parser::parse_module(src).map_err(|e| LinkError {
                         message: format!("std module `{imp}`: {e}"),
                         location: None,
@@ -2402,7 +2421,7 @@ pub fn mark_definition_site_expr(
         if available.iter().any(|(name, _)| name == imported) {
             continue;
         }
-        let Some(source) = std_source(imported) else { continue };
+        let Some(source) = bundled_source(imported) else { continue };
         let module = crate::parser::parse_module(source).map_err(|error| LinkError {
             message: format!("standard-library module `{imported}` failed to parse: {error}"),
             location: None,

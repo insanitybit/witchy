@@ -121,7 +121,7 @@ ownership paths:
 | Source class | Current state | Classification | Target boundary |
 |---|---|---|---|
 | `std/` | Standard library embedded by the linker and documented from source comments | KEEP | A standard-library registry with generated API docs. |
-| Browser/playground modules | Browser resolution calls `linker::std_source`; special modules can enter through root `bundled_module` fallback paths. | EXTRACT | A bundled-module provider that identifies `StandardLibrary` versus `Playground` provenance. |
+| Browser/playground modules | `linker::std_source` is now a pure standard-library registry; `linker::playground_source` owns the glamour/markdown experiments; `linker::bundled_source` (std ∪ playground) is the general import resolver. Browser/native/LSP resolution uses `bundled_source`. | KEEP | Provenance is now explicit (StandardLibrary vs Playground); std_source no longer conflates glamour. |
 | `examples/` | Teaching programs and executable parity evidence | KEEP | Remain outside bundled library identity. |
 | `projects/pm`, `projects/coven`, `projects/coven-web` | Self-hosted ecosystem applications | KEEP | Product/project registry and explicit support classification. |
 | `projects/glamour` and experiments | Product experiments also used by browser/e2e fixtures | NARROW | Keep experimental status explicit; inject into playgrounds without calling it standard library. |
@@ -168,7 +168,7 @@ first structural work should use unowned contracts or WIR-helper domains.
 | Repeated `link_file*` and module-loading variants | CONSOLIDATE | One provider-driven loader preserves filesystem, dependency, and bundled diagnostics. |
 | Checked versus unchecked compilation helpers | CONSOLIDATE | Public execution paths require checked input; unchecked helpers remain only where tests deliberately exercise rejection. |
 | Multiple Wasm execution wrappers | CONSOLIDATE | One executor owns instantiation, imports, results, and diagnostic observation. |
-| `std_source` used as a general bundled lookup concept | NARROW | Standard and playground provenance represented separately. |
+| `std_source` used as a general bundled lookup concept | DONE | `std_source` = stdlib only; `playground_source` = experiments; `bundled_source` = the general resolver. Standard and playground provenance are represented separately. |
 | WIR helper implementation and dependency metadata | NARROW | Responsibility extraction and compatibility narrowing are complete: one typed registry owns dependency metadata, domain modules own constructors, and the helper surface is reduced to nine `pub` items via a resolved-call-site census (`scratch/wir-helper-census.md`) — no catalog duplication. New helpers default to `pub(super)`/`pub(crate)`; add `pub` only with an out-of-crate call site. |
 | Repeated test process/temp/server lifecycle code | CONSOLIDATE | Shared harnesses preserve explicit assertions and cleanup behavior. |
 | Obsolete runtime-spike and hand-written-Wasm headers | DELETE | Removed from both the native command composition root and the Wasmtime runtime kernel; each module now states its current responsibility. |

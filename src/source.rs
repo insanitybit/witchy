@@ -25,7 +25,7 @@ pub(crate) fn project_entry_file() -> Option<String> {
 /// Source for a bundled standard-library module, shipped with the compiler so
 /// `import list` works without a local file. Bundled module names are reserved.
 pub(crate) fn bundled_module(name: &str) -> Option<&'static str> {
-    witchy_syntax::linker::std_source(name)
+    witchy_syntax::linker::bundled_source(name)
 }
 
 /// Parse and link a source file. Non-std imports resolve from sibling

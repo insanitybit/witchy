@@ -77,7 +77,7 @@ fn resolve_std_modules(src: &str) -> Result<Vec<(String, witchy_syntax::ast::Mod
             if !loaded.insert(name.clone()) {
                 continue;
             }
-            let source = witchy_syntax::linker::std_source(&name).ok_or_else(|| {
+            let source = witchy_syntax::linker::bundled_source(&name).ok_or_else(|| {
                 let hint = witchy_syntax::linker::closest_std_module(&name)
                     .map(|m| format!(" — did you mean `import {m}`?"))
                     .unwrap_or_default();
