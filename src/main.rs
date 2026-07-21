@@ -22,7 +22,7 @@ pub use witchy::generators;
 pub use witchy::grants;
 pub use witchy::interpreter;
 pub use witchy::linker;
-pub use witchy::{enforce_performance_modes, is_entry_function, ownership_relevant};
+pub use witchy::{enforce_performance_modes, is_entry_function};
 pub use witchy::opt;
 pub use witchy::pipeline;
 mod cli;

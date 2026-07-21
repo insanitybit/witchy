@@ -18,8 +18,8 @@
 pub use witchy_lower::{analysis, codegen};
 // RFC-0018: the front-end + AST-level base layer lives in the `witchy-syntax`
 // crate; re-export so the rest of the compiler keeps using
-// `crate::{ast,parser,fmt,…}::…` paths unchanged.
-pub use witchy_syntax::{ast, doc, fmt, format, generators, linker, opt, origin, parser};
+// `crate::{ast,parser,…}::…` paths unchanged.
+pub use witchy_syntax::{ast, doc, format, generators, linker, opt, parser};
 // RFC-0030: deterministic optimization counters (`witchy stats`) — native-only
 // (needs the wasmtime sandbox to run a program and read its counters).
 #[cfg(feature = "native")]
