@@ -150,7 +150,7 @@ distributed mechanically.
 | `witchy-syntax/linker.rs` | ~4,900 | NARROW | Module graph/linking versus bundled-source registry and expansion orchestration. |
 | `src/main.rs`, `src/{cli,source}.rs`, `src/commands/**` | ~3,208 + ~205 + ~272 + ~900 | EXTRACT | CLI presentation, source loading, frontend/capability commands, and compilation/cache/artifact emission have distinct owners. Continue separating execution/parity, sandbox/grants, build steps, and embedded product adapters from the composition root. |
 | `witchy-lower/analysis.rs` | ~4,300 | NARROW | Separate ownership facts/summaries from diagnostics and optimization consumers only where interfaces become smaller. |
-| `witchy-runtime/runtime{.rs,/compiler.rs,/host/**}` | ~3,220 + ~105 + ~445 | EXTRACT | Compiler-service imports and the crypto and clock/env/rand host families have distinct adapter/registrar owners. Continue separating filesystem/process, network, VM-worker, and core diagnostic/memory families from grant admission and execution policy. |
+| `witchy-runtime/runtime{.rs,/compiler.rs,/host/**}` | ~2,790 + ~105 + ~915 | EXTRACT | Compiler-service imports and the crypto, clock/env/rand, and network host families have distinct adapter/registrar owners; the serve-pool worker machinery and its shared listener helper stay kernel-side with the VM-worker family. Continue separating filesystem/process, VM-worker, and core diagnostic/memory families from grant admission and execution policy. |
 
 Active worktree overlap is an admission check, not checked-in ownership. Before
 every hotspot slice, run `scripts/worktree-status.sh`, inspect branch diffs, and
