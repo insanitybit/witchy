@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use witchy_syntax::ast::{Item, Module, Type};
 
 /// The host capabilities the runtime grants at an entry point.
-pub const HOST_CAPABILITIES: &[&str] =
+pub(crate) const HOST_CAPABILITIES: &[&str] =
     &["Console", "Clock", "Rand", "Env", "Secret", "SecretStore", "Dir", "File", "Net", "Exec"];
 
 /// Capability values that are derived from host capabilities at runtime, rather
@@ -32,7 +32,7 @@ pub const DERIVED_CAPABILITIES: &[&str] = &["Socket", "Listener"];
 /// parallel set to the runtime host caps, tracked on a separate axis. Kind-only
 /// (the specific tool/dir/host/var is the consumer's grant, not the type), so
 /// they carry no rights. See rfcs/build-time-execution-plan.md.
-pub const BUILD_CAPABILITIES: &[&str] =
+pub(crate) const BUILD_CAPABILITIES: &[&str] =
     &["BuildOut", "BuildRead", "BuildEnv", "BuildNet", "BuildExec"];
 
 /// The rights (verbs) a single capability permits. Empty for `Console`, which
@@ -620,7 +620,7 @@ pub struct Footprint {
     /// The capability brands (refinements) used anywhere in the module — the
     /// union of every entry's brands. Authority-equivalent to their host caps,
     /// but a finer-grained record of *intent*.
-    pub brands: BTreeSet<String>,
+    pub(crate) brands: BTreeSet<String>,
     /// RFC-0038: the bare **grantable** user capabilities an entry point receives
     /// (e.g. `UiRoot`). A separate axis from `total`: these carry no host authority
     /// (they're policy-only, minted from a `[user_caps]` grant), but a dependency
