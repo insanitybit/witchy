@@ -5,4 +5,5 @@ pub(super) mod crypto;
 pub(super) mod filesystem;
 pub(super) mod network;
 pub(super) mod secret;
+pub(super) mod staging;
 pub(super) mod vm_worker;
