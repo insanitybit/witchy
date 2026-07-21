@@ -63,7 +63,7 @@ pub fn sroa_candidates(f: &Function) -> HashSet<String> {
 }
 
 /// As [`sroa_candidates`], over a body block directly (what codegen has in hand).
-pub fn sroa_candidates_block(body: &Block) -> HashSet<String> {
+pub(crate) fn sroa_candidates_block(body: &Block) -> HashSet<String> {
     let mut potential = HashSet::new();
     collect_aggregate_lets(body, &mut potential);
     if potential.is_empty() {
@@ -90,7 +90,7 @@ pub fn confined_slice_candidates(f: &Function) -> HashSet<String> {
 }
 
 /// As [`confined_slice_candidates`], over a body block directly.
-pub fn confined_slice_candidates_block(body: &Block) -> HashSet<String> {
+pub(crate) fn confined_slice_candidates_block(body: &Block) -> HashSet<String> {
     let mut src_of: HashMap<String, String> = HashMap::new();
     collect_slice_lets(body, &mut src_of);
     if src_of.is_empty() {
@@ -116,7 +116,7 @@ pub fn confined_slice_candidates_block(body: &Block) -> HashSet<String> {
 
 /// Whether a call name is `list.slice` — possibly with a monomorphization suffix
 /// (`list.slice__Int`) appended by generic instantiation.
-pub fn is_list_slice(callee: &str) -> bool {
+pub(crate) fn is_list_slice(callee: &str) -> bool {
     callee == "list.slice" || callee.starts_with("list.slice__")
 }
 
@@ -139,7 +139,7 @@ pub fn confined_record_list_candidates(f: &Function) -> HashSet<String> {
 }
 
 /// As [`confined_record_list_candidates`], over a body block directly.
-pub fn confined_record_list_candidates_block(body: &Block) -> HashSet<String> {
+pub(crate) fn confined_record_list_candidates_block(body: &Block) -> HashSet<String> {
     let mut lets = HashSet::new();
     collect_record_list_lets(body, &mut lets);
     if lets.is_empty() {
@@ -177,7 +177,7 @@ pub fn confined_inplace_reuse_vars(f: &Function) -> HashSet<String> {
 }
 
 /// As [`confined_inplace_reuse_vars`], over a body block directly.
-pub fn confined_inplace_reuse_vars_block(body: &Block) -> HashSet<String> {
+pub(crate) fn confined_inplace_reuse_vars_block(body: &Block) -> HashSet<String> {
     let mut shape_of: HashMap<String, ReuseShape> = HashMap::new();
     collect_reuse_lets(body, &mut shape_of);
     if shape_of.is_empty() {
@@ -418,7 +418,7 @@ pub fn confined_reassigned_vars(f: &Function, summaries: &Summaries) -> HashSet<
 }
 
 /// As [`confined_reassigned_vars`], over a body block directly.
-pub fn confined_reassigned_vars_block(body: &Block, summaries: &Summaries) -> HashSet<String> {
+pub(crate) fn confined_reassigned_vars_block(body: &Block, summaries: &Summaries) -> HashSet<String> {
     let mut bound = HashSet::new();
     collect_let_names(body, &mut bound);
     let mut reassigned = HashSet::new();
@@ -461,7 +461,7 @@ pub fn confined_reassigned_vars_block(body: &Block, summaries: &Summaries) -> Ha
 /// nested lambda body — a capture — disqualifies it too, so a closure captured by
 /// another closure is never elidable). Returns `called − disqualified`, so a name that
 /// only ever appears as a value (never called) is not in the set either.
-pub fn only_directly_called(body: &Block) -> HashSet<String> {
+pub(crate) fn only_directly_called(body: &Block) -> HashSet<String> {
     let mut called = HashSet::new();
     let mut disq = HashSet::new();
     scan_call_positions_block(body, &mut called, &mut disq);
@@ -584,7 +584,7 @@ fn collect_record_list_lets(b: &Block, out: &mut HashSet<String>) {
 /// (never a silent fall-back to the boxed layout the programmer declared away).
 /// Uniformity of the constructor (all elements the same record) is left to the
 /// codegen consumer's `packable_record_list`, which also performs the layout.
-pub fn record_list_lets_block(body: &Block) -> HashMap<String, String> {
+pub(crate) fn record_list_lets_block(body: &Block) -> HashMap<String, String> {
     let mut out = HashMap::new();
     record_list_lets_inner(body, &mut out);
     out
@@ -668,7 +668,7 @@ fn collect_slice_lets(b: &Block, out: &mut HashMap<String, String>) {
 /// captured variable that is reassigned in between would change the closure's observed
 /// value — the interpreter (which snapshots) would then diverge. Default-deny: any
 /// reassigned capture forces the boxed (tier-3) closure.
-pub fn reassigned_names(body: &Block) -> HashSet<String> {
+pub(crate) fn reassigned_names(body: &Block) -> HashSet<String> {
     let mut out = HashSet::new();
     collect_assigned_targets(body, &mut out);
     out
@@ -717,7 +717,7 @@ fn mark_all_vars(e: &Expr, out: &mut HashSet<String>) {
 /// Public wrapper over [`each_subexpr`]: apply `f` to each immediate sub-expression
 /// of `e` (recursing into nested blocks), for consumers (e.g. codegen) that need to
 /// scan an expression tree without re-deriving the AST shape.
-pub fn for_each_immediate_subexpr(e: &Expr, f: &mut impl FnMut(&Expr)) {
+pub(crate) fn for_each_immediate_subexpr(e: &Expr, f: &mut impl FnMut(&Expr)) {
     each_subexpr(e, f);
 }
 
