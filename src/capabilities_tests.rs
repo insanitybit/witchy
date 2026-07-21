@@ -1,5 +1,5 @@
-    use crate::capabilities::*;
-    use crate::parser::parse_module;
+    use witchy_caps::capabilities::*;
+    use witchy_syntax::parser::parse_module;
     use std::collections::BTreeSet;
 
     fn footprint(src: &str) -> Footprint {
@@ -53,7 +53,7 @@
                 .items
                 .iter()
                 .find_map(|it| match it {
-                    crate::ast::Item::Function(f) if f.name == "main" => Some(f.params.clone()),
+                    witchy_syntax::ast::Item::Function(f) if f.name == "main" => Some(f.params.clone()),
                     _ => None,
                 })
                 .expect("main")
@@ -439,7 +439,7 @@ pub fn serve(console: Console) -> Int:
             "rights", "dict", "time", "encoding", "path", "policy",
         ];
         for name in pure {
-            let src = crate::linker::std_source(name).expect("bundled module");
+            let src = witchy_syntax::linker::std_source(name).expect("bundled module");
             let fp = footprint(src);
             assert!(
                 fp.total.is_empty(),
@@ -450,7 +450,7 @@ pub fn serve(console: Console) -> Int:
         // `crypto` is pure except for `sign`/`public_key`, which take a
         // `Secret` — so the module's surface demands exactly that (its hashing
         // and verification stay capability-free).
-        let crypto = footprint(crate::linker::std_source("crypto").expect("bundled module"));
+        let crypto = footprint(witchy_syntax::linker::std_source("crypto").expect("bundled module"));
         assert_eq!(
             crypto.total.keys().copied().collect::<Vec<_>>(),
             vec!["Secret"],
@@ -460,14 +460,14 @@ pub fn serve(console: Console) -> Int:
         // takes a `Console` — so the module's surface demands exactly that (the
         // `Show` trait and its impls, including the container blankets, stay
         // capability-free).
-        let show = footprint(crate::linker::std_source("show").expect("bundled module"));
+        let show = footprint(witchy_syntax::linker::std_source("show").expect("bundled module"));
         assert_eq!(
             show.total.keys().copied().collect::<Vec<_>>(),
             vec!["Console"],
             "show's only capability demand is Console (for say)",
         );
         // `http` is connect-only: it should never widen to bare/full Net.
-        let http_fp = footprint(crate::linker::std_source("http").expect("bundled module"));
+        let http_fp = footprint(witchy_syntax::linker::std_source("http").expect("bundled module"));
         assert_eq!(
             http_fp.total,
             cs(&[("Net", &["Connect", "Tcp"])]),
@@ -476,7 +476,7 @@ pub fn serve(console: Console) -> Int:
         // `server` takes `Net[Listen, Tcp]` plus `Secret` (RFC-0060: `serve_tls`
         // accepts a private key as a use-only `Secret`) — authority is visible, as
         // it should be for a module that can serve HTTPS.
-        let server_fp = footprint(crate::linker::std_source("server").expect("bundled module"));
+        let server_fp = footprint(witchy_syntax::linker::std_source("server").expect("bundled module"));
         assert_eq!(
             server_fp.total,
             cs(&[("Net", &["Listen", "Tcp"]), ("Secret", &[])]),
@@ -484,7 +484,7 @@ pub fn serve(console: Console) -> Int:
         );
         // `exec` takes an `Exec` (to spawn) plus a `Dir[Read]` (to name and
         // confine the executable) — exactly those two, nothing ambient.
-        let exec_fp = footprint(crate::linker::std_source("exec").expect("bundled module"));
+        let exec_fp = footprint(witchy_syntax::linker::std_source("exec").expect("bundled module"));
         assert_eq!(
             exec_fp.total.keys().copied().collect::<Vec<_>>(),
             vec!["Dir", "Exec"],

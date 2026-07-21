@@ -9,7 +9,10 @@ use sha2::{Digest, Sha256};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{artifact, ast, capabilities, grants, runtime};
+use crate::artifact;
+use witchy_syntax::ast;
+use witchy_caps::{capabilities, grants};
+use witchy_runtime::runtime;
 
 const MAGIC: &[u8; 16] = b"WITCHY-EXE-0092!";
 const FORMAT_VERSION: u32 = 1;
@@ -768,12 +771,12 @@ mod tests {
     use wasm_encoder::Module;
 
     fn app_wasm() -> Vec<u8> {
-        let source = crate::parser::parse_module("fn main(console: Console):\n    return\n").unwrap();
+        let source = witchy_syntax::parser::parse_module("fn main(console: Console):\n    return\n").unwrap();
         artifact::embed_launch_contract(Module::new().finish(), &source)
     }
 
     fn module(source: &str) -> ast::Module {
-        crate::parser::parse_module(source).unwrap()
+        witchy_syntax::parser::parse_module(source).unwrap()
     }
 
     #[test]

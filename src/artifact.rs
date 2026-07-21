@@ -4,7 +4,8 @@ use std::borrow::Cow;
 
 use wasm_encoder::{CustomSection, Section as _};
 
-use crate::{ast, capabilities};
+use witchy_syntax::ast;
+use witchy_caps::capabilities;
 
 const LAUNCH_SECTION: &str = "witchy.launch";
 const LAUNCH_VERSION: u8 = 1;
@@ -148,7 +149,7 @@ mod tests {
 
     #[test]
     fn launch_contract_round_trips_capabilities_and_rights() {
-        let module = crate::parser::parse_module(
+        let module = witchy_syntax::parser::parse_module(
             "fn main(console: Console, root: Dir[Read], net: Net[Connect, Tcp], key: Secret):\n    return\n",
         )
         .unwrap();

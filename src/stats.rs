@@ -9,8 +9,9 @@
 //! *observable*; these counters prove it actually *fired*.
 #![cfg(feature = "native")]
 
-use crate::runtime::{Capabilities, Runtime};
-use crate::{codegen, typeck};
+use witchy_runtime::runtime::{Capabilities, Runtime};
+use witchy_lower::codegen;
+use witchy_types::typeck;
 
 /// Wasm linear-memory pages for a stats run (mirrors the CLI's run budget).
 const STATS_MEMORY_PAGES: usize = 16384;
@@ -94,7 +95,7 @@ pub fn compute(src: &str) -> Result<Stats, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::opt::{self, Opt, OptSet};
+    use witchy_syntax::opt::{self, Opt, OptSet};
 
     // An accumulation loop: in-place push keeps it O(n); forced copy re-owns at
     // every iteration and balloons the heap to O(n^2).
@@ -128,7 +129,7 @@ mod tests {
         let linked = crate::resolve_std_only(&large_source).expect("resolve FIP kernel");
         typeck::check(&linked).expect("type-check FIP kernel");
         assert!(
-            crate::analysis::module_fip_misses(&linked).is_empty(),
+            witchy_lower::analysis::module_fip_misses(&linked).is_empty(),
             "the representative state machine must satisfy the static FIP contract"
         );
 
@@ -271,7 +272,7 @@ mod tests {
 
         let linked = crate::resolve_std_only(EXTRACT).expect("resolve opt extraction workload");
         typeck::check(&linked).expect("type-check opt extraction workload");
-        let misses: Vec<_> = crate::analysis::module_no_copy_misses(&linked)
+        let misses: Vec<_> = witchy_lower::analysis::module_no_copy_misses(&linked)
             .into_iter()
             .filter(|miss| miss.function == "main")
             .collect();
@@ -321,7 +322,7 @@ mod tests {
 
         let linked = crate::resolve_std_only(UNIQUE_RESULT).expect("resolve unique result");
         typeck::check(&linked).expect("type-check unique result");
-        let misses: Vec<_> = crate::analysis::module_no_copy_misses(&linked)
+        let misses: Vec<_> = witchy_lower::analysis::module_no_copy_misses(&linked)
             .into_iter()
             .filter(|miss| miss.function == "main")
             .collect();
@@ -361,7 +362,7 @@ mod tests {
 
         let linked = crate::resolve_std_only(EARLY).expect("resolve early unique result");
         typeck::check(&linked).expect("type-check early unique result");
-        let misses: Vec<_> = crate::analysis::module_no_copy_misses(&linked)
+        let misses: Vec<_> = witchy_lower::analysis::module_no_copy_misses(&linked)
             .into_iter()
             .filter(|miss| miss.function == "main")
             .collect();
@@ -762,7 +763,7 @@ fn main(console: Console):
                     let linked = crate::resolve_std_only(src).expect("link");
                     typeck::check(&linked).expect("typeck");
                     let oracle =
-                        crate::interpreter::run_module(linked, ".", Vec::new()).expect("interp run");
+                        witchy_interp::interpreter::run_module(linked, ".", Vec::new()).expect("interp run");
 
                     opt::set_for_tests(Some(OptSet::all()));
                     let base = compute(src).expect("compute all").output;
@@ -793,7 +794,7 @@ fn main(console: Console):
     fn interp(src: &str) -> Vec<String> {
         let linked = crate::resolve_std_only(src).expect("link");
         typeck::check(&linked).expect("typeck");
-        crate::interpreter::run_module(linked, ".", Vec::new()).expect("interp run")
+        witchy_interp::interpreter::run_module(linked, ".", Vec::new()).expect("interp run")
     }
 
     /// RFC-0028 confined Views DoD counter (b): a read-only window over an

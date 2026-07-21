@@ -52,38 +52,38 @@ pub use witchy_wir::{wir, wir_encode, wir_helpers, wir_opt};
 /// Resolve a single-source program against the BUNDLED standard library only
 /// (no filesystem — the browser has none): parse the entry, then breadth-first
 /// load each `import`ed std module from the embedded sources and link them.
-pub fn resolve_std_only(src: &str) -> Result<ast::Module, String> {
+pub fn resolve_std_only(src: &str) -> Result<witchy_syntax::ast::Module, String> {
     resolve_std_modules(src).and_then(|modules| {
-        pipeline::link(modules, "main").map_err(|e| e.to_string())
+        witchy_interp::pipeline::link(modules, "main").map_err(|e| e.to_string())
     })
 }
 
 /// Resolve bundled standard-library imports and retain proof that the linked
 /// program passed the canonical type checker.
-pub fn resolve_std_only_checked(src: &str) -> Result<pipeline::CheckedModule, String> {
+pub fn resolve_std_only_checked(src: &str) -> Result<witchy_interp::pipeline::CheckedModule, String> {
     resolve_std_modules(src).and_then(|modules| {
-        pipeline::link_checked(modules, "main").map_err(|e| e.to_string())
+        witchy_interp::pipeline::link_checked(modules, "main").map_err(|e| e.to_string())
     })
 }
 
-fn resolve_std_modules(src: &str) -> Result<Vec<(String, ast::Module)>, String> {
+fn resolve_std_modules(src: &str) -> Result<Vec<(String, witchy_syntax::ast::Module)>, String> {
     use std::collections::{HashSet, VecDeque};
-    let entry = parser::parse_module(src).map_err(|e| e.to_string())?;
-    let mut modules: Vec<(String, ast::Module)> = vec![("main".to_string(), entry.clone())];
+    let entry = witchy_syntax::parser::parse_module(src).map_err(|e| e.to_string())?;
+    let mut modules: Vec<(String, witchy_syntax::ast::Module)> = vec![("main".to_string(), entry.clone())];
     let mut loaded: HashSet<String> = HashSet::from(["main".to_string()]);
-    let mut queue: VecDeque<ast::Module> = VecDeque::from([entry]);
+    let mut queue: VecDeque<witchy_syntax::ast::Module> = VecDeque::from([entry]);
     while let Some(module) = queue.pop_front() {
         for name in module.imports.clone() {
             if !loaded.insert(name.clone()) {
                 continue;
             }
-            let source = linker::std_source(&name).ok_or_else(|| {
-                let hint = linker::closest_std_module(&name)
+            let source = witchy_syntax::linker::std_source(&name).ok_or_else(|| {
+                let hint = witchy_syntax::linker::closest_std_module(&name)
                     .map(|m| format!(" — did you mean `import {m}`?"))
                     .unwrap_or_default();
                 format!("unknown module `{name}`{hint} (the browser playground has only the bundled std)")
             })?;
-            let parsed = parser::parse_module(source).map_err(|e| e.to_string())?;
+            let parsed = witchy_syntax::parser::parse_module(source).map_err(|e| e.to_string())?;
             queue.push_back(parsed.clone());
             modules.push((name, parsed));
         }
@@ -103,7 +103,7 @@ pub fn is_entry_function(name: &str, entry_stem: &str) -> bool {
 /// Enforce the source file's declared performance mode after linking and type
 /// checking. This lives in the wasm-safe library so CLI, LSP, and browser
 /// compilation apply one contract.
-pub fn enforce_performance_modes(linked: &ast::Module, entry_stem: &str) -> Result<(), String> {
+pub fn enforce_performance_modes(linked: &witchy_syntax::ast::Module, entry_stem: &str) -> Result<(), String> {
     let source_modes: Vec<&str> = linked
         .modes
         .iter()
@@ -117,7 +117,7 @@ pub fn enforce_performance_modes(linked: &ast::Module, entry_stem: &str) -> Resu
     let mode_names = source_modes.join(", ");
     let mut errors = Vec::new();
 
-    for (func, cliff) in analysis::module_cliffs(linked) {
+    for (func, cliff) in witchy_lower::analysis::module_cliffs(linked) {
         if !is_entry_function(&func, entry_stem) {
             continue;
         }
@@ -130,7 +130,7 @@ pub fn enforce_performance_modes(linked: &ast::Module, entry_stem: &str) -> Resu
         ));
     }
 
-    for miss in analysis::module_no_copy_misses(linked) {
+    for miss in witchy_lower::analysis::module_no_copy_misses(linked) {
         if !is_entry_function(&miss.function, entry_stem) {
             continue;
         }
@@ -155,7 +155,7 @@ pub fn enforce_performance_modes(linked: &ast::Module, entry_stem: &str) -> Resu
         ));
     }
 
-    for miss in analysis::module_fip_misses(linked) {
+    for miss in witchy_lower::analysis::module_fip_misses(linked) {
         if !is_entry_function(&miss.function, entry_stem) {
             continue;
         }
@@ -168,12 +168,12 @@ pub fn enforce_performance_modes(linked: &ast::Module, entry_stem: &str) -> Resu
     }
 
     for item in &linked.items {
-        let ast::Item::Function(function) = item else { continue };
+        let witchy_syntax::ast::Item::Function(function) = item else { continue };
         if !is_entry_function(&function.name, entry_stem) {
             continue;
         }
         for param in &function.params {
-            if param.convention == ast::Convention::Let && ownership_relevant(&param.ty) {
+            if param.convention == witchy_syntax::ast::Convention::Let && ownership_relevant(&param.ty) {
                 errors.push(format!(
                     "error: in `{}`: parameter `{}` has no ownership convention — \
                      `mode {}` requires an explicit `let` (read-only borrow), `own` \
@@ -189,24 +189,24 @@ pub fn enforce_performance_modes(linked: &ast::Module, entry_stem: &str) -> Resu
 
 /// Whether an ownership convention changes generated code for this parameter.
 /// Qualifiers refine the contract but do not hide the underlying heap type.
-pub fn ownership_relevant(ty: &Option<ast::Type>) -> bool {
+pub fn ownership_relevant(ty: &Option<witchy_syntax::ast::Type>) -> bool {
     ty.as_ref().is_some_and(ownership_relevant_type)
 }
 
-fn ownership_relevant_type(ty: &ast::Type) -> bool {
+fn ownership_relevant_type(ty: &witchy_syntax::ast::Type) -> bool {
     match ty {
-        ast::Type::Named(name, _) => {
+        witchy_syntax::ast::Type::Named(name, _) => {
             !matches!(name.as_str(), "Int" | "Float" | "Bool" | "Duration")
-                && !capabilities::is_capability_type_name(name)
+                && !witchy_caps::capabilities::is_capability_type_name(name)
         }
-        ast::Type::Tuple(_) => true,
+        witchy_syntax::ast::Type::Tuple(_) => true,
         // Record composition is normalized before ownership analysis; keep the
         // raw syntax conservatively ownership-relevant if tooling asks early.
-        ast::Type::RecordCompose { .. } => true,
+        witchy_syntax::ast::Type::RecordCompose { .. } => true,
         // (RFC-0081) A dyn value is a heap value, so its convention matters.
-        ast::Type::Dyn(_, _) => true,
-        ast::Type::Fn(_, _, _) => false,
-        ast::Type::Qualified(_, inner) => ownership_relevant_type(inner),
+        witchy_syntax::ast::Type::Dyn(_, _) => true,
+        witchy_syntax::ast::Type::Fn(_, _, _) => false,
+        witchy_syntax::ast::Type::Qualified(_, inner) => ownership_relevant_type(inner),
     }
 }
 
@@ -224,12 +224,12 @@ pub fn compile_source(src: &str) -> Result<Vec<u8>, String> {
     enforce_performance_modes(linked, "main")?;
     // Compile through the WIR → wasm-binary pipeline (`wasmparser`/`wasm-encoder`,
     // pure Rust, so this runs on EVERY target including the browser playground).
-    let bytes = match codegen::compile_checked_module_binary(&checked) {
-        codegen::LoweringOutcome::Lowered(bytes) => bytes,
-        codegen::LoweringOutcome::Unsupported(reason) => {
+    let bytes = match witchy_lower::codegen::compile_checked_module_binary(&checked) {
+        witchy_lower::codegen::LoweringOutcome::Lowered(bytes) => bytes,
+        witchy_lower::codegen::LoweringOutcome::Unsupported(reason) => {
             return Err(format!("cannot compile to WASM: {reason}"));
         }
-        codegen::LoweringOutcome::Rejected(error) => {
+        witchy_lower::codegen::LoweringOutcome::Rejected(error) => {
             return Err(format!("cannot compile to WASM: {error}"));
         }
     };
@@ -322,7 +322,7 @@ fn main() -> Int:
 "#,
         )
         .expect("resolve lambda program");
-        super::typeck::check(&linked).expect("type-check lambda program");
+        witchy_types::typeck::check(&linked).expect("type-check lambda program");
         let error = super::enforce_performance_modes(&linked, "main")
             .expect_err("an entry lambda is part of the entry module contract");
         assert!(error.contains("main::<lambda>"), "{error}");
@@ -334,13 +334,13 @@ fn main() -> Int:
 /// delegates `float_to_str` here so it never reimplements (and so never diverges
 /// from) Rust's float `Display`.
 pub fn render_float(x: f64) -> String {
-    crate::fmt::render_float(x)
+    witchy_syntax::fmt::render_float(x)
 }
 
 /// `string.from_code` via the shared native registry — the same `char::from_u32`
 /// both backends use. Out-of-range/surrogate becomes U+FFFD.
 pub fn string_from_code(cp: i64) -> String {
-    native_str("string.from_code", crate::value::NativeValue::Int(cp))
+    native_str("string.from_code", witchy_runtime::value::NativeValue::Int(cp))
         .unwrap_or_else(|_| "\u{FFFD}".to_string())
 }
 
@@ -349,7 +349,7 @@ pub fn string_from_code(cp: i64) -> String {
 /// UTF-8; byte ops preserve the raw slice and return raw flat-buffer bytes.
 /// The playground host shim delegates here.
 pub fn encoding(op: i32, input: &[u8]) -> Result<Vec<u8>, String> {
-    use crate::value::NativeValue;
+    use witchy_runtime::value::NativeValue;
     enum Input {
         String,
         Bytes,
@@ -377,7 +377,7 @@ pub fn encoding(op: i32, input: &[u8]) -> Result<Vec<u8>, String> {
         Input::Bytes => NativeValue::Bytes(input.to_vec()),
         Input::LossyString => NativeValue::Str(String::from_utf8_lossy(input).into_owned()),
     };
-    let f = native::lookup(name).ok_or_else(|| format!("{name} is not registered"))?;
+    let f = witchy_runtime::native::lookup(name).ok_or_else(|| format!("{name} is not registered"))?;
     match f(&[arg]).map_err(|e| e.message)? {
         NativeValue::Str(s) => Ok(s.into_bytes()),
         NativeValue::Bytes(bytes) => Ok(bytes),
@@ -385,18 +385,18 @@ pub fn encoding(op: i32, input: &[u8]) -> Result<Vec<u8>, String> {
     }
 }
 
-fn native_str(name: &str, arg: crate::value::NativeValue) -> Result<String, String> {
-    let f = native::lookup(name).ok_or_else(|| format!("{name} is not registered"))?;
+fn native_str(name: &str, arg: witchy_runtime::value::NativeValue) -> Result<String, String> {
+    let f = witchy_runtime::native::lookup(name).ok_or_else(|| format!("{name} is not registered"))?;
     match f(&[arg]).map_err(|e| e.message)? {
-        crate::value::NativeValue::Str(s) => Ok(s),
+        witchy_runtime::value::NativeValue::Str(s) => Ok(s),
         _ => Err(format!("{name} did not return a String")),
     }
 }
 
-fn native_call(name: &str, args: &[&str]) -> Result<crate::value::NativeValue, String> {
-    let f = native::lookup(name).ok_or_else(|| format!("{name} is not registered"))?;
-    let vals: Vec<crate::value::NativeValue> =
-        args.iter().map(|s| crate::value::NativeValue::Str(s.to_string())).collect();
+fn native_call(name: &str, args: &[&str]) -> Result<witchy_runtime::value::NativeValue, String> {
+    let f = witchy_runtime::native::lookup(name).ok_or_else(|| format!("{name} is not registered"))?;
+    let vals: Vec<witchy_runtime::value::NativeValue> =
+        args.iter().map(|s| witchy_runtime::value::NativeValue::Str(s.to_string())).collect();
     f(&vals).map_err(|e| e.message)
 }
 
@@ -413,7 +413,7 @@ pub fn crypto_hash(op: i32, input: &str) -> String {
         _ => return String::new(),
     };
     match native_call(name, &[input]) {
-        Ok(crate::value::NativeValue::Str(s)) => s,
+        Ok(witchy_runtime::value::NativeValue::Str(s)) => s,
         _ => String::new(),
     }
 }
@@ -421,7 +421,7 @@ pub fn crypto_hash(op: i32, input: &str) -> String {
 /// HMAC-SHA256(key, message) as hex.
 pub fn hmac_sha256(key: &str, msg: &str) -> String {
     match native_call("crypto.hmac_sha256", &[key, msg]) {
-        Ok(crate::value::NativeValue::Str(s)) => s,
+        Ok(witchy_runtime::value::NativeValue::Str(s)) => s,
         _ => String::new(),
     }
 }
@@ -430,7 +430,7 @@ pub fn hmac_sha256(key: &str, msg: &str) -> String {
 /// share; the host shim stages it through `fill_pending` like the native runtime.
 pub fn regex_spans(pattern: &str, text: &str) -> String {
     match native_call(witchy_syntax::intrinsics::REGEX_MATCH_SPANS, &[pattern, text]) {
-        Ok(crate::value::NativeValue::Str(s)) => s,
+        Ok(witchy_runtime::value::NativeValue::Str(s)) => s,
         // The browser host calls this through the C-style wasm export, whose ABI
         // can only return bytes. Prefix host-visible errors with an impossible
         // span byte; web/witchy-host.js turns it back into a thrown error.
@@ -452,7 +452,7 @@ pub fn crypto_verify_status(op: i32, pk: &str, msg: &str, sig: &str) -> i64 {
         _ => return -4,
     };
     match native_call(name, &[pk, msg, sig]) {
-        Ok(crate::value::NativeValue::Int(n)) => n,
+        Ok(witchy_runtime::value::NativeValue::Int(n)) => n,
         _ => -4,
     }
 }
