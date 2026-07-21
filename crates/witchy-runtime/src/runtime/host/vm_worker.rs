@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use wasmtime::{
     Caller, Engine, Error, ExternRef, Instance, Linker, Module, Result, Rooted, Store,
     StoreLimits, StoreLimitsBuilder,
@@ -143,7 +145,19 @@ fn spawn_worker(
     worker_listener: Option<(std::sync::Arc<std::net::TcpListener>, Option<crate::net::ServerTlsConfig>)>,
     limits: StoreLimits,
 ) -> Result<(Store<VmState>, Instance)> {
-    let state = vmstate_from_caps(0, caps, limits, worker_listener, engine, module, preempt);
+    // Workers re-wire the default registry-backed services; threading the
+    // parent's handle through the spawn signatures is the follow-up when the
+    // implementation moves above the kernel.
+    let state = vmstate_from_caps(
+        0,
+        caps,
+        limits,
+        worker_listener,
+        engine,
+        module,
+        preempt,
+        Arc::new(super::super::compiler::RegistryCompilerServices),
+    );
     let mut store = Store::new(engine, state);
     store.limiter(|s| &mut s.limits);
     if preempt {

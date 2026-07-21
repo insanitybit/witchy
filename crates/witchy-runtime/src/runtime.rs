@@ -424,6 +424,10 @@ const HEAP_POISON: u8 = 0xDB;
 pub struct VmState {
     id: VmId,
     caps: Capabilities,
+    /// The compiler services exposed to trusted programs; injected from above
+    /// so `runtime/compiler.rs` depends on the interface, not the
+    /// implementation.
+    compiler_services: Arc<dyn compiler::CompilerServices>,
     pub(crate) limits: StoreLimits,
     /// Everything the VM has printed (via the `print`/`print_int`
     /// capabilities), so the host can observe a compiled program's output.
@@ -686,6 +690,9 @@ pub struct Runtime {
     engine: Engine,
     next_id: VmId,
     preempt: bool,
+    /// Injected into every VM's state; the Wasmtime compiler-service adapters
+    /// call this interface rather than the compiler implementation directly.
+    compiler_services: Arc<dyn compiler::CompilerServices>,
 }
 
 impl Runtime {
@@ -763,6 +770,7 @@ impl Runtime {
             engine,
             next_id: 1,
             preempt,
+            compiler_services: Arc::new(compiler::RegistryCompilerServices),
         })
     }
 
@@ -786,8 +794,16 @@ impl Runtime {
         let limits = StoreLimitsBuilder::new()
             .memory_size(memory_pages_max * 64 * 1024)
             .build();
-        let state =
-            vmstate_from_caps(id, &caps, limits, None, &self.engine, &module, self.preempt);
+        let state = vmstate_from_caps(
+            id,
+            &caps,
+            limits,
+            None,
+            &self.engine,
+            &module,
+            self.preempt,
+            self.compiler_services.clone(),
+        );
 
         let mut store = Store::new(&self.engine, state);
         store.limiter(|s| &mut s.limits);
@@ -984,6 +1000,7 @@ fn confine(r: std::result::Result<std::path::PathBuf, crate::confine::ConfineErr
 /// here, so the root Dir/File/Net grant material and build grants are derived
 /// from `caps` in exactly one place. `worker_listener` is `Some` only for a
 /// `serve` pool worker.
+#[allow(clippy::too_many_arguments)]
 fn vmstate_from_caps(
     id: VmId,
     caps: &Capabilities,
@@ -992,6 +1009,7 @@ fn vmstate_from_caps(
     engine: &Engine,
     module: &Module,
     preempt: bool,
+    compiler_services: Arc<dyn compiler::CompilerServices>,
 ) -> VmState {
     let default_dir_rights = FsRights::new(caps.dir_read, caps.dir_write);
     let dirs = caps
@@ -1026,6 +1044,7 @@ fn vmstate_from_caps(
     VmState {
         id,
         caps: caps.clone(),
+        compiler_services,
         limits,
         output: Arc::new(Mutex::new(Vec::new())),
         dirs,
