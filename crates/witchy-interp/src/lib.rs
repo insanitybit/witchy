@@ -14,6 +14,7 @@
 #![allow(clippy::collapsible_if, clippy::collapsible_match, clippy::items_after_test_module)]
 #![deny(unsafe_code)]
 
+pub mod compiler_natives;
 pub mod comptime;
 pub mod interpreter;
 pub mod pipeline;

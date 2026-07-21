@@ -1,12 +1,24 @@
-//! Compiler services exposed to trusted Witchy programs.
+//! Compiler-service natives (`compiler.footprint`/`diff`/`doc`/`try_doc`).
 //!
-//! These parse, check, document, and analyze source. They remain behind the
-//! native-function registry while their dependency-injection boundary is built.
+//! Moved out of `witchy-runtime` so the runtime kernel sheds its parser/type/
+//! caps implementation dependencies (RFC-0018 stage-DAG). The interpreter
+//! dispatches these directly; the compiled backend reaches the same code via
+//! the injected `CompilerServices` seam, whose default reads the vtable this
+//! module installs into `witchy_runtime`.
 
-use super::{type_error, Value};
-use crate::value::NativeError as RuntimeError;
+use witchy_runtime::value::{NativeError as RuntimeError, NativeValue as Value};
 use witchy_syntax::ast::{Item, Module};
 use witchy_syntax::intrinsics;
+
+fn type_error(msg: impl Into<String>) -> RuntimeError {
+    RuntimeError { message: msg.into() }
+}
+
+/// Install the compiler-native vtable into `witchy_runtime` so the compiled
+/// backend's default `CompilerServices` can dispatch. Idempotent.
+pub fn install() {
+    witchy_runtime::native::install_compiler_natives(footprint, diff, doc, doc_result_json);
+}
 
 /// Compute the capability footprint of witchy `source`, returned as JSON:
 /// `{"total":[..],"build":[..],"user_caps":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]}`,

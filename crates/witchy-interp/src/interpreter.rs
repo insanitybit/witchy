@@ -2807,6 +2807,9 @@ impl Interpreter {
         // Native stdlib modules (crypto, …): pure, stateless functions reached by
         // their qualified name (`crypto.sha256`). Dispatched through the registry
         // so adding one needs no change here — see `src/native.rs`.
+        // Ensure the compiler-service natives (installed from this crate,
+        // above the runtime kernel) are resolvable before the registry lookup.
+        crate::compiler_natives::install();
         if let Some(f) = witchy_runtime::native::lookup(name) {
             // `native` speaks `NativeValue` (it doesn't depend on the interpreter);
             // bridge our `Value` across the call.

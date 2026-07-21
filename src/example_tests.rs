@@ -2015,6 +2015,9 @@ fn main(console: Console):
 
     #[test]
     fn native_compiler_intrinsics_reject_comptime_source_strings() {
+        // The compiler-service natives live above the runtime kernel in
+        // `witchy-interp`; install their vtable before resolving them here.
+        witchy_interp::compiler_natives::install();
         use crate::value::NativeValue;
 
         let invalid = "fn main(console: Console):\n    missing(console)\n";
@@ -4242,6 +4245,7 @@ fn main(console: Console, root: Dir[Read]):
     mod ownership;
 
     fn wasm_run(src: &str) -> Vec<String> {
+        witchy_interp::compiler_natives::install();
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
         let bytes = codegen::compile_module_binary(&linked)
@@ -14455,6 +14459,7 @@ fn main(console: Console):
     /// Link a multi-module program, compile the flat module to WASM, run it on
     /// the runtime with output capabilities, and return what it printed.
     fn run_linked_on_wasm(sources: &[(&str, &str)], entry: &str) -> Vec<String> {
+        witchy_interp::compiler_natives::install();
         use crate::runtime::{Capabilities, Runtime};
         let mods: Vec<(String, ast::Module)> = sources
             .iter()

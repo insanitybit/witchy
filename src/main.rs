@@ -196,6 +196,12 @@ fn embedded_pm_module(name: &str) -> Option<&'static str> {
 }
 
 fn main() -> wasmtime::Result<()> {
+    // Install the compiler-service natives (footprint/diff/doc), which live
+    // above the runtime kernel in `witchy-interp` so the kernel carries no
+    // parser/type/caps dependency. The compiled backend's `CompilerServices`
+    // default reads this vtable; a trusted program (pm/coven) calling
+    // `compiler.footprint` needs it present before any run.
+    witchy_interp::compiler_natives::install();
     // RFC-0092: a packaged application is a normal command. Detect its
     // authenticated overlay before interpreting ANY argv as Witchy compiler or
     // grant flags; every token after argv[0] belongs to the application.

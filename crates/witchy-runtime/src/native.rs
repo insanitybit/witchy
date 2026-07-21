@@ -16,6 +16,33 @@
 
 use crate::value::{NativeError as RuntimeError, NativeValue as Value};
 use witchy_syntax::intrinsics;
+use std::sync::OnceLock;
+
+/// The four compiler-service natives (`compiler.footprint`/`diff`/`doc`/
+/// `try_doc`), installed from above the kernel by `witchy-interp` so this crate
+/// carries no parser/type/caps implementation dependency. Both backends reach
+/// them through `lookup`, so the interpreter and the compiled `CompilerServices`
+/// default stay byte-identical.
+pub struct CompilerNatives {
+    pub footprint: NativeFn,
+    pub diff: NativeFn,
+    pub doc: NativeFn,
+    pub doc_result_json: NativeFn,
+}
+
+/// The installed compiler-native vtable (empty until `install_compiler_natives`).
+pub static COMPILER_NATIVES: OnceLock<CompilerNatives> = OnceLock::new();
+
+/// Install the compiler-service natives. Idempotent — the first call wins, so a
+/// process may install once at startup (CLI) or lazily (interpreter/tests).
+pub fn install_compiler_natives(
+    footprint: NativeFn,
+    diff: NativeFn,
+    doc: NativeFn,
+    doc_result_json: NativeFn,
+) {
+    let _ = COMPILER_NATIVES.set(CompilerNatives { footprint, diff, doc, doc_result_json });
+}
 
 /// A native module function: pure and stateless, `(args) -> value`.
 pub type NativeFn = fn(&[Value]) -> Result<Value, RuntimeError>;
@@ -51,10 +78,14 @@ pub fn lookup(qualified: &str) -> Option<NativeFn> {
         intrinsics::CRYPTO_SHA3_256 => Some(crypto::sha3_256),
         #[cfg(not(target_arch = "wasm32"))]
         intrinsics::CRYPTO_HMAC_SHA256 => Some(crypto::hmac_sha256),
-        intrinsics::COMPILER_FOOTPRINT => Some(compiler::footprint),
-        intrinsics::COMPILER_DIFF => Some(compiler::diff),
-        intrinsics::COMPILER_DOC => Some(compiler::doc),
-        intrinsics::COMPILER_DOC_RESULT_JSON => Some(compiler::doc_result_json),
+        // The compiler-service natives are installed from above the kernel
+        // (`witchy-interp`) so this crate has no parser/type/caps dependency;
+        // an uninstalled process resolves them to None (a clear "not registered"
+        // error at the call site).
+        witchy_syntax::intrinsics::COMPILER_FOOTPRINT => COMPILER_NATIVES.get().map(|v| v.footprint),
+        witchy_syntax::intrinsics::COMPILER_DIFF => COMPILER_NATIVES.get().map(|v| v.diff),
+        witchy_syntax::intrinsics::COMPILER_DOC => COMPILER_NATIVES.get().map(|v| v.doc),
+        witchy_syntax::intrinsics::COMPILER_DOC_RESULT_JSON => COMPILER_NATIVES.get().map(|v| v.doc_result_json),
         intrinsics::ENCODING_UTF8_LOSSY => Some(encoding::utf8_lossy),
         intrinsics::ENCODING_HEX_ENCODE => Some(encoding::hex_encode),
         intrinsics::ENCODING_HEX_ENCODE_BYTES => Some(encoding::hex_encode_bytes),
@@ -531,10 +562,6 @@ mod crypto {
     }
 }
 
-/// The `compiler` module: witchy's own toolchain, exposed to witchy. This is what
-/// lets a (self-hosted) package manager compute a rune's capability footprint —
-/// the heart of the supply-chain story — from within witchy.
-mod compiler;
 
 /// The `encoding` module: hex and base64 over strings or raw `Bytes`. The
 /// byte-level codecs are native because witchy source cannot inspect raw bytes
@@ -824,6 +851,19 @@ mod intrinsic_catalog_tests {
 
         for intrinsic in witchy_syntax::intrinsics::ALL {
             match intrinsic.runtime {
+                // The compiler-service natives (compiler.footprint/diff/doc/try_doc)
+                // are installed above the kernel by witchy-interp, not statically
+                // registered here, so `lookup` resolves them only after install.
+                // Their presence + behavior is covered by the interpreter/compiled
+                // parity tests; exempt them from the static-registration contract.
+                IntrinsicRuntime::Native
+                    if matches!(
+                        intrinsic.name,
+                        witchy_syntax::intrinsics::COMPILER_FOOTPRINT
+                            | witchy_syntax::intrinsics::COMPILER_DIFF
+                            | witchy_syntax::intrinsics::COMPILER_DOC
+                            | witchy_syntax::intrinsics::COMPILER_DOC_RESULT_JSON
+                    ) => {}
                 IntrinsicRuntime::Native => assert!(
                     super::lookup(intrinsic.name).is_some(),
                     "intrinsic {} names a missing native runtime hook",

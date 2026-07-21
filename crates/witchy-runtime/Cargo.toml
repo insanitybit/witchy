@@ -9,7 +9,6 @@ description = "witchy compiler — runtime values, the capability host registry,
 [dependencies]
 witchy-caps = { path = "../witchy-caps" }
 witchy-syntax = { path = "../witchy-syntax" }
-witchy-types = { path = "../witchy-types" }
 witchy-wir = { path = "../witchy-wir" }
 # Pure-Rust crypto for the wasm-safe path (the playground never runs
 # security-critical crypto); the native path below uses aws-lc-rs instead.
@@ -39,3 +38,4 @@ native = ["dep:wasmtime", "dep:getrandom"]
 # Exposes the scoped TLS-root registry used by the root package's hermetic
 # integration tests. Normal builds cannot add trust anchors through this API.
 test-support = []
+
