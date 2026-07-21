@@ -1,9 +1,15 @@
 //! Compiled execution and interpreter/Wasm parity command services.
 
+use witchy::enforce_performance_modes;
+use witchy_syntax::ast;
+use witchy_caps::capabilities;
+use witchy_lower::codegen;
+use witchy_interp::interpreter;
+use witchy_runtime::runtime::{self, Runtime};
+use witchy_types::typeck;
 use crate::{
-    ast, capabilities, codegen, commands, enforce_performance_modes, interpreter,
-    link_file, linked_has_main, main_fs_param_rights, run_wasm_bytes, runtime, typeck,
-    Runtime, RUN_MEMORY_PAGES,
+    commands, link_file, linked_has_main, main_fs_param_rights, run_wasm_bytes,
+    RUN_MEMORY_PAGES,
 };
 
 /// Run `witchy parity` when it is the requested command.
@@ -288,7 +294,7 @@ pub(crate) fn run_linked_compiled(
     strict_dir: bool,
     test_mocks: bool,
 ) -> Result<(Vec<String>, Option<i32>), String> {
-    use crate::runtime::Capabilities;
+    use witchy_runtime::runtime::Capabilities;
     // The grant is what `main` RECEIVES — authority originates only there (witchy
     // has no ambient caps), so a linked library's public fns (a dependency's `pub fn
     // fetch(net)`, std `crypto.sign`'s `Secret`) are not entry points of THIS run

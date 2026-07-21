@@ -1,9 +1,12 @@
 //! Native compilation, artifact emission, and source-cache services.
 
-use crate::{
-    artifact, ast, codegen, enforce_performance_modes, link_file, link_file_checked,
-    link_file_checked_with_deps, opt, pipeline, trusted_exe, typeck, wir,
-};
+use witchy::{artifact, enforce_performance_modes, trusted_exe};
+use witchy_syntax::{ast, opt};
+use witchy_lower::codegen;
+use witchy_interp::pipeline;
+use witchy_types::typeck;
+use witchy_wir::wir;
+use crate::{link_file, link_file_checked, link_file_checked_with_deps};
 
 pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
     // `witchy compile <entry> [--dep name=path]... [--out <file.wasm>]` links the
@@ -265,7 +268,7 @@ fn compiler_fingerprint() -> &'static str {
 /// since every `WITCHY_OPT` setting compiles to different wasm. Reads the same
 /// `opt::enabled` the compiler does, so a test override or the env both flow in.
 fn active_opt_key() -> String {
-    use crate::opt::{self, Opt};
+    use witchy_syntax::opt::{self, Opt};
     Opt::ALL
         .iter()
         .filter(|o| opt::enabled(**o))

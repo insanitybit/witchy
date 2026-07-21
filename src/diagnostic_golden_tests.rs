@@ -19,7 +19,10 @@
 //! position and message on both backends (RFC-0045 strict); a bare Wasm trap is
 //! a regression.
 
-use crate::{codegen, interpreter, parser, pipeline, typeck};
+use witchy_lower::codegen;
+use witchy_interp::{interpreter, pipeline};
+use witchy_syntax::parser;
+use witchy_types::typeck;
 
 // ---------------------------------------------------------------------------
 // Pipeline plumbing — reuses the same stages the CLI and `example_tests.rs`
@@ -93,7 +96,7 @@ fn mode_diag(src: &str) -> String {
         Ok(m) => m,
         Err(e) => return format!("<link error>: {e}"),
     };
-    match crate::enforce_performance_modes(&linked, "main") {
+    match witchy::enforce_performance_modes(&linked, "main") {
         Ok(()) => "<unexpectedly accepted>".to_string(),
         Err(e) => e,
     }

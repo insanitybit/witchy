@@ -10,7 +10,8 @@ use std::path::PathBuf;
 use lsp_server::{Connection, Message, Notification};
 use serde_json::{Value, json};
 
-use crate::{ast, parser, typeck};
+use witchy_syntax::{ast, parser};
+use witchy_types::typeck;
 
 type LspResult = Result<(), Box<dyn Error + Sync + Send>>;
 
@@ -91,7 +92,7 @@ fn document_symbol_response(docs: &HashMap<String, String>, params: &Value) -> V
     for generated in linked.origins.nodes() {
         if generated.origin.invocation.module != entry
             || !generated.node.path.is_empty()
-            || generated.node.category != witchy::origin::SyntaxCategory::Item
+            || generated.node.category != witchy_syntax::origin::SyntaxCategory::Item
         {
             continue;
         }
@@ -157,7 +158,7 @@ fn link_document_with_origins(
     uri: &str,
     text: &str,
     docs: &HashMap<String, String>,
-) -> Option<(String, ast::Module, crate::linker::LinkedModule)> {
+) -> Option<(String, ast::Module, witchy_syntax::linker::LinkedModule)> {
     let path = uri_to_path(uri);
     let dir = path.as_ref()?.parent().map(PathBuf::from)?;
     let entry = path.as_ref()?.file_stem()?.to_str()?.to_string();
@@ -186,7 +187,7 @@ fn link_document_with_origins(
         );
         modules.push((name, module));
     }
-    let linked = crate::pipeline::link_with_origins(modules, &entry).ok()?;
+    let linked = witchy_interp::pipeline::link_with_origins(modules, &entry).ok()?;
     Some((entry, parsed, linked))
 }
 
@@ -249,7 +250,7 @@ fn completion_response(docs: &HashMap<String, String>, params: &Value) -> Value 
         return json!([]);
     };
     let mut items: Vec<Value> = Vec::new();
-    for module in crate::linker::PRELUDE_MODULES {
+    for module in witchy_syntax::linker::PRELUDE_MODULES {
         // Prelude completion comes from the canonical source registry, so it
         // cannot drift from the linker or be replaced by a sibling file.
         push_module_completions(&mut items, module, None, docs);
@@ -313,7 +314,7 @@ fn module_source(
     doc_uri: Option<&str>,
     docs: &HashMap<String, String>,
 ) -> Option<String> {
-    if let Some(src) = crate::linker::std_source(name) {
+    if let Some(src) = witchy_syntax::linker::std_source(name) {
         return Some(src.to_string());
     }
     let dir = doc_uri.and_then(uri_to_path).and_then(|p| p.parent().map(PathBuf::from))?;
@@ -399,7 +400,7 @@ fn hover_response(docs: &HashMap<String, String>, params: &Value) -> Value {
     };
     if let Some(owner) = &associated_owner {
         for (src, _prefix) in &sources {
-            if let Ok(Some(symbol)) = crate::doc::associated_function(src, owner, &bare) {
+            if let Ok(Some(symbol)) = witchy_syntax::doc::associated_function(src, owner, &bare) {
                 let contents = format!(
                     "```witchy\n{}\n```\n{}",
                     symbol.signature, symbol.docs
@@ -433,7 +434,7 @@ fn hover_response(docs: &HashMap<String, String>, params: &Value) -> Value {
     // explicit module qualifier (`list.repeat`) still means the module function.
     if !module_qualified {
         for (src, _prefix) in &sources {
-            if let Ok(Some(symbol)) = crate::doc::instance_method(src, None, &bare) {
+            if let Ok(Some(symbol)) = witchy_syntax::doc::instance_method(src, None, &bare) {
                 let contents = format!(
                     "```witchy\n{}\n```\n{}",
                     symbol.signature, symbol.docs
@@ -572,7 +573,7 @@ fn visible_module_sources(
             names.push(module);
         }
     }
-    names.extend(crate::linker::PRELUDE_MODULES.iter().map(|s| s.to_string()));
+    names.extend(witchy_syntax::linker::PRELUDE_MODULES.iter().map(|s| s.to_string()));
     let mut seen: HashSet<String> = HashSet::new();
     let mut out = Vec::new();
     for name in names {
@@ -720,7 +721,7 @@ fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) ->
         return import_diags;
     }
 
-    let linked = match crate::pipeline::link(modules, &entry) {
+    let linked = match witchy_interp::pipeline::link(modules, &entry) {
         Ok(m) => m,
         Err(e) => {
             // BUG-162: map the link error onto the line it names (or the import it
@@ -749,8 +750,8 @@ fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) ->
             // `mode` file the cliff is a hard error. Only the buffer's OWN functions
             // (the entry module's `main` / `{entry}.fn`) are judged; linked-in modules
             // keep their own policy.
-            for (func, c) in crate::analysis::module_cliffs(&linked) {
-                if !crate::is_entry_function(&func, &entry) {
+            for (func, c) in witchy_lower::analysis::module_cliffs(&linked) {
+                if !witchy::is_entry_function(&func, &entry) {
                     continue;
                 }
                 let line0 = c.line.saturating_sub(1);
@@ -781,8 +782,8 @@ fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) ->
             }
 
             if enforce {
-                for miss in crate::analysis::module_no_copy_misses(&linked) {
-                    if !crate::is_entry_function(&miss.function, &entry) {
+                for miss in witchy_lower::analysis::module_no_copy_misses(&linked) {
+                    if !witchy::is_entry_function(&miss.function, &entry) {
                         continue;
                     }
                     let line0 = miss.line.saturating_sub(1);
@@ -800,8 +801,8 @@ fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) ->
                         ),
                     ));
                 }
-                for miss in crate::analysis::module_fip_misses(&linked) {
-                    if !crate::is_entry_function(&miss.function, &entry) {
+                for miss in witchy_lower::analysis::module_fip_misses(&linked) {
+                    if !witchy::is_entry_function(&miss.function, &entry) {
                         continue;
                     }
                     diags.push(line_diag(
@@ -821,11 +822,11 @@ fn compute_diagnostics(uri: &str, text: &str, docs: &HashMap<String, String>) ->
             if enforce {
                 for item in &linked.items {
                     let ast::Item::Function(f) = item else { continue };
-                    if !crate::is_entry_function(&f.name, &entry) {
+                    if !witchy::is_entry_function(&f.name, &entry) {
                         continue;
                     }
                     for p in &f.params {
-                        if p.convention == ast::Convention::Let && crate::ownership_relevant(&p.ty) {
+                        if p.convention == ast::Convention::Let && witchy::ownership_relevant(&p.ty) {
                             let bare = f.name.rsplit('.').next().unwrap_or(&f.name);
                             let line0 = fn_decl_line(text, bare).unwrap_or(0);
                             diags.push(line_diag(
@@ -913,7 +914,7 @@ fn import_line_of(text: &str, name: &str) -> Option<u32> {
 /// The line a link error should underline: the `line N` it carries, else the
 /// relevant import, else the top of file. Link errors otherwise all pinned to
 /// line 0 (BUG-162).
-fn link_error_line(error: &crate::linker::LinkError, text: &str, entry: &str) -> u32 {
+fn link_error_line(error: &witchy_syntax::linker::LinkError, text: &str, entry: &str) -> u32 {
     if let Some(location) = &error.location {
         if location.module == entry {
             return location.line.saturating_sub(1);

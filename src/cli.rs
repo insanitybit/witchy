@@ -1,6 +1,6 @@
 //! Command-line presentation and argument decoding.
 
-use crate::runtime;
+use witchy_runtime::runtime;
 
 pub(crate) fn compiler_version(version: &str, build_commit: Option<&str>) -> String {
     match build_commit.filter(|commit| !commit.is_empty()) {

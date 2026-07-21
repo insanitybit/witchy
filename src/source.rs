@@ -1,6 +1,7 @@
 //! Native source discovery, loading, linking, and expansion.
 
-use crate::{ast, comptime, format, linker, parser, pipeline};
+use witchy_syntax::{ast, format, linker, parser};
+use witchy_interp::{comptime, pipeline};
 
 /// The current directory's project entry source file (`src/<module>.witchy`,
 /// where `<module>` is the manifest's rune name with `/`-prefixes stripped and
@@ -24,7 +25,7 @@ pub(crate) fn project_entry_file() -> Option<String> {
 /// Source for a bundled standard-library module, shipped with the compiler so
 /// `import list` works without a local file. Bundled module names are reserved.
 pub(crate) fn bundled_module(name: &str) -> Option<&'static str> {
-    crate::linker::std_source(name)
+    witchy_syntax::linker::std_source(name)
 }
 
 /// Parse and link a source file. Non-std imports resolve from sibling
@@ -130,7 +131,7 @@ fn load_file_modules(
                 None => {
                     // A misspelled `import` of a std module gets a suggestion.
                     let hint = if name != entry_stem {
-                        crate::linker::closest_std_module(&name)
+                        witchy_syntax::linker::closest_std_module(&name)
                             .map(|m| format!(" — did you mean `import {m}`?"))
                             .unwrap_or_default()
                     } else {

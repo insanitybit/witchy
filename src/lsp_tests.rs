@@ -726,9 +726,9 @@ fn main(console: Console):
         // carries a structured source line underlines it; an imported module
         // falls back to its import; otherwise line 0.
         let text = "import helper\nimport other\nfn main(console: Console):\n    console.print(\"x\")\n    console.print(helper.not_real())\n";
-        let error = |message: &str, location: Option<(&str, u32)>| crate::linker::LinkError {
+        let error = |message: &str, location: Option<(&str, u32)>| witchy_syntax::linker::LinkError {
             message: message.to_string(),
-            location: location.map(|(module, line)| crate::linker::LinkLocation {
+            location: location.map(|(module, line)| witchy_syntax::linker::LinkLocation {
                 module: module.to_string(),
                 line,
             }),

@@ -1,6 +1,10 @@
 //! Capability inspection, diffing, and grant-check command services.
 
-use crate::{capabilities as capability_model, comptime, grants, link_file, parser, typeck};
+use witchy_caps::{capabilities as capability_model, grants};
+use witchy_interp::comptime;
+use witchy_syntax::parser;
+use witchy_types::typeck;
+use crate::link_file;
 
 /// Read, parse, and compute the host-capability footprint of a source file.
 pub(crate) fn analyze_file(path: &str) -> Result<capability_model::Footprint, String> {
