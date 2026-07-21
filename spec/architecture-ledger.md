@@ -68,14 +68,14 @@ old path after its callers move.
 
 | Responsibility | Current owner | Classification | Target owner and acceptance evidence |
 |---|---|---|---|
-| Argument parsing, help, dispatch | `src/cli.rs` owns help/version presentation plus shared mode, value, and secret decoding; `src/main.rs` still owns command-specific parsing and dispatch | EXTRACT | Extend `src/cli` toward typed commands while preserving golden help/flag/exit behavior byte-for-byte. |
+| Argument parsing, help, dispatch | `src/cli.rs` owns help/version presentation + flag/secret decoding; `src/commands/dispatch.rs` owns argv routing (lifted from `main.rs`). `main.rs` is a 220-line composition root (install services + call dispatch). | KEEP | Golden help/flag/exit behavior preserved byte-for-byte (CLI subprocess suite). |
 | Project and source loading | `src/source.rs` owns native project discovery, bundled lookup, dependency-aware file loading, linking, checked linking, and expansion; browser resolution in `lib.rs` and LSP loading remain separate adapters | CONSOLIDATE | Introduce filesystem and bundled-source providers so browser and LSP reuse the canonical loader without importing CLI policy. Linking/checking tests cover dependency and diagnostic behavior. |
 | Check, expand, docs, capability reports | `src/commands/{frontend,capabilities}.rs` over `src/source.rs` and checked compiler services | NARROW | Preserve the command-service boundary while typed top-level dispatch replaces repeated argv polling. CLI tests lock stdout, stderr, and status. |
 | AST to Wasm compilation and cache | `src/commands/compile.rs` | KEEP | One native compilation service owns checked artifact emission, trusted-exe packaging, and embedded/source cache publication. Wasm/parity and CLI subprocess tests guard bytes and behavior. |
-| Compiled execution and parity | `main.rs` (`run_linked_compiled`, `run_wasm_*`, `parity_check`) | CONSOLIDATE | One execution service parameterized by grants and observation mode. Differential and exact-error tests remain authoritative. |
-| Sandbox, grants, trusted apps | `main.rs`, `trusted_exe`, `witchy-runtime::runtime` | EXTRACT | CLI policy adapters above a small runtime kernel. Existing denial, confinement, trust, and e2e tests remain unchanged. |
-| Build-step execution | `main.rs` plus interpreter pipeline | EXTRACT | Dedicated build-step service with explicit environment/grant inputs. Compiled build-step tests preserve behavior. |
-| Embedded PM and Coven integration | `main.rs` and self-hosted `projects/` sources | EXTRACT | One native adapter; the Witchy programs remain product source rather than Rust command logic. E2E workflows guard it. |
+| Compiled execution and parity | `src/commands/execution.rs` (`run_linked_compiled`, `parity_check`) + `src/commands/wasm_exec.rs` (`run_wasm_*`, trusted-app launch) | KEEP | Extracted from the composition root; differential and exact-error tests remain authoritative. |
+| Sandbox, grants, trusted apps | `src/commands/sandbox.rs`, `trusted_exe`, `witchy-runtime::runtime` | KEEP | Policy adapters extracted from the composition root above the runtime kernel; denial/confinement/trust/e2e tests unchanged. |
+| Build-step execution | `src/commands/build_steps.rs` | KEEP | Dedicated build-step service extracted from the composition root; compiled build-step tests preserve behavior. |
+| Embedded PM and Coven integration | `src/commands/embedded_pm.rs` + self-hosted `projects/` sources | KEEP | Native launcher extracted from the composition root; the Witchy programs remain product source. E2E workflows guard it. |
 
 There must ultimately be one canonical path for loading, checked compilation,
 execution, bundled lookup, capability policy, test lifecycle, and WIR helper
@@ -148,7 +148,7 @@ distributed mechanically.
 | `witchy-types/traits.rs` | ~5,700 | EXTRACT | Validation, method resolution, anonymous unions, refinement/conversion, and monomorphization. |
 | `tests/e2e{.rs,/**}` | 48 + 8 domain modules over `tests/support/*` | KEEP | Decomposed into 8 domain modules with byte-identical inventory; support helpers own lifecycle/registry/sandbox. |
 | `witchy-syntax/linker.rs` | ~4,900 | NARROW | Module graph/linking versus bundled-source registry and expansion orchestration. |
-| `src/main.rs`, `src/{cli,source}.rs`, `src/commands/**` | ~3,208 + ~205 + ~272 + ~900 | EXTRACT | CLI presentation, source loading, frontend/capability commands, and compilation/cache/artifact emission have distinct owners. Continue separating execution/parity, sandbox/grants, build steps, and embedded product adapters from the composition root. |
+| `src/main.rs` (composition root) + `src/{cli,source}.rs` + `src/commands/**` | ~220 + ~205 + ~272 + ~4,600 (10 command modules) | KEEP | main.rs reduced 2,783 -> 220 (a genuine composition root): dispatch, execution, wasm-exec, sandbox/grants, build-steps, embedded-pm, frontend, capabilities, compile all own distinct `commands/*` modules. |
 | `witchy-lower/analysis.rs` | ~4,300 | NARROW | Separate ownership facts/summaries from diagnostics and optimization consumers only where interfaces become smaller. |
 | `witchy-runtime/runtime{.rs,/compiler.rs,/host/**}` | ~1,195 + ~105 + ~2,690 | EXTRACT | Every host-import family (crypto, clock/env/rand, network, filesystem/exec, build-step, VM-worker, secret, console, staging) has a distinct registrar owner under `runtime/host/`. The kernel retains grant admission, VM construction, the checked-heap shadow, the inline field-length stubs, the shared guest-memory ABI helpers, and execution policy. Remaining EXTRACT work is the injected compiler-service interface, not further family moves. |
 
