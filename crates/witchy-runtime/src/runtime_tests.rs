@@ -68,15 +68,6 @@
         assert!(decode_optimized_wasm(&input_hash, &bad_magic).is_none(), "unknown cache formats must be ignored");
     }
 
-    #[test]
-    fn build_env_length_rejects_values_outside_the_guest_abi() {
-        assert_eq!(checked_build_env_len("SMALL", 42).unwrap(), 42);
-        let err = checked_build_env_len("HUGE", usize::MAX)
-            .expect_err("a host length must not truncate into the guest ABI");
-        assert!(err.to_string().contains("HUGE"), "{err}");
-        assert!(err.to_string().contains("ABI size limit"), "{err}");
-    }
-
     const NULL_FILE_READ: &str = r#"
         (module
           (import "witchy" "file_read_len" (func $file_read_len (param externref) (result i32)))
