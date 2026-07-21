@@ -6,8 +6,8 @@
 mod lookup;
 mod read;
 
-pub use lookup::*;
-pub use read::*;
+pub(crate) use lookup::*;
+pub(crate) use read::*;
 
 use crate::wir::*;
 
@@ -21,7 +21,7 @@ use crate::wir::*;
 /// current turns dict insert/lookup from the linear-scan fallback into O(1).
 /// Void (like `$ensure`) so callers invoke it through `$Do` with no leftover
 /// stack value. Calls `$dict_hash`.
-pub fn dict_index_put_helper() -> WirFunc {
+pub(crate) fn dict_index_put_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -73,7 +73,7 @@ pub fn dict_index_put_helper() -> WirFunc {
 /// `$dict_reindex(d, cap, mode)` — rebuild the hidden open-addressing index
 /// after a structural copy or grow. Rehashing existing entries is maintenance,
 /// not a second semantic lookup. Compound key modes keep the index disabled.
-pub fn dict_reindex_helper() -> WirFunc {
+pub(crate) fn dict_reindex_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -227,7 +227,7 @@ pub fn dict_reindex_helper() -> WirFunc {
 
 /// `$dict_new() -> i32` — an empty dict: 8 reserved bytes holding a zero hidden
 /// word (at p-4) and a zero count (at p), with `p` returned.
-pub fn dict_new_helper() -> WirFunc {
+pub(crate) fn dict_new_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -257,7 +257,7 @@ pub fn dict_new_helper() -> WirFunc {
 /// `$dict_insert(d, k, v, mode) -> i32` — a fresh dict like `d` with `k` set to
 /// `v`: the matching entry's value replaced, or `(k, v)` appended. Copies the
 /// existing block (resetting the hidden index word to 0), then writes in place.
-pub fn dict_insert_helper() -> WirFunc {
+pub(crate) fn dict_insert_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -316,7 +316,7 @@ pub fn dict_insert_helper() -> WirFunc {
 ///     -> (dict, present, old-slot, cap)` — one semantic key search with an
 /// ownership-aware replace/append path. Leaf transfer is delegated to the
 /// generic `$slot_take_or_dup` helper.
-pub fn dict_insert_extract_helper() -> WirFunc {
+pub(crate) fn dict_insert_extract_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -570,7 +570,7 @@ pub fn dict_insert_extract_helper() -> WirFunc {
 /// path. The multi-value early `return`s are restructured into `ret_ptr`/`ret_cap`
 /// locals + a dual tail Push (WIR has no multi-value If/Return). Calls `$dict_find`
 /// + `$ensure`; uses `$heap` + `$__witchy_reowns`.
-pub fn dict_insert_cap_helper() -> WirFunc {
+pub(super) fn dict_insert_cap_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -789,7 +789,7 @@ pub fn dict_insert_cap_helper() -> WirFunc {
 /// closure call mirrors the non-cap `$dict_update`; the (ptr, cap) pair from
 /// `$dict_insert_cap` is captured into locals and re-pushed (WIR can't tail a
 /// multi-value call). Calls `$dict_get_or` + `$dict_insert_cap`; uses the table.
-pub fn dict_update_cap_helper() -> WirFunc {
+pub(crate) fn dict_update_cap_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -844,7 +844,7 @@ pub fn dict_update_cap_helper() -> WirFunc {
 /// to the current value (or `default` when absent) and reinsert. The closure is
 /// a 1-arg `$clos1` (`(param i32 env)(param i64 v)(result i64)`): its env pointer
 /// is the closure record itself and its code index is the record's first word.
-pub fn dict_update_helper() -> WirFunc {
+pub(crate) fn dict_update_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -889,7 +889,7 @@ pub fn dict_update_helper() -> WirFunc {
 
 /// `$dict_remove(d, k, mode) -> i32` — a fresh dict with the entry for `k`
 /// dropped (unchanged if absent). Copies every entry whose key isn't `k`.
-pub fn dict_remove_helper() -> WirFunc {
+pub(crate) fn dict_remove_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -959,7 +959,7 @@ pub fn dict_remove_helper() -> WirFunc {
 /// `$dict_remove_extract(d, k, mode, cap, key_bias, value_bias)
 ///     -> (dict, present, old-slot, cap)` — locate once, transfer or retain the
 /// old value through `$slot_take_or_dup`, and repair insertion order.
-pub fn dict_remove_extract_helper() -> WirFunc {
+pub(crate) fn dict_remove_extract_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());

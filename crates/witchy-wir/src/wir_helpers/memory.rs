@@ -5,7 +5,7 @@ use crate::wir::*;
 /// `$ensure(size: i32)` — grow linear memory so `$heap + size` fits. Mirrors the
 /// `ENSURE_WAT` helper: `need = heap + size; have = memory.size * 65536; if need
 /// >u have: drop(memory.grow(ceil((need-have)/65536)))`. Uses the `$heap` global.
-pub fn ensure_helper(checked: bool) -> WirFunc {
+pub(crate) fn ensure_helper(checked: bool) -> WirFunc {
     let getl = |n: &str| WirExpr::GetLocal(n.into());
     let i32c = WirExpr::ConstI32;
     let bin = |op: BinOp, l: WirExpr, r: WirExpr| WirExpr::Binary {
@@ -66,7 +66,7 @@ pub fn ensure_helper(checked: bool) -> WirFunc {
 /// via a raw `memory.copy` (which bypasses `$ensure`, so the shadow wouldn't otherwise
 /// learn of the reuse). Routed through this helper rather than an inline `CallHost` so
 /// the capability-minimal prune isn't deferred (`no_direct_host` stays true).
-pub fn heap_reclaim_helper() -> WirFunc {
+pub(super) fn heap_reclaim_helper() -> WirFunc {
     WirFunc {
         name: "__heap_reclaim".into(),
         params: vec![WirLocal { name: "wm".into(), ty: WirTy::Bool }],
@@ -80,7 +80,7 @@ pub fn heap_reclaim_helper() -> WirFunc {
     }
 }
 
-pub use crate::layout::{slot_offset, slot_record_size, HEAP_REDZONE, RC_SIZE_MASK};
+pub(super) use crate::layout::{slot_offset, slot_record_size, HEAP_REDZONE, RC_SIZE_MASK};
 
 /// (RFC-0023) Whether the opt-in checked heap is selected for this compile. Read from
 /// the environment like the other codegen toggles (`WITCHY_OPT`, `WIRDIAG`), so a
@@ -98,7 +98,7 @@ pub fn heap_check_enabled() -> bool {
 /// stale read" divergence into a guaranteed one. Output-preserving on a CORRECT program (a
 /// correctly-freed block is never read again), so it only ever surfaces real bugs. Trades
 /// reclamation for detection (freed memory leaks), so it is a debug-only test mode.
-pub fn uaf_check_enabled() -> bool {
+fn uaf_check_enabled() -> bool {
     std::env::var_os("WITCHY_UAF_CHECK").is_some_and(|v| v == "1")
 }
 
@@ -127,7 +127,7 @@ pub fn type_check_enabled() -> bool {
 /// leak-safe, heuristic-masked residual. Once I1's typed emission closes SEC-037 at its
 /// source and this fires zero times across the fuzzer + examples + e2e, the whole
 /// `header_ok` check is deleted and this flag with it (RFC-0051 Design I1 step 3).
-pub fn rc_assert_enabled() -> bool {
+fn rc_assert_enabled() -> bool {
     std::env::var_os("WITCHY_RC_ASSERT").is_some_and(|v| v == "1")
 }
 
@@ -135,7 +135,7 @@ pub fn rc_assert_enabled() -> bool {
 /// `slot_record_size(n)` bytes, store the i32 tag/length header then each i64 field slot,
 /// advance `$heap`, return the pointer. Mirrors `wir_prelude::mk_helper` /
 /// `codegen::mk_helper`. Calls `$ensure`; uses the `$heap` global.
-pub fn mk_helper(n: usize, checked: bool) -> WirFunc {
+pub(crate) fn mk_helper(n: usize, checked: bool) -> WirFunc {
     let size = slot_record_size(n);
     // (RFC-0023) When checked, reserve a trailing redzone the host poisons via
     // `heap_register` and sweeps after the run — so an overrun past this object's end
@@ -263,7 +263,7 @@ fn increment_counter(name: &str) -> WirNode {
     }
 }
 
-pub fn bump_alloc_helper() -> WirFunc {
+pub(crate) fn bump_alloc_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     WirFunc {
@@ -300,7 +300,7 @@ pub fn bump_alloc_helper() -> WirFunc {
 /// the returned object pointer; a freed block links via the object's first word (`@obj+0`,
 /// dead once freed). `rc` is the RFC-0035 per-object refcount (1 on alloc / reuse), read
 /// only by the gated `$dup`/`$drop`; `size` drives the free-list reuse scan.
-pub fn rc_alloc_helper() -> WirFunc {
+pub(crate) fn rc_alloc_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -413,7 +413,7 @@ pub fn rc_alloc_helper() -> WirFunc {
 /// free-at-overwrite rule, gated `WITCHY_OPT=rc-floor`) only needs the pointer — no
 /// size — and is responsible for soundness: it only frees a block the escape oracle
 /// proved confined + unaliased and distinct from the freshly-built result.
-pub fn rc_free_helper() -> WirFunc {
+pub(crate) fn rc_free_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -541,7 +541,7 @@ pub fn rc_free_helper() -> WirFunc {
 /// `i32`-kinded value — the guard is the soundness floor, not mere defence-in-depth.
 /// Emitted (gated `rc-floor`) where a heap value is aliased into a second live holder —
 /// a container element read out into a binding, a binding copied.
-pub fn rc_dup_helper() -> WirFunc {
+pub(crate) fn rc_dup_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -606,7 +606,7 @@ pub fn rc_dup_helper() -> WirFunc {
 /// `$leaf_dup(value, rc_bias) -> i64` — retain an RC-backed universal-slot
 /// value and return it unchanged. `rc_bias` is -1 for a trivial leaf, 0 for an
 /// ordinary RC pointer, and 4 for a Dict pointer following its hidden index.
-pub fn leaf_dup_helper() -> WirFunc {
+pub(crate) fn leaf_dup_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |name: &str| E::GetLocal(name.into());
@@ -679,7 +679,7 @@ pub fn leaf_dup_helper() -> WirFunc {
 
 /// `$leaf_drop(value, rc_bias)` — release one RC-backed universal-slot value.
 /// It is the exact inverse of [`leaf_dup_helper`] for initialized leaves.
-pub fn leaf_drop_helper() -> WirFunc {
+pub(crate) fn leaf_drop_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |name: &str| E::GetLocal(name.into());
@@ -753,7 +753,7 @@ pub fn leaf_drop_helper() -> WirFunc {
 /// repair); a shared container retains an RC-backed leaf before returning it.
 /// `rc_bias` is -1 for trivial leaves, 0 for ordinary RC pointers, and 4 for a
 /// Dict value whose exposed pointer follows its hidden index word.
-pub fn slot_take_or_dup_helper() -> WirFunc {
+pub(crate) fn slot_take_or_dup_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |name: &str| E::GetLocal(name.into());
@@ -805,7 +805,7 @@ pub fn slot_take_or_dup_helper() -> WirFunc {
 /// governs the drop side: a missed drop leaks, never frees live). Freeing is shell-only
 /// for now — a child heap value held by the freed block leaks (sound); recursive `$rdrop`
 /// is a later brick. Emitted (gated `rc-floor`) at a heap value's last use / a slot overwrite.
-pub fn rc_drop_helper() -> WirFunc {
+pub(crate) fn rc_drop_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());

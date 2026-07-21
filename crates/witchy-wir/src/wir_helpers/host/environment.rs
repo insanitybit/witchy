@@ -3,7 +3,7 @@
 use crate::wir::*;
 
 /// `$get_env(name) -> Option(String)` through the capability-checked host ABI.
-pub fn get_env_helper() -> WirFunc {
+pub(in crate::wir_helpers) fn get_env_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -44,7 +44,7 @@ pub fn get_env_helper() -> WirFunc {
 /// are staged like ordinary `get_env`, but the host enforces the BuildEnv
 /// allow-list carried by the sandbox grant. The source receiver is checked and
 /// then dropped before the host ABI.
-pub fn build_get_env_helper() -> WirFunc {
+pub(in crate::wir_helpers) fn build_get_env_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -94,7 +94,7 @@ pub fn build_get_env_helper() -> WirFunc {
 }
 /// `$build_args() -> i32` — the `Args` list, sized by `args_size` and filled by
 /// `write_pending_list`.
-pub fn build_args_helper() -> WirFunc {
+pub(in crate::wir_helpers) fn build_args_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());

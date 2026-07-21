@@ -6,7 +6,7 @@ use witchy_syntax::diag::DiagTemplate;
 
 /// `$dict_get_or(d, k, default, mode) -> i64` — the value slot for `k`, or
 /// `default` when absent.
-pub fn dict_get_or_helper() -> WirFunc {
+pub(crate) fn dict_get_or_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -43,7 +43,7 @@ pub fn dict_get_or_helper() -> WirFunc {
 
 /// `$dict_at(d, k, mode) -> i64` — the value slot for `k`, or a routed runtime
 /// error when absent. This is the compiled half of strict `d[k]` reads.
-pub fn dict_at_helper() -> WirFunc {
+pub(in crate::wir_helpers) fn dict_at_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -79,7 +79,7 @@ pub fn dict_at_helper() -> WirFunc {
 }
 
 /// `$dict_has(d, k, mode) -> i32` — whether `k` is present.
-pub fn dict_has_helper() -> WirFunc {
+pub(crate) fn dict_has_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -104,7 +104,7 @@ pub fn dict_has_helper() -> WirFunc {
 
 /// Shared body for `$dict_keys` / `$dict_values`: copy each entry's slot at
 /// `entry_off` (4 = key, 12 = value) into a fresh `count`-element list.
-pub fn dict_project_helper(name: &str, entry_off: u32) -> WirFunc {
+pub(crate) fn dict_project_helper(name: &str, entry_off: u32) -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -150,7 +150,7 @@ pub fn dict_project_helper(name: &str, entry_off: u32) -> WirFunc {
 /// `$dict_pairs(d) -> i32` — a `List((K, V))`: one `[0][key][value]` tuple per
 /// entry (20 bytes: i32 tag + two i64 slots), with the list holding the tuple
 /// pointers. Reserves the list slots first, then allocates tuples after it.
-pub fn dict_pairs_helper() -> WirFunc {
+pub(in crate::wir_helpers) fn dict_pairs_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());

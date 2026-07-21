@@ -3,15 +3,15 @@
 mod host;
 mod transform;
 
-pub use host::*;
-pub use transform::*;
+pub(super) use host::*;
+pub(crate) use transform::*;
 
 use crate::wir::*;
 
 /// `$str_eq(a: i32, b: i32) -> i32` — content equality of two `[len][bytes]`
 /// strings: same pointer → 1; different length → 0; else compare bytes. Mirrors
 /// `STR_EQ_WAT`. Byte reads via `Load8U`; no heap/import/table.
-pub fn str_eq_helper() -> WirFunc {
+pub(crate) fn str_eq_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -90,7 +90,7 @@ pub fn str_eq_helper() -> WirFunc {
 /// `[len][bytes]` strings: negative if `a < b`, zero if equal, positive if
 /// `a > b`. Compares up to the shorter length, then breaks ties by length.
 /// Mirrors `STR_CMP_WAT`; byte reads via `Load8U`, no heap/import/table.
-pub fn str_cmp_helper() -> WirFunc {
+pub(super) fn str_cmp_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -170,7 +170,7 @@ pub fn str_cmp_helper() -> WirFunc {
 /// (a scan loop with an inner byte-compare loop; the inner mismatch `br` lives
 /// inside an `if`, which the encoder must count as a branch frame). No
 /// heap/import/table.
-pub fn find_byte_helper() -> WirFunc {
+pub(crate) fn find_byte_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -248,7 +248,7 @@ pub fn find_byte_helper() -> WirFunc {
 /// `$starts_with(s, p) -> i32` — 1 iff string `s` begins with prefix `p`.
 /// Byte-compares `p`'s bytes against `s`'s leading bytes; bails to 0 the moment a
 /// byte differs or `p` is longer than `s`.
-pub fn starts_with_helper() -> WirFunc {
+pub(crate) fn starts_with_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -306,7 +306,7 @@ pub fn starts_with_helper() -> WirFunc {
 /// `$ends_with(s, p) -> i32` — 1 iff string `s` ends with suffix `p`.
 /// Like `$starts_with`, but the comparison window into `s` is shifted by
 /// `off = len(s) - len(p)`; bails to 0 if `p` is longer than `s`.
-pub fn ends_with_helper() -> WirFunc {
+pub(crate) fn ends_with_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -371,7 +371,7 @@ pub fn ends_with_helper() -> WirFunc {
 /// `$char_count(s: i32) -> i32` — the number of Unicode scalars in `s`: just
 /// `byte_to_char(s, len(s))`, reading the byte-length header itself so the caller
 /// evaluates `s` once. Mirrors the `string.char_count` legacy emission.
-pub fn char_count_helper() -> WirFunc {
+pub(super) fn char_count_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     WirFunc {
@@ -390,7 +390,7 @@ pub fn char_count_helper() -> WirFunc {
     }
 }
 
-pub fn byte_to_char_helper() -> WirFunc {
+pub(crate) fn byte_to_char_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -436,7 +436,7 @@ pub fn byte_to_char_helper() -> WirFunc {
 /// `$str_index_of(s, sub) -> i32` — the *character* index where `sub` first
 /// occurs in `s`, or -1 if absent. `$find_byte` gives the byte offset; this maps
 /// it back to a character index via `$byte_to_char`.
-pub fn str_index_of_helper() -> WirFunc {
+pub(crate) fn str_index_of_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -479,7 +479,7 @@ pub fn str_index_of_helper() -> WirFunc {
 /// wrap when narrowed — that was BUG-011, where the compiled backend narrowed the
 /// index to i32 *before* clamping, so a large `end` wrapped to `< start` and yielded
 /// `""` while the interpreter clamped in i64 and returned the whole string.
-pub fn char_to_byte_helper() -> WirFunc {
+pub(crate) fn char_to_byte_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());

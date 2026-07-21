@@ -8,7 +8,7 @@ use witchy_syntax::diag::DiagTemplate;
 /// `[i32 len][bytes…]` layout: trap on `i < 0 || i >= len`, else zero-extend the
 /// byte at `b + 4 + i`. Matches the interpreter's "bytes index out of bounds"
 /// error (an unchecked `load8_u` here was SEC-038). No heap/import/table.
-pub fn bytes_at_helper() -> WirFunc {
+pub(super) fn bytes_at_helper() -> WirFunc {
     let getl = |n: &str| WirExpr::GetLocal(n.into());
     let i32c = WirExpr::ConstI32;
     let i64c = WirExpr::ConstI64;
@@ -70,7 +70,7 @@ pub fn bytes_at_helper() -> WirFunc {
 /// `$bytes_from_list(xs) -> i32` — build a flat `Bytes` buffer from a
 /// `List(Int)`. The public `std/bytes.from_list` wrapper validates every slot is
 /// in `0..=255`; this helper performs the representation copy.
-pub fn bytes_from_list_helper() -> WirFunc {
+pub(super) fn bytes_from_list_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -134,7 +134,7 @@ pub fn bytes_from_list_helper() -> WirFunc {
 /// closing the same out-of-i32-range hole as `$bytes_at`/`$list_at`). Only after
 /// clamping into `[0, len]` — where the bounds provably fit i32 for any non-empty
 /// result — are `lo` and the count narrowed to i32 for the `$substr` ABI.
-pub fn bytes_slice_helper() -> WirFunc {
+pub(super) fn bytes_slice_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -220,7 +220,7 @@ pub fn bytes_slice_helper() -> WirFunc {
 /// interpreter), and cap the length header to the bytes written. Must NOT be the
 /// raw identity: `Bytes` has no UTF-8 contract, so returning invalid bytes verbatim
 /// diverged from the interpreter (which substitutes U+FFFD).
-pub fn bytes_to_string_helper() -> WirFunc {
+pub(super) fn bytes_to_string_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let host = witchy_syntax::intrinsics::wir_host_call(

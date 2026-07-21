@@ -53,7 +53,7 @@ fn view_clamp_setup(getl: &dyn Fn(&str) -> WirExpr) -> Vec<WirNode> {
 /// read of a confined slice view: clamp the window, trap on `j < 0 || j >= len`,
 /// else load the i64 slot at `(src+4) + (off+j)*8`. A negative `len` (empty
 /// window) traps every `j >= 0`, matching an out-of-range read of an empty copy.
-pub fn list_at_view_helper() -> WirFunc {
+pub(in crate::wir_helpers) fn list_at_view_helper() -> WirFunc {
     let getl = |n: &str| WirExpr::GetLocal(n.into());
     let i32c = WirExpr::ConstI32;
     let i64c = WirExpr::ConstI64;
@@ -128,7 +128,7 @@ pub fn list_at_view_helper() -> WirFunc {
 /// `$list_len_view(src: i32, lo: i32, hi: i32) -> i32` — the element count of a
 /// confined slice view: `max(0, min(hi, len(src)) - max(lo, 0))`. Matches the
 /// length of the materialized `list.slice` copy.
-pub fn list_len_view_helper() -> WirFunc {
+pub(in crate::wir_helpers) fn list_len_view_helper() -> WirFunc {
     let getl = |n: &str| WirExpr::GetLocal(n.into());
     let i32c = WirExpr::ConstI32;
     let bin = |op: BinOp, l: WirExpr, r: WirExpr| WirExpr::Binary {
@@ -189,7 +189,7 @@ pub fn list_len_view_helper() -> WirFunc {
 /// re-own signal). Mirrors `LIST_PUSH_CAP_WAT`; the multi-value early `return` is
 /// restructured into `ret_ptr`/`ret_cap` locals + a dual tail `Push` (WIR has no
 /// multi-value `If`/`Return`). Calls `$ensure`; uses `$heap` + `$__witchy_reowns`.
-pub fn list_push_cap_helper() -> WirFunc {
+pub(crate) fn list_push_cap_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -337,7 +337,7 @@ pub fn list_push_cap_helper() -> WirFunc {
 /// `$__witchy_reowns`) and the slot written there. An out-of-range index leaves
 /// the list unchanged (no copy, no trap — matching the stdlib semantics).
 /// Calls `$ensure`; uses `$heap` + `$__witchy_reowns`.
-pub fn list_set_cap_helper() -> WirFunc {
+pub(in crate::wir_helpers) fn list_set_cap_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -401,7 +401,7 @@ pub fn list_set_cap_helper() -> WirFunc {
 /// `$dict_update_cap` (`CallIndirect` on the closure's code index, the element
 /// passed as the i64 slot). An out-of-range index leaves the list unchanged and
 /// does not call the closure. Calls `$ensure`; uses `$heap` + `$__witchy_reowns`.
-pub fn list_update_cap_helper() -> WirFunc {
+pub(crate) fn list_update_cap_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -479,7 +479,7 @@ pub fn list_update_cap_helper() -> WirFunc {
 /// writes `x` in the new tail slot, and returns the new pointer. (The in-place
 /// optimization lives in `$list_push_cap`; this is the plain fallback used by
 /// helpers like `$split`/`$str_chars` that build lists internally.)
-pub fn list_push_helper() -> WirFunc {
+pub(crate) fn list_push_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -537,7 +537,7 @@ pub fn list_push_helper() -> WirFunc {
 /// `$list_concat(a, b) -> i32` — a fresh list holding `a`'s elements followed by
 /// `b`'s. Like the string `$concat`, but elements are 8-byte slots: allocate
 /// `(alen+blen)` slots, `memory.copy` each source array in turn, bump `$heap`.
-pub fn list_concat_helper() -> WirFunc {
+pub(crate) fn list_concat_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -590,7 +590,7 @@ pub fn list_concat_helper() -> WirFunc {
 /// `$list_drop(list, k) -> i32` — a fresh list with the first `k` elements
 /// dropped. Allocates `(len-k)` slots and `memory.copy`s the tail. Used by the
 /// `[a, ..rest]` list pattern to bind the tail.
-pub fn list_drop_helper() -> WirFunc {
+pub(in crate::wir_helpers) fn list_drop_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());

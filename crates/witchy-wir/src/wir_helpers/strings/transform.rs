@@ -6,7 +6,7 @@ use crate::wir::*;
 /// `$concat(a: i32, b: i32) -> i32` — allocate a fresh `[alen+blen][a..b..]`
 /// string and `memory.copy` both operands in. Mirrors `CONCAT_WAT`. Calls
 /// `$ensure`; uses the `$heap` global.
-pub fn concat_helper() -> WirFunc {
+pub(in crate::wir_helpers) fn concat_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -73,7 +73,7 @@ pub fn concat_helper() -> WirFunc {
 /// `$__witchy_reowns` on a zero cap. Mirrors `STR_APPEND_CAP_WAT`; multi-value
 /// early `return` restructured into `ret_ptr`/`ret_cap` + a dual tail Push.
 /// Calls `$ensure`; uses `$heap` + `$__witchy_reowns`.
-pub fn str_append_cap_helper() -> WirFunc {
+pub(crate) fn str_append_cap_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -188,7 +188,7 @@ pub fn str_append_cap_helper() -> WirFunc {
 /// `$substr(src, start, len) -> i32` — a fresh string holding `len` bytes of
 /// `src` starting at *byte* offset `start`. Allocates `4 + len` via `$ensure`,
 /// writes the length header, `memory.copy`s the slice, and bumps `$heap`.
-pub fn substr_helper() -> WirFunc {
+pub(crate) fn substr_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -228,7 +228,7 @@ pub fn substr_helper() -> WirFunc {
 /// byte offsets via `$char_to_byte`, which clamps each index to `[0, char_count]`
 /// in i64 (mirroring the interpreter's `max(0).min(len)`), then `$substr`s the byte
 /// slice; an empty slice when the bounds cross.
-pub fn str_substring_helper() -> WirFunc {
+pub(crate) fn str_substring_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -270,7 +270,7 @@ pub fn str_substring_helper() -> WirFunc {
 
 /// `$is_ws(b) -> i32` — 1 iff byte `b` is ASCII whitespace (space, tab, LF, CR,
 /// VT, FF). A pure OR of equalities, no loop.
-pub fn is_ws_helper() -> WirFunc {
+pub(crate) fn is_ws_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -298,7 +298,7 @@ pub fn is_ws_helper() -> WirFunc {
 /// `$trim(s) -> i32` — `s` with leading and trailing ASCII whitespace removed.
 /// Advances `lo` past leading whitespace and pulls `hi` in past trailing
 /// whitespace, then `$substr`s the `[lo, hi)` byte window.
-pub fn trim_helper() -> WirFunc {
+pub(crate) fn trim_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -369,7 +369,7 @@ pub fn trim_helper() -> WirFunc {
 /// it, then `$substr`s the trailing piece after the loop. The substr pointer is
 /// zero-extended into the list's i64 slot (a pointer, so the sign of the extend
 /// is immaterial — the reader `i32.wrap_i64`s it back).
-pub fn split_helper() -> WirFunc {
+pub(crate) fn split_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -496,7 +496,7 @@ pub fn split_helper() -> WirFunc {
 /// Counts characters via `$byte_to_char`, then `$str_substring`s each single-char
 /// `[i, i+1)` window and `$list_push`es it (the substring handles multibyte
 /// characters correctly).
-pub fn str_chars_helper() -> WirFunc {
+pub(crate) fn str_chars_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -595,7 +595,7 @@ pub fn str_chars_helper() -> WirFunc {
 /// `$ascii_case(s, up) -> i32` — `s` with ASCII letters cased: `up != 0`
 /// uppercases (`a`–`z` → `A`–`Z`), else lowercases. Non-letters and non-ASCII
 /// bytes copy through unchanged (byte-wise, so multibyte UTF-8 is preserved).
-pub fn ascii_case_helper() -> WirFunc {
+pub(crate) fn ascii_case_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -671,7 +671,7 @@ pub fn ascii_case_helper() -> WirFunc {
 /// `$match_at(s, from, pos) -> i32` — 1 iff `from` occurs in `s` starting at
 /// byte offset `pos`. Bails to 0 if `from` would run off the end or any byte
 /// differs.
-pub fn match_at_helper() -> WirFunc {
+pub(crate) fn match_at_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -723,7 +723,7 @@ pub fn match_at_helper() -> WirFunc {
 /// by `to`. Empty `from` inserts `to` between every character (and at both ends),
 /// stepping by UTF-8 sequence length. Otherwise counts matches via `$match_at`,
 /// allocates the exact result, then copies through replacing each match.
-pub fn replace_helper() -> WirFunc {
+pub(crate) fn replace_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());

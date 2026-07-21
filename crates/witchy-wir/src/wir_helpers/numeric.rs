@@ -10,7 +10,7 @@ use witchy_syntax::diag::DiagTemplate;
 /// otherwise count digits (a div-by-10 loop), allocate `[len][digits]`, write the
 /// optional `-` then the digits back-to-front (a second div/rem loop). Calls
 /// `$ensure`; uses the `$heap` global; byte writes via `Store8`.
-pub fn int_to_string_helper(checked: bool) -> WirFunc {
+pub(crate) fn int_to_string_helper(checked: bool) -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -176,7 +176,7 @@ pub fn int_to_string_helper(checked: bool) -> WirFunc {
 /// traps), so each helper first traps (`unreachable`) when either operand is NaN
 /// (`x != x`), then does the plain `f64.{lt,le,gt,ge}`. Mirrors `FLOAT_ORD_WAT`
 /// with the NaN guard inlined (the binary sink is independent of the WAT one).
-pub fn float_cmp_helper(name: &str, op: BinOp) -> WirFunc {
+pub(super) fn float_cmp_helper(name: &str, op: BinOp) -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -221,7 +221,7 @@ pub fn float_cmp_helper(name: &str, op: BinOp) -> WirFunc {
 
 /// Guarded Witchy integer division. WebAssembly traps directly on zero and on
 /// `Int::MIN / -1`; route both through the shared language diagnostics first.
-pub fn int_div_helper() -> WirFunc {
+pub(super) fn int_div_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -280,7 +280,7 @@ pub fn int_div_helper() -> WirFunc {
 
 /// Guarded Witchy integer remainder. `Int::MIN % -1` is defined as zero on
 /// both backends; only a zero divisor aborts.
-pub fn int_rem_helper() -> WirFunc {
+pub(super) fn int_rem_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -323,7 +323,7 @@ pub fn int_rem_helper() -> WirFunc {
 /// `$float_to_int(x: f64) -> i64` — `math.to_int`. Finite values and infinities
 /// keep the WebAssembly saturating conversion policy, but NaN is a Witchy
 /// runtime error instead of silently becoming 0.
-pub fn float_to_int_helper() -> WirFunc {
+pub(super) fn float_to_int_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -359,7 +359,7 @@ pub fn float_to_int_helper() -> WirFunc {
 /// tolerating leading/trailing ASCII whitespace. Traps (like Rust's checked
 /// parse) on overflow, on no digits, or on trailing non-whitespace garbage —
 /// matching the interpreter oracle, which errors on the same inputs.
-pub fn str_to_int_helper() -> WirFunc {
+pub(crate) fn str_to_int_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -490,7 +490,7 @@ pub fn str_to_int_helper() -> WirFunc {
 /// `$float_to_str(x) -> i32` — render f64 `x` to a String via the host
 /// `float_to_str` import (writes into a reserved 512-byte buffer, returns the
 /// length). Used by the `$ts` renderer for Float fields. The import is ungated.
-pub fn float_to_str_helper() -> WirFunc {
+pub(super) fn float_to_str_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());

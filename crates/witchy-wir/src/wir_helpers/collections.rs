@@ -2,7 +2,7 @@
 
 mod operations;
 
-pub use operations::*;
+pub(crate) use operations::*;
 
 use super::abort_nodes;
 use crate::wir::*;
@@ -16,7 +16,7 @@ use witchy_syntax::diag::DiagTemplate;
 /// (which would WRAP to an in-range i32 if narrowed first) must still trap — and
 /// its true value must appear in the message. Only after the check passes (so
 /// `0 <= i < len <= i32::MAX`) is `i` narrowed to i32 for the address arithmetic.
-pub fn list_at_helper() -> WirFunc {
+pub(super) fn list_at_helper() -> WirFunc {
     let getl = |n: &str| WirExpr::GetLocal(n.into());
     let i32c = WirExpr::ConstI32;
     let i64c = WirExpr::ConstI64;
@@ -83,7 +83,7 @@ pub fn list_at_helper() -> WirFunc {
 /// Selection and repair share one length read, while
 /// [`super::slot_take_or_dup_helper`]
 /// owns transfer-versus-retain behavior for the selected leaf.
-pub fn list_pop_extract_helper() -> WirFunc {
+pub(super) fn list_pop_extract_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());

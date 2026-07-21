@@ -11,23 +11,23 @@
 //! how `codegen` resolves a module's reachable helper set.
 
 mod bytes;
-pub use bytes::*;
+use bytes::*;
 mod collections;
-pub use collections::*;
+pub(crate) use collections::*;
 mod diagnostics;
 pub use diagnostics::*;
 mod dict;
-pub use dict::*;
+pub(crate) use dict::*;
 mod encoding;
-pub use encoding::*;
+use encoding::*;
 mod host;
 pub use host::*;
 mod memory;
 pub use memory::*;
 mod numeric;
-pub use numeric::*;
+pub(crate) use numeric::*;
 mod strings;
-pub use strings::*;
+pub(crate) use strings::*;
 mod vm;
 pub use vm::*;
 mod registry;

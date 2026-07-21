@@ -5,7 +5,7 @@ use crate::wir::*;
 /// `$key_eq(a, b, mode) -> i32` — slot equality under the key's compile-time
 /// type: mode 0 = raw i64 (Int/Bool), 1 = `$str_eq` on the pointers (String),
 /// else f64 (the slots reinterpreted as doubles).
-pub fn key_eq_helper() -> WirFunc {
+pub(crate) fn key_eq_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -47,7 +47,7 @@ pub fn key_eq_helper() -> WirFunc {
 /// `$dict_hash(k, mode) -> i32` — a 64-bit bit-mix for scalar keys (mode 0),
 /// FNV-1a over the bytes for string keys (mode 1, `k` = string pointer). Only
 /// consulted by `$dict_find`'s (binary-path-dormant) hash probe.
-pub fn dict_hash_helper() -> WirFunc {
+pub(crate) fn dict_hash_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -140,7 +140,7 @@ pub fn dict_hash_helper() -> WirFunc {
 /// `$dict_find(d, k, mode) -> i32` — the entry index of key `k`, or -1. Linear
 /// scan when the hidden index word is 0 (always, on the binary path); otherwise
 /// an open-addressing probe over the hash table.
-pub fn dict_find_helper() -> WirFunc {
+pub(crate) fn dict_find_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());

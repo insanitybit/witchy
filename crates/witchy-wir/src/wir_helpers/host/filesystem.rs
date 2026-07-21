@@ -3,7 +3,7 @@
 use crate::wir::*;
 
 /// `$dir_read(h, rel) -> String` through the confined Dir host capability.
-pub fn dir_read_helper() -> WirFunc {
+pub(in crate::wir_helpers) fn dir_read_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -38,7 +38,7 @@ pub fn dir_read_helper() -> WirFunc {
 /// protocol identical to [`dir_read_helper`]: `file_read_len` reads the file and
 /// reports its byte length (staging the bytes host-side), then `fill_pending`
 /// copies the staged bytes into `res+4`. Needs a `File[Read]` capability.
-pub fn file_read_helper() -> WirFunc {
+pub(in crate::wir_helpers) fn file_read_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -70,7 +70,7 @@ pub fn file_read_helper() -> WirFunc {
 /// Two-phase host protocol identical to [`dir_read_helper`]: `exec_run` runs the
 /// process and reports the staged payload's byte length, then `fill_pending`
 /// copies it into `res+4`. Needs the `Exec` capability.
-pub fn exec_helper() -> WirFunc {
+pub(in crate::wir_helpers) fn exec_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -102,7 +102,7 @@ pub fn exec_helper() -> WirFunc {
 }
 
 /// `$build_read(rel) -> String` through the confined build-input host adapter.
-pub fn build_read_helper() -> WirFunc {
+pub(in crate::wir_helpers) fn build_read_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -133,7 +133,7 @@ pub fn build_read_helper() -> WirFunc {
 /// the same native `regex.match_spans` the interpreter uses) reports the byte
 /// length and stages the bytes; `$fill_pending` copies them into a fresh
 /// `[len][bytes]` String. The variable-length string host-wrapper shape.
-pub fn regex_match_spans_helper() -> WirFunc {
+pub(in crate::wir_helpers) fn regex_match_spans_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -172,7 +172,7 @@ pub fn regex_match_spans_helper() -> WirFunc {
 /// `List(String)`. The host reports the total byte size of the marshaled list
 /// (`dir_list_size`), then writes the whole `[count][ptr..]` + payload structure
 /// into the reserved block (`write_pending_list`). Needs the Dir(Read) capability.
-pub fn dir_list_helper() -> WirFunc {
+pub(in crate::wir_helpers) fn dir_list_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());

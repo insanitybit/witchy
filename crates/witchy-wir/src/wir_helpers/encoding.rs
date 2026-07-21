@@ -7,7 +7,7 @@ use crate::wir::*;
 /// Reserves a worst-case `2*len + 20` result buffer, lets the host write into
 /// `res+4`, and caps the length header to what it returned. The first migrated
 /// host-import helper.
-pub fn encoding_helper() -> WirFunc {
+pub(super) fn encoding_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -110,7 +110,7 @@ pub(super) fn crypto_keyed_helper(name: &str, import: &str, hexlen: i32, has_msg
 /// the host `crypto_reveal_len` reads the host-side secret and reports its byte
 /// length (staging the bytes), then `fill_pending` copies them into `res+4`.
 /// Value secrets are revealed to external sinks; signing keys remain host-side.
-pub fn crypto_reveal_helper() -> WirFunc {
+pub(super) fn crypto_reveal_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());

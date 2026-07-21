@@ -3,7 +3,7 @@
 use crate::wir::*;
 
 /// `$string_from_code(cp: i64) -> String` through the Unicode host adapter.
-pub fn string_from_code_helper() -> WirFunc {
+pub(in crate::wir_helpers) fn string_from_code_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -36,7 +36,7 @@ pub fn string_from_code_helper() -> WirFunc {
 }
 
 /// `$rcopy_str(p: i32) -> i32` — copy a region-local String into parent memory.
-pub fn rcopy_str_helper() -> WirFunc {
+pub(in crate::wir_helpers) fn rcopy_str_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());

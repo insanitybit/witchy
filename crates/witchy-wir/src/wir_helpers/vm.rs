@@ -7,14 +7,14 @@ use super::host::{two_phase_helper, two_phase_helper_typed};
 use crate::wir::*;
 
 /// `$vm_par_map(xs, f) -> i32` — scalar `vm.par_map`: results as a flat `List(Int)`.
-pub fn vm_par_map_helper() -> WirFunc {
+pub(super) fn vm_par_map_helper() -> WirFunc {
     two_phase_helper("vm_par_map", &["xs", "f"], "vm_par_map_run", "vm_par_map_write")
 }
 
 
 /// `$vm_par_map_bytes(xs, f) -> i32` — the `String`/`Bytes` `vm.par_map`: raw buffer
 /// payloads, results as a `List(Bytes)`/`List(String)` (identical layout).
-pub fn vm_par_map_bytes_helper() -> WirFunc {
+pub(super) fn vm_par_map_bytes_helper() -> WirFunc {
     two_phase_helper("vm_par_map_bytes", &["xs", "f"], "vm_par_map_bytes_run", "vm_par_map_bytes_write")
 }
 
@@ -86,7 +86,7 @@ pub fn call2_helper() -> WirFunc {
 /// long-lived isolated worker VM: process the request stream in order, threading state
 /// through `handler`, emitting each new state. The host stages the response `List(Bytes)`
 /// (`vm_serve_run`), laid out by `vm_par_map_bytes_write` (same `List(Bytes)` structure).
-pub fn vm_serve_helper() -> WirFunc {
+pub(super) fn vm_serve_helper() -> WirFunc {
     two_phase_helper(
         "vm_serve",
         &["init", "requests", "handler"],
@@ -98,7 +98,7 @@ pub fn vm_serve_helper() -> WirFunc {
 /// (RFC-0032) `$vm_with_dir(dir, f, input) -> i32` — capability-passing: run `f` on
 /// `input` in an isolated worker VM granted exactly `dir`. The host stages the result
 /// `Bytes` (`vm_with_dir_run`), which `fill_pending` lays out into the reserved block.
-pub fn vm_with_dir_helper() -> WirFunc {
+pub(super) fn vm_with_dir_helper() -> WirFunc {
     two_phase_helper_typed(
         "vm_with_dir",
         &[
