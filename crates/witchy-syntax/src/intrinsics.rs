@@ -411,7 +411,7 @@ const fn encoding_host_call(selector: i32, input: WirHostInput) -> Option<WirHos
     Some(WirHostCall { helper: "encoding", selector, input })
 }
 
-pub const GENERATED_RENDER: &str = "@render";
+pub(crate) const GENERATED_RENDER: &str = "@render";
 pub const GENERATED_LIST_PUSH: &str = "@list_push";
 pub const COMPILER_QUOTE_ITEM: &str = "@quote_item";
 pub const COMPILER_QUOTE_ITEM_HOLES: &str = "@quote_item_holes";
@@ -427,7 +427,7 @@ pub const COMPILER_QUOTE_BLOCK: &str = "@quote_block";
 pub const COMPILER_QUOTE_BLOCK_HOLES: &str = "@quote_block_holes";
 pub const COMPILER_EMIT_ITEM: &str = "@emit_item";
 pub const COMPILER_EMIT_EXPR: &str = "@emit_expr";
-pub const RETIRED_SOURCE_RENDER: &str = "__render";
+pub(crate) const RETIRED_SOURCE_RENDER: &str = "__render";
 pub const TRY_CONTEXT: &str = "__try_ctx";
 
 pub const ERASE: &str = "__erase";
@@ -438,43 +438,43 @@ pub const BYTES_FROM_LIST: &str = "__bytes_from_list";
 pub const BYTES_TO_STRING: &str = "__bytes_to_string";
 pub const BYTES_LENGTH: &str = "__bytes_length";
 pub const BYTES_AT: &str = "__bytes_at";
-pub const BYTES_AT_PUBLIC: &str = "bytes.at";
+pub(crate) const BYTES_AT_PUBLIC: &str = "bytes.at";
 pub const BYTES_CONCAT: &str = "__bytes_concat";
 pub const BYTES_SLICE: &str = "__bytes_slice";
 
-pub const CHANNEL_OPEN: &str = "__channel_open";
-pub const CHANNEL_SEND: &str = "__channel_send";
-pub const CHANNEL_RECV: &str = "__channel_recv";
-pub const CHANNEL_SELECT: &str = "__channel_select";
+pub(crate) const CHANNEL_OPEN: &str = "__channel_open";
+pub(crate) const CHANNEL_SEND: &str = "__channel_send";
+pub(crate) const CHANNEL_RECV: &str = "__channel_recv";
+pub(crate) const CHANNEL_SELECT: &str = "__channel_select";
 
 pub const TESTING_MOCK_DIR: &str = "__mock_dir";
 pub const SECRETSTORE_GET: &str = "secretstore.get";
 pub const SECRETSTORE_REQUIRE: &str = "secretstore.require";
-pub const META_FRESH_IDENT: &str = "__meta_fresh_ident";
-pub const META_CALL_SITE_EXPR: &str = "__meta_call_site_expr";
-pub const META_CALL_SITE_TYPE: &str = "__meta_call_site_type";
-pub const META_CALL_SITE_PATTERN: &str = "__meta_call_site_pattern";
-pub const META_PATTERN_CTOR: &str = "__meta_pattern_ctor";
-pub const META_PATTERN_TUPLE: &str = "__meta_pattern_tuple";
-pub const META_PATTERN_LIST: &str = "__meta_pattern_list";
-pub const META_PATTERN_LIST_REST: &str = "__meta_pattern_list_rest";
-pub const META_PATTERN_OR: &str = "__meta_pattern_or";
-pub const META_TYPE_NAMED: &str = "__meta_type_named";
-pub const META_TYPE_TUPLE: &str = "__meta_type_tuple";
-pub const META_TYPE_FN: &str = "__meta_type_fn";
-pub const META_TYPE_QUALIFIED: &str = "__meta_type_qualified";
-pub const META_TYPE_EXPR: &str = "__meta_type_expr";
-pub const META_TYPE_CAPABILITY: &str = "__meta_type_capability";
-pub const META_EXPR_CALL: &str = "__meta_expr_call";
-pub const META_EXPR_FIELD: &str = "__meta_expr_field";
-pub const META_EXPR_MATCH: &str = "__meta_expr_match";
-pub const META_MATCH_ARM: &str = "__meta_match_arm";
-pub const META_BLOCK: &str = "__meta_block";
-pub const META_STMT_EXPR: &str = "__meta_stmt_expr";
-pub const META_STMT_RETURN: &str = "__meta_stmt_return";
-pub const META_STMT_LET: &str = "__meta_stmt_let";
-pub const META_PARAM: &str = "__meta_param";
-pub const META_FUNCTION_BLOCK: &str = "__meta_function_block";
+pub(crate) const META_FRESH_IDENT: &str = "__meta_fresh_ident";
+pub(crate) const META_CALL_SITE_EXPR: &str = "__meta_call_site_expr";
+pub(crate) const META_CALL_SITE_TYPE: &str = "__meta_call_site_type";
+pub(crate) const META_CALL_SITE_PATTERN: &str = "__meta_call_site_pattern";
+pub(crate) const META_PATTERN_CTOR: &str = "__meta_pattern_ctor";
+pub(crate) const META_PATTERN_TUPLE: &str = "__meta_pattern_tuple";
+pub(crate) const META_PATTERN_LIST: &str = "__meta_pattern_list";
+pub(crate) const META_PATTERN_LIST_REST: &str = "__meta_pattern_list_rest";
+pub(crate) const META_PATTERN_OR: &str = "__meta_pattern_or";
+pub(crate) const META_TYPE_NAMED: &str = "__meta_type_named";
+pub(crate) const META_TYPE_TUPLE: &str = "__meta_type_tuple";
+pub(crate) const META_TYPE_FN: &str = "__meta_type_fn";
+pub(crate) const META_TYPE_QUALIFIED: &str = "__meta_type_qualified";
+pub(crate) const META_TYPE_EXPR: &str = "__meta_type_expr";
+pub(crate) const META_TYPE_CAPABILITY: &str = "__meta_type_capability";
+pub(crate) const META_EXPR_CALL: &str = "__meta_expr_call";
+pub(crate) const META_EXPR_FIELD: &str = "__meta_expr_field";
+pub(crate) const META_EXPR_MATCH: &str = "__meta_expr_match";
+pub(crate) const META_MATCH_ARM: &str = "__meta_match_arm";
+pub(crate) const META_BLOCK: &str = "__meta_block";
+pub(crate) const META_STMT_EXPR: &str = "__meta_stmt_expr";
+pub(crate) const META_STMT_RETURN: &str = "__meta_stmt_return";
+pub(crate) const META_STMT_LET: &str = "__meta_stmt_let";
+pub(crate) const META_PARAM: &str = "__meta_param";
+pub(crate) const META_FUNCTION_BLOCK: &str = "__meta_function_block";
 
 pub const COMPILER_FOOTPRINT: &str = "compiler.footprint";
 pub const COMPILER_DIFF: &str = "compiler.diff";
@@ -2461,7 +2461,7 @@ pub const BYTES_BRIDGES: &[&str] = &[
 /// Public or compatibility spellings that share one canonical operation row.
 /// Consumers should canonicalize only through this table: synthesized
 /// monomorphized names still carry representation information of their own.
-pub const OPERATION_ALIASES: &[(&str, &str)] = &[(BYTES_AT_PUBLIC, BYTES_AT)];
+pub(crate) const OPERATION_ALIASES: &[(&str, &str)] = &[(BYTES_AT_PUBLIC, BYTES_AT)];
 
 pub const CHANNEL_BRIDGES: &[&str] = &[
     CHANNEL_OPEN,
@@ -2630,7 +2630,7 @@ pub fn lookup_wir_host_selector(helper: &str, selector: i32) -> Option<&'static 
     })
 }
 
-pub fn is_render(name: &str) -> bool {
+pub(crate) fn is_render(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::GeneratedRender)
 }
 
@@ -2653,7 +2653,7 @@ pub fn is_bytes_bridge(name: &str) -> bool {
     })
 }
 
-pub fn is_channel_bridge(name: &str) -> bool {
+pub(crate) fn is_channel_bridge(name: &str) -> bool {
     lookup(name).is_some_and(|spec| {
         matches!(
             spec.id,
@@ -2871,7 +2871,7 @@ pub fn is_meta_function_block(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaFunctionBlock)
 }
 
-pub fn private_intrinsic_callers(bare_name: &str) -> Option<&'static [&'static str]> {
+pub(crate) fn private_intrinsic_callers(bare_name: &str) -> Option<&'static [&'static str]> {
     if canonical_operation_name(bare_name) != bare_name {
         return None;
     }

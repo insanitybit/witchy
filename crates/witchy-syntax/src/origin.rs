@@ -156,7 +156,7 @@ impl OriginTable {
         id
     }
 
-    pub fn record(
+    pub(crate) fn record(
         &mut self,
         module: &str,
         node: GeneratedNodePath,
@@ -192,7 +192,7 @@ impl OriginTable {
 
     /// Remap item addresses after an AST pass. One input may expand to several
     /// outputs; the first keeps its ID and additional outputs receive new IDs.
-    pub fn remap_items(&mut self, module: &str, mapping: &[Vec<usize>]) {
+    pub(crate) fn remap_items(&mut self, module: &str, mapping: &[Vec<usize>]) {
         let old = std::mem::take(&mut self.nodes);
         let mut remapped = Vec::new();
         for entry in old {
@@ -217,7 +217,7 @@ impl OriginTable {
     /// Rewalk each output tree with the source item's trace instead. If a future
     /// producer assigns distinct traces within one item, fail loudly until that
     /// lowering supplies a finer-grained mapping.
-    pub fn rebuild_item_trees(
+    pub(crate) fn rebuild_item_trees(
         &mut self,
         module: &str,
         mapping: &[Vec<usize>],

@@ -55,7 +55,7 @@ pub fn module_type_info_exprs(module: &Module) -> Result<Vec<Expr>, String> {
 }
 
 /// Build the `meta.TypeInfo(...)` constructor expression describing `t`.
-pub fn type_info_expr(t: &TypeDef) -> Expr {
+pub(crate) fn type_info_expr(t: &TypeDef) -> Expr {
     let s = |v: &str| Expr::Str(v.to_string());
     let str_list = |xs: &[String]| Expr::List(xs.iter().map(|x| Expr::Str(x.clone())).collect());
     let is_record = t.variants.len() == 1 && !t.variants[0].field_names.is_empty();

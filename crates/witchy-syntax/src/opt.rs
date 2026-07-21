@@ -180,14 +180,14 @@ impl OptSet {
     /// The **`release`** mode: every hardened optimization. This is what an unset
     /// `WITCHY_OPT` resolves to; every registered pass has cleared its hardening
     /// bar, so the production set is exactly [`OptSet::all`].
-    pub fn release() -> OptSet {
+    pub(crate) fn release() -> OptSet {
         OptSet::all()
     }
 
     /// The **`debug`** mode: no optimizations — maximal debuggability and fastest
     /// compile. Identical to [`OptSet::none`] (also the de-opt reference oracle),
     /// named separately so `WITCHY_OPT=debug` reads as a mode, not a de-opt.
-    pub fn debug() -> OptSet {
+    pub(crate) fn debug() -> OptSet {
         OptSet::none()
     }
 
@@ -197,7 +197,7 @@ impl OptSet {
         OptSet::release()
     }
 
-    pub fn contains(self, o: Opt) -> bool {
+    pub(crate) fn contains(self, o: Opt) -> bool {
         self.0 & o.bit() != 0
     }
 
@@ -222,7 +222,7 @@ fn known_names() -> String {
 
 /// Parse a `WITCHY_OPT` value into an [`OptSet`]. Returns a human-readable error
 /// for an unknown token or a misplaced `all`/`none`.
-pub fn parse(spec: &str) -> Result<OptSet, String> {
+pub(crate) fn parse(spec: &str) -> Result<OptSet, String> {
     let mut set = OptSet::default_set();
     for (i, raw) in spec.split(',').map(str::trim).filter(|t| !t.is_empty()).enumerate() {
         match raw {

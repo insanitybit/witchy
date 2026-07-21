@@ -267,7 +267,7 @@ pub struct ResolvedDeclarations {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ResolvedSourceNamespace {
+pub(crate) struct ResolvedSourceNamespace {
     pub declarations: ResolvedDeclarations,
     pub method_owners: MethodOwnerCandidates,
 }
@@ -527,7 +527,7 @@ pub fn resolve_with_user_modules_and_declarations(
 /// discovery. This pass validates every import against one link set,
 /// canonicalizes all source-visible type and trait identities in place, and
 /// records method owners without choosing a receiver-directed dispatch target.
-pub fn resolve_source_namespace(
+pub(crate) fn resolve_source_namespace(
     modules: &mut [(String, Module)],
     user_modules: &std::collections::HashSet<String>,
 ) -> Result<ResolvedSourceNamespace, LinkError> {
@@ -576,7 +576,7 @@ fn validate_link_set_imports(modules: &[(String, Module)]) -> Result<(), LinkErr
 /// Resolve the type and constructor syntax written inside one compiler-owned
 /// expression against its definition module. Tagged-expression holes are
 /// substituted only after this pass, so their call-site names are not touched.
-pub fn resolve_definition_site_expr(
+pub(crate) fn resolve_definition_site_expr(
     expr: &mut Expr,
     definition_module: &str,
     modules: &[(String, Module)],
@@ -1622,7 +1622,7 @@ impl<'a> Scope<'a> {
 
 /// Rewrite residual bare constructor patterns in the merged `module` to their
 /// canonical `module.Ctor` names, using the full set of declared constructors.
-pub fn resolve_residual_patterns(module: &mut Module) -> Result<(), LinkError> {
+pub(crate) fn resolve_residual_patterns(module: &mut Module) -> Result<(), LinkError> {
     // Every canonical constructor name in the program, indexed by unqualified
     // suffix -> the canonical names sharing it.
     let mut by_suffix: HashMap<String, Vec<String>> = HashMap::new();

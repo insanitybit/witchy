@@ -75,7 +75,7 @@ impl SourceCheckedModule {
         &mut self.module
     }
 
-    pub(crate) fn into_module(self) -> Module {
+    pub fn into_module(self) -> Module {
         self.module
     }
 }
@@ -93,7 +93,7 @@ impl GeneratorsLoweredModule {
         &mut self.module
     }
 
-    pub(crate) fn into_module(self) -> Module {
+    pub fn into_module(self) -> Module {
         self.module
     }
 }
@@ -103,7 +103,7 @@ impl AsyncLoweredModule {
         Self { module }
     }
 
-    pub(crate) fn into_module(self) -> Module {
+    pub fn into_module(self) -> Module {
         self.module
     }
 }

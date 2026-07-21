@@ -15,7 +15,7 @@ use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 /// The name of a constant defined in terms of itself (directly or through a
 /// chain), if any — so the linker can report it rather than letting it expand to
 /// a dangling self-reference. Returns the first cyclic constant found.
-pub fn find_cycle(module: &Module) -> Option<String> {
+pub(crate) fn find_cycle(module: &Module) -> Option<String> {
     let mut edges: HashMap<String, Vec<String>> = HashMap::new();
     for item in &module.items {
         if let Item::Const { name, value } = item {

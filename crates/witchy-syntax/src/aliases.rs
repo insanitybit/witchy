@@ -21,8 +21,8 @@ use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Alias {
-    pub(crate) params: Vec<String>,
-    pub(crate) ty: Type,
+    pub params: Vec<String>,
+    pub ty: Type,
 }
 
 #[derive(Clone, Copy)]
@@ -34,7 +34,7 @@ struct ResolveContext<'a> {
 /// The name of a type alias defined in terms of itself (directly or through a
 /// chain), if any — so the linker can report it rather than letting the alias
 /// expand to a dangling reference. Returns the first cyclic alias found.
-pub fn find_cycle(module: &Module) -> Option<String> {
+pub(crate) fn find_cycle(module: &Module) -> Option<String> {
     let mut edges: HashMap<String, Vec<String>> = HashMap::new();
     for item in &module.items {
         if let Item::TypeAlias { name, ty, .. } = item {

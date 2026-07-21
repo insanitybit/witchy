@@ -42,7 +42,7 @@ use foldhash::{HashMap, HashMapExt as _};
 type Consts = HashMap<String, Expr>;
 
 /// Optimize every function/method body in the module in place.
-pub fn optimize(module: &mut Module) {
+pub(crate) fn optimize(module: &mut Module) {
     for item in &mut module.items {
         match item {
             Item::Function(f) => opt_block(&mut f.body, &mut Consts::new()),

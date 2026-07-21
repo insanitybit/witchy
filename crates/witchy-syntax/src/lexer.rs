@@ -21,7 +21,7 @@ struct InterpSource {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Tok {
+pub(crate) enum Tok {
     // Literals
     Int(i64),
     Float(f64),
@@ -234,14 +234,14 @@ impl fmt::Display for Tok {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Token {
+pub(crate) struct Token {
     pub kind: Tok,
     pub line: u32,
     pub col: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct LexError {
+pub(crate) struct LexError {
     pub message: String,
     pub line: u32,
     pub col: u32,
@@ -1097,7 +1097,7 @@ impl Lexer {
 }
 
 /// Tokenize witchy source into a stream ending in `Tok::Eof`.
-pub fn tokenize(src: &str) -> Result<Vec<Token>, LexError> {
+pub(crate) fn tokenize(src: &str) -> Result<Vec<Token>, LexError> {
     Lexer::new(src).tokenize()
 }
 
@@ -1137,7 +1137,7 @@ fn vtok(kind: Tok, near: &Token) -> Token {
 /// what lets a block-bodied lambda be passed as a call argument
 /// (`list.map(xs, fn(c):` then an indented `match`/body). Such an inner block is
 /// closed either by a dedent or by the bracket that encloses it closing.
-pub fn apply_layout(tokens: Vec<Token>) -> Vec<Token> {
+pub(crate) fn apply_layout(tokens: Vec<Token>) -> Vec<Token> {
     struct LayoutLine {
         indent: u32,
         /// Bracket nesting depth at the line's first token.

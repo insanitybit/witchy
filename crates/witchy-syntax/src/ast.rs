@@ -12,7 +12,7 @@ use foldhash::{HashSet, HashSetExt as _};
 /// `@` is not a valid identifier character in witchy source, so users cannot
 /// spell this name. User source renders through interpolation or `show.render`;
 /// the compiler keeps one private structural-render seam for generated AST.
-pub const GENERATED_RENDER_INTRINSIC: &str = crate::intrinsics::GENERATED_RENDER;
+pub(crate) const GENERATED_RENDER_INTRINSIC: &str = crate::intrinsics::GENERATED_RENDER;
 
 pub fn is_render_intrinsic(name: &str) -> bool {
     crate::intrinsics::is_render(name)
@@ -896,7 +896,7 @@ pub fn collect_type_names<S: Extend<String>>(t: &Type, out: &mut S) {
 /// Canonical compiler-private name of an anonymous record field set. Field
 /// names must already be sorted. The field types remain ordinary generic
 /// arguments on the returned head.
-pub fn anon_record_type_name(fields: &[String]) -> String {
+pub(crate) fn anon_record_type_name(fields: &[String]) -> String {
     let mut suffix = format!("{:010}", fields.len());
     for field in fields {
         suffix.push_str(&format!("{:010}", field.len()));
@@ -946,7 +946,7 @@ pub fn anon_record_field_names(name: &str) -> Option<Vec<String>> {
 /// Both direct parser synthesis and post-alias RFC-0098 composition use this
 /// constructor so the identity, field order, and reflection contract cannot
 /// drift.
-pub fn synthetic_anon_record_def(fields: &[String]) -> TypeDef {
+pub(crate) fn synthetic_anon_record_def(fields: &[String]) -> TypeDef {
     let name = anon_record_type_name(fields);
     let params: Vec<String> = (0..fields.len()).map(|i| format!("t{i}")).collect();
     TypeDef {
