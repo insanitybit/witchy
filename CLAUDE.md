@@ -44,6 +44,13 @@ Don't file a bug as an RFC or an ad-hoc design doc as a bug; security findings s
   the doc-comments in `std/*.witchy`; a test (`stdlib_docs_are_current`)
   fails if it drifts. Edit the `std/*.witchy` comment, then regenerate:
   `witchy doc std/*.witchy > spec/stdlib.md`.
+- **`cargo check -p witchy-runtime` does NOT compile the Wasm kernel.** The
+  `runtime` module (runtime.rs + runtime/{compiler.rs,host/**}) sits behind the crate's
+  non-default `native` feature, which only the root package activates
+  (`witchy`'s default features). A package-scoped check/clippy of
+  `witchy-runtime` alone reports green without ever parsing those files —
+  validate runtime work with `cargo check -p witchy` or a workspace-wide
+  command instead.
 - **Never `cargo fmt`.** The Rust here is HAND-FORMATTED on purpose — `cargo fmt`
   reformats ~70 files. The only formatting gate is `witchy fmt` over `std/*.witchy`
   + `examples/*/src/*.witchy` + `projects/**/src/*.witchy`.
