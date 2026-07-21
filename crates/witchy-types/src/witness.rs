@@ -206,7 +206,7 @@ pub fn layout(module: &Module, existential: &Type) -> Result<ExistentialLayout, 
     layout_from_catalog(&WitnessCatalog::from_module(module), existential)
 }
 
-pub fn layout_from_catalog(
+pub(crate) fn layout_from_catalog(
     catalog: &WitnessCatalog,
     existential: &Type,
 ) -> Result<ExistentialLayout, String> {

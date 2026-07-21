@@ -143,7 +143,7 @@ impl LoanFacts {
 }
 
 /// Validate loan semantics when the caller does not need lowering facts.
-pub fn check(module: &Module) -> Result<(), TypeError> {
+pub(crate) fn check(module: &Module) -> Result<(), TypeError> {
     facts(module).map(|_| ())
 }
 
