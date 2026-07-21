@@ -85,7 +85,7 @@ registration. Adapters may vary inputs; they must not copy the implementation.
 
 | Evidence | Current state | Classification | Target boundary |
 |---|---|---|---|
-| Differential language matrix | `src/example_tests.rs` (about 26k lines) | EXTRACT | Shared parity harness with frontend, types/traits, ownership, collections, capabilities, stdlib, diagnostics, and project-fixture modules. |
+| Differential language matrix | `src/example_tests.rs` (~25k lines) + `src/example_tests/` domain submodules | EXTRACT | The module root owns the shared parity harness (`link_run`/`wasm_run`/`interp`/…); six domain submodules extracted so far (concurrency, traits, records, comptime, quote, ownership — 99 tests, byte-identical, inventory-accounted). Continue moving topical runs (capabilities, pm/coven, crypto/net, stdlib) per the handoff; the interleaved front of the file is last, per-test. |
 | Product workflows | `tests/e2e.rs` (about 5k lines) | EXTRACT | Shared process/registry lifecycle harness with package, trust, Coven, sandbox, publishing, and self-hosted workflow modules. |
 | CLI tests | Presentation and secret-decoding tests live beside `src/cli.rs`; expansion tests live beside `src/source.rs`; four command/service test modules remain inline in `main.rs` | EXTRACT | Move each remaining suite with its command/service owner; preserve assertions and test intent. |
 | Stage tests | Unit/integration suites under each owning crate | KEEP | New regressions live at the narrowest stage, plus differential evidence for observable semantics. |
