@@ -11,23 +11,16 @@
 #![deny(unsafe_code)]
 
 pub use witchy::analysis;
-pub use witchy::aliases;
 pub use witchy::artifact;
 pub use witchy::ast;
 pub use witchy::capabilities;
 pub use witchy::codegen;
-pub use witchy::confine;
-pub use witchy::async_lower;
-pub use witchy::consts;
 pub use witchy::comptime;
-pub use witchy::derive;
 pub use witchy::doc;
-pub use witchy::fmt;
 pub use witchy::format;
 pub use witchy::generators;
 pub use witchy::grants;
 pub use witchy::interpreter;
-pub use witchy::lexer;
 pub use witchy::linker;
 pub use witchy::{enforce_performance_modes, is_entry_function, ownership_relevant};
 pub use witchy::opt;
@@ -38,12 +31,9 @@ mod lsp;
 mod source;
 pub use witchy::native;
 pub use witchy::net;
-pub use witchy::optimize;
 pub use witchy::parser;
 mod idp;
-pub use witchy::records;
 pub use witchy::runtime;
-pub use witchy::traits;
 pub use witchy::typeck;
 pub use witchy::trusted_exe;
 pub use witchy::value;
@@ -51,9 +41,6 @@ pub use witchy::wir;
 pub use witchy::wir_encode;
 pub use witchy::wir_helpers;
 pub use witchy::wir_opt;
-#[cfg(feature = "native")]
-pub use witchy::wir_prelude;
-
 
 use cli::{
     compiler_version, flag_value, leading_opt_mode, parse_secret_file, parse_secret_inline,

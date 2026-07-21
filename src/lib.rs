@@ -15,14 +15,11 @@
 
 // RFC-0018: AST→WIR lowering (codegen) + its uniqueness analysis live in the
 // `witchy-lower` crate.
-pub use witchy_lower::{analysis, codegen, escape};
+pub use witchy_lower::{analysis, codegen};
 // RFC-0018: the front-end + AST-level base layer lives in the `witchy-syntax`
 // crate; re-export so the rest of the compiler keeps using
-// `crate::{ast,lexer,parser,aliases,consts,fmt,…}::…` paths unchanged.
-pub use witchy_syntax::{
-    aliases, ast, async_lower, build_entry, consts, derive, doc, fmt, format, generators,
-    lambda_scan, lexer, linker, opt, optimize, origin, parser, records, reflect,
-};
+// `crate::{ast,parser,fmt,…}::…` paths unchanged.
+pub use witchy_syntax::{ast, doc, fmt, format, generators, linker, opt, origin, parser};
 // RFC-0030: deterministic optimization counters (`witchy stats`) — native-only
 // (needs the wasmtime sandbox to run a program and read its counters).
 #[cfg(feature = "native")]
@@ -36,7 +33,7 @@ pub mod trusted_exe;
 mod capabilities_tests;
 // RFC-0018: runtime values + the capability host live in `witchy-runtime`
 // (wasm-safe); the wasmtime sandbox `runtime` is native-only.
-pub use witchy_runtime::{confine, native, net, value};
+pub use witchy_runtime::{native, net, value};
 #[cfg(feature = "native")]
 pub use witchy_runtime::runtime;
 /// RFC-0013 capability grant documents (TOML); native-only — re-exported from
@@ -45,12 +42,12 @@ pub use witchy_runtime::runtime;
 pub use witchy_caps::grants;
 // RFC-0018: the reference interpreter (parity oracle) + compile-time evaluation
 // live in the `witchy-interp` crate.
-pub use witchy_interp::{comptime, interpreter, pipeline, tagged};
+pub use witchy_interp::{comptime, interpreter, pipeline};
 // RFC-0018: type checking + trait resolution live in the `witchy-types` crate.
-pub use witchy_types::{traits, typeck};
+pub use witchy_types::typeck;
 // RFC-0018: the WIR group lives in the `witchy-wir` crate; re-export it so the
 // rest of the compiler keeps using `crate::wir::…` paths unchanged.
-pub use witchy_wir::{wir, wir_encode, wir_helpers, wir_opt, wir_prelude};
+pub use witchy_wir::{wir, wir_encode, wir_helpers, wir_opt};
 
 /// Resolve a single-source program against the BUNDLED standard library only
 /// (no filesystem — the browser has none): parse the entry, then breadth-first
