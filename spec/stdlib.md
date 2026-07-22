@@ -919,6 +919,7 @@ Checked failures remain ordinary matchable data and never become unchecked casts
 - `ArityMismatch(String, Int, Int)`
 - `ArgumentMismatch(Int, RuntimeType, RuntimeType)`
 - `ResultMismatch(RuntimeType, RuntimeType)`
+- `TraitMismatch(RuntimeType)`
 - `CapabilityDenied(String)`
 - `PrivateField(String)`
 - `SealedType(RuntimeType)`
@@ -965,6 +966,14 @@ Invoke only a descriptor-registered method. Arguments are checked against exact 
 #### `fn call_with(value: Dynamic, name: String, args: List(Dynamic), capabilities: c) -> Result(Dynamic, DynamicError)`
 
 Capability-bearing methods use a separate statically typed authority bundle. One capability is passed directly; multiple capabilities use a tuple in the same order as the reflected method parameters. Capabilities never enter `Dynamic` or the ordinary argument list.
+
+#### `fn implements(value: Dynamic, trait_type: RuntimeType) -> Bool`
+
+Query an authenticated `dyn Trait` descriptor produced by `dynamic.runtime_type(dyn Trait)`. The compiler closes this relation over the linked RFC-0081 impl catalog; display names never participate.
+
+#### `fn as_trait(value: Dynamic, trait_type: RuntimeType) -> Result(Dynamic, DynamicError)`
+
+Validate the same closed relation while retaining the original owned dynamic envelope. Trait identity is evidence for later reflection, not an unchecked payload cast.
 
 #### `fn field(value: Dynamic, name: String) -> Result(Dynamic, DynamicError)`
 
