@@ -218,6 +218,7 @@ pub(crate) enum ComptimeItemEmission {
     Source(String),
     ModuleSyntax {
         module: Box<Module>,
+        compatibility_source: String,
         definition_line: u32,
         hole_ancestry: Vec<ComptimeHoleOrigin>,
     },
@@ -592,7 +593,7 @@ pub struct Interpreter {
     fresh_ident_counter: u64,
     compiler_syntax_instance_counter: u64,
     compiler_item_syntax: HashMap<String, Item>,
-    compiler_item_modules: HashMap<String, Module>,
+    compiler_item_modules: HashMap<String, (Module, String)>,
     compiler_expr_syntax: HashMap<String, Expr>,
     compiler_type_syntax: HashMap<String, Type>,
     compiler_pattern_syntax: HashMap<String, Pattern>,

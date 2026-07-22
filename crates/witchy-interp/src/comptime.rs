@@ -357,7 +357,8 @@ fn decode_comptime_output(
         .expect("the empty module is always valid Witchy");
     let mut origins = OriginTable::default();
     let mut source_batch = Vec::new();
-    for positioned in item_output {
+    let mut item_output = item_output.into_iter().peekable();
+    while let Some(positioned) = item_output.next() {
         if positioned.output_position != 0 {
             return Err("internal: typed comptime output lost its source ordering".into());
         }
@@ -367,9 +368,21 @@ fn decode_comptime_output(
             }
             crate::interpreter::ComptimeItemEmission::ModuleSyntax {
                 module,
+                compatibility_source,
                 definition_line,
                 hole_ancestry,
             } => {
+                let adjacent_source = !source_batch.is_empty()
+                    || item_output.peek().is_some_and(|next| {
+                        matches!(
+                            &next.emission,
+                            crate::interpreter::ComptimeItemEmission::Source(_)
+                        )
+                    });
+                if adjacent_source {
+                    source_batch.push(compatibility_source);
+                    continue;
+                }
                 append_item_source_batch(
                     &mut emitted,
                     &mut origins,

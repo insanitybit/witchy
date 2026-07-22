@@ -936,7 +936,8 @@ impl Interpreter {
                     let handle = self.next_compiler_syntax_handle("dynamic-item")?;
                     self.compiler_item_syntax
                         .insert(handle.clone(), module.items[0].clone());
-                    self.compiler_item_modules.insert(handle.clone(), module);
+                    self.compiler_item_modules
+                        .insert(handle.clone(), (module, (**source).clone()));
                     Ok(Some(Value::Ctor {
                         name: OWNED_ITEM_SYNTAX_CTOR.into(),
                         fields: Rc::new(vec![
@@ -1450,9 +1451,12 @@ impl Interpreter {
                             unreachable!()
                         };
                         let definition_line = u32::try_from(*definition_line).unwrap_or(0);
-                        if let Some(module) = self.compiler_item_modules.get(handle.as_str()) {
+                        if let Some((module, source)) =
+                            self.compiler_item_modules.get(handle.as_str())
+                        {
                             ComptimeItemEmission::ModuleSyntax {
                                 module: Box::new(module.clone()),
+                                compatibility_source: source.clone(),
                                 definition_line,
                                 hole_ancestry: Vec::new(),
                             }
