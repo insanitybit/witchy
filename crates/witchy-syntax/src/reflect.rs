@@ -16,13 +16,17 @@ pub(crate) fn normalized_type_for_typeinfo(
     t: &TypeDef,
     aliases: &HashMap<String, crate::aliases::Alias>,
 ) -> Result<TypeDef, String> {
+    // Parameter identity belongs to the declaration spelling. Alias expansion
+    // may reorder variables inside a field and must not reorder the nominal
+    // type's positional generic arguments.
+    let parameters = crate::ast::effective_type_def_params(t);
     let mut out = t.clone();
     for variant in &mut out.variants {
         for field in &mut variant.fields {
             crate::aliases::resolve_type_aliases(field, aliases)?;
         }
     }
-    out.params = crate::ast::effective_type_def_params(&out);
+    out.params = parameters;
     Ok(out)
 }
 
@@ -191,5 +195,25 @@ mod tests {
         let normalized = normalized_type_for_typeinfo(&definition, &HashMap::default())
             .expect("normalize reflected type");
         assert_eq!(normalized.params, ["a", "b"]);
+    }
+
+    #[test]
+    fn normalized_typeinfo_preserves_parameter_order_across_alias_expansion() {
+        let module = crate::parser::parse_module(
+            "type Flip(x, y) = (y, x)\n\ntype Mixed(a):\n    payload: Flip(b, c)\n",
+        )
+        .expect("parse aliased mixed parameters");
+        let aliases = crate::aliases::resolved_map(&module).expect("resolve aliases");
+        let definition = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Type(definition) if definition.name == "Mixed" => Some(definition),
+                _ => None,
+            })
+            .expect("Mixed declaration");
+        let normalized = normalized_type_for_typeinfo(definition, &aliases)
+            .expect("normalize aliased reflected type");
+        assert_eq!(normalized.params, ["a", "b", "c"]);
     }
 }

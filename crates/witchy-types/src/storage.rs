@@ -195,7 +195,7 @@ impl<'a> ReferenceStorageClassifier<'a> {
 
                 if let Some(def) = self.defs.get(name.as_str()) {
                     let key = format!("type:{name}");
-                    let params = type_def_params(def);
+                    let params = crate::typeck::type_def_params(def);
                     if !seen.insert(key.clone()) {
                         return self.classify_stored_args(
                             &params,
@@ -251,7 +251,7 @@ impl<'a> ReferenceStorageClassifier<'a> {
 /// so a declaration such as `Task(a)` can receive a concrete GC layout without
 /// cloning or rewriting the source type declaration.
 pub fn instantiate_type_def_fields(def: &TypeDef, args: &[Type]) -> Vec<Vec<Type>> {
-    let bindings = bind(&type_def_params(def), args, &HashMap::new());
+    let bindings = bind(&crate::typeck::type_def_params(def), args, &HashMap::new());
     def.variants
         .iter()
         .map(|variant| {
@@ -347,7 +347,7 @@ fn stored_parameter_summaries<'a>(
         let def_updates = defs
             .iter()
             .map(|(name, def)| {
-                let params = type_def_params(def);
+                let params = crate::typeck::type_def_params(def);
                 let mut deps = HashSet::new();
                 for field in def.variants.iter().flat_map(|variant| &variant.fields) {
                     deps.extend(storage_dependencies(
@@ -443,7 +443,7 @@ fn storage_dependencies<'a>(
             }
             if let Some(def) = defs.get(name.as_str()) {
                 return mapped_dependencies(
-                    &type_def_params(def),
+                    &crate::typeck::type_def_params(def),
                     args,
                     def_summaries.get(name.as_str()),
                     defs,
@@ -486,10 +486,6 @@ fn mapped_dependencies<'a>(
             storage_dependencies(arg, defs, aliases, def_summaries, alias_summaries)
         })
         .collect()
-}
-
-fn type_def_params(def: &TypeDef) -> Vec<String> {
-    crate::typeck::type_def_params(def)
 }
 
 #[cfg(test)]
