@@ -2353,7 +2353,7 @@ This is COMPILE-TIME structure (field names + declared type expressions), distin
 
 #### `sealed type ItemSyntax`
 
-RFC-0080's typed boundary for whole generated items. `quote item:` and literal whole-item `meta.item("...")` values retain compiler-owned item AST. For an item quote with holes, the compiler substitutes typed expression, type, and pattern nodes into that AST. `function_block` also transfers an owned block directly; other dynamic item builders retain source compatibility for now.
+RFC-0080's typed boundary for whole generated items. `quote item:` and literal whole-item `meta.item("...")` values retain compiler-owned item AST. For an item quote with holes, the compiler substitutes typed expression, type, and pattern nodes into that AST. Dynamic `item(source)` input is parsed once at this boundary and then travels as a compiler-owned module fragment, including any imports required by the generated declaration.
 
 - `ItemSyntax(String)`
 
@@ -2365,7 +2365,7 @@ An opaque aggregate of generated items. Keeping the aggregate typed lets generat
 
 #### `sealed type Span`
 
-Source spans are compiler-owned metadata. The constructor is sealed so user code cannot forge locations; compiler APIs may attach concrete spans as the generated-navigation surface grows.
+Source spans are compiler-owned metadata. The constructor is sealed so user code cannot forge locations; expansion records definition, invocation, and hole-ancestry spans for diagnostics and generated-symbol navigation.
 
 - `Span(String, Int, Int)`
 
@@ -2462,7 +2462,7 @@ A type's structure. `fields` is populated for records and `variants` for sums; b
 
 #### `fn item(source: String) -> ItemSyntax`
 
-A dynamic source-backed item wrapper. A literal whole-item argument is recognized by the parser and promoted to compiler-owned item syntax.
+Parse one complete dynamic declaration (and its imports) into compiler-owned syntax. Incomplete adjacent migration fragments retain the source constructor so emit_item can parse their batch. Literal whole-item arguments take the parser's equivalent zero-runtime path.
 
 #### `fn item_join(parts: List(String), holes: List(ExprSyntax)) -> ItemSyntax`
 
