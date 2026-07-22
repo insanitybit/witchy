@@ -893,11 +893,29 @@ Checked runtime values (RFC-0082 Stage 1).
 
 - `Dynamic(RuntimeType, dyn Reflect)`
 
+#### `sealed type RuntimeField`
+
+- `RuntimeField(String, RuntimeType)`
+
+#### `sealed type DynamicFieldStatus`
+
+- `FieldFound(RuntimeType)`
+- `FieldPrivate`
+- `FieldSealed`
+- `FieldMissing`
+- `FieldMalformed`
+
 #### `type DynamicError`
 
-Checked operation failures are ordinary matchable data. Stage 1 has only the exact-descriptor conversion failure; later stages extend this same error type with member, call-contract, visibility, and capability failures.
+Checked failures remain ordinary matchable data and never become unchecked casts or backend traps.
 
 - `TypeMismatch(RuntimeType)`
+- `MissingField(String)`
+- `PrivateField(String)`
+- `SealedType(RuntimeType)`
+- `MalformedRequest(String)`
+- `MalformedDescriptor(RuntimeType)`
+- `MalformedPayload(RuntimeType)`
 
 #### `fn dynamic(value: a) -> Dynamic where a: Reflect`
 
@@ -910,6 +928,16 @@ Return the immutable descriptor carried by a dynamic value.
 #### `fn type_name(ty: RuntimeType) -> String`
 
 Human-readable only. Descriptor equality and decoding never key on this name.
+
+#### `fn fields(ty: RuntimeType) -> List(RuntimeField)`
+
+Declared public readable fields in source order. The compiler replaces the intrinsic with an authenticated lookup over canonical descriptor IDs.
+
+#### `fn field_name(field: RuntimeField) -> String`
+
+#### `fn field_type(field: RuntimeField) -> RuntimeType`
+
+#### `fn field(value: Dynamic, name: String) -> Result(Dynamic, DynamicError)`
 
 #### `fn try_decode(value: Dynamic) -> Option(a)`
 
@@ -2902,11 +2930,18 @@ The reflected shape of a value.
 - `MVariant(String, String, List(Mirror))`
 - `MNil`
 
+#### `type DynamicFieldValue`
+
+Compiler-authenticated field projection payload. The two descriptor IDs bind the accessor's concrete receiver and returned field to the runtime shape plan; `dynamic.field` validates both before constructing a new Dynamic envelope.
+
+- `DynamicFieldValue(Int, Int, dyn Reflect)`
+
 #### `trait Reflect`
 
 Values that can describe themselves as a `Mirror`.
 
 - `fn reflect(self) -> Mirror`
+- `fn __dynamic_field(self, name: String) -> Option(DynamicFieldValue)` _(default)_
 
 #### `fn reflect_bytes(b: Bytes) -> Mirror`
 
