@@ -21,10 +21,12 @@ fn main(console: Console):
 0 7 14
 ```
 
-`emit(line)` is the block's only output channel. Everything it emits is
-concatenated, parsed as witchy source, and **appended** to the module — and
-only then does the module get type-checked and footprint-analyzed. Generated
-code is held to exactly the same rules as handwritten code.
+`emit(line)` is the raw-source output channel. Everything it emits is
+concatenated, parsed as witchy source, and **appended** to the module. Structured
+generators instead use `emit_item(meta.ItemSyntax)`, which preserves the
+compiler-owned item rather than rendering and reparsing it. Only then does the
+module get type-checked and footprint-analyzed. Generated code is held to
+exactly the same rules as handwritten code.
 
 ## Why it can't break the capability model
 
@@ -68,32 +70,19 @@ for a generated binding; user source cannot spell its reserved name, so a local
 with the same human-readable hint cannot capture it.
 
 `quote item:` remains compiler-owned syntax from parsing through append; it is
-not rendered and reparsed. Typed holes replace exact expression, type, or pattern
-nodes in that item AST. The hole payload values and dynamic builders remain the
-compatibility path while the rest of the syntax tree becomes structural.
-`quote expr:` values retain their parsed AST, including when they contain typed
-holes. The compiler substitutes each hole node structurally instead of joining
-and reparsing the enclosing expression. A source-backed compatibility hole may
-still parse its own payload. Existing `meta.expr_*` builders project canonical
-source, and values composed through those builders remain on the compatibility
-path until their structural forms land.
-`quote type:` values work the same way, including typed holes. The enclosing
-type template remains compiler-owned, so nested anonymous structural types and
-borrowed views are substituted as nodes. A source-backed compatibility hole may
-parse its own payload; general `meta.type_*` builder composition still projects
-canonical source.
-`quote pattern:` values also retain their parsed node, including typed holes.
-The compiler substitutes the exact pattern node, while a compatibility hole may
-parse its own payload. General `meta.pattern_*` composition remains the
-source-backed construction API.
-`quote stmt:` and `quote block:` values retain their body AST too, including
-mixed expression, type, and pattern holes. The existing body builders consume
-their canonical projection, so generators can migrate without changing the
-`meta.function_block` surface while the quoted body itself stays structural.
-When a typed tagged-literal generator returns one of these compiler-owned values,
-the expansion engine transfers the expression AST directly. A composed
-source-backed `ExprSyntax` and a legacy `String` tag retain the explicit parse
-fallback.
+not rendered and reparsed. Typed holes replace exact expression, type, or
+pattern nodes in that item AST. `quote expr:`, `quote type:`, `quote pattern:`,
+`quote stmt:`, and `quote block:` likewise retain their parsed nodes. Their
+typed holes are substituted structurally instead of joining and reparsing the
+enclosing syntax.
+
+The `meta` builders validate category boundaries and preserve compiler-owned
+children where their API is structural. Compatibility builders that accept raw
+source parse only that explicit payload. Use quotation and structural builders
+for new generators; use raw-source constructors only when the syntax is not yet
+covered by a structural builder. A typed tagged-literal generator returns
+`meta.ExprSyntax`, and the expansion engine transfers that expression AST
+directly.
 
 ```witchy
 import meta
@@ -226,22 +215,23 @@ fn main(console: Console):
 A string literal written *immediately after an identifier* — `tag"…"` — is a
 **tagged literal**. Like `comptime` it runs at compile time, but in *expression*
 position: the lexer splits the literal into its static fragments and its `${…}`
-holes, and the compiler calls your `tag` function
+holes. New tags should use the typed signature
 
 ```text
-fn tag(parts: List(String), holes: List(String)) -> String
+comptime fn tag(parts: List(String), holes: List(String)) -> meta.ExprSyntax
 ```
 
-with `parts` = the static fragments and `holes` = one **opaque marker** per hole.
-The tag *places* each marker where that hole's value belongs and returns witchy
-**expression source**; the compiler parses it and substitutes the real hole
-expression — resolved at the call site — at each marker, then splices the result
-in before type-checking.
+Legacy `String`-returning tags remain an explicit migration path, but new code
+should not use them. With `parts` = the static fragments and `holes` = one
+**opaque marker** per hole,
+The tag returns the typed expression that replaces the literal. Convert a marker
+to its explicit expression category with `meta.expr_raw`, or compose it through
+a structural quote or builder. The compiler substitutes the real hole expression
+— resolved at the call site — and splices the result before type-checking.
 
-A typed generator may instead return `meta.ExprSyntax`. `quote expr:` results,
-including structurally substituted expression templates, stay as compiler-owned
-AST through this boundary; compatibility builders still project source until
-their structural forms land. Direct functions, types, constructors, and
+`quote expr:` results, including structurally substituted expression templates,
+stay as compiler-owned AST through this boundary. Direct functions, types,
+constructors, and
 constructor patterns written in compiler-owned typed output resolve where the
 tag is defined, including through that module's imports, while the literal's
 holes keep their invocation-site context. This name resolution does not bypass
@@ -282,9 +272,12 @@ fn main(console: Console):
 
 ```witchy
 import list
+import meta
 
-fn greet(parts: List(String), holes: List(String)) -> String:
-    "\"Hello, \" + " + holes.at(0) + " + \"!\""
+comptime fn greet(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+    let name = meta.expr_raw(list.at(holes, 0))
+    quote expr:
+        "Hello, " + ${name} + "!"
 
 fn main(console: Console):
     let name = "witch"
