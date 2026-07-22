@@ -215,10 +215,8 @@ const OWNED_ITEM_SYNTAX_CTOR: &str = "@owned_item_syntax";
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ComptimeItemEmission {
-    Source(String),
     ModuleSyntax {
         module: Box<Module>,
-        compatibility_source: String,
         definition_line: u32,
         hole_ancestry: Vec<ComptimeHoleOrigin>,
     },
@@ -244,7 +242,6 @@ struct ComptimeSyntaxOrigin {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ComptimeExprEmission {
-    Source(String),
     Syntax(Box<Expr>),
 }
 
@@ -593,8 +590,11 @@ pub struct Interpreter {
     fresh_ident_counter: u64,
     compiler_syntax_instance_counter: u64,
     compiler_item_syntax: HashMap<String, Item>,
-    compiler_item_modules: HashMap<String, (Module, String)>,
+    compiler_item_modules: HashMap<String, Module>,
     compiler_expr_syntax: HashMap<String, Expr>,
+    /// Module names that dynamic generated expressions may use as qualifiers.
+    /// Populated only for tagged-literal compile-time evaluation.
+    compiler_expr_qualifiers: Option<Vec<String>>,
     compiler_type_syntax: HashMap<String, Type>,
     compiler_pattern_syntax: HashMap<String, Pattern>,
     compiler_match_arm_syntax: HashMap<String, MatchArm>,
@@ -841,6 +841,7 @@ impl Interpreter {
             compiler_item_syntax,
             compiler_item_modules: HashMap::new(),
             compiler_expr_syntax,
+            compiler_expr_qualifiers: None,
             compiler_type_syntax,
             compiler_pattern_syntax,
             compiler_match_arm_syntax: HashMap::new(),

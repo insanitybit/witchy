@@ -2462,11 +2462,7 @@ A type's structure. `fields` is populated for records and `variants` for sums; b
 
 #### `fn item(source: String) -> ItemSyntax`
 
-Parse one complete dynamic declaration (and its imports) into compiler-owned syntax. Incomplete adjacent migration fragments retain the source constructor so emit_item can parse their batch. Literal whole-item arguments take the parser's equivalent zero-runtime path.
-
-#### `fn item_join(parts: List(String), holes: List(ExprSyntax)) -> ItemSyntax`
-
-Join parser-checked item quote fragments with typed expression holes.
+Parse one complete dynamic declaration (and its imports) into compiler-owned syntax. Literal whole-item arguments take the parser's equivalent zero-runtime path; dynamic input is rejected here unless it is exactly one declaration.
 
 #### `fn item_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> ItemSyntax`
 
@@ -2539,10 +2535,6 @@ Expression syntax builders. Ordinary names retain the compatibility payload; cal
 #### `fn expr_match(scrutinee: ExprSyntax, arms: List(MatchArmSyntax)) -> ExprSyntax`
 
 #### `fn expr_raw(source: String) -> ExprSyntax`
-
-#### `fn expr_join(parts: List(String), holes: List(ExprSyntax)) -> ExprSyntax`
-
-Join parser-checked expression quote fragments with typed expression holes. `parts` must have exactly one more element than `holes`, as in string interpolation: part0, hole0, part1, ...
 
 #### `fn expr_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> ExprSyntax`
 
@@ -2620,10 +2612,6 @@ Source-backed statement and block syntax. These are still text at the compiler b
 
 A source-backed statement wrapper for parser-checked `quote stmt:`.
 
-#### `fn stmt_join(parts: List(String), holes: List(ExprSyntax)) -> StmtSyntax`
-
-Join parser-checked statement quote fragments with typed expression holes.
-
 #### `fn stmt_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> StmtSyntax`
 
 Join parser-checked statement quote fragments with typed syntax holes.
@@ -2633,10 +2621,6 @@ Join parser-checked statement quote fragments with typed syntax holes.
 #### `fn block_raw(source: String) -> BlockSyntax`
 
 A source-backed block wrapper for parser-checked `quote block:`.
-
-#### `fn block_join(parts: List(String), holes: List(ExprSyntax)) -> BlockSyntax`
-
-Join parser-checked block quote fragments with typed expression holes.
 
 #### `fn block_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> BlockSyntax`
 

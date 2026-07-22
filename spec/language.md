@@ -1116,8 +1116,8 @@ deterministic by construction. Legacy `emit(line)` output, and direct
 `meta.item("...")` are stored as compiler-owned item AST and appended without
 formatting or reparsing. A hole-bearing item keeps that AST and replaces its
 exact expression, type, and pattern placeholder nodes with the typed hole
-payloads. Those payload syntax values, dynamically constructed
-`meta.item(source)`, and item builders remain source-backed compatibility paths. A
+payloads. Dynamic `meta.item(source)` input is parsed exactly once at its
+constructor boundary and then remains compiler-owned. A
 single `comptime:` block may use the legacy source channel or the typed item
 channel, but not both.
 Compiler syntax values such as `meta.ItemSyntax`, `meta.TypeSyntax`,
@@ -1128,13 +1128,11 @@ functions, fields, aliases, and expressions cannot store or return them.
 projection. When the quote contains holes, the compiler stores an expression
 template and structurally replaces its exact hole nodes. A compiler-owned hole
 transfers its AST directly; a source-backed compatibility hole parses only its
-own payload, never the enclosing expression. Literal `meta.expr_raw("...")` and
-literal `meta.expr_join(parts, holes)` plans are promoted to the same owned
-representation when parsed. Direct item holes and typed tagged-literal output
-consume the resulting AST without reparsing. Other `meta.expr_*` builders
-project canonical source for compatibility; their composed values remain
-source-backed in this stage and a typed tag carrying one uses the explicit parse
-fallback.
+own payload, never the enclosing expression. Literal `meta.expr_raw("...")`
+plans are promoted to the same owned representation when parsed; dynamic input
+is parsed exactly once at the constructor boundary. Direct item holes and typed
+tagged-literal output consume the resulting AST without reparsing. Structural
+`meta.expr_*` builders retain their owned child nodes.
 `quote type:` values likewise retain a compiler-owned type AST. A hole-bearing
 quote stores a type template and structurally replaces its exact hole nodes. A
 compiler-owned hole transfers its AST directly; a source-backed compatibility

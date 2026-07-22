@@ -6,6 +6,9 @@ use witchy::{codegen, interpreter, parser, pipeline, typeck};
 const DEFINITION_SUPPORT: &str = r#"
 type Wrapped(a):
     Wrapped(a)
+
+pub fn answer() -> Int:
+    42
 "#;
 
 const CONSUMER_SUPPORT: &str = r#"
@@ -43,6 +46,14 @@ comptime fn callsite_qualified(parts: List(String), holes: List(String)) -> meta
     let supplied = meta.expr_raw(list.at(holes, 0))
     quote expr:
         (fn(item: ${ty}) -> Int: ${matched})(${supplied})
+
+comptime fn dynamic_qualified(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+    let source = "definition_support.answer()"
+    meta.expr_raw(source)
+
+comptime fn dynamic_static_interpolation(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+    let sigil = "$"
+    meta.expr_raw("\"" + sigil + "{not_in_scope}\"")
 "#;
 
 const CONSUMER: &str = r#"
@@ -52,6 +63,8 @@ import consumer_support
 fn main(console: Console):
     console.print("${definition_qualified"ignored"}")
     console.print("${callsite_qualified"${consumer_support.Wrapped(41)}"}")
+    console.print("${dynamic_qualified"ignored"}")
+    console.print("${dynamic_static_interpolation"ignored"}")
 "#;
 
 #[test]
@@ -80,7 +93,12 @@ fn qualified_builder_origins_resolve_on_both_backends() {
     assert!(rendered.contains("definition_support.Wrapped"), "{rendered}");
     assert!(rendered.contains("consumer_support.Wrapped"), "{rendered}");
 
-    let expected = vec!["42".to_string(), "42".to_string()];
+    let expected = vec![
+        "42".to_string(),
+        "42".to_string(),
+        "42".to_string(),
+        "${not_in_scope}".to_string(),
+    ];
     assert_eq!(
         interpreter::run_module(linked.clone(), ".", Vec::new()).expect("interpret"),
         expected,

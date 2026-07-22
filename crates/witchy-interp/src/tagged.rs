@@ -730,7 +730,7 @@ fn expand_one(
         output: lines,
         items: item_output,
         exprs: mut expr_output,
-    } = crate::interpreter::run_comptime_module_outputs_budgeted_in_scope(
+    } = crate::interpreter::run_comptime_module_outputs_budgeted_in_scope_with_qualifiers(
         linked,
         ".",
         crate::interpreter::COMPTIME_STEP_LIMIT,
@@ -740,6 +740,7 @@ fn expand_one(
             ctx.name,
             tag.len()
         )),
+        Some(ctx.qualifiers.clone()),
     )
     .map_err(|e| format!("{}: {e}", where_()))?;
     if !item_output.is_empty() {
@@ -796,7 +797,6 @@ fn expand_one(
                     .map_err(|error| format!("{}: {error}", where_()))?;
                     expr
                 }
-                crate::interpreter::ComptimeExprEmission::Source(source) => parse_source(source)?,
             }
         }
     };
@@ -876,7 +876,10 @@ fn reindent_body(src: &str) -> String {
     out
 }
 
-fn parse_generated_splice_expr(src: &str, qualifiers: &[String]) -> Result<Expr, String> {
+pub(crate) fn parse_generated_splice_expr(
+    src: &str,
+    qualifiers: &[String],
+) -> Result<Expr, String> {
     parse_splice_expr(&escape_generated_string_interpolations(src), qualifiers)
 }
 

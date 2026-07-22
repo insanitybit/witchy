@@ -921,23 +921,16 @@ impl Interpreter {
                     if self.fresh_ident_scope.is_none() {
                         return err("meta.item is available only during compile-time expansion");
                     }
-                    let Ok(module) = parse_module(source) else {
-                        return Ok(Some(Value::Ctor {
-                            name: "meta.ItemSyntax".into(),
-                            fields: Rc::new(vec![Value::Str(source.clone())]),
-                        }));
-                    };
+                    let module = parse_module(source).map_err(|error| RuntimeError {
+                        message: format!("meta.item source does not parse: {error}"),
+                    })?;
                     if !module.modes.is_empty() || module.items.len() != 1 {
-                        return Ok(Some(Value::Ctor {
-                            name: "meta.ItemSyntax".into(),
-                            fields: Rc::new(vec![Value::Str(source.clone())]),
-                        }));
+                        return err("meta.item expects exactly one complete declaration");
                     }
                     let handle = self.next_compiler_syntax_handle("dynamic-item")?;
                     self.compiler_item_syntax
                         .insert(handle.clone(), module.items[0].clone());
-                    self.compiler_item_modules
-                        .insert(handle.clone(), (module, (**source).clone()));
+                    self.compiler_item_modules.insert(handle.clone(), module);
                     Ok(Some(Value::Ctor {
                         name: OWNED_ITEM_SYNTAX_CTOR.into(),
                         fields: Rc::new(vec![
@@ -947,6 +940,28 @@ impl Interpreter {
                     }))
                 }
                 _ => err("meta.item expects one String declaration fragment"),
+            },
+            name if intrinsics::is_meta_expr(name) => match args {
+                [Value::Str(source)] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err("meta.expr_raw is available only during compile-time expansion");
+                    }
+                    let parsed = match &self.compiler_expr_qualifiers {
+                        Some(qualifiers) => {
+                            crate::tagged::parse_generated_splice_expr(source, qualifiers)
+                        }
+                        None => witchy_syntax::syntax_holes::parse_expr_payload(source),
+                    };
+                    let expr = parsed.map_err(|error| RuntimeError {
+                        message: format!("meta.expr_raw source does not parse: {error}"),
+                    })?;
+                    Ok(Some(self.store_compiler_expr_syntax(
+                        "dynamic-expression",
+                        expr,
+                        Vec::new(),
+                    )?))
+                }
+                _ => err("meta.expr_raw expects one String expression"),
             },
             name if name == intrinsics::COMPILER_QUOTE_EXPR => {
                 if self.fresh_ident_scope.is_none() {
@@ -1451,12 +1466,9 @@ impl Interpreter {
                             unreachable!()
                         };
                         let definition_line = u32::try_from(*definition_line).unwrap_or(0);
-                        if let Some((module, source)) =
-                            self.compiler_item_modules.get(handle.as_str())
-                        {
+                        if let Some(module) = self.compiler_item_modules.get(handle.as_str()) {
                             ComptimeItemEmission::ModuleSyntax {
                                 module: Box::new(module.clone()),
-                                compatibility_source: source.clone(),
                                 definition_line,
                                 hole_ancestry: Vec::new(),
                             }
@@ -1516,15 +1528,6 @@ impl Interpreter {
                             hole_ancestry,
                         }
                     }
-                    Value::Ctor { name, fields }
-                        if name.rsplit_once('.').map_or(&*name, |(_, tail)| tail)
-                            == "ItemSyntax" =>
-                    {
-                        let [Value::Str(source)] = fields.as_slice() else {
-                            return err("ItemSyntax carried an invalid source payload");
-                        };
-                        ComptimeItemEmission::Source((**source).clone())
-                    }
                     _ => return err("emit_item expects meta.ItemSyntax"),
                 };
                 self.comptime_item_output.push(PositionedComptimeItem {
@@ -1554,15 +1557,6 @@ impl Interpreter {
                                     .into(),
                             })?;
                         ComptimeExprEmission::Syntax(Box::new(expr))
-                    }
-                    Value::Ctor { name, fields }
-                        if name.rsplit_once('.').map_or(&*name, |(_, tail)| tail)
-                            == "ExprSyntax" =>
-                    {
-                        let [Value::Str(source)] = fields.as_slice() else {
-                            return err("ExprSyntax carried an invalid source payload");
-                        };
-                        ComptimeExprEmission::Source((**source).clone())
                     }
                     _ => return err("expression emission expects meta.ExprSyntax"),
                 };

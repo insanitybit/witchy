@@ -356,40 +356,16 @@ fn decode_comptime_output(
     let mut emitted = witchy_syntax::parser::parse_module("")
         .expect("the empty module is always valid Witchy");
     let mut origins = OriginTable::default();
-    let mut source_batch = Vec::new();
-    let mut item_output = item_output.into_iter().peekable();
-    while let Some(positioned) = item_output.next() {
+    for positioned in item_output {
         if positioned.output_position != 0 {
             return Err("internal: typed comptime output lost its source ordering".into());
         }
         match positioned.emission {
-            crate::interpreter::ComptimeItemEmission::Source(source) => {
-                source_batch.push(source);
-            }
             crate::interpreter::ComptimeItemEmission::ModuleSyntax {
                 module,
-                compatibility_source,
                 definition_line,
                 hole_ancestry,
             } => {
-                let adjacent_source = !source_batch.is_empty()
-                    || item_output.peek().is_some_and(|next| {
-                        matches!(
-                            &next.emission,
-                            crate::interpreter::ComptimeItemEmission::Source(_)
-                        )
-                    });
-                if adjacent_source {
-                    source_batch.push(compatibility_source);
-                    continue;
-                }
-                append_item_source_batch(
-                    &mut emitted,
-                    &mut origins,
-                    &mut source_batch,
-                    module_name,
-                    invocation_line,
-                )?;
                 let mut module_origins = OriginTable::default();
                 record_emitted_items(
                     &mut module_origins,
@@ -407,13 +383,6 @@ fn decode_comptime_output(
                 definition_line,
                 hole_ancestry,
             } => {
-                append_item_source_batch(
-                    &mut emitted,
-                    &mut origins,
-                    &mut source_batch,
-                    module_name,
-                    invocation_line,
-                )?;
                 let item_index = emitted.items.len();
                 emitted.items.push(*item);
                 emitted.item_lines.push(0);
@@ -429,44 +398,7 @@ fn decode_comptime_output(
             }
         }
     }
-    append_item_source_batch(
-        &mut emitted,
-        &mut origins,
-        &mut source_batch,
-        module_name,
-        invocation_line,
-    )?;
     Ok((emitted, origins))
-}
-
-fn append_item_source_batch(
-    into: &mut Module,
-    into_origins: &mut OriginTable,
-    source_batch: &mut Vec<String>,
-    module_name: &str,
-    invocation_line: u32,
-) -> Result<(), String> {
-    if source_batch.is_empty() {
-        return Ok(());
-    }
-    let source = std::mem::take(source_batch).join("\n");
-    let parsed = witchy_syntax::parser::parse_module(&source).map_err(|e| {
-        format!(
-            "emit_item received source that does not parse: {e}\n--- emitted item source ---\n{source}"
-        )
-    })?;
-    let mut parsed_origins = OriginTable::default();
-    record_emitted_items(
-        &mut parsed_origins,
-        &parsed,
-        module_name,
-        invocation_line,
-        invocation_line,
-        0,
-        &[],
-    );
-    append_unstamped_module(into, into_origins, parsed, parsed_origins);
-    Ok(())
 }
 
 fn record_emitted_items(
@@ -1260,7 +1192,7 @@ fn main(console: Console):
     }
 
     #[test]
-    fn adjacent_compatibility_item_fragments_still_parse_as_one_batch() {
+    fn incomplete_typed_item_fragments_fail_at_construction() {
         let src = r#"
 comptime:
     let head = "fn split_item() -> Int:"
@@ -1272,11 +1204,10 @@ fn main(console: Console):
     console.print("${split_item()}")
 "#;
         let module = witchy_syntax::parser::parse_module(src).expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), module)], "main")
-            .expect("adjacent compatibility item fragments remain supported");
-        witchy_types::typeck::check(&linked).expect("typecheck");
-        let out = crate::interpreter::run_module(linked, ".", Vec::new()).expect("run");
-        assert_eq!(out, ["2"]);
+        let err = crate::pipeline::link(vec![("main".into(), module)], "main")
+            .expect_err("incomplete typed item fragments must fail")
+            .message;
+        assert!(err.contains("meta.item source does not parse"), "got: {err}");
     }
 
     #[test]

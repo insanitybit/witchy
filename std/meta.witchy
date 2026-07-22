@@ -78,9 +78,8 @@ sealed type Ident:
     CallSiteIdent(String)
 
 // Parse one complete dynamic declaration (and its imports) into compiler-owned
-// syntax. Incomplete adjacent migration fragments retain the source constructor
-// so emit_item can parse their batch. Literal whole-item arguments take the
-// parser's equivalent zero-runtime path.
+// syntax. Literal whole-item arguments take the parser's equivalent zero-runtime
+// path; dynamic input is rejected here unless it is exactly one declaration.
 pub fn item(source: String) -> ItemSyntax:
     __meta_item(source)
 
@@ -88,13 +87,6 @@ pub fn item(source: String) -> ItemSyntax:
 // the linker limits this intrinsic to std/meta.
 fn __meta_item(source: String) -> ItemSyntax:
     ItemSyntax(source)
-
-// Join parser-checked item quote fragments with typed expression holes.
-pub fn item_join(parts: List(String), holes: List(ExprSyntax)) -> ItemSyntax:
-    var syntax_holes = []
-    for hole in holes:
-        list.push(syntax_holes, expr_hole(hole))
-    item_join_syntax(parts, syntax_holes)
 
 // Join parser-checked item quote fragments with typed syntax holes.
 pub fn item_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> ItemSyntax:
@@ -106,7 +98,7 @@ pub fn item_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> ItemSyn
     while i < list.length(holes):
         out = out + syntax_hole_source(list.at(holes, i)) + list.at(parts, i + 1)
         i = i + 1
-    ItemSyntax(out)
+    __meta_item(out)
 
 // A validated Witchy identifier. This rejects keywords, `_`, non-ASCII source
 // spelling, and compiler-reserved `__` names before generated source is parsed.
@@ -358,21 +350,11 @@ fn __meta_expr_match(scrutinee: ExprSyntax, arms: List(MatchArmSyntax)) -> ExprS
     __meta_expr_match(scrutinee, arms)
 
 pub fn expr_raw(source: String) -> ExprSyntax:
+    __meta_expr(source)
+
+// Compiler-private parse boundary for complete dynamic expressions.
+fn __meta_expr(source: String) -> ExprSyntax:
     ExprSyntax(source)
-
-// Join parser-checked expression quote fragments with typed expression holes.
-// `parts` must have exactly one more element than `holes`, as in string
-// interpolation: part0, hole0, part1, ...
-pub fn expr_join(parts: List(String), holes: List(ExprSyntax)) -> ExprSyntax:
-    if list.length(parts) != list.length(holes) + 1:
-        fail("meta.expr_join: expected one more part than hole")
-
-    var out = list.at(parts, 0)
-    var i = 0
-    while i < list.length(holes):
-        out = out + expr_source(list.at(holes, i)) + list.at(parts, i + 1)
-        i = i + 1
-    ExprSyntax(out)
 
 // Join parser-checked expression fragments with mixed typed syntax holes.
 pub fn expr_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> ExprSyntax:
@@ -384,7 +366,7 @@ pub fn expr_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> ExprSyn
     while i < list.length(holes):
         out = out + syntax_hole_source(list.at(holes, i)) + list.at(parts, i + 1)
         i = i + 1
-    ExprSyntax(out)
+    __meta_expr(out)
 
 fn expr_source(expr: ExprSyntax) -> String:
     match expr:
@@ -603,13 +585,6 @@ fn __meta_stmt_leaf(kind: String) -> StmtSyntax:
 pub fn stmt_raw(source: String) -> StmtSyntax:
     StmtSyntax(source)
 
-// Join parser-checked statement quote fragments with typed expression holes.
-pub fn stmt_join(parts: List(String), holes: List(ExprSyntax)) -> StmtSyntax:
-    var syntax_holes = []
-    for hole in holes:
-        list.push(syntax_holes, expr_hole(hole))
-    stmt_join_syntax(parts, syntax_holes)
-
 // Join parser-checked statement quote fragments with typed syntax holes.
 pub fn stmt_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> StmtSyntax:
     if list.length(parts) != list.length(holes) + 1:
@@ -635,13 +610,6 @@ fn __meta_block(stmts: List(StmtSyntax), tail: Option(ExprSyntax)) -> BlockSynta
 // A source-backed block wrapper for parser-checked `quote block:`.
 pub fn block_raw(source: String) -> BlockSyntax:
     BlockSyntax(source)
-
-// Join parser-checked block quote fragments with typed expression holes.
-pub fn block_join(parts: List(String), holes: List(ExprSyntax)) -> BlockSyntax:
-    var syntax_holes = []
-    for hole in holes:
-        list.push(syntax_holes, expr_hole(hole))
-    block_join_syntax(parts, syntax_holes)
 
 // Join parser-checked block quote fragments with typed syntax holes.
 pub fn block_join_syntax(parts: List(String), holes: List(SyntaxHole)) -> BlockSyntax:

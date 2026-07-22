@@ -432,8 +432,10 @@ impl Parser {
                 "`pub` may only precede a function declaration (`pub fn`, `pub gen fn`, or `pub async fn`)",
             ));
         }
-        if !attributes.is_empty()
-            && !(self.at(&Tok::Fn) || self.at(&Tok::Gen) || self.at(&Tok::Async))
+        if !(attributes.is_empty()
+            || self.at(&Tok::Fn)
+            || self.at(&Tok::Gen)
+            || self.at(&Tok::Async))
         {
             return Err(self.error("declaration attributes may only precede a function"));
         }
@@ -1714,14 +1716,9 @@ impl Parser {
                                         self.compiler_owned_expr_literal(source, member_line)
                                 {
                                     owned
-                                } else if name == "meta.expr_join"
-                                    && let Some(owned) =
-                                        self.compiler_owned_expr_join(&args, member_line, false)
-                                {
-                                    owned
                                 } else if name == "meta.expr_join_syntax"
                                     && let Some(owned) =
-                                        self.compiler_owned_expr_join(&args, member_line, true)
+                                        self.compiler_owned_expr_join(&args, member_line)
                                 {
                                     owned
                                 } else if name == "meta.type_join"
@@ -2357,7 +2354,6 @@ impl Parser {
         &mut self,
         args: &[Expr],
         definition_line: u32,
-        holes_are_syntax: bool,
     ) -> Option<Expr> {
         let [Expr::List(parts), Expr::List(holes)] = args else {
             return None;
@@ -2365,21 +2361,7 @@ impl Parser {
         if parts.len() != holes.len() + 1 {
             return None;
         }
-        let source = if holes_are_syntax {
-            Self::compiler_owned_mixed_join_source(args)?
-        } else {
-            let mut source = String::new();
-            for (index, part) in parts.iter().enumerate() {
-                let Expr::Str(part) = part else {
-                    return None;
-                };
-                source.push_str(part);
-                if index < holes.len() {
-                    source.push_str(&format!("{QUOTE_EXPR_HOLE_PREFIX}{index}"));
-                }
-            }
-            source
-        };
+        let source = Self::compiler_owned_mixed_join_source(args)?;
         let owned = self.compiler_owned_expr_literal(&source, definition_line)?;
         let Expr::Call { name, args: owned_args } = owned else {
             return None;
@@ -2395,15 +2377,7 @@ impl Parser {
             args: vec![
                 Expr::Str(handle.clone()),
                 Expr::List(parts.clone()),
-                Expr::List(if holes_are_syntax {
-                    holes.clone()
-                } else {
-                    holes
-                        .iter()
-                        .cloned()
-                        .map(|hole| self.meta_call("expr_hole", vec![hole]))
-                        .collect()
-                }),
+                Expr::List(holes.clone()),
             ],
         })
     }

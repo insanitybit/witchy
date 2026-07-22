@@ -70,6 +70,7 @@ pub fn run_checked_module(
             UserCapGrants::new(),
             DEFAULT_STEP_LIMIT,
             None,
+            None,
             Some(runtime_catalog),
         )
     })
@@ -122,9 +123,25 @@ pub(crate) fn run_comptime_module_outputs_budgeted_in_scope(
     step_limit: u64,
     fresh_ident_scope: Option<String>,
 ) -> Result<ComptimeOutputs, RuntimeError> {
+    run_comptime_module_outputs_budgeted_in_scope_with_qualifiers(
+        module,
+        root,
+        step_limit,
+        fresh_ident_scope,
+        None,
+    )
+}
+
+pub(crate) fn run_comptime_module_outputs_budgeted_in_scope_with_qualifiers(
+    module: Module,
+    root: impl AsRef<Path>,
+    step_limit: u64,
+    fresh_ident_scope: Option<String>,
+    compiler_expr_qualifiers: Option<Vec<String>>,
+) -> Result<ComptimeOutputs, RuntimeError> {
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
-        run_module_inner_limited(module, root, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, Vec::new(), UserCapGrants::new(), step_limit, fresh_ident_scope)
+        run_module_inner_limited(module, root, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, Vec::new(), UserCapGrants::new(), step_limit, fresh_ident_scope, compiler_expr_qualifiers)
     })
     .map(|outcome| ComptimeOutputs {
         output: outcome.output,
@@ -142,7 +159,7 @@ pub fn run_module_files(
 ) -> Result<Vec<String>, RuntimeError> {
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
-        run_module_inner_limited(module, root, Vec::new(), file_grants, Vec::new(), Vec::new(), None, Vec::new(), UserCapGrants::new(), DEFAULT_STEP_LIMIT, None)
+        run_module_inner_limited(module, root, Vec::new(), file_grants, Vec::new(), Vec::new(), None, Vec::new(), UserCapGrants::new(), DEFAULT_STEP_LIMIT, None, None)
     })
     .map(|outcome| outcome.output)
 }
@@ -215,6 +232,7 @@ pub fn run_module_exit_secrets(
             named_secrets,
             UserCapGrants::new(),
             DEFAULT_STEP_LIMIT,
+            None,
             None,
         )
     })
@@ -303,7 +321,7 @@ pub fn run_module_user_caps(
 ) -> Result<Vec<String>, RuntimeError> {
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
-        run_module_inner_limited(module, root, Vec::new(), file_grants, net_allow, args, None, Vec::new(), user_caps, DEFAULT_STEP_LIMIT, None)
+        run_module_inner_limited(module, root, Vec::new(), file_grants, net_allow, args, None, Vec::new(), user_caps, DEFAULT_STEP_LIMIT, None, None)
     })
     .map(|outcome| outcome.output)
 }
@@ -316,7 +334,7 @@ fn run_module_inner(
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
 ) -> Result<InterpreterOutcome, RuntimeError> {
-    run_module_inner_limited(module, root, dir_roots, Vec::new(), net_allow, args, signing_key, Vec::new(), UserCapGrants::new(), DEFAULT_STEP_LIMIT, None)
+    run_module_inner_limited(module, root, dir_roots, Vec::new(), net_allow, args, signing_key, Vec::new(), UserCapGrants::new(), DEFAULT_STEP_LIMIT, None, None)
 }
 
 /// Prepare the interpreter's executable AST through the same typed existential
@@ -370,6 +388,7 @@ fn run_module_inner_limited(
     user_caps: UserCapGrants,
     step_limit: u64,
     fresh_ident_scope: Option<String>,
+    compiler_expr_qualifiers: Option<Vec<String>>,
 ) -> Result<InterpreterOutcome, RuntimeError> {
     run_module_inner_limited_with_catalog(
         module,
@@ -383,6 +402,7 @@ fn run_module_inner_limited(
         user_caps,
         step_limit,
         fresh_ident_scope,
+        compiler_expr_qualifiers,
         None,
     )
 }
@@ -400,12 +420,14 @@ fn run_module_inner_limited_with_catalog(
     user_caps: UserCapGrants,
     step_limit: u64,
     fresh_ident_scope: Option<String>,
+    compiler_expr_qualifiers: Option<Vec<String>>,
     runtime_catalog: Option<RuntimeDeclarationCatalog>,
 ) -> Result<InterpreterOutcome, RuntimeError> {
     let (module, witnesses) = prepare_runtime_module(module, runtime_catalog.as_ref())?;
     let mut interp = Interpreter::new_with_witnesses(module, witnesses);
     interp.step_limit = step_limit;
     interp.fresh_ident_scope = fresh_ident_scope;
+    interp.compiler_expr_qualifiers = compiler_expr_qualifiers;
     interp.root = root;
     interp.dir_roots = dir_roots;
     interp.file_grants = file_grants;

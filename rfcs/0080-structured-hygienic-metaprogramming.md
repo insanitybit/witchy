@@ -255,7 +255,7 @@ The first source-compatible slice is implemented:
 - The fifteenth slice adds expression holes inside `quote expr:`. A `${...}`
   hole is accepted only inside the quoted expression body, its contents are
   ordinary compile-time code that must evaluate to `meta.ExprSyntax`, and the
-  parser lowers the quote to `meta.expr_join(parts, holes)`. This composes with
+  parser lowers the quote to `meta.expr_join_syntax(parts, holes)`. This composes with
   typed tagged literals: a tag can wrap an opaque RFC-0006 hole marker as
   `ExprSyntax` and splice it into parser-checked quoted code.
 - The sixteenth slice adds the same hole model to `quote type:` and
@@ -272,7 +272,7 @@ The first source-compatible slice is implemented:
 - The eighteenth slice adds expression holes inside `quote stmt:` and
   `quote block:`. A `${...}` in an expression position must evaluate to
   `meta.ExprSyntax`, and the parser lowers the quote through typed
-  `meta.stmt_join(parts, holes)` / `meta.block_join(parts, holes)` boundaries.
+  `meta.stmt_join_syntax(parts, holes)` / `meta.block_join_syntax(parts, holes)` boundaries.
 - The nineteenth slice extends statement/block holes to type and pattern
   positions with a typed `meta.SyntaxHole` union. Mixed statement/block quotes
   lower to `meta.stmt_join_syntax(parts, holes)` /
@@ -372,7 +372,7 @@ The first source-compatible slice is implemented:
   typed `ExprSyntax` into a clone of that template. A compiler-owned hole is
   transferred as an AST; a compatibility hole parses only its own payload. The
   enclosing expression is never assembled or reparsed. Literal
-  `meta.expr_join(parts, holes)` plans are promoted to the same representation
+  `meta.expr_join_syntax(parts, holes)` plans are promoted to the same representation
   when parsed, so formatting retains the public typed spelling while restoring
   the owned template. General `meta.expr_*` builder composition and
   hole-bearing type, pattern, statement, and block quotations remain on their
@@ -551,11 +551,9 @@ The first source-compatible slice is implemented:
   opaque handle to the resulting module fragment. Imports, `from` imports, and
   nested syntax tables travel with the item through `emit_item`; typed emission
   does not format or reparse a standalone complete fragment. Literal items
-  retain the parser's equivalent direct path. Inputs that are not yet one
-  complete declaration remain adjacent source compatibility fragments; when
-  one touches a dynamic complete fragment, its retained spelling participates
-  in that legacy batch. This is the same explicit migration channel as
-  `emit(String)`, not the typed representation.
+  retain the parser's equivalent direct path. Inputs that are not exactly one
+  complete declaration fail at the constructor boundary; incomplete adjacent
+  fragments are available only through the explicit `emit(String)` channel.
 - The fifty-eighth slice completes the `ModuleSyntax`, `Span`, and tooling
   contract. Structural modules aggregate owned items without flattening them;
   persistent per-node origins provide compiler-owned definition, invocation,
@@ -564,9 +562,10 @@ The first source-compatible slice is implemented:
   and macro definition locations.
 
 This is the full accepted RFC boundary. Every quotation category and its typed
-hole placement is compiler-owned. Explicit `*_raw`, `*_join`, legacy `emit`,
-and String-returning tags remain source migration APIs as specified above; they
-do not define the representation of typed structural output. The
+hole placement is compiler-owned. Dynamic `meta.item` and `meta.expr_raw`
+payloads parse once at construction and typed emission has no source fallback.
+Legacy `emit` and String-returning tags remain explicit migration APIs; they do
+not define the representation of typed structural output. The
 pattern-composition builders,
 let/expression/return statement builders, `meta.block`, and
 `meta.function_block` retain owned child nodes when constructing statements,
