@@ -31,7 +31,13 @@ impl Codegen<'_> {
             Pattern::Int(k) => (eq_i64(*k), vec![]),
             Pattern::Bool(b) => (eq_i64(if *b { 1 } else { 0 }), vec![]),
             Pattern::Var(name) => {
-                let k = self.locals.get(name).copied().unwrap_or(Kind::I32);
+                let k = self
+                    .locals
+                    .get(name)
+                    .copied()
+                    .or_else(|| expected.map(|ty| self.kind_for_type(ty)))
+                    .unwrap_or(Kind::I32);
+                self.locals.insert(name.clone(), k);
                 (
                     W::ConstI32(1),
                     vec![N::SetLocal {

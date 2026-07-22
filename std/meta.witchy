@@ -929,13 +929,20 @@ fn reflect_call(ty: TypeExpr, value: String) -> String:
 pub fn derive_reflect(t: TypeInfo) -> ItemSyntax:
     item(derive_reflect_source(t))
 
+fn dynamic_field_body(fields: List(FieldInfo), index: Int, indent: String) -> String:
+    if index >= list.length(fields):
+        indent + "None\n"
+    else:
+        let f = list.at(fields, index)
+        indent + "if __name == \"" + f.name + "\":\n" + indent + "    Some(reflect.DynamicFieldValue(__dynamic_descriptor_id(self), __dynamic_descriptor_id(self." + f.name + "), self." + f.name + "))\n" + indent + "else:\n" + dynamic_field_body(fields, index + 1, indent + "    ")
+
 fn derive_reflect_source(t: TypeInfo) -> String:
     let head = "import reflect\n\nimpl Reflect for " + target_with_params(t) + where_each(t.params, "Reflect") + ":\n    fn reflect(self) -> reflect.Mirror:\n"
     if let TypeRecord = t.kind:
         var pairs = []
         for f in t.fields:
             list.push(pairs, "(\"" + f.name + "\", " + reflect_call(f.type_expr, "self." + f.name) + ")")
-        head + "        reflect.MRecord(\"" + t.name + "\", [" + list.join(pairs, ", ") + "])\n"
+        head + "        reflect.MRecord(\"" + t.name + "\", [" + list.join(pairs, ", ") + "])\n\n    fn __dynamic_field(self, __name: String) -> Option(reflect.DynamicFieldValue):\n" + dynamic_field_body(t.fields, 0, "        ")
     else:
         var arms = []
         for v in t.variants:

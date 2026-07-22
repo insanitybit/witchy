@@ -2518,6 +2518,53 @@ impl<'types> Codegen<'types> {
         }
     }
 
+    fn substitute_pattern_type(ty: &Type, bindings: &HashMap<String, Type>) -> Type {
+        match ty {
+            Type::Named(name, args) if args.is_empty() && bindings.contains_key(name) => {
+                bindings[name].clone()
+            }
+            Type::Named(name, args) => Type::Named(
+                name.clone(),
+                args.iter()
+                    .map(|arg| Self::substitute_pattern_type(arg, bindings))
+                    .collect(),
+            ),
+            Type::Dyn(name, args) => Type::Dyn(
+                name.clone(),
+                args.iter()
+                    .map(|arg| Self::substitute_pattern_type(arg, bindings))
+                    .collect(),
+            ),
+            Type::Tuple(items) => Type::Tuple(
+                items
+                    .iter()
+                    .map(|item| Self::substitute_pattern_type(item, bindings))
+                    .collect(),
+            ),
+            Type::Fn(params, result, conventions) => Type::Fn(
+                params
+                    .iter()
+                    .map(|param| Self::substitute_pattern_type(param, bindings))
+                    .collect(),
+                Box::new(Self::substitute_pattern_type(result, bindings)),
+                conventions.clone(),
+            ),
+            Type::Qualified(qualifier, inner) => Type::Qualified(
+                qualifier.clone(),
+                Box::new(Self::substitute_pattern_type(inner, bindings)),
+            ),
+            Type::RecordCompose { base, fields } => Type::RecordCompose {
+                base: Box::new(Self::substitute_pattern_type(base, bindings)),
+                fields: fields
+                    .iter()
+                    .map(|(name, field)| {
+                        (name.clone(), Self::substitute_pattern_type(field, bindings))
+                    })
+                    .collect(),
+            },
+        }
+    }
+
     fn ctor_pattern_field_types(&self, name: &str, expected: Option<&Type>) -> Option<Vec<Type>> {
         if let Some((layout, _)) = self.gc_layout_for_ctor(name, expected) {
             return Some(layout.field_types);
@@ -2534,13 +2581,36 @@ impl<'types> Codegen<'types> {
             }
             _ => {}
         }
-        self.ctors
+        let fields = self
+            .ctors
             .get(name)
             .map(|&(tag, _)| tag as usize)
             .and_then(|tag| {
                 let ty = self.ctor_type_name.get(name)?;
                 self.adt_variants.get(ty)?.get(tag).cloned()
-            })
+            })?;
+        let owner = self.ctor_type_name.get(name)?;
+        let Some(Type::Named(expected_owner, args)) = expected.map(Type::unqualified) else {
+            return Some(fields);
+        };
+        let Some(params) = self
+            .record_generics
+            .get(owner)
+            .filter(|params| expected_owner == owner.as_str() && params.len() == args.len())
+        else {
+            return Some(fields);
+        };
+        let bindings = params
+            .iter()
+            .cloned()
+            .zip(args.iter().cloned())
+            .collect::<HashMap<_, _>>();
+        Some(
+            fields
+                .iter()
+                .map(|field| Self::substitute_pattern_type(field, &bindings))
+                .collect(),
+        )
     }
 
     fn anon_union_pattern_field_types(

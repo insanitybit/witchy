@@ -36,6 +36,12 @@ type Mirror:
     MVariant(String, String, List(Mirror))
     MNil
 
+// Compiler-authenticated field projection payload. The two descriptor IDs bind
+// the accessor's concrete receiver and returned field to the runtime shape plan;
+// `dynamic.field` validates both before constructing a new Dynamic envelope.
+type DynamicFieldValue:
+    DynamicFieldValue(Int, Int, dyn Reflect)
+
 // A list's elements, reflected.
 
 // A tuple's slots, reflected (a fixed-arity heterogeneous sequence).
@@ -47,6 +53,11 @@ type Mirror:
 // Values that can describe themselves as a `Mirror`.
 trait Reflect:
     fn reflect(self) -> Mirror
+
+    // Record derives override this internal slot. Other reflectable values have
+    // no readable named fields, so the default is deliberately empty.
+    fn __dynamic_field(self, name: String) -> Option(DynamicFieldValue):
+        None
 
 impl Reflect for Int:
     fn reflect(self) -> Mirror:

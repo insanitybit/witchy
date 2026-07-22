@@ -28,6 +28,9 @@ pub enum IntrinsicId {
     Unerase,
     DynamicRuntimeType,
     DynamicDescriptor,
+    DynamicDescriptorId,
+    DynamicFields,
+    DynamicFieldStatus,
     DynamicTryDecode,
     DynamicTryDecodeTyped,
     BytesFromString,
@@ -167,6 +170,9 @@ pub enum IntrinsicSignature {
     MessageToGeneric,
     StringStringToRuntimeType,
     GenericToRuntimeType,
+    GenericToInt,
+    RuntimeTypeToListRuntimeField,
+    RuntimeTypeStringToDynamicFieldStatus,
     DynamicToOptionGeneric,
     DynamicIntToOptionGeneric,
     StringToBytes,
@@ -447,6 +453,9 @@ pub const ERASE: &str = "__erase";
 pub const UNERASE: &str = "__unerase";
 pub const DYNAMIC_RUNTIME_TYPE: &str = "__dynamic_runtime_type";
 pub const DYNAMIC_DESCRIPTOR: &str = "__dynamic_descriptor";
+pub const DYNAMIC_DESCRIPTOR_ID: &str = "__dynamic_descriptor_id";
+pub const DYNAMIC_FIELDS: &str = "__dynamic_fields";
+pub const DYNAMIC_FIELD_STATUS: &str = "__dynamic_field_status";
 pub const DYNAMIC_TRY_DECODE: &str = "__dynamic_try_decode";
 pub const DYNAMIC_TRY_DECODE_TYPED: &str = "__dynamic_try_decode_typed";
 
@@ -889,6 +898,51 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "Dynamic descriptor construction",
+        private_callers: DYNAMIC_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::DynamicDescriptorId,
+        name: DYNAMIC_DESCRIPTOR_ID,
+        arity: 1,
+        signature: IntrinsicSignature::GenericToInt,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "Dynamic descriptor identity",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::DynamicFields,
+        name: DYNAMIC_FIELDS,
+        arity: 1,
+        signature: IntrinsicSignature::RuntimeTypeToListRuntimeField,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "Dynamic field enumeration",
+        private_callers: DYNAMIC_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::DynamicFieldStatus,
+        name: DYNAMIC_FIELD_STATUS,
+        arity: 2,
+        signature: IntrinsicSignature::RuntimeTypeStringToDynamicFieldStatus,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "Dynamic field lookup",
         private_callers: DYNAMIC_BRIDGE_CALLERS,
     },
     IntrinsicSpec {

@@ -3587,6 +3587,24 @@ impl Checker {
                     Ty::Named("dynamic.RuntimeType".into(), Vec::new()),
                 ))
             }
+            S::GenericToInt => {
+                let value = self.fresh();
+                Some((vec![value], Ty::Int))
+            }
+            S::RuntimeTypeToListRuntimeField => Some((
+                vec![Ty::Named("dynamic.RuntimeType".into(), Vec::new())],
+                Ty::List(Box::new(Ty::Named(
+                    "dynamic.RuntimeField".into(),
+                    Vec::new(),
+                ))),
+            )),
+            S::RuntimeTypeStringToDynamicFieldStatus => Some((
+                vec![
+                    Ty::Named("dynamic.RuntimeType".into(), Vec::new()),
+                    Ty::String,
+                ],
+                Ty::Named("dynamic.DynamicFieldStatus".into(), Vec::new()),
+            )),
             S::DynamicToOptionGeneric => {
                 let value = self.fresh();
                 Some((

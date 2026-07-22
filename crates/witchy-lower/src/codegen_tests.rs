@@ -967,10 +967,18 @@ fn main() -> Int:
             AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
         };
 
+        fn no_expand(
+            _name: &str,
+            _module: &mut witchy_syntax::ast::Module,
+            _siblings: &[(String, witchy_syntax::ast::Module)],
+        ) -> Result<witchy_syntax::origin::OriginTable, String> {
+            Ok(witchy_syntax::origin::OriginTable::default())
+        }
+
         let module = parse_module(src).expect("parse Dynamic Wasm fixture");
         let workspace = PackageCoordinate::new(
             PackageSource::Workspace,
-            "example/dynamic-wasm-test",
+            "example/dynamic-test",
             "0.1.0",
         )
         .expect("workspace coordinate");
@@ -984,10 +992,10 @@ fn main() -> Int:
             "main".to_string(),
             ModuleLoadIdentity::new(workspace, ["main"]).expect("main owner"),
         )];
-        assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|module| {
+        assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|std_module| {
             (
-                (*module).to_string(),
-                ModuleLoadIdentity::new(toolchain.clone(), ["std", *module])
+                (*std_module).to_string(),
+                ModuleLoadIdentity::new(toolchain.clone(), ["std", *std_module])
                     .expect("std owner"),
             )
         }));
@@ -996,25 +1004,25 @@ fn main() -> Int:
         let checked = witchy_types::pipeline::link_checked_authenticated(
             vec![("main".into(), module)],
             "main",
-            |_name, _module, _siblings| Ok(witchy_syntax::origin::OriginTable::default()),
+            no_expand,
             owners,
         )
-        .expect("authenticated checked link");
+        .expect("authenticated Dynamic checked link");
         let bytes = compile_checked_module_binary(&checked)
-            .expect_lowered("authenticated Dynamic program lowers");
+            .expect_lowered("authenticated Dynamic fixture lowers");
         let (mut store, instance, captured) = instantiate_with_print(&bytes);
         instance
             .get_typed_func::<(), ()>(&mut store, "run")
-            .expect("run export")
+            .unwrap()
             .call(&mut store, ())
-            .expect("run Dynamic Wasm");
+            .unwrap();
         captured.lock().unwrap().clone()
     }
 
     #[test]
     fn dynamic_descriptor_exact_decode_and_mismatch_match_the_interpreter() {
         let output = run_authenticated_dynamic(
-            "import dynamic\nimport reflect\n\ntype User:\n    name: String\n    age: Int\n\ntype Box(a):\n    Box(a)\n\nimpl Reflect for User:\n    fn reflect(self) -> reflect.Mirror:\n        reflect.MNil\n\nimpl Reflect for Box(a):\n    fn reflect(self) -> reflect.Mirror:\n        reflect.MNil\n\nfn main(console: Console):\n    let value = dynamic.dynamic(7)\n    console.print(dynamic.type_name(dynamic.type_of(value)))\n    console.print(dynamic.type_name(dynamic.runtime_type(Int)))\n    console.print(dynamic.type_name(dynamic.runtime_type(User)))\n    console.print(dynamic.type_name(dynamic.runtime_type(Box(Int))))\n    console.print(dynamic.type_name(dynamic.runtime_type(.{age: Int, name: String})))\n    console.print(dynamic.type_name(dynamic.runtime_type(.[Count(Int) | Label(String)])))\n    let exact: Option(Int) = dynamic.try_decode(value)\n    match exact:\n        Some(number) -> console.print(\"${number}\")\n        None -> console.print(\"missing-int\")\n    let mismatch: Option(String) = dynamic.try_decode(value)\n    match mismatch:\n        Some(text) -> console.print(text)\n        None -> console.print(\"none\")\n    let decoded: Result(Int, dynamic.DynamicError) = dynamic.decode(value)\n    match decoded:\n        Ok(number) -> console.print(\"decoded-${number}\")\n        Err(_) -> console.print(\"decode-failed\")\n    let wrong: Result(String, dynamic.DynamicError) = dynamic.decode(value)\n    match wrong:\n        Ok(text) -> console.print(text)\n        Err(dynamic.TypeMismatch(actual)) -> console.print(\"mismatch-${dynamic.type_name(actual)}\")\n    let person = dynamic.dynamic(User(\"Ada\", 42))\n    let decoded_person: Option(User) = dynamic.try_decode(person)\n    match decoded_person:\n        Some(user) -> console.print(user.name)\n        None -> console.print(\"missing-user\")\n    let words = dynamic.dynamic([\"alpha\", \"beta\"])\n    let decoded_words: Option(List(String)) = dynamic.try_decode(words)\n    match decoded_words:\n        Some(items) -> console.print(list.at(items, 1))\n        None -> console.print(\"missing-words\")\n    let boxed = dynamic.dynamic(Box(11))\n    let decoded_box: Option(Box(Int)) = dynamic.try_decode(boxed)\n    match decoded_box:\n        Some(Box(number)) -> console.print(\"box-${number}\")\n        None -> console.print(\"missing-box\")\n    let record = dynamic.dynamic(.{name: \"Nia\", age: 9})\n    let decoded_record: Option(.{age: Int, name: String}) = dynamic.try_decode(record)\n    match decoded_record:\n        Some(found) -> console.print(found.name)\n        None -> console.print(\"missing-record\")\n    let choice: .[Count(Int) | Label(String)] = .Count(5)\n    let encoded_choice = dynamic.dynamic(choice)\n    let decoded_choice: Option(.[Count(Int) | Label(String)]) = dynamic.try_decode(encoded_choice)\n    match decoded_choice:\n        Some(.Count(number)) -> console.print(\"count-${number}\")\n        Some(.Label(label)) -> console.print(label)\n        None -> console.print(\"missing-choice\")\n",
+            "import dynamic\nimport reflect\n\ntype User:\n    name: String\n    age: Int\n\ntype Box(a):\n    Box(a)\n\nimpl Reflect for User:\n    fn reflect(self) -> reflect.Mirror:\n        reflect.MNil\n\nimpl Reflect for Box(a):\n    fn reflect(self) -> reflect.Mirror:\n        reflect.MNil\n\nfn main(console: Console):\n    let value = dynamic.dynamic(7)\n    console.print(dynamic.type_name(dynamic.type_of(value)))\n    console.print(dynamic.type_name(dynamic.runtime_type(Int)))\n    console.print(dynamic.type_name(dynamic.runtime_type(User)))\n    console.print(dynamic.type_name(dynamic.runtime_type(Box(Int))))\n    console.print(dynamic.type_name(dynamic.runtime_type(.{age: Int, name: String})))\n    console.print(dynamic.type_name(dynamic.runtime_type(.[Count(Int) | Label(String)])))\n    let exact: Option(Int) = dynamic.try_decode(value)\n    match exact:\n        Some(number) -> console.print(\"${number}\")\n        None -> console.print(\"missing-int\")\n    let mismatch: Option(String) = dynamic.try_decode(value)\n    match mismatch:\n        Some(text) -> console.print(text)\n        None -> console.print(\"none\")\n    let decoded: Result(Int, dynamic.DynamicError) = dynamic.decode(value)\n    match decoded:\n        Ok(number) -> console.print(\"decoded-${number}\")\n        Err(_) -> console.print(\"decode-failed\")\n    let wrong: Result(String, dynamic.DynamicError) = dynamic.decode(value)\n    match wrong:\n        Ok(text) -> console.print(text)\n        Err(dynamic.TypeMismatch(actual)) -> console.print(\"mismatch-${dynamic.type_name(actual)}\")\n        Err(_) -> console.print(\"unexpected-dynamic-error\")\n    let person = dynamic.dynamic(User(\"Ada\", 42))\n    let decoded_person: Option(User) = dynamic.try_decode(person)\n    match decoded_person:\n        Some(user) -> console.print(user.name)\n        None -> console.print(\"missing-user\")\n    let words = dynamic.dynamic([\"alpha\", \"beta\"])\n    let decoded_words: Option(List(String)) = dynamic.try_decode(words)\n    match decoded_words:\n        Some(items) -> console.print(list.at(items, 1))\n        None -> console.print(\"missing-words\")\n    let boxed = dynamic.dynamic(Box(11))\n    let decoded_box: Option(Box(Int)) = dynamic.try_decode(boxed)\n    match decoded_box:\n        Some(Box(number)) -> console.print(\"box-${number}\")\n        None -> console.print(\"missing-box\")\n    let record = dynamic.dynamic(.{name: \"Nia\", age: 9})\n    let decoded_record: Option(.{age: Int, name: String}) = dynamic.try_decode(record)\n    match decoded_record:\n        Some(found) -> console.print(found.name)\n        None -> console.print(\"missing-record\")\n    let choice: .[Count(Int) | Label(String)] = .Count(5)\n    let encoded_choice = dynamic.dynamic(choice)\n    let decoded_choice: Option(.[Count(Int) | Label(String)]) = dynamic.try_decode(encoded_choice)\n    match decoded_choice:\n        Some(.Count(number)) -> console.print(\"count-${number}\")\n        Some(.Label(label)) -> console.print(label)\n        None -> console.print(\"missing-choice\")\n",
         );
         assert_eq!(
             output,

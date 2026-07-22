@@ -13,11 +13,26 @@ sealed type RuntimeType:
 sealed type Dynamic:
     Dynamic(RuntimeType, dyn Reflect)
 
-// Checked operation failures are ordinary matchable data. Stage 1 has only the
-// exact-descriptor conversion failure; later stages extend this same error type
-// with member, call-contract, visibility, and capability failures.
+sealed type RuntimeField:
+    RuntimeField(String, RuntimeType)
+
+sealed type DynamicFieldStatus:
+    FieldFound(RuntimeType)
+    FieldPrivate
+    FieldSealed
+    FieldMissing
+    FieldMalformed
+
+// Checked failures remain ordinary matchable data and never become unchecked
+// casts or backend traps.
 type DynamicError:
     TypeMismatch(RuntimeType)
+    MissingField(String)
+    PrivateField(String)
+    SealedType(RuntimeType)
+    MalformedRequest(String)
+    MalformedDescriptor(RuntimeType)
+    MalformedPayload(RuntimeType)
 
 // Convert one reflectable value into an owned dynamic envelope. The compiler
 // replaces `__dynamic_descriptor` with an immutable descriptor constant and
@@ -34,6 +49,41 @@ pub fn type_of(value: Dynamic) -> RuntimeType:
 pub fn type_name(ty: RuntimeType) -> String:
     match ty:
         RuntimeType(_, name) -> name
+
+// Declared public readable fields in source order. The compiler replaces the
+// intrinsic with an authenticated lookup over canonical descriptor IDs.
+pub fn fields(ty: RuntimeType) -> List(RuntimeField):
+    __dynamic_fields(ty)
+
+pub fn field_name(field: RuntimeField) -> String:
+    match field:
+        RuntimeField(name, _) -> name
+
+pub fn field_type(field: RuntimeField) -> RuntimeType:
+    match field:
+        RuntimeField(_, ty) -> ty
+
+pub fn field(value: Dynamic, name: String) -> Result(Dynamic, DynamicError):
+    if name == "":
+        Err(MalformedRequest(name))
+    else:
+        match value:
+            Dynamic(ty, payload) ->
+                match __dynamic_field_status(ty, name):
+                    FieldFound(field_ty) ->
+                        match payload.__dynamic_field(name):
+                            Some(reflect.DynamicFieldValue(actual_owner, actual_field, field_payload)) ->
+                                match (ty, field_ty):
+                                    (RuntimeType(expected_owner, _), RuntimeType(expected_field, _)) ->
+                                        if actual_owner != expected_owner || actual_field != expected_field:
+                                            Err(MalformedPayload(ty))
+                                        else:
+                                            Ok(Dynamic(field_ty, field_payload))
+                            None -> Err(MalformedPayload(ty))
+                    FieldPrivate -> Err(PrivateField(name))
+                    FieldSealed -> Err(SealedType(ty))
+                    FieldMissing -> Err(MissingField(name))
+                    FieldMalformed -> Err(MalformedDescriptor(ty))
 
 // Decode only when the inferred expected type has the exact canonical descriptor.
 // The compiler specializes this private call after generic monomorphization.

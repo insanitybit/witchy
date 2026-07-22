@@ -9,9 +9,7 @@
 use witchy_syntax::ast::{Block, Expr, Item, Module, Stmt, Type};
 use witchy_syntax::{format, intrinsics};
 
-use crate::runtime_type::{
-    RuntimeDeclarationCatalog, RuntimeTypeIdentity, RuntimeTypePlan,
-};
+use crate::runtime_type::{RuntimeDeclarationCatalog, RuntimeTypePlan, RuntimeTypeShape};
 use crate::typeck::{TypeTable, TypedModule, ty_to_ast};
 use crate::witness::{self, WitnessCatalog, WitnessPlan};
 
@@ -101,14 +99,24 @@ fn lower_explicit_packs_inner(
         );
     }
     let typed = crate::record_projection::lower_explicit_projections(typed)?;
-    let dynamic_identities =
-        collect_dynamic_identities(typed.module(), typed.table(), runtime_catalog)?;
-    let runtime_types = RuntimeTypePlan::build(dynamic_identities)
-        .map_err(|error| error.to_string())?;
+    let dynamic_types = collect_dynamic_types(typed.module(), typed.table(), runtime_catalog)?;
+    let runtime_types = match runtime_catalog {
+        Some(runtime_catalog) => RuntimeTypePlan::build_with_runtime_shapes(
+            dynamic_types.iter(),
+            runtime_catalog,
+            typed.module(),
+        ),
+        None => RuntimeTypePlan::build(Vec::new()),
+    }
+    .map_err(|error| error.to_string())?;
+    let (module, _, dynamic_result) = typed.rewrite_into_module(|table, module| {
+        rewrite_dynamic_module(module, table, runtime_catalog, &runtime_types)
+    });
+    dynamic_result?;
+    let typed = crate::typeck::annotate(module);
     let (requests, upcasts) = collect_requests(typed.module(), typed.table())?;
     let witnesses = witness::build_from_catalog_with_upcasts(catalog, requests, upcasts)?;
     let (module, table, result) = typed.rewrite_into_module(|table, module| {
-        rewrite_dynamic_module(module, table, runtime_catalog, &runtime_types)?;
         rewrite_module(module, table, &witnesses)
     });
     result?;
@@ -158,6 +166,12 @@ fn dynamic_identity_request(
         };
         return resolved_expr_type(table, value);
     }
+    if dynamic_intrinsic(name, intrinsics::DYNAMIC_DESCRIPTOR_ID) {
+        let [value] = args.as_slice() else {
+            return Err("Dynamic descriptor identity requires one value".into());
+        };
+        return resolved_expr_type(table, value);
+    }
     if dynamic_intrinsic(name, intrinsics::DYNAMIC_TRY_DECODE) {
         let Some(result) = resolved_expr_type(table, expr)? else { return Ok(None) };
         let Type::Named(option, arguments) = result.unqualified() else {
@@ -171,11 +185,11 @@ fn dynamic_identity_request(
     Ok(None)
 }
 
-fn collect_dynamic_identities(
+fn collect_dynamic_types(
     module: &Module,
     table: &TypeTable,
     runtime_catalog: Option<&RuntimeDeclarationCatalog>,
-) -> Result<Vec<RuntimeTypeIdentity>, String> {
+) -> Result<Vec<Type>, String> {
     let mut requested = Vec::new();
     visit_module_exprs(module, &mut |expr| {
         if let Some(ty) = dynamic_identity_request(module, table, expr)? {
@@ -189,14 +203,12 @@ fn collect_dynamic_identities(
     let runtime_catalog = runtime_catalog.ok_or_else(|| {
         "Dynamic operations require authenticated runtime declaration ownership".to_string()
     })?;
-    requested
-        .iter()
-        .map(|ty| {
-            runtime_catalog
-                .capability_free_type_identity(ty, module)
-                .map_err(|error| error.to_string())
-        })
-        .collect()
+    for ty in &requested {
+        runtime_catalog
+            .capability_free_type_identity(ty, module)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(requested)
 }
 
 fn rewrite_dynamic_module(
@@ -445,6 +457,11 @@ fn rewrite_dynamic_expr(
                     ],
                 };
             }
+            Expr::Call { name, .. }
+                if dynamic_intrinsic(name, intrinsics::DYNAMIC_DESCRIPTOR_ID) =>
+            {
+                *expr = Expr::Int(i64::from(descriptor.index()));
+            }
             Expr::Call { name, args }
                 if dynamic_intrinsic(name, intrinsics::DYNAMIC_TRY_DECODE) =>
             {
@@ -454,7 +471,170 @@ fn rewrite_dynamic_expr(
             _ => {}
         }
     }
+    let fields_lookup = matches!(
+        expr,
+        Expr::Call { name, .. } if dynamic_intrinsic(name, intrinsics::DYNAMIC_FIELDS)
+    );
+    let field_status_lookup = matches!(
+        expr,
+        Expr::Call { name, .. } if dynamic_intrinsic(name, intrinsics::DYNAMIC_FIELD_STATUS)
+    );
+    if fields_lookup {
+        let Expr::Call { args, .. } = expr else { unreachable!() };
+        let [ty] = std::mem::take(args).try_into().map_err(|_| {
+            "Dynamic field enumeration requires one runtime descriptor".to_string()
+        })?;
+        *expr = runtime_fields_lookup(ty, runtime_types);
+    } else if field_status_lookup {
+        let Expr::Call { args, .. } = expr else { unreachable!() };
+        let [ty, field] = std::mem::take(args)
+            .try_into()
+            .map_err(|_| "Dynamic field lookup requires a descriptor and name".to_string())?;
+        *expr = runtime_field_status_lookup(ty, field, runtime_types);
+    }
     Ok(())
+}
+
+fn runtime_type_expr(id: crate::runtime_type::RuntimeTypeId, display: &str) -> Expr {
+    Expr::Ctor {
+        name: "dynamic.RuntimeType".into(),
+        args: vec![Expr::Int(i64::from(id.index())), Expr::Str(display.into())],
+    }
+}
+
+fn runtime_fields_lookup(ty: Expr, runtime_types: &RuntimeTypePlan) -> Expr {
+    let mut descriptor_arms = runtime_types
+        .descriptors()
+        .iter()
+        .map(|descriptor| {
+            let fields = match runtime_types.shape(descriptor.id) {
+                Some(RuntimeTypeShape::Record(fields)) => fields
+                    .iter()
+                    .map(|field| Expr::Ctor {
+                        name: "dynamic.RuntimeField".into(),
+                        args: vec![
+                            Expr::Str(field.name.clone()),
+                            runtime_type_expr(field.descriptor, &field.display),
+                        ],
+                    })
+                    .collect(),
+                Some(RuntimeTypeShape::Opaque | RuntimeTypeShape::Sealed) | None => Vec::new(),
+            };
+            witchy_syntax::ast::MatchArm {
+                line: u32::MAX,
+                pattern: witchy_syntax::ast::Pattern::Int(i64::from(descriptor.id.index())),
+                guard: None,
+                body: Expr::List(fields),
+            }
+        })
+        .collect::<Vec<_>>();
+    descriptor_arms.push(witchy_syntax::ast::MatchArm {
+        line: u32::MAX,
+        pattern: witchy_syntax::ast::Pattern::Wildcard,
+        guard: None,
+        body: Expr::List(Vec::new()),
+    });
+    Expr::Match {
+        scrutinee: Box::new(ty),
+        arms: vec![witchy_syntax::ast::MatchArm {
+            line: u32::MAX,
+            pattern: witchy_syntax::ast::Pattern::Ctor {
+                name: "dynamic.RuntimeType".into(),
+                args: vec![
+                    witchy_syntax::ast::Pattern::Var("$dynamic_descriptor".into()),
+                    witchy_syntax::ast::Pattern::Wildcard,
+                ],
+            },
+            guard: None,
+            body: Expr::Match {
+                scrutinee: Box::new(Expr::Var("$dynamic_descriptor".into())),
+                arms: descriptor_arms,
+            },
+        }],
+    }
+}
+
+fn runtime_field_status_lookup(
+    ty: Expr,
+    field_name: Expr,
+    runtime_types: &RuntimeTypePlan,
+) -> Expr {
+    let status = |name: &str, args: Vec<Expr>| Expr::Ctor {
+        name: format!("dynamic.{name}"),
+        args,
+    };
+    let mut descriptor_arms = runtime_types
+        .descriptors()
+        .iter()
+        .map(|descriptor| {
+            let body = match runtime_types.shape(descriptor.id) {
+                Some(RuntimeTypeShape::Record(fields)) => {
+                    let mut field_arms = fields
+                        .iter()
+                        .map(|field| witchy_syntax::ast::MatchArm {
+                            line: u32::MAX,
+                            pattern: witchy_syntax::ast::Pattern::Str(field.name.clone()),
+                            guard: None,
+                            body: status(
+                                "FieldFound",
+                                vec![runtime_type_expr(field.descriptor, &field.display)],
+                            ),
+                        })
+                        .collect::<Vec<_>>();
+                    field_arms.push(witchy_syntax::ast::MatchArm {
+                        line: u32::MAX,
+                        pattern: witchy_syntax::ast::Pattern::Wildcard,
+                        guard: None,
+                        body: status("FieldMissing", Vec::new()),
+                    });
+                    Expr::Match {
+                        scrutinee: Box::new(Expr::Var("$dynamic_field".into())),
+                        arms: field_arms,
+                    }
+                }
+                Some(RuntimeTypeShape::Sealed) => status("FieldSealed", Vec::new()),
+                Some(RuntimeTypeShape::Opaque) | None => status("FieldMissing", Vec::new()),
+            };
+            witchy_syntax::ast::MatchArm {
+                line: u32::MAX,
+                pattern: witchy_syntax::ast::Pattern::Int(i64::from(descriptor.id.index())),
+                guard: None,
+                body,
+            }
+        })
+        .collect::<Vec<_>>();
+    descriptor_arms.push(witchy_syntax::ast::MatchArm {
+        line: u32::MAX,
+        pattern: witchy_syntax::ast::Pattern::Wildcard,
+        guard: None,
+        body: status("FieldMalformed", Vec::new()),
+    });
+    Expr::Match {
+        scrutinee: Box::new(ty),
+        arms: vec![witchy_syntax::ast::MatchArm {
+            line: u32::MAX,
+            pattern: witchy_syntax::ast::Pattern::Ctor {
+                name: "dynamic.RuntimeType".into(),
+                args: vec![
+                    witchy_syntax::ast::Pattern::Var("$dynamic_descriptor".into()),
+                    witchy_syntax::ast::Pattern::Wildcard,
+                ],
+            },
+            guard: None,
+            body: Expr::Match {
+                scrutinee: Box::new(field_name),
+                arms: vec![witchy_syntax::ast::MatchArm {
+                    line: u32::MAX,
+                    pattern: witchy_syntax::ast::Pattern::Var("$dynamic_field".into()),
+                    guard: None,
+                    body: Expr::Match {
+                        scrutinee: Box::new(Expr::Var("$dynamic_descriptor".into())),
+                        arms: descriptor_arms,
+                    },
+                }],
+            },
+        }],
+    }
 }
 
 fn pack_request(table: &TypeTable, expr: &Expr) -> Result<Option<ExistentialRequest>, String> {

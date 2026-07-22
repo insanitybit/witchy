@@ -868,11 +868,34 @@ pub struct RuntimeTypeDescriptor {
     pub identity: RuntimeTypeIdentity,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeFieldDescriptor {
+    pub name: String,
+    pub descriptor: RuntimeTypeId,
+    pub display: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum RuntimeTypeShape {
+    #[default]
+    Opaque,
+    Sealed,
+    Record(Vec<RuntimeFieldDescriptor>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RuntimeTypeShapeDraft {
+    Opaque,
+    Sealed,
+    Record(Vec<(String, RuntimeTypeIdentity, String)>),
+}
+
 /// Deterministic descriptor constants for one closed program.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RuntimeTypePlan {
     descriptors: Vec<RuntimeTypeDescriptor>,
     by_identity: BTreeMap<RuntimeTypeIdentity, RuntimeTypeId>,
+    shapes: Vec<RuntimeTypeShape>,
 }
 
 impl RuntimeTypePlan {
@@ -892,7 +915,42 @@ impl RuntimeTypePlan {
             by_identity.insert(identity.clone(), id);
             descriptors.push(RuntimeTypeDescriptor { id, identity });
         }
-        Ok(Self { descriptors, by_identity })
+        let shapes = vec![RuntimeTypeShape::Opaque; descriptors.len()];
+        Ok(Self { descriptors, by_identity, shapes })
+    }
+
+    pub fn build_with_runtime_shapes<'a>(
+        types: impl IntoIterator<Item = &'a Type>,
+        catalog: &RuntimeDeclarationCatalog,
+        module: &Module,
+    ) -> Result<Self, RuntimeTypeError> {
+        let mut identities = BTreeSet::new();
+        let mut drafts = BTreeMap::new();
+        for ty in types {
+            collect_runtime_type_shape(ty, catalog, module, &mut identities, &mut drafts)?;
+        }
+        let mut plan = Self::build(identities)?;
+        for (identity, draft) in drafts {
+            let Some(id) = plan.id(&identity) else { continue };
+            let shape = match draft {
+                RuntimeTypeShapeDraft::Opaque => RuntimeTypeShape::Opaque,
+                RuntimeTypeShapeDraft::Sealed => RuntimeTypeShape::Sealed,
+                RuntimeTypeShapeDraft::Record(fields) => RuntimeTypeShape::Record(
+                    fields
+                        .into_iter()
+                        .map(|(name, identity, display)| RuntimeFieldDescriptor {
+                            name,
+                            descriptor: plan
+                                .id(&identity)
+                                .expect("runtime shape collector retains every field descriptor"),
+                            display,
+                        })
+                        .collect(),
+                ),
+            };
+            plan.shapes[usize::try_from(id.0).expect("descriptor index fits usize")] = shape;
+        }
+        Ok(plan)
     }
 
     /// Build the backend-neutral descriptor constants for resolved compiler
@@ -923,6 +981,133 @@ impl RuntimeTypePlan {
             .get(usize::try_from(id.0).ok()?)
             .filter(|descriptor| descriptor.id == id)
     }
+
+    pub fn shape(&self, id: RuntimeTypeId) -> Option<&RuntimeTypeShape> {
+        self.shapes.get(usize::try_from(id.0).ok()?)
+    }
+}
+
+fn collect_runtime_type_shape(
+    ty: &Type,
+    catalog: &RuntimeDeclarationCatalog,
+    module: &Module,
+    identities: &mut BTreeSet<RuntimeTypeIdentity>,
+    drafts: &mut BTreeMap<RuntimeTypeIdentity, RuntimeTypeShapeDraft>,
+) -> Result<(), RuntimeTypeError> {
+    if let Type::Qualified(_, inner) = ty {
+        return collect_runtime_type_shape(inner, catalog, module, identities, drafts);
+    }
+    let identity = catalog.type_identity(ty)?;
+    if !identities.insert(identity.clone()) {
+        return Ok(());
+    }
+    drafts.insert(identity.clone(), RuntimeTypeShapeDraft::Opaque);
+    match ty {
+        Type::Named(name, arguments) => {
+            for argument in arguments {
+                collect_runtime_type_shape(argument, catalog, module, identities, drafts)?;
+            }
+            if let RuntimeTypeIdentity::Record(_) = &identity
+                && let Some(field_names) = decode_anon_record(name)
+            {
+                let mut fields = Vec::new();
+                for (field_name, field_type) in field_names.into_iter().zip(arguments) {
+                    let field_identity = catalog.type_identity(field_type)?;
+                    collect_runtime_type_shape(
+                        field_type,
+                        catalog,
+                        module,
+                        identities,
+                        drafts,
+                    )?;
+                    fields.push((
+                        field_name,
+                        field_identity,
+                        witchy_syntax::format::type_str(field_type),
+                    ));
+                }
+                drafts.insert(identity, RuntimeTypeShapeDraft::Record(fields));
+                return Ok(());
+            }
+            let RuntimeTypeIdentity::Nominal { declaration, .. } = &identity else {
+                return Ok(());
+            };
+            let definition = module.items.iter().find_map(|item| {
+                let Item::Type(definition) = item else { return None };
+                let matches = definition.name == *name
+                    || catalog.resolve(&definition.name, DeclarationKind::Type)
+                        == Some(declaration);
+                matches.then_some(definition)
+            });
+            let Some(definition) = definition else {
+                return Err(RuntimeTypeError::MissingRuntimeShape {
+                    declaration: Box::new(declaration.clone()),
+                });
+            };
+            if definition.sealed {
+                drafts.insert(identity, RuntimeTypeShapeDraft::Sealed);
+                return Ok(());
+            }
+            let Some(variant) = definition.variants.first().filter(|_| {
+                definition.variants.len() == 1
+                    && !definition.variants[0].field_names.is_empty()
+                    && definition.variants[0].field_names.len()
+                        == definition.variants[0].fields.len()
+            }) else {
+                return Ok(());
+            };
+            if definition.params.len() != arguments.len() {
+                return Err(RuntimeTypeError::RuntimeShapeArity {
+                    name: definition.name.clone(),
+                    expected: definition.params.len(),
+                    actual: arguments.len(),
+                });
+            }
+            let bindings = definition
+                .params
+                .iter()
+                .cloned()
+                .zip(arguments.iter().cloned())
+                .collect::<BTreeMap<_, _>>();
+            let mut fields = Vec::new();
+            for (field_name, field_type) in variant.field_names.iter().zip(&variant.fields) {
+                let field_type = instantiate_runtime_type(field_type, &bindings);
+                let field_identity = catalog.type_identity(&field_type)?;
+                collect_runtime_type_shape(
+                    &field_type,
+                    catalog,
+                    module,
+                    identities,
+                    drafts,
+                )?;
+                fields.push((
+                    field_name.clone(),
+                    field_identity,
+                    witchy_syntax::format::type_str(&field_type),
+                ));
+            }
+            drafts.insert(identity, RuntimeTypeShapeDraft::Record(fields));
+        }
+        Type::Dyn(_, arguments) | Type::Tuple(arguments) => {
+            for argument in arguments {
+                collect_runtime_type_shape(argument, catalog, module, identities, drafts)?;
+            }
+        }
+        Type::Fn(parameters, result, _) => {
+            for parameter in parameters {
+                collect_runtime_type_shape(parameter, catalog, module, identities, drafts)?;
+            }
+            collect_runtime_type_shape(result, catalog, module, identities, drafts)?;
+        }
+        Type::RecordCompose { base, fields } => {
+            collect_runtime_type_shape(base, catalog, module, identities, drafts)?;
+            for (_, field) in fields {
+                collect_runtime_type_shape(field, catalog, module, identities, drafts)?;
+            }
+        }
+        Type::Qualified(_, _) => unreachable!("qualified types are stripped above"),
+    }
+    Ok(())
 }
 
 fn collect_nested_identities(
