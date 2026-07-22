@@ -102,7 +102,8 @@ fn seeded_divergence_is_inert_on_run_but_fails_parity() {
 }
 
 /// RFC-0058 §1: prove the lever is inert in release by STATIC inspection — the env
-/// var name must appear ONLY in the binary's parity command (`src/main.rs`), never
+/// var name must appear ONLY in the binary's parity command
+/// (`src/commands/execution.rs`), never
 /// in the compiler/runtime/interpreter crates that back the program-run path.
 #[test]
 fn seeded_divergence_var_is_absent_from_release_crates() {
@@ -114,8 +115,11 @@ fn seeded_divergence_var_is_absent_from_release_crates() {
         "the seeded-divergence lever is referenced on a RELEASE code path (crates/): {hits:?} — it must live only on the `witchy parity` path"
     );
     // Sanity: it IS present in the binary's parity command (else this proves nothing).
-    let main = std::fs::read_to_string(root.join("src/main.rs")).unwrap();
-    assert!(main.contains("WITCHY_SEEDED_DIVERGENCE"), "the seeded-divergence lever vanished from src/main.rs");
+    let execution = std::fs::read_to_string(root.join("src/commands/execution.rs")).unwrap();
+    assert!(
+        execution.contains("WITCHY_SEEDED_DIVERGENCE"),
+        "the seeded-divergence lever vanished from src/commands/execution.rs"
+    );
 }
 
 /// Recursively collect `.rs` files under `dir` that contain `needle` (skipping
