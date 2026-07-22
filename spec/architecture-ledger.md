@@ -141,11 +141,11 @@ distributed mechanically.
 | Hotspot (master snapshot) | Size | Classification | Responsibility boundary |
 |---|---:|---|---|
 | `src/example_tests{.rs,/**}` | ~25k + 6 domain modules | EXTRACT | Root owns the parity harness; 6 domains extracted (99 tests). ~825 tests remain (handoff: `state/agents/example-tests-decomposition-handoff.md`). |
-| `witchy-lower/codegen/mod.rs` | ~12,100 | EXTRACT | Typed scope/local, representation/layout, helper, capability-import, ownership, and structural-metadata contexts. |
-| `witchy-types/typeck.rs` | ~9,700 | EXTRACT | Constraint/inference, checking, diagnostics, capability convention, and checked-output boundaries after active semantic work clears. |
-| `witchy-interp/interpreter{.rs,/reflection.rs}` | ~6,900 + ~700 | EXTRACT | Syntax-reflection payload decoding and hole-origin reconstruction now have one function-only module with no evaluator-state access; hole substitution itself still runs in the evaluator. Continue separating environment/value state, capability adapters, tail-call analysis, evaluator execution, and launch APIs. |
+| `witchy-lower/codegen/mod.rs` | ~9,900 | EXTRACT | The `assembly`, `builtins`, `helpers`, `passes`, `types`, `loans` (loan-root/event collection), `type_vars` (type-variable/devirtualization analysis), and `expr_lower` (the ~2k-line expression→WIR lowering method, an `impl Codegen` continuation) modules each own a responsibility. Remaining EXTRACT work: grouping the `Codegen` struct's state into typed scope/local, representation/layout, capability-import, ownership, and structural-metadata contexts. |
+| `witchy-types/typeck.rs` | ~8,900 | EXTRACT | Pattern-coverage exhaustiveness (`coverage`), capability rights-set parsing (`cap_rights`), and duplicate-declaration/uniqueness checks (`uniqueness`) are extracted. Remaining: separating constraint/inference, checking, diagnostics, and checked-output boundaries. |
+| `witchy-interp/interpreter{.rs,/**}` | ~2,100 + eleven modules | EXTRACT | interpreter.rs is reduced 6,899 → ~2,100. Responsibility modules under `interpreter/`: `reflection` (syntax-reflection payload decoding), `capability_values` (Dir/File/Net capability adapters), `ast_walk` (analysis helpers), `assignment_plan` + `places` (memory-place planning, capture, read/store, write-back), `environment` (the lexical environment), `tail_analysis` (tail-edge/tail-position analysis), `value_ops` (pattern match, binary ops, comparison, native conversion), `calls` (call/closure evaluation dispatch), `builtins` (the ~2.5k-line builtin-call dispatcher), and `runners` (the public `run_*` execution façade). What remains in interpreter.rs is the core evaluator (`eval`/`eval_block`/`eval_tail_expr`/`eval_function_block`), value/error types, the `Interpreter` struct + construction, and rendering. |
 | `witchy-wir/wir_helpers/**` | 34-line facade; domain modules ~18-1,210 | NARROW | The facade now only declares and re-exports responsibility modules. The typed registry, runtime diagnostics, memory/RC, byte buffers, list operations, dictionary projections, numeric operations, string inspection/transformation and host construction/output, encoding/crypto, filesystem/process/environment, networking, VM, and helper-builder domains each have an explicit owner. Dictionary mutation/capacity and registry catalogs remain deliberately cohesive. The public surface is narrowed after a resolved-call-site census (`scratch/wir-helper-census.md`): only the typed registry entry points (`wir_helper`, `WirHelperSpec`), `abort_nodes`, the memory check gates (`heap_check_enabled`, `type_check_enabled`), the VM trampolines (`galloc_helper`, `call_idx_helper`, `call2_helper`), and `print_str_helper` remain `pub`; every other constructor is `pub(crate)` (in-crate test consumers) or module-tree-local, and the facade globs carry matching visibility. |
-| `witchy-types/traits.rs` | ~5,700 | EXTRACT | Validation, method resolution, anonymous unions, refinement/conversion, and monomorphization. |
+| `witchy-types/traits.rs` | ~4,300 | EXTRACT | Error-conversion rewrite (`conversions`) and anonymous-union impl synthesis (`anon_union`) are extracted, with a further method-resolution/derive cluster in progress. Remaining: validation, method resolution, refinement, and monomorphization boundaries. |
 | `tests/e2e{.rs,/**}` | 48 + 8 domain modules over `tests/support/*` | KEEP | Decomposed into 8 domain modules with byte-identical inventory; support helpers own lifecycle/registry/sandbox. |
 | `witchy-syntax/linker.rs` | ~4,900 | NARROW | Module graph/linking versus bundled-source registry and expansion orchestration. |
 | `src/main.rs` (composition root) + `src/{cli,source}.rs` + `src/commands/**` | ~220 + ~205 + ~272 + ~4,600 (10 command modules) | KEEP | main.rs reduced 2,783 -> 220 (a genuine composition root): dispatch, execution, wasm-exec, sandbox/grants, build-steps, embedded-pm, frontend, capabilities, compile all own distinct `commands/*` modules. |
@@ -156,9 +156,11 @@ Active worktree overlap is an admission check, not checked-in ownership. Before
 every hotspot slice, run `scripts/worktree-status.sh`, inspect branch diffs, and
 state owned files. A worktree's existence is not a lock, but overlapping dirty
 or recently active semantic work requires coordination or selection of another
-slice. At this snapshot, RFC-0080/0081 worktrees overlap interpreter, traits,
-type checking, lowering/codegen, `main.rs`, and the differential matrix, so the
-first structural work should use unowned contracts or WIR-helper domains.
+slice. The RFC-0080/0081 semantic worktrees that previously overlapped
+interpreter, traits, type checking, and lowering/codegen are no longer active,
+so hotspot decomposition on those files is unblocked and substantially executed
+(see the rows above); each slice is a verbatim, single-responsibility move
+validated on the serialized gate.
 
 ## Redundancy and obsolete-path ledger
 
