@@ -1,20 +1,20 @@
 ---
 rfc: 0080
 title: Structured hygienic metaprogramming
-status: deferred
+status: accepted
 created: 2026-07-12
 superseded-by:
-tracking: "implemented foundation through compiler-owned capability types, qualified identities, persistent per-node provenance, and typed structural quotation; remaining source-projecting compatibility builders, item identity, ModuleSyntax, Span, and tooling stages are explicitly deferred until a scheduled consumer requires them"
+tracking: "implemented: compiler-owned typed quotation and builders, hygienic identities, dynamic item/module identity, persistent Span provenance, stable expansion, and generated-symbol navigation"
 ---
 
 # RFC-0080: Structured hygienic metaprogramming
 
-> **2026-07-20 terminal disposition:** the implemented structured-expansion
-> foundation is preserved and tested, including the recovered capability-type
-> slice. The remaining compatibility-builder, item-identity, `ModuleSyntax`,
-> `Span`, and tooling surface is deferred, not implicitly active. Revive this
-> RFC when a scheduled compiler/library consumer requires one of those missing
-> operations, or before promising a fully structural public metaprogramming API.
+> **2026-07-22 terminal disposition:** accepted and implemented. Typed syntax
+> values retain compiler-owned AST identity through construction and emission;
+> generated nodes carry persistent definition, invocation, and hole spans; and
+> editor navigation exposes generated declarations and both expansion sites.
+> Legacy source emission remains only as the explicit migration channel defined
+> below, not as the representation of typed output.
 
 The implemented syntax-expansion surface is exercised by
 [`tests/rfc0080.rs`](../tests/rfc0080.rs) and the compiler-owned expansion path
@@ -546,11 +546,25 @@ The first source-compatible slice is implemented:
   ambient `Dir`/`File`/`Net` head is validated at the public bridge and again
   at the compiler-private intrinsic; capability rights remain structural type
   children through generated signatures on both backends.
+- The fifty-seventh slice closes dynamic item identity. `meta.item(source)`
+  parses one declaration fragment at the constructor boundary and returns an
+  opaque handle to the resulting module fragment. Imports, `from` imports, and
+  nested syntax tables travel with the item through `emit_item`; typed emission
+  never formats or reparses that fragment. Literal items retain the parser's
+  equivalent direct path, while `emit(String)` remains the explicit migration
+  channel required above.
+- The fifty-eighth slice completes the `ModuleSyntax`, `Span`, and tooling
+  contract. Structural modules aggregate owned items without flattening them;
+  persistent per-node origins provide compiler-owned definition, invocation,
+  and hole-ancestry spans; `witchy expand` remains stable; and the LSP indexes
+  generated declarations and resolves go-to-definition to both the invocation
+  and macro definition locations.
 
-This is intentionally not the full RFC, and the residual is deferred rather
-than left proposed. Every quotation category and its typed
-hole placement is now compiler-owned. Some `meta.*` compatibility builders may
-still project canonical source, but these pattern-composition builders,
+This is the full accepted RFC boundary. Every quotation category and its typed
+hole placement is compiler-owned. Explicit `*_raw`, `*_join`, legacy `emit`,
+and String-returning tags remain source migration APIs as specified above; they
+do not define the representation of typed structural output. The
+pattern-composition builders,
 let/expression/return statement builders, `meta.block`, and
 `meta.function_block` retain owned child nodes when constructing statements,
 blocks, and items. Compiler-owned typed tag expressions preserve
@@ -558,11 +572,7 @@ definition-site direct function, type, constructor, and constructor-pattern
 references, and
 `meta.call_site("name")`, consumed through `meta.expr_name`, `meta.type_named`,
 or `meta.pattern_ctor`, explicitly selects invocation-site value, type, or
-constructor resolution. Direct tagged-expansion failures preserve the invocation
-and definition module/line pair. Source-projecting compatibility-builder and
-item identities remain deferred work; field selectors are validated members
-and do not introduce a lexical origin. `ModuleSyntax`, `Span`, and generated
-symbol navigation are likewise outside the implemented boundary. The value is the
-migration seam: future work can move the
-payload behind these wrappers from parsed source to structured compiler nodes
-without changing the comptime append/merge path again.
+constructor resolution. Direct tagged-expansion failures preserve the
+invocation and definition span, and every generated node retains that
+provenance for diagnostics and tooling. Field selectors are validated members
+and do not introduce a lexical origin.

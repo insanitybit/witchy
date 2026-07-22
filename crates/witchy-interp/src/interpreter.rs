@@ -216,6 +216,11 @@ const OWNED_ITEM_SYNTAX_CTOR: &str = "@owned_item_syntax";
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ComptimeItemEmission {
     Source(String),
+    ModuleSyntax {
+        module: Box<Module>,
+        definition_line: u32,
+        hole_ancestry: Vec<ComptimeHoleOrigin>,
+    },
     Syntax {
         item: Box<Item>,
         definition_line: u32,
@@ -587,6 +592,7 @@ pub struct Interpreter {
     fresh_ident_counter: u64,
     compiler_syntax_instance_counter: u64,
     compiler_item_syntax: HashMap<String, Item>,
+    compiler_item_modules: HashMap<String, Module>,
     compiler_expr_syntax: HashMap<String, Expr>,
     compiler_type_syntax: HashMap<String, Type>,
     compiler_pattern_syntax: HashMap<String, Pattern>,
@@ -832,6 +838,7 @@ impl Interpreter {
             fresh_ident_counter: 0,
             compiler_syntax_instance_counter: 0,
             compiler_item_syntax,
+            compiler_item_modules: HashMap::new(),
             compiler_expr_syntax,
             compiler_type_syntax,
             compiler_pattern_syntax,

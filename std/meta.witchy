@@ -11,8 +11,9 @@
 // RFC-0080's typed boundary for whole generated items. `quote item:` and literal
 // whole-item `meta.item("...")` values retain compiler-owned item AST. For an
 // item quote with holes, the compiler substitutes typed expression, type, and
-// pattern nodes into that AST. `function_block` also transfers an owned block
-// directly; other dynamic item builders retain source compatibility for now.
+// pattern nodes into that AST. Dynamic `item(source)` input is parsed once at
+// this boundary and then travels as a compiler-owned module fragment, including
+// any imports required by the generated declaration.
 sealed type ItemSyntax:
     ItemSyntax(String)
 
@@ -23,8 +24,8 @@ sealed type ModuleSyntax:
     ModuleSyntax(List(ItemSyntax))
 
 // Source spans are compiler-owned metadata. The constructor is sealed so user
-// code cannot forge locations; compiler APIs may attach concrete spans as the
-// generated-navigation surface grows.
+// code cannot forge locations; expansion records definition, invocation, and
+// hole-ancestry spans for diagnostics and generated-symbol navigation.
 sealed type Span:
     Span(String, Int, Int)
 
@@ -76,9 +77,14 @@ sealed type Ident:
     Ident(String)
     CallSiteIdent(String)
 
-// A dynamic source-backed item wrapper. A literal whole-item argument is
-// recognized by the parser and promoted to compiler-owned item syntax.
+// Parse one dynamic declaration (and its imports) into compiler-owned syntax.
+// Literal whole-item arguments take the parser's equivalent zero-runtime path.
 pub fn item(source: String) -> ItemSyntax:
+    __meta_item(source)
+
+// Compiler-private bridge. Runtime modules cannot construct ItemSyntax, and
+// the linker limits this intrinsic to std/meta.
+fn __meta_item(source: String) -> ItemSyntax:
     ItemSyntax(source)
 
 // Join parser-checked item quote fragments with typed expression holes.

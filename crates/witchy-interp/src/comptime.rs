@@ -365,6 +365,30 @@ fn decode_comptime_output(
             crate::interpreter::ComptimeItemEmission::Source(source) => {
                 source_batch.push(source);
             }
+            crate::interpreter::ComptimeItemEmission::ModuleSyntax {
+                module,
+                definition_line,
+                hole_ancestry,
+            } => {
+                append_item_source_batch(
+                    &mut emitted,
+                    &mut origins,
+                    &mut source_batch,
+                    module_name,
+                    invocation_line,
+                )?;
+                let mut module_origins = OriginTable::default();
+                record_emitted_items(
+                    &mut module_origins,
+                    &module,
+                    module_name,
+                    definition_line,
+                    invocation_line,
+                    0,
+                    &hole_ancestry,
+                );
+                append_unstamped_module(&mut emitted, &mut origins, *module, module_origins);
+            }
             crate::interpreter::ComptimeItemEmission::Syntax {
                 item,
                 definition_line,

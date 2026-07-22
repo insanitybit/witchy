@@ -916,6 +916,37 @@ impl Interpreter {
                     "meta.impl_block expects TypeSyntax, TypeSyntax, and List(ItemSyntax)",
                 ),
             },
+            name if intrinsics::is_meta_item(name) => match args {
+                [Value::Str(source)] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err("meta.item is available only during compile-time expansion");
+                    }
+                    let module = parse_module(source).map_err(|error| RuntimeError {
+                        message: format!("meta.item source does not parse: {error}"),
+                    })?;
+                    if !module.modes.is_empty() {
+                        return err("meta.item accepts a declaration fragment, not a module mode");
+                    }
+                    if module.items.len() != 1 {
+                        return err(format!(
+                            "meta.item expects exactly one generated declaration, got {}",
+                            module.items.len()
+                        ));
+                    }
+                    let handle = self.next_compiler_syntax_handle("dynamic-item")?;
+                    self.compiler_item_syntax
+                        .insert(handle.clone(), module.items[0].clone());
+                    self.compiler_item_modules.insert(handle.clone(), module);
+                    Ok(Some(Value::Ctor {
+                        name: OWNED_ITEM_SYNTAX_CTOR.into(),
+                        fields: Rc::new(vec![
+                            Value::str(handle),
+                            Value::Int(i64::from(self.cur_line)),
+                        ]),
+                    }))
+                }
+                _ => err("meta.item expects one String declaration fragment"),
+            },
             name if name == intrinsics::COMPILER_QUOTE_EXPR => {
                 if self.fresh_ident_scope.is_none() {
                     return err(
@@ -1418,18 +1449,27 @@ impl Interpreter {
                         else {
                             unreachable!()
                         };
-                        let item = self
-                            .compiler_item_syntax
-                            .get(handle.as_str())
-                            .cloned()
-                            .ok_or_else(|| RuntimeError {
-                                message: "compiler-owned item emission referenced an invalid syntax handle"
-                                    .into(),
-                            })?;
-                        ComptimeItemEmission::Syntax {
-                            item: Box::new(item),
-                            definition_line: u32::try_from(*definition_line).unwrap_or(0),
-                            hole_ancestry: Vec::new(),
+                        let definition_line = u32::try_from(*definition_line).unwrap_or(0);
+                        if let Some(module) = self.compiler_item_modules.get(handle.as_str()) {
+                            ComptimeItemEmission::ModuleSyntax {
+                                module: Box::new(module.clone()),
+                                definition_line,
+                                hole_ancestry: Vec::new(),
+                            }
+                        } else {
+                            let item = self
+                                .compiler_item_syntax
+                                .get(handle.as_str())
+                                .cloned()
+                                .ok_or_else(|| RuntimeError {
+                                    message: "compiler-owned item emission referenced an invalid syntax handle"
+                                        .into(),
+                                })?;
+                            ComptimeItemEmission::Syntax {
+                                item: Box::new(item),
+                                definition_line,
+                                hole_ancestry: Vec::new(),
+                            }
                         }
                     }
                     Value::Ctor { name, fields }

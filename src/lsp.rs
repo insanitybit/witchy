@@ -25,6 +25,7 @@ pub fn run() -> LspResult {
         "completionProvider": {},
         "hoverProvider": true,
         "documentSymbolProvider": true,
+        "definitionProvider": true,
     }))?;
     main_loop(&connection)?;
     io_threads.join()?;
@@ -44,6 +45,9 @@ fn main_loop(connection: &Connection) -> LspResult {
                     "textDocument/hover" => Some(hover_response(&docs, &req.params)),
                     "textDocument/documentSymbol" => {
                         Some(document_symbol_response(&docs, &req.params))
+                    }
+                    "textDocument/definition" => {
+                        Some(definition_response(&docs, &req.params))
                     }
                     _ => None,
                 };
@@ -176,6 +180,83 @@ fn item_has_dynamic_dispatch(item: &ast::Item) -> bool {
         ast::Item::Function(function)
             if function.attributes.iter().any(|attribute| attribute == "dynamic")
     )
+}
+
+// --- generated definitions ------------------------------------------------
+
+/// Resolve a generated declaration represented at its invocation line to both
+/// sides of its expansion boundary. The invocation is useful when a symbol came
+/// from a document-symbol result; the definition location opens the macro body.
+fn definition_response(docs: &HashMap<String, String>, params: &Value) -> Value {
+    let Some(uri) = params["textDocument"]["uri"].as_str() else {
+        return Value::Null;
+    };
+    let Some(text) = docs.get(uri) else {
+        return Value::Null;
+    };
+    let Some(line0) = params["position"]["line"]
+        .as_u64()
+        .and_then(|line| u32::try_from(line).ok())
+    else {
+        return Value::Null;
+    };
+    let Some((entry, _, linked)) = link_document_with_origins(uri, text, docs) else {
+        return Value::Null;
+    };
+
+    let mut seen = HashSet::new();
+    let mut locations = Vec::new();
+    for generated in linked.origins.nodes() {
+        if generated.node.category != witchy_syntax::origin::SyntaxCategory::Item
+            || !generated.node.path.is_empty()
+            || generated.origin.invocation.module != entry
+            || generated.origin.invocation.start.line.saturating_sub(1) != line0
+        {
+            continue;
+        }
+        for span in [&generated.origin.invocation, &generated.origin.definition] {
+            let Some(target_uri) = module_uri(uri, &entry, &span.module, docs) else {
+                continue;
+            };
+            let start_line = span.start.line.saturating_sub(1);
+            let start_character = span.start.column.saturating_sub(1);
+            let end_line = span.end.line.saturating_sub(1);
+            let end_character = span.end.column.saturating_sub(1).max(start_character + 1);
+            if seen.insert((
+                target_uri.clone(),
+                start_line,
+                start_character,
+                end_line,
+                end_character,
+            )) {
+                locations.push(json!({
+                    "uri": target_uri,
+                    "range": {
+                        "start": { "line": start_line, "character": start_character },
+                        "end": { "line": end_line, "character": end_character },
+                    }
+                }));
+            }
+        }
+    }
+    if locations.is_empty() { Value::Null } else { json!(locations) }
+}
+
+fn module_uri(
+    entry_uri: &str,
+    entry: &str,
+    module: &str,
+    docs: &HashMap<String, String>,
+) -> Option<String> {
+    if module == entry {
+        return Some(entry_uri.to_string());
+    }
+    let entry_path = uri_to_path(entry_uri)?;
+    let sibling = entry_path.parent()?.join(format!("{module}.witchy"));
+    if let Some(uri) = docs.keys().find(|uri| uri_to_path(uri).as_ref() == Some(&sibling)) {
+        return Some(uri.clone());
+    }
+    sibling.exists().then(|| format!("file://{}", sibling.to_string_lossy()))
 }
 
 fn link_document_with_origins(

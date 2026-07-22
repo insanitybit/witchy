@@ -97,3 +97,49 @@ fn compiler_owned_items_expand_in_order_and_run_on_both_backends() {
     actor.run().expect("run compiled structural item program");
     assert_eq!(actor.output(), expected);
 }
+
+#[test]
+fn dynamic_item_source_becomes_an_owned_module_fragment_with_imports() {
+    let source = r#"
+import meta
+
+comptime fn build(name: String) -> ItemSyntax:
+    let nl = "\n"
+    let declaration = "import show" + nl + nl + "pub fn " + name + "() -> String:" + nl + "    show.render(7)"
+    meta.item(declaration)
+
+comptime:
+    emit_item(build("dynamic_owned"))
+
+fn main(console: Console):
+    console.print(dynamic_owned())
+"#;
+    let parsed = parser::parse_module(source).expect("parse dynamic item producer");
+    let linked = pipeline::link_with_origins(vec![("main".into(), parsed)], "main")
+        .expect("dynamic item parses once and preserves its import fragment");
+    typeck::check(&linked.module).expect("typecheck dynamic owned item");
+    let generated = linked
+        .module
+        .items
+        .iter()
+        .position(|item| matches!(item, ast::Item::Function(function) if function.name.ends_with("dynamic_owned")))
+        .expect("dynamic generated function");
+    assert!(linked.origins.origin_for_item(generated).is_some());
+
+    let expected = vec!["7".to_string()];
+    assert_eq!(
+        interpreter::run_module(linked.module.clone(), ".", Vec::new()).expect("interpret"),
+        expected
+    );
+    let wasm = codegen::compile_module_binary(&linked.module).expect_lowered("compile");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut actor = runtime
+        .spawn(
+            &wasm,
+            Capabilities { print: true, quiet: true, ..Default::default() },
+            128,
+        )
+        .expect("spawn");
+    actor.run().expect("run compiled program");
+    assert_eq!(actor.output(), expected);
+}

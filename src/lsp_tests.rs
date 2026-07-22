@@ -66,6 +66,40 @@ fn main(console: Console):
     }
 
     #[test]
+    fn generated_definition_returns_invocation_and_macro_definition() {
+        let src = r#"import meta
+
+comptime fn build() -> ItemSyntax:
+    quote item:
+        pub fn generated() -> Int:
+            7
+
+comptime:
+    emit_item(build())
+
+fn main(console: Console):
+    console.print("${generated()}")
+"#;
+        let uri = "file:///tmp/main.witchy";
+        let mut docs = HashMap::new();
+        docs.insert(uri.to_string(), src.to_string());
+        let response = definition_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 7, "character": 0 },
+            }),
+        );
+        let locations = response.as_array().expect("generated definition locations");
+        let lines = locations
+            .iter()
+            .map(|location| location["range"]["start"]["line"].as_u64().unwrap())
+            .collect::<HashSet<_>>();
+        assert_eq!(lines, HashSet::from([3, 7]));
+        assert!(locations.iter().all(|location| location["uri"] == json!(uri)));
+    }
+
+    #[test]
     fn async_and_generator_hover_preserve_function_kind() {
         let mut docs = HashMap::new();
         let generators = include_str!("../examples/generators/src/generators.witchy");
