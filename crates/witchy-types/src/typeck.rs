@@ -3704,6 +3704,25 @@ impl Checker {
                     ),
                 ))
             }
+            S::DynamicStringListDynamicGenericToResultDynamicDynamicError => {
+                let dynamic = Ty::Named("dynamic.Dynamic".into(), Vec::new());
+                let capabilities = self.fresh();
+                Some((
+                    vec![
+                        dynamic.clone(),
+                        Ty::String,
+                        Ty::List(Box::new(dynamic.clone())),
+                        capabilities,
+                    ],
+                    Ty::Named(
+                        "Result".into(),
+                        vec![
+                            dynamic,
+                            Ty::Named("dynamic.DynamicError".into(), Vec::new()),
+                        ],
+                    ),
+                ))
+            }
             S::DynamicToOptionGeneric => {
                 let value = self.fresh();
                 Some((

@@ -146,11 +146,71 @@ fn invalid_dynamic_declarations_fail_closed() {
 }
 
 #[test]
-fn capability_bearing_dynamic_signatures_are_rejected_before_dispatch_generation() {
-    let source = "@dynamic\npub fn expose(self: Int, console: Console) -> Int:\n    console.print(\"no\")\n    self\n\nfn main():\n    ()\n";
-    let checked = authenticated(source).expect("declaration checking succeeds before lowering");
-    let error = witchy_interp::interpreter::run_checked_module(checked, ".", Vec::new())
-        .expect_err("capability-bearing dynamic method must not enter the runtime table")
-        .to_string();
-    assert!(error.contains("unsupported capability-bearing signature"), "{error}");
+fn capability_methods_require_and_retain_an_explicit_static_bundle() {
+    let source = r#"
+import dynamic
+import reflect
+
+type Widget:
+    value: Int
+
+impl Reflect for Widget:
+    fn reflect(self) -> reflect.Mirror:
+        reflect.MNil
+
+@dynamic
+pub fn announce(self: Widget, console: Console, label: String) -> Widget:
+    console.print("cap-${label}")
+    self
+
+fn main(console: Console):
+    let method = list.at(dynamic.methods(dynamic.runtime_type(Widget)), 0)
+    console.print(list.at(dynamic.method_capabilities(method), 0))
+    match dynamic.call(dynamic.dynamic(Widget(1)), "announce", [dynamic.dynamic("missing")]):
+        Err(dynamic.CapabilityDenied(name)) -> console.print("denied-${name}")
+        _ -> console.print("unexpected-implicit")
+    match dynamic.call_with(dynamic.dynamic(Widget(1)), "announce", [dynamic.dynamic("wrong")], "not-authority"):
+        Err(dynamic.CapabilityDenied(name)) -> console.print("wrong-${name}")
+        _ -> console.print("unexpected-wrong")
+    match dynamic.call_with(dynamic.dynamic(Widget(1)), "announce", [dynamic.dynamic("ok")], console):
+        Ok(_) -> console.print("called")
+        Err(_) -> console.print("call-failed")
+"#;
+
+    assert_eq!(
+        run(source).expect("run capability-aware dynamic method fixture"),
+        ["Console", "denied-announce", "wrong-announce", "cap-ok", "called"],
+    );
+}
+
+#[test]
+fn multiple_capabilities_use_an_exact_ordered_tuple() {
+    let source = r#"
+import dynamic
+import reflect
+
+type Widget:
+    value: Int
+
+impl Reflect for Widget:
+    fn reflect(self) -> reflect.Mirror:
+        reflect.MNil
+
+@dynamic
+pub fn report(self: Widget, console: Console, clock: Clock, amount: Int) -> Widget:
+    console.print("report-${amount}")
+    self
+
+fn main(console: Console, clock: Clock):
+    let method = list.at(dynamic.methods(dynamic.runtime_type(Widget)), 0)
+    console.print(list.join(dynamic.method_capabilities(method), ","))
+    match dynamic.call_with(dynamic.dynamic(Widget(1)), "report", [dynamic.dynamic(7)], (console, clock)):
+        Ok(_) -> console.print("tuple-called")
+        Err(_) -> console.print("tuple-failed")
+"#;
+
+    assert_eq!(
+        run(source).expect("run multi-capability dynamic method fixture"),
+        ["Console,Clock", "report-7", "tuple-called"],
+    );
 }

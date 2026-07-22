@@ -12,8 +12,9 @@ use witchy_syntax::ast::{Block, Expr, Item, Module, Stmt, Type};
 use witchy_syntax::{format, intrinsics};
 
 use crate::runtime_type::{
-    RuntimeDeclarationCatalog, RuntimeMethodArgumentDescriptor, RuntimeMethodDescriptor,
-    RuntimeTypePlan, RuntimeTypeShape,
+    RuntimeDeclarationCatalog, RuntimeMethodArgumentDescriptor,
+    RuntimeMethodCapabilityDescriptor, RuntimeMethodDescriptor,
+    RuntimeMethodParameterDescriptor, RuntimeTypeError, RuntimeTypePlan, RuntimeTypeShape,
 };
 use crate::typeck::{TypeTable, TypedModule, ty_to_ast};
 use crate::witness::{self, WitnessCatalog, WitnessPlan};
@@ -108,7 +109,10 @@ fn lower_explicit_packs_inner(
     let mut dynamic_types = collect_dynamic_types(typed.module(), typed.table(), runtime_catalog)?;
     for method in &dynamic_methods {
         dynamic_types.push(method.receiver.clone());
-        dynamic_types.extend(method.arguments.iter().cloned());
+        dynamic_types.extend(method.parameters.iter().filter_map(|parameter| match parameter {
+            DynamicMethodParameterDefinition::Value(ty) => Some(ty.clone()),
+            DynamicMethodParameterDefinition::Capability(_) => None,
+        }));
         dynamic_types.push(method.result.clone());
     }
     let mut runtime_types = match runtime_catalog {
@@ -146,8 +150,14 @@ struct DynamicMethodDefinition {
     name: String,
     function: String,
     receiver: Type,
-    arguments: Vec<Type>,
+    parameters: Vec<DynamicMethodParameterDefinition>,
     result: Type,
+}
+
+#[derive(Clone, Debug)]
+enum DynamicMethodParameterDefinition {
+    Value(Type),
+    Capability(Type),
 }
 
 fn collect_dynamic_method_definitions(
@@ -206,7 +216,7 @@ fn collect_dynamic_method_definitions(
                 function.name
             )
         })?;
-        let arguments = function
+        let parameter_types = function
             .params
             .iter()
             .skip(1)
@@ -220,19 +230,31 @@ fn collect_dynamic_method_definitions(
             })
             .collect::<Result<Vec<_>, _>>()?;
         let result = function.ret.clone().unwrap_or_else(|| Type::Tuple(Vec::new()));
-        for ty in std::iter::once(&receiver)
-            .chain(arguments.iter())
-            .chain(std::iter::once(&result))
-        {
+        for (role, ty) in [("receiver", &receiver), ("result", &result)] {
             runtime_catalog
                 .capability_free_type_identity(ty, module)
                 .map_err(|error| {
                     format!(
-                        "@dynamic function `{}` has an unsupported capability-bearing signature: {error}",
-                        function.name
+                        "@dynamic function `{}` {role} must be capability-free: {error}",
+                        function.name,
                     )
                 })?;
         }
+        let parameters = parameter_types
+            .into_iter()
+            .map(|ty| match runtime_catalog.capability_free_type_identity(&ty, module) {
+                Ok(_) => Ok(DynamicMethodParameterDefinition::Value(ty)),
+                Err(RuntimeTypeError::CapabilityType(_)
+                | RuntimeTypeError::CapabilityRetained { .. }) => {
+                    Ok(DynamicMethodParameterDefinition::Capability(ty))
+                }
+                Err(error) => Err(format!(
+                    "@dynamic function `{}` has an unsupported parameter `{}`: {error}",
+                    function.name,
+                    witchy_syntax::format::type_str(&ty),
+                )),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let name = function
             .name
             .rsplit('.')
@@ -252,7 +274,7 @@ fn collect_dynamic_method_definitions(
             name,
             function: function.name.clone(),
             receiver,
-            arguments,
+            parameters,
             result,
         });
     }
@@ -279,15 +301,27 @@ fn prepare_dynamic_methods(
         .into_iter()
         .map(|method| {
             let receiver = descriptor(&method.receiver)?;
-            let arguments = method
-                .arguments
+            let parameters = method
+                .parameters
                 .into_iter()
-                .map(|ty| {
-                    Ok(RuntimeMethodArgumentDescriptor {
-                        descriptor: descriptor(&ty)?,
-                        display: witchy_syntax::format::type_str(&ty),
-                        ty,
-                    })
+                .map(|parameter| match parameter {
+                    DynamicMethodParameterDefinition::Value(ty) => {
+                        Ok(RuntimeMethodParameterDescriptor::Value(
+                            RuntimeMethodArgumentDescriptor {
+                                descriptor: descriptor(&ty)?,
+                                display: witchy_syntax::format::type_str(&ty),
+                                ty,
+                            },
+                        ))
+                    }
+                    DynamicMethodParameterDefinition::Capability(ty) => {
+                        Ok(RuntimeMethodParameterDescriptor::Capability(
+                            RuntimeMethodCapabilityDescriptor {
+                                display: witchy_syntax::format::type_str(&ty),
+                                ty,
+                            },
+                        ))
+                    }
                 })
                 .collect::<Result<Vec<_>, String>>()?;
             let result = descriptor(&method.result)?;
@@ -296,7 +330,7 @@ fn prepare_dynamic_methods(
                 receiver_type: method.receiver,
                 name: method.name,
                 function: method.function,
-                arguments,
+                parameters,
                 result,
                 result_display: witchy_syntax::format::type_str(&method.result),
                 result_type: method.result,
@@ -307,6 +341,10 @@ fn prepare_dynamic_methods(
 
 fn dynamic_intrinsic(name: &str, intrinsic: &str) -> bool {
     name == intrinsic || name.rsplit('.').next() == Some(intrinsic)
+}
+
+fn dynamic_call_with(name: &str) -> bool {
+    name == "dynamic.call_with" || dynamic_intrinsic(name, intrinsics::DYNAMIC_CALL_WITH)
 }
 
 fn resolved_expr_type(table: &TypeTable, expr: &Expr) -> Result<Option<Type>, String> {
@@ -496,6 +534,14 @@ fn rewrite_dynamic_expr(
     runtime_types: &RuntimeTypePlan,
 ) -> Result<(), String> {
     let request = dynamic_identity_request(module, table, expr, runtime_catalog.is_some())?;
+    let call_with_capability_type = match expr {
+        Expr::Call { name, args } if dynamic_call_with(name) => args
+            .get(3)
+            .map(|capabilities| resolved_expr_type(table, capabilities))
+            .transpose()?
+            .flatten(),
+        _ => None,
+    };
     match expr {
         Expr::List(items)
         | Expr::Tuple(items)
@@ -688,6 +734,10 @@ fn rewrite_dynamic_expr(
         expr,
         Expr::Call { name, .. } if dynamic_intrinsic(name, intrinsics::DYNAMIC_CALL)
     );
+    let method_call_with = matches!(
+        expr,
+        Expr::Call { name, .. } if dynamic_call_with(name)
+    );
     if fields_lookup {
         let Expr::Call { args, .. } = expr else { unreachable!() };
         let [ty] = std::mem::take(args).try_into().map_err(|_| {
@@ -711,7 +761,22 @@ fn rewrite_dynamic_expr(
         let [receiver, name, arguments] = std::mem::take(args)
             .try_into()
             .map_err(|_| "Dynamic method call requires a receiver, name, and arguments".to_string())?;
-        *expr = runtime_method_call(receiver, name, arguments, runtime_types);
+        *expr = runtime_method_call(receiver, name, arguments, None, runtime_types);
+    } else if method_call_with {
+        let Expr::Call { args, .. } = expr else { unreachable!() };
+        let [receiver, name, arguments, capabilities] = std::mem::take(args)
+            .try_into()
+            .map_err(|_| {
+                "Dynamic method call with capabilities requires a receiver, name, arguments, and capability bundle"
+                    .to_string()
+            })?;
+        *expr = runtime_method_call(
+            receiver,
+            name,
+            arguments,
+            Some((capabilities, call_with_capability_type)),
+            runtime_types,
+        );
     }
     Ok(())
 }
@@ -807,14 +872,29 @@ fn runtime_methods_lookup(ty: Expr, runtime_types: &RuntimeTypePlan) -> Expr {
                         Expr::Str(method.name.clone()),
                         Expr::List(
                             method
-                                .arguments
+                                .parameters
                                 .iter()
-                                .map(|argument| {
-                                    runtime_type_expr(argument.descriptor, &argument.display)
+                                .filter_map(|parameter| match parameter {
+                                    RuntimeMethodParameterDescriptor::Value(argument) => Some(
+                                        runtime_type_expr(argument.descriptor, &argument.display),
+                                    ),
+                                    RuntimeMethodParameterDescriptor::Capability(_) => None,
                                 })
                                 .collect(),
                         ),
                         runtime_type_expr(method.result, &method.result_display),
+                        Expr::List(
+                            method
+                                .parameters
+                                .iter()
+                                .filter_map(|parameter| match parameter {
+                                    RuntimeMethodParameterDescriptor::Value(_) => None,
+                                    RuntimeMethodParameterDescriptor::Capability(capability) => {
+                                        Some(Expr::Str(capability.display.clone()))
+                                    }
+                                })
+                                .collect(),
+                        ),
                     ],
                 })
                 .collect();
@@ -911,17 +991,78 @@ fn dynamic_decode_step(
     })
 }
 
-fn runtime_method_invocation(method: &RuntimeMethodDescriptor, method_index: usize) -> Expr {
+fn capability_bundle_types(ty: &Type) -> Vec<Type> {
+    match ty.unqualified() {
+        Type::Tuple(types) => types.clone(),
+        _ => vec![ty.clone()],
+    }
+}
+
+fn runtime_method_invocation(
+    method: &RuntimeMethodDescriptor,
+    method_index: usize,
+    with_capabilities: bool,
+    capability_type: Option<&Type>,
+) -> Expr {
     let receiver = "$dynamic_call_receiver";
     let self_name = format!("$dynamic_self_{method_index}");
-    let argument_values = (0..method.arguments.len())
+    let arguments = method
+        .parameters
+        .iter()
+        .filter_map(|parameter| match parameter {
+            RuntimeMethodParameterDescriptor::Value(argument) => Some(argument),
+            RuntimeMethodParameterDescriptor::Capability(_) => None,
+        })
+        .collect::<Vec<_>>();
+    let capabilities = method
+        .parameters
+        .iter()
+        .filter_map(|parameter| match parameter {
+            RuntimeMethodParameterDescriptor::Value(_) => None,
+            RuntimeMethodParameterDescriptor::Capability(capability) => Some(capability),
+        })
+        .collect::<Vec<_>>();
+    let supplied_capabilities = capability_type.map(capability_bundle_types);
+    let expected_capabilities = capabilities
+        .iter()
+        .map(|capability| capability.ty.clone())
+        .collect::<Vec<_>>();
+    if capabilities.is_empty() && with_capabilities
+        || !capabilities.is_empty()
+            && (!with_capabilities
+                || supplied_capabilities.as_ref() != Some(&expected_capabilities))
+    {
+        return dynamic_error("CapabilityDenied", vec![Expr::Str(method.name.clone())]);
+    }
+    let argument_values = (0..arguments.len())
         .map(|index| format!("$dynamic_argument_{method_index}_{index}"))
         .collect::<Vec<_>>();
-    let decoded_arguments = (0..method.arguments.len())
+    let decoded_arguments = (0..arguments.len())
         .map(|index| format!("$dynamic_decoded_{method_index}_{index}"))
         .collect::<Vec<_>>();
+    let capability_values = (0..capabilities.len())
+        .map(|index| format!("$dynamic_capability_{method_index}_{index}"))
+        .collect::<Vec<_>>();
     let mut call_arguments = vec![Expr::Var(self_name.clone())];
-    call_arguments.extend(decoded_arguments.iter().cloned().map(Expr::Var));
+    let mut argument_index = 0usize;
+    let mut capability_index = 0usize;
+    for parameter in &method.parameters {
+        match parameter {
+            RuntimeMethodParameterDescriptor::Value(_) => {
+                call_arguments.push(Expr::Var(decoded_arguments[argument_index].clone()));
+                argument_index += 1;
+            }
+            RuntimeMethodParameterDescriptor::Capability(_) => {
+                let value = if capabilities.len() == 1 {
+                    "$dynamic_call_capabilities".to_string()
+                } else {
+                    capability_values[capability_index].clone()
+                };
+                call_arguments.push(Expr::Var(value));
+                capability_index += 1;
+            }
+        }
+    }
     let mut body = Expr::Ctor {
         name: "Ok".into(),
         args: vec![Expr::Ctor {
@@ -935,7 +1076,35 @@ fn runtime_method_invocation(method: &RuntimeMethodDescriptor, method_index: usi
             ],
         }],
     };
-    for (index, argument) in method.arguments.iter().enumerate().rev() {
+    if capabilities.len() > 1 {
+        body = Expr::Match {
+            scrutinee: Box::new(Expr::Var("$dynamic_call_capabilities".into())),
+            arms: vec![
+                witchy_syntax::ast::MatchArm {
+                    line: u32::MAX,
+                    pattern: witchy_syntax::ast::Pattern::Tuple(
+                        capability_values
+                            .iter()
+                            .cloned()
+                            .map(witchy_syntax::ast::Pattern::Var)
+                            .collect(),
+                    ),
+                    guard: None,
+                    body,
+                },
+                witchy_syntax::ast::MatchArm {
+                    line: u32::MAX,
+                    pattern: witchy_syntax::ast::Pattern::Wildcard,
+                    guard: None,
+                    body: dynamic_error(
+                        "CapabilityDenied",
+                        vec![Expr::Str(method.name.clone())],
+                    ),
+                },
+            ],
+        };
+    }
+    for (index, argument) in arguments.iter().enumerate().rev() {
         let value = &argument_values[index];
         let actual_type = dynamic_type_of(value);
         let decode = dynamic_decode_step(
@@ -1011,7 +1180,7 @@ fn runtime_method_invocation(method: &RuntimeMethodDescriptor, method_index: usi
                     "ArityMismatch",
                     vec![
                         Expr::Str(method.name.clone()),
-                        Expr::Int(i64::try_from(method.arguments.len()).unwrap_or(i64::MAX)),
+                        Expr::Int(i64::try_from(arguments.len()).unwrap_or(i64::MAX)),
                         Expr::Call {
                             name: "list.length".into(),
                             args: vec![Expr::Var("$dynamic_call_arguments".into())],
@@ -1027,6 +1196,7 @@ fn runtime_method_call(
     receiver: Expr,
     name: Expr,
     arguments: Expr,
+    capabilities: Option<(Expr, Option<Type>)>,
     runtime_types: &RuntimeTypePlan,
 ) -> Expr {
     let mut by_receiver = BTreeMap::<u32, Vec<(usize, &RuntimeMethodDescriptor)>>::new();
@@ -1049,7 +1219,14 @@ fn runtime_method_call(
                         line: u32::MAX,
                         pattern: witchy_syntax::ast::Pattern::Str(method.name.clone()),
                         guard: None,
-                        body: runtime_method_invocation(method, *index),
+                        body: runtime_method_invocation(
+                            method,
+                            *index,
+                            capabilities.is_some(),
+                            capabilities
+                                .as_ref()
+                                .and_then(|(_, capability_type)| capability_type.as_ref()),
+                        ),
                     })
                     .collect::<Vec<_>>();
                 method_arms.push(witchy_syntax::ast::MatchArm {
@@ -1091,8 +1268,7 @@ fn runtime_method_call(
         guard: None,
         body: dynamic_error("MalformedDescriptor", vec![descriptor_value.clone()]),
     });
-    Expr::Block(Block {
-        stmts: vec![
+    let mut stmts = vec![
             Stmt::Let {
                 name: "$dynamic_call_receiver".into(),
                 ty: None,
@@ -1111,12 +1287,23 @@ fn runtime_method_call(
                 value: arguments,
                 mutable: false,
             },
-            Stmt::Expr(Expr::Match {
-                scrutinee: Box::new(descriptor_value),
-                arms: descriptor_arms,
-            }),
-        ],
-        lines: vec![u32::MAX; 4],
+        ];
+    if let Some((capabilities, _)) = capabilities {
+        stmts.push(Stmt::Let {
+            name: "$dynamic_call_capabilities".into(),
+            ty: None,
+            value: capabilities,
+            mutable: false,
+        });
+    }
+    stmts.push(Stmt::Expr(Expr::Match {
+        scrutinee: Box::new(descriptor_value),
+        arms: descriptor_arms,
+    }));
+    let lines = vec![u32::MAX; stmts.len()];
+    Expr::Block(Block {
+        stmts,
+        lines,
         region: None,
     })
 }

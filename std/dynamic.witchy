@@ -17,7 +17,7 @@ sealed type RuntimeField:
     RuntimeField(String, RuntimeType)
 
 sealed type RuntimeMethod:
-    RuntimeMethod(String, List(RuntimeType), RuntimeType)
+    RuntimeMethod(String, List(RuntimeType), RuntimeType, List(String))
 
 sealed type DynamicFieldStatus:
     FieldFound(RuntimeType)
@@ -78,20 +78,31 @@ pub fn methods(ty: RuntimeType) -> List(RuntimeMethod):
 
 pub fn method_name(method: RuntimeMethod) -> String:
     match method:
-        RuntimeMethod(name, _, _) -> name
+        RuntimeMethod(name, _, _, _) -> name
 
 pub fn method_args(method: RuntimeMethod) -> List(RuntimeType):
     match method:
-        RuntimeMethod(_, args, _) -> args
+        RuntimeMethod(_, args, _, _) -> args
 
 pub fn method_result(method: RuntimeMethod) -> RuntimeType:
     match method:
-        RuntimeMethod(_, _, result) -> result
+        RuntimeMethod(_, _, result, _) -> result
+
+pub fn method_capabilities(method: RuntimeMethod) -> List(String):
+    match method:
+        RuntimeMethod(_, _, _, capabilities) -> capabilities
 
 // Invoke only a descriptor-registered method. Arguments are checked against
 // exact authenticated descriptors before the compiler-generated typed call.
 pub fn call(value: Dynamic, name: String, args: List(Dynamic)) -> Result(Dynamic, DynamicError):
     __dynamic_call(value, name, args)
+
+// Capability-bearing methods use a separate statically typed authority bundle.
+// One capability is passed directly; multiple capabilities use a tuple in the
+// same order as the reflected method parameters. Capabilities never enter
+// `Dynamic` or the ordinary argument list.
+pub fn call_with(value: Dynamic, name: String, args: List(Dynamic), capabilities: c) -> Result(Dynamic, DynamicError):
+    __dynamic_call_with(value, name, args, capabilities)
 
 pub fn field(value: Dynamic, name: String) -> Result(Dynamic, DynamicError):
     if name == "":

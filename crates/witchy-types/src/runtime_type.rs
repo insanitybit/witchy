@@ -883,12 +883,24 @@ pub struct RuntimeMethodArgumentDescriptor {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct RuntimeMethodCapabilityDescriptor {
+    pub ty: Type,
+    pub display: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum RuntimeMethodParameterDescriptor {
+    Value(RuntimeMethodArgumentDescriptor),
+    Capability(RuntimeMethodCapabilityDescriptor),
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct RuntimeMethodDescriptor {
     pub receiver: RuntimeTypeId,
     pub receiver_type: Type,
     pub name: String,
     pub function: String,
-    pub arguments: Vec<RuntimeMethodArgumentDescriptor>,
+    pub parameters: Vec<RuntimeMethodParameterDescriptor>,
     pub result: RuntimeTypeId,
     pub result_type: Type,
     pub result_display: String,
