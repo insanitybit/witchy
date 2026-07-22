@@ -4470,9 +4470,11 @@ impl Checker {
             return Ok(structural_ok);
         }
         if let Some((cap, path)) = self.ty_capability_retention(&resolved_actual) {
-            let path = (!path.is_empty())
-                .then(|| format!(" through `{}`", path.join(" -> ")))
-                .unwrap_or_default();
+            let path = if path.is_empty() {
+                String::new()
+            } else {
+                format!(" through `{}`", path.join(" -> "))
+            };
             return terr(format!(
                 "conversion to `dyn {}`: the concrete payload type `{resolved_actual}` \
                  carries a `{cap}` capability{path} — capability-carrying existential \
@@ -6301,9 +6303,11 @@ impl Checker {
                         return Ok(target);
                     }
                     if let Some((cap, path)) = self.ty_capability_retention(&resolved_src) {
-                        let path = (!path.is_empty())
-                            .then(|| format!(" through `{}`", path.join(" -> ")))
-                            .unwrap_or_default();
+                        let path = if path.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" through `{}`", path.join(" -> "))
+                        };
                         let display_name = existential_bare(dyn_name);
                         return terr(format!(
                             "`as dyn {display_name}`: the concrete payload type `{resolved_src}` \
@@ -8305,9 +8309,11 @@ fn run_check_selected(
             let existential = c.resolve(&existential);
             let concrete = c.resolve(&concrete);
             if let Some((cap, path)) = c.ty_capability_retention(&concrete) {
-                let path = (!path.is_empty())
-                    .then(|| format!(" through `{}`", path.join(" -> ")))
-                    .unwrap_or_default();
+                let path = if path.is_empty() {
+                    String::new()
+                } else {
+                    format!(" through `{}`", path.join(" -> "))
+                };
                 let dyn_name = match &existential {
                     Ty::Dyn(name, _) => existential_bare(name),
                     _ => "existential",
