@@ -6,6 +6,114 @@
 use super::*;
 
 impl Codegen<'_> {
+    pub(crate) fn lower_dynamic_try_decode(
+        &mut self,
+        call_expr: &Expr,
+        args: &[Expr],
+    ) -> Option<witchy_wir::wir::WirExpr> {
+        use witchy_wir::wir::{WirExpr as W, WirNode as N};
+
+        if !self.collect_wir {
+            return None;
+        }
+        let [Expr::Var(dynamic_local), Expr::Int(expected_descriptor)] = args else {
+            return None;
+        };
+        let result = self.ast_type_of_expr(call_expr)?;
+        let expected = match result.unqualified() {
+            Type::Named(option, arguments)
+                if option.rsplit('.').next() == Some("Option") && arguments.len() == 1 =>
+            {
+                &arguments[0]
+            }
+            _ => return None,
+        };
+        let expected_kind = self.kind_for_type(expected);
+        let Some(payload_id) = self
+            .existential_payload_type_ids
+            .get(&self.gc_lookup_type_key(expected))
+            .copied()
+        else {
+            return Some(match expected_kind {
+                kind @ (Kind::ExternRef | Kind::GcRef(_)) => {
+                    W::RefNull(Self::wir_kind(kind))
+                }
+                Kind::I32 | Kind::I64 | Kind::F64 => {
+                    self.mk_arities.insert(0);
+                    W::Call { func: "mk0".into(), args: vec![W::ConstI32(1)] }
+                }
+            });
+        };
+        let dynamic_ty = Type::Named("dynamic.Dynamic".into(), Vec::new());
+        let (dynamic_layout, dynamic_id) =
+            self.gc_layout_for_ctor("Dynamic", Some(&dynamic_ty))?;
+        if dynamic_layout.field_types.len() != 2 {
+            return None;
+        }
+        let dynamic_value = || W::GetLocal(dynamic_local.clone());
+        let descriptor = W::StructGet {
+            struct_id: dynamic_id,
+            field: dynamic_layout.field_base,
+            base: Box::new(dynamic_value()),
+        };
+        let actual_descriptor = W::Load {
+            ptr: Box::new(descriptor),
+            kind: witchy_wir::wir::Kind::I64,
+            offset: 4,
+        };
+        let envelope = W::StructGet {
+            struct_id: dynamic_id,
+            field: dynamic_layout.field_base + 1,
+            base: Box::new(dynamic_value()),
+        };
+        let erased_payload = W::StructGet {
+            struct_id: EXISTENTIAL_WRAPPER_ID,
+            field: witchy_wir::wir::EXISTENTIAL_PAYLOAD_FIELD,
+            base: Box::new(envelope),
+        };
+        let payload = W::StructGet {
+            struct_id: payload_id,
+            field: 0,
+            base: Box::new(W::RefCast {
+                struct_id: payload_id,
+                value: Box::new(erased_payload),
+            }),
+        };
+        let condition = W::Binary {
+            op: witchy_wir::wir::BinOp::Eq,
+            kind: witchy_wir::wir::Kind::I64,
+            lhs: Box::new(actual_descriptor),
+            rhs: Box::new(W::ConstI64(*expected_descriptor)),
+        };
+        let (success, failure, result_ty) = match expected_kind {
+            kind @ (Kind::ExternRef | Kind::GcRef(_)) => (
+                payload,
+                W::RefNull(Self::wir_kind(kind)),
+                Self::wir_ty_for_kind(kind),
+            ),
+            kind @ (Kind::I32 | Kind::I64 | Kind::F64) => {
+                self.mk_arities.extend([0, 1]);
+                (
+                    W::Call {
+                        func: "mk1".into(),
+                        args: vec![
+                            W::ConstI32(0),
+                            W::ToSlot(Box::new(payload), Self::wir_kind(kind)),
+                        ],
+                    },
+                    W::Call { func: "mk0".into(), args: vec![W::ConstI32(1)] },
+                    witchy_wir::wir::WirTy::Bool,
+                )
+            }
+        };
+        Some(W::Control(Box::new(N::If {
+            cond: condition,
+            then_: vec![N::Push(success)],
+            els: vec![N::Push(failure)],
+            result: Some(result_ty),
+        })))
+    }
+
     /// Adapt a structural `(container, present, old-slot)` helper to a native
     /// `var` operation: write the repaired container back to its receiver local
     /// and yield `Option(old)` as the independent ordinary result. ADT layout

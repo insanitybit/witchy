@@ -2965,6 +2965,147 @@ impl Checker {
         go(self, t, &mut HashSet::new())
     }
 
+    /// The same authority closure as `ty_carries_capability`, with the nominal
+    /// field/constructor edge that retains the capability. Generic declaration
+    /// fields are instantiated before traversal so diagnostics identify the
+    /// source shape rather than an otherwise opaque type argument.
+    fn ty_capability_retention(&self, t: &Ty) -> Option<(&'static str, Vec<String>)> {
+        fn direct(ty: &Ty) -> Option<&'static str> {
+            Some(match ty {
+                Ty::Console => "Console",
+                Ty::Clock => "Clock",
+                Ty::Rand => "Rand",
+                Ty::Env => "Env",
+                Ty::Secret => "Secret",
+                Ty::Exec => "Exec",
+                Ty::Dir(_) => "Dir",
+                Ty::File(_) => "File",
+                Ty::Net(_) => "Net",
+                Ty::Socket => "Socket",
+                Ty::Listener => "Listener",
+                Ty::BuildOut => "BuildOut",
+                Ty::BuildRead => "BuildRead",
+                Ty::BuildEnv => "BuildEnv",
+                Ty::BuildNet => "BuildNet",
+                Ty::BuildExec => "BuildExec",
+                Ty::Named(name, _) if name == "SecretStore" => "SecretStore",
+                _ => return None,
+            })
+        }
+        fn go(
+            checker: &Checker,
+            ty: &Ty,
+            visiting: &mut Vec<(String, Vec<Ty>)>,
+            path: &[String],
+        ) -> Option<(&'static str, Vec<String>)> {
+            let resolved = checker.resolve(ty);
+            if let Some(capability) = direct(&resolved) {
+                return Some((capability, path.to_vec()));
+            }
+            match resolved {
+                Ty::List(item) => {
+                    let mut child = path.to_vec();
+                    child.push("list item".into());
+                    go(checker, &item, visiting, &child)
+                }
+                Ty::Tuple(items) => items.iter().enumerate().find_map(|(index, item)| {
+                    let mut child = path.to_vec();
+                    child.push(format!("tuple[{index}]"));
+                    go(checker, item, visiting, &child)
+                }),
+                Ty::Fn(params, result, _) => params
+                    .iter()
+                    .enumerate()
+                    .find_map(|(index, param)| {
+                        let mut child = path.to_vec();
+                        child.push(format!("parameter[{index}]"));
+                        go(checker, param, visiting, &child)
+                    })
+                    .or_else(|| {
+                        let mut child = path.to_vec();
+                        child.push("result".into());
+                        go(checker, &result, visiting, &child)
+                    }),
+                Ty::Dyn(name, arguments) => arguments.iter().enumerate().find_map(|(index, arg)| {
+                    let mut child = path.to_vec();
+                    child.push(format!("{name}<arg {index}>"));
+                    go(checker, arg, visiting, &child)
+                }),
+                Ty::Named(name, arguments) => {
+                    if let Some(capability) = checker.transparent_externref_brands.get(&name) {
+                        return externref_cap_name(capability)
+                            .map(|capability| (capability, path.to_vec()));
+                    }
+                    let key = (name.clone(), arguments.clone());
+                    if visiting.contains(&key) {
+                        return None;
+                    }
+                    visiting.push(key);
+                    let bare = name.rsplit('.').next().unwrap_or(&name);
+                    if let Some((parameters, fields)) = checker.record_fields.get(&name) {
+                        let substitution = parameters
+                            .iter()
+                            .copied()
+                            .zip(arguments.iter().cloned())
+                            .collect::<HashMap<_, _>>();
+                        for (field_name, field_type) in fields {
+                            let mut child = path.to_vec();
+                            child.push(format!("{bare}.{field_name}"));
+                            let field_type = checker.subst_vars(field_type, &substitution);
+                            if let Some(found) = go(checker, &field_type, visiting, &child) {
+                                visiting.pop();
+                                return Some(found);
+                            }
+                        }
+                    }
+                    if let Some(variants) = checker.adt_variants.get(&name) {
+                        for variant in variants {
+                            let Some((payloads, result)) = checker.ctor_sigs.get(variant) else {
+                                continue;
+                            };
+                            let result_arguments = match checker.resolve(result) {
+                                Ty::Named(_, result_arguments) => result_arguments,
+                                _ => Vec::new(),
+                            };
+                            let substitution = result_arguments
+                                .iter()
+                                .zip(&arguments)
+                                .filter_map(|(parameter, argument)| match parameter {
+                                    Ty::Var(id) => Some((*id, argument.clone())),
+                                    _ => None,
+                                })
+                                .collect::<HashMap<_, _>>();
+                            let variant = variant.rsplit('.').next().unwrap_or(variant);
+                            for (index, payload) in payloads.iter().enumerate() {
+                                let mut child = path.to_vec();
+                                child.push(format!("{variant}[{index}]"));
+                                let payload = checker.subst_vars(payload, &substitution);
+                                if let Some(found) = go(checker, &payload, visiting, &child) {
+                                    visiting.pop();
+                                    return Some(found);
+                                }
+                            }
+                        }
+                    }
+                    visiting.pop();
+                    None
+                }
+                Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
+                | Ty::Bool | Ty::Unit | Ty::Var(_) => None,
+                Ty::Console | Ty::Clock | Ty::Rand | Ty::Env | Ty::Secret | Ty::Exec
+                | Ty::Dir(_) | Ty::File(_) | Ty::Net(_) | Ty::Socket | Ty::Listener
+                | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv | Ty::BuildNet
+                | Ty::BuildExec => None,
+            }
+        }
+        let found = go(self, t, &mut Vec::new(), &[]);
+        debug_assert_eq!(
+            found.as_ref().map(|(capability, _)| *capability),
+            self.ty_carries_capability(t),
+        );
+        found
+    }
+
     fn ty_is_direct_externref_value(&self, t: &Ty) -> bool {
         let resolved = self.resolve(t);
         if ty_externref_cap_name(&resolved).is_some() {
@@ -3434,6 +3575,27 @@ impl Checker {
             S::MessageToGeneric => {
                 let m = self.fresh();
                 Some((vec![Ty::Msg], m))
+            }
+            S::GenericToRuntimeType => {
+                let value = self.fresh();
+                Some((
+                    vec![value],
+                    Ty::Named("dynamic.RuntimeType".into(), Vec::new()),
+                ))
+            }
+            S::DynamicToOptionGeneric => {
+                let value = self.fresh();
+                Some((
+                    vec![Ty::Named("dynamic.Dynamic".into(), Vec::new())],
+                    Ty::Named("Option".into(), vec![value]),
+                ))
+            }
+            S::DynamicIntToOptionGeneric => {
+                let value = self.fresh();
+                Some((
+                    vec![Ty::Named("dynamic.Dynamic".into(), Vec::new()), Ty::Int],
+                    Ty::Named("Option".into(), vec![value]),
+                ))
             }
             S::StringToBytes => Some((vec![Ty::String], Ty::Bytes)),
             S::ListIntToBytes => Some((vec![Ty::List(Box::new(Ty::Int))], Ty::Bytes)),
@@ -4307,10 +4469,13 @@ impl Checker {
             }
             return Ok(structural_ok);
         }
-        if let Some(cap) = self.ty_carries_capability(&resolved_actual) {
+        if let Some((cap, path)) = self.ty_capability_retention(&resolved_actual) {
+            let path = (!path.is_empty())
+                .then(|| format!(" through `{}`", path.join(" -> ")))
+                .unwrap_or_default();
             return terr(format!(
                 "conversion to `dyn {}`: the concrete payload type `{resolved_actual}` \
-                 carries a `{cap}` capability — capability-carrying existential \
+                 carries a `{cap}` capability{path} — capability-carrying existential \
                  payloads are rejected (RFC-0081); pass the capability explicitly \
                  in method signatures instead",
                 existential_bare(dyn_name)
@@ -6135,11 +6300,14 @@ impl Checker {
                         self.record_existential_upcast(expr, &target, &resolved_src)?;
                         return Ok(target);
                     }
-                    if let Some(cap) = self.ty_carries_capability(&resolved_src) {
+                    if let Some((cap, path)) = self.ty_capability_retention(&resolved_src) {
+                        let path = (!path.is_empty())
+                            .then(|| format!(" through `{}`", path.join(" -> ")))
+                            .unwrap_or_default();
                         let display_name = existential_bare(dyn_name);
                         return terr(format!(
                             "`as dyn {display_name}`: the concrete payload type `{resolved_src}` \
-                             carries a `{cap}` capability — capability-carrying existential \
+                             carries a `{cap}` capability{path} — capability-carrying existential \
                              payloads are rejected (RFC-0081); pass the capability explicitly \
                              in method signatures instead"
                         ));
@@ -8136,14 +8304,17 @@ fn run_check_selected(
         for (key, (existential, concrete)) in records {
             let existential = c.resolve(&existential);
             let concrete = c.resolve(&concrete);
-            if let Some(cap) = c.ty_carries_capability(&concrete) {
+            if let Some((cap, path)) = c.ty_capability_retention(&concrete) {
+                let path = (!path.is_empty())
+                    .then(|| format!(" through `{}`", path.join(" -> ")))
+                    .unwrap_or_default();
                 let dyn_name = match &existential {
                     Ty::Dyn(name, _) => existential_bare(name),
                     _ => "existential",
                 };
                 return terr(format!(
                     "conversion to `dyn {dyn_name}`: the concrete payload type `{concrete}` \
-                     carries a `{cap}` capability — capability-carrying existential \
+                     carries a `{cap}` capability{path} — capability-carrying existential \
                      payloads are rejected (RFC-0081); pass the capability explicitly \
                      in method signatures instead"
                 ));

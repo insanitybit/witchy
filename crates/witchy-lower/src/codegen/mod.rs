@@ -841,6 +841,10 @@ struct Codegen<'types> {
     /// Closed witness ID -> concrete one-field payload box. The field uses the
     /// payload's actual WIR kind, never the scalar slot ABI.
     existential_payload_ids: HashMap<u32, u32>,
+    /// Canonical concrete type key -> its one-field existential payload box.
+    /// Dynamic decode selects this from the inferred result type before emitting
+    /// a `ref.cast`; runtime descriptor strings never choose a representation.
+    existential_payload_type_ids: HashMap<String, u32>,
     /// Closed-plan authenticated `(source witness, target existential, result
     /// witness)` transitions for compiler-owned existential upcasts.
     existential_upcasts: Vec<(u32, Type, u32)>,
@@ -1366,6 +1370,7 @@ impl<'types> Codegen<'types> {
             gc_arrays: Vec::new(),
             gc_reference_list_ids: HashMap::new(),
             existential_payload_ids: HashMap::new(),
+            existential_payload_type_ids: HashMap::new(),
             existential_upcasts: Vec::new(),
             lambda_gc_env_ids: HashMap::new(),
             ctor_field_records: HashMap::new(),

@@ -18,6 +18,13 @@ impl<'types> Codegen<'types> {
             Expr::TaggedLit { tag, .. } => {
                 unreachable!("unexpanded tagged literal `{tag}` reached codegen")
             }
+            Expr::Call { name, args }
+                if witchy_syntax::intrinsics::canonical_operation_name(
+                    witchy_syntax::cap_ops::surface_name(name),
+                ) == witchy_syntax::intrinsics::DYNAMIC_TRY_DECODE_TYPED =>
+            {
+                return self.lower_dynamic_try_decode(e, args);
+            }
             Expr::Int(n) | Expr::Duration(n) => W::ConstI64(*n),
             Expr::Float(x) => W::ConstF64(*x),
             Expr::Bool(b) => W::ConstI32(if *b { 1 } else { 0 }),

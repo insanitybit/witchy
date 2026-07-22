@@ -8,6 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use witchy_syntax::ast::{Module, Type};
+use witchy_types::runtime_type::RuntimeDeclarationCatalog;
 
 use super::*;
 
@@ -41,6 +42,38 @@ pub fn run_module(
     net_allow: Vec<String>,
 ) -> Result<Vec<String>, RuntimeError> {
     run_module_args(module, root, net_allow, Vec::new())
+}
+
+/// Run a module that crossed the authenticated checked-link boundary. Dynamic
+/// descriptor preparation consumes retained loader ownership directly; raw AST
+/// runners cannot reconstruct package identity from flattened compiler names.
+pub fn run_checked_module(
+    checked: witchy_types::pipeline::CheckedModule,
+    root: impl AsRef<Path>,
+    net_allow: Vec<String>,
+) -> Result<Vec<String>, RuntimeError> {
+    let runtime_catalog = checked
+        .runtime_declaration_catalog()
+        .map_err(|error| RuntimeError { message: error.to_string() })?;
+    let module = checked.into_module();
+    let root = root.as_ref().to_path_buf();
+    run_on_deep_stack(move || {
+        run_module_inner_limited_with_catalog(
+            module,
+            root,
+            Vec::new(),
+            Vec::new(),
+            net_allow,
+            Vec::new(),
+            None,
+            Vec::new(),
+            UserCapGrants::new(),
+            DEFAULT_STEP_LIMIT,
+            None,
+            Some(runtime_catalog),
+        )
+    })
+    .map(|outcome| outcome.output)
 }
 
 /// Like [`run_module`], but with an evaluation step ceiling — the `comptime:`
@@ -290,7 +323,10 @@ fn run_module_inner(
 /// contract as the compiled backend. The catalog must be captured before trait
 /// lowering erases declarations; the resulting plan is then carried alongside
 /// the lowered module instead of rediscovering dispatch at evaluation time.
-fn prepare_runtime_module(module: Module) -> Result<(Module, WitnessPlan), RuntimeError> {
+fn prepare_runtime_module(
+    module: Module,
+    runtime_catalog: Option<&RuntimeDeclarationCatalog>,
+) -> Result<(Module, WitnessPlan), RuntimeError> {
     let checked = witchy_syntax::source_check::check(module)
         .map_err(|message| RuntimeError { message })?;
     let checked = witchy_syntax::generators::lower(checked)
@@ -308,8 +344,15 @@ fn prepare_runtime_module(module: Module) -> Result<(Module, WitnessPlan), Runti
     witchy_syntax::parser::lower_sugar_module(&mut module);
     let typed = witchy_types::typeck::annotate_checked(module)
         .map_err(|error| RuntimeError { message: error.to_string() })?;
-    let prepared = witchy_types::existential::lower_explicit_packs(typed, &catalog)
-        .map_err(|message| RuntimeError { message })?;
+    let prepared = match runtime_catalog {
+        Some(runtime_catalog) => witchy_types::existential::lower_explicit_packs_with_runtime_types(
+            typed,
+            &catalog,
+            runtime_catalog,
+        ),
+        None => witchy_types::existential::lower_explicit_packs(typed, &catalog),
+    }
+    .map_err(|message| RuntimeError { message })?;
     let (module, _, witnesses) = prepared.into_parts();
     Ok((module, witnesses))
 }
@@ -328,7 +371,38 @@ fn run_module_inner_limited(
     step_limit: u64,
     fresh_ident_scope: Option<String>,
 ) -> Result<InterpreterOutcome, RuntimeError> {
-    let (module, witnesses) = prepare_runtime_module(module)?;
+    run_module_inner_limited_with_catalog(
+        module,
+        root,
+        dir_roots,
+        file_grants,
+        net_allow,
+        args,
+        signing_key,
+        named_secrets,
+        user_caps,
+        step_limit,
+        fresh_ident_scope,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_module_inner_limited_with_catalog(
+    module: Module,
+    root: PathBuf,
+    dir_roots: Vec<PathBuf>,
+    file_grants: Vec<PathBuf>,
+    net_allow: Vec<String>,
+    args: Vec<String>,
+    signing_key: Option<[u8; 32]>,
+    named_secrets: Vec<(String, Vec<u8>, bool)>,
+    user_caps: UserCapGrants,
+    step_limit: u64,
+    fresh_ident_scope: Option<String>,
+    runtime_catalog: Option<RuntimeDeclarationCatalog>,
+) -> Result<InterpreterOutcome, RuntimeError> {
+    let (module, witnesses) = prepare_runtime_module(module, runtime_catalog.as_ref())?;
     let mut interp = Interpreter::new_with_witnesses(module, witnesses);
     interp.step_limit = step_limit;
     interp.fresh_ident_scope = fresh_ident_scope;
@@ -447,7 +521,7 @@ pub fn run_build_step(module: Module, grants: BuildGrants) -> Result<Vec<String>
     let Some(build) = witchy_syntax::build_entry::build_entrypoint(&module).cloned() else {
         return Ok(Vec::new());
     };
-    let (module, witnesses) = prepare_runtime_module(module)?;
+    let (module, witnesses) = prepare_runtime_module(module, None)?;
     let mut interp = Interpreter::new_with_witnesses(module, witnesses);
     let argv = build
         .params

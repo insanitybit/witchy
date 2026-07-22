@@ -741,10 +741,11 @@ fn register_module_items(
                 fields: Vec::new(),
                 mutable: false,
             });
-            existential_payload_boxes.insert(key, payload_id);
+            existential_payload_boxes.insert(key.clone(), payload_id);
             payload_id
         };
         cg.existential_payload_ids.insert(witness.id, payload_id);
+        cg.existential_payload_type_ids.insert(key, payload_id);
     }
     let mut lambda_keys = Vec::new();
     for item in &module.items {
@@ -1358,12 +1359,13 @@ fn assemble_optimized_wir_with_structs(
     ),
     LoweringFailure,
 > {
-    assemble_optimized_wir_with_structs_mode(module, false)
+    assemble_optimized_wir_with_structs_mode(module, false, None)
 }
 
 fn assemble_optimized_wir_with_structs_mode(
     module: &Module,
     build_entrypoint: bool,
+    runtime_catalog: Option<&witchy_types::runtime_type::RuntimeDeclarationCatalog>,
 ) -> Result<
     (
         witchy_wir::wir::WirModule,
@@ -1373,7 +1375,7 @@ fn assemble_optimized_wir_with_structs_mode(
     LoweringFailure,
 > {
     let (mut wir_module, gc_structs, gc_arrays) =
-        assemble_wir_module_with_structs_mode(module, build_entrypoint)?;
+        assemble_wir_module_with_structs_mode(module, build_entrypoint, runtime_catalog)?;
     witchy_wir::wir_opt::lower_direct_tail_calls(&mut wir_module);
     witchy_wir::wir_opt::optimize(&mut wir_module);
     Ok((wir_module, gc_structs, gc_arrays))
@@ -1383,7 +1385,7 @@ fn assemble_optimized_wir_with_structs_mode(
 /// The result distinguishes a valid source construct that lacks a compiled
 /// lowering from rejected input or malformed compiler output.
 pub fn compile_module_binary(module: &Module) -> LoweringOutcome<Vec<u8>> {
-    compile_module_binary_mode(module, false)
+    compile_module_binary_mode(module, false, None)
 }
 
 /// Compile a module that has crossed the canonical linked type-check boundary.
@@ -1394,15 +1396,21 @@ pub fn compile_module_binary(module: &Module) -> LoweringOutcome<Vec<u8>> {
 pub fn compile_checked_module_binary(
     checked: &witchy_types::pipeline::CheckedModule,
 ) -> LoweringOutcome<Vec<u8>> {
-    compile_module_binary_mode(checked.module(), false)
+    let runtime_catalog = checked.runtime_declaration_catalog().ok();
+    compile_module_binary_mode(checked.module(), false, runtime_catalog.as_ref())
 }
 
 fn compile_module_binary_mode(
     module: &Module,
     build_entrypoint: bool,
+    runtime_catalog: Option<&witchy_types::runtime_type::RuntimeDeclarationCatalog>,
 ) -> LoweringOutcome<Vec<u8>> {
     let (wir_module, gc_structs, gc_arrays) =
-        match assemble_optimized_wir_with_structs_mode(module, build_entrypoint) {
+        match assemble_optimized_wir_with_structs_mode(
+            module,
+            build_entrypoint,
+            runtime_catalog,
+        ) {
         Ok(assembled) => assembled,
         Err(failure) => return public_outcome(Err(failure)),
     };
@@ -1483,12 +1491,13 @@ fn assemble_wir_module_with_structs(
     ),
     LoweringFailure,
 > {
-    assemble_wir_module_with_structs_mode(module, false)
+    assemble_wir_module_with_structs_mode(module, false, None)
 }
 
 fn assemble_wir_module_with_structs_mode(
     module: &Module,
     build_entrypoint: bool,
+    runtime_catalog: Option<&witchy_types::runtime_type::RuntimeDeclarationCatalog>,
 ) -> Result<
     (
         witchy_wir::wir::WirModule,
@@ -1534,22 +1543,28 @@ fn assemble_wir_module_with_structs_mode(
         rewrite_try_ctx_module(module, table)
     });
     typed.rewrite_preserving_nodes(|table, module| flip_string_add_module(module, table));
-    let prepared = witchy_types::existential::lower_explicit_packs(typed, &witness_catalog)
-        .map_err(|message| CodegenError { message })?;
+    let prepared = match runtime_catalog {
+        Some(runtime_catalog) => witchy_types::existential::lower_explicit_packs_with_runtime_types(
+            typed,
+            &witness_catalog,
+            runtime_catalog,
+        ),
+        None => witchy_types::existential::lower_explicit_packs(typed, &witness_catalog),
+    }
+    .map_err(|message| CodegenError { message })?;
     let (module, type_table, witnesses) = prepared.into_parts();
     let loan_facts = witchy_types::loans::facts(&module)
         .map_err(|error| CodegenError { message: error.to_string() })?;
-    let custom_eq_roots = custom_eq_function_roots(&module);
-    let mut reachable = reachable_functions_with(&module, &custom_eq_roots);
     // Witness adapters are ordinary monomorphized impl methods, but their only
-    // callers are generated after source reachability has run. Keep them as
-    // roots so a closed existential construction cannot leave a table entry
-    // pointing at an un-emitted function.
+    // callers are generated after source reachability has run. Seed them before
+    // the transitive walk so their own callees are emitted too.
+    let mut extra_roots = custom_eq_function_roots(&module);
     for witness in &witnesses.witnesses {
         for slot in &witness.slots {
-            reachable.insert(slot.adapter.clone());
+            extra_roots.push(slot.adapter.clone());
         }
     }
+    let reachable = reachable_functions_with(&module, &extra_roots);
     let mut cg = Codegen::new(&type_table, loan_facts);
     cg.collect_wir = true;
     register_module_items(&mut cg, &module, &reachable, &witnesses);
@@ -2893,6 +2908,74 @@ mod checked_codegen_boundary_tests {
         Ok(witchy_syntax::origin::OriginTable::default())
     }
 
+    fn authenticated_checked_result(
+        source: &str,
+    ) -> Result<witchy_types::pipeline::CheckedModule, witchy_types::pipeline::PipelineError> {
+        use witchy_types::runtime_type::{
+            AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
+        };
+
+        let module = witchy_syntax::parser::parse_module(source)
+            .expect("parse authenticated checked-codegen fixture");
+        let workspace = PackageCoordinate::new(
+            PackageSource::Workspace,
+            "example/dynamic-test",
+            "0.1.0",
+        )
+        .expect("workspace coordinate");
+        let toolchain = PackageCoordinate::new(
+            PackageSource::Toolchain,
+            "witchy/stdlib",
+            "0.1.0",
+        )
+        .expect("toolchain coordinate");
+        let mut assignments = vec![(
+            "main".to_string(),
+            ModuleLoadIdentity::new(workspace, ["main"]).expect("main owner"),
+        )];
+        assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|module| {
+            (
+                (*module).to_string(),
+                ModuleLoadIdentity::new(toolchain.clone(), ["std", *module])
+                    .expect("std owner"),
+            )
+        }));
+        let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)
+            .expect("authenticated owners");
+        witchy_types::pipeline::link_checked_authenticated(
+            vec![("main".into(), module)],
+            "main",
+            no_expand,
+            owners,
+        )
+    }
+
+    fn authenticated_checked(source: &str) -> witchy_types::pipeline::CheckedModule {
+        authenticated_checked_result(source).expect("authenticated checked link")
+    }
+
+    #[test]
+    fn authenticated_dynamic_descriptor_reaches_compiled_preparation() {
+        let checked = authenticated_checked(
+            "import dynamic\n\nfn main() -> Int:\n    let value = dynamic.dynamic(7)\n    0\n",
+        );
+        assert!(
+            matches!(compile_checked_module_binary(&checked), LoweringOutcome::Lowered(_)),
+            "authenticated Dynamic construction must lower"
+        );
+    }
+
+    #[test]
+    fn dynamic_construction_rejects_a_transitive_capability_before_lowering() {
+        let error = authenticated_checked_result(
+            "import dynamic\nimport reflect\n\ntype Holder:\n    Holder(Console)\n\nimpl Reflect for Holder:\n    fn reflect(self) -> reflect.Mirror:\n        reflect.MNil\n\nfn main(console: Console) -> Int:\n    let value = dynamic.dynamic(Holder(console))\n    0\n",
+        )
+        .expect_err("capability-retaining Dynamic construction must be rejected");
+        let message = error.to_string();
+        assert!(message.contains("Console"), "{message}");
+        assert!(message.contains("Holder[0]"), "{message}");
+    }
+
     #[test]
     fn checked_codegen_uses_the_authenticated_module() {
         let module = witchy_syntax::parser::parse_module("fn main() -> Int:\n    7\n")
@@ -3311,5 +3394,5 @@ pub fn compile_build_module(module: &Module) -> LoweringOutcome<Vec<u8>> {
             }
         }
     }
-    compile_module_binary_mode(&m, true)
+    compile_module_binary_mode(&m, true, None)
 }

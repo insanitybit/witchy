@@ -962,6 +962,63 @@ fn main() -> Int:
         captured.lock().unwrap().clone()
     }
 
+    fn run_authenticated_dynamic(src: &str) -> Vec<String> {
+        use witchy_types::runtime_type::{
+            AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
+        };
+
+        let module = parse_module(src).expect("parse Dynamic Wasm fixture");
+        let workspace = PackageCoordinate::new(
+            PackageSource::Workspace,
+            "example/dynamic-wasm-test",
+            "0.1.0",
+        )
+        .expect("workspace coordinate");
+        let toolchain = PackageCoordinate::new(
+            PackageSource::Toolchain,
+            "witchy/stdlib",
+            "0.1.0",
+        )
+        .expect("toolchain coordinate");
+        let mut assignments = vec![(
+            "main".to_string(),
+            ModuleLoadIdentity::new(workspace, ["main"]).expect("main owner"),
+        )];
+        assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|module| {
+            (
+                (*module).to_string(),
+                ModuleLoadIdentity::new(toolchain.clone(), ["std", *module])
+                    .expect("std owner"),
+            )
+        }));
+        let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)
+            .expect("authenticated owners");
+        let checked = witchy_types::pipeline::link_checked_authenticated(
+            vec![("main".into(), module)],
+            "main",
+            |_name, _module, _siblings| Ok(witchy_syntax::origin::OriginTable::default()),
+            owners,
+        )
+        .expect("authenticated checked link");
+        let bytes = compile_checked_module_binary(&checked)
+            .expect_lowered("authenticated Dynamic program lowers");
+        let (mut store, instance, captured) = instantiate_with_print(&bytes);
+        instance
+            .get_typed_func::<(), ()>(&mut store, "run")
+            .expect("run export")
+            .call(&mut store, ())
+            .expect("run Dynamic Wasm");
+        captured.lock().unwrap().clone()
+    }
+
+    #[test]
+    fn dynamic_descriptor_exact_decode_and_mismatch_match_the_interpreter() {
+        let output = run_authenticated_dynamic(
+            "import dynamic\nimport reflect\n\ntype User:\n    name: String\n    age: Int\n\nimpl Reflect for User:\n    fn reflect(self) -> reflect.Mirror:\n        reflect.MNil\n\nfn main(console: Console):\n    let value = dynamic.dynamic(7)\n    console.print(dynamic.type_name(dynamic.type_of(value)))\n    let exact: Option(Int) = dynamic.try_decode(value)\n    match exact:\n        Some(number) -> console.print(\"${number}\")\n        None -> console.print(\"missing-int\")\n    let mismatch: Option(String) = dynamic.try_decode(value)\n    match mismatch:\n        Some(text) -> console.print(text)\n        None -> console.print(\"none\")\n    let person = dynamic.dynamic(User(\"Ada\", 42))\n    let decoded_person: Option(User) = dynamic.try_decode(person)\n    match decoded_person:\n        Some(user) -> console.print(user.name)\n        None -> console.print(\"missing-user\")\n    let words = dynamic.dynamic([\"alpha\", \"beta\"])\n    let decoded_words: Option(List(String)) = dynamic.try_decode(words)\n    match decoded_words:\n        Some(items) -> console.print(list.at(items, 1))\n        None -> console.print(\"missing-words\")\n",
+        );
+        assert_eq!(output, ["Int", "7", "none", "Ada", "beta"]);
+    }
+
     #[test]
     fn compiles_arithmetic() {
         assert_eq!(run_int(r#"

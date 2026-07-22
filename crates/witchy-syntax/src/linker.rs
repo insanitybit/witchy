@@ -336,7 +336,7 @@ pub const STD_MODULES: &[&str] = &[
     "list", "string", "math", "result", "option", "func", "cmp", "ascii", "set", "server",
     "show", "http", "json", "url", "duration", "prng", "regex", "crypto", "compiler", "toml",
     "iter", "semver", "rights", "fs", "dict", "time", "encoding", "path", "testing",
-    "future", "task", "chan", "webauthn", "secretstore", "reflect", "meta", "convert", "exec",
+    "future", "task", "chan", "webauthn", "secretstore", "reflect", "dynamic", "meta", "convert", "exec",
     "policy", "jwt", "oauth", "rand", "vm", "bytes", "error", "borrow",
 ];
 
@@ -603,6 +603,7 @@ pub fn std_source(name: &str) -> Option<&'static str> {
         "task" => Some(include_str!("../../../std/task.witchy")),
         "chan" => Some(include_str!("../../../std/chan.witchy")),
         "reflect" => Some(include_str!("../../../std/reflect.witchy")),
+        "dynamic" => Some(include_str!("../../../std/dynamic.witchy")),
         "meta" => Some(include_str!("../../../std/meta.witchy")),
         "exec" => Some(include_str!("../../../std/exec.witchy")),
         "policy" => Some(include_str!("../../../std/policy.witchy")),

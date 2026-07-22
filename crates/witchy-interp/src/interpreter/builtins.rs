@@ -1532,6 +1532,36 @@ impl Interpreter {
             // endpoint's type are both the identity — the value passes through
             // unchanged, exactly as the executor's former generic `m` did.
             intrinsics::ERASE | intrinsics::UNERASE => Ok(Some(one(args)?)),
+            intrinsics::DYNAMIC_TRY_DECODE_TYPED => match args {
+                [Value::Ctor { name, fields }, Value::Int(expected)]
+                    if name.rsplit('.').next() == Some("Dynamic") =>
+                {
+                    let [descriptor, payload] = fields.as_slice() else {
+                        return err("malformed Dynamic envelope");
+                    };
+                    let Value::Ctor { name, fields } = descriptor else {
+                        return err("malformed Dynamic runtime descriptor");
+                    };
+                    if name.rsplit('.').next() != Some("RuntimeType") {
+                        return err("malformed Dynamic runtime descriptor");
+                    }
+                    let [Value::Int(actual), Value::Str(_)] = fields.as_slice() else {
+                        return err("malformed Dynamic runtime descriptor");
+                    };
+                    let Value::Existential { payload, .. } = payload else {
+                        return err("malformed Dynamic payload envelope");
+                    };
+                    if actual == expected {
+                        Ok(Some(Value::ctor("Some", vec![(**payload).clone()])))
+                    } else {
+                        Ok(Some(Value::ctor("None", Vec::new())))
+                    }
+                }
+                _ => err("typed Dynamic decoding expects a Dynamic value and descriptor ID"),
+            },
+            intrinsics::DYNAMIC_DESCRIPTOR | intrinsics::DYNAMIC_TRY_DECODE => err(
+                "internal error: unspecialized Dynamic operation reached the interpreter",
+            ),
             // String stdlib.
             intrinsics::STRING_LENGTH => match one(args)? {
                 Value::Str(s) => Ok(Some(Value::Int(s.len() as i64))),

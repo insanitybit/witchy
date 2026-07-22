@@ -26,6 +26,9 @@ pub enum IntrinsicId {
     TryContext,
     Erase,
     Unerase,
+    DynamicDescriptor,
+    DynamicTryDecode,
+    DynamicTryDecodeTyped,
     BytesFromString,
     BytesFromList,
     BytesToString,
@@ -161,6 +164,9 @@ pub enum IntrinsicSignature {
     TryContext,
     GenericToMessage,
     MessageToGeneric,
+    GenericToRuntimeType,
+    DynamicToOptionGeneric,
+    DynamicIntToOptionGeneric,
     StringToBytes,
     ListIntToBytes,
     BytesToString,
@@ -406,6 +412,7 @@ pub struct IntrinsicSpec {
 const NO_HELPERS: &[&str] = &[];
 const NO_PRIVATE_CALLERS: &[&str] = &[];
 const MESSAGE_BRIDGE_CALLERS: &[&str] = &["chan", "task"];
+const DYNAMIC_BRIDGE_CALLERS: &[&str] = &["dynamic"];
 const BYTES_BRIDGE_CALLERS: &[&str] = &["bytes"];
 const TESTING_BRIDGE_CALLERS: &[&str] = &["testing"];
 const META_BRIDGE_CALLERS: &[&str] = &["meta"];
@@ -436,6 +443,9 @@ pub const TRY_CONTEXT: &str = "__try_ctx";
 
 pub const ERASE: &str = "__erase";
 pub const UNERASE: &str = "__unerase";
+pub const DYNAMIC_DESCRIPTOR: &str = "__dynamic_descriptor";
+pub const DYNAMIC_TRY_DECODE: &str = "__dynamic_try_decode";
+pub const DYNAMIC_TRY_DECODE_TYPED: &str = "__dynamic_try_decode_typed";
 
 pub const BYTES_FROM_STRING: &str = "__bytes_from_string";
 pub const BYTES_FROM_LIST: &str = "__bytes_from_list";
@@ -847,6 +857,51 @@ pub const ALL: &[IntrinsicSpec] = &[
         wir_host_call: None,
         diagnostic_name: "message recovery",
         private_callers: MESSAGE_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::DynamicDescriptor,
+        name: DYNAMIC_DESCRIPTOR,
+        arity: 1,
+        signature: IntrinsicSignature::GenericToRuntimeType,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "Dynamic descriptor construction",
+        private_callers: DYNAMIC_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::DynamicTryDecode,
+        name: DYNAMIC_TRY_DECODE,
+        arity: 1,
+        signature: IntrinsicSignature::DynamicToOptionGeneric,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "Dynamic decoding",
+        private_callers: DYNAMIC_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::DynamicTryDecodeTyped,
+        name: DYNAMIC_TRY_DECODE_TYPED,
+        arity: 2,
+        signature: IntrinsicSignature::DynamicIntToOptionGeneric,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "typed Dynamic decoding",
+        private_callers: DYNAMIC_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
         id: IntrinsicId::BytesFromString,
