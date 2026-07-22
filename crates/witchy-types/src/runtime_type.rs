@@ -502,7 +502,7 @@ fn validate_capability_free_type(
             }
             let definition = definitions.get(&declaration).ok_or_else(|| {
                 RuntimeTypeError::MissingRuntimeShape {
-                    declaration: declaration.clone(),
+                    declaration: Box::new(declaration.clone()),
                 }
             })?;
             if definition.is_capability {
@@ -959,7 +959,9 @@ pub enum RuntimeTypeError {
     CapabilityType(String),
     CapabilityRetained { capability: String, path: Vec<String> },
     UninspectableDynamicPayload { kind: String, path: Vec<String> },
-    MissingRuntimeShape { declaration: DeclarationIdentity },
+    MissingRuntimeShape {
+        declaration: Box<DeclarationIdentity>,
+    },
     RuntimeShapeArity { name: String, expected: usize, actual: usize },
     MissingAuthenticatedModuleOwners,
     MissingModuleOwner { module: String },
