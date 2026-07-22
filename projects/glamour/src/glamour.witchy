@@ -15,6 +15,7 @@
 // the empty footprint (they touch no Net/Dir/Clock); see `to_json`/the run loop.
 
 import reflect
+import meta
 from json import Json
 
 // ---------------------------------------------------------------------------
@@ -139,11 +140,9 @@ type Attr(msg):
 // is delivered as data into `update`, so the rune still performs no DOM reads.
 
 // ---- constructors / helpers (the names the `html` tag emits) ----
-// The `html` tag emits these QUALIFIED (`glamour.element`/`glamour.text`/
-// `glamour.prop`/`glamour.on`), so they resolve in the TAG's module no matter what
-// the call site binds — a consumer's `let text = …` cannot shadow the emitted
-// `text` constructor (RFC-0006's hygiene). A consumer that writes `html"…"` must
-// still `import glamour` so the qualifier resolves. The hole values are spliced as
+// The typed `html` tag gives these calls definition-site identity, so a consumer's
+// `let text = …` cannot shadow the emitted `text` constructor (RFC-0006/RFC-0080
+// hygiene). The hole values are spliced as
 // already-parsed AST at the tag's markers (see the `html` tag below), so a hole
 // expression resolves at the CALL site — the other half of the hygiene split.
 pub fn element(tag: String, attrs: List(Attr(msg)), children: List(VNode(msg))) -> VNode(msg):
@@ -703,22 +702,22 @@ pub fn step_with(input: String, view: fn(model) -> VNode(msg), update: fn(model,
 // The `html` tag — a COMPILE-TIME tagged literal (RFC-0006). `html"<div…>"`
 // expands DURING COMPILATION: this function runs once in the compiler, receives
 // the static fragments (`parts`) and an OPAQUE MARKER per hole (`holes` — each
-// element is a `__witchy_hole_N` token, NOT the hole's source), and returns witchy
-// EXPRESSION SOURCE constructing a `VNode`. The tag PLACES each marker where the
+// element is a `__witchy_hole_N` token, NOT the hole's source), and returns typed
+// expression syntax constructing a `VNode`. The tag PLACES each marker where the
 // hole's value belongs; `tagged::expand` substitutes the real hole expression
 // (parsed once at the call site, carrying its source position) at each marker. The
-// emitted constructors are QUALIFIED (`glamour.text`/`glamour.element`/…) so they
-// resolve in this module and cannot be shadowed by a call-site local — the hygiene
+// emitted constructors receive definition-site identity, so they resolve in this
+// module and cannot be shadowed by a call-site local — the hygiene
 // split (RFC-0006). The result is spliced over the literal, so both backends
 // compile the same AST.
 //
 // Holes are typed BY POSITION (the headline safety property):
-//   * a hole in TEXT position      -> `glamour.text(<marker>)`  (a text NODE; if
+//   * a hole in TEXT position      -> `text(<marker>)`  (a text NODE; if
 //     the hole is a String it is inert text — XSS-immune; a VNode hole is spliced
 //     directly, the simplest correct rule).
-//   * a hole in ATTRIBUTE-VALUE    -> `glamour.prop("name", <marker>)`
+//   * a hole in ATTRIBUTE-VALUE    -> `prop("name", <marker>)`
 //     position
-//   * a hole in `on:event=${...}`  -> `glamour.on("event", <marker>)`  (events as
+//   * a hole in `on:event=${...}`  -> `on("event", <marker>)`  (events as
 //     data; the hole is a `msg` value).
 //   * a hole in a FORBIDDEN spot   -> `fail("…")` at comptime, aborting the
 //     (e.g. as a tag NAME)            compile with a message naming the problem.
@@ -729,7 +728,7 @@ pub fn step_with(input: String, view: fn(model) -> VNode(msg), update: fn(model,
 // HTML comments, entities beyond the escape set, boolean attributes without a
 // value, and namespaced/SVG tags.
 // ===========================================================================
-pub fn html(parts: List(String), holes: List(String)) -> String:
+pub comptime fn html(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     // A source `\0` escape is legal in a tagged literal's static parts, but NUL
     // is the private hole-marker delimiter below. Reject it before weaving so
     // static text can never be parsed as a synthetic hole (BUG-439).
@@ -744,7 +743,7 @@ pub fn html(parts: List(String), holes: List(String)) -> String:
     let (src, next) = parsed
     // (BUG-227) A template must have exactly ONE root: reject any content after it.
     let _checked = no_trailing_tokens(toks, next)
-    src
+    meta.expr_raw(src)
 
 fn reject_static_nul(parts: List(String)) -> Bool:
     let nul = string.from_code(0)
@@ -1041,10 +1040,10 @@ fn parse_element(toks: List(HtmlTok), at: Int, name: String, attrs: List(HAttr),
     else:
         let attr_src = emit_attrs(attrs, holes)
         if self_close:
-            ("glamour.element(\"" + escape_src(name) + "\", [" + attr_src + "], [])", at + 1)
+            ("element(\"" + escape_src(name) + "\", [" + attr_src + "], [])", at + 1)
         else:
             let (kids_src, after) = parse_children(toks, at + 1, name, holes)
-            ("glamour.element(\"" + escape_src(name) + "\", [" + attr_src + "], [" + kids_src + "])", after)
+            ("element(\"" + escape_src(name) + "\", [" + attr_src + "], [" + kids_src + "])", after)
 
 // Parse children until the matching `</name>`. Returns (comma-joined child
 // sources, index after the close tag).
@@ -1078,22 +1077,21 @@ fn parse_children(toks: List(HtmlTok), at: Int, name: String, holes: List(String
 
 // idiom-exempt: these emitters assemble Witchy source and preserve quoting byte-for-byte.
 
-// Static text -> `glamour.text("…")` with the literal string-escaped for
-// re-parsing. The qualified name resolves in glamour's module (hygiene).
+// Static text -> `text("…")` with the literal string-escaped for re-parsing.
 fn emit_text_literal(s: String) -> String:
-    "glamour.text(\"" + escape_src(s) + "\")"
+    "text(\"" + escape_src(s) + "\")"
 
-// A text-position hole -> `glamour.text(<marker>)`. `holes.at(idx)` is the
+// A text-position hole -> `text(<marker>)`. `holes.at(idx)` is the
 // opaque `__witchy_hole_idx` token; `tagged::expand` substitutes the real hole
 // expression there. This is the SIMPLEST CORRECT rule and the security crux: the
-// hole is ALWAYS wrapped in `glamour.text(...)`, so a String hole becomes an inert
+// hole is ALWAYS wrapped in `text(...)`, so a String hole becomes an inert
 // text NODE (escaped on render — XSS-immune by construction), and the position
 // therefore TYPES the hole as `String` (a VNode in text position is a type error
 // here). Splicing a child VNode directly — to nest a precomputed subtree via
 // `${node}` — is a documented later refinement (it needs the tag to emit the hole
 // unwrapped when its type is `VNode`).
 fn emit_text_hole(idx: Int, holes: List(String)) -> String:
-    "glamour.text(" + holes.at(idx) + ")"
+    "text(" + holes.at(idx) + ")"
 
 fn emit_attrs(attrs: List(HAttr), holes: List(String)) -> String:
     var srcs = []
@@ -1103,9 +1101,9 @@ fn emit_attrs(attrs: List(HAttr), holes: List(String)) -> String:
 
 fn emit_attr(a: HAttr, holes: List(String)) -> String:
     match a:
-        SProp(name, value) -> "glamour.prop(\"" + escape_src(name) + "\", \"" + escape_src(value) + "\")"
-        HProp(name, idx) -> "glamour.prop(\"" + escape_src(name) + "\", " + holes.at(idx) + ")"
-        HOn(event, idx) -> "glamour.on(\"" + escape_src(event) + "\", " + holes.at(idx) + ")"
+        SProp(name, value) -> "prop(\"" + escape_src(name) + "\", \"" + escape_src(value) + "\")"
+        HProp(name, idx) -> "prop(\"" + escape_src(name) + "\", " + holes.at(idx) + ")"
+        HOn(event, idx) -> "on(\"" + escape_src(event) + "\", " + holes.at(idx) + ")"
         Bad(msg) ->
             let _bad = fail("glamour html: ${msg}")
             ""

@@ -2667,6 +2667,12 @@ fn rewrite_expr(
                 rewrite_expr(a, context, line)?;
             }
         }
+        Expr::TaggedLit { tag, .. } => {
+            if context.definition_site && definition_site_tag_target(tag).is_none() {
+                let target_module = definition_site_tag_module(tag, context, line)?;
+                *tag = format!("{DEFINITION_SITE_PREFIX}{target_module}.{tag}");
+            }
+        }
         Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. }
         | Expr::List(args) | Expr::Tuple(args) => {
             for a in args {
@@ -2824,7 +2830,7 @@ fn rewrite_expr(
                 rewrite_expr(&mut arm.body, &nested, line)?;
             }
         }
-        Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::TaggedLit { .. } => {}
+        Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
     }
     Ok(())
 }
@@ -3285,6 +3291,53 @@ fn definition_site_target(
         );
     }
     Ok(Some(target.to_string()))
+}
+
+/// Decode the compiler-owned identity attached to a nested tagged literal.
+/// Source cannot spell the `@` prefix, so this may authorize a private tag in
+/// the module whose generated AST introduced it.
+pub fn definition_site_tag_target(tag: &str) -> Option<(&str, &str)> {
+    tag.strip_prefix(DEFINITION_SITE_PREFIX)?.split_once('.')
+}
+
+fn definition_site_tag_module(
+    tag: &str,
+    context: &RewriteContext<'_>,
+    line: Option<u32>,
+) -> Result<String, LinkError> {
+    if context
+        .fns
+        .get(context.module)
+        .is_some_and(|functions| functions.contains_key(tag))
+    {
+        return Ok(context.module.to_string());
+    }
+    let mut imported = context
+        .imports
+        .iter()
+        .filter(|module| {
+            context
+                .fns
+                .get(*module)
+                .and_then(|functions| functions.get(tag))
+                .is_some_and(|signature| signature.public)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    imported.sort();
+    imported.dedup();
+    match imported.as_slice() {
+        [] => Ok(context.module.to_string()),
+        [module] => Ok(module.clone()),
+        modules => lerr_at(
+            format!(
+                "definition-site tagged literal `{tag}` is ambiguous across directly imported modules: {}",
+                modules.join(", ")
+            ),
+            context.module,
+            line,
+        ),
+    }
 }
 
 fn check_test_only_call(

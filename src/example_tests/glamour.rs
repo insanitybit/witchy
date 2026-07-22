@@ -12,11 +12,13 @@ use crate::{codegen, interpreter, parser, typeck};
     fn tagged_literal_expands_identically_on_both_backends() {
         let src = "import list\n\
                    \n\
-                   fn twice(parts: List(String), holes: List(String)) -> String:\n\
+                   import meta\n\
+                   \n\
+                   comptime fn twice(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
                    \x20   let a = list.at(parts, 0)\n\
                    \x20   let b = list.at(parts, 1)\n\
                    \x20   let h = list.at(holes, 0)\n\
-                   \x20   \"\\\"\" + a + \"\\\" + \" + h + \" + \" + h + \" + \\\"\" + b + \"\\\"\"\n\
+                   \x20   meta.expr_raw(\"\\\"\" + a + \"\\\" + \" + h + \" + \" + h + \" + \\\"\" + b + \"\\\"\")\n\
                    \n\
                    fn main(console: Console):\n\
                    \x20   let v = \"X\"\n\

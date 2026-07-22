@@ -708,14 +708,14 @@ pub enum Expr {
         body: Block,
     },
     /// `tag"a${x}b"` — a compile-time tagged literal (RFC-0006). `tag` is an
-    /// ordinary compile-time function `fn(parts: List(String), holes: List(String))
-    /// -> String` that returns witchy EXPRESSION SOURCE. `parts` are the static
+    /// `comptime fn(parts: List(String), holes: List(String)) -> meta.ExprSyntax`.
+    /// `parts` are the static
     /// fragments (`["a", "b"]`); `holes` are each interpolation's SOURCE TEXT
     /// (`["x"]`); `hole_spans` is each hole's `(line, col)` start position in the
     /// ORIGINAL source. `crate::tagged::expand` passes the tag an OPAQUE MARKER
     /// (`__witchy_hole_N`) per hole — the tag places markers where the hole's value
-    /// goes — runs `tag(parts, markers)` at compile time, parses the returned
-    /// string as an expression, then SUBSTITUTES the real hole expression (parsed
+    /// goes — runs `tag(parts, markers)` at compile time, receives one typed
+    /// expression AST, then SUBSTITUTES the real hole expression (parsed
     /// once from `holes[N]` and STAMPED with `hole_spans[N]`) at each marker. This
     /// is RFC-0006's hygiene split: tag-emitted nodes carry the tag's scope (the
     /// tag emits qualified `glamour.text(…)` etc.), hole nodes carry the call site.

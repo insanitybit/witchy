@@ -8,17 +8,267 @@
 use std::collections::{HashMap, HashSet};
 
 use witchy_syntax::ast::{
-    collect_type_names, Block, Expr, Function, Item, Pattern, Stmt, Type,
+    collect_type_names, Block, Expr, Function, Item, Module, Pattern, Stmt, Type,
 };
 
-/// The names of every local item reachable from a root function.
-pub(crate) fn reachable_from_function(items: &[Item], root: &str) -> HashSet<String> {
-    let ctx = Reachability::new(items);
+const TAGGED_LITERAL_REF: &str = "@compiler:tagged-literal";
+const IMPL_REF_PREFIX: &str = "@compiler:impl:";
+
+pub(crate) fn impl_item_identity(index: usize) -> String {
+    format!("{IMPL_REF_PREFIX}{index}")
+}
+
+/// Module-qualified item identities reachable from one function.
+pub(crate) fn reachable_from_module_function(
+    modules: &[(String, Module)],
+    root_module: &str,
+    root: &str,
+) -> HashSet<(String, String)> {
     let mut keep = HashSet::new();
     let mut work = Vec::new();
-    ctx.push_ref(root, &mut keep, &mut work);
-    ctx.drain(&mut keep, &mut work);
+    push_module_ref(modules, root_module, root, &mut keep, &mut work);
+
+    while let Some((module_name, item_name)) = work.pop() {
+        let Some((_, module)) = modules.iter().find(|(name, _)| name == &module_name) else {
+            continue;
+        };
+        let mut refs = HashSet::new();
+        if let Some(item) = module
+            .items
+            .iter()
+            .enumerate()
+            .find_map(|(index, item)| item_owns_name(item, index, &item_name).then_some(item))
+        {
+            match item {
+                Item::Function(function) => collect_function_refs(function, &mut refs),
+                Item::Type(ty) => {
+                    for variant in &ty.variants {
+                        for field in &variant.fields {
+                            collect_type_names(field, &mut refs);
+                        }
+                    }
+                }
+                Item::TypeAlias { ty, .. } => collect_type_names(ty, &mut refs),
+                Item::Trait(trait_) => {
+                    refs.extend(trait_.supertraits.iter().cloned());
+                    for method in &trait_.methods {
+                        for param in &method.params {
+                            if let Some(ty) = &param.ty {
+                                collect_type_names(ty, &mut refs);
+                            }
+                        }
+                        if let Some(ty) = &method.ret {
+                            collect_type_names(ty, &mut refs);
+                        }
+                        if let Some(default) = &method.default {
+                            collect_refs_block(default, &mut refs);
+                        }
+                    }
+                }
+                Item::Impl(impl_) => {
+                    if let Some(trait_name) = &impl_.trait_name {
+                        refs.insert(trait_name.clone());
+                    }
+                    refs.insert(impl_.type_name.clone());
+                    for ty in impl_.trait_args.iter().chain(&impl_.target_args) {
+                        collect_type_names(ty, &mut refs);
+                    }
+                    for (_, trait_name, args) in &impl_.bounds {
+                        refs.insert(trait_name.clone());
+                        for ty in args {
+                            collect_type_names(ty, &mut refs);
+                        }
+                    }
+                    for method in &impl_.methods {
+                        collect_function_refs(method, &mut refs);
+                    }
+                }
+                Item::Const { value, .. } => collect_refs_expr(value, &mut refs),
+                _ => {}
+            }
+            if matches!(item, Item::Type(_) | Item::Trait(_)) {
+                enqueue_matching_impls(
+                    modules,
+                    &module_name,
+                    &item_name,
+                    &mut keep,
+                    &mut work,
+                );
+            }
+        }
+        for name in refs {
+            push_module_ref(modules, &module_name, &name, &mut keep, &mut work);
+        }
+    }
     keep
+}
+
+fn collect_function_refs(function: &Function, refs: &mut HashSet<String>) {
+    collect_refs_block(&function.body, refs);
+    for param in &function.params {
+        if let Some(ty) = &param.ty {
+            collect_type_names(ty, refs);
+        }
+    }
+    if let Some(ty) = &function.ret {
+        collect_type_names(ty, refs);
+    }
+    for (_, trait_name, args) in &function.bounds {
+        refs.insert(trait_name.clone());
+        for ty in args {
+            collect_type_names(ty, refs);
+        }
+    }
+}
+
+fn enqueue_matching_impls(
+    modules: &[(String, Module)],
+    item_module: &str,
+    item_name: &str,
+    keep: &mut HashSet<(String, String)>,
+    work: &mut Vec<(String, String)>,
+) {
+    let wanted = (item_module.to_string(), item_name.to_string());
+    for (module_name, module) in modules {
+        for (index, item) in module.items.iter().enumerate() {
+            let Item::Impl(impl_) = item else { continue };
+            let type_matches = resolve_named_identity(modules, module_name, &impl_.type_name)
+                .is_some_and(|identity| identity == wanted);
+            let trait_matches = impl_
+                .trait_name
+                .as_deref()
+                .and_then(|name| resolve_named_identity(modules, module_name, name))
+                .is_some_and(|identity| identity == wanted);
+            if !type_matches && !trait_matches {
+                continue;
+            }
+            let key = (module_name.clone(), impl_item_identity(index));
+            if keep.insert(key.clone()) {
+                work.push(key);
+            }
+        }
+    }
+}
+
+pub(crate) fn block_contains_tagged_literal(block: &Block) -> bool {
+    let mut refs = HashSet::new();
+    collect_refs_block(block, &mut refs);
+    refs.contains(TAGGED_LITERAL_REF)
+}
+
+pub(crate) fn expr_contains_tagged_literal(expr: &Expr) -> bool {
+    let mut refs = HashSet::new();
+    collect_refs_expr(expr, &mut refs);
+    refs.contains(TAGGED_LITERAL_REF)
+}
+
+fn resolve_named_identity(
+    modules: &[(String, Module)],
+    owner: &str,
+    reference: &str,
+) -> Option<(String, String)> {
+    if let Some((module_name, name)) = reference.split_once('.') {
+        let (_, module) = modules
+            .iter()
+            .find(|(candidate, _)| candidate == module_name)?;
+        return owned_item_name(module, name).map(|name| (module_name.to_string(), name));
+    }
+
+    let (_, module) = modules.iter().find(|(name, _)| name == owner)?;
+    if let Some(name) = owned_item_name(module, reference) {
+        return Some((owner.to_string(), name));
+    }
+
+    let mut imported = HashSet::new();
+    for (source, names) in &module.from_imports {
+        if !names.iter().any(|name| name == reference) {
+            continue;
+        }
+        let Some((_, source_module)) = modules.iter().find(|(name, _)| name == source) else {
+            continue;
+        };
+        if let Some(name) = owned_item_name(source_module, reference) {
+            imported.insert((source.clone(), name));
+        }
+    }
+    (imported.len() == 1).then(|| imported.into_iter().next()).flatten()
+}
+
+fn push_module_ref(
+    modules: &[(String, Module)],
+    owner: &str,
+    reference: &str,
+    keep: &mut HashSet<(String, String)>,
+    work: &mut Vec<(String, String)>,
+) {
+    let mut enqueue = |module: &str, name: String| {
+        let key = (module.to_string(), name);
+        if keep.insert(key.clone()) {
+            work.push(key);
+        }
+    };
+
+    if let Some((module_name, name)) = reference.split_once('.') {
+        if let Some((_, module)) = modules.iter().find(|(candidate, _)| candidate == module_name) {
+            if let Some(owned) = owned_item_name(module, name) {
+                enqueue(module_name, owned);
+            }
+        }
+        return;
+    }
+
+    let Some((_, module)) = modules.iter().find(|(name, _)| name == owner) else {
+        return;
+    };
+    if let Some(owned) = owned_item_name(module, reference) {
+        enqueue(owner, owned);
+        return;
+    }
+    for (source, names) in &module.from_imports {
+        if !names.iter().any(|name| name == reference) {
+            continue;
+        }
+        if let Some((_, imported)) = modules.iter().find(|(name, _)| name == source) {
+            if let Some(owned) = owned_item_name(imported, reference) {
+                enqueue(source, owned);
+            }
+        }
+    }
+}
+
+fn owned_item_name(module: &Module, name: &str) -> Option<String> {
+    module.items.iter().find_map(|item| match item {
+        Item::Function(function) if function.name == name => Some(function.name.clone()),
+        Item::Type(ty) if ty.name == name => Some(ty.name.clone()),
+        Item::Type(ty) if ty.variants.iter().any(|variant| variant.name == name) => {
+            Some(ty.name.clone())
+        }
+        Item::Trait(trait_) if trait_.name == name => Some(trait_.name.clone()),
+        Item::Const { name: constant, .. } if constant == name => Some(constant.clone()),
+        Item::TypeAlias { name: alias, .. } if alias == name => Some(alias.clone()),
+        _ => None,
+    })
+}
+
+pub(crate) fn module_item_identity(
+    modules: &[(String, Module)],
+    module_name: &str,
+    name: &str,
+) -> Option<String> {
+    let (_, module) = modules.iter().find(|(candidate, _)| candidate == module_name)?;
+    owned_item_name(module, name)
+}
+
+fn item_owns_name(item: &Item, index: usize, name: &str) -> bool {
+    match item {
+        Item::Function(function) => function.name == name,
+        Item::Type(ty) => ty.name == name,
+        Item::Trait(trait_) => trait_.name == name,
+        Item::Impl(_) => name == impl_item_identity(index),
+        Item::Const { name: constant, .. } => constant == name,
+        Item::TypeAlias { name: alias, .. } => alias == name,
+        _ => false,
+    }
 }
 
 /// The names of every local item reachable from a root block.
@@ -307,7 +557,9 @@ fn collect_refs_expr(e: &Expr, out: &mut HashSet<String>) {
         | Expr::Float(_)
         | Expr::Duration(_)
         | Expr::Str(_)
-        | Expr::Bool(_)
-        | Expr::TaggedLit { .. } => {}
+        | Expr::Bool(_) => {}
+        Expr::TaggedLit { .. } => {
+            out.insert(TAGGED_LITERAL_REF.to_string());
+        }
     }
 }

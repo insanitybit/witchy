@@ -215,19 +215,28 @@ fn main(console: Console):
 A string literal written *immediately after an identifier* — `tag"…"` — is a
 **tagged literal**. Like `comptime` it runs at compile time, but in *expression*
 position: the lexer splits the literal into its static fragments and its `${…}`
-holes. New tags should use the typed signature
+holes. Tags use the typed signature
 
 ```text
 comptime fn tag(parts: List(String), holes: List(String)) -> meta.ExprSyntax
 ```
 
-Legacy `String`-returning tags remain an explicit migration path, but new code
-should not use them. With `parts` = the static fragments and `holes` = one
+String-returning tags are rejected. With `parts` = the static fragments and `holes` = one
 **opaque marker** per hole,
 The tag returns the typed expression that replaces the literal. Convert a marker
 to its explicit expression category with `meta.expr_raw`, or compose it through
 a structural quote or builder. The compiler substitutes the real hole expression
 — resolved at the call site — and splices the result before type-checking.
+Reachable tag evaluator items do not invoke tagged literals in their bodies or
+initializers; to compose tags, return nested tagged-literal syntax. Dynamic source is parsed with
+the tag definition's direct imports, while hole expressions use the invocation
+module's direct imports. Transitive imports never become implicit qualifier
+scope.
+The evaluator retains the selected tag's module-qualified helper closure,
+including constants, constructors, custom traits, implementations, and imported
+comptime helpers. Duplicate tag names from direct imports are an error. Bundled
+standard-library modules are not tag-entry namespaces; tags live in ordinary
+imported runes such as `glamour`.
 
 `quote expr:` results, including structurally substituted expression templates,
 stay as compiler-owned AST through this boundary. Direct functions, types,

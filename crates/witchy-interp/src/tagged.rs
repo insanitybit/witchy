@@ -1,9 +1,7 @@
 //! `tag"…${expr}…"` — compile-time tagged literals (RFC-0006).
 //!
-//! A *tag* is an ordinary compile-time function
-//! `fn <tag>(parts: List(String), holes: List(String)) -> String` that returns
-//! witchy EXPRESSION SOURCE, or the RFC-0080 typed form
-//! `fn <tag>(parts: List(String), holes: List(String)) -> meta.ExprSyntax`. A
+//! A *tag* is a `comptime` function
+//! `comptime fn <tag>(parts: List(String), holes: List(String)) -> meta.ExprSyntax`. A
 //! tagged literal `tag"a${x}b"` is expanded AT COMPILE TIME — before type-checking.
 //!
 //! ## Marker substitution (the hygiene split)
@@ -13,7 +11,7 @@
 //! expression and cannot collide with user code; the `__witchy_` prefix is
 //! reserved-synthetic). The tag PLACES these markers wherever a hole's value
 //! belongs (an `html` text hole emits `glamour.text(__witchy_hole_0)`). After the
-//! tag returns source and we parse it to an AST, `expand` walks that AST and
+//! tag returns `ExprSyntax`, `expand` walks that AST and
 //! REPLACES each `__witchy_hole_N` leaf with a CLONE of the hole's ACTUAL
 //! expression — parsed ONCE from the original hole source and STAMPED with the
 //! hole's captured `(line, col)` (via a one-statement `Expr::Block` whose `lines`
@@ -33,18 +31,14 @@
 //!
 //! Typed RFC-0080 tags emit an expression event through the same interpreter
 //! expansion channel as `comptime` item events. A compiler-owned quotation
-//! transfers its AST directly; compatibility `ExprSyntax` and legacy `String`
-//! results retain the explicit source-parse fallback. Both runtime backends then
+//! transfers its AST directly. `meta.expr_raw` is the one explicit bridge for a
+//! tag that must construct source dynamically. Both runtime backends then
 //! compile the same expanded AST. `Expr::TaggedLit` is therefore UNREACHABLE
 //! after this pass; typeck, the interpreter, and both codegen backends panic on it.
 
-use witchy_syntax::ast::{
-    Block, CompilerBlockSyntax, CompilerExprSyntax, CompilerItemSyntax, CompilerPatternSyntax,
-    CompilerStmtSyntax, CompilerTypeSyntax, Expr, Function, Item, MatchArm, Module, Param, Stmt,
-    Type,
-};
+use witchy_syntax::ast::{Block, Expr, Function, Item, MatchArm, Module, Stmt, Type};
 use std::cell::Cell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// A tag may emit a tag (re-expansion); cap the nesting so a self-referential or
 /// runaway tag fails loudly rather than looping.
@@ -89,75 +83,38 @@ pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) ->
     // it would re-enter this pass forever; see linker.rs and `expand_one`).
     let by_name: HashMap<&str, &Module> =
         siblings.iter().map(|(n, m)| (n.as_str(), m)).collect();
-    let mut items = module.items.clone();
-    let mut compiler_item_syntax = module.compiler_item_syntax.clone();
-    let mut compiler_expr_syntax = module.compiler_expr_syntax.clone();
     let mut tag_origins = HashMap::new();
+    let mut ambiguous_tags = HashMap::new();
     record_tag_origins(
         &mut tag_origins,
+        &mut ambiguous_tags,
+        name,
         name,
         &module.items,
         &module.item_lines,
+        false,
     );
-    let mut compiler_type_syntax = module.compiler_type_syntax.clone();
-    let mut compiler_pattern_syntax = module.compiler_pattern_syntax.clone();
-    let mut compiler_stmt_syntax = module.compiler_stmt_syntax.clone();
-    let mut compiler_block_syntax = module.compiler_block_syntax.clone();
-    let mut std_imports: Vec<String> = Vec::new();
-    let mut std_from_imports: Vec<(String, Vec<String>)> = Vec::new();
-    merge_std_from_imports(&mut std_from_imports, &module.from_imports);
-    let mut seen = HashSet::new();
-    seen.insert(name.to_string());
-    let mut frontier: Vec<String> = module.imports.clone();
-    while let Some(imp) = frontier.pop() {
+    for imp in &module.imports {
         if witchy_syntax::linker::STD_MODULES.contains(&imp.as_str()) {
-            if !std_imports.contains(&imp) {
-                std_imports.push(imp);
-            }
             continue;
         }
-        if !seen.insert(imp.clone()) {
-            continue;
-        }
-        if let Some(m) = by_name.get(imp.as_str()) {
-            merge_std_from_imports(&mut std_from_imports, &m.from_imports);
-            items.extend(m.items.iter().cloned());
-            compiler_item_syntax.extend(m.compiler_item_syntax.iter().cloned());
-            record_tag_origins(&mut tag_origins, &imp, &m.items, &m.item_lines);
-            compiler_expr_syntax.extend(m.compiler_expr_syntax.iter().cloned());
-            compiler_type_syntax.extend(m.compiler_type_syntax.iter().cloned());
-            compiler_pattern_syntax.extend(m.compiler_pattern_syntax.iter().cloned());
-            compiler_stmt_syntax.extend(m.compiler_stmt_syntax.iter().cloned());
-            compiler_block_syntax.extend(m.compiler_block_syntax.iter().cloned());
-            frontier.extend(m.imports.iter().cloned());
-        }
-    }
-    // Module names that may appear as a QUALIFIER in a tag's generated source: the
-    // tag emits hygienic, qualified constructors (`glamour.text(…)`), and that
-    // source is parsed in a throwaway wrapper whose `imports` decide whether `m.f`
-    // is a qualified call vs. a UFCS method call. Seed the consumer itself plus
-    // every module it imports (transitively) so any qualifier the tag could emit
-    // parses as a call. (`seen` already accumulated the consumer + visited
-    // non-std imports; add the std imports too.)
-    let mut qualifiers: Vec<String> = seen.into_iter().collect();
-    for s in &std_imports {
-        if !qualifiers.contains(s) {
-            qualifiers.push(s.clone());
+        if let Some(imported) = by_name.get(imp.as_str()) {
+            record_tag_origins(
+                &mut tag_origins,
+                &mut ambiguous_tags,
+                name,
+                imp,
+                &imported.items,
+                &imported.item_lines,
+                true,
+            );
         }
     }
     let ctx = Context {
         name: name.to_string(),
-        items,
-        imports: std_imports,
-        from_imports: std_from_imports,
-        qualifiers,
-        compiler_item_syntax,
-        compiler_expr_syntax,
+        invocation_qualifiers: module.imports.clone(),
         tag_origins,
-        compiler_type_syntax,
-        compiler_pattern_syntax,
-        compiler_stmt_syntax,
-        compiler_block_syntax,
+        ambiguous_tags,
         definition_modules: std::iter::once((name.to_string(), module.clone()))
             .chain(siblings.iter().cloned())
             .collect(),
@@ -192,23 +149,23 @@ pub fn expand(name: &str, module: &mut Module, siblings: &[(String, Module)]) ->
     Ok(())
 }
 
+fn expand_tag_program(
+    name: &str,
+    module: &mut Module,
+    _siblings: &[(String, Module)],
+) -> Result<witchy_syntax::origin::OriginTable, String> {
+    crate::comptime::expand_with_origins(name, module)
+}
+
 /// The per-module context a tag runs against.
 struct Context {
     name: String,
-    items: Vec<Item>,
-    imports: Vec<String>,
-    from_imports: Vec<(String, Vec<String>)>,
     /// Module names a tag's generated source may qualify against (the consumer +
     /// its transitive imports). Seeded as `import` lines in the throwaway parse so
     /// `glamour.text(…)` parses as a qualified call, not a method call.
-    qualifiers: Vec<String>,
-    compiler_item_syntax: Vec<CompilerItemSyntax>,
-    compiler_expr_syntax: Vec<CompilerExprSyntax>,
+    invocation_qualifiers: Vec<String>,
     tag_origins: HashMap<String, TagOrigin>,
-    compiler_type_syntax: Vec<CompilerTypeSyntax>,
-    compiler_pattern_syntax: Vec<CompilerPatternSyntax>,
-    compiler_stmt_syntax: Vec<CompilerStmtSyntax>,
-    compiler_block_syntax: Vec<CompilerBlockSyntax>,
+    ambiguous_tags: HashMap<String, Vec<String>>,
     definition_modules: Vec<(String, Module)>,
     /// Stable traversal ordinal used to give each tagged-literal evaluator an
     /// independent RFC-0080 fresh-name namespace.
@@ -223,17 +180,44 @@ struct TagOrigin {
 
 fn record_tag_origins(
     origins: &mut HashMap<String, TagOrigin>,
+    ambiguities: &mut HashMap<String, Vec<String>>,
+    local_module: &str,
     module: &str,
     items: &[Item],
     item_lines: &[u32],
+    public_only: bool,
 ) {
     for (index, item) in items.iter().enumerate() {
         if let Item::Function(function) = item {
+            if public_only && !function.public {
+                continue;
+            }
             let definition_line = item_lines
                 .get(index)
                 .copied()
                 .filter(|line| *line != u32::MAX)
                 .unwrap_or(0);
+            if public_only {
+                if let Some(modules) = ambiguities.get_mut(&function.name) {
+                    if !modules.iter().any(|existing| existing == module) {
+                        modules.push(module.to_string());
+                        modules.sort();
+                    }
+                    continue;
+                }
+                if let Some(existing) = origins.get(&function.name) {
+                    if existing.module == local_module {
+                        continue;
+                    }
+                    if existing.module != module {
+                        let mut modules = vec![existing.module.clone(), module.to_string()];
+                        modules.sort();
+                        ambiguities.insert(function.name.clone(), modules);
+                        origins.remove(&function.name);
+                        continue;
+                    }
+                }
+            }
             origins
                 .entry(function.name.clone())
                 .or_insert_with(|| TagOrigin {
@@ -245,15 +229,17 @@ fn record_tag_origins(
 }
 
 fn expansion_site(ctx: &Context, tag: &str, invocation_line: u32) -> String {
+    let display_tag = witchy_syntax::linker::definition_site_tag_target(tag)
+        .map_or(tag, |(_, name)| name);
     let invocation = if invocation_line == 0 {
-        format!("module `{}`: tagged literal `{tag}`", ctx.name)
+        format!("module `{}`: tagged literal `{display_tag}`", ctx.name)
     } else {
         format!(
-            "module `{}`: tagged literal `{tag}` at invocation line {invocation_line}",
+            "module `{}`: tagged literal `{display_tag}` at invocation line {invocation_line}",
             ctx.name
         )
     };
-    let Some(origin) = ctx.tag_origins.get(tag) else {
+    let Some((_, origin)) = tag_function(ctx, tag) else {
         return invocation;
     };
     if origin.definition_line == 0 {
@@ -284,12 +270,6 @@ fn expansion_site_with_trace(
             .collect::<Vec<_>>()
             .join("\n")
     )
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TagOutput {
-    SourceString,
-    ExprSyntax,
 }
 
 /// Replace `expr` with its expansion if it is (or contains) a `TaggedLit`,
@@ -496,20 +476,61 @@ fn walk_block_depth(
     Ok(())
 }
 
-fn tag_output(ctx: &Context, tag: &str) -> TagOutput {
-    for item in &ctx.items {
-        let Item::Function(f) = item else {
-            continue;
-        };
-        if f.name != tag {
-            continue;
-        }
-        if f.ret.as_ref().is_some_and(is_expr_syntax_type) {
-            return TagOutput::ExprSyntax;
-        }
-        return TagOutput::SourceString;
+fn validate_tag<'a>(
+    ctx: &'a Context,
+    tag: &str,
+) -> Result<(&'a Function, TagOrigin), String> {
+    if let Some(modules) = ctx.ambiguous_tags.get(tag) {
+        return Err(format!(
+            "is ambiguous across directly imported modules: {}",
+            modules.join(", ")
+        ));
     }
-    TagOutput::SourceString
+    let Some((f, origin)) = tag_function(ctx, tag) else {
+        return Err("is not defined or is not public in a directly imported module".into());
+    };
+    if !f.comptime_only {
+        return Err("must be declared `comptime`".into());
+    }
+    if f.ret.as_ref().is_some_and(is_expr_syntax_type) {
+        Ok((f, origin))
+    } else {
+        Err("must return meta.ExprSyntax".into())
+    }
+}
+
+fn tag_function<'a>(ctx: &'a Context, tag: &str) -> Option<(&'a Function, TagOrigin)> {
+    let (module_name, name, recorded_origin) = if let Some((module, name)) =
+        witchy_syntax::linker::definition_site_tag_target(tag)
+    {
+        (module.to_string(), name, None)
+    } else {
+        let origin = ctx.tag_origins.get(tag)?.clone();
+        (origin.module.clone(), tag, Some(origin))
+    };
+    if witchy_syntax::linker::STD_MODULES.contains(&module_name.as_str()) {
+        return None;
+    }
+    let (_, module) = ctx
+        .definition_modules
+        .iter()
+        .find(|(candidate, _)| candidate == &module_name)?;
+    let (index, function) = module.items.iter().enumerate().find_map(|(index, item)| {
+        match item {
+            Item::Function(function) if function.name == name => Some((index, function)),
+            _ => None,
+        }
+    })?;
+    let origin = recorded_origin.unwrap_or_else(|| TagOrigin {
+        module: module_name,
+        definition_line: module
+            .item_lines
+            .get(index)
+            .copied()
+            .filter(|line| *line != u32::MAX)
+            .unwrap_or(0),
+    });
+    Some((function, origin))
 }
 
 fn is_expr_syntax_type(ty: &Type) -> bool {
@@ -518,57 +539,13 @@ fn is_expr_syntax_type(ty: &Type) -> bool {
         Type::Named(name, args) => {
             args.is_empty() && (name == "ExprSyntax" || name == "meta.ExprSyntax")
         }
-        Type::Dyn(_, _) | Type::Tuple(_) | Type::Fn(_, _, _) => false,
-        Type::RecordCompose { base, fields } => {
-            is_expr_syntax_type(base)
-                || fields.iter().any(|(_, field)| is_expr_syntax_type(field))
-        }
-    }
-}
-
-fn merge_std_from_imports(target: &mut Vec<(String, Vec<String>)>, imports: &[(String, Vec<String>)]) {
-    for (module, names) in imports {
-        if witchy_syntax::linker::STD_MODULES.contains(&module.as_str()) {
-            merge_from_import(target, module, names);
-        }
-    }
-}
-
-fn merge_from_import(target: &mut Vec<(String, Vec<String>)>, module: &str, names: &[String]) {
-    if let Some((_, existing)) = target.iter_mut().find(|(m, _)| m == module) {
-        for name in names {
-            if !existing.contains(name) {
-                existing.push(name.clone());
-            }
-        }
-    } else {
-        target.push((module.to_string(), names.to_vec()));
-    }
-}
-
-fn ensure_from_imports(target: &mut Vec<(String, Vec<String>)>, module: &str, names: &[&str]) {
-    if let Some((_, existing)) = target.iter_mut().find(|(m, _)| m == module) {
-        for name in names {
-            let name = (*name).to_string();
-            if !existing.contains(&name) {
-                existing.push(name);
-            }
-        }
-    } else {
-        target.push((
-            module.to_string(),
-            names.iter().map(|name| (*name).to_string()).collect(),
-        ));
+        Type::Dyn(_, _) | Type::Tuple(_) | Type::Fn(_, _, _) | Type::RecordCompose { .. } => false,
     }
 }
 
 /// Run one tag: build a synthetic comptime program calling `tag(parts, holes)`,
-/// run it on the reference interpreter, and parse the emitted source as an
-/// expression. Mirrors `comptime::expand`'s construction (the `emit` print
-/// closure + std imports) but the program calls the tag rather than running a
-/// user block. Legacy tags return `String`; RFC-0080 tags may return
-/// `meta.ExprSyntax`, which the harness destructures internally before printing
-/// the source payload.
+/// run it on the reference interpreter, and transfer its emitted expression AST.
+/// A tag must return `meta.ExprSyntax`.
 fn expand_one(
     ctx: &Context,
     tag: &str,
@@ -592,67 +569,47 @@ fn expand_one(
     // the tag returns. This is the hygiene split (RFC-0006): the tag never sees —
     // and so cannot mangle or capture — the author's hole expression.
     let markers: Vec<String> = (0..holes.len()).map(hole_marker).collect();
-    let output = tag_output(ctx, tag);
+    let (selected_tag, definition_origin) = validate_tag(ctx, tag)
+        .map_err(|reason| format!("{}: tag `{tag}` {reason}", where_()))?;
     let tag_call = Expr::Call {
-        name: tag.to_string(),
+        name: selected_tag.name.clone(),
         args: vec![str_list(parts), str_list(&markers)],
     };
 
-    // fn main(console: Console):
-    //     let emit = fn(line): console.print(line)
-    //     emit(<tag>([parts...], [markers...]))
-    //
-    // Typed RFC-0080 tags send their sealed value through a compiler-only
-    // expression event. Compiler-owned syntax transfers its AST directly;
-    // source-backed compatibility values are classified by the interpreter.
-    let emit_closure = Stmt::Let {
-        ty: None,
-        name: "emit".into(),
-        mutable: false,
-        value: Expr::Lambda {
-            params: vec![Param {
-                name: "line".into(),
-                ty: Some(Type::Named("String".into(), Vec::new())),
-                convention: Default::default(),
-                default: None,
-            }],
-            body: Block {
-                stmts: vec![Stmt::Expr(Expr::MethodCall {
-                    receiver: Box::new(Expr::Var("console".into())),
-                    method: "print".into(),
-                    args: vec![Expr::Var("line".into())],
-                })],
-                lines: vec![0],
-                region: None,
-            },
-            ret: None,
+    let emit_call = Stmt::Expr(Expr::Call {
+        name: witchy_syntax::intrinsics::COMPILER_EMIT_EXPR.into(),
+        args: vec![tag_call],
+    });
+    let bridge_name = "@compiler:tag-bridge";
+    let bridge = Function {
+        public: true,
+        comptime_only: true,
+        attributes: Vec::new(),
+        name: bridge_name.into(),
+        params: Vec::new(),
+        ret: None,
+        body: Block {
+            stmts: vec![emit_call],
+            lines: vec![0],
+            region: None,
         },
-    };
-    let emit_call = match output {
-        TagOutput::SourceString => Stmt::Expr(Expr::Call {
-            name: "emit".into(),
-            args: vec![tag_call],
-        }),
-        TagOutput::ExprSyntax => Stmt::Expr(Expr::Call {
-            name: witchy_syntax::intrinsics::COMPILER_EMIT_EXPR.into(),
-            args: vec![tag_call],
-        }),
+        bounds: Vec::new(),
+        is_gen: false,
+        is_async: false,
     };
     let main = Function {
         public: false,
         comptime_only: false,
         attributes: Vec::new(),
         name: "main".into(),
-        params: vec![Param {
-            name: "console".into(),
-            ty: Some(Type::Named("Console".into(), Vec::new())),
-            convention: Default::default(),
-            default: None,
-        }],
+        params: Vec::new(),
         ret: None,
         body: Block {
-            stmts: vec![emit_closure, emit_call],
-            lines: vec![0, 0],
+            stmts: vec![Stmt::Expr(Expr::Call {
+                name: format!("{}.{bridge_name}", definition_origin.module),
+                args: Vec::new(),
+            })],
+            lines: vec![0],
             region: None,
         },
         bounds: Vec::new(),
@@ -674,56 +631,164 @@ fn expand_one(
     // EMITS as source (`element`/`text`/`prop`) live in the GENERATED expression,
     // which is spliced into the consumer and type-checked there — they are not
     // roots of this program, so pruning them out is correct.
-    let keep = crate::reachability::reachable_from_function(&ctx.items, tag);
-    let mut items: Vec<Item> = ctx
-        .items
+    let root_name = selected_tag.name.clone();
+    let keep = crate::reachability::reachable_from_module_function(
+        &ctx.definition_modules,
+        &definition_origin.module,
+        &root_name,
+    );
+    for (module_name, module) in &ctx.definition_modules {
+        for (item_index, item) in module.items.iter().enumerate() {
+            match item {
+                Item::Function(function)
+                    if keep.contains(&(module_name.clone(), function.name.clone()))
+                        && crate::reachability::block_contains_tagged_literal(&function.body) =>
+                {
+                    return Err(format!(
+                        "{}: tag evaluator function `{}.{}` contains a tagged literal; nested tags must be returned as expression syntax",
+                        where_(),
+                        module_name,
+                        function.name,
+                    ));
+                }
+                Item::Trait(trait_)
+                    if keep.contains(&(module_name.clone(), trait_.name.clone())) =>
+                {
+                    for method in &trait_.methods {
+                        if method.default.as_ref().is_some_and(
+                            crate::reachability::block_contains_tagged_literal,
+                        ) {
+                            return Err(format!(
+                                "{}: tag evaluator trait default `{}.{}` contains a tagged literal; nested tags must be returned as expression syntax",
+                                where_(),
+                                trait_.name,
+                                method.name,
+                            ));
+                        }
+                    }
+                }
+                Item::Impl(impl_)
+                    if keep.contains(&(
+                        module_name.clone(),
+                        crate::reachability::impl_item_identity(item_index),
+                    )) =>
+                {
+                    for method in &impl_.methods {
+                        if crate::reachability::block_contains_tagged_literal(&method.body) {
+                            return Err(format!(
+                                "{}: tag evaluator implementation method `{}.{}` contains a tagged literal; nested tags must be returned as expression syntax",
+                                where_(),
+                                impl_.type_name,
+                                method.name,
+                            ));
+                        }
+                    }
+                }
+                Item::Const { name, value }
+                    if keep.contains(&(module_name.clone(), name.clone()))
+                        && crate::reachability::expr_contains_tagged_literal(value) =>
+                {
+                    return Err(format!(
+                        "{}: tag evaluator constant `{}.{}` contains a tagged literal; nested tags must be returned as expression syntax",
+                        where_(),
+                        module_name,
+                        name,
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut modules: Vec<(String, Module)> = ctx
+        .definition_modules
         .iter()
-        .filter(|it| match it {
-            Item::Function(f) => f.name != "main" && keep.contains(f.name.as_str()),
-            Item::Type(t) => keep.contains(t.name.as_str()),
-            // A `trait` declaration is small and a reachable bounded tag (`where a:
-            // T`) needs it in scope; keeping all of them is harmless (no body to
-            // reference a pruned type).
-            Item::Trait(_) => true,
-            // Everything else is DROPPED. An `impl` in particular must NOT be kept
-            // blindly: `derive(Reflect)` on a CONSUMER type (e.g. `type Msg
-            // derive(Reflect)`) lowers to an `impl Reflect for Msg` whose body
-            // names `Msg`. The synthetic main only ever calls the tag, so that
-            // impl is never used — and `Msg` is unreachable from the tag, so
-            // keeping the impl would leave it dangling ("unknown type `Msg`").
-            // Consts/aliases/comptime are likewise already inlined/expanded for the
-            // real module and irrelevant to running the tag.
-            _ => false,
-        })
+        .filter(|(name, _)| !witchy_syntax::linker::STD_MODULES.contains(&name.as_str()))
         .cloned()
         .collect();
-    items.push(Item::Function(main));
-
-    let mut from_imports = ctx.from_imports.clone();
-    if output == TagOutput::ExprSyntax {
-        ensure_from_imports(&mut from_imports, "meta", &["ExprSyntax"]);
+    for (module_name, module) in &mut modules {
+        let module_has_reachable_items = keep.iter().any(|(owner, _)| owner == module_name);
+        let mut item_index = 0;
+        module.items.retain_mut(|item| {
+            let original_index = item_index;
+            item_index += 1;
+            match item {
+            Item::Function(function) => {
+                keep.contains(&(module_name.clone(), function.name.clone()))
+            }
+            Item::Type(ty) => keep.contains(&(module_name.clone(), ty.name.clone())),
+            Item::TypeAlias { name, .. } => keep.contains(&(module_name.clone(), name.clone())),
+            Item::Trait(trait_) => {
+                keep.contains(&(module_name.clone(), trait_.name.clone()))
+            }
+            Item::Impl(_) => keep.contains(&(
+                module_name.clone(),
+                crate::reachability::impl_item_identity(original_index),
+            )),
+            Item::Const { name, .. } => {
+                keep.contains(&(module_name.clone(), name.clone()))
+            }
+            Item::Comptime(_) => false,
+        }});
+        if !module_has_reachable_items {
+            module.imports.clear();
+            module.from_imports.clear();
+            module.compiler_item_syntax.clear();
+            module.compiler_expr_syntax.clear();
+            module.compiler_type_syntax.clear();
+            module.compiler_pattern_syntax.clear();
+            module.compiler_stmt_syntax.clear();
+            module.compiler_block_syntax.clear();
+        } else {
+            module.from_imports.retain_mut(|(source, names)| {
+                if witchy_syntax::linker::STD_MODULES.contains(&source.as_str()) {
+                    return true;
+                }
+                names.retain(|name| {
+                    crate::reachability::module_item_identity(
+                        &ctx.definition_modules,
+                        source,
+                        name,
+                    )
+                    .is_some_and(|identity| keep.contains(&(source.clone(), identity)))
+                });
+                !names.is_empty()
+            });
+            module.compiler_type_syntax.retain(|syntax| !syntax.runtime_identity);
+        }
+        module.import_lines.clear();
+        module.item_lines.clear();
+        module.linked_entry = None;
+        if module_name == &definition_origin.module {
+            module.items.push(Item::Function(bridge.clone()));
+        }
     }
-    let prog = Module {
-        modes: Vec::new(),
-        imports: ctx.imports.clone(),
-        from_imports,
-        items,
-        import_lines: Vec::new(),
-        item_lines: Vec::new(),
-        compiler_item_syntax: ctx.compiler_item_syntax.clone(),
-        compiler_expr_syntax: ctx.compiler_expr_syntax.clone(),
-        compiler_type_syntax: ctx
-            .compiler_type_syntax
-            .iter()
-            .filter(|syntax| !syntax.runtime_identity)
-            .cloned()
-            .collect(),
-        compiler_pattern_syntax: ctx.compiler_pattern_syntax.clone(),
-        compiler_stmt_syntax: ctx.compiler_stmt_syntax.clone(),
-        compiler_block_syntax: ctx.compiler_block_syntax.clone(),
-        linked_entry: None,
-    };
-    let linked = crate::pipeline::link(vec![("comptime".into(), prog)], "comptime")
+    let mut entry_module = "@compiler:tag-entry".to_string();
+    while modules.iter().any(|(name, _)| name == &entry_module) {
+        entry_module.push(':');
+    }
+    modules.push((
+        entry_module.clone(),
+        Module {
+            modes: Vec::new(),
+            imports: vec![definition_origin.module.clone()],
+            from_imports: Vec::new(),
+            items: vec![Item::Function(main)],
+            import_lines: Vec::new(),
+            item_lines: Vec::new(),
+            compiler_item_syntax: Vec::new(),
+            compiler_expr_syntax: Vec::new(),
+            compiler_type_syntax: Vec::new(),
+            compiler_pattern_syntax: Vec::new(),
+            compiler_stmt_syntax: Vec::new(),
+            compiler_block_syntax: Vec::new(),
+            linked_entry: None,
+        },
+    ));
+    let linked = witchy_syntax::linker::link(
+        modules,
+        &entry_module,
+        expand_tag_program,
+    )
         .map_err(|e| format!("{}: {e}", where_()))?;
     witchy_types::typeck::check_comptime(&linked).map_err(|e| format!("{}: {e}", where_()))?;
     let crate::interpreter::ComptimeOutputs {
@@ -740,30 +805,24 @@ fn expand_one(
             ctx.name,
             tag.len()
         )),
-        Some(ctx.qualifiers.clone()),
+        Some({
+            let mut qualifiers = ctx
+                .definition_modules
+                .iter()
+                .find(|(name, _)| name == &definition_origin.module)
+                .map(|(_, module)| module.imports.clone())
+                .unwrap_or_default();
+            if !qualifiers.contains(&definition_origin.module) {
+                qualifiers.push(definition_origin.module.clone());
+            }
+            qualifiers
+        }),
     )
     .map_err(|e| format!("{}: {e}", where_()))?;
     if !item_output.is_empty() {
         return Err(format!("{}: a tagged literal may emit one expression, not items", where_()));
     }
-    let parse_source = |src: String| {
-        // Source compatibility still parses with the tag module qualifiers so
-        // `glamour.text(...)` remains a qualified call rather than UFCS.
-        parse_generated_splice_expr(&src, &ctx.qualifiers).map_err(|error| {
-            format!("{}: generated source: {error}\n--- generated ---\n{src}", where_())
-        })
-    };
-    let mut e = match output {
-        TagOutput::SourceString => {
-            if !expr_output.is_empty() {
-                return Err(format!(
-                    "{}: a source-returning tag produced a typed expression event",
-                    where_()
-                ));
-            }
-            parse_source(lines.join("\n"))?
-        }
-        TagOutput::ExprSyntax => {
+    let mut e = {
             if !lines.is_empty() {
                 return Err(format!(
                     "{}: a typed tag produced unexpected source output",
@@ -779,15 +838,6 @@ fn expand_one(
             }
             match expr_output.pop().expect("one expression emission") {
                 crate::interpreter::ComptimeExprEmission::Syntax(expr) => {
-                    let definition_origin = ctx
-                        .tag_origins
-                        .get(tag)
-                        .ok_or_else(|| {
-                            format!(
-                                "{}: typed tag `{tag}` lost its definition module",
-                                where_()
-                            )
-                        })?;
                     let mut expr = *expr;
                     witchy_syntax::linker::mark_definition_site_expr(
                         &mut expr,
@@ -798,7 +848,6 @@ fn expand_one(
                     expr
                 }
             }
-        }
     };
 
     // Parse each hole's ORIGINAL source ONCE, into an expression carrying the
@@ -810,7 +859,7 @@ fn expand_one(
     let mut hole_exprs: Vec<Expr> = Vec::with_capacity(holes.len());
     for (i, hole) in holes.iter().enumerate() {
         let span = hole_spans.get(i).copied().unwrap_or((0, 0));
-        let hole_expr = parse_hole(hole, span, &ctx.qualifiers, &where_)?;
+        let hole_expr = parse_hole(hole, span, &ctx.invocation_qualifiers, &where_)?;
         hole_exprs.push(wrap_hole_origin(hole_expr, i, span));
     }
 
@@ -1166,8 +1215,8 @@ fn substitute_holes_children(
             substitute_holes(scrutinee, holes, where_)?;
             substitute_holes_block(body, holes, where_)?;
         }
-        // The generated source is plain witchy: a tag cannot emit a tagged literal
-        // here (it returns STRING source; a nested `tag"…"` in that source is
+        // A typed tag can still construct a nested tagged literal through
+        // `meta.expr_raw`; that nested `tag"…"` is
         // re-expanded by `walk_expr_depth` AFTER substitution, never reached here).
         Expr::TaggedLit { .. } => {}
     }

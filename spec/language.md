@@ -1237,23 +1237,23 @@ A string literal written **immediately after an identifier**, `tag"a${x}b"`, is 
 and its `${…}` hole sources, and the compiler calls the `tag` function
 
 ```text
-fn tag(parts: List(String), holes: List(String)) -> String
-```
-
-or the typed RFC-0080 form
-
-```text
 comptime fn tag(parts: List(String), holes: List(String)) -> meta.ExprSyntax
 ```
 
 with `parts` = the static fragments and `holes` = an **opaque marker** per hole —
 a token the tag *places* where that hole's value belongs (the tag does not read
-the hole's source). A legacy string tag returns witchy **expression source**; a
-typed tag returns `meta.ExprSyntax`. A compiler-owned expression transfers its AST
-through the expansion event directly; source-backed compatibility values retain
-the generated-expression parse. Direct function, type, and constructor
+the hole's source). A tag returns `meta.ExprSyntax`; String-returning tags are
+rejected. A compiler-owned expression transfers its AST through the expansion
+event directly. A tag that must construct source dynamically uses the explicit
+`meta.expr_raw` bridge, which parses once when the syntax value is constructed.
+Reachable tag evaluator items may not contain tagged literals in their bodies or
+initializers; nested tags are returned as expression syntax and expanded after the outer tag
+returns. Generated dynamic source resolves against the definition module's
+direct imports, and call-site holes resolve against the invocation module's
+direct imports. Transitive imports never become implicit qualifier scope.
+Direct function, type, and constructor
 references in compiler-owned output resolve in the tag's definition module,
-including private function helpers and transitively imported declarations; an
+including private function helpers and directly imported public declarations; an
 invocation-site declaration with the same spelling cannot capture them.
 Definition-site identity does not bypass sealed-type construction rules. The
 compiler then **substitutes** the real hole
@@ -1261,7 +1261,11 @@ expression — parsed once at the call site, carrying its source position — at
 marker and splices the result over the literal before type checking. So both
 backends compile the same AST, the tag runs once in the compiler, and a hole's
 marker may be placed zero, once, or many times. The tag is local or imported;
-only the items reachable from it run at expansion time.
+only its module-qualified reachable closure runs at expansion time, including
+reachable comptime helpers, constants, constructors, traits, and implementations
+in directly imported modules. Two direct imports exporting the same tag name are
+ambiguous and rejected. Bundled standard-library modules do not export tag entry
+points; library tags live in ordinary imported runes.
 
 Because a tag emits *code*, interpolation holes are typed **by position** (the
 substituted expression is type-checked normally) and there is no runtime string
@@ -1276,14 +1280,14 @@ The `html` tag in the `glamour` rune uses this: a `${userInput}` in text positio
 becomes a `text(…)` **node**, never markup, so it is XSS-immune by construction.
 
 ```witchy
-import list
+import meta
 
 // A tag receives the static parts and an opaque MARKER per hole; it places each
-// marker where the hole's value goes, then returns witchy expression source. The
+// marker where the hole's value goes, then constructs one typed expression. The
 // compiler substitutes the real hole expression (here `name`, resolved at the
 // call site) at the marker.
-fn greet(parts: List(String), holes: List(String)) -> String:
-    "\"Hello, \" + " + holes.at(0)
+comptime fn greet(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+    meta.expr_raw("\"Hello, \" + " + holes.at(0))
 
 fn main(console: Console):
     let name = "witch"

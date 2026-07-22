@@ -39,39 +39,39 @@ type LocalPatternValue:
 type PatternEnvelope(a):
     PatternEnvelope(a)
 
-comptime fn answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn answer(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     quote expr:
         hidden() + 2
 
-comptime fn lexical(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn lexical(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     quote expr:
         (fn(hidden: Int): hidden + 1)(41)
 
-comptime fn call_selected(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn call_selected(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     let selected = meta.expr_name(meta.call_site("selected"))
     quote expr:
         ${selected}()
 
-comptime fn reference_selected(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn reference_selected(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     meta.expr_name(meta.call_site("selected"))
 
-comptime fn composed_call_selected(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn composed_call_selected(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     let selected = meta.expr_name(meta.call_site("selected"))
     meta.expr_call(selected, [])
 
-comptime fn composed_field_selected(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn composed_field_selected(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     let selected = meta.expr_name(meta.call_site("selected_record"))
     let record = meta.expr_call(selected, [])
     meta.expr_field(record, meta.ident("value"))
 
-comptime fn composed_match_selected(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn composed_match_selected(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     let selected = meta.expr_name(meta.call_site("selected"))
     let value = meta.expr_call(selected, [])
     let arm = meta.match_arm(meta.pattern_int(42), meta.expr_call(selected, []))
     let fallback = meta.match_arm(meta.pattern_wildcard(), meta.expr_int(0))
     meta.expr_match(value, [arm, fallback])
 
-comptime fn composed_pattern_selected(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn composed_pattern_selected(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     let first = meta.pattern_ctor(meta.call_site("LocalPatternValue"), [meta.pattern_var(meta.ident("left"))])
     let exact = meta.pattern_list([first])
     let second = meta.pattern_ctor(meta.call_site("LocalPatternValue"), [meta.pattern_var(meta.ident("right"))])
@@ -88,20 +88,20 @@ comptime fn composed_pattern_selected(parts: List(String), holes: List(String)) 
         left + right
     meta.expr_match(scrutinee, [meta.match_arm(pattern, body)])
 
-comptime fn construct_hidden(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn construct_hidden(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     quote expr:
         match HiddenValue(41):
             HiddenValue(value) -> value + 1
 
-comptime fn type_hidden(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn type_hidden(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     quote expr:
         (fn(value: HiddenValue): 42)(HiddenValue(0))
 
-comptime fn record_hidden(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn record_hidden(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     quote expr:
         HiddenRecord(value: 42).value
 
-comptime fn alias_hidden(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn alias_hidden(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     quote expr:
         (fn(value: HiddenAlias) -> Int:
             let copied = region -> HiddenAlias:
@@ -110,12 +110,12 @@ comptime fn alias_hidden(parts: List(String), holes: List(String)) -> meta.ExprS
                 HiddenValue(number) -> number + 1
         )(HiddenValue(41))
 
-comptime fn preserve_hole(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn preserve_hole(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     let value = meta.expr_raw(list.at(holes, 0))
     quote expr:
         ${value}
 
-comptime fn imported_hidden(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn imported_hidden(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     quote expr:
         (fn(imported: ImportedAlias): match imported:
             ImportedValue(value) -> value + 1
@@ -295,7 +295,7 @@ type ConsumerEmpty:
 
 type ConsumerAlias(a) = List(a)
 
-comptime fn inspect_type(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn inspect_type(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     let inner_ty = meta.type_named(meta.call_site("ConsumerInner"), [])
     let ty = meta.type_named(meta.call_site("ConsumerValue"), [inner_ty])
     let inner_constructor = meta.expr_name(meta.call_site("ConsumerInner"))
@@ -303,7 +303,7 @@ comptime fn inspect_type(parts: List(String), holes: List(String)) -> meta.ExprS
     quote expr:
         (fn(item: ${ty}) -> Int: 42)(${constructor}(${inner_constructor}(41)))
 
-comptime fn inspect_pattern(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn inspect_pattern(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     let binding = meta.pattern_var(meta.ident("value"))
     let inner_pattern = meta.pattern_ctor(meta.call_site("ConsumerInner"), [binding])
     let pattern = meta.pattern_ctor(meta.call_site("ConsumerValue"), [inner_pattern])
@@ -313,14 +313,14 @@ comptime fn inspect_pattern(parts: List(String), holes: List(String)) -> meta.Ex
         match ${constructor}(${inner_constructor}(41)):
             ${pattern} -> value + 1
 
-comptime fn inspect_empty(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn inspect_empty(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     let constructor = meta.expr_name(meta.call_site("ConsumerEmpty"))
     let pattern = meta.pattern_ctor(meta.call_site("ConsumerEmpty"), [])
     quote expr:
         match ${constructor}:
             ${pattern} -> 42
 
-comptime fn inspect_alias(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn inspect_alias(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     let argument = quote type:
         Int
     let ty = meta.type_named(meta.call_site("ConsumerAlias"), [argument])
@@ -400,7 +400,7 @@ import meta
 sealed type Token:
     value: Int
 
-comptime fn forge(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn forge(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     quote expr:
         Token(value: 7)
 "#,
@@ -445,7 +445,7 @@ sealed type Token:
 pub fn token() -> Token:
     Token(value: 1)
 
-comptime fn mutate(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn mutate(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     let token = meta.expr_raw(list.at(holes, 0))
     quote expr:
         (fn(token: Token) -> Token:
@@ -538,7 +538,7 @@ fn unknown_definition_site_record_does_not_capture_consumer_type() {
         r#"
 import meta
 
-comptime fn forge(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn forge(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     quote expr:
         ConsumerOnly(value: 7)
 "#,

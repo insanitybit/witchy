@@ -277,8 +277,10 @@ fn main(console: Console):
         // be expanded before type-checking — it must not survive as an
         // `Expr::TaggedLit` (which the type checker `unreachable!`s on). The `lit`
         // tag here emits the source `"ok"`, so both sites render `ok`.
-        let src = "fn lit(parts: List(String), holes: List(String)) -> String:\n\
-                   \x20   \"\\\"ok\\\"\"\n\
+        let src = "import meta\n\
+                   \n\
+                   comptime fn lit(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n\
+                   \x20   meta.expr_raw(\"\\\"ok\\\"\")\n\
                    type Box:\n\
                    \x20   value: Int\n\
                    impl Box:\n\
@@ -317,7 +319,7 @@ fn main(console: Console):
     /// matches a plain multiline string and both backends produce identical bytes.
     #[test]
     fn multiline_tag_literal_preserves_raw_newlines_on_both_backends() {
-        let src = "import list\n\nfn raw(parts: List(String), holes: List(String)) -> String:\n    \"\\\"\" + parts.at(0) + \"\\\"\"\n\nfn main(console: Console):\n    console.print(raw\"line1\\nline2\")\n    console.print(\"line1\\nline2\")\n";
+        let src = "import meta\n\ncomptime fn raw(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    meta.expr_raw(\"\\\"\" + parts.at(0) + \"\\\"\")\n\nfn main(console: Console):\n    console.print(raw\"line1\\nline2\")\n    console.print(\"line1\\nline2\")\n";
         // The plain multiline string (line 2 of output) is the oracle; the tagged
         // literal (line 1) must match it exactly on BOTH backends.
         let expected = vec!["line1\nline2".to_string(), "line1\nline2".to_string()];

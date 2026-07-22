@@ -356,7 +356,7 @@ fn main(console: Console):
     /// skipped (they can never be referenced as `q.f(…)` anyway).
     #[test]
     fn tagged_literal_in_hyphenated_module_expands() {
-        let src = "fn lit(parts: List(String), holes: List(String)) -> String:\n    \"\\\"ok\\\"\"\n\nfn main(console: Console):\n    console.print(lit\"ignored\")\n";
+        let src = "import meta\n\ncomptime fn lit(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    meta.expr_raw(\"\\\"ok\\\"\")\n\nfn main(console: Console):\n    console.print(lit\"ignored\")\n";
         let module = parser::parse_module(src).expect("parse");
         let linked = crate::pipeline::link(vec![("tag-hyphen".into(), module)], "tag-hyphen")
             .expect("a tagged literal in a hyphenated-stem module must link");
@@ -371,8 +371,10 @@ fn main(console: Console):
     /// the flagship glamour `html` tag.
     #[test]
     fn tagged_literal_escaped_dollar_stays_literal_on_both_backends() {
-        let plain = r#"fn lit(parts: List(String), holes: List(String)) -> String:
-    "\"" + list.at(parts, 0) + "\""
+        let plain = r#"import meta
+
+comptime fn lit(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+    meta.expr_raw("\"" + list.at(parts, 0) + "\"")
 
 fn main(console: Console):
     let price = "CAPTURED"

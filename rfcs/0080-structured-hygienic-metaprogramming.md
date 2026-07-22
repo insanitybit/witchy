@@ -328,12 +328,13 @@ The first source-compatible slice is implemented:
   `meta.expr_raw("...")` and promotes literal payloads back where independently
   parseable. At this slice, expression quotes containing holes remain
   source-backed.
-- The twenty-sixth slice gives typed tagged literals a compiler-owned expression
+- The twenty-sixth slice historically gave typed tagged literals a compiler-owned expression
   event on the same interpreter expansion channel as typed item emission. A tag
   returning a hole-free quoted expression transfers the stored AST directly,
   after which RFC-0006 substitutes call-site hole nodes as before. A composed
-  source-backed `ExprSyntax` is carried as an explicit compatibility event and
-  parsed with the tag's qualifier context; a legacy `String` tag is unchanged.
+  source-backed `ExprSyntax` was carried as an explicit compatibility event and
+  parsed with the tag's qualifier context. The final accepted boundary below
+  supersedes that temporary compatibility event with construction-time parsing.
   Missing, duplicate, cross-category, or mixed source/typed emissions fail
   loudly. Both runtime backends continue to consume only the expanded AST.
 - The twenty-seventh slice gives hole-free `quote type:` a module-owned `Type`
@@ -418,7 +419,7 @@ The first source-compatible slice is implemented:
   their compatibility spelling, so constructor, type, pattern, field, and item
   origins remain later slices rather than silently claiming general hygiene.
 - The thirty-sixth slice makes direct tagged-expansion failures carry both ends
-  of their provenance. Local and imported typed or legacy tags report the
+  of their provenance. Local and imported typed tags report the
   consumer module and tagged-literal invocation line plus the defining module
   and function line. Link, type-check, evaluator, generated-source parse, typed
   emission, and hole-substitution failures all pass through that one expansion
@@ -564,8 +565,15 @@ The first source-compatible slice is implemented:
 This is the full accepted RFC boundary. Every quotation category and its typed
 hole placement is compiler-owned. Dynamic `meta.item` and `meta.expr_raw`
 payloads parse once at construction and typed emission has no source fallback.
-Legacy `emit` and String-returning tags remain explicit migration APIs; they do
-not define the representation of typed structural output. The
+Legacy `emit(String)` remains the single raw item-source escape hatch.
+String-returning tags are removed; dynamic expression source crosses only
+through `meta.expr_raw`, which parses once at construction. The
+tag evaluator closure is module-qualified, preserves reachable comptime helpers,
+constants, constructors, traits, and implementations, rejects ambiguous imported
+roots,
+and rejects tagged literals in reachable evaluator bodies and initializers; nested tags are returned as
+syntax and retain their resolved definition module. Definition-source and
+call-site-hole parsing each use only their own direct imports. The
 pattern-composition builders,
 let/expression/return statement builders, `meta.block`, and
 `meta.function_block` retain owned child nodes when constructing statements,

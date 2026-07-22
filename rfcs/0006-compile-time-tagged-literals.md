@@ -9,9 +9,15 @@ tracking: |
   The `tag"…"` surface (lexer/parser/AST) + the expand-before-codegen pass
   (src/tagged.rs, pruned to items REACHABLE FROM THE TAG so a tag-bearing consumer
   function doesn't recurse) + fmt rendering landed, differential-tested on both
-  backends. Built on witchy's source-emitting comptime model — a tag is
-  `fn(parts: List(String), holes: List(String)) -> String` returning expression
-  source — NOT a separate AST-reflection subsystem (the consistency is the point).
+  backends. RFC-0080 subsequently closed the representation: a tag is now
+  `comptime fn(parts: List(String), holes: List(String)) -> meta.ExprSyntax`.
+  Dynamic source construction is explicit through `meta.expr_raw`; String-returning
+  tags are removed. Reachable evaluator items cannot recursively invoke tagged
+  literals in bodies or initializers; composition returns nested expression syntax, with definition-site
+  and call-site direct-import scopes kept separate. The evaluator retains the
+  module-qualified constant/type/trait/implementation/helper closure, rejects
+  ambiguous directly imported roots, and does not treat bundled std modules as
+  tag-entry namespaces.
   Documented in [`spec/language.md`](../spec/language.md) §8. The headline `html` tag lives in the glamour
   rune (RFC-0008).
   UPDATE 2026-06-22: hygiene + hole-precise diagnostics IMPLEMENTED (originally
@@ -116,15 +122,14 @@ What is **new** here is that a tag returns **AST to splice**, i.e. compile-time
 *code generation* rather than just a compile-time *value*. A tag's contract:
 
 ```text
-comptime fn html(parts: [StaticStr], holes: [Ast]) -> Ast
+comptime fn html(parts: List(String), holes: List(String)) -> meta.ExprSyntax
 ```
 
 - `parts` are the static fragments delivered as **compile-time strings** — the tag
   parses them with its own embedded grammar (HTML, SQL, a regex, …).
-- `holes` are the interpolation expressions delivered **as AST nodes**, not as
-  evaluated values. The tag decides where each hole may appear and what AST to
-  emit around it.
-- the return is **AST**, spliced into the program at the literal's site, then
+- `holes` are opaque marker strings, not source text or evaluated values. The tag
+  places each marker where its corresponding call-site expression belongs.
+- the return is **typed expression syntax**, spliced into the program at the literal's site, then
   type-checked as if the author had written it by hand.
 
 A tag is therefore a small compiler that runs during compilation: it consumes a

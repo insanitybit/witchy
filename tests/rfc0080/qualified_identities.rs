@@ -20,7 +20,7 @@ const TAG_LIBRARY: &str = r#"
 import meta
 import definition_support
 
-comptime fn definition_qualified(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn definition_qualified(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     let argument = quote type:
         Int
     let ty = meta.type_qualified(meta.ident("definition_support"), meta.ident("Wrapped"), [argument])
@@ -33,7 +33,7 @@ comptime fn definition_qualified(parts: List(String), holes: List(String)) -> me
     quote expr:
         (fn(item: ${ty}) -> Int: ${matched})(definition_support.Wrapped(41))
 
-comptime fn callsite_qualified(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn callsite_qualified(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     let argument = quote type:
         Int
     let ty = meta.type_qualified(meta.call_site("consumer_support"), meta.ident("Wrapped"), [argument])
@@ -47,11 +47,11 @@ comptime fn callsite_qualified(parts: List(String), holes: List(String)) -> meta
     quote expr:
         (fn(item: ${ty}) -> Int: ${matched})(${supplied})
 
-comptime fn dynamic_qualified(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn dynamic_qualified(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     let source = "definition_support.answer()"
     meta.expr_raw(source)
 
-comptime fn dynamic_static_interpolation(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
+pub comptime fn dynamic_static_interpolation(parts: List(String), holes: List(String)) -> meta.ExprSyntax:
     let sigil = "$"
     meta.expr_raw("\"" + sigil + "{not_in_scope}\"")
 "#;

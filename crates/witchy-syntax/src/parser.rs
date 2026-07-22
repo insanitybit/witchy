@@ -427,9 +427,14 @@ impl Parser {
             attributes.push(attribute);
         }
         let public = self.eat(&Tok::Pub);
-        if public && !(self.at(&Tok::Fn) || self.at(&Tok::Gen) || self.at(&Tok::Async)) {
+        if public
+            && !(self.at(&Tok::Fn)
+                || self.at(&Tok::Gen)
+                || self.at(&Tok::Async)
+                || self.at(&Tok::Comptime))
+        {
             return Err(self.error(
-                "`pub` may only precede a function declaration (`pub fn`, `pub gen fn`, or `pub async fn`)",
+                "`pub` may only precede a function declaration (`pub fn`, `pub comptime fn`, `pub gen fn`, or `pub async fn`)",
             ));
         }
         if !(attributes.is_empty()
@@ -478,7 +483,12 @@ impl Parser {
             // free; expanded by `crate::comptime` during linking).
             self.advance();
             if self.at(&Tok::Fn) {
-                return Ok(Item::Function(self.function(false, true, Vec::new())?));
+                return Ok(Item::Function(self.function(public, true, attributes)?));
+            }
+            if public {
+                return Err(self.error(
+                    "`pub` may only precede a function declaration; `comptime:` blocks cannot be public",
+                ));
             }
             if self.at(&Tok::Gen) || self.at(&Tok::Async) {
                 return Err(self.error("`comptime` may only precede `fn` or a block"));

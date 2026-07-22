@@ -182,12 +182,12 @@ use crate::{codegen, interpreter, parser, typeck};
     fn imported_tag_in_non_main_fn_agrees_on_both_backends() {
         use crate::runtime::{Capabilities, Runtime};
         // The tag-defining module: a tiny `box"…"` tag that emits source wrapping
-        // each hole in `widget.unwrap(widget.wrap(…))`. The `Wrapped` type + `wrap`/`unwrap`
+        // each hole in definition-site `unwrap(wrap(…))`. The `Wrapped` type + `wrap`/`unwrap`
         // helpers exercise the reachable-TYPES half of the prune (the tag's
         // signature/body reach `Wrapped`, so it must be kept for the comptime
         // program to type-check), and prove a tag works when defined in an
         // IMPORTED rune, not just locally.
-        let widget = "type Wrapped:\n    Wrap(String)\n\npub fn unwrap(w: Wrapped) -> String:\n    match w:\n        Wrap(s) -> s\n\npub fn wrap(s: String) -> Wrapped:\n    Wrap(s)\n\npub fn box(parts: List(String), holes: List(String)) -> String:\n    var out = \"widget.unwrap(widget.wrap(\\\"\"\n    var i = 0\n    let n = list.length(parts)\n    for p in parts:\n        out = out + p\n        if i < n - 1:\n            out = out + \"\\\" + \" + list.at(holes, i) + \" + \\\"\"\n        i = i + 1\n    out + \"\\\"))\"\n";
+        let widget = "import meta\n\ntype Wrapped:\n    Wrap(String)\n\npub fn unwrap(w: Wrapped) -> String:\n    match w:\n        Wrap(s) -> s\n\npub fn wrap(s: String) -> Wrapped:\n    Wrap(s)\n\npub comptime fn box(parts: List(String), holes: List(String)) -> meta.ExprSyntax:\n    var out = \"unwrap(wrap(\\\"\"\n    var i = 0\n    let n = list.length(parts)\n    for p in parts:\n        out = out + p\n        if i < n - 1:\n            out = out + \"\\\" + \" + list.at(holes, i) + \" + \\\"\"\n        i = i + 1\n    meta.expr_raw(out + \"\\\"))\")\n";
         // The CONSUMER: the tag appears in `render`, a NON-`main` function. This is
         // the exact shape that recursed before the fix (cf. glamour's `view`).
         let app = "import widget\n\nfn render(x: String) -> String:\n    box\"[${x}]\"\n\nfn main(console: Console):\n    console.print(render(\"hi\"))\n";
