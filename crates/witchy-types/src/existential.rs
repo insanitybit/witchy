@@ -142,6 +142,7 @@ fn dynamic_identity_request(
     module: &Module,
     table: &TypeTable,
     expr: &Expr,
+    include_internal_descriptor_ids: bool,
 ) -> Result<Option<Type>, String> {
     let Expr::Call { name, args } = expr else { return Ok(None) };
     if dynamic_intrinsic(name, intrinsics::DYNAMIC_RUNTIME_TYPE) {
@@ -167,6 +168,9 @@ fn dynamic_identity_request(
         return resolved_expr_type(table, value);
     }
     if dynamic_intrinsic(name, intrinsics::DYNAMIC_DESCRIPTOR_ID) {
+        if !include_internal_descriptor_ids {
+            return Ok(None);
+        }
         let [value] = args.as_slice() else {
             return Err("Dynamic descriptor identity requires one value".into());
         };
@@ -192,7 +196,9 @@ fn collect_dynamic_types(
 ) -> Result<Vec<Type>, String> {
     let mut requested = Vec::new();
     visit_module_exprs(module, &mut |expr| {
-        if let Some(ty) = dynamic_identity_request(module, table, expr)? {
+        if let Some(ty) =
+            dynamic_identity_request(module, table, expr, runtime_catalog.is_some())?
+        {
             requested.push(ty);
         }
         Ok(())
@@ -307,7 +313,7 @@ fn rewrite_dynamic_expr(
     runtime_catalog: Option<&RuntimeDeclarationCatalog>,
     runtime_types: &RuntimeTypePlan,
 ) -> Result<(), String> {
-    let request = dynamic_identity_request(module, table, expr)?;
+    let request = dynamic_identity_request(module, table, expr, runtime_catalog.is_some())?;
     match expr {
         Expr::List(items)
         | Expr::Tuple(items)
@@ -470,6 +476,19 @@ fn rewrite_dynamic_expr(
             }
             _ => {}
         }
+    } else if runtime_catalog.is_none()
+        && matches!(
+            expr,
+            Expr::Call { name, .. }
+                if dynamic_intrinsic(name, intrinsics::DYNAMIC_DESCRIPTOR_ID)
+        )
+    {
+        // Derive(Reflect) installs this compiler-private helper on every
+        // reflected record. Legacy raw-AST runners have no loader provenance,
+        // but must not reject a program merely because the dormant helper is
+        // present. The invalid sentinel cannot authenticate a field payload;
+        // public Dynamic construction still requires a runtime catalog above.
+        *expr = Expr::Int(-1);
     }
     let fields_lookup = matches!(
         expr,
