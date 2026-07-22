@@ -77,8 +77,10 @@ sealed type Ident:
     Ident(String)
     CallSiteIdent(String)
 
-// Parse one dynamic declaration (and its imports) into compiler-owned syntax.
-// Literal whole-item arguments take the parser's equivalent zero-runtime path.
+// Parse one complete dynamic declaration (and its imports) into compiler-owned
+// syntax. Incomplete adjacent migration fragments retain the source constructor
+// so emit_item can parse their batch. Literal whole-item arguments take the
+// parser's equivalent zero-runtime path.
 pub fn item(source: String) -> ItemSyntax:
     __meta_item(source)
 

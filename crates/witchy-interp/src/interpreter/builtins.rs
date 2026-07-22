@@ -921,17 +921,17 @@ impl Interpreter {
                     if self.fresh_ident_scope.is_none() {
                         return err("meta.item is available only during compile-time expansion");
                     }
-                    let module = parse_module(source).map_err(|error| RuntimeError {
-                        message: format!("meta.item source does not parse: {error}"),
-                    })?;
-                    if !module.modes.is_empty() {
-                        return err("meta.item accepts a declaration fragment, not a module mode");
-                    }
-                    if module.items.len() != 1 {
-                        return err(format!(
-                            "meta.item expects exactly one generated declaration, got {}",
-                            module.items.len()
-                        ));
+                    let Ok(module) = parse_module(source) else {
+                        return Ok(Some(Value::Ctor {
+                            name: "meta.ItemSyntax".into(),
+                            fields: Rc::new(vec![Value::Str(source.clone())]),
+                        }));
+                    };
+                    if !module.modes.is_empty() || module.items.len() != 1 {
+                        return Ok(Some(Value::Ctor {
+                            name: "meta.ItemSyntax".into(),
+                            fields: Rc::new(vec![Value::Str(source.clone())]),
+                        }));
                     }
                     let handle = self.next_compiler_syntax_handle("dynamic-item")?;
                     self.compiler_item_syntax

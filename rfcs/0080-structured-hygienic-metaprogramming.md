@@ -551,8 +551,9 @@ The first source-compatible slice is implemented:
   opaque handle to the resulting module fragment. Imports, `from` imports, and
   nested syntax tables travel with the item through `emit_item`; typed emission
   never formats or reparses that fragment. Literal items retain the parser's
-  equivalent direct path, while `emit(String)` remains the explicit migration
-  channel required above.
+  equivalent direct path. Inputs that are not yet one complete declaration
+  remain adjacent source compatibility fragments, alongside the explicit
+  `emit(String)` migration channel required above.
 - The fifty-eighth slice completes the `ModuleSyntax`, `Span`, and tooling
   contract. Structural modules aggregate owned items without flattening them;
   persistent per-node origins provide compiler-owned definition, invocation,
