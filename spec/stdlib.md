@@ -897,6 +897,10 @@ Checked runtime values (RFC-0082 Stage 1).
 
 - `RuntimeField(String, RuntimeType)`
 
+#### `sealed type RuntimeMethod`
+
+- `RuntimeMethod(String, List(RuntimeType), RuntimeType)`
+
 #### `sealed type DynamicFieldStatus`
 
 - `FieldFound(RuntimeType)`
@@ -911,6 +915,11 @@ Checked failures remain ordinary matchable data and never become unchecked casts
 
 - `TypeMismatch(RuntimeType)`
 - `MissingField(String)`
+- `MissingMethod(String)`
+- `ArityMismatch(String, Int, Int)`
+- `ArgumentMismatch(Int, RuntimeType, RuntimeType)`
+- `ResultMismatch(RuntimeType, RuntimeType)`
+- `CapabilityDenied(String)`
 - `PrivateField(String)`
 - `SealedType(RuntimeType)`
 - `MalformedRequest(String)`
@@ -936,6 +945,20 @@ Declared public readable fields in source order. The compiler replaces the intri
 #### `fn field_name(field: RuntimeField) -> String`
 
 #### `fn field_type(field: RuntimeField) -> RuntimeType`
+
+#### `fn methods(ty: RuntimeType) -> List(RuntimeMethod)`
+
+Public methods explicitly registered with `@dynamic`. The compiler replaces this lookup with immutable data from the closed authenticated method plan.
+
+#### `fn method_name(method: RuntimeMethod) -> String`
+
+#### `fn method_args(method: RuntimeMethod) -> List(RuntimeType)`
+
+#### `fn method_result(method: RuntimeMethod) -> RuntimeType`
+
+#### `fn call(value: Dynamic, name: String, args: List(Dynamic)) -> Result(Dynamic, DynamicError)`
+
+Invoke only a descriptor-registered method. Arguments are checked against exact authenticated descriptors before the compiler-generated typed call.
 
 #### `fn field(value: Dynamic, name: String) -> Result(Dynamic, DynamicError)`
 
