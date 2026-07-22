@@ -365,7 +365,7 @@ fn is_local_unique_type(t: &ast::Type) -> bool {
     }
 }
 
-fn type_param_names<'a>(fields: impl Iterator<Item = &'a ast::Type>) -> Vec<String> {
+pub(crate) fn type_param_names<'a>(fields: impl Iterator<Item = &'a ast::Type>) -> Vec<String> {
     let mut names = Vec::new();
     for field in fields {
         collect_type_params(field, &mut names);
@@ -1608,6 +1608,85 @@ fn check_main_signature(module: &Module) -> Result<(), TypeError> {
                  printed by the interpreter but dropped by the compiled backend, so the two \
                  diverge. Print the value inside `main` and return `Nil` or an exit code.",
                 witchy_syntax::format::type_str(t)
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn check_dynamic_method_declarations(module: &Module) -> Result<(), TypeError> {
+    let mut registered = HashSet::new();
+    for item in &module.items {
+        let Item::Function(function) = item else { continue };
+        if !function.attributes.iter().any(|attribute| attribute == "dynamic") {
+            continue;
+        }
+        if !function.public {
+            return terr(format!("@dynamic function `{}` must be public", function.name));
+        }
+        if function.comptime_only || function.is_async || function.is_gen {
+            return terr(format!(
+                "@dynamic function `{}` must be an ordinary runtime function",
+                function.name
+            ));
+        }
+        let signature_types = function
+            .params
+            .iter()
+            .filter_map(|parameter| parameter.ty.as_ref())
+            .chain(function.ret.iter());
+        if !function.bounds.is_empty() || !type_param_names(signature_types).is_empty() {
+            return terr(format!(
+                "@dynamic function `{}` must have a closed non-generic signature",
+                function.name
+            ));
+        }
+        let Some(receiver) = function.params.first() else {
+            return terr(format!(
+                "@dynamic function `{}` requires `self` as its first parameter",
+                function.name
+            ));
+        };
+        if receiver.name != "self" || receiver.ty.is_none() {
+            return terr(format!(
+                "@dynamic function `{}` requires an explicitly typed `self` first parameter",
+                function.name
+            ));
+        }
+        for parameter in &function.params {
+            if parameter.ty.is_none() {
+                return terr(format!(
+                    "@dynamic function `{}` parameter `{}` requires an explicit type",
+                    function.name, parameter.name
+                ));
+            }
+            if parameter.default.is_some() {
+                return terr(format!(
+                    "@dynamic function `{}` cannot use default parameters because runtime arity is exact",
+                    function.name
+                ));
+            }
+            if parameter.convention != ast::Convention::Let {
+                return terr(format!(
+                    "@dynamic function `{}` parameter `{}` must use the `let` convention",
+                    function.name, parameter.name
+                ));
+            }
+        }
+        let receiver = receiver.ty.as_ref().expect("checked above");
+        let method = function
+            .name
+            .rsplit('.')
+            .next()
+            .unwrap_or(&function.name);
+        let key = (
+            witchy_syntax::format::type_str(receiver),
+            method.to_string(),
+        );
+        if !registered.insert(key.clone()) {
+            return terr(format!(
+                "duplicate @dynamic method `{}` for `{}`",
+                key.1, key.0
             ));
         }
     }
@@ -3605,6 +3684,26 @@ impl Checker {
                 ],
                 Ty::Named("dynamic.DynamicFieldStatus".into(), Vec::new()),
             )),
+            S::RuntimeTypeToListRuntimeMethod => Some((
+                vec![Ty::Named("dynamic.RuntimeType".into(), Vec::new())],
+                Ty::List(Box::new(Ty::Named(
+                    "dynamic.RuntimeMethod".into(),
+                    Vec::new(),
+                ))),
+            )),
+            S::DynamicStringListDynamicToResultDynamicDynamicError => {
+                let dynamic = Ty::Named("dynamic.Dynamic".into(), Vec::new());
+                Some((
+                    vec![dynamic.clone(), Ty::String, Ty::List(Box::new(dynamic.clone()))],
+                    Ty::Named(
+                        "Result".into(),
+                        vec![
+                            dynamic,
+                            Ty::Named("dynamic.DynamicError".into(), Vec::new()),
+                        ],
+                    ),
+                ))
+            }
             S::DynamicToOptionGeneric => {
                 let value = self.fresh();
                 Some((
@@ -8312,6 +8411,7 @@ fn run_check_selected(
     // `main` is the root entrypoint: its parameters are where the host's authority
     // enters, so they must be capabilities (or the args list) — validate before
     // diving into bodies so a malformed entry point is reported up front.
+    check_dynamic_method_declarations(module)?;
     check_main_signature(module)?;
     // RFC-0038: a `grantable` capability must be BARE (no transitive host authority),
     // checked module-wide (a grantable cap is invalid regardless of `main`).

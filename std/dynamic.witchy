@@ -16,6 +16,9 @@ sealed type Dynamic:
 sealed type RuntimeField:
     RuntimeField(String, RuntimeType)
 
+sealed type RuntimeMethod:
+    RuntimeMethod(String, List(RuntimeType), RuntimeType)
+
 sealed type DynamicFieldStatus:
     FieldFound(RuntimeType)
     FieldPrivate
@@ -28,6 +31,11 @@ sealed type DynamicFieldStatus:
 type DynamicError:
     TypeMismatch(RuntimeType)
     MissingField(String)
+    MissingMethod(String)
+    ArityMismatch(String, Int, Int)
+    ArgumentMismatch(Int, RuntimeType, RuntimeType)
+    ResultMismatch(RuntimeType, RuntimeType)
+    CapabilityDenied(String)
     PrivateField(String)
     SealedType(RuntimeType)
     MalformedRequest(String)
@@ -62,6 +70,28 @@ pub fn field_name(field: RuntimeField) -> String:
 pub fn field_type(field: RuntimeField) -> RuntimeType:
     match field:
         RuntimeField(_, ty) -> ty
+
+// Public methods explicitly registered with `@dynamic`. The compiler replaces
+// this lookup with immutable data from the closed authenticated method plan.
+pub fn methods(ty: RuntimeType) -> List(RuntimeMethod):
+    __dynamic_methods(ty)
+
+pub fn method_name(method: RuntimeMethod) -> String:
+    match method:
+        RuntimeMethod(name, _, _) -> name
+
+pub fn method_args(method: RuntimeMethod) -> List(RuntimeType):
+    match method:
+        RuntimeMethod(_, args, _) -> args
+
+pub fn method_result(method: RuntimeMethod) -> RuntimeType:
+    match method:
+        RuntimeMethod(_, _, result) -> result
+
+// Invoke only a descriptor-registered method. Arguments are checked against
+// exact authenticated descriptors before the compiler-generated typed call.
+pub fn call(value: Dynamic, name: String, args: List(Dynamic)) -> Result(Dynamic, DynamicError):
+    __dynamic_call(value, name, args)
 
 pub fn field(value: Dynamic, name: String) -> Result(Dynamic, DynamicError):
     if name == "":

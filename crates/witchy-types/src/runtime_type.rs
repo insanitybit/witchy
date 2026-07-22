@@ -875,6 +875,25 @@ pub struct RuntimeFieldDescriptor {
     pub display: String,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuntimeMethodArgumentDescriptor {
+    pub descriptor: RuntimeTypeId,
+    pub ty: Type,
+    pub display: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuntimeMethodDescriptor {
+    pub receiver: RuntimeTypeId,
+    pub receiver_type: Type,
+    pub name: String,
+    pub function: String,
+    pub arguments: Vec<RuntimeMethodArgumentDescriptor>,
+    pub result: RuntimeTypeId,
+    pub result_type: Type,
+    pub result_display: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum RuntimeTypeShape {
     #[default]
@@ -891,11 +910,12 @@ enum RuntimeTypeShapeDraft {
 }
 
 /// Deterministic descriptor constants for one closed program.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct RuntimeTypePlan {
     descriptors: Vec<RuntimeTypeDescriptor>,
     by_identity: BTreeMap<RuntimeTypeIdentity, RuntimeTypeId>,
     shapes: Vec<RuntimeTypeShape>,
+    methods: Vec<RuntimeMethodDescriptor>,
 }
 
 impl RuntimeTypePlan {
@@ -916,7 +936,7 @@ impl RuntimeTypePlan {
             descriptors.push(RuntimeTypeDescriptor { id, identity });
         }
         let shapes = vec![RuntimeTypeShape::Opaque; descriptors.len()];
-        Ok(Self { descriptors, by_identity, shapes })
+        Ok(Self { descriptors, by_identity, shapes, methods: Vec::new() })
     }
 
     pub fn build_with_runtime_shapes<'a>(
@@ -984,6 +1004,21 @@ impl RuntimeTypePlan {
 
     pub fn shape(&self, id: RuntimeTypeId) -> Option<&RuntimeTypeShape> {
         self.shapes.get(usize::try_from(id.0).ok()?)
+    }
+
+    pub fn set_methods(&mut self, mut methods: Vec<RuntimeMethodDescriptor>) {
+        methods.sort_by(|left, right| {
+            (left.receiver.index(), left.name.as_str(), left.function.as_str()).cmp(&(
+                right.receiver.index(),
+                right.name.as_str(),
+                right.function.as_str(),
+            ))
+        });
+        self.methods = methods;
+    }
+
+    pub fn methods(&self) -> &[RuntimeMethodDescriptor] {
+        &self.methods
     }
 }
 

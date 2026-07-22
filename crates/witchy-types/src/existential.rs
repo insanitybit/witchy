@@ -6,10 +6,15 @@
 //! source-unspellable AST node. Backends therefore consume one construction
 //! contract without rediscovering coercions, impl identity, or runtime types.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use witchy_syntax::ast::{Block, Expr, Item, Module, Stmt, Type};
 use witchy_syntax::{format, intrinsics};
 
-use crate::runtime_type::{RuntimeDeclarationCatalog, RuntimeTypePlan, RuntimeTypeShape};
+use crate::runtime_type::{
+    RuntimeDeclarationCatalog, RuntimeMethodArgumentDescriptor, RuntimeMethodDescriptor,
+    RuntimeTypePlan, RuntimeTypeShape,
+};
 use crate::typeck::{TypeTable, TypedModule, ty_to_ast};
 use crate::witness::{self, WitnessCatalog, WitnessPlan};
 
@@ -99,8 +104,14 @@ fn lower_explicit_packs_inner(
         );
     }
     let typed = crate::record_projection::lower_explicit_projections(typed)?;
-    let dynamic_types = collect_dynamic_types(typed.module(), typed.table(), runtime_catalog)?;
-    let runtime_types = match runtime_catalog {
+    let dynamic_methods = collect_dynamic_method_definitions(typed.module(), runtime_catalog)?;
+    let mut dynamic_types = collect_dynamic_types(typed.module(), typed.table(), runtime_catalog)?;
+    for method in &dynamic_methods {
+        dynamic_types.push(method.receiver.clone());
+        dynamic_types.extend(method.arguments.iter().cloned());
+        dynamic_types.push(method.result.clone());
+    }
+    let mut runtime_types = match runtime_catalog {
         Some(runtime_catalog) => RuntimeTypePlan::build_with_runtime_shapes(
             dynamic_types.iter(),
             runtime_catalog,
@@ -109,6 +120,13 @@ fn lower_explicit_packs_inner(
         None => RuntimeTypePlan::build(Vec::new()),
     }
     .map_err(|error| error.to_string())?;
+    if let Some(runtime_catalog) = runtime_catalog {
+        runtime_types.set_methods(prepare_dynamic_methods(
+            dynamic_methods,
+            runtime_catalog,
+            &runtime_types,
+        )?);
+    }
     let (module, _, dynamic_result) = typed.rewrite_into_module(|table, module| {
         rewrite_dynamic_module(module, table, runtime_catalog, &runtime_types)
     });
@@ -121,6 +139,170 @@ fn lower_explicit_packs_inner(
     });
     result?;
     Ok(PreparedExistentials { module, table, witnesses, runtime_types })
+}
+
+#[derive(Clone, Debug)]
+struct DynamicMethodDefinition {
+    name: String,
+    function: String,
+    receiver: Type,
+    arguments: Vec<Type>,
+    result: Type,
+}
+
+fn collect_dynamic_method_definitions(
+    module: &Module,
+    runtime_catalog: Option<&RuntimeDeclarationCatalog>,
+) -> Result<Vec<DynamicMethodDefinition>, String> {
+    let functions = module.items.iter().filter_map(|item| match item {
+        Item::Function(function) if function.attributes.iter().any(|attr| attr == "dynamic") => {
+            Some(function)
+        }
+        _ => None,
+    });
+    let mut methods = Vec::new();
+    let mut identities = BTreeSet::new();
+    for function in functions {
+        let runtime_catalog = runtime_catalog.ok_or_else(|| {
+            "@dynamic methods require authenticated runtime declaration ownership".to_string()
+        })?;
+        if !function.public {
+            return Err(format!("@dynamic function `{}` must be public", function.name));
+        }
+        if function.comptime_only || function.is_async || function.is_gen {
+            return Err(format!(
+                "@dynamic function `{}` must be an ordinary runtime function",
+                function.name
+            ));
+        }
+        let signature_types = function
+            .params
+            .iter()
+            .filter_map(|parameter| parameter.ty.as_ref())
+            .chain(function.ret.iter());
+        if !function.bounds.is_empty()
+            || !crate::typeck::type_param_names(signature_types).is_empty()
+        {
+            return Err(format!(
+                "@dynamic function `{}` must have a closed non-generic signature",
+                function.name
+            ));
+        }
+        let Some(receiver) = function.params.first() else {
+            return Err(format!(
+                "@dynamic function `{}` requires `self` as its first parameter",
+                function.name
+            ));
+        };
+        if receiver.name != "self" {
+            return Err(format!(
+                "@dynamic function `{}` requires `self` as its first parameter",
+                function.name
+            ));
+        }
+        let receiver = receiver.ty.clone().ok_or_else(|| {
+            format!(
+                "@dynamic function `{}` requires an explicit receiver type",
+                function.name
+            )
+        })?;
+        let arguments = function
+            .params
+            .iter()
+            .skip(1)
+            .map(|parameter| {
+                parameter.ty.clone().ok_or_else(|| {
+                    format!(
+                        "@dynamic function `{}` parameter `{}` requires an explicit type",
+                        function.name, parameter.name
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let result = function.ret.clone().unwrap_or_else(|| Type::Tuple(Vec::new()));
+        for ty in std::iter::once(&receiver)
+            .chain(arguments.iter())
+            .chain(std::iter::once(&result))
+        {
+            runtime_catalog
+                .capability_free_type_identity(ty, module)
+                .map_err(|error| {
+                    format!(
+                        "@dynamic function `{}` has an unsupported capability-bearing signature: {error}",
+                        function.name
+                    )
+                })?;
+        }
+        let name = function
+            .name
+            .rsplit('.')
+            .next()
+            .unwrap_or(&function.name)
+            .to_string();
+        let receiver_identity = runtime_catalog
+            .type_identity(&receiver)
+            .map_err(|error| error.to_string())?;
+        if !identities.insert((receiver_identity, name.clone())) {
+            return Err(format!(
+                "duplicate @dynamic method `{name}` for `{}`",
+                witchy_syntax::format::type_str(&receiver)
+            ));
+        }
+        methods.push(DynamicMethodDefinition {
+            name,
+            function: function.name.clone(),
+            receiver,
+            arguments,
+            result,
+        });
+    }
+    Ok(methods)
+}
+
+fn prepare_dynamic_methods(
+    methods: Vec<DynamicMethodDefinition>,
+    runtime_catalog: &RuntimeDeclarationCatalog,
+    runtime_types: &RuntimeTypePlan,
+) -> Result<Vec<RuntimeMethodDescriptor>, String> {
+    let descriptor = |ty: &Type| {
+        let identity = runtime_catalog
+            .type_identity(ty)
+            .map_err(|error| error.to_string())?;
+        runtime_types.id(&identity).ok_or_else(|| {
+            format!(
+                "dynamic method plan lost descriptor for `{}`",
+                witchy_syntax::format::type_str(ty)
+            )
+        })
+    };
+    methods
+        .into_iter()
+        .map(|method| {
+            let receiver = descriptor(&method.receiver)?;
+            let arguments = method
+                .arguments
+                .into_iter()
+                .map(|ty| {
+                    Ok(RuntimeMethodArgumentDescriptor {
+                        descriptor: descriptor(&ty)?,
+                        display: witchy_syntax::format::type_str(&ty),
+                        ty,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            let result = descriptor(&method.result)?;
+            Ok(RuntimeMethodDescriptor {
+                receiver,
+                receiver_type: method.receiver,
+                name: method.name,
+                function: method.function,
+                arguments,
+                result,
+                result_display: witchy_syntax::format::type_str(&method.result),
+                result_type: method.result,
+            })
+        })
+        .collect()
 }
 
 fn dynamic_intrinsic(name: &str, intrinsic: &str) -> bool {
@@ -498,6 +680,14 @@ fn rewrite_dynamic_expr(
         expr,
         Expr::Call { name, .. } if dynamic_intrinsic(name, intrinsics::DYNAMIC_FIELD_STATUS)
     );
+    let methods_lookup = matches!(
+        expr,
+        Expr::Call { name, .. } if dynamic_intrinsic(name, intrinsics::DYNAMIC_METHODS)
+    );
+    let method_call = matches!(
+        expr,
+        Expr::Call { name, .. } if dynamic_intrinsic(name, intrinsics::DYNAMIC_CALL)
+    );
     if fields_lookup {
         let Expr::Call { args, .. } = expr else { unreachable!() };
         let [ty] = std::mem::take(args).try_into().map_err(|_| {
@@ -510,6 +700,18 @@ fn rewrite_dynamic_expr(
             .try_into()
             .map_err(|_| "Dynamic field lookup requires a descriptor and name".to_string())?;
         *expr = runtime_field_status_lookup(ty, field, runtime_types);
+    } else if methods_lookup {
+        let Expr::Call { args, .. } = expr else { unreachable!() };
+        let [ty] = std::mem::take(args)
+            .try_into()
+            .map_err(|_| "Dynamic method enumeration requires one descriptor".to_string())?;
+        *expr = runtime_methods_lookup(ty, runtime_types);
+    } else if method_call {
+        let Expr::Call { args, .. } = expr else { unreachable!() };
+        let [receiver, name, arguments] = std::mem::take(args)
+            .try_into()
+            .map_err(|_| "Dynamic method call requires a receiver, name, and arguments".to_string())?;
+        *expr = runtime_method_call(receiver, name, arguments, runtime_types);
     }
     Ok(())
 }
@@ -571,6 +773,352 @@ fn runtime_fields_lookup(ty: Expr, runtime_types: &RuntimeTypePlan) -> Expr {
             },
         }],
     }
+}
+
+fn dynamic_error(name: &str, args: Vec<Expr>) -> Expr {
+    Expr::Ctor {
+        name: "Err".into(),
+        args: vec![Expr::Ctor {
+            name: format!("dynamic.{name}"),
+            args,
+        }],
+    }
+}
+
+fn runtime_methods_lookup(ty: Expr, runtime_types: &RuntimeTypePlan) -> Expr {
+    let mut by_receiver = BTreeMap::<u32, Vec<&RuntimeMethodDescriptor>>::new();
+    for method in runtime_types.methods() {
+        by_receiver
+            .entry(method.receiver.index())
+            .or_default()
+            .push(method);
+    }
+    let mut descriptor_arms = runtime_types
+        .descriptors()
+        .iter()
+        .map(|descriptor| {
+            let methods = by_receiver
+                .get(&descriptor.id.index())
+                .into_iter()
+                .flatten()
+                .map(|method| Expr::Ctor {
+                    name: "dynamic.RuntimeMethod".into(),
+                    args: vec![
+                        Expr::Str(method.name.clone()),
+                        Expr::List(
+                            method
+                                .arguments
+                                .iter()
+                                .map(|argument| {
+                                    runtime_type_expr(argument.descriptor, &argument.display)
+                                })
+                                .collect(),
+                        ),
+                        runtime_type_expr(method.result, &method.result_display),
+                    ],
+                })
+                .collect();
+            witchy_syntax::ast::MatchArm {
+                line: u32::MAX,
+                pattern: witchy_syntax::ast::Pattern::Int(i64::from(descriptor.id.index())),
+                guard: None,
+                body: Expr::List(methods),
+            }
+        })
+        .collect::<Vec<_>>();
+    descriptor_arms.push(witchy_syntax::ast::MatchArm {
+        line: u32::MAX,
+        pattern: witchy_syntax::ast::Pattern::Wildcard,
+        guard: None,
+        body: Expr::List(Vec::new()),
+    });
+    Expr::Match {
+        scrutinee: Box::new(ty),
+        arms: vec![witchy_syntax::ast::MatchArm {
+            line: u32::MAX,
+            pattern: witchy_syntax::ast::Pattern::Ctor {
+                name: "dynamic.RuntimeType".into(),
+                args: vec![
+                    witchy_syntax::ast::Pattern::Var("$dynamic_method_descriptor".into()),
+                    witchy_syntax::ast::Pattern::Wildcard,
+                ],
+            },
+            guard: None,
+            body: Expr::Match {
+                scrutinee: Box::new(Expr::Var("$dynamic_method_descriptor".into())),
+                arms: descriptor_arms,
+            },
+        }],
+    }
+}
+
+fn dynamic_type_of(value: &str) -> Expr {
+    Expr::Call {
+        name: "dynamic.type_of".into(),
+        args: vec![Expr::Var(value.into())],
+    }
+}
+
+fn dynamic_decode_step(
+    value: &str,
+    decoded: &str,
+    ty: &Type,
+    descriptor: crate::runtime_type::RuntimeTypeId,
+    success: Expr,
+    failure: Expr,
+) -> Expr {
+    let option = Type::Named("Option".into(), vec![ty.clone()]);
+    Expr::Block(Block {
+        stmts: vec![
+            Stmt::Let {
+                name: format!("{decoded}_option"),
+                ty: Some(option),
+                value: Expr::Call {
+                    name: intrinsics::DYNAMIC_TRY_DECODE_TYPED.into(),
+                    args: vec![
+                        Expr::Var(value.into()),
+                        Expr::Int(i64::from(descriptor.index())),
+                    ],
+                },
+                mutable: false,
+            },
+            Stmt::Expr(Expr::Match {
+                scrutinee: Box::new(Expr::Var(format!("{decoded}_option"))),
+                arms: vec![
+                    witchy_syntax::ast::MatchArm {
+                        line: u32::MAX,
+                        pattern: witchy_syntax::ast::Pattern::Ctor {
+                            name: "Some".into(),
+                            args: vec![witchy_syntax::ast::Pattern::Var(decoded.into())],
+                        },
+                        guard: None,
+                        body: success,
+                    },
+                    witchy_syntax::ast::MatchArm {
+                        line: u32::MAX,
+                        pattern: witchy_syntax::ast::Pattern::Ctor {
+                            name: "None".into(),
+                            args: Vec::new(),
+                        },
+                        guard: None,
+                        body: failure,
+                    },
+                ],
+            }),
+        ],
+        lines: vec![u32::MAX, u32::MAX],
+        region: None,
+    })
+}
+
+fn runtime_method_invocation(method: &RuntimeMethodDescriptor, method_index: usize) -> Expr {
+    let receiver = "$dynamic_call_receiver";
+    let self_name = format!("$dynamic_self_{method_index}");
+    let argument_values = (0..method.arguments.len())
+        .map(|index| format!("$dynamic_argument_{method_index}_{index}"))
+        .collect::<Vec<_>>();
+    let decoded_arguments = (0..method.arguments.len())
+        .map(|index| format!("$dynamic_decoded_{method_index}_{index}"))
+        .collect::<Vec<_>>();
+    let mut call_arguments = vec![Expr::Var(self_name.clone())];
+    call_arguments.extend(decoded_arguments.iter().cloned().map(Expr::Var));
+    let mut body = Expr::Ctor {
+        name: "Ok".into(),
+        args: vec![Expr::Ctor {
+            name: "dynamic.Dynamic".into(),
+            args: vec![
+                runtime_type_expr(method.result, &method.result_display),
+                Expr::Call {
+                    name: method.function.clone(),
+                    args: call_arguments,
+                },
+            ],
+        }],
+    };
+    for (index, argument) in method.arguments.iter().enumerate().rev() {
+        let value = &argument_values[index];
+        let actual_type = dynamic_type_of(value);
+        let decode = dynamic_decode_step(
+            value,
+            &decoded_arguments[index],
+            &argument.ty,
+            argument.descriptor,
+            body,
+            dynamic_error("MalformedPayload", vec![actual_type.clone()]),
+        );
+        body = Expr::Match {
+            scrutinee: Box::new(actual_type.clone()),
+            arms: vec![
+                witchy_syntax::ast::MatchArm {
+                    line: u32::MAX,
+                    pattern: witchy_syntax::ast::Pattern::Ctor {
+                        name: "dynamic.RuntimeType".into(),
+                        args: vec![
+                            witchy_syntax::ast::Pattern::Int(i64::from(
+                                argument.descriptor.index(),
+                            )),
+                            witchy_syntax::ast::Pattern::Wildcard,
+                        ],
+                    },
+                    guard: None,
+                    body: decode,
+                },
+                witchy_syntax::ast::MatchArm {
+                    line: u32::MAX,
+                    pattern: witchy_syntax::ast::Pattern::Wildcard,
+                    guard: None,
+                    body: dynamic_error(
+                        "ArgumentMismatch",
+                        vec![
+                            Expr::Int(i64::try_from(index).unwrap_or(i64::MAX)),
+                            runtime_type_expr(argument.descriptor, &argument.display),
+                            actual_type,
+                        ],
+                    ),
+                },
+            ],
+        };
+    }
+    body = dynamic_decode_step(
+        receiver,
+        &self_name,
+        &method.receiver_type,
+        method.receiver,
+        body,
+        dynamic_error("MalformedPayload", vec![dynamic_type_of(receiver)]),
+    );
+    Expr::Match {
+        scrutinee: Box::new(Expr::Var("$dynamic_call_arguments".into())),
+        arms: vec![
+            witchy_syntax::ast::MatchArm {
+                line: u32::MAX,
+                pattern: witchy_syntax::ast::Pattern::List {
+                    elems: argument_values
+                        .iter()
+                        .cloned()
+                        .map(witchy_syntax::ast::Pattern::Var)
+                        .collect(),
+                    rest: None,
+                },
+                guard: None,
+                body,
+            },
+            witchy_syntax::ast::MatchArm {
+                line: u32::MAX,
+                pattern: witchy_syntax::ast::Pattern::Wildcard,
+                guard: None,
+                body: dynamic_error(
+                    "ArityMismatch",
+                    vec![
+                        Expr::Str(method.name.clone()),
+                        Expr::Int(i64::try_from(method.arguments.len()).unwrap_or(i64::MAX)),
+                        Expr::Call {
+                            name: "list.length".into(),
+                            args: vec![Expr::Var("$dynamic_call_arguments".into())],
+                        },
+                    ],
+                ),
+            },
+        ],
+    }
+}
+
+fn runtime_method_call(
+    receiver: Expr,
+    name: Expr,
+    arguments: Expr,
+    runtime_types: &RuntimeTypePlan,
+) -> Expr {
+    let mut by_receiver = BTreeMap::<u32, Vec<(usize, &RuntimeMethodDescriptor)>>::new();
+    for (index, method) in runtime_types.methods().iter().enumerate() {
+        by_receiver
+            .entry(method.receiver.index())
+            .or_default()
+            .push((index, method));
+    }
+    let descriptor_value = dynamic_type_of("$dynamic_call_receiver");
+    let mut descriptor_arms = runtime_types
+        .descriptors()
+        .iter()
+        .map(|descriptor| {
+            let methods = by_receiver.get(&descriptor.id.index());
+            let body = if let Some(methods) = methods {
+                let mut method_arms = methods
+                    .iter()
+                    .map(|(index, method)| witchy_syntax::ast::MatchArm {
+                        line: u32::MAX,
+                        pattern: witchy_syntax::ast::Pattern::Str(method.name.clone()),
+                        guard: None,
+                        body: runtime_method_invocation(method, *index),
+                    })
+                    .collect::<Vec<_>>();
+                method_arms.push(witchy_syntax::ast::MatchArm {
+                    line: u32::MAX,
+                    pattern: witchy_syntax::ast::Pattern::Wildcard,
+                    guard: None,
+                    body: dynamic_error(
+                        "MissingMethod",
+                        vec![Expr::Var("$dynamic_call_name".into())],
+                    ),
+                });
+                Expr::Match {
+                    scrutinee: Box::new(Expr::Var("$dynamic_call_name".into())),
+                    arms: method_arms,
+                }
+            } else {
+                dynamic_error(
+                    "MissingMethod",
+                    vec![Expr::Var("$dynamic_call_name".into())],
+                )
+            };
+            witchy_syntax::ast::MatchArm {
+                line: u32::MAX,
+                pattern: witchy_syntax::ast::Pattern::Ctor {
+                    name: "dynamic.RuntimeType".into(),
+                    args: vec![
+                        witchy_syntax::ast::Pattern::Int(i64::from(descriptor.id.index())),
+                        witchy_syntax::ast::Pattern::Wildcard,
+                    ],
+                },
+                guard: None,
+                body,
+            }
+        })
+        .collect::<Vec<_>>();
+    descriptor_arms.push(witchy_syntax::ast::MatchArm {
+        line: u32::MAX,
+        pattern: witchy_syntax::ast::Pattern::Wildcard,
+        guard: None,
+        body: dynamic_error("MalformedDescriptor", vec![descriptor_value.clone()]),
+    });
+    Expr::Block(Block {
+        stmts: vec![
+            Stmt::Let {
+                name: "$dynamic_call_receiver".into(),
+                ty: None,
+                value: receiver,
+                mutable: false,
+            },
+            Stmt::Let {
+                name: "$dynamic_call_name".into(),
+                ty: None,
+                value: name,
+                mutable: false,
+            },
+            Stmt::Let {
+                name: "$dynamic_call_arguments".into(),
+                ty: None,
+                value: arguments,
+                mutable: false,
+            },
+            Stmt::Expr(Expr::Match {
+                scrutinee: Box::new(descriptor_value),
+                arms: descriptor_arms,
+            }),
+        ],
+        lines: vec![u32::MAX; 4],
+        region: None,
+    })
 }
 
 fn runtime_field_status_lookup(

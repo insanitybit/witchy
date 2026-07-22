@@ -31,6 +31,8 @@ pub enum IntrinsicId {
     DynamicDescriptorId,
     DynamicFields,
     DynamicFieldStatus,
+    DynamicMethods,
+    DynamicCall,
     DynamicTryDecode,
     DynamicTryDecodeTyped,
     BytesFromString,
@@ -173,6 +175,8 @@ pub enum IntrinsicSignature {
     GenericToInt,
     RuntimeTypeToListRuntimeField,
     RuntimeTypeStringToDynamicFieldStatus,
+    RuntimeTypeToListRuntimeMethod,
+    DynamicStringListDynamicToResultDynamicDynamicError,
     DynamicToOptionGeneric,
     DynamicIntToOptionGeneric,
     StringToBytes,
@@ -456,6 +460,8 @@ pub const DYNAMIC_DESCRIPTOR: &str = "__dynamic_descriptor";
 pub const DYNAMIC_DESCRIPTOR_ID: &str = "__dynamic_descriptor_id";
 pub const DYNAMIC_FIELDS: &str = "__dynamic_fields";
 pub const DYNAMIC_FIELD_STATUS: &str = "__dynamic_field_status";
+pub const DYNAMIC_METHODS: &str = "__dynamic_methods";
+pub const DYNAMIC_CALL: &str = "__dynamic_call";
 pub const DYNAMIC_TRY_DECODE: &str = "__dynamic_try_decode";
 pub const DYNAMIC_TRY_DECODE_TYPED: &str = "__dynamic_try_decode_typed";
 
@@ -943,6 +949,36 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "Dynamic field lookup",
+        private_callers: DYNAMIC_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::DynamicMethods,
+        name: DYNAMIC_METHODS,
+        arity: 1,
+        signature: IntrinsicSignature::RuntimeTypeToListRuntimeMethod,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "Dynamic method enumeration",
+        private_callers: DYNAMIC_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::DynamicCall,
+        name: DYNAMIC_CALL,
+        arity: 3,
+        signature: IntrinsicSignature::DynamicStringListDynamicToResultDynamicDynamicError,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "Dynamic method call",
         private_callers: DYNAMIC_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
