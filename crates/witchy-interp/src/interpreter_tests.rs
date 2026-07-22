@@ -2416,7 +2416,7 @@ fn main(console: Console):
     // test can't see the const's value to check it).
 
     fn scan_fn_body<'a>(src: &'a str, sig: &str) -> &'a str {
-        let start = src.find(sig).unwrap_or_else(|| panic!("missing `{sig}` in interpreter.rs"));
+        let start = src.find(sig).unwrap_or_else(|| panic!("missing `{sig}` in interpreter source"));
         let tail = &src[start + sig.len()..];
         let end = tail.find("\n    fn ").unwrap_or(tail.len());
         &tail[..end]
@@ -2475,10 +2475,14 @@ fn main(console: Console):
     #[test]
     fn interpreter_builtin_names_are_covered() {
         let src = include_str!("interpreter.rs");
-        let mut names: Vec<String> = ["    fn call_builtin(", "    fn call_interpreter_special("]
-            .into_iter()
-            .flat_map(|sig| dispatch_literals(scan_fn_body(src, sig)))
-            .collect();
+        let builtins_src = include_str!("interpreter/builtins.rs");
+        let mut names: Vec<String> = [
+            (builtins_src, "    pub(super) fn call_builtin("),
+            (src, "    fn call_interpreter_special("),
+        ]
+        .into_iter()
+        .flat_map(|(source, sig)| dispatch_literals(scan_fn_body(source, sig)))
+        .collect();
         names.sort();
         names.dedup();
         // Sanity: the scan actually found the known dispatch arms (guards against
