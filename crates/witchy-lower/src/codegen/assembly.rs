@@ -35,11 +35,12 @@ fn grantable_cap_names(module: &Module) -> HashSet<&str> {
 fn is_compiler_syntax_type_name(name: &str) -> bool {
     matches!(
         name,
-        "meta.ItemSyntax" | "meta.TypeSyntax" | "meta.ExprSyntax" | "meta.PatternSyntax"
+        "meta.ItemSyntax" | "meta.ModuleSyntax" | "meta.Span" | "meta.TypeSyntax" | "meta.ExprSyntax" | "meta.PatternSyntax"
             | "meta.SyntaxHole" | "meta.StmtSyntax" | "meta.BlockSyntax"
             | "meta.MatchArmSyntax" | "meta.ParamSyntax" | "meta.Ident" | "ItemSyntax"
             | "TypeSyntax" | "ExprSyntax" | "PatternSyntax" | "SyntaxHole"
             | "StmtSyntax" | "BlockSyntax" | "MatchArmSyntax" | "ParamSyntax" | "Ident"
+            | "ModuleSyntax" | "Span"
     )
 }
 

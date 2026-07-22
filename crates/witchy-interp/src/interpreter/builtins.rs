@@ -877,6 +877,45 @@ impl Interpreter {
                     "meta.function_block expects Bool, Ident, List(ParamSyntax), Option(TypeSyntax), and BlockSyntax",
                 ),
             },
+            name if intrinsics::is_meta_impl_block(name) => match args {
+                [trait_ty, target_ty, items] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err(
+                            "meta.impl_block is available only during compile-time expansion",
+                        );
+                    }
+                    let trait_ty =
+                        compiler_type_syntax_value(trait_ty, &self.compiler_type_syntax)?;
+                    let target_ty =
+                        compiler_type_syntax_value(target_ty, &self.compiler_type_syntax)?;
+                    let (trait_name, trait_args) =
+                        compiler_impl_head(trait_ty, "trait", "meta.impl_block")?;
+                    let (type_name, target_args) =
+                        compiler_impl_head(target_ty, "target", "meta.impl_block")?;
+                    let methods = compiler_impl_methods(items, &self.compiler_item_syntax)?;
+                    let item = Item::Impl(ImplDef {
+                        origin: ImplOrigin::Source,
+                        trait_name: Some(trait_name),
+                        trait_args,
+                        type_name,
+                        target_args,
+                        bounds: Vec::new(),
+                        methods,
+                    });
+                    let handle = self.next_compiler_syntax_handle("impl-item")?;
+                    self.compiler_item_syntax.insert(handle.clone(), item);
+                    Ok(Some(Value::Ctor {
+                        name: OWNED_ITEM_SYNTAX_CTOR.into(),
+                        fields: Rc::new(vec![
+                            Value::str(handle),
+                            Value::Int(i64::from(self.cur_line)),
+                        ]),
+                    }))
+                }
+                _ => err(
+                    "meta.impl_block expects TypeSyntax, TypeSyntax, and List(ItemSyntax)",
+                ),
+            },
             name if name == intrinsics::COMPILER_QUOTE_EXPR => {
                 if self.fresh_ident_scope.is_none() {
                     return err(
@@ -2628,4 +2667,53 @@ impl Interpreter {
             _ => Ok(None),
         }
     }
+}
+
+fn compiler_impl_head(
+    ty: Type,
+    role: &str,
+    operation: &str,
+) -> Result<(String, Vec<Type>), RuntimeError> {
+    match ty {
+        Type::Named(name, args) => Ok((name, args)),
+        _ => err(format!(
+            "{operation} expects its {role} TypeSyntax to name a trait or concrete type"
+        )),
+    }
+}
+
+fn compiler_impl_methods(
+    value: &Value,
+    item_syntax: &HashMap<String, Item>,
+) -> Result<Vec<Function>, RuntimeError> {
+    let Value::List(items) = value else {
+        return err("meta.impl_block expects a list of method ItemSyntax values");
+    };
+    let mut methods = Vec::with_capacity(items.len());
+    for value in items.iter() {
+        let item = match value {
+            Value::Ctor { name, fields }
+                if &**name == OWNED_ITEM_SYNTAX_CTOR
+                    && matches!(fields.as_slice(), [Value::Str(_), Value::Int(_)]) =>
+            {
+                let Value::Str(handle) = &fields[0] else {
+                    unreachable!()
+                };
+                item_syntax.get(handle.as_str()).cloned().ok_or_else(|| RuntimeError {
+                    message: "meta.impl_block referenced an invalid compiler-owned item handle"
+                        .into(),
+                })?
+            }
+            _ => {
+                return err(
+                    "meta.impl_block methods must be compiler-owned function ItemSyntax values",
+                )
+            }
+        };
+        let Item::Function(function) = item else {
+            return err("meta.impl_block accepts function items only");
+        };
+        methods.push(function);
+    }
+    Ok(methods)
 }

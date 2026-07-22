@@ -16,6 +16,18 @@
 sealed type ItemSyntax:
     ItemSyntax(String)
 
+// An opaque aggregate of generated items. Keeping the aggregate typed lets
+// generators build and transform a whole generated module without flattening
+// its items back into source text.
+sealed type ModuleSyntax:
+    ModuleSyntax(List(ItemSyntax))
+
+// Source spans are compiler-owned metadata. The constructor is sealed so user
+// code cannot forge locations; compiler APIs may attach concrete spans as the
+// generated-navigation surface grows.
+sealed type Span:
+    Span(String, Int, Int)
+
 // Hole-free `quote type:` values retain a compiler-owned type AST. The
 // internal constructor carries its opaque identity plus canonical source so
 // existing builders can compose it through the compatibility path.
@@ -685,6 +697,21 @@ pub fn function_block(public: Bool, name: Ident, params: List(ParamSyntax), ret:
 // transfer as typed nodes; compatibility ParamSyntax values remain accepted.
 fn __meta_function_block(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: BlockSyntax) -> ItemSyntax:
     __meta_function_block(public, name, params, ret, body)
+
+// Build a trait implementation directly from typed trait/target heads and
+// compiler-owned function items. No impl source is rendered or reparsed.
+pub fn impl_block(trait_ty: TypeSyntax, target_ty: TypeSyntax, items: List(ItemSyntax)) -> ItemSyntax:
+    __meta_impl_block(trait_ty, target_ty, items)
+
+fn __meta_impl_block(trait_ty: TypeSyntax, target_ty: TypeSyntax, items: List(ItemSyntax)) -> ItemSyntax:
+    __meta_impl_block(trait_ty, target_ty, items)
+
+pub fn module(items: List(ItemSyntax)) -> ModuleSyntax:
+    ModuleSyntax(items)
+
+pub fn module_items(module_syntax: ModuleSyntax) -> List(ItemSyntax):
+    match module_syntax:
+        ModuleSyntax(items) -> items
 
 // A declared type expression, exposed as data so generators do not have to parse
 // source-looking type strings.

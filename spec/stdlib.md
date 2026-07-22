@@ -2251,6 +2251,18 @@ RFC-0080's typed boundary for whole generated items. `quote item:` and literal w
 
 - `ItemSyntax(String)`
 
+#### `sealed type ModuleSyntax`
+
+An opaque aggregate of generated items. Keeping the aggregate typed lets generators build and transform a whole generated module without flattening its items back into source text.
+
+- `ModuleSyntax(List(ItemSyntax))`
+
+#### `sealed type Span`
+
+Source spans are compiler-owned metadata. The constructor is sealed so user code cannot forge locations; compiler APIs may attach concrete spans as the generated-navigation surface grows.
+
+- `Span(String, Int, Int)`
+
 #### `sealed type TypeSyntax`
 
 Hole-free `quote type:` values retain a compiler-owned type AST. The internal constructor carries its opaque identity plus canonical source so existing builders can compose it through the compatibility path.
@@ -2531,6 +2543,14 @@ A function parameter and function item constructors. The single-expression form 
 #### `fn function(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: ExprSyntax) -> ItemSyntax`
 
 #### `fn function_block(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: BlockSyntax) -> ItemSyntax`
+
+#### `fn impl_block(trait_ty: TypeSyntax, target_ty: TypeSyntax, items: List(ItemSyntax)) -> ItemSyntax`
+
+Build a trait implementation directly from typed trait/target heads and compiler-owned function items. No impl source is rendered or reparsed.
+
+#### `fn module(items: List(ItemSyntax)) -> ModuleSyntax`
+
+#### `fn module_items(module_syntax: ModuleSyntax) -> List(ItemSyntax)`
 
 #### `fn type_source(ty: TypeExpr) -> String`
 

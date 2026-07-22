@@ -19,6 +19,8 @@ use super::{
 pub(super) fn compiler_syntax_type_name(name: &str) -> Option<&'static str> {
     match name {
         "meta.ItemSyntax" => Some("meta.ItemSyntax"),
+        "meta.ModuleSyntax" => Some("meta.ModuleSyntax"),
+        "meta.Span" => Some("meta.Span"),
         "meta.TypeSyntax" => Some("meta.TypeSyntax"),
         "meta.ExprSyntax" => Some("meta.ExprSyntax"),
         "meta.PatternSyntax" => Some("meta.PatternSyntax"),
