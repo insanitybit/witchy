@@ -3576,6 +3576,10 @@ impl Checker {
                 let m = self.fresh();
                 Some((vec![Ty::Msg], m))
             }
+            S::StringStringToRuntimeType => Some((
+                vec![Ty::String, Ty::String],
+                Ty::Named("dynamic.RuntimeType".into(), Vec::new()),
+            )),
             S::GenericToRuntimeType => {
                 let value = self.fresh();
                 Some((
@@ -4985,6 +4989,18 @@ impl Checker {
     ) -> Result<Ty, TypeError> {
         let is_cap_op = cap_ops::is_marked(name);
         let call_name = cap_ops::surface_name(name);
+        if expected.is_none()
+            && matches!(call_name, "dynamic.try_decode" | "dynamic.decode")
+        {
+            let result = if call_name.ends_with("try_decode") {
+                "Option(T)"
+            } else {
+                "Result(T, dynamic.DynamicError)"
+            };
+            return terr(format!(
+                "`{call_name}` requires an expected `{result}` result type; add a type annotation"
+            ));
+        }
         if let Some((callback_index, diagnostic)) =
             isolated_vm_callback_contract(call_name, args.len())
         {

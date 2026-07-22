@@ -26,6 +26,7 @@ pub enum IntrinsicId {
     TryContext,
     Erase,
     Unerase,
+    DynamicRuntimeType,
     DynamicDescriptor,
     DynamicTryDecode,
     DynamicTryDecodeTyped,
@@ -164,6 +165,7 @@ pub enum IntrinsicSignature {
     TryContext,
     GenericToMessage,
     MessageToGeneric,
+    StringStringToRuntimeType,
     GenericToRuntimeType,
     DynamicToOptionGeneric,
     DynamicIntToOptionGeneric,
@@ -443,6 +445,7 @@ pub const TRY_CONTEXT: &str = "__try_ctx";
 
 pub const ERASE: &str = "__erase";
 pub const UNERASE: &str = "__unerase";
+pub const DYNAMIC_RUNTIME_TYPE: &str = "__dynamic_runtime_type";
 pub const DYNAMIC_DESCRIPTOR: &str = "__dynamic_descriptor";
 pub const DYNAMIC_TRY_DECODE: &str = "__dynamic_try_decode";
 pub const DYNAMIC_TRY_DECODE_TYPED: &str = "__dynamic_try_decode_typed";
@@ -857,6 +860,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         wir_host_call: None,
         diagnostic_name: "message recovery",
         private_callers: MESSAGE_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::DynamicRuntimeType,
+        name: DYNAMIC_RUNTIME_TYPE,
+        arity: 2,
+        signature: IntrinsicSignature::StringStringToRuntimeType,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "runtime type descriptor",
+        private_callers: NO_PRIVATE_CALLERS,
     },
     IntrinsicSpec {
         id: IntrinsicId::DynamicDescriptor,

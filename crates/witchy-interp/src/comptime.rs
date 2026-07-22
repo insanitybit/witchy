@@ -222,7 +222,12 @@ fn expand_with_item_limit_and_origins(
             item_lines: Vec::new(),
             compiler_item_syntax: module.compiler_item_syntax.clone(),
             compiler_expr_syntax: module.compiler_expr_syntax.clone(),
-            compiler_type_syntax: module.compiler_type_syntax.clone(),
+            compiler_type_syntax: module
+                .compiler_type_syntax
+                .iter()
+                .filter(|syntax| !syntax.runtime_identity)
+                .cloned()
+                .collect(),
             compiler_pattern_syntax: module.compiler_pattern_syntax.clone(),
             compiler_stmt_syntax: module.compiler_stmt_syntax.clone(),
             compiler_block_syntax: module.compiler_block_syntax.clone(),
@@ -750,13 +755,15 @@ pub fn expand_compile_time(
     crate::tagged::expand(name, module, siblings)?;
     if name != "comptime" {
         strip_comptime_only_functions(name, module, &mut origins);
-        // All compiler-owned handles have either been emitted or were confined
-        // to stripped compile-time helpers. Runtime type checking/codegen never
-        // need the payload table, and persistent expanded-module caches should
-        // not retain it.
+        // Quotation handles have either been emitted or were confined to
+        // stripped compile-time helpers. RFC-0082 runtime descriptor requests
+        // deliberately survive into typed closed-program preparation, where
+        // their stored Type AST is the identity authority.
         module.compiler_item_syntax.clear();
         module.compiler_expr_syntax.clear();
-        module.compiler_type_syntax.clear();
+        module
+            .compiler_type_syntax
+            .retain(|syntax| syntax.runtime_identity);
         module.compiler_pattern_syntax.clear();
         module.compiler_stmt_syntax.clear();
         module.compiler_block_syntax.clear();

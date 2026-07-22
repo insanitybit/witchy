@@ -29,6 +29,7 @@
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 
 use crate::ast::*;
+use crate::intrinsics;
 use crate::linker::LinkError;
 
 /// Receiver-independent ownership facts gathered while source traits and impls
@@ -1211,6 +1212,12 @@ impl<'a> Scope<'a> {
     // ---- items -----------------------------------------------------------
 
     fn rewrite_module(&self, m: &mut Module) -> Result<(), LinkError> {
+        for syntax in &mut m.compiler_type_syntax {
+            if syntax.runtime_identity {
+                syntax.handle = runtime_type_handle(self.home, &syntax.handle);
+                self.resolve_type(&mut syntax.ty)?;
+            }
+        }
         for item in &mut m.items {
             match item {
                 Item::Type(t) => {
@@ -1392,6 +1399,11 @@ impl<'a> Scope<'a> {
             // `iter.Item(1)` parsed as a qualified Call; if the suffix is a
             // constructor of that module, it is really a constructor application.
             Expr::Call { name, args } => {
+                if name == intrinsics::DYNAMIC_RUNTIME_TYPE
+                    && let [Expr::Str(handle), Expr::Str(_)] = args.as_mut_slice()
+                {
+                    *handle = runtime_type_handle(self.home, handle);
+                }
                 if let Some((module, suffix)) = name.split_once('.') {
                     if self.is_qualified_ctor(module, suffix) {
                         let name = std::mem::take(name);
@@ -1607,6 +1619,15 @@ impl<'a> Scope<'a> {
             | Expr::TaggedLit { .. } => {}
         }
         Ok(())
+    }
+}
+
+fn runtime_type_handle(home: &str, handle: &str) -> String {
+    let prefix = format!("witchy-runtime-type-module-v1\0{}:{home}\0", home.len());
+    if handle.starts_with(&prefix) {
+        handle.to_string()
+    } else {
+        format!("{prefix}{handle}")
     }
 }
 

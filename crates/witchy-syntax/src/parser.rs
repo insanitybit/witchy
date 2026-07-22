@@ -1654,6 +1654,12 @@ impl Parser {
                             continue;
                         }
                     }
+                    if matches!(&e, Expr::Var(module) if module == "dynamic" && self.imports.contains(module))
+                        && member == "runtime_type"
+                    {
+                        e = self.compiler_owned_runtime_type(member_line)?;
+                        continue;
+                    }
                     let args = self.call_args_labeled()?;
                     match e {
                         // `mod.func(args)` — a module-qualified call on a bare
@@ -2413,8 +2419,40 @@ impl Parser {
             handle: handle.clone(),
             ty,
             definition_line,
+            runtime_identity: false,
         });
         handle
+    }
+
+    /// Parse RFC-0082's type-position operation without pretending its argument
+    /// is a runtime value. The opaque handle reaches compiler preparation; the
+    /// stored Type node, not the source projection, is the identity authority.
+    fn compiler_owned_runtime_type(&mut self, definition_line: u32) -> Result<Expr, ParseError> {
+        self.expect(&Tok::LParen)?;
+        if self.at(&Tok::RParen) {
+            return Err(self.error(
+                "`dynamic.runtime_type` requires exactly one type argument".to_string(),
+            ));
+        }
+        let ty = self.ty()?;
+        if self.eat(&Tok::Comma) {
+            return Err(self.error(
+                "`dynamic.runtime_type` accepts one type argument, not a type list".to_string(),
+            ));
+        }
+        self.expect(&Tok::RParen)?;
+        let source = crate::format::type_str(&ty);
+        let handle = self.compiler_syntax_handle("runtime-type", &source);
+        self.compiler_type_syntax.push(CompilerTypeSyntax {
+            handle: handle.clone(),
+            ty,
+            definition_line,
+            runtime_identity: true,
+        });
+        Ok(Expr::Call {
+            name: crate::intrinsics::DYNAMIC_RUNTIME_TYPE.into(),
+            args: vec![Expr::Str(handle), Expr::Str(source)],
+        })
     }
 
     fn compiler_owned_type_join(

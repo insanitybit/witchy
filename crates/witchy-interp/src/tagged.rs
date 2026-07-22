@@ -711,7 +711,12 @@ fn expand_one(
         item_lines: Vec::new(),
         compiler_item_syntax: ctx.compiler_item_syntax.clone(),
         compiler_expr_syntax: ctx.compiler_expr_syntax.clone(),
-        compiler_type_syntax: ctx.compiler_type_syntax.clone(),
+        compiler_type_syntax: ctx
+            .compiler_type_syntax
+            .iter()
+            .filter(|syntax| !syntax.runtime_identity)
+            .cloned()
+            .collect(),
         compiler_pattern_syntax: ctx.compiler_pattern_syntax.clone(),
         compiler_stmt_syntax: ctx.compiler_stmt_syntax.clone(),
         compiler_block_syntax: ctx.compiler_block_syntax.clone(),

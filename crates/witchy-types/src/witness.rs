@@ -97,6 +97,12 @@ impl WitnessCatalog {
                 &trait_methods,
             ));
         catalog
+            .impls
+            .extend(crate::traits::synthesize_anon_record_impls(
+                &module.items,
+                &trait_methods,
+            ));
+        catalog
     }
 }
 

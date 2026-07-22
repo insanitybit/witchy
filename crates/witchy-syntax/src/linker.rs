@@ -2067,6 +2067,12 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
 
 fn expansion_sibling(runtime: &Module, source: &Module) -> Module {
     let mut sibling = runtime.clone();
+    // Expansion siblings execute compile-time code only. Runtime descriptor
+    // requests belong to the enclosing executable module and may name types
+    // intentionally absent from the synthetic `comptime` namespace.
+    sibling
+        .compiler_type_syntax
+        .retain(|syntax| !syntax.runtime_identity);
     let existing: HashSet<String> = sibling
         .items
         .iter()
@@ -2106,7 +2112,12 @@ fn expansion_sibling(runtime: &Module, source: &Module) -> Module {
         sibling.compiler_expr_syntax = source.compiler_expr_syntax.clone();
     }
     if sibling.compiler_type_syntax.is_empty() {
-        sibling.compiler_type_syntax = source.compiler_type_syntax.clone();
+        sibling.compiler_type_syntax = source
+            .compiler_type_syntax
+            .iter()
+            .filter(|syntax| !syntax.runtime_identity)
+            .cloned()
+            .collect();
     }
     if sibling.compiler_pattern_syntax.is_empty() {
         sibling.compiler_pattern_syntax = source.compiler_pattern_syntax.clone();

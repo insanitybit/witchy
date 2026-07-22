@@ -1449,7 +1449,14 @@ fn f(var a: Int, own b: Int, c: Int) -> Int:
     fn dyn_trait_head_may_be_module_qualified() {
         let module = parse_module("fn f(x: dyn render.Widget) -> Int:\n    1\n")
             .expect("qualified dyn trait head parses");
-        let Item::Function(function) = &module.items[0] else { panic!("expected function") };
+        let function = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) => Some(function),
+                _ => None,
+            })
+            .expect("expected function");
         assert_eq!(
             function.params[0].ty,
             Some(Type::Dyn("render.Widget".into(), Vec::new()))
@@ -1469,4 +1476,46 @@ fn f(var a: Int, own b: Int, c: Int) -> Int:
             "got: {}",
             err.message
         );
+    }
+
+    #[test]
+    fn runtime_type_parses_a_compiler_owned_type_position() {
+        let module = parse_module(
+            "import dynamic\n\nfn descriptor() -> dynamic.RuntimeType:\n    dynamic.runtime_type(List(.{name: String, age: Int}))\n",
+        )
+        .expect("runtime type position parses");
+        let function = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(function) => Some(function),
+                _ => None,
+            })
+            .expect("expected function");
+        let Stmt::Expr(Expr::Call { name, args }) = &function.body.stmts[0] else {
+            panic!("expected compiler-owned runtime type call")
+        };
+        assert_eq!(name, crate::intrinsics::DYNAMIC_RUNTIME_TYPE);
+        let [Expr::Str(handle), Expr::Str(source)] = args.as_slice() else {
+            panic!("expected opaque handle and source projection")
+        };
+        assert_eq!(source, "List(.{age: Int, name: String})");
+        let [syntax] = module.compiler_type_syntax.as_slice() else {
+            panic!("expected one stored type node")
+        };
+        assert!(syntax.runtime_identity);
+        assert_eq!(&syntax.handle, handle);
+        assert_eq!(crate::format::module(&module, &[]),
+            "import dynamic\nimport reflect\n\nfn descriptor() -> dynamic.RuntimeType:\n    dynamic.runtime_type(List(.{age: Int, name: String}))\n");
+    }
+
+    #[test]
+    fn runtime_type_rejects_value_and_multiple_type_arguments() {
+        for source in [
+            "import dynamic\nfn f():\n    dynamic.runtime_type()\n",
+            "import dynamic\nfn f():\n    dynamic.runtime_type(Int, String)\n",
+            "import dynamic\nfn f():\n    dynamic.runtime_type(1)\n",
+        ] {
+            parse_module(source).expect_err("runtime_type accepts exactly one type");
+        }
     }

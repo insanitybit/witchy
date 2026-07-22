@@ -43,6 +43,7 @@ pub fn try_decode(value: Dynamic) -> Option(a):
 // Decode to the result type inferred from the surrounding static context. A
 // mismatch retains the actual canonical descriptor for diagnostics and recovery.
 pub fn decode(value: Dynamic) -> Result(a, DynamicError):
-    match try_decode(value):
+    let decoded: Option(a) = try_decode(value)
+    match decoded:
         Some(decoded) -> Ok(decoded)
         None -> Err(TypeMismatch(type_of(value)))

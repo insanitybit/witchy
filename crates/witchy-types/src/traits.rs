@@ -32,8 +32,10 @@ use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 use witchy_syntax::{ast::*, cap_ops, intrinsics};
 
 mod anon_union;
+mod anon_record;
 mod conversions;
 mod mono;
+pub(crate) use anon_record::synthesize_anon_record_impls;
 pub(crate) use anon_union::synthesize_anon_union_impls;
 use conversions::rewrite_try_from_conversions;
 
@@ -333,7 +335,11 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
     let mut impl_pairs: HashSet<(String, String)> = HashSet::new();
     let mut impl_contract_diags: Vec<String> = Vec::new();
     let mut generated: Vec<Function> = Vec::new();
-    let synthetic_impls = synthesize_anon_union_impls(&module.items, &trait_method_list);
+    let mut synthetic_impls = synthesize_anon_union_impls(&module.items, &trait_method_list);
+    synthetic_impls.extend(synthesize_anon_record_impls(
+        &module.items,
+        &trait_method_list,
+    ));
     let source_impls = module.items.iter().filter_map(|item| match item {
         Item::Impl(im) => Some(im),
         _ => None,

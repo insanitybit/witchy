@@ -132,6 +132,11 @@ pub struct CompilerTypeSyntax {
     pub handle: String,
     pub ty: Type,
     pub definition_line: u32,
+    /// This payload is a runtime descriptor request rather than an RFC-0080
+    /// quotation. The linker resolves and namespaces these type nodes in their
+    /// source module before the closed-program runtime catalog consumes them.
+    #[cfg_attr(not(target_arch = "wasm32"), serde(default))]
+    pub runtime_identity: bool,
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(serde::Serialize, serde::Deserialize))]

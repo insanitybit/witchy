@@ -1253,6 +1253,11 @@ fn expr(e: &Expr) -> String {
         Expr::List(xs) => format!("[{}]", comma(xs)),
         Expr::Tuple(xs) => format!("({})", comma(xs)),
         Expr::Call { name, args } => {
+            if name == crate::intrinsics::DYNAMIC_RUNTIME_TYPE
+                && let [Expr::Str(_handle), Expr::Str(source)] = args.as_slice()
+            {
+                return format!("dynamic.runtime_type({source})");
+            }
             // Hole-free RFC-0080 item quotation carries the parsed item in the
             // module's compiler syntax table. Print its canonical source through
             // the existing `meta.item` surface; the parser recognizes a literal

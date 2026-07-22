@@ -131,10 +131,27 @@ fn resolved_expr_type(table: &TypeTable, expr: &Expr) -> Result<Option<Type>, St
 }
 
 fn dynamic_identity_request(
+    module: &Module,
     table: &TypeTable,
     expr: &Expr,
 ) -> Result<Option<Type>, String> {
     let Expr::Call { name, args } = expr else { return Ok(None) };
+    if dynamic_intrinsic(name, intrinsics::DYNAMIC_RUNTIME_TYPE) {
+        let [Expr::Str(handle), Expr::Str(_source)] = args.as_slice() else {
+            return Err("dynamic.runtime_type requires one compiler-owned type argument".into());
+        };
+        let mut matches = module
+            .compiler_type_syntax
+            .iter()
+            .filter(|syntax| syntax.runtime_identity && syntax.handle == *handle);
+        let syntax = matches.next().ok_or_else(|| {
+            "dynamic.runtime_type lost its compiler-owned type syntax".to_string()
+        })?;
+        if matches.next().is_some() {
+            return Err("dynamic.runtime_type has an ambiguous compiler-owned type handle".into());
+        }
+        return Ok(Some(syntax.ty.clone()));
+    }
     if dynamic_intrinsic(name, intrinsics::DYNAMIC_DESCRIPTOR) {
         let [value] = args.as_slice() else {
             return Err("Dynamic descriptor construction requires one value".into());
@@ -161,7 +178,7 @@ fn collect_dynamic_identities(
 ) -> Result<Vec<RuntimeTypeIdentity>, String> {
     let mut requested = Vec::new();
     visit_module_exprs(module, &mut |expr| {
-        if let Some(ty) = dynamic_identity_request(table, expr)? {
+        if let Some(ty) = dynamic_identity_request(module, table, expr)? {
             requested.push(ty);
         }
         Ok(())
@@ -188,15 +205,28 @@ fn rewrite_dynamic_module(
     runtime_catalog: Option<&RuntimeDeclarationCatalog>,
     runtime_types: &RuntimeTypePlan,
 ) -> Result<(), String> {
+    let dynamic_context = module.clone();
     for item in &mut module.items {
         match item {
             Item::Function(function) => {
-                rewrite_dynamic_block(&mut function.body, table, runtime_catalog, runtime_types)?;
+                rewrite_dynamic_block(
+                    &mut function.body,
+                    &dynamic_context,
+                    table,
+                    runtime_catalog,
+                    runtime_types,
+                )?;
             }
             Item::Trait(definition) => {
                 for method in &mut definition.methods {
                     if let Some(default) = &mut method.default {
-                        rewrite_dynamic_block(default, table, runtime_catalog, runtime_types)?;
+                        rewrite_dynamic_block(
+                            default,
+                            &dynamic_context,
+                            table,
+                            runtime_catalog,
+                            runtime_types,
+                        )?;
                     }
                 }
             }
@@ -204,6 +234,7 @@ fn rewrite_dynamic_module(
                 for method in &mut definition.methods {
                     rewrite_dynamic_block(
                         &mut method.body,
+                        &dynamic_context,
                         table,
                         runtime_catalog,
                         runtime_types,
@@ -211,10 +242,22 @@ fn rewrite_dynamic_module(
                 }
             }
             Item::Const { value, .. } => {
-                rewrite_dynamic_expr(value, table, runtime_catalog, runtime_types)?;
+                rewrite_dynamic_expr(
+                    value,
+                    &dynamic_context,
+                    table,
+                    runtime_catalog,
+                    runtime_types,
+                )?;
             }
             Item::Comptime(block) => {
-                rewrite_dynamic_block(block, table, runtime_catalog, runtime_types)?;
+                rewrite_dynamic_block(
+                    block,
+                    &dynamic_context,
+                    table,
+                    runtime_catalog,
+                    runtime_types,
+                )?;
             }
             Item::Type(_) | Item::TypeAlias { .. } => {}
         }
@@ -224,6 +267,7 @@ fn rewrite_dynamic_module(
 
 fn rewrite_dynamic_block(
     block: &mut Block,
+    module: &Module,
     table: &TypeTable,
     runtime_catalog: Option<&RuntimeDeclarationCatalog>,
     runtime_types: &RuntimeTypePlan,
@@ -236,7 +280,7 @@ fn rewrite_dynamic_block(
             | Stmt::Yield(value)
             | Stmt::Expr(value)
             | Stmt::Return(Some(value)) => {
-                rewrite_dynamic_expr(value, table, runtime_catalog, runtime_types)?;
+                rewrite_dynamic_expr(value, module, table, runtime_catalog, runtime_types)?;
             }
             Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
         }
@@ -246,41 +290,42 @@ fn rewrite_dynamic_block(
 
 fn rewrite_dynamic_expr(
     expr: &mut Expr,
+    module: &Module,
     table: &TypeTable,
     runtime_catalog: Option<&RuntimeDeclarationCatalog>,
     runtime_types: &RuntimeTypePlan,
 ) -> Result<(), String> {
-    let request = dynamic_identity_request(table, expr)?;
+    let request = dynamic_identity_request(module, table, expr)?;
     match expr {
         Expr::List(items)
         | Expr::Tuple(items)
         | Expr::Ctor { args: items, .. }
         | Expr::AnonCtor { args: items, .. } => {
             for item in items {
-                rewrite_dynamic_expr(item, table, runtime_catalog, runtime_types)?;
+                rewrite_dynamic_expr(item, module, table, runtime_catalog, runtime_types)?;
             }
         }
         Expr::Call { args, .. } => {
             for argument in args {
-                rewrite_dynamic_expr(argument, table, runtime_catalog, runtime_types)?;
+                rewrite_dynamic_expr(argument, module, table, runtime_catalog, runtime_types)?;
             }
         }
         Expr::MethodCall { receiver, args, .. }
         | Expr::ExistentialCall { receiver, args, .. } => {
-            rewrite_dynamic_expr(receiver, table, runtime_catalog, runtime_types)?;
+            rewrite_dynamic_expr(receiver, module, table, runtime_catalog, runtime_types)?;
             for argument in args {
-                rewrite_dynamic_expr(argument, table, runtime_catalog, runtime_types)?;
+                rewrite_dynamic_expr(argument, module, table, runtime_catalog, runtime_types)?;
             }
         }
         Expr::LabeledCall { args, .. } => {
             for (_, argument) in args {
-                rewrite_dynamic_expr(argument, table, runtime_catalog, runtime_types)?;
+                rewrite_dynamic_expr(argument, module, table, runtime_catalog, runtime_types)?;
             }
         }
         Expr::Apply { func, args } => {
-            rewrite_dynamic_expr(func, table, runtime_catalog, runtime_types)?;
+            rewrite_dynamic_expr(func, module, table, runtime_catalog, runtime_types)?;
             for argument in args {
-                rewrite_dynamic_expr(argument, table, runtime_catalog, runtime_types)?;
+                rewrite_dynamic_expr(argument, module, table, runtime_catalog, runtime_types)?;
             }
         }
         Expr::Unary { expr, .. }
@@ -289,64 +334,70 @@ fn rewrite_dynamic_expr(
         | Expr::ExistentialPack { expr, .. }
         | Expr::ExistentialUpcast { expr, .. }
         | Expr::Field { base: expr, .. } => {
-            rewrite_dynamic_expr(expr, table, runtime_catalog, runtime_types)?;
+            rewrite_dynamic_expr(expr, module, table, runtime_catalog, runtime_types)?;
         }
         Expr::Lambda { body, .. } | Expr::Block(body) => {
-            rewrite_dynamic_block(body, table, runtime_catalog, runtime_types)?;
+            rewrite_dynamic_block(body, module, table, runtime_catalog, runtime_types)?;
         }
         Expr::RecordUpdate { base, fields, .. } => {
-            rewrite_dynamic_expr(base, table, runtime_catalog, runtime_types)?;
+            rewrite_dynamic_expr(base, module, table, runtime_catalog, runtime_types)?;
             for (_, value) in fields {
-                rewrite_dynamic_expr(value, table, runtime_catalog, runtime_types)?;
+                rewrite_dynamic_expr(value, module, table, runtime_catalog, runtime_types)?;
             }
         }
         Expr::Record { fields, spread, .. } => {
             for (_, value) in fields {
-                rewrite_dynamic_expr(value, table, runtime_catalog, runtime_types)?;
+                rewrite_dynamic_expr(value, module, table, runtime_catalog, runtime_types)?;
             }
             if let Some(spread) = spread {
-                rewrite_dynamic_expr(spread, table, runtime_catalog, runtime_types)?;
+                rewrite_dynamic_expr(spread, module, table, runtime_catalog, runtime_types)?;
             }
         }
         Expr::Binary { lhs, rhs, .. } => {
-            rewrite_dynamic_expr(lhs, table, runtime_catalog, runtime_types)?;
-            rewrite_dynamic_expr(rhs, table, runtime_catalog, runtime_types)?;
+            rewrite_dynamic_expr(lhs, module, table, runtime_catalog, runtime_types)?;
+            rewrite_dynamic_expr(rhs, module, table, runtime_catalog, runtime_types)?;
         }
         Expr::If { cond, then_block, else_block } => {
-            rewrite_dynamic_expr(cond, table, runtime_catalog, runtime_types)?;
-            rewrite_dynamic_block(then_block, table, runtime_catalog, runtime_types)?;
+            rewrite_dynamic_expr(cond, module, table, runtime_catalog, runtime_types)?;
+            rewrite_dynamic_block(then_block, module, table, runtime_catalog, runtime_types)?;
             if let Some(else_block) = else_block {
-                rewrite_dynamic_block(else_block, table, runtime_catalog, runtime_types)?;
+                rewrite_dynamic_block(else_block, module, table, runtime_catalog, runtime_types)?;
             }
         }
         Expr::Match { scrutinee, arms } => {
-            rewrite_dynamic_expr(scrutinee, table, runtime_catalog, runtime_types)?;
+            rewrite_dynamic_expr(scrutinee, module, table, runtime_catalog, runtime_types)?;
             for arm in arms {
                 if let Some(guard) = &mut arm.guard {
-                    rewrite_dynamic_expr(guard, table, runtime_catalog, runtime_types)?;
+                    rewrite_dynamic_expr(guard, module, table, runtime_catalog, runtime_types)?;
                 }
-                rewrite_dynamic_expr(&mut arm.body, table, runtime_catalog, runtime_types)?;
+                rewrite_dynamic_expr(
+                    &mut arm.body,
+                    module,
+                    table,
+                    runtime_catalog,
+                    runtime_types,
+                )?;
             }
         }
         Expr::While { cond, body } => {
-            rewrite_dynamic_expr(cond, table, runtime_catalog, runtime_types)?;
-            rewrite_dynamic_block(body, table, runtime_catalog, runtime_types)?;
+            rewrite_dynamic_expr(cond, module, table, runtime_catalog, runtime_types)?;
+            rewrite_dynamic_block(body, module, table, runtime_catalog, runtime_types)?;
         }
         Expr::For { iter, body, .. } => {
-            rewrite_dynamic_expr(iter, table, runtime_catalog, runtime_types)?;
-            rewrite_dynamic_block(body, table, runtime_catalog, runtime_types)?;
+            rewrite_dynamic_expr(iter, module, table, runtime_catalog, runtime_types)?;
+            rewrite_dynamic_block(body, module, table, runtime_catalog, runtime_types)?;
         }
         Expr::Range { lo, hi, .. } => {
-            rewrite_dynamic_expr(lo, table, runtime_catalog, runtime_types)?;
-            rewrite_dynamic_expr(hi, table, runtime_catalog, runtime_types)?;
+            rewrite_dynamic_expr(lo, module, table, runtime_catalog, runtime_types)?;
+            rewrite_dynamic_expr(hi, module, table, runtime_catalog, runtime_types)?;
         }
         Expr::Index { base, index } => {
-            rewrite_dynamic_expr(base, table, runtime_catalog, runtime_types)?;
-            rewrite_dynamic_expr(index, table, runtime_catalog, runtime_types)?;
+            rewrite_dynamic_expr(base, module, table, runtime_catalog, runtime_types)?;
+            rewrite_dynamic_expr(index, module, table, runtime_catalog, runtime_types)?;
         }
         Expr::WhileLet { scrutinee, body, .. } => {
-            rewrite_dynamic_expr(scrutinee, table, runtime_catalog, runtime_types)?;
-            rewrite_dynamic_block(body, table, runtime_catalog, runtime_types)?;
+            rewrite_dynamic_expr(scrutinee, module, table, runtime_catalog, runtime_types)?;
+            rewrite_dynamic_block(body, module, table, runtime_catalog, runtime_types)?;
         }
         Expr::Int(_)
         | Expr::Float(_)
@@ -368,6 +419,21 @@ fn rewrite_dynamic_expr(
             "Dynamic descriptor plan lost a prepared concrete type".to_string()
         })?;
         match expr {
+            Expr::Call { name, args }
+                if dynamic_intrinsic(name, intrinsics::DYNAMIC_RUNTIME_TYPE) =>
+            {
+                let display = match args.as_slice() {
+                    [Expr::Str(_), Expr::Str(source)] => source.clone(),
+                    _ => format::type_str(&ty),
+                };
+                *expr = Expr::Ctor {
+                    name: "dynamic.RuntimeType".into(),
+                    args: vec![
+                        Expr::Int(i64::from(descriptor.index())),
+                        Expr::Str(display),
+                    ],
+                };
+            }
             Expr::Call { name, .. }
                 if dynamic_intrinsic(name, intrinsics::DYNAMIC_DESCRIPTOR) =>
             {
