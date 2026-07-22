@@ -1003,6 +1003,17 @@ impl LoanCtx<'_> {
                         self.aggregate_borrow_source(field, callables, live)
                     })
                 }),
+            // RFC-0082 Dynamic is an owned persistence boundary. A view may
+            // cross it only after explicit `.owned()` materialization; otherwise
+            // the erased runtime representation would outlive its checked root.
+            Expr::Call { name, args } if name == "dynamic.dynamic" => args
+                .iter()
+                .find_map(&mut inspect)
+                .or_else(|| {
+                    args.iter().find_map(|arg| {
+                        self.aggregate_borrow_source(arg, callables, live)
+                    })
+                }),
             Expr::Call { args, .. } | Expr::Apply { args, .. } => args
                 .iter()
                 .find_map(|arg| self.aggregate_borrow_source(arg, callables, live)),
@@ -1252,6 +1263,16 @@ impl LoanCtx<'_> {
                 if name == &loan.owner {
                     return Err(self.conflict(loan, "reassigned"));
                 }
+            }
+            if stmt_stores_view_in_dynamic(stmt, &loan.view) {
+                return Err(terr(format!(
+                    "in `{}`: borrowed view `{}` from `{}` cannot be stored in Dynamic — \
+                     materialize it with `{}.owned()` before calling `dynamic.dynamic`",
+                    short_name(self.fn_name),
+                    loan.view,
+                    short_name(&loan.origin),
+                    loan.view,
+                )));
             }
             // The view escaping through a closure/task/channel while its loan is
             // live requires materialization (the owner may not outlive the view's
@@ -1510,6 +1531,21 @@ fn stmt_lets_view_escape(stmt: &Stmt, view: &str) -> bool {
         }
     });
     escapes
+}
+
+/// RFC-0082 Dynamic is an owned persistence boundary. A borrowed view may
+/// reach it only after `.owned()` has ended the loan and produced ordinary data.
+fn stmt_stores_view_in_dynamic(stmt: &Stmt, view: &str) -> bool {
+    let mut stores = false;
+    walk_stmt_exprs(stmt, &mut |expr| {
+        let Expr::Call { name, args } = expr else { return };
+        if (name == "dynamic.dynamic" || name.starts_with("dynamic.dynamic__"))
+            && args.iter().any(|arg| expr_result_is_var(arg, view))
+        {
+            stores = true;
+        }
+    });
+    stores
 }
 
 fn expr_materializes_view(expr: &Expr, view: &str) -> bool {

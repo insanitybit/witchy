@@ -46,7 +46,7 @@ type DynamicError:
 // Convert one reflectable value into an owned dynamic envelope. The compiler
 // replaces `__dynamic_descriptor` with an immutable descriptor constant and
 // rejects direct or transitive capability payloads before either backend runs.
-pub fn dynamic(value: a) -> Dynamic where a: Reflect:
+pub fn dynamic(own value: a) -> Dynamic where a: Reflect:
     Dynamic(__dynamic_descriptor(value), value)
 
 // Return the immutable descriptor carried by a dynamic value.
