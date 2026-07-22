@@ -13,6 +13,12 @@ sealed type RuntimeType:
 sealed type Dynamic:
     Dynamic(RuntimeType, dyn Reflect)
 
+// Checked operation failures are ordinary matchable data. Stage 1 has only the
+// exact-descriptor conversion failure; later stages extend this same error type
+// with member, call-contract, visibility, and capability failures.
+type DynamicError:
+    TypeMismatch(RuntimeType)
+
 // Convert one reflectable value into an owned dynamic envelope. The compiler
 // replaces `__dynamic_descriptor` with an immutable descriptor constant and
 // rejects direct or transitive capability payloads before either backend runs.
@@ -33,3 +39,10 @@ pub fn type_name(ty: RuntimeType) -> String:
 // The compiler specializes this private call after generic monomorphization.
 pub fn try_decode(value: Dynamic) -> Option(a):
     __dynamic_try_decode(value)
+
+// Decode to the result type inferred from the surrounding static context. A
+// mismatch retains the actual canonical descriptor for diagnostics and recovery.
+pub fn decode(value: Dynamic) -> Result(a, DynamicError):
+    match try_decode(value):
+        Some(decoded) -> Ok(decoded)
+        None -> Err(TypeMismatch(type_of(value)))
