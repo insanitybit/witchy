@@ -2418,7 +2418,12 @@ fn main(console: Console):
     fn scan_fn_body<'a>(src: &'a str, sig: &str) -> &'a str {
         let start = src.find(sig).unwrap_or_else(|| panic!("missing `{sig}` in interpreter source"));
         let tail = &src[start + sig.len()..];
-        let end = tail.find("\n    fn ").unwrap_or(tail.len());
+        // End at the method's own closing brace — the first `}` at exactly the
+        // 4-space impl-method indent. Robust to the callee's visibility keyword
+        // (the old "next `\n    fn `" heuristic missed `pub(super) fn` neighbors)
+        // and to brace-bearing string literals inside the body (those are never
+        // at a 4-space line start).
+        let end = tail.find("\n    }").map(|i| i + "\n    }".len()).unwrap_or(tail.len());
         &tail[..end]
     }
 
@@ -2474,11 +2479,11 @@ fn main(console: Console):
 
     #[test]
     fn interpreter_builtin_names_are_covered() {
-        let src = include_str!("interpreter.rs");
         let builtins_src = include_str!("interpreter/builtins.rs");
+        let calls_src = include_str!("interpreter/calls.rs");
         let mut names: Vec<String> = [
             (builtins_src, "    pub(super) fn call_builtin("),
-            (src, "    fn call_interpreter_special("),
+            (calls_src, "    pub(super) fn call_interpreter_special("),
         ]
         .into_iter()
         .flat_map(|(source, sig)| dispatch_literals(scan_fn_body(source, sig)))
