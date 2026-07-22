@@ -14,6 +14,10 @@ use witchy_syntax::ast::*;
 use super::*;
 
 impl Mono<'_> {
+    pub(super) fn seed_specialization(&mut self, name: &str, type_args: Vec<Type>) {
+        self.specialize(name, type_args);
+    }
+
     pub(super) fn run(&mut self, items: &mut [Item]) {
         for item in items.iter_mut() {
             if let Item::Function(f) = item {

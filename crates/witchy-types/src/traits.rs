@@ -748,6 +748,10 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
             let __t_mono = mono_timing_start();
             let (next_memo, next_diags, generated) = typed.rewrite_preserving_nodes(
                 |table, module| {
+                    let witness_plan = crate::existential::concrete_pack_requests(module, table)
+                        .and_then(|requests| {
+                            crate::witness::build_from_catalog(&witness_catalog, requests)
+                        });
                     let mut mono = Mono {
                         templates: &templates,
                         known_fns: &known_fns,
@@ -765,6 +769,39 @@ fn lower_with(module: Module, mono_unbounded: bool) -> (Module, Vec<String>) {
                         show_types: &show_types,
                         render_available,
                     };
+                    match witness_plan {
+                        Ok(witnesses) => {
+                            for witness in witnesses.witnesses {
+                                for slot in witness.slots {
+                                    if known_fns.contains(&slot.adapter)
+                                        || mono
+                                            .generated
+                                            .iter()
+                                            .any(|function| function.name == slot.adapter)
+                                    {
+                                        continue;
+                                    }
+                                    let seed = templates.iter().find_map(|(name, template)| {
+                                        let type_args =
+                                            type_args_from_receiver(template, &witness.concrete)?;
+                                        let suffix = type_args
+                                            .iter()
+                                            .map(|ty| {
+                                                mangle_type_key(&type_key(ty.unqualified()))
+                                            })
+                                            .collect::<Vec<_>>()
+                                            .join("__");
+                                        (format!("{name}__{suffix}") == slot.adapter)
+                                            .then(|| (name.clone(), type_args))
+                                    });
+                                    if let Some((name, type_args)) = seed {
+                                        mono.seed_specialization(&name, type_args);
+                                    }
+                                }
+                            }
+                        }
+                        Err(message) => mono.diagnostics.push(message),
+                    }
                     mono.run(&mut module.items);
                     (mono.memo, mono.diagnostics, mono.generated)
                 },

@@ -708,6 +708,49 @@ fn collect_requests(
     Ok((requests, upcasts))
 }
 
+fn type_contains_unresolved_variable(ty: &Type) -> bool {
+    match ty {
+        Type::Named(name, args) | Type::Dyn(name, args) => {
+            (args.is_empty()
+                && name
+                    .rsplit('.')
+                    .next()
+                    .and_then(|name| name.chars().next())
+                    .is_some_and(char::is_lowercase))
+                || args.iter().any(type_contains_unresolved_variable)
+        }
+        Type::Tuple(items) => items.iter().any(type_contains_unresolved_variable),
+        Type::Fn(params, result, _) => {
+            params.iter().any(type_contains_unresolved_variable)
+                || type_contains_unresolved_variable(result)
+        }
+        Type::Qualified(_, inner) => type_contains_unresolved_variable(inner),
+        Type::RecordCompose { base, fields } => {
+            type_contains_unresolved_variable(base)
+                || fields
+                    .iter()
+                    .any(|(_, field)| type_contains_unresolved_variable(field))
+        }
+    }
+}
+
+/// Concrete existential constructions visible before generic templates are
+/// discarded. Trait monomorphization uses these requests to materialize the
+/// adapter functions that the later closed witness plan will reference.
+pub(crate) fn concrete_pack_requests(
+    module: &Module,
+    table: &TypeTable,
+) -> Result<Vec<ExistentialRequest>, String> {
+    let (requests, _) = collect_requests(module, table)?;
+    Ok(requests
+        .into_iter()
+        .filter(|(existential, concrete)| {
+            !type_contains_unresolved_variable(existential)
+                && !type_contains_unresolved_variable(concrete)
+        })
+        .collect())
+}
+
 fn rewrite_module(
     module: &mut Module,
     table: &TypeTable,

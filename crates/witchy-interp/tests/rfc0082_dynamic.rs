@@ -77,6 +77,9 @@ type User derive(Reflect):
 type Cell(a) derive(Reflect):
     value: a
 
+type Bag derive(Reflect):
+    values: List(String)
+
 sealed type Vault derive(Reflect):
     token: String
 
@@ -118,6 +121,14 @@ fn main(console: Console):
                 Ok(value) -> console.print("generic-${value}")
                 Err(_) -> console.print("generic-decode-error")
         Err(_) -> console.print("generic-projection-error")
+    let bag = dynamic.dynamic(Bag(["alpha", "beta"]))
+    match dynamic.field(bag, "values"):
+        Ok(projected) ->
+            let values: Result(List(String), dynamic.DynamicError) = dynamic.decode(projected)
+            match values:
+                Ok(items) -> console.print("list-${list.at(items, 1)}")
+                Err(_) -> console.print("list-decode-error")
+        Err(_) -> console.print("list-projection-error")
 "#,
     );
     let output = witchy_interp::interpreter::run_checked_module(checked, ".", Vec::new())
@@ -134,6 +145,7 @@ fn main(console: Console):
             "sealed-denied",
             "anon-Engineer",
             "generic-9",
+            "list-beta",
         ]
     );
 }
