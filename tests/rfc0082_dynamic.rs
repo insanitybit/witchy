@@ -97,9 +97,9 @@ type Mixed(a) derive(Reflect):
     second: b
 
 fn main(console: Console):
-    let mixed: Mixed(Int, String) = Mixed(7, "mixed")
+    let mixed: Mixed(String, Bool) = Mixed("mixed", true)
     let packed = dynamic.dynamic(mixed)
-    let decoded: Option(Mixed(Int, String)) = dynamic.try_decode(packed)
+    let decoded: Option(Mixed(String, Bool)) = dynamic.try_decode(packed)
     match decoded:
         Some(found) -> console.print("${found.first}-${found.second}")
         None -> console.print("decode failed")
@@ -108,7 +108,7 @@ fn main(console: Console):
 
     let interpreted = witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
         .expect("run authenticated Dynamic reflection on interpreter");
-    assert_eq!(interpreted, ["7-mixed"]);
+    assert_eq!(interpreted, ["mixed-true"]);
 
     let wasm = codegen::compile_checked_module_binary(&checked)
         .expect_lowered("compile mixed explicit and inferred reflection");
@@ -121,5 +121,5 @@ fn main(console: Console):
         )
         .expect("spawn");
     actor.run().expect("run compiled Dynamic reflection");
-    assert_eq!(actor.output(), ["7-mixed"]);
+    assert_eq!(actor.output(), ["mixed-true"]);
 }
