@@ -130,6 +130,12 @@ fn lower_explicit_packs_inner(
             runtime_catalog,
             &runtime_types,
         )?);
+        runtime_types.set_trait_relations(prepare_dynamic_trait_relations(
+            &dynamic_types,
+            catalog,
+            runtime_catalog,
+            &runtime_types,
+        )?);
     }
     let (module, _, dynamic_result) = typed.rewrite_into_module(|table, module| {
         rewrite_dynamic_module(module, table, runtime_catalog, &runtime_types)
@@ -376,7 +382,7 @@ fn dynamic_identity_request(
         let syntax = matches.next().ok_or_else(|| {
             "dynamic.runtime_type lost its compiler-owned type syntax".to_string()
         })?;
-        if matches.next().is_some() {
+        if matches.any(|candidate| candidate.ty != syntax.ty) {
             return Err("dynamic.runtime_type has an ambiguous compiler-owned type handle".into());
         }
         return Ok(Some(syntax.ty.clone()));
@@ -419,7 +425,13 @@ fn collect_dynamic_types(
         if let Some(ty) =
             dynamic_identity_request(module, table, expr, runtime_catalog.is_some())?
         {
-            requested.push(ty);
+            let trait_descriptor = matches!(
+                expr,
+                Expr::Call { name, .. }
+                    if dynamic_intrinsic(name, intrinsics::DYNAMIC_RUNTIME_TYPE)
+                        && matches!(ty.unqualified(), Type::Dyn(..))
+            );
+            requested.push((ty, trait_descriptor));
         }
         Ok(())
     })?;
@@ -429,12 +441,56 @@ fn collect_dynamic_types(
     let runtime_catalog = runtime_catalog.ok_or_else(|| {
         "Dynamic operations require authenticated runtime declaration ownership".to_string()
     })?;
-    for ty in &requested {
-        runtime_catalog
-            .capability_free_type_identity(ty, module)
-            .map_err(|error| error.to_string())?;
+    for (ty, trait_descriptor) in &requested {
+        if *trait_descriptor {
+            runtime_catalog
+                .type_identity(ty)
+                .map_err(|error| error.to_string())?;
+        } else {
+            runtime_catalog
+                .capability_free_type_identity(ty, module)
+                .map_err(|error| error.to_string())?;
+        }
     }
-    Ok(requested)
+    Ok(requested.into_iter().map(|(ty, _)| ty).collect())
+}
+
+fn prepare_dynamic_trait_relations(
+    dynamic_types: &[Type],
+    catalog: &WitnessCatalog,
+    runtime_catalog: &RuntimeDeclarationCatalog,
+    runtime_types: &RuntimeTypePlan,
+) -> Result<Vec<(crate::runtime_type::RuntimeTypeId, crate::runtime_type::RuntimeTypeId)>, String> {
+    let traits = dynamic_types
+        .iter()
+        .filter(|ty| matches!(ty.unqualified(), Type::Dyn(..)))
+        .collect::<Vec<_>>();
+    let concrete_types = dynamic_types
+        .iter()
+        .filter(|ty| !matches!(ty.unqualified(), Type::Dyn(..)))
+        .collect::<Vec<_>>();
+    let mut relations = Vec::new();
+    for concrete in concrete_types {
+        let concrete_identity = runtime_catalog
+            .type_identity(concrete)
+            .map_err(|error| error.to_string())?;
+        let concrete_id = runtime_types.id(&concrete_identity).ok_or_else(|| {
+            "Dynamic trait plan lost a prepared concrete descriptor".to_string()
+        })?;
+        for trait_type in &traits {
+            if !catalog.implements(concrete, trait_type)? {
+                continue;
+            }
+            let trait_identity = runtime_catalog
+                .type_identity(trait_type)
+                .map_err(|error| error.to_string())?;
+            let trait_id = runtime_types.id(&trait_identity).ok_or_else(|| {
+                "Dynamic trait plan lost a prepared trait descriptor".to_string()
+            })?;
+            relations.push((concrete_id, trait_id));
+        }
+    }
+    Ok(relations)
 }
 
 fn rewrite_dynamic_module(
@@ -738,6 +794,14 @@ fn rewrite_dynamic_expr(
         expr,
         Expr::Call { name, .. } if dynamic_call_with(name)
     );
+    let trait_query = matches!(
+        expr,
+        Expr::Call { name, .. } if dynamic_intrinsic(name, intrinsics::DYNAMIC_IMPLEMENTS)
+    );
+    let trait_cast = matches!(
+        expr,
+        Expr::Call { name, .. } if dynamic_intrinsic(name, intrinsics::DYNAMIC_AS_TRAIT)
+    );
     if fields_lookup {
         let Expr::Call { args, .. } = expr else { unreachable!() };
         let [ty] = std::mem::take(args).try_into().map_err(|_| {
@@ -777,6 +841,12 @@ fn rewrite_dynamic_expr(
             Some((capabilities, call_with_capability_type)),
             runtime_types,
         );
+    } else if trait_query || trait_cast {
+        let Expr::Call { args, .. } = expr else { unreachable!() };
+        let [value, trait_type] = std::mem::take(args)
+            .try_into()
+            .map_err(|_| "Dynamic trait queries require a value and trait descriptor".to_string())?;
+        *expr = runtime_trait_query(value, trait_type, trait_cast, runtime_types);
     }
     Ok(())
 }
@@ -786,6 +856,84 @@ fn runtime_type_expr(id: crate::runtime_type::RuntimeTypeId, display: &str) -> E
         name: "dynamic.RuntimeType".into(),
         args: vec![Expr::Int(i64::from(id.index())), Expr::Str(display.into())],
     }
+}
+
+fn runtime_trait_query(
+    value: Expr,
+    trait_type: Expr,
+    checked_view: bool,
+    runtime_types: &RuntimeTypePlan,
+) -> Expr {
+    let mut arms = runtime_types
+        .trait_relations()
+        .iter()
+        .map(|(concrete, trait_id)| witchy_syntax::ast::MatchArm {
+            line: u32::MAX,
+            pattern: witchy_syntax::ast::Pattern::Tuple(vec![
+                witchy_syntax::ast::Pattern::Ctor {
+                    name: "dynamic.RuntimeType".into(),
+                    args: vec![
+                        witchy_syntax::ast::Pattern::Int(i64::from(concrete.index())),
+                        witchy_syntax::ast::Pattern::Wildcard,
+                    ],
+                },
+                witchy_syntax::ast::Pattern::Ctor {
+                    name: "dynamic.RuntimeType".into(),
+                    args: vec![
+                        witchy_syntax::ast::Pattern::Int(i64::from(trait_id.index())),
+                        witchy_syntax::ast::Pattern::Wildcard,
+                    ],
+                },
+            ]),
+            guard: None,
+            body: if checked_view {
+                Expr::Ctor {
+                    name: "Ok".into(),
+                    args: vec![Expr::Var("$dynamic_trait_value".into())],
+                }
+            } else {
+                Expr::Bool(true)
+            },
+        })
+        .collect::<Vec<_>>();
+    arms.push(witchy_syntax::ast::MatchArm {
+        line: u32::MAX,
+        pattern: witchy_syntax::ast::Pattern::Wildcard,
+        guard: None,
+        body: if checked_view {
+            dynamic_error(
+                "TraitMismatch",
+                vec![Expr::Var("$dynamic_trait_type".into())],
+            )
+        } else {
+            Expr::Bool(false)
+        },
+    });
+    Expr::Block(Block {
+        stmts: vec![
+            Stmt::Let {
+                name: "$dynamic_trait_value".into(),
+                ty: None,
+                value,
+                mutable: false,
+            },
+            Stmt::Let {
+                name: "$dynamic_trait_type".into(),
+                ty: None,
+                value: trait_type,
+                mutable: false,
+            },
+            Stmt::Expr(Expr::Match {
+                scrutinee: Box::new(Expr::Tuple(vec![
+                    dynamic_type_of("$dynamic_trait_value"),
+                    Expr::Var("$dynamic_trait_type".into()),
+                ])),
+                arms,
+            }),
+        ],
+        lines: vec![u32::MAX; 3],
+        region: None,
+    })
 }
 
 fn runtime_fields_lookup(ty: Expr, runtime_types: &RuntimeTypePlan) -> Expr {

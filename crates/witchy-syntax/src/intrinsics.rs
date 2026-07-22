@@ -34,6 +34,8 @@ pub enum IntrinsicId {
     DynamicMethods,
     DynamicCall,
     DynamicCallWith,
+    DynamicImplements,
+    DynamicAsTrait,
     DynamicTryDecode,
     DynamicTryDecodeTyped,
     BytesFromString,
@@ -179,6 +181,8 @@ pub enum IntrinsicSignature {
     RuntimeTypeToListRuntimeMethod,
     DynamicStringListDynamicToResultDynamicDynamicError,
     DynamicStringListDynamicGenericToResultDynamicDynamicError,
+    DynamicRuntimeTypeToBool,
+    DynamicRuntimeTypeToResultDynamicDynamicError,
     DynamicToOptionGeneric,
     DynamicIntToOptionGeneric,
     StringToBytes,
@@ -465,6 +469,8 @@ pub const DYNAMIC_FIELD_STATUS: &str = "__dynamic_field_status";
 pub const DYNAMIC_METHODS: &str = "__dynamic_methods";
 pub const DYNAMIC_CALL: &str = "__dynamic_call";
 pub const DYNAMIC_CALL_WITH: &str = "__dynamic_call_with";
+pub const DYNAMIC_IMPLEMENTS: &str = "__dynamic_implements";
+pub const DYNAMIC_AS_TRAIT: &str = "__dynamic_as_trait";
 pub const DYNAMIC_TRY_DECODE: &str = "__dynamic_try_decode";
 pub const DYNAMIC_TRY_DECODE_TYPED: &str = "__dynamic_try_decode_typed";
 
@@ -997,6 +1003,36 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "Dynamic method call with explicit capabilities",
+        private_callers: DYNAMIC_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::DynamicImplements,
+        name: DYNAMIC_IMPLEMENTS,
+        arity: 2,
+        signature: IntrinsicSignature::DynamicRuntimeTypeToBool,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "Dynamic trait membership query",
+        private_callers: DYNAMIC_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::DynamicAsTrait,
+        name: DYNAMIC_AS_TRAIT,
+        arity: 2,
+        signature: IntrinsicSignature::DynamicRuntimeTypeToResultDynamicDynamicError,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "Dynamic checked trait view",
         private_callers: DYNAMIC_BRIDGE_CALLERS,
     },
     IntrinsicSpec {

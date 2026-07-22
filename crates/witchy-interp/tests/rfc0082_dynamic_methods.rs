@@ -214,3 +214,50 @@ fn main(console: Console, clock: Clock):
         ["Console,Clock", "report-7", "tuple-called"],
     );
 }
+
+#[test]
+fn trait_queries_use_authenticated_closed_impl_membership() {
+    let source = r#"
+import dynamic
+import reflect
+
+trait Label:
+    fn label(self) -> String
+
+trait Missing:
+    fn missing(self) -> String
+
+type Widget:
+    value: Int
+
+impl Reflect for Widget:
+    fn reflect(self) -> reflect.Mirror:
+        reflect.MNil
+
+impl Label for Widget:
+    fn label(self) -> String:
+        "widget-${self.value}"
+
+fn main(console: Console):
+    let packed = dynamic.dynamic(Widget(7))
+    console.print("label-${dynamic.implements(packed, dynamic.runtime_type(dyn Label))}")
+    console.print("missing-${dynamic.implements(packed, dynamic.runtime_type(dyn Missing))}")
+    console.print("not-trait-${dynamic.implements(packed, dynamic.runtime_type(Int))}")
+    match dynamic.as_trait(packed, dynamic.runtime_type(dyn Label)):
+        Ok(view) ->
+            let decoded: Option(Widget) = dynamic.try_decode(view)
+            match decoded:
+                Some(widget) -> console.print("view-${widget.value}")
+                None -> console.print("decode-failed")
+        Err(_) -> console.print("unexpected-view-error")
+    match dynamic.as_trait(packed, dynamic.runtime_type(dyn Missing)):
+        Err(dynamic.TraitMismatch(trait_type)) ->
+            console.print("mismatch-${dynamic.type_name(trait_type)}")
+        _ -> console.print("unexpected-missing-view")
+"#;
+
+    assert_eq!(
+        run(source).expect("run authenticated dynamic trait fixture"),
+        ["label-true", "missing-false", "not-trait-false", "view-7", "mismatch-dyn Missing"],
+    );
+}

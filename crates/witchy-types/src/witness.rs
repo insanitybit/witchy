@@ -104,6 +104,39 @@ impl WitnessCatalog {
             ));
         catalog
     }
+
+    /// Decide one closed concrete-to-trait relation using the same impl heads,
+    /// conditional bounds, and qualified identities as witness construction.
+    pub fn implements(&self, concrete: &Type, existential: &Type) -> Result<bool, String> {
+        let Type::Dyn(trait_name, trait_args) = existential else {
+            return Err("runtime trait query must name `dyn Trait`".to_string());
+        };
+        let definition = self
+            .traits
+            .iter()
+            .find(|definition| definition.name == *trait_name)
+            .ok_or_else(|| format!("runtime trait query references unknown trait `{trait_name}`"))?;
+        if definition.typarams.len() != trait_args.len() {
+            return Err(format!(
+                "trait `{trait_name}` expects {} type argument(s), got {}",
+                definition.typarams.len(),
+                trait_args.len()
+            ));
+        }
+        if trait_args.iter().any(has_free_type_variable)
+            || has_free_type_variable(concrete)
+        {
+            return Err("runtime trait queries must be fully substituted".to_string());
+        }
+        let impls = self.impls.iter().collect::<Vec<_>>();
+        Ok(has_applicable_impl(
+            &impls,
+            trait_name,
+            trait_args,
+            concrete,
+            &mut HashSet::new(),
+        ))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

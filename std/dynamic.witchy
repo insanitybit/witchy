@@ -35,6 +35,7 @@ type DynamicError:
     ArityMismatch(String, Int, Int)
     ArgumentMismatch(Int, RuntimeType, RuntimeType)
     ResultMismatch(RuntimeType, RuntimeType)
+    TraitMismatch(RuntimeType)
     CapabilityDenied(String)
     PrivateField(String)
     SealedType(RuntimeType)
@@ -103,6 +104,18 @@ pub fn call(value: Dynamic, name: String, args: List(Dynamic)) -> Result(Dynamic
 // `Dynamic` or the ordinary argument list.
 pub fn call_with(value: Dynamic, name: String, args: List(Dynamic), capabilities: c) -> Result(Dynamic, DynamicError):
     __dynamic_call_with(value, name, args, capabilities)
+
+// Query an authenticated `dyn Trait` descriptor produced by
+// `dynamic.runtime_type(dyn Trait)`. The compiler closes this relation over the
+// linked RFC-0081 impl catalog; display names never participate.
+pub fn implements(value: Dynamic, trait_type: RuntimeType) -> Bool:
+    __dynamic_implements(value, trait_type)
+
+// Validate the same closed relation while retaining the original owned dynamic
+// envelope. Trait identity is evidence for later reflection, not an unchecked
+// payload cast.
+pub fn as_trait(value: Dynamic, trait_type: RuntimeType) -> Result(Dynamic, DynamicError):
+    __dynamic_as_trait(value, trait_type)
 
 pub fn field(value: Dynamic, name: String) -> Result(Dynamic, DynamicError):
     if name == "":

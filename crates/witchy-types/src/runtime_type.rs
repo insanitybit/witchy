@@ -928,6 +928,7 @@ pub struct RuntimeTypePlan {
     by_identity: BTreeMap<RuntimeTypeIdentity, RuntimeTypeId>,
     shapes: Vec<RuntimeTypeShape>,
     methods: Vec<RuntimeMethodDescriptor>,
+    trait_relations: Vec<(RuntimeTypeId, RuntimeTypeId)>,
 }
 
 impl RuntimeTypePlan {
@@ -948,7 +949,13 @@ impl RuntimeTypePlan {
             descriptors.push(RuntimeTypeDescriptor { id, identity });
         }
         let shapes = vec![RuntimeTypeShape::Opaque; descriptors.len()];
-        Ok(Self { descriptors, by_identity, shapes, methods: Vec::new() })
+        Ok(Self {
+            descriptors,
+            by_identity,
+            shapes,
+            methods: Vec::new(),
+            trait_relations: Vec::new(),
+        })
     }
 
     pub fn build_with_runtime_shapes<'a>(
@@ -1031,6 +1038,19 @@ impl RuntimeTypePlan {
 
     pub fn methods(&self) -> &[RuntimeMethodDescriptor] {
         &self.methods
+    }
+
+    pub fn set_trait_relations(
+        &mut self,
+        mut relations: Vec<(RuntimeTypeId, RuntimeTypeId)>,
+    ) {
+        relations.sort_by_key(|(concrete, trait_id)| (concrete.index(), trait_id.index()));
+        relations.dedup();
+        self.trait_relations = relations;
+    }
+
+    pub fn trait_relations(&self) -> &[(RuntimeTypeId, RuntimeTypeId)] {
+        &self.trait_relations
     }
 }
 

@@ -188,3 +188,62 @@ fn main():
     assert!(stdout.contains("fetch"), "{stdout}");
     assert!(stdout.contains("Net[Connect, Tcp]"), "{stdout}");
 }
+
+#[test]
+fn dynamic_trait_queries_match_between_interpreter_and_wasm() {
+    let source = r#"
+import dynamic
+import reflect
+
+trait Label:
+    fn label(self) -> String
+
+trait Missing:
+    fn missing(self) -> String
+
+type Widget:
+    value: Int
+
+impl Reflect for Widget:
+    fn reflect(self) -> reflect.Mirror:
+        reflect.MNil
+
+impl Label for Widget:
+    fn label(self) -> String:
+        "widget-${self.value}"
+
+fn main(console: Console):
+    let packed = dynamic.dynamic(Widget(9))
+    console.print("label-${dynamic.implements(packed, dynamic.runtime_type(dyn Label))}")
+    console.print("missing-${dynamic.implements(packed, dynamic.runtime_type(dyn Missing))}")
+    match dynamic.as_trait(packed, dynamic.runtime_type(dyn Label)):
+        Ok(view) ->
+            let decoded: Option(Widget) = dynamic.try_decode(view)
+            match decoded:
+                Some(widget) -> console.print("view-${widget.value}")
+                None -> console.print("decode-failed")
+        Err(_) -> console.print("unexpected-view-error")
+    match dynamic.as_trait(packed, dynamic.runtime_type(dyn Missing)):
+        Err(dynamic.TraitMismatch(trait_type)) ->
+            console.print("mismatch-${dynamic.type_name(trait_type)}")
+        _ -> console.print("unexpected-missing-view")
+"#;
+    let checked = checked(source);
+    let interpreted = interpreter::run_checked_module(checked.clone(), ".", Vec::new())
+        .expect("interpret authenticated dynamic trait fixture");
+    let expected = ["label-true", "missing-false", "view-9", "mismatch-dyn Missing"];
+    assert_eq!(interpreted, expected);
+
+    let wasm = codegen::compile_checked_module_binary(&checked)
+        .expect_lowered("compile authenticated dynamic trait fixture");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut actor = runtime
+        .spawn(
+            &wasm,
+            Capabilities { print: true, quiet: true, ..Default::default() },
+            256,
+        )
+        .expect("spawn compiled dynamic trait fixture");
+    actor.run().expect("run compiled dynamic trait fixture");
+    assert_eq!(actor.output(), expected);
+}

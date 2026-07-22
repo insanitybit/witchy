@@ -3723,6 +3723,29 @@ impl Checker {
                     ),
                 ))
             }
+            S::DynamicRuntimeTypeToBool => Some((
+                vec![
+                    Ty::Named("dynamic.Dynamic".into(), Vec::new()),
+                    Ty::Named("dynamic.RuntimeType".into(), Vec::new()),
+                ],
+                Ty::Bool,
+            )),
+            S::DynamicRuntimeTypeToResultDynamicDynamicError => {
+                let dynamic = Ty::Named("dynamic.Dynamic".into(), Vec::new());
+                Some((
+                    vec![
+                        dynamic.clone(),
+                        Ty::Named("dynamic.RuntimeType".into(), Vec::new()),
+                    ],
+                    Ty::Named(
+                        "Result".into(),
+                        vec![
+                            dynamic,
+                            Ty::Named("dynamic.DynamicError".into(), Vec::new()),
+                        ],
+                    ),
+                ))
+            }
             S::DynamicToOptionGeneric => {
                 let value = self.fresh();
                 Some((
