@@ -74,7 +74,7 @@ fn main(console: Console):
         None -> console.print("shared-decode-failed")
 "#;
     let checked = checked(source);
-    let interpreted = interpreter::run_checked_module(checked.clone(), ".", Vec::new())
+    let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
         .expect("interpret Dynamic ownership fixture");
     let expected = ["materialized-borrowed", "unique-3", "alias-shared", "shared-shared"];
     assert_eq!(interpreted, expected);

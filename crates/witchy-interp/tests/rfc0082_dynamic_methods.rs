@@ -41,7 +41,7 @@ fn authenticated(source: &str) -> Result<witchy_types::pipeline::CheckedModule, 
 
 fn run(source: &str) -> Result<Vec<String>, String> {
     let checked = authenticated(source)?;
-    witchy_interp::interpreter::run_checked_module(checked, ".", Vec::new())
+    witchy_interp::interpreter::run_checked_module(&checked, ".", Vec::new())
         .map_err(|error| error.to_string())
 }
 

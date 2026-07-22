@@ -110,7 +110,7 @@ use crate::{ast, codegen, interpreter, parser, typeck};
                             let bytes = codegen::compile_checked_module_binary(&proof)
                                 .expect_lowered(&format!("{context} compiles to WASM"));
                             let interp = interpreter::run_checked_module(
-                                proof,
+                                &proof,
                                 std::path::Path::new("."),
                                 Vec::new(),
                             )

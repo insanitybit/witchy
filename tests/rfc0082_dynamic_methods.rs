@@ -75,7 +75,7 @@ fn main(console: Console):
         _ -> console.print("unexpected-argument")
 "#;
     let checked = checked(source);
-    let interpreted = interpreter::run_checked_module(checked.clone(), ".", Vec::new())
+    let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
         .expect("interpret authenticated dynamic method fixture");
     let expected = [
         "value-12",
@@ -126,7 +126,7 @@ fn main(console: Console):
         Err(_) -> console.print("call-failed")
 "#;
     let checked = checked(source);
-    let interpreted = interpreter::run_checked_module(checked.clone(), ".", Vec::new())
+    let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
         .expect("interpret explicit capability fixture");
     let expected = ["denied-announce", "cap-ok", "called"];
     assert_eq!(interpreted, expected);
@@ -229,7 +229,7 @@ fn main(console: Console):
         _ -> console.print("unexpected-missing-view")
 "#;
     let checked = checked(source);
-    let interpreted = interpreter::run_checked_module(checked.clone(), ".", Vec::new())
+    let interpreted = interpreter::run_checked_module(&checked, ".", Vec::new())
         .expect("interpret authenticated dynamic trait fixture");
     let expected = ["label-true", "missing-false", "view-9", "mismatch-dyn Missing"];
     assert_eq!(interpreted, expected);

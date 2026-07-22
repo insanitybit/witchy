@@ -406,7 +406,7 @@
                             .collect();
                         let output: Vec<String> = if runnable {
                             interpreter::run_checked_module(
-                                checked,
+                                &checked,
                                 std::path::Path::new("."),
                                 Vec::new(),
                             )

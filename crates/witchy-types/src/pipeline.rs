@@ -24,7 +24,7 @@ use crate::typeck::{self, TypeError};
 ///
 /// The wrapped AST remains private so APIs that require checked input can use
 /// this type as evidence instead of relying on caller discipline.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct CheckedModule {
     linked: LinkedModule,
     module_owners: Option<AuthenticatedModuleOwners>,
@@ -32,6 +32,10 @@ pub struct CheckedModule {
 
 impl CheckedModule {
     /// Borrow the checked linked AST.
+    ///
+    /// This is not yet a capability-secure proof boundary because [`Module`]
+    /// remains cloneable for compiler stages. Production sinks must continue
+    /// to accept `CheckedModule` rather than a clone of this view.
     pub fn module(&self) -> &Module {
         &self.linked.module
     }
@@ -61,15 +65,6 @@ impl CheckedModule {
         )
     }
 
-    /// Consume the proof wrapper and return the checked linked AST.
-    pub fn into_module(self) -> Module {
-        self.linked.module
-    }
-
-    /// Consume the proof wrapper while retaining generated-node origins.
-    pub fn into_linked(self) -> LinkedModule {
-        self.linked
-    }
 }
 
 /// The stage at which linking and checking failed.
@@ -338,6 +333,15 @@ mod tests {
         assert_eq!(checked.module(), &old.module);
         assert_eq!(checked.origins(), &old.origins);
         assert_eq!(EXPANSIONS.load(Ordering::SeqCst), before + 1);
+    }
+
+    #[test]
+    fn checked_proof_has_no_consuming_ast_accessors() {
+        let source = include_str!("pipeline.rs");
+        let into_module = ["pub fn into_", "module(self) -> Module"].concat();
+        let into_linked = ["pub fn into_", "linked(self) -> LinkedModule"].concat();
+        assert!(!source.contains(&into_module));
+        assert!(!source.contains(&into_linked));
     }
 
     #[test]

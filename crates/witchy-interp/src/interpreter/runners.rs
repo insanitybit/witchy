@@ -45,17 +45,17 @@ pub fn run_module(
 }
 
 /// Run a module that crossed the authenticated checked-link boundary. Dynamic
-/// descriptor preparation consumes retained loader ownership directly; raw AST
+/// descriptor preparation uses retained loader ownership directly; raw AST
 /// runners cannot reconstruct package identity from flattened compiler names.
 pub fn run_checked_module(
-    checked: witchy_types::pipeline::CheckedModule,
+    checked: &witchy_types::pipeline::CheckedModule,
     root: impl AsRef<Path>,
     net_allow: Vec<String>,
 ) -> Result<Vec<String>, RuntimeError> {
     let runtime_catalog = checked
         .runtime_declaration_catalog()
         .map_err(|error| RuntimeError { message: error.to_string() })?;
-    let module = checked.into_module();
+    let module = checked.module().clone();
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
         run_module_inner_limited_with_catalog(

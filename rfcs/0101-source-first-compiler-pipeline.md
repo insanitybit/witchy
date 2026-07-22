@@ -87,6 +87,13 @@ Implemented evidence:
   proof from filesystem linking through artifact generation. Type-invalid files
   therefore cannot construct the value accepted by their codegen entrypoint;
   focused CLI tests pin both the accepted and rejected boundaries.
+- The checked proof no longer implements `Clone` or exposes the redundant
+  consuming `into_module`/`into_linked` accessors. Checked interpreter execution
+  borrows the proof, while analysis and codegen retain a borrowed view of its
+  linked AST. This is API cleanup, not the final capability boundary: `Module`
+  remains cloneable, and raw lowerer/interpreter sinks retained for tests and
+  compiler-synthesized modules can still accept such a clone. Closing that path
+  requires relocating or sealing those sinks rather than another accessor name.
 
 ## Required contract
 
@@ -123,8 +130,8 @@ expansion, name/type resolution, and destructive transforms. The remaining
 work must move those boundaries incrementally without creating a second
 semantic pipeline or weakening the existing fail-closed checks. In dependency
 order: establish non-destructive linked name/trait/method resolution; move
-complete source type checking before trait desugaring; then remove raw
-production `Module` escape hatches and promote the RFC only after backend and
+complete source type checking before trait desugaring; then remove the remaining
+raw production `Module` entrypoints and promote the RFC only after backend and
 diagnostic-origin criteria are green.
 
 A labeled module call still requires its import to be present in parsed source;

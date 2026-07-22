@@ -179,7 +179,7 @@ pub(crate) fn parity_check(path: &str) -> ParityOutcome {
         }
         _ => None,
     });
-    let interp = interpreter::run_checked_module(checked, Path::new("."), Vec::new())
+    let interp = interpreter::run_checked_module(&checked, Path::new("."), Vec::new())
         .map_err(|e| e.to_string());
     let compiled = match &unmintable {
         Some(msg) => Err(witchy_syntax::diag::runtime_error("", 0, msg)),
