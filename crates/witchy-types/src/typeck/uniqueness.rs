@@ -11,7 +11,7 @@ use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 
 use witchy_syntax::ast::{self, Block, Expr, Function, Item, Module, Stmt};
 
-use super::{collect_type_params, terr, TypeError};
+use super::{terr, TypeError};
 
 /// Reject two top-level functions with the same name. Witchy has no
 /// free-function overloading — a second definition silently overwrites the first
@@ -120,8 +120,7 @@ pub(super) fn check_unique_declarations(module: &Module) -> Result<(), TypeError
             }
             Item::TypeAlias { name, params, ty } => {
                 check_type_params(format!("type alias `{}`", bare(name)), params)?;
-                let mut used_params = Vec::new();
-                collect_type_params(ty, &mut used_params);
+                let used_params = ast::effective_type_params(&[], std::iter::once(ty));
                 for param in used_params {
                     if !params.contains(&param) {
                         return terr(format!(

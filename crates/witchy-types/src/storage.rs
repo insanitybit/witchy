@@ -488,57 +488,8 @@ fn mapped_dependencies<'a>(
         .collect()
 }
 
-pub fn type_def_params(def: &TypeDef) -> Vec<String> {
-    if !def.params.is_empty() {
-        return def.params.clone();
-    }
-    let mut params = Vec::new();
-    for field in def.variants.iter().flat_map(|variant| &variant.fields) {
-        collect_implicit_params(field, &mut params);
-    }
-    params
-}
-
-fn collect_implicit_params(ty: &Type, out: &mut Vec<String>) {
-    match ty {
-        Type::Qualified(_, inner) => collect_implicit_params(inner, out),
-        Type::Tuple(items) => {
-            for item in items {
-                collect_implicit_params(item, out);
-            }
-        }
-        Type::RecordCompose { base, fields } => {
-            collect_implicit_params(base, out);
-            for (_, ty) in fields {
-                collect_implicit_params(ty, out);
-            }
-        }
-        Type::Dyn(_, args) => {
-            for arg in args {
-                collect_implicit_params(arg, out);
-            }
-        }
-        Type::Fn(params, ret, _) => {
-            for param in params {
-                collect_implicit_params(param, out);
-            }
-            collect_implicit_params(ret, out);
-        }
-        Type::Named(name, args) => {
-            if args.is_empty()
-                && name.chars().next().is_some_and(char::is_lowercase)
-                && !name.contains('.')
-            {
-                if !out.contains(name) {
-                    out.push(name.clone());
-                }
-            } else {
-                for arg in args {
-                    collect_implicit_params(arg, out);
-                }
-            }
-        }
-    }
+fn type_def_params(def: &TypeDef) -> Vec<String> {
+    crate::typeck::type_def_params(def)
 }
 
 #[cfg(test)]

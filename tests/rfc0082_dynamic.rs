@@ -84,3 +84,42 @@ fn main(console: Console):
         ["name:String", "age:Int", "field-Ada", "missing-missing", "sealed-denied"]
     );
 }
+
+#[test]
+fn mixed_explicit_and_inferred_reflection_agrees_on_both_backends() {
+    let checked = checked(
+        r#"
+import dynamic
+import reflect
+
+type Mixed(a) derive(Reflect):
+    first: a
+    second: b
+
+fn main(console: Console):
+    let mixed: Mixed(Int, String) = Mixed(7, "mixed")
+    let packed = dynamic.dynamic(mixed)
+    let decoded: Option(Mixed(Int, String)) = dynamic.try_decode(packed)
+    match decoded:
+        Some(found) -> console.print("${found.first}-${found.second}")
+        None -> console.print("decode failed")
+"#,
+    );
+
+    let interpreted = witchy::interpreter::run_checked_module(&checked, ".", Vec::new())
+        .expect("run authenticated Dynamic reflection on interpreter");
+    assert_eq!(interpreted, ["7-mixed"]);
+
+    let wasm = codegen::compile_checked_module_binary(&checked)
+        .expect_lowered("compile mixed explicit and inferred reflection");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut actor = runtime
+        .spawn(
+            &wasm,
+            Capabilities { print: true, quiet: true, ..Default::default() },
+            128,
+        )
+        .expect("spawn");
+    actor.run().expect("run compiled Dynamic reflection");
+    assert_eq!(actor.output(), ["7-mixed"]);
+}

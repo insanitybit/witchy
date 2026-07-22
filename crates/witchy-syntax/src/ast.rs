@@ -229,11 +229,11 @@ pub enum ImplOrigin {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeDef {
     pub name: String,
-    /// Explicit type parameters: `type Pair(m, a):` is `["m", "a"]`. When present,
-    /// these FIX the parameter order; otherwise the order is inferred from the
-    /// variants' field types (order of first appearance). Explicit params matter
-    /// when a constructor omits some of them (e.g. `Done(a)` for `Step(m, a)`) —
-    /// inference can't recover the intended position of the omitted one.
+    /// Explicit type parameters: `type Pair(m, a):` is `["m", "a"]`. They form
+    /// the parameter-order prefix; additional lowercase parameters used by fields
+    /// are appended in first-occurrence order. Explicit params matter when a
+    /// constructor omits some of them (e.g. `Done(a)` for `Step(m, a)`) because
+    /// inference cannot recover the intended position of the omitted one.
     pub params: Vec<String>,
     pub variants: Vec<Variant>,
     /// `type T derive(Show, Eq, Ord):` — traits whose impls the compiler
@@ -417,6 +417,74 @@ pub enum Type {
     /// check (identity, existential safety, capability-payload rejection) and
     /// then fail with one feature-stage diagnostic before either backend lowers.
     Dyn(String, Vec<Type>),
+}
+
+/// Effective generic parameters for a set of type positions. Explicit names
+/// retain their order; implicit lowercase names follow in first-occurrence
+/// order. This is the syntax-level authority shared by checking, reflection,
+/// derive, storage planning, and runtime descriptors.
+pub fn effective_type_params<'a>(
+    explicit: &[String],
+    fields: impl IntoIterator<Item = &'a Type>,
+) -> Vec<String> {
+    let mut parameters = explicit.to_vec();
+    for field in fields {
+        collect_effective_type_params(field, &mut parameters);
+    }
+    parameters
+}
+
+/// Effective generic parameters of an algebraic type declaration.
+pub fn effective_type_def_params(definition: &TypeDef) -> Vec<String> {
+    effective_type_params(
+        &definition.params,
+        definition
+            .variants
+            .iter()
+            .flat_map(|variant| &variant.fields),
+    )
+}
+
+fn collect_effective_type_params(ty: &Type, parameters: &mut Vec<String>) {
+    match ty {
+        Type::Qualified(_, inner) => collect_effective_type_params(inner, parameters),
+        Type::Tuple(items) => {
+            for item in items {
+                collect_effective_type_params(item, parameters);
+            }
+        }
+        Type::RecordCompose { base, fields } => {
+            collect_effective_type_params(base, parameters);
+            for (_, field) in fields {
+                collect_effective_type_params(field, parameters);
+            }
+        }
+        Type::Dyn(_, arguments) => {
+            for argument in arguments {
+                collect_effective_type_params(argument, parameters);
+            }
+        }
+        Type::Fn(inputs, output, _) => {
+            for input in inputs {
+                collect_effective_type_params(input, parameters);
+            }
+            collect_effective_type_params(output, parameters);
+        }
+        Type::Named(name, arguments) => {
+            if arguments.is_empty()
+                && name.chars().next().is_some_and(char::is_lowercase)
+                && !name.contains('.')
+            {
+                if !parameters.contains(name) {
+                    parameters.push(name.clone());
+                }
+            } else {
+                for argument in arguments {
+                    collect_effective_type_params(argument, parameters);
+                }
+            }
+        }
+    }
 }
 
 /// An ownership/immutability qualifier (RFC-0025 `frozen`, RFC-0026 `unique`,

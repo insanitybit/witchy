@@ -358,7 +358,7 @@ fn validate_capability_free_type(
     catalog: &RuntimeDeclarationCatalog,
     definitions: &BTreeMap<DeclarationIdentity, &TypeDef>,
     bindings: &BTreeMap<String, Type>,
-    visiting: &mut Vec<(DeclarationIdentity, Vec<Type>)>,
+    visiting: &mut Vec<DeclarationIdentity>,
     path: &[String],
 ) -> Result<(), RuntimeTypeError> {
     match ty {
@@ -495,11 +495,6 @@ fn validate_capability_free_type(
                 .iter()
                 .map(|argument| instantiate_runtime_type(argument, bindings))
                 .collect::<Vec<_>>();
-            if visiting.iter().any(|(seen_declaration, seen_args)| {
-                seen_declaration == &declaration && seen_args == &instantiated_args
-            }) {
-                return Ok(());
-            }
             let definition = definitions.get(&declaration).ok_or_else(|| {
                 RuntimeTypeError::MissingRuntimeShape {
                     declaration: Box::new(declaration.clone()),
@@ -511,17 +506,33 @@ fn validate_capability_free_type(
                     path: path.to_vec(),
                 });
             }
-            if definition.params.len() != args.len() {
+            let parameters = crate::typeck::type_def_params(definition);
+            if parameters.len() != instantiated_args.len() {
                 return Err(RuntimeTypeError::RuntimeShapeArity {
                     name: definition.name.clone(),
-                    expected: definition.params.len(),
-                    actual: args.len(),
+                    expected: parameters.len(),
+                    actual: instantiated_args.len(),
                 });
             }
-            visiting.push((declaration, instantiated_args.clone()));
+            for (index, argument) in instantiated_args.iter().enumerate() {
+                let mut child_path = path.to_vec();
+                child_path.push(format!("{} argument[{index}]", definition.name));
+                validate_capability_free_type(
+                    argument,
+                    catalog,
+                    definitions,
+                    &BTreeMap::new(),
+                    visiting,
+                    &child_path,
+                )?;
+            }
+            if visiting.contains(&declaration) {
+                return Ok(());
+            }
+            visiting.push(declaration);
             let mut nested_bindings = bindings.clone();
-            for (parameter, argument) in definition.params.iter().zip(instantiated_args) {
-                nested_bindings.insert(parameter.clone(), argument);
+            for (parameter, argument) in parameters.into_iter().zip(instantiated_args) {
+                nested_bindings.insert(parameter, argument);
             }
             for variant in &definition.variants {
                 for (index, field) in variant.fields.iter().enumerate() {
@@ -965,8 +976,16 @@ impl RuntimeTypePlan {
     ) -> Result<Self, RuntimeTypeError> {
         let mut identities = BTreeSet::new();
         let mut drafts = BTreeMap::new();
+        let mut visiting = BTreeSet::new();
         for ty in types {
-            collect_runtime_type_shape(ty, catalog, module, &mut identities, &mut drafts)?;
+            collect_runtime_type_shape(
+                ty,
+                catalog,
+                module,
+                &mut identities,
+                &mut drafts,
+                &mut visiting,
+            )?;
         }
         let mut plan = Self::build(identities)?;
         for (identity, draft) in drafts {
@@ -1060,19 +1079,65 @@ fn collect_runtime_type_shape(
     module: &Module,
     identities: &mut BTreeSet<RuntimeTypeIdentity>,
     drafts: &mut BTreeMap<RuntimeTypeIdentity, RuntimeTypeShapeDraft>,
+    visiting: &mut BTreeSet<DeclarationIdentity>,
 ) -> Result<(), RuntimeTypeError> {
     if let Type::Qualified(_, inner) = ty {
-        return collect_runtime_type_shape(inner, catalog, module, identities, drafts);
+        return collect_runtime_type_shape(inner, catalog, module, identities, drafts, visiting);
     }
     let identity = catalog.type_identity(ty)?;
-    if !identities.insert(identity.clone()) {
+    if identities.contains(&identity) {
         return Ok(());
     }
+    let entered = match &identity {
+        RuntimeTypeIdentity::Nominal { declaration, .. } => {
+            if visiting.contains(declaration) {
+                return Err(RuntimeTypeError::ExpandingRuntimeShapeRecursion {
+                    declaration: Box::new(declaration.clone()),
+                    identity: Box::new(identity),
+                });
+            }
+            visiting.insert(declaration.clone());
+            Some(declaration.clone())
+        }
+        _ => None,
+    };
+    identities.insert(identity.clone());
     drafts.insert(identity.clone(), RuntimeTypeShapeDraft::Opaque);
+    let result = collect_runtime_type_shape_inner(
+        ty,
+        &identity,
+        catalog,
+        module,
+        identities,
+        drafts,
+        visiting,
+    );
+    if let Some(declaration) = entered {
+        visiting.remove(&declaration);
+    }
+    result
+}
+
+fn collect_runtime_type_shape_inner(
+    ty: &Type,
+    identity: &RuntimeTypeIdentity,
+    catalog: &RuntimeDeclarationCatalog,
+    module: &Module,
+    identities: &mut BTreeSet<RuntimeTypeIdentity>,
+    drafts: &mut BTreeMap<RuntimeTypeIdentity, RuntimeTypeShapeDraft>,
+    visiting: &mut BTreeSet<DeclarationIdentity>,
+) -> Result<(), RuntimeTypeError> {
     match ty {
         Type::Named(name, arguments) => {
             for argument in arguments {
-                collect_runtime_type_shape(argument, catalog, module, identities, drafts)?;
+                collect_runtime_type_shape(
+                    argument,
+                    catalog,
+                    module,
+                    identities,
+                    drafts,
+                    visiting,
+                )?;
             }
             if let RuntimeTypeIdentity::Record(_) = &identity
                 && let Some(field_names) = decode_anon_record(name)
@@ -1086,6 +1151,7 @@ fn collect_runtime_type_shape(
                         module,
                         identities,
                         drafts,
+                        visiting,
                     )?;
                     fields.push((
                         field_name,
@@ -1093,7 +1159,7 @@ fn collect_runtime_type_shape(
                         witchy_syntax::format::type_str(field_type),
                     ));
                 }
-                drafts.insert(identity, RuntimeTypeShapeDraft::Record(fields));
+                drafts.insert(identity.clone(), RuntimeTypeShapeDraft::Record(fields));
                 return Ok(());
             }
             let RuntimeTypeIdentity::Nominal { declaration, .. } = &identity else {
@@ -1112,7 +1178,7 @@ fn collect_runtime_type_shape(
                 });
             };
             if definition.sealed {
-                drafts.insert(identity, RuntimeTypeShapeDraft::Sealed);
+                drafts.insert(identity.clone(), RuntimeTypeShapeDraft::Sealed);
                 return Ok(());
             }
             let Some(variant) = definition.variants.first().filter(|_| {
@@ -1123,17 +1189,16 @@ fn collect_runtime_type_shape(
             }) else {
                 return Ok(());
             };
-            if definition.params.len() != arguments.len() {
+            let parameters = crate::typeck::type_def_params(definition);
+            if parameters.len() != arguments.len() {
                 return Err(RuntimeTypeError::RuntimeShapeArity {
                     name: definition.name.clone(),
-                    expected: definition.params.len(),
+                    expected: parameters.len(),
                     actual: arguments.len(),
                 });
             }
-            let bindings = definition
-                .params
-                .iter()
-                .cloned()
+            let bindings = parameters
+                .into_iter()
                 .zip(arguments.iter().cloned())
                 .collect::<BTreeMap<_, _>>();
             let mut fields = Vec::new();
@@ -1146,6 +1211,7 @@ fn collect_runtime_type_shape(
                     module,
                     identities,
                     drafts,
+                    visiting,
                 )?;
                 fields.push((
                     field_name.clone(),
@@ -1153,23 +1219,51 @@ fn collect_runtime_type_shape(
                     witchy_syntax::format::type_str(&field_type),
                 ));
             }
-            drafts.insert(identity, RuntimeTypeShapeDraft::Record(fields));
+            drafts.insert(identity.clone(), RuntimeTypeShapeDraft::Record(fields));
         }
         Type::Dyn(_, arguments) | Type::Tuple(arguments) => {
             for argument in arguments {
-                collect_runtime_type_shape(argument, catalog, module, identities, drafts)?;
+                collect_runtime_type_shape(
+                    argument,
+                    catalog,
+                    module,
+                    identities,
+                    drafts,
+                    visiting,
+                )?;
             }
         }
         Type::Fn(parameters, result, _) => {
             for parameter in parameters {
-                collect_runtime_type_shape(parameter, catalog, module, identities, drafts)?;
+                collect_runtime_type_shape(
+                    parameter,
+                    catalog,
+                    module,
+                    identities,
+                    drafts,
+                    visiting,
+                )?;
             }
-            collect_runtime_type_shape(result, catalog, module, identities, drafts)?;
+            collect_runtime_type_shape(
+                result,
+                catalog,
+                module,
+                identities,
+                drafts,
+                visiting,
+            )?;
         }
         Type::RecordCompose { base, fields } => {
-            collect_runtime_type_shape(base, catalog, module, identities, drafts)?;
+            collect_runtime_type_shape(base, catalog, module, identities, drafts, visiting)?;
             for (_, field) in fields {
-                collect_runtime_type_shape(field, catalog, module, identities, drafts)?;
+                collect_runtime_type_shape(
+                    field,
+                    catalog,
+                    module,
+                    identities,
+                    drafts,
+                    visiting,
+                )?;
             }
         }
         Type::Qualified(_, _) => unreachable!("qualified types are stripped above"),
@@ -1215,6 +1309,10 @@ pub enum RuntimeTypeError {
         declaration: Box<DeclarationIdentity>,
     },
     RuntimeShapeArity { name: String, expected: usize, actual: usize },
+    ExpandingRuntimeShapeRecursion {
+        declaration: Box<DeclarationIdentity>,
+        identity: Box<RuntimeTypeIdentity>,
+    },
     MissingAuthenticatedModuleOwners,
     MissingModuleOwner { module: String },
     ConflictingModuleOwner { module: String },
@@ -1258,6 +1356,12 @@ impl std::fmt::Display for RuntimeTypeError {
             Self::RuntimeShapeArity { name, expected, actual } => write!(
                 f,
                 "runtime shape `{name}` expects {expected} type argument(s), got {actual}"
+            ),
+            Self::ExpandingRuntimeShapeRecursion { declaration, identity } => write!(
+                f,
+                "runtime shape `{}::{}` recursively changes its type arguments to `{identity:?}` and has no finite descriptor closure",
+                declaration.module().join("."),
+                declaration.name()
             ),
             Self::MissingAuthenticatedModuleOwners => f.write_str(
                 "checked module lacks authenticated loader ownership; use an authenticated checked-link API",
@@ -1715,7 +1819,7 @@ mod tests {
     #[test]
     fn capability_free_identity_substitutes_generics_and_terminates_recursion() {
         let module = witchy_syntax::parser::parse_module(
-            "type Boxed(a):\n    Boxed(a)\n\ntype Recursive:\n    Empty\n    Next(List(Recursive))\n",
+            "type Boxed:\n    Boxed(a)\n\ntype Grow:\n    More(Grow(List(a)))\n\ntype UnsafeGrow(a):\n    More(UnsafeGrow(Console))\n\ntype BadGrow(a):\n    More(BadGrow(a, String))\n\ntype Recursive:\n    Empty\n    Next(List(Recursive))\n",
         )
         .expect("parse generic and recursive types");
         let owner = ModuleLoadIdentity::new(
@@ -1724,7 +1828,7 @@ mod tests {
         )
         .expect("module owner");
         let mut catalog = RuntimeDeclarationCatalog::default();
-        for name in ["Boxed", "Recursive"] {
+        for name in ["Boxed", "Grow", "UnsafeGrow", "BadGrow", "Recursive"] {
             catalog
                 .insert_resolved(name, &owner, name, DeclarationKind::Type)
                 .expect("declaration");
@@ -1743,7 +1847,50 @@ mod tests {
             error,
             RuntimeTypeError::CapabilityRetained {
                 capability: "Console".into(),
-                path: vec!["Boxed[0]".into()],
+                path: vec!["Boxed argument[0]".into()],
+            }
+        );
+
+        catalog
+            .capability_free_type_identity(
+                &Type::Named(
+                    "Grow".into(),
+                    vec![Type::Named("Int".into(), Vec::new())],
+                ),
+                &module,
+            )
+            .expect("argument-growing recursion terminates by declaration");
+
+        let error = catalog
+            .capability_free_type_identity(
+                &Type::Named(
+                    "UnsafeGrow".into(),
+                    vec![Type::Named("Int".into(), Vec::new())],
+                ),
+                &module,
+            )
+            .expect_err("recursive transformed capability argument must be rejected");
+        assert!(matches!(
+            error,
+            RuntimeTypeError::CapabilityRetained { ref capability, .. }
+                if capability == "Console"
+        ));
+
+        let error = catalog
+            .capability_free_type_identity(
+                &Type::Named(
+                    "BadGrow".into(),
+                    vec![Type::Named("Int".into(), Vec::new())],
+                ),
+                &module,
+            )
+            .expect_err("recursive transformed arity must be checked");
+        assert_eq!(
+            error,
+            RuntimeTypeError::RuntimeShapeArity {
+                name: "BadGrow".into(),
+                expected: 1,
+                actual: 2,
             }
         );
 
@@ -1754,5 +1901,89 @@ mod tests {
             )
             .expect("safe recursion terminates");
         assert!(matches!(recursive, RuntimeTypeIdentity::Nominal { .. }));
+    }
+
+    #[test]
+    fn runtime_record_shapes_substitute_inferred_type_parameters() {
+        let module = witchy_syntax::parser::parse_module(
+            "type Boxed:\n    value: a\n\ntype Grow(a):\n    next: Grow(List(a))\n\ntype Node(a):\n    value: a\n    next: Node(a)\n\ntype Left(a):\n    right: Right(a)\n\ntype Right(a):\n    left: Left(a)\n",
+        )
+        .expect("parse inferred generic record");
+        let owner = ModuleLoadIdentity::new(
+            package(PackageSource::Workspace, "app", "0.1.0"),
+            ["main"],
+        )
+        .expect("module owner");
+        let mut catalog = RuntimeDeclarationCatalog::default();
+        for name in ["Boxed", "Grow", "Node", "Left", "Right"] {
+            catalog
+                .insert_resolved(name, &owner, name, DeclarationKind::Type)
+                .expect("declaration");
+        }
+        let boxed = Type::Named(
+            "Boxed".into(),
+            vec![Type::Named("String".into(), Vec::new())],
+        );
+        let plan = RuntimeTypePlan::build_with_runtime_shapes([&boxed], &catalog, &module)
+            .expect("inferred parameter participates in runtime shape substitution");
+        let identity = catalog.type_identity(&boxed).expect("boxed identity");
+        let id = plan.id(&identity).expect("boxed descriptor");
+        assert!(matches!(
+            plan.shape(id),
+            Some(RuntimeTypeShape::Record(fields))
+                if fields.len() == 1 && fields[0].name == "value" && fields[0].display == "String"
+        ));
+        let grow = Type::Named(
+            "Grow".into(),
+            vec![Type::Named("Int".into(), Vec::new())],
+        );
+        let error = RuntimeTypePlan::build_with_runtime_shapes([&grow], &catalog, &module)
+            .expect_err("argument-growing record shape has no finite closure");
+        assert!(matches!(
+            error,
+            RuntimeTypeError::ExpandingRuntimeShapeRecursion { .. }
+        ));
+
+        let node = Type::Named(
+            "Node".into(),
+            vec![Type::Named("Int".into(), Vec::new())],
+        );
+        let plan = RuntimeTypePlan::build_with_runtime_shapes([&node], &catalog, &module)
+            .expect("exact recursive record has a finite closure");
+        let node_identity = catalog.type_identity(&node).expect("node identity");
+        let node_id = plan.id(&node_identity).expect("node descriptor");
+        let Some(RuntimeTypeShape::Record(node_fields)) = plan.shape(node_id) else {
+            panic!("Node must retain its record shape");
+        };
+        let next = node_fields
+            .iter()
+            .find(|field| field.name == "next")
+            .expect("next field");
+        assert_eq!(next.descriptor, node_id);
+
+        let left = Type::Named(
+            "Left".into(),
+            vec![Type::Named("String".into(), Vec::new())],
+        );
+        let right = Type::Named(
+            "Right".into(),
+            vec![Type::Named("String".into(), Vec::new())],
+        );
+        let plan = RuntimeTypePlan::build_with_runtime_shapes([&left], &catalog, &module)
+            .expect("mutually recursive records have a finite closure");
+        let left_id = plan
+            .id(&catalog.type_identity(&left).expect("left identity"))
+            .expect("left descriptor");
+        let right_id = plan
+            .id(&catalog.type_identity(&right).expect("right identity"))
+            .expect("right descriptor");
+        let Some(RuntimeTypeShape::Record(left_fields)) = plan.shape(left_id) else {
+            panic!("Left must retain its record shape");
+        };
+        let Some(RuntimeTypeShape::Record(right_fields)) = plan.shape(right_id) else {
+            panic!("Right must retain its record shape");
+        };
+        assert_eq!(left_fields[0].descriptor, right_id);
+        assert_eq!(right_fields[0].descriptor, left_id);
     }
 }

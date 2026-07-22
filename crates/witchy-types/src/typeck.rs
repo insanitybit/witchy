@@ -366,19 +366,18 @@ fn is_local_unique_type(t: &ast::Type) -> bool {
 }
 
 pub(crate) fn type_param_names<'a>(fields: impl Iterator<Item = &'a ast::Type>) -> Vec<String> {
-    let mut names = Vec::new();
-    for field in fields {
-        collect_type_params(field, &mut names);
-    }
-    names
+    ast::effective_type_params(&[], fields)
+}
+
+/// Effective type parameters for an ADT, preserving explicit order and then
+/// appending implicit lowercase parameters in first field-occurrence order.
+/// Every stage that substitutes ADT fields must use this authority.
+pub fn type_def_params(t: &ast::TypeDef) -> Vec<String> {
+    ast::effective_type_def_params(t)
 }
 
 fn type_def_arity(t: &ast::TypeDef) -> usize {
-    if !t.params.is_empty() {
-        t.params.len()
-    } else {
-        type_param_names(t.variants.iter().flat_map(|v| v.fields.iter())).len()
-    }
+    type_def_params(t).len()
 }
 
 fn validate_type(
@@ -1269,7 +1268,7 @@ fn gc_reference_aggregate_supported(
     if def.variants.is_empty() {
         return false;
     }
-    def.params.is_empty()
+    type_def_params(def).is_empty()
         && storage
             .first_reference(&ast::Type::Named(name.to_string(), Vec::new()))
             .is_some()
@@ -2198,45 +2197,6 @@ fn check_unique_capacity_results(module: &Module) -> Result<(), TypeError> {
 /// copied by value, never pointer-backed.
 fn is_scalar_ty(t: &Ty) -> bool {
     matches!(t, Ty::Int | Ty::Float | Ty::Bool | Ty::Duration)
-}
-
-fn collect_type_params(t: &ast::Type, acc: &mut Vec<String>) {
-    match t {
-        ast::Type::Qualified(_, inner) => collect_type_params(inner, acc),
-        ast::Type::Tuple(ts) => {
-            for x in ts {
-                collect_type_params(x, acc);
-            }
-        }
-        ast::Type::RecordCompose { base, fields } => {
-            collect_type_params(base, acc);
-            for (_, ty) in fields {
-                collect_type_params(ty, acc);
-            }
-        }
-        ast::Type::Dyn(_, args) => {
-            for a in args {
-                collect_type_params(a, acc);
-            }
-        }
-        ast::Type::Fn(params, ret, _) => {
-            for p in params {
-                collect_type_params(p, acc);
-            }
-            collect_type_params(ret, acc);
-        }
-        ast::Type::Named(name, args) => {
-            if args.is_empty() && name.chars().next().is_some_and(|c| c.is_lowercase()) && !name.contains('.') {
-                if !acc.contains(name) {
-                    acc.push(name.clone());
-                }
-            } else {
-                for a in args {
-                    collect_type_params(a, acc);
-                }
-            }
-        }
-    }
 }
 
 fn collect_trait_method_names(module: &Module) -> HashSet<String> {
@@ -8371,12 +8331,7 @@ fn run_check_selected(
                 // param `a`). Explicit params are required when a constructor omits
                 // one (e.g. `Done(a)` for `Step(m, a)`): inference would drop the
                 // omitted `m` from that constructor's result type, mis-aligning it.
-                let mut param_names: Vec<String> = t.params.clone();
-                for variant in &t.variants {
-                    for ft in &variant.fields {
-                        collect_type_params(ft, &mut param_names);
-                    }
-                }
+                let param_names = type_def_params(t);
                 let mut vars: HashMap<String, Ty> = HashMap::new();
                 let mut typaram_ids: HashSet<u32> = HashSet::new();
                 let mut params_in_order: Vec<u32> = Vec::new();

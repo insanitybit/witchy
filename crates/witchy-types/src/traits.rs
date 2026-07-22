@@ -3077,19 +3077,7 @@ fn build_ctor_infos(items: &[Item]) -> HashMap<String, CtorInfo> {
     let mut map = HashMap::new();
     for item in items {
         let Item::Type(t) = item else { continue };
-        let mut implicit_params = Vec::new();
-        if t.params.is_empty() {
-            for v in &t.variants {
-                for field in &v.fields {
-                    collect_type_vars(field, &mut implicit_params);
-                }
-            }
-        }
-        let params = if t.params.is_empty() {
-            implicit_params
-        } else {
-            t.params.clone()
-        };
+        let params = crate::typeck::type_def_params(t);
         for v in &t.variants {
             map.insert(
                 v.name.clone(),

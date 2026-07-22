@@ -22,15 +22,7 @@ pub(crate) fn normalized_type_for_typeinfo(
             crate::aliases::resolve_type_aliases(field, aliases)?;
         }
     }
-    if out.params.is_empty() {
-        let mut params = Vec::new();
-        for variant in &out.variants {
-            for field in &variant.fields {
-                collect_type_vars(field, &mut params);
-            }
-        }
-        out.params = params;
-    }
+    out.params = crate::ast::effective_type_def_params(&out);
     Ok(out)
 }
 
@@ -159,5 +151,45 @@ fn type_expr(t: &Type) -> Expr {
                 ),
             ],
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parsed_type(source: &str, name: &str) -> TypeDef {
+        crate::parser::parse_module(source)
+            .expect("parse type")
+            .items
+            .into_iter()
+            .find_map(|item| match item {
+                Item::Type(definition) if definition.name == name => Some(definition),
+                _ => None,
+            })
+            .expect("type declaration")
+    }
+
+    #[test]
+    fn effective_params_preserve_explicit_then_inferred_order() {
+        let definition = parsed_type(
+            "type Mixed(a):\n    first: b\n    second: a\n    third: c\n    repeated: b\n",
+            "Mixed",
+        );
+        assert_eq!(
+            crate::ast::effective_type_def_params(&definition),
+            ["a", "b", "c"]
+        );
+    }
+
+    #[test]
+    fn normalized_typeinfo_includes_mixed_explicit_and_inferred_params() {
+        let definition = parsed_type(
+            "type Mixed(a):\n    first: a\n    second: b\n",
+            "Mixed",
+        );
+        let normalized = normalized_type_for_typeinfo(&definition, &HashMap::default())
+            .expect("normalize reflected type");
+        assert_eq!(normalized.params, ["a", "b"]);
     }
 }

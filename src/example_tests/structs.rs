@@ -614,6 +614,29 @@ fn main(console: Console):
     }
 
     #[test]
+    fn inferred_and_mixed_generic_record_fields_agree_on_both_backends() {
+        let src = r#"
+type Boxed:
+    value: a
+
+type Mixed(a):
+    first: a
+    second: b
+
+fn main(console: Console):
+    let number: Boxed(Int) = Boxed(42)
+    let text: Boxed(String) = Boxed("boxed")
+    let mixed: Mixed(Int, String) = Mixed(7, "mixed")
+    console.print("${number.value}")
+    console.print(text.value)
+    console.print("${mixed.first}-${mixed.second}")
+"#;
+        let expected = vec!["42", "boxed", "7-mixed"];
+        assert_eq!(interp(src), expected, "interpreter");
+        assert_eq!(run_on_wasm(src), expected, "compiled WASM");
+    }
+
+    #[test]
     fn nested_records_backends_agree() {
         // A record containing a record: chained field access (o.inner.v), nested
         // construction, `update` on a nested field, and immutability of the
