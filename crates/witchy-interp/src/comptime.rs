@@ -200,6 +200,7 @@ fn expand_with_item_limit_and_origins(
         prog_items.push(Item::Function(Function {
             public: false,
             comptime_only: false,
+            attributes: Vec::new(),
             name: "main".into(),
             params: vec![Param {
                 name: "console".into(),

@@ -641,6 +641,7 @@ fn expand_one(
     let main = Function {
         public: false,
         comptime_only: false,
+        attributes: Vec::new(),
         name: "main".into(),
         params: vec![Param {
             name: "console".into(),

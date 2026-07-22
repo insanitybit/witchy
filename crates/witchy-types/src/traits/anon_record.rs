@@ -84,6 +84,7 @@ fn reflect_impl(name: String, fields: Vec<String>, trait_name: &str) -> ImplDef 
         methods: vec![Function {
             public: true,
             comptime_only: false,
+            attributes: Vec::new(),
             name: "reflect".to_string(),
             params: vec![Param {
                 name: "self".to_string(),

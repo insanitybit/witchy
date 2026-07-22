@@ -411,14 +411,34 @@ impl Parser {
     }
 
     fn item(&mut self) -> Result<Item, ParseError> {
+        let mut attributes = Vec::new();
+        while self.eat(&Tok::At) {
+            let attribute = self.ident()?;
+            if attribute != "dynamic" {
+                return Err(self.error(format!(
+                    "unknown declaration attribute `@{attribute}` — supported attributes: @dynamic"
+                )));
+            }
+            if attributes.contains(&attribute) {
+                return Err(self.error(format!(
+                    "duplicate declaration attribute `@{attribute}`"
+                )));
+            }
+            attributes.push(attribute);
+        }
         let public = self.eat(&Tok::Pub);
         if public && !(self.at(&Tok::Fn) || self.at(&Tok::Gen) || self.at(&Tok::Async)) {
             return Err(self.error(
                 "`pub` may only precede a function declaration (`pub fn`, `pub gen fn`, or `pub async fn`)",
             ));
         }
+        if !attributes.is_empty()
+            && !(self.at(&Tok::Fn) || self.at(&Tok::Gen) || self.at(&Tok::Async))
+        {
+            return Err(self.error("declaration attributes may only precede a function"));
+        }
         if self.at(&Tok::Fn) || self.at(&Tok::Gen) || self.at(&Tok::Async) {
-            Ok(Item::Function(self.function(public, false)?))
+            Ok(Item::Function(self.function(public, false, attributes)?))
         } else if self.at(&Tok::Type) {
             self.type_def(false)
         } else if self.at_ident("sealed") {
@@ -456,7 +476,7 @@ impl Parser {
             // free; expanded by `crate::comptime` during linking).
             self.advance();
             if self.at(&Tok::Fn) {
-                return Ok(Item::Function(self.function(false, true)?));
+                return Ok(Item::Function(self.function(false, true, Vec::new())?));
             }
             if self.at(&Tok::Gen) || self.at(&Tok::Async) {
                 return Err(self.error("`comptime` may only precede `fn` or a block"));
@@ -641,7 +661,7 @@ impl Parser {
                 // for type-associated (self-less) constructors — `Net.tcp(…)` —
                 // that a module exports as public API (RFC-0057).
                 let public = self.eat(&Tok::Pub);
-                methods.push(self.function(public, false)?);
+                methods.push(self.function(public, false, Vec::new())?);
             }
             self.expect(&Tok::RBrace)?;
         }
@@ -930,7 +950,12 @@ impl Parser {
         )
     }
 
-    fn function(&mut self, public: bool, comptime_only: bool) -> Result<Function, ParseError> {
+    fn function(
+        &mut self,
+        public: bool,
+        comptime_only: bool,
+        attributes: Vec<String>,
+    ) -> Result<Function, ParseError> {
         let is_async = self.eat(&Tok::Async);
         let is_gen = self.eat(&Tok::Gen);
         if comptime_only && (is_async || is_gen) {
@@ -970,6 +995,7 @@ impl Parser {
         Ok(Function {
             public,
             comptime_only,
+            attributes,
             name,
             params,
             ret,

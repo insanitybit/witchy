@@ -146,6 +146,7 @@ fn method_fn(
     Function {
         public: true,
         comptime_only: false,
+        attributes: Vec::new(),
         name,
         params,
         ret,

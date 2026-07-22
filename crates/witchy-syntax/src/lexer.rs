@@ -105,6 +105,7 @@ pub(crate) enum Tok {
     DotDot,
     DotDotEq,
     Underscore,
+    At,
 
     // Operators
     Eq,     // =
@@ -198,6 +199,7 @@ impl fmt::Display for Tok {
             DotDot => write!(f, ".."),
             DotDotEq => write!(f, "..="),
             Underscore => write!(f, "_"),
+            At => write!(f, "@"),
             Eq => write!(f, "="),
             EqEq => write!(f, "=="),
             NotEq => write!(f, "!="),
@@ -1054,6 +1056,7 @@ impl Lexer {
                 Tok::QuestionQuestion
             }
             ('?', _) => Tok::Question,
+            ('@', _) => Tok::At,
             ('$', Some('{')) => {
                 self.bump();
                 Tok::QuoteHoleStart

@@ -82,6 +82,18 @@
     }
 
     #[test]
+    fn declaration_attributes_round_trip_and_unknown_names_fail_closed() {
+        let src = "@dynamic\npub fn render(self: Int) -> String:\n    \"${self}\"\n";
+        let out = reformat(src).expect("function attribute round-trips");
+        assert!(out.starts_with("@dynamic\npub fn render"), "{out}");
+        assert_eq!(reformat(&out).as_deref(), Some(out.as_str()));
+
+        let error = crate::parser::parse_module("@typo\nfn render() -> Int:\n    1\n")
+            .expect_err("unknown attributes must not become inert metadata");
+        assert!(error.message.contains("unknown declaration attribute `@typo`"));
+    }
+
+    #[test]
     fn compiler_owned_item_quotes_round_trip_through_formatting() {
         let src = "import meta\n\ncomptime fn make() -> ItemSyntax:\n    quote item:\n        pub fn generated() -> Int:\n            1\n\ncomptime:\n    emit_item(make())\n";
         let out = reformat(src).expect("compiler-owned item quote round-trips");
@@ -420,6 +432,7 @@
             items: vec![Item::Function(Function {
                 public: false,
                 comptime_only: false,
+                attributes: Vec::new(),
                 name: "main".into(),
                 params: vec![Param {
                     name: "console".into(),

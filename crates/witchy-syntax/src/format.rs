@@ -390,6 +390,12 @@ fn param(p: &Param) -> String {
 
 fn function(s: &mut String, f: &Function, indented: bool, c: &mut Comments, upper: u32) {
     let depth = if indented { 1 } else { 0 };
+    for attribute in &f.attributes {
+        pad(s, depth);
+        s.push('@');
+        s.push_str(attribute);
+        s.push('\n');
+    }
     pad(s, depth);
     if f.public {
         s.push_str("pub ");

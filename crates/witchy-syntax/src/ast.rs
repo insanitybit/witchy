@@ -313,6 +313,11 @@ pub struct Function {
     /// derives, and tagged literals. It is omitted from the runtime module after
     /// compile-time expansion, so compiler syntax values can stay compile-time-only.
     pub comptime_only: bool,
+    /// Compiler-recognized declaration metadata. Attribute names are parsed as
+    /// identifiers and admitted by a deny-by-default registry; unknown names
+    /// never become inert annotations.
+    #[cfg_attr(not(target_arch = "wasm32"), serde(default))]
+    pub attributes: Vec<String>,
     pub name: String,
     pub params: Vec<Param>,
     pub ret: Option<Type>,

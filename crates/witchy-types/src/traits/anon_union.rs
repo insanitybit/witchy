@@ -390,6 +390,7 @@ fn anon_union_show_impl(
         methods: vec![Function {
             public: true,
             comptime_only: false,
+            attributes: Vec::new(),
             name: "show".to_string(),
             params: vec![self_param()],
             ret: Some(named_type("String")),
@@ -420,6 +421,7 @@ fn anon_union_reflect_impl(
         methods: vec![Function {
             public: true,
             comptime_only: false,
+            attributes: Vec::new(),
             name: "reflect".to_string(),
             params: vec![self_param()],
             ret: Some(Type::Named("reflect.Mirror".to_string(), Vec::new())),
@@ -450,6 +452,7 @@ fn anon_union_partial_eq_impl(
         methods: vec![Function {
             public: true,
             comptime_only: false,
+            attributes: Vec::new(),
             name: "eq".to_string(),
             params: vec![
                 self_param(),
