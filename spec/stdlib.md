@@ -893,6 +893,12 @@ Checked runtime values (RFC-0082 Stage 1).
 
 - `Dynamic(RuntimeType, dyn Reflect)`
 
+#### `type DynamicError`
+
+Checked operation failures are ordinary matchable data. Stage 1 has only the exact-descriptor conversion failure; later stages extend this same error type with member, call-contract, visibility, and capability failures.
+
+- `TypeMismatch(RuntimeType)`
+
 #### `fn dynamic(value: a) -> Dynamic where a: Reflect`
 
 Convert one reflectable value into an owned dynamic envelope. The compiler replaces `__dynamic_descriptor` with an immutable descriptor constant and rejects direct or transitive capability payloads before either backend runs.
@@ -908,6 +914,10 @@ Human-readable only. Descriptor equality and decoding never key on this name.
 #### `fn try_decode(value: Dynamic) -> Option(a)`
 
 Decode only when the inferred expected type has the exact canonical descriptor. The compiler specializes this private call after generic monomorphization.
+
+#### `fn decode(value: Dynamic) -> Result(a, DynamicError)`
+
+Decode to the result type inferred from the surrounding static context. A mismatch retains the actual canonical descriptor for diagnostics and recovery.
 
 ## `encoding`
 
