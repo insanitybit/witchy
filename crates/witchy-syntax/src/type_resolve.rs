@@ -505,7 +505,7 @@ pub fn resolve(modules: &mut [(String, Module)]) -> Result<(), LinkError> {
 /// Canonicalize types while preserving which module names came from user
 /// files. A local module named `policy`, for example, is not the canonical std
 /// owner of the ambient policy types merely because its filename matches.
-pub fn resolve_with_user_modules(
+pub(crate) fn resolve_with_user_modules(
     modules: &mut [(String, Module)],
     user_modules: &std::collections::HashSet<String>,
 ) -> Result<(), LinkError> {
@@ -516,7 +516,7 @@ pub fn resolve_with_user_modules(
 /// compiler key. Package identity is deliberately supplied later by the loader;
 /// this pass records facts it uniquely knows and does not guess filesystem or
 /// package ownership.
-pub fn resolve_with_user_modules_and_declarations(
+pub(crate) fn resolve_with_user_modules_and_declarations(
     modules: &mut [(String, Module)],
     user_modules: &std::collections::HashSet<String>,
 ) -> Result<ResolvedDeclarations, LinkError> {

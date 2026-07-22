@@ -4302,7 +4302,7 @@ pub fn desugar_index(base: Expr, index: Expr) -> Expr {
 /// Lower `receiver.method(args)` to the call `method(receiver, args)` — exactly
 /// what the parser used to build inline. The linker then resolves `method` by
 /// the receiver's type just as for any call.
-pub fn desugar_method(receiver: Expr, method: String, args: Vec<Expr>) -> Expr {
+pub(crate) fn desugar_method(receiver: Expr, method: String, args: Vec<Expr>) -> Expr {
     let mut all = Vec::with_capacity(args.len() + 1);
     all.push(receiver);
     all.extend(args);

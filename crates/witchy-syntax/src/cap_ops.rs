@@ -127,7 +127,7 @@ pub fn is_op_name(name: &str) -> bool {
     OPS.iter().any(|op| op.name == name)
 }
 
-pub fn op_info(name: &str, total_arity: usize) -> Option<&'static CapOp> {
+pub(crate) fn op_info(name: &str, total_arity: usize) -> Option<&'static CapOp> {
     let name = surface_name(name);
     OPS.iter().find(|op| op.name == name && op.total_arity == total_arity)
 }

@@ -1105,7 +1105,7 @@ pub(crate) fn tokenize(src: &str) -> Result<Vec<Token>, LexError> {
 /// by the formatter to reproduce comments and to tell a body comment (indented)
 /// from a next-item comment (at the item's column). Returns what was lexed even
 /// if a later error occurs.
-pub fn own_line_comments(src: &str) -> Vec<(u32, u32, String)> {
+pub(crate) fn own_line_comments(src: &str) -> Vec<(u32, u32, String)> {
     let mut lexer = Lexer::new(src);
     let _ = lexer.tokenize();
     lexer.comments
@@ -1114,7 +1114,7 @@ pub fn own_line_comments(src: &str) -> Vec<(u32, u32, String)> {
 /// Comments that share a source line with code, as `(line, col, text)`. These are
 /// attached by the formatter to the statement that owns `line`; unsupported
 /// anchors make `reformat` refuse rather than drop the comment.
-pub fn trailing_comments(src: &str) -> Vec<(u32, u32, String)> {
+pub(crate) fn trailing_comments(src: &str) -> Vec<(u32, u32, String)> {
     let mut lexer = Lexer::new(src);
     let _ = lexer.tokenize();
     lexer.trailing_comments
