@@ -927,7 +927,7 @@ Checked failures remain ordinary matchable data and never become unchecked casts
 - `MalformedDescriptor(RuntimeType)`
 - `MalformedPayload(RuntimeType)`
 
-#### `fn dynamic(value: a) -> Dynamic where a: Reflect`
+#### `fn dynamic(own value: a) -> Dynamic where a: Reflect`
 
 Convert one reflectable value into an owned dynamic envelope. The compiler replaces `__dynamic_descriptor` with an immutable descriptor constant and rejects direct or transitive capability payloads before either backend runs.
 
