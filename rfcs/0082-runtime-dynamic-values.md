@@ -4,17 +4,19 @@ title: Runtime Dynamic values and checked reflection
 status: accepted
 created: 2026-07-12
 superseded-by:
-tracking: "descriptor identity, retained declaration provenance, authenticated production package-coordinate loading, checked-link transport, and fail-closed retained catalog construction are implemented; source Dynamic stages 1-4 remain in progress"
+tracking: "implemented: authenticated descriptor identity, checked Dynamic conversion and decoding, public shape inspection, opted-in method and trait dispatch, explicit capability accounting, ownership-safe payload handling, backend parity, and tooling/docs/examples"
 ---
 
 # RFC-0082: Runtime `Dynamic` values and checked reflection
 
-> **2026-07-22 implementation resumed:** the backend-neutral descriptor and
-> checked-catalog foundation is retained, and the production compiler/PM loader
-> now carries authenticated root and dependency package coordinates through
-> checked linking. The user-visible `Dynamic` payload, conversion, field/call,
-> trait, parity, and tooling stages remain incomplete and may not reconstruct
-> identity from aliases, paths, or display names.
+> **2026-07-22 terminal disposition:** accepted and implemented. The
+> backend-neutral descriptor catalog uses authenticated root and dependency
+> package coordinates through checked linking; source `Dynamic` conversion,
+> decoding, public shape inspection, opted-in method and trait dispatch,
+> explicit capability accounting, ownership-safe payload handling, interpreter
+> and compiled-Wasm parity, LSP/docs presentation, and package-boundary examples
+> are landed. Identity is never reconstructed from aliases, paths, or display
+> names.
 
 ## Summary
 
@@ -172,7 +174,7 @@ hard prerequisites:
    payload extraction or mutation path. The baseline remains correct by copying
    when no uniqueness proof is available.
 
-Implementation proceeds in these independently mergeable stages:
+Implementation landed in these independently mergeable stages:
 
 1. **Descriptor identity and conversion:** add backend-neutral immutable
    descriptor plans; implement `dynamic`, `type`, `decode`, and `try_decode`
@@ -189,14 +191,14 @@ Implementation proceeds in these independently mergeable stages:
    LSP presentation, generated documentation, and migration guidance only after
    stages 1-3 agree across both backends.
 
-The first stage is split at an explicit backend-neutral boundary. As currently
-built, `witchy-types::runtime_type` owns immutable package coordinates, resolved
+The first stage retains an explicit backend-neutral boundary.
+`witchy-types::runtime_type` owns immutable package coordinates, resolved
 declaration identities, structural identities, authenticated import-alias
 mapping, and deterministic descriptor IDs closed over nested types. Unknown or
-conflicting declarations and direct capability types fail while building that
-plan. No source-level `Dynamic`, payload envelope, conversion operation, or
-backend runtime behavior exists until the remaining stage-1 slices land; the
-identity plan alone is not presented as an implemented user feature.
+conflicting declarations and direct or transitive capability payloads fail at
+the checked boundary. Source-level `Dynamic`, its owned payload envelope,
+conversion and decode operations, and matching interpreter/compiled behavior
+consume that identity plan rather than introducing a second runtime identity.
 
 The linker now retains each declaration's compiler key, source-module key,
 local name, and kind before flattening. An opaque owner map validates one
