@@ -192,6 +192,68 @@ fn main(console: Console):
     }
 
     #[test]
+    fn rfc0082_dynamic_dispatch_is_visible_in_hover_and_symbols() {
+        let mut docs = HashMap::new();
+        let src = r#"type Counter derive(Reflect):
+    value: Int
+
+@dynamic
+pub fn bump(self: Counter, amount: Int) -> Counter:
+    Counter(self.value + amount)
+
+fn main():
+    bump(Counter(1), 2)
+"#;
+        let uri = "file:///rfc0082-dynamic-lsp.witchy";
+        docs.insert(uri.to_string(), src.to_string());
+
+        let line = 8u64;
+        let col = src.lines().nth(8).unwrap().find("bump").unwrap() as u64;
+        let hover = hover_response(
+            &docs,
+            &json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": line, "character": col },
+            }),
+        );
+        let hover_text = hover["contents"]["value"].as_str().expect("hover text");
+        assert!(hover_text.contains("@dynamic"), "{hover_text}");
+        assert!(hover_text.contains("Dynamic dispatch"), "{hover_text}");
+
+        let response = document_symbol_response(
+            &docs,
+            &json!({ "textDocument": { "uri": uri } }),
+        );
+        let bump = response
+            .as_array()
+            .expect("document symbols")
+            .iter()
+            .find(|symbol| {
+                symbol["name"]
+                    .as_str()
+                    .is_some_and(|name| name.ends_with("bump"))
+            })
+            .unwrap_or_else(|| panic!("bump symbol in {response}"));
+        assert_eq!(bump["detail"], json!("dynamic dispatch (@dynamic)"));
+        assert_eq!(bump["data"]["dynamicDispatch"], json!(true));
+    }
+
+    #[test]
+    fn rfc0082_invalid_dynamic_declaration_is_a_loud_lsp_diagnostic() {
+        let src = "@dynamic\nfn hidden(self: Int) -> Int:\n    self\n\nfn main():\n    hidden(1)\n";
+        let diagnostics = diags(src);
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| {
+                diagnostic["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("must be public"))
+            })
+            .expect("public dynamic declaration diagnostic");
+        assert_eq!(diagnostic["range"]["start"]["line"], json!(0));
+    }
+
+    #[test]
     fn rfc0098_hover_displays_structural_record_composition() {
         let mut docs = HashMap::new();
         let src = "type Summary = .{id: Int, label: String}\n// Stored rows add a revision.\ntype Detailed = .{..Summary, revision: Int}\n\nfn keep(row: Detailed) -> Detailed:\n    row\n";

@@ -74,7 +74,7 @@ fn document_symbol_response(docs: &HashMap<String, String>, params: &Value) -> V
     let Some(text) = docs.get(uri) else {
         return json!([]);
     };
-    let Some((entry, parsed, linked)) = link_document_with_origins(uri, text, docs) else {
+    let Ok(parsed) = parser::parse_module(text) else {
         return json!([]);
     };
 
@@ -86,8 +86,14 @@ fn document_symbol_response(docs: &HashMap<String, String>, params: &Value) -> V
             continue;
         }
         let line = source_line.saturating_sub(1);
-        symbols.push(document_symbol(name, kind, line, text, None));
+        let data = item_has_dynamic_dispatch(item)
+            .then(|| json!({ "dynamicDispatch": true }));
+        symbols.push(document_symbol(name, kind, line, text, data));
     }
+
+    let Some((entry, _, linked)) = link_document_with_origins(uri, text, docs) else {
+        return json!(symbols);
+    };
 
     for generated in linked.origins.nodes() {
         if generated.origin.invocation.module != entry
@@ -111,6 +117,7 @@ fn document_symbol_response(docs: &HashMap<String, String>, params: &Value) -> V
             text,
             Some(json!({
                 "generated": true,
+                "dynamicDispatch": item_has_dynamic_dispatch(item),
                 "id": {
                     "module": &generated.id.module,
                     "ordinal": generated.id.ordinal,
@@ -137,7 +144,16 @@ fn document_symbol(name: &str, kind: u32, line0: u32, text: &str, data: Option<V
         },
     });
     if let Some(data) = data {
-        symbol["detail"] = json!("generated");
+        let generated = data["generated"].as_bool().unwrap_or(false);
+        let dynamic = data["dynamicDispatch"].as_bool().unwrap_or(false);
+        if let Some(detail) = match (generated, dynamic) {
+            (true, true) => Some("generated, dynamic dispatch"),
+            (true, false) => Some("generated"),
+            (false, true) => Some("dynamic dispatch (@dynamic)"),
+            (false, false) => None,
+        } {
+            symbol["detail"] = json!(detail);
+        }
         symbol["data"] = data;
     }
     symbol
@@ -152,6 +168,14 @@ fn item_symbol(item: &ast::Item) -> Option<(&str, u32)> {
         ast::Item::TypeAlias { name, .. } => Some((name, 5)),
         ast::Item::Impl(_) | ast::Item::Comptime(_) => None,
     }
+}
+
+fn item_has_dynamic_dispatch(item: &ast::Item) -> bool {
+    matches!(
+        item,
+        ast::Item::Function(function)
+            if function.attributes.iter().any(|attribute| attribute == "dynamic")
+    )
 }
 
 fn link_document_with_origins(
@@ -544,10 +568,43 @@ fn signature_doc(src: &str, name: &str) -> Option<(String, String)> {
                 }
             }
             doc_lines.reverse();
-            return Some((declaration.signature.to_string(), doc_lines.join("\n")));
+            let dynamic = source_function_is_dynamic(src, name);
+            let signature = if dynamic {
+                format!("@dynamic\n{}", declaration.signature)
+            } else {
+                declaration.signature.to_string()
+            };
+            let docs = doc_lines.join("\n");
+            let docs = if dynamic {
+                let note = "**Dynamic dispatch:** registered for closed-world checked invocation.";
+                if docs.is_empty() {
+                    note.to_string()
+                } else {
+                    format!("{note}\n\n{docs}")
+                }
+            } else {
+                docs
+            };
+            return Some((signature, docs));
         }
     }
     None
+}
+
+fn source_function_is_dynamic(src: &str, name: &str) -> bool {
+    parser::parse_module(src).is_ok_and(|module| {
+        module.items.iter().any(|item| {
+            matches!(
+                item,
+                ast::Item::Function(function)
+                    if function.name.rsplit('.').next() == Some(name)
+                        && function
+                            .attributes
+                            .iter()
+                            .any(|attribute| attribute == "dynamic")
+            )
+        })
+    })
 }
 
 /// Module sources visible to this document without qualification at a use site:

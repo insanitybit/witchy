@@ -6,9 +6,8 @@ use witchy_caps::capabilities;
 use witchy_lower::codegen;
 use witchy_interp::interpreter;
 use witchy_runtime::runtime::{self, Runtime};
-use witchy_types::typeck;
 use crate::{
-    commands, link_file, linked_has_main, run_wasm_bytes,
+    commands, link_file_checked, linked_has_main, run_wasm_bytes,
     RUN_MEMORY_PAGES,
 };
 
@@ -133,25 +132,23 @@ pub(crate) fn parity_check(path: &str) -> ParityOutcome {
             return ParityOutcome::Unexpected { message: format!($($arg)*) }
         };
     }
-    let (linked, stem) = match link_file(path) {
+    let (checked, stem) = match link_file_checked(path) {
         Ok(v) => v,
         Err(e) => unexpected!("{e}"),
     };
-    if let Err(e) = typeck::check(&linked) {
-        unexpected!("{e}");
-    }
+    let linked = checked.module();
     // Honor `mode opt` here too (BUG-119): a copy-cliff or a missing ownership
     // convention is a hard error under `mode opt` on every other path
     // (check/run/sandbox/emit) — a program `check` rejects must not slip through
     // `parity` as an "unexpected error" masquerading as a compile miss.
-    if let Err(e) = enforce_performance_modes(&linked, &stem) {
+    if let Err(e) = enforce_performance_modes(linked, &stem) {
         unexpected!("{e}");
     }
-    if !linked_has_main(&linked) {
+    if !linked_has_main(linked) {
         unexpected!("`{path}` has no `main` to run");
     }
     // Compile first (borrows `linked`), then run the interpreter (consumes it).
-    let bytes = match codegen::compile_module_binary(&linked) {
+    let bytes = match codegen::compile_checked_module_binary(&checked) {
         codegen::LoweringOutcome::Lowered(bytes) => bytes,
         codegen::LoweringOutcome::Unsupported(reason) => {
             unexpected!("cannot compile to WASM: {reason}")
@@ -182,7 +179,8 @@ pub(crate) fn parity_check(path: &str) -> ParityOutcome {
         }
         _ => None,
     });
-    let interp = interpreter::run_module(linked, Path::new("."), Vec::new()).map_err(|e| e.to_string());
+    let interp = interpreter::run_checked_module(checked, Path::new("."), Vec::new())
+        .map_err(|e| e.to_string());
     let compiled = match &unmintable {
         Some(msg) => Err(witchy_syntax::diag::runtime_error("", 0, msg)),
         None => run_wasm_bytes(&bytes).map(|mut lines| {
@@ -259,7 +257,7 @@ pub(crate) fn parity_check(path: &str) -> ParityOutcome {
 
 #[cfg(test)]
 mod runtime_parity_tests {
-    use super::backend_errors_agree;
+    use super::{ParityOutcome, backend_errors_agree, parity_check};
 
     #[test]
     fn backend_errors_require_full_diagnostic_parity() {
@@ -269,6 +267,42 @@ mod runtime_parity_tests {
         assert!(!backend_errors_agree(full, "wasm trap: integer divide by zero"));
         assert!(backend_errors_agree("host refusal", "host refusal"));
         assert!(!backend_errors_agree("host refusal", "different refusal"));
+    }
+
+    #[test]
+    fn parity_authenticates_user_dynamic_declarations() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "witchy-rfc0082-parity-{}-{nonce}.witchy",
+            std::process::id(),
+        ));
+        std::fs::write(
+            &path,
+            r#"import reflect
+
+type Counter derive(Reflect):
+    value: Int
+
+@dynamic
+pub fn add(self: Counter, amount: Int) -> Counter:
+    Counter(self.value + amount)
+
+fn main(console: Console):
+    console.print("dynamic-ready")
+"#,
+        )
+        .expect("write dynamic parity fixture");
+
+        let outcome = parity_check(path.to_str().expect("UTF-8 fixture path"));
+        std::fs::remove_file(&path).expect("remove dynamic parity fixture");
+        assert!(
+            matches!(&outcome, ParityOutcome::Agree { compared: 1, .. }),
+            "{}",
+            outcome.message(),
+        );
     }
 }
 
@@ -284,6 +318,64 @@ mod runtime_parity_tests {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_linked_compiled(
     linked: &ast::Module,
+    dir_roots: Vec<std::path::PathBuf>,
+    file_grants: Vec<std::path::PathBuf>,
+    net_allow: Vec<String>,
+    args: Vec<String>,
+    signing_key: Option<[u8; 32]>,
+    named_secrets: Vec<runtime::SecretGrant>,
+    user_cap_fields: Vec<Vec<String>>,
+    strict_dir: bool,
+    test_mocks: bool,
+) -> Result<(Vec<String>, Option<i32>), String> {
+    run_compiled(
+        linked,
+        None,
+        dir_roots,
+        file_grants,
+        net_allow,
+        args,
+        signing_key,
+        named_secrets,
+        user_cap_fields,
+        strict_dir,
+        test_mocks,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_checked_compiled(
+    checked: &witchy_types::pipeline::CheckedModule,
+    dir_roots: Vec<std::path::PathBuf>,
+    file_grants: Vec<std::path::PathBuf>,
+    net_allow: Vec<String>,
+    args: Vec<String>,
+    signing_key: Option<[u8; 32]>,
+    named_secrets: Vec<runtime::SecretGrant>,
+    user_cap_fields: Vec<Vec<String>>,
+    strict_dir: bool,
+    test_mocks: bool,
+) -> Result<(Vec<String>, Option<i32>), String> {
+    let wasm = commands::compile::compile_checked_to_wasm_cached(checked)?;
+    run_compiled(
+        checked.module(),
+        Some(wasm),
+        dir_roots,
+        file_grants,
+        net_allow,
+        args,
+        signing_key,
+        named_secrets,
+        user_cap_fields,
+        strict_dir,
+        test_mocks,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_compiled(
+    linked: &ast::Module,
+    precompiled_wasm: Option<Vec<u8>>,
     dir_roots: Vec<std::path::PathBuf>,
     file_grants: Vec<std::path::PathBuf>,
     net_allow: Vec<String>,
@@ -398,7 +490,10 @@ pub(crate) fn run_linked_compiled(
         }
         caps.secrets.extend(named_secrets);
     }
-    let wasm = commands::compile::compile_linked_to_wasm_cached(linked)?;
+    let wasm = match precompiled_wasm {
+        Some(wasm) => wasm,
+        None => commands::compile::compile_linked_to_wasm_cached(linked)?,
+    };
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
     let mut vm = rt
         .spawn(&wasm, caps, RUN_MEMORY_PAGES)

@@ -143,3 +143,58 @@ decoding has to be.
 consumer you write runs identically on the interpreter and the compiled backend,
 and audits in `witchy caps` like any other code. Reflection adds no runtime magic:
 it is a trait and a data type, nothing more.
+
+## Checked dynamic values
+
+The `dynamic` module pairs an owned value with its exact runtime type. Public
+fields and explicitly registered `@dynamic` methods can then be discovered and
+used through checked APIs. Trait queries use compiler-authenticated trait
+descriptors, not forgeable strings.
+
+```witchy
+import dynamic
+import reflect
+
+trait Named:
+    fn name(self) -> String
+
+type Counter derive(Reflect):
+    value: Int
+
+impl Named for Counter:
+    fn name(self) -> String:
+        "counter"
+
+@dynamic
+pub fn add(self: Counter, amount: Int) -> Counter:
+    Counter(self.value + amount)
+
+fn main(console: Console):
+    let value = dynamic.dynamic(Counter(4))
+    let descriptor = dynamic.type_of(value)
+    let methods = dynamic.methods(descriptor)
+    console.print(dynamic.method_name(list.at(methods, 0)))
+
+    let named = dynamic.runtime_type(dyn Named)
+    console.print("${dynamic.implements(value, named)}")
+
+    match dynamic.call(value, "add", [dynamic.dynamic(3)]):
+        Ok(result) ->
+            let decoded: Result(Counter, dynamic.DynamicError) = dynamic.decode(result)
+            match decoded:
+                Ok(counter) -> console.print("${counter.value}")
+                Err(error) -> console.print("${error}")
+        Err(error) -> console.print("${error}")
+```
+
+```text
+add
+true
+7
+```
+
+Dynamic values cannot retain borrowed views: materialize a view with `.owned()`
+before packing it. Capability-requiring methods are excluded from plain
+`dynamic.call`; inspect `dynamic.method_caps` and provide an explicit bundle to
+`dynamic.call_with`. Private or sealed fields remain inaccessible, and unknown
+fields, methods, traits, or mismatched argument types return structured errors.

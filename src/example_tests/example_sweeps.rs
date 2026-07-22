@@ -85,12 +85,11 @@ use crate::{ast, codegen, interpreter, parser, typeck};
                     let Ok(text) = std::fs::read_to_string(file) else { return (0, 0) };
                     for (idx, snippet) in extract_witchy_blocks(&text).into_iter().enumerate() {
                         let context = format!("{}: ```witchy block #{}", file.display(), idx + 1);
-                        let module = parser::parse_module(&snippet)
-                            .unwrap_or_else(|e| panic!("{context} fails to parse: {e:?}\n---\n{snippet}"));
-                        let linked = crate::pipeline::link(vec![("main".into(), module)], "main")
-                            .unwrap_or_else(|e| panic!("{context} fails to link: {e}\n---\n{snippet}"));
-                        typeck::check(&linked)
-                            .unwrap_or_else(|e| panic!("{context} fails to type-check: {e}\n---\n{snippet}"));
+                        let proof = witchy::resolve_std_only_checked(&snippet)
+                            .unwrap_or_else(|e| {
+                                panic!("{context} fails to parse, link, or type-check: {e}\n---\n{snippet}")
+                            });
+                        let linked = proof.module();
                         checked += 1;
 
                         let has_main = linked
@@ -105,14 +104,17 @@ use crate::{ast, codegen, interpreter, parser, typeck};
                                         && matches!(args.first(),
                                             Some(ast::Type::Named(s, _)) if s == "String"))))
                         });
-                        let footprint = crate::capabilities::analyze(&linked);
+                        let footprint = crate::capabilities::analyze(linked);
                         let console_only = footprint.total.keys().all(|k| *k == "Console");
                         if has_main && console_only && !has_actor && !reads_argv {
-                            let bytes = codegen::compile_module_binary(&linked)
+                            let bytes = codegen::compile_checked_module_binary(&proof)
                                 .expect_lowered(&format!("{context} compiles to WASM"));
-                            let interp =
-                                interpreter::run_module(linked, std::path::Path::new("."), Vec::new())
-                                    .unwrap_or_else(|e| panic!("{context} fails on the interpreter: {e}"));
+                            let interp = interpreter::run_checked_module(
+                                proof,
+                                std::path::Path::new("."),
+                                Vec::new(),
+                            )
+                            .unwrap_or_else(|e| panic!("{context} fails on the interpreter: {e}"));
                             let compiled = crate::run_wasm_bytes(&bytes)
                                 .unwrap_or_else(|e| panic!("{context} fails on WASM: {e}"));
                             assert_eq!(interp, compiled, "{context}: the backends DIVERGE");

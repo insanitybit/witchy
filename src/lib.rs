@@ -62,7 +62,57 @@ pub fn resolve_std_only(src: &str) -> Result<witchy_syntax::ast::Module, String>
 /// program passed the canonical type checker.
 pub fn resolve_std_only_checked(src: &str) -> Result<witchy_interp::pipeline::CheckedModule, String> {
     resolve_std_modules(src).and_then(|modules| {
-        witchy_interp::pipeline::link_checked(modules, "main").map_err(|e| e.to_string())
+        use witchy_types::runtime_type::{
+            AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
+        };
+
+        let application = PackageCoordinate::new(
+            PackageSource::Workspace,
+            "witchy/source",
+            env!("CARGO_PKG_VERSION"),
+        )
+        .map_err(|error| error.to_string())?;
+        let toolchain = PackageCoordinate::new(
+            PackageSource::Toolchain,
+            "witchy/std",
+            env!("CARGO_PKG_VERSION"),
+        )
+        .map_err(|error| error.to_string())?;
+        let mut assignments = vec![(
+            "main".to_string(),
+            ModuleLoadIdentity::new(application, ["source", "main"])
+                .map_err(|error| error.to_string())?,
+        )];
+        assignments.extend(
+            witchy_syntax::linker::STD_MODULES
+                .iter()
+                .map(|name| {
+                    ModuleLoadIdentity::new(toolchain.clone(), ["std", *name])
+                        .map(|owner| ((*name).to_string(), owner))
+                        .map_err(|error| error.to_string())
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        let playground = PackageCoordinate::new(
+            PackageSource::Toolchain,
+            "witchy/glamour",
+            env!("CARGO_PKG_VERSION"),
+        )
+        .map_err(|error| error.to_string())?;
+        assignments.extend(
+            witchy_syntax::linker::PLAYGROUND_MODULES
+                .iter()
+                .map(|name| {
+                    ModuleLoadIdentity::new(playground.clone(), ["src", *name])
+                        .map(|owner| ((*name).to_string(), owner))
+                        .map_err(|error| error.to_string())
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)
+            .map_err(|error| error.to_string())?;
+        witchy_interp::pipeline::link_checked_authenticated(modules, "main", owners)
+            .map_err(|e| e.to_string())
     })
 }
 

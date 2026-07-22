@@ -69,14 +69,25 @@ pub(crate) fn link_file_checked_with_deps(
     path: &str,
     deps: &std::collections::HashMap<String, std::path::PathBuf>,
 ) -> Result<(pipeline::CheckedModule, String), String> {
-    let (modules, entry_stem, user_modules) = load_file_modules(path, deps)?;
-    let checked = pipeline::link_checked_with_user_modules(modules, &entry_stem, &user_modules)
-        .map_err(|error| match error {
-            pipeline::PipelineError::Ownership(error) => format!("{path}: {error}"),
-            pipeline::PipelineError::Link(error) => error.to_string(),
-            pipeline::PipelineError::Type(error) => format!("{path}: {error}"),
-        })?;
-    Ok((checked, entry_stem))
+    let entry_path = std::path::Path::new(path);
+    let entry_stem = entry_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .ok_or_else(|| format!("invalid file name: {path}"))?;
+    let entry_owner = workspace_module_owner(entry_path, entry_stem)?;
+    let authenticated = deps
+        .iter()
+        .map(|(alias, dependency)| {
+            Ok((
+                alias.clone(),
+                AuthenticatedDependency {
+                    path: dependency.clone(),
+                    owner: workspace_module_owner(dependency, alias)?,
+                },
+            ))
+        })
+        .collect::<Result<std::collections::HashMap<_, _>, String>>()?;
+    link_file_checked_authenticated_with_deps(path, &authenticated, entry_owner)
 }
 
 pub(crate) fn link_file_checked_authenticated_with_deps(
@@ -242,14 +253,14 @@ fn load_file_modules_authenticated(
         let (source, owner) = match std::fs::read_to_string(&module_path) {
             Ok(source) => {
                 if bundled_module(&name) == Some(source.as_str()) {
-                    (source, toolchain_module_owner(&name)?)
+                    (source, bundled_module_owner(&name)?)
                 } else {
                     user_modules.insert(name.clone());
                     (source, proposed_owner)
                 }
             }
             Err(error) => match bundled_module(&name) {
-                Some(source) => (source.to_string(), toolchain_module_owner(&name)?),
+                Some(source) => (source.to_string(), bundled_module_owner(&name)?),
                 None => {
                     let hint = if name != entry_stem {
                         witchy_syntax::linker::closest_std_module(&name)
@@ -282,7 +293,7 @@ fn load_file_modules_authenticated(
                 queue.push_back((
                     import.clone(),
                     entry_dir.join(format!("{import}.witchy")),
-                    toolchain_module_owner(import)?,
+                    bundled_module_owner(import)?,
                 ));
                 continue;
             }
@@ -302,6 +313,9 @@ fn load_file_modules_authenticated(
     for module in witchy_syntax::linker::STD_MODULES {
         assignments.push((module.to_string(), toolchain_module_owner(module)?));
     }
+    for module in witchy_syntax::linker::PLAYGROUND_MODULES {
+        assignments.push((module.to_string(), playground_module_owner(module)?));
+    }
     let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)
         .map_err(|error| error.to_string())?;
     Ok((modules, entry_stem, user_modules, owners))
@@ -315,6 +329,100 @@ fn toolchain_module_owner(module: &str) -> Result<ModuleLoadIdentity, String> {
     )
     .map_err(|error| error.to_string())?;
     ModuleLoadIdentity::new(package, ["std", module]).map_err(|error| error.to_string())
+}
+
+fn playground_module_owner(module: &str) -> Result<ModuleLoadIdentity, String> {
+    let package = PackageCoordinate::new(
+        PackageSource::Toolchain,
+        "witchy/glamour",
+        env!("CARGO_PKG_VERSION"),
+    )
+    .map_err(|error| error.to_string())?;
+    ModuleLoadIdentity::new(package, ["src", module]).map_err(|error| error.to_string())
+}
+
+fn bundled_module_owner(module: &str) -> Result<ModuleLoadIdentity, String> {
+    if witchy_syntax::linker::PLAYGROUND_MODULES.contains(&module) {
+        playground_module_owner(module)
+    } else {
+        toolchain_module_owner(module)
+    }
+}
+
+fn workspace_module_owner(
+    source_path: &std::path::Path,
+    fallback_name: &str,
+) -> Result<ModuleLoadIdentity, String> {
+    let manifest = source_path
+        .parent()
+        .into_iter()
+        .flat_map(std::path::Path::ancestors)
+        .find_map(|directory| {
+            let path = directory.join("witchy.toml");
+            path.is_file().then_some((directory, path))
+        });
+    let (package_name, package_version, module_path) = if let Some((root, manifest)) = manifest {
+        let source = std::fs::read_to_string(&manifest)
+            .map_err(|error| format!("cannot read `{}`: {error}", manifest.display()))?;
+        let mut in_rune = false;
+        let mut name = None;
+        let mut version = None;
+        for line in source.lines() {
+            let line = line.trim();
+            if line.starts_with('[') {
+                in_rune = line == "[rune]";
+                continue;
+            }
+            if !in_rune {
+                continue;
+            }
+            let value = |key: &str| {
+                line.strip_prefix(key)
+                    .and_then(|rest| rest.trim_start().strip_prefix('='))
+                    .map(str::trim)
+                    .and_then(|value| value.strip_prefix('"'))
+                    .and_then(|value| value.strip_suffix('"'))
+                    .map(str::to_string)
+            };
+            name = name.or_else(|| value("name"));
+            version = version.or_else(|| value("version"));
+        }
+        let name = name.ok_or_else(|| {
+            format!("`{}` has no [rune] name", manifest.display())
+        })?;
+        let version = version.unwrap_or_else(|| "0.0.0".to_string());
+        let relative = source_path.strip_prefix(root).unwrap_or(source_path);
+        let mut module_path = relative
+            .parent()
+            .into_iter()
+            .flat_map(std::path::Path::components)
+            .filter_map(|component| match component {
+                std::path::Component::Normal(component) => component.to_str().map(str::to_string),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        module_path.push(
+            relative
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or(fallback_name)
+                .to_string(),
+        );
+        (name, version, module_path)
+    } else {
+        (
+            format!("local/{fallback_name}"),
+            env!("CARGO_PKG_VERSION").to_string(),
+            vec!["src".to_string(), fallback_name.to_string()],
+        )
+    };
+    let package = PackageCoordinate::new(
+        PackageSource::Workspace,
+        package_name,
+        package_version,
+    )
+    .map_err(|error| error.to_string())?;
+    ModuleLoadIdentity::new(package, module_path).map_err(|error| error.to_string())
 }
 
 fn sibling_module_owner(

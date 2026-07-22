@@ -56,7 +56,7 @@ pub(crate) use commands::capabilities::{
 };
 #[cfg(test)]
 pub(crate) use commands::compile::{emit_wasm_file, emit_wat_file};
-use commands::execution::run_linked_compiled;
+use commands::execution::run_checked_compiled;
 #[cfg(test)]
 pub(crate) use commands::execution::{parity_check, ParityOutcome};
 #[cfg(test)]
@@ -186,15 +186,13 @@ pub(crate) fn execute_file_exit(
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<runtime::SecretGrant>,
 ) -> Result<(Vec<String>, i32), String> {
-    let (linked, entry_stem) = link_file(path)?;
-    // Same file-context prefix as `check_file` (RFC-0072 phase 2): the CLI
-    // names the file, the library message stays path-free.
-    typeck::check(&linked).map_err(|e| format!("{path}: {e}"))?;
-    enforce_performance_modes(&linked, &entry_stem)?;
+    let (checked, entry_stem) = link_file_checked(path)?;
+    let linked = checked.module();
+    enforce_performance_modes(linked, &entry_stem)?;
 
     // No `main` means there's nothing to run directly — but the file still
     // compiled. Explain rather than failing with "unknown function `main`".
-    if !linked_has_main(&linked) {
+    if !linked_has_main(linked) {
         let msg = format!(
             "`{entry_stem}` compiled OK — it's a library (no `main`); import it from another module."
         );
@@ -205,7 +203,7 @@ pub(crate) fn execute_file_exit(
     // share one runtime, so dev == deploy by construction. The interpreter is only
     // the differential oracle (`witchy parity`) and the comptime evaluator — never
     // a user-program run path.
-    run_linked_compiled(&linked, Vec::new(), Vec::new(), net_allow, args, signing_key, named_secrets, Vec::new(), false, false)
+    run_checked_compiled(&checked, Vec::new(), Vec::new(), net_allow, args, signing_key, named_secrets, Vec::new(), false, false)
         .map(|(lines, code)| (lines, code.unwrap_or(0)))
 }
 

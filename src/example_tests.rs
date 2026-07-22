@@ -355,9 +355,9 @@
                         let mut footprint_module = module.clone();
                         crate::comptime::expand("main", &mut footprint_module)
                             .unwrap_or_else(|e| panic!("{context} fails compile-time expansion: {e}"));
-                        let linked = crate::pipeline::link(vec![("main".into(), module)], "main")
-                            .unwrap_or_else(|e| panic!("{context} fails to link: {e}"));
-                        typeck::check(&linked).unwrap_or_else(|e| panic!("{context} fails to type-check: {e}"));
+                        let checked = witchy::resolve_std_only_checked(&snippet)
+                            .unwrap_or_else(|e| panic!("{context} fails to link or type-check: {e}"));
+                        let linked = checked.module();
 
                         let has_main = linked
                             .items
@@ -405,7 +405,11 @@
                             })
                             .collect();
                         let output: Vec<String> = if runnable {
-                            interpreter::run_module(linked, std::path::Path::new("."), Vec::new())
+                            interpreter::run_checked_module(
+                                checked,
+                                std::path::Path::new("."),
+                                Vec::new(),
+                            )
                                 .unwrap_or_else(|e| panic!("{context} fails on the interpreter: {e}"))
                         } else {
                             Vec::new()

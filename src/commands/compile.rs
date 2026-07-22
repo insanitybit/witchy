@@ -446,6 +446,23 @@ pub(crate) fn embedded_wasm_cached(
 /// capability grant and every security check still run from `linked` on every run —
 /// only the wasm is cached.
 pub(crate) fn compile_linked_to_wasm_cached(linked: &ast::Module) -> Result<Vec<u8>, String> {
+    compile_to_wasm_cached(linked, || compile_linked_to_wasm(linked))
+}
+
+/// Checked-module twin of [`compile_linked_to_wasm_cached`]. The proof wrapper,
+/// including authenticated loader ownership, participates in the cache key so
+/// identical source loaded from different packages cannot share runtime type
+/// identities or dynamic method catalogs.
+pub(crate) fn compile_checked_to_wasm_cached(
+    checked: &pipeline::CheckedModule,
+) -> Result<Vec<u8>, String> {
+    compile_to_wasm_cached(checked, || compile_checked_to_wasm(checked))
+}
+
+fn compile_to_wasm_cached(
+    cache_input: &impl std::fmt::Debug,
+    compile: impl FnOnce() -> Result<Vec<u8>, String>,
+) -> Result<Vec<u8>, String> {
     // The AST reaches the hasher STREAMING through a `fmt::Write` adapter: the
     // Debug rendering of a std-linked module runs hundreds of KB, and `format!`
     // used to materialize all of it as a heap String on EVERY run, warm or
@@ -468,7 +485,7 @@ pub(crate) fn compile_linked_to_wasm_cached(linked: &ast::Module) -> Result<Vec<
         let mut w = HashWriter(blake3::Hasher::new());
         // Infallible: the adapter never errors, and the AST's derived Debug has
         // no failing formatter.
-        let _ = write!(w, "{linked:?}");
+        let _ = write!(w, "{cache_input:?}");
         let mut h = w.0;
         h.update(b"\0");
         h.update(compiler_fingerprint().as_bytes());
@@ -491,7 +508,7 @@ pub(crate) fn compile_linked_to_wasm_cached(linked: &ast::Module) -> Result<Vec<
             return Ok(bytes);
         }
     }
-    let wasm = compile_linked_to_wasm(linked)?;
+    let wasm = compile()?;
     if let Some(p) = &path {
         // Write-then-rename so a concurrent reader never sees a partial file; the
         // pid-tagged temp keeps two processes from racing on one path.

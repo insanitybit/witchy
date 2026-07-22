@@ -345,6 +345,11 @@ pub const STD_MODULES: &[&str] = &[
 pub const PRELUDE_MODULES: &[&str] =
     &["list", "string", "dict", "math", "option", "result", "policy", "show"];
 
+/// Bundled playground/package modules. These are compiler-shipped for
+/// filesystem-free docs and playgrounds, but retain a package owner distinct
+/// from the standard library.
+pub const PLAYGROUND_MODULES: &[&str] = &["glamour", "markdown"];
+
 /// The bundled std modules that export a `pub fn` of the given name — used to
 /// suggest a missing `import` when a call names an unimported stdlib function.
 pub fn std_modules_for_function(fn_name: &str) -> Vec<&'static str> {

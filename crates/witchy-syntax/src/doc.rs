@@ -183,7 +183,15 @@ pub fn render_module(module_name: &str, source: &str, module: &Module) -> Result
         }
         any = true;
         let sig = format!("{}{}", fn_qualifier(f.is_async, f.is_gen), signature(&f.name, &f.params, &f.ret, &f.bounds));
+        let dynamic = f.attributes.iter().any(|attribute| attribute == "dynamic");
+        let sig = if dynamic { format!("@dynamic {sig}") } else { sig };
         let _ = writeln!(out, "#### `{sig}`\n");
+        if dynamic {
+            let _ = writeln!(
+                out,
+                "**Dynamic dispatch:** registered for closed-world discovery and checked invocation through `dynamic.methods` and `dynamic.call`.\n",
+            );
+        }
         // The source line carries the same `async`/`gen` qualifier before `fn`,
         // so the doc-comment marker must reconstruct it to find the block.
         let marker = format!("pub {}fn {}(", fn_qualifier(f.is_async, f.is_gen), f.name);
@@ -700,6 +708,15 @@ mod tests {
         assert!(md.contains("#### `fn hello(name: String) -> String`"), "signature: {md}");
         assert!(md.contains("Say hello to `name`."), "fn doc: {md}");
         assert!(!md.contains("private_helper"), "private fn must be omitted: {md}");
+    }
+
+    #[test]
+    fn marks_dynamic_functions_in_generated_docs() {
+        let src = "@dynamic\npub fn bump(self: Int, amount: Int) -> Int:\n    self + amount\n";
+        let md = render("counter", src).unwrap();
+        assert!(md.contains("#### `@dynamic fn bump(self: Int, amount: Int) -> Int`"), "{md}");
+        assert!(md.contains("**Dynamic dispatch:**"), "{md}");
+        assert!(md.contains("`dynamic.methods`"), "{md}");
     }
 
     // BUG-072: a top-of-file comment is the module description, even when the
