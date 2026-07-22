@@ -3446,7 +3446,7 @@ fn main():
         assert!(
             err.contains(
                 "`as dyn Render`: the concrete payload type `Holder` carries a `Dir` \
-                 capability — capability-carrying existential payloads are rejected (RFC-0081); \
+                 capability through `Holder.dir` — capability-carrying existential payloads are rejected (RFC-0081); \
                  pass the capability explicitly in method signatures instead"
             ),
             "{err}"
@@ -3467,7 +3467,7 @@ fn main():
         assert!(
             err.contains(
                 "conversion to `dyn Render`: the concrete payload type `Holder` carries a `Dir` \
-                 capability — capability-carrying existential payloads are rejected (RFC-0081); \
+                 capability through `Holder.dir` — capability-carrying existential payloads are rejected (RFC-0081); \
                  pass the capability explicitly in method signatures instead"
             ),
             "{err}"
