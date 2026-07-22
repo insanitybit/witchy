@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use witchy_syntax::ast::{Convention, Type};
+use witchy_syntax::ast::{Convention, Item, Module, Type, TypeDef};
 use witchy_syntax::type_resolve::{ResolvedDeclarationKind, ResolvedDeclarations};
 
 /// The immutable package coordinate that owns a declaration.
@@ -321,6 +321,276 @@ impl RuntimeDeclarationCatalog {
         RuntimeTypeIdentity::from_resolved_type(ty, &|name, kind| {
             self.resolve(name, kind).cloned()
         })
+    }
+
+    /// Resolve a runtime identity only after proving that its complete nominal
+    /// payload graph is capability-free. The diagnostic path is expressed in
+    /// declaration/field/constructor terms so a source conversion can identify
+    /// the retaining edge rather than merely naming the leaf capability.
+    pub fn capability_free_type_identity(
+        &self,
+        ty: &Type,
+        module: &Module,
+    ) -> Result<RuntimeTypeIdentity, RuntimeTypeError> {
+        let mut definitions = BTreeMap::new();
+        for item in &module.items {
+            let Item::Type(definition) = item else { continue };
+            let Some(identity) = self.resolve(&definition.name, DeclarationKind::Type) else {
+                continue;
+            };
+            definitions.insert(identity.clone(), definition);
+        }
+        let mut visiting = Vec::new();
+        validate_capability_free_type(
+            ty,
+            self,
+            &definitions,
+            &BTreeMap::new(),
+            &mut visiting,
+            &[],
+        )?;
+        self.type_identity(ty)
+    }
+}
+
+fn validate_capability_free_type(
+    ty: &Type,
+    catalog: &RuntimeDeclarationCatalog,
+    definitions: &BTreeMap<DeclarationIdentity, &TypeDef>,
+    bindings: &BTreeMap<String, Type>,
+    visiting: &mut Vec<(DeclarationIdentity, Vec<Type>)>,
+    path: &[String],
+) -> Result<(), RuntimeTypeError> {
+    match ty {
+        Type::Qualified(_, inner) => validate_capability_free_type(
+            inner,
+            catalog,
+            definitions,
+            bindings,
+            visiting,
+            path,
+        ),
+        Type::Tuple(items) => {
+            for (index, item) in items.iter().enumerate() {
+                let mut child_path = path.to_vec();
+                child_path.push(format!("tuple[{index}]"));
+                validate_capability_free_type(
+                    item,
+                    catalog,
+                    definitions,
+                    bindings,
+                    visiting,
+                    &child_path,
+                )?;
+            }
+            Ok(())
+        }
+        Type::Fn(_, _, _) => Err(RuntimeTypeError::UninspectableDynamicPayload {
+            kind: "function".into(),
+            path: path.to_vec(),
+        }),
+        Type::Dyn(name, _) => Err(RuntimeTypeError::UninspectableDynamicPayload {
+            kind: format!("existential `{name}`"),
+            path: path.to_vec(),
+        }),
+        Type::RecordCompose { base, fields } => {
+            validate_capability_free_type(
+                base,
+                catalog,
+                definitions,
+                bindings,
+                visiting,
+                path,
+            )?;
+            for (name, field) in fields {
+                let mut child_path = path.to_vec();
+                child_path.push(name.clone());
+                validate_capability_free_type(
+                    field,
+                    catalog,
+                    definitions,
+                    bindings,
+                    visiting,
+                    &child_path,
+                )?;
+            }
+            Ok(())
+        }
+        Type::Named(name, args) => {
+            if args.is_empty() {
+                if let Some(bound) = bindings.get(name) {
+                    return validate_capability_free_type(
+                        bound,
+                        catalog,
+                        definitions,
+                        bindings,
+                        visiting,
+                        path,
+                    );
+                }
+            }
+            if capability_type(name) {
+                return Err(RuntimeTypeError::CapabilityRetained {
+                    capability: name.clone(),
+                    path: path.to_vec(),
+                });
+            }
+            if primitive(name, args.len()).is_some() {
+                return Ok(());
+            }
+            if name == "List" && args.len() == 1 {
+                let mut child_path = path.to_vec();
+                child_path.push("list item".into());
+                return validate_capability_free_type(
+                    &args[0],
+                    catalog,
+                    definitions,
+                    bindings,
+                    visiting,
+                    &child_path,
+                );
+            }
+            if let Some(fields) = decode_anon_record(name) {
+                for (field, ty) in fields.into_iter().zip(args) {
+                    let mut child_path = path.to_vec();
+                    child_path.push(field);
+                    validate_capability_free_type(
+                        ty,
+                        catalog,
+                        definitions,
+                        bindings,
+                        visiting,
+                        &child_path,
+                    )?;
+                }
+                return Ok(());
+            }
+            if let Some(variants) = crate::typeck::anon_union_synthetic_variants(name) {
+                let mut at = 0;
+                for (variant, arity) in variants {
+                    for index in 0..arity {
+                        let mut child_path = path.to_vec();
+                        child_path.push(format!("{variant}[{index}]"));
+                        if let Some(payload) = args.get(at) {
+                            validate_capability_free_type(
+                                payload,
+                                catalog,
+                                definitions,
+                                bindings,
+                                visiting,
+                                &child_path,
+                            )?;
+                        }
+                        at += 1;
+                    }
+                }
+                return Ok(());
+            }
+
+            let instantiated = instantiate_runtime_type(ty, bindings);
+            let Some(declaration) = catalog.resolve(name, DeclarationKind::Type).cloned() else {
+                return catalog.type_identity(&instantiated).map(|_| ());
+            };
+            let instantiated_args = args
+                .iter()
+                .map(|argument| instantiate_runtime_type(argument, bindings))
+                .collect::<Vec<_>>();
+            if visiting.iter().any(|(seen_declaration, seen_args)| {
+                seen_declaration == &declaration && seen_args == &instantiated_args
+            }) {
+                return Ok(());
+            }
+            let definition = definitions.get(&declaration).ok_or_else(|| {
+                RuntimeTypeError::MissingRuntimeShape {
+                    declaration: declaration.clone(),
+                }
+            })?;
+            if definition.is_capability {
+                return Err(RuntimeTypeError::CapabilityRetained {
+                    capability: definition.name.clone(),
+                    path: path.to_vec(),
+                });
+            }
+            if definition.params.len() != args.len() {
+                return Err(RuntimeTypeError::RuntimeShapeArity {
+                    name: definition.name.clone(),
+                    expected: definition.params.len(),
+                    actual: args.len(),
+                });
+            }
+            visiting.push((declaration, instantiated_args.clone()));
+            let mut nested_bindings = bindings.clone();
+            for (parameter, argument) in definition.params.iter().zip(instantiated_args) {
+                nested_bindings.insert(parameter.clone(), argument);
+            }
+            for variant in &definition.variants {
+                for (index, field) in variant.fields.iter().enumerate() {
+                    let label = variant.field_names.get(index).map_or_else(
+                        || format!("{}[{}]", variant.name, index),
+                        |field| format!("{}.{}", definition.name, field),
+                    );
+                    let mut child_path = path.to_vec();
+                    child_path.push(label);
+                    validate_capability_free_type(
+                        field,
+                        catalog,
+                        definitions,
+                        &nested_bindings,
+                        visiting,
+                        &child_path,
+                    )?;
+                }
+            }
+            visiting.pop();
+            Ok(())
+        }
+    }
+}
+
+fn instantiate_runtime_type(ty: &Type, bindings: &BTreeMap<String, Type>) -> Type {
+    match ty {
+        Type::Named(name, args) if args.is_empty() && bindings.contains_key(name) => {
+            bindings[name].clone()
+        }
+        Type::Named(name, args) => Type::Named(
+            name.clone(),
+            args.iter()
+                .map(|arg| instantiate_runtime_type(arg, bindings))
+                .collect(),
+        ),
+        Type::Dyn(name, args) => Type::Dyn(
+            name.clone(),
+            args.iter()
+                .map(|arg| instantiate_runtime_type(arg, bindings))
+                .collect(),
+        ),
+        Type::Tuple(items) => Type::Tuple(
+            items
+                .iter()
+                .map(|item| instantiate_runtime_type(item, bindings))
+                .collect(),
+        ),
+        Type::Fn(params, result, conventions) => Type::Fn(
+            params
+                .iter()
+                .map(|param| instantiate_runtime_type(param, bindings))
+                .collect(),
+            Box::new(instantiate_runtime_type(result, bindings)),
+            conventions.clone(),
+        ),
+        Type::Qualified(qualifier, inner) => Type::Qualified(
+            qualifier.clone(),
+            Box::new(instantiate_runtime_type(inner, bindings)),
+        ),
+        Type::RecordCompose { base, fields } => Type::RecordCompose {
+            base: Box::new(instantiate_runtime_type(base, bindings)),
+            fields: fields
+                .iter()
+                .map(|(name, field)| {
+                    (name.clone(), instantiate_runtime_type(field, bindings))
+                })
+                .collect(),
+        },
     }
 }
 
@@ -687,6 +957,10 @@ pub enum RuntimeTypeError {
     InvalidDeclarationIdentity(String),
     InvalidModuleOwner(String),
     CapabilityType(String),
+    CapabilityRetained { capability: String, path: Vec<String> },
+    UninspectableDynamicPayload { kind: String, path: Vec<String> },
+    MissingRuntimeShape { declaration: DeclarationIdentity },
+    RuntimeShapeArity { name: String, expected: usize, actual: usize },
     MissingAuthenticatedModuleOwners,
     MissingModuleOwner { module: String },
     ConflictingModuleOwner { module: String },
@@ -707,6 +981,30 @@ impl std::fmt::Display for RuntimeTypeError {
             Self::CapabilityType(name) => {
                 write!(f, "capability type `{name}` cannot have a runtime descriptor")
             }
+            Self::CapabilityRetained { capability, path } => {
+                write!(f, "capability type `{capability}` cannot convert to Dynamic")?;
+                if !path.is_empty() {
+                    write!(f, "; retained by `{}`", path.join(" -> "))?;
+                }
+                Ok(())
+            }
+            Self::UninspectableDynamicPayload { kind, path } => {
+                write!(f, "{kind} payload cannot convert to Dynamic")?;
+                if !path.is_empty() {
+                    write!(f, "; retained by `{}`", path.join(" -> "))?;
+                }
+                Ok(())
+            }
+            Self::MissingRuntimeShape { declaration } => write!(
+                f,
+                "runtime shape for authenticated declaration `{}::{}` is missing",
+                declaration.module().join("."),
+                declaration.name()
+            ),
+            Self::RuntimeShapeArity { name, expected, actual } => write!(
+                f,
+                "runtime shape `{name}` expects {expected} type argument(s), got {actual}"
+            ),
             Self::MissingAuthenticatedModuleOwners => f.write_str(
                 "checked module lacks authenticated loader ownership; use an authenticated checked-link API",
             ),
@@ -1123,5 +1421,84 @@ mod tests {
         assert!(plan.id(&int).is_some());
         assert!(plan.id(&tuple).is_some());
         assert!(plan.id(&list).is_some());
+    }
+
+    #[test]
+    fn capability_free_identity_reports_the_nominal_retaining_path() {
+        let module = witchy_syntax::parser::parse_module(
+            "type Inner:\n    Inner(Console)\n\ntype Outer:\n    Outer(Inner)\n",
+        )
+        .expect("parse retaining types");
+        let owner = ModuleLoadIdentity::new(
+            package(PackageSource::Workspace, "app", "0.1.0"),
+            ["main"],
+        )
+        .expect("module owner");
+        let mut catalog = RuntimeDeclarationCatalog::default();
+        catalog
+            .insert_resolved("Inner", &owner, "Inner", DeclarationKind::Type)
+            .expect("inner declaration");
+        catalog
+            .insert_resolved("Outer", &owner, "Outer", DeclarationKind::Type)
+            .expect("outer declaration");
+
+        let error = catalog
+            .capability_free_type_identity(
+                &Type::Named("Outer".into(), Vec::new()),
+                &module,
+            )
+            .expect_err("transitive capability must be rejected");
+        assert_eq!(
+            error,
+            RuntimeTypeError::CapabilityRetained {
+                capability: "Console".into(),
+                path: vec!["Outer[0]".into(), "Inner[0]".into()],
+            }
+        );
+        assert!(error.to_string().contains("Outer[0] -> Inner[0]"));
+    }
+
+    #[test]
+    fn capability_free_identity_substitutes_generics_and_terminates_recursion() {
+        let module = witchy_syntax::parser::parse_module(
+            "type Boxed(a):\n    Boxed(a)\n\ntype Recursive:\n    Empty\n    Next(List(Recursive))\n",
+        )
+        .expect("parse generic and recursive types");
+        let owner = ModuleLoadIdentity::new(
+            package(PackageSource::Workspace, "app", "0.1.0"),
+            ["main"],
+        )
+        .expect("module owner");
+        let mut catalog = RuntimeDeclarationCatalog::default();
+        for name in ["Boxed", "Recursive"] {
+            catalog
+                .insert_resolved(name, &owner, name, DeclarationKind::Type)
+                .expect("declaration");
+        }
+
+        let error = catalog
+            .capability_free_type_identity(
+                &Type::Named(
+                    "Boxed".into(),
+                    vec![Type::Named("Console".into(), Vec::new())],
+                ),
+                &module,
+            )
+            .expect_err("generic capability payload must be rejected");
+        assert_eq!(
+            error,
+            RuntimeTypeError::CapabilityRetained {
+                capability: "Console".into(),
+                path: vec!["Boxed[0]".into()],
+            }
+        );
+
+        let recursive = catalog
+            .capability_free_type_identity(
+                &Type::Named("Recursive".into(), Vec::new()),
+                &module,
+            )
+            .expect("safe recursion terminates");
+        assert!(matches!(recursive, RuntimeTypeIdentity::Nominal { .. }));
     }
 }
