@@ -53,10 +53,9 @@ type DynamicFieldValue:
 // Values that can describe themselves as a `Mirror`.
 trait Reflect:
     fn reflect(self) -> Mirror
-
-    // Record derives override this internal slot. Other reflectable values have
-    // no readable named fields, so the default is deliberately empty.
     fn __dynamic_field(self, name: String) -> Option(DynamicFieldValue):
+        // Record derives override this internal slot. Other reflectable values have
+        // no readable named fields, so the default is deliberately empty.
         None
 
 impl Reflect for Int:
