@@ -899,7 +899,7 @@ Checked runtime values (RFC-0082 Stage 1).
 
 #### `sealed type RuntimeMethod`
 
-- `RuntimeMethod(String, List(RuntimeType), RuntimeType)`
+- `RuntimeMethod(String, List(RuntimeType), RuntimeType, List(String))`
 
 #### `sealed type DynamicFieldStatus`
 
@@ -956,9 +956,15 @@ Public methods explicitly registered with `@dynamic`. The compiler replaces this
 
 #### `fn method_result(method: RuntimeMethod) -> RuntimeType`
 
+#### `fn method_capabilities(method: RuntimeMethod) -> List(String)`
+
 #### `fn call(value: Dynamic, name: String, args: List(Dynamic)) -> Result(Dynamic, DynamicError)`
 
 Invoke only a descriptor-registered method. Arguments are checked against exact authenticated descriptors before the compiler-generated typed call.
+
+#### `fn call_with(value: Dynamic, name: String, args: List(Dynamic), capabilities: c) -> Result(Dynamic, DynamicError)`
+
+Capability-bearing methods use a separate statically typed authority bundle. One capability is passed directly; multiple capabilities use a tuple in the same order as the reflected method parameters. Capabilities never enter `Dynamic` or the ordinary argument list.
 
 #### `fn field(value: Dynamic, name: String) -> Result(Dynamic, DynamicError)`
 
