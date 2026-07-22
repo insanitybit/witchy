@@ -1,9 +1,9 @@
 ---
 rfc: 0067
 title: 0.1 coherence map — one public story for each core concept
-status: accepted
+status: implemented
 created: 2026-07-06
-tracking: accepted as the active ordering contract reconciling RFC-0061/RFC-0063 with the 0.1 backlog
+tracking: the ordering contract was executed and its owned RFC work is terminally classified; ongoing release evidence lives in RELEASE-READINESS.md
 ---
 
 # RFC-0067: 0.1 coherence map

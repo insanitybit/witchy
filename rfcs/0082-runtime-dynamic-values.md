@@ -1,7 +1,7 @@
 ---
 rfc: 0082
 title: Runtime Dynamic values and checked reflection
-status: accepted
+status: implemented
 created: 2026-07-12
 superseded-by:
 tracking: "implemented: authenticated descriptor identity, checked Dynamic conversion and decoding, public shape inspection, opted-in method and trait dispatch, explicit capability accounting, ownership-safe payload handling, backend parity, and tooling/docs/examples"

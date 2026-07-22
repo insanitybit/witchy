@@ -1,7 +1,7 @@
 ---
 rfc: 0080
 title: Structured hygienic metaprogramming
-status: accepted
+status: implemented
 created: 2026-07-12
 superseded-by:
 tracking: "implemented: compiler-owned typed quotation and builders, hygienic identities, dynamic item/module identity, persistent Span provenance, stable expansion, and generated-symbol navigation"

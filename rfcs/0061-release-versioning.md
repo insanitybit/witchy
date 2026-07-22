@@ -1,9 +1,9 @@
 ---
 rfc: 0061
 title: Release versioning — 0.x policy and the 0.1.0 gate
-status: accepted
+status: implemented
 created: 2026-07-04
-tracking: the 0.1.0 gate is the active release plan; tagged builds embed and verify the checked-out commit; bug-drain + RFC-drain in progress 2026-07
+tracking: the versioning policy, tagged-build identity, and release gate machinery are implemented; cutting 0.1.0 remains an operational event governed by RELEASE-READINESS.md
 ---
 
 # RFC-0061: Release versioning — 0.x policy and the 0.1.0 gate

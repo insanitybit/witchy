@@ -1,7 +1,7 @@
 ---
 rfc: 0091
 title: "Browser-runnable capability examples — real Clock/Env, an in-memory Dir (Net deferred)"
-status: accepted
+status: implemented
 created: 2026-07-10
 supersedes:
 superseded-by:

@@ -1,9 +1,9 @@
 ---
 rfc: 0101
 title: source-first compiler pipeline
-status: proposed
+status: deferred
 created: 2026-07-20
-tracking: "implementation active: checked linking injects declaration checks at the complete expanded-source boundary, destructive lowerings use staged proofs, and production codegen retains checked proofs; body type checking and trait lowering remain open"
+tracking: "landed proof boundaries are retained; body type checking and trait lowering are parked until a concrete correctness defect justifies reviving the broader pipeline reorder with executable acceptance evidence"
 related:
   - "[0070](0070-0-1-blocking-set.md) (terminal 0.1 decision record and checked-module seam)"
   - "BUG-428 / BUG-429 / BUG-434 / BUG-436 (closed regression classes)"

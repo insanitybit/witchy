@@ -1,10 +1,10 @@
 ---
 rfc: 0063
 title: Strong-state coherence gate for a proud 0.1 release
-status: accepted
+status: deferred
 created: 2026-07-04
 superseded-by:
-tracking: coherence gate accepted as the pre-tag bar; executed alongside RFC-0061; intrinsic-name, host-import authority, and Bytes/string/math/List/Dict/crypto/regex/SecretStore operation catalog slices landed
+tracking: landed intrinsic-name, host-import authority, and operation-catalog slices are retained; residual consumer-by-consumer hook migration is parked until a concrete coherence defect supplies an executable acceptance fixture
 ---
 
 # RFC-0063: Strong-state coherence gate for a proud 0.1 release
