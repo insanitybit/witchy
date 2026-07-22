@@ -137,8 +137,13 @@ fn ident_source(id: Ident) -> String:
 
 fn expr_ident(id: Ident) -> ExprSyntax:
     match id:
-        Ident(source) -> ExprSyntax(source)
+        Ident(source) -> __meta_expr_leaf("name", source)
         CallSiteIdent(source) -> __meta_call_site_expr(source)
+
+// Compiler-owned literal/name construction. The bridge decodes the typed
+// payload directly into an Expr node; it never renders and reparses source.
+fn __meta_expr_leaf(kind: String, payload: String) -> ExprSyntax:
+    __meta_expr_leaf(kind, payload)
 
 // Interpreter-owned compile-time hook. It creates a compiler-owned expression
 // node carrying call-site origin; no source spelling can mint that origin.
@@ -317,10 +322,10 @@ fn __meta_expr_field(base: ExprSyntax, field: Ident) -> ExprSyntax:
     __meta_expr_field(base, field)
 
 pub fn expr_int(n: Int) -> ExprSyntax:
-    ExprSyntax("${n}")
+    __meta_expr_leaf("int", "${n}")
 
 pub fn expr_bool(b: Bool) -> ExprSyntax:
-    ExprSyntax(if b: "true" else: "false")
+    __meta_expr_leaf("bool", if b: "true" else: "false")
 
 pub fn expr_match(scrutinee: ExprSyntax, arms: List(MatchArmSyntax)) -> ExprSyntax:
     if list.is_empty(arms):
@@ -375,29 +380,35 @@ fn expr_sources(exprs: List(ExprSyntax)) -> List(String):
 // Source-backed pattern syntax. Patterns share validated identifiers with
 // expressions, so generated matches cannot accidentally mint a reserved binding.
 pub fn pattern_var(name: Ident) -> PatternSyntax:
-    PatternSyntax(ident_source(name))
+    match name:
+        Ident(source) -> __meta_pattern_leaf("var", source, "", false)
+        CallSiteIdent(source) -> __meta_pattern_leaf("call-site-var", source, "", false)
 
 pub fn pattern_wildcard() -> PatternSyntax:
-    PatternSyntax("_")
+    __meta_pattern_leaf("wildcard", "", "", false)
 
 pub fn pattern_int(n: Int) -> PatternSyntax:
-    PatternSyntax("${n}")
+    __meta_pattern_leaf("int", "${n}", "", false)
 
 pub fn pattern_bool(b: Bool) -> PatternSyntax:
-    PatternSyntax(if b: "true" else: "false")
+    __meta_pattern_leaf("bool", if b: "true" else: "false", "", false)
 
 // A string literal pattern.
 pub fn pattern_str(value: String) -> PatternSyntax:
-    PatternSyntax(string_literal(value))
+    __meta_pattern_leaf("string", value, "", false)
 
 // A duration literal pattern from its whole-millisecond value.
 pub fn pattern_duration_ms(ms: Int) -> PatternSyntax:
-    PatternSyntax("${ms}ms")
+    __meta_pattern_leaf("duration", "${ms}", "", false)
 
 // An integer range pattern.
 pub fn pattern_range(lo: Int, hi: Int, inclusive: Bool) -> PatternSyntax:
-    let op = if inclusive: "..=" else: ".."
-    PatternSyntax("${lo}" + op + "${hi}")
+    __meta_pattern_leaf("range", "${lo}", "${hi}", inclusive)
+
+// Compiler-owned pattern leaf construction. Scalar payloads are validated and
+// decoded directly into Pattern variants by the compiler bridge.
+fn __meta_pattern_leaf(kind: String, first: String, second: String, inclusive: Bool) -> PatternSyntax:
+    __meta_pattern_leaf(kind, first, second, inclusive)
 
 pub fn pattern_ctor(name: Ident, args: List(PatternSyntax)) -> PatternSyntax:
     match name:
@@ -562,7 +573,11 @@ fn __meta_stmt_return(value: ExprSyntax) -> StmtSyntax:
     __meta_stmt_return(value)
 
 pub fn stmt_return_none() -> StmtSyntax:
-    StmtSyntax("return")
+    __meta_stmt_leaf("return")
+
+// Compiler-owned statement construction for leaf statements without children.
+fn __meta_stmt_leaf(kind: String) -> StmtSyntax:
+    __meta_stmt_leaf(kind)
 
 // A source-backed statement wrapper for parser-checked `quote stmt:`.
 pub fn stmt_raw(source: String) -> StmtSyntax:

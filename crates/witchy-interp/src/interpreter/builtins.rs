@@ -147,6 +147,44 @@ impl Interpreter {
                 Value::Str(hint) => Ok(Some(Value::str(self.next_fresh_ident(hint.as_str())?))),
                 other => err(format!("meta.fresh expects a String hint, got `{other}`")),
             },
+            name if intrinsics::is_meta_expr_leaf(name) => match args {
+                [Value::Str(kind), Value::Str(payload)] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err("meta expression builders are available only during compile-time expansion");
+                    }
+                    let expr = compiler_expr_leaf(kind, payload)?;
+                    Ok(Some(self.store_compiler_expr_syntax(
+                        "expression-leaf",
+                        expr,
+                        Vec::new(),
+                    )?))
+                }
+                _ => err("meta expression builder expects a kind and scalar payload"),
+            },
+            name if intrinsics::is_meta_pattern_leaf(name) => match args {
+                [Value::Str(kind), Value::Str(first), Value::Str(second), Value::Bool(inclusive)] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err("meta pattern builders are available only during compile-time expansion");
+                    }
+                    let pattern = compiler_pattern_leaf(kind, first, second, *inclusive)?;
+                    Ok(Some(self.store_compiler_pattern_syntax(
+                        "pattern-leaf",
+                        pattern,
+                        Vec::new(),
+                    )?))
+                }
+                _ => err("meta pattern builder expects a kind and scalar payloads"),
+            },
+            name if intrinsics::is_meta_stmt_leaf(name) => match args {
+                [Value::Str(kind)] => {
+                    if self.fresh_ident_scope.is_none() {
+                        return err("meta statement builders are available only during compile-time expansion");
+                    }
+                    let stmt = compiler_stmt_leaf(kind)?;
+                    Ok(Some(self.store_compiler_stmt_syntax("statement-leaf", stmt)?))
+                }
+                _ => err("meta statement builder expects a statement kind"),
+            },
             name if intrinsics::is_meta_call_site_expr(name) => match one(args)? {
                 Value::Str(name) => {
                     if self.fresh_ident_scope.is_none() {

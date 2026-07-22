@@ -41,6 +41,9 @@ pub enum IntrinsicId {
     SecretStoreGet,
     SecretStoreRequire,
     MetaFreshIdent,
+    MetaExprLeaf,
+    MetaPatternLeaf,
+    MetaStmtLeaf,
     MetaCallSiteExpr,
     MetaCallSiteType,
     MetaCallSitePattern,
@@ -451,6 +454,9 @@ pub const TESTING_MOCK_DIR: &str = "__mock_dir";
 pub const SECRETSTORE_GET: &str = "secretstore.get";
 pub const SECRETSTORE_REQUIRE: &str = "secretstore.require";
 pub(crate) const META_FRESH_IDENT: &str = "__meta_fresh_ident";
+pub(crate) const META_EXPR_LEAF: &str = "__meta_expr_leaf";
+pub(crate) const META_PATTERN_LEAF: &str = "__meta_pattern_leaf";
+pub(crate) const META_STMT_LEAF: &str = "__meta_stmt_leaf";
 pub(crate) const META_CALL_SITE_EXPR: &str = "__meta_call_site_expr";
 pub(crate) const META_CALL_SITE_TYPE: &str = "__meta_call_site_type";
 pub(crate) const META_CALL_SITE_PATTERN: &str = "__meta_call_site_pattern";
@@ -1063,6 +1069,51 @@ pub const ALL: &[IntrinsicSpec] = &[
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: "meta.fresh",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaExprLeaf,
+        name: META_EXPR_LEAF,
+        arity: 2,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta expression builder",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaPatternLeaf,
+        name: META_PATTERN_LEAF,
+        arity: 4,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta pattern builder",
+        private_callers: META_BRIDGE_CALLERS,
+    },
+    IntrinsicSpec {
+        id: IntrinsicId::MetaStmtLeaf,
+        name: META_STMT_LEAF,
+        arity: 1,
+        signature: IntrinsicSignature::DeclaredInSource,
+        effect: IntrinsicEffect::Toolchain,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::FrontendGenerated,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: NO_HELPERS,
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "meta statement builder",
         private_callers: META_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
@@ -2775,6 +2826,18 @@ pub fn is_meta_fresh_ident(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaFreshIdent)
 }
 
+pub fn is_meta_expr_leaf(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaExprLeaf)
+}
+
+pub fn is_meta_pattern_leaf(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaPatternLeaf)
+}
+
+pub fn is_meta_stmt_leaf(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaStmtLeaf)
+}
+
 pub fn is_meta_call_site_expr(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::MetaCallSiteExpr)
 }
@@ -2908,6 +2971,9 @@ mod tests {
             Some(TESTING_BRIDGE_CALLERS)
         );
         assert_eq!(private_intrinsic_callers(META_FRESH_IDENT), Some(META_BRIDGE_CALLERS));
+        assert_eq!(private_intrinsic_callers(META_EXPR_LEAF), Some(META_BRIDGE_CALLERS));
+        assert_eq!(private_intrinsic_callers(META_PATTERN_LEAF), Some(META_BRIDGE_CALLERS));
+        assert_eq!(private_intrinsic_callers(META_STMT_LEAF), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_CALL_SITE_EXPR), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_CALL_SITE_TYPE), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_CALL_SITE_PATTERN), Some(META_BRIDGE_CALLERS));
@@ -2933,6 +2999,9 @@ mod tests {
         assert_eq!(private_intrinsic_callers(META_PARAM), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_FUNCTION_BLOCK), Some(META_BRIDGE_CALLERS));
         assert_eq!(lookup("meta.__meta_fresh_ident"), lookup(META_FRESH_IDENT));
+        assert_eq!(lookup("meta.__meta_expr_leaf"), lookup(META_EXPR_LEAF));
+        assert_eq!(lookup("meta.__meta_pattern_leaf"), lookup(META_PATTERN_LEAF));
+        assert_eq!(lookup("meta.__meta_stmt_leaf"), lookup(META_STMT_LEAF));
         assert_eq!(lookup("meta.__meta_call_site_expr"), lookup(META_CALL_SITE_EXPR));
         assert_eq!(lookup("meta.__meta_call_site_type"), lookup(META_CALL_SITE_TYPE));
         assert_eq!(
@@ -2994,6 +3063,9 @@ mod tests {
             CHANNEL_SELECT,
             TESTING_MOCK_DIR,
             META_FRESH_IDENT,
+            META_EXPR_LEAF,
+            META_PATTERN_LEAF,
+            META_STMT_LEAF,
             META_CALL_SITE_EXPR,
             META_CALL_SITE_TYPE,
             META_CALL_SITE_PATTERN,

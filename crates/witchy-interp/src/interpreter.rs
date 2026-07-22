@@ -68,10 +68,11 @@ mod reflection;
 use reflection::{
     compiler_binding_ident_name, compiler_block_syntax_value, compiler_ctor_tail,
     compiler_direct_hole_origins, compiler_expr_syntax_value, compiler_function_conventions,
-    compiler_ident_name, compiler_item_hole_origins, compiler_item_holes,
+    compiler_expr_leaf, compiler_ident_name, compiler_item_hole_origins, compiler_item_holes,
     compiler_match_arms, compiler_optional_expr_syntax_value,
     compiler_optional_type_syntax_value, compiler_params, compiler_pattern_holes,
-    compiler_pattern_syntax_value, compiler_reflected_type, compiler_stmt_syntax_value,
+    compiler_pattern_leaf, compiler_pattern_syntax_value, compiler_reflected_type,
+    compiler_stmt_leaf, compiler_stmt_syntax_value,
     compiler_type_holes, compiler_type_syntax_value,
 };
 
@@ -1135,6 +1136,28 @@ impl Interpreter {
         self.compiler_stmt_syntax.insert(handle.clone(), stmt);
         Ok(Value::Ctor {
             name: "meta.CompilerStmtSyntax".into(),
+            fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
+        })
+    }
+
+    fn store_compiler_expr_syntax(
+        &mut self,
+        category: &str,
+        expr: Expr,
+        hole_ancestry: Vec<ComptimeHoleOrigin>,
+    ) -> Result<Value, RuntimeError> {
+        let source = witchy_syntax::format::expr_str(&expr);
+        let handle = self.next_compiler_syntax_handle(category)?;
+        self.compiler_expr_syntax.insert(handle.clone(), expr);
+        self.compiler_expr_origins.insert(
+            handle.clone(),
+            ComptimeSyntaxOrigin {
+                definition_line: self.cur_line,
+                hole_ancestry,
+            },
+        );
+        Ok(Value::Ctor {
+            name: "meta.CompilerExprSyntax".into(),
             fields: Rc::new(vec![Value::str(handle), Value::str(source)]),
         })
     }

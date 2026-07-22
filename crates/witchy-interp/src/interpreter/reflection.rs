@@ -6,6 +6,70 @@ use witchy_syntax::parser::parse_module;
 
 use super::{err, ComptimeHoleOrigin, ComptimeSyntaxOrigin, RuntimeError, Value};
 
+pub(super) fn compiler_expr_leaf(kind: &str, payload: &str) -> Result<Expr, RuntimeError> {
+    if kind == "name" && payload.chars().next().is_some_and(char::is_uppercase) {
+        Ok(Expr::Ctor { name: payload.to_string(), args: Vec::new() })
+    } else if kind == "name" {
+        Ok(Expr::Var(payload.to_string()))
+    } else if kind == "int" {
+        Ok(Expr::Int(payload.parse().map_err(|_| RuntimeError {
+            message: "meta.expr_int carried an invalid Int payload".into(),
+        })?))
+    } else if kind == "bool" {
+        Ok(Expr::Bool(payload.parse().map_err(|_| RuntimeError {
+            message: "meta.expr_bool carried an invalid Bool payload".into(),
+        })?))
+    } else {
+        err(format!("unknown compiler-owned expression leaf `{kind}`"))
+    }
+}
+
+pub(super) fn compiler_pattern_leaf(
+    kind: &str,
+    first: &str,
+    second: &str,
+    inclusive: bool,
+) -> Result<Pattern, RuntimeError> {
+    let parse_int = |payload: &str, operation: &str| {
+        payload.parse::<i64>().map_err(|_| RuntimeError {
+            message: format!("{operation} carried an invalid Int payload"),
+        })
+    };
+    if kind == "var" {
+        Ok(Pattern::Var(first.to_string()))
+    } else if kind == "call-site-var" {
+        err("meta.pattern_var: meta.call_site is reference-only")
+    } else if kind == "wildcard" {
+        Ok(Pattern::Wildcard)
+    } else if kind == "int" {
+        Ok(Pattern::Int(parse_int(first, "meta.pattern_int")?))
+    } else if kind == "bool" {
+        Ok(Pattern::Bool(first.parse().map_err(|_| RuntimeError {
+            message: "meta.pattern_bool carried an invalid Bool payload".into(),
+        })?))
+    } else if kind == "string" {
+        Ok(Pattern::Str(first.to_string()))
+    } else if kind == "duration" {
+        Ok(Pattern::Duration(parse_int(first, "meta.pattern_duration_ms")?))
+    } else if kind == "range" {
+        Ok(Pattern::IntRange {
+            lo: parse_int(first, "meta.pattern_range")?,
+            hi: parse_int(second, "meta.pattern_range")?,
+            inclusive,
+        })
+    } else {
+        err(format!("unknown compiler-owned pattern leaf `{kind}`"))
+    }
+}
+
+pub(super) fn compiler_stmt_leaf(kind: &str) -> Result<Stmt, RuntimeError> {
+    if kind == "return" {
+        Ok(Stmt::Return(None))
+    } else {
+        err(format!("unknown compiler-owned statement leaf `{kind}`"))
+    }
+}
+
 /// Decode one `meta.ExprSyntax` value for compiler-owned structural builders.
 /// A compatibility payload is parsed in isolation; an owned payload transfers
 /// its AST directly so definition-site and call-site markers cannot be erased

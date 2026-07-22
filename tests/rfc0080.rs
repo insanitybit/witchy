@@ -32,3 +32,5 @@ mod structural_body_holes;
 mod structural_type_holes;
 #[path = "rfc0080/tag_definition_site.rs"]
 mod tag_definition_site;
+#[path = "rfc0080/structural_leaf_builders.rs"]
+mod structural_leaf_builders;
