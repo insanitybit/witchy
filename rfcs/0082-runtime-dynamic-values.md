@@ -1,21 +1,20 @@
 ---
 rfc: 0082
 title: Runtime Dynamic values and checked reflection
-status: deferred
+status: accepted
 created: 2026-07-12
 superseded-by:
-tracking: "descriptor identity, retained declaration provenance, opaque validated loader-owner maps, authenticated checked-link transport, and fail-closed retained catalog construction are implemented; production package-coordinate loading and source Dynamic stages 1-4 are explicitly deferred until the authenticated loader contract is scheduled after 0.1"
+tracking: "descriptor identity, retained declaration provenance, authenticated production package-coordinate loading, checked-link transport, and fail-closed retained catalog construction are implemented; source Dynamic stages 1-4 remain in progress"
 ---
 
 # RFC-0082: Runtime `Dynamic` values and checked reflection
 
-> **2026-07-20 terminal disposition:** the backend-neutral descriptor and
-> checked-catalog foundation is implemented and retained. The user-visible
-> `Dynamic` payload, conversion, field/call, trait, parity, and tooling stages
-> are explicitly deferred. Revive this RFC after 0.1 when the production loader
-> carries authenticated package coordinates through dependency loading; stage 1
-> may not resume by reconstructing identity from aliases, paths, or display
-> names.
+> **2026-07-22 implementation resumed:** the backend-neutral descriptor and
+> checked-catalog foundation is retained, and the production compiler/PM loader
+> now carries authenticated root and dependency package coordinates through
+> checked linking. The user-visible `Dynamic` payload, conversion, field/call,
+> trait, parity, and tooling stages remain incomplete and may not reconstruct
+> identity from aliases, paths, or display names.
 
 ## Summary
 
@@ -209,12 +208,12 @@ declarations. It is retained by the authenticated checked-link APIs.
 pipeline-owned join point: catalog construction consumes only those retained
 owners, and legacy checked-link callers cannot add an ad hoc map later.
 Catalog mutation is crate-private, so descriptor consumers cannot construct one
-without successful type checking. The production package path does not yet
-supply the required ownership map: the self-hosted PM
-currently reduces a selected dependency to `--dep alias=path`, discarding its
-package name, version, and source before Rust loading. Until a richer loader
-contract carries those authenticated coordinates (including toolchain-owned
-std modules), catalog construction fails on a missing module owner rather than
+without successful type checking. The production package path supplies the
+required ownership map alongside `--dep alias=path`: the self-hosted PM emits
+explicit root/dependency owner records from workspace manifests and
+authenticated registry lock entries, the Rust loader propagates those owners
+through source discovery, and bundled std modules receive toolchain ownership.
+Missing, duplicate, conflicting, or extra owner records fail closed rather than
 deriving identity from an alias or filesystem path.
 
 ## Representation and failure invariants

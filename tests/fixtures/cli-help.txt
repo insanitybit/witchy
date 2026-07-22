@@ -15,7 +15,7 @@ USAGE:
     witchy caps-diff <old.witchy> <new.witchy>    fail if the footprint widened
     witchy which    <name>                        find a function in the standard library by (partial) name
     witchy doc     <file.witchy>...                generate stdlib documentation from doc-comments
-    witchy compile <entry.witchy> [--dep name=path]... [--out <file.wasm>]
+    witchy compile <entry.witchy> [--dep name=path]... [--package-owner source package version module] [--dep-owner alias source package version module]... [--out <file.wasm>]
                                                   compile to a standalone .wasm module
     witchy --release build --target trusted-exe [--out <file>]
                                                   build a trusted self-contained native application

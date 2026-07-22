@@ -2,6 +2,15 @@
 
 use witchy_syntax::{ast, format, linker, parser};
 use witchy_interp::{comptime, pipeline};
+use witchy_types::runtime_type::{
+    AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
+};
+
+#[derive(Clone, Debug)]
+pub(crate) struct AuthenticatedDependency {
+    pub path: std::path::PathBuf,
+    pub owner: ModuleLoadIdentity,
+}
 
 /// The current directory's project entry source file (`src/<module>.witchy`,
 /// where `<module>` is the manifest's rune name with `/`-prefixes stripped and
@@ -67,6 +76,35 @@ pub(crate) fn link_file_checked_with_deps(
             pipeline::PipelineError::Link(error) => error.to_string(),
             pipeline::PipelineError::Type(error) => format!("{path}: {error}"),
         })?;
+    Ok((checked, entry_stem))
+}
+
+pub(crate) fn link_file_checked_authenticated_with_deps(
+    path: &str,
+    deps: &std::collections::HashMap<String, AuthenticatedDependency>,
+    entry_owner: ModuleLoadIdentity,
+) -> Result<(pipeline::CheckedModule, String), String> {
+    let paths = deps
+        .iter()
+        .map(|(name, dep)| (name.clone(), dep.path.clone()))
+        .collect();
+    let dep_owners = deps
+        .iter()
+        .map(|(name, dep)| (name.clone(), dep.owner.clone()))
+        .collect();
+    let (modules, entry_stem, user_modules, owners) =
+        load_file_modules_authenticated(path, &paths, entry_owner, &dep_owners)?;
+    let checked = pipeline::link_checked_authenticated_with_user_modules(
+        modules,
+        &entry_stem,
+        &user_modules,
+        owners,
+    )
+    .map_err(|error| match error {
+        pipeline::PipelineError::Ownership(error) => format!("{path}: {error}"),
+        pipeline::PipelineError::Link(error) => error.to_string(),
+        pipeline::PipelineError::Type(error) => format!("{path}: {error}"),
+    })?;
     Ok((checked, entry_stem))
 }
 
@@ -157,6 +195,138 @@ fn load_file_modules(
     Ok((modules, entry_stem, user_modules))
 }
 
+fn load_file_modules_authenticated(
+    path: &str,
+    deps: &std::collections::HashMap<String, std::path::PathBuf>,
+    entry_owner: ModuleLoadIdentity,
+    dep_owners: &std::collections::HashMap<String, ModuleLoadIdentity>,
+) -> Result<(SourceModules, String, UserModuleSet, AuthenticatedModuleOwners), String> {
+    use std::collections::{HashSet, VecDeque};
+    use std::path::{Path, PathBuf};
+
+    let entry_path = Path::new(path);
+    let entry_dir = entry_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let entry_stem = entry_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| format!("invalid file name: {path}"))?
+        .to_string();
+
+    for name in deps.keys() {
+        if !dep_owners.contains_key(name) {
+            return Err(format!(
+                "authenticated dependency `{name}` is missing loader ownership"
+            ));
+        }
+    }
+    if let Some(name) = dep_owners.keys().find(|name| !deps.contains_key(*name)) {
+        return Err(format!(
+            "loader ownership was supplied for unknown dependency `{name}`"
+        ));
+    }
+
+    let mut modules = Vec::new();
+    let mut loaded = HashSet::new();
+    let mut user_modules = HashSet::new();
+    let mut assignments = Vec::new();
+    let mut queue: VecDeque<(String, PathBuf, ModuleLoadIdentity)> = VecDeque::new();
+    queue.push_back((entry_stem.clone(), entry_path.to_path_buf(), entry_owner));
+
+    while let Some((name, module_path, proposed_owner)) = queue.pop_front() {
+        if !loaded.insert(name.clone()) {
+            continue;
+        }
+        let (source, owner) = match std::fs::read_to_string(&module_path) {
+            Ok(source) => {
+                if bundled_module(&name) == Some(source.as_str()) {
+                    (source, toolchain_module_owner(&name)?)
+                } else {
+                    user_modules.insert(name.clone());
+                    (source, proposed_owner)
+                }
+            }
+            Err(error) => match bundled_module(&name) {
+                Some(source) => (source.to_string(), toolchain_module_owner(&name)?),
+                None => {
+                    let hint = if name != entry_stem {
+                        witchy_syntax::linker::closest_std_module(&name)
+                            .map(|module| format!(" — did you mean `import {module}`?"))
+                            .unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    return Err(format!(
+                        "cannot read `{}`: {error}{hint}",
+                        module_path.display()
+                    ));
+                }
+            },
+        };
+        assignments.push((name.clone(), owner.clone()));
+        let module = parser::parse_module(&source).map_err(|error| format!("{name}: {error}"))?;
+        for import in &module.imports {
+            if loaded.contains(import) {
+                continue;
+            }
+            if let Some(dep_path) = deps.get(import) {
+                let dep_owner = dep_owners.get(import).cloned().ok_or_else(|| {
+                    format!("authenticated dependency `{import}` is missing loader ownership")
+                })?;
+                queue.push_back((import.clone(), dep_path.clone(), dep_owner));
+                continue;
+            }
+            if bundled_module(import).is_some() {
+                queue.push_back((
+                    import.clone(),
+                    entry_dir.join(format!("{import}.witchy")),
+                    toolchain_module_owner(import)?,
+                ));
+                continue;
+            }
+            let sibling = module_path
+                .parent()
+                .unwrap_or(entry_dir)
+                .join(format!("{import}.witchy"));
+            queue.push_back((
+                import.clone(),
+                sibling,
+                sibling_module_owner(&owner, import)?,
+            ));
+        }
+        modules.push((name, module));
+    }
+
+    for module in witchy_syntax::linker::STD_MODULES {
+        assignments.push((module.to_string(), toolchain_module_owner(module)?));
+    }
+    let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)
+        .map_err(|error| error.to_string())?;
+    Ok((modules, entry_stem, user_modules, owners))
+}
+
+fn toolchain_module_owner(module: &str) -> Result<ModuleLoadIdentity, String> {
+    let package = PackageCoordinate::new(
+        PackageSource::Toolchain,
+        "witchy/std",
+        env!("CARGO_PKG_VERSION"),
+    )
+    .map_err(|error| error.to_string())?;
+    ModuleLoadIdentity::new(package, ["std", module]).map_err(|error| error.to_string())
+}
+
+fn sibling_module_owner(
+    owner: &ModuleLoadIdentity,
+    module: &str,
+) -> Result<ModuleLoadIdentity, String> {
+    let mut path = owner.module_path().to_vec();
+    path.pop();
+    path.push(module.to_string());
+    ModuleLoadIdentity::new(owner.package().clone(), path).map_err(|error| error.to_string())
+}
+
 pub(crate) fn expand_file_source(path: &str) -> Result<String, String> {
     let (mut modules, entry_stem, _) =
         load_file_modules(path, &std::collections::HashMap::new())?;
@@ -187,7 +357,13 @@ pub(crate) fn linked_has_main(linked: &ast::Module) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::expand_file_source;
+    use super::{
+        expand_file_source, link_file_checked_authenticated_with_deps,
+        AuthenticatedDependency,
+    };
+    use witchy_types::runtime_type::{
+        DeclarationKind, ModuleLoadIdentity, PackageCoordinate, PackageSource,
+    };
 
     fn unique_dir(name: &str) -> std::path::PathBuf {
         let nanos = std::time::SystemTime::now()
@@ -217,6 +393,66 @@ mod tests {
         assert!(!expanded.contains("comptime:"), "{expanded}");
         assert!(expanded.contains("pub fn generated() -> Int:\n    42\n"), "{expanded}");
         assert!(expanded.contains("fn main(console: Console):"), "{expanded}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn authenticated_file_loader_retains_package_coordinates() {
+        let dir = unique_dir("authenticated_loader");
+        let app_src = dir.join("app/src");
+        let dep_src = dir.join("vendor/model/src");
+        std::fs::create_dir_all(&app_src).unwrap();
+        std::fs::create_dir_all(&dep_src).unwrap();
+        let entry = app_src.join("app.witchy");
+        let dependency = dep_src.join("model.witchy");
+        std::fs::write(
+            &entry,
+            "import model\n\ntype Local:\n    Local\n\nfn accept(value: model.User) -> model.User:\n    value\n",
+        )
+        .unwrap();
+        std::fs::write(&dependency, "type User:\n    User\n").unwrap();
+
+        let app_package = PackageCoordinate::new(
+            PackageSource::Workspace,
+            "example/app",
+            "0.1.0",
+        )
+        .unwrap();
+        let dep_package = PackageCoordinate::new(
+            PackageSource::Registry("coven-root-key".into()),
+            "acme/model",
+            "1.2.3",
+        )
+        .unwrap();
+        let app_owner =
+            ModuleLoadIdentity::new(app_package.clone(), ["src", "app"]).unwrap();
+        let dep_owner =
+            ModuleLoadIdentity::new(dep_package.clone(), ["src", "model"]).unwrap();
+        let deps = std::collections::HashMap::from([(
+            "model".to_string(),
+            AuthenticatedDependency { path: dependency, owner: dep_owner },
+        )]);
+
+        let (checked, _) = link_file_checked_authenticated_with_deps(
+            entry.to_str().unwrap(),
+            &deps,
+            app_owner,
+        )
+        .expect("authenticated checked link");
+        let catalog = checked
+            .runtime_declaration_catalog()
+            .expect("runtime declaration catalog");
+        let local = catalog
+            .resolve("app.Local", DeclarationKind::Type)
+            .expect("application declaration");
+        let user = catalog
+            .resolve("model.User", DeclarationKind::Type)
+            .expect("dependency declaration");
+        assert_eq!(local.package(), &app_package);
+        assert_eq!(local.module(), &["src".to_string(), "app".to_string()]);
+        assert_eq!(user.package(), &dep_package);
+        assert_eq!(user.module(), &["src".to_string(), "model".to_string()]);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

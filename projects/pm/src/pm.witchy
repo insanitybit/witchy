@@ -538,7 +538,14 @@ fn project_entry(root: Dir, dir: String) -> Option(String):
 // a sibling-library workspace builds without vendoring. Path wins when both are
 // present (the manifest is the source of truth for a path dep).
 fn dep_flags(root: Dir, dir: String) -> Result(List(String), LockIntegrityError):
-    collect_deps(root, dir, [])
+    let manifest_path = join_path(dir, "witchy.toml")
+    if !root.exists(manifest_path):
+        Err(LockEntryMalformed("project has no witchy.toml for authenticated package ownership"))
+    else:
+        let manifest = root.read(manifest_path)
+        let name = required_manifest_coordinate(manifest, "rune.name")?
+        let version = required_manifest_coordinate(manifest, "rune.version")?
+        collect_deps(root, dir, package_owner_flag([], "workspace", name, version, module_name(name)))
 
 // Accumulate `--dep` flags for the rune at `dir` and, recursively, the path
 // dependencies it declares — skipping any already present so the graph is walked
@@ -554,6 +561,11 @@ fn collect_deps(root: Dir, dir: String, flags: List(String)) -> Result(List(Stri
     let lockpath = join_path(dir, "witchy.lock")
     if root.exists(lockpath):
         let lock = root.read(lockpath)
+        let rootpub: String = match pinned_registry_trust(lock):
+            Err(e) -> return Err(LockEntryMalformed(lock_pin_error_message(e)))
+            Ok(None) -> ""
+            Ok(Some(trust)) -> trust.1
+
         for entry in lock_rune_entries(lock)?:
             // The import key is the local alias (basename), distinct from the lock's
             // registry identity `name` (BUG-099). Old-format locks have no `alias`,
@@ -561,7 +573,11 @@ fn collect_deps(root: Dir, dir: String, flags: List(String)) -> Result(List(Stri
             let alias = entry_alias(entry)
             if entry_is_registry(entry) && !alias.is_empty() && !has_dep(acc, alias):
                 if let Some(src) = vendored_module(root, dir, alias):
-                    acc = dep_flag(acc, alias, src)
+                    if rootpub.is_empty():
+                        return Err(LockRootKeyMissing)
+                    let package = required_lock_field(entry, "name")?
+                    let version = required_lock_field(entry, "version")?
+                    acc = dep_flag_owned(acc, alias, src, "registry:${rootpub}", package, version, module_name(package))
     Ok(acc)
 
 // Append a `--dep <name>=<path>` for a manifest path dependency (no-op otherwise),
@@ -582,10 +598,11 @@ fn push_path_dep(root: Dir, dir: String, flags: List(String), pair: (String, Str
             // error names the actual broken dependency directory.
             Some(rel) ->
                 let dep_dir = normalize_path(join_path(dir, rel))
+                let owner = workspace_dependency_owner(root, dep_dir)?
                 match module_in_src(root, dep_dir):
-                    Some(src) -> collect_deps(root, dep_dir, dep_flag(flags, name, src))
+                    Some(src) -> collect_deps(root, dep_dir, dep_flag_owned(flags, name, src, owner.0, owner.1, owner.2, owner.3))
                     None ->
-                        Ok(dep_flag(flags, name, conventional_entry(dep_dir, name)))
+                        Ok(dep_flag_owned(flags, name, conventional_entry(dep_dir, name), owner.0, owner.1, owner.2, owner.3))
             None -> Ok(flags)
 
 fn dep_flag(flags: List(String), name: String, src: String) -> List(String):
@@ -593,6 +610,60 @@ fn dep_flag(flags: List(String), name: String, src: String) -> List(String):
     out.push("--dep")
     out.push("${name}=${src}")
     out
+
+fn package_owner_flag(flags: List(String), source: String, package: String, version: String, module: String) -> List(String):
+    var out = flags
+    out.push("--package-owner")
+    out.push(source)
+    out.push(package)
+    out.push(version)
+    out.push(module)
+    out
+
+fn dep_flag_owned(flags: List(String), alias: String, src: String, source: String, package: String, version: String, module: String) -> List(String):
+    var out = dep_flag(flags, alias, src)
+    out.push("--dep-owner")
+    out.push(alias)
+    out.push(source)
+    out.push(package)
+    out.push(version)
+    out.push(module)
+    out
+
+fn required_manifest_coordinate(manifest: String, path: String) -> Result(String, LockIntegrityError):
+    match toml.get(manifest, path):
+        Some(value) ->
+            if value.is_empty():
+                Err(LockEntryMalformed("manifest `${path}` is empty"))
+            else:
+                Ok(value)
+        None -> Err(LockEntryMalformed("manifest is missing `${path}`"))
+
+fn workspace_dependency_owner(root: Dir, dep_dir: String) -> Result((String, String, String, String), LockIntegrityError):
+    let manifest_path = join_path(dep_dir, "witchy.toml")
+    if !root.exists(manifest_path):
+        Err(LockEntryMalformed("path dependency `${dep_dir}` has no witchy.toml for authenticated ownership"))
+    else:
+        let manifest = root.read(manifest_path)
+        let package = required_manifest_coordinate(manifest, "rune.name")?
+        let version = required_manifest_coordinate(manifest, "rune.version")?
+        Ok(("workspace", package, version, module_name(package)))
+
+fn dependency_owner(root: Dir, dir: String, alias: String, depdir: String) -> Result((String, String, String), LockIntegrityError):
+    let lockpath = join_path(dir, "witchy.lock")
+    if root.exists(lockpath):
+        let lock = root.read(lockpath)
+        for entry in lock_rune_entries(lock)?:
+            if entry_is_registry(entry) && entry_alias(entry) == alias:
+                let rootpub = match pinned_registry_trust(lock):
+                    Err(e) -> return Err(LockEntryMalformed(lock_pin_error_message(e)))
+                    Ok(None) -> return Err(LockRootKeyMissing)
+                    Ok(Some(trust)) -> trust.1
+
+                return Ok(("registry:${rootpub}", required_lock_field(entry, "name")?, required_lock_field(entry, "version")?))
+
+    let owner = workspace_dependency_owner(root, depdir)?
+    Ok((owner.0, owner.1, owner.2))
 
 // Whether a `--dep <name>=...` flag is already present.
 fn has_dep(flags: List(String), name: String) -> Bool:
@@ -796,6 +867,12 @@ fn audit_then_flags(console: Console, root: Dir, dir: String, name: String, depd
             return (1, [])
         Ok(caps) -> caps
 
+    let owner = match dependency_owner(root, dir, name, depdir):
+        Err(e) ->
+            console.print(lock_integrity_error_message(e))
+            return (1, [])
+        Ok(value) -> value
+
     var generated = []
     var flags = []
     for f in root.subtree(gendir).list():
@@ -809,7 +886,8 @@ fn audit_then_flags(console: Console, root: Dir, dir: String, name: String, depd
 
             for c in caps:
                 generated = add_unique(generated, c)
-            flags = dep_flag(flags, module_stem(f), path)
+            let module = module_stem(f)
+            flags = dep_flag_owned(flags, module, path, owner.0, owner.1, owner.2, module)
     let widened = rights.uncovered(shipped, generated)
     if list.length(widened) > 0:
         console.print("`${name}`'s build step generated source that WIDENS its footprint (+ ${list.join(widened, ", ")}) beyond the locked baseline — refusing. Generated code is still code; it cannot smuggle in authority the version was not accepted with.")

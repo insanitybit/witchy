@@ -7,6 +7,10 @@ use witchy_interp::pipeline;
 use witchy_types::typeck;
 use witchy_wir::wir;
 use crate::{link_file, link_file_checked, link_file_checked_with_deps};
+use crate::source::{
+    link_file_checked_authenticated_with_deps, AuthenticatedDependency,
+};
+use witchy_types::runtime_type::{ModuleLoadIdentity, PackageCoordinate, PackageSource};
 
 pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
     // `witchy compile <entry> [--dep name=path]... [--out <file.wasm>]` links the
@@ -18,6 +22,9 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
         let mut entry: Option<String> = None;
         let mut deps: std::collections::HashMap<String, std::path::PathBuf> =
             std::collections::HashMap::new();
+        let mut dep_owners: std::collections::HashMap<String, ModuleLoadIdentity> =
+            std::collections::HashMap::new();
+        let mut package_owner: Option<ModuleLoadIdentity> = None;
         let mut out: Option<String> = None;
         let mut target = "wasm".to_string();
         let mut manifest: Option<String> = None;
@@ -36,6 +43,36 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
                         std::process::exit(1);
                     }
                 },
+                "--package-owner" => match parse_module_owner(&mut argv, "--package-owner") {
+                    Ok(owner) if package_owner.is_none() => package_owner = Some(owner),
+                    Ok(_) => {
+                        eprintln!("--package-owner may be supplied only once");
+                        std::process::exit(1);
+                    }
+                    Err(error) => {
+                        eprintln!("{error}");
+                        std::process::exit(1);
+                    }
+                },
+                "--dep-owner" => {
+                    let Some(alias) = argv.next() else {
+                        eprintln!("--dep-owner needs alias source package version module");
+                        std::process::exit(1);
+                    };
+                    match parse_module_owner(&mut argv, "--dep-owner") {
+                        Ok(owner) => {
+                            if dep_owners.contains_key(&alias) {
+                                eprintln!("--dep-owner for `{alias}` was supplied more than once");
+                                std::process::exit(1);
+                            }
+                            dep_owners.insert(alias, owner);
+                        }
+                        Err(error) => {
+                            eprintln!("{error}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
                 "--out" => match argv.next() {
                     Some(f) => out = Some(f),
                     None => {
@@ -69,12 +106,40 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
         }
         let Some(entry) = entry else {
             eprintln!(
-                "usage: witchy compile <entry.witchy> [--dep name=path]... [--target wasm|trusted-exe] [--manifest witchy.toml] [--out <file>]"
+                "usage: witchy compile <entry.witchy> [--dep name=path]... [--package-owner source package version module] [--dep-owner alias source package version module]... [--target wasm|trusted-exe] [--manifest witchy.toml] [--out <file>]"
             );
             std::process::exit(1);
         };
         let result = (|| -> Result<(), String> {
-            let (checked, stem) = link_file_checked_with_deps(&entry, &deps)?;
+            let (checked, stem) = if package_owner.is_some() || !dep_owners.is_empty() {
+                let package_owner = package_owner.ok_or_else(|| {
+                    "authenticated dependency ownership requires --package-owner".to_string()
+                })?;
+                let authenticated = deps
+                    .iter()
+                    .map(|(alias, path)| {
+                        let owner = dep_owners.get(alias).cloned().ok_or_else(|| {
+                            format!("dependency `{alias}` is missing --dep-owner metadata")
+                        })?;
+                        Ok((
+                            alias.clone(),
+                            AuthenticatedDependency { path: path.clone(), owner },
+                        ))
+                    })
+                    .collect::<Result<std::collections::HashMap<_, _>, String>>()?;
+                if let Some(alias) = dep_owners.keys().find(|alias| !deps.contains_key(*alias)) {
+                    return Err(format!(
+                        "--dep-owner was supplied for unknown dependency `{alias}`"
+                    ));
+                }
+                link_file_checked_authenticated_with_deps(
+                    &entry,
+                    &authenticated,
+                    package_owner,
+                )?
+            } else {
+                link_file_checked_with_deps(&entry, &deps)?
+            };
             let linked = checked.module();
             enforce_performance_modes(linked, &stem)?;
             let bytes = compile_checked_to_wasm(&checked)?;
@@ -132,6 +197,40 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
         }
     }
     Ok(false)
+}
+
+fn parse_module_owner(
+    argv: &mut impl Iterator<Item = String>,
+    flag: &str,
+) -> Result<ModuleLoadIdentity, String> {
+    let source = argv
+        .next()
+        .ok_or_else(|| format!("{flag} needs source package version module"))?;
+    let package = argv
+        .next()
+        .ok_or_else(|| format!("{flag} needs source package version module"))?;
+    let version = argv
+        .next()
+        .ok_or_else(|| format!("{flag} needs source package version module"))?;
+    let module = argv
+        .next()
+        .ok_or_else(|| format!("{flag} needs source package version module"))?;
+    let source = match source.as_str() {
+        "toolchain" => PackageSource::Toolchain,
+        "workspace" => PackageSource::Workspace,
+        value if value.starts_with("registry:") && value.len() > "registry:".len() => {
+            PackageSource::Registry(value["registry:".len()..].to_string())
+        }
+        _ => {
+            return Err(format!(
+                "{flag} source must be `toolchain`, `workspace`, or `registry:<identity>`"
+            ))
+        }
+    };
+    let package = PackageCoordinate::new(source, package, version)
+        .map_err(|error| format!("{flag}: {error}"))?;
+    let module_path: Vec<&str> = module.split('.').collect();
+    ModuleLoadIdentity::new(package, module_path).map_err(|error| format!("{flag}: {error}"))
 }
 
 pub(crate) fn run_emit() -> bool {

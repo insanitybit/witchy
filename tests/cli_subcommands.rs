@@ -225,6 +225,68 @@ fn crypto_verify_malformed_inputs_are_result_errors() {
 // `check` rejects it; every other compile-ish path must too.
 const BAD_OPT: &str = "mode opt\n\nfn helper(xs: List(Int)) -> Int:\n    var acc = 0\n    for x in xs:\n        acc = acc + x\n    acc\n\nfn main(console: Console):\n    console.print(\"sum: ${helper([1, 2, 3])}\")\n";
 
+#[test]
+fn compile_accepts_complete_authenticated_package_owners() {
+    let dir = workdir("authenticated-package-owners");
+    let entry = write(
+        &dir,
+        "app.witchy",
+        "import model\n\nfn main(console: Console):\n    console.print(\"${model.answer()}\")\n",
+    );
+    let dependency = write(&dir, "model.witchy", "pub fn answer() -> Int:\n    42\n");
+    let wasm = dir.join("app.wasm");
+    let dep_arg = format!("model={dependency}");
+    let out = Command::new(BIN)
+        .args([
+            "compile",
+            &entry,
+            "--dep",
+            &dep_arg,
+            "--package-owner",
+            "workspace",
+            "example/app",
+            "0.1.0",
+            "src.app",
+            "--dep-owner",
+            "model",
+            "registry:test-root-key",
+            "acme/model",
+            "1.2.3",
+            "src.model",
+            "--out",
+            wasm.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "authenticated compile failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(wasm.exists());
+
+    let missing = Command::new(BIN)
+        .args([
+            "compile",
+            &entry,
+            "--dep",
+            &dep_arg,
+            "--package-owner",
+            "workspace",
+            "example/app",
+            "0.1.0",
+            "src.app",
+        ])
+        .output()
+        .unwrap();
+    assert!(!missing.status.success());
+    assert!(
+        String::from_utf8_lossy(&missing.stderr).contains("missing --dep-owner"),
+        "{}",
+        String::from_utf8_lossy(&missing.stderr)
+    );
+}
+
 // ---- BUG-104 / BUG-106: compiled `.wasm` artifact launch ----
 
 #[test]
