@@ -314,6 +314,7 @@ fn run_tests_in_module(
                 Vec::new(),
                 true,
                 true,
+                witchy_confinement::EnforcementMode::Disabled,
             )
             .map(|_| ())
         } else {

@@ -53,6 +53,52 @@ fn sandbox_dir_requires_explicit_grant() {
     sandbox::sandbox_dir_requires_explicit_grant();
 }
 
+/// RFC-0103: the strict sandbox launcher arms native outer confinement after
+/// resolving grants, while the convenient development launcher deliberately
+/// leaves process-wide confinement disabled.
+#[test]
+fn strict_sandbox_arms_outer_confinement_but_dev_run_does_not() {
+    let dir = unique("outer-confinement");
+    let source = dir.join("main.witchy");
+    std::fs::write(dir.join("data.txt"), "confined").unwrap();
+    std::fs::write(
+        &source,
+        "fn main(console: Console, root: Dir[Read]):\n    console.print(root.read(\"data.txt\"))\n",
+    )
+    .unwrap();
+
+    let strict = Command::new(BIN)
+        .args(["sandbox", "--dir", dir.to_str().unwrap(), source.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        strict.status.success(),
+        "strict launch failed: out={} err={}",
+        stdout(&strict),
+        stderr(&strict)
+    );
+    assert!(
+        stderr(&strict).contains("confinement:"),
+        "strict launch did not report its outer confinement status: {}",
+        stderr(&strict)
+    );
+
+    let dev = Command::new(BIN).current_dir(&dir).arg(&source).output().unwrap();
+    assert!(
+        dev.status.success(),
+        "development launch failed: out={} err={}",
+        stdout(&dev),
+        stderr(&dev)
+    );
+    assert!(
+        !stderr(&dev).contains("confinement:"),
+        "development launch unexpectedly armed process-wide confinement: {}",
+        stderr(&dev)
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// RFC-0077 rider 2: authority-free mock constructors are a `witchy test`
 /// privilege, not a generally available way to mint capability-shaped values.
 /// Pin every production entry that can otherwise reach linking or comptime.

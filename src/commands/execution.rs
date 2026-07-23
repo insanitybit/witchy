@@ -330,6 +330,7 @@ pub(crate) fn run_linked_compiled(
     user_cap_fields: Vec<Vec<String>>,
     strict_dir: bool,
     test_mocks: bool,
+    confinement: witchy_confinement::EnforcementMode,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     run_compiled(
         linked,
@@ -346,6 +347,7 @@ pub(crate) fn run_linked_compiled(
         user_cap_fields,
         strict_dir,
         test_mocks,
+        confinement,
     )
 }
 
@@ -379,6 +381,7 @@ pub(crate) fn run_checked_compiled(
         user_cap_fields,
         strict_dir,
         test_mocks,
+        witchy_confinement::EnforcementMode::Disabled,
     )
 }
 
@@ -398,6 +401,7 @@ fn run_compiled(
     user_cap_fields: Vec<Vec<String>>,
     strict_dir: bool,
     test_mocks: bool,
+    confinement: witchy_confinement::EnforcementMode,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     // Install the compiler-service natives (compiler.footprint/diff/doc),
     // which live above the runtime kernel in witchy-interp. This is THE compiled
@@ -545,6 +549,7 @@ fn run_compiled(
         Some(wasm) => wasm,
         None => commands::compile::compile_linked_to_wasm_cached(linked)?,
     };
+    commands::confinement::arm(&caps, confinement)?;
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
     let mut vm = rt
         .spawn(&wasm, caps, RUN_MEMORY_PAGES)

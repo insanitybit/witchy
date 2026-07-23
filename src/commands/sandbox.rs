@@ -77,6 +77,7 @@ pub(crate) fn run_file_sandboxed(
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<runtime::SecretGrant>,
+    confinement: witchy_confinement::EnforcementMode,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     let (linked, stem) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
@@ -101,7 +102,7 @@ pub(crate) fn run_file_sandboxed(
         "sandboxing `{path}` \u{2014} granted exactly: {}",
         capabilities::show_caps(&grant)
     );
-    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, fetch_origins, None, None, args, signing_key, named_secrets, Vec::new(), true, false)
+    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, fetch_origins, None, None, args, signing_key, named_secrets, Vec::new(), true, false, confinement)
 }
 
 /// Resolve a `[secrets]` entry's `from = "env:VAR"` to the secret bytes the host
@@ -120,6 +121,7 @@ pub(crate) fn run_file_grants(
     grants_path: &str,
     accept_grants: bool,
     args: Vec<String>,
+    confinement: witchy_confinement::EnforcementMode,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     use std::io::IsTerminal;
     let (linked, stem) = link_file(path)?;
@@ -335,5 +337,5 @@ pub(crate) fn run_file_grants(
     }
     // Secrets reach the program by name through the `SecretStore` (`require`/`get`);
     // the bare root `Secret` (`--signing-key`) is not granted via documents here.
-    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, fetch_origins, env_allow, exec_allow, args, None, named_secrets, user_cap_fields, true, false)
+    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, fetch_origins, env_allow, exec_allow, args, None, named_secrets, user_cap_fields, true, false, confinement)
 }

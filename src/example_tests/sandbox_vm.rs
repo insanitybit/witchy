@@ -174,6 +174,7 @@ use crate::{codegen, interpreter, parser, typeck};
             vec!["../secret.txt".to_string()],
             None,
             Vec::new(),
+            witchy_confinement::EnforcementMode::Disabled,
         )
         .expect_err("a `..` traversal must be denied");
         assert!(

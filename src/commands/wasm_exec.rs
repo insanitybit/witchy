@@ -59,9 +59,10 @@ pub(crate) fn run_wasm_file(
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<runtime::SecretGrant>,
     strict_dir: bool,
+    confinement: witchy_confinement::EnforcementMode,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
-    run_wasm_module(&bytes, dir_roots, file_grants, net_allow, fetch_origins, args, signing_key, named_secrets, strict_dir)
+    run_wasm_module(&bytes, dir_roots, file_grants, net_allow, fetch_origins, args, signing_key, named_secrets, strict_dir, confinement)
 }
 
 /// Detect, from a compiled wasm program, whether its `main` returns an `Int` — so
@@ -140,6 +141,7 @@ pub(crate) fn run_wasm_module(
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<runtime::SecretGrant>,
     strict_dir: bool,
+    confinement: witchy_confinement::EnforcementMode,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     use crate::runtime::Capabilities;
     use witchy_wir::wir_prelude::{abi_import_uses_authority, AbiImportAuthority as Authority};
@@ -249,7 +251,7 @@ pub(crate) fn run_wasm_module(
         }
         caps.secrets.extend(named_secrets);
     }
-    run_prepared_wasm(bytes, caps)
+    run_prepared_wasm(bytes, caps, confinement)
 }
 
 /// Run the application embedded in this process with only its checked target
@@ -296,7 +298,11 @@ pub(crate) fn run_trusted_application(
         secrets: resolved.secrets,
         ..Default::default()
     };
-    let (lines, exit) = run_prepared_wasm(&application.wasm, caps)?;
+    let (lines, exit) = run_prepared_wasm(
+        &application.wasm,
+        caps,
+        witchy_confinement::EnforcementMode::BestEffort,
+    )?;
     for line in lines {
         println!("{line}");
     }
@@ -306,7 +312,9 @@ pub(crate) fn run_trusted_application(
 pub(crate) fn run_prepared_wasm(
     bytes: &[u8],
     caps: runtime::Capabilities,
+    confinement: witchy_confinement::EnforcementMode,
 ) -> Result<(Vec<String>, Option<i32>), String> {
+    crate::commands::confinement::arm(&caps, confinement)?;
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
     let mut vm = rt
         .spawn(bytes, caps, RUN_MEMORY_PAGES)

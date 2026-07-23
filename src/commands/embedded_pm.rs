@@ -110,7 +110,7 @@ pub(crate) fn run_embedded_pm(raw: Vec<String>) -> ! {
     // `run_wasm_module` grants exactly the same authority (Dir grant ordinal 0 =
     // cwd, ordinal 1 = bin so `Exec` finds the compiler) and surfaces `main`'s
     // `Int` exit code.
-    match commands::wasm_exec::run_wasm_module(&wasm, vec![cwd, bin], Vec::new(), net_allow, Vec::new(), pm_args, None, Vec::new(), false) {
+    match commands::wasm_exec::run_wasm_module(&wasm, vec![cwd, bin], Vec::new(), net_allow, Vec::new(), pm_args, None, Vec::new(), false, witchy_confinement::EnforcementMode::Disabled) {
         Ok((lines, code)) => {
             for l in &lines {
                 println!("{l}");

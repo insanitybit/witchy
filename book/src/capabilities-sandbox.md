@@ -120,6 +120,14 @@ cannot redirect an operation. Writes also refuse a symlink leaf. The interpreter
 and compiled host carry the same `ConfinedDir`/`ConfinedFile` objects, so this
 security boundary is shared rather than reimplemented for parity.
 
+Strict `witchy sandbox` launches also derive an outer native policy from those
+same resolved grants immediately before guest execution. Linux hosts apply
+Landlock filesystem and TCP restrictions when the running kernel supports them;
+other hosts report the layer as unavailable and continue in best-effort mode.
+Each strict launch prints the provider and enforcement status on stderr. Ordinary
+development runs and reusable embedded runtimes do not arm irreversible
+process-wide policy, because their process may need to host more than one guest.
+
 Executable selection uses descriptor execution or an already-open private
 snapshot. On macOS, platform binaries may instead use a path only after Witchy
 verifies that its opened identity still matches and that every ancestor is

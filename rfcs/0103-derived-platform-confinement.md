@@ -338,15 +338,17 @@ the served app is the input it should derive from).
    Evidence includes deterministic parent replacement, retained-authority,
    lexical escape, symlink-leaf write, interpreter traversal, compiled-exec
    parity, and browser-target compile regressions.
-2. **In progress**: `witchy-confinement` owns the normalized filesystem,
+2. **Implemented**: `witchy-confinement` owns the normalized filesystem,
    network, Fetch-origin, and syscall-class policy, and
    `Capabilities::confinement_policy` is the only concrete-grant derivation.
    Empty grants remain distinct from absent authority and unexpressible
    transports are explicit. The Linux provider uses safe `landlock` APIs,
    best-effort or hard compatibility, separate filesystem/TCP rulesets, and
-   Linux-gated host-bypass violation harnesses. Next, the CLI host and
-   trusted-exe launcher must arm that provider after grant resolution but before
-   guest execution;
+   Linux-gated host-bypass violation harnesses. Strict CLI sandbox and
+   trusted-exe launchers arm that provider after grant resolution but before
+   guest execution; reusable runtimes, development runs, parity, tests, servers,
+   and in-process build orchestration explicitly leave irreversible process-wide
+   policy disabled;
    evidence: a violation harness that deliberately bypasses the host layer
    in a test build and asserts the kernel denies (the fence catches a
    simulated host bug), plus the full differential suite green under the

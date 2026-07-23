@@ -1096,6 +1096,7 @@ fn yes(b: Bool) -> String:
             vec!["data.txt".to_string()],
             None,
             Vec::new(),
+            witchy_confinement::EnforcementMode::Disabled,
         )
         .expect("sandbox run");
         assert_eq!(out, vec![format!("{host_path}: needle in here")]);

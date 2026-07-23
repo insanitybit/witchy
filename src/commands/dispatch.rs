@@ -602,13 +602,19 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                 eprintln!("--grants applies to a `.witchy` not a precompiled `.wasm`");
                 std::process::exit(1);
             }
-            commands::sandbox::run_file_grants(&path, &doc, accept_grants, prog_args)
+            commands::sandbox::run_file_grants(
+                &path,
+                &doc,
+                accept_grants,
+                prog_args,
+                witchy_confinement::EnforcementMode::BestEffort,
+            )
         } else if path.ends_with(".wasm") {
             // `sandbox` is the strict path: a `Dir`-importing artifact needs an
             // explicit `--dir` (BUG-106), just like the source form.
-            commands::wasm_exec::run_wasm_file(&path, dir_roots, file_grants, net_allow, fetch_origins, prog_args, signing_key, named_secrets, true)
+            commands::wasm_exec::run_wasm_file(&path, dir_roots, file_grants, net_allow, fetch_origins, prog_args, signing_key, named_secrets, true, witchy_confinement::EnforcementMode::BestEffort)
         } else {
-            commands::sandbox::run_file_sandboxed(&path, dir_roots, file_grants, net_allow, fetch_origins, prog_args, signing_key, named_secrets)
+            commands::sandbox::run_file_sandboxed(&path, dir_roots, file_grants, net_allow, fetch_origins, prog_args, signing_key, named_secrets, witchy_confinement::EnforcementMode::BestEffort)
         };
         match result {
             Ok((lines, exit_code)) => {
@@ -835,7 +841,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
             Some(path) if path.ends_with(".wasm") => {
                 // Dev run: default a `Dir` to the cwd (not strict) — the convenience
                 // the source `witchy <file>` run keeps.
-                match commands::wasm_exec::run_wasm_file(path, Vec::new(), Vec::new(), net_allow, fetch_origins, prog_args, signing_key, named_secrets, false) {
+                match commands::wasm_exec::run_wasm_file(path, Vec::new(), Vec::new(), net_allow, fetch_origins, prog_args, signing_key, named_secrets, false, witchy_confinement::EnforcementMode::Disabled) {
                     Ok((lines, code)) => {
                         for line in lines {
                             println!("{line}");

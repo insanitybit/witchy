@@ -110,6 +110,11 @@ fn main(console: Console, cwd: Dir[Read], root: Dir[Read], env: Env, args: List(
             .args(["inside.txt", "--dir", "belongs-to-app"]),
     );
     assert_eq!(relative.status.code(), Some(23), "stderr: {}", stderr(&relative));
+    assert!(
+        stderr(&relative).contains("confinement:"),
+        "trusted executable did not report outer confinement: {}",
+        stderr(&relative)
+    );
     assert_eq!(
         stdout(&relative),
         "relative:cwd-data\nenv:inherited\nargv:inside.txt|--dir|belongs-to-app\n"

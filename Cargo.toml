@@ -63,6 +63,7 @@ native = ["dep:wasmtime", "dep:lsp-server", "dep:serde_json", "dep:serde", "dep:
 # Stage-aligned crates extracted from the monolith (RFC-0018). Re-exported from
 # lib.rs so existing `crate::{ast,lexer,parser,wir,…}::…` paths keep resolving.
 witchy-caps = { path = "crates/witchy-caps" }
+witchy-confinement = { path = "crates/witchy-confinement" }
 witchy-interp = { path = "crates/witchy-interp" }
 witchy-lower = { path = "crates/witchy-lower" }
 witchy-runtime = { path = "crates/witchy-runtime" }
