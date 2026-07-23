@@ -112,8 +112,12 @@ creates the root reference from a launch grant; operations such as `subtree`,
 objects as new references.
 
 Path confinement uses the same rules as the interpreter: `..` is rejected,
-absolute paths are rejected, and symlinks that escape the subtree are rejected —
-checked host-side, where the program can't interfere.
+absolute paths are rejected, and symlinks that escape the subtree are rejected,
+all checked host-side. On native Unix hosts, reads, writes, and appends also open
+the final path component with `O_NOFOLLOW`. That closes a concurrent swap of the
+checked leaf file for a symlink before it is opened. Parent path components are
+still checked with canonicalize-then-open; a concurrent local attacker can race
+those components until descriptor-anchored resolution from RFC-0103 lands.
 
 ## Console input is separate authority
 

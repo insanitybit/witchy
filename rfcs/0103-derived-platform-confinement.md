@@ -4,11 +4,13 @@ title: "Derived platform confinement: kernel and web enforcement of capability g
 status: deferred
 created: 2026-07-23
 tracking: >
-  Deferred before implementation; no code is in flight. Reopen only with an
-  owner for the platform-specific runtime TCB work and a phase-one plan that
-  preserves parity across supported hosts. The ordered design remains:
-  race-free per-operation confinement, derived Landlock/seccomp policy,
-  build-step confinement, derived CSP, then additional OS providers.
+  Deferred after landing the first bounded phase-one slice in e53dc1b6:
+  native Unix reads, writes, and appends use O_NOFOLLOW to close the
+  final-component symlink-swap race on both backends. Parent-component races
+  and descriptor-anchored full-path resolution remain open; no implementation
+  branch is in flight. Reopen with an owner for that runtime TCB work before
+  derived Landlock/seccomp policy, build-step confinement, derived CSP, and
+  additional OS providers.
 predecessors:
   - "[0013](0013-capability-grant-documents.md) (grant documents — the concrete pre-execution authority statement this RFC compiles)"
   - "[0068](0068-compiled-build-step-grants.md) (build-step grants — the declared authority of third-party build code)"
@@ -64,9 +66,11 @@ A native run trusts: the compiler (capability typing, footprint), the
 runtime kernel (grant admission, import handlers, `confine`), and wasmtime.
 A single bug in any of these yields the process's full ambient authority —
 every file the user can read, arbitrary network, arbitrary exec.
-`confine.rs` itself documents a live instance of the risk class: its
-canonicalize-then-use check is "mildly TOCTOU; the race-free fix is
-syscall-level confinement (openat2/O_NOFOLLOW, i.e. the cap-std crate)."
+`confine.rs` documents a live instance of the risk class. The final component
+is now opened with `O_NOFOLLOW` on native Unix hosts, closing a checked leaf's
+swap to a symlink. Parent components still use canonicalize-then-open, so the
+full path walk remains subject to concurrent local mutation until it becomes
+descriptor-anchored.
 The wasm sandbox is strong, but "strong" is not "assumed infallible" — every
 serious sandbox architecture (Chrome's, OpenBSD's, systemd's) layers an
 outer kernel fence precisely because inner layers have bugs.
@@ -227,6 +231,12 @@ the primary and finer enforcer everywhere.
 
 ## Per-operation confinement (phase 1, independent of policy)
 
+**Current status:** commit `e53dc1b6` landed the bounded leaf-race slice.
+`open_read`, `open_write`, and `open_append` apply `O_NOFOLLOW` on Unix, and
+both the interpreter and compiled host use those shared helpers. This closes
+the final-component symlink swap only. The descriptor-anchored parent walk
+described below remains deferred.
+
 Before any policy compiler: replace `confine`'s canonicalize-then-use with
 dirfd-anchored, race-free resolution — `openat2(RESOLVE_BENEATH |
 RESOLVE_NO_MAGICLINKS)` on Linux, `O_NOFOLLOW_ANY` on macOS (the cap-std
@@ -319,9 +329,10 @@ the served app is the input it should derive from).
 
 ## Implementation phases and evidence
 
-1. **Race-free per-op confinement**: `openat2`/`O_NOFOLLOW_ANY` inside
-   `witchy-runtime::confine`; evidence: the existing confinement/denial
-   suites plus a symlink-race regression test; both backends share the fix.
+1. **Partially implemented, leaf opens only**: shared `open_read`,
+   `open_write`, and `open_append` use `O_NOFOLLOW` on Unix, with regular-file
+   behavior and symlink-leaf denial tests. Full `openat2`/`O_NOFOLLOW_ANY`
+   descriptor-anchored traversal and a parent-component race regression remain.
 2. **Landlock filesystem + TCP** in the CLI host and trusted-exe launcher:
    probe ABI, derive from resolved grants, arm before guest execution;
    evidence: a violation harness that deliberately bypasses the host layer

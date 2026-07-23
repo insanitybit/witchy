@@ -150,6 +150,11 @@ can also be handed straight to `main` (`main(config: File[Read])`, granted with
 A `File` is read/write only; there is no exec-on-a-`File` (spawning a process is
 the separate `Exec` capability, below).
 
+On native Unix hosts, the final file component is opened with `O_NOFOLLOW`, so
+an attacker cannot replace the checked leaf with a symlink between the check and
+the read, write, or append. This does not yet make the whole path walk race-free:
+parent-component changes still require RFC-0103's descriptor-anchored resolver.
+
 ## Net: a smaller slice of the network
 
 Rights narrow the *verbs* a `Net` permits (`Connect` vs `Listen`); to narrow its

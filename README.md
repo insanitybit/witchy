@@ -76,8 +76,9 @@ supported-preview contract.
 
 The parity, checked-heap, sandbox, and artifact tests provide concrete regression
 evidence; they are not proof that the compiler or runtime has no defects. In
-particular, current filesystem confinement is not race-free against a concurrent
-local symlink swap.
+particular, native Unix file opens now reject a concurrent final-component
+symlink swap with `O_NOFOLLOW`, but parent-component path resolution is not yet
+race-free against concurrent local filesystem mutation.
 
 Portable `.wasm` artifacts remain untrusted guests run by a separately installed
 Witchy host. A [`trusted-exe`](rfcs/0092-trusted-application-executables.md), by contrast, embeds the application, checked root
