@@ -91,11 +91,24 @@ try {
   await cells[0].run();
   ok(cells[0].output.textContent === "the reader edited this", "Run executes the reader's EDITED source");
 
-  // 2. Idempotent: re-enhancing the same root finds nothing new.
+  // 2. Browser argv is explicit page-supplied launch input.
+  const argv = pageWith(`fn main(console: Console, args: List(String)):
+    console.print("\${args.length()}")
+    for arg in args:
+        console.print(arg)`);
+  const argvCells = enhanceRunnableCells(argv, {
+    document: doc,
+    loadCompiler,
+    runOptions: { args: ["one", "héllo"] },
+  });
+  await argvCells[0].run();
+  ok(argvCells[0].output.textContent === "2\none\nhéllo", "a runnable cell receives ordered UTF-8 argv");
+
+  // 3. Idempotent: re-enhancing the same root finds nothing new.
   const again = enhanceRunnableCells(root, { document: doc, loadCompiler });
   ok(again.length === 0, "re-enhancing is idempotent (no double cells)");
 
-  // 3. A compile error surfaces as an error cell, not a thrown exception.
+  // 4. A compile error surfaces as an error cell, not a thrown exception.
   const bad = pageWith("fn main(console: Console):\n    console.print(nope)");
   const badCells = enhanceRunnableCells(bad, { document: doc, loadCompiler });
   await badCells[0].run();

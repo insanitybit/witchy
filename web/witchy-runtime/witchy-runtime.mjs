@@ -31,6 +31,7 @@ export const WITCHY_ABI_VERSION = 3;
 // classification instead of silently widening the browser host.
 export const WITCHY_BROWSER_IMPORTS = Object.freeze([
   "__witchy_abort",
+  "args_size",
   "crypto.__ecdsa_p256_verify_hex_status",
   "crypto.__ecdsa_p256_verify_status",
   "crypto.__ed25519_verify_status",
@@ -462,7 +463,7 @@ function runeHash(paths, contents) {
 //              guest's ordinary synchronous call resumes after the Promise
 //              settles without blocking the browser thread.
 //
-// `Exec`, `Secret`, raw `Net`, `mint_file` (a top-level File grant), argv and
+// `Exec`, `Secret`, raw `Net`, `mint_file` (a top-level File grant), and
 // compiler introspection remain DENIED BY OMISSION even under this host — they
 // are simply not built, so a module reaching them still fails to instantiate
 // with a `LinkError`. See rfcs/0091-browser-virtual-capabilities.md.
@@ -1271,6 +1272,7 @@ function makeFetchImports(grants, { readWstrText, stagePending }, fetchImpl) {
 export async function instantiate(wasmBytes, opts = {}) {
   const output = [];
   const onPrint = opts.onPrint || ((line) => output.push(line));
+  const args = Array.isArray(opts.args) ? opts.args.map(String) : [];
   const nodeCrypto = opts.nodeCrypto !== undefined ? opts.nodeCrypto : await defaultNodeCrypto();
   const crypto = opts.cryptoBackend || makeCryptoBackend(nodeCrypto);
 
@@ -1317,7 +1319,7 @@ export async function instantiate(wasmBytes, opts = {}) {
   let pendingList = null;
 
   // The witchy import object — PURE functions only. No `dir_*`, `net_*`,
-  // `exec_run`, `now`, `env_*`, `args_size`, `secretstore_*`, `crypto_reveal_*`,
+  // `exec_run`, `now`, `env_*`, `secretstore_*`, `crypto_reveal_*`,
   // `build_*`, `compiler_*`, `crypto.sign`, `crypto.public_key`: those are
   // capabilities (or interpreter-only host services) and are DELIBERATELY ABSENT,
   // so a module importing one cannot instantiate here.
@@ -1385,6 +1387,14 @@ export async function instantiate(wasmBytes, opts = {}) {
       const bytes = pending;
       pending = null;
       writeAt(bytes, outPtr);
+    },
+    // argv is host-chosen launch input, not authority. Stage an immutable copy
+    // for the same two-call List(String) transfer used by the native runtime.
+    args_size() {
+      pendingList = args.slice();
+      let size = 4 + 8 * pendingList.length;
+      for (const arg of pendingList) size += 4 + utf8.encode(arg).length;
+      return size;
     },
     // write_pending_list lays a staged List(String) out at base_ptr. No PURE
     // host op stages a list (args_size/dir_list_size are capabilities), so under

@@ -53,8 +53,8 @@ function compile(source) {
 // Run a witchy source through the NATIVE interpreter (the parity oracle),
 // optionally with a working directory and extra env; return output lines
 // normalized to the shim's per-call list (trailing newlines trimmed).
-function nativeRun(src, { cwd, env } = {}) {
-  const out = execFileSync(BIN, [src], {
+function nativeRun(src, { cwd, env, args = [] } = {}) {
+  const out = execFileSync(BIN, [src, ...args], {
     encoding: "utf8",
     cwd: cwd || work,
     env: { ...process.env, ...(env || {}) },
@@ -65,7 +65,24 @@ function nativeRun(src, { cwd, env } = {}) {
 const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 try {
-  // === 1. Clock: real wall/monotonic time ===================================
+  // === 1. argv: page-supplied launch input, including Unicode ===============
+  {
+    const ARGV = `fn main(console: Console, args: List(String)):
+    console.print("\${args.length()}")
+    for arg in args:
+        console.print(arg)
+`;
+    const { src, bytes } = compile(ARGV);
+    const args = ["one", "héllo"];
+    const host = await instantiate(bytes, { args });
+    const shimLines = host.run();
+    ok(eq(shimLines, ["2", ...args]), "argv preserves page-supplied order and UTF-8");
+    ok(eq(shimLines, nativeRun(src, { args })), "argv output matches the native oracle byte-for-byte");
+    const empty = await instantiate(bytes);
+    ok(eq(empty.run(), ["0"]), "argv defaults to an empty list");
+  }
+
+  // === 2. Clock: real wall/monotonic time ===================================
   {
     const CLOCK = `fn main(console: Console, clock: Clock):
     let t = clock.now()

@@ -489,10 +489,11 @@ mod tests {
 
         let mut facilities = HostRequirements::default();
         facilities.require_facility(HostFacility::Argv);
+        assert!(menu.check(&facilities).portable());
         facilities.require_facility(HostFacility::Vm);
         assert_eq!(
             menu.check(&facilities).missing_facilities,
-            vec![HostFacility::Argv, HostFacility::Vm]
+            vec![HostFacility::Vm]
         );
     }
 

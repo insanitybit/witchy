@@ -57,7 +57,7 @@ export function readOptimizationStats(exports) {
 // Compile + instantiate + run `source` on the browser's own engine; return
 // `{ ok, text, stats }` (text is the joined output, or the error / trap message;
 // stats are the compiled module's deterministic RFC-0089 resource counters).
-export async function runWitchy(wasm, source) {
+export async function runWitchy(wasm, source, opts = {}) {
   // Fresh views — any lib call that allocates may grow (and detach) the buffer.
   const libU8 = () => new Uint8Array(wasm.memory.buffer);
   const libDV = () => new DataView(wasm.memory.buffer);
@@ -102,6 +102,8 @@ export async function runWitchy(wasm, source) {
   // no filesystem to resolve a pure sibling), so their host ops are delegated to
   // the lib's exports — reusing the real Rust regex/sha2 path, byte-for-byte.
   let pending = new Uint8Array(0); // staged by `regex_match_spans_len`, drained by `fill_pending`
+  let pendingList = null;
+  const args = Array.isArray(opts.args) ? opts.args.map(String) : [];
   const hashOp = (op) => (inPtr, outPtr) => {
     const input = readWstr(inPtr);
     const lp = toLib(input);
@@ -172,6 +174,33 @@ export async function runWitchy(wasm, source) {
     fill_pending(outPtr) {
       u8().set(pending, outPtr);
       pending = new Uint8Array(0);
+    },
+    args_size() {
+      pendingList = args.slice();
+      let size = 4 + 8 * pendingList.length;
+      for (const arg of pendingList) size += 4 + new TextEncoder().encode(arg).length;
+      return size;
+    },
+    write_pending_list(basePtr) {
+      if (pendingList === null) return;
+      const values = pendingList;
+      pendingList = null;
+      const encoded = values.map((value) => new TextEncoder().encode(value));
+      const stringsStart = basePtr + 4 + 8 * values.length;
+      dv().setInt32(basePtr, values.length, true);
+      let offset = 0;
+      for (let i = 0; i < encoded.length; i++) {
+        const ptr = stringsStart + offset;
+        dv().setUint32(basePtr + 4 + 8 * i, ptr >>> 0, true);
+        dv().setUint32(basePtr + 4 + 8 * i + 4, 0, true);
+        offset += 4 + encoded[i].length;
+      }
+      let cursor = stringsStart;
+      for (const bytes of encoded) {
+        dv().setInt32(cursor, bytes.length, true);
+        u8().set(bytes, cursor + 4);
+        cursor += 4 + bytes.length;
+      }
     },
   };
 

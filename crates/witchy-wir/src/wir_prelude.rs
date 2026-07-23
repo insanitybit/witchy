@@ -591,6 +591,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
             | "crypto.__ecdsa_p256_verify_hex_status"
             | "crypto.__rsa_pkcs1_sha256_verify_status"
             | "crypto.__ed25519_verify_status"
+            | "args_size"
             | "__witchy_abort"
     );
     Some(AbiImportInfo { class, authorities, browser })
@@ -783,6 +784,10 @@ mod tests {
             );
         }
         assert_eq!(render_abi_import_catalog().lines().count(), IMPORT_COUNT + 2);
+        assert!(
+            abi_import_info("args_size").is_some_and(|info| info.browser),
+            "argv launch input is implemented by the browser host"
+        );
     }
 
     /// The prelude exposes the helper NAMES the binary path's resolution filter

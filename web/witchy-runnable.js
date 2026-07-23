@@ -123,7 +123,7 @@ export function buildRunnableCell(doc, source, opts = {}) {
     runButton.textContent = "Running…";
     try {
       const wasm = await compiler();
-      const { ok, text, stats } = await runWitchy(wasm, src);
+      const { ok, text, stats } = await runWitchy(wasm, src, opts.runOptions || {});
       output.textContent = text || (ok ? "(no output)" : "(empty error)");
       output.setAttribute("class", ok ? "witchy-output ok" : "witchy-output err");
       // `mode opt` makes resource behavior part of the checked source contract.

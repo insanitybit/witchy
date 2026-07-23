@@ -24,3 +24,7 @@ source = "per-run"
 provider = "browser-fetch"
 determinism = "nondeterministic"
 origins = "host-configured"
+
+[facilities.argv]
+provider = "page-argv"
+determinism = "deterministic"
