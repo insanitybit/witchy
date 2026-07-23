@@ -32,7 +32,9 @@
   - [The Manifest, the Lockfile, and the CLI](packages-cli.md)
   - [Build Steps: `build.witchy`](packages-build.md)
 - [Frontend Apps with Glamour](frontend.md)
-- [Execution Backends: One Meaning](backends.md)
+- [Running Witchy Code](running.md)
+  - [Execution Backends: One Meaning](backends.md)
+  - [Shipping and Deployment](shipping.md)
 - [Idiomatic witchy](idioms.md)
 - [Testing](testing.md)
 
