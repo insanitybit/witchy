@@ -33,3 +33,7 @@ source = "page"
 [facilities.argv]
 provider = "page-argv"
 determinism = "deterministic"
+
+[facilities.vm]
+provider = "sequential-instance"
+determinism = "deterministic"

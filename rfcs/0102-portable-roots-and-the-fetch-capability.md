@@ -7,8 +7,8 @@ tracking: >
   Draft. Phase order: (1) doctrine + menu documents, (2) the Fetch root with
   native/interpreter/fixture providers and the std/http client cut-over,
   (3) the browser Fetch provider + playground wiring, (4) browser host
-  expansion for existing families (argv and SecretStore implemented; vm
-  workers remaining), (5) menu
+  expansion for existing families (argv, SecretStore, and sequential vm
+  workers implemented), (5) menu
   repairs (Env, Exec, Console) as independently landable slices.
 predecessors:
   - "[0002](0002-user-definable-capabilities.md) (user-definable capabilities — attenuation above roots; never mint from nothing)"
@@ -437,10 +437,11 @@ is separately addressable (enforce-before-you-ship).
    grant shapes (`[fetch]`, `--fetch`, trusted-exe binding); a playground
    test running a real book example against a playground-hosted endpoint.
 4. **Browser expansion**: argv and `SecretStore` are implemented with explicit
-   page grants; the bare `Secret` root remains denied. The `vm.*` sequential
-   port remains. Re-bless `book/examples.json` after each widening and record
-   the `browser_runnable` delta (the acceptance metric: strictly larger, with
-   zero examples made less runnable).
+   page grants; the bare `Secret` root remains denied. `vm.par_map` and
+   `vm.serve` run sequentially in fresh zero-authority browser instances.
+   Re-bless `book/examples.json` after each widening and record the
+   `browser_runnable` delta (the acceptance metric: strictly larger, with zero
+   examples made less runnable).
 5. **Menu repairs**: Env, Exec, Console as three independent branches, each
    with both-backend differential coverage.
 

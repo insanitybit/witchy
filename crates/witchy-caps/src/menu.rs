@@ -492,10 +492,7 @@ mod tests {
         facilities.require_facility(HostFacility::Argv);
         assert!(menu.check(&facilities).portable());
         facilities.require_facility(HostFacility::Vm);
-        assert_eq!(
-            menu.check(&facilities).missing_facilities,
-            vec![HostFacility::Vm]
-        );
+        assert!(menu.check(&facilities).portable());
     }
 
     #[test]
@@ -583,6 +580,18 @@ mod tests {
             secrets.settings.get("source"),
             Some(&toml::Value::String("page".to_string()))
         );
+    }
+
+    #[test]
+    fn browser_vm_plan_uses_sequential_instances() {
+        let menu = HostMenu::parse(BROWSER_MENU).unwrap();
+        let mut requirements = HostRequirements::default();
+        requirements.require_facility(HostFacility::Vm);
+        let plan = menu.plan(&requirements).expect("browser VM provider");
+        assert_eq!(plan.facilities.len(), 1);
+        assert_eq!(plan.facilities[0].facility, HostFacility::Vm);
+        assert_eq!(plan.facilities[0].provider, "sequential-instance");
+        assert_eq!(plan.facilities[0].determinism, Determinism::Deterministic);
     }
 
     #[test]

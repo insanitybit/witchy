@@ -1,4 +1,7 @@
-import { makeSecretStoreImports } from "./witchy-runtime/witchy-runtime.mjs";
+import {
+  instantiate as instantiateRuntime,
+  makeSecretStoreImports,
+} from "./witchy-runtime/witchy-runtime.mjs";
 
 // Shared host shim for the witchy browser playground — imported by both
 // web/playground.js (browser) and scripts/pg_validate.mjs (the Node/V8 validator),
@@ -76,6 +79,27 @@ export async function runWitchy(wasm, source, opts = {}) {
     binary = compile(wasm, source);
   } catch (e) {
     return { ok: false, text: String((e && e.message) || e) };
+  }
+
+  const compiled = new WebAssembly.Module(binary);
+  const usesVm = WebAssembly.Module.imports(compiled)
+    .some((entry) => entry.module === "witchy" && entry.name.startsWith("vm_"));
+  if (opts.capabilities && opts.capabilities.vm === true && usesVm) {
+    try {
+      const host = await instantiateRuntime(compiled, opts);
+      const lines = await host.run();
+      return {
+        ok: true,
+        text: lines.join("\n"),
+        stats: readOptimizationStats(host.instance.exports),
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        text: `runtime error: ${String((e && e.message) || e)}`,
+        stats: {},
+      };
+    }
   }
 
   const out = [];

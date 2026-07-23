@@ -2606,7 +2606,7 @@
   },
   {
     "block": 1,
-    "browser_runnable": false,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-vm.md",
@@ -2633,7 +2633,7 @@
   },
   {
     "block": 3,
-    "browser_runnable": false,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/tour-vm.md",

@@ -7,15 +7,16 @@ a separate sandbox with explicitly chosen authority.
 These APIs preserve backend parity by fixing result order and rejecting callback
 shapes that cannot cross an isolated VM boundary.
 
-> The `vm` examples below have no **Run** button in the online book: worker VMs are a
-> native, multi-core facility, and the browser playground's pure-compute sandbox has no
-> workers to spawn. Run them with `witchy <file>` locally to see them in action.
+> The online book runs these examples in fresh, zero-authority WebAssembly
+> instances, driven sequentially. Native compiled programs fan eligible maps
+> across cores; the browser preserves the same ordered result and isolation
+> without claiming parallel speedup.
 
 ## `vm.par_map`: use every core
 
 `vm.par_map(xs, f)` maps a function over a list with the elements processed in
-parallel — on the compiled backend, across one worker VM per core, each its own
-isolated WebAssembly instance.
+parallel on the native compiled backend, across one worker VM per core. The
+browser creates isolated WebAssembly instances too, but drives them sequentially.
 
 ```witchy
 import vm
@@ -44,8 +45,9 @@ body with the same ordered-map semantics:
   its own memory, so a captured parent-heap value would not be reachable there. A
   local function value or lambda remains valid, but runs sequentially.
 
-Worker startup adds a per-call cost, so `vm.par_map` is intended for substantial
-CPU-bound elements rather than tiny callbacks.
+Worker startup adds a per-call cost, so native `vm.par_map` is intended for
+substantial CPU-bound elements rather than tiny callbacks. Browser execution is
+the portable semantic path, not a performance claim.
 
 ## `Bytes`: the binary payload
 

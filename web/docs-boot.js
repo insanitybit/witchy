@@ -39,6 +39,7 @@ const contentFetch = (url) => fetch(contentUrl(url, here));
 // intentionally revealable because the recipe demonstrates both policies.
 const RUN_OPTIONS = {
   capabilities: {
+    vm: true,
     secrets: {
       signing: {
         value: "0000000000000000000000000000000000000000000000000000000000000000",

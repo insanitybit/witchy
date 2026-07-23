@@ -508,6 +508,14 @@ export const WITCHY_SECRET_STORE_IMPORTS = Object.freeze([
   "secretstore_lookup",
   "crypto_reveal_len",
 ]);
+export const WITCHY_VM_IMPORTS = Object.freeze([
+  "vm_par_map_run",
+  "vm_par_map_write",
+  "vm_par_map_bytes_run",
+  "vm_par_map_bytes_write",
+  "vm_with_dir_run",
+  "vm_serve_run",
+]);
 
 // The DIR_DENY_ALL sentinel — a single NUL (U+0000), byte-identical to
 // `crates/witchy-caps/src/capabilities.rs` (`const DIR_DENY_ALL: &str = "\u{0}"`).
@@ -894,14 +902,21 @@ function normalizeSecretStore(spec) {
   return secrets;
 }
 
-// Normalize `opts.capabilities` into `{ clock, env, dir, fetch, secrets }`. Absent/false =>
+// Normalize `opts.capabilities` into `{ clock, env, dir, fetch, secrets, vm }`. Absent/false =>
 // that family stays DENIED (its imports are never built). `env` becomes a Map
 // (empty when enabled with no entries); `dir` becomes an array of grant specs
 // (one per `mint_dir` ordinal), each `{ fs, read, write }`; `fetch` becomes an
 // array of explicit origin-scoped grants (one per `mint_fetch` ordinal);
 // `secrets` becomes an immutable named map whose copied bytes remain host-side.
 function normalizeCapabilities(spec) {
-  const out = { clock: false, env: null, dir: null, fetch: null, secrets: null };
+  const out = {
+    clock: false,
+    env: null,
+    dir: null,
+    fetch: null,
+    secrets: null,
+    vm: false,
+  };
   if (!spec || typeof spec !== "object") return out;
 
   out.clock = spec.clock === true;
@@ -931,6 +946,7 @@ function normalizeCapabilities(spec) {
   }
 
   if (spec.secrets) out.secrets = normalizeSecretStore(spec.secrets);
+  out.vm = spec.vm === true;
 
   return out;
 }
@@ -1065,6 +1081,154 @@ export function makeSecretStoreImports(
   checkFamilyImports("SecretStore", imports, WITCHY_SECRET_STORE_IMPORTS);
   imports["crypto.sign"] = new WebAssembly.Suspending(imports["crypto.sign"]);
   imports["crypto.public_key"] = new WebAssembly.Suspending(imports["crypto.public_key"]);
+  return imports;
+}
+
+function makeVmImports(
+  { readI64List, readWstrListRaw, writeAt },
+  spawnWorker,
+) {
+  if (typeof WebAssembly.Suspending !== "function" || typeof WebAssembly.promising !== "function") {
+    throw new Error(
+      "witchy-runtime: browser VM workers require WebAssembly JSPI " +
+      "(`WebAssembly.Suspending` and `WebAssembly.promising`)",
+    );
+  }
+
+  let pendingInts = null;
+  let pendingBytes = null;
+
+  const workerMemory = (worker) => {
+    const memory = worker.instance.exports.memory;
+    if (!(memory instanceof WebAssembly.Memory)) {
+      throw new Error("witchy-runtime: VM worker exports no memory");
+    }
+    return memory;
+  };
+  const copyIntoWorker = (worker, bytes) => {
+    const galloc = worker.instance.exports.__galloc;
+    if (typeof galloc !== "function") {
+      throw new Error("witchy-runtime: VM worker exports no __galloc");
+    }
+    const ptr = galloc(4 + bytes.length);
+    const memory = workerMemory(worker);
+    const view = new DataView(memory.buffer);
+    view.setInt32(ptr, bytes.length, true);
+    new Uint8Array(memory.buffer).set(bytes, ptr + 4);
+    return ptr;
+  };
+  const readWorkerBytes = (worker, rawPtr) => {
+    const ptr = Number(rawPtr);
+    const memory = workerMemory(worker);
+    const view = new DataView(memory.buffer);
+    const len = view.getInt32(ptr, true);
+    if (len < 0 || ptr < 0 || ptr + 4 + len > memory.buffer.byteLength) {
+      throw new Error("witchy-runtime: VM worker returned an invalid Bytes pointer");
+    }
+    return new Uint8Array(memory.buffer).slice(ptr + 4, ptr + 4 + len);
+  };
+  const call1 = async (worker, codeIdx, arg) => {
+    const callback = worker.instance.exports.__call_idx;
+    if (typeof callback !== "function") {
+      throw new Error("witchy-runtime: VM worker exports no __call_idx");
+    }
+    return WebAssembly.promising(callback)(codeIdx, arg);
+  };
+  const call2 = async (worker, codeIdx, left, right) => {
+    const callback = worker.instance.exports.__call2;
+    if (typeof callback !== "function") {
+      throw new Error("witchy-runtime: VM worker exports no __call2");
+    }
+    return WebAssembly.promising(callback)(codeIdx, left, right);
+  };
+  const writeBytesList = (items, basePtr) => {
+    const size = 4 + 8 * items.length
+      + items.reduce((total, bytes) => total + 4 + bytes.length, 0);
+    const out = new Uint8Array(size);
+    const view = new DataView(out.buffer);
+    view.setInt32(0, items.length, true);
+    let payloadOffset = 4 + 8 * items.length;
+    for (let i = 0; i < items.length; i++) {
+      view.setBigInt64(4 + 8 * i, BigInt(basePtr + payloadOffset), true);
+      view.setInt32(payloadOffset, items[i].length, true);
+      out.set(items[i], payloadOffset + 4);
+      payloadOffset += 4 + items[i].length;
+    }
+    writeAt(out, basePtr);
+  };
+
+  const imports = {
+    async vm_par_map_run(xsPtr, codeIdx) {
+      const worker = await spawnWorker();
+      const results = [];
+      for (const value of readI64List(xsPtr)) {
+        results.push(await call1(worker, codeIdx, value));
+      }
+      pendingInts = results;
+      return 4 + 8 * results.length;
+    },
+    vm_par_map_write(basePtr) {
+      if (pendingInts === null) {
+        throw new Error("vm_par_map_write called with nothing staged");
+      }
+      const values = pendingInts;
+      pendingInts = null;
+      const out = new Uint8Array(4 + 8 * values.length);
+      const view = new DataView(out.buffer);
+      view.setInt32(0, values.length, true);
+      values.forEach((value, index) => view.setBigInt64(4 + 8 * index, value, true));
+      writeAt(out, basePtr);
+    },
+    async vm_par_map_bytes_run(xsPtr, codeIdx) {
+      const worker = await spawnWorker();
+      const results = [];
+      for (const bytes of readWstrListRaw(xsPtr)) {
+        const inputPtr = copyIntoWorker(worker, bytes);
+        const resultPtr = await call1(worker, codeIdx, BigInt(inputPtr));
+        results.push(readWorkerBytes(worker, resultPtr));
+      }
+      pendingBytes = results;
+      return 4 + 8 * results.length
+        + results.reduce((total, bytes) => total + 4 + bytes.length, 0);
+    },
+    vm_par_map_bytes_write(basePtr) {
+      if (pendingBytes === null) {
+        throw new Error("vm_par_map_bytes_write called with nothing staged");
+      }
+      const values = pendingBytes;
+      pendingBytes = null;
+      writeBytesList(values, basePtr);
+    },
+    vm_with_dir_run() {
+      throw new Error(
+        "browser vm.with_dir remains unavailable until Dir-bearing function values " +
+        "cross the typed capability-closure boundary",
+      );
+    },
+    async vm_serve_run(initPtr, requestsPtr, codeIdx) {
+      const worker = await spawnWorker();
+      let statePtr = copyIntoWorker(worker, readWstrListRaw(initPtr, true));
+      const results = [];
+      for (const request of readWstrListRaw(requestsPtr)) {
+        const requestPtr = copyIntoWorker(worker, request);
+        statePtr = Number(await call2(
+          worker,
+          codeIdx,
+          BigInt(statePtr),
+          BigInt(requestPtr),
+        ));
+        results.push(readWorkerBytes(worker, statePtr));
+      }
+      pendingBytes = results;
+      return 4 + 8 * results.length
+        + results.reduce((total, bytes) => total + 4 + bytes.length, 0);
+    },
+  };
+  checkFamilyImports("VM", imports, WITCHY_VM_IMPORTS);
+  imports.vm_par_map_run = new WebAssembly.Suspending(imports.vm_par_map_run);
+  imports.vm_par_map_bytes_run =
+    new WebAssembly.Suspending(imports.vm_par_map_bytes_run);
+  imports.vm_serve_run = new WebAssembly.Suspending(imports.vm_serve_run);
   return imports;
 }
 
@@ -1437,6 +1601,8 @@ function makeFetchImports(grants, { readWstrText, stagePending }, fetchImpl) {
  * @param {object} [opts.nodeCrypto]  a `node:crypto`-shaped object (auto-detected
  *        on Node when omitted)
  * @param {SubtleCrypto} [opts.subtleCrypto]  WebCrypto override for SecretStore
+ * @param {(instance: WebAssembly.Instance) => void} [opts.onVmSpawn]
+ *        test/telemetry hook called for each fresh sequential worker instance
  * @param {Function} [opts.fetchImpl]  injected fetch implementation (testing);
  *        defaults to the platform's global fetch
  */
@@ -1446,6 +1612,9 @@ export async function instantiate(wasmBytes, opts = {}) {
   const args = Array.isArray(opts.args) ? opts.args.map(String) : [];
   const nodeCrypto = opts.nodeCrypto !== undefined ? opts.nodeCrypto : await defaultNodeCrypto();
   const crypto = opts.cryptoBackend || makeCryptoBackend(nodeCrypto);
+  const module = wasmBytes instanceof WebAssembly.Module
+    ? wasmBytes
+    : await WebAssembly.compile(wasmBytes);
 
   // Bound late: instance memory is set after instantiation, but the import
   // closures capture `mem` by reference through this object.
@@ -1469,6 +1638,23 @@ export async function instantiate(wasmBytes, opts = {}) {
       const hi = dv().getUint32(ptr + 4 + 8 * i + 4, true);
       const elem = hi * 0x100000000 + lo;
       out.push(readWstrText(elem));
+    }
+    return out;
+  };
+  const readWstrListRaw = (ptr, single = false) => {
+    if (single) return readWstr(ptr);
+    const count = dv().getInt32(ptr, true);
+    const out = [];
+    for (let i = 0; i < count; i++) {
+      out.push(readWstr(Number(dv().getBigInt64(ptr + 4 + 8 * i, true))));
+    }
+    return out;
+  };
+  const readI64List = (ptr) => {
+    const count = dv().getInt32(ptr, true);
+    const out = [];
+    for (let i = 0; i < count; i++) {
+      out.push(dv().getBigInt64(ptr + 4 + 8 * i, true));
     }
     return out;
   };
@@ -1701,6 +1887,8 @@ export async function instantiate(wasmBytes, opts = {}) {
   const marshal = {
     readWstr,
     readWstrText,
+    readWstrListRaw,
+    readI64List,
     writeAt,
     stagePending: (bytes) => { pending = bytes; },
     stageList: (names) => { pendingList = names; },
@@ -1721,15 +1909,45 @@ export async function instantiate(wasmBytes, opts = {}) {
       makeSecretStoreImports(caps.secrets, marshal, subtleCrypto),
     );
   }
+  if (caps.vm) {
+    const spawnWorker = async () => {
+      const worker = await instantiate(module, {
+        cryptoBackend: crypto,
+        nodeCrypto,
+        subtleCrypto: opts.subtleCrypto,
+        capabilities: { vm: true },
+        _trapUnknownImports: true,
+      });
+      if (typeof opts.onVmSpawn === "function") opts.onVmSpawn(worker.instance);
+      return worker;
+    };
+    Object.assign(witchy, makeVmImports(marshal, spawnWorker));
+  }
 
-  ({ instance } = await WebAssembly.instantiate(wasmBytes, { witchy }));
+  if (opts._trapUnknownImports === true) {
+    for (const imported of WebAssembly.Module.imports(module)) {
+      if (
+        imported.module === "witchy"
+        && imported.kind === "function"
+        && !Object.prototype.hasOwnProperty.call(witchy, imported.name)
+      ) {
+        witchy[imported.name] = () => {
+          throw new Error(
+            `VM worker has no authority for witchy::${imported.name}`,
+          );
+        };
+      }
+    }
+  }
+
+  instance = new WebAssembly.Instance(module, { witchy });
   memory = instance.exports.memory;
 
   const run = () => {
     if (typeof instance.exports.run !== "function") {
       throw new Error("witchy-runtime: the module does not export `run`");
     }
-    if (caps.fetch || caps.secrets) {
+    if (caps.fetch || caps.secrets || caps.vm) {
       return WebAssembly.promising(instance.exports.run)().then(() => output);
     }
     instance.exports.run();
@@ -1776,7 +1994,7 @@ export async function instantiate(wasmBytes, opts = {}) {
       if (heapGlobal != null) heapGlobal.value = heapBase;
       return result;
     };
-    if (caps.fetch || caps.secrets) {
+    if (caps.fetch || caps.secrets || caps.vm) {
       return WebAssembly.promising(fn)(inPtr, bytes.length).then(finish);
     }
     return finish(fn(inPtr, bytes.length));

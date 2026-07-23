@@ -54,6 +54,11 @@ run();          // synchronous without Fetch/SecretStore; returns the output arr
   Ed25519 signing/public-key operations but cannot be revealed. The provider
   uses opaque externrefs and WebCrypto through JSPI; bare `Secret` remains
   denied because `mint_secret` is not provided.
+- `opts.capabilities.vm = true` — opt into fresh zero-authority worker
+  instances for ordered `vm.par_map` and lock-step `vm.serve`. The browser
+  drives them sequentially, matching the interpreter oracle without claiming
+  multi-core execution. Parent authority imports are linked as traps inside
+  each worker.
 - `opts.fetchImpl` — inject a fetch-compatible function for deterministic tests;
   production defaults to `globalThis.fetch`.
 
@@ -109,9 +114,10 @@ the compiler catalog and the actual JavaScript import object.
 
 **Opt-in providers:** real browser `Clock`; immutable page-supplied `Env`;
 per-run in-memory `Dir`; real browser `Fetch`, constrained to explicit origins;
-and page-supplied `SecretStore`. Fetch sends no credentials, refuses redirects,
-and bounds buffered responses. Fetch and SecretStore signing use WebAssembly
-JSPI to suspend and resume the guest around asynchronous platform calls.
+page-supplied `SecretStore`; and fresh sequential VM instances. Fetch sends no
+credentials, refuses redirects, and bounds buffered responses. Fetch,
+SecretStore signing, and VM creation use WebAssembly JSPI to suspend and resume
+the guest around asynchronous platform calls.
 
 **Refuses (absent):** unrequested capability imports and unsupported families
 including raw `Net`, `Exec`, bare root `Secret`, build authority, and native

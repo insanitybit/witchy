@@ -18,7 +18,9 @@
 //      request/response parity, pre-I/O denial, and fail-closed limits.
 //   7. SecretStore — page-supplied opaque secrets preserve reveal/use-only
 //      policy and Ed25519 output matches the native oracle.
-//   8. Deny-by-omission is preserved — the DEFAULT host still LinkErrors on any
+//   8. VM — fresh zero-authority instances provide ordered scalar/Bytes maps,
+//      lock-step stateful serve, and finite nested vm source.
+//   9. Deny-by-omission is preserved — the DEFAULT host still LinkErrors on any
 //      capability program, and Exec/bare Secret/Net stay denied EVEN under the
 //      opt-in host (their imports are simply never built).
 //
@@ -465,7 +467,62 @@ fn main(console: Console, secrets: SecretStore):
     ok(missingDenied, "an empty SecretStore preserves the canonical missing-secret diagnostic");
   }
 
-  // === 8. Exec/bare Secret/Net stay DENIED under the opt-in host ============
+  // === 8. VM: fresh zero-authority sequential instances =====================
+  {
+    const VM = `import vm
+import bytes
+import list
+import secretstore
+
+fn square(n: Int) -> Int:
+    n * n
+
+fn nested(n: Int) -> Int:
+    list.sum(vm.par_map([n, n + 1], square))
+
+fn tag(value: Bytes) -> Bytes:
+    bytes.concat(value, bytes.from_string("!"))
+
+fn step(state: Bytes, request: Bytes) -> Bytes:
+    bytes.concat(state, request)
+
+fn main(console: Console, secrets: SecretStore):
+    let _ = secrets.get("not-granted")
+    console.print("\${list.sum(vm.par_map([1, 2, 3, 4], square))}")
+    console.print("\${list.at(vm.par_map([2], nested), 0)}")
+    let tagged = vm.par_map([bytes.from_string("a"), bytes.from_string("bb")], tag)
+    console.print(bytes.to_string(list.at(tagged, 1)))
+    let served = vm.serve(
+        bytes.from_string(""),
+        [bytes.from_string("a"), bytes.from_string("b")],
+        step,
+    )
+    for response in served:
+        console.print(bytes.to_string(response))
+`;
+    const { src, bytes: moduleBytes } = compile(VM);
+    const workers = [];
+    const host = await instantiate(moduleBytes, {
+      capabilities: { vm: true, secrets: true },
+      onVmSpawn: (instance) => workers.push(instance),
+    });
+    const shimLines = await host.run();
+    ok(eq(shimLines, ["30", "13", "bb!", "a", "ab"]), "VM preserves ordered map and serve semantics");
+    ok(eq(shimLines, nativeRun(src)), "VM output matches the sequential interpreter oracle");
+    ok(workers.length >= 4, "VM creates fresh instances for each intercepted map and serve");
+    ok(new Set(workers).size === workers.length, "every VM operation receives a distinct instance");
+    ok(workers.every((worker) => worker !== host.instance), "no VM callback re-enters the parent instance");
+
+    let defaultDenied = false;
+    try {
+      await instantiate(moduleBytes);
+    } catch (e) {
+      defaultDenied = e instanceof WebAssembly.LinkError;
+    }
+    ok(defaultDenied, "the default host still denies VM imports by omission");
+  }
+
+  // === 9. Exec/bare Secret/Net stay DENIED under the opt-in host ============
   {
     const EXEC = `import exec
 
@@ -503,6 +560,7 @@ fn main(console: Console, net: Net):
             env: true,
             dir: { write: true },
             secrets: { signing: { value: "0".repeat(64), useOnly: true } },
+            vm: true,
           },
         });
         how = "(unexpectedly instantiated)";
