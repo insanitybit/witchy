@@ -150,6 +150,15 @@ snapshot. On macOS, platform binaries may instead use a path only after Witchy
 verifies that its opened identity still matches and that every ancestor is
 root-owned and non-writable; mutable grant paths cannot redirect execution.
 
+Third-party build steps use the same outer boundary without irreversibly
+restricting the compiler process. Witchy checks and compiles `build.witchy`
+first, then sends the compiled module and resolved `[build.grants]` to a fresh
+child over a private stdin protocol. That child receives only the granted
+environment values and arms its derived filesystem, network, and process policy
+before creating the build VM. BuildExec tools are resolved by the driver and
+opened through the same descriptor-confined executable path; build code never
+gets ambient `PATH` lookup or the compiler's full environment.
+
 ## Console input is separate authority
 
 Bare `Console` carries both rights for compatibility. A logger needs only

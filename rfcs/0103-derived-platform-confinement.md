@@ -12,8 +12,10 @@ tracking: >
   boundary are implemented. Its Linux provider safely translates filesystem
   and TCP policy into independently reported Landlock rulesets. Launch
   activation, required launch mode, and seccomp promise classes are
-  implemented. Build-step outer confinement, derived CSP, and enforcement
-  menus remain active implementation phases.
+  implemented. Build-step execution now compiles in the driver and runs each
+  build VM in a dedicated, environment-scrubbed child that arms the derived
+  outer policy before VM creation. Derived CSP and enforcement menus remain
+  active implementation phases.
 predecessors:
   - "[0013](0013-capability-grant-documents.md) (grant documents — the concrete pre-execution authority statement this RFC compiles)"
   - "[0068](0068-compiled-build-step-grants.md) (build-step grants — the declared authority of third-party build code)"
@@ -365,9 +367,14 @@ the served app is the input it should derive from).
    production and test-code cross-checks, class-set regressions, child probes
    proving `execve` and socket denial, and the suite-green strict launcher as
    the CI canary.
-4. **Build-step confinement**: the build driver arms the fence around each
-   `build.witchy` child from its `[build.grants]`; evidence: a build step
-   attempting undeclared fs/net/exec is kernel-denied.
+4. **Implemented**: the build driver resolves grants and compiles before
+   spawning a dedicated child over a versioned stdin protocol. The child has
+   only granted environment values, arms the derived build fs/net/exec policy
+   immediately before VM creation, and launches BuildExec tools through the
+   shared descriptor-confined executable path rather than ambient `PATH`.
+   Evidence: a real-binary child-routing regression, policy regressions proving
+   empty BuildNet/BuildExec allowlists do not widen syscall promises, the
+   provider's host-bypass probes, and the existing build grant suite.
 5. **Derived CSP**: playground + glamour hosts emit policy from the
    capability surface (`connect-src` = Fetch origins); coven-web's `csp_for`
    consumes the derivation; evidence: web test asserting the emitted policy

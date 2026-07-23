@@ -1,7 +1,31 @@
 //! Build-step execution service (`build` entrypoints run in the grant-minimal
 //! WASM sandbox). Extracted from the composition root.
 
-use crate::{ast, codegen, link_file, runtime, typeck};
+#[cfg(test)]
+use crate::ast;
+use crate::{codegen, link_file, runtime, typeck};
+
+pub(crate) const BUILD_CHILD_COMMAND: &str = "@compiler:build-child";
+const BUILD_CHILD_REQUEST_VERSION: u32 = 1;
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct BuildExecTool {
+    name: String,
+    path: std::path::PathBuf,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct BuildChildRequest {
+    version: u32,
+    wasm: Vec<u8>,
+    out_dir: std::path::PathBuf,
+    read_roots: Vec<std::path::PathBuf>,
+    env: std::collections::BTreeMap<String, Option<String>>,
+    exec_tools: Vec<BuildExecTool>,
+    net_hosts: Vec<String>,
+}
 
 /// Run a deterministic `build` step in the zero-ambient WASM sandbox. This keeps
 /// the old BuildOut/BuildRead-only helper shape used by tests and callers; the
@@ -51,6 +75,7 @@ fn capture_build_env(
     env
 }
 
+#[cfg(test)]
 fn run_build_step_compiled_with_env(
     module: ast::Module,
     out_dir: std::path::PathBuf,
@@ -59,24 +84,55 @@ fn run_build_step_compiled_with_env(
     exec_tools: Vec<String>,
     net_hosts: Vec<String>,
 ) -> Result<Vec<String>, String> {
-    use runtime::{Capabilities, Runtime};
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("build: output dir: {e}"))?;
     let wasm = match codegen::compile_build_module(&module) {
         codegen::LoweringOutcome::Lowered(bytes) => bytes,
         codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
         codegen::LoweringOutcome::Rejected(error) => return Err(error.message),
     };
+    let exec_tools = resolve_build_exec_tools(exec_tools)?;
+    run_build_step_wasm(
+        &wasm,
+        out_dir,
+        read_roots,
+        env,
+        exec_tools,
+        net_hosts,
+        witchy_confinement::EnforcementMode::Disabled,
+    )
+}
+
+fn run_build_step_wasm(
+    wasm: &[u8],
+    out_dir: std::path::PathBuf,
+    read_roots: Vec<std::path::PathBuf>,
+    env: std::collections::BTreeMap<String, Option<String>>,
+    exec_tools: Vec<BuildExecTool>,
+    net_hosts: Vec<String>,
+    confinement: witchy_confinement::EnforcementMode,
+) -> Result<Vec<String>, String> {
+    use runtime::{Capabilities, Runtime};
+
+    std::fs::create_dir_all(&out_dir).map_err(|e| format!("build: output dir: {e}"))?;
+    let exec_allow = exec_tools.iter().map(|tool| tool.name.clone()).collect();
+    let build_exec_tools = exec_tools
+        .into_iter()
+        .map(|tool| (tool.name, tool.path))
+        .collect();
     let caps = Capabilities {
         build_out: Some(out_dir.clone()),
         build_read_roots: read_roots,
         build_env: Some(env),
-        exec_allow: Some(exec_tools),
+        exec_allow: Some(exec_allow),
+        build_exec_tools,
+        build_exec_runtime_roots: build_exec_runtime_roots(),
         build_net_allow: Some(net_hosts),
         ..Default::default()
     };
+    super::confinement::arm(&caps, confinement)?;
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
     let mut vm = rt
-        .spawn(&wasm, caps, crate::RUN_MEMORY_PAGES)
+        .spawn(wasm, caps, crate::RUN_MEMORY_PAGES)
         .map_err(|e| e.to_string())?;
     vm.run().map_err(|e| e.root_cause().to_string())?;
     let mut generated: Vec<String> = std::fs::read_dir(&out_dir)
@@ -114,7 +170,127 @@ fn run_build_step_file_with_env(
     let (linked, _) = link_file(path)?;
     typeck::check(&linked).map_err(|e| e.to_string())?;
     let out = out_dir.unwrap_or_else(|| std::path::PathBuf::from("build-out"));
-    run_build_step_compiled_with_env(linked, out, read_roots, env, exec_tools, net_hosts)
+    #[cfg(test)]
+    {
+        run_build_step_compiled_with_env(linked, out, read_roots, env, exec_tools, net_hosts)
+    }
+    #[cfg(not(test))]
+    {
+        std::fs::create_dir_all(&out).map_err(|e| format!("build: output dir: {e}"))?;
+        let wasm = match codegen::compile_build_module(&linked) {
+            codegen::LoweringOutcome::Lowered(bytes) => bytes,
+            codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
+            codegen::LoweringOutcome::Rejected(error) => return Err(error.message),
+        };
+        let request = BuildChildRequest {
+            version: BUILD_CHILD_REQUEST_VERSION,
+            wasm,
+            out_dir: out,
+            read_roots,
+            env,
+            exec_tools: resolve_build_exec_tools(exec_tools)?,
+            net_hosts,
+        };
+        run_build_step_child_process(&request)
+    }
+}
+
+pub(crate) fn run_build_step_child() -> Result<Vec<String>, String> {
+    let request: BuildChildRequest = serde_json::from_reader(std::io::stdin().lock())
+        .map_err(|error| format!("build child: invalid request: {error}"))?;
+    if request.version != BUILD_CHILD_REQUEST_VERSION {
+        return Err(format!(
+            "build child: unsupported request version {}",
+            request.version
+        ));
+    }
+    run_build_step_wasm(
+        &request.wasm,
+        request.out_dir,
+        request.read_roots,
+        request.env,
+        request.exec_tools,
+        request.net_hosts,
+        witchy_confinement::EnforcementMode::BestEffort,
+    )
+}
+
+#[cfg(not(test))]
+fn run_build_step_child_process(request: &BuildChildRequest) -> Result<Vec<String>, String> {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    let executable =
+        std::env::current_exe().map_err(|error| format!("build: locating witchy: {error}"))?;
+    let mut command = Command::new(executable);
+    command
+        .arg(BUILD_CHILD_COMMAND)
+        .env_clear()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (name, value) in &request.env {
+        if let Some(value) = value {
+            command.env(name, value);
+        }
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("build: starting confined child: {error}"))?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "build: confined child has no request pipe".to_string())?;
+    serde_json::to_writer(&mut stdin, request)
+        .map_err(|error| format!("build: encoding confined child request: {error}"))?;
+    stdin
+        .flush()
+        .map_err(|error| format!("build: sending confined child request: {error}"))?;
+    drop(stdin);
+
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("build: waiting for confined child: {error}"))?;
+    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    if !output.status.success() {
+        return Err(format!("build: confined child exited with {}", output.status));
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("build: invalid confined child response: {error}"))
+}
+
+fn resolve_build_exec_tools(tools: Vec<String>) -> Result<Vec<BuildExecTool>, String> {
+    let search_path = std::env::var_os("PATH").unwrap_or_default();
+    tools
+        .into_iter()
+        .map(|name| {
+            let requested = std::path::Path::new(&name);
+            let path = if requested.components().count() > 1 {
+                requested.to_path_buf()
+            } else {
+                std::env::split_paths(&search_path)
+                    .map(|dir| dir.join(requested))
+                    .find(|candidate| candidate.is_file())
+                    .ok_or_else(|| format!("build: allowed tool `{name}` was not found in PATH"))?
+            };
+            Ok(BuildExecTool { name, path })
+        })
+        .collect()
+}
+
+fn build_exec_runtime_roots() -> Vec<std::path::PathBuf> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        ["/lib", "/lib64", "/usr/lib", "/usr/lib64"]
+            .into_iter()
+            .map(std::path::PathBuf::from)
+            .filter(|path| path.is_dir())
+            .collect()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        Vec::new()
+    }
 }
 
 #[cfg(test)]

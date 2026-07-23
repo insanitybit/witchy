@@ -528,6 +528,9 @@ fn concrete_grants_have_one_complete_confinement_policy() {
         fetch_grants: vec![vec!["https://api.example".into()]],
         build_out: Some(PathBuf::from("/generated")),
         build_read_roots: vec![PathBuf::from("/schema")],
+        build_exec_tools: vec![("tool".into(), PathBuf::from("/bin/tool"))],
+        build_exec_runtime_roots: vec![PathBuf::from("/lib")],
+        build_net_allow: Some(vec!["cache.example:8443".into()]),
         ..Default::default()
     };
 
@@ -535,6 +538,11 @@ fn concrete_grants_have_one_complete_confinement_policy() {
     assert_eq!(
         policy.filesystem,
         vec![
+            FsRule {
+                path: PathBuf::from("/bin/tool"),
+                scope: FsScope::File,
+                access: FsAccess::new(true, false, true),
+            },
             FsRule {
                 path: PathBuf::from("/config/app.toml"),
                 scope: FsScope::File,
@@ -544,6 +552,11 @@ fn concrete_grants_have_one_complete_confinement_policy() {
                 path: PathBuf::from("/generated"),
                 scope: FsScope::Tree,
                 access: FsAccess::new(false, true, false),
+            },
+            FsRule {
+                path: PathBuf::from("/lib"),
+                scope: FsScope::Tree,
+                access: FsAccess::new(true, false, true),
             },
             FsRule {
                 path: PathBuf::from("/read"),
@@ -564,7 +577,7 @@ fn concrete_grants_have_one_complete_confinement_policy() {
     );
     assert_eq!(
         policy.network.connect_tcp_ports,
-        BTreeSet::from([443, 5432, 8080])
+        BTreeSet::from([443, 5432, 8080, 8443])
     );
     assert_eq!(
         policy.network.bind_tcp_ports,
@@ -580,6 +593,22 @@ fn concrete_grants_have_one_complete_confinement_policy() {
             SyscallClass::Process,
         ])
     );
+}
+
+#[test]
+fn empty_build_grants_do_not_widen_outer_authority() {
+    use witchy_confinement::SyscallClass;
+
+    let policy = Capabilities {
+        exec_allow: Some(Vec::new()),
+        build_net_allow: Some(Vec::new()),
+        ..Default::default()
+    }
+    .confinement_policy();
+
+    assert!(!policy.network.connect_requested);
+    assert!(!policy.syscall_classes.contains(&SyscallClass::Network));
+    assert!(!policy.syscall_classes.contains(&SyscallClass::Process));
 }
 
 #[test]

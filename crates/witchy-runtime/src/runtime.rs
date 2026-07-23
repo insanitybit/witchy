@@ -286,6 +286,13 @@ pub struct Capabilities {
     /// preserves the ordinary coarse `Exec` grant; `Some(tools)` is used by
     /// BuildExec and refuses every tool not named here.
     pub exec_allow: Option<Vec<String>>,
+    /// BuildExec names paired with the exact ambient paths selected by the
+    /// build driver before confinement. Guest-provided names never reach an
+    /// ambient PATH lookup.
+    pub build_exec_tools: Vec<(String, std::path::PathBuf)>,
+    /// Read/execute-only platform roots needed by dynamically linked BuildExec
+    /// children. These are launcher-derived child needs, not guest grants.
+    pub build_exec_runtime_roots: Vec<std::path::PathBuf>,
     /// The `host:port` allowlist backing the root `Net` capability.
     /// `None` denies the network entirely; the verb flags below pick which
     /// operation families are linked within it.
@@ -394,6 +401,20 @@ impl Capabilities {
                 FsAccess::new(true, false, false),
             );
         }
+        for (_, path) in &self.build_exec_tools {
+            policy.add_fs_rule(
+                path,
+                FsScope::File,
+                FsAccess::new(true, false, true),
+            );
+        }
+        for path in &self.build_exec_runtime_roots {
+            policy.add_fs_rule(
+                path,
+                FsScope::Tree,
+                FsAccess::new(true, false, true),
+            );
+        }
 
         if self.net_connect {
             policy.network.connect_requested = true;
@@ -420,13 +441,20 @@ impl Capabilities {
         for origin in self.fetch_grants.iter().flatten() {
             policy.add_fetch_origin(origin);
         }
-        if let Some(targets) = &self.build_net_allow {
+        if let Some(targets) = &self.build_net_allow
+            && !targets.is_empty()
+        {
             policy.network.connect_requested = true;
             for target in targets {
                 policy.add_connect_target(target);
             }
         }
-        if self.exec || self.exec_allow.is_some() {
+        if self.exec
+            || self
+                .exec_allow
+                .as_ref()
+                .is_some_and(|tools| !tools.is_empty())
+        {
             policy.syscall_classes.insert(SyscallClass::Process);
         }
         policy.normalize_classes();
@@ -582,6 +610,8 @@ pub struct VmState {
     /// the host ABI; import linking, not a guest handle, carries the authority.
     build_out: Option<crate::confine::ConfinedDir>,
     build_read_roots: Vec<crate::confine::ConfinedDir>,
+    build_exec_tools:
+        std::collections::BTreeMap<String, crate::confine::ConfinedFile>,
     /// (RFC-0023) Checked-heap shadow. Each `heap_register(start,end)` the guest's
     /// checked allocators emit records an object's `[start,end)`; the host poisons
     /// `[end, end+HEAP_REDZONE)` and the post-run sweep traps if any poison byte was
@@ -1174,6 +1204,15 @@ fn vmstate_from_caps(
         .map(|root| crate::confine::ConfinedDir::open_ambient(root))
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(|error| Error::msg(error.0))?;
+    let build_exec_tools = caps
+        .build_exec_tools
+        .iter()
+        .map(|(name, path)| {
+            crate::confine::ConfinedFile::open_ambient(path)
+                .map(|file| (name.clone(), file))
+        })
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|error| Error::msg(error.0))?;
     Ok(VmState {
         id,
         caps: caps.clone(),
@@ -1193,6 +1232,7 @@ fn vmstate_from_caps(
         worker_listener,
         build_out,
         build_read_roots,
+        build_exec_tools,
         heap_objects: Vec::new(),
         rand_state: crate::rand::seed_from_env(),
         engine: engine.clone(),

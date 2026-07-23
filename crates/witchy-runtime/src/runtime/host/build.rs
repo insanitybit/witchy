@@ -196,34 +196,19 @@ fn host_build_exec_run(
     let data = mem.data(&caller);
     let tool = read_wstr(data, tool_ptr)?;
     let input = read_wstr(data, input_ptr)?;
-    let allow = caller
+    let executable = caller
         .data()
-        .caps
-        .exec_allow
-        .as_ref()
-        .ok_or_else(|| Error::msg("run_tool: no BuildExec grant"))?;
-    if !allow.iter().any(|t| t == &tool) {
-        return Err(Error::msg(format!(
-            "run_tool: `{tool}` is not in this BuildExec grant's allow-list"
-        )));
-    }
-
-    use std::io::Write as _;
-    use std::process::{Command, Stdio};
-    let mut child = Command::new(&tool)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .build_exec_tools
+        .get(&tool)
+        .cloned()
+        .ok_or_else(|| {
+            Error::msg(format!(
+                "run_tool: `{tool}` is not in this BuildExec grant's allow-list"
+            ))
+        })?;
+    let out = executable
+        .run(&[], &input)
         .map_err(|e| Error::msg(format!("run_tool: cannot start `{tool}`: {e}")))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(input.as_bytes())
-            .map_err(|e| Error::msg(format!("run_tool: writing to `{tool}` stdin: {e}")))?;
-    }
-    let out = child
-        .wait_with_output()
-        .map_err(|e| Error::msg(format!("run_tool: `{tool}` failed: {e}")))?;
     if !out.status.success() {
         return Err(Error::msg(format!("run_tool: `{tool}` exited with {}", out.status)));
     }

@@ -38,6 +38,24 @@ pub(crate) fn run() -> wasmtime::Result<()> {
             std::process::exit(1);
         }
     }
+    if std::env::args().nth(1).as_deref()
+        == Some(commands::build_steps::BUILD_CHILD_COMMAND)
+    {
+        match commands::build_steps::run_build_step_child() {
+            Ok(files) => {
+                println!(
+                    "{}",
+                    serde_json::to_string(&files)
+                        .expect("build child response is always JSON-serializable")
+                );
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
     // (RFC-0037) `--release` / `--debug` — thin WITCHY_OPT mode selectors, usable with any
     // subcommand. `--debug` compiles with NO optimizations (maximal debuggability); `--release`
     // is the optimized shipping set (also the default when neither is given). Set the mode here,
