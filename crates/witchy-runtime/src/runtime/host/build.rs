@@ -63,7 +63,9 @@ fn host_build_out_write(
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    std::fs::write(&path, contents)
+    use std::io::Write;
+    crate::confine::open_write(&path)
+        .and_then(|mut f| f.write_all(contents.as_bytes()))
         .map_err(|e| Error::msg(format!("write_out failed for `{}`: {e}", path.display())))
 }
 
@@ -77,14 +79,21 @@ fn host_build_read_len(mut caller: Caller<'_, VmState>, rel_ptr: i32) -> Result<
     let mut last = String::from("no granted read root");
     for base in &roots {
         match crate::confine::resolve(base, &rel) {
-            Ok(path) => match std::fs::read_to_string(&path) {
-                Ok(contents) => {
-                    let len = contents.len() as i32;
-                    caller.data_mut().pending = Some(contents.into_bytes());
-                    return Ok(len);
+            Ok(path) => {
+                use std::io::Read;
+                let read = crate::confine::open_read(&path).and_then(|mut f| {
+                    let mut s = String::new();
+                    f.read_to_string(&mut s).map(|_| s)
+                });
+                match read {
+                    Ok(contents) => {
+                        let len = contents.len() as i32;
+                        caller.data_mut().pending = Some(contents.into_bytes());
+                        return Ok(len);
+                    }
+                    Err(e) => last = format!("`{}`: {e}", path.display()),
                 }
-                Err(e) => last = format!("`{}`: {e}", path.display()),
-            },
+            }
             Err(e) => last = e.0,
         }
     }

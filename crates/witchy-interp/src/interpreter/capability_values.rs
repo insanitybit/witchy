@@ -104,10 +104,17 @@ pub(super) fn dir_file_value(dir: &DirValue, rel: &str, write: bool) -> Result<F
 
 pub(super) fn read_file_value(file: &FileValue) -> Result<String, RuntimeError> {
     match file {
-        FileValue::Fs(path) => match std::fs::read_to_string(path) {
-            Ok(contents) => Ok(contents),
-            Err(e) => err(format!("read failed for `{}`: {e}", path.display())),
-        },
+        FileValue::Fs(path) => {
+            use std::io::Read;
+            let read = witchy_runtime::confine::open_read(path).and_then(|mut f| {
+                let mut s = String::new();
+                f.read_to_string(&mut s).map(|_| s)
+            });
+            match read {
+                Ok(contents) => Ok(contents),
+                Err(e) => err(format!("read failed for `{}`: {e}", path.display())),
+            }
+        }
         FileValue::Mock { path, files } => files
             .get(path)
             .cloned()
@@ -119,10 +126,13 @@ pub(super) fn read_file_value(file: &FileValue) -> Result<String, RuntimeError> 
 
 pub(super) fn write_file_value(file: &FileValue, contents: &str) -> Result<(), RuntimeError> {
     match file {
-        FileValue::Fs(path) => match std::fs::write(path, contents) {
-            Ok(()) => Ok(()),
-            Err(e) => err(format!("write failed for `{}`: {e}", path.display())),
-        },
+        FileValue::Fs(path) => {
+            use std::io::Write;
+            match witchy_runtime::confine::open_write(path).and_then(|mut f| f.write_all(contents.as_bytes())) {
+                Ok(()) => Ok(()),
+                Err(e) => err(format!("write failed for `{}`: {e}", path.display())),
+            }
+        }
         FileValue::Mock { path, .. } => err(format!(
             "write failed for mock Dir `{path}`: mock directories are read-only"
         )),

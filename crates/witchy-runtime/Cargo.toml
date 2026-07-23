@@ -33,6 +33,13 @@ rustls-pemfile = "2"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
 
+# `O_NOFOLLOW` for the leaf-race-free confined open (`confine::open_read`/`_write`/
+# `_append`). Unix-only. Non-unix targets use a fallback without the flag: wasm has
+# no host filesystem, and Windows leaf-symlink hardening is not yet implemented
+# (tracked in RFC-0103 alongside the full-tree confinement follow-up).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [features]
 native = ["dep:wasmtime", "dep:getrandom"]
 # Exposes the scoped TLS-root registry used by the root package's hermetic

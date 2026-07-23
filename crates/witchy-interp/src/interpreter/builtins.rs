@@ -2150,10 +2150,7 @@ impl Interpreter {
                     match dir_file_value(base, rel, true)? {
                         FileValue::Fs(path) => {
                             use std::io::Write as _;
-                            let res = std::fs::OpenOptions::new()
-                                .create(true)
-                                .append(true)
-                                .open(&path)
+                            let res = witchy_runtime::confine::open_append(&path)
                                 .and_then(|mut f| f.write_all(contents.as_bytes()));
                             match res {
                                 Ok(()) => Ok(Some(Value::Unit)),
@@ -2313,7 +2310,10 @@ impl Interpreter {
             "write_out" => match args {
                 [Value::Build(BuildCap::Out(base)), Value::Str(rel), Value::Str(contents)] => {
                     let path = resolve_write(base, rel)?;
-                    match std::fs::write(&path, contents.as_bytes()) {
+                    use std::io::Write;
+                    match witchy_runtime::confine::open_write(&path)
+                        .and_then(|mut f| f.write_all(contents.as_bytes()))
+                    {
                         Ok(()) => Ok(Some(Value::Unit)),
                         Err(e) => err(format!("write_out failed for `{}`: {e}", path.display())),
                     }
@@ -2332,10 +2332,17 @@ impl Interpreter {
                     let mut last_err = None;
                     for base in roots {
                         match resolve(base, rel) {
-                            Ok(path) => match std::fs::read_to_string(&path) {
-                                Ok(contents) => return Ok(Some(Value::str(contents))),
-                                Err(e) => last_err = Some(format!("`{}`: {e}", path.display())),
-                            },
+                            Ok(path) => {
+                                use std::io::Read;
+                                let read = witchy_runtime::confine::open_read(&path).and_then(|mut f| {
+                                    let mut s = String::new();
+                                    f.read_to_string(&mut s).map(|_| s)
+                                });
+                                match read {
+                                    Ok(contents) => return Ok(Some(Value::str(contents))),
+                                    Err(e) => last_err = Some(format!("`{}`: {e}", path.display())),
+                                }
+                            }
                             Err(e) => last_err = Some(e.message),
                         }
                     }

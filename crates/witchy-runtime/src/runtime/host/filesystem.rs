@@ -303,8 +303,15 @@ fn dir_file_backing(dir: &DirAuthority, rel: &str, write: bool) -> Result<FileBa
 
 fn read_file_backing(file: &FileBacking) -> Result<String> {
     match file {
-        FileBacking::Fs(path) => std::fs::read_to_string(path)
-            .map_err(|e| Error::msg(format!("read failed for `{}`: {e}", path.display()))),
+        FileBacking::Fs(path) => {
+            use std::io::Read;
+            crate::confine::open_read(path)
+                .and_then(|mut f| {
+                    let mut s = String::new();
+                    f.read_to_string(&mut s).map(|_| s)
+                })
+                .map_err(|e| Error::msg(format!("read failed for `{}`: {e}", path.display())))
+        }
         FileBacking::Mock { path, files } => files
             .get(path)
             .cloned()
@@ -314,8 +321,12 @@ fn read_file_backing(file: &FileBacking) -> Result<String> {
 
 fn write_file_backing(file: &FileBacking, contents: String) -> Result<()> {
     match file {
-        FileBacking::Fs(path) => std::fs::write(path, contents)
-            .map_err(|e| Error::msg(format!("write failed for `{}`: {e}", path.display()))),
+        FileBacking::Fs(path) => {
+            use std::io::Write;
+            crate::confine::open_write(path)
+                .and_then(|mut f| f.write_all(contents.as_bytes()))
+                .map_err(|e| Error::msg(format!("write failed for `{}`: {e}", path.display())))
+        }
         FileBacking::Mock { path, .. } => Err(Error::msg(format!(
             "write failed for mock Dir `{path}`: mock directories are read-only"
         ))),
@@ -655,10 +666,7 @@ fn host_dir_append(
     match dir_file_backing(&dir, &rel, true)? {
         FileBacking::Fs(path) => {
             use std::io::Write as _;
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
+            crate::confine::open_append(&path)
                 .and_then(|mut f| f.write_all(contents.as_bytes()))
                 .map_err(|e| Error::msg(format!("append failed for `{}`: {e}", path.display())))
         }
