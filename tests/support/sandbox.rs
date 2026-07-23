@@ -512,3 +512,99 @@ pub(crate) fn env_only_is_monotone_and_typed() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[cfg(unix)]
+pub(crate) fn grant_document_exec_is_name_scoped_monotone_and_typed() {
+    let dir = unique("exec-grant");
+    std::fs::create_dir_all(&dir).unwrap();
+    let allowed = dir.join("allowed.witchy");
+    let denied = dir.join("denied.witchy");
+    let mistyped = dir.join("mistyped.witchy");
+    let grants = dir.join("grants.toml");
+    let wrong_binding = dir.join("wrong-binding.toml");
+
+    std::fs::write(
+        &allowed,
+        "fn main(console: Console, root: Dir[Read], runner: Exec):\n    console.print(runner.exec(root, \"bin/echo\", \"hello\", \"\"))\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &denied,
+        "fn main(console: Console, root: Dir[Read], runner: Exec):\n    let public = runner.only([\"bin/echo\"])\n    let widened = public.only([\"bin/sh\"])\n    console.print(widened.exec(root, \"bin/sh\", \"\", \"\"))\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &mistyped,
+        "fn main(runner: Exec):\n    let invalid = runner.only([1])\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &grants,
+        "[dirs]\nroot = { root = \"/\", rights = [\"Read\"] }\n\
+         [exec]\nrunner = [\"bin/echo\", \"bin/sh\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &wrong_binding,
+        "[dirs]\nroot = { root = \"/\", rights = [\"Read\"] }\n\
+         [exec]\nother = [\"bin/echo\"]\n",
+    )
+    .unwrap();
+
+    let permitted = Command::new(BIN)
+        .args(["sandbox", "--grants", grants.to_str().unwrap(), allowed.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        permitted.status.success() && stdout(&permitted).contains("hello"),
+        "allowed Exec program must run: out={} err={}",
+        stdout(&permitted),
+        stderr(&permitted)
+    );
+
+    let cannot_widen = Command::new(BIN)
+        .args(["sandbox", "--grants", grants.to_str().unwrap(), denied.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!cannot_widen.status.success(), "nested Exec.only must not regain authority");
+    assert!(
+        stdout(&cannot_widen).contains("not in this Exec grant's allow-list")
+            || stderr(&cannot_widen).contains("not in this Exec grant's allow-list"),
+        "expected Exec attenuation diagnostic: out={} err={}",
+        stdout(&cannot_widen),
+        stderr(&cannot_widen)
+    );
+
+    let mismatched = Command::new(BIN)
+        .args([
+            "sandbox",
+            "--grants",
+            wrong_binding.to_str().unwrap(),
+            allowed.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!mismatched.status.success(), "a differently named Exec grant must not bind");
+    assert!(
+        stdout(&mismatched).contains("[exec].runner")
+            || stderr(&mismatched).contains("[exec].runner"),
+        "expected same-name Exec binding diagnostic: out={} err={}",
+        stdout(&mismatched),
+        stderr(&mismatched)
+    );
+
+    let bad_programs = Command::new(BIN)
+        .args(["check", mistyped.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!bad_programs.status.success(), "Exec.only must require List(String)");
+    assert!(
+        stdout(&bad_programs).contains("List(String)")
+            || stderr(&bad_programs).contains("List(String)"),
+        "expected Exec.only list diagnostic: out={} err={}",
+        stdout(&bad_programs),
+        stderr(&bad_programs)
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

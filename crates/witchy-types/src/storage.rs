@@ -22,6 +22,7 @@ pub fn externref_cap_name(name: &str) -> Option<&'static str> {
         "Dir" => Some("Dir"),
         "File" => Some("File"),
         "Env" => Some("Env"),
+        "Exec" => Some("Exec"),
         "Net" => Some("Net"),
         "Fetch" => Some("Fetch"),
         "Socket" => Some("Socket"),
@@ -513,11 +514,11 @@ mod tests {
     #[test]
     fn externref_capability_set_is_explicit_and_closed() {
         for name in [
-            "Dir", "File", "Env", "Net", "Fetch", "Socket", "Listener", "Secret",
+            "Dir", "File", "Env", "Exec", "Net", "Fetch", "Socket", "Listener", "Secret",
         ] {
             assert_eq!(externref_cap_name(name), Some(name));
         }
-        for name in ["Console", "Clock", "Rand", "SecretStore", "Exec"] {
+        for name in ["Console", "Clock", "Rand", "SecretStore"] {
             assert_eq!(externref_cap_name(name), None, "{name}");
         }
     }

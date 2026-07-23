@@ -101,7 +101,7 @@ pub(crate) fn run_file_sandboxed(
         "sandboxing `{path}` \u{2014} granted exactly: {}",
         capabilities::show_caps(&grant)
     );
-    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, fetch_origins, None, args, signing_key, named_secrets, Vec::new(), true, false)
+    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, fetch_origins, None, None, args, signing_key, named_secrets, Vec::new(), true, false)
 }
 
 /// Resolve a `[secrets]` entry's `from = "env:VAR"` to the secret bytes the host
@@ -171,6 +171,7 @@ pub(crate) fn run_file_grants(
     net_allow.dedup();
     let mut fetch_origins: Vec<String> = Vec::new();
     let mut env_allow: Option<Vec<String>> = None;
+    let mut exec_allow: Option<Vec<String>> = None;
     let mut named_secrets: Vec<runtime::SecretGrant> = Vec::new();
     for (name, s) in &doc.secrets {
         // BUG-146: carry the document's `use-only` modifier through to the runtime
@@ -252,6 +253,24 @@ pub(crate) fn run_file_grants(
                     names.dedup();
                     env_allow = Some(names);
                 }
+                Some(ast::Type::Named(n, _)) if n == "Exec" => {
+                    if exec_allow.is_some() {
+                        return Err(
+                            "grant documents currently support one `Exec` parameter per entrypoint"
+                                .to_string(),
+                        );
+                    }
+                    let programs = doc.exec.get(&p.name).ok_or_else(|| {
+                        format!(
+                            "grant `{grants_path}` has no `[exec].{}` for `main` parameter `{}`",
+                            p.name, p.name
+                        )
+                    })?;
+                    let mut programs = programs.clone();
+                    programs.sort();
+                    programs.dedup();
+                    exec_allow = Some(programs);
+                }
                 Some(ast::Type::Named(n, _)) if grantable.contains_key(n.as_str()) => {
                     // RFC-0038: a bare grantable cap — pull each policy field from the
                     // `[user_caps]` entry in the cap's declared field order.
@@ -296,6 +315,9 @@ pub(crate) fn run_file_grants(
     for (name, names) in &doc.env {
         eprintln!("  env    {name}: {}", names.join(", "));
     }
+    for (name, programs) in &doc.exec {
+        eprintln!("  exec   {name}: {}", programs.join(", "));
+    }
     for (name, s) in &doc.secrets {
         eprintln!("  secret {name}: {}", s.from);
     }
@@ -313,5 +335,5 @@ pub(crate) fn run_file_grants(
     }
     // Secrets reach the program by name through the `SecretStore` (`require`/`get`);
     // the bare root `Secret` (`--signing-key`) is not granted via documents here.
-    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, fetch_origins, env_allow, args, None, named_secrets, user_cap_fields, true, false)
+    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, fetch_origins, env_allow, exec_allow, args, None, named_secrets, user_cap_fields, true, false)
 }

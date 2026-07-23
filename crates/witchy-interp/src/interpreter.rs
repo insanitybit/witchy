@@ -297,7 +297,7 @@ pub enum Capability {
     Env(Option<std::collections::BTreeSet<String>>),
     /// The right to spawn a native subprocess (`exec`). Right-less and payload-
     /// free: the executable is named + confined by a `Dir[Read]` argument.
-    Exec,
+    Exec(Option<std::collections::BTreeSet<String>>),
 }
 
 impl fmt::Display for Value {
@@ -893,7 +893,7 @@ impl Interpreter {
                         message: format!("invalid Fetch grant: {error}"),
                     })
             }
-            Some(Type::Named(n, _)) if n == "Exec" => Ok(Value::Cap(Capability::Exec)),
+            Some(Type::Named(n, _)) if n == "Exec" => Ok(Value::Cap(Capability::Exec(None))),
             Some(Type::Named(n, _)) if n == "Secret" => match self.signing_key {
                 // The bare `Secret` is the signing key: revealable=false is enforced by
                 // the signing-key identity check, so its `use_only` flag stays false here.

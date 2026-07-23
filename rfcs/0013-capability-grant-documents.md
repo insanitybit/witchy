@@ -15,24 +15,27 @@ CLI launch/approval wiring in [`src/main.rs`](../src/main.rs) and end-to-end
 coverage in [`tests/e2e.rs`](../tests/e2e.rs).
 
 > **Status: partially implemented** (2026-06-25). Shipped: the grant-document
-> format + TOML parser (`[files]`/`[dirs]`/`[net]`/`[secrets]`) and the
+> format + TOML parser (`[files]`/`[dirs]`/`[net]`/`[fetch]`/`[env]`/
+> `[exec]`/`[secrets]`) and the
 > **footprint cross-check** — the feature of this RFC — in [`src/grants.rs`](../src/grants.rs). A
 > grant's conferred authority (`GrantDoc::cap_set`) is diffed against the program's
 > computed footprint (`capabilities::analyze`): an over-request warns, an
 > under-grant is fatal, a match is clean; `Net` is compared at presence level (the
 > doc expresses addresses, not the footprint's verb rights), and
-> `Console`/`Clock`/`Env` are outside the doc (always host-provided). It is exposed
+> `Console`/`Clock` are outside the doc (always host-provided). It is exposed
 > as **`witchy grants-check <prog.witchy> <grants.toml>`**, which prints the diff
 > and exits 2 on an under-grant (so CI/install tooling can gate on it, mirroring
 > `caps-diff`). The **launch path** also ships: `witchy sandbox --grants
 > app.grants.toml <prog>` mints the whole capability set from the document —
 > binding each `Dir`/`File` `main` parameter to the same-named entry
-> (`[files].config` → the `config` parameter), `[net]` to one allowlist,
-> `[secrets]` to host-resolved named secrets (`from = "env:VAR"`) — runs the
+> (`[files].config` → the `config` parameter), `[net]`, `[fetch]`, `[env]`,
+> and `[exec]` to policy-carrying same-named capabilities, and `[secrets]` to
+> host-resolved named secrets (`from = "env:VAR"`) — runs the
 > cross-check at launch (warn on over-grant, ABORT on under-grant), then runs.
 > The **approval diff** is now wired too (2026-06-28): `witchy sandbox --grants`
-> prints exactly what `main` will receive (capabilities + each `dir`/`file`/`net`/
-> `secret` binding) and, on an interactive TTY, prompts `Approve and run? [y/N]`
+> prints exactly what `main` will receive (capabilities + each
+> `dir`/`file`/`net`/`fetch`/`env`/`exec`/`secret` binding) and, on an
+> interactive TTY, prompts `Approve and run? [y/N]`
 > before handing authority over; `--accept-grants` pre-approves for non-interactive
 > launches (CI, installers), and a non-TTY launch proceeds after printing the diff
 > (the cross-check + under-grant abort remains the hard gate). The one intentional
@@ -88,6 +91,15 @@ data = { root = "./data", rights = ["Read", "Write"] }
 # endpoints are scheme-agnostic host:port (RFC-0011 policy values); TLS is a
 # connect-time choice on the dialed address (RFC-0009), not part of the allowlist
 github = ["github.com:443", "api.github.com:443"]
+
+[fetch]
+api = ["https://api.github.com"]
+
+[env]
+runtime = ["HOME", "LANG"]
+
+[exec]
+runner = ["bin/git"]
 
 [secrets]
 gh = { from = "env:GITHUB_OAUTH" }    # the host resolves it; never inlined here

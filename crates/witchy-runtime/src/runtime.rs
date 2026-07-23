@@ -397,6 +397,11 @@ struct EnvAuthority {
     allow: Option<std::collections::BTreeSet<String>>,
 }
 
+#[derive(Clone, Debug)]
+struct ExecAuthority {
+    allow: Option<std::collections::BTreeSet<String>>,
+}
+
 #[derive(Clone)]
 struct SocketResource {
     stream: Arc<Mutex<std::io::BufReader<Box<dyn Stream>>>>,

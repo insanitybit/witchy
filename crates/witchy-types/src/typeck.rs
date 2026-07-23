@@ -1184,8 +1184,8 @@ fn packed_list_in_type(t: &ast::Type, packed_names: &HashSet<&str>) -> Option<St
 /// (RFC-0005) Names of the capabilities represented as an unforgeable `externref`
 /// on the compiled backend — the caps with NO boxed i64-slot representation.
 /// `Console`/`Clock`/`Rand` are zero-representation (no runtime handle), while
-/// `SecretStore`/`Exec` are root authorities with no guest-held handle to
-/// migrate. `Option(cap)` is represented as nullable externref; structural
+/// `SecretStore` is a root authority with no guest-held handle to migrate.
+/// `Option(cap)` is represented as nullable externref; structural
 /// containers/tuples/functions over these caps still need typed GC/closure
 /// lowering and are rejected at boundaries.
 fn is_externref_cap(name: &str) -> bool {
@@ -4247,6 +4247,27 @@ impl Checker {
     /// `(Int, String)` over a `List(String)`. Returns `Ok(None)` when `name` is not
     /// `exec`.
     fn check_exec_op(&mut self, name: &str, args: &[Expr]) -> Result<Option<Ty>, TypeError> {
+        if name == "only" {
+            let Some(receiver) = args.first() else {
+                return Ok(None);
+            };
+            let receiver_ty = self.infer(receiver)?;
+            if !matches!(self.resolve(&receiver_ty), Ty::Exec) {
+                return Ok(None);
+            }
+            if args.len() != 2 {
+                return terr(format!("`only` expects 2 argument(s) but got {}", args.len()));
+            }
+            let programs = self.infer(&args[1])?;
+            self.unify(&Ty::List(Box::new(Ty::String)), &programs)
+                .map_err(|error| TypeError {
+                    message: format!(
+                        "in call to `only`: Exec programs must be a List(String): {}",
+                        error.message
+                    ),
+                })?;
+            return Ok(Some(Ty::Exec));
+        }
         if name != "exec" {
             return Ok(None);
         }

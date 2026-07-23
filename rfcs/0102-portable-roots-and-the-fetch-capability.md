@@ -356,10 +356,10 @@ are untouched; the win is that libraries can now be handed less.
 
 ### Exec: complete the layers
 
-Exec allowlisting exists at the trusted-exe and build layers but not
-in-language, and runtime grant documents cannot grant Exec at all. Mirror
-`Net`: a policy constructor / narrowing (`exec.only(["git"])`) and an
-`[exec]` grant-document section. No type-level verbs (running is running).
+Exec allowlisting spans the interpreted and compiled hosts. `Exec` values carry
+an opaque executable-name policy, grant-document `[exec]` entries establish
+same-named root bindings, and `exec.only(List(String))` monotonically
+intersects that policy. There are no type-level verbs: running is running.
 
 ### Console: Read and Write rights
 

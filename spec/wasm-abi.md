@@ -20,7 +20,7 @@ breaking ABI change that must bump `WITCHY_ABI_VERSION`.
 
 ## ABI version
 
-The current ABI version is **4**. The JavaScript host pins it as
+The current ABI version is **5**. The JavaScript host pins it as
 `WITCHY_ABI_VERSION` (exported from `web/witchy-runtime/witchy-runtime.mjs`). The
 version covers: the import module name `"witchy"`, the set of import names and
 their `(params) -> results` signatures, the value/memory representation, and the
@@ -28,8 +28,8 @@ pending-buffer protocol. Bump it in lockstep with any change to those.
 Version 1 is the baseline frozen for the first 0.1 release. Version 2 adds the
 opaque Fetch grant, attenuation, and staged request imports. Version 3 adds the
 Net-to-Fetch derivation import. Version 4 makes Env an opaque, attenuable
-externref rather than ambient host state; earlier pre-release import counts
-were not separately published ABI versions.
+externref rather than ambient host state. Version 5 does the same for Exec;
+earlier pre-release import counts were not separately published ABI versions.
 
 ## Import inclusion is tree-shaken
 
@@ -133,7 +133,7 @@ It does **not** implement unavailable capability sizing imports
 
 ## The imports
 
-ABI version 4 declares **93 imports** (`IMPORT_COUNT` in
+ABI version 5 declares **95 imports** (`IMPORT_COUNT` in
 `crates/witchy-wir/src/wir_prelude.rs`). That file owns the ordered signatures
 and the explicit metadata rendered below. The classes are:
 
@@ -243,7 +243,9 @@ byte-for-byte and instantiates an all-import probe against the native host.
 | `crypto.__ecdsa_p256_verify_hex_status` | `(i32, i32, i32) -> i64` | pure infrastructure | none | provided |
 | `crypto.__rsa_pkcs1_sha256_verify_status` | `(i32, i32, i32) -> i64` | pure infrastructure | none | provided |
 | `crypto.__ed25519_verify_status` | `(i32, i32, i32) -> i64` | pure infrastructure | none | provided |
-| `exec_run` | `(externref, i32, i32, i32) -> i32` | capability authority | Exec | omitted |
+| `mint_exec` | `() -> externref` | capability authority | Exec | omitted |
+| `exec_only` | `(externref, i32) -> externref` | capability authority | Exec | omitted |
+| `exec_run` | `(externref, externref, i32, i32, i32) -> i32` | capability authority | Exec | omitted |
 | `heap_register` | `(i32, i32)` | runtime diagnostic | none | omitted |
 | `heap_frontier` | `(i32)` | runtime diagnostic | none | omitted |
 | `__witchy_abort` | `(i32, i64, i64, i32)` | runtime diagnostic | none | provided |

@@ -125,8 +125,11 @@ historical socket-level design and
 [RFC-0102](../rfcs/0102-portable-roots-and-the-fetch-capability.md) for Fetch.
 
 `Exec` is the right to spawn a native subprocess — the runtime analog of the
-build-time `BuildExec`. It is right-less and carries no payload of its own: the
-executable is **named through a `Dir[Read]` argument**, resolved with the same
+build-time `BuildExec`. It is right-less, and its opaque host value carries an
+optional executable-name allowlist. A bare host-minted `Exec` is unrestricted;
+`exec.only(List(String))` returns the intersection of its receiver's policy and
+the requested names. Grant-document `[exec]` entries establish same-named root
+bindings. The executable is **named through a `Dir[Read]` argument**, resolved with the same
 confinement as `read`, so **you can only execute a file you can read**. The std
 `exec` module wraps the low-level primitive as
 `exec.run(e, dir, path, args: List(String), stdin) -> (Int, String)`, returning

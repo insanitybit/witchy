@@ -300,7 +300,9 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "crypto.__ecdsa_p256_verify_hex_status" (func $crypto_ecdsa_p256_verify_hex_status (param i32 i32 i32) (result i64)))
   (import "witchy" "crypto.__rsa_pkcs1_sha256_verify_status" (func $crypto_rsa_pkcs1_sha256_verify_status (param i32 i32 i32) (result i64)))
   (import "witchy" "crypto.__ed25519_verify_status" (func $crypto_ed25519_verify_status (param i32 i32 i32) (result i64)))
-  (import "witchy" "exec_run" (func $exec_run_host (param externref i32 i32 i32) (result i32)))
+  (import "witchy" "mint_exec" (func $mint_exec_host (result externref)))
+  (import "witchy" "exec_only" (func $exec_only_host (param externref i32) (result externref)))
+  (import "witchy" "exec_run" (func $exec_run_host (param externref externref i32 i32 i32) (result i32)))
   (import "witchy" "heap_register" (func $heap_register_host (param i32 i32)))
   (import "witchy" "heap_frontier" (func $heap_frontier_host (param i32)))
   (import "witchy" "__witchy_abort" (func $__witchy_abort (param i32 i64 i64 i32)))
@@ -308,10 +310,10 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 93;
+pub const IMPORT_COUNT: usize = 95;
 
 /// Version of the public `"witchy"` host-import contract.
-pub const WITCHY_ABI_VERSION: u32 = 4;
+pub const WITCHY_ABI_VERSION: u32 = 5;
 
 /// The role an import plays at the host boundary. This classification is part
 /// of the public Wasm ABI: it tells embedders which imports grant authority,
@@ -504,6 +506,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "now"
         | "now_monotonic"
         | "rand_u64"
+        | "mint_exec"
+        | "exec_only"
         | "exec_run" => C::CapabilityAuthority,
 
         "args_size" | "user_cap_field_len" => C::LaunchInput,
@@ -562,7 +566,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         "net_listen_tls" => AUTH_NET_LISTEN_SECRET,
         "now" | "now_monotonic" => AUTH_CLOCK,
         "rand_u64" => AUTH_RAND,
-        "exec_run" => AUTH_EXEC,
+        "mint_exec" | "exec_only" | "exec_run" => AUTH_EXEC,
         "build_read_len" => AUTH_BUILD_READ,
         "build_out_write" => AUTH_BUILD_OUT,
         "build_env_len" | "build_env_fill" => AUTH_BUILD_ENV,

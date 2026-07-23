@@ -681,11 +681,11 @@ impl Codegen<'_> {
                 let a = self.lower_args(&[&args[0], &args[1]])?;
                 if self.collect_wir { call("dir_create", a) } else { host("dir_create_host", a) }
             }
-            // `exec(cap, dir, path, args, stdin) -> String`. The `Exec` cap (arg 0)
-            // is a structural placeholder — `caps.exec` gates linking — so it is
-            // dropped; the WIR `exec` helper takes (Dir externref, path, args, stdin).
+            // `exec(cap, dir, path, args, stdin) -> String`. Both authority
+            // handles cross the ABI: Exec carries the program allow-list and Dir
+            // confines the executable path.
             ("exec", 5) => {
-                call("exec", self.lower_args(&[&args[1], &args[2], &args[3], &args[4]])?)
+                call("exec", self.lower_args(&[&args[0], &args[1], &args[2], &args[3], &args[4]])?)
             }
             ("list", 1) => {
                 self.used_dir_ops.insert("list");
@@ -820,6 +820,12 @@ impl Codegen<'_> {
                 ) {
                     let a = self.lower_args(&[&args[0], &args[1]])?;
                     if self.collect_wir { call("env_only", a) } else { host("env_only_host", a) }
+                } else if matches!(
+                    self.type_table.type_of(&args[0]),
+                    Some(witchy_types::typeck::Ty::Exec)
+                ) {
+                    let a = self.lower_args(&[&args[0], &args[1]])?;
+                    if self.collect_wir { call("exec_only", a) } else { host("exec_only_host", a) }
                 } else if matches!(self.type_table.type_of(&args[0]), Some(witchy_types::typeck::Ty::Dir(_))) {
                     self.used_dir_ops.insert("only");
                     let pattern = Expr::Field { base: Box::new(args[1].clone()), field: "pattern".into() };

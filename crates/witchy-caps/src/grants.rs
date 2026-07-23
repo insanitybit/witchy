@@ -20,6 +20,8 @@
 //! api = ["https://api.github.com"]
 //! [env]
 //! runtime = ["HOME", "LANG"]
+//! [exec]
+//! runner = ["bin/git"]
 //! [secrets]
 //! gh = { from = "env:GITHUB_OAUTH" }
 //! [user_caps]
@@ -51,6 +53,9 @@ pub struct GrantDoc {
     /// bind to. An empty list grants a real Env that can read no names.
     #[serde(default)]
     pub env: BTreeMap<String, Vec<String>>,
+    /// Executable-name allowlists keyed by the `Exec` parameter they bind to.
+    #[serde(default)]
+    pub exec: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub secrets: BTreeMap<String, SecretGrant>,
     /// RFC-0038: bare, library-defined `grantable` capabilities the host mints at
@@ -134,6 +139,9 @@ impl GrantDoc {
         if !self.env.is_empty() {
             cs.insert("Env", Rights::new());
         }
+        if !self.exec.is_empty() {
+            cs.insert("Exec", Rights::new());
+        }
         if !self.secrets.is_empty() {
             // A `[secrets]` section models NAMED store secrets, reached through a
             // `SecretStore` (`SecretStore.get`/`require`). It does NOT confer a bare
@@ -206,9 +214,9 @@ impl CrossCheck {
 }
 
 /// The capabilities a grant document models. `Console`/`Clock` are currently
-/// host-provided outside the document, and `Exec` has no section yet.
+/// host-provided outside the document.
 const GRANTABLE: &[&str] =
-    &["Dir", "File", "Net", "Fetch", "Env", "Secret", "SecretStore"];
+    &["Dir", "File", "Net", "Fetch", "Env", "Exec", "Secret", "SecretStore"];
 
 fn grantable_only(cs: &CapSet) -> CapSet {
     cs.iter()
@@ -310,6 +318,14 @@ mod tests {
         assert!(named.cap_set().contains_key("Env"));
         let empty = GrantDoc::parse("[env]\nruntime = []\n").unwrap();
         assert!(empty.cap_set().contains_key("Env"));
+    }
+
+    #[test]
+    fn exec_section_confers_exec_including_an_empty_program_set() {
+        let named = GrantDoc::parse("[exec]\nrunner = [\"git\", \"witchy\"]\n").unwrap();
+        assert!(named.cap_set().contains_key("Exec"));
+        let empty = GrantDoc::parse("[exec]\nrunner = []\n").unwrap();
+        assert!(empty.cap_set().contains_key("Exec"));
     }
 
     /// (BUG-117) A `[secrets]` section confers `SecretStore` (named store secrets)

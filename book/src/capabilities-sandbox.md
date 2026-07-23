@@ -66,6 +66,10 @@ config = { path = "config.toml", rights = ["Read"] }
 data = { root = "./data", rights = ["Read", "Write"] }
 [net]
 api = ["api.example.com:443"]
+[env]
+environment = ["HOME", "LANG"]
+[exec]
+runner = ["bin/git"]
 [secrets]
 token = { from = "env:API_TOKEN" }    # the host resolves it; never inlined
 ```
@@ -75,8 +79,10 @@ witchy sandbox --grants app.grants.toml program.witchy
 ```
 
 Each `Dir`/`File` parameter of `main` binds to the document entry of the *same
-name* (`[files].config` → the `config` parameter). And because witchy already
-*computes* a program's footprint, the grant is **cross-checked against it**: a grant
+name* (`[files].config` → the `config` parameter). `[net]`, `[fetch]`, `[env]`,
+and `[exec]` entries likewise bind same-named policy-carrying parameters. And
+because witchy already *computes* a program's footprint, the grant is
+**cross-checked against it**: a grant
 that asks for authority the code never exercises is a warning (the classic
 over-permission smell), and a grant that withholds authority the code needs is a
 hard error before launch — so "approve this program's permissions" becomes a diff
@@ -84,7 +90,8 @@ against what the code actually does, not blind trust. The same check runs
 standalone: `witchy grants-check program.witchy app.grants.toml`.
 
 At launch the grant is printed as a reviewable diff — each capability and its
-`dir`/`file`/`net`/`secret` binding — and on an interactive terminal you are
+`dir`/`file`/`net`/`fetch`/`env`/`exec`/`secret` binding — and on an
+interactive terminal you are
 prompted to approve it before any authority is handed over. Pass `--accept-grants`
 to skip the prompt for non-interactive launches (CI, installers):
 
@@ -96,11 +103,13 @@ witchy sandbox --grants app.grants.toml --accept-grants program.witchy
 
 When a program holds a `Dir` inside the sandbox, it doesn't hold a path — it
 holds an opaque WebAssembly `externref` to an authority object owned by the
-*host*. Paths, address allowlists, streams, listeners, and secret bytes stay
+*host*. Paths, address/name/program allowlists, streams, listeners, and secret
+bytes stay
 outside guest linear memory. Corrupting or fabricating an integer in memory
 therefore cannot mint a `Dir`, `Net`, socket, listener, or `Secret`. The host
 creates the root reference from a launch grant; operations such as `subtree`,
-`read_file`, and `net.only` return narrower host objects as new references.
+`read_file`, `net.only`, `env.only`, and `exec.only` return narrower host
+objects as new references.
 
 Path confinement uses the same rules as the interpreter: `..` is rejected,
 absolute paths are rejected, and symlinks that escape the subtree are rejected —

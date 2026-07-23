@@ -3,8 +3,8 @@ use std::sync::Arc;
 use wasmtime::{Caller, Error, ExternRef, Linker, Result, Rooted};
 
 use super::super::{
-    confine, memory_of, read_wstr, read_wstr_pair_list, DirAuthority, DirBacking,
-    FileAuthority, FileBacking, FsRights, VmState,
+    confine, memory_of, read_wstr, read_wstr_list, read_wstr_pair_list, DirAuthority,
+    DirBacking, ExecAuthority, FileAuthority, FileBacking, FsRights, VmState,
 };
 
 /// Register the test-only in-memory Dir mint (RFC-0077). The import grants no
@@ -68,8 +68,48 @@ pub(in crate::runtime) fn link_mint_file(linker: &mut Linker<VmState>) -> Result
 /// Register the Exec subprocess spawn. The executable is named through a
 /// `Dir[Read]` capability, so `exec_run` reuses the shared confinement path.
 pub(in crate::runtime) fn link_exec(linker: &mut Linker<VmState>) -> Result<()> {
+    linker.func_wrap("witchy", "mint_exec", host_mint_exec)?;
+    linker.func_wrap("witchy", "exec_only", host_exec_only)?;
     linker.func_wrap("witchy", "exec_run", host_exec_run)?;
     Ok(())
+}
+
+fn exec_authority_ref(
+    caller: &Caller<'_, VmState>,
+    exec: Option<Rooted<ExternRef>>,
+) -> Result<ExecAuthority> {
+    let exec = exec.ok_or_else(|| Error::msg("Exec externref is null"))?;
+    exec.data(caller)?
+        .ok_or_else(|| Error::msg("Exec externref has no host data"))?
+        .downcast_ref::<ExecAuthority>()
+        .cloned()
+        .ok_or_else(|| Error::msg("Exec externref has wrong host data"))
+}
+
+fn host_mint_exec(mut caller: Caller<'_, VmState>) -> Result<Option<Rooted<ExternRef>>> {
+    let allow = caller
+        .data()
+        .caps
+        .exec_allow
+        .as_ref()
+        .map(|programs| programs.iter().cloned().collect());
+    ExternRef::new(&mut caller, ExecAuthority { allow }).map(Some)
+}
+
+fn host_exec_only(
+    mut caller: Caller<'_, VmState>,
+    exec: Option<Rooted<ExternRef>>,
+    programs_ptr: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
+    let current = exec_authority_ref(&caller, exec)?;
+    let mem = memory_of(&mut caller)?;
+    let requested: std::collections::BTreeSet<_> =
+        read_wstr_list(mem.data(&caller), programs_ptr)?.into_iter().collect();
+    let allow = Some(match current.allow {
+        Some(current) => requested.intersection(&current).cloned().collect(),
+        None => requested,
+    });
+    ExternRef::new(&mut caller, ExecAuthority { allow }).map(Some)
 }
 
 // --- the Dir capability family ---
@@ -452,18 +492,20 @@ fn host_dir_read_len(
 /// two-phase protocol so both backends produce identical results. Needs `Exec`.
 fn host_exec_run(
     mut caller: Caller<'_, VmState>,
+    exec: Option<Rooted<ExternRef>>,
     d: Option<Rooted<ExternRef>>,
     path_ptr: i32,
     args_ptr: i32,
     stdin_ptr: i32,
 ) -> Result<i32> {
+    let exec = exec_authority_ref(&caller, exec)?;
     let mem = memory_of(&mut caller)?;
     let data = mem.data(&caller);
     let path = read_wstr(data, path_ptr)?;
     let joined = read_wstr(data, args_ptr)?;
     let stdin = read_wstr(data, stdin_ptr)?;
-    if let Some(allow) = &caller.data().caps.exec_allow {
-        if !allow.iter().any(|tool| tool == &path) {
+    if let Some(allow) = &exec.allow {
+        if !allow.contains(&path) {
             return Err(Error::msg(format!("exec: `{path}` is not in this Exec grant's allow-list")));
         }
     }

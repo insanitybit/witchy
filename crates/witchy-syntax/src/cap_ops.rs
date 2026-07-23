@@ -74,6 +74,7 @@ pub const OPS: &[CapOp] = &[
     op!("get_env", Env, 2, OptionString, "env.get_env(name)"),
     op!("only", Env, 2, SameReceiver, "env.only(names)"),
     op!("exec", Exec, 5, String, "exec.exec(dir, path, args, stdin)"),
+    op!("only", Exec, 2, SameReceiver, "exec.only(programs)"),
     op!("write_out", BuildOut, 3, Nil, "out.write_out(path, contents)"),
     op!("read_build", BuildRead, 2, String, "build_read.read_build(path)"),
     op!("get_build_env", BuildEnv, 2, OptionString, "build_env.get_build_env(name)"),

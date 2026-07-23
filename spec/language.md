@@ -1485,7 +1485,8 @@ with `witchy sandbox --dir <root> prog.witchy a b c`.)
 `Dir[...]`, `File[...]`, `Net[...]`, `Exec`, `SecretStore` — and the launch grant
 backs each: `--dir <root>` a `Dir`, `--file <path>` a `File` (the i-th `File`
 parameter ← the i-th `--file`), `--net <host:port>` a `Net` allowlist entry,
-`--secret`/`--signing-key` a `SecretStore`. A `File[Read]` lets a single-file
+`--secret`/`--signing-key` a `SecretStore`; grant-document `[env]` and `[exec]`
+entries carry the corresponding name allowlists. A `File[Read]` lets a single-file
 program ask for exactly one file instead of a whole `Dir`. A **grant document**
 (`--grants app.grants.toml`) enumerates the whole grant as reviewable TOML and is
 cross-checked against the computed footprint — see

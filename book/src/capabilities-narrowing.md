@@ -203,17 +203,21 @@ takes an argv list, never a shell string:
 ```witchy
 import exec
 
-// `run_tool` can execute exactly the binaries reachable through `bin` — nothing
-// it cannot already read, and no shell to inject into.
-fn run_tool(e: Exec, bin: Dir[Read], name: String) -> Int:
-    let (code, _out) = exec.run(e, bin, name, ["--version"], "")
+// This helper can execute only `git` through `bin`: no shell and no other
+// readable executable.
+fn run_git(e: Exec, bin: Dir[Read]) -> Int:
+    let git = e.only(["git"])
+    let (code, _out) = exec.run(git, bin, "git", ["--version"], "")
     code
 ```
 
 Almost nothing should hold `Exec`; it exists chiefly so a self-hosted tool (like
 the package manager driving the compiler) can run a confined subprocess. `witchy
 caps` surfaces it like any other authority, and the supply-chain gate treats newly
-wanting `Exec` as a serious widening.
+wanting `Exec` as a serious widening. A grant document's `[exec].runner` entry
+sets the root allowlist for a same-named `runner: Exec` parameter. `only`
+intersects that policy with the requested names, so a narrower capability can
+never regain an executable excluded by its source.
 
 ## User-defined capabilities: `capability X from U`
 

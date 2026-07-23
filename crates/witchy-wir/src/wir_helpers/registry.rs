@@ -869,6 +869,18 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: true,
             uses_table: false,
         }),
+        "exec_only" => Some(WirHelperSpec {
+            func: host_call_helper_typed(
+                "exec_only",
+                "exec_only",
+                &[WirTy::Extern, WirTy::List(Box::new(WirTy::Str))],
+                WirTy::Extern,
+            ),
+            helper_deps: &[],
+            import_deps: &["exec_only"],
+            uses_heap: false,
+            uses_table: false,
+        }),
         "crypto_reveal" => Some(WirHelperSpec {
             func: crypto_reveal_helper(),
             helper_deps: &["rc_alloc"],

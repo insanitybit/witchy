@@ -64,9 +64,10 @@ pub(in crate::wir_helpers) fn file_read_helper() -> WirFunc {
     }
 }
 
-/// `$exec(h, path, args, stdin) -> i32` — spawn the executable `path` under Dir
-/// externref `h` (confined like `dir_read`), passing the `\0`-joined argv `args` and
-/// `stdin`, returning the payload string `"<exit_code>\n<stdout><stderr>"`.
+/// `$exec(exec, h, path, args, stdin) -> i32` — spawn the executable `path`
+/// through the attenuable Exec authority and under Dir externref `h` (confined
+/// like `dir_read`), passing the `\0`-joined argv `args` and `stdin`, returning
+/// the payload string `"<exit_code>\n<stdout><stderr>"`.
 /// Two-phase host protocol identical to [`dir_read_helper`]: `exec_run` runs the
 /// process and reports the staged payload's byte length, then `fill_pending`
 /// copies it into `res+4`. Needs the `Exec` capability.
@@ -79,6 +80,7 @@ pub(in crate::wir_helpers) fn exec_helper() -> WirFunc {
     WirFunc {
         name: "exec".into(),
         params: vec![
+            WirLocal { name: "exec".into(), ty: WirTy::Extern },
             WirLocal { name: "h".into(), ty: WirTy::Extern },
             WirLocal { name: "path".into(), ty: WirTy::Str },
             WirLocal { name: "args".into(), ty: WirTy::Str },
@@ -90,7 +92,7 @@ pub(in crate::wir_helpers) fn exec_helper() -> WirFunc {
             WirLocal { name: "res".into(), ty: WirTy::Bool },
         ],
         body: vec![
-            N::SetLocal { local: "len".into(), value: E::CallHost { import: "exec_run".into(), args: vec![getl("h"), getl("path"), getl("args"), getl("stdin")] } },
+            N::SetLocal { local: "len".into(), value: E::CallHost { import: "exec_run".into(), args: vec![getl("exec"), getl("h"), getl("path"), getl("args"), getl("stdin")] } },
             // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse); it reserves + bumps `$heap`.
             N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
             N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },

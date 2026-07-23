@@ -2044,7 +2044,12 @@ impl Interpreter {
             // `(Int, String)` over a `List(String)`. (One staged-string result, so
             // the compiled backend mirrors `dir_read` exactly — see rfcs/0004.)
             "exec" => match args {
-                [Value::Cap(Capability::Exec), Value::Dir(base, pol), Value::Str(path), Value::Str(joined), Value::Str(stdin)] => {
+                [Value::Cap(Capability::Exec(allow)), Value::Dir(base, pol), Value::Str(path), Value::Str(joined), Value::Str(stdin)] => {
+                    if allow.as_ref().is_some_and(|programs| !programs.contains(path.as_str())) {
+                        return err(format!(
+                            "exec: `{path}` is not in this Exec grant's allow-list"
+                        ));
+                    }
                     // (RFC-0011) exec is the sharpest right, so it takes the SAME entry-policy
                     // gate as read/write: a `Dir[...].only(...)` may only run a file it admits.
                     if !witchy_caps::capabilities::dir_admits(pol, path, false) {
@@ -2429,6 +2434,20 @@ impl Interpreter {
             // set; `deny` subtracts it (a monotone exclusion recorded as `!`-prefixed entries
             // the shared `net_allows` honours).
             "only" => match args {
+                [Value::Cap(Capability::Exec(allow)), Value::List(programs)] => {
+                    let requested = programs
+                        .iter()
+                        .map(|program| match program {
+                            Value::Str(program) => Ok(program.as_str().to_string()),
+                            _ => err("Exec.only expects a List(String)"),
+                        })
+                        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+                    let narrowed = match allow {
+                        Some(current) => requested.intersection(current).cloned().collect(),
+                        None => requested,
+                    };
+                    Ok(Some(Value::Cap(Capability::Exec(Some(narrowed)))))
+                }
                 [Value::Cap(Capability::Env(allow)), Value::List(names)] => {
                     let requested = names
                         .iter()
@@ -2467,7 +2486,7 @@ impl Interpreter {
                     )))
                 }
                 _ => err(
-                    "only expects an Env and names, a Fetch and origins, a Net and a NetPolicy, or a Dir and a DirPolicy",
+                    "only expects an Env/Exec and names, a Fetch and origins, a Net and a NetPolicy, or a Dir and a DirPolicy",
                 ),
             },
             "send_raw" => match args {
