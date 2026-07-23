@@ -27,7 +27,7 @@ pub enum Determinism {
     Nondeterministic,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum HostFacility {
     Argv,
     Vm,
@@ -94,6 +94,32 @@ impl HostRequirements {
             self.facilities.push(facility);
         }
     }
+
+    fn normalized(&self) -> Self {
+        let mut capabilities: BTreeMap<CapabilityKind, Vec<CapabilityRight>> = BTreeMap::new();
+        for requirement in &self.capabilities {
+            let rights = capabilities.entry(requirement.kind).or_default();
+            for right in &requirement.rights {
+                if !rights.contains(right) {
+                    rights.push(*right);
+                }
+            }
+        }
+        let capabilities = capabilities
+            .into_iter()
+            .map(|(kind, mut rights)| {
+                order_rights(kind, &mut rights);
+                CapabilityRequirement { kind, rights }
+            })
+            .collect();
+        let mut facilities = self.facilities.clone();
+        facilities.sort();
+        facilities.dedup();
+        Self {
+            capabilities,
+            facilities,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -120,6 +146,32 @@ pub struct HostMenu {
     pub axis: MenuAxis,
     pub grants: Vec<HostGrant>,
     pub facilities: Vec<FacilityGrant>,
+}
+
+/// The exact provider bindings selected for one entrypoint on one host.
+/// Unlike a menu, a plan contains no authority the program did not request.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GrantPlan {
+    pub host: String,
+    pub axis: MenuAxis,
+    pub capabilities: Vec<PlannedCapability>,
+    pub facilities: Vec<PlannedFacility>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlannedCapability {
+    pub requirement: CapabilityRequirement,
+    pub provider: String,
+    pub determinism: Determinism,
+    pub settings: BTreeMap<String, toml::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlannedFacility {
+    pub facility: HostFacility,
+    pub provider: String,
+    pub determinism: Determinism,
+    pub settings: BTreeMap<String, toml::Value>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -270,6 +322,61 @@ impl HostMenu {
         }
         report
     }
+
+    /// Bind typed requirements to this host's providers. The result is
+    /// capability-minimal: provider-wide rights are clipped to the requested
+    /// rights, duplicate requirements are merged, and unrequested menu entries
+    /// never appear.
+    pub fn plan(
+        &self,
+        requirements: &HostRequirements,
+    ) -> Result<GrantPlan, PortabilityReport> {
+        let requirements = requirements.normalized();
+        let report = self.check(&requirements);
+        if !report.portable() {
+            return Err(report);
+        }
+        let capabilities = requirements
+            .capabilities
+            .iter()
+            .map(|requirement| {
+                let grant = self
+                    .grants
+                    .iter()
+                    .find(|grant| grant.kind == requirement.kind)
+                    .expect("portable requirements have a matching grant");
+                PlannedCapability {
+                    requirement: requirement.clone(),
+                    provider: grant.provider.clone(),
+                    determinism: grant.determinism,
+                    settings: grant.settings.clone(),
+                }
+            })
+            .collect();
+        let facilities = requirements
+            .facilities
+            .iter()
+            .map(|facility| {
+                let grant = self
+                    .facilities
+                    .iter()
+                    .find(|grant| grant.facility == *facility)
+                    .expect("portable requirements have a matching facility");
+                PlannedFacility {
+                    facility: *facility,
+                    provider: grant.provider.clone(),
+                    determinism: grant.determinism,
+                    settings: grant.settings.clone(),
+                }
+            })
+            .collect();
+        Ok(GrantPlan {
+            host: self.host.clone(),
+            axis: self.axis,
+            capabilities,
+            facilities,
+        })
+    }
 }
 
 fn parse_rights(
@@ -398,6 +505,52 @@ mod tests {
         let report = menu.check(&requirements(&[("Dir", &["Read", "Write"])]));
         assert!(report.missing_capabilities.is_empty());
         assert_eq!(report.missing_rights[0].rights, vec![CapabilityRight::Write]);
+    }
+
+    #[test]
+    fn grant_plan_is_normalized_and_contains_only_requested_authority() {
+        let menu = HostMenu::parse(NATIVE_MENU).unwrap();
+        let mut requested = requirements(&[("Dir", &["Read"]), ("Console", &[])]);
+        requested.capabilities.push(CapabilityRequirement {
+            kind: CapabilityKind::Dir,
+            rights: vec![CapabilityRight::Read],
+        });
+        requested.require_facility(HostFacility::Argv);
+        requested.require_facility(HostFacility::Argv);
+
+        let plan = menu.plan(&requested).expect("native plan");
+        assert_eq!(plan.host, "native-cli");
+        assert_eq!(plan.capabilities.len(), 2);
+        assert_eq!(plan.facilities.len(), 1);
+        let dir = plan
+            .capabilities
+            .iter()
+            .find(|binding| binding.requirement.kind == CapabilityKind::Dir)
+            .unwrap();
+        assert_eq!(dir.requirement.rights, vec![CapabilityRight::Read]);
+        assert_eq!(dir.provider, "confined-filesystem");
+        assert!(
+            !plan
+                .capabilities
+                .iter()
+                .any(|binding| binding.requirement.kind == CapabilityKind::Net),
+            "an unrequested menu grant must not enter the launch plan"
+        );
+    }
+
+    #[test]
+    fn grant_plan_returns_the_typed_portability_failure() {
+        let menu = HostMenu::parse(BROWSER_MENU).unwrap();
+        let report = menu
+            .plan(&requirements(&[("Fetch", &[])]))
+            .expect_err("browser Fetch is not implemented yet");
+        assert_eq!(
+            report.missing_capabilities,
+            vec![CapabilityRequirement {
+                kind: CapabilityKind::Fetch,
+                rights: Vec::new(),
+            }]
+        );
     }
 
     #[test]

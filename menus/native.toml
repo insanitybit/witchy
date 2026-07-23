@@ -45,6 +45,13 @@ determinism = "nondeterministic"
 rights = ["Connect", "Listen", "Tcp", "Udp", "Uds"]
 grant = "address-allowlist"
 
+[grants.Fetch]
+provider = "native-http"
+determinism = "nondeterministic"
+grant = "origin-allowlist"
+redirects = "deny"
+buffered = true
+
 [grants.Exec]
 provider = "confined-process"
 determinism = "nondeterministic"
