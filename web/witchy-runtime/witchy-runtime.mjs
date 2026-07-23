@@ -462,8 +462,11 @@ function runeHash(paths, contents) {
 //              allowlist. `fetch_send_len` is a JSPI-suspending import, so the
 //              guest's ordinary synchronous call resumes after the Promise
 //              settles without blocking the browser thread.
+//   * SecretStore — an immutable page-supplied named map. Opaque externrefs
+//              preserve use-only policy; WebCrypto sign/public-key calls
+//              suspend through JSPI without exposing key bytes to the guest.
 //
-// `Exec`, `Secret`, raw `Net`, `mint_file` (a top-level File grant), and
+// `Exec`, bare root `Secret`, raw `Net`, `mint_file` (a top-level File grant), and
 // compiler introspection remain DENIED BY OMISSION even under this host — they
 // are simply not built, so a module reaching them still fails to instantiate
 // with a `LinkError`. See rfcs/0091-browser-virtual-capabilities.md.
@@ -498,6 +501,12 @@ export const WITCHY_FETCH_IMPORTS = Object.freeze([
   "mint_fetch",
   "fetch_only",
   "fetch_send_len",
+]);
+export const WITCHY_SECRET_STORE_IMPORTS = Object.freeze([
+  "crypto.sign",
+  "crypto.public_key",
+  "secretstore_lookup",
+  "crypto_reveal_len",
 ]);
 
 // The DIR_DENY_ALL sentinel — a single NUL (U+0000), byte-identical to
@@ -845,13 +854,54 @@ function normalizeFetchGrant(grant) {
   return { origins, timeoutMs, maxResponseBytes };
 }
 
-// Normalize `opts.capabilities` into `{ clock, env, dir, fetch }`. Absent/false =>
+function normalizeSecretStore(spec) {
+  if (spec === true) return new Map();
+  if (!spec || typeof spec !== "object" || Array.isArray(spec)) {
+    throw new Error(
+      "witchy-runtime: SecretStore requires `true`, a Map, or a named-secret object",
+    );
+  }
+  const entries = spec instanceof Map ? spec.entries() : Object.entries(spec);
+  const secrets = new Map();
+  for (const [rawName, rawGrant] of entries) {
+    const name = String(rawName);
+    let value = rawGrant;
+    let useOnly = false;
+    if (
+      rawGrant
+      && typeof rawGrant === "object"
+      && !(rawGrant instanceof Uint8Array)
+      && !ArrayBuffer.isView(rawGrant)
+    ) {
+      if (!Object.prototype.hasOwnProperty.call(rawGrant, "value")) {
+        throw new Error(`witchy-runtime: secret \`${name}\` is missing its \`value\``);
+      }
+      value = rawGrant.value;
+      useOnly = rawGrant.useOnly === true;
+    }
+    let bytes;
+    if (typeof value === "string") {
+      bytes = utf8.encode(value);
+    } else if (value instanceof Uint8Array || ArrayBuffer.isView(value)) {
+      bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice();
+    } else {
+      throw new Error(
+        `witchy-runtime: secret \`${name}\` must be a string or byte array`,
+      );
+    }
+    secrets.set(name, { bytes, useOnly });
+  }
+  return secrets;
+}
+
+// Normalize `opts.capabilities` into `{ clock, env, dir, fetch, secrets }`. Absent/false =>
 // that family stays DENIED (its imports are never built). `env` becomes a Map
 // (empty when enabled with no entries); `dir` becomes an array of grant specs
 // (one per `mint_dir` ordinal), each `{ fs, read, write }`; `fetch` becomes an
-// array of explicit origin-scoped grants (one per `mint_fetch` ordinal).
+// array of explicit origin-scoped grants (one per `mint_fetch` ordinal);
+// `secrets` becomes an immutable named map whose copied bytes remain host-side.
 function normalizeCapabilities(spec) {
-  const out = { clock: false, env: null, dir: null, fetch: null };
+  const out = { clock: false, env: null, dir: null, fetch: null, secrets: null };
   if (!spec || typeof spec !== "object") return out;
 
   out.clock = spec.clock === true;
@@ -880,6 +930,8 @@ function normalizeCapabilities(spec) {
     out.fetch = grants.map(normalizeFetchGrant);
   }
 
+  if (spec.secrets) out.secrets = normalizeSecretStore(spec.secrets);
+
   return out;
 }
 
@@ -896,6 +948,124 @@ function checkFamilyImports(family, imports, catalog) {
       `  actual:   ${actual.join(", ")}`
     );
   }
+}
+
+function secretSeed32(bytes) {
+  if (bytes.length === 32) return bytes;
+  if (bytes.length === 64) {
+    const seed = hexToBytes(decodeLossy(bytes));
+    if (seed !== null && seed.length === 32) return seed;
+    throw new Error("secret is not a valid hex Ed25519 seed");
+  }
+  throw new Error("secret is not a signing key (need a 32-byte seed or 64 hex chars)");
+}
+
+function decodeBase64Url(value) {
+  const standard = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = standard + "=".repeat((4 - (standard.length % 4)) % 4);
+  if (typeof globalThis.atob !== "function") {
+    throw new Error("witchy-runtime: this platform cannot decode an Ed25519 public key");
+  }
+  const binary = globalThis.atob(padded);
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
+
+// SecretStore: a page-supplied immutable named map. Lookups return branded
+// opaque externrefs; only this closure can unwrap them. Reveal enforces the
+// per-entry use-only bit. Ed25519 signing/public-key derivation runs in the
+// platform WebCrypto provider through JSPI, so key bytes never enter guest
+// memory. This family deliberately excludes `mint_secret`: a bare root Secret
+// remains denied even when a SecretStore is granted.
+export function makeSecretStoreImports(
+  secretSpec,
+  { readWstr, readWstrText, writeAt, stagePending },
+  subtleCrypto = globalThis.crypto && globalThis.crypto.subtle,
+) {
+  if (typeof WebAssembly.Suspending !== "function" || typeof WebAssembly.promising !== "function") {
+    throw new Error(
+      "witchy-runtime: browser SecretStore signing requires WebAssembly JSPI " +
+      "(`WebAssembly.Suspending` and `WebAssembly.promising`)",
+    );
+  }
+  if (!subtleCrypto) {
+    throw new Error("witchy-runtime: browser SecretStore signing requires WebCrypto");
+  }
+
+  const grants = secretSpec instanceof Map ? secretSpec : normalizeSecretStore(secretSpec);
+  const handles = new Map();
+  const branded = new WeakSet();
+  for (const [name, grant] of grants) {
+    const handle = { bytes: grant.bytes.slice(), useOnly: grant.useOnly === true };
+    branded.add(handle);
+    handles.set(name, handle);
+  }
+  const privateKeys = new WeakMap();
+  const requireHandle = (handle) => {
+    if (!handle || typeof handle !== "object" || !branded.has(handle)) {
+      throw new Error("Secret externref has wrong host data");
+    }
+    return handle;
+  };
+  const privateKey = async (handle) => {
+    let key = privateKeys.get(handle);
+    if (!key) {
+      const seed = secretSeed32(handle.bytes);
+      const prefix = hexToBytes("302e020100300506032b657004220420");
+      const pkcs8 = new Uint8Array(prefix.length + seed.length);
+      pkcs8.set(prefix);
+      pkcs8.set(seed, prefix.length);
+      key = await subtleCrypto.importKey(
+        "pkcs8",
+        pkcs8,
+        { name: "Ed25519" },
+        true,
+        ["sign"],
+      );
+      privateKeys.set(handle, key);
+    }
+    return key;
+  };
+
+  const imports = {
+    secretstore_lookup(namePtr) {
+      return handles.get(readWstrText(namePtr)) || null;
+    },
+    crypto_reveal_len(secret) {
+      const handle = requireHandle(secret);
+      if (handle.useOnly) {
+        throw new Error("this secret is use-only and cannot be revealed");
+      }
+      const bytes = utf8.encode(decodeLossy(handle.bytes));
+      stagePending(bytes);
+      return bytes.length;
+    },
+    async "crypto.sign"(secret, messagePtr, outPtr) {
+      const handle = requireHandle(secret);
+      const message = readWstr(messagePtr);
+      const signature = await subtleCrypto.sign(
+        { name: "Ed25519" },
+        await privateKey(handle),
+        message,
+      );
+      writeAt(utf8.encode(toHex(new Uint8Array(signature))), outPtr);
+    },
+    async "crypto.public_key"(secret, outPtr) {
+      const handle = requireHandle(secret);
+      const jwk = await subtleCrypto.exportKey("jwk", await privateKey(handle));
+      if (typeof jwk.x !== "string") {
+        throw new Error("witchy-runtime: WebCrypto did not return an Ed25519 public key");
+      }
+      const publicKey = decodeBase64Url(jwk.x);
+      if (publicKey.length !== 32) {
+        throw new Error("witchy-runtime: WebCrypto returned a malformed Ed25519 public key");
+      }
+      writeAt(utf8.encode(toHex(publicKey)), outPtr);
+    },
+  };
+  checkFamilyImports("SecretStore", imports, WITCHY_SECRET_STORE_IMPORTS);
+  imports["crypto.sign"] = new WebAssembly.Suspending(imports["crypto.sign"]);
+  imports["crypto.public_key"] = new WebAssembly.Suspending(imports["crypto.public_key"]);
+  return imports;
 }
 
 // Clock: real browser wall/monotonic time on the existing i64 ABI. `now` is ms
@@ -1266,6 +1436,7 @@ function makeFetchImports(grants, { readWstrText, stagePending }, fetchImpl) {
  * @param {object} [opts.cryptoBackend]  override the crypto backend (testing)
  * @param {object} [opts.nodeCrypto]  a `node:crypto`-shaped object (auto-detected
  *        on Node when omitted)
+ * @param {SubtleCrypto} [opts.subtleCrypto]  WebCrypto override for SecretStore
  * @param {Function} [opts.fetchImpl]  injected fetch implementation (testing);
  *        defaults to the platform's global fetch
  */
@@ -1540,6 +1711,16 @@ export async function instantiate(wasmBytes, opts = {}) {
   if (caps.fetch) {
     Object.assign(witchy, makeFetchImports(caps.fetch, marshal, opts.fetchImpl));
   }
+  if (caps.secrets) {
+    const subtleCrypto =
+      opts.subtleCrypto
+      || (globalThis.crypto && globalThis.crypto.subtle)
+      || (nodeCrypto && nodeCrypto.webcrypto && nodeCrypto.webcrypto.subtle);
+    Object.assign(
+      witchy,
+      makeSecretStoreImports(caps.secrets, marshal, subtleCrypto),
+    );
+  }
 
   ({ instance } = await WebAssembly.instantiate(wasmBytes, { witchy }));
   memory = instance.exports.memory;
@@ -1548,7 +1729,7 @@ export async function instantiate(wasmBytes, opts = {}) {
     if (typeof instance.exports.run !== "function") {
       throw new Error("witchy-runtime: the module does not export `run`");
     }
-    if (caps.fetch) {
+    if (caps.fetch || caps.secrets) {
       return WebAssembly.promising(instance.exports.run)().then(() => output);
     }
     instance.exports.run();
@@ -1595,7 +1776,7 @@ export async function instantiate(wasmBytes, opts = {}) {
       if (heapGlobal != null) heapGlobal.value = heapBase;
       return result;
     };
-    if (caps.fetch) {
+    if (caps.fetch || caps.secrets) {
       return WebAssembly.promising(fn)(inPtr, bytes.length).then(finish);
     }
     return finish(fn(inPtr, bytes.length));

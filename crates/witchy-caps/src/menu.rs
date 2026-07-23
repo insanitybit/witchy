@@ -470,10 +470,11 @@ mod tests {
             ("Env", &[]),
             ("Dir", &["Read", "Write"]),
             ("Fetch", &[]),
+            ("SecretStore", &[]),
         ]);
         assert!(menu.check(&supported).portable());
 
-        for denied in ["Rand", "Secret", "SecretStore", "File", "Net", "Exec"] {
+        for denied in ["Rand", "Secret", "File", "Net", "Exec"] {
             let requirement = if denied == "File" {
                 requirements(&[(denied, &["Read"])])
             } else if denied == "Net" {
@@ -559,6 +560,28 @@ mod tests {
         assert_eq!(
             fetch.settings.get("origins"),
             Some(&toml::Value::String("host-configured".to_string()))
+        );
+    }
+
+    #[test]
+    fn browser_secret_store_plan_uses_page_supplied_secrets() {
+        let menu = HostMenu::parse(BROWSER_MENU).unwrap();
+        let plan = menu
+            .plan(&requirements(&[("SecretStore", &[])]))
+            .expect("browser SecretStore provider");
+        assert_eq!(plan.capabilities.len(), 1);
+        let secrets = &plan.capabilities[0];
+        assert_eq!(
+            secrets.requirement,
+            CapabilityRequirement {
+                kind: CapabilityKind::SecretStore,
+                rights: Vec::new()
+            }
+        );
+        assert_eq!(secrets.provider, "page-secrets");
+        assert_eq!(
+            secrets.settings.get("source"),
+            Some(&toml::Value::String("page".to_string()))
         );
     }
 

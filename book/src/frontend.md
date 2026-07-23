@@ -31,11 +31,12 @@ network authority is denied — running right in the page in
 ## The browser boundary is deny-by-omission
 
 A Glamour app compiles to the same witchy WebAssembly as any other program, and
-runs on the browser's own WebAssembly engine. The browser host provides only the
-pure-compute infrastructure imports; every authority import (`Dir`, `Net`,
-`Clock`, `Env`, `Exec`, secrets) is **not offered**. A module that reaches
-for one cannot instantiate. That is the same structural guarantee as the native
-sandbox, arrived at by omission rather than by a runtime check — see
+runs on the browser's own WebAssembly engine. The browser host starts with only
+pure-compute infrastructure imports; no authority is ambient. A module that
+reaches for an unrequested capability cannot instantiate. The page may
+explicitly opt into providers published by the browser menu. That is the same
+structural guarantee as the native sandbox, arrived at by omission rather than
+by a runtime check — see
 [the WASM ABI](https://github.com/insanitybit/witchy/blob/master/spec/wasm-abi.md)
 and [Capabilities](capabilities.md) for the full model.
 
@@ -47,25 +48,17 @@ For a *teaching* or *playground* embedder that wants those examples to run,
 [RFC-0091](https://github.com/insanitybit/witchy/blob/master/rfcs/0091-browser-virtual-capabilities.md)
 adds an **opt-in** browser host that backs each capability with *what the browser
 actually has* — the real clock for `Clock`, a default-empty (but page-supplied)
-environment for `Env`, and a confined **in-memory scratch tree** for `Dir`, the
-one capability that genuinely needs a backing. It is opt-in precisely so it is
+environment for `Env`, a confined **in-memory scratch tree** for `Dir`,
+origin-scoped browser `Fetch`, and page-supplied opaque secrets for
+`SecretStore`. It is opt-in precisely so it is
 never an ambient widening: the default host still denies everything by omission,
 and a page enables only the families it explicitly hands over. Those examples then
 run with ordinary, non-deterministic output (fine for a demo).
 
-`Exec` (a native subprocess) and host secrets have no browser analogue and stay
-un-runnable by design. `Net` also stays denied for now because Witchy's host-call
-ABI is **synchronous** (a capability call
-returns its result inline before the guest continues), and `net.connect` is a raw
-**TCP socket** the guest reads and writes a byte at a time. The browser's only
-network primitive, `fetch`, is **asynchronous** and message-shaped, not a socket —
-and the sync escapes (a blocking `XMLHttpRequest`, or a worker with
-`SharedArrayBuffer` + `Atomics.wait`) either freeze the page or require
-re-architecting how modules are instantiated. Backing `Net` honestly therefore
-waits on an async-suspending host-call ABI (Asyncify / JSPI) plus a socket-shaped
-transport; until then, faking it would break the parity guarantee, so it is left
-denied. [RFC-0091](https://github.com/insanitybit/witchy/blob/master/rfcs/0091-browser-virtual-capabilities.md)
-records this as an explicit later phase.
+`Exec` (a native subprocess), bare root `Secret`, and raw socket `Net` still
+have no honest browser provider and remain denied. Browser `Fetch` and
+SecretStore signing use JSPI to suspend synchronous guest calls around the
+platform's asynchronous APIs without pretending that `fetch()` is a TCP socket.
 
 ## UI authority is a capability, too
 

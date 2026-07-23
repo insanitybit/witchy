@@ -189,6 +189,11 @@ loses the `SecretStore` capability (or was never granted it) cannot sign or
 reveal at all — the authority to use a secret is itself a value you can withhold
 or [narrow](capabilities-narrowing.md).
 
+In the browser, the page supplies the named-secret map explicitly. This book's
+host grants a deterministic use-only demo signing seed and the revealable
+`api-token` shown above; the provider keeps both outside guest memory and applies
+the same signing and reveal policy as the native host.
+
 ## Render HTML with Glamour
 
 [Glamour](https://github.com/insanitybit/witchy) is witchy's frontend framework

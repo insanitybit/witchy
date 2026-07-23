@@ -16,8 +16,10 @@
 //   5. Entry policy — `dir.only(Dir.ext(".log"))` denies a non-matching file.
 //   6. Fetch — explicit origin-scoped real fetch() authority, JSPI suspension,
 //      request/response parity, pre-I/O denial, and fail-closed limits.
-//   7. Deny-by-omission is preserved — the DEFAULT host still LinkErrors on any
-//      Dir/Clock/Env/Fetch program, and Exec/Secret/Net stay denied EVEN under the
+//   7. SecretStore — page-supplied opaque secrets preserve reveal/use-only
+//      policy and Ed25519 output matches the native oracle.
+//   8. Deny-by-omission is preserved — the DEFAULT host still LinkErrors on any
+//      capability program, and Exec/bare Secret/Net stay denied EVEN under the
 //      opt-in host (their imports are simply never built).
 //
 // Node is the host engine. Usage: node web/witchy-runtime/capability-host.test.mjs [witchy-binary]
@@ -53,8 +55,11 @@ function compile(source) {
 // Run a witchy source through the NATIVE interpreter (the parity oracle),
 // optionally with a working directory and extra env; return output lines
 // normalized to the shim's per-call list (trailing newlines trimmed).
-function nativeRun(src, { cwd, env, args = [] } = {}) {
-  const out = execFileSync(BIN, [src, ...args], {
+function nativeRun(src, { cwd, env, args = [], flags = [] } = {}) {
+  const command = flags.length === 0
+    ? [src, ...args]
+    : ["run", ...flags, src, ...args];
+  const out = execFileSync(BIN, command, {
     encoding: "utf8",
     cwd: cwd || work,
     env: { ...process.env, ...(env || {}) },
@@ -378,7 +383,89 @@ try {
     );
   }
 
-  // === 7. Exec/Secret/Net stay DENIED even under the opt-in host ============
+  // === 7. SecretStore: opaque page grants + policy + native parity ==========
+  {
+    const SECRET_STORE = `import crypto
+import secretstore
+
+fn main(console: Console, secrets: SecretStore):
+    let signing = secrets.require("signing")
+    console.print(crypto.public_key(signing))
+    console.print(crypto.sign(signing, "release v1.2.3"))
+    console.print(crypto.reveal(secrets.require("api-token")))
+`;
+    const { src, bytes } = compile(SECRET_STORE);
+    const seed = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const keyPath = join(work, "signing.seed");
+    writeFileSync(keyPath, seed);
+    const capabilities = {
+      secrets: {
+        signing: { value: seed, useOnly: true },
+        "api-token": "sk-live-abc",
+      },
+    };
+    const host = await instantiate(bytes, { capabilities });
+    const shimLines = await host.run();
+    ok(shimLines[0].length === 64, "SecretStore derives a 64-hex Ed25519 public key");
+    ok(shimLines[1].length === 128, "SecretStore signs with a 128-hex Ed25519 signature");
+    ok(shimLines[2] === "sk-live-abc", "SecretStore reveals an explicitly revealable value");
+    ok(
+      eq(
+        shimLines,
+        nativeRun(src, {
+          flags: [
+            "--signing-key", keyPath,
+            "--secret", "api-token=sk-live-abc",
+          ],
+        }),
+      ),
+      "SecretStore public-key/sign/reveal output matches the native oracle byte-for-byte",
+    );
+
+    let defaultDenied = false;
+    try {
+      await instantiate(bytes);
+    } catch (e) {
+      defaultDenied = e instanceof WebAssembly.LinkError;
+    }
+    ok(defaultDenied, "the default host still denies SecretStore by omission");
+
+    const REVEAL_USE_ONLY = `import crypto
+import secretstore
+
+fn main(console: Console, secrets: SecretStore):
+    console.print(crypto.reveal(secrets.require("locked")))
+`;
+    const locked = await instantiate(compile(REVEAL_USE_ONLY).bytes, {
+      capabilities: { secrets: { locked: { value: "hidden", useOnly: true } } },
+    });
+    let useOnlyDenied = false;
+    try {
+      await locked.run();
+    } catch (e) {
+      useOnlyDenied = /use-only and cannot be revealed/.test(String(e.message));
+    }
+    ok(useOnlyDenied, "a use-only page secret cannot be revealed");
+
+    const MISSING = `import secretstore
+
+fn main(console: Console, secrets: SecretStore):
+    let _ = secrets.require("absent")
+    console.print("unreachable")
+`;
+    const missing = await instantiate(compile(MISSING).bytes, {
+      capabilities: { secrets: true },
+    });
+    let missingDenied = false;
+    try {
+      await missing.run();
+    } catch (e) {
+      missingDenied = /required secret `absent` was not granted/.test(String(e.message));
+    }
+    ok(missingDenied, "an empty SecretStore preserves the canonical missing-secret diagnostic");
+  }
+
+  // === 8. Exec/bare Secret/Net stay DENIED under the opt-in host ============
   {
     const EXEC = `import exec
 
@@ -386,11 +473,10 @@ fn main(console: Console, e: Exec, bin: Dir[Read]):
     let (code, _out) = exec.run(e, bin, "true", [], "")
     console.print("\${code}")
 `;
-    const SECRET = `import secretstore
+    const SECRET = `import crypto
 
-fn main(console: Console, store: SecretStore):
-    let s = secretstore.require(store, "signing")
-    console.print("has secret")
+fn main(console: Console, secret: Secret):
+    console.print(crypto.public_key(secret))
 `;
     const NET = `import http
 
@@ -409,9 +495,16 @@ fn main(console: Console, net: Net):
       }
       let denied = false, how = "";
       try {
-        // Offer the FULL opt-in capability surface — Exec/Secret/Net are still
+        // Offer the FULL opt-in capability surface — Exec/bare Secret/Net are still
         // absent from it, so instantiation must still fail.
-        await instantiate(bytes, { capabilities: { clock: true, env: true, dir: { write: true } } });
+        await instantiate(bytes, {
+          capabilities: {
+            clock: true,
+            env: true,
+            dir: { write: true },
+            secrets: { signing: { value: "0".repeat(64), useOnly: true } },
+          },
+        });
         how = "(unexpectedly instantiated)";
       } catch (e) {
         denied = e instanceof WebAssembly.LinkError;

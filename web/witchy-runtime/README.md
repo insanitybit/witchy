@@ -33,7 +33,7 @@ import { instantiate } from "./witchy-runtime.mjs";
 const { run, output } = await instantiate(wasmBytes, {
   onPrint: (line) => console.log(line), // optional; else lines collect in `output`
 });
-run();          // synchronous without Fetch; returns the output array
+run();          // synchronous without Fetch/SecretStore; returns the output array
 ```
 
 `instantiate(wasmBytes, opts) -> { instance, output, run, callString, memory }`:
@@ -49,6 +49,11 @@ run();          // synchronous without Fetch; returns the output array
   `callString` are Promise-returning for a Fetch-enabled instance and must be
   awaited. Optional positive `timeoutMs` and non-negative `maxResponseBytes`
   values tighten the 30-second/16-MiB defaults.
+- `opts.capabilities.secrets` — opt into a page-supplied named SecretStore.
+  A string or byte array is revealable; `{ value, useOnly: true }` is usable by
+  Ed25519 signing/public-key operations but cannot be revealed. The provider
+  uses opaque externrefs and WebCrypto through JSPI; bare `Secret` remains
+  denied because `mint_secret` is not provided.
 - `opts.fetchImpl` — inject a fetch-compatible function for deterministic tests;
   production defaults to `globalThis.fetch`.
 
@@ -103,15 +108,15 @@ diagnostics. The exported `WITCHY_BROWSER_IMPORTS` list is checked against both
 the compiler catalog and the actual JavaScript import object.
 
 **Opt-in providers:** real browser `Clock`; immutable page-supplied `Env`;
-per-run in-memory `Dir`; and real browser `Fetch`, constrained to explicit
-origins. Fetch sends no credentials, refuses redirects, bounds buffered
-responses, and uses WebAssembly JSPI to suspend and resume the guest around the
-asynchronous platform call.
+per-run in-memory `Dir`; real browser `Fetch`, constrained to explicit origins;
+and page-supplied `SecretStore`. Fetch sends no credentials, refuses redirects,
+and bounds buffered responses. Fetch and SecretStore signing use WebAssembly
+JSPI to suspend and resume the guest around asynchronous platform calls.
 
 **Refuses (absent):** unrequested capability imports and unsupported families
-including raw `Net`, `Exec`, secrets, build authority, and signing, plus native
-launch/toolchain services such as `args_size` and `compiler_*`. A module
-importing any of these cannot instantiate.
+including raw `Net`, `Exec`, bare root `Secret`, build authority, and native
+launch/toolchain services such as `compiler_*`. A module importing any of these
+cannot instantiate.
 
 See [`spec/wasm-abi.md`](../../spec/wasm-abi.md) for the full import table and the
 pending-buffer protocol.

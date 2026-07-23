@@ -104,18 +104,44 @@ try {
   await argvCells[0].run();
   ok(argvCells[0].output.textContent === "2\none\nhéllo", "a runnable cell receives ordered UTF-8 argv");
 
-  // 3. Idempotent: re-enhancing the same root finds nothing new.
+  // 3. The book host receives explicit page-supplied SecretStore grants.
+  const secrets = pageWith(`import crypto
+import secretstore
+
+fn main(console: Console, secrets: SecretStore):
+    let signing = secrets.require("signing")
+    console.print("signature length \${crypto.sign(signing, "release v1.2.3").length()}")
+    console.print("token: \${crypto.reveal(secrets.require("api-token"))}")`);
+  const secretCells = enhanceRunnableCells(secrets, {
+    document: doc,
+    loadCompiler,
+    runOptions: {
+      capabilities: {
+        secrets: {
+          signing: { value: "0".repeat(64), useOnly: true },
+          "api-token": "sk-live-abc",
+        },
+      },
+    },
+  });
+  await secretCells[0].run();
+  ok(
+    secretCells[0].output.textContent === "signature length 128\ntoken: sk-live-abc",
+    "a runnable cell signs with an opaque secret and reveals only the value secret",
+  );
+
+  // 4. Idempotent: re-enhancing the same root finds nothing new.
   const again = enhanceRunnableCells(root, { document: doc, loadCompiler });
   ok(again.length === 0, "re-enhancing is idempotent (no double cells)");
 
-  // 4. A compile error surfaces as an error cell, not a thrown exception.
+  // 5. A compile error surfaces as an error cell, not a thrown exception.
   const bad = pageWith("fn main(console: Console):\n    console.print(nope)");
   const badCells = enhanceRunnableCells(bad, { document: doc, loadCompiler });
   await badCells[0].run();
   ok((badCells[0].output.getAttribute("class") || "").includes("err"), "a compile error marks the cell err");
   ok(badCells[0].output.textContent.length > 0, "the error message is shown");
 
-  // 4. RFC-0089: the browser reads the same compiled-Wasm resource counters as
+  // 6. RFC-0089: the browser reads the same compiled-Wasm resource counters as
   // native `witchy stats`. A 50,000-transition FIP kernel performs only its four
   // fixed setup allocations and no per-transition reuse/free/rewind work.
   const fip = pageWith(`mode opt
@@ -142,7 +168,7 @@ fn main(console: Console):
   ok(proof.includes("rc_free_calls 0"), "FIP depth adds no frees");
   ok(proof.includes("region_rewind_calls 0"), "FIP depth adds no region rewinds");
 
-  // 5. RFC-0098: browser-visible counters compare a shallow projection with a
+  // 7. RFC-0098: browser-visible counters compare a shallow projection with a
   // projection-heavy loop. Sixty-three additional exact target constructions
   // add at most sixty-three allocator calls; output proves the richer source is
   // still intact. This is an operation-count bound, never a timing assertion.
@@ -186,7 +212,7 @@ fn main(console: Console):
     "the browser observes one closed loop region per additional projection",
   );
 
-  // 6. A non-witchy code block is left alone.
+  // 8. A non-witchy code block is left alone.
   const other = new FakeElement("div");
   const pre = new FakeElement("pre");
   const code = new FakeElement("code");

@@ -34,6 +34,21 @@ const loadCompiler = (() => {
 // chapter route can never make the fetch route-relative.
 const contentFetch = (url) => fetch(contentUrl(url, here));
 
+// Explicit, deterministic page grants for runnable documentation examples.
+// The signing seed remains host-side and use-only; the ordinary token is
+// intentionally revealable because the recipe demonstrates both policies.
+const RUN_OPTIONS = {
+  capabilities: {
+    secrets: {
+      signing: {
+        value: "0000000000000000000000000000000000000000000000000000000000000000",
+        useOnly: true,
+      },
+      "api-token": "sk-live-abc",
+    },
+  },
+};
+
 // (RFC-0041) A `glamour-app` fence names a bundled INTERACTIVE demo. Mount it LIVE with the
 // book's OWN glamour-dom runtime into a contained sub-tree. NETWORK IS DENIED — no `fetch` is
 // passed, so any `UiFetch`/http Cmd the app emits simply isn't performed; a timer IS provided
@@ -109,7 +124,11 @@ await mount(wasm, document.getElementById("app"), {
   // read-only one for a capability example that can't (so it never shows a Run error).
   // `highlightWitchy` escapes its input (XSS-safe), so it can paint via innerHTML.
   slots: {
-    "witchy-runnable": runnableSlot({ loadCompiler, highlight: highlightWitchy }),
+    "witchy-runnable": runnableSlot({
+      loadCompiler,
+      highlight: highlightWitchy,
+      runOptions: RUN_OPTIONS,
+    }),
     "witchy-static": staticSlot({ highlight: highlightWitchy }),
     // Non-witchy code fences get read-only highlighting too (same token theme).
     "shell-static": staticSlot({ highlight: highlightShell }),

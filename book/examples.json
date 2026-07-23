@@ -838,7 +838,7 @@
   },
   {
     "block": 9,
-    "browser_runnable": false,
+    "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/appendix-recipes.md",

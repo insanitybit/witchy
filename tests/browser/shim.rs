@@ -265,12 +265,14 @@ fn playground_examples_are_current_witchy() {
 ///     and which NEVER touches a real filesystem;
 ///   * a `..`/absolute path is refused by BOTH the shim and the native run (confinement parity);
 ///   * `dir.only(Dir.ext(".log"))` denies a non-matching file (entry policy); and
-///   * the DEFAULT host still `LinkError`s on any Dir/Clock/Env program, and `Exec`/`Secret`/
+///   * `SecretStore` uses page-supplied opaque grants with native Ed25519/reveal parity and
+///     preserves use-only policy; and
+///   * the DEFAULT host still `LinkError`s on capability programs, while `Exec`/bare `Secret`/
 ///     `Net` stay denied by omission EVEN under the opt-in host.
 ///
 /// This is the parity + non-widening guarantee for RFC-0091 phase 1.
 #[test]
-fn browser_capability_host_runs_clock_env_dir_and_denies_the_rest() {
+fn browser_capability_host_runs_portable_providers_and_denies_the_rest() {
     if !node_available() {
         eprintln!("skipping: `node` is not available on PATH");
         return;

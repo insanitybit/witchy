@@ -1,9 +1,10 @@
 // witchy-runnable — build RUNNABLE cells from `witchy` code blocks (RFC-0041 P2).
 //
-// A reader's snippet compiles to a capability-DENIED, pure-compute wasm module
-// (deny-by-omission — the browser grants no `Dir`/`Net`/…), so it is already contained by
-// wasm's memory isolation plus the capability model: it can only compute and return a string.
-// That is why a cell runs safely in the MAIN frame with no compartment (RFC-0041 §Phase 2).
+// A reader's snippet compiles to tree-shaken wasm whose imports are exactly the
+// authority it reaches. The host starts deny-by-omission and may pass explicit
+// `runOptions` providers for examples admitted by the browser menu. Wasm memory
+// isolation plus the capability import boundary contains the cell in the main
+// frame without a separate compartment (RFC-0041 §Phase 2).
 //
 // Two entry points:
 //   * `runnableSlot(opts)` — a glamour HOST-SLOT renderer: register it as

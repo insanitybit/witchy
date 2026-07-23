@@ -1,3 +1,5 @@
+import { makeSecretStoreImports } from "./witchy-runtime/witchy-runtime.mjs";
+
 // Shared host shim for the witchy browser playground — imported by both
 // web/playground.js (browser) and scripts/pg_validate.mjs (the Node/V8 validator),
 // so it stays free of DOM/fetch: callers load the lib wasm and pass its `exports`
@@ -204,6 +206,24 @@ export async function runWitchy(wasm, source, opts = {}) {
     },
   };
 
+  const secretSpec = opts.capabilities && opts.capabilities.secrets;
+  const hasSecretStore = secretSpec !== undefined && secretSpec !== false;
+  if (hasSecretStore) {
+    Object.assign(
+      real,
+      makeSecretStoreImports(
+        secretSpec,
+        {
+          readWstr,
+          readWstrText: (ptr) => dec.decode(readWstr(ptr)),
+          writeAt: writeInner,
+          stagePending: (bytes) => { pending = bytes; },
+        },
+        globalThis.crypto && globalThis.crypto.subtle,
+      ),
+    );
+  }
+
   // Any authority import (now/env/dir_*/net_*/crypto.*/…) is a trapping stub —
   // the browser grants no capabilities.
   const witchy = new Proxy(real, {
@@ -221,7 +241,11 @@ export async function runWitchy(wasm, source, opts = {}) {
   try {
     ({ instance } = await WebAssembly.instantiate(binary, { witchy }));
     innerMem = instance.exports.memory;
-    instance.exports.run();
+    if (hasSecretStore) {
+      await WebAssembly.promising(instance.exports.run)();
+    } else {
+      instance.exports.run();
+    }
   } catch (e) {
     const msg = `runtime error: ${String((e && e.message) || e)}`;
     const stats = instance == null ? {} : readOptimizationStats(instance.exports);

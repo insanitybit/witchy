@@ -25,6 +25,11 @@ provider = "browser-fetch"
 determinism = "nondeterministic"
 origins = "host-configured"
 
+[grants.SecretStore]
+provider = "page-secrets"
+determinism = "deterministic"
+source = "page"
+
 [facilities.argv]
 provider = "page-argv"
 determinism = "deterministic"

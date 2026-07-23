@@ -24,10 +24,10 @@ python3 -m http.server -d web 8000   # any static file server works
 - `index.html` is the UI, preloaded with the language reference's examples.
 
 The low-level runtime has explicit browser providers for Clock, page-supplied
-Env, in-memory Dir, and origin-scoped Fetch. The editor shell still starts with
-no ambient capabilities; examples opt into only the providers declared by the
-browser host menu. Raw Net remains unavailable because browser `fetch()` is
-Fetch authority, not a byte-stream socket.
+Env and SecretStore, in-memory Dir, and origin-scoped Fetch. The editor shell
+still starts with no ambient capabilities; examples opt into only the providers
+declared by the browser host menu. Raw Net remains unavailable because browser
+`fetch()` is Fetch authority, not a byte-stream socket.
 
 `web/witchy.wasm` is a build artifact (gitignored); regenerate it with the
 build script.
