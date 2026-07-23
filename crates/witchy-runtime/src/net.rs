@@ -197,7 +197,45 @@ pub fn dial(
     tls: bool,
     host_port: &str,
 ) -> std::io::Result<Box<dyn Stream>> {
-    let tcp = TcpStream::connect(targets)?;
+    dial_with_timeout(targets, tls, host_port, None)
+}
+
+/// Dial an already-resolved target set with an optional per-address connect
+/// timeout and matching read/write deadlines. Fetch uses this to make timeout a
+/// provider contract rather than an unbounded host call; raw `Net` keeps the
+/// historical blocking behavior through [`dial`].
+pub fn dial_with_timeout(
+    targets: &[std::net::SocketAddr],
+    tls: bool,
+    host_port: &str,
+    timeout: Option<std::time::Duration>,
+) -> std::io::Result<Box<dyn Stream>> {
+    let tcp = match timeout {
+        Some(timeout) => {
+            let mut last = None;
+            let mut connected = None;
+            for target in targets {
+                match TcpStream::connect_timeout(target, timeout) {
+                    Ok(stream) => {
+                        connected = Some(stream);
+                        break;
+                    }
+                    Err(error) => last = Some(error),
+                }
+            }
+            connected.ok_or_else(|| {
+                last.unwrap_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "cannot dial an empty target set",
+                    )
+                })
+            })?
+        }
+        None => TcpStream::connect(targets)?,
+    };
+    tcp.set_read_timeout(timeout)?;
+    tcp.set_write_timeout(timeout)?;
     if !tls {
         return Ok(Box::new(tcp));
     }

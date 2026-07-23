@@ -12,6 +12,7 @@
 #![deny(unsafe_code)]
 
 pub mod confine;
+pub mod fetch;
 pub mod native;
 pub mod net;
 pub mod rand;
