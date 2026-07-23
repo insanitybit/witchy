@@ -1,3 +1,5 @@
+use std::os::fd::AsFd as _;
+
 use landlock::{
     Access, AccessFs, AccessNet, ABI, CompatLevel, Compatible, NetPort,
     PathBeneath, PathFd, RestrictionStatus, Ruleset, RulesetAttr,
@@ -84,11 +86,24 @@ fn apply_filesystem(
         .map_err(error)?;
     let mut created = ruleset.create().map_err(error)?;
     for rule in &policy.filesystem {
-        let access = fs_access(rule.scope, rule.access);
+        let path = PathFd::new(&rule.path).map_err(error)?;
+        let scope = match rule.scope {
+            FsScope::Path => {
+                let stat = rustix::fs::fstat(path.as_fd()).map_err(error)?;
+                if rustix::fs::FileType::from_raw_mode(stat.st_mode)
+                    == rustix::fs::FileType::Directory
+                {
+                    FsScope::Tree
+                } else {
+                    FsScope::File
+                }
+            }
+            scope => scope,
+        };
+        let access = fs_access(scope, rule.access);
         if access.is_empty() {
             continue;
         }
-        let path = PathFd::new(&rule.path).map_err(error)?;
         created = created
             .add_rule(PathBeneath::new(path, access))
             .map_err(error)?;
@@ -208,16 +223,23 @@ mod tests {
         if let Some(root) = std::env::var_os(FS_CHILD) {
             let root = PathBuf::from(root);
             let allowed = root.join("allowed");
+            let allowed_file = root.join("allowed-file");
             let outside = root.join("outside");
             let mut policy = Policy::default();
             policy.add_fs_rule(
                 &allowed,
-                FsScope::Tree,
+                FsScope::Path,
+                FsAccess::new(true, false, false),
+            );
+            policy.add_fs_rule(
+                &allowed_file,
+                FsScope::Path,
                 FsAccess::new(true, false, false),
             );
             let report = apply(&policy, EnforcementMode::Required).unwrap();
             assert!(report.fully_enforced(), "{report:?}");
             assert_eq!(std::fs::read_to_string(allowed.join("value")).unwrap(), "allowed");
+            assert_eq!(std::fs::read_to_string(allowed_file).unwrap(), "allowed-file");
             let error = std::fs::read_to_string(outside.join("value")).unwrap_err();
             assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
             return;
@@ -229,6 +251,7 @@ mod tests {
         std::fs::create_dir_all(&allowed).unwrap();
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(allowed.join("value"), "allowed").unwrap();
+        std::fs::write(root.join("allowed-file"), "allowed-file").unwrap();
         std::fs::write(outside.join("value"), "outside").unwrap();
         let output = run_child(
             "linux::tests::landlock_denies_an_ungranted_filesystem_path",

@@ -168,6 +168,8 @@ fn main(console: Console):
     console.print(list.join(toml.keys(m, "dependencies"), "|"))
     console.print(opt(toml.inline_get("{ path = \"../money\" }", "path")))
     console.print(opt(toml.inline_get("{ path = \"../util\", version = \"1.2\" }", "version")))
+    console.print(list.join(toml.inline_get_array("{ programs = [\"git\", \"witchy\"], child-paths = [\"~/.gitconfig\"] }", "programs"), "|"))
+    console.print(list.join(toml.inline_get_array("{ programs = [\"git\", \"witchy\"], child-paths = [\"~/.gitconfig\"] }", "child-paths"), "|"))
     let lock = "[[rune]]\nname = \"money\"\nhash = \"sha256:aa\"\n\n[[rune]]\nname = \"util\"\nhash = \"sha256:bb\"\n"
     console.print(rune_summary(lock))
 
@@ -202,6 +204,8 @@ fn opt(o: Option(String)) -> String:
                 "money|acme/util",
                 "../money",
                 "1.2",
+                "git|witchy",
+                "~/.gitconfig",
                 "money=sha256:aa|util=sha256:bb"
             ]
         );

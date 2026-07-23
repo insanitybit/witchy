@@ -612,6 +612,26 @@ fn empty_build_grants_do_not_widen_outer_authority() {
 }
 
 #[test]
+fn exec_child_paths_widen_only_the_read_only_outer_fence() {
+    use witchy_confinement::{FsAccess, FsRule, FsScope};
+
+    let policy = Capabilities {
+        exec_child_paths: vec![PathBuf::from("/child-config")],
+        ..Default::default()
+    }
+    .confinement_policy();
+
+    assert_eq!(
+        policy.filesystem,
+        vec![FsRule {
+            path: PathBuf::from("/child-config"),
+            scope: FsScope::Path,
+            access: FsAccess::new(true, false, false),
+        }]
+    );
+}
+
+#[test]
 fn empty_network_grant_remains_distinct_from_no_network_grant() {
     use witchy_confinement::SyscallClass;
 
@@ -629,3 +649,4 @@ fn empty_network_grant_remains_distinct_from_no_network_grant() {
     assert!(empty.network.connect_tcp_ports.is_empty());
     assert!(empty.syscall_classes.contains(&SyscallClass::Network));
 }
+use std::path::PathBuf;

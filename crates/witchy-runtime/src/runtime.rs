@@ -286,6 +286,9 @@ pub struct Capabilities {
     /// preserves the ordinary coarse `Exec` grant; `Some(tools)` is used by
     /// BuildExec and refuses every tool not named here.
     pub exec_allow: Option<Vec<String>>,
+    /// Host-declared read-only paths needed by native children. These widen only
+    /// the inherited outer fence; they are never minted as guest Dir/File values.
+    pub exec_child_paths: Vec<std::path::PathBuf>,
     /// BuildExec names paired with the exact ambient paths selected by the
     /// build driver before confinement. Guest-provided names never reach an
     /// ambient PATH lookup.
@@ -415,6 +418,13 @@ impl Capabilities {
                 FsAccess::new(true, false, true),
             );
         }
+        for path in &self.exec_child_paths {
+            policy.add_fs_rule(
+                path,
+                FsScope::Path,
+                FsAccess::new(true, false, false),
+            );
+        }
 
         if self.net_connect {
             policy.network.connect_requested = true;
@@ -460,6 +470,42 @@ impl Capabilities {
         policy.normalize_classes();
         policy
     }
+}
+
+/// Resolve host-authored child-needs without canonicalizing and reopening them.
+/// The provider opens each resulting pathname when it installs the rule.
+pub fn resolve_exec_child_paths(
+    paths: &[String],
+    base: &std::path::Path,
+) -> Result<Vec<std::path::PathBuf>, String> {
+    paths
+        .iter()
+        .map(|declared| {
+            if declared.is_empty() {
+                return Err("Exec child path must not be empty".to_string());
+            }
+            let configured = if declared == "~" || declared.starts_with("~/") {
+                let home = std::env::var_os("HOME")
+                    .ok_or_else(|| format!("Exec child path `{declared}` needs $HOME, but it is unset"))?;
+                std::path::PathBuf::from(home)
+                    .join(declared.strip_prefix("~/").unwrap_or(""))
+            } else {
+                std::path::PathBuf::from(declared)
+            };
+            let path = if configured.is_absolute() {
+                configured
+            } else {
+                base.join(configured)
+            };
+            std::fs::metadata(&path).map_err(|error| {
+                format!(
+                    "cannot resolve Exec child path `{}`: {error}",
+                    path.display()
+                )
+            })?;
+            Ok(path)
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

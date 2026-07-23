@@ -102,7 +102,7 @@ pub(crate) fn run_file_sandboxed(
         "sandboxing `{path}` \u{2014} granted exactly: {}",
         capabilities::show_caps(&grant)
     );
-    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, fetch_origins, None, None, args, signing_key, named_secrets, Vec::new(), true, false, confinement)
+    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, fetch_origins, None, None, Vec::new(), args, signing_key, named_secrets, Vec::new(), true, false, confinement)
 }
 
 /// Resolve a `[secrets]` entry's `from = "env:VAR"` to the secret bytes the host
@@ -174,6 +174,7 @@ pub(crate) fn run_file_grants(
     let mut fetch_origins: Vec<String> = Vec::new();
     let mut env_allow: Option<Vec<String>> = None;
     let mut exec_allow: Option<Vec<String>> = None;
+    let mut exec_child_paths: Vec<std::path::PathBuf> = Vec::new();
     let mut named_secrets: Vec<runtime::SecretGrant> = Vec::new();
     for (name, s) in &doc.secrets {
         // BUG-146: carry the document's `use-only` modifier through to the runtime
@@ -262,16 +263,21 @@ pub(crate) fn run_file_grants(
                                 .to_string(),
                         );
                     }
-                    let programs = doc.exec.get(&p.name).ok_or_else(|| {
+                    let binding = doc.exec.get(&p.name).ok_or_else(|| {
                         format!(
                             "grant `{grants_path}` has no `[exec].{}` for `main` parameter `{}`",
                             p.name, p.name
                         )
                     })?;
-                    let mut programs = programs.clone();
+                    let mut programs = binding.programs().to_vec();
                     programs.sort();
                     programs.dedup();
                     exec_allow = Some(programs);
+                    exec_child_paths = runtime::resolve_exec_child_paths(
+                        binding.child_paths(),
+                        &std::env::current_dir()
+                            .map_err(|error| format!("cannot determine launch directory: {error}"))?,
+                    )?;
                 }
                 Some(ast::Type::Named(n, _)) if grantable.contains_key(n.as_str()) => {
                     // RFC-0038: a bare grantable cap — pull each policy field from the
@@ -317,8 +323,11 @@ pub(crate) fn run_file_grants(
     for (name, names) in &doc.env {
         eprintln!("  env    {name}: {}", names.join(", "));
     }
-    for (name, programs) in &doc.exec {
-        eprintln!("  exec   {name}: {}", programs.join(", "));
+    for (name, binding) in &doc.exec {
+        eprintln!("  exec   {name}: {}", binding.programs().join(", "));
+        if !binding.child_paths().is_empty() {
+            eprintln!("    child paths: {}", binding.child_paths().join(", "));
+        }
     }
     for (name, s) in &doc.secrets {
         eprintln!("  secret {name}: {}", s.from);
@@ -337,5 +346,5 @@ pub(crate) fn run_file_grants(
     }
     // Secrets reach the program by name through the `SecretStore` (`require`/`get`);
     // the bare root `Secret` (`--signing-key`) is not granted via documents here.
-    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, fetch_origins, env_allow, exec_allow, args, None, named_secrets, user_cap_fields, true, false, confinement)
+    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, fetch_origins, env_allow, exec_allow, exec_child_paths, args, None, named_secrets, user_cap_fields, true, false, confinement)
 }

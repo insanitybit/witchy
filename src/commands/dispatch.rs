@@ -223,7 +223,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
             }
         }
     }
-    // `witchy build-step <file> [--out <dir>] [--read <dir>] [--env <KEY>]... [--exec <tool>]... [--net <host:port>]...`
+    // `witchy build-step <file> [--out <dir>] [--read <dir>] [--env <KEY>]... [--exec <tool>]... [--child-path <path>]... [--net <host:port>]...`
     // runs a rune's `build` entrypoint under confined grants and reports the
     // source it generated. The build step can only use the build capabilities it
     // is granted here (it cannot forge a runtime cap), so this is the build-time
@@ -233,6 +233,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
         let mut read_roots: Vec<std::path::PathBuf> = Vec::new();
         let mut env_keys: Vec<String> = Vec::new();
         let mut exec_tools: Vec<String> = Vec::new();
+        let mut child_paths: Vec<String> = Vec::new();
         let mut net_hosts: Vec<String> = Vec::new();
         let mut path: Option<String> = None;
         let mut argv = std::env::args().skip(2);
@@ -254,6 +255,11 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                         exec_tools.push(t);
                     }
                 }
+                "--child-path" => {
+                    if let Some(path) = argv.next() {
+                        child_paths.push(path);
+                    }
+                }
                 "--net" => {
                     if let Some(h) = argv.next() {
                         net_hosts.push(h);
@@ -264,10 +270,10 @@ pub(crate) fn run() -> wasmtime::Result<()> {
             }
         }
         let Some(path) = path else {
-            eprintln!("usage: witchy build-step <file.witchy> [--out <dir>] [--read <dir>]... [--env <KEY>]... [--exec <tool>]... [--net <host:port>]...");
+            eprintln!("usage: witchy build-step <file.witchy> [--out <dir>] [--read <dir>]... [--env <KEY>]... [--exec <tool>]... [--child-path <path>]... [--net <host:port>]...");
             std::process::exit(1);
         };
-        match commands::build_steps::run_build_step_file(&path, out_dir, read_roots, env_keys, exec_tools, net_hosts) {
+        match commands::build_steps::run_build_step_file(&path, out_dir, read_roots, env_keys, exec_tools, child_paths, net_hosts) {
             Ok(files) if files.is_empty() => println!("{path}: no `build` entrypoint, or it generated no files"),
             Ok(files) => {
                 println!("build step generated {} file(s):", files.len());

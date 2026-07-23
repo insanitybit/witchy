@@ -920,8 +920,10 @@ fn build_cache_key(root: Dir, dir: String, manifest: String, name: String, build
         material = material + "\nread " + p + "=" + read_input_digest(root, normalize_path(join_path(dir, p)))
     for k in toml.get_array(manifest, section + ".env"):
         material = material + "\nenv " + k
-    for t in toml.get_array(manifest, section + ".exec"):
+    for t in build_exec_programs(manifest, section):
         material = material + "\nexec " + t
+    for p in build_exec_child_paths(manifest, section):
+        material = material + "\nexec-child " + p
     "witchy-build-cache-v2:" + crypto.sha256(material)
 
 // The content digest of a granted read input — a single file, or (a read grant is a
@@ -966,7 +968,7 @@ fn granted_build_kinds(manifest: String, name: String) -> List(String):
     let section = "build.grants.\"${name}\""
     if list.length(toml.get_array(manifest, section + ".read")) > 0:
         out.push("BuildRead")
-    if list.length(toml.get_array(manifest, section + ".exec")) > 0:
+    if list.length(build_exec_programs(manifest, section)) > 0:
         out.push("BuildExec")
     if list.length(toml.get_array(manifest, section + ".env")) > 0:
         out.push("BuildEnv")
@@ -976,7 +978,8 @@ fn granted_build_kinds(manifest: String, name: String) -> List(String):
 
 // Translate a `[build.grants."name"]` section into `witchy build-step` flags:
 // each granted read path (resolved relative to the project) → `--read`, env key →
-// `--env`, exec tool → `--exec`. (BuildOut needs no flag — it is the default.)
+// `--env`, exec tool → `--exec`, inherited child need → `--child-path`.
+// (BuildOut needs no flag — it is the default.)
 fn grant_flags(manifest: String, name: String, dir: String) -> List(String):
     var out = []
     let section = "build.grants.\"${name}\""
@@ -986,9 +989,12 @@ fn grant_flags(manifest: String, name: String, dir: String) -> List(String):
     for k in toml.get_array(manifest, section + ".env"):
         out.push("--env")
         out.push(k)
-    for t in toml.get_array(manifest, section + ".exec"):
+    for t in build_exec_programs(manifest, section):
         out.push("--exec")
         out.push(t)
+    for p in build_exec_child_paths(manifest, section):
+        out.push("--child-path")
+        out.push(if p == "~" || p.starts_with("~/"): p else: normalize_path(join_path(dir, p)))
     // BUG-081: a granted BuildNet host must be plumbed to the confined build step
     // just like read/env/exec — one `--net <host:port>` per allowed address. (The
     // matching consumer of this flag in the compiler's `build-step` command is the
@@ -997,6 +1003,26 @@ fn grant_flags(manifest: String, name: String, dir: String) -> List(String):
         out.push("--net")
         out.push(h)
     out
+
+// Preserve the original `exec = ["protoc"]` grant while accepting RFC-0103's
+// richer `exec = { programs = [...], child-paths = [...] }` declaration.
+fn build_exec_programs(manifest: String, section: String) -> List(String):
+    match toml.get(manifest, section + ".exec"):
+        Some(raw) ->
+            if raw.trim().starts_with("{"):
+                toml.inline_get_array(raw, "programs")
+            else:
+                toml.get_array(manifest, section + ".exec")
+        None -> []
+
+fn build_exec_child_paths(manifest: String, section: String) -> List(String):
+    match toml.get(manifest, section + ".exec"):
+        Some(raw) ->
+            if raw.trim().starts_with("{"):
+                toml.inline_get_array(raw, "child-paths")
+            else:
+                []
+        None -> []
 
 // The build-axis footprint of a source: the build capabilities its `build`
 // entrypoint demands (`compiler.footprint`'s `build` array).

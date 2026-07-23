@@ -38,7 +38,7 @@ pub struct OwnedEmbeddedApplication {
     pub bindings: Vec<u8>,
 }
 
-const PLAN_VERSION: u32 = 3;
+const PLAN_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -105,6 +105,7 @@ struct ExecPlan {
     /// `None` is explicit unrestricted process execution. `Some` is the
     /// compiled-in executable-name allow-list.
     programs: Option<Vec<String>>,
+    child_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,6 +128,7 @@ pub struct ResolvedBindings {
     pub net_grants: Vec<Vec<String>>,
     pub exec: bool,
     pub exec_allow: Option<Vec<String>>,
+    pub exec_child_paths: Vec<std::path::PathBuf>,
     pub secrets: Vec<runtime::SecretGrant>,
     pub declared: capabilities::CapSet,
 }
@@ -191,8 +193,15 @@ enum RawNetBinding {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "from", rename_all = "kebab-case", deny_unknown_fields)]
 enum RawExecBinding {
-    System,
-    Allow { programs: Vec<String> },
+    System {
+        #[serde(default, rename = "child-paths")]
+        child_paths: Vec<String>,
+    },
+    Allow {
+        programs: Vec<String>,
+        #[serde(default, rename = "child-paths")]
+        child_paths: Vec<String>,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -330,11 +339,23 @@ pub fn build_binding_plan(module: &ast::Module, manifest: &str) -> Result<Vec<u8
                     .exec
                     .remove(&parameter.name)
                     .ok_or_else(|| binding_error(&target, "exec", &parameter.name, "Exec"))?;
-                let programs = match binding {
-                    RawExecBinding::System => None,
-                    RawExecBinding::Allow { programs } => Some(programs),
+                let (programs, child_paths) = match binding {
+                    RawExecBinding::System { child_paths } => (None, child_paths),
+                    RawExecBinding::Allow { programs, child_paths } => {
+                        (Some(programs), child_paths)
+                    }
                 };
-                exec = Some(ExecPlan { name: parameter.name.clone(), programs });
+                if child_paths.iter().any(String::is_empty) {
+                    return Err(format!(
+                        "trusted-exe Exec binding `{}` contains an empty child path",
+                        parameter.name
+                    ));
+                }
+                exec = Some(ExecPlan {
+                    name: parameter.name.clone(),
+                    programs,
+                    child_paths,
+                });
             }
             "Secret" => {
                 return Err(format!(
@@ -508,6 +529,10 @@ pub fn resolve_binding_plan(
             use_only: secret.use_only,
         });
     }
+    let exec_child_paths = match plan.exec.as_ref() {
+        Some(binding) => runtime::resolve_exec_child_paths(&binding.child_paths, &cwd)?,
+        None => Vec::new(),
+    };
     Ok(ResolvedBindings {
         confinement: if plan.confinement_required {
             witchy_confinement::EnforcementMode::Required
@@ -522,6 +547,7 @@ pub fn resolve_binding_plan(
         net_grants: plan.net.into_iter().map(|binding| binding.allow).collect(),
         exec: plan.exec.is_some(),
         exec_allow: plan.exec.and_then(|binding| binding.programs),
+        exec_child_paths,
         secrets,
         declared,
     })
@@ -1021,12 +1047,19 @@ mod tests {
                         network = { from = \"allow\", addresses = [\"api.example.com:443\"] }\n\
                         listener = { from = \"allow\", addresses = [\"127.0.0.1:8080\"] }\n\
                         [targets.trusted-exe.exec]\n\
-                        runner = { from = \"allow\", programs = [\"git\"] }\n";
+                        runner = { from = \"allow\", programs = [\"git\"], child-paths = [\"Cargo.toml\"] }\n";
         let bytes = build_binding_plan(&source, manifest).unwrap();
         let plan: BindingPlan = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(plan.net[0].allow, ["api.example.com:443"]);
         assert_eq!(plan.net[1].allow, ["127.0.0.1:8080"]);
-        assert_eq!(plan.exec.unwrap().programs.unwrap(), ["git"]);
+        let exec = plan.exec.unwrap();
+        assert_eq!(exec.programs.unwrap(), ["git"]);
+        assert_eq!(exec.child_paths, ["Cargo.toml"]);
+        let wasm = artifact::embed_launch_contract(Module::new().finish(), &source);
+        let resolved =
+            resolve_binding_plan(&bytes, &wasm, std::path::Path::new(".")).unwrap();
+        assert_eq!(resolved.exec_child_paths.len(), 1);
+        assert!(resolved.exec_child_paths[0].ends_with("Cargo.toml"));
 
         let missing = build_binding_plan(
             &source,

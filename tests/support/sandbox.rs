@@ -541,7 +541,7 @@ pub(crate) fn grant_document_exec_is_name_scoped_monotone_and_typed() {
     std::fs::write(
         &grants,
         "[dirs]\nroot = { root = \"/\", rights = [\"Read\"] }\n\
-         [exec]\nrunner = [\"bin/echo\", \"bin/sh\"]\n",
+         [exec]\nrunner = { programs = [\"bin/echo\", \"bin/sh\"], child-paths = [\"/etc\"] }\n",
     )
     .unwrap();
     std::fs::write(

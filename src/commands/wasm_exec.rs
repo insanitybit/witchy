@@ -291,6 +291,7 @@ pub(crate) fn run_trusted_application(
         file_rights: resolved.file_rights,
         exec: resolved.exec,
         exec_allow: resolved.exec_allow,
+        exec_child_paths: resolved.exec_child_paths,
         net_allow: (!network_grants.is_empty()).then(|| network_grants.remove(0)),
         net_grants: network_grants,
         net_connect: declares_right("Net", "Connect"),

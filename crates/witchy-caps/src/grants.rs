@@ -53,9 +53,10 @@ pub struct GrantDoc {
     /// bind to. An empty list grants a real Env that can read no names.
     #[serde(default)]
     pub env: BTreeMap<String, Vec<String>>,
-    /// Executable-name allowlists keyed by the `Exec` parameter they bind to.
+    /// Executable-name allowlists and optional inherited child-needs keyed by
+    /// the `Exec` parameter they bind to.
     #[serde(default)]
-    pub exec: BTreeMap<String, Vec<String>>,
+    pub exec: BTreeMap<String, ExecGrant>,
     #[serde(default)]
     pub secrets: BTreeMap<String, SecretGrant>,
     /// RFC-0038: bare, library-defined `grantable` capabilities the host mints at
@@ -80,6 +81,61 @@ pub struct DirGrant {
     pub root: String,
     #[serde(default)]
     pub rights: Vec<String>,
+}
+
+#[derive(Debug)]
+pub enum ExecGrant {
+    Programs(Vec<String>),
+    Detailed(ExecGrantDetail),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecGrantDetail {
+    #[serde(default)]
+    programs: Vec<String>,
+    #[serde(default, rename = "child-paths")]
+    child_paths: Vec<String>,
+}
+
+impl ExecGrant {
+    pub fn programs(&self) -> &[String] {
+        match self {
+            Self::Programs(programs) => programs,
+            Self::Detailed(detail) => &detail.programs,
+        }
+    }
+
+    pub fn child_paths(&self) -> &[String] {
+        match self {
+            Self::Programs(_) => &[],
+            Self::Detailed(detail) => &detail.child_paths,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ExecGrant {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = toml::Value::deserialize(deserializer)?;
+        match value {
+            toml::Value::Array(values) => Vec::<String>::deserialize(
+                toml::Value::Array(values),
+            )
+            .map(Self::Programs)
+            .map_err(serde::de::Error::custom),
+            toml::Value::Table(values) => ExecGrantDetail::deserialize(
+                toml::Value::Table(values),
+            )
+            .map(Self::Detailed)
+            .map_err(serde::de::Error::custom),
+            _ => Err(serde::de::Error::custom(
+                "Exec grant must be a program array or a { programs, child-paths } table",
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -326,6 +382,17 @@ mod tests {
         assert!(named.cap_set().contains_key("Exec"));
         let empty = GrantDoc::parse("[exec]\nrunner = []\n").unwrap();
         assert!(empty.cap_set().contains_key("Exec"));
+        let detailed = GrantDoc::parse(
+            "[exec]\nrunner = { programs = [\"git\"], child-paths = [\"~/.gitconfig\"] }\n",
+        )
+        .unwrap();
+        assert_eq!(detailed.exec["runner"].programs(), ["git"]);
+        assert_eq!(detailed.exec["runner"].child_paths(), ["~/.gitconfig"]);
+        let error = GrantDoc::parse(
+            "[exec]\nrunner = { programs = [\"git\"], child_paths = [\"oops\"] }\n",
+        )
+        .unwrap_err();
+        assert!(error.contains("unknown field"), "{error}");
     }
 
     /// (BUG-117) A `[secrets]` section confers `SecretStore` (named store secrets)

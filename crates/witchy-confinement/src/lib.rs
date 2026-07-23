@@ -92,6 +92,9 @@ impl FsAccess {
 pub enum FsScope {
     Tree,
     File,
+    /// Resolve file-versus-directory from the same opened object the provider
+    /// uses to install its rule.
+    Path,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -257,6 +260,7 @@ fn scope_order(scope: FsScope) -> u8 {
     match scope {
         FsScope::Tree => 0,
         FsScope::File => 1,
+        FsScope::Path => 2,
     }
 }
 

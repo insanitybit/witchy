@@ -309,6 +309,7 @@ fn run_tests_in_module(
                 None,
                 None,
                 Vec::new(),
+                Vec::new(),
                 None,
                 Vec::new(),
                 Vec::new(),

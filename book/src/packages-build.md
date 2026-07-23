@@ -75,7 +75,7 @@ So you authorize it — *that rune, that tool*:
 
 ```toml
 [build.grants."genlib"]
-exec = ["protoc"]
+exec = { programs = ["protoc"], child-paths = ["/usr/share/proto"] }
 ```
 
 ```text
@@ -86,6 +86,9 @@ build OK: `app` (1 dependency resolved, linked + type-checked)
 (For env vars the same shape applies: `env = ["TARGET"]` lets the step read
 `TARGET` and nothing else — `get_build_env` refuses any key the grant doesn't
 name, even if it exists in your environment.)
+
+`child-paths` are read-only outer-fence needs inherited by the named tool; they
+are not `BuildRead` grants and never become visible to the Witchy build program.
 
 ## Gated against the future: the widening
 

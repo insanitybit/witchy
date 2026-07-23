@@ -238,3 +238,60 @@ fn build_step_generated_deps_link_and_run() {
         stderr(&out),
     );
 }
+
+/// RFC-0103: the package-manager grant accepts the richer BuildExec form,
+/// forwards its child-only paths to the isolated build child, and does not turn
+/// them into BuildRead authority for the Witchy build program.
+#[test]
+fn build_exec_child_paths_flow_through_the_package_manager() {
+    let work = unique("build-exec-child-paths");
+    let app = work.join("app");
+    let lib = work.join("genlib");
+    std::fs::create_dir_all(app.join("src")).unwrap();
+    std::fs::create_dir_all(lib.join("src")).unwrap();
+    std::fs::create_dir_all(work.join("child-config")).unwrap();
+    std::fs::write(work.join("child-config/tool.conf"), "tool-only").unwrap();
+
+    std::fs::write(
+        app.join("witchy.toml"),
+        "[rune]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
+         [capabilities]\nruntime = [\"Console\"]\n\n\
+         [dependencies]\n\"genlib\" = { path = \"../genlib\" }\n\n\
+         [build.grants.\"genlib\"]\n\
+         exec = { programs = [\"cat\"], child-paths = [\"../child-config\"] }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("src/app.witchy"),
+        "import genmod\nfn main(console: Console):\n    console.print(\"${genmod.value()}\")\n",
+    )
+    .unwrap();
+    std::fs::write(
+        lib.join("witchy.toml"),
+        "[rune]\nname = \"genlib\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        lib.join("src/genlib.witchy"),
+        "pub fn placeholder() -> Int:\n    0\n",
+    )
+    .unwrap();
+    std::fs::write(
+        lib.join("src/build.witchy"),
+        "fn build(out: BuildOut, tool: BuildExec):\n    out.write_out(\"genmod.witchy\", tool.run_tool(\"cat\", \"pub fn value() -> Int:\\n    42\\n\"))\n",
+    )
+    .unwrap();
+
+    let out = Command::new(BIN)
+        .current_dir(&work)
+        .args(["run", "app"])
+        .output()
+        .expect("spawn witchy run");
+    assert!(
+        out.status.success() && stdout(&out).contains("42"),
+        "richer BuildExec grant must build and run: status {:?} stdout {} stderr {}",
+        out.status.code(),
+        stdout(&out),
+        stderr(&out),
+    );
+}

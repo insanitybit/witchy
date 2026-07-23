@@ -159,6 +159,24 @@ before creating the build VM. BuildExec tools are resolved by the driver and
 opened through the same descriptor-confined executable path; build code never
 gets ambient `PATH` lookup or the compiler's full environment.
 
+Native children inherit the outer fence. If an allowed tool needs host files
+that are not Witchy grants, declare them as child-only read authority:
+
+```toml
+[exec]
+runner = { programs = ["git"], child-paths = ["~/.gitconfig"] }
+```
+
+The same declaration is authenticated into a trusted executable:
+
+```toml
+[targets.trusted-exe.exec]
+runner = { from = "allow", programs = ["git"], child-paths = ["~/.gitconfig"] }
+```
+
+These paths widen only the kernel fence inherited by the child. They do not mint
+an additional `Dir` or `File` for Witchy code, and omitted paths remain denied.
+
 ## Console input is separate authority
 
 Bare `Console` carries both rights for compatibility. A logger needs only

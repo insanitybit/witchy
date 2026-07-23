@@ -4196,6 +4196,10 @@ Just the keys of `[section]` (unquoted), in file order.
 
 Read `key` from an inline table value like `{ path = "../money", version = "1" }`. Returns the unquoted value, or None if the key is absent.
 
+#### `fn inline_get_array(inline: String, key: String) -> List(String)`
+
+Read a string-array field from an inline table. This is the array counterpart to `inline_get`, used by nested policy values such as `{ programs = ["git"], child-paths = ["~/.gitconfig"] }`.
+
 ### Trait implementations
 
 #### `impl Show for TomlDecodeError`

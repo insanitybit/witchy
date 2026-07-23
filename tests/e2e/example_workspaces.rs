@@ -3,6 +3,14 @@
 
 use super::support::coven::*;
 
+fn application_output(output: &str) -> String {
+    output
+        .lines()
+        .filter(|line| !line.starts_with("confinement:"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// The committed `examples/projects/todo` workspace — a `todo` app that depends
 /// on a sibling `tasklib` library via a path dependency and reads its checklist
 /// with a read-only `Dir` capability — builds and runs end to end. Copied into a
@@ -31,7 +39,10 @@ fn example_ledger_workspace_runs_with_async_and_a_path_dependency() {
     // FIFO message order + running balance, formatted by the `money` rune.
     assert!(s.contains("deposit  $12.50  -> balance $12.50"), "first deposit missing: {s}");
     assert!(s.contains("withdraw $5.00  -> balance $11.25"), "withdrawal missing: {s}");
-    assert!(s.trim().ends_with("deposit  $0.99  -> balance $12.24"), "final balance wrong: {s}");
+    assert!(
+        application_output(&s).ends_with("deposit  $0.99  -> balance $12.24"),
+        "final balance wrong: {s}"
+    );
 }
 
 /// The committed `examples/projects/report` workspace — a `report` app that
@@ -88,7 +99,12 @@ fn example_config_workspace_runs_with_result_error_handling() {
 
     let out = pm_fe(&work, &["run", "greet"]);
     assert!(out.status.success(), "run failed: {}", stderr(&out));
-    assert!(stdout(&out).trim() == "Hello, witchy!", "greeting wrong: {}", stdout(&out));
+    assert_eq!(
+        application_output(&stdout(&out)),
+        "Hello, witchy!",
+        "greeting wrong: {}",
+        stdout(&out)
+    );
 
     // Drop a required key: `?` short-circuits to the friendly Err message. The
     // data file lives in the app subdir (the program's runtime Dir is rooted there).

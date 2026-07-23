@@ -417,16 +417,42 @@ pub fn inline_get(inline: String, key: String) -> Option(String):
                 found = Some(unquote(v))
     found
 
+// Read a string-array field from an inline table. This is the array counterpart
+// to `inline_get`, used by nested policy values such as
+// `{ programs = ["git"], child-paths = ["~/.gitconfig"] }`.
+pub fn inline_get_array(inline: String, key: String) -> List(String):
+    let body = inline.trim().strip_prefix("{").strip_suffix("}")
+    var found = []
+    for part in split_outside_quotes(body, ","):
+        if let Some((k, v)) = key_value(part.trim()):
+            if k == key:
+                found = parse_array(v)
+    found
+
 // Split `s` on `sep` only where `sep` occurs outside a double-quoted span.
 fn split_outside_quotes(s: String, sep: String) -> List(String):
     var parts = []
     var current = ""
     var in_quotes = false
+    var square_depth = 0
+    var brace_depth = 0
     for ch in s.chars():
         if ch == "\"":
             in_quotes = !in_quotes
             current = current + ch
-        else if ch == sep && !in_quotes:
+        else if !in_quotes && ch == "[":
+            square_depth = square_depth + 1
+            current = current + ch
+        else if !in_quotes && ch == "]":
+            square_depth = square_depth - 1
+            current = current + ch
+        else if !in_quotes && ch == "{":
+            brace_depth = brace_depth + 1
+            current = current + ch
+        else if !in_quotes && ch == "}":
+            brace_depth = brace_depth - 1
+            current = current + ch
+        else if ch == sep && !in_quotes && square_depth == 0 && brace_depth == 0:
             list.push(parts, current)
             current = ""
         else:

@@ -6,7 +6,7 @@ use crate::ast;
 use crate::{codegen, link_file, runtime, typeck};
 
 pub(crate) const BUILD_CHILD_COMMAND: &str = "@compiler:build-child";
-const BUILD_CHILD_REQUEST_VERSION: u32 = 1;
+const BUILD_CHILD_REQUEST_VERSION: u32 = 2;
 
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -20,10 +20,17 @@ struct BuildExecTool {
 struct BuildChildRequest {
     version: u32,
     wasm: Vec<u8>,
+    grants: BuildRuntimeGrants,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct BuildRuntimeGrants {
     out_dir: std::path::PathBuf,
     read_roots: Vec<std::path::PathBuf>,
     env: std::collections::BTreeMap<String, Option<String>>,
     exec_tools: Vec<BuildExecTool>,
+    child_paths: Vec<std::path::PathBuf>,
     net_hosts: Vec<String>,
 }
 
@@ -58,7 +65,15 @@ pub fn run_build_step_compiled(
     net_hosts: Vec<String>,
 ) -> Result<Vec<String>, String> {
     let env = capture_build_env(&env_keys);
-    run_build_step_compiled_with_env(module, out_dir, read_roots, env, exec_tools, net_hosts)
+    run_build_step_compiled_with_env(
+        module,
+        out_dir,
+        read_roots,
+        env,
+        exec_tools,
+        Vec::new(),
+        net_hosts,
+    )
 }
 
 fn capture_build_env(
@@ -82,6 +97,7 @@ fn run_build_step_compiled_with_env(
     read_roots: Vec<std::path::PathBuf>,
     env: std::collections::BTreeMap<String, Option<String>>,
     exec_tools: Vec<String>,
+    child_paths: Vec<String>,
     net_hosts: Vec<String>,
 ) -> Result<Vec<String>, String> {
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("build: output dir: {e}"))?;
@@ -91,28 +107,40 @@ fn run_build_step_compiled_with_env(
         codegen::LoweringOutcome::Rejected(error) => return Err(error.message),
     };
     let exec_tools = resolve_build_exec_tools(exec_tools)?;
+    let child_paths = runtime::resolve_exec_child_paths(
+        &child_paths,
+        &std::env::current_dir()
+            .map_err(|error| format!("build: cannot determine working directory: {error}"))?,
+    )?;
     run_build_step_wasm(
         &wasm,
-        out_dir,
-        read_roots,
-        env,
-        exec_tools,
-        net_hosts,
+        BuildRuntimeGrants {
+            out_dir,
+            read_roots,
+            env,
+            exec_tools,
+            child_paths,
+            net_hosts,
+        },
         witchy_confinement::EnforcementMode::Disabled,
     )
 }
 
 fn run_build_step_wasm(
     wasm: &[u8],
-    out_dir: std::path::PathBuf,
-    read_roots: Vec<std::path::PathBuf>,
-    env: std::collections::BTreeMap<String, Option<String>>,
-    exec_tools: Vec<BuildExecTool>,
-    net_hosts: Vec<String>,
+    grants: BuildRuntimeGrants,
     confinement: witchy_confinement::EnforcementMode,
 ) -> Result<Vec<String>, String> {
     use runtime::{Capabilities, Runtime};
 
+    let BuildRuntimeGrants {
+        out_dir,
+        read_roots,
+        env,
+        exec_tools,
+        child_paths,
+        net_hosts,
+    } = grants;
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("build: output dir: {e}"))?;
     let exec_allow = exec_tools.iter().map(|tool| tool.name.clone()).collect();
     let build_exec_tools = exec_tools
@@ -126,6 +154,7 @@ fn run_build_step_wasm(
         exec_allow: Some(exec_allow),
         build_exec_tools,
         build_exec_runtime_roots: build_exec_runtime_roots(),
+        exec_child_paths: child_paths,
         build_net_allow: Some(net_hosts),
         ..Default::default()
     };
@@ -153,10 +182,11 @@ pub(crate) fn run_build_step_file(
     read_roots: Vec<std::path::PathBuf>,
     env_keys: Vec<String>,
     exec_tools: Vec<String>,
+    child_paths: Vec<String>,
     net_hosts: Vec<String>,
 ) -> Result<Vec<String>, String> {
     let env = capture_build_env(&env_keys);
-    run_build_step_file_with_env(path, out_dir, read_roots, env, exec_tools, net_hosts)
+    run_build_step_file_with_env(path, out_dir, read_roots, env, exec_tools, child_paths, net_hosts)
 }
 
 fn run_build_step_file_with_env(
@@ -165,6 +195,7 @@ fn run_build_step_file_with_env(
     read_roots: Vec<std::path::PathBuf>,
     env: std::collections::BTreeMap<String, Option<String>>,
     exec_tools: Vec<String>,
+    child_paths: Vec<String>,
     net_hosts: Vec<String>,
 ) -> Result<Vec<String>, String> {
     let (linked, _) = link_file(path)?;
@@ -172,7 +203,15 @@ fn run_build_step_file_with_env(
     let out = out_dir.unwrap_or_else(|| std::path::PathBuf::from("build-out"));
     #[cfg(test)]
     {
-        run_build_step_compiled_with_env(linked, out, read_roots, env, exec_tools, net_hosts)
+        run_build_step_compiled_with_env(
+            linked,
+            out,
+            read_roots,
+            env,
+            exec_tools,
+            child_paths,
+            net_hosts,
+        )
     }
     #[cfg(not(test))]
     {
@@ -185,11 +224,18 @@ fn run_build_step_file_with_env(
         let request = BuildChildRequest {
             version: BUILD_CHILD_REQUEST_VERSION,
             wasm,
-            out_dir: out,
-            read_roots,
-            env,
-            exec_tools: resolve_build_exec_tools(exec_tools)?,
-            net_hosts,
+            grants: BuildRuntimeGrants {
+                out_dir: out,
+                read_roots,
+                env,
+                exec_tools: resolve_build_exec_tools(exec_tools)?,
+                child_paths: runtime::resolve_exec_child_paths(
+                    &child_paths,
+                    &std::env::current_dir()
+                        .map_err(|error| format!("build: cannot determine working directory: {error}"))?,
+                )?,
+                net_hosts,
+            },
         };
         run_build_step_child_process(&request)
     }
@@ -206,11 +252,7 @@ pub(crate) fn run_build_step_child() -> Result<Vec<String>, String> {
     }
     run_build_step_wasm(
         &request.wasm,
-        request.out_dir,
-        request.read_roots,
-        request.env,
-        request.exec_tools,
-        request.net_hosts,
+        request.grants,
         witchy_confinement::EnforcementMode::BestEffort,
     )
 }
@@ -229,7 +271,7 @@ fn run_build_step_child_process(request: &BuildChildRequest) -> Result<Vec<Strin
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    for (name, value) in &request.env {
+    for (name, value) in &request.grants.env {
         if let Some(value) = value {
             command.env(name, value);
         }
@@ -330,6 +372,7 @@ mod compiled_build_step_tests {
             env.clone(),
             vec![],
             vec![],
+            vec![],
         )
         .expect("allow-listed env key reads");
         assert_eq!(std::fs::read_to_string(dir.join("out/g.txt")).unwrap(), "yes");
@@ -343,6 +386,7 @@ mod compiled_build_step_tests {
             Some(dir.join("out2")),
             vec![],
             env,
+            vec![],
             vec![],
             vec![],
         )
@@ -381,6 +425,7 @@ mod compiled_build_step_tests {
             vec![],
             vec![],
             vec![],
+            vec![],
             vec![addr.clone()],
         )
         .expect("allow-listed fetch runs");
@@ -390,6 +435,7 @@ mod compiled_build_step_tests {
         let err = run_build_step_file(
             source.to_str().unwrap(),
             Some(dir.join("out2")),
+            vec![],
             vec![],
             vec![],
             vec![],
@@ -415,6 +461,7 @@ mod compiled_build_step_tests {
             vec![],
             vec!["cat".to_string()],
             vec![],
+            vec![],
         )
         .expect("cat is allow-listed");
         assert_eq!(std::fs::read_to_string(dir.join("out/x.txt")).unwrap(), "piped-input");
@@ -429,6 +476,7 @@ mod compiled_build_step_tests {
             vec![],
             vec![],
             vec!["cat".to_string()],
+            vec![],
             vec![],
         )
         .expect_err("unlisted tool is refused");
