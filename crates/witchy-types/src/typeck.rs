@@ -23,6 +23,7 @@ use witchy_syntax::ast::{
 };
 use witchy_syntax::build_entry::{build_entrypoint, is_build_capability_type};
 use witchy_syntax::{cap_ops, intrinsics};
+use witchy_cap_model::{CapabilityClass, CapabilityKind};
 
 use crate::storage::{externref_cap_name, ReferenceLeaf, ReferenceStorageClassifier};
 
@@ -256,30 +257,32 @@ fn at_loc(e: TypeError, line: u32, func: &str, home: &str) -> TypeError {
     }
 }
 
-/// The type names the checker knows without a declaration: primitives, host
-/// capabilities, and the built-in generics. Mirrors the named arms of
-/// `to_ty_generic` plus the opaque generics the checker itself produces
-/// (`Option`/`Result`/`Dict`). Any other named type must be declared (a `type`
-/// or be a lowercase generic parameter.
+/// Non-capability type names known without a declaration. Built-in capability
+/// names and their zero-arity/right-bearing shapes come from
+/// `witchy-cap-model`.
 const BUILTIN_TYPE_NAMES: &[&str] = &[
-    "Int", "Float", "Duration", "String", "Bytes", "__Msg", "Bool", "Nil", "Console", "Clock", "Rand", "Env", "Secret",
-    "SecretStore", "Dir", "File", "Net", "Exec", "Socket", "Listener", "List", "Option", "Result",
-    "Dict", "BuildOut", "BuildRead", "BuildEnv", "BuildNet", "BuildExec",
+    "Int", "Float", "Duration", "String", "Bytes", "__Msg", "Bool", "Nil", "List", "Option",
+    "Result", "Dict",
 ];
 
 const AMBIENT_STD_TYPE_NAMES: &[&str] = &["Ordering", "Set", "Iter"];
 const AMBIENT_TRAIT_NAMES: &[&str] = &["PartialEq", "Eq", "PartialOrd", "Ord"];
 
 fn builtin_type_arity(name: &str) -> Option<usize> {
+    if let Some(kind) = CapabilityKind::from_name(name) {
+        return kind.builtin_arity();
+    }
     match name {
         "List" | "Option" | "Set" | "Iter" => Some(1),
         "Result" | "Dict" => Some(2),
         "Int" | "Float" | "Duration" | "String" | "Bytes" | "__Msg" | "Bool" | "Nil"
-        | "Console" | "Clock" | "Rand" | "Env" | "Secret" | "SecretStore" | "Exec"
-        | "Socket" | "Listener" | "BuildOut" | "BuildRead" | "BuildEnv" | "BuildNet"
-        | "BuildExec" | "Ordering" => Some(0),
+        | "Ordering" => Some(0),
         _ => None,
     }
+}
+
+fn is_builtin_type_name(name: &str) -> bool {
+    BUILTIN_TYPE_NAMES.contains(&name) || CapabilityKind::from_name(name).is_some()
 }
 
 fn is_synthetic_type_name(name: &str) -> bool {
@@ -580,10 +583,13 @@ fn validate_type_model(
 /// module; lowercase argument-less names are generic parameters.
 fn check_type_names(module: &Module) -> Result<(), TypeError> {
     let mut known: HashSet<&str> = BUILTIN_TYPE_NAMES.iter().copied().collect();
+    known.extend(CapabilityKind::ALL.iter().map(|kind| kind.name()));
     let mut arities: HashMap<&str, usize> = BUILTIN_TYPE_NAMES
         .iter()
         .chain(AMBIENT_STD_TYPE_NAMES.iter())
-        .filter_map(|name| builtin_type_arity(name).map(|arity| (*name, arity)))
+        .copied()
+        .chain(CapabilityKind::ALL.iter().map(|kind| kind.name()))
+        .filter_map(|name| builtin_type_arity(name).map(|arity| (name, arity)))
         .collect();
     let mut packed_names: HashSet<&str> = HashSet::new();
     // (RFC-0005) User `type`/`capability` declarations used by the stage-specific
@@ -1394,7 +1400,8 @@ fn reject_cap_slot_boundary(
 /// authority (the rights of `Dir`/`Net` don't matter here — any are grantable).
 pub(crate) fn is_capability_type(t: &ast::Type) -> bool {
     matches!(t, ast::Type::Named(n, _)
-        if matches!(n.as_str(), "Console" | "Clock" | "Rand" | "Env" | "Dir" | "File" | "Net" | "Exec" | "Secret" | "SecretStore"))
+        if CapabilityKind::from_name(n)
+            .is_some_and(|kind| kind.class() == CapabilityClass::Host))
 }
 
 /// (RFC-0047) The kind of an un-comparable component of a type: `==`/`!=` reject
@@ -6200,7 +6207,7 @@ impl Checker {
                     Ok(result)
                 } else {
                     if self.adt_variants.contains_key(name)
-                        || BUILTIN_TYPE_NAMES.contains(&name.as_str())
+                        || is_builtin_type_name(name)
                         || AMBIENT_STD_TYPE_NAMES.contains(&name.as_str())
                         || is_synthetic_type_name(name)
                     {

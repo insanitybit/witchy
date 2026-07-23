@@ -18,22 +18,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use witchy_cap_model::{
+    CapabilityClass, CapabilityKind, CapabilityRight, NET_TRANSPORT_RIGHTS, NET_VERB_RIGHTS,
+};
 use witchy_syntax::ast::{Item, Module, Type};
-
-/// The host capabilities the runtime grants at an entry point.
-pub(crate) const HOST_CAPABILITIES: &[&str] =
-    &["Console", "Clock", "Rand", "Env", "Secret", "SecretStore", "Dir", "File", "Net", "Exec"];
-
-/// Capability values that are derived from host capabilities at runtime, rather
-/// than granted as root authorities at an entry point.
-pub const DERIVED_CAPABILITIES: &[&str] = &["Socket", "Listener"];
-
-/// The build-time capabilities a rune's `build` entrypoint may demand — the
-/// parallel set to the runtime host caps, tracked on a separate axis. Kind-only
-/// (the specific tool/dir/host/var is the consumer's grant, not the type), so
-/// they carry no rights. See rfcs/build-time-execution-plan.md.
-pub(crate) const BUILD_CAPABILITIES: &[&str] =
-    &["BuildOut", "BuildRead", "BuildEnv", "BuildNet", "BuildExec"];
 
 /// The rights (verbs) a single capability permits. Empty for `Console`, which
 /// has no sub-verbs.
@@ -44,25 +32,27 @@ pub type Rights = BTreeSet<&'static str>;
 pub type CapSet = BTreeMap<&'static str, Rights>;
 
 fn host_cap(name: &str) -> Option<&'static str> {
-    HOST_CAPABILITIES.iter().copied().find(|c| *c == name)
+    CapabilityKind::from_name(name)
+        .filter(|kind| kind.class() == CapabilityClass::Host)
+        .map(CapabilityKind::name)
 }
 
 fn build_cap(name: &str) -> Option<&'static str> {
-    BUILD_CAPABILITIES.iter().copied().find(|c| *c == name)
+    CapabilityKind::from_name(name)
+        .filter(|kind| kind.class() == CapabilityClass::Build)
+        .map(CapabilityKind::name)
 }
 
 pub fn is_host_capability(name: &str) -> bool {
-    host_cap(name).is_some()
+    witchy_cap_model::is_host_capability(name)
 }
 
 pub fn is_build_capability(name: &str) -> bool {
-    build_cap(name).is_some()
+    witchy_cap_model::is_build_capability(name)
 }
 
 pub fn is_capability_type_name(name: &str) -> bool {
-    is_host_capability(name)
-        || is_build_capability(name)
-        || DERIVED_CAPABILITIES.contains(&name)
+    witchy_cap_model::is_capability_type_name(name)
 }
 
 /// Build-time capability kinds reachable from a type (no rights — kind-only).
@@ -96,33 +86,15 @@ fn build_caps_in(ty: &Type, out: &mut CapSet) {
 /// The full right-set for a capability — what a *bare* `Dir`/`Net` (no brackets)
 /// confers. `Console` and unknown names have no rights.
 fn full_rights(cap: &str) -> Rights {
-    match cap {
-        "Dir" => ["Read", "Write"].into_iter().collect(),
-        "File" => ["Read", "Write"].into_iter().collect(),
-        // `Net` has two axes: verbs and transports. Bare `Net` is full on both.
-        "Net" => ["Connect", "Listen", "Tcp", "Udp", "Uds"].into_iter().collect(),
-        _ => Rights::new(),
-    }
+    CapabilityKind::from_name(cap)
+        .map(|kind| kind.rights().iter().map(|right| right.name()).collect())
+        .unwrap_or_default()
 }
-
-const NET_VERBS: [&str; 2] = ["Connect", "Listen"];
-const NET_TRANSPORTS: [&str; 3] = ["Tcp", "Udp", "Uds"];
 
 /// Map a bracketed marker to its canonical right name, or `None` if it isn't a
 /// recognized right for that capability.
 fn right_marker(cap: &str, marker: &str) -> Option<&'static str> {
-    match (cap, marker) {
-        ("Dir", "Read") => Some("Read"),
-        ("Dir", "Write") => Some("Write"),
-        ("File", "Read") => Some("Read"),
-        ("File", "Write") => Some("Write"),
-        ("Net", "Connect") => Some("Connect"),
-        ("Net", "Listen") => Some("Listen"),
-        ("Net", "Tcp") => Some("Tcp"),
-        ("Net", "Udp") => Some("Udp"),
-        ("Net", "Uds") => Some("Uds"),
-        _ => None,
-    }
+    CapabilityKind::from_name(cap)?.right(marker).map(CapabilityRight::name)
 }
 
 /// Whether the concrete address `target` (`host:port`) is admitted by an
@@ -476,11 +448,11 @@ fn rights_from_args(cap: &'static str, args: &[Type]) -> Rights {
         }
     }
     if cap == "Net" {
-        if !NET_VERBS.iter().any(|v| r.contains(v)) {
-            r.extend(NET_VERBS);
+        if !NET_VERB_RIGHTS.iter().any(|right| r.contains(right.name())) {
+            r.extend(NET_VERB_RIGHTS.iter().map(|right| right.name()));
         }
-        if !NET_TRANSPORTS.iter().any(|t| r.contains(t)) {
-            r.extend(NET_TRANSPORTS);
+        if !NET_TRANSPORT_RIGHTS.iter().any(|right| r.contains(right.name())) {
+            r.extend(NET_TRANSPORT_RIGHTS.iter().map(|right| right.name()));
         }
     }
     r
@@ -729,11 +701,21 @@ pub fn show_cap(name: &str, rights: &Rights) -> String {
         // `{Connect, Tcp, Udp, Uds}` prints as `Net[Connect]`, not the verbose
         // transport list. (Mirrors `NetRights`' Display in the type checker.)
         let mut parts: Vec<&str> = Vec::new();
-        if !NET_VERBS.iter().all(|v| rights.contains(v)) {
-            parts.extend(NET_VERBS.iter().filter(|v| rights.contains(*v)));
+        if !NET_VERB_RIGHTS.iter().all(|right| rights.contains(right.name())) {
+            parts.extend(
+                NET_VERB_RIGHTS
+                    .iter()
+                    .map(|right| right.name())
+                    .filter(|right| rights.contains(right)),
+            );
         }
-        if !NET_TRANSPORTS.iter().all(|t| rights.contains(t)) {
-            parts.extend(NET_TRANSPORTS.iter().filter(|t| rights.contains(*t)));
+        if !NET_TRANSPORT_RIGHTS.iter().all(|right| rights.contains(right.name())) {
+            parts.extend(
+                NET_TRANSPORT_RIGHTS
+                    .iter()
+                    .map(|right| right.name())
+                    .filter(|right| rights.contains(right)),
+            );
         }
         return format!("Net[{}]", parts.join(", "));
     }

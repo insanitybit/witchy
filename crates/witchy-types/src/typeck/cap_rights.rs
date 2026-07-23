@@ -6,6 +6,7 @@
 use std::fmt;
 
 use witchy_syntax::ast;
+use witchy_cap_model::{CapabilityKind, CapabilityRight};
 
 use super::{terr, TypeError};
 
@@ -40,16 +41,16 @@ impl fmt::Display for DirRights {
 /// capability family (`Dir`, `File`) — one parser, so a new right is added in
 /// exactly one place (RFC-0073). `None` means "no args": the full set, by the
 /// family's bare-name convention.
-fn read_write_args(args: &[ast::Type]) -> Option<(bool, bool)> {
+fn read_write_args(kind: CapabilityKind, args: &[ast::Type]) -> Option<(bool, bool)> {
     if args.is_empty() {
         return None;
     }
     let (mut read, mut write) = (false, false);
     for a in args {
         if let ast::Type::Named(n, _) = a {
-            match n.as_str() {
-                "Read" => read = true,
-                "Write" => write = true,
+            match kind.right(n) {
+                Some(CapabilityRight::Read) => read = true,
+                Some(CapabilityRight::Write) => write = true,
                 _ => {}
             }
         }
@@ -60,7 +61,7 @@ fn read_write_args(args: &[ast::Type]) -> Option<(bool, bool)> {
 /// Interpret a `Dir`'s type arguments as its rights. Bare `Dir` (no args) is the
 /// full set; `Dir[Read]`/`Dir[Write]`/`Dir[Read, Write]` narrow it.
 pub(super) fn dir_rights(args: &[ast::Type]) -> DirRights {
-    match read_write_args(args) {
+    match read_write_args(CapabilityKind::Dir, args) {
         None => DirRights::full(),
         Some((read, write)) => DirRights { read, write },
     }
@@ -96,7 +97,7 @@ impl fmt::Display for FileRights {
 
 /// Interpret a `File`'s type arguments as its rights (bare `File` is the full set).
 pub(super) fn file_rights(args: &[ast::Type]) -> FileRights {
-    match read_write_args(args) {
+    match read_write_args(CapabilityKind::File, args) {
         None => FileRights::full(),
         Some((read, write)) => FileRights { read, write },
     }
@@ -177,12 +178,12 @@ pub(super) fn net_rights(args: &[ast::Type]) -> NetRights {
     let (mut saw_verb, mut saw_transport) = (false, false);
     for a in args {
         if let ast::Type::Named(n, _) = a {
-            match n.as_str() {
-                "Connect" => (r.connect, saw_verb) = (true, true),
-                "Listen" => (r.listen, saw_verb) = (true, true),
-                "Tcp" => (r.tcp, saw_transport) = (true, true),
-                "Udp" => (r.udp, saw_transport) = (true, true),
-                "Uds" => (r.uds, saw_transport) = (true, true),
+            match CapabilityKind::Net.right(n) {
+                Some(CapabilityRight::Connect) => (r.connect, saw_verb) = (true, true),
+                Some(CapabilityRight::Listen) => (r.listen, saw_verb) = (true, true),
+                Some(CapabilityRight::Tcp) => (r.tcp, saw_transport) = (true, true),
+                Some(CapabilityRight::Udp) => (r.udp, saw_transport) = (true, true),
+                Some(CapabilityRight::Uds) => (r.uds, saw_transport) = (true, true),
                 _ => {}
             }
         }
@@ -202,27 +203,21 @@ pub(super) fn net_rights(args: &[ast::Type]) -> NetRights {
 /// keeping the declared authority shape faithful to the source (BUG-154). The
 /// single source of truth the rights-interpreting functions
 /// (`dir_rights`/`file_rights`/`net_rights`) match against.
-fn cap_markers(cap: &str) -> &'static [&'static str] {
-    match cap {
-        "Dir" | "File" => &["Read", "Write"],
-        "Net" => &["Connect", "Listen", "Tcp", "Udp", "Uds"],
-        _ => &[],
-    }
-}
-
 /// Reject any bracket marker on a `Dir`/`File`/`Net` capability that is not in its
-/// [`cap_markers`] vocabulary. An empty list (`Dir[]`) is legal (no rights); each
+/// catalog vocabulary. An empty list (`Dir[]`) is legal (no rights); each
 /// marker must be a bare, argument-less name from the allowed set.
 pub(super) fn validate_cap_markers(cap: &str, args: &[ast::Type]) -> Result<(), TypeError> {
-    let allowed = cap_markers(cap);
+    let kind = CapabilityKind::from_name(cap);
+    let allowed = kind.map(CapabilityKind::rights).unwrap_or(&[]);
     for a in args {
         let ok = matches!(a, ast::Type::Named(m, margs)
-            if margs.is_empty() && allowed.contains(&m.as_str()));
+            if margs.is_empty() && kind.is_some_and(|kind| kind.right(m).is_some()));
         if !ok {
             let found = match a {
                 ast::Type::Named(m, _) => m.clone(),
                 _ => format!("{a:?}"),
             };
+            let allowed = allowed.iter().map(|right| right.name()).collect::<Vec<_>>();
             return terr(format!(
                 "unknown `{cap}` right `{found}` — `{cap}` admits {}",
                 allowed.join(", ")

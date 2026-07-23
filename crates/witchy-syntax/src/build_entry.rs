@@ -7,13 +7,15 @@
 //! any one of those stages.
 
 use crate::ast::{Function, Item, Module, Type};
+use witchy_cap_model::{CapabilityClass, CapabilityKind};
 
 /// True if `t` is one of the build-capability types a `fn build` receives
 /// (`BuildOut` and friends) — the marker that distinguishes a build entrypoint
 /// from an ordinary function named `build`.
 pub fn is_build_capability_type(t: &Type) -> bool {
     matches!(t, Type::Named(n, _)
-        if matches!(n.as_str(), "BuildOut" | "BuildRead" | "BuildEnv" | "BuildNet" | "BuildExec"))
+        if CapabilityKind::from_name(n)
+            .is_some_and(|kind| kind.class() == CapabilityClass::Build))
 }
 
 /// The rune's build entrypoint, if any: a top-level `fn build` whose first

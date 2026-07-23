@@ -2705,11 +2705,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "witchy-cap-model"
+version = "0.1.0"
+
+[[package]]
 name = "witchy-caps"
 version = "0.1.0"
 dependencies = [
  "serde",
  "toml 1.1.2+spec-1.1.0",
+ "witchy-cap-model",
  "witchy-syntax",
 ]
 
@@ -2764,6 +2769,7 @@ dependencies = [
  "postcard",
  "ryu",
  "serde",
+ "witchy-cap-model",
 ]
 
 [[package]]
@@ -2771,6 +2777,7 @@ name = "witchy-types"
 version = "0.1.0"
 dependencies = [
  "foldhash 0.2.0",
+ "witchy-cap-model",
  "witchy-syntax",
 ]
 

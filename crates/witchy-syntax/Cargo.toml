@@ -11,6 +11,7 @@ description = "witchy compiler — the lexer, parser, and AST (source text → A
 # advisory cross-process std-expansion cache below. The wasm playground omits
 # that filesystem-only tier.
 [dependencies]
+witchy-cap-model = { path = "../witchy-cap-model" }
 # Fast non-DoS-resistant hasher for internal tables (see witchy-types).
 foldhash = "0.2.0"
 # Shortest-round-trip f64 formatting for the shared interpreter/WASM render path.

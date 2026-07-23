@@ -106,16 +106,12 @@ fn lerr<T>(message: impl Into<String>) -> Result<T, LinkError> {
     })
 }
 
-/// Type names known without a module qualifier: primitives, host capabilities,
-/// the built-in generics, and the prelude types `Option`/`Result`. MUST mirror
-/// `witchy_types::typeck::BUILTIN_TYPE_NAMES` (the checker's counterpart). A type
-/// declared with one of these names is left bare (today's flat behavior); every
-/// other user type is module-qualified.
+/// Non-capability type names known without a module qualifier. Built-in
+/// capability names come from `witchy-cap-model`, so syntax and typeck cannot
+/// silently disagree about the authority vocabulary.
 const AMBIENT_TYPES: &[&str] = &[
-    "Int", "Float", "Duration", "String", "Bytes", "__Msg", "Bool", "Nil", "Console", "Clock",
-    "Rand", "Env", "Secret", "SecretStore", "Dir", "File", "Net", "Exec", "Socket", "Listener",
-    "List", "Option", "Result", "Dict", "BuildOut", "BuildRead", "BuildEnv", "BuildNet",
-    "BuildExec",
+    "Int", "Float", "Duration", "String", "Bytes", "__Msg", "Bool", "Nil", "List", "Option",
+    "Result", "Dict",
     // `cmp.Ordering` is the comparison hierarchy's result type: derive- and
     // operator-generated code references it (and its variants) pervasively, and
     // `cmp` is its sole declarer, so it collides with nothing. Keeping it ambient
@@ -157,7 +153,7 @@ const DEFINITION_SITE_TRAIT_PREFIX: &str = "@definition_site_trait:";
 const DEFINITION_SITE_CTOR_PREFIX: &str = "@definition_site_ctor:";
 
 fn is_ambient_type(name: &str) -> bool {
-    AMBIENT_TYPES.contains(&name)
+    AMBIENT_TYPES.contains(&name) || witchy_cap_model::is_capability_type_name(name)
 }
 
 fn is_ambient_ctor(name: &str) -> bool {
