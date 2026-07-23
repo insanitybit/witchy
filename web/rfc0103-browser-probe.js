@@ -26,7 +26,7 @@ function extractWitchyBlocks(markdown) {
 async function loadCompiler() {
   const bytes = await fetchWasm("./witchy.wasm");
   const { module, instance } = await WebAssembly.instantiate(bytes, {});
-  return { module, exports: instance.exports };
+  return { bytes, module, exports: instance.exports };
 }
 
 async function run() {

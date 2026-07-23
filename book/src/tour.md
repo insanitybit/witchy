@@ -39,8 +39,9 @@ The tour is organized as follows:
 - [**Modules and Source Files**](tour-modules.md)
 - [**Compile-Time Code**](tour-comptime.md)
 
-Every `witchy` code block in the book is checked as a complete program. The
-manifest-marked runnable blocks are executed against their committed output and
-receive a browser Run button. Examples that require filesystem, network,
-process, secret, or unavailable browser authority are read-only and include the
-grant needed to run them locally.
+Every `witchy` code block in the book is checked. Complete non-negative examples
+are also executed through the browser host and receive a Run button when their
+authority has an honest browser provider. Each click runs in a fresh
+opaque-origin frame under grant-derived CSP. Partial declarations, deliberate
+errors, and examples requiring native-only authority remain read-only and
+include the grant needed to run them locally.

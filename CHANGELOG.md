@@ -36,6 +36,24 @@ runtime diagnostics, across the maintained differential suite. That is evidence
 for the exercised programs and properties; it is not a proof that the compiler
 has no defects.
 
+### Confinement hardening
+
+- Native `Dir`, `File`, build-root, and executable operations are anchored to
+  retained descriptors/handles rather than canonicalize-then-open paths.
+  Concurrent parent or leaf replacement cannot redirect granted authority.
+- Strict Linux launches derive Landlock filesystem/TCP policy and seccomp
+  promise classes from the same concrete grants enforced by the host.
+  `--confine=required` fails before `main` when the complete requested fence is
+  unavailable; best-effort degradation is reported.
+- Build steps execute in dedicated environment-scrubbed children that arm their
+  derived policy before creating the build VM.
+- Browser CSP is derived from Fetch grants. Each runnable book execution uses a
+  fresh opaque-origin `sandbox="allow-scripts"` frame with the same derived
+  `connect-src` boundary.
+- **Breaking hardening:** allowed `Exec` children inherit the outer fence.
+  Tools needing additional read-only host paths must declare `child-paths` in
+  grant documents, build grants, or authenticated trusted-executable bindings.
+
 ### Release artifacts and verified targets
 
 Publication is fail-closed unless the archive for each target is built and then
@@ -75,9 +93,10 @@ to the private GitHub repository and release.
 
 - Compatibility may break without deprecation before 1.0.
 - macOS artifacts are neither Apple-notarized nor independently code-signed.
-- Current `Dir` confinement rejects lexical, absolute, and existing symlink
-  escapes, but its canonicalize-then-open design is not race-free against a
-  concurrent local symlink swap.
+- Outer kernel policy is currently implemented on supported Linux
+  architectures. Other native hosts retain handle-anchored per-operation
+  confinement and report the outer layer unavailable unless required mode was
+  requested, in which case launch fails closed.
 - Remote Coven registry lifecycle and trusted publishing are not part of the
   installability promise for the 0.1.0 toolchain archive. Local source/project
   workflows are exercised by the installed-artifact smoke test.

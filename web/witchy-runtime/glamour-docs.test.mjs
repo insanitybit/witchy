@@ -84,7 +84,10 @@ try {
     const title = slug.charAt(0).toUpperCase() + slug.slice(1);
     // Every page carries a runnable `witchy` example, so the docs app's slot-remap has
     // something to turn into a runnable cell (the `language-witchy` fence).
-    const page = `## ${title}\n\nBody text for the **${slug}** page.\n\n\`\`\`witchy\nfn main(console: Console):\n    console.print("hi from ${slug}")\n\`\`\`\n`;
+    const page = `## ${title}\n\nBody text for the **${slug}** page.\n\n`
+      + `\`\`\`witchy\nfn main(console: Console):\n    console.print("hi from ${slug}")\n\`\`\`\n\n`
+      + `\`\`\`witchy\nfn main(console: Console, clock: Clock, env: Env, dir: Dir, fetch: Fetch, secrets: SecretStore):\n    console.print("portable browser capabilities")\n\`\`\`\n\n`
+      + `\`\`\`witchy\nfn main(console: Console, exec: Exec):\n    console.print("native only")\n\`\`\`\n`;
     return Promise.resolve({ status: 200, text: () => Promise.resolve(page) });
   };
   const location = { pathname: "/" };
@@ -136,7 +139,14 @@ try {
   // (RFC-0041 P2) the page's `witchy` fence became a RUNNABLE CELL via a host Slot — the docs
   // app is now a runnable book. Crucially, the page ALSO still renders (the slot is non-diffed,
   // so — unlike the afterRender-mutation approach — a re-render doesn't corrupt the page).
-  ok(qsa(root, "button").some((b) => (b.getAttribute("class") || "").includes("witchy-run")), "a code block became a runnable cell (Run button) via the host slot");
+  const runButtons = qsa(root, "button").filter(
+    (b) => (b.getAttribute("class") || "").includes("witchy-run"),
+  );
+  ok(runButtons.length === 2, "Console and portable browser-capability examples receive Run buttons");
+  ok(
+    root.textContent.includes("native only"),
+    "an Exec example remains visibly read-only under the browser menu",
+  );
   ok(qsa(root, "div").some((d) => (d.getAttribute("class") || "") === "witchy-cell"), "the runnable cell is wrapped in the rendered page");
 
   // 3. Clicking a sidebar page navigates to its URL, fetches it, and renders it.

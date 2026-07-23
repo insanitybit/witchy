@@ -13,6 +13,9 @@ This is a *general* witchy-WASM browser runtime, not specific to any one app. It
 is distinct from the `web/witchy-host.js` playground shim, which compiles
 snippets via a Rust-built `witchy.wasm` lib and delegates the pure helpers back
 to that lib; this runtime is standalone and implements the pure helpers in JS.
+The book's `witchy-cell-sandbox.js` imports both inside a fresh opaque-origin
+frame: compilation stays in the trusted parent, while guest execution and its
+derived Fetch CSP stay in the child.
 
 ## The guarantee: deny-by-omission
 

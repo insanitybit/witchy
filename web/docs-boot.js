@@ -28,8 +28,10 @@ const loadCompiler = (() => {
   let p = null;
   return () =>
     (p ||= fetchWasm(assetUrl("witchy.wasm", here), { hint: COMPILER_HINT })
-      .then((b) => WebAssembly.instantiate(b, {}))
-      .then(({ module, instance }) => ({ module, exports: instance.exports })));
+      .then(async (bytes) => {
+        const { module, instance } = await WebAssembly.instantiate(bytes, {});
+        return { bytes, module, exports: instance.exports };
+      }));
 })();
 const runProgram = createSandboxedProgramRunner({ document, loadCompiler });
 
@@ -40,9 +42,9 @@ const contentFetch = (url) => fetch(contentUrl(url, here));
 // (RFC-0041) A `glamour-app` fence names a bundled INTERACTIVE demo. Mount it LIVE with the
 // book's OWN glamour-dom runtime into a contained sub-tree. NETWORK IS DENIED — no `fetch` is
 // passed, so any `UiFetch`/http Cmd the app emits simply isn't performed; a timer IS provided
-// so an interactive/animated app works. The app is capability-denied and WASM-isolated, so it
-// runs safely in the main frame just like every runnable cell. Each app's initial model is
-// configured here (it must match the app's own model shape).
+// so an interactive/animated app works. This trusted bundled app remains in the
+// main frame; unlike an arbitrary runnable cell, it is not sent through the
+// opaque-frame program runner. Each app's initial model must match its own shape.
 const DEMO_APPS = { counter: { initialModel: { n: 0 } } };
 const glamourAppSlot = (doc, name) => {
   const host = doc.createElement("div");

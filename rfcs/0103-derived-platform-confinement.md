@@ -1,21 +1,16 @@
 ---
 rfc: 0103
 title: "Derived platform confinement: kernel and web enforcement of capability grants"
-status: accepted
+status: implemented
 created: 2026-07-23
 tracking: >
-  Reopened for full implementation. Phase 1 is implemented: native Dir, File,
-  build-root, and executable selection authority is descriptor/handle anchored
-  through one shared confine implementation used by both backends, with
-  deterministic parent-swap regressions. The target-neutral
-  `witchy-confinement` policy model and the single concrete-grant derivation
-  boundary are implemented. Its Linux provider safely translates filesystem
-  and TCP policy into independently reported Landlock rulesets. Launch
-  activation, required launch mode, and seccomp promise classes are
-  implemented. Build-step execution now compiles in the driver and runs each
-  build VM in a dedicated, environment-scrubbed child that arms the derived
-  outer policy before VM creation. Derived CSP and enforcement menus remain
-  active implementation phases.
+  Implemented end to end. Shared descriptor/handle-anchored native authority,
+  the target-neutral policy model, Linux Landlock and seccomp providers,
+  required mode, dedicated confined build children, inherited Exec child needs,
+  enforcement menus, derived CSP, opaque-frame runnable cells, and the
+  browser exfiltration/full-book probe are all shipped with focused and
+  serialized-gate evidence. The provider additions listed under Future work
+  remain separate follow-on RFC scope, not unfinished phases of this decision.
 predecessors:
   - "[0013](0013-capability-grant-documents.md) (grant documents — the concrete pre-execution authority statement this RFC compiles)"
   - "[0068](0068-compiled-build-step-grants.md) (build-step grants — the declared authority of third-party build code)"
@@ -375,18 +370,19 @@ the served app is the input it should derive from).
    Evidence: a real-binary child-routing regression, policy regressions proving
    empty BuildNet/BuildExec allowlists do not widen syscall promises, the
    provider's host-bypass probes, and the existing build grant suite.
-5. **Derived CSP**: playground + glamour hosts emit policy from the
+5. **Implemented**: playground + glamour hosts emit policy from the
    capability surface (`connect-src` = Fetch origins); coven-web's `csp_for`
-   consumes the derivation; evidence: web test asserting the emitted policy
-   matches the granted surface, and a probe page proving exfiltration to an
-   ungranted origin is blocked by the browser.
-6. **In progress**: `--confine=required` is implemented for strict source and
+   consumes the derivation. Each book execution runs in a fresh opaque-origin
+   sandbox frame with no main-frame fallback. Evidence: emitted-policy and
+   frame-protocol tests plus a real-browser probe with a reachable positive
+   control, zero requests observed by the ungranted origin, all complete book
+   examples executing, and exact manifest output for runnable examples.
+6. **Implemented**: `--confine=required` is implemented for strict source and
    precompiled sandbox launches, and the trusted-exe manifest's
    `confine = "required"` choice is authenticated inside the versioned binding
    plan. Unsupported, partial, or unexpressible enforcement fails before
-   `main`; best-effort remains the default. The menu `[enforcement]` sections
-   land with the remaining seccomp and CSP providers so they do not advertise
-   unfinished mechanisms.
+   `main`; best-effort remains the default. Native, trusted-exe, build, and
+   browser menus publish only their implemented `[enforcement]` providers.
 
 Each phase lands independently through the serialized gate; phases 1-3
 touch the runtime TCB and take adversarial review.

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +8,9 @@ import { DOCS_RUN_OPTIONS } from "./docs-run-options.js";
 import { deriveContentSecurityPolicy } from "./witchy-runtime/witchy-runtime.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
+const frameHash = createHash("sha256")
+  .update(readFileSync(join(here, "witchy-cell-frame.js")))
+  .digest("base64");
 
 function emittedPolicy(file) {
   const html = readFileSync(join(here, file), "utf8");
@@ -27,6 +31,12 @@ assert.doesNotMatch(playground, /https?:\/\//);
 
 const docs = deriveContentSecurityPolicy(DOCS_RUN_OPTIONS.capabilities, {
   hostConnect: ["'self'"],
+  scriptSources: [
+    "'self'",
+    "'wasm-unsafe-eval'",
+    "blob:",
+    `'sha256-${frameHash}'`,
+  ],
   imageSources: ["'self'", "data:"],
   fontSources: ["'self'"],
   frameSources: ["'self'"],

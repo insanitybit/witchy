@@ -177,6 +177,20 @@ runner = { from = "allow", programs = ["git"], child-paths = ["~/.gitconfig"] }
 These paths widen only the kernel fence inherited by the child. They do not mint
 an additional `Dir` or `File` for Witchy code, and omitted paths remain denied.
 
+## The browser's outer fence
+
+Browser hosts derive Content Security Policy from the same capability surface:
+`connect-src` is the concrete `Fetch` origin set, while unrelated resource
+families remain denied. In this book, the trusted page compiles an example but
+never executes its guest instructions. It transfers the compiled module and
+plain grant data over a private `MessageChannel` to a fresh opaque-origin
+`sandbox="allow-scripts"` frame. The frame recreates only the requested browser
+providers and runs the guest under its own derived CSP.
+
+That layer is defense in depth around the WebAssembly capability host. It does
+not make browser-only substitutes for raw `Net`, `Exec`, `File`, bare `Secret`,
+or `Rand`; examples requiring those native roots remain read-only.
+
 ## Console input is separate authority
 
 Bare `Console` carries both rights for compatibility. A logger needs only
@@ -222,6 +236,10 @@ The boundary has explicit limits:
   chose to give somehow safe.
 - **Side channels are out of scope.** Timing and microarchitectural channels
   (Spectre-class) aren't defended against.
+- **Outer enforcement is provider-specific.** Landlock/seccomp is the current
+  Linux provider and CSP is the browser provider. Other native hosts still use
+  handle-anchored per-operation confinement, report the absent outer layer in
+  best-effort mode, and fail before `main` in required mode.
 
 What you get, within those boundaries, is the thing most systems can't offer at
 all: the ability to run code whose blast radius is written in its type and

@@ -66,6 +66,7 @@ cp book/src/*.md "$OUT/content/"
 # 3. The shared web modules (flat — they import each other as siblings), the page, the manifest.
 cp web/witchy-runtime/glamour-dom.mjs web/witchy-runtime/witchy-runtime.mjs \
    web/witchy-host.js web/witchy-runnable.js web/witchy-cell-sandbox.js \
+   web/witchy-cell-frame.js \
    web/witchy-highlight.js \
    web/docs-boot.js web/docs-run-options.js web/docs-asset-url.js \
    web/wasm-fetch.js web/docs.css "$OUT/"

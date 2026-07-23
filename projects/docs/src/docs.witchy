@@ -207,8 +207,8 @@ fn runs_in_browser(code: String) -> Bool:
     code.contains("fn main(") && !names_denied_capability(code)
 
 fn names_denied_capability(code: String) -> Bool:
-    let denied = ["Dir", "Net", "File", "Secret", "SecretStore", "Clock", "Rand", "Env", "Exec", "UiRoot", "UiFetch", "UiRoute", "UiTimer", "CredentialPort", "SecretInput", "SecretRef"]
-    denied.any(fn(cap: String): code.contains(cap))
+    let denied = ["Net", "File", "Rand", "Exec", "UiRoot", "UiFetch", "UiRoute", "UiTimer", "CredentialPort", "SecretInput", "SecretRef"]
+    denied.any(fn(cap: String): code.contains(cap)) || code.replace("SecretStore", "").contains("Secret")
 
 // The fence language from a `<code>`'s `language-<lang>` class (markdown preserves the fence's
 // info string there), or "" if none — so the app can slot each fence to the right highlighter.

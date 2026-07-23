@@ -95,7 +95,8 @@ for p in "${paths[@]}"; do
         web/witchy-runtime/witchy-highlight.test.mjs | \
         web/witchy-runtime/witchy-runnable.test.mjs | \
         web/witchy-runtime/witchy-cell-sandbox.test.mjs | \
-        web/witchy-cell-sandbox.js)
+        web/witchy-cell-sandbox.js | \
+        web/witchy-cell-frame.js)
             add "cargo nextest run --test browser -E 'test(/^shim::/)'" ;;
         web/witchy-runtime/encoding-abi.test.mjs)
             add "cargo nextest run --test browser -E 'test(/^encoding::/)'" ;;

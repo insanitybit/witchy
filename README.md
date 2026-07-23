@@ -81,9 +81,11 @@ writes, navigation, listing, creation, direct `File` grants, and build roots
 cannot be redirected by replacing a parent. Executable selection uses descriptor
 execution, an already-open private snapshot, or, on macOS, a path whose opened
 identity and root-owned non-writable ancestry were verified before execution;
-mutable grant paths are never reopened for execution. The independent outer
-platform fence proposed by RFC-0103 (Landlock/seccomp and derived browser CSP)
-is separate work and is not yet implemented.
+mutable grant paths are never reopened for execution. Strict Linux launches add
+an independently derived Landlock/seccomp fence, and runnable book cells execute
+inside fresh opaque-origin frames whose CSP admits only their granted Fetch
+origins. Required mode fails before `main` when every requested outer layer
+cannot be enforced; other hosts report best-effort degradation explicitly.
 
 Portable `.wasm` artifacts remain untrusted guests run by a separately installed
 Witchy host. A [`trusted-exe`](rfcs/0092-trusted-application-executables.md), by contrast, embeds the application, checked root

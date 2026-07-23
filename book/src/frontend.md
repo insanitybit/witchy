@@ -40,9 +40,14 @@ by a runtime check — see
 [the WASM ABI](https://github.com/insanitybit/witchy/blob/master/spec/wasm-abi.md)
 and [Capabilities](capabilities.md) for the full model.
 
-The book gives a **Run** button only to examples supported by its browser host.
-The cell runs under a capability-denied default host, so examples that reach for
-other authority or unavailable native services remain read-only.
+The book gives a **Run** button to every complete example supported by its
+browser host, including examples using `Clock`, page-supplied `Env`, an
+in-memory `Dir`, origin-scoped `Fetch`, `SecretStore`, or a sequential `VM`.
+Each click compiles in the trusted page, then transfers only the compiled guest
+and plain grant data into a fresh `<iframe sandbox="allow-scripts">`. Omitting
+`allow-same-origin` gives the frame an opaque origin; its independently derived
+CSP sets `connect-src` to exactly the granted Fetch origins. Unsupported native
+authority remains read-only rather than falling back to main-frame execution.
 
 For a *teaching* or *playground* embedder that wants those examples to run,
 [RFC-0091](https://github.com/insanitybit/witchy/blob/master/rfcs/0091-browser-virtual-capabilities.md)

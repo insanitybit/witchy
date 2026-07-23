@@ -84,9 +84,11 @@ changes into the release evidence below.
 - **BLOCKER — publication authority:** no tag or release may be created until the
   user approves the exact green commit. The tag workflow creates a draft; final
   publication is a separate explicit workflow dispatch.
-- **ACCEPTED LOW limitation — filesystem race:** `Dir` confinement is not
-  TOCTOU-free under concurrent local symlink replacement. It remains documented
-  in the changelog rather than being expanded into compiler/runtime work here.
+- **RESOLVED — filesystem TOCTOU:** RFC-0103 replaced
+  canonicalize-then-open with shared descriptor/handle-anchored authority for
+  runtime, build, direct-file, and executable operations. Deterministic parent
+  and leaf replacement regressions cover fresh-operation rejection and retained
+  capability identity on both interpreter and compiled paths.
 - The gitignored bug ledger is split and known to be internally stale. Release
   disposition therefore comes from deterministic reproducers and the candidate
   matrix, not raw OPEN/FIXED counts.

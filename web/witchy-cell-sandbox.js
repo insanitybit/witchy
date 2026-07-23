@@ -2,85 +2,11 @@ import { compile } from "./witchy-host.js";
 import { deriveContentSecurityPolicy } from "./witchy-runtime/witchy-runtime.mjs";
 
 const INIT = "witchy-cell-init-v1";
+const PROGRESS = "witchy-cell-progress-v1";
+const READY = "witchy-cell-ready-v1";
 const RESULT = "witchy-cell-result-v1";
 const DEFAULT_TIMEOUT_MS = 30_000;
-
-// This is the only script admitted by each srcdoc frame. It accepts one private
-// MessagePort from its parent, imports trusted source supplied over that port,
-// and either runs one compiled guest or probes one Fetch URL. The frame has an
-// opaque origin because its sandbox deliberately omits allow-same-origin.
-const FRAME_BOOTSTRAP = `(() => {
-  "use strict";
-  let initialized = false;
-  const trustedParent = parent;
-
-  function materializeOptions(portable) {
-    const options = { ...(portable || {}) };
-    const fixture = options.fetchFixture;
-    delete options.fetchFixture;
-    if (fixture !== undefined) {
-      if (!fixture || fixture.kind !== "text-prefix" || typeof fixture.prefix !== "string") {
-        throw new Error("witchy sandbox: unsupported Fetch fixture");
-      }
-      options.fetchImpl = async (url) => {
-        const bytes = new TextEncoder().encode(fixture.prefix + String(url));
-        return {
-          status: Number.isInteger(fixture.status) ? fixture.status : 200,
-          redirected: false,
-          type: "basic",
-          headers: new Map([["content-type", "text/plain; charset=utf-8"]]),
-          arrayBuffer: async () => bytes.buffer,
-        };
-      };
-    }
-    return options;
-  }
-
-  addEventListener("message", async (event) => {
-    if (initialized || event.source !== trustedParent || !event.data
-        || event.data.type !== "${INIT}" || event.ports.length !== 1) return;
-    initialized = true;
-    const port = event.ports[0];
-    try {
-      if (event.data.action === "probe-fetch") {
-        const response = await fetch(event.data.url, { cache: "no-store", mode: "cors" });
-        await response.arrayBuffer();
-        port.postMessage({ type: "${RESULT}", result: { ok: true, status: response.status } });
-        return;
-      }
-      if (event.data.action !== "run") throw new Error("unknown sandbox action");
-
-      const runtimeUrl = "data:text/javascript;charset=utf-8,"
-        + encodeURIComponent(event.data.runtimeSource);
-      const expectedImport = 'from "./witchy-runtime/witchy-runtime.mjs";';
-      if (!event.data.hostSource.includes(expectedImport)) {
-        throw new Error("witchy sandbox: host/runtime import contract drifted");
-      }
-      const hostSource = event.data.hostSource.replace(
-        expectedImport,
-        "from " + JSON.stringify(runtimeUrl) + ";",
-      );
-      const hostUrl = "data:text/javascript;charset=utf-8," + encodeURIComponent(hostSource);
-      const host = await import(hostUrl);
-      const compiler = await WebAssembly.instantiate(event.data.compilerModule, {});
-      const result = await host.runCompiledWitchy(
-        compiler.exports,
-        event.data.binary,
-        materializeOptions(event.data.runOptions),
-      );
-      port.postMessage({ type: "${RESULT}", result });
-    } catch (error) {
-      port.postMessage({
-        type: "${RESULT}",
-        result: {
-          ok: false,
-          text: "sandbox error: " + String((error && error.message) || error),
-          stats: {},
-        },
-      });
-    }
-  });
-})();`;
+const FRAME_SCRIPT_URL = new URL("./witchy-cell-frame.js", import.meta.url);
 
 function escapeAttribute(value) {
   return String(value)
@@ -99,18 +25,25 @@ function randomNonce() {
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
 
-export function sandboxContentSecurityPolicy(capabilities, nonce) {
+export function sandboxContentSecurityPolicy(
+  capabilities,
+  nonce,
+) {
   return deriveContentSecurityPolicy(capabilities, {
-    scriptSources: [`'nonce-${nonce}'`, "data:", "'wasm-unsafe-eval'"],
+    scriptSources: [`'nonce-${nonce}'`, "blob:", "'wasm-unsafe-eval'"],
     styleSources: [],
   });
 }
 
-export function sandboxSrcdoc(capabilities, nonce) {
+export function sandboxSrcdoc(capabilities, nonce, frameSource) {
+  if (typeof frameSource !== "string" || /<\/script/i.test(frameSource)) {
+    throw new Error("witchy sandbox: invalid fixed frame bootstrap");
+  }
   const policy = sandboxContentSecurityPolicy(capabilities, nonce);
   return `<!doctype html><meta charset="utf-8">`
     + `<meta http-equiv="Content-Security-Policy" content="${escapeAttribute(policy)}">`
-    + `<script nonce="${escapeAttribute(nonce)}">${FRAME_BOOTSTRAP}</script>`;
+    + `<script nonce="${escapeAttribute(nonce)}" `
+    + `data-ready-token="${escapeAttribute(nonce)}">${frameSource}</script>`;
 }
 
 function assertPortable(value, path = "runOptions", seen = new Set()) {
@@ -150,6 +83,7 @@ async function requestFrame({
   document: doc,
   capabilities,
   payload,
+  frameSource,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 }) {
   if (!doc || !doc.body || typeof doc.createElement !== "function") {
@@ -158,6 +92,11 @@ async function requestFrame({
   if (typeof globalThis.MessageChannel !== "function") {
     throw new Error("witchy sandbox: MessageChannel is unavailable");
   }
+  const view = doc.defaultView || globalThis;
+  if (typeof view.addEventListener !== "function"
+      || typeof view.removeEventListener !== "function") {
+    throw new Error("witchy sandbox: a live browser window is required");
+  }
 
   const nonce = randomNonce();
   const frame = doc.createElement("iframe");
@@ -165,39 +104,54 @@ async function requestFrame({
   frame.setAttribute("hidden", "");
   frame.setAttribute("aria-hidden", "true");
   frame.setAttribute("tabindex", "-1");
-  frame.srcdoc = sandboxSrcdoc(capabilities, nonce);
+  frame.srcdoc = sandboxSrcdoc(capabilities, nonce, frameSource);
 
   const channel = new MessageChannel();
   return new Promise((resolve, reject) => {
     let settled = false;
+    let progress = "waiting for frame readiness";
+    let onReady;
     const finish = (fn, value) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      view.removeEventListener("message", onReady);
       channel.port1.close();
       removeFrame(frame);
       fn(value);
     };
     const timer = setTimeout(
-      () => finish(reject, new Error("witchy sandbox: frame execution timed out")),
+      () => finish(
+        reject,
+        new Error(`witchy sandbox: frame execution timed out (${progress})`),
+      ),
       timeoutMs,
     );
     channel.port1.onmessage = (event) => {
+      if (event.data && event.data.type === PROGRESS) {
+        progress = event.data.stage;
+        return;
+      }
       if (!event.data || event.data.type !== RESULT) return;
       finish(resolve, event.data.result);
     };
     channel.port1.start();
-    frame.addEventListener("load", () => {
+    onReady = (event) => {
+      if (event.source !== frame.contentWindow || !event.data
+          || event.data.type !== READY || event.data.token !== nonce) return;
+      view.removeEventListener("message", onReady);
+      progress = "waiting for child initialization";
       try {
         frame.contentWindow.postMessage(
-          { type: INIT, ...payload },
+          { type: INIT, token: nonce, ...payload },
           "*",
           [channel.port2],
         );
       } catch (error) {
         finish(reject, error);
       }
-    }, { once: true });
+    };
+    view.addEventListener("message", onReady);
     doc.body.appendChild(frame);
   });
 }
@@ -214,19 +168,19 @@ function loadText(url) {
 export function createSandboxedProgramRunner({
   document: doc = globalThis.document,
   loadCompiler,
-  hostSourceUrl = new URL("./witchy-host.js", import.meta.url),
-  runtimeSourceUrl = new URL("./witchy-runtime/witchy-runtime.mjs", import.meta.url),
+  frameScriptUrl = FRAME_SCRIPT_URL,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 } = {}) {
   if (typeof loadCompiler !== "function") {
-    throw new Error("witchy sandbox: loadCompiler must return { module, exports }");
+    throw new Error("witchy sandbox: loadCompiler must return { bytes, module, exports }");
   }
   let compilerPromise;
   let sourcesPromise;
   const compiler = () => (compilerPromise ||= Promise.resolve().then(loadCompiler));
   const sources = () => (sourcesPromise ||= Promise.all([
-    loadText(hostSourceUrl),
-    loadText(runtimeSourceUrl),
+    loadText(frameScriptUrl),
+    loadText(new URL("./witchy-host.js", import.meta.url)),
+    loadText(new URL("./witchy-runtime/witchy-runtime.mjs", import.meta.url)),
   ]));
 
   return async (source, runOptions = {}) => {
@@ -235,21 +189,23 @@ export function createSandboxedProgramRunner({
     let loaded;
     try {
       loaded = await compiler();
-      if (!(loaded && loaded.module instanceof WebAssembly.Module && loaded.exports)) {
-        throw new Error("loadCompiler did not return { module, exports }");
+      if (!(loaded && loaded.module instanceof WebAssembly.Module && loaded.exports
+          && (loaded.bytes instanceof Uint8Array || loaded.bytes instanceof ArrayBuffer))) {
+        throw new Error("loadCompiler did not return { bytes, module, exports }");
       }
       binary = compile(loaded.exports, source);
     } catch (error) {
       return { ok: false, text: String((error && error.message) || error), stats: {} };
     }
-    const [hostSource, runtimeSource] = await sources();
+    const [frameSource, hostSource, runtimeSource] = await sources();
     return requestFrame({
       document: doc,
       capabilities: runOptions.capabilities,
+      frameSource,
       timeoutMs,
       payload: {
         action: "run",
-        compilerModule: loaded.module,
+        compilerBytes: loaded.bytes,
         binary,
         runOptions,
         hostSource,
@@ -264,13 +220,17 @@ export function probeSandboxFetch(
   capabilities,
   {
     document: doc = globalThis.document,
+    frameScriptUrl = FRAME_SCRIPT_URL,
+    frameSource,
     timeoutMs = DEFAULT_TIMEOUT_MS,
   } = {},
 ) {
-  return requestFrame({
+  const source = frameSource === undefined ? loadText(frameScriptUrl) : Promise.resolve(frameSource);
+  return source.then((loadedFrameSource) => requestFrame({
     document: doc,
     capabilities,
+    frameSource: loadedFrameSource,
     timeoutMs,
     payload: { action: "probe-fetch", url: String(url) },
-  });
+  }));
 }

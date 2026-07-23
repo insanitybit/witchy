@@ -32,3 +32,18 @@ Fetch authority, not a byte-stream socket.
 
 `web/witchy.wasm` is a build artifact (gitignored); regenerate it with the
 build script.
+
+## Runnable book isolation
+
+The deployable book uses `witchy-cell-sandbox.js`, not the standalone
+playground's main-frame runner. The trusted page compiles source, then sends the
+compiled guest plus structured-cloneable grant data to a fresh
+`sandbox="allow-scripts"` iframe over a private `MessageChannel`. The frame has
+an opaque origin and a CSP derived from the same browser capability object,
+including `connect-src` equal to the granted Fetch origins. There is no
+same-origin or direct-execution fallback.
+
+`scripts/probe-browser-confinement.mjs dist` drives the shipped bundle in Safari:
+it verifies a granted local origin is reachable, an ungranted live server
+receives zero requests, every complete book example runs in an opaque frame, and
+manifest-runnable examples retain exact output.

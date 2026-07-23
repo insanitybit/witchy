@@ -14,8 +14,10 @@ python3 -m http.server -d web 8000
 # open http://localhost:8000
 ```
 
-Examples with a Run button execute there. Native-only host services and examples
-that require ungranted authority remain read-only.
+Examples with a Run button compile in the trusted page and execute in a fresh
+opaque-origin frame whose CSP is derived from the example's browser grants.
+Native-only host services and examples that require ungranted authority remain
+read-only.
 
 ## Installing a tagged release
 
