@@ -275,6 +275,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "mint_fetch" (func $mint_fetch_host (param i32) (result externref)))
   (import "witchy" "fetch_only" (func $fetch_only_host (param externref i32) (result externref)))
   (import "witchy" "fetch_send_len" (func $fetch_send_host (param externref i32 i32 i32 i32) (result i32)))
+  (import "witchy" "net_fetch" (func $net_fetch_host (param externref i32) (result externref)))
   (import "witchy" "net_connect" (func $net_connect_host (param externref i32) (result externref)))
   (import "witchy" "net_try_connect" (func $net_try_connect_host (param externref i32) (result externref)))
   (import "witchy" "net_resolve_size" (func $net_resolve_size_host (param externref i32) (result i32)))
@@ -305,10 +306,10 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 90;
+pub const IMPORT_COUNT: usize = 91;
 
 /// Version of the public `"witchy"` host-import contract.
-pub const WITCHY_ABI_VERSION: u32 = 2;
+pub const WITCHY_ABI_VERSION: u32 = 3;
 
 /// The role an import plays at the host boundary. This classification is part
 /// of the public Wasm ABI: it tells embedders which imports grant authority,
@@ -481,6 +482,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "mint_fetch"
         | "fetch_only"
         | "fetch_send_len"
+        | "net_fetch"
         | "net_connect"
         | "net_try_connect"
         | "net_resolve_size"
@@ -538,6 +540,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         "mint_net" => AUTH_NET_GRANT,
         "mint_fetch" => AUTH_FETCH_GRANT,
         "fetch_only" | "fetch_send_len" => AUTH_FETCH,
+        "net_fetch" => AUTH_NET_CONNECT,
         "net_connect"
         | "net_try_connect"
         | "net_resolve_size"

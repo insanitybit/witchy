@@ -2403,6 +2403,20 @@ impl Interpreter {
                 }
                 _ => err("run_tool expects a BuildExec, a tool name, and input"),
             },
+            "fetch" => match args {
+                [Value::Net(allow), Value::Str(origins)] => {
+                    witchy_runtime::fetch::FetchPolicy::from_net(
+                        allow,
+                        origins.lines().map(str::to_owned),
+                    )
+                    .map(Value::Fetch)
+                    .map(Some)
+                    .map_err(|error| RuntimeError {
+                        message: format!("net.fetch: {error}"),
+                    })
+                }
+                _ => err("fetch expects a Net and newline-separated origins"),
+            },
             // RFC-0011 typed verbs: the argument is a `NetPolicy` carrying one or more address
             // patterns (a `confine.union` joins them, newline-separated). `only` narrows to the
             // set; `deny` subtracts it (a monotone exclusion recorded as `!`-prefixed entries

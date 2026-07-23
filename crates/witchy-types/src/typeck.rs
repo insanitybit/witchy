@@ -4254,6 +4254,25 @@ impl Checker {
     /// Request/Response conversion; the compiler sees only strings and an
     /// unforgeable, origin-scoped authority.
     fn check_fetch_op(&mut self, name: &str, args: &[Expr]) -> Result<Option<Ty>, TypeError> {
+        if name == "fetch" {
+            if args.len() != 2 {
+                return terr(format!(
+                    "`fetch` expects 2 argument(s) but got {}",
+                    args.len()
+                ));
+            }
+            let rights = self.net_cap_rights(name, &args[0])?;
+            if !rights.connect || !rights.tcp {
+                return terr(format!(
+                    "`fetch` needs `Net[Connect, Tcp]` but the capability is `{rights}`"
+                ));
+            }
+            let origins = self.infer(&args[1])?;
+            self.unify(&Ty::String, &origins).map_err(|err| TypeError {
+                message: format!("in call to `fetch`: {}", err.message),
+            })?;
+            return Ok(Some(Ty::Fetch));
+        }
         if name != "only" && name != "send_raw" {
             return Ok(None);
         }

@@ -38,6 +38,7 @@ pub enum ResultShape {
     OptionString,
     Dir,
     File,
+    Fetch,
     Socket,
     OptionSocket,
     Listener,
@@ -95,6 +96,7 @@ pub const OPS: &[CapOp] = &[
     op!("listen", Net, 2, Listener, "net.listen(addr)"),
     op!("listen_tls", Net, 4, Listener, "net.listen_tls(addr, cert_pem, key)"),
     op!("only", Net, 2, SameReceiver, "cap.only(policy)"),
+    op!("fetch", Net, 2, Fetch, "net.fetch(origins)"),
     op!("only", Fetch, 2, SameReceiver, "fetch.only(origins)"),
     op!(
         "send_raw",

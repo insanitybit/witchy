@@ -23,12 +23,31 @@ pub(in crate::runtime) fn link_mint(linker: &mut Linker<VmState>) -> Result<()> 
 pub(in crate::runtime) fn link_connect(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "net_restrict", host_net_restrict)?;
     linker.func_wrap("witchy", "net_deny", host_net_deny)?;
+    linker.func_wrap("witchy", "net_fetch", host_net_fetch)?;
     linker.func_wrap("witchy", "net_connect", host_net_connect)?;
     linker.func_wrap("witchy", "net_try_connect", host_net_try_connect)?;
     linker.func_wrap("witchy", "net_resolve_size", host_net_resolve_size)?;
     linker.func_wrap("witchy", "net_connect_pinned", host_net_connect_pinned)?;
     linker.func_wrap("witchy", "net_try_connect_pinned", host_net_try_connect_pinned)?;
     Ok(())
+}
+
+/// `net_fetch(net, origins) -> Fetch`: derive exact HTTP(S) origins while
+/// retaining the source Net policy as a permanent post-DNS floor.
+fn host_net_fetch(
+    mut caller: Caller<'_, VmState>,
+    net_ref: Option<Rooted<ExternRef>>,
+    origins_ptr: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
+    let mem = memory_of(&mut caller)?;
+    let origins = read_wstr(mem.data(&caller), origins_ptr)?;
+    let net = net_authority_ref(&caller, net_ref)?;
+    let policy = crate::fetch::FetchPolicy::from_net(
+        &net.allow,
+        origins.lines().map(str::to_owned),
+    )
+    .map_err(|error| Error::msg(format!("net.fetch: {error}")))?;
+    ExternRef::new(&mut caller, policy).map(Some)
 }
 
 /// Register the Listen-right family. HTTPS listen (RFC-0060) uses the same

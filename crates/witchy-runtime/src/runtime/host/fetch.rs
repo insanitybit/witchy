@@ -3,8 +3,12 @@ use wasmtime::{Caller, Error, ExternRef, Linker, Result, Rooted};
 use super::super::{memory_of, read_wstr, VmState};
 use crate::fetch::{FetchPolicy, FetchRequest};
 
-pub(in crate::runtime) fn link(linker: &mut Linker<VmState>) -> Result<()> {
+pub(in crate::runtime) fn link_mint(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "mint_fetch", host_mint_fetch)?;
+    Ok(())
+}
+
+pub(in crate::runtime) fn link_ops(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "fetch_only", host_fetch_only)?;
     linker.func_wrap("witchy", "fetch_send_len", host_fetch_send_len)?;
     Ok(())

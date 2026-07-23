@@ -948,7 +948,10 @@ pub(crate) fn link_capability_imports(
         host::network::link_socket_io(linker)?;
     }
     if !caps.fetch_grants.is_empty() {
-        host::fetch::link(linker)?;
+        host::fetch::link_mint(linker)?;
+    }
+    if !caps.fetch_grants.is_empty() || (net && caps.net_connect) {
+        host::fetch::link_ops(linker)?;
     }
     if caps.signing_key.is_some() {
         host::secret::link_mint(linker)?;

@@ -802,6 +802,11 @@ impl Codegen<'_> {
                 let a = self.lower_args(&[&args[0]])?;
                 if self.collect_wir { call("net_accept", a) } else { host("net_accept_host", a) }
             }
+            ("fetch", 2) => {
+                self.used_net_ops.insert("connect");
+                let a = self.lower_args(&[&args[0], &args[1]])?;
+                if self.collect_wir { call("net_fetch", a) } else { host("net_fetch_host", a) }
+            }
             // RFC-0011 typed verbs: `only`/`deny` take a policy record; extract its
             // single `pattern` field and feed the host op the same string. `only` is
             // polymorphic on the receiver — a `Dir` narrows its ENTRY policy

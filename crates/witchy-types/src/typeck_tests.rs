@@ -2745,6 +2745,21 @@ fn main():
     }
 
     #[test]
+    fn fetch_derivation_requires_connect_tcp_and_returns_fetch() {
+        check_str(
+            "fn derive(net: Net[Connect, Tcp]) -> Fetch:\n    net.fetch(\"https://example.com\")\n",
+        )
+        .expect("Net[Connect, Tcp] derives Fetch");
+        for rights in ["Listen, Tcp", "Connect, Udp"] {
+            let source = format!(
+                "fn derive(net: Net[{rights}]) -> Fetch:\n    net.fetch(\"https://example.com\")\n"
+            );
+            let error = check_str(&source).expect_err("insufficient Net rights reject");
+            assert!(error.contains("needs `Net[Connect, Tcp]`"), "{error}");
+        }
+    }
+
+    #[test]
     fn unknown_capability_right_markers_are_rejected() {
         // (BUG-154) A misspelled or invalid bracket marker must be a clear error,
         // not silently normalized to a different authority shape.

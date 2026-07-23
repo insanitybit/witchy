@@ -20,14 +20,15 @@ breaking ABI change that must bump `WITCHY_ABI_VERSION`.
 
 ## ABI version
 
-The current ABI version is **2**. The JavaScript host pins it as
+The current ABI version is **3**. The JavaScript host pins it as
 `WITCHY_ABI_VERSION` (exported from `web/witchy-runtime/witchy-runtime.mjs`). The
 version covers: the import module name `"witchy"`, the set of import names and
 their `(params) -> results` signatures, the value/memory representation, and the
 pending-buffer protocol. Bump it in lockstep with any change to those.
 Version 1 is the baseline frozen for the first 0.1 release. Version 2 adds the
-opaque Fetch grant, attenuation, and staged request imports; earlier pre-release
-import counts were not separately published ABI versions.
+opaque Fetch grant, attenuation, and staged request imports. Version 3 adds the
+Net-to-Fetch derivation import; earlier pre-release import counts were not
+separately published ABI versions.
 
 ## Import inclusion is tree-shaken
 
@@ -131,7 +132,7 @@ cannot instantiate.
 
 ## The imports
 
-ABI version 2 declares **90 imports** (`IMPORT_COUNT` in
+ABI version 3 declares **91 imports** (`IMPORT_COUNT` in
 `crates/witchy-wir/src/wir_prelude.rs`). That file owns the ordered signatures
 and the explicit metadata rendered below. The classes are:
 
@@ -216,6 +217,7 @@ byte-for-byte and instantiates an all-import probe against the native host.
 | `mint_fetch` | `(i32) -> externref` | capability authority | Fetch.grant | omitted |
 | `fetch_only` | `(externref, i32) -> externref` | capability authority | Fetch | omitted |
 | `fetch_send_len` | `(externref, i32, i32, i32, i32) -> i32` | capability authority | Fetch | omitted |
+| `net_fetch` | `(externref, i32) -> externref` | capability authority | Net.Connect | omitted |
 | `net_connect` | `(externref, i32) -> externref` | capability authority | Net.Connect | omitted |
 | `net_try_connect` | `(externref, i32) -> externref` | capability authority | Net.Connect | omitted |
 | `net_resolve_size` | `(externref, i32) -> i32` | capability authority | Net.Connect | omitted |

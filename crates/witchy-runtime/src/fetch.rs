@@ -72,6 +72,9 @@ impl Scheme {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchPolicy {
     allowed: AllowedOrigins,
+    /// A derived Fetch permanently retains the source Net policy. Direct Fetch
+    /// grants have no Net floor.
+    network_floor: Option<Vec<String>>,
     timeout: Duration,
     max_response_bytes: usize,
 }
@@ -93,6 +96,7 @@ impl FetchPolicy {
         }
         Ok(Self {
             allowed: AllowedOrigins::Exact(allowed),
+            network_floor: None,
             timeout: Duration::from_secs(30),
             max_response_bytes: 16 * 1024 * 1024,
         })
@@ -101,9 +105,41 @@ impl FetchPolicy {
     pub fn system() -> Self {
         Self {
             allowed: AllowedOrigins::Any,
+            network_floor: None,
             timeout: Duration::from_secs(30),
             max_response_bytes: 16 * 1024 * 1024,
         }
+    }
+
+    /// Derive exact origin-scoped Fetch authority from a Net capability.
+    ///
+    /// Every requested origin must be admitted by the source Net policy before
+    /// the Fetch exists. The complete source policy is retained and re-applied
+    /// after DNS resolution on every send, so a hostname allow plus an IP/CIDR
+    /// deny cannot be bypassed by derivation.
+    pub fn from_net(
+        net_allow: &[String],
+        origins: impl IntoIterator<Item = String>,
+    ) -> Result<Self, FetchError> {
+        let mut allowed = Vec::new();
+        for origin in origins {
+            let origin = Origin::parse(&origin)?;
+            let authority = format!("{}:{}", display_host(&origin.host), origin.port);
+            if !witchy_caps::capabilities::net_allows(net_allow, &authority) {
+                return Err(FetchError::Denied {
+                    origin: origin.as_str(),
+                });
+            }
+            if !allowed.contains(&origin) {
+                allowed.push(origin);
+            }
+        }
+        Ok(Self {
+            allowed: AllowedOrigins::Exact(allowed),
+            network_floor: Some(net_allow.to_vec()),
+            timeout: Duration::from_secs(30),
+            max_response_bytes: 16 * 1024 * 1024,
+        })
     }
 
     pub fn with_limits(mut self, timeout: Duration, max_response_bytes: usize) -> Self {
@@ -127,6 +163,7 @@ impl FetchPolicy {
         }
         Ok(Self {
             allowed: AllowedOrigins::Exact(narrowed),
+            network_floor: self.network_floor.clone(),
             timeout: self.timeout,
             max_response_bytes: self.max_response_bytes,
         })
@@ -223,7 +260,15 @@ pub fn send(policy: &FetchPolicy, request: &FetchRequest) -> Result<FetchRespons
         display_host(&parsed.origin.host),
         parsed.origin.port
     );
-    let targets = resolve(&parsed.origin.host, parsed.origin.port)?;
+    let targets = if let Some(net_allow) = &policy.network_floor {
+        witchy_caps::capabilities::resolve_admitted(net_allow, &host_port).map_err(|_| {
+            FetchError::Denied {
+                origin: parsed.origin.as_str(),
+            }
+        })?
+    } else {
+        resolve(&parsed.origin.host, parsed.origin.port)?
+    };
     let mut stream = crate::net::dial_with_timeout(
         &targets,
         parsed.origin.scheme == Scheme::Https,
@@ -621,6 +666,30 @@ mod tests {
             send(&narrowed, &get("http://127.0.0.1:9/never-dial".to_string())),
             Err(FetchError::Denied { .. })
         ));
+    }
+
+    #[test]
+    fn net_derivation_is_bounded_and_preserves_the_network_floor() {
+        let allow = vec![
+            "127.0.0.1:8080".to_string(),
+            "!127.0.0.1:8081".to_string(),
+        ];
+        let fetch = FetchPolicy::from_net(
+            &allow,
+            ["http://127.0.0.1:8080".to_string()],
+        )
+        .expect("admitted origin derives");
+        assert!(fetch
+            .only(["http://127.0.0.1:8080".to_string()])
+            .is_ok());
+        assert!(matches!(
+            FetchPolicy::from_net(
+                &allow,
+                ["http://127.0.0.1:8081".to_string()]
+            ),
+            Err(FetchError::Denied { .. })
+        ));
+        assert_eq!(fetch.network_floor, Some(allow));
     }
 
     #[test]

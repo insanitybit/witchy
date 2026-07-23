@@ -446,6 +446,18 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
+        "net_fetch" => Some(WirHelperSpec {
+            func: host_call_helper_typed(
+                "net_fetch",
+                "net_fetch",
+                &[WirTy::Extern, WirTy::Str],
+                WirTy::Extern,
+            ),
+            helper_deps: &[],
+            import_deps: &["net_fetch"],
+            uses_heap: false,
+            uses_table: false,
+        }),
         "fetch_send" => Some(WirHelperSpec {
             func: staged_string_helper_typed(
                 "fetch_send",

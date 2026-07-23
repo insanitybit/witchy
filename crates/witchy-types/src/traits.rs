@@ -1727,6 +1727,7 @@ fn cap_op_result_type(e: &Expr, type_of: &dyn Fn(&Expr) -> Option<Type>) -> Opti
         }
         cap_ops::ResultShape::Dir => Some(named_type("Dir")),
         cap_ops::ResultShape::File => Some(named_type("File")),
+        cap_ops::ResultShape::Fetch => Some(named_type("Fetch")),
         cap_ops::ResultShape::Socket => Some(named_type("Socket")),
         cap_ops::ResultShape::OptionSocket => {
             Some(Type::Named("Option".to_string(), vec![named_type("Socket")]))

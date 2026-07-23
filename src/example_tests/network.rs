@@ -701,6 +701,67 @@ fn main(console: Console):
         server.join().expect("server thread");
     }
 
+    #[test]
+    fn fetch_derived_from_net_compiles_without_a_fetch_root_grant() {
+        use crate::runtime::{Capabilities, Runtime};
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("address");
+        let origin = format!("http://{address}");
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream.read(&mut chunk).expect("read");
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                }
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nderived",
+                    )
+                    .expect("write");
+            }
+        });
+        let source = format!(
+            "fn main(console: Console, net: Net[Connect, Tcp]):\n    \
+             let fetch = net.fetch(\"{origin}\")\n    \
+             console.print(fetch.send_raw(\"GET\", \"{origin}/hello\", \"\", \"\"))\n"
+        );
+        let module = parser::parse_module(&source).expect("parse");
+        let linked =
+            crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let net_allow = vec![address.to_string()];
+        let interpreted =
+            interpreter::run_module(linked.clone(), ".", net_allow.clone()).expect("interpreter");
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect_lowered("the binary path lowers Net-to-Fetch derivation");
+        let mut runtime = Runtime::batch().expect("runtime");
+        let mut actor = runtime
+            .spawn(
+                &bytes,
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    net_allow: Some(net_allow),
+                    net_connect: true,
+                    ..Default::default()
+                },
+                64,
+            )
+            .expect("spawn without a Fetch root grant");
+        actor.run().expect("run");
+        assert_eq!(actor.output(), interpreted);
+        assert!(actor.output()[0].contains("derived"));
+        server.join().expect("server");
+    }
+
     /// `http.try_get` is fallible: a dial to an ALLOWLISTED-but-closed port
     /// yields `Err(...)` rather than trapping — on BOTH backends. This is the
     /// primitive that lets a proxy answer 502 for a down upstream instead of
