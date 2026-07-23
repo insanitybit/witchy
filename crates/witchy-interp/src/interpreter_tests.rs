@@ -657,16 +657,18 @@ fn main(console: Console):
         // A Dir capability is confined to its subtree. `resolve` must reject any
         // path that would escape it, so a holder (e.g. an untrusted library
         // handed a narrow Dir) can read within the subtree but never above it.
-        use std::path::Path;
-        let base = Path::new(".");
+        let base = witchy_runtime::confine::ConfinedDir::open_ambient(
+            std::path::Path::new("."),
+        )
+        .unwrap();
         // Positive control: a path inside the subtree resolves (Cargo.toml is at
         // the crate root, the CWD for tests).
-        assert!(resolve(base, "Cargo.toml").is_ok());
+        assert!(base.file("Cargo.toml", true).is_ok());
         // `..` is rejected lexically, before any filesystem access.
-        assert!(resolve(base, "../secret").is_err());
-        assert!(resolve(base, "src/../../etc/passwd").is_err());
+        assert!(base.file("../secret", true).is_err());
+        assert!(base.file("src/../../etc/passwd", true).is_err());
         // Absolute paths are rejected: the capability is a subtree, not root.
-        assert!(resolve(base, "/etc/passwd").is_err());
+        assert!(base.file("/etc/passwd", true).is_err());
     }
 
     #[test]

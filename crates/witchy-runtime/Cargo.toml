@@ -27,22 +27,23 @@ aws-lc-rs = "1"
 rustls = { version = "0.23", default-features = false, features = ["std", "aws_lc_rs", "tls12", "logging"] }
 webpki-roots = "0.26"
 rustls-pemfile = "2"
+# RFC-0103: portable, descriptor/handle-anchored filesystem traversal. These are
+# native-only because the browser build has no host filesystem.
+cap-std = "4.0.2"
+cap-fs-ext = "4.0.2"
+tempfile = "3.27.0"
 
 # ed25519-dalek pulls getrandom transitively; the browser target needs its JS
 # backend to link (crypto is seed-only here, so it is never actually called).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
 
-# `O_NOFOLLOW` for the leaf-race-free confined open (`confine::open_read`/`_write`/
-# `_append`). Unix-only. Non-unix targets use a fallback without the flag: wasm has
-# no host filesystem, and Windows leaf-symlink hardening is not yet implemented
-# (tracked in RFC-0103 alongside the full-tree confinement follow-up).
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
+# Safe file-descriptor passing for race-free execution of a confined file.
+[target.'cfg(all(unix, not(target_arch = "wasm32")))'.dependencies]
+cap-std-ext = "5.1.2"
 
 [features]
 native = ["dep:wasmtime", "dep:getrandom"]
 # Exposes the scoped TLS-root registry used by the root package's hermetic
 # integration tests. Normal builds cannot add trust anchors through this API.
 test-support = []
-

@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use super::{err, resolve, resolve_write, DirValue, FileValue, RuntimeError, Value};
+use super::{err, DirValue, FileValue, RuntimeError, Value};
 
 pub(super) fn mock_normalize(rel: &str) -> Result<String, RuntimeError> {
     let path = Path::new(rel);
@@ -79,7 +79,10 @@ pub(super) fn mock_list(files: &BTreeMap<String, String>, root: &str) -> Result<
 
 pub(super) fn dir_child_value(dir: &DirValue, name: &str) -> Result<DirValue, RuntimeError> {
     match dir {
-        DirValue::Fs(base) => Ok(DirValue::Fs(resolve(base, name)?)),
+        DirValue::Fs(base) => base
+            .open_dir(name)
+            .map(DirValue::Fs)
+            .map_err(|error| RuntimeError { message: error.0 }),
         DirValue::Mock { root, files } => {
             Ok(DirValue::Mock { root: mock_join(root, name)?, files: files.clone() })
         }
@@ -88,14 +91,10 @@ pub(super) fn dir_child_value(dir: &DirValue, name: &str) -> Result<DirValue, Ru
 
 pub(super) fn dir_file_value(dir: &DirValue, rel: &str, write: bool) -> Result<FileValue, RuntimeError> {
     match dir {
-        DirValue::Fs(base) => {
-            let path = if write {
-                resolve_write(base, rel)?
-            } else {
-                resolve(base, rel)?
-            };
-            Ok(FileValue::Fs(path))
-        }
+        DirValue::Fs(base) => base
+            .file(rel, !write)
+            .map(FileValue::Fs)
+            .map_err(|error| RuntimeError { message: error.0 }),
         DirValue::Mock { root, files } => {
             Ok(FileValue::Mock { path: mock_join(root, rel)?, files: files.clone() })
         }
@@ -104,15 +103,10 @@ pub(super) fn dir_file_value(dir: &DirValue, rel: &str, write: bool) -> Result<F
 
 pub(super) fn read_file_value(file: &FileValue) -> Result<String, RuntimeError> {
     match file {
-        FileValue::Fs(path) => {
-            use std::io::Read;
-            let read = witchy_runtime::confine::open_read(path).and_then(|mut f| {
-                let mut s = String::new();
-                f.read_to_string(&mut s).map(|_| s)
-            });
-            match read {
+        FileValue::Fs(file) => {
+            match file.read_to_string() {
                 Ok(contents) => Ok(contents),
-                Err(e) => err(format!("read failed for `{}`: {e}", path.display())),
+                Err(e) => err(format!("read failed for `{}`: {e}", file.display_path().display())),
             }
         }
         FileValue::Mock { path, files } => files
@@ -126,11 +120,10 @@ pub(super) fn read_file_value(file: &FileValue) -> Result<String, RuntimeError> 
 
 pub(super) fn write_file_value(file: &FileValue, contents: &str) -> Result<(), RuntimeError> {
     match file {
-        FileValue::Fs(path) => {
-            use std::io::Write;
-            match witchy_runtime::confine::open_write(path).and_then(|mut f| f.write_all(contents.as_bytes())) {
+        FileValue::Fs(file) => {
+            match file.write_all(contents.as_bytes()) {
                 Ok(()) => Ok(()),
-                Err(e) => err(format!("write failed for `{}`: {e}", path.display())),
+                Err(e) => err(format!("write failed for `{}`: {e}", file.display_path().display())),
             }
         }
         FileValue::Mock { path, .. } => err(format!(

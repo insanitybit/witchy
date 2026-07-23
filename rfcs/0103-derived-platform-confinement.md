@@ -1,16 +1,15 @@
 ---
 rfc: 0103
 title: "Derived platform confinement: kernel and web enforcement of capability grants"
-status: deferred
+status: accepted
 created: 2026-07-23
 tracking: >
-  Deferred after landing the first bounded phase-one slice in e53dc1b6:
-  native Unix reads, writes, and appends use O_NOFOLLOW to close the
-  final-component symlink-swap race on both backends. Parent-component races
-  and descriptor-anchored full-path resolution remain open; no implementation
-  branch is in flight. Reopen with an owner for that runtime TCB work before
-  derived Landlock/seccomp policy, build-step confinement, derived CSP, and
-  additional OS providers.
+  Reopened for full implementation. Phase 1 is implemented: native Dir, File,
+  build-root, and executable selection authority is descriptor/handle anchored
+  through one shared confine implementation used by both backends, with
+  deterministic parent-swap regressions. Derived Landlock/seccomp policy,
+  build-step outer confinement, derived CSP, required mode, and enforcement
+  menus remain active implementation phases.
 predecessors:
   - "[0013](0013-capability-grant-documents.md) (grant documents — the concrete pre-execution authority statement this RFC compiles)"
   - "[0068](0068-compiled-build-step-grants.md) (build-step grants — the declared authority of third-party build code)"
@@ -40,9 +39,9 @@ outside the runtime's own trust base:
 - **Linux**: a Landlock ruleset (filesystem subtrees + rights, TCP
   connect/bind ports) and a grant-conditional seccomp filter, applied after
   grant resolution and before guest execution;
-- **every Unix, per-operation**: race-free dirfd-anchored path resolution
-  (`openat2` + `RESOLVE_BENEATH` on Linux, `O_NOFOLLOW_ANY` on macOS)
-  replacing `confine`'s canonicalize-then-use;
+- **native hosts, per-operation**: race-free descriptor/handle-anchored path
+  resolution through `cap-std` (the platform-specific `openat`/`openat2` or
+  handle walk) replacing `confine`'s canonicalize-then-use;
 - **the web**: a Content-Security-Policy derived from the capability
   surface (`connect-src` = the granted `Fetch` origins), formalizing and
   extending the hardened header suite coven-web already ships;
@@ -66,11 +65,11 @@ A native run trusts: the compiler (capability typing, footprint), the
 runtime kernel (grant admission, import handlers, `confine`), and wasmtime.
 A single bug in any of these yields the process's full ambient authority —
 every file the user can read, arbitrary network, arbitrary exec.
-`confine.rs` documents a live instance of the risk class. The final component
-is now opened with `O_NOFOLLOW` on native Unix hosts, closing a checked leaf's
-swap to a symlink. Parent components still use canonicalize-then-open, so the
-full path walk remains subject to concurrent local mutation until it becomes
-descriptor-anchored.
+`confine.rs` documented a live instance of the risk class. Phase 1 has now
+removed that canonicalize-then-open model: roots are admitted as open directory
+handles and all guest-selected components are resolved beneath those handles.
+Retained `File` and subtree capabilities remain attached to their original
+parent objects even if their old ambient names are replaced.
 The wasm sandbox is strong, but "strong" is not "assumed infallible" — every
 serious sandbox architecture (Chrome's, OpenBSD's, systemd's) layers an
 outer kernel fence precisely because inner layers have bugs.
@@ -231,21 +230,22 @@ the primary and finer enforcer everywhere.
 
 ## Per-operation confinement (phase 1, independent of policy)
 
-**Current status:** commit `e53dc1b6` landed the bounded leaf-race slice.
-`open_read`, `open_write`, and `open_append` apply `O_NOFOLLOW` on Unix, and
-both the interpreter and compiled host use those shared helpers. This closes
-the final-component symlink swap only. The descriptor-anchored parent walk
-described below remains deferred.
+**Implemented:** `ConfinedDir` consumes ambient authority only when a host grant
+is admitted. `subtree`, direct and derived `File` values, read/write/append,
+exists/is-dir/list, directory creation, build input/output roots, and executable
+selection then operate relative to retained handles. Writes atomically refuse a
+symlink leaf. Linux executes the opened executable through an inherited procfd;
+Unix hosts without descriptor execution run a private mode-checked snapshot of
+that opened file. macOS platform binaries may instead use a path only after its
+opened identity and root-owned, non-writable ancestry are verified. Mutable
+grant pathnames are never reopened for execution. Both the interpreter oracle
+and compiled host carry these shared objects.
 
-Before any policy compiler: replace `confine`'s canonicalize-then-use with
-dirfd-anchored, race-free resolution — `openat2(RESOLVE_BENEATH |
-RESOLVE_NO_MAGICLINKS)` on Linux, `O_NOFOLLOW_ANY` on macOS (the cap-std
-approach `confine.rs` already names as the fix). This closes the documented
-symlink-race class per operation, on every host, with no launch-time
-machinery, and it benefits the interpreter oracle and compiled backend
-identically since both share `confine`. It ships first because it is small,
-local, and closes a known race; the Landlock layer then makes the same
-guarantee hold even if a future path check regresses.
+Deterministic regressions replace a parent with an escaping symlink after
+authority creation. Fresh operations reject it, while previously minted
+subdirectory and file capabilities continue to address their original opened
+objects. The browser target compiles the no-host-filesystem stub and cannot mint
+ambient filesystem authority.
 
 ## The web platform: CSP is the browser's Landlock
 
@@ -329,10 +329,12 @@ the served app is the input it should derive from).
 
 ## Implementation phases and evidence
 
-1. **Partially implemented, leaf opens only**: shared `open_read`,
-   `open_write`, and `open_append` use `O_NOFOLLOW` on Unix, with regular-file
-   behavior and symlink-leaf denial tests. Full `openat2`/`O_NOFOLLOW_ANY`
-   descriptor-anchored traversal and a parent-component race regression remain.
+1. **Implemented**: shared descriptor/handle-anchored `ConfinedDir` and
+   `ConfinedFile` cover runtime and build reads/writes, append, navigation,
+   metadata, listing, creation, direct grants, and executable selection.
+   Evidence includes deterministic parent replacement, retained-authority,
+   lexical escape, symlink-leaf write, interpreter traversal, compiled-exec
+   parity, and browser-target compile regressions.
 2. **Landlock filesystem + TCP** in the CLI host and trusted-exe launcher:
    probe ABI, derive from resolved grants, arm before guest execution;
    evidence: a violation harness that deliberately bypasses the host layer

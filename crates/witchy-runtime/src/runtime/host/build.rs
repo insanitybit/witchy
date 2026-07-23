@@ -59,14 +59,15 @@ fn host_build_out_write(
         .build_out
         .clone()
         .ok_or_else(|| Error::msg("write_out: no BuildOut grant"))?;
-    let path = confine(crate::confine::resolve_write(&base, &name))?;
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    use std::io::Write;
-    crate::confine::open_write(&path)
-        .and_then(|mut f| f.write_all(contents.as_bytes()))
-        .map_err(|e| Error::msg(format!("write_out failed for `{}`: {e}", path.display())))
+    let parent = std::path::Path::new(&name)
+        .parent()
+        .and_then(std::path::Path::to_str)
+        .ok_or_else(|| Error::msg(format!("write_out path `{name}` is not valid UTF-8")))?;
+    confine(base.make_dir(parent))?;
+    let file = confine(base.file(&name, false))?;
+    file.write_all(contents.as_bytes()).map_err(|e| {
+        Error::msg(format!("write_out failed for `{}`: {e}", file.display_path().display()))
+    })
 }
 
 /// `build_read_len(rel) -> byte length`: read the file from the first granted
@@ -78,20 +79,15 @@ fn host_build_read_len(mut caller: Caller<'_, VmState>, rel_ptr: i32) -> Result<
     let roots = caller.data().build_read_roots.clone();
     let mut last = String::from("no granted read root");
     for base in &roots {
-        match crate::confine::resolve(base, &rel) {
-            Ok(path) => {
-                use std::io::Read;
-                let read = crate::confine::open_read(&path).and_then(|mut f| {
-                    let mut s = String::new();
-                    f.read_to_string(&mut s).map(|_| s)
-                });
-                match read {
+        match base.file(&rel, true) {
+            Ok(file) => {
+                match file.read_to_string() {
                     Ok(contents) => {
                         let len = contents.len() as i32;
                         caller.data_mut().pending = Some(contents.into_bytes());
                         return Ok(len);
                     }
-                    Err(e) => last = format!("`{}`: {e}", path.display()),
+                    Err(e) => last = format!("`{}`: {e}", file.display_path().display()),
                 }
             }
             Err(e) => last = e.0,

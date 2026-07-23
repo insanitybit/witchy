@@ -1,23 +1,18 @@
-//! Path confinement for the `Dir` capability — the SINGLE, shared implementation
-//! of the subtree escape checks (lexical `..`/absolute rejection + symlink-aware
-//! canonicalization). Both the compiled-WASM sandbox (`runtime.rs`) and the
-//! interpreter oracle resolve through these functions, so the two backends can
-//! never diverge on which paths a `Dir` capability reaches. Keeping it one
-//! implementation is a security invariant — see `spec/binary-distribution.md`.
+//! Handle-anchored filesystem confinement for `Dir`, `File`, and build
+//! capabilities.
 //!
-//! `resolve`/`resolve_write` perform the confinement *check* and return a path;
-//! both backends then open that path through [`open_read`]/[`open_write`], which
-//! pass `O_NOFOLLOW` so the final component cannot be swapped for a symlink
-//! between the check and the open (RFC-0103, phase 1 — the leaf `TOCTOU`).
-//! Parent-component races and full tree confinement are the follow-up
-//! (`openat2`/`RESOLVE_BENEATH` on Linux, a dir-anchored walk elsewhere).
+//! Ambient paths are consumed exactly once, when the host admits a root grant.
+//! Every guest-directed operation after that is relative to an open directory
+//! handle. `cap-std` performs the platform-specific component walk and rejects
+//! paths which leave that handle, so renaming a checked parent or swapping it for
+//! a symlink cannot redirect a later operation. The interpreter oracle and the
+//! compiled-Wasm host carry these same types and call these same methods.
 
-use std::fs::{File, OpenOptions};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 /// A confinement violation (an escape attempt, or an inaccessible base/target).
-/// Carries the human-readable message both backends surface; the interpreter
-/// wraps it into its `RuntimeError`, the runtime sandbox into a host trap.
+/// Carries the human-readable message both backends surface.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfineError(pub String);
 
@@ -29,148 +24,493 @@ impl std::fmt::Display for ConfineError {
 
 impl std::error::Error for ConfineError {}
 
-fn err<T>(message: &str) -> Result<T, ConfineError> {
-    Err(ConfineError(message.to_string()))
+fn err<T>(message: impl Into<String>) -> Result<T, ConfineError> {
+    Err(ConfineError(message.into()))
 }
 
-/// Resolve `rel` against a `Dir` `base`, confining it to the subtree: reject
-/// absolute paths and `..`, then canonicalize and require the result to stay
-/// under the (canonicalized) base, so a symlink can't escape.
-///
-/// This is the confinement *check*; open the returned path through [`open_read`]
-/// so a final-component symlink swapped in after this check cannot redirect the
-/// read (the leaf `TOCTOU`). Parent-component races are the RFC-0103 follow-up.
-pub fn resolve(base: &Path, rel: &str) -> Result<PathBuf, ConfineError> {
-    let p = Path::new(rel);
-    if p.is_absolute() {
+fn validate_relative(path: &Path) -> Result<(), ConfineError> {
+    if path.is_absolute() {
         return err("absolute paths are not allowed (a Dir capability is a subtree)");
     }
-    for comp in p.components() {
-        match comp {
+    for component in path.components() {
+        match component {
             Component::Normal(_) | Component::CurDir => {}
             Component::ParentDir => return err("`..` escapes the Dir capability"),
-            _ => return err("invalid path component in a Dir-relative path"),
+            Component::RootDir | Component::Prefix(_) => {
+                return err("invalid path component in a Dir-relative path");
+            }
         }
     }
-    let joined = base.join(rel);
-    let real = std::fs::canonicalize(&joined)
-        .map_err(|e| ConfineError(format!("cannot access `{}`: {e}", joined.display())))?;
-    let real_base = std::fs::canonicalize(base)
-        .map_err(|e| ConfineError(format!("invalid Dir base `{}`: {e}", base.display())))?;
-    if !real.starts_with(&real_base) {
-        return err("path escapes the Dir capability (via symlink)");
-    }
-    Ok(real)
+    Ok(())
 }
 
-/// Like `resolve`, but for writing: the target file need not exist, so
-/// confinement is checked against its parent directory (which must exist and lie
-/// within the capability's subtree). The lexical `..`/absolute checks still apply.
-pub fn resolve_write(base: &Path, rel: &str) -> Result<PathBuf, ConfineError> {
-    let p = Path::new(rel);
-    if p.is_absolute() {
-        return err("absolute paths are not allowed (a Dir capability is a subtree)");
-    }
-    for comp in p.components() {
-        match comp {
-            Component::Normal(_) | Component::CurDir => {}
-            Component::ParentDir => return err("`..` escapes the Dir capability"),
-            _ => return err("invalid path component in a Dir-relative path"),
-        }
-    }
-    let joined = base.join(rel);
-    let parent = joined.parent().unwrap_or(base);
-    let real_parent = std::fs::canonicalize(parent)
-        .map_err(|e| ConfineError(format!("cannot access `{}`: {e}", parent.display())))?;
-    let real_base = std::fs::canonicalize(base)
-        .map_err(|e| ConfineError(format!("invalid Dir base `{}`: {e}", base.display())))?;
-    if !real_parent.starts_with(&real_base) {
-        return err("path escapes the Dir capability (via symlink)");
-    }
-    // The parent is confined, but the final component itself could be a
-    // pre-existing symlink pointing outside the subtree (unlike `read`, we can't
-    // canonicalize a not-yet-existing target). Refuse to write *through* a
-    // symlink leaf. This check races the actual open, so EVERY write of this
-    // path must go through [`open_write`]/[`open_append`], which re-check
-    // atomically with `O_NOFOLLOW`; this early rejection just gives the clearer
-    // confinement message in the common (non-racing) case.
-    if let Ok(meta) = std::fs::symlink_metadata(&joined) {
-        if meta.file_type().is_symlink() {
-            return err("path escapes the Dir capability (the target is a symlink)");
-        }
-    }
-    Ok(joined)
+fn denotes_self(path: &Path) -> bool {
+    path.components().all(|component| component == Component::CurDir)
 }
 
-/// Open a confined path for reading with `O_NOFOLLOW`, so a final-component
-/// symlink swapped in after [`resolve`]'s check cannot redirect the read out of
-/// the subtree. `resolve` returns a canonical (symlink-free) path, so a legitimate
-/// target is never a symlink and this never rejects one; only the racing swap
-/// trips it. Both backends read through here so they open identically.
+fn inaccessible(path: &Path, error: std::io::Error) -> ConfineError {
+    ConfineError(format!("cannot access `{}`: {error}", path.display()))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn unsupported() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "host filesystem capabilities are unavailable on this target",
+    )
+}
+
+/// An admitted directory grant backed by an open directory handle.
 ///
-/// Non-confinement I/O errors (missing file, permission) surface unchanged for
-/// the caller to format; a swapped-in symlink surfaces as the OS `O_NOFOLLOW`
-/// error (`ELOOP`), which is an adversarial-only path, never a normal read.
-pub fn open_read(path: &Path) -> std::io::Result<File> {
-    let mut opts = OpenOptions::new();
-    opts.read(true);
-    with_nofollow(&mut opts);
-    opts.open(path)
+/// `display` is diagnostic provenance only. It is never used for authority or
+/// filesystem access after construction.
+#[derive(Clone)]
+pub struct ConfinedDir {
+    #[cfg(not(target_arch = "wasm32"))]
+    inner: Arc<cap_std::fs::Dir>,
+    display: Arc<PathBuf>,
 }
 
-/// Open a confined path for writing (`create`/`truncate`) with `O_NOFOLLOW`, so a
-/// final-component symlink swapped in after [`resolve_write`]'s check cannot make
-/// the write escape the subtree. `resolve_write` already rejects a symlink leaf;
-/// this closes the race between that check and the open. Both backends write
-/// through here.
-pub fn open_write(path: &Path) -> std::io::Result<File> {
-    let mut opts = OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    with_nofollow(&mut opts);
-    opts.open(path)
+impl std::fmt::Debug for ConfinedDir {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ConfinedDir").field(&self.display).finish()
+    }
 }
 
-/// Open a confined path for appending (`create`/`append`) with `O_NOFOLLOW`, the
-/// same leaf-symlink guard as [`open_write`] for the non-truncating write op.
-/// `resolve_write` gates this path too, so both backends append through here.
-pub fn open_append(path: &Path) -> std::io::Result<File> {
-    let mut opts = OpenOptions::new();
-    opts.append(true).create(true);
-    with_nofollow(&mut opts);
-    opts.open(path)
+impl PartialEq for ConfinedDir {
+    fn eq(&self, other: &Self) -> bool {
+        self.display == other.display
+    }
 }
 
-/// Add `O_NOFOLLOW` (refuse a symlink final component) where the platform has it.
-/// The wasm build has no host filesystem, so its fallback simply omits the flag.
-#[cfg(unix)]
-fn with_nofollow(opts: &mut OpenOptions) {
-    use std::os::unix::fs::OpenOptionsExt;
-    opts.custom_flags(libc::O_NOFOLLOW);
+impl Eq for ConfinedDir {}
+
+impl ConfinedDir {
+    /// Consume ambient authority while admitting a host-provided root.
+    pub fn open_ambient(path: &Path) -> Result<Self, ConfineError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let inner = cap_std::fs::Dir::open_ambient_dir(
+                path,
+                cap_std::ambient_authority(),
+            )
+            .map_err(|error| {
+                ConfineError(format!("invalid Dir base `{}`: {error}", path.display()))
+            })?;
+            Ok(Self {
+                inner: Arc::new(inner),
+                display: Arc::new(path.to_path_buf()),
+            })
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Ok(Self {
+                display: Arc::new(path.to_path_buf()),
+            })
+        }
+    }
+
+    /// Diagnostic provenance for this authority. Never use this path to open.
+    pub fn display_path(&self) -> &Path {
+        self.display.as_path()
+    }
+
+    /// Attenuate to an already-existing subdirectory.
+    pub fn open_dir(&self, rel: &str) -> Result<Self, ConfineError> {
+        let path = Path::new(rel);
+        validate_relative(path)?;
+        if denotes_self(path) {
+            return Ok(self.clone());
+        }
+        let display = self.display.join(path);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let inner = self
+                .inner
+                .open_dir(path)
+                .map_err(|error| inaccessible(&display, error))?;
+            Ok(Self {
+                inner: Arc::new(inner),
+                display: Arc::new(display),
+            })
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = display;
+            err("host filesystem capabilities are unavailable on this target")
+        }
+    }
+
+    /// Bind one relative file name to an anchored parent handle.
+    ///
+    /// When `must_exist` is true the file is opened now, preserving `Dir.open`'s
+    /// eager failure. Later reads still reopen relative to the retained parent so
+    /// the capability continues to denote the name while remaining confined.
+    pub fn file(&self, rel: &str, must_exist: bool) -> Result<ConfinedFile, ConfineError> {
+        let path = Path::new(rel);
+        validate_relative(path)?;
+        let name = path.file_name().ok_or_else(|| {
+            ConfineError(format!("cannot access `{}`: path does not name a file", self.display.join(path).display()))
+        })?;
+        let parent_path = path.parent().unwrap_or_else(|| Path::new(""));
+        let parent = if parent_path.as_os_str().is_empty() {
+            self.clone()
+        } else {
+            let parent = parent_path.to_str().ok_or_else(|| {
+                ConfineError(format!(
+                    "cannot access `{}`: path is not valid UTF-8",
+                    self.display.join(parent_path).display()
+                ))
+            })?;
+            self.open_dir(parent)?
+        };
+        let file = ConfinedFile {
+            display: self.display.join(path),
+            parent,
+            name: PathBuf::from(name),
+        };
+        if must_exist {
+            file.open_read_handle()
+                .map_err(|error| inaccessible(&file.display, error))?;
+        }
+        Ok(file)
+    }
+
+    /// Test for an entry without exposing an ambient path.
+    pub fn exists(&self, rel: &str) -> Result<bool, ConfineError> {
+        let path = Path::new(rel);
+        validate_relative(path)?;
+        if denotes_self(path) {
+            return Ok(true);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.inner
+                .try_exists(path)
+                .map_err(|error| inaccessible(&self.display.join(path), error))
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = path;
+            err("host filesystem capabilities are unavailable on this target")
+        }
+    }
+
+    /// Test whether an entry is a directory without exposing an ambient path.
+    pub fn is_dir(&self, rel: &str) -> Result<bool, ConfineError> {
+        let path = Path::new(rel);
+        validate_relative(path)?;
+        if denotes_self(path) {
+            return Ok(true);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            Ok(self.inner.is_dir(path))
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = path;
+            err("host filesystem capabilities are unavailable on this target")
+        }
+    }
+
+    /// Return immediate UTF-8 entry names in deterministic order.
+    pub fn entries(&self) -> std::io::Result<Vec<String>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut names = self
+                .inner
+                .entries()?
+                .map(|entry| {
+                    entry?.file_name().into_string().map_err(|_| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "directory entry name is not valid UTF-8",
+                        )
+                    })
+                })
+                .collect::<std::io::Result<Vec<_>>>()?;
+            names.sort();
+            Ok(names)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Err(unsupported())
+        }
+    }
+
+    /// Create one confined directory path, idempotently.
+    pub fn make_dir(&self, rel: &str) -> Result<(), ConfineError> {
+        let path = Path::new(rel);
+        validate_relative(path)?;
+        if denotes_self(path) {
+            return Ok(());
+        }
+        let display = self.display.join(path);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.inner
+                .create_dir_all(path)
+                .map_err(|error| inaccessible(&display, error))
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = display;
+            err("host filesystem capabilities are unavailable on this target")
+        }
+    }
 }
 
-#[cfg(not(unix))]
-fn with_nofollow(_opts: &mut OpenOptions) {}
+/// A fixed file name paired with its already-open, confined parent directory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfinedFile {
+    parent: ConfinedDir,
+    name: PathBuf,
+    display: PathBuf,
+}
+
+impl ConfinedFile {
+    /// Admit a direct host `File` grant without retaining its ambient path as
+    /// authority.
+    pub fn open_ambient(path: &Path) -> Result<Self, ConfineError> {
+        let name = path.file_name().ok_or_else(|| {
+            ConfineError(format!("invalid File grant `{}`: path does not name a file", path.display()))
+        })?;
+        let parent_path = path.parent().unwrap_or_else(|| Path::new("."));
+        let parent = ConfinedDir::open_ambient(parent_path)?;
+        Ok(Self {
+            parent,
+            name: PathBuf::from(name),
+            display: path.to_path_buf(),
+        })
+    }
+
+    /// Diagnostic provenance for this authority. Never use this path to open.
+    pub fn display_path(&self) -> &Path {
+        &self.display
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn open_read_handle(&self) -> std::io::Result<cap_std::fs::File> {
+        self.parent.inner.open(&self.name)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn open_read_handle(&self) -> std::io::Result<()> {
+        Err(unsupported())
+    }
+
+    /// macOS will not execute `/dev/fd`, and copied Apple platform binaries are
+    /// killed because the trust cache is path-bound. Permit the original path
+    /// only when it still names the opened inode and every directory which can
+    /// redirect it is root-owned and non-writable. User-mutable trees always use
+    /// the opened-file snapshot below.
+    #[cfg(target_os = "macos")]
+    fn immutable_system_exec_path(
+        &self,
+        opened: &cap_std::fs::File,
+    ) -> Option<PathBuf> {
+        use cap_std::fs::MetadataExt as _;
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+        let path = std::fs::canonicalize(&self.display).ok()?;
+        let opened_meta = opened.metadata().ok()?;
+        let path_meta = std::fs::metadata(&path).ok()?;
+        if opened_meta.dev() != path_meta.dev() || opened_meta.ino() != path_meta.ino() {
+            return None;
+        }
+        for ancestor in path.parent()?.ancestors() {
+            let metadata = std::fs::symlink_metadata(ancestor).ok()?;
+            if metadata.uid() != 0 || metadata.permissions().mode() & 0o022 != 0 {
+                return None;
+            }
+        }
+        Some(path)
+    }
+
+    pub fn read_to_string(&self) -> std::io::Result<String> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use std::io::Read;
+            let mut file = self.open_read_handle()?;
+            let mut contents = String::new();
+            file.read_to_string(&mut contents)?;
+            Ok(contents)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Err(unsupported())
+        }
+    }
+
+    pub fn write_all(&self, contents: &[u8]) -> std::io::Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
+            use std::io::Write;
+            let mut options = cap_std::fs::OpenOptions::new();
+            options
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .follow(FollowSymlinks::No);
+            self.parent
+                .inner
+                .open_with(&self.name, &options)?
+                .write_all(contents)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = contents;
+            Err(unsupported())
+        }
+    }
+
+    pub fn append_all(&self, contents: &[u8]) -> std::io::Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
+            use std::io::Write;
+            let mut options = cap_std::fs::OpenOptions::new();
+            options
+                .append(true)
+                .create(true)
+                .follow(FollowSymlinks::No);
+            self.parent
+                .inner
+                .open_with(&self.name, &options)?
+                .write_all(contents)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = contents;
+            Err(unsupported())
+        }
+    }
+
+    /// Execute this already-confined file without reopening its original ambient
+    /// pathname. Linux passes the open executable as fd 3 so scripts keep working
+    /// after the kernel starts their shebang interpreter.
+    #[cfg(all(
+        any(target_os = "linux", target_os = "android"),
+        not(target_arch = "wasm32")
+    ))]
+    pub fn run(&self, args: &[&str], stdin: &str) -> std::io::Result<std::process::Output> {
+        use cap_std_ext::cmdext::{CapStdExtCommandExt, CmdFds};
+        use std::os::fd::OwnedFd;
+        use std::process::{Command, Stdio};
+
+        let std_file = self.open_read_handle()?.into_std();
+        let executable = Arc::new(OwnedFd::from(std_file));
+        let executable_path = "/proc/self/fd/3";
+        let mut fds = CmdFds::new();
+        fds.take_fd_n(executable, 3);
+        let mut command = Command::new(executable_path);
+        command
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .take_fds(fds);
+        let mut child = command.spawn()?;
+        if let Some(mut input) = child.stdin.take() {
+            use std::io::Write;
+            input.write_all(stdin.as_bytes())?;
+        }
+        child.wait_with_output()
+    }
+
+    /// macOS and the other supported Unix hosts lack a public descriptor-exec
+    /// primitive (`/dev/fd` is non-executable on macOS). Snapshot the already-open
+    /// file into a private temporary directory and execute that stable name. The
+    /// original capability path is never reopened, and the directory remains
+    /// alive until the child exits.
+    #[cfg(all(
+        unix,
+        not(any(target_os = "linux", target_os = "android")),
+        not(target_arch = "wasm32")
+    ))]
+    pub fn run(&self, args: &[&str], stdin: &str) -> std::io::Result<std::process::Output> {
+        use cap_std::fs::PermissionsExt as _;
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::process::{Command, Stdio};
+
+        let mut source = self.open_read_handle()?;
+        let mode = source.metadata()?.permissions().mode();
+        if mode & 0o111 == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "confined executable does not have an execute bit",
+            ));
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(path) = self.immutable_system_exec_path(&source) {
+            let mut child = Command::new(path)
+                .args(args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()?;
+            if let Some(mut input) = child.stdin.take() {
+                input.write_all(stdin.as_bytes())?;
+            }
+            return child.wait_with_output();
+        }
+        let temp = tempfile::Builder::new()
+            .prefix("witchy-confined-exec-")
+            .tempdir()?;
+        let executable_path = temp.path().join("program");
+        let mut executable = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&executable_path)?;
+        std::io::copy(&mut source, &mut executable)?;
+        executable.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+        drop(executable);
+
+        let mut child = Command::new(&executable_path)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        if let Some(mut input) = child.stdin.take() {
+            input.write_all(stdin.as_bytes())?;
+        }
+        let output = child.wait_with_output();
+        drop(temp);
+        output
+    }
+
+    #[cfg(any(not(unix), target_arch = "wasm32"))]
+    pub fn run(&self, _args: &[&str], _stdin: &str) -> std::io::Result<std::process::Output> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "race-free confined executable launch is unavailable on this target",
+        ))
+    }
+}
 
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static SEQ: AtomicU64 = AtomicU64::new(0);
 
-    /// A fresh scratch dir, removed on drop.
     struct Scratch(PathBuf);
     impl Scratch {
         fn new() -> Self {
             let n = SEQ.fetch_add(1, Ordering::Relaxed);
-            let p = std::env::temp_dir().join(format!("witchy-confine-{}-{n}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&p);
-            std::fs::create_dir_all(&p).unwrap();
-            Scratch(p)
+            let path =
+                std::env::temp_dir().join(format!("witchy-confine-{}-{n}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
         }
-        fn join(&self, s: &str) -> PathBuf {
-            self.0.join(s)
+        fn join(&self, path: &str) -> PathBuf {
+            self.0.join(path)
         }
     }
     impl Drop for Scratch {
@@ -180,40 +520,83 @@ mod tests {
     }
 
     #[test]
-    fn open_read_reads_a_regular_file() {
-        let s = Scratch::new();
-        std::fs::write(s.join("f"), b"hello").unwrap();
-        let mut buf = String::new();
-        open_read(&s.join("f")).unwrap().read_to_string(&mut buf).unwrap();
-        assert_eq!(buf, "hello");
+    fn regular_files_and_directories_work() {
+        let scratch = Scratch::new();
+        std::fs::create_dir(scratch.join("sub")).unwrap();
+        std::fs::write(scratch.join("sub/input"), "hello").unwrap();
+        let root = ConfinedDir::open_ambient(&scratch.0).unwrap();
+        assert_eq!(root.file("sub/input", true).unwrap().read_to_string().unwrap(), "hello");
+        let output = root.file("sub/output", false).unwrap();
+        output.write_all(b"one").unwrap();
+        output.append_all(b" two").unwrap();
+        assert_eq!(std::fs::read_to_string(scratch.join("sub/output")).unwrap(), "one two");
+        assert_eq!(root.open_dir("sub").unwrap().entries().unwrap(), vec!["input", "output"]);
+        root.make_dir("fresh/nested").unwrap();
+        root.make_dir("fresh/nested").unwrap();
+        assert!(root.open_dir("fresh/nested").is_ok());
     }
 
     #[test]
-    fn open_write_creates_and_truncates_a_regular_file() {
-        let s = Scratch::new();
-        open_write(&s.join("f")).unwrap().write_all(b"one").unwrap();
-        open_write(&s.join("f")).unwrap().write_all(b"2").unwrap();
-        assert_eq!(std::fs::read(s.join("f")).unwrap(), b"2");
+    fn lexical_escape_is_rejected() {
+        let scratch = Scratch::new();
+        let root = ConfinedDir::open_ambient(&scratch.0).unwrap();
+        assert!(root.file("../secret", true).is_err());
+        assert!(root.file("/etc/passwd", true).is_err());
+        assert!(root.open_dir("a/../../b").is_err());
+        assert!(root.make_dir("../outside").is_err());
     }
 
-    /// The security property: a final-component symlink pointing outside the
-    /// subtree (the leaf-swap TOCTOU) is refused at open time, so neither a read
-    /// nor a write follows it — even though the path string looks in-subtree.
     #[test]
-    fn a_symlink_leaf_is_never_followed() {
-        let s = Scratch::new();
-        let secret = s.join("secret");
-        std::fs::write(&secret, b"private").unwrap();
-        let link = s.join("leaf");
-        std::os::unix::fs::symlink(&secret, &link).unwrap();
+    fn a_fresh_operation_rejects_a_swapped_parent() {
+        let scratch = Scratch::new();
+        std::fs::create_dir(scratch.join("root")).unwrap();
+        std::fs::create_dir(scratch.join("root/parent")).unwrap();
+        std::fs::create_dir(scratch.join("outside")).unwrap();
+        std::fs::write(scratch.join("outside/secret"), "private").unwrap();
+        let root = ConfinedDir::open_ambient(&scratch.join("root")).unwrap();
 
-        // Read must not disclose the symlink target.
-        assert!(open_read(&link).is_err(), "open_read followed a symlink leaf");
+        std::fs::rename(scratch.join("root/parent"), scratch.join("root/original")).unwrap();
+        std::os::unix::fs::symlink("../../outside", scratch.join("root/parent")).unwrap();
 
-        // Write must not clobber the symlink target.
-        assert!(open_write(&link).is_err(), "open_write followed a symlink leaf");
-        // Append must not extend the symlink target either.
-        assert!(open_append(&link).is_err(), "open_append followed a symlink leaf");
-        assert_eq!(std::fs::read(&secret).unwrap(), b"private", "write escaped through the symlink");
+        assert!(root.file("parent/secret", true).is_err());
+        assert!(root.file("parent/secret", false).is_err());
+        assert!(root.open_dir("parent").is_err());
+        assert!(!root.exists("parent/secret").unwrap_or(false));
+        assert!(!root.is_dir("parent").unwrap_or(false));
+        assert_eq!(std::fs::read_to_string(scratch.join("outside/secret")).unwrap(), "private");
+    }
+
+    #[test]
+    fn retained_file_and_subdir_authority_survive_name_replacement() {
+        let scratch = Scratch::new();
+        std::fs::create_dir(scratch.join("root")).unwrap();
+        std::fs::create_dir(scratch.join("root/parent")).unwrap();
+        std::fs::create_dir(scratch.join("outside")).unwrap();
+        std::fs::write(scratch.join("root/parent/file"), "inside").unwrap();
+        std::fs::write(scratch.join("outside/file"), "outside").unwrap();
+        let root = ConfinedDir::open_ambient(&scratch.join("root")).unwrap();
+        let file = root.file("parent/file", true).unwrap();
+        let subdir = root.open_dir("parent").unwrap();
+
+        std::fs::rename(scratch.join("root/parent"), scratch.join("root/original")).unwrap();
+        std::os::unix::fs::symlink("../../outside", scratch.join("root/parent")).unwrap();
+
+        file.write_all(b"retained").unwrap();
+        subdir.file("new", false).unwrap().write_all(b"new").unwrap();
+        assert_eq!(std::fs::read_to_string(scratch.join("root/original/file")).unwrap(), "retained");
+        assert_eq!(std::fs::read_to_string(scratch.join("root/original/new")).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(scratch.join("outside/file")).unwrap(), "outside");
+    }
+
+    #[test]
+    fn a_symlink_leaf_is_never_followed_for_writes() {
+        let scratch = Scratch::new();
+        let root = ConfinedDir::open_ambient(&scratch.0).unwrap();
+        std::fs::write(scratch.join("secret"), "private").unwrap();
+        std::os::unix::fs::symlink("secret", scratch.join("leaf")).unwrap();
+        let leaf = root.file("leaf", false).unwrap();
+        assert!(leaf.write_all(b"changed").is_err());
+        assert!(leaf.append_all(b"changed").is_err());
+        assert_eq!(std::fs::read_to_string(scratch.join("secret")).unwrap(), "private");
     }
 }

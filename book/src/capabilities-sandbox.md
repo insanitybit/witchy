@@ -111,13 +111,19 @@ creates the root reference from a launch grant; operations such as `subtree`,
 `read_file`, `net.only`, `env.only`, and `exec.only` return narrower host
 objects as new references.
 
-Path confinement uses the same rules as the interpreter: `..` is rejected,
-absolute paths are rejected, and symlinks that escape the subtree are rejected,
-all checked host-side. On native Unix hosts, reads, writes, and appends also open
-the final path component with `O_NOFOLLOW`. That closes a concurrent swap of the
-checked leaf file for a symlink before it is opened. Parent path components are
-still checked with canonicalize-then-open; a concurrent local attacker can race
-those components until descriptor-anchored resolution from RFC-0103 lands.
+Path confinement is handle-anchored on native hosts. The launcher consumes an
+ambient path once to open each root grant; every `subtree`, `File`, read, write,
+append, existence check, directory check/list, and directory creation after that
+resolves relative to an open directory handle. `..` and absolute paths are
+rejected, escaping symlinks are rejected, and replacing any parent path component
+cannot redirect an operation. Writes also refuse a symlink leaf. The interpreter
+and compiled host carry the same `ConfinedDir`/`ConfinedFile` objects, so this
+security boundary is shared rather than reimplemented for parity.
+
+Executable selection uses descriptor execution or an already-open private
+snapshot. On macOS, platform binaries may instead use a path only after Witchy
+verifies that its opened identity still matches and that every ancestor is
+root-owned and non-writable; mutable grant paths cannot redirect execution.
 
 ## Console input is separate authority
 

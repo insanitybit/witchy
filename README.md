@@ -75,10 +75,15 @@ deprecation period. A feature merging does not automatically promote it into the
 supported-preview contract.
 
 The parity, checked-heap, sandbox, and artifact tests provide concrete regression
-evidence; they are not proof that the compiler or runtime has no defects. In
-particular, native Unix file opens now reject a concurrent final-component
-symlink swap with `O_NOFOLLOW`, but parent-component path resolution is not yet
-race-free against concurrent local filesystem mutation.
+evidence; they are not proof that the compiler or runtime has no defects. Native
+filesystem capabilities are handle-anchored across every path component: reads,
+writes, navigation, listing, creation, direct `File` grants, and build roots
+cannot be redirected by replacing a parent. Executable selection uses descriptor
+execution, an already-open private snapshot, or, on macOS, a path whose opened
+identity and root-owned non-writable ancestry were verified before execution;
+mutable grant paths are never reopened for execution. The independent outer
+platform fence proposed by RFC-0103 (Landlock/seccomp and derived browser CSP)
+is separate work and is not yet implemented.
 
 Portable `.wasm` artifacts remain untrusted guests run by a separately installed
 Witchy host. A [`trusted-exe`](rfcs/0092-trusted-application-executables.md), by contrast, embeds the application, checked root

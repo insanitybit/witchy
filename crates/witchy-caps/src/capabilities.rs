@@ -106,7 +106,8 @@ fn right_marker(cap: &str, marker: &str) -> Option<&'static str> {
 /// Exact string equality is the fast path and the fallback (so existing
 /// `host:port` allowlists behave unchanged). Shared by BOTH backends so the
 /// network confinement check is one implementation — the same discipline as
-/// `confine::resolve` for `Dir` (a deliberate parity/security invariant).
+/// the shared handle-anchored `ConfinedDir` (a deliberate parity/security
+/// invariant).
 ///
 /// `target` is expected to be concrete (a literal IP or a resolved host); the
 /// connect path additionally re-checks the *resolved* IP, so a CIDR pattern with

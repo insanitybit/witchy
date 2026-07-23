@@ -32,7 +32,7 @@ use std::io::BufReader;
 use std::net::TcpListener;
 
 use witchy_runtime::net::Stream;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use witchy_syntax::ast::*;
@@ -78,7 +78,7 @@ use reflection::{
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DirValue {
-    Fs(PathBuf),
+    Fs(witchy_runtime::confine::ConfinedDir),
     Mock {
         root: String,
         files: Rc<BTreeMap<String, String>>,
@@ -87,7 +87,7 @@ pub enum DirValue {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FileValue {
-    Fs(PathBuf),
+    Fs(witchy_runtime::confine::ConfinedFile),
     Mock {
         path: String,
         files: Rc<BTreeMap<String, String>>,
@@ -105,17 +105,17 @@ pub enum Value {
     Tuple(Rc<Vec<Value>>),
     Ctor { name: Rc<str>, fields: Rc<Vec<Value>> },
     Cap(Capability),
-    /// An unforgeable capability to a directory subtree (cap-std `Dir` style).
-    /// Carries the host path it is rooted at; can only be obtained from the root
-    /// grant or by attenuation (`subdir`).
-    // A confined directory: its root path + an entry policy (RFC-0011; `""` =
+    /// An unforgeable capability to an open directory subtree.
+    /// Carries a host directory handle; can only be obtained from the root grant
+    /// or by attenuation (`subdir`).
+    // A confined directory handle + an entry policy (RFC-0011; `""` =
     // unrestricted). `dir.only(confine.ext(...))` narrows the policy; reads/writes
     // through the Dir are admitted only when the policy admits the entry name.
     Dir(DirValue, String),
     /// A file capability (RFC-0012): authority to one file (the leaf of the
-    /// Dir/File hierarchy). Carries the confined host path; obtained by navigating
-    /// a `Dir` (`dir.open`/`dir.create`) or as a `main` grant. Rights are checked
-    /// at compile time, so the value carries only the path.
+    /// Dir/File hierarchy). Carries an anchored parent handle plus a fixed leaf;
+    /// obtained by navigating a `Dir` (`dir.open`/`dir.create`) or as a `main`
+    /// grant. Rights are checked at compile time.
     File(FileValue),
     /// A network capability: an allow-list of permitted `host:port` destinations
     /// (wasi:sockets / cap-std-net style). Attenuable via `restrict`.
@@ -271,10 +271,10 @@ struct InterpreterOutcome {
 #[derive(Debug, Clone, PartialEq)]
 pub enum BuildCap {
     /// Write generated source into this confined output directory.
-    Out(PathBuf),
+    Out(witchy_runtime::confine::ConfinedDir),
     /// Read project files confined to one of these directory subtrees. A relative
     /// path resolves against the first granted root that contains it.
-    Read(Vec<PathBuf>),
+    Read(Vec<witchy_runtime::confine::ConfinedDir>),
     /// Immutable host snapshot of the granted environment names and values.
     /// A missing map entry is ungranted; `None` is granted but unset.
     Env(BTreeMap<String, Option<String>>),
@@ -544,9 +544,9 @@ pub struct Interpreter {
     /// `root`. Empty for the common single-`Dir` case. Mirrors the compiled
     /// backend's `Capabilities::dir_roots`. See rfcs/0004-self-hosted-cli.md.
     dir_roots: Vec<PathBuf>,
-    /// Direct `File` grants (RFC-0012): the i-th `File` param of `main` is the
-    /// i-th path here. Read/write is the param's compile-time right, so these are
-    /// plain paths. Mirrors the compiled backend's `Capabilities::file_grants`.
+    /// Direct `File` grant inputs (RFC-0012): the i-th `File` param of `main` is
+    /// admitted from the i-th path here, then carried as an anchored file
+    /// authority. Mirrors the compiled backend's `Capabilities::file_grants`.
     file_grants: Vec<PathBuf>,
     /// Allow-list backing the root `Net` capability.
     net_allow: Vec<String>,
@@ -888,7 +888,11 @@ impl Interpreter {
             Some(Type::Named(n, _)) if n == "Clock" => Ok(Value::Cap(Capability::Clock)),
             Some(Type::Named(n, _)) if n == "Rand" => Ok(Value::Cap(Capability::Rand)),
             Some(Type::Named(n, _)) if n == "Env" => Ok(Value::Cap(Capability::Env(None))),
-            Some(Type::Named(n, _)) if n == "Dir" => Ok(Value::Dir(DirValue::Fs(self.root.clone()), String::new())),
+            Some(Type::Named(n, _)) if n == "Dir" => {
+                let root = witchy_runtime::confine::ConfinedDir::open_ambient(&self.root)
+                    .map_err(|error| RuntimeError { message: error.0 })?;
+                Ok(Value::Dir(DirValue::Fs(root), String::new()))
+            }
             Some(Type::Named(n, _)) if n == "Net" => Ok(Value::Net(self.net_allow.clone())),
             Some(Type::Named(n, _)) if n == "Fetch" => {
                 witchy_runtime::fetch::FetchPolicy::allow(self.fetch_origins.clone())
@@ -948,13 +952,21 @@ impl Interpreter {
     fn mint_build_cap(&self, ty: &Option<Type>, grants: &BuildGrants) -> Result<Value, RuntimeError> {
         match ty {
             Some(Type::Named(n, _)) if n == "BuildOut" => {
-                Ok(Value::Build(BuildCap::Out(grants.out_dir.clone())))
+                let out = witchy_runtime::confine::ConfinedDir::open_ambient(&grants.out_dir)
+                    .map_err(|error| RuntimeError { message: error.0 })?;
+                Ok(Value::Build(BuildCap::Out(out)))
             }
             Some(Type::Named(n, _)) if n == "BuildRead" => {
                 if grants.read_roots.is_empty() {
                     return err("build step demands `BuildRead` but no read grant was provided");
                 }
-                Ok(Value::Build(BuildCap::Read(grants.read_roots.clone())))
+                let roots = grants
+                    .read_roots
+                    .iter()
+                    .map(|root| witchy_runtime::confine::ConfinedDir::open_ambient(root))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| RuntimeError { message: error.0 })?;
+                Ok(Value::Build(BuildCap::Read(roots)))
             }
             Some(Type::Named(n, _)) if n == "BuildEnv" => {
                 Ok(Value::Build(BuildCap::Env(grants.env.clone())))
@@ -2146,18 +2158,6 @@ impl Interpreter {
     }
 }
 
-
-// The `Dir` confinement lives in `witchy_runtime::confine` — the single implementation the
-// compiled sandbox shares (see that module). These thin wrappers adapt its
-// `ConfineError` to the interpreter's `RuntimeError` so the eval call sites are
-// unchanged.
-pub(crate) fn resolve(base: &Path, rel: &str) -> Result<PathBuf, RuntimeError> {
-    witchy_runtime::confine::resolve(base, rel).map_err(|e| RuntimeError { message: e.0 })
-}
-
-pub(crate) fn resolve_write(base: &Path, rel: &str) -> Result<PathBuf, RuntimeError> {
-    witchy_runtime::confine::resolve_write(base, rel).map_err(|e| RuntimeError { message: e.0 })
-}
 
 #[cfg(test)]
 #[path = "interpreter_tests.rs"]

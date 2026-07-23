@@ -144,16 +144,17 @@ The **name states the conferred right**, and it's all checked statically:
 `Dir[Write]` and yields `File[Write]`. So a `Dir[Read]` can only ever produce a
 `File[Read]` (calling `write_file` on it is a compile error), and `write` on a
 `File[Read]` is a compile error too — the read-only chain is provable end to end.
-Navigation keeps the same `..`/absolute/symlink confinement as `read`, and a `File`
-can also be handed straight to `main` (`main(config: File[Read])`, granted with
-`--file`) — the least authority for a single-file program, with no `Dir` at all.
-A `File` is read/write only; there is no exec-on-a-`File` (spawning a process is
-the separate `Exec` capability, below).
+Navigation keeps the same `..`/absolute/symlink confinement as `read`, and a
+`File` can also be handed straight to `main` (`main(config: File[Read])`, granted
+with `--file`) — the least authority for a single-file program, with no `Dir` at
+all. A `File` is read/write only; there is no exec-on-a-`File` (spawning a process
+is the separate `Exec` capability, below).
 
-On native Unix hosts, the final file component is opened with `O_NOFOLLOW`, so
-an attacker cannot replace the checked leaf with a symlink between the check and
-the read, write, or append. This does not yet make the whole path walk race-free:
-parent-component changes still require RFC-0103's descriptor-anchored resolver.
+Native directory and file capabilities are open handles, not checked path
+strings. A `File` retains its already-open parent plus one fixed leaf; a subtree
+retains the opened child directory. Renaming or replacing any original path
+component therefore cannot redirect a later operation, and write/append refuse
+a symlink leaf. Build input/output roots use the same implementation.
 
 ## Net: a smaller slice of the network
 
@@ -209,8 +210,11 @@ dangerous capability, because a spawned process runs with full OS authority
 **outside** witchy's sandbox. witchy cannot confine what it spawns, so `Exec` is
 kept conspicuous and granted on its own line, never folded into `File`. Two things
 keep it honest: the binary is **named through a `Dir[Read]`** (you can only execute
-a file you can *read*, resolved with the same confinement as `read`), and the call
-takes an argv list, never a shell string:
+a file you can *read*, opened through the same handle-anchored confinement as
+`read`), and the call takes an argv list, never a shell string. The host executes
+the already-open file (or a private immutable snapshot on platforms without
+descriptor execution), so a concurrent path swap cannot change which program
+starts:
 
 ```witchy
 import exec

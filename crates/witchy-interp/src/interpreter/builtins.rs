@@ -2079,29 +2079,17 @@ impl Interpreter {
                     let DirValue::Fs(base) = base else {
                         return err("exec cannot run programs from an in-memory mock Dir");
                     };
-                    let prog = resolve(base, path)?;
+                    let prog = base
+                        .file(path, true)
+                        .map_err(|error| RuntimeError { message: error.0 })?;
                     let argv: Vec<&str> =
                         if joined.is_empty() { Vec::new() } else { joined.split('\0').collect() };
-                    use std::io::Write as _;
-                    use std::process::{Command, Stdio};
-                    let spawned = Command::new(&prog)
-                        .args(&argv)
-                        .stdin(Stdio::piped())
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::piped())
-                        .spawn();
-                    let mut child = match spawned {
-                        Ok(c) => c,
-                        Err(e) => return err(format!("exec failed to spawn `{}`: {e}", prog.display())),
-                    };
-                    if let Some(mut sin) = child.stdin.take() {
-                        if let Err(e) = sin.write_all(stdin.as_bytes()) {
-                            return err(format!("exec failed writing stdin to `{}`: {e}", prog.display()));
-                        }
-                    }
-                    let output = match child.wait_with_output() {
+                    let output = match prog.run(&argv, stdin) {
                         Ok(o) => o,
-                        Err(e) => return err(format!("exec failed running `{}`: {e}", prog.display())),
+                        Err(e) => return err(format!(
+                            "exec failed running `{}`: {e}",
+                            prog.display_path().display()
+                        )),
                     };
                     let code = output.status.code().unwrap_or(-1);
                     let out = String::from_utf8_lossy(&output.stdout);
@@ -2148,13 +2136,13 @@ impl Interpreter {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
                     }
                     match dir_file_value(base, rel, true)? {
-                        FileValue::Fs(path) => {
-                            use std::io::Write as _;
-                            let res = witchy_runtime::confine::open_append(&path)
-                                .and_then(|mut f| f.write_all(contents.as_bytes()));
-                            match res {
+                        FileValue::Fs(file) => {
+                            match file.append_all(contents.as_bytes()) {
                                 Ok(()) => Ok(Some(Value::Unit)),
-                                Err(e) => err(format!("append failed for `{}`: {e}", path.display())),
+                                Err(e) => err(format!(
+                                    "append failed for `{}`: {e}",
+                                    file.display_path().display()
+                                )),
                             }
                         }
                         FileValue::Mock { path, .. } => err(format!(
@@ -2170,7 +2158,7 @@ impl Interpreter {
             "exists" => match args {
                 [Value::Dir(base, _), Value::Str(rel)] => {
                     let ok = match base {
-                        DirValue::Fs(base) => resolve(base, rel).map(|p| p.exists()).unwrap_or(false),
+                        DirValue::Fs(base) => base.exists(rel).unwrap_or(false),
                         DirValue::Mock { root, files } => {
                             mock_join(root, rel).map(|path| mock_exists(files, &path)).unwrap_or(false)
                         }
@@ -2185,7 +2173,7 @@ impl Interpreter {
             "is_dir" => match args {
                 [Value::Dir(base, _), Value::Str(rel)] => {
                     let ok = match base {
-                        DirValue::Fs(base) => resolve(base, rel).map(|p| p.is_dir()).unwrap_or(false),
+                        DirValue::Fs(base) => base.is_dir(rel).unwrap_or(false),
                         DirValue::Mock { root, files } => {
                             mock_join(root, rel).map(|path| mock_is_dir(files, &path)).unwrap_or(false)
                         }
@@ -2199,32 +2187,12 @@ impl Interpreter {
             "list" => match args {
                 [Value::Dir(base, _)] => {
                     let names: Vec<String> = match base {
-                        DirValue::Fs(base) => {
-                            let mut names = Vec::new();
-                            let entries = std::fs::read_dir(base).map_err(|e| RuntimeError {
-                                message: format!("list failed for `{}`: {e}", base.display()),
-                            })?;
-                            for entry in entries {
-                                let entry = match entry {
-                                    Ok(entry) => entry,
-                                    Err(e) => {
-                                        return err(format!("list failed for `{}`: {e}", base.display()));
-                                    }
-                                };
-                                let name = match entry.file_name().into_string() {
-                                    Ok(name) => name,
-                                    Err(_) => {
-                                        return err(format!(
-                                            "list failed for `{}`: directory entry name is not valid UTF-8",
-                                            base.display()
-                                        ));
-                                    }
-                                };
-                                names.push(name);
-                            }
-                            names.sort();
-                            names
-                        }
+                        DirValue::Fs(base) => base.entries().map_err(|error| RuntimeError {
+                            message: format!(
+                                "list failed for `{}`: {error}",
+                                base.display_path().display()
+                            ),
+                        })?,
                         DirValue::Mock { root, files } => mock_list(files, root)?,
                     };
                     Ok(Some(Value::list(names.into_iter().map(Value::str).collect())))
@@ -2241,10 +2209,13 @@ impl Interpreter {
                     }
                     match base {
                         DirValue::Fs(base) => {
-                            let path = resolve_write(base, name)?;
-                            match std::fs::create_dir_all(&path) {
+                            match base.make_dir(name) {
                                 Ok(()) => Ok(Some(Value::Unit)),
-                                Err(e) => err(format!("make_dir failed for `{}`: {e}", path.display())),
+                                Err(e) => err(format!(
+                                    "make_dir failed for `{}`: {}",
+                                    base.display_path().join(name.as_str()).display(),
+                                    e.0
+                                )),
                             }
                         }
                         DirValue::Mock { root, .. } => {
@@ -2309,13 +2280,23 @@ impl Interpreter {
             // Write generated source into the confined per-rune output sandbox.
             "write_out" => match args {
                 [Value::Build(BuildCap::Out(base)), Value::Str(rel), Value::Str(contents)] => {
-                    let path = resolve_write(base, rel)?;
-                    use std::io::Write;
-                    match witchy_runtime::confine::open_write(&path)
-                        .and_then(|mut f| f.write_all(contents.as_bytes()))
-                    {
+                    let parent = std::path::Path::new(rel.as_str())
+                        .parent()
+                        .and_then(std::path::Path::to_str)
+                        .ok_or_else(|| RuntimeError {
+                            message: format!("write_out path `{rel}` is not valid UTF-8"),
+                        })?;
+                    base.make_dir(parent)
+                        .map_err(|error| RuntimeError { message: error.0 })?;
+                    let file = base
+                        .file(rel, false)
+                        .map_err(|error| RuntimeError { message: error.0 })?;
+                    match file.write_all(contents.as_bytes()) {
                         Ok(()) => Ok(Some(Value::Unit)),
-                        Err(e) => err(format!("write_out failed for `{}`: {e}", path.display())),
+                        Err(e) => err(format!(
+                            "write_out failed for `{}`: {e}",
+                            file.display_path().display()
+                        )),
                     }
                 }
                 _ => err("write_out expects a BuildOut, a relative path, and contents"),
@@ -2331,19 +2312,17 @@ impl Interpreter {
                     }
                     let mut last_err = None;
                     for base in roots {
-                        match resolve(base, rel) {
-                            Ok(path) => {
-                                use std::io::Read;
-                                let read = witchy_runtime::confine::open_read(&path).and_then(|mut f| {
-                                    let mut s = String::new();
-                                    f.read_to_string(&mut s).map(|_| s)
-                                });
-                                match read {
+                        match base.file(rel, true) {
+                            Ok(file) => {
+                                match file.read_to_string() {
                                     Ok(contents) => return Ok(Some(Value::str(contents))),
-                                    Err(e) => last_err = Some(format!("`{}`: {e}", path.display())),
+                                    Err(e) => last_err = Some(format!(
+                                        "`{}`: {e}",
+                                        file.display_path().display()
+                                    )),
                                 }
                             }
-                            Err(e) => last_err = Some(e.message),
+                            Err(e) => last_err = Some(e.0),
                         }
                     }
                     err(format!(

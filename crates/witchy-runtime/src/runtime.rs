@@ -360,7 +360,7 @@ impl FsRights {
 
 #[derive(Clone, Debug)]
 enum DirBacking {
-    Fs(std::path::PathBuf),
+    Fs(crate::confine::ConfinedDir),
     Mock {
         root: String,
         files: Arc<std::collections::BTreeMap<String, String>>,
@@ -376,7 +376,7 @@ struct DirAuthority {
 
 #[derive(Clone, Debug)]
 enum FileBacking {
-    Fs(std::path::PathBuf),
+    Fs(crate::confine::ConfinedFile),
     Mock {
         path: String,
         files: Arc<std::collections::BTreeMap<String, String>>,
@@ -488,8 +488,8 @@ pub struct VmState {
     /// A build step's confined output directory (`BuildOut`) and read roots
     /// (`BuildRead`) — host-side. Build capabilities are zero-representation at
     /// the host ABI; import linking, not a guest handle, carries the authority.
-    build_out: Option<std::path::PathBuf>,
-    build_read_roots: Vec<std::path::PathBuf>,
+    build_out: Option<crate::confine::ConfinedDir>,
+    build_read_roots: Vec<crate::confine::ConfinedDir>,
     /// (RFC-0023) Checked-heap shadow. Each `heap_register(start,end)` the guest's
     /// checked allocators emit records an object's `[start,end)`; the host poisons
     /// `[end, end+HEAP_REDZONE)` and the post-run sweep traps if any poison byte was
@@ -823,7 +823,7 @@ impl Runtime {
             &module,
             self.preempt,
             self.compiler_services.clone(),
-        );
+        )?;
 
         let mut store = Store::new(&self.engine, state);
         store.limiter(|s| &mut s.limits);
@@ -1020,7 +1020,7 @@ pub(crate) fn link_capability_imports(
     Ok(())
 }
 
-fn confine(r: std::result::Result<std::path::PathBuf, crate::confine::ConfineError>) -> Result<std::path::PathBuf> {
+fn confine<T>(r: std::result::Result<T, crate::confine::ConfineError>) -> Result<T> {
     r.map_err(|e| Error::msg(e.0))
 }
 
@@ -1039,7 +1039,7 @@ fn vmstate_from_caps(
     module: &Module,
     preempt: bool,
     compiler_services: Arc<dyn compiler::CompilerServices>,
-) -> VmState {
+) -> Result<VmState> {
     let default_dir_rights = FsRights::new(caps.dir_read, caps.dir_write);
     let dirs = caps
         .dir_root
@@ -1047,22 +1047,22 @@ fn vmstate_from_caps(
         .cloned()
         .chain(caps.dir_roots.iter().cloned())
         .enumerate()
-        .map(|(i, p)| DirAuthority {
-            backing: DirBacking::Fs(p),
+        .map(|(i, p)| Ok(DirAuthority {
+            backing: DirBacking::Fs(confine(crate::confine::ConfinedDir::open_ambient(&p))?),
             policy: String::new(),
             rights: caps.dir_rights.get(i).copied().unwrap_or(default_dir_rights),
-        })
-        .collect();
+        }))
+        .collect::<Result<Vec<_>>>()?;
     let files = caps
         .file_grants
         .iter()
         .cloned()
         .enumerate()
-        .map(|(i, path)| FileAuthority {
-            backing: FileBacking::Fs(path),
+        .map(|(i, path)| Ok(FileAuthority {
+            backing: FileBacking::Fs(confine(crate::confine::ConfinedFile::open_ambient(&path))?),
             rights: caps.file_rights.get(i).copied().unwrap_or_else(FsRights::full),
-        })
-        .collect();
+        }))
+        .collect::<Result<Vec<_>>>()?;
     let nets = caps
         .net_allow
         .iter()
@@ -1070,7 +1070,19 @@ fn vmstate_from_caps(
         .chain(caps.net_grants.iter().cloned())
         .map(|allow| NetAuthority { allow })
         .collect();
-    VmState {
+    let build_out = caps
+        .build_out
+        .as_deref()
+        .map(crate::confine::ConfinedDir::open_ambient)
+        .transpose()
+        .map_err(|error| Error::msg(error.0))?;
+    let build_read_roots = caps
+        .build_read_roots
+        .iter()
+        .map(|root| crate::confine::ConfinedDir::open_ambient(root))
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|error| Error::msg(error.0))?;
+    Ok(VmState {
         id,
         caps: caps.clone(),
         compiler_services,
@@ -1087,14 +1099,14 @@ fn vmstate_from_caps(
         nets,
         fetch_grants: caps.fetch_grants.clone(),
         worker_listener,
-        build_out: caps.build_out.clone(),
-        build_read_roots: caps.build_read_roots.clone(),
+        build_out,
+        build_read_roots,
         heap_objects: Vec::new(),
         rand_state: crate::rand::seed_from_env(),
         engine: engine.clone(),
         module: module.clone(),
         preempt,
-    }
+    })
 }
 
 // --- small helpers for safe guest-memory access ---

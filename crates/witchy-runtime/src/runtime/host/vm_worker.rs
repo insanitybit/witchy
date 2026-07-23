@@ -157,7 +157,7 @@ fn spawn_worker(
         module,
         preempt,
         Arc::new(super::super::compiler::RegistryCompilerServices),
-    );
+    )?;
     let mut store = Store::new(engine, state);
     store.limiter(|s| &mut s.limits);
     if preempt {

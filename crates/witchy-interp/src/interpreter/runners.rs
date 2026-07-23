@@ -532,14 +532,18 @@ fn run_module_inner_limited_with_catalog(
                         interp.dir_roots.get(dir_idx - 1).cloned().unwrap_or_else(|| interp.root.clone())
                     };
                     dir_idx += 1;
-                    vals.push(Value::Dir(DirValue::Fs(r), String::new()));
+                    let dir = witchy_runtime::confine::ConfinedDir::open_ambient(&r)
+                        .map_err(|error| RuntimeError { message: error.0 })?;
+                    vals.push(Value::Dir(DirValue::Fs(dir), String::new()));
                 } else if matches!(&p.ty, Some(Type::Named(n, _)) if n == "File") {
                     // The i-th `File` param maps to the i-th `--file` grant (RFC-0012).
                     let path = interp.file_grants.get(file_idx).cloned().ok_or_else(|| RuntimeError {
                         message: "`main` requires a `File`, but the host granted none (provide `--file <path>`)".into(),
                     })?;
                     file_idx += 1;
-                    vals.push(Value::File(FileValue::Fs(path)));
+                    let file = witchy_runtime::confine::ConfinedFile::open_ambient(&path)
+                        .map_err(|error| RuntimeError { message: error.0 })?;
+                    vals.push(Value::File(FileValue::Fs(file)));
                 } else if let Some(Type::Named(tn, _)) = &p.ty {
                     // RFC-0038: a record-typed `main` param is a bare grantable cap
                     // (typeck guarantees it); mint the sealed record from the grant.

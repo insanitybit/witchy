@@ -169,16 +169,6 @@ pub(super) fn compare(l: &Value, r: &Value) -> Result<std::cmp::Ordering, Runtim
     }
 }
 
-/// Parse and run a witchy program, returning everything it `print`ed. Expects a
-/// `main` function with no parameters.
-/// Resolve a path relative to a `Dir` capability, confining it to the subtree.
-/// Beyond the lexical `..`/absolute checks, we canonicalize (resolving symlinks)
-/// and verify the real target stays under the real base, so a symlink *inside*
-/// the subtree can't point out of it.
-///
-/// Note: canonicalize-then-use is mildly TOCTOU; the race-free fix is
-/// syscall-level confinement (openat2/O_NOFOLLOW, i.e. the cap-std crate), which
-/// is what the planned WASI-preopen substrate gives us.
 // Bridge between the interpreter's `Value` and the registry's `NativeValue` at
 // the single native-dispatch site. Native functions are typed (their `.witchy`
 // stubs), so they only ever receive the simple shapes `NativeValue` carries; any

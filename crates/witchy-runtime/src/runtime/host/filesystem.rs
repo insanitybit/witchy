@@ -117,9 +117,8 @@ fn host_exec_only(
 // A guest `Dir` value is an opaque externref carrying a host-side `DirAuthority`.
 // The paths never enter guest memory, and there is no guest-visible integer
 // handle to forge or widen. Every operation resolves through the SAME
-// `resolve`/`resolve_write` confinement the interpreter uses (lexical
-// `..`/absolute rejection + symlink-aware canonicalization), so the two backends
-// agree on exactly which paths are reachable.
+// handle-anchored confinement the interpreter uses, so the two backends agree
+// on exactly which paths are reachable and neither reopens ambient paths.
 
 /// Look up a root Dir grant by ordinal while minting the root `Dir` externref
 /// for `main`. This ordinal never crosses into guest code.
@@ -277,7 +276,7 @@ fn mock_list(files: &std::collections::BTreeMap<String, String>, root: &str) -> 
 fn dir_child_backing(dir: &DirAuthority, name: &str) -> Result<DirBacking> {
     match &dir.backing {
         DirBacking::Fs(base) => {
-            Ok(DirBacking::Fs(confine(crate::confine::resolve(base, name))?))
+            Ok(DirBacking::Fs(confine(base.open_dir(name))?))
         }
         DirBacking::Mock { root, files } => {
             Ok(DirBacking::Mock { root: mock_join(root, name)?, files: files.clone() })
@@ -288,12 +287,7 @@ fn dir_child_backing(dir: &DirAuthority, name: &str) -> Result<DirBacking> {
 fn dir_file_backing(dir: &DirAuthority, rel: &str, write: bool) -> Result<FileBacking> {
     match &dir.backing {
         DirBacking::Fs(base) => {
-            let path = if write {
-                confine(crate::confine::resolve_write(base, rel))?
-            } else {
-                confine(crate::confine::resolve(base, rel))?
-            };
-            Ok(FileBacking::Fs(path))
+            Ok(FileBacking::Fs(confine(base.file(rel, !write))?))
         }
         DirBacking::Mock { root, files } => {
             Ok(FileBacking::Mock { path: mock_join(root, rel)?, files: files.clone() })
@@ -303,14 +297,10 @@ fn dir_file_backing(dir: &DirAuthority, rel: &str, write: bool) -> Result<FileBa
 
 fn read_file_backing(file: &FileBacking) -> Result<String> {
     match file {
-        FileBacking::Fs(path) => {
-            use std::io::Read;
-            crate::confine::open_read(path)
-                .and_then(|mut f| {
-                    let mut s = String::new();
-                    f.read_to_string(&mut s).map(|_| s)
-                })
-                .map_err(|e| Error::msg(format!("read failed for `{}`: {e}", path.display())))
+        FileBacking::Fs(file) => {
+            file.read_to_string().map_err(|e| {
+                Error::msg(format!("read failed for `{}`: {e}", file.display_path().display()))
+            })
         }
         FileBacking::Mock { path, files } => files
             .get(path)
@@ -321,11 +311,10 @@ fn read_file_backing(file: &FileBacking) -> Result<String> {
 
 fn write_file_backing(file: &FileBacking, contents: String) -> Result<()> {
     match file {
-        FileBacking::Fs(path) => {
-            use std::io::Write;
-            crate::confine::open_write(path)
-                .and_then(|mut f| f.write_all(contents.as_bytes()))
-                .map_err(|e| Error::msg(format!("write failed for `{}`: {e}", path.display())))
+        FileBacking::Fs(file) => {
+            file.write_all(contents.as_bytes()).map_err(|e| {
+                Error::msg(format!("write failed for `{}`: {e}", file.display_path().display()))
+            })
         }
         FileBacking::Mock { path, .. } => Err(Error::msg(format!(
             "write failed for mock Dir `{path}`: mock directories are read-only"
@@ -529,24 +518,11 @@ fn host_exec_run(
     let DirBacking::Fs(base) = &dir.backing else {
         return Err(Error::msg("exec cannot run programs from an in-memory mock Dir"));
     };
-    let prog = confine(crate::confine::resolve(base, &path))?;
+    let prog = confine(base.file(&path, true))?;
     let argv: Vec<&str> = if joined.is_empty() { Vec::new() } else { joined.split('\0').collect() };
-    use std::io::Write as _;
-    use std::process::{Command, Stdio};
-    let mut child = Command::new(&prog)
-        .args(&argv)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| Error::msg(format!("exec failed to spawn `{}`: {e}", prog.display())))?;
-    if let Some(mut sin) = child.stdin.take() {
-        sin.write_all(stdin.as_bytes())
-            .map_err(|e| Error::msg(format!("exec failed writing stdin to `{}`: {e}", prog.display())))?;
-    }
-    let output = child
-        .wait_with_output()
-        .map_err(|e| Error::msg(format!("exec failed running `{}`: {e}", prog.display())))?;
+    let output = prog.run(&argv, &stdin).map_err(|e| {
+        Error::msg(format!("exec failed running `{}`: {e}", prog.display_path().display()))
+    })?;
     let code = output.status.code().unwrap_or(-1);
     let out = String::from_utf8_lossy(&output.stdout);
     let serr = String::from_utf8_lossy(&output.stderr);
@@ -567,9 +543,7 @@ fn host_dir_exists(
     let dir = dir_authority_ref(&caller, d)?;
     dir_require_read(&dir)?;
     let ok = match &dir.backing {
-        DirBacking::Fs(base) => crate::confine::resolve(base, &rel)
-            .map(|p| p.exists())
-            .unwrap_or(false),
+        DirBacking::Fs(base) => base.exists(&rel).unwrap_or(false),
         DirBacking::Mock { root, files } => {
             mock_join(root, &rel).map(|path| mock_exists(files, &path)).unwrap_or(false)
         }
@@ -588,9 +562,7 @@ fn host_dir_is_dir(
     let dir = dir_authority_ref(&caller, d)?;
     dir_require_read(&dir)?;
     let ok = match &dir.backing {
-        DirBacking::Fs(base) => crate::confine::resolve(base, &rel)
-            .map(|p| p.is_dir())
-            .unwrap_or(false),
+        DirBacking::Fs(base) => base.is_dir(&rel).unwrap_or(false),
         DirBacking::Mock { root, files } => {
             mock_join(root, &rel).map(|path| mock_is_dir(files, &path)).unwrap_or(false)
         }
@@ -605,23 +577,9 @@ fn host_dir_list_size(mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRe
     let dir = dir_authority_ref(&caller, d)?;
     dir_require_read(&dir)?;
     let names: Vec<String> = match &dir.backing {
-        DirBacking::Fs(base) => {
-            let mut names: Vec<String> = std::fs::read_dir(base)
-                .map_err(|e| Error::msg(format!("list failed for `{}`: {e}", base.display())))?
-                .map(|entry| {
-                    let entry =
-                        entry.map_err(|e| Error::msg(format!("list failed for `{}`: {e}", base.display())))?;
-                    entry.file_name().into_string().map_err(|_| {
-                        Error::msg(format!(
-                            "list failed for `{}`: directory entry name is not valid UTF-8",
-                            base.display()
-                        ))
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?;
-            names.sort();
-            names
-        }
+        DirBacking::Fs(base) => base.entries().map_err(|e| {
+            Error::msg(format!("list failed for `{}`: {e}", base.display_path().display()))
+        })?,
         DirBacking::Mock { root, files } => mock_list(files, root)?,
     };
     let size = 4 + 8 * names.len() + names.iter().map(|n| 4 + n.len()).sum::<usize>();
@@ -664,11 +622,10 @@ fn host_dir_append(
     dir_require_write(&dir)?;
     dir_guard(&dir, &rel, false)?;
     match dir_file_backing(&dir, &rel, true)? {
-        FileBacking::Fs(path) => {
-            use std::io::Write as _;
-            crate::confine::open_append(&path)
-                .and_then(|mut f| f.write_all(contents.as_bytes()))
-                .map_err(|e| Error::msg(format!("append failed for `{}`: {e}", path.display())))
+        FileBacking::Fs(file) => {
+            file.append_all(contents.as_bytes()).map_err(|e| {
+                Error::msg(format!("append failed for `{}`: {e}", file.display_path().display()))
+            })
         }
         FileBacking::Mock { path, .. } => Err(Error::msg(format!(
             "append failed for mock Dir `{path}`: mock directories are read-only"
@@ -690,9 +647,11 @@ fn host_dir_make_dir(
     dir_guard(&dir, &name, true)?;
     match &dir.backing {
         DirBacking::Fs(base) => {
-            let path = confine(crate::confine::resolve_write(base, &name))?;
-            std::fs::create_dir_all(&path)
-                .map_err(|e| Error::msg(format!("make_dir failed for `{}`: {e}", path.display())))
+            base.make_dir(&name).map_err(|e| Error::msg(format!(
+                "make_dir failed for `{}`: {}",
+                base.display_path().join(&name).display(),
+                e.0
+            )))
         }
         DirBacking::Mock { root, .. } => {
             let path = mock_join(root, &name)?;
