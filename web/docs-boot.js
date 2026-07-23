@@ -6,10 +6,11 @@
 // client-side.
 import { mount } from "./glamour-dom.mjs";
 import { runnableSlot, staticSlot } from "./witchy-runnable.js";
+import { createSandboxedProgramRunner } from "./witchy-cell-sandbox.js";
 import { assetUrl, contentUrl } from "./docs-asset-url.js";
 import { fetchWasm } from "./wasm-fetch.js";
 import { highlightWitchy, highlightShell, highlightToml } from "./witchy-highlight.js";
-import { DOCS_RUN_OPTIONS } from "./docs-run-options.js";
+import { DOCS_SANDBOX_RUN_OPTIONS } from "./docs-run-options.js";
 
 // Every bundle asset resolves against THIS module's URL — the bundle root — never the current
 // route. A chapter routes to `/p/<slug>`, so a page-relative `./content/...` / `./witchy.wasm`
@@ -28,8 +29,9 @@ const loadCompiler = (() => {
   return () =>
     (p ||= fetchWasm(assetUrl("witchy.wasm", here), { hint: COMPILER_HINT })
       .then((b) => WebAssembly.instantiate(b, {}))
-      .then(({ instance }) => instance.exports));
+      .then(({ module, instance }) => ({ module, exports: instance.exports })));
 })();
+const runProgram = createSandboxedProgramRunner({ document, loadCompiler });
 
 // The rune builds absolute `/content/...` fetch URLs; resolve them against the bundle root so a
 // chapter route can never make the fetch route-relative.
@@ -111,9 +113,9 @@ await mount(wasm, document.getElementById("app"), {
   // `highlightWitchy` escapes its input (XSS-safe), so it can paint via innerHTML.
   slots: {
     "witchy-runnable": runnableSlot({
-      loadCompiler,
+      runProgram,
       highlight: highlightWitchy,
-      runOptions: DOCS_RUN_OPTIONS,
+      runOptions: DOCS_SANDBOX_RUN_OPTIONS,
     }),
     "witchy-static": staticSlot({ highlight: highlightWitchy }),
     // Non-witchy code fences get read-only highlighting too (same token theme).

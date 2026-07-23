@@ -201,6 +201,28 @@ jobs:
       - name: Validate the runnable book against the manifest oracle
         run: node scripts/validate_book_examples.mjs
 
+  browser-confinement:
+    name: Browser confinement and runnable book
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/install-rust
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Build docs and browser compiler
+        run: |
+          cargo build --release
+          cargo build --release --lib --no-default-features --target wasm32-unknown-unknown
+          WITCHY_BROWSER_WASM=target/wasm32-unknown-unknown/release/witchy.wasm ./scripts/build-docs.sh dist
+      - name: Enable Safari automation
+        run: sudo safaridriver --enable
+      - name: Prove derived CSP and run every complete book example in opaque frames
+        run: node scripts/probe-browser-confinement.mjs dist
+
   fmt:
     name: Formatting check (std + examples + projects)
     runs-on: ubuntu-latest

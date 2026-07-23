@@ -11,6 +11,7 @@
 //           node web/witchy-runtime/witchy-runnable.test.mjs
 
 import { enhanceRunnableCells } from "../witchy-runnable.js";
+import { runWitchy } from "../witchy-host.js";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -67,6 +68,7 @@ const loadCompiler = async () => {
   const { instance } = await WebAssembly.instantiate(bytes, {});
   return instance.exports;
 };
+const runProgram = async (source, options) => runWitchy(await loadCompiler(), source, options);
 
 let failures = 0;
 const ok = (cond, msg) => { console.log(`  ${cond ? "ok" : "FAIL"}: ${msg}`); if (!cond) failures++; };
@@ -74,7 +76,7 @@ const ok = (cond, msg) => { console.log(`  ${cond ? "ok" : "FAIL"}: ${msg}`); if
 try {
   // 1. A runnable cell: enhance, then Run, and the real output shows.
   const root = pageWith('fn main(console: Console):\n    console.print("hello from a runnable cell")');
-  const cells = enhanceRunnableCells(root, { document: doc, loadCompiler });
+  const cells = enhanceRunnableCells(root, { document: doc, runProgram });
   ok(cells.length === 1, "one runnable cell is found and enhanced");
   ok(qsa(root, "button").some((b) => (b.getAttribute("class") || "").includes("witchy-run")), "a Run button is added");
   ok(qsa(root, "div").some((d) => (d.getAttribute("class") || "") === "witchy-cell"), "the cell is wrapped");
@@ -98,7 +100,7 @@ try {
         console.print(arg)`);
   const argvCells = enhanceRunnableCells(argv, {
     document: doc,
-    loadCompiler,
+    runProgram,
     runOptions: { args: ["one", "héllo"] },
   });
   await argvCells[0].run();
@@ -114,7 +116,7 @@ fn main(console: Console, secrets: SecretStore):
     console.print("token: \${crypto.reveal(secrets.require("api-token"))}")`);
   const secretCells = enhanceRunnableCells(secrets, {
     document: doc,
-    loadCompiler,
+    runProgram,
     runOptions: {
       capabilities: {
         secrets: {
@@ -148,7 +150,7 @@ fn main(console: Console):
   const vmWorkers = [];
   const vmCells = enhanceRunnableCells(vm, {
     document: doc,
-    loadCompiler,
+    runProgram,
     runOptions: {
       capabilities: { vm: true },
       onVmSpawn: (instance) => vmWorkers.push(instance),
@@ -159,12 +161,12 @@ fn main(console: Console):
   ok(vmWorkers.length === 1, "the runnable VM cell uses one fresh worker instance");
 
   // 5. Idempotent: re-enhancing the same root finds nothing new.
-  const again = enhanceRunnableCells(root, { document: doc, loadCompiler });
+  const again = enhanceRunnableCells(root, { document: doc, runProgram });
   ok(again.length === 0, "re-enhancing is idempotent (no double cells)");
 
   // 6. A compile error surfaces as an error cell, not a thrown exception.
   const bad = pageWith("fn main(console: Console):\n    console.print(nope)");
-  const badCells = enhanceRunnableCells(bad, { document: doc, loadCompiler });
+  const badCells = enhanceRunnableCells(bad, { document: doc, runProgram });
   await badCells[0].run();
   ok((badCells[0].output.getAttribute("class") || "").includes("err"), "a compile error marks the cell err");
   ok(badCells[0].output.textContent.length > 0, "the error message is shown");
@@ -186,7 +188,7 @@ fn run(own state: unique State, n: Int) -> unique State:
 fn main(console: Console):
     let done = run(State(0), 50000)
     console.print("\${done.count}")`);
-  const fipCells = enhanceRunnableCells(fip, { document: doc, loadCompiler });
+  const fipCells = enhanceRunnableCells(fip, { document: doc, runProgram });
   await fipCells[0].run();
   ok(fipCells[0].output.textContent === "50000", "the browser completes 50,000 FIP transitions");
   const proof = fipCells[0].statsOutput.textContent;
@@ -219,8 +221,8 @@ fn main(console: Console):
     if (!line) throw new Error(`missing browser counter ${name}: ${proofText}`);
     return BigInt(line.slice(name.length + 1));
   };
-  const shallowProjection = enhanceRunnableCells(pageWith(projectionKernel(1)), { document: doc, loadCompiler })[0];
-  const heavyProjection = enhanceRunnableCells(pageWith(projectionKernel(64)), { document: doc, loadCompiler })[0];
+  const shallowProjection = enhanceRunnableCells(pageWith(projectionKernel(1)), { document: doc, runProgram })[0];
+  const heavyProjection = enhanceRunnableCells(pageWith(projectionKernel(64)), { document: doc, runProgram })[0];
   await shallowProjection.run();
   await heavyProjection.run();
   ok(shallowProjection.output.textContent === "7 3", "the shallow projection preserves its richer source");
@@ -245,7 +247,7 @@ fn main(console: Console):
     output.print("hello, \${input.read_line()}")`);
   const consoleCells = enhanceRunnableCells(consoleInput, {
     document: doc,
-    loadCompiler,
+    runProgram,
     runOptions: { capabilities: { console: { input: ["Ada"] } } },
   });
   await consoleCells[0].run();
@@ -261,7 +263,7 @@ fn main(console: Console):
   code.setAttribute("class", "language-sh");
   code.appendChild(new FakeText("echo hi"));
   pre.appendChild(code); other.appendChild(pre);
-  ok(enhanceRunnableCells(other, { document: doc, loadCompiler }).length === 0, "a non-witchy fence is not enhanced");
+  ok(enhanceRunnableCells(other, { document: doc, runProgram }).length === 0, "a non-witchy fence is not enhanced");
 } catch (e) {
   console.error("harness threw:", e);
   failures++;

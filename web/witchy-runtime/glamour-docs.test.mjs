@@ -102,11 +102,11 @@ try {
     // (RFC-0040) the app's `export_step` takes a `UiRoot`; stage its grant.
     instantiateOpts: { userCaps: [["book"]] },
     // (RFC-0041 P2) register the runnable-cell renderer for the app's `witchy-runnable` slots.
-    // `loadCompiler` is only called on Run (not driven here — the compile+run path is proven by
+    // `runProgram` is only called on Run (not driven here — the compile+run path is proven by
     // witchy-runnable.test.mjs), so it stays a stub; this asserts the SLOT WIRING renders a cell.
     slots: {
       "witchy-runnable": runnableSlot({
-        loadCompiler: async () => { throw new Error("compiler not loaded in the rendering test"); },
+        runProgram: async () => { throw new Error("runner not used in the rendering test"); },
       }),
     },
   });

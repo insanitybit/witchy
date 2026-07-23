@@ -221,6 +221,32 @@ fn witchy_runnable_cell_compiles_and_runs_in_page() {
     assert!(stdout.contains("WITCHY-RUNNABLE OK"), "runnable-cell driver did not report success:\n{stdout}");
 }
 
+/// RFC-0103: production runnable cells use a fresh `sandbox="allow-scripts"`
+/// iframe with no same-origin escape, a private MessagePort, and a CSP derived
+/// from the exact Fetch grant. This structural test is browser-independent; the
+/// Safari probe separately proves the browser blocks the denied request.
+#[test]
+fn runnable_cell_uses_an_opaque_derived_policy_frame() {
+    if !node_available() {
+        eprintln!("skipping: `node` is not available on PATH");
+        return;
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let driver = manifest.join("web/witchy-runtime/witchy-cell-sandbox.test.mjs");
+    let out = Command::new("node")
+        .arg(&driver)
+        .current_dir(manifest)
+        .output()
+        .expect("spawn sandboxed-cell contract test");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "sandboxed-cell contract failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(stdout.contains("WITCHY-CELL-SANDBOX OK"), "missing success marker: {stdout}");
+}
+
 /// RFC-0041 P0: the standalone playground's example programs are CURRENT witchy. The committed
 /// Node driver (`web/witchy-runtime/playground-examples.test.mjs`) imports `EXAMPLES` straight
 /// from `web/playground.js` and compiles/runs each with the real toolchain — the five console

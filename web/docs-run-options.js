@@ -48,3 +48,15 @@ export const DOCS_RUN_OPTIONS = Object.freeze({
   },
   fetchImpl: docsFetch,
 });
+
+// The opaque iframe boundary accepts data, never functions. It reconstructs
+// this deterministic fixture inside the child, after structured cloning.
+export const DOCS_SANDBOX_RUN_OPTIONS = Object.freeze({
+  args: DOCS_RUN_OPTIONS.args,
+  capabilities: DOCS_RUN_OPTIONS.capabilities,
+  fetchFixture: Object.freeze({
+    kind: "text-prefix",
+    prefix: "witchy documentation fixture for ",
+    status: 200,
+  }),
+});

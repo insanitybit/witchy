@@ -2,13 +2,13 @@
 //
 // A reader's snippet compiles to tree-shaken wasm whose imports are exactly the
 // authority it reaches. The host starts deny-by-omission and may pass explicit
-// `runOptions` providers for examples admitted by the browser menu. Wasm memory
-// isolation plus the capability import boundary contains the cell in the main
-// frame without a separate compartment (RFC-0041 §Phase 2).
+// `runOptions` providers for examples admitted by the browser menu. Production
+// callers inject a sandbox runner: the docs runner compiles in the trusted page
+// and executes the guest in a fresh opaque-origin iframe (RFC-0103).
 //
 // Two entry points:
 //   * `runnableSlot(opts)` — a glamour HOST-SLOT renderer: register it as
-//     `mount(..., { slots: { "witchy-runnable": runnableSlot({ loadCompiler }) } })`. glamour
+//     `mount(..., { slots: { "witchy-runnable": runnableSlot({ runProgram }) } })`. glamour
 //     mounts it into a `Slot` node and NEVER diffs into it, so a page re-render can't clobber
 //     the cell. This is what the docs app uses.
 //   * `enhanceRunnableCells(root, opts)` — progressive enhancement for a STATIC page (the
@@ -17,8 +17,6 @@
 // Both build the same cell via `buildRunnableCell`. DOM-agnostic (createElement / getAttribute
 // / childNodes only — no innerHTML sink, no querySelector) so it runs under a real browser DOM
 // AND a headless FakeElement DOM.
-
-import { runWitchy } from "./witchy-host.js";
 
 function formatOptimizationStats(stats) {
   const entries = Object.entries(stats || {});
@@ -80,21 +78,19 @@ function buildCopyButton(doc, getText) {
 
 /**
  * Build a runnable cell for `source`: a `<pre>` showing the code, a Run button, and an output
- * pane. On Run, compile+run `source` via `witchy-host.js` against the lazily-loaded compiler.
+ * pane. On Run, delegate the current source to the caller's explicit execution boundary.
  *
  * @param {Document} doc
  * @param {string} source
  * @param {object} opts
- * @param {function} opts.loadCompiler  async `() => wasmExports` — the instantiated
- *   `web/witchy.wasm` exports; called lazily on the first Run and cached per cell.
+ * @param {function} opts.runProgram async `(source, runOptions) => result`.
+ *   The production docs pass the opaque-iframe runner from `witchy-cell-sandbox.js`.
  * @returns {{ element, editor, runButton, output, statsOutput, run }}
  */
 export function buildRunnableCell(doc, source, opts = {}) {
-  if (typeof opts.loadCompiler !== "function") {
-    throw new Error("witchy-runnable: opts.loadCompiler must be an async () => wasm exports");
+  if (typeof opts.runProgram !== "function") {
+    throw new Error("witchy-runnable: opts.runProgram must be an async program runner");
   }
-  let compilerPromise = null;
-  const compiler = () => (compilerPromise ||= Promise.resolve().then(opts.loadCompiler));
 
   const element = doc.createElement("div");
   element.setAttribute("class", "witchy-cell");
@@ -123,8 +119,7 @@ export function buildRunnableCell(doc, source, opts = {}) {
     const src = typeof editor.value === "string" ? editor.value : source;
     runButton.textContent = "Running…";
     try {
-      const wasm = await compiler();
-      const { ok, text, stats } = await runWitchy(wasm, src, opts.runOptions || {});
+      const { ok, text, stats } = await opts.runProgram(src, opts.runOptions || {});
       output.textContent = text || (ok ? "(no output)" : "(empty error)");
       output.setAttribute("class", ok ? "witchy-output ok" : "witchy-output err");
       // `mode opt` makes resource behavior part of the checked source contract.

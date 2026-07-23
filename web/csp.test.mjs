@@ -29,10 +29,12 @@ const docs = deriveContentSecurityPolicy(DOCS_RUN_OPTIONS.capabilities, {
   hostConnect: ["'self'"],
   imageSources: ["'self'", "data:"],
   fontSources: ["'self'"],
+  frameSources: ["'self'"],
 });
 assert.equal(emittedPolicy("docs.html"), docs);
 assert.match(docs, /connect-src 'self' https:\/\/example\.com:443(?:;|$)/);
 assert.doesNotMatch(docs, /evil\.example/);
+assert.match(docs, /frame-src 'self'(?:;|$)/);
 
 const sealed = deriveContentSecurityPolicy(undefined, {
   scriptSources: ["'unsafe-inline'"],

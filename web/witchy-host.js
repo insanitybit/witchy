@@ -69,6 +69,19 @@ export function readOptimizationStats(exports) {
 // `{ ok, text, stats }` (text is the joined output, or the error / trap message;
 // stats are the compiled module's deterministic RFC-0089 resource counters).
 export async function runWitchy(wasm, source, opts = {}) {
+  let binary;
+  try {
+    binary = compile(wasm, source);
+  } catch (e) {
+    return { ok: false, text: String((e && e.message) || e) };
+  }
+  return runCompiledWitchy(wasm, binary, opts);
+}
+
+// Run an already-compiled guest. The sandboxed book path compiles in its
+// trusted parent and calls this function inside an opaque-origin iframe, so no
+// untrusted guest instruction executes in the docs page's main realm.
+export async function runCompiledWitchy(wasm, binary, opts = {}) {
   // Fresh views — any lib call that allocates may grow (and detach) the buffer.
   const libU8 = () => new Uint8Array(wasm.memory.buffer);
   const libDV = () => new DataView(wasm.memory.buffer);
@@ -79,13 +92,6 @@ export async function runWitchy(wasm, source, opts = {}) {
     wasm.witchy_free(ptr, 4 + len);
     return bytes;
   };
-
-  let binary;
-  try {
-    binary = compile(wasm, source);
-  } catch (e) {
-    return { ok: false, text: String((e && e.message) || e) };
-  }
 
   const compiled = new WebAssembly.Module(binary);
   const imports = WebAssembly.Module.imports(compiled);
