@@ -99,6 +99,79 @@ fn strict_sandbox_arms_outer_confinement_but_dev_run_does_not() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn sandbox_rejects_unknown_confinement_modes_before_guest_execution() {
+    let output = Command::new(BIN)
+        .args(["sandbox", "--confine=disabled", "does-not-run.witchy"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("expected `best-effort` or `required`"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn required_confinement_refuses_an_unsupported_host_before_main() {
+    let dir = unique("required-confinement");
+    let source = dir.join("main.witchy");
+    std::fs::write(
+        &source,
+        "fn main(console: Console):\n    console.print(\"main-ran\")\n",
+    )
+    .unwrap();
+    let output = Command::new(BIN)
+        .args([
+            "sandbox",
+            "--confine",
+            "required",
+            source.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(!stdout(&output).contains("main-ran"), "guest ran before required confinement");
+    assert!(
+        stderr(&output).contains("required platform confinement is unavailable"),
+        "{}",
+        stderr(&output)
+    );
+
+    let wasm = dir.join("main.wasm");
+    let compiled = Command::new(BIN)
+        .args([
+            "compile",
+            source.to_str().unwrap(),
+            "--out",
+            wasm.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(compiled.status.success(), "{}", stderr(&compiled));
+    let artifact = Command::new(BIN)
+        .args([
+            "sandbox",
+            "--confine=required",
+            wasm.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!artifact.status.success());
+    assert!(
+        !stdout(&artifact).contains("main-ran"),
+        "precompiled guest ran before required confinement"
+    );
+    assert!(
+        stderr(&artifact).contains("required platform confinement is unavailable"),
+        "{}",
+        stderr(&artifact)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// RFC-0077 rider 2: authority-free mock constructors are a `witchy test`
 /// privilege, not a generally available way to mint capability-shaped values.
 /// Pin every production entry that can otherwise reach linking or comptime.

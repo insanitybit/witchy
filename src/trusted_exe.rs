@@ -38,12 +38,13 @@ pub struct OwnedEmbeddedApplication {
     pub bindings: Vec<u8>,
 }
 
-const PLAN_VERSION: u32 = 2;
+const PLAN_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BindingPlan {
     version: u32,
+    confinement_required: bool,
     declared: BTreeMap<String, BTreeSet<String>>,
     dirs: Vec<DirPlan>,
     files: Vec<FilePlan>,
@@ -117,6 +118,7 @@ struct SecretPlan {
 /// Host resources resolved from a checked binding plan at process startup.
 #[derive(Debug)]
 pub struct ResolvedBindings {
+    pub confinement: witchy_confinement::EnforcementMode,
     pub dir_roots: Vec<std::path::PathBuf>,
     pub dir_rights: Vec<runtime::FsRights>,
     pub file_grants: Vec<std::path::PathBuf>,
@@ -144,6 +146,8 @@ struct TargetTables {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TrustedTarget {
+    #[serde(default)]
+    confine: Option<String>,
     #[serde(default)]
     dirs: BTreeMap<String, RawDirBinding>,
     #[serde(default)]
@@ -205,6 +209,12 @@ pub fn build_binding_plan(module: &ast::Module, manifest: &str) -> Result<Vec<u8
     let parsed: ProjectManifest = toml::from_str(manifest)
         .map_err(|error| format!("trusted-exe manifest is not valid TOML: {error}"))?;
     let mut target = parsed.targets.trusted_exe.unwrap_or_default();
+    let confinement = target
+        .confine
+        .as_deref()
+        .unwrap_or("best-effort")
+        .parse::<witchy_confinement::EnforcementMode>()
+        .map_err(|error| format!("trusted-exe manifest: {error}"))?;
     let main = module
         .items
         .iter()
@@ -376,6 +386,8 @@ pub fn build_binding_plan(module: &ast::Module, manifest: &str) -> Result<Vec<u8
     }
     let plan = BindingPlan {
         version: PLAN_VERSION,
+        confinement_required:
+            confinement == witchy_confinement::EnforcementMode::Required,
         declared: owned_contract(&capabilities::run_grant(module)),
         dirs,
         files,
@@ -497,6 +509,11 @@ pub fn resolve_binding_plan(
         });
     }
     Ok(ResolvedBindings {
+        confinement: if plan.confinement_required {
+            witchy_confinement::EnforcementMode::Required
+        } else {
+            witchy_confinement::EnforcementMode::BestEffort
+        },
         dir_roots,
         dir_rights,
         file_grants,
@@ -891,6 +908,40 @@ mod tests {
         assert_eq!(resolved.dir_roots[0], std::fs::canonicalize(".").unwrap());
         assert_eq!(resolved.dir_roots[1], std::path::Path::new("/"));
         assert_eq!(resolved.dir_rights, vec![runtime::FsRights::new(true, false); 2]);
+    }
+
+    #[test]
+    fn confinement_mode_is_authenticated_in_the_binding_plan() {
+        let source = module("fn main(console: Console):\n    return\n");
+        let wasm = artifact::embed_launch_contract(Module::new().finish(), &source);
+
+        let default = build_binding_plan(&source, "").unwrap();
+        let default = resolve_binding_plan(&default, &wasm, std::path::Path::new(".")).unwrap();
+        assert_eq!(
+            default.confinement,
+            witchy_confinement::EnforcementMode::BestEffort
+        );
+
+        let required = build_binding_plan(
+            &source,
+            "[targets.trusted-exe]\nconfine = \"required\"\n",
+        )
+        .unwrap();
+        let encoded: BindingPlan = serde_json::from_slice(&required).unwrap();
+        assert!(encoded.confinement_required);
+        let required =
+            resolve_binding_plan(&required, &wasm, std::path::Path::new(".")).unwrap();
+        assert_eq!(
+            required.confinement,
+            witchy_confinement::EnforcementMode::Required
+        );
+
+        let error = build_binding_plan(
+            &source,
+            "[targets.trusted-exe]\nconfine = \"disabled\"\n",
+        )
+        .unwrap_err();
+        assert!(error.contains("expected `best-effort` or `required`"), "{error}");
     }
 
     #[test]

@@ -132,6 +132,15 @@ runner = { from = "allow", programs = ["git"] }
 token = { from = "env:APP_TOKEN", use-only = true }
 ```
 
+The target defaults to best-effort native outer confinement. A deployment that
+must refuse unsupported or partial enforcement records the stricter choice in
+the authenticated binding plan:
+
+```toml
+[targets.trusted-exe]
+confine = "required"
+```
+
 `Env` bindings explicitly name the process variables the packaged application
 may read; an empty `names` list grants none. `Console`, `Clock`, `Rand`, argv,
 and an empty `SecretStore` use their conventional process values and need no

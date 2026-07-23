@@ -6,7 +6,9 @@
 //! browser, or operating-system dependency.
 
 use std::collections::BTreeSet;
+use std::fmt;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 mod provider;
 pub use provider::{
@@ -25,6 +27,37 @@ pub enum EnforcementMode {
     BestEffort,
     /// Refuse launch unless every policy dimension has an enforcing provider.
     Required,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParseEnforcementModeError {
+    value: String,
+}
+
+impl fmt::Display for ParseEnforcementModeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "unknown confinement mode `{}` (expected `best-effort` or `required`)",
+            self.value
+        )
+    }
+}
+
+impl std::error::Error for ParseEnforcementModeError {}
+
+impl FromStr for EnforcementMode {
+    type Err = ParseEnforcementModeError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "best-effort" => Ok(Self::BestEffort),
+            "required" => Ok(Self::Required),
+            _ => Err(ParseEnforcementModeError {
+                value: value.to_string(),
+            }),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -231,6 +264,16 @@ fn origin_port(origin: &str) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launch_modes_have_one_strict_parser() {
+        assert_eq!("best-effort".parse(), Ok(EnforcementMode::BestEffort));
+        assert_eq!("required".parse(), Ok(EnforcementMode::Required));
+        assert_eq!(
+            "disabled".parse::<EnforcementMode>().unwrap_err().to_string(),
+            "unknown confinement mode `disabled` (expected `best-effort` or `required`)"
+        );
+    }
 
     #[test]
     fn filesystem_rules_union_without_losing_scope() {

@@ -267,6 +267,7 @@ pub(crate) fn run_trusted_application(
         &application.wasm,
         &cwd,
     )?;
+    let confinement = resolved.confinement;
     let declares = |name: &str| resolved.declared.contains_key(name);
     let declares_right = |name: &str, right: &str| {
         resolved.declared.get(name).is_some_and(|rights| rights.contains(right))
@@ -301,7 +302,7 @@ pub(crate) fn run_trusted_application(
     let (lines, exit) = run_prepared_wasm(
         &application.wasm,
         caps,
-        witchy_confinement::EnforcementMode::BestEffort,
+        confinement,
     )?;
     for line in lines {
         println!("{line}");

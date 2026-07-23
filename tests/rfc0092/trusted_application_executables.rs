@@ -188,6 +188,46 @@ fn main(console: Console, cwd: Dir[Read], root: Dir[Read], env: Env, args: List(
 }
 
 #[test]
+#[cfg(all(unix, not(target_os = "linux")))]
+fn trusted_executable_required_confinement_fails_before_main() {
+    let scratch = Scratch::new();
+    let manifest = scratch.join("witchy.toml");
+    std::fs::write(
+        &manifest,
+        "[rune]\nname = \"required_fixture\"\nversion = \"0.1.0\"\n\n\
+         [targets.trusted-exe]\nconfine = \"required\"\n",
+    )
+    .unwrap();
+    let source = scratch.join("required_fixture.witchy");
+    std::fs::write(
+        &source,
+        "fn main(console: Console):\n    console.print(\"main-ran\")\n",
+    )
+    .unwrap();
+    let executable = scratch.join("required_fixture");
+    let built = run(Command::new(BIN).args([
+        "compile",
+        source.to_str().unwrap(),
+        "--target",
+        "trusted-exe",
+        "--manifest",
+        manifest.to_str().unwrap(),
+        "--out",
+        executable.to_str().unwrap(),
+    ]));
+    assert!(built.status.success(), "{}", stderr(&built));
+
+    let output = run(&mut Command::new(&executable));
+    assert!(!output.status.success());
+    assert!(!stdout(&output).contains("main-ran"), "guest ran before required confinement");
+    assert!(
+        stderr(&output).contains("required platform confinement is unavailable"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
 fn dependency_footprint_does_not_widen_the_trusted_root() {
     let scratch = Scratch::new();
     let manifest = scratch.join("witchy.toml");

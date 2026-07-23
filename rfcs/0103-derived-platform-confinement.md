@@ -11,8 +11,9 @@ tracking: >
   `witchy-confinement` policy model and the single concrete-grant derivation
   boundary are implemented. Its Linux provider safely translates filesystem
   and TCP policy into independently reported Landlock rulesets. Launch
-  activation, seccomp, build-step outer confinement, derived CSP, required
-  mode, and enforcement menus remain active implementation phases.
+  activation and required launch mode are implemented. Seccomp, build-step
+  outer confinement, derived CSP, and enforcement menus remain active
+  implementation phases.
 predecessors:
   - "[0013](0013-capability-grant-documents.md) (grant documents — the concrete pre-execution authority statement this RFC compiles)"
   - "[0068](0068-compiled-build-step-grants.md) (build-step grants — the declared authority of third-party build code)"
@@ -364,7 +365,13 @@ the served app is the input it should derive from).
    consumes the derivation; evidence: web test asserting the emitted policy
    matches the granted surface, and a probe page proving exfiltration to an
    ungranted origin is blocked by the browser.
-6. **`--confine=required`** and the menu `[enforcement]` sections.
+6. **In progress**: `--confine=required` is implemented for strict source and
+   precompiled sandbox launches, and the trusted-exe manifest's
+   `confine = "required"` choice is authenticated inside the versioned binding
+   plan. Unsupported, partial, or unexpressible enforcement fails before
+   `main`; best-effort remains the default. The menu `[enforcement]` sections
+   land with the remaining seccomp and CSP providers so they do not advertise
+   unfinished mechanisms.
 
 Each phase lands independently through the serialized gate; phases 1-3
 touch the runtime TCB and take adversarial review.

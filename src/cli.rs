@@ -23,7 +23,7 @@ USAGE:
                                                   (a verify-the-compiler tool, not a workflow step)
     witchy test [--integration] [--dir <root>]... [--net <addr>]... <file.witchy|dir>
                                                   run plain zero-grant or explicit integration tests
-    witchy sandbox [--dir <root>] [--net <addr>]... [--fetch <origin>]... <file.witchy> [args...]
+    witchy sandbox [--confine <best-effort|required>] [--dir <root>] [--net <addr>]... [--fetch <origin>]... <file.witchy> [args...]
                                                   compile and run in a VM granted exactly its footprint
     witchy emit-wat <file.witchy>                 print the compiled WebAssembly text (the module sandbox runs)
     witchy expand  <file.witchy>                  print canonical source after comptime/tag expansion
@@ -97,6 +97,14 @@ pub(crate) fn flag_value(arg: &str, flag: &str, rest: &mut impl Iterator<Item = 
     }
 }
 
+pub(crate) fn parse_confinement_mode(
+    value: &str,
+) -> Result<witchy_confinement::EnforcementMode, String> {
+    value.parse().map_err(
+        |error: witchy_confinement::ParseEnforcementModeError| error.to_string(),
+    )
+}
+
 /// Parse a `--secret name=value[,use-only]` spec into a named secret. The value is
 /// taken literally (UTF-8 bytes) — a token, password, or connection string. The
 /// name must be non-empty and contain no `=` (everything after the first `=`, up
@@ -163,7 +171,7 @@ mod version_tests {
 
 #[cfg(test)]
 mod cli_flag_tests {
-    use super::leading_opt_mode;
+    use super::{leading_opt_mode, parse_confinement_mode};
 
     fn argv(args: &[&str]) -> Vec<String> {
         args.iter().map(|s| s.to_string()).collect()
@@ -175,6 +183,21 @@ mod cli_flag_tests {
         assert_eq!(leading_opt_mode(&argv(&["--debug", "sandbox", "foo.witchy"])), Some("debug"));
         // `--debug` wins over `--release` when both lead (maximal debuggability).
         assert_eq!(leading_opt_mode(&argv(&["--release", "--debug", "foo.witchy"])), Some("debug"));
+    }
+
+    #[test]
+    fn confinement_mode_accepts_only_public_launch_modes() {
+        assert_eq!(
+            parse_confinement_mode("best-effort"),
+            Ok(witchy_confinement::EnforcementMode::BestEffort)
+        );
+        assert_eq!(
+            parse_confinement_mode("required"),
+            Ok(witchy_confinement::EnforcementMode::Required)
+        );
+        assert!(parse_confinement_mode("disabled")
+            .unwrap_err()
+            .contains("expected `best-effort` or `required`"));
     }
 
     #[test]

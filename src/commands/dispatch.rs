@@ -510,10 +510,22 @@ pub(crate) fn run() -> wasmtime::Result<()> {
         // RFC-0013: pre-approve the grant (skip the interactive confirmation),
         // for non-interactive launches (CI, installers, scripts).
         let mut accept_grants = false;
+        let mut confinement = witchy_confinement::EnforcementMode::BestEffort;
         let mut path: Option<String> = None;
         let mut prog_args: Vec<String> = Vec::new();
         let mut argv = std::env::args().skip(2);
         while let Some(a) = argv.next() {
+            if path.is_none() && (a == "--confine" || a.starts_with("--confine=")) {
+                let value = crate::cli::flag_value(&a, "--confine", &mut argv);
+                confinement = match crate::cli::parse_confinement_mode(&value) {
+                    Ok(mode) => mode,
+                    Err(error) => {
+                        eprintln!("{error}");
+                        std::process::exit(1);
+                    }
+                };
+                continue;
+            }
             match a.as_str() {
                 "--dir" if path.is_none() => match argv.next() {
                     Some(root) => dir_roots.push(std::path::PathBuf::from(root)),
@@ -591,7 +603,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
             }
         }
         let Some(path) = path else {
-            eprintln!("usage: witchy sandbox [--grants <doc.toml> [--accept-grants] | [--dir <root>] [--file <path>]... [--net <host:port>]... [--fetch <scheme://host:port>]... [--signing-key <seed-file>] [--secret name=value] [--secret-file name=path]] <file.witchy> [args...]");
+            eprintln!("usage: witchy sandbox [--confine <best-effort|required>] [--grants <doc.toml> [--accept-grants] | [--dir <root>] [--file <path>]... [--net <host:port>]... [--fetch <scheme://host:port>]... [--signing-key <seed-file>] [--secret name=value] [--secret-file name=path]] <file.witchy> [args...]");
             std::process::exit(1);
         };
         // A precompiled `.wasm` runs directly (authority from its launch metadata
@@ -607,14 +619,14 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                 &doc,
                 accept_grants,
                 prog_args,
-                witchy_confinement::EnforcementMode::BestEffort,
+                confinement,
             )
         } else if path.ends_with(".wasm") {
             // `sandbox` is the strict path: a `Dir`-importing artifact needs an
             // explicit `--dir` (BUG-106), just like the source form.
-            commands::wasm_exec::run_wasm_file(&path, dir_roots, file_grants, net_allow, fetch_origins, prog_args, signing_key, named_secrets, true, witchy_confinement::EnforcementMode::BestEffort)
+            commands::wasm_exec::run_wasm_file(&path, dir_roots, file_grants, net_allow, fetch_origins, prog_args, signing_key, named_secrets, true, confinement)
         } else {
-            commands::sandbox::run_file_sandboxed(&path, dir_roots, file_grants, net_allow, fetch_origins, prog_args, signing_key, named_secrets, witchy_confinement::EnforcementMode::BestEffort)
+            commands::sandbox::run_file_sandboxed(&path, dir_roots, file_grants, net_allow, fetch_origins, prog_args, signing_key, named_secrets, confinement)
         };
         match result {
             Ok((lines, exit_code)) => {

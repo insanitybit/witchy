@@ -127,6 +127,12 @@ other hosts report the layer as unavailable and continue in best-effort mode.
 Each strict launch prints the provider and enforcement status on stderr. Ordinary
 development runs and reusable embedded runtimes do not arm irreversible
 process-wide policy, because their process may need to host more than one guest.
+Use `--confine=required` when deployment must fail before `main` unless every
+currently implemented outer layer is fully enforced:
+
+```sh
+witchy sandbox --confine=required --dir . main.witchy
+```
 
 Executable selection uses descriptor execution or an already-open private
 snapshot. On macOS, platform binaries may instead use a path only after Witchy
