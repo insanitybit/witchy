@@ -34,8 +34,9 @@ pub(crate) fn apply(
             "Landlock enforces TCP ports; a granted UDP or Unix-domain transport remains host-layer only"
                 .into();
     }
+    let syscalls = apply_syscalls(policy, mode)?;
     let report = EnforcementReport {
-        layers: vec![filesystem, tcp],
+        layers: vec![filesystem, tcp, syscalls],
     };
     if mode == EnforcementMode::Required && !report.fully_enforced() {
         return Err(EnforcementError(format!(
@@ -44,6 +45,32 @@ pub(crate) fn apply(
         )));
     }
     Ok(report)
+}
+
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64"))]
+fn apply_syscalls(
+    policy: &Policy,
+    mode: EnforcementMode,
+) -> Result<LayerReport, EnforcementError> {
+    crate::linux_seccomp::apply(policy, mode)
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")))]
+fn apply_syscalls(
+    _policy: &Policy,
+    mode: EnforcementMode,
+) -> Result<LayerReport, EnforcementError> {
+    if mode == EnforcementMode::Required {
+        return Err(EnforcementError(
+            "required syscall confinement is unavailable on this Linux architecture".into(),
+        ));
+    }
+    Ok(LayerReport {
+        layer: Layer::Syscalls,
+        provider: "none",
+        status: LayerStatus::Unavailable,
+        detail: "seccomp provider supports x86_64, aarch64, and riscv64".into(),
+    })
 }
 
 fn apply_filesystem(

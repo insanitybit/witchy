@@ -17,6 +17,11 @@ pub use provider::{
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")
+))]
+mod linux_seccomp;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum EnforcementMode {

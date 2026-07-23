@@ -6,6 +6,7 @@ use crate::{EnforcementMode, Policy};
 pub enum Layer {
     Filesystem,
     Tcp,
+    Syscalls,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -67,6 +68,12 @@ pub fn apply(
                     status: LayerStatus::Disabled,
                     detail: "process-wide confinement was not requested".into(),
                 },
+                LayerReport {
+                    layer: Layer::Syscalls,
+                    provider: syscall_provider(),
+                    status: LayerStatus::Disabled,
+                    detail: "process-wide confinement was not requested".into(),
+                },
             ],
         });
     }
@@ -92,6 +99,12 @@ pub fn apply(
                     status: LayerStatus::Unavailable,
                     detail: "no native TCP confinement provider on this platform".into(),
                 },
+                LayerReport {
+                    layer: Layer::Syscalls,
+                    provider: syscall_provider(),
+                    status: LayerStatus::Unavailable,
+                    detail: "no native syscall-confinement provider on this platform".into(),
+                },
             ],
         };
         if mode == EnforcementMode::Required {
@@ -101,6 +114,17 @@ pub fn apply(
         } else {
             Ok(report)
         }
+    }
+}
+
+const fn syscall_provider() -> &'static str {
+    if cfg!(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")
+    )) {
+        "seccomp-bpf"
+    } else {
+        "none"
     }
 }
 
