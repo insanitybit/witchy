@@ -24,6 +24,7 @@ const CAP_TAGS: [(&str, u8); 11] = [
     ("Fetch", 10),
 ];
 
+const CONSOLE_RIGHTS: [(&str, u8); 2] = [("Read", 1 << 0), ("Write", 1 << 1)];
 const DIR_RIGHTS: [(&str, u8); 2] = [("Read", 1 << 0), ("Write", 1 << 1)];
 const NET_RIGHTS: [(&str, u8); 5] = [
     ("Connect", 1 << 0),
@@ -92,6 +93,7 @@ fn tag_cap(tag: u8) -> Option<&'static str> {
 
 fn right_tags(cap: &str) -> &'static [(&'static str, u8)] {
     match cap {
+        "Console" => &CONSOLE_RIGHTS,
         "Dir" | "File" => &DIR_RIGHTS,
         "Net" => &NET_RIGHTS,
         _ => &[],

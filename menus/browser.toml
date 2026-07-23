@@ -2,8 +2,10 @@ host = "browser-playground"
 axis = "runtime"
 
 [grants.Console]
-provider = "page-output"
+provider = "page-stdio"
 determinism = "deterministic"
+rights = ["Read", "Write"]
+source = "page"
 
 [grants.Clock]
 provider = "browser-clock"

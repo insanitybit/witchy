@@ -34,8 +34,8 @@ use coverage::{
 };
 
 mod cap_rights;
-pub use cap_rights::{DirRights, FileRights, NetRights};
-use cap_rights::{dir_rights, file_rights, net_rights, validate_cap_markers};
+pub use cap_rights::{ConsoleRights, DirRights, FileRights, NetRights};
+use cap_rights::{console_rights, dir_rights, file_rights, net_rights, validate_cap_markers};
 
 mod uniqueness;
 use uniqueness::{check_unique_declarations, check_unique_functions, check_unique_parameters};
@@ -69,7 +69,7 @@ pub enum Ty {
     Msg,
     Bool,
     Unit,
-    Console,
+    Console(ConsoleRights),
     Clock,
     /// The runtime authority to draw cryptographic randomness (`rand_u64`).
     Rand,
@@ -126,7 +126,7 @@ impl fmt::Display for Ty {
             Ty::Msg => write!(f, "__Msg"),
             Ty::Bool => write!(f, "Bool"),
             Ty::Unit => write!(f, "()"),
-            Ty::Console => write!(f, "Console"),
+            Ty::Console(rights) => write!(f, "{rights}"),
             Ty::Clock => write!(f, "Clock"),
             Ty::Rand => write!(f, "Rand"),
             Ty::Env => write!(f, "Env"),
@@ -416,7 +416,7 @@ fn validate_type(
             // a rejected right (`Net[Tls]` — TLS is an endpoint scheme, not a Net
             // right; RFC-0009) is a clear error instead of a silently-normalized
             // capability whose authority shape no longer matches the source.
-            if n == "Dir" || n == "File" || n == "Net" {
+            if matches!(n.as_str(), "Console" | "Dir" | "File" | "Net") {
                 return validate_cap_markers(n, args);
             }
             if known.contains(n.as_str()) || is_synthetic_type_name(n) {
@@ -1197,7 +1197,7 @@ fn is_externref_cap(name: &str) -> bool {
 /// existing capability kind to that set therefore updates all three paths.
 fn ty_externref_cap_name(ty: &Ty) -> Option<&'static str> {
     let name = match ty {
-        Ty::Console => "Console",
+        Ty::Console(_) => "Console",
         Ty::Clock => "Clock",
         Ty::Rand => "Rand",
         Ty::Env => "Env",
@@ -2565,7 +2565,7 @@ impl Checker {
             "__Msg" => Ty::Msg,
             "Bool" => Ty::Bool,
             "Nil" => Ty::Unit,
-            "Console" => Ty::Console,
+            "Console" => Ty::Console(console_rights(args)),
             "Clock" => Ty::Clock,
             "Rand" => Ty::Rand,
             "Env" => Ty::Env,
@@ -2884,7 +2884,7 @@ impl Checker {
                     hit
                 }
                 Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
-                | Ty::Bool | Ty::Unit | Ty::Console | Ty::Clock | Ty::Rand | Ty::Env
+                | Ty::Bool | Ty::Unit | Ty::Console(_) | Ty::Clock | Ty::Rand | Ty::Env
                 | Ty::Secret | Ty::Exec | Ty::Fetch | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
                 | Ty::Socket | Ty::Listener | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv
                 | Ty::BuildNet | Ty::BuildExec | Ty::Var(_) => None,
@@ -2922,7 +2922,7 @@ impl Checker {
                     record_hit || variant_hit
                 }
                 Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
-                | Ty::Bool | Ty::Unit | Ty::Console | Ty::Clock | Ty::Rand | Ty::Env
+                | Ty::Bool | Ty::Unit | Ty::Console(_) | Ty::Clock | Ty::Rand | Ty::Env
                 | Ty::Secret | Ty::Exec | Ty::Fetch | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
                 | Ty::Socket | Ty::Listener | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv
                 | Ty::BuildNet | Ty::BuildExec | Ty::Var(_) => false,
@@ -2943,7 +2943,7 @@ impl Checker {
     fn ty_carries_capability(&self, t: &Ty) -> Option<&'static str> {
         fn direct(ty: &Ty) -> Option<&'static str> {
             Some(match ty {
-                Ty::Console => "Console",
+                Ty::Console(_) => "Console",
                 Ty::Clock => "Clock",
                 Ty::Rand => "Rand",
                 Ty::Env => "Env",
@@ -3009,7 +3009,7 @@ impl Checker {
                 Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
                 | Ty::Bool | Ty::Unit | Ty::Var(_) => None,
                 // Direct capabilities were handled by `direct` above.
-                Ty::Console | Ty::Clock | Ty::Rand | Ty::Env | Ty::Secret | Ty::Exec | Ty::Fetch
+                Ty::Console(_) | Ty::Clock | Ty::Rand | Ty::Env | Ty::Secret | Ty::Exec | Ty::Fetch
                 | Ty::Dir(_) | Ty::File(_) | Ty::Net(_) | Ty::Socket | Ty::Listener
                 | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv | Ty::BuildNet
                 | Ty::BuildExec => None,
@@ -3025,7 +3025,7 @@ impl Checker {
     fn ty_capability_retention(&self, t: &Ty) -> Option<(&'static str, Vec<String>)> {
         fn direct(ty: &Ty) -> Option<&'static str> {
             Some(match ty {
-                Ty::Console => "Console",
+                Ty::Console(_) => "Console",
                 Ty::Clock => "Clock",
                 Ty::Rand => "Rand",
                 Ty::Env => "Env",
@@ -3146,7 +3146,7 @@ impl Checker {
                 }
                 Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
                 | Ty::Bool | Ty::Unit | Ty::Var(_) => None,
-                Ty::Console | Ty::Clock | Ty::Rand | Ty::Env | Ty::Secret | Ty::Exec | Ty::Fetch
+                Ty::Console(_) | Ty::Clock | Ty::Rand | Ty::Env | Ty::Secret | Ty::Exec | Ty::Fetch
                 | Ty::Dir(_) | Ty::File(_) | Ty::Net(_) | Ty::Socket | Ty::Listener
                 | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv | Ty::BuildNet
                 | Ty::BuildExec => None,
@@ -3177,7 +3177,7 @@ impl Checker {
     /// capabilities, even when a capability is still i32-backed today.
     fn ty_authority_taint(&self, t: &Ty, seen: &mut HashSet<String>) -> Option<String> {
         match self.resolve(t) {
-            Ty::Console => Some("Console".to_string()),
+            Ty::Console(_) => Some("Console".to_string()),
             Ty::Clock => Some("Clock".to_string()),
             Ty::Rand => Some("Rand".to_string()),
             Ty::Env => Some("Env".to_string()),
@@ -3261,7 +3261,7 @@ impl Checker {
                 args.iter().try_for_each(|arg| self.reject_structural_authority_ty(arg, ctx))
             }
             Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
-            | Ty::Bool | Ty::Unit | Ty::Console | Ty::Clock | Ty::Rand | Ty::Env
+            | Ty::Bool | Ty::Unit | Ty::Console(_) | Ty::Clock | Ty::Rand | Ty::Env
             | Ty::Secret | Ty::Exec | Ty::Fetch | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
             | Ty::Socket | Ty::Listener | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv
             | Ty::BuildNet | Ty::BuildExec | Ty::Var(_) => Ok(()),
@@ -3281,7 +3281,7 @@ impl Checker {
                 compiler_syntax_type_name(&name).or_else(|| args.iter().find_map(|arg| self.compiler_syntax_ty(arg)))
             }
             Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
-            | Ty::Bool | Ty::Unit | Ty::Console | Ty::Clock | Ty::Rand | Ty::Env
+            | Ty::Bool | Ty::Unit | Ty::Console(_) | Ty::Clock | Ty::Rand | Ty::Env
             | Ty::Secret | Ty::Exec | Ty::Fetch | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
             | Ty::Socket | Ty::Listener | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv
             | Ty::BuildNet | Ty::BuildExec | Ty::Var(_) => None,
@@ -3923,7 +3923,8 @@ impl Checker {
             return Some(signature);
         }
         match name {
-            "print" => Some((vec![Ty::Console, Ty::String], Ty::Unit)),
+            "print" => Some((vec![Ty::Console(ConsoleRights::full()), Ty::String], Ty::Unit)),
+            "read_line" => Some((vec![Ty::Console(ConsoleRights::full())], Ty::String)),
             "now" => Some((vec![Ty::Clock], Ty::Int)),
             // Monotonic elapsed nanoseconds (a steady clock, immune to wall-clock
             // jumps) — for measuring durations. Like `now`, the Clock arg is the
@@ -4069,6 +4070,55 @@ impl Checker {
                 ),
             })?;
         Ok(Some(Ty::Env))
+    }
+
+    fn check_console_op(&mut self, name: &str, args: &[Expr]) -> Result<Option<Ty>, TypeError> {
+        if !matches!(name, "print" | "read_line") {
+            return Ok(None);
+        }
+        let expected = if name == "print" { 2 } else { 1 };
+        if args.len() != expected {
+            return terr(format!(
+                "`{name}` expects {expected} argument(s) but got {}",
+                args.len()
+            ));
+        }
+        let cap = self.infer(&args[0])?;
+        let rights = match self.resolve(&cap) {
+            Ty::Console(rights) => rights,
+            Ty::Var(_) => {
+                self.unify(&cap, &Ty::Console(ConsoleRights::full()))?;
+                ConsoleRights::full()
+            }
+            other => {
+                return terr(format!(
+                    "`{name}` expects a `Console` capability but got `{other}`"
+                ));
+            }
+        };
+        match name {
+            "print" => {
+                if !rights.write {
+                    return terr(format!(
+                        "`print` needs `Write` but the capability is `{rights}`"
+                    ));
+                }
+                let message = self.infer(&args[1])?;
+                self.unify(&Ty::String, &message).map_err(|error| TypeError {
+                    message: format!("in call to `print`: {}", error.message),
+                })?;
+                Ok(Some(Ty::Unit))
+            }
+            "read_line" => {
+                if !rights.read {
+                    return terr(format!(
+                        "`read_line` needs `Read` but the capability is `{rights}`"
+                    ));
+                }
+                Ok(Some(Ty::String))
+            }
+            _ => unreachable!(),
+        }
     }
 
     /// Type-check a directory-capability op, enforcing that the `Dir`'s rights
@@ -4544,13 +4594,15 @@ impl Checker {
                     && (!t.udp || s.udp)
                     && (!t.uds || s.uds)
             }
-            (Ty::Console, Ty::Console) => true,
+            (Ty::Console(s), Ty::Console(t)) => {
+                (!t.read || s.read) && (!t.write || s.write)
+            }
             (Ty::Exec, Ty::Exec) => true,
             (Ty::Fetch, Ty::Fetch) => true,
             // An unconstrained source: pin it to the ascribed capability.
             (
                 Ty::Var(_),
-                Ty::Dir(_) | Ty::File(_) | Ty::Net(_) | Ty::Console | Ty::Exec | Ty::Fetch,
+                Ty::Dir(_) | Ty::File(_) | Ty::Net(_) | Ty::Console(_) | Ty::Exec | Ty::Fetch,
             ) => {
                 return self.unify(src, target).map_err(|e| TypeError {
                     message: format!("in `as` ascription: {}", e.message),
@@ -4591,6 +4643,9 @@ impl Checker {
                     && (!want.tcp || has.tcp)
                     && (!want.udp || has.udp)
                     && (!want.uds || has.uds)
+            }
+            (Ty::Console(want), Ty::Console(has)) => {
+                (!want.read || has.read) && (!want.write || has.write)
             }
             _ => false,
         };
@@ -4840,7 +4895,7 @@ impl Checker {
         match t {
             Ty::Fn(_, _, _) => Some(Uncomparable::Function),
             Ty::Dyn(_, _) => Some(Uncomparable::Existential),
-            Ty::Console
+            Ty::Console(_)
             | Ty::Clock
             | Ty::Rand
             | Ty::Env
@@ -5402,6 +5457,9 @@ impl Checker {
         if catalog_contract.is_none() && user_sig.is_none() {
             if !is_cap_op && let Some(msg) = bare_cap_op_error(call_name, args.len()) {
                 return terr(msg);
+            }
+            if let Some(t) = self.check_console_op(call_name, args)? {
+                return Ok(t);
             }
             if let Some(t) = self.check_file_op(call_name, args)? {
                 return Ok(t);
@@ -8057,7 +8115,21 @@ pub fn ty_to_ast(t: &Ty) -> Option<witchy_syntax::ast::Type> {
         Ty::Msg => T::Named("__Msg".into(), Vec::new()),
         Ty::Bool => T::Named("Bool".into(), Vec::new()),
         Ty::Unit => T::Named("Nil".into(), Vec::new()),
-        Ty::Console => T::Named("Console".into(), Vec::new()),
+        Ty::Console(rights) => {
+            if !rights.read && !rights.write {
+                return None;
+            }
+            let mut args = Vec::new();
+            if *rights != ConsoleRights::full() {
+                if rights.read {
+                    args.push(marker("Read"));
+                }
+                if rights.write {
+                    args.push(marker("Write"));
+                }
+            }
+            T::Named("Console".into(), args)
+        }
         Ty::Clock => T::Named("Clock".into(), Vec::new()),
         Ty::Rand => T::Named("Rand".into(), Vec::new()),
         Ty::Env => T::Named("Env".into(), Vec::new()),

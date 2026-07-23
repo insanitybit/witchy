@@ -231,6 +231,10 @@ impl SecretGrant {
 pub struct Capabilities {
     /// May write to the host's stdout via `witchy.print`.
     pub print: bool,
+    /// May read lines from the host through `Console[Read]`.
+    pub console_read: bool,
+    /// Deterministic input fixture. `None` uses process stdin.
+    pub console_input: Option<Vec<String>>,
     /// May print an integer via `witchy.print_int` (used by compiled witchy).
     pub print_int: bool,
     /// Capture output without echoing it to stdout (used by `witchy parity`,
@@ -444,6 +448,8 @@ pub struct VmState {
     /// Everything the VM has printed (via the `print`/`print_int`
     /// capabilities), so the host can observe a compiled program's output.
     pub(crate) output: Arc<Mutex<Vec<String>>>,
+    /// Remaining Console input fixture; `None` delegates to process stdin.
+    pub(crate) console_input: Option<std::collections::VecDeque<String>>,
     /// Root `Dir` grants awaiting wrapper-local `mint_dir(i)`. A live guest `Dir`
     /// is an externref carrying a cloned `DirAuthority`, not this index.
     dirs: Vec<DirAuthority>,
@@ -878,6 +884,9 @@ pub(crate) fn link_capability_imports(
     if caps.print {
         host::console::link_print(linker)?;
     }
+    if caps.console_read {
+        host::console::link_console_read(linker)?;
+    }
     if caps.print_int {
         host::console::link_print_values(linker)?;
     }
@@ -1067,6 +1076,7 @@ fn vmstate_from_caps(
         compiler_services,
         limits,
         output: Arc::new(Mutex::new(Vec::new())),
+        console_input: caps.console_input.clone().map(Into::into),
         dirs,
         files,
         pending: None,

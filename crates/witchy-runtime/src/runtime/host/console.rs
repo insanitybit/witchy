@@ -20,6 +20,12 @@ pub(in crate::runtime) fn link_print(linker: &mut Linker<VmState>) -> Result<()>
     Ok(())
 }
 
+/// Register `Console[Read]` line input.
+pub(in crate::runtime) fn link_console_read(linker: &mut Linker<VmState>) -> Result<()> {
+    linker.func_wrap("witchy", "console_read_len", host_console_read_len)?;
+    Ok(())
+}
+
 /// Register the "print a computed result" facility for an Int- or
 /// Float-returning `main`.
 pub(in crate::runtime) fn link_print_values(linker: &mut Linker<VmState>) -> Result<()> {
@@ -90,6 +96,26 @@ fn host_print(mut caller: Caller<'_, VmState>, ptr: i32, len: i32) -> Result<()>
         .unwrap()
         .push(text.trim_end_matches('\n').to_string());
     Ok(())
+}
+
+fn host_console_read_len(mut caller: Caller<'_, VmState>) -> Result<i32> {
+    let mut line = match caller.data_mut().console_input.as_mut() {
+        Some(lines) => lines.pop_front().unwrap_or_default(),
+        None => {
+            let mut line = String::new();
+            std::io::stdin()
+                .read_line(&mut line)
+                .map_err(|error| wasmtime::Error::msg(format!("failed to read Console input: {error}")))?;
+            line
+        }
+    };
+    while matches!(line.as_bytes().last(), Some(b'\r' | b'\n')) {
+        line.pop();
+    }
+    let len = i32::try_from(line.len())
+        .map_err(|_| wasmtime::Error::msg("Console input exceeds the guest ABI size limit"))?;
+    caller.data_mut().pending = Some(line.into_bytes());
+    Ok(len)
 }
 
 fn host_print_int(caller: Caller<'_, VmState>, n: i64) -> Result<()> {

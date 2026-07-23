@@ -6,7 +6,7 @@
     "expect_error": false,
     "file": "README.md",
     "footprint": [
-      "Console",
+      "Console[Read,Write]",
       "Dir[Read,Write]"
     ],
     "output": [],
@@ -19,7 +19,7 @@
     "expect_error": false,
     "file": "README.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "area: 12",
@@ -34,7 +34,7 @@
     "expect_error": false,
     "file": "spec/capabilities.md",
     "footprint": [
-      "Console",
+      "Console[Read,Write]",
       "Dir[Read,Write]"
     ],
     "output": [],
@@ -47,7 +47,7 @@
     "expect_error": false,
     "file": "spec/capabilities.md",
     "footprint": [
-      "Console",
+      "Console[Read,Write]",
       "Net[Connect,Listen,Tcp,Udp,Uds]"
     ],
     "output": [],
@@ -81,7 +81,7 @@
     "file": "spec/capabilities.md",
     "footprint": [
       "Clock",
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [],
     "runnable": false
@@ -93,7 +93,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "zero",
@@ -109,7 +109,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "sum: 13",
@@ -125,7 +125,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "true",
@@ -142,7 +142,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       ".{x: 2, y: 2}",
@@ -159,7 +159,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "100"
@@ -173,7 +173,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "2",
@@ -188,7 +188,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "[9, 7, 3]",
@@ -203,7 +203,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "[1, 2]"
@@ -217,7 +217,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "1",
@@ -236,7 +236,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "medium",
@@ -252,7 +252,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "[10, 20, 30, 40]"
@@ -266,7 +266,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "first even: 4"
@@ -280,7 +280,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "small 2",
@@ -300,7 +300,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "12",
@@ -315,7 +315,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "42 42"
@@ -329,7 +329,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "15",
@@ -344,7 +344,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "tcp://localhost:8080",
@@ -360,7 +360,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "60"
@@ -384,7 +384,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "9",
@@ -399,7 +399,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "woof"
@@ -413,7 +413,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "WOOF"
@@ -427,7 +427,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "number=7",
@@ -442,7 +442,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "Point(1, 2)",
@@ -457,7 +457,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "{\"files\":[[\"a.txt\",\"hi\"]]}"
@@ -471,7 +471,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "5"
@@ -485,7 +485,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "0 7 14"
@@ -499,7 +499,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "Hello, witch"
@@ -513,7 +513,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "ok: 10",
@@ -528,7 +528,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "computing 10/0: division by zero"
@@ -542,7 +542,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "36",
@@ -557,7 +557,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "1 4 9 16 25",
@@ -572,7 +572,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "0 1 1 2 3 5 8 13"
@@ -586,7 +586,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "A-B-C"
@@ -600,7 +600,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console",
+      "Console[Read,Write]",
       "Dir[Read]"
     ],
     "output": [],
@@ -647,7 +647,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console",
+      "Console[Read,Write]",
       "Net[Connect,Listen,Tcp,Udp,Uds]"
     ],
     "output": [],
@@ -660,7 +660,7 @@
     "expect_error": false,
     "file": "spec/language.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "got 1",
@@ -696,7 +696,7 @@
     "expect_error": false,
     "file": "book/src/appendix-performance.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "21"
@@ -710,7 +710,7 @@
     "expect_error": false,
     "file": "book/src/appendix-performance.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "borrowed, not copied",
@@ -725,7 +725,7 @@
     "expect_error": false,
     "file": "book/src/appendix-performance.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "borrowed",
@@ -740,7 +740,7 @@
     "expect_error": false,
     "file": "book/src/appendix-recipes.md",
     "footprint": [
-      "Console",
+      "Console[Read,Write]",
       "Dir[Read]"
     ],
     "output": [],
@@ -753,7 +753,7 @@
     "expect_error": false,
     "file": "book/src/appendix-recipes.md",
     "footprint": [
-      "Console",
+      "Console[Read,Write]",
       "Dir[Read]"
     ],
     "output": [],
@@ -766,7 +766,7 @@
     "expect_error": false,
     "file": "book/src/appendix-recipes.md",
     "footprint": [
-      "Console",
+      "Console[Read,Write]",
       "Dir[Write]"
     ],
     "output": [],
@@ -779,7 +779,7 @@
     "expect_error": false,
     "file": "book/src/appendix-recipes.md",
     "footprint": [
-      "Console",
+      "Console[Read,Write]",
       "Dir[Read]"
     ],
     "output": [],
@@ -792,7 +792,7 @@
     "expect_error": false,
     "file": "book/src/appendix-recipes.md",
     "footprint": [
-      "Console",
+      "Console[Read,Write]",
       "Env"
     ],
     "output": [],
@@ -805,7 +805,7 @@
     "expect_error": false,
     "file": "book/src/appendix-recipes.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [],
     "runnable": false
@@ -817,7 +817,7 @@
     "expect_error": false,
     "file": "book/src/appendix-recipes.md",
     "footprint": [
-      "Console",
+      "Console[Read,Write]",
       "Fetch"
     ],
     "output": [],
@@ -830,7 +830,7 @@
     "expect_error": false,
     "file": "book/src/appendix-recipes.md",
     "footprint": [
-      "Console",
+      "Console[Read,Write]",
       "Fetch"
     ],
     "output": [],
@@ -843,7 +843,7 @@
     "expect_error": false,
     "file": "book/src/appendix-recipes.md",
     "footprint": [
-      "Console",
+      "Console[Read,Write]",
       "SecretStore"
     ],
     "output": [],
@@ -856,7 +856,7 @@
     "expect_error": false,
     "file": "book/src/appendix-recipes.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "<article class=\"post\"><h1>Hello from a rune</h1><p>Glamour renders &lt;script&gt; as text.</p></article>"
@@ -870,7 +870,7 @@
     "expect_error": false,
     "file": "book/src/backends.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "number=7",
@@ -885,7 +885,7 @@
     "expect_error": false,
     "file": "book/src/backends.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "5",
@@ -901,7 +901,7 @@
     "file": "book/src/capabilities-authority.md",
     "footprint": [
       "Clock",
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [],
     "runnable": false
@@ -913,7 +913,7 @@
     "expect_error": false,
     "file": "book/src/capabilities-authority.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "compute(6): 37"
@@ -927,7 +927,7 @@
     "expect_error": false,
     "file": "book/src/capabilities-narrowing.md",
     "footprint": [
-      "Console",
+      "Console[Read,Write]",
       "Dir[Read,Write]"
     ],
     "output": [],
@@ -940,7 +940,7 @@
     "expect_error": false,
     "file": "book/src/capabilities-narrowing.md",
     "footprint": [
-      "Console",
+      "Console[Read,Write]",
       "Net[Connect,Tcp]"
     ],
     "output": [],
@@ -953,7 +953,7 @@
     "expect_error": false,
     "file": "book/src/capabilities-narrowing.md",
     "footprint": [
-      "Console",
+      "Console[Read,Write]",
       "Dir[Read,Write]"
     ],
     "output": [],
@@ -966,7 +966,7 @@
     "expect_error": false,
     "file": "book/src/capabilities-narrowing.md",
     "footprint": [
-      "Console",
+      "Console[Read,Write]",
       "Dir[Read,Write]"
     ],
     "output": [],
@@ -979,7 +979,7 @@
     "expect_error": false,
     "file": "book/src/capabilities-narrowing.md",
     "footprint": [
-      "Console",
+      "Console[Read,Write]",
       "Dir[Read,Write]"
     ],
     "output": [],
@@ -992,7 +992,7 @@
     "expect_error": false,
     "file": "book/src/capabilities-narrowing.md",
     "footprint": [
-      "Console",
+      "Console[Read,Write]",
       "Dir[Read,Write]"
     ],
     "output": [],
@@ -1005,7 +1005,7 @@
     "expect_error": false,
     "file": "book/src/capabilities-narrowing.md",
     "footprint": [
-      "Console",
+      "Console[Read,Write]",
       "Net[Connect,Listen,Tcp,Udp,Uds]"
     ],
     "output": [],
@@ -1040,7 +1040,7 @@
     "expect_error": false,
     "file": "book/src/capabilities-narrowing.md",
     "footprint": [
-      "Console",
+      "Console[Read,Write]",
       "Net[Connect,Listen,Tcp,Udp,Uds]"
     ],
     "output": [],
@@ -1064,7 +1064,7 @@
     "file": "book/src/capabilities-narrowing.md",
     "footprint": [
       "Clock",
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [],
     "runnable": false
@@ -1076,7 +1076,7 @@
     "expect_error": false,
     "file": "book/src/capabilities-optional.md",
     "footprint": [
-      "Console",
+      "Console[Read,Write]",
       "Dir[Write]"
     ],
     "output": [],
@@ -1089,7 +1089,7 @@
     "expect_error": false,
     "file": "book/src/capabilities-optional.md",
     "footprint": [
-      "Console",
+      "Console[Read,Write]",
       "Dir[Read,Write]"
     ],
     "output": [],
@@ -1102,7 +1102,7 @@
     "expect_error": false,
     "file": "book/src/capabilities-optional.md",
     "footprint": [
-      "Console",
+      "Console[Read,Write]",
       "Dir[Write]",
       "Env"
     ],
@@ -1114,9 +1114,21 @@
     "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
+    "file": "book/src/capabilities-sandbox.md",
+    "footprint": [
+      "Console[Read,Write]"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 1,
+    "browser_runnable": true,
+    "console_only": true,
+    "expect_error": false,
     "file": "book/src/for-var.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "[10, 20, 30, 40]",
@@ -1132,7 +1144,7 @@
     "expect_error": false,
     "file": "book/src/functional-in-place.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "50000"
@@ -1146,7 +1158,7 @@
     "expect_error": false,
     "file": "book/src/getting-started-hello.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "hello, witchy"
@@ -1160,7 +1172,7 @@
     "expect_error": false,
     "file": "book/src/getting-started-hello.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "zero",
@@ -1175,7 +1187,7 @@
     "expect_error": false,
     "file": "book/src/getting-started.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "hello"
@@ -1189,7 +1201,7 @@
     "expect_error": false,
     "file": "book/src/idioms.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "dialing example.com:8080",
@@ -1204,7 +1216,7 @@
     "expect_error": false,
     "file": "book/src/idioms.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "[1, 4, 9] 2"
@@ -1218,7 +1230,7 @@
     "expect_error": false,
     "file": "book/src/idioms.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "example.com:8080",
@@ -1233,7 +1245,7 @@
     "expect_error": false,
     "file": "book/src/idioms.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "[9, 1, 1, 25, 81]",
@@ -1249,7 +1261,7 @@
     "expect_error": false,
     "file": "book/src/idioms.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "ada",
@@ -1264,7 +1276,7 @@
     "expect_error": false,
     "file": "book/src/introduction.md",
     "footprint": [
-      "Console",
+      "Console[Read,Write]",
       "Dir[Read]"
     ],
     "output": [],
@@ -1277,7 +1289,7 @@
     "expect_error": false,
     "file": "book/src/introduction.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "{\"count\":5,\"total\":145}"
@@ -1291,7 +1303,7 @@
     "expect_error": false,
     "file": "book/src/introduction.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "{\"squares\":[1,4,9,16,25]}"
@@ -1305,7 +1317,7 @@
     "expect_error": false,
     "file": "book/src/mutating-methods.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "[1, 2]",
@@ -1321,7 +1333,7 @@
     "expect_error": false,
     "file": "book/src/mutating-methods.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "[9, 9]"
@@ -1345,7 +1357,7 @@
     "expect_error": false,
     "file": "book/src/mutating-methods.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "36 37"
@@ -1379,7 +1391,7 @@
     "expect_error": false,
     "file": "book/src/project.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "exact:  INFO started",
@@ -1395,7 +1407,7 @@
     "expect_error": false,
     "file": "book/src/project.md",
     "footprint": [
-      "Console",
+      "Console[Read,Write]",
       "Dir[Read]",
       "Env"
     ],
@@ -1409,7 +1421,7 @@
     "expect_error": false,
     "file": "book/src/structural-records.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "7:ready:payload",
@@ -1424,7 +1436,7 @@
     "expect_error": false,
     "file": "book/src/structural-records.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       ".{id: 7, label: ready}",
@@ -1443,7 +1455,7 @@
     "expect_error": false,
     "file": "book/src/structural-records.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       ".{id: 7, label: ready}",
@@ -1460,7 +1472,7 @@
     "expect_error": false,
     "file": "book/src/structural-records.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "borrow ready",
@@ -1477,7 +1489,7 @@
     "expect_error": false,
     "file": "book/src/structural-records.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "7 3"
@@ -1511,7 +1523,7 @@
     "expect_error": false,
     "file": "book/src/tour-async.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "doubled: 42"
@@ -1525,7 +1537,7 @@
     "expect_error": false,
     "file": "book/src/tour-async.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "A 2",
@@ -1544,7 +1556,7 @@
     "expect_error": false,
     "file": "book/src/tour-async.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "got: first",
@@ -1559,7 +1571,7 @@
     "expect_error": false,
     "file": "book/src/tour-async.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "total is 7"
@@ -1573,7 +1585,7 @@
     "expect_error": false,
     "file": "book/src/tour-async.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "sq 9",
@@ -1589,7 +1601,7 @@
     "expect_error": false,
     "file": "book/src/tour-async.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "gathered: [1, 4, 9]",
@@ -1606,7 +1618,7 @@
     "expect_error": false,
     "file": "book/src/tour-async.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "got 1",
@@ -1622,7 +1634,7 @@
     "expect_error": false,
     "file": "book/src/tour-async.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "sum is 10"
@@ -1636,7 +1648,7 @@
     "expect_error": false,
     "file": "book/src/tour-async.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "110"
@@ -1660,7 +1672,7 @@
     "expect_error": false,
     "file": "book/src/tour-comptime.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "0 7 14"
@@ -1674,7 +1686,7 @@
     "expect_error": false,
     "file": "book/src/tour-comptime.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "42"
@@ -1688,7 +1700,7 @@
     "expect_error": false,
     "file": "book/src/tour-comptime.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "42"
@@ -1702,7 +1714,7 @@
     "expect_error": false,
     "file": "book/src/tour-comptime.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "42"
@@ -1716,7 +1728,7 @@
     "expect_error": false,
     "file": "book/src/tour-comptime.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "42"
@@ -1730,7 +1742,7 @@
     "expect_error": false,
     "file": "book/src/tour-comptime.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "42"
@@ -1744,7 +1756,7 @@
     "expect_error": false,
     "file": "book/src/tour-comptime.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "42",
@@ -1759,7 +1771,7 @@
     "expect_error": false,
     "file": "book/src/tour-comptime.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "Hello, witch!"
@@ -1773,7 +1785,7 @@
     "expect_error": false,
     "file": "book/src/tour-data.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "ada",
@@ -1788,7 +1800,7 @@
     "expect_error": false,
     "file": "book/src/tour-data.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "150",
@@ -1803,7 +1815,7 @@
     "expect_error": false,
     "file": "book/src/tour-data.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "1, 2",
@@ -1818,7 +1830,7 @@
     "expect_error": false,
     "file": "book/src/tour-data.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       ".{x: 2, y: 2}",
@@ -1834,7 +1846,7 @@
     "expect_error": false,
     "file": "book/src/tour-data.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "ready",
@@ -1850,7 +1862,7 @@
     "expect_error": false,
     "file": "book/src/tour-data.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "7 3"
@@ -1864,7 +1876,7 @@
     "expect_error": false,
     "file": "book/src/tour-data.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "true",
@@ -1880,7 +1892,7 @@
     "expect_error": false,
     "file": "book/src/tour-data.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "click at 3,9",
@@ -1896,7 +1908,7 @@
     "expect_error": false,
     "file": "book/src/tour-data.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "empty",
@@ -1915,7 +1927,7 @@
     "expect_error": false,
     "file": "book/src/tour-data.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "a few",
@@ -1932,7 +1944,7 @@
     "expect_error": false,
     "file": "book/src/tour-data.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "clamped to 100"
@@ -1946,7 +1958,7 @@
     "expect_error": false,
     "file": "book/src/tour-errors.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "found 4",
@@ -1961,7 +1973,7 @@
     "expect_error": false,
     "file": "book/src/tour-errors.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "got 20"
@@ -1975,7 +1987,7 @@
     "expect_error": false,
     "file": "book/src/tour-errors.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "20",
@@ -1990,7 +2002,7 @@
     "expect_error": false,
     "file": "book/src/tour-errors.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "ok: 5",
@@ -2005,7 +2017,7 @@
     "expect_error": false,
     "file": "book/src/tour-errors.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "ok: 10",
@@ -2021,7 +2033,7 @@
     "expect_error": false,
     "file": "book/src/tour-errors.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "port 8080",
@@ -2036,7 +2048,7 @@
     "expect_error": false,
     "file": "book/src/tour-errors.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "9"
@@ -2050,7 +2062,7 @@
     "expect_error": false,
     "file": "book/src/tour-errors.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "2026-06-12 v1.4.0"
@@ -2064,7 +2076,7 @@
     "expect_error": false,
     "file": "book/src/tour-functions.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "5"
@@ -2078,7 +2090,7 @@
     "expect_error": false,
     "file": "book/src/tour-functions.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "27"
@@ -2092,7 +2104,7 @@
     "expect_error": false,
     "file": "book/src/tour-functions.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "true"
@@ -2106,7 +2118,7 @@
     "expect_error": false,
     "file": "book/src/tour-functions.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "7"
@@ -2120,7 +2132,7 @@
     "expect_error": false,
     "file": "book/src/tour-functions.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "14"
@@ -2134,7 +2146,7 @@
     "expect_error": false,
     "file": "book/src/tour-functions.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "hello, ada",
@@ -2150,7 +2162,7 @@
     "expect_error": false,
     "file": "book/src/tour-functions.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "positive",
@@ -2166,7 +2178,7 @@
     "expect_error": false,
     "file": "book/src/tour-functions.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "10",
@@ -2181,7 +2193,7 @@
     "expect_error": false,
     "file": "book/src/tour-functions.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "3",
@@ -2197,7 +2209,7 @@
     "expect_error": false,
     "file": "book/src/tour-functions.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "[9, 2, 8]"
@@ -2211,7 +2223,7 @@
     "expect_error": false,
     "file": "book/src/tour-functions.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "15",
@@ -2226,7 +2238,7 @@
     "expect_error": false,
     "file": "book/src/tour-functions.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "42"
@@ -2240,7 +2252,7 @@
     "expect_error": false,
     "file": "book/src/tour-functions.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "10",
@@ -2255,7 +2267,7 @@
     "expect_error": false,
     "file": "book/src/tour-functions.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "[witchy]"
@@ -2269,7 +2281,7 @@
     "expect_error": false,
     "file": "book/src/tour-generics.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "1, 2",
@@ -2284,7 +2296,7 @@
     "expect_error": false,
     "file": "book/src/tour-generics.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "woof",
@@ -2299,7 +2311,7 @@
     "expect_error": false,
     "file": "book/src/tour-generics.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "9",
@@ -2314,7 +2326,7 @@
     "expect_error": false,
     "file": "book/src/tour-generics.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "21, 5"
@@ -2328,7 +2340,7 @@
     "expect_error": false,
     "file": "book/src/tour-generics.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "now: 21 deg C",
@@ -2344,7 +2356,7 @@
     "expect_error": false,
     "file": "book/src/tour-generics.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "true",
@@ -2359,7 +2371,7 @@
     "expect_error": false,
     "file": "book/src/tour-generics.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "true",
@@ -2374,7 +2386,7 @@
     "expect_error": false,
     "file": "book/src/tour-iterators.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "4, 8, 12, 16, 20"
@@ -2388,7 +2400,7 @@
     "expect_error": false,
     "file": "book/src/tour-iterators.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "0, 1, 1, 2, 3, 5, 8, 13, 21, 34"
@@ -2402,7 +2414,7 @@
     "expect_error": false,
     "file": "book/src/tour-iterators.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "collatz(6): 6, 3, 10, 5, 16, 8, 4, 2, 1",
@@ -2417,7 +2429,7 @@
     "expect_error": false,
     "file": "book/src/tour-iterators.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "[0, 1, 2, 3]"
@@ -2431,7 +2443,7 @@
     "expect_error": false,
     "file": "book/src/tour-modules.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "integer 7"
@@ -2445,7 +2457,7 @@
     "expect_error": false,
     "file": "book/src/tour-reflection.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "{\"x\":1,\"y\":2}",
@@ -2460,7 +2472,7 @@
     "expect_error": false,
     "file": "book/src/tour-reflection.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "Square(3, 4)",
@@ -2475,7 +2487,7 @@
     "expect_error": false,
     "file": "book/src/tour-reflection.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "int",
@@ -2492,7 +2504,7 @@
     "expect_error": false,
     "file": "book/src/tour-reflection.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "add",
@@ -2508,7 +2520,7 @@
     "expect_error": false,
     "file": "book/src/tour-values.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "42",
@@ -2526,7 +2538,7 @@
     "expect_error": false,
     "file": "book/src/tour-values.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "hello, world",
@@ -2541,7 +2553,7 @@
     "expect_error": false,
     "file": "book/src/tour-values.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "7",
@@ -2558,7 +2570,7 @@
     "expect_error": false,
     "file": "book/src/tour-values.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "1 2 3",
@@ -2578,7 +2590,7 @@
     "expect_error": false,
     "file": "book/src/tour-values.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "[1, 4, 9, 16, 25]",
@@ -2594,7 +2606,7 @@
     "expect_error": false,
     "file": "book/src/tour-values.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "true",
@@ -2611,7 +2623,7 @@
     "expect_error": false,
     "file": "book/src/tour-vm.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [],
     "runnable": false
@@ -2623,7 +2635,7 @@
     "expect_error": false,
     "file": "book/src/tour-vm.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [
       "2",
@@ -2638,7 +2650,7 @@
     "expect_error": false,
     "file": "book/src/tour-vm.md",
     "footprint": [
-      "Console"
+      "Console[Read,Write]"
     ],
     "output": [],
     "runnable": false

@@ -2,8 +2,9 @@ host = "native-cli"
 axis = "runtime"
 
 [grants.Console]
-provider = "process-stdout"
-determinism = "deterministic"
+provider = "process-stdio"
+determinism = "nondeterministic"
+rights = ["Read", "Write"]
 
 [grants.Clock]
 provider = "system-clock"

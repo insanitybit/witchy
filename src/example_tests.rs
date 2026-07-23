@@ -335,6 +335,20 @@
         files
     }
 
+    fn main_declares_console_read(module: &ast::Module) -> bool {
+        module.items.iter().any(|item| {
+            matches!(item, ast::Item::Function(function) if function.name == "main"
+                && function.params.iter().any(|parameter| {
+                    matches!(&parameter.ty, Some(ast::Type::Named(name, rights))
+                        if name == "Console"
+                            && rights.iter().any(|right| {
+                                matches!(right, ast::Type::Named(name, args)
+                                    if name == "Read" && args.is_empty())
+                            }))
+                }))
+        })
+    }
+
     /// (RFC-0041 Phase 3) Generate the runnable-example classification manifest as pretty
     /// JSON. Reuses the SAME classifier as `documentation_examples_are_valid`: per doc
     /// `witchy` block, whether it is `runnable` (a `Console`-only `main`, no actor/argv) and
@@ -376,9 +390,11 @@
                         });
                         let fp = crate::capabilities::analyze(&footprint_module);
                         let console_only = fp.total.keys().all(|k| *k == "Console");
+                        let reads_console = main_declares_console_read(linked);
                         let uses_workers = footprint_module.imports.iter().any(|m| m == "vm")
                             || linked.imports.iter().any(|m| m == "vm");
-                        let runnable = has_main && console_only && !reads_argv && !uses_workers;
+                        let runnable =
+                            has_main && console_only && !reads_console && !reads_argv && !uses_workers;
                         // (RFC-0102) `browser_runnable` is the program's typed host
                         // requirements checked against the published browser menu. Capability
                         // families/rights and non-capability facilities (argv/VM workers) all

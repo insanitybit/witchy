@@ -81,6 +81,7 @@ fn maximal_capabilities() -> Capabilities {
     Capabilities {
         print: true,
         print_int: true,
+        console_read: true,
         clock: true,
         rand: true,
         env: true,

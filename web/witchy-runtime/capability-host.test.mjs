@@ -57,7 +57,14 @@ function compile(source) {
 // Run a witchy source through the NATIVE interpreter (the parity oracle),
 // optionally with a working directory and extra env; return output lines
 // normalized to the shim's per-call list (trailing newlines trimmed).
-function nativeRun(src, { cwd, env, args = [], flags = [] } = {}) {
+function nativeRun(src, {
+  cwd,
+  env,
+  args = [],
+  flags = [],
+  input,
+  preserveTrailingEmpty = false,
+} = {}) {
   const command = flags.length === 0
     ? [src, ...args]
     : ["run", ...flags, src, ...args];
@@ -65,7 +72,11 @@ function nativeRun(src, { cwd, env, args = [], flags = [] } = {}) {
     encoding: "utf8",
     cwd: cwd || work,
     env: { ...process.env, ...(env || {}) },
+    input,
   });
+  if (preserveTrailingEmpty) {
+    return (out.endsWith("\n") ? out.slice(0, -1) : out).split("\n");
+  }
   return out.replace(/\n+$/, "").split("\n");
 }
 
@@ -554,7 +565,37 @@ fn main(console: Console, secrets: SecretStore):
     ok(defaultDenied, "the default host still denies VM imports by omission");
   }
 
-  // === 9. Exec/bare Secret/Net stay DENIED under the opt-in host ============
+  // === 9. Console Read: page fixtures, EOF, omission, and native parity =====
+  {
+    const CONSOLE = `fn main(input: Console[Read], output: Console[Write]):
+    output.print(input.read_line())
+    output.print(input.read_line())
+    output.print(input.read_line())
+`;
+    const { src, bytes } = compile(CONSOLE);
+    let defaultDenied = false;
+    try {
+      await instantiate(bytes);
+    } catch (e) {
+      defaultDenied = e instanceof WebAssembly.LinkError;
+    }
+    ok(defaultDenied, "Console Read is denied when no page input provider is supplied");
+
+    const host = await instantiate(bytes, {
+      capabilities: { console: { input: ["Ada", "Lovelace"] } },
+    });
+    const lines = await host.run();
+    ok(eq(lines, ["Ada", "Lovelace", ""]), "Console fixtures are ordered and exhaust to EOF");
+    ok(
+      eq(lines, nativeRun(src, {
+        input: "Ada\nLovelace\n",
+        preserveTrailingEmpty: true,
+      })),
+      "Console input matches the native provider",
+    );
+  }
+
+  // === 10. Exec/bare Secret/Net stay DENIED under the opt-in host ===========
   {
     const EXEC = `import exec
 

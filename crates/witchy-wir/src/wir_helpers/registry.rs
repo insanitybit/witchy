@@ -41,6 +41,13 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
+        "console_read" => Some(WirHelperSpec {
+            func: staged_string_helper("console_read", &[], "console_read_len"),
+            helper_deps: &["rc_alloc"],
+            import_deps: &["console_read_len", "fill_pending"],
+            uses_heap: true,
+            uses_table: false,
+        }),
         "ensure" => {
             let checked = heap_check_enabled();
             let import_deps: &'static [&'static str] =

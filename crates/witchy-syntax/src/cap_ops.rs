@@ -68,6 +68,7 @@ macro_rules! op {
 
 pub const OPS: &[CapOp] = &[
     op!("print", Console, 2, Nil, "console.print(message)"),
+    op!("read_line", Console, 1, String, "console.read_line()"),
     op!("now", Clock, 1, Int, "clock.now()"),
     op!("now_monotonic", Clock, 1, Int, "clock.now_monotonic()"),
     op!("rand_u64", Rand, 1, Int, "rand.rand_u64()"),

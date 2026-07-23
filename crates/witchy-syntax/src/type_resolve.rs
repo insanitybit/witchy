@@ -958,9 +958,9 @@ impl<'a> Scope<'a> {
                 Ok(())
             }
             Type::Named(name, args) => {
-                // `Dir[Read]` / `File[Write]` / `Net[Connect]` carry capability
+                // `Console[Read]` / `Dir[Read]` / `File[Write]` / `Net[Connect]` carry capability
                 // RIGHTS in their arguments, not types — leave them untouched.
-                if matches!(name.as_str(), "Dir" | "File" | "Net") {
+                if matches!(name.as_str(), "Console" | "Dir" | "File" | "Net") {
                     return Ok(());
                 }
                 for a in args.iter_mut() {

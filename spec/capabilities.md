@@ -43,7 +43,7 @@ audit witchy code by reading signatures, not by tracing call graphs.
 
 | Type | Grants | Operations |
 |---|---|---|
-| `Console` | write to stdout | `console.print(s)` |
+| `Console`, `Console[Read]`, `Console[Write]` | read stdin and write stdout | `console.read_line() -> String`, `console.print(s)` |
 | `Clock` | read the wall clock | `clock.now() -> Int` (epoch ms) |
 | `Env` | read environment variables | `env.get_env(name) -> Option(String)` |
 | `Dir`, `Dir[Read]`, `Dir[Write]` | a directory **subtree** | `read`, `write`, `append`, `exists`, `is_dir`, `list`, `make_dir`, `subtree`, `read_file`/`write_file` (→ `File`) |

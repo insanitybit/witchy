@@ -134,7 +134,7 @@ impl CapabilityKind {
 
     pub const fn rights(self) -> &'static [CapabilityRight] {
         match self {
-            Self::Dir | Self::File => READ_WRITE_RIGHTS,
+            Self::Console | Self::Dir | Self::File => READ_WRITE_RIGHTS,
             Self::Net => NET_RIGHTS,
             _ => &[],
         }
@@ -208,6 +208,7 @@ mod tests {
         assert_eq!(CapabilityKind::Dir.right("Read"), Some(CapabilityRight::Read));
         assert_eq!(CapabilityKind::Net.right("Connect"), Some(CapabilityRight::Connect));
         assert_eq!(CapabilityKind::Net.right("Read"), None);
-        assert_eq!(CapabilityKind::Console.right("Write"), None);
+        assert_eq!(CapabilityKind::Console.right("Read"), Some(CapabilityRight::Read));
+        assert_eq!(CapabilityKind::Console.right("Write"), Some(CapabilityRight::Write));
     }
 }

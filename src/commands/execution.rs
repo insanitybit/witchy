@@ -434,7 +434,12 @@ fn run_compiled(
     // Int-returning `main` surfaces its value as the LAST line, which the
     // caller turns into the process exit code, like the interpreter CLI).
     let mut caps = Capabilities {
-        print: true,
+        print: grant
+            .get("Console")
+            .is_some_and(|rights| rights.contains("Write")),
+        console_read: grant
+            .get("Console")
+            .is_some_and(|rights| rights.contains("Read")),
         print_int: true,
         quiet: true,
         args,

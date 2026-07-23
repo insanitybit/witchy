@@ -2031,7 +2031,7 @@ pub fn type_str(t: &Type) -> String {
             }
             // Capability rights use bracket syntax (`Dir[Read]`, `Net[Connect]`);
             // ordinary generic types use parens (`List(Int)`, `Option(T)`).
-            if n == "Dir" || n == "File" || n == "Net" {
+            if matches!(n.as_str(), "Console" | "Dir" | "File" | "Net") {
                 format!("{n}[{}]", args.iter().map(type_str).collect::<Vec<_>>().join(", "))
             } else {
                 format!("{n}({})", args.iter().map(type_str).collect::<Vec<_>>().join(", "))

@@ -143,6 +143,27 @@ impl Interpreter {
                 [_, _] => err("print requires a Console capability as its first argument"),
                 _ => err("print expects a Console capability and a message: console.print(msg)"),
             },
+            "read_line" => match args {
+                [Value::Cap(Capability::Console)] => {
+                    let line = match self.console_input.as_mut() {
+                        Some(lines) => lines.pop_front().unwrap_or_default(),
+                        None => {
+                            let mut line = String::new();
+                            std::io::stdin()
+                                .read_line(&mut line)
+                                .map_err(|error| RuntimeError {
+                                    message: format!("failed to read Console input: {error}"),
+                                })?;
+                            line
+                        }
+                    };
+                    Ok(Some(Value::str(
+                        line.trim_end_matches(['\r', '\n']).to_string(),
+                    )))
+                }
+                [_] => err("read_line requires a Console capability as its first argument"),
+                _ => err("read_line expects exactly one argument"),
+            },
             name if intrinsics::is_meta_fresh_ident(name) => match one(args)? {
                 Value::Str(hint) => Ok(Some(Value::str(self.next_fresh_ident(hint.as_str())?))),
                 other => err(format!("meta.fresh expects a String hint, got `{other}`")),
@@ -379,7 +400,7 @@ impl Interpreter {
                         );
                     }
                     let head = compiler_ident_name(head, "meta.type_capability")?;
-                    if !matches!(head.as_str(), "Dir" | "File" | "Net") {
+                    if !matches!(head.as_str(), "Console" | "Dir" | "File" | "Net") {
                         return err("meta.type_capability expected Dir, File, or Net");
                     }
                     let hole_ancestry = compiler_direct_hole_origins(

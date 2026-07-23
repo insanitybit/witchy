@@ -106,7 +106,12 @@ use crate::{ast, codegen, interpreter, parser, typeck};
                         });
                         let footprint = crate::capabilities::analyze(linked);
                         let console_only = footprint.total.keys().all(|k| *k == "Console");
-                        if has_main && console_only && !has_actor && !reads_argv {
+                        if has_main
+                            && console_only
+                            && !main_declares_console_read(linked)
+                            && !has_actor
+                            && !reads_argv
+                        {
                             let bytes = codegen::compile_checked_module_binary(&proof)
                                 .expect_lowered(&format!("{context} compiles to WASM"));
                             let interp = interpreter::run_checked_module(
@@ -251,7 +256,7 @@ use crate::{ast, codegen, interpreter, parser, typeck};
                         .total
                         .keys()
                         .all(|k| *k == "Console");
-                    if !has_main || !console_only {
+                    if !has_main || !console_only || main_declares_console_read(&linked) {
                         return None;
                     }
                     let compile_with_rc = |on: bool| {

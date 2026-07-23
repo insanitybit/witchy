@@ -598,6 +598,7 @@ impl Codegen<'_> {
                     witchy_wir::wir::WirNode::Push(W::ConstI32(0)),
                 ])
             }
+            ("read_line", 1) => call("console_read", vec![]),
             // Duration <-> Int(ms) is a runtime no-op (both i64) — value-neutral.
             ("int_to_duration", 1) | ("duration_to_int", 1) => return self.lower_expr(&args[0]),
             // `contains(s, sub)` == `find_byte(s, sub) != -1`.

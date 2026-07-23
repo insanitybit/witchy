@@ -44,6 +44,35 @@ pub fn run_module(
     run_module_args(module, root, net_allow, Vec::new())
 }
 
+/// Run with deterministic Console input rather than process stdin.
+pub fn run_module_console_input(
+    module: Module,
+    root: impl AsRef<Path>,
+    lines: Vec<String>,
+) -> Result<Vec<String>, RuntimeError> {
+    let root = root.as_ref().to_path_buf();
+    run_on_deep_stack(move || {
+        run_module_inner_limited_with_catalog(
+            module,
+            root,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            Vec::new(),
+            UserCapGrants::new(),
+            DEFAULT_STEP_LIMIT,
+            None,
+            None,
+            None,
+            Some(lines),
+        )
+    })
+    .map(|outcome| outcome.output)
+}
+
 /// Run a module that crossed the authenticated checked-link boundary. Dynamic
 /// descriptor preparation uses retained loader ownership directly; raw AST
 /// runners cannot reconstruct package identity from flattened compiler names.
@@ -73,6 +102,7 @@ pub fn run_checked_module(
             None,
             None,
             Some(runtime_catalog),
+            None,
         )
     })
     .map(|outcome| outcome.output)
@@ -437,6 +467,7 @@ fn run_module_inner_limited(
         fresh_ident_scope,
         compiler_expr_qualifiers,
         None,
+        None,
     )
 }
 
@@ -456,6 +487,7 @@ fn run_module_inner_limited_with_catalog(
     fresh_ident_scope: Option<String>,
     compiler_expr_qualifiers: Option<Vec<String>>,
     runtime_catalog: Option<RuntimeDeclarationCatalog>,
+    console_input: Option<Vec<String>>,
 ) -> Result<InterpreterOutcome, RuntimeError> {
     let (module, witnesses) = prepare_runtime_module(module, runtime_catalog.as_ref())?;
     let mut interp = Interpreter::new_with_witnesses(module, witnesses);
@@ -467,6 +499,7 @@ fn run_module_inner_limited_with_catalog(
     interp.file_grants = file_grants;
     interp.net_allow = net_allow;
     interp.fetch_origins = fetch_origins;
+    interp.console_input = console_input.map(Into::into);
     interp.signing_key = signing_key;
     interp.user_cap_grants = user_caps;
     // The signing key is the `signing` secret in the store, so a program may take

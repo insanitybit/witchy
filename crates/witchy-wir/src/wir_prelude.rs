@@ -212,6 +212,7 @@ pub struct Prelude {
 /// `*_host` family. The encoder MUST place these at function indices `0..` in
 /// exactly this order for the spliced bodies' `call` operands to resolve.
 const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (param i32 i32)))
+  (import "witchy" "console_read_len" (func $console_read_len_host (result i32)))
   (import "witchy" "crypto.sha256" (func $crypto_sha256_host (param i32 i32)))
   (import "witchy" "crypto.rune_hash" (func $crypto_rune_hash_host (param i32 i32 i32)))
   (import "witchy" "compiler_footprint_len" (func $compiler_footprint_len_host (param i32) (result i32)))
@@ -310,10 +311,10 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 95;
+pub const IMPORT_COUNT: usize = 96;
 
 /// Version of the public `"witchy"` host-import contract.
-pub const WITCHY_ABI_VERSION: u32 = 5;
+pub const WITCHY_ABI_VERSION: u32 = 6;
 
 /// The role an import plays at the host boundary. This classification is part
 /// of the public Wasm ABI: it tells embedders which imports grant authority,
@@ -344,6 +345,7 @@ impl AbiImportClass {
 /// family owns it, so launchers and hosts do not need local import-name tables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AbiImportAuthority {
+    ConsoleRead,
     Secret,
     Env,
     DirGrant,
@@ -369,6 +371,7 @@ pub enum AbiImportAuthority {
 impl AbiImportAuthority {
     pub const fn label(self) -> &'static str {
         match self {
+            Self::ConsoleRead => "Console.Read",
             Self::Secret => "Secret",
             Self::Env => "Env",
             Self::DirGrant => "Dir.grant",
@@ -394,6 +397,7 @@ impl AbiImportAuthority {
 }
 
 const NO_AUTHORITIES: &[AbiImportAuthority] = &[];
+const AUTH_CONSOLE_READ: &[AbiImportAuthority] = &[AbiImportAuthority::ConsoleRead];
 const AUTH_SECRET: &[AbiImportAuthority] = &[AbiImportAuthority::Secret];
 const AUTH_ENV: &[AbiImportAuthority] = &[AbiImportAuthority::Env];
 const AUTH_DIR_GRANT: &[AbiImportAuthority] = &[AbiImportAuthority::DirGrant];
@@ -451,7 +455,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "crypto.__rsa_pkcs1_sha256_verify_status"
         | "crypto.__ed25519_verify_status" => C::PureInfrastructure,
 
-        "crypto.sign"
+        "console_read_len"
+        | "crypto.sign"
         | "crypto.public_key"
         | "secretstore_lookup"
         | "crypto_reveal_len"
@@ -532,6 +537,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
     };
 
     let authorities = match name {
+        "console_read_len" => AUTH_CONSOLE_READ,
         "crypto.sign" | "crypto.public_key" | "secretstore_lookup" | "crypto_reveal_len" | "mint_secret" => AUTH_SECRET,
         "mint_env" | "env_only" | "env_len" | "env_fill" => AUTH_ENV,
         "mint_dir" => AUTH_DIR_GRANT,

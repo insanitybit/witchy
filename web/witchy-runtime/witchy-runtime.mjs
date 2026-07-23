@@ -23,7 +23,7 @@
 // The ABI version this shim implements. Bump in lockstep with a breaking change
 // to the `"witchy"` import surface (a renamed/re-signatured pure import, or a
 // change to the pending-buffer protocol). RFC-0007 §"ABI stabilization".
-export const WITCHY_ABI_VERSION = 5;
+export const WITCHY_ABI_VERSION = 6;
 
 // Exact deny-by-omission surface implemented below. The Rust ABI catalog test
 // compares this list with `wir_prelude` and `instantiate` compares it with the
@@ -477,6 +477,7 @@ function runeHash(paths, contents) {
 // classification the pure `WITCHY_BROWSER_IMPORTS` list enforces, so the
 // playground host can never silently widen either.
 export const WITCHY_CLOCK_IMPORTS = Object.freeze(["now", "now_monotonic"]);
+export const WITCHY_CONSOLE_IMPORTS = Object.freeze(["console_read_len"]);
 export const WITCHY_ENV_IMPORTS = Object.freeze([
   "mint_env",
   "env_only",
@@ -907,7 +908,7 @@ function normalizeSecretStore(spec) {
   return secrets;
 }
 
-// Normalize `opts.capabilities` into `{ clock, env, dir, fetch, secrets, vm }`. Absent/false =>
+// Normalize `opts.capabilities` into `{ console, clock, env, dir, fetch, secrets, vm }`. Absent/false =>
 // that family stays DENIED (its imports are never built). `env` becomes a Map
 // (empty when enabled with no entries); `dir` becomes an array of grant specs
 // (one per `mint_dir` ordinal), each `{ fs, read, write }`; `fetch` becomes an
@@ -915,6 +916,7 @@ function normalizeSecretStore(spec) {
 // `secrets` becomes an immutable named map whose copied bytes remain host-side.
 function normalizeCapabilities(spec) {
   const out = {
+    console: null,
     clock: false,
     env: null,
     dir: null,
@@ -923,6 +925,13 @@ function normalizeCapabilities(spec) {
     vm: false,
   };
   if (!spec || typeof spec !== "object") return out;
+
+  if (spec.console === true) {
+    out.console = [];
+  } else if (spec.console && typeof spec.console === "object") {
+    const input = Array.isArray(spec.console.input) ? spec.console.input : [];
+    out.console = input.map(String);
+  }
 
   out.clock = spec.clock === true;
 
@@ -1253,6 +1262,19 @@ function makeClockImports() {
     now_monotonic() { return monotonicNs(); },
   };
   checkFamilyImports("Clock", imports, WITCHY_CLOCK_IMPORTS);
+  return imports;
+}
+
+function makeConsoleImports(input, { stagePending }) {
+  const lines = input.slice();
+  const imports = {
+    console_read_len() {
+      const bytes = utf8.encode(lines.length === 0 ? "" : lines.shift());
+      stagePending(bytes);
+      return bytes.length;
+    },
+  };
+  checkFamilyImports("Console", imports, WITCHY_CONSOLE_IMPORTS);
   return imports;
 }
 
@@ -1925,6 +1947,7 @@ export async function instantiate(wasmBytes, opts = {}) {
     stagePending: (bytes) => { pending = bytes; },
     stageList: (names) => { pendingList = names; },
   };
+  if (caps.console) Object.assign(witchy, makeConsoleImports(caps.console, marshal));
   if (caps.clock) Object.assign(witchy, makeClockImports());
   if (caps.env) Object.assign(witchy, makeEnvImports(caps.env, marshal));
   if (caps.dir) Object.assign(witchy, makeDirImports(caps.dir, marshal));

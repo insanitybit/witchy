@@ -1482,7 +1482,7 @@ type-checks but isn't run by the doc harness, since it needs `Dir` — run it
 with `witchy sandbox --dir <root> prog.witchy a b c`.)
 
 `main` may ask for any of the host capabilities — `Console`, `Clock`, `Env`,
-`Dir[...]`, `File[...]`, `Net[...]`, `Exec`, `SecretStore` — and the launch grant
+`Console[...]`, `Dir[...]`, `File[...]`, `Net[...]`, `Exec`, `SecretStore` — and the launch grant
 backs each: `--dir <root>` a `Dir`, `--file <path>` a `File` (the i-th `File`
 parameter ← the i-th `--file`), `--net <host:port>` a `Net` allowlist entry,
 `--secret`/`--signing-key` a `SecretStore`; grant-document `[env]` and `[exec]`

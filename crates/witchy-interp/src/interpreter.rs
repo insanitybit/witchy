@@ -552,6 +552,9 @@ pub struct Interpreter {
     net_allow: Vec<String>,
     /// Origin allow-list backing the root `Fetch` capability.
     fetch_origins: Vec<String>,
+    /// Explicit Console input fixture. `None` reads native stdin; `Some` consumes
+    /// the supplied lines and returns an empty string after exhaustion.
+    console_input: Option<std::collections::VecDeque<String>>,
     /// (`Rand`) splitmix64 state for `rand_u64`. Seeded from `WITCHY_RAND_SEED` for
     /// deterministic parity/tests; `None` until first use, then clock-seeded (the
     /// interpreter is the oracle/playground, never the production CSPRNG path).
@@ -832,6 +835,7 @@ impl Interpreter {
             file_grants: Vec::new(),
             net_allow: Vec::new(),
             fetch_origins: Vec::new(),
+            console_input: None,
             rand_state: witchy_runtime::rand::seed_from_env(),
             signing_key: None,
             secrets: std::collections::BTreeMap::new(),

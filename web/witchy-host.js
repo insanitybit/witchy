@@ -82,9 +82,17 @@ export async function runWitchy(wasm, source, opts = {}) {
   }
 
   const compiled = new WebAssembly.Module(binary);
-  const usesVm = WebAssembly.Module.imports(compiled)
-    .some((entry) => entry.module === "witchy" && entry.name.startsWith("vm_"));
-  if (opts.capabilities && opts.capabilities.vm === true && usesVm) {
+  const imports = WebAssembly.Module.imports(compiled);
+  const usesVm = imports.some(
+    (entry) => entry.module === "witchy" && entry.name.startsWith("vm_"),
+  );
+  const usesConsoleInput = imports.some(
+    (entry) => entry.module === "witchy" && entry.name === "console_read_len",
+  );
+  const hasRuntimeProvider =
+    (opts.capabilities && opts.capabilities.vm === true && usesVm)
+    || (opts.capabilities && opts.capabilities.console && usesConsoleInput);
+  if (hasRuntimeProvider) {
     try {
       const host = await instantiateRuntime(compiled, opts);
       const lines = await host.run();

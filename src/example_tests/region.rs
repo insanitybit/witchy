@@ -380,7 +380,7 @@ use crate::{ast, codegen, parser, typeck};
                         .total
                         .keys()
                         .all(|k| *k == "Console");
-                    if !has_main || !console_only {
+                    if !has_main || !console_only || main_declares_console_read(&linked) {
                         return None;
                     }
                     let compile_with = |force_copy: bool| {

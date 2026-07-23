@@ -1,4 +1,4 @@
-//! Capability rights-set parsing and formatting for the `Dir`/`File`/`Net`
+//! Capability rights-set parsing and formatting for the `Console`/`Dir`/`File`/`Net`
 //! capability family. Each capability is decomposed by right so the footprint
 //! distinguishes (e.g.) read-only from writing code, and an op that needs a
 //! right it wasn't granted is a compile-time error (RFC-0012/0073).
@@ -9,6 +9,31 @@ use witchy_syntax::ast;
 use witchy_cap_model::{CapabilityKind, CapabilityRight};
 
 use super::{terr, TypeError};
+
+/// The operations a `Console` capability permits. Bare `Console` is full
+/// read/write authority; bracketed markers narrow it independently.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ConsoleRights {
+    pub read: bool,
+    pub write: bool,
+}
+
+impl ConsoleRights {
+    pub fn full() -> Self {
+        Self { read: true, write: true }
+    }
+}
+
+impl fmt::Display for ConsoleRights {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match (self.read, self.write) {
+            (true, true) => write!(f, "Console"),
+            (true, false) => write!(f, "Console[Read]"),
+            (false, true) => write!(f, "Console[Write]"),
+            (false, false) => write!(f, "Console[]"),
+        }
+    }
+}
 
 /// The operations a `Dir` capability permits. Decomposing the capability by
 /// right makes the footprint distinguish read-only from writing code, and an op
@@ -56,6 +81,13 @@ fn read_write_args(kind: CapabilityKind, args: &[ast::Type]) -> Option<(bool, bo
         }
     }
     Some((read, write))
+}
+
+pub(super) fn console_rights(args: &[ast::Type]) -> ConsoleRights {
+    match read_write_args(CapabilityKind::Console, args) {
+        None => ConsoleRights::full(),
+        Some((read, write)) => ConsoleRights { read, write },
+    }
 }
 
 /// Interpret a `Dir`'s type arguments as its rights. Bare `Dir` (no args) is the
@@ -202,8 +234,8 @@ pub(super) fn net_rights(args: &[ast::Type]) -> NetRights {
 /// (`Net[Tls]`), and is rejected at check time rather than silently dropped —
 /// keeping the declared authority shape faithful to the source (BUG-154). The
 /// single source of truth the rights-interpreting functions
-/// (`dir_rights`/`file_rights`/`net_rights`) match against.
-/// Reject any bracket marker on a `Dir`/`File`/`Net` capability that is not in its
+/// (`console_rights`/`dir_rights`/`file_rights`/`net_rights`) match against.
+/// Reject any bracket marker on a rights-bearing capability that is not in its
 /// catalog vocabulary. An empty list (`Dir[]`) is legal (no rights); each
 /// marker must be a bare, argument-less name from the allowed set.
 pub(super) fn validate_cap_markers(cap: &str, args: &[ast::Type]) -> Result<(), TypeError> {

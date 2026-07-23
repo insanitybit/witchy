@@ -39,6 +39,7 @@ const contentFetch = (url) => fetch(contentUrl(url, here));
 // intentionally revealable because the recipe demonstrates both policies.
 const RUN_OPTIONS = {
   capabilities: {
+    console: { input: ["Ada"] },
     vm: true,
     secrets: {
       signing: {

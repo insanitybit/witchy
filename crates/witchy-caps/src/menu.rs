@@ -465,7 +465,7 @@ mod tests {
     fn browser_menu_matches_the_current_provider_boundary() {
         let menu = HostMenu::parse(BROWSER_MENU).unwrap();
         let supported = requirements(&[
-            ("Console", &[]),
+            ("Console", &["Read", "Write"]),
             ("Clock", &[]),
             ("Env", &[]),
             ("Dir", &["Read", "Write"]),

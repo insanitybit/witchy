@@ -15,6 +15,7 @@
     }
 
     // Bare `Net` is full on both axes; `Net[Connect]` keeps all transports.
+    const CONSOLE_FULL: &[&str] = &["Read", "Write"];
     const NET_FULL: &[&str] = &["Connect", "Listen", "Tcp", "Udp", "Uds"];
     const NET_CONNECT: &[&str] = &["Connect", "Tcp", "Udp", "Uds"];
 
@@ -126,14 +127,14 @@ fn main(console: Console):
         // only `main`'s authority — see `run_grant_is_only_mains_authority`.)
         assert_eq!(
             fp.total,
-            cs(&[("Console", &[]), ("Net", NET_FULL)])
+            cs(&[("Console", CONSOLE_FULL), ("Net", NET_FULL)])
         );
         let names: Vec<&str> = fp.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["serve", "main"]);
         let serve = fp.entries.iter().find(|e| e.name == "serve").unwrap();
         assert_eq!(
             serve.capabilities,
-            cs(&[("Console", &[]), ("Net", NET_FULL)])
+            cs(&[("Console", CONSOLE_FULL), ("Net", NET_FULL)])
         );
     }
 
@@ -208,10 +209,10 @@ fn main(console: Console):
         // total unions every public entry (serve's Net, sign's Secret, main's Console)...
         assert_eq!(
             analyze(&module).total,
-            cs(&[("Console", &[]), ("Net", NET_FULL), ("Secret", &[])])
+            cs(&[("Console", CONSOLE_FULL), ("Net", NET_FULL), ("Secret", &[])])
         );
         // ...but the run grant is exactly what `main` receives.
-        assert_eq!(run_grant(&module), cs(&[("Console", &[])]));
+        assert_eq!(run_grant(&module), cs(&[("Console", CONSOLE_FULL)]));
     }
 
     #[test]

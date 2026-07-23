@@ -363,14 +363,13 @@ intersects that policy. There are no type-level verbs: running is running.
 
 ### Console: Read and Write rights
 
-`Console[Read, Write]`, Dir-style; bare `Console` = full rights, existing
-code untouched. This introduces stdin authority as a *right* — a
-`Console[Read]` holder can capture typed input (passwords), categorically
-different trust from a logger, and the distinction must exist the moment
-input exists. Providers: native = real stdin; fixture/browser =
-page-supplied input lines (the seeded-`Rand` pattern). Interactive input is
-nondeterministic → runnable-unpinned tier. No `[Error]` right until stderr
-is separately addressable (enforce-before-you-ship).
+`Console[Read, Write]` is implemented Dir-style; bare `Console` retains full
+rights, so existing code is unchanged. `read_line` requires `Read` and `print`
+requires `Write`, making typed stdin authority categorically different from a
+logger. The native provider reads real stdin; interpreter and browser fixtures
+consume explicit finite input lines. Interactive input is nondeterministic and
+therefore belongs to the runnable-unpinned tier. There is no `[Error]` right:
+stderr is not separately addressable.
 
 ## Rejected alternatives
 

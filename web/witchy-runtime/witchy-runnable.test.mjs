@@ -240,7 +240,21 @@ fn main(console: Console):
     "the browser observes one closed loop region per additional projection",
   );
 
-  // 9. A non-witchy code block is left alone.
+  // 9. Console input is explicit page-supplied launch authority.
+  const consoleInput = pageWith(`fn main(input: Console[Read], output: Console[Write]):
+    output.print("hello, \${input.read_line()}")`);
+  const consoleCells = enhanceRunnableCells(consoleInput, {
+    document: doc,
+    loadCompiler,
+    runOptions: { capabilities: { console: { input: ["Ada"] } } },
+  });
+  await consoleCells[0].run();
+  ok(
+    consoleCells[0].output.textContent === "hello, Ada",
+    "a runnable cell consumes its explicit Console input fixture",
+  );
+
+  // 10. A non-witchy code block is left alone.
   const other = new FakeElement("div");
   const pre = new FakeElement("pre");
   const code = new FakeElement("code");

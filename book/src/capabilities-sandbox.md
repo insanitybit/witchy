@@ -115,6 +115,22 @@ Path confinement uses the same rules as the interpreter: `..` is rejected,
 absolute paths are rejected, and symlinks that escape the subtree are rejected —
 checked host-side, where the program can't interfere.
 
+## Console input is separate authority
+
+Bare `Console` carries both rights for compatibility. A logger needs only
+`Console[Write]`; input code asks for `Console[Read]`, so receiving typed input
+does not silently give a library an output channel:
+
+```witchy
+fn main(input: Console[Read], output: Console[Write]):
+    let name = input.read_line()
+    output.print("hello, ${name}")
+```
+
+The native provider reads stdin. The browser provider consumes explicit
+page-supplied lines; when its finite fixture is exhausted, `read_line` returns
+the empty string.
+
 ## Why you can trust the sandbox runs your program
 
 The everyday `witchy program.witchy` run and `witchy sandbox` compile your program
