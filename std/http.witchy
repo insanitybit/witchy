@@ -1,16 +1,12 @@
-// HTTP types and a small HTTP/1.1 *client* over the `Net` capability — the
-// witchy answer to a slice of Go's net/http (and reqwest's shape). Pure
-// transport built on the capability-gated socket primitives: a module handed a
-// `Net` restricted to some hosts can reach only those, and one handed no `Net`
-// can't reach the network at all. The `server` module builds on the shared
-// `Request`/`Response` types here. Runs on both backends: the socket primitives
-// compile to capability-gated host imports, so a compiled module's import list
-// IS its network footprint.
-
-// `header` returns Option; `get_url` returns typed Result; `url` parses URL strings.
+// Portable HTTP request/response types and a Fetch-based client.
+//
+// Client authority is the origin-scoped `Fetch` root. DNS resolution, pinned
+// dialing, redirects, timeouts, and response-size limits are host-provider
+// responsibilities, so browser and native callers share this exact API. The
+// `server` module continues to use the Request/Response types and parsing
+// helpers below; HTTP servers remain on Net[Listen].
 
 import option
-import result
 import string
 import url
 import ascii
@@ -19,13 +15,17 @@ import show
 import error
 import convert
 
-// Matchable HTTP client failures for fallible network and parse paths.
+// Uniform failures produced by every Fetch provider, plus strict response
+// parsing failures in this module.
 type HttpError:
-    InvalidUrl(url.UrlError)
-    UnsupportedScheme(String)
-    ConnectFailed(String, Int)
-    NoResolvedAddressPassedPinPolicy(String)
-    PinnedConnectFailed(String, String, Int)
+    Denied(String)
+    InvalidRequest(String)
+    Timeout
+    Redirect(String)
+    Network(String)
+    ProviderMalformedResponse(String)
+    ResponseTooLarge(String)
+    UnknownProviderFailure(String, String)
     MalformedResponse(ResponseParseError)
 
 // Matchable strict-response parse failures. These are surfaced through
@@ -51,11 +51,14 @@ pub fn response_parse_error_message(e: ResponseParseError) -> String:
 
 pub fn http_error_message(e: HttpError) -> String:
     match e:
-        InvalidUrl(reason) -> "invalid URL: " + url.url_error_message(reason)
-        UnsupportedScheme(scheme) -> "unsupported URL scheme `" + scheme + "` (only http and https are supported)"
-        ConnectFailed(host, port) -> "connect to " + host + ":" + "${port}" + " failed (unreachable)"
-        NoResolvedAddressPassedPinPolicy(host) -> "no resolved address for " + host + " passed the pin policy"
-        PinnedConnectFailed(host, ip, port) -> "connect to " + host + " (" + ip + ":" + "${port}" + ") failed"
+        Denied(message) -> message
+        InvalidRequest(message) -> message
+        Timeout -> "Fetch request timed out"
+        Redirect(message) -> message
+        Network(message) -> message
+        ProviderMalformedResponse(message) -> message
+        ResponseTooLarge(message) -> message
+        UnknownProviderFailure(code, message) -> "Fetch provider error `" + code + "`: " + message
         MalformedResponse(reason) -> response_parse_error_message(reason)
 
 impl Show for ResponseParseError:
@@ -89,306 +92,144 @@ type Response:
 type Request:
     Request(String, String, List((String, String)), List((String, String)), List((String, String)), String)
 
-// (RFC-0020) A vetted pin: a URL resolved ONCE to a single checked IP. Sealed — only
-// this module can mint one (`pin`/`unpinned`), so holding a `PinnedUrl` is proof that a
-// policy ran and cannot be hand-forged with an attacker's address. `get_pinned` dials
-// EXACTLY `ip`, carrying `host` for TLS SNI and the `Host` header, and never re-resolves
-// — closing the DNS-rebinding TOCTOU by construction. The `Net` allowlist stays the hard
-// floor underneath: `connect_pinned` re-checks `ip`, so even a buggy pin policy cannot
-// dial past `net.deny(Net.private())`.
-capability PinnedUrl:
-    host: String
-    port: Int
-    secure: Bool
-    path: String
-    ip: String
-
-// Perform a GET request to `host:port` for `path`, returning the response.
-pub fn get(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Response:
-    request(net, "GET", host, port, path, "")
-
-// Perform a POST request with `body` (e.g. a JSON document). The body's byte
-// length is sent as Content-Length.
-pub fn post(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Response:
-    request(net, "POST", host, port, path, body)
-
-pub fn put(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Response:
-    request(net, "PUT", host, port, path, body)
-
-pub fn delete(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Response:
-    request(net, "DELETE", host, port, path, "")
-
-pub fn patch(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Response:
-    request(net, "PATCH", host, port, path, body)
-
-pub fn head(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Response:
-    request(net, "HEAD", host, port, path, "")
-
-// GET a full URL string (`http://host[:port]/path`), returning an error when
-// parsing, connecting, or response decoding fails. Saves splitting
-// host/port/path by hand while preserving the fallible `Result` contract.
-pub fn get_url(net: Net[Connect, Tcp], raw: String) -> Result(Response, HttpError):
+// Canonical origin text for deriving Fetch from Net. Invalid or unsupported
+// URLs are configuration errors here; request-time URL failures remain typed.
+pub fn origin(raw: String) -> String:
     match url.parse(raw):
-        Ok(u) ->
-            match scheme_secure(url.scheme(u)):
-                Ok(secure) -> try_request_with(net, secure, "GET", url.host(u), url.port(u), url.request_target(u), [], "")
-                Err(e) -> Err(e)
-        Err(e) -> Err(InvalidUrl(e))
-
-// GET a full URL with String errors for application-style callers and older code.
-pub fn get_url_string(net: Net[Connect, Tcp], raw: String) -> Result(Response, String):
-    match get_url(net, raw):
-        Ok(resp) -> Ok(resp)
-        Err(e) -> Err(http_error_message(e))
-
-// (BUG-234) Whether a URL scheme is HTTPS (`Ok(true)`), plain HTTP (`Ok(false)`),
-// or unsupported (`Err`). This module speaks only HTTP/1.1: a `ftp:`/`file:`/`ws:`
-// URL must NOT be silently dialed as plaintext HTTP to the named host — reject it so
-// the caller gets an error rather than an accidental request to the wrong protocol.
-fn scheme_secure(scheme: String) -> Result(Bool, HttpError):
-    if scheme == "https":
-        Ok(true)
-    else if scheme == "http":
-        Ok(false)
-    else:
-        Err(UnsupportedScheme(scheme))
-
-// The dial target for a request: `tls:host:port` when `secure` (HTTPS), else
-// `host:port`. The capability allowlist governs the bare `host:port`; the `tls:`
-// scheme tells `connect` to terminate the connection over TLS (see net `connect`).
-fn endpoint(secure: Bool, host: String, port: Int) -> String:
-    let base = host + ":" + "${port}"
-    if secure:
-        "tls:" + base
-    else:
-        base
-
-// Send a request with custom headers, returning the response. The generic form
-// behind the method helpers — use it when you need to set headers (auth,
-// content-type, ...). `secure` selects HTTPS (TLS). `Connection: close` ends
-// `recv_all` after the body.
-pub fn request_with(net: Net[Connect, Tcp], secure: Bool, method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Response:
-    send_on(net.connect(endpoint(secure, host, port)), method, host, path, headers, body)
-
-fn render_and_send(sock: Socket, method: String, host: String, path: String, headers: List((String, String)), body: String):
-    // (SEC-043 / BUG-364) Validate everything spliced into the request line/headers
-    // BEFORE rendering: a `\r`/`\n` in the method/path/host, or a malformed header
-    // name, would inject a header or a second request. The request-LINE fields
-    // (method/path/host) must additionally carry no SPACE or TAB — a space in the
-    // path or method splits the request line into extra tokens (request smuggling) —
-    // so they use the stricter `check_request_field`. Trap loudly (both backends).
-    check_request_field("method", method)
-    check_request_field("request path", path)
-    check_request_field("host", host)
-    var head = method + " " + path + " HTTP/1.1\r\n" + "Host: " + host + "\r\n"
-    for h in headers:
-        let (k, v) = h
-        check_header(k, v)
-        // (BUG-393) The framing headers are OWNED by this renderer (Content-Length
-        // and Connection are appended below), and so is Host — derived from the
-        // request target and rendered first above. A caller-supplied Content-Length /
-        // Transfer-Encoding / Connection would conflict with ours and enable request
-        // smuggling; a second Host is the request-routing twin of that ambiguity.
-        // Drop them rather than emit two owned headers.
-        if !is_framing_header(k) && k.to_lower() != "host":
-            head = head + k + ": " + v + "\r\n"
-    let req = head + "Content-Length: " + "${body.length()}" + "\r\n" + "Connection: close\r\n\r\n" + body
-
-    sock.send_bytes(req)
-
-// Build an HTTP/1.1 request and send it on an already-connected socket, then parse the
-// response. Shared by `request_with` (a fresh `connect`) and `send_pinned` (a pinned
-// `connect_pinned`) so the two dial paths produce byte-identical requests.
-fn send_on(sock: Socket, method: String, host: String, path: String, headers: List((String, String)), body: String) -> Response:
-    match send_on_result(sock, method, host, path, headers, body):
-        Ok(resp) -> resp
         Err(e) ->
-            fail("HTTP response malformed: " + http_error_message(e))
+            fail("invalid HTTP URL: " + url.url_error_message(e))
+            ""
+        Ok(parsed) ->
+            let scheme = url.scheme(parsed)
+            if scheme != "http" && scheme != "https":
+                fail("unsupported HTTP URL scheme `" + scheme + "`")
+            scheme + "://" + url.host(parsed) + ":" + "${url.port(parsed)}"
+
+// Perform one request and trap on a provider/response failure. Use
+// `try_request_with` when network weather belongs in application control flow.
+pub fn request_with(fetch: Fetch, method: String, request_url: String, headers: List((String, String)), body: String) -> Response:
+    match try_request_with(fetch, method, request_url, headers, body):
+        Ok(response) -> response
+        Err(e) ->
+            fail("HTTP request failed: " + http_error_message(e))
             Response(0, [], "")
 
-fn send_on_result(sock: Socket, method: String, host: String, path: String, headers: List((String, String)), body: String) -> Result(Response, HttpError):
-    render_and_send(sock, method, host, path, headers, body)
-    try_parse_response(sock.recv_all())
+pub fn try_request_with(fetch: Fetch, method: String, request_url: String, headers: List((String, String)), body: String) -> Result(Response, HttpError):
+    parse_fetch_payload(fetch.send_raw(method, request_url, render_headers(headers), body))
 
-fn request(net: Net[Connect, Tcp], method: String, host: String, port: Int, path: String, body: String) -> Response:
-    request_with(net, false, method, host, port, path, [], body)
+pub fn get(fetch: Fetch, request_url: String) -> Response:
+    request_with(fetch, "GET", request_url, [], "")
 
-// Like `request_with`, but fallible: an unreachable upstream yields
-// `Err("connect to host:port failed (unreachable)")` instead of trapping. Built
-// on `try_connect` so a long-running server (a proxy, a health check) survives a
-// down peer — the caller decides what to do (e.g. answer 502) instead of the VM
-// aborting. A successful dial sends the request and parses the response as usual.
-pub fn try_request_with(net: Net[Connect, Tcp], secure: Bool, method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Result(Response, HttpError):
-    match net.try_connect(endpoint(secure, host, port)):
-        None -> Err(ConnectFailed(host, port))
-        Some(sock) -> send_on_result(sock, method, host, path, headers, body)
+pub fn post(fetch: Fetch, request_url: String, body: String) -> Response:
+    request_with(fetch, "POST", request_url, [], body)
 
-pub fn try_request_with_string(net: Net[Connect, Tcp], secure: Bool, method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Result(Response, String):
-    match try_request_with(net, secure, method, host, port, path, headers, body):
-        Ok(resp) -> Ok(resp)
-        Err(e) -> Err(http_error_message(e))
+pub fn put(fetch: Fetch, request_url: String, body: String) -> Response:
+    request_with(fetch, "PUT", request_url, [], body)
 
-// Fallible GET: `Ok(response)` on success, `Err(reason)` if the host is
-// unreachable. The fallible counterpart of `get`.
-pub fn try_get(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Result(Response, HttpError):
-    try_request_with(net, false, "GET", host, port, path, [], "")
+pub fn delete(fetch: Fetch, request_url: String) -> Response:
+    request_with(fetch, "DELETE", request_url, [], "")
 
-pub fn try_get_string(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Result(Response, String):
-    match try_get(net, host, port, path):
-        Ok(resp) -> Ok(resp)
-        Err(e) -> Err(http_error_message(e))
+pub fn patch(fetch: Fetch, request_url: String, body: String) -> Response:
+    request_with(fetch, "PATCH", request_url, [], body)
 
-// Fallible POST: `Ok(response)` on success, `Err(reason)` if the host is
-// unreachable. The fallible counterpart of `post`.
-pub fn try_post(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Result(Response, HttpError):
-    try_request_with(net, false, "POST", host, port, path, [], body)
+pub fn head(fetch: Fetch, request_url: String) -> Response:
+    request_with(fetch, "HEAD", request_url, [], "")
 
-pub fn try_post_string(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Result(Response, String):
-    match try_post(net, host, port, path, body):
-        Ok(resp) -> Ok(resp)
-        Err(e) -> Err(http_error_message(e))
+pub fn try_get(fetch: Fetch, request_url: String) -> Result(Response, HttpError):
+    try_request_with(fetch, "GET", request_url, [], "")
 
-// ---- Rebinding-resistant fetch (RFC-0020): resolve once, pin, connect ----
+pub fn try_post(fetch: Fetch, request_url: String, body: String) -> Result(Response, HttpError):
+    try_request_with(fetch, "POST", request_url, [], body)
 
-// Resolve `raw`'s host ONCE, keep the first resolved IP the predicate approves, and pin
-// it. The safe shape for fetching an untrusted URL — pair it with a confined `Net` for
-// defense in depth, so the capability floor rejects an internal address even if the
-// predicate is wrong:
-//     let safe = net.deny(Net.private())
-//     match http.pin(safe, user_url, allow_ip):
-//         Ok(p) -> http.get_pinned(safe, p)
-//         Err(e) -> Err(e)
-pub fn pin(net: Net[Connect, Tcp], raw: String, allow_ip: fn(String) -> Bool) -> Result(PinnedUrl, HttpError):
-    match url.parse(raw):
-        Err(e) -> Err(InvalidUrl(e))
-        Ok(u) ->
-            match scheme_secure(url.scheme(u)):
-                Err(e) -> Err(e)
-                Ok(secure) ->
-                    match first_allowed(net.resolve(url.host(u)), allow_ip):
-                        None -> Err(NoResolvedAddressPassedPinPolicy(url.host(u)))
-                        Some(ip) -> Ok(PinnedUrl(url.host(u), url.port(u), secure, url.request_target(u), ip))
+fn render_headers(headers: List((String, String))) -> String:
+    var rendered = ""
+    for header in headers:
+        let (name, value) = header
+        check_header(name, value)
+        if rendered != "":
+            rendered = rendered + "\n"
+        rendered = rendered + name + ": " + value
+    rendered
 
-pub fn pin_string(net: Net[Connect, Tcp], raw: String, allow_ip: fn(String) -> Bool) -> Result(PinnedUrl, String):
-    match pin(net, raw, allow_ip):
-        Ok(p) -> Ok(p)
-        Err(e) -> Err(http_error_message(e))
+fn parse_fetch_payload(raw: String) -> Result(Response, HttpError):
+    let prefix = "WITCHY_FETCH_ERROR:"
+    if !raw.starts_with(prefix):
+        match parse_response_inner(raw, true, false):
+            Ok(response) -> Ok(response)
+            Err(error) -> Err(MalformedResponse(error))
+    else:
+        let failure = raw.substring(prefix.char_count(), raw.char_count())
+        let separator = failure.index_of(":") ?? -1
+        if separator < 0:
+            Err(UnknownProviderFailure("unknown", failure))
+        else:
+            let code = failure.substring(0, separator)
+            let message = failure.substring(separator + 1, failure.char_count())
+            Err(provider_error(code, message))
 
-// The NAMED, greppable no-policy pin: resolve once and pin the first address, applying no
-// per-IP policy. Safe only behind a confined `Net` (the allowlist floor still applies);
-// prefer `pin` with a real predicate. Named so a review can find every unchecked pin.
-pub fn unpinned(net: Net[Connect, Tcp], raw: String) -> Result(PinnedUrl, HttpError):
-    pin(net, raw, allow_any)
-
-pub fn unpinned_string(net: Net[Connect, Tcp], raw: String) -> Result(PinnedUrl, String):
-    match unpinned(net, raw):
-        Ok(p) -> Ok(p)
-        Err(e) -> Err(http_error_message(e))
-
-fn allow_any(ip: String) -> Bool:
-    true
-
-// The first IP the predicate approves, or `None` if none do. The chooser sees the
-// already-resolved candidates and selects one — it never resolves again, so the
-// resolve-once invariant stays in one place.
-fn first_allowed(ips: List(String), allow_ip: fn(String) -> Bool) -> Option(String):
-    for ip in ips:
-        if allow_ip(ip):
-            return Some(ip)
-    None
-
-// GET the pinned target, honoring the pin — dials the pinned IP, never re-resolving.
-pub fn get_pinned(net: Net[Connect, Tcp], p: PinnedUrl) -> Result(Response, HttpError):
-    send_pinned(net, p, "GET", [], "")
-
-pub fn get_pinned_string(net: Net[Connect, Tcp], p: PinnedUrl) -> Result(Response, String):
-    match get_pinned(net, p):
-        Ok(resp) -> Ok(resp)
-        Err(e) -> Err(http_error_message(e))
-
-// The general pinned send: dial the pinned IP via `connect_pinned` (presenting the
-// original hostname for TLS SNI and the `Host` header), issue the request, and parse the
-// response. Never re-resolves the host, so no rebinding can slip a new address underneath.
-pub fn send_pinned(net: Net[Connect, Tcp], p: PinnedUrl, method: String, headers: List((String, String)), body: String) -> Result(Response, HttpError):
-    match p:
-        PinnedUrl(host, port, secure, path, ip) ->
-            match net.try_connect_pinned(ip, host, port, secure):
-                None -> Err(PinnedConnectFailed(host, ip, port))
-                Some(sock) -> send_on_result(sock, method, host, path, headers, body)
-
-pub fn send_pinned_string(net: Net[Connect, Tcp], p: PinnedUrl, method: String, headers: List((String, String)), body: String) -> Result(Response, String):
-    match send_pinned(net, p, method, headers, body):
-        Ok(resp) -> Ok(resp)
-        Err(e) -> Err(http_error_message(e))
+fn provider_error(code: String, message: String) -> HttpError:
+    if code == "denied":
+        Denied(message)
+    else if code == "invalid-request":
+        InvalidRequest(message)
+    else if code == "timeout":
+        Timeout
+    else if code == "redirect":
+        Redirect(message)
+    else if code == "network":
+        Network(message)
+    else if code == "malformed-response":
+        ProviderMalformedResponse(message)
+    else if code == "response-too-large":
+        ResponseTooLarge(message)
+    else:
+        UnknownProviderFailure(code, message)
 
 // ---- Request builder (reqwest-style fluent client) ----
-
-// An outgoing request being assembled: method, full URL, headers, and body.
-// Build it up with the chainable methods and finish with `.send(net)`.
 type RequestBuilder:
     RequestBuilder(String, String, List((String, String)), String)
 
-// Start a request to `url` with `method` (e.g. "GET").
-pub fn build(method: String, url: String) -> RequestBuilder:
-    RequestBuilder(method, url, [], "")
+pub fn build(method: String, request_url: String) -> RequestBuilder:
+    RequestBuilder(method, request_url, [], "")
 
-pub fn get_request(url: String) -> RequestBuilder:
-    build("GET", url)
+pub fn get_request(request_url: String) -> RequestBuilder:
+    build("GET", request_url)
 
-pub fn post_request(url: String) -> RequestBuilder:
-    build("POST", url)
+pub fn post_request(request_url: String) -> RequestBuilder:
+    build("POST", request_url)
 
-pub fn put_request(url: String) -> RequestBuilder:
-    build("PUT", url)
+pub fn put_request(request_url: String) -> RequestBuilder:
+    build("PUT", request_url)
 
-pub fn delete_request(url: String) -> RequestBuilder:
-    build("DELETE", url)
+pub fn delete_request(request_url: String) -> RequestBuilder:
+    build("DELETE", request_url)
 
-pub fn patch_request(url: String) -> RequestBuilder:
-    build("PATCH", url)
+pub fn patch_request(request_url: String) -> RequestBuilder:
+    build("PATCH", request_url)
 
-// The fluent surface: real METHODS on RequestBuilder, each returning the
-// extended builder (`http.get_request(url).with_header(...).send(net)`).
 impl RequestBuilder:
     pub fn with_header(self, name: String, value: String) -> RequestBuilder:
-        // Add a request header (chainable).
         match self:
-            RequestBuilder(m, u, hs, b) ->
-                var headers = hs
-                list.push(headers, (name, value))
-                RequestBuilder(m, u, headers, b)
+            RequestBuilder(method, request_url, headers, body) ->
+                var next = headers
+                list.push(next, (name, value))
+                RequestBuilder(method, request_url, next, body)
 
-    pub fn with_body(self, b: String) -> RequestBuilder:
-        // Set the request body (e.g. a JSON document); nothing else changes.
+    pub fn with_body(self, body: String) -> RequestBuilder:
         match self:
-            RequestBuilder(m, u, hs, _b) -> RequestBuilder(m, u, hs, b)
+            RequestBuilder(method, request_url, headers, _old) -> RequestBuilder(method, request_url, headers, body)
 
     pub fn with_query(self, key: String, value: String) -> RequestBuilder:
-        // Append a percent-encoded `key=value` query parameter before any
-        // fragment. A malformed URL remains unchanged and `send` reports it.
         match self:
-            RequestBuilder(m, u, hs, b) ->
-                match url.parse(u):
-                    Ok(parsed) -> RequestBuilder(m, url.format(url.with_query(parsed, key, value)), hs, b)
-                    Err(_e) -> RequestBuilder(m, u, hs, b)
+            RequestBuilder(method, request_url, headers, body) ->
+                match url.parse(request_url):
+                    Ok(parsed) -> RequestBuilder(method, url.format(url.with_query(parsed, key, value)), headers, body)
+                    Err(_e) -> RequestBuilder(method, request_url, headers, body)
 
-    pub fn send(self, net: Net[Connect, Tcp]) -> Result(Response, HttpError):
-        // Send the assembled request, parsing host/port/path from its URL. An `Err`
-        // is returned rather than a panic when the URL does not parse.
+    pub fn send(self, fetch: Fetch) -> Result(Response, HttpError):
         match self:
-            RequestBuilder(m, u, hs, b) ->
-                match url.parse(u):
-                    Ok(parsed) ->
-                        match scheme_secure(url.scheme(parsed)):
-                            Ok(secure) -> try_request_with(net, secure, m, url.host(parsed), url.port(parsed), url.request_target(parsed), hs, b)
-                            Err(e) -> Err(e)
-                    Err(e) -> Err(InvalidUrl(e))
-
-    pub fn send_string(self, net: Net[Connect, Tcp]) -> Result(Response, String):
-        // Send the assembled request with String errors for older code.
-        match self.send(net):
-            Ok(resp) -> Ok(resp)
-            Err(e) -> Err(http_error_message(e))
+            RequestBuilder(method, request_url, headers, body) ->
+                try_request_with(fetch, method, request_url, headers, body)
 
 // Whether the response status is in the 2xx success range.
 pub fn is_success(r: Response) -> Bool:
@@ -505,7 +346,7 @@ pub fn is_framing_header(name: String) -> Bool:
 // keeps the historical lossy chunked behavior; use `try_parse_response` at trust
 // boundaries where malformed framing must be an error.
 pub fn parse_response(raw: String) -> Response:
-    match parse_response_inner(raw, false):
+    match parse_response_inner(raw, false, true):
         Ok(resp) -> resp
         Err(_e) -> Response(0, [], "")
 
@@ -513,7 +354,7 @@ pub fn parse_response(raw: String) -> Response:
 // `Transfer-Encoding: chunked` bodies return `Err` instead of handing callers a
 // recovered prefix that may look like valid JSON.
 pub fn try_parse_response(raw: String) -> Result(Response, HttpError):
-    match parse_response_inner(raw, true):
+    match parse_response_inner(raw, true, true):
         Ok(resp) -> Ok(resp)
         Err(e) -> Err(MalformedResponse(e))
 
@@ -522,7 +363,7 @@ pub fn try_parse_response_string(raw: String) -> Result(Response, String):
         Ok(resp) -> Ok(resp)
         Err(e) -> Err(http_error_message(e))
 
-fn parse_response_inner(raw: String, strict_chunked: Bool) -> Result(Response, ResponseParseError):
+fn parse_response_inner(raw: String, strict_chunked: Bool, decode_transfer: Bool) -> Result(Response, ResponseParseError):
     let sep = raw.index_of("\r\n\r\n") ?? -1
     let head: String = if sep < 0: raw else: raw.substring(0, sep)
     let bdy: String = if sep < 0: "" else: raw.substring(sep + 4, raw.char_count())
@@ -542,6 +383,8 @@ fn parse_response_inner(raw: String, strict_chunked: Bool) -> Result(Response, R
     // of hex-sized chunks; returning it verbatim would hand the caller wire framing
     // instead of the payload. Decode it when the header advertises chunked (a `TE`
     // value like `gzip, chunked` counts); otherwise pass the body through unchanged.
+    if !decode_transfer:
+        return Ok(Response(status_code(status_line), hdrs, bdy))
     let body = match find_header(hdrs, "transfer-encoding"):
         Some(te) ->
             if te.to_lower().contains("chunked"):

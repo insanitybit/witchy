@@ -23,14 +23,25 @@ import crypto
 import encoding
 import exec
 import fs
-import http
 import rights
 import show
 import error
 import convert
+from http import Response
 from json import Json
 from semver import Version, Req
 from toml import Toml
+
+fn registry_origin(host: String, port: Int) -> String:
+    "http://${host}:${port}"
+
+fn registry_get(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Response:
+    let origin = registry_origin(host, port)
+    http.get(net.fetch(origin), origin + path)
+
+fn registry_post(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Response:
+    let origin = registry_origin(host, port)
+    http.post(net.fetch(origin), origin + path, body)
 
 // `main` takes two `Dir` grants positionally: `root` (handle 0) is the project
 // tree the PM reads/writes; `bin` (handle 1) is where the compiler lives, used
@@ -1194,7 +1205,7 @@ fn cmd_publish(console: Console, net: Net, root: Dir, env: Env, args: List(Strin
 fn publish_checked(console: Console, net: Net, root: Dir, dir: String, manifest: String, host: String, port: Int, identity: String, env: Env) -> Int:
     let files = publish_files(root, dir, manifest)
     let token = id_token_from_env(env)
-    let resp = http.post(net, host, port, "/coven/publish", coven_proto.publish_body(manifest, files, identity, token))
+    let resp = registry_post(net, host, port, "/coven/publish", coven_proto.publish_body(manifest, files, identity, token))
     console.print("publish: ${http.status(resp)} state=${resp_field(http.body(resp), "state")}")
     if http.status(resp) >= 200 && http.status(resp) < 300:
         0
@@ -1254,7 +1265,7 @@ fn cmd_promote(console: Console, net: Net, env: Env, args: List(String)) -> Int:
             Ok(hp) ->
                 let (host, port) = hp
                 let body = coven_proto.promote_body(name, version, "local-confirmation", identity, id_token_from_env(env))
-                let resp = http.post(net, host, port, "/coven/promote", body)
+                let resp = registry_post(net, host, port, "/coven/promote", body)
                 console.print("promote: ${http.status(resp)}")
                 if http.status(resp) >= 200 && http.status(resp) < 300:
                     0
@@ -1285,7 +1296,7 @@ fn cmd_outdated(console: Console, net: Net, root: Dir, args: List(String)) -> In
 fn report_dep_version(console: Console, net: Net, host: String, port: Int, pair: (String, String)):
     let (name, inline) = pair
     if let Some(req) = toml.inline_get(inline, "version"):
-        let resp = http.get(net, host, port, "/coven/versions?name=${wire(name)}")
+        let resp = registry_get(net, host, port, "/coven/versions?name=${wire(name)}")
         console.print("${name}: req ${req}, ${latest_label(http.body(resp), http.status(resp))}")
 
 fn latest_label(body: String, status: Int) -> String:
@@ -1328,7 +1339,7 @@ fn cmd_yank(console: Console, net: Net, env: Env, args: List(String)) -> Int:
                 1
             Ok(hp) ->
                 let (host, port) = hp
-                let resp = http.post(net, host, port, "/coven/yank", coven_proto.yank_body(name, version, id_token_from_env(env)))
+                let resp = registry_post(net, host, port, "/coven/yank", coven_proto.yank_body(name, version, id_token_from_env(env)))
                 console.print("yank: ${http.status(resp)}")
                 if http.status(resp) >= 200 && http.status(resp) < 300:
                     0
@@ -1352,7 +1363,7 @@ fn cmd_list(console: Console, net: Net, env: Env, args: List(String)) -> Int:
                 1
             Ok(hp) ->
                 let (host, port) = hp
-                let resp = http.get(net, host, port, "/coven/versions?name=${wire(name)}")
+                let resp = registry_get(net, host, port, "/coven/versions?name=${wire(name)}")
                 if http.status(resp) != 200:
                     console.print("registry error listing ${name}")
                     1
@@ -1643,8 +1654,8 @@ fn verify_chain(console: Console, net: Net, root: Dir, dir: String, host: String
                 console.print("FAIL: TUF chain — registry root key does not match the key pinned in witchy.lock (possible MITM / hostile mirror)")
                 2
             else:
-                let snap_resp = http.get(net, host, port, "/coven/snapshot")
-                let ts_resp = http.get(net, host, port, "/coven/timestamp")
+                let snap_resp = registry_get(net, host, port, "/coven/snapshot")
+                let ts_resp = registry_get(net, host, port, "/coven/timestamp")
                 if http.status(snap_resp) != 200 || http.status(ts_resp) != 200:
                     console.print("FAIL: TUF chain — registry served no snapshot/timestamp role")
                     2
@@ -2350,7 +2361,7 @@ fn verified_incoming_footprint(net: Net, root: Dir, host: String, port: Int, nam
     if pinned_pub != "" && pinned_pub != rootpub:
         Err(RecordRootKeyMismatch)
     else:
-        let resp = http.get(net, host, port, "/coven/record?name=${wire(name)}&version=${version}")
+        let resp = registry_get(net, host, port, "/coven/record?name=${wire(name)}&version=${version}")
         if http.status(resp) != 200:
             Err(RecordMissing)
         else if !record_signature_valid(rootpub, http.body(resp)):
@@ -2677,7 +2688,7 @@ fn lock_trust_pins(net: Net, root: Dir, host: String, port: Int) -> Result(Strin
 // rollback floor. An unavailable snapshot is an error: treating it as "nothing to
 // pin" would erase an existing rollback floor during lock regeneration.
 fn snapshot_pin(net: Net, root: Dir, host: String, port: Int) -> Result((String, String), TufError):
-    let snap_resp = http.get(net, host, port, "/coven/snapshot")
+    let snap_resp = registry_get(net, host, port, "/coven/snapshot")
     if http.status(snap_resp) != 200:
         Err(SnapshotUnavailable(http.status(snap_resp)))
     else:
@@ -2686,7 +2697,7 @@ fn snapshot_pin(net: Net, root: Dir, host: String, port: Int) -> Result((String,
         if pinned_pub != "" && pinned_pub != rootpub:
             Err(RootKeyMismatch)
         else:
-            let ts_resp = http.get(net, host, port, "/coven/timestamp")
+            let ts_resp = registry_get(net, host, port, "/coven/timestamp")
             if http.status(ts_resp) != 200:
                 Err(SnapshotWithoutTimestamp)
             else:
@@ -2714,7 +2725,7 @@ fn verified_snapshot_line(rootpub: String, snap_env: String, ts_env: String) -> 
         Ok("registry_snapshot_version = ${signed_field_int(snap_env, "version")}\n")
 
 fn fetch_registry_rootpub(net: Net, host: String, port: Int) -> Result(String, RegistryRootKeyError):
-    let resp = http.get(net, host, port, "/coven/rootpub")
+    let resp = registry_get(net, host, port, "/coven/rootpub")
     if http.status(resp) != 200:
         Err(RegistryRootKeyUnavailable(http.status(resp)))
     else if !valid_registry_rootpub(http.body(resp)):
@@ -2871,7 +2882,7 @@ fn add_rune(console: Console, net: Net, root: Dir, host: String, port: Int, name
 // compromised-release window, §8) unless `--allow-fresh` was passed. If the only
 // matching versions are still cooling, the error explains the window + override.
 fn resolve_version(net: Net, host: String, port: Int, name: String, req: String, cooldown: (Int, Int, Bool)) -> Result(String, VersionResolveError):
-    let resp = http.get(net, host, port, "/coven/versions?name=${wire(name)}")
+    let resp = registry_get(net, host, port, "/coven/versions?name=${wire(name)}")
     if http.status(resp) != 200:
         Err(VersionRegistryFetchFailed(http.status(resp)))
     else:
@@ -3088,7 +3099,7 @@ fn fetch_source_with_root(console: Console, net: Net, root: Dir, host: String, p
         console.print("BLOCK: registry root key for ${name}@${version} does not match the key pinned in witchy.lock (possible MITM / hostile mirror)")
         1
     else:
-        let record = http.get(net, host, port, "/coven/record?name=${wire(name)}&version=${version}")
+        let record = registry_get(net, host, port, "/coven/record?name=${wire(name)}&version=${version}")
         if http.status(record) != 200:
             console.print("registry has no record for ${name}@${version}")
             1
@@ -3112,7 +3123,7 @@ fn record_matches_coordinate(record: String, name: String, version: String) -> B
     recorded_field(record, "name") == name && recorded_field(record, "version") == version
 
 fn fetch_verified(console: Console, net: Net, root: Dir, host: String, port: Int, name: String, version: String, dest: String, record: String) -> Int:
-    let resp = http.get(net, host, port, "/coven/source?name=${wire(name)}&version=${version}")
+    let resp = registry_get(net, host, port, "/coven/source?name=${wire(name)}&version=${version}")
     if http.status(resp) != 200:
         console.print("registry has no source for ${name}@${version}")
         1

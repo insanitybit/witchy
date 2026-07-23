@@ -812,26 +812,26 @@
   },
   {
     "block": 7,
-    "browser_runnable": false,
+    "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/appendix-recipes.md",
     "footprint": [
       "Console",
-      "Net[Connect,Listen,Tcp,Udp,Uds]"
+      "Fetch"
     ],
     "output": [],
     "runnable": false
   },
   {
     "block": 8,
-    "browser_runnable": false,
+    "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/appendix-recipes.md",
     "footprint": [
       "Console",
-      "Net[Connect,Tcp]"
+      "Fetch"
     ],
     "output": [],
     "runnable": false

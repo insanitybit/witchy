@@ -100,59 +100,50 @@ fn main(console: Console, args: List(String)) -> Int:
 
 ## Make an HTTP request
 
-`import http` gives a small client over a `Net` capability. `http.get` returns a
-`Response`; `status`, `is_success`, and `body` read it back.
+`import http` gives a portable client over an origin-scoped `Fetch` capability.
+`http.get` returns a `Response`; `status`, `is_success`, and `body` read it
+back. The host menu grants the origin before launch; the program can narrow it
+again before use.
 
 ```witchy
 import http
 
-fn main(console: Console, net: Net):
-    let resp = http.get(net, "localhost", 80, "/")
+fn main(console: Console, fetch: Fetch):
+    let target = "https://example.com/"
+    let resp = http.get(fetch.only(http.origin(target)), target)
     console.print("status ${http.status(resp)}")
     if http.is_success(resp):
         console.print(http.body(resp))
 ```
 
-To narrow the network capability itself — a client that can dial out but never
-listen — ask for `Net[Connect, Tcp]` instead of a full `Net`, exactly as the
-[narrowing chapter](capabilities-narrowing.md) describes. The client composes
-with that narrowing: `http.get` itself demands only `Net[Connect, Tcp]` (and
-`server.serve` only `Net[Listen, Tcp]`), so a narrowed handle passes straight
-through.
+`Fetch` exposes HTTP requests, not sockets: the provider owns DNS, TLS,
+redirect policy, timeout, response bounds, and browser CORS behavior. Native
+programs that already hold `Net[Connect, Tcp]` can derive the same authority
+with `net.fetch(origin)`, while browser programs receive `Fetch` directly.
 
 ## Fetch an untrusted URL without DNS rebinding
 
-When the URL comes from outside — a webhook target, a user-supplied link — a
-plain fetch is exposed to a rebinding attack: the name is resolved once for a
-safety check and *again* at connect time, and an attacker who controls the DNS
-can return an internal address the check never saw. `http.pin` closes that gap.
-It resolves the host **once**, lets your policy approve one of the resolved IPs,
-and returns a sealed `PinnedUrl`; `http.get_pinned` dials **exactly that IP** —
-never re-resolving — while still presenting the original hostname for TLS and the
-`Host` header. Pair it with a `Net` that denies the private ranges, so the
-capability itself is the hard floor even if the policy is wrong:
+When a URL comes from outside, do not turn its authority into a new grant.
+Narrow an existing `Fetch` root to the parsed origin instead. Narrowing rejects
+an origin the host did not grant, so user input cannot expand authority. The
+native provider resolves once and dials only the admitted result; a Fetch
+derived from confined `Net` also retains that network policy as a permanent
+floor.
 
 ```witchy
 import http
 
-fn main(console: Console, net: Net[Connect, Tcp]):
-    let safe = net.deny(Net.private())
-    match http.pin(safe, "http://example.com/status", public_ok):
-        Err(e) -> console.print("blocked: ${e}")
-        Ok(target) ->
-            match http.get_pinned(safe, target):
-                Ok(resp) -> console.print("status ${http.status(resp)}")
-                Err(e) -> console.print("fetch failed: ${e}")
-
-// Your policy: inspect a resolved IP literal and approve or reject it. Returning
-// `false` for every candidate makes `pin` fail closed.
-fn public_ok(ip: String) -> Bool:
-    true
+fn main(console: Console, fetch: Fetch):
+    let target = "https://example.com/status"
+    let scoped = fetch.only(http.origin(target))
+    match http.try_get(scoped, target):
+        Ok(resp) -> console.print("status ${http.status(resp)}")
+        Err(e) -> console.print("fetch failed: ${e}")
 ```
 
-Because `PinnedUrl` is a sealed capability — only `std/http` can mint one — a
-value of that type is unforgeable proof that the policy ran: a function that asks
-for a `PinnedUrl` cannot be handed an unchecked target.
+The application never sees an IP or a socket. That keeps the same source
+portable to the browser, where the platform Fetch implementation enforces its
+own origin and CORS boundary.
 
 ## Sign with a secret without ever seeing its bytes
 

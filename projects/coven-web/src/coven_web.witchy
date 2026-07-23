@@ -22,8 +22,22 @@ import secretstore
 import url
 import result
 import option
-from http import Request, Response
+from http import HttpError, Request, Response
 from json import Json
+
+fn upstream_origin(host: String, port: Int) -> String:
+    "http://${host}:${port}"
+
+fn upstream_try_get(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Result(Response, HttpError):
+    let origin = upstream_origin(host, port)
+    http.try_get(net.fetch(origin), origin + path)
+
+fn upstream_try_post(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Result(Response, HttpError):
+    let origin = upstream_origin(host, port)
+    http.try_post(net.fetch(origin), origin + path, body)
+
+fn fetch_for_url(net: Net[Connect, Tcp], request_url: String) -> Fetch:
+    net.fetch(http.origin(request_url))
 
 fn main(console: Console, net: Net, assets: Dir, secrets: SecretStore, clock: Clock, rand: Rand, args: List(String)):
     // The root signing key is the store's `signing` secret (`--signing-key <seed>` is
@@ -156,7 +170,7 @@ fn h_proxy(net: Net, upstream: String, base: String) -> fn(Request) -> Response:
                     let qs = encode_query(q)
                     let path = if qs == "": base else: "${base}?${qs}"
                     let (host, port) = split_host_port(upstream)
-                    match http.try_get(net, host, port, path):
+                    match upstream_try_get(net, host, port, path):
                         Ok(resp) -> server.json(http.status(resp), http.body(resp))
                         Err(_e) -> server.json(502, "{\"error\":\"coven registry unreachable\"}")
 
@@ -269,7 +283,7 @@ fn wa_do_promote(store: Dir, net: Net, upstream: String, origin: String, rp_id: 
                     store.write("_wa_challenge.json", "{}")
                     let body = json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version)), ("second_factor", JsonString("webauthn")), ("promoted_by", JsonString(promoter))]))
                     let (host, port) = split_host_port(upstream)
-                    match http.try_post(net, host, port, "/coven/promote", body):
+                    match upstream_try_post(net, host, port, "/coven/promote", body):
                         Ok(resp) -> server.json(http.status(resp), http.body(resp))
                         Err(_e) -> server.json(502, "{\"error\":\"coven registry unreachable\"}")
 
@@ -306,7 +320,7 @@ fn wa_do_yank(store: Dir, net: Net, upstream: String, origin: String, rp_id: Str
                     store.write("_wa_challenge.json", "{}")
                     let body = json.encode(JsonObject([("name", JsonString(name)), ("version", JsonString(version))]))
                     let (host, port) = split_host_port(upstream)
-                    match http.try_post(net, host, port, "/coven/yank", body):
+                    match upstream_try_post(net, host, port, "/coven/yank", body):
                         Ok(resp) -> server.json(http.status(resp), http.body(resp))
                         Err(_e) -> server.json(502, "{\"error\":\"coven registry unreachable\"}")
 
@@ -495,12 +509,14 @@ fn github_callback(store: Dir, net: Net, key: Secret, clock: Clock, secrets: Sec
         match secretstore.get(secrets, "github_client_secret"):
             None -> server.json(500, "{\"error\":\"github login is misconfigured (no client secret)\"}")
             Some(sec) ->
-                match oauth.exchange_code(net, "${gh_base}/login/oauth/access_token", client_id, crypto.reveal(sec), code, redirect_uri):
+                let token_url = "${gh_base}/login/oauth/access_token"
+                match oauth.exchange_code(fetch_for_url(net, token_url), token_url, client_id, crypto.reveal(sec), code, redirect_uri):
                     Err(_) -> server.json(502, json.encode(JsonObject([("error", JsonString("token exchange failed"))])))
                     Ok(token) -> github_finish(net, key, clock, gh_api, token)
 
 fn github_finish(net: Net, key: Secret, clock: Clock, gh_api: String, token: String) -> Response:
-    match oauth.bearer_get_json(net, "${gh_api}/user", token):
+    let user_url = "${gh_api}/user"
+    match oauth.bearer_get_json(fetch_for_url(net, user_url), user_url, token):
         // BUG-410: require a non-empty verified provider identity before minting a session.
         // An empty `login` (a malformed/mock `/user` response) must NOT become a signed-in
         // session with an empty subject — fail closed.
@@ -539,12 +555,12 @@ fn google_callback(store: Dir, net: Net, key: Secret, clock: Clock, secrets: Sec
         match secretstore.get(secrets, "google_client_secret"):
             None -> server.json(500, "{\"error\":\"google login is misconfigured (no client secret)\"}")
             Some(sec) ->
-                match oauth.exchange_code_id_token(net, token_url, client_id, crypto.reveal(sec), code, redirect_uri):
+                match oauth.exchange_code_id_token(fetch_for_url(net, token_url), token_url, client_id, crypto.reveal(sec), code, redirect_uri):
                     Err(_) -> server.json(502, json.encode(JsonObject([("error", JsonString("token exchange failed"))])))
                     Ok(id_token) -> google_verify(net, key, clock, jwks_url, client_id, id_token, expected_nonce)
 
 fn google_verify(net: Net, key: Secret, clock: Clock, jwks_url: String, client_id: String, id_token: String, expected_nonce: String) -> Response:
-    match http.get_url(net, jwks_url):
+    match http.try_get(fetch_for_url(net, jwks_url), jwks_url):
         Err(_) -> server.json(502, json.encode(JsonObject([("error", JsonString("JWKS fetch failed"))])))
         Ok(resp) ->
             match json.decode(http.body(resp)):

@@ -89,7 +89,7 @@ fn no_selection() -> Int:
 // ---------------------------------------------------------------------------
 fn catalog() -> List(Rune):
     // VERIFIED: signature checks out, TUF metadata is fresh, trusted publisher.
-    let widget = Rune("acme/widget", "1.2.0", ["Net", "Dir", "Clock"], "// acme/widget — fetches and renders a remote widget.\nfn main(net: Net):\n    let body = http.get(net, \"https://acme.test/widget\")\n    print(body)", true, "snapshot v42, timestamp fresh", "trusted-publisher | issuer=ci@acme")
+    let widget = Rune("acme/widget", "1.2.0", ["Fetch", "Dir", "Clock"], "// acme/widget - fetches and renders a remote widget.\nfn main(fetch: Fetch):\n    let body = http.get(fetch, \"https://acme.test/widget\")\n    print(body)", true, "snapshot v42, timestamp fresh", "trusted-publisher | issuer=ci@acme")
 
     // VERIFIED + the celebrated EMPTY footprint.
     let glamour_view = Rune("glamour/view", "0.1.0", [], "// glamour/view — a footprint-EMPTY view rune.\nfn view(count: Int) -> VNode(Msg):\n    html\"<span>\${count}</span>\"", true, "snapshot v42, timestamp fresh", "trusted-publisher | issuer=witchy-core")

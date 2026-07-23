@@ -1056,7 +1056,7 @@ fn main(console: Console, net: Net):
 
     #[test]
     fn http_client_builder_loopback() {
-        // The reqwest-style client builder (get_request().with_header(...).send(net))
+        // The reqwest-style client builder (get_request().with_header(...).send(fetch))
         // against a raw TCP server: it sends the method/path/header and parses
         // the response status and body.
         use std::io::{Read, Write};
@@ -1090,7 +1090,7 @@ fn main(console: Console, net: Net):
     let req = http.get_request("http://{addr}/path")
         .with_header("X-Test", "abc")
         .with_query("q", "hi")
-    match req.send(net):
+    match req.send(net.fetch("http://{addr}")):
         Ok(resp) ->
             console.print("${{http.status(resp)}}")
             console.print(http.body(resp))

@@ -380,8 +380,9 @@ fn main(console: Console):
     fn http_rejects_non_http_schemes_on_both_backends() {
         let src = "import http\n\n\
                    fn main(net: Net, console: Console):\n\
+                   \x20   let fetch = net.fetch(\"\")\n\
                    \x20   for u in [\"ftp://h/x\", \"file:///etc/passwd\", \"gopher://h/1\"]:\n\
-                   \x20       match http.get_url(net, u):\n\
+                   \x20       match http.try_get(fetch, u):\n\
                    \x20           Ok(_r) -> console.print(\"OK\")\n\
                    \x20           Err(_e) -> console.print(\"rejected\")\n";
         let want = ["rejected", "rejected", "rejected"];
@@ -606,7 +607,7 @@ fn main(console: Console):
         });
 
         let src = format!(
-            "import http\nfn main(console: Console, net: Net):\n    let res = http.get(net, \"127.0.0.1\", {port}, \"/greet\")\n    console.print(f\"{{http.status(res)}} {{http.body(res)}}\")\n"
+            "import http\nfn main(console: Console, net: Net):\n    let target = \"http://127.0.0.1:{port}/greet\"\n    let res = http.get(net.fetch(http.origin(target)), target)\n    console.print(f\"{{http.status(res)}} {{http.body(res)}}\")\n"
         );
         let want = vec!["200 hello".to_string()];
         let module = parser::parse_module(&src).expect("parse");
@@ -780,7 +781,7 @@ fn main(console: Console):
         drop(listener);
 
         let src = format!(
-            "import http\nfn main(console: Console, net: Net):\n    match http.try_get(net, \"127.0.0.1\", {port}, \"/\"):\n        Ok(_) -> console.print(\"ok\")\n        Err(_) -> console.print(\"err\")\n"
+            "import http\nfn main(console: Console, net: Net):\n    let target = \"http://127.0.0.1:{port}/\"\n    match http.try_get(net.fetch(http.origin(target)), target):\n        Ok(_) -> console.print(\"ok\")\n        Err(_) -> console.print(\"err\")\n"
         );
         let want = vec!["err".to_string()];
         let module = parser::parse_module(&src).expect("parse");
@@ -988,7 +989,8 @@ fn main(console: Console, net: Net):
             r#"
 import http
 fn main(console: Console, net: Net):
-    match http.get_url(net, "http://127.0.0.1:{port}/path"):
+    let target = "http://127.0.0.1:{port}/path"
+    match http.try_get(net.fetch(http.origin(target)), target):
         Ok(r) -> console.print(http.body(r))
         Err(e) -> console.print(http.http_error_message(e))
 "#
@@ -1033,7 +1035,8 @@ fn main(console: Console, net: Net):
             r#"
 import http
 fn main(console: Console, net: Net):
-    let r = http.get(net, "127.0.0.1", {port}, "/")
+    let target = "http://127.0.0.1:{port}/"
+    let r = http.get(net.fetch(http.origin(target)), target)
     console.print("${{http.status(r)}}")
     console.print(http.body(r))
 "#
@@ -1051,7 +1054,7 @@ fn main(console: Console, net: Net):
     }
 
     #[test]
-    fn std_http_tolerates_malformed_status_line() {
+    fn std_http_rejects_malformed_status_line() {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().unwrap().port();
@@ -1077,9 +1080,11 @@ fn main(console: Console, net: Net):
             r#"
 import http
 fn main(console: Console, net: Net):
-    let r = http.get(net, "127.0.0.1", {port}, "/")
-    console.print("${{http.status(r)}}")
-    console.print(http.body(r))
+    let target = "http://127.0.0.1:{port}/"
+    match http.try_get(net.fetch(http.origin(target)), target):
+        Ok(_response) -> console.print("unexpected")
+        Err(http.ProviderMalformedResponse(_message)) -> console.print("rejected")
+        Err(error) -> console.print(http.http_error_message(error))
 "#
         );
         let mods = vec![("main".to_string(), parser::parse_module(&program).expect("parse"))];
@@ -1091,7 +1096,7 @@ fn main(console: Console, net: Net):
         )
         .expect("run");
         server.join().ok();
-        assert_eq!(out, vec!["0".to_string(), "hi".to_string()]);
+        assert_eq!(out, vec!["rejected".to_string()]);
     }
 
     #[test]
@@ -1138,7 +1143,8 @@ fn main(console: Console, net: Net):
             r#"
 import http
 fn main(console: Console, net: Net):
-    let r = http.post(net, "127.0.0.1", {port}, "/echo", "hello body")
+    let target = "http://127.0.0.1:{port}/echo"
+    let r = http.post(net.fetch(http.origin(target)), target, "hello body")
     console.print("${{http.status(r)}}")
     console.print(http.body(r))
 "#
@@ -1182,7 +1188,8 @@ fn main(console: Console, net: Net):
 import http
 import option
 fn main(console: Console, net: Net):
-    let r = http.get(net, "127.0.0.1", {port}, "/")
+    let target = "http://127.0.0.1:{port}/"
+    let r = http.get(net.fetch(http.origin(target)), target)
     console.print(option.unwrap_or(http.header(r, "Content-Type"), "none"))
     console.print(option.unwrap_or(http.header(r, "x-custom"), "none"))
     console.print(option.unwrap_or(http.header(r, "Missing"), "none"))

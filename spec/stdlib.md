@@ -1248,17 +1248,22 @@ Race `tasks`: drive them concurrently until the FIRST one finishes, and return i
 
 ## `http`
 
-HTTP types and a small HTTP/1.1 *client* over the `Net` capability — the witchy answer to a slice of Go's net/http (and reqwest's shape). Pure transport built on the capability-gated socket primitives: a module handed a `Net` restricted to some hosts can reach only those, and one handed no `Net` can't reach the network at all. The `server` module builds on the shared `Request`/`Response` types here. Runs on both backends: the socket primitives compile to capability-gated host imports, so a compiled module's import list IS its network footprint.
+Portable HTTP request/response types and a Fetch-based client.
+
+Client authority is the origin-scoped `Fetch` root. DNS resolution, pinned dialing, redirects, timeouts, and response-size limits are host-provider responsibilities, so browser and native callers share this exact API. The `server` module continues to use the Request/Response types and parsing helpers below; HTTP servers remain on Net[Listen].
 
 #### `type HttpError`
 
-Matchable HTTP client failures for fallible network and parse paths.
+Uniform failures produced by every Fetch provider, plus strict response parsing failures in this module.
 
-- `InvalidUrl(url.UrlError)`
-- `UnsupportedScheme(String)`
-- `ConnectFailed(String, Int)`
-- `NoResolvedAddressPassedPinPolicy(String)`
-- `PinnedConnectFailed(String, String, Int)`
+- `Denied(String)`
+- `InvalidRequest(String)`
+- `Timeout`
+- `Redirect(String)`
+- `Network(String)`
+- `ProviderMalformedResponse(String)`
+- `ResponseTooLarge(String)`
+- `UnknownProviderFailure(String, String)`
 - `MalformedResponse(ResponseParseError)`
 
 #### `type ResponseParseError`
@@ -1285,19 +1290,7 @@ A parsed request the server hands to a handler: method, raw path, the path param
 
 - `Request(String, String, List((String, String)), List((String, String)), List((String, String)), String)`
 
-#### `capability PinnedUrl`
-
-(RFC-0020) A vetted pin: a URL resolved ONCE to a single checked IP. Sealed — only this module can mint one (`pin`/`unpinned`), so holding a `PinnedUrl` is proof that a policy ran and cannot be hand-forged with an attacker's address. `get_pinned` dials EXACTLY `ip`, carrying `host` for TLS SNI and the `Host` header, and never re-resolves — closing the DNS-rebinding TOCTOU by construction. The `Net` allowlist stays the hard floor underneath: `connect_pinned` re-checks `ip`, so even a buggy pin policy cannot dial past `net.deny(Net.private())`.
-
-- `host: String`
-- `port: Int`
-- `secure: Bool`
-- `path: String`
-- `ip: String`
-
 #### `type RequestBuilder`
-
-An outgoing request being assembled: method, full URL, headers, and body. Build it up with the chainable methods and finish with `.send(net)`.
 
 - `RequestBuilder(String, String, List((String, String)), String)`
 
@@ -1305,89 +1298,43 @@ An outgoing request being assembled: method, full URL, headers, and body. Build 
 
 #### `fn http_error_message(e: HttpError) -> String`
 
-#### `fn get(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Response`
+#### `fn origin(raw: String) -> String`
 
-Perform a GET request to `host:port` for `path`, returning the response.
+Canonical origin text for deriving Fetch from Net. Invalid or unsupported URLs are configuration errors here; request-time URL failures remain typed.
 
-#### `fn post(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Response`
+#### `fn request_with(fetch: Fetch, method: String, request_url: String, headers: List((String, String)), body: String) -> Response`
 
-Perform a POST request with `body` (e.g. a JSON document). The body's byte length is sent as Content-Length.
+Perform one request and trap on a provider/response failure. Use `try_request_with` when network weather belongs in application control flow.
 
-#### `fn put(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Response`
+#### `fn try_request_with(fetch: Fetch, method: String, request_url: String, headers: List((String, String)), body: String) -> Result(Response, HttpError)`
 
-#### `fn delete(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Response`
+#### `fn get(fetch: Fetch, request_url: String) -> Response`
 
-#### `fn patch(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Response`
+#### `fn post(fetch: Fetch, request_url: String, body: String) -> Response`
 
-#### `fn head(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Response`
+#### `fn put(fetch: Fetch, request_url: String, body: String) -> Response`
 
-#### `fn get_url(net: Net[Connect, Tcp], raw: String) -> Result(Response, HttpError)`
+#### `fn delete(fetch: Fetch, request_url: String) -> Response`
 
-GET a full URL string (`http://host[:port]/path`), returning an error when parsing, connecting, or response decoding fails. Saves splitting host/port/path by hand while preserving the fallible `Result` contract.
+#### `fn patch(fetch: Fetch, request_url: String, body: String) -> Response`
 
-#### `fn get_url_string(net: Net[Connect, Tcp], raw: String) -> Result(Response, String)`
+#### `fn head(fetch: Fetch, request_url: String) -> Response`
 
-GET a full URL with String errors for application-style callers and older code.
+#### `fn try_get(fetch: Fetch, request_url: String) -> Result(Response, HttpError)`
 
-#### `fn request_with(net: Net[Connect, Tcp], secure: Bool, method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Response`
+#### `fn try_post(fetch: Fetch, request_url: String, body: String) -> Result(Response, HttpError)`
 
-Send a request with custom headers, returning the response. The generic form behind the method helpers — use it when you need to set headers (auth, content-type, ...). `secure` selects HTTPS (TLS). `Connection: close` ends `recv_all` after the body.
+#### `fn build(method: String, request_url: String) -> RequestBuilder`
 
-#### `fn try_request_with(net: Net[Connect, Tcp], secure: Bool, method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Result(Response, HttpError)`
+#### `fn get_request(request_url: String) -> RequestBuilder`
 
-Like `request_with`, but fallible: an unreachable upstream yields `Err("connect to host:port failed (unreachable)")` instead of trapping. Built on `try_connect` so a long-running server (a proxy, a health check) survives a down peer — the caller decides what to do (e.g. answer 502) instead of the VM aborting. A successful dial sends the request and parses the response as usual.
+#### `fn post_request(request_url: String) -> RequestBuilder`
 
-#### `fn try_request_with_string(net: Net[Connect, Tcp], secure: Bool, method: String, host: String, port: Int, path: String, headers: List((String, String)), body: String) -> Result(Response, String)`
+#### `fn put_request(request_url: String) -> RequestBuilder`
 
-#### `fn try_get(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Result(Response, HttpError)`
+#### `fn delete_request(request_url: String) -> RequestBuilder`
 
-Fallible GET: `Ok(response)` on success, `Err(reason)` if the host is unreachable. The fallible counterpart of `get`.
-
-#### `fn try_get_string(net: Net[Connect, Tcp], host: String, port: Int, path: String) -> Result(Response, String)`
-
-#### `fn try_post(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Result(Response, HttpError)`
-
-Fallible POST: `Ok(response)` on success, `Err(reason)` if the host is unreachable. The fallible counterpart of `post`.
-
-#### `fn try_post_string(net: Net[Connect, Tcp], host: String, port: Int, path: String, body: String) -> Result(Response, String)`
-
-#### `fn pin(net: Net[Connect, Tcp], raw: String, allow_ip: fn(String) -> Bool) -> Result(PinnedUrl, HttpError)`
-
-Resolve `raw`'s host ONCE, keep the first resolved IP the predicate approves, and pin it. The safe shape for fetching an untrusted URL — pair it with a confined `Net` for defense in depth, so the capability floor rejects an internal address even if the predicate is wrong:     let safe = net.deny(Net.private())     match http.pin(safe, user_url, allow_ip):         Ok(p) -> http.get_pinned(safe, p)         Err(e) -> Err(e)
-
-#### `fn pin_string(net: Net[Connect, Tcp], raw: String, allow_ip: fn(String) -> Bool) -> Result(PinnedUrl, String)`
-
-#### `fn unpinned(net: Net[Connect, Tcp], raw: String) -> Result(PinnedUrl, HttpError)`
-
-The NAMED, greppable no-policy pin: resolve once and pin the first address, applying no per-IP policy. Safe only behind a confined `Net` (the allowlist floor still applies); prefer `pin` with a real predicate. Named so a review can find every unchecked pin.
-
-#### `fn unpinned_string(net: Net[Connect, Tcp], raw: String) -> Result(PinnedUrl, String)`
-
-#### `fn get_pinned(net: Net[Connect, Tcp], p: PinnedUrl) -> Result(Response, HttpError)`
-
-GET the pinned target, honoring the pin — dials the pinned IP, never re-resolving.
-
-#### `fn get_pinned_string(net: Net[Connect, Tcp], p: PinnedUrl) -> Result(Response, String)`
-
-#### `fn send_pinned(net: Net[Connect, Tcp], p: PinnedUrl, method: String, headers: List((String, String)), body: String) -> Result(Response, HttpError)`
-
-The general pinned send: dial the pinned IP via `connect_pinned` (presenting the original hostname for TLS SNI and the `Host` header), issue the request, and parse the response. Never re-resolves the host, so no rebinding can slip a new address underneath.
-
-#### `fn send_pinned_string(net: Net[Connect, Tcp], p: PinnedUrl, method: String, headers: List((String, String)), body: String) -> Result(Response, String)`
-
-#### `fn build(method: String, url: String) -> RequestBuilder`
-
-Start a request to `url` with `method` (e.g. "GET").
-
-#### `fn get_request(url: String) -> RequestBuilder`
-
-#### `fn post_request(url: String) -> RequestBuilder`
-
-#### `fn put_request(url: String) -> RequestBuilder`
-
-#### `fn delete_request(url: String) -> RequestBuilder`
-
-#### `fn patch_request(url: String) -> RequestBuilder`
+#### `fn patch_request(request_url: String) -> RequestBuilder`
 
 #### `fn is_success(r: Response) -> Bool`
 
@@ -1445,13 +1392,11 @@ Strict response parsing for public client paths. In particular, malformed `Trans
 
 #### `RequestBuilder.with_header(name: String, value: String) -> RequestBuilder`
 
-#### `RequestBuilder.with_body(b: String) -> RequestBuilder`
+#### `RequestBuilder.with_body(body: String) -> RequestBuilder`
 
 #### `RequestBuilder.with_query(key: String, value: String) -> RequestBuilder`
 
-#### `RequestBuilder.send(net: Net[Connect, Tcp]) -> Result(Response, HttpError)`
-
-#### `RequestBuilder.send_string(net: Net[Connect, Tcp]) -> Result(Response, String)`
+#### `RequestBuilder.send(fetch: Fetch) -> Result(Response, HttpError)`
 
 ### Trait implementations
 
@@ -2699,29 +2644,29 @@ Matchable OAuth/OIDC client failures. Transport, provider HTTP status, JSON resp
 
 The provider authorization-endpoint URL to redirect the user to. After the user approves, the provider redirects to `redirect_uri?code=...&state=...`. `scope` is the provider's space-separated permission list (e.g. GitHub `read:user`, OIDC `openid email`). An endpoint that already carries fixed parameters (a tenant, `prompt`, ...) is extended with `&`, never a second `?`.
 
-#### `fn exchange_code(net: Net[Connect, Tcp], token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, OAuthError)`
+#### `fn exchange_code(fetch: Fetch, token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, OAuthError)`
 
 Exchange an authorization `code` for an access token at the provider's token endpoint — an HTTPS POST with a form-encoded body and `Accept: application/json`. Returns the `access_token`, or a reason. Needs a `Net` that reaches the token host over TLS; the `client_secret` should come from a `Secret`, never a literal.
 
-#### `fn exchange_code_string(net: Net[Connect, Tcp], token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, String)`
+#### `fn exchange_code_string(fetch: Fetch, token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, String)`
 
-#### `fn exchange_code_id_token(net: Net[Connect, Tcp], token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, OAuthError)`
+#### `fn exchange_code_id_token(fetch: Fetch, token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, OAuthError)`
 
 Like `exchange_code`, but returns the OIDC `id_token` (a JWT carrying the user's identity) instead of the access token — for "Log in with Google" and other OIDC providers. Verify the returned token with `std/jwt` (`kid` → `rsa_key_for_kid` over the provider's JWKS → `verify_oidc_fresh` with that provider's lifetime policy).
 
-#### `fn exchange_code_id_token_string(net: Net[Connect, Tcp], token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, String)`
+#### `fn exchange_code_id_token_string(fetch: Fetch, token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, String)`
 
-#### `fn token_response(net: Net[Connect, Tcp], token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(Json, OAuthError)`
+#### `fn token_response(fetch: Fetch, token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(Json, OAuthError)`
 
 The raw token-endpoint response as JSON (the HTTPS POST exchanging the code) — the level beneath `exchange_code`; read `access_token` / `id_token` / `refresh_token` from it.
 
-#### `fn token_response_string(net: Net[Connect, Tcp], token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(Json, String)`
+#### `fn token_response_string(fetch: Fetch, token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(Json, String)`
 
-#### `fn bearer_get_json(net: Net[Connect, Tcp], url: String, token: String) -> Result(Json, OAuthError)`
+#### `fn bearer_get_json(fetch: Fetch, url: String, token: String) -> Result(Json, OAuthError)`
 
 GET `url` with a `Bearer` access token and parse the JSON body — the "read the signed-in user" step after `exchange_code` (GitHub `/user`, an OIDC userinfo endpoint). Sends a `User-Agent` (GitHub rejects requests without one). Returns the parsed JSON, or a reason. The caller reads identity fields it trusts (`login`, `id`, `email`).
 
-#### `fn bearer_get_json_string(net: Net[Connect, Tcp], url: String, token: String) -> Result(Json, String)`
+#### `fn bearer_get_json_string(fetch: Fetch, url: String, token: String) -> Result(Json, String)`
 
 ### Trait implementations
 

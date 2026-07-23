@@ -159,7 +159,6 @@ pub(crate) fn run_wasm_module(
     let net_connect = imports_authority(Authority::NetConnect) || declares_right("Net", "Connect");
     let net_listen = imports_authority(Authority::NetListen) || declares_right("Net", "Listen");
     let fetch_grant = imports_authority(Authority::FetchGrant) || declares("Fetch");
-    let fetch_use = imports_authority(Authority::Fetch);
     let uses_secret_host = imports_authority(Authority::Secret);
     if declares("Secret") && signing_key.is_none() {
         return Err(
@@ -192,7 +191,11 @@ pub(crate) fn run_wasm_module(
     if imports_authority(Authority::Exec) || declares("Exec") {
         caps.exec = true;
     }
-    if fetch_grant || fetch_use {
+    // A Fetch host import does not imply a root Fetch grant: `Net[Connect,
+    // Tcp].fetch(...)` deliberately mints a bounded Fetch inside the program.
+    // The launch contract and `mint_fetch` import identify actual roots. An
+    // explicitly supplied grant also remains available to legacy artifacts.
+    if fetch_grant || !fetch_origins.is_empty() {
         if fetch_origins.is_empty() {
             return Err(
                 "this module requires `Fetch`, but no origins were granted \

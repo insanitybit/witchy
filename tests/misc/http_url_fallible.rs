@@ -13,16 +13,13 @@ fn get_url_returns_connect_error_on_both_backends() {
     drop(listener);
 
     let source = format!(
-        "import http\nfn main(console: Console, net: Net):\n    let target = \"http://127.0.0.1:{port}/\"\n    match http.get_url(net, target):\n        Ok(_) -> console.print(\"unexpected typed success\")\n        Err(http.ConnectFailed(host, failed_port)) -> console.print(\"connect:${{host}}:${{failed_port}}\")\n        Err(e) -> console.print(\"unexpected typed error: \" + http.http_error_message(e))\n    match http.get_url_string(net, target):\n        Ok(_) -> console.print(\"unexpected string success\")\n        Err(e) -> console.print(e)\n"
+        "import http\nfn main(console: Console, net: Net):\n    let target = \"http://127.0.0.1:{port}/\"\n    match http.try_get(net.fetch(http.origin(target)), target):\n        Ok(_) -> console.print(\"unexpected typed success\")\n        Err(http.Network(_message)) -> console.print(\"network\")\n        Err(e) -> console.print(\"unexpected typed error: \" + http.http_error_message(e))\n"
     );
     let module = parser::parse_module(&source).expect("parse");
     let linked = pipeline::link(vec![("main".into(), module)], "main").expect("link");
     typeck::check(&linked).expect("typecheck");
 
-    let expected = vec![
-        format!("connect:127.0.0.1:{port}"),
-        format!("connect to 127.0.0.1:{port} failed (unreachable)"),
-    ];
+    let expected = vec!["network".to_string()];
     assert_eq!(
         interpreter::run_module(linked.clone(), ".", vec![addr.clone()]).expect("interpret"),
         expected,

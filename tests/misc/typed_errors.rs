@@ -230,18 +230,17 @@ fn http_typed_errors_are_matchable_and_bridge_to_string() {
         "http",
         r#"import http
 import show
-import url
 
 fn classify(e: http.HttpError) -> String:
     match e:
-        http.InvalidUrl(reason) ->
-            match reason:
-                url.MissingSchemeSeparator(raw) -> "url:missing:" + raw
-                _ -> "url:other"
-        http.UnsupportedScheme(scheme) -> "scheme:" + scheme
-        http.ConnectFailed(host, port) -> "connect:" + host + ":${port}"
-        http.NoResolvedAddressPassedPinPolicy(host) -> "pin-policy:" + host
-        http.PinnedConnectFailed(host, ip, port) -> "pinned:" + host + ":" + ip + ":${port}"
+        http.Denied(message) -> "denied:" + message
+        http.InvalidRequest(message) -> "invalid:" + message
+        http.Timeout -> "timeout"
+        http.Redirect(message) -> "redirect:" + message
+        http.Network(message) -> "network:" + message
+        http.ProviderMalformedResponse(message) -> "provider-response:" + message
+        http.ResponseTooLarge(message) -> "too-large:" + message
+        http.UnknownProviderFailure(code, message) -> "unknown:" + code + ":" + message
         http.MalformedResponse(reason) -> "response:" + http.response_parse_error_message(reason)
 
 fn via_string(raw: String) -> Result(http.Response, String):
@@ -259,22 +258,28 @@ fn main(console: Console):
     match via_string(bad):
         Ok(_) -> console.print("bad")
         Err(e) -> console.print(e)
-    console.print(http.http_error_message(http.InvalidUrl(url.MissingSchemeSeparator("nope"))))
-    console.print(show.render(http.UnsupportedScheme("ftp")))
-    console.print(http.http_error_message(http.ConnectFailed("example.test", 80)))
-    console.print(http.http_error_message(http.NoResolvedAddressPassedPinPolicy("example.test")))
-    console.print(http.http_error_message(http.PinnedConnectFailed("example.test", "203.0.113.1", 443)))
+    console.print(classify(http.Denied("blocked")))
+    console.print(show.render(http.InvalidRequest("bad request")))
+    console.print(http.http_error_message(http.Timeout))
+    console.print(classify(http.Redirect("redirect refused")))
+    console.print(classify(http.Network("offline")))
+    console.print(classify(http.ProviderMalformedResponse("bad status")))
+    console.print(classify(http.ResponseTooLarge("limit 10")))
+    console.print(http.http_error_message(http.UnknownProviderFailure("custom", "detail")))
 "#,
         &[
             "response:chunked response has invalid chunk size `z`",
             "chunked response has invalid chunk size `z`",
             "chunked response has invalid chunk size `z`",
             "chunked response has invalid chunk size `z`",
-            "invalid URL: missing `scheme://` in: nope",
-            "unsupported URL scheme `ftp` (only http and https are supported)",
-            "connect to example.test:80 failed (unreachable)",
-            "no resolved address for example.test passed the pin policy",
-            "connect to example.test (203.0.113.1:443) failed",
+            "denied:blocked",
+            "bad request",
+            "Fetch request timed out",
+            "redirect:redirect refused",
+            "network:offline",
+            "provider-response:bad status",
+            "too-large:limit 10",
+            "Fetch provider error `custom`: detail",
         ],
     );
 }
@@ -331,8 +336,8 @@ fn via_string() -> Result(String, String):
 fn main(console: Console):
     console.print(classify(oauth.TokenEndpointNotHttps("http://idp/token")))
     console.print(classify(oauth.BearerEndpointNotHttps("http://api/user")))
-    console.print(classify(oauth.TokenEndpointUnreachable(http.UnsupportedScheme("ftp"))))
-    console.print(classify(oauth.BearerRequestFailed(http.UnsupportedScheme("ftp"))))
+    console.print(classify(oauth.TokenEndpointUnreachable(http.Network("offline"))))
+    console.print(classify(oauth.BearerRequestFailed(http.Denied("blocked"))))
     console.print(classify(oauth.TokenEndpointRejected(400, "bad")))
     console.print(classify(oauth.BearerEndpointRejected(401)))
     console.print(classify(oauth.TokenResponseJson(json.DecodeError("bad json"))))
@@ -348,8 +353,8 @@ fn main(console: Console):
         &[
             "token-https:http://idp/token",
             "bearer-https:http://api/user",
-            "token-http:unsupported URL scheme `ftp` (only http and https are supported)",
-            "bearer-http:unsupported URL scheme `ftp` (only http and https are supported)",
+            "token-http:offline",
+            "bearer-http:blocked",
             "token-status:400:bad",
             "bearer-status:401",
             "token-json:bad json",

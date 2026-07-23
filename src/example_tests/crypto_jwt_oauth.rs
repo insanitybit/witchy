@@ -749,20 +749,16 @@ fn main(console: Console):
         );
     }
 
-    /// RFC-0020 Layer 3: the sealed `PinnedUrl` ergonomic surface end to end on BOTH
-    /// backends. First, `http.pin` RUNS its policy — a predicate that rejects every
-    /// candidate yields `Err`, proving the pin is not minted without a passing address.
-    /// Then the safe path: `pin` (resolve once + approve) -> `get_pinned` dials the pinned
-    /// IP (never re-resolving) against a loopback HTTP/1.1 server, and both backends parse
-    /// the identical `200 hello`. The `PinnedUrl` is a sealed capability — only `std/http`
-    /// can mint one — so a vetted target is an unforgeable value.
+    /// RFC-0102: native callers derive exact Fetch authority from confined Net,
+    /// while DNS pinning and the post-resolution Net floor remain host-side.
+    /// Both backends parse the same provider-normalized response.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn http_pin_and_get_pinned_backends_agree() {
+    fn http_fetch_derived_from_net_backends_agree() {
         use std::io::{BufRead, Write};
         let server = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = server.local_addr().unwrap().port();
-        // One request per backend run (only the get_pinned half dials); reply 200 hello.
+        // One request per backend run; reply 200 hello.
         let handle = std::thread::spawn(move || {
             for _ in 0..2 {
                 let (stream, _) = server.accept().expect("accept");
@@ -784,33 +780,23 @@ fn main(console: Console):
         let src = format!(
             "import http\n\
              fn main(console: Console, net: Net):\n\
-             \x20   match http.pin(net, \"http://127.0.0.1:{port}/nope\", reject):\n\
-             \x20       Ok(_) -> console.print(\"UNEXPECTED\")\n\
-             \x20       Err(_) -> console.print(\"policy blocked\")\n\
-             \x20   match http.pin(net, \"http://127.0.0.1:{port}/greet\", allow):\n\
-             \x20       Err(e) -> console.print(\"pin: \" + http.http_error_message(e))\n\
-             \x20       Ok(p) ->\n\
-             \x20           match http.get_pinned(net, p):\n\
-             \x20               Ok(r) -> console.print(\"${{http.status(r)}} ${{http.body(r)}}\")\n\
-             \x20               Err(e) -> console.print(\"get: \" + http.http_error_message(e))\n\
-             fn allow(ip: String) -> Bool:\n\
-             \x20   true\n\
-             fn reject(ip: String) -> Bool:\n\
-             \x20   false\n"
+             \x20   let target = \"http://127.0.0.1:{port}/greet\"\n\
+             \x20   match http.try_get(net.fetch(http.origin(target)), target):\n\
+             \x20       Ok(r) -> console.print(\"${{http.status(r)}} ${{http.body(r)}}\")\n\
+             \x20       Err(e) -> console.print(\"get: \" + http.http_error_message(e))\n"
         );
         let allow = format!("127.0.0.1:{port}");
-        let want = vec!["policy blocked".to_string(), "200 hello".to_string()];
-        assert_eq!(link_run_net(&src, &[allow.as_str()]), want, "interp pin+get_pinned");
+        let want = vec!["200 hello".to_string()];
+        assert_eq!(link_run_net(&src, &[allow.as_str()]), want, "interp derived Fetch");
         assert_eq!(
             run_linked_on_wasm_net(&[("main", src.as_str())], "main", &[allow.as_str()]),
             want,
-            "wasm pin+get_pinned",
+            "wasm derived Fetch",
         );
         handle.join().expect("server thread");
     }
 
-    /// HTTPS end to end: `http.get_url("https://localhost:PORT/")` routes through the
-    /// `tls:` scheme to a local rustls server speaking minimal HTTP/1.1, and parses the
+    /// HTTPS end to end: a derived Fetch reaches a local rustls HTTP/1.1 server and parses the
     /// response — status and body identical on BOTH backends. Closes the loop from the
     /// TLS transport up to the `std/http` client (the shape an OAuth/OIDC call makes).
     #[cfg(not(target_arch = "wasm32"))]
@@ -859,7 +845,7 @@ fn main(console: Console):
         });
 
         let src = format!(
-            "import http\nfn main(console: Console, net: Net):\n    match http.get_url(net, \"https://localhost:{port}/\"):\n        Ok(resp) -> console.print(\"${{http.status(resp)}} ${{http.body(resp)}}\")\n        Err(e) -> console.print(\"error: \" + http.http_error_message(e))\n"
+            "import http\nfn main(console: Console, net: Net):\n    let target = \"https://localhost:{port}/\"\n    match http.try_get(net.fetch(http.origin(target)), target):\n        Ok(resp) -> console.print(\"${{http.status(resp)}} ${{http.body(resp)}}\")\n        Err(e) -> console.print(\"error: \" + http.http_error_message(e))\n"
         );
         let allow = format!("localhost:{port}");
         assert_eq!(link_run_net(&src, &[allow.as_str()]), vec!["200 hi".to_string()], "interp https");
@@ -948,7 +934,7 @@ fn main(console: Console):
         });
 
         let src = format!(
-            "import oauth\nfn main(console: Console, net: Net):\n    match oauth.exchange_code(net, \"https://localhost:{port}/token\", \"cid\", \"sekret\", \"thecode\", \"http://app/cb\"):\n        Ok(tok) -> console.print(tok)\n        Err(e) -> console.print(\"error: \" + oauth.oauth_error_message(e))\n"
+            "import http\nimport oauth\nfn main(console: Console, net: Net):\n    let target = \"https://localhost:{port}/token\"\n    match oauth.exchange_code(net.fetch(http.origin(target)), target, \"cid\", \"sekret\", \"thecode\", \"http://app/cb\"):\n        Ok(tok) -> console.print(tok)\n        Err(e) -> console.print(\"error: \" + oauth.oauth_error_message(e))\n"
         );
         let allow = format!("localhost:{port}");
         assert_eq!(link_run_net(&src, &[allow.as_str()]), vec!["gho_test_token".to_string()], "interp exchange");
@@ -1025,7 +1011,7 @@ fn main(console: Console):
         });
 
         let src = format!(
-            "import oauth\nimport json\nfn main(console: Console, net: Net):\n    match oauth.bearer_get_json(net, \"https://localhost:{port}/user\", \"gho_test_token\"):\n        Ok(doc) -> console.print(json.get_string(doc, \"login\").unwrap_or(\"?\"))\n        Err(e) -> console.print(\"error: \" + oauth.oauth_error_message(e))\n"
+            "import http\nimport oauth\nimport json\nfn main(console: Console, net: Net):\n    let target = \"https://localhost:{port}/user\"\n    match oauth.bearer_get_json(net.fetch(http.origin(target)), target, \"gho_test_token\"):\n        Ok(doc) -> console.print(json.get_string(doc, \"login\").unwrap_or(\"?\"))\n        Err(e) -> console.print(\"error: \" + oauth.oauth_error_message(e))\n"
         );
         let allow = format!("localhost:{port}");
         assert_eq!(link_run_net(&src, &[allow.as_str()]), vec!["octocat".to_string()], "interp bearer get");

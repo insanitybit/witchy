@@ -511,9 +511,13 @@ impl ParsedUrl {
                 "URL contains whitespace or a control character",
             ));
         }
-        if input.contains('#') {
-            return Err(FetchError::invalid("URL fragments are not sent by Fetch"));
+        let fragment = input.find('#');
+        if origin_only && fragment.is_some() {
+            return Err(FetchError::invalid(
+                "an origin grant must not contain a path, query, or fragment",
+            ));
         }
+        let input = fragment.map_or(input, |index| &input[..index]);
         let (scheme, rest) = input
             .split_once("://")
             .ok_or_else(|| FetchError::invalid("URL is missing `scheme://`"))?;

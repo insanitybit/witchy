@@ -466,12 +466,13 @@ pub fn serve(console: Console) -> Int:
             vec!["Console"],
             "show's only capability demand is Console (for say)",
         );
-        // `http` is connect-only: it should never widen to bare/full Net.
+        // `http` is Fetch-only: DNS, dialing, redirects, and response bounds
+        // belong to the host provider, and the stdlib cannot acquire raw Net.
         let http_fp = footprint(witchy_syntax::linker::std_source("http").expect("bundled module"));
         assert_eq!(
             http_fp.total,
-            cs(&[("Net", &["Connect", "Tcp"])]),
-            "http must be exactly Net[Connect, Tcp] — a widening here grants listen/server authority",
+            cs(&[("Fetch", &[])]),
+            "http must be exactly Fetch - raw Net would bypass the portable provider boundary",
         );
         // `server` takes `Net[Listen, Tcp]` plus `Secret` (RFC-0060: `serve_tls`
         // accepts a private key as a use-only `Secret`) — authority is visible, as

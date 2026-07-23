@@ -59,7 +59,8 @@ fn main(console: Console, net: Net):
     describe(console, "https://h#frag")
     describe(console, "https://h/p?x=1#frag")
     describe(console, "https://h/p?#")
-    match http.get_request("http://127.0.0.1:{port}/p?old=1#frag").with_query("x", "a b").send(net):
+    let target = "http://127.0.0.1:{port}/p?old=1#frag"
+    match http.get_request(target).with_query("x", "a b").send(net.fetch(http.origin(target))):
         Ok(response) -> console.print("status=${{http.status(response)}}")
         Err(e) -> console.print("error: " + http.http_error_message(e))
 "#

@@ -68,13 +68,13 @@ pub fn authorize_url(authorize_endpoint: String, client_id: String, redirect_uri
 // — an HTTPS POST with a form-encoded body and `Accept: application/json`. Returns the
 // `access_token`, or a reason. Needs a `Net` that reaches the token host over TLS; the
 // `client_secret` should come from a `Secret`, never a literal.
-pub fn exchange_code(net: Net[Connect, Tcp], token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, OAuthError):
-    match token_response(net, token_url, client_id, client_secret, code, redirect_uri):
+pub fn exchange_code(fetch: Fetch, token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, OAuthError):
+    match token_response(fetch, token_url, client_id, client_secret, code, redirect_uri):
         Err(e) -> Err(e)
         Ok(doc) -> token_field(doc, "access_token")
 
-pub fn exchange_code_string(net: Net[Connect, Tcp], token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, String):
-    match exchange_code(net, token_url, client_id, client_secret, code, redirect_uri):
+pub fn exchange_code_string(fetch: Fetch, token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, String):
+    match exchange_code(fetch, token_url, client_id, client_secret, code, redirect_uri):
         Ok(token) -> Ok(token)
         Err(e) -> Err(oauth_error_message(e))
 
@@ -82,19 +82,19 @@ pub fn exchange_code_string(net: Net[Connect, Tcp], token_url: String, client_id
 // identity) instead of the access token — for "Log in with Google" and other OIDC
 // providers. Verify the returned token with `std/jwt` (`kid` → `rsa_key_for_kid` over the
 // provider's JWKS → `verify_oidc_fresh` with that provider's lifetime policy).
-pub fn exchange_code_id_token(net: Net[Connect, Tcp], token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, OAuthError):
-    match token_response(net, token_url, client_id, client_secret, code, redirect_uri):
+pub fn exchange_code_id_token(fetch: Fetch, token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, OAuthError):
+    match token_response(fetch, token_url, client_id, client_secret, code, redirect_uri):
         Err(e) -> Err(e)
         Ok(doc) -> token_field(doc, "id_token")
 
-pub fn exchange_code_id_token_string(net: Net[Connect, Tcp], token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, String):
-    match exchange_code_id_token(net, token_url, client_id, client_secret, code, redirect_uri):
+pub fn exchange_code_id_token_string(fetch: Fetch, token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, String):
+    match exchange_code_id_token(fetch, token_url, client_id, client_secret, code, redirect_uri):
         Ok(token) -> Ok(token)
         Err(e) -> Err(oauth_error_message(e))
 
 // The raw token-endpoint response as JSON (the HTTPS POST exchanging the code) — the level
 // beneath `exchange_code`; read `access_token` / `id_token` / `refresh_token` from it.
-pub fn token_response(net: Net[Connect, Tcp], token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(Json, OAuthError):
+pub fn token_response(fetch: Fetch, token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(Json, OAuthError):
     // This POST carries the `client_secret`; plaintext HTTP would leak it on the
     // wire, so refuse anything but HTTPS — fail closed (BUG-265).
     if !token_url.starts_with("https://"):
@@ -105,7 +105,7 @@ pub fn token_response(net: Net[Connect, Tcp], token_url: String, client_id: Stri
         .with_header("accept", "application/json")
         .with_header("content-type", "application/x-www-form-urlencoded")
         .with_body(body)
-    match req.send(net):
+    match req.send(fetch):
         // Surface the provider's error body (an OAuth error response carries
         // `error`/`error_description`), not just the bare status (BUG-418).
         Err(e) -> Err(TokenEndpointUnreachable(e))
@@ -117,8 +117,8 @@ pub fn token_response(net: Net[Connect, Tcp], token_url: String, client_id: Stri
                     Ok(doc) -> Ok(doc)
                     Err(e) -> Err(TokenResponseJson(e))
 
-pub fn token_response_string(net: Net[Connect, Tcp], token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(Json, String):
-    match token_response(net, token_url, client_id, client_secret, code, redirect_uri):
+pub fn token_response_string(fetch: Fetch, token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(Json, String):
+    match token_response(fetch, token_url, client_id, client_secret, code, redirect_uri):
         Ok(doc) -> Ok(doc)
         Err(e) -> Err(oauth_error_message(e))
 
@@ -126,7 +126,7 @@ pub fn token_response_string(net: Net[Connect, Tcp], token_url: String, client_i
 // signed-in user" step after `exchange_code` (GitHub `/user`, an OIDC userinfo endpoint).
 // Sends a `User-Agent` (GitHub rejects requests without one). Returns the parsed JSON, or
 // a reason. The caller reads identity fields it trusts (`login`, `id`, `email`).
-pub fn bearer_get_json(net: Net[Connect, Tcp], url: String, token: String) -> Result(Json, OAuthError):
+pub fn bearer_get_json(fetch: Fetch, url: String, token: String) -> Result(Json, OAuthError):
     // The request carries a `Bearer` access token; plaintext HTTP would leak it, so
     // refuse anything but HTTPS — fail closed (BUG-265).
     if !url.starts_with("https://"):
@@ -135,7 +135,7 @@ pub fn bearer_get_json(net: Net[Connect, Tcp], url: String, token: String) -> Re
         .with_header("authorization", "Bearer " + token)
         .with_header("accept", "application/json")
         .with_header("user-agent", "witchy-oauth")
-    match req.send(net):
+    match req.send(fetch):
         Err(e) -> Err(BearerRequestFailed(e))
         Ok(resp) ->
             if !http.is_success(resp):
@@ -145,8 +145,8 @@ pub fn bearer_get_json(net: Net[Connect, Tcp], url: String, token: String) -> Re
                     Ok(doc) -> Ok(doc)
                     Err(e) -> Err(BearerResponseJson(e))
 
-pub fn bearer_get_json_string(net: Net[Connect, Tcp], url: String, token: String) -> Result(Json, String):
-    match bearer_get_json(net, url, token):
+pub fn bearer_get_json_string(fetch: Fetch, url: String, token: String) -> Result(Json, String):
+    match bearer_get_json(fetch, url, token):
         Ok(doc) -> Ok(doc)
         Err(e) -> Err(oauth_error_message(e))
 

@@ -103,27 +103,26 @@ guard, `net.deny(Net.private())` excludes loopback, RFC-1918, link-local
 enforced on the resolved IP, so a name that rebinds to an internal address is
 refused at connect time.
 
-When the URL is dynamic — a webhook target, a user-supplied link — a program can
-resolve and pin explicitly. `net.resolve(host)` returns the host's current IP
-literals (gated on `Net[Connect]`; it filters nothing, so the program decides), and
-`connect_pinned(net, ip, host, port, secure)` dials that *exact* IP without a second
-lookup, presenting `host` for TLS SNI and the `Host` header. The allowlist is
-re-checked against `ip`, so a pinned dial can never exceed the capability. The
-ergonomic surface is `std/http`: `http.pin(net, url, allow_ip)` resolves once, lets a
-predicate approve one resolved IP, and returns a **sealed** `PinnedUrl` (only
-`std/http` can mint one — the value is unforgeable proof the policy ran);
-`http.get_pinned(net, pin)` dials the pinned IP and never re-resolves. The safe shape
-pairs the two with a confined `Net`, so the capability floor holds even if the policy
-is wrong:
+Portable HTTP uses the narrower `Fetch` root rather than exposing DNS or
+sockets. A Fetch value carries an origin allowlist and can only be narrowed:
+`fetch.only(origin)` rejects any origin outside its current authority.
+`std/http` accepts Fetch directly, so the same program runs under native and
+browser providers. Native code that already holds `Net[Connect, Tcp]` can derive
+Fetch with `net.fetch(origin)`; the Net allowlist remains a permanent floor after
+DNS resolution, and the provider resolves once before dialing.
 
 ```sh
 let safe = net.deny(Net.private())
-match http.pin(safe, user_url, public_ok):
-    Ok(target) -> http.get_pinned(safe, target)
-    Err(e) -> Err(e)
+let target = "https://example.com/status"
+let fetch = safe.fetch(http.origin(target))
+http.try_get(fetch, target)
 ```
 
-See [RFC-0020](../rfcs/0020-rebinding-resistant-http.md).
+Code which genuinely needs address inspection or raw protocols may still use
+`net.resolve` and `connect_pinned`, but those are no longer part of the portable
+HTTP surface. See [RFC-0020](../rfcs/0020-rebinding-resistant-http.md) for the
+historical socket-level design and
+[RFC-0102](../rfcs/0102-portable-roots-and-the-fetch-capability.md) for Fetch.
 
 `Exec` is the right to spawn a native subprocess — the runtime analog of the
 build-time `BuildExec`. It is right-less and carries no payload of its own: the

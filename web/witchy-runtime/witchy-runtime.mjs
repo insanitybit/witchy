@@ -732,18 +732,20 @@ function parseFetchUrl(input, originOnly = false) {
       throw invalidFetch("URL contains whitespace or a control character");
     }
   }
-  if (text.includes("#")) {
-    throw invalidFetch("URL fragments are not sent by Fetch");
+  const fragment = text.indexOf("#");
+  if (originOnly && fragment >= 0) {
+    throw invalidFetch("an origin grant must not contain a path, query, or fragment");
   }
-  const schemeEnd = text.indexOf("://");
+  const requestUrl = fragment >= 0 ? text.slice(0, fragment) : text;
+  const schemeEnd = requestUrl.indexOf("://");
   if (schemeEnd < 0) {
     throw invalidFetch("URL is missing `scheme://`");
   }
-  const scheme = text.slice(0, schemeEnd).toLowerCase();
+  const scheme = requestUrl.slice(0, schemeEnd).toLowerCase();
   if (scheme !== "http" && scheme !== "https") {
     throw invalidFetch("Fetch URLs and origins must use `http` or `https`");
   }
-  const rest = text.slice(schemeEnd + 3);
+  const rest = requestUrl.slice(schemeEnd + 3);
   let authorityEnd = rest.length;
   for (const separator of ["/", "?"]) {
     const index = rest.indexOf(separator);
@@ -793,7 +795,7 @@ function parseFetchUrl(input, originOnly = false) {
   }
   return {
     origin: `${scheme}://${host}:${port}`,
-    url: text,
+    url: requestUrl,
   };
 }
 
