@@ -146,6 +146,17 @@ pub struct HostMenu {
     pub axis: MenuAxis,
     pub grants: Vec<HostGrant>,
     pub facilities: Vec<FacilityGrant>,
+    pub enforcement: EnforcementMenu,
+}
+
+/// Outer host enforcement advertised independently from guest authority.
+/// Provider names are descriptive and open-ended; absent means the host makes
+/// no claim for that layer.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EnforcementMenu {
+    pub filesystem: Option<String>,
+    pub syscalls: Option<String>,
+    pub csp: Option<String>,
 }
 
 /// The exact provider bindings selected for one entrypoint on one host.
@@ -197,6 +208,16 @@ struct RawMenu {
     grants: BTreeMap<String, RawGrant>,
     #[serde(default)]
     facilities: BTreeMap<String, RawGrant>,
+    #[serde(default)]
+    enforcement: RawEnforcement,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawEnforcement {
+    filesystem: Option<String>,
+    syscalls: Option<String>,
+    csp: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -278,12 +299,18 @@ impl HostMenu {
                 settings: raw_grant.settings,
             });
         }
+        let enforcement = EnforcementMenu {
+            filesystem: nonempty_provider("filesystem", raw.enforcement.filesystem)?,
+            syscalls: nonempty_provider("syscalls", raw.enforcement.syscalls)?,
+            csp: nonempty_provider("csp", raw.enforcement.csp)?,
+        };
 
         Ok(Self {
             host: raw.host,
             axis: raw.axis,
             grants,
             facilities,
+            enforcement,
         })
     }
 
@@ -379,6 +406,18 @@ impl HostMenu {
     }
 }
 
+fn nonempty_provider(
+    layer: &str,
+    provider: Option<String>,
+) -> Result<Option<String>, String> {
+    match provider {
+        Some(provider) if provider.trim().is_empty() => {
+            Err(format!("host menu enforcement `{layer}` has an empty provider"))
+        }
+        provider => Ok(provider),
+    }
+}
+
 fn parse_rights(
     kind: CapabilityKind,
     names: Vec<String>,
@@ -459,6 +498,52 @@ mod tests {
             let menu = HostMenu::parse(source).expect("published menu must parse");
             assert!(!menu.host.is_empty());
         }
+    }
+
+    #[test]
+    fn published_menus_advertise_only_implemented_outer_layers() {
+        let native = HostMenu::parse(NATIVE_MENU).unwrap();
+        assert_eq!(
+            native.enforcement,
+            EnforcementMenu {
+                filesystem: Some("linux-landlock".to_string()),
+                syscalls: Some("linux-seccomp".to_string()),
+                csp: None,
+            }
+        );
+        assert_eq!(
+            HostMenu::parse(TRUSTED_EXE_MENU).unwrap().enforcement,
+            native.enforcement
+        );
+        assert_eq!(
+            HostMenu::parse(BUILD_MENU).unwrap().enforcement,
+            native.enforcement
+        );
+        assert_eq!(
+            HostMenu::parse(BROWSER_MENU).unwrap().enforcement,
+            EnforcementMenu {
+                filesystem: None,
+                syscalls: None,
+                csp: Some("derived".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn enforcement_typos_and_empty_providers_fail_closed() {
+        let typo = "host = \"bad\"\naxis = \"runtime\"\n[grants]\n\
+                    [enforcement]\nlandlok = \"linux-landlock\"\n";
+        assert!(
+            HostMenu::parse(typo)
+                .unwrap_err()
+                .contains("unknown field `landlok`")
+        );
+        let empty = "host = \"bad\"\naxis = \"runtime\"\n[grants]\n\
+                     [enforcement]\ncsp = \"  \"\n";
+        assert_eq!(
+            HostMenu::parse(empty).unwrap_err(),
+            "host menu enforcement `csp` has an empty provider"
+        );
     }
 
     #[test]

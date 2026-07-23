@@ -1,6 +1,10 @@
 host = "native-cli"
 axis = "runtime"
 
+[enforcement]
+filesystem = "linux-landlock"
+syscalls = "linux-seccomp"
+
 [grants.Console]
 provider = "process-stdio"
 determinism = "nondeterministic"

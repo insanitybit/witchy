@@ -1,6 +1,10 @@
 host = "build-step"
 axis = "build"
 
+[enforcement]
+filesystem = "linux-landlock"
+syscalls = "linux-seccomp"
+
 [grants.BuildOut]
 provider = "confined-output"
 determinism = "deterministic"

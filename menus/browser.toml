@@ -1,6 +1,9 @@
 host = "browser-playground"
 axis = "runtime"
 
+[enforcement]
+csp = "derived"
+
 [grants.Console]
 provider = "page-stdio"
 determinism = "deterministic"
