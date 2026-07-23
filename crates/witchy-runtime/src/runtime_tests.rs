@@ -504,3 +504,99 @@
             "a redzone below the reclaim watermark must stay guarded, got: {err}"
         );
     }
+
+#[test]
+fn concrete_grants_have_one_complete_confinement_policy() {
+    use std::collections::BTreeSet;
+    use std::path::PathBuf;
+    use witchy_confinement::{FsAccess, FsRule, FsScope, SyscallClass};
+
+    let caps = Capabilities {
+        dir_root: Some(PathBuf::from("/read")),
+        dir_roots: vec![PathBuf::from("/write")],
+        dir_rights: vec![
+            FsRights::new(true, false),
+            FsRights::new(false, true),
+        ],
+        file_grants: vec![PathBuf::from("/config/app.toml")],
+        file_rights: vec![FsRights::new(true, false)],
+        exec: true,
+        net_allow: Some(vec!["db.example:5432".into()]),
+        net_connect: true,
+        net_grants: vec![vec!["127.0.0.1:8080".into()]],
+        net_listen: true,
+        fetch_grants: vec![vec!["https://api.example".into()]],
+        build_out: Some(PathBuf::from("/generated")),
+        build_read_roots: vec![PathBuf::from("/schema")],
+        ..Default::default()
+    };
+
+    let policy = caps.confinement_policy();
+    assert_eq!(
+        policy.filesystem,
+        vec![
+            FsRule {
+                path: PathBuf::from("/config/app.toml"),
+                scope: FsScope::File,
+                access: FsAccess::new(true, false, false),
+            },
+            FsRule {
+                path: PathBuf::from("/generated"),
+                scope: FsScope::Tree,
+                access: FsAccess::new(false, true, false),
+            },
+            FsRule {
+                path: PathBuf::from("/read"),
+                scope: FsScope::Tree,
+                access: FsAccess::new(true, false, true),
+            },
+            FsRule {
+                path: PathBuf::from("/schema"),
+                scope: FsScope::Tree,
+                access: FsAccess::new(true, false, false),
+            },
+            FsRule {
+                path: PathBuf::from("/write"),
+                scope: FsScope::Tree,
+                access: FsAccess::new(false, true, false),
+            },
+        ]
+    );
+    assert_eq!(
+        policy.network.connect_tcp_ports,
+        BTreeSet::from([443, 5432, 8080])
+    );
+    assert_eq!(
+        policy.network.bind_tcp_ports,
+        BTreeSet::from([5432, 8080])
+    );
+    assert_eq!(
+        policy.syscall_classes,
+        BTreeSet::from([
+            SyscallClass::Base,
+            SyscallClass::FsOpen,
+            SyscallClass::Network,
+            SyscallClass::Listen,
+            SyscallClass::Process,
+        ])
+    );
+}
+
+#[test]
+fn empty_network_grant_remains_distinct_from_no_network_grant() {
+    use witchy_confinement::SyscallClass;
+
+    let absent = Capabilities::none().confinement_policy();
+    let empty = Capabilities {
+        net_allow: Some(Vec::new()),
+        net_connect: true,
+        ..Default::default()
+    }
+    .confinement_policy();
+
+    assert!(!absent.network.connect_requested);
+    assert!(!absent.syscall_classes.contains(&SyscallClass::Network));
+    assert!(empty.network.connect_requested);
+    assert!(empty.network.connect_tcp_ports.is_empty());
+    assert!(empty.syscall_classes.contains(&SyscallClass::Network));
+}

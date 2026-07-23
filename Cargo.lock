@@ -2859,6 +2859,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "witchy-confinement"
+version = "0.1.0"
+
+[[package]]
 name = "witchy-interp"
 version = "0.1.0"
 dependencies = [
@@ -2900,6 +2904,7 @@ dependencies = [
  "wasmtime",
  "webpki-roots 0.26.11",
  "witchy-caps",
+ "witchy-confinement",
  "witchy-syntax",
  "witchy-wir",
 ]

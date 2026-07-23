@@ -340,6 +340,98 @@ impl Capabilities {
     pub fn none() -> Self {
         Self::default()
     }
+
+    /// Derive the target-neutral outer-confinement policy from the exact
+    /// concrete grants admitted for this VM. Platform providers consume this
+    /// object; none may independently reinterpret `Capabilities`.
+    pub fn confinement_policy(&self) -> witchy_confinement::Policy {
+        use witchy_confinement::{
+            FsAccess, FsScope, Policy, SyscallClass,
+        };
+
+        let mut policy = Policy::default();
+        let coarse_dir_rights = FsRights::new(self.dir_read, self.dir_write);
+        for (index, root) in self
+            .dir_root
+            .iter()
+            .chain(self.dir_roots.iter())
+            .enumerate()
+        {
+            let rights = self
+                .dir_rights
+                .get(index)
+                .copied()
+                .unwrap_or(coarse_dir_rights);
+            policy.add_fs_rule(
+                root,
+                FsScope::Tree,
+                FsAccess::new(rights.read, rights.write, self.exec && rights.read),
+            );
+        }
+        for (index, path) in self.file_grants.iter().enumerate() {
+            let rights = self
+                .file_rights
+                .get(index)
+                .copied()
+                .unwrap_or_else(FsRights::full);
+            policy.add_fs_rule(
+                path,
+                FsScope::File,
+                FsAccess::new(rights.read, rights.write, false),
+            );
+        }
+        if let Some(path) = &self.build_out {
+            policy.add_fs_rule(
+                path,
+                FsScope::Tree,
+                FsAccess::new(false, true, false),
+            );
+        }
+        for path in &self.build_read_roots {
+            policy.add_fs_rule(
+                path,
+                FsScope::Tree,
+                FsAccess::new(true, false, false),
+            );
+        }
+
+        if self.net_connect {
+            policy.network.connect_requested = true;
+            for target in self
+                .net_allow
+                .iter()
+                .flatten()
+                .chain(self.net_grants.iter().flatten())
+            {
+                policy.add_connect_target(target);
+            }
+        }
+        if self.net_listen {
+            policy.network.bind_requested = true;
+            for target in self
+                .net_allow
+                .iter()
+                .flatten()
+                .chain(self.net_grants.iter().flatten())
+            {
+                policy.add_bind_target(target);
+            }
+        }
+        for origin in self.fetch_grants.iter().flatten() {
+            policy.add_fetch_origin(origin);
+        }
+        if let Some(targets) = &self.build_net_allow {
+            policy.network.connect_requested = true;
+            for target in targets {
+                policy.add_connect_target(target);
+            }
+        }
+        if self.exec || self.exec_allow.is_some() {
+            policy.syscall_classes.insert(SyscallClass::Process);
+        }
+        policy.normalize_classes();
+        policy
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

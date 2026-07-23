@@ -8,6 +8,7 @@ description = "witchy compiler — runtime values, the capability host registry,
 
 [dependencies]
 witchy-caps = { path = "../witchy-caps" }
+witchy-confinement = { path = "../witchy-confinement" }
 witchy-syntax = { path = "../witchy-syntax" }
 witchy-wir = { path = "../witchy-wir" }
 # Pure-Rust crypto for the wasm-safe path (the playground never runs

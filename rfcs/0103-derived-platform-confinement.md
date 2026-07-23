@@ -7,7 +7,9 @@ tracking: >
   Reopened for full implementation. Phase 1 is implemented: native Dir, File,
   build-root, and executable selection authority is descriptor/handle anchored
   through one shared confine implementation used by both backends, with
-  deterministic parent-swap regressions. Derived Landlock/seccomp policy,
+  deterministic parent-swap regressions. The target-neutral
+  `witchy-confinement` policy model and the single concrete-grant derivation
+  boundary are implemented. Landlock/seccomp providers, launch activation,
   build-step outer confinement, derived CSP, required mode, and enforcement
   menus remain active implementation phases.
 predecessors:
@@ -335,8 +337,13 @@ the served app is the input it should derive from).
    Evidence includes deterministic parent replacement, retained-authority,
    lexical escape, symlink-leaf write, interpreter traversal, compiled-exec
    parity, and browser-target compile regressions.
-2. **Landlock filesystem + TCP** in the CLI host and trusted-exe launcher:
-   probe ABI, derive from resolved grants, arm before guest execution;
+2. **In progress**: `witchy-confinement` owns the normalized filesystem,
+   network, Fetch-origin, and syscall-class policy, and
+   `Capabilities::confinement_policy` is the only concrete-grant derivation.
+   Empty grants remain distinct from absent authority and unexpressible
+   transports are explicit. Next, Landlock filesystem + TCP in the CLI host and
+   trusted-exe launcher must probe ABI and arm after grant resolution but before
+   guest execution;
    evidence: a violation harness that deliberately bypasses the host layer
    in a test build and asserts the kernel denies (the fence catches a
    simulated host bug), plus the full differential suite green under the
