@@ -9,9 +9,10 @@ tracking: >
   through one shared confine implementation used by both backends, with
   deterministic parent-swap regressions. The target-neutral
   `witchy-confinement` policy model and the single concrete-grant derivation
-  boundary are implemented. Landlock/seccomp providers, launch activation,
-  build-step outer confinement, derived CSP, required mode, and enforcement
-  menus remain active implementation phases.
+  boundary are implemented. Its Linux provider safely translates filesystem
+  and TCP policy into independently reported Landlock rulesets. Launch
+  activation, seccomp, build-step outer confinement, derived CSP, required
+  mode, and enforcement menus remain active implementation phases.
 predecessors:
   - "[0013](0013-capability-grant-documents.md) (grant documents — the concrete pre-execution authority statement this RFC compiles)"
   - "[0068](0068-compiled-build-step-grants.md) (build-step grants — the declared authority of third-party build code)"
@@ -341,8 +342,10 @@ the served app is the input it should derive from).
    network, Fetch-origin, and syscall-class policy, and
    `Capabilities::confinement_policy` is the only concrete-grant derivation.
    Empty grants remain distinct from absent authority and unexpressible
-   transports are explicit. Next, Landlock filesystem + TCP in the CLI host and
-   trusted-exe launcher must probe ABI and arm after grant resolution but before
+   transports are explicit. The Linux provider uses safe `landlock` APIs,
+   best-effort or hard compatibility, separate filesystem/TCP rulesets, and
+   Linux-gated host-bypass violation harnesses. Next, the CLI host and
+   trusted-exe launcher must arm that provider after grant resolution but before
    guest execution;
    evidence: a violation harness that deliberately bypasses the host layer
    in a test build and asserts the kernel denies (the fence catches a

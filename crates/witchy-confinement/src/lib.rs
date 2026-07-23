@@ -8,6 +8,14 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+mod provider;
+pub use provider::{
+    EnforcementError, EnforcementReport, Layer, LayerReport, LayerStatus, apply,
+};
+
+#[cfg(target_os = "linux")]
+mod linux;
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum EnforcementMode {
     /// Reusable library and test paths do not mutate process-wide policy.
