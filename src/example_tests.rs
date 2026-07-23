@@ -343,8 +343,12 @@
     /// never re-derives classification (which could disagree with the authoritative Rust one).
     fn generate_examples_manifest() -> String {
         let files = doc_markdown_files();
+        let browser_menu =
+            witchy_caps::menu::HostMenu::parse(witchy_caps::menu::BROWSER_MENU)
+                .expect("the checked-in browser host menu must be valid");
         let per_file: Vec<Vec<serde_json::Value>> = std::thread::scope(|s| {
             let handles: Vec<_> = files.iter().map(|file| {
+                let browser_menu = &browser_menu;
                 s.spawn(move || {
                     let mut file_entries = Vec::new();
                     let Ok(text) = std::fs::read_to_string(file) else { return file_entries };
@@ -375,24 +379,31 @@
                         let uses_workers = footprint_module.imports.iter().any(|m| m == "vm")
                             || linked.imports.iter().any(|m| m == "vm");
                         let runnable = has_main && console_only && !reads_argv && !uses_workers;
-                        // (RFC-0091) `browser_runnable`: whether the OPT-IN playground host
-                        // (`instantiate(..., { capabilities })` in web/witchy-runtime) can run
-                        // this block. That host backs exactly the browser-honest capability
-                        // families — `Console`, `Clock` (real wall/monotonic time), `Env` (an
-                        // empty/page-supplied map), and `Dir` (a per-run in-memory tree) — and
-                        // leaves `Net`/`Exec`/`Secret`/argv/workers denied by omission. This is a
-                        // SUPERSET of `runnable` (which stays Console-only + output-pinned): a
+                        // (RFC-0102) `browser_runnable` is the program's typed host
+                        // requirements checked against the published browser menu. Capability
+                        // families/rights and non-capability facilities (argv/VM workers) all
+                        // pass through that one subset check; the classifier owns no private
+                        // host allowlist. This is a SUPERSET of `runnable` (which stays
+                        // Console-only + output-pinned): a
                         // `browser_runnable`-but-not-`runnable` block has NO pinned `output`,
                         // because its result depends on real time or on host-supplied Dir/Env
                         // fixtures rather than a deterministic oracle run. The docs cell uses
                         // this to offer a Run button (empty fixtures) without claiming a golden.
-                        const BROWSER_CAP_FAMILIES: &[&str] = &["Console", "Clock", "Env", "Dir"];
-                        let browser_caps_ok = fp
-                            .total
-                            .keys()
-                            .all(|k| BROWSER_CAP_FAMILIES.iter().any(|f| f == k));
+                        let mut browser_requirements =
+                            witchy_caps::menu::HostRequirements::from_cap_set(&fp.total)
+                                .unwrap_or_else(|e| {
+                                    panic!("{context} has invalid host requirements: {e}")
+                                });
+                        if reads_argv {
+                            browser_requirements
+                                .require_facility(witchy_caps::menu::HostFacility::Argv);
+                        }
+                        if uses_workers {
+                            browser_requirements
+                                .require_facility(witchy_caps::menu::HostFacility::Vm);
+                        }
                         let browser_runnable =
-                            has_main && browser_caps_ok && !reads_argv && !uses_workers;
+                            has_main && browser_menu.check(&browser_requirements).portable();
                         let footprint: Vec<String> = fp
                             .total
                             .iter()
