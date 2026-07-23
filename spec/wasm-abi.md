@@ -38,8 +38,8 @@ set. The codegen path (`assemble_wir_module` in
 functions the reachable code calls. A footprint-empty rune therefore imports no
 capability-authority function; a rune that touches the
 filesystem/network/clock additionally imports the corresponding capability
-function. Authority-free modules can still require a native-only launch or
-toolchain service such as `args_size` or `compiler_footprint_len`.
+function. Authority-free modules can still require a native-only toolchain
+service such as `compiler_footprint_len`.
 
 This is what makes the browser target's containment **structural**. The browser
 host (`web/witchy-runtime/`) provides only entries marked `browser: provided`
@@ -124,11 +124,11 @@ Some imports instead take an `out_ptr` and write a **fixed-size** result directl
 (no staging) — e.g. `crypto.sha256` writes 64 hex bytes, `float_to_str` writes the
 decimal and returns its length. The guest reserves a sufficient buffer first.
 
-The pure-compute host implements `fill_pending` (drains a staged String, used by
-`regex_match_spans_len`) and `write_pending_list` (a no-op there, since no pure
-sizing import stages a list). It does **not** implement the capability sizing
-imports (`dir_read_len`, `net_recv_*_len`, `args_size`, …), so a module using one
-cannot instantiate.
+The browser host implements `fill_pending` (drains a staged String, used by
+`regex_match_spans_len`), `args_size` (stages page-supplied argv, empty by
+default), and `write_pending_list` (drains argv or a capability-produced list).
+It does **not** implement unavailable capability sizing imports
+(`net_recv_*_len`, for example), so a module using one cannot instantiate.
 
 ## The imports
 
@@ -175,7 +175,7 @@ byte-for-byte and instantiates an all-import probe against the native host.
 | `env_fill` | `(i32, i32)` | capability authority | Env | omitted |
 | `dir_read_len` | `(externref, i32) -> i32` | capability authority | Dir.Read | omitted |
 | `dir_list_size` | `(externref) -> i32` | capability authority | Dir.Read | omitted |
-| `args_size` | `() -> i32` | launch input | none | omitted |
+| `args_size` | `() -> i32` | launch input | none | provided |
 | `testing_mock_dir` | `(i32) -> externref` | internal/toolchain service | none | omitted |
 | `write_pending_list` | `(i32)` | pure infrastructure | none | provided |
 | `vm_par_map_run` | `(i32, i32) -> i32` | internal/toolchain service | none | omitted |
@@ -283,9 +283,8 @@ a self-contained synchronous implementation needing none.
 
 ### Host policy notes
 
-> `args_size` is host-chosen *input* rather than authority, but it is a host
-> service the pure-compute target does not offer, so it is omitted; a browser
-> module receives no argv.
+> `args_size` is host-chosen *input* rather than authority. Browser callers
+> provide it as `opts.args`; omission means an empty argument list.
 
 > The `compiler_*` imports are pure functions of their source arguments and grant
 > no authority — they never appear in the capability footprint (a program that
