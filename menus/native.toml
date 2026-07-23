@@ -1,0 +1,58 @@
+host = "native-cli"
+axis = "runtime"
+
+[grants.Console]
+provider = "process-stdout"
+determinism = "deterministic"
+
+[grants.Clock]
+provider = "system-clock"
+determinism = "nondeterministic"
+
+[grants.Rand]
+provider = "system-random"
+determinism = "nondeterministic"
+
+[grants.Env]
+provider = "process-environment"
+determinism = "nondeterministic"
+
+[grants.Secret]
+provider = "signing-key"
+determinism = "nondeterministic"
+source = "launch"
+
+[grants.SecretStore]
+provider = "named-secrets"
+determinism = "nondeterministic"
+source = "launch"
+
+[grants.Dir]
+provider = "confined-filesystem"
+determinism = "nondeterministic"
+rights = ["Read", "Write"]
+grant = "path"
+
+[grants.File]
+provider = "confined-file"
+determinism = "nondeterministic"
+rights = ["Read", "Write"]
+grant = "path"
+
+[grants.Net]
+provider = "pinned-network"
+determinism = "nondeterministic"
+rights = ["Connect", "Listen", "Tcp", "Udp", "Uds"]
+grant = "address-allowlist"
+
+[grants.Exec]
+provider = "confined-process"
+determinism = "nondeterministic"
+
+[facilities.argv]
+provider = "process-argv"
+determinism = "nondeterministic"
+
+[facilities.vm]
+provider = "wasmtime-worker"
+determinism = "deterministic"

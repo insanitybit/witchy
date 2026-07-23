@@ -13,3 +13,6 @@ pub mod capabilities;
 /// RFC-0013 capability grant documents (TOML); native-only (uses `serde`/`toml`).
 #[cfg(feature = "native")]
 pub mod grants;
+/// RFC-0102 host capability menus and typed portability requirements.
+#[cfg(feature = "native")]
+pub mod menu;

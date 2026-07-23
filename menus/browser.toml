@@ -1,0 +1,21 @@
+host = "browser-playground"
+axis = "runtime"
+
+[grants.Console]
+provider = "page-output"
+determinism = "deterministic"
+
+[grants.Clock]
+provider = "browser-clock"
+determinism = "nondeterministic"
+
+[grants.Env]
+provider = "page-map"
+determinism = "deterministic"
+source = "page"
+
+[grants.Dir]
+provider = "memory"
+determinism = "deterministic"
+rights = ["Read", "Write"]
+source = "per-run"
