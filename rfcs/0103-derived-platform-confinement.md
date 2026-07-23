@@ -11,9 +11,9 @@ tracking: >
   `witchy-confinement` policy model and the single concrete-grant derivation
   boundary are implemented. Its Linux provider safely translates filesystem
   and TCP policy into independently reported Landlock rulesets. Launch
-  activation and required launch mode are implemented. Seccomp, build-step
-  outer confinement, derived CSP, and enforcement menus remain active
-  implementation phases.
+  activation, required launch mode, and seccomp promise classes are
+  implemented. Build-step outer confinement, derived CSP, and enforcement
+  menus remain active implementation phases.
 predecessors:
   - "[0013](0013-capability-grant-documents.md) (grant documents — the concrete pre-execution authority statement this RFC compiles)"
   - "[0068](0068-compiled-build-step-grants.md) (build-step grants — the declared authority of third-party build code)"
@@ -354,9 +354,17 @@ the served app is the input it should derive from).
    in a test build and asserts the kernel denies (the fence catches a
    simulated host bug), plus the full differential suite green under the
    armed fence (superset invariant).
-3. **Seccomp promise classes**, grant-conditional; evidence: suite-green
-   under filter as CI canary; `execve`/socket denial tests for ungranted
-   classes.
+3. **Implemented**: Linux x86_64/aarch64/riscv64 hosts install a
+   thread-synchronized seccomp-BPF filter after Landlock. Central `fs-open`,
+   `net`, `listen`, and `proc` promise classes deny their syscall families
+   with `EPERM` when the corresponding concrete authority is absent; a fixed
+   bypass set denies `io_uring`, handle-based opens, mount/namespace mutation,
+   BPF, and process-introspection mechanisms regardless of grants. The
+   provider uses rust-vmm's safe `seccompiler` API, reports its own layer, and
+   participates in required-mode completeness. Evidence: warning-denied Linux
+   production and test-code cross-checks, class-set regressions, child probes
+   proving `execve` and socket denial, and the suite-green strict launcher as
+   the CI canary.
 4. **Build-step confinement**: the build driver arms the fence around each
    `build.witchy` child from its `[build.grants]`; evidence: a build step
    attempting undeclared fs/net/exec is kernel-denied.

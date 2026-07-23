@@ -134,6 +134,17 @@ currently implemented outer layer is fully enforced:
 witchy sandbox --confine=required --dir . main.witchy
 ```
 
+On supported Linux architectures the outer policy also installs a
+thread-synchronized seccomp filter. Witchy maintains promise classes rather
+than a brittle full syscall allowlist: without filesystem authority the open
+family returns `EPERM`; without network authority socket creation returns
+`EPERM`; without `Net[Listen]`, bind/listen/accept return `EPERM`; and without
+`Exec`, process creation and execution return `EPERM`. High-risk mechanisms
+that could bypass those classes, including `io_uring`, handle-based opens,
+mounts, namespace changes, BPF, and process introspection, remain denied even
+when ordinary grants are present. Filters are restriction-only, apply to every
+existing thread, and are inherited by executable children.
+
 Executable selection uses descriptor execution or an already-open private
 snapshot. On macOS, platform binaries may instead use a path only after Witchy
 verifies that its opened identity still matches and that every ancestor is
