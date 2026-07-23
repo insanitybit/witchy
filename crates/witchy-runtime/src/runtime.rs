@@ -254,13 +254,18 @@ pub struct Capabilities {
     /// `None` denies the filesystem entirely; the `dir_read`/`dir_write` flags
     /// pick which operation families are linked within it.
     pub dir_root: Option<std::path::PathBuf>,
+    /// Host roots admitted before outer confinement activation. Rights are
+    /// aligned before `dir_root` and `dir_roots`; these handles are never
+    /// reopened through their diagnostic paths.
+    pub preopened_dirs: Vec<crate::confine::ConfinedDir>,
     /// Additional root `Dir` grants, for a `main` that takes several `Dir`
     /// parameters. The generated wrapper mints each parameter from its grant
     /// ordinal; the ordinal never becomes the guest's `Dir` value.
     pub dir_roots: Vec<std::path::PathBuf>,
-    /// Per-Dir-grant rights, aligned with `dir_root` followed by `dir_roots`.
-    /// Empty means "use the coarse `dir_read`/`dir_write` grant for each Dir grant",
-    /// preserving older callers that grant one uniform root.
+    /// Per-Dir-grant rights, aligned with `preopened_dirs`, then `dir_root`,
+    /// then `dir_roots`. Empty means "use the coarse `dir_read`/`dir_write`
+    /// grant for each Dir grant", preserving older callers that grant one
+    /// uniform root.
     pub dir_rights: Vec<FsRights>,
     /// Enable authority-free in-memory test capability constructors such as
     /// `testing.mock_dir`. This links read-only Dir/File operation imports for
@@ -269,9 +274,14 @@ pub struct Capabilities {
     /// Direct `File` grants (RFC-0012): the i-th `File` parameter of `main` maps to
     /// the i-th path here. Backed by `--file` or `[files]`.
     pub file_grants: Vec<std::path::PathBuf>,
-    /// Per-File-grant rights, aligned with `file_grants`. Empty means full read and
-    /// write, which preserves the historical precompiled-wasm `--file` behavior
-    /// until that launch surface grows explicit rights syntax.
+    /// Direct File grants admitted before outer confinement activation. Rights
+    /// are aligned before `file_grants`; retained parent handles remain the
+    /// authority after launch-path replacement.
+    pub preopened_files: Vec<crate::confine::ConfinedFile>,
+    /// Per-File-grant rights, aligned with `preopened_files`, then
+    /// `file_grants`. Empty means full read and write, which preserves the
+    /// historical precompiled-wasm `--file` behavior until that launch surface
+    /// grows explicit rights syntax.
     pub file_rights: Vec<FsRights>,
     /// May read within `dir_root` (read/exists/is_dir/list/subdir).
     pub dir_read: bool,
@@ -362,9 +372,11 @@ impl Capabilities {
         let mut policy = Policy::default();
         let coarse_dir_rights = FsRights::new(self.dir_read, self.dir_write);
         for (index, root) in self
-            .dir_root
+            .preopened_dirs
             .iter()
-            .chain(self.dir_roots.iter())
+            .map(crate::confine::ConfinedDir::display_path)
+            .chain(self.dir_root.iter().map(std::path::PathBuf::as_path))
+            .chain(self.dir_roots.iter().map(std::path::PathBuf::as_path))
             .enumerate()
         {
             let rights = self
@@ -378,7 +390,13 @@ impl Capabilities {
                 FsAccess::new(rights.read, rights.write, self.exec && rights.read),
             );
         }
-        for (index, path) in self.file_grants.iter().enumerate() {
+        for (index, path) in self
+            .preopened_files
+            .iter()
+            .map(crate::confine::ConfinedFile::display_path)
+            .chain(self.file_grants.iter().map(std::path::PathBuf::as_path))
+            .enumerate()
+        {
             let rights = self
                 .file_rights
                 .get(index)
@@ -1069,7 +1087,8 @@ pub(crate) fn link_capability_imports(
     }
     // The Dir family is linked per RIGHT, so a module compiled against a
     // write operation cannot even instantiate under a read-only grant.
-    let has_real_dir = caps.dir_root.is_some() || !caps.dir_roots.is_empty();
+    let has_real_dir =
+        !caps.preopened_dirs.is_empty() || caps.dir_root.is_some() || !caps.dir_roots.is_empty();
     let dir_read = caps.dir_read || caps.dir_rights.iter().any(|r| r.read);
     let dir_write = caps.dir_write || caps.dir_rights.iter().any(|r| r.write);
     if caps.test_mocks {
@@ -1088,7 +1107,7 @@ pub(crate) fn link_capability_imports(
     // RFC-0012 File leaf ops: usable on a File obtained by navigation (above) OR
     // granted directly to `main` (`--file`), so they are linked whenever either a
     // Dir grant or a direct File grant is present.
-    let has_file_grants = !caps.file_grants.is_empty();
+    let has_file_grants = !caps.preopened_files.is_empty() || !caps.file_grants.is_empty();
     let direct_file_read = if caps.file_rights.is_empty() {
         has_file_grants
     } else {
@@ -1210,24 +1229,37 @@ fn vmstate_from_caps(
 ) -> Result<VmState> {
     let default_dir_rights = FsRights::new(caps.dir_read, caps.dir_write);
     let dirs = caps
-        .dir_root
+        .preopened_dirs
         .iter()
         .cloned()
-        .chain(caps.dir_roots.iter().cloned())
+        .map(Ok)
+        .chain(
+            caps.dir_root
+                .iter()
+                .cloned()
+                .chain(caps.dir_roots.iter().cloned())
+                .map(|path| confine(crate::confine::ConfinedDir::open_ambient(&path))),
+        )
         .enumerate()
-        .map(|(i, p)| Ok(DirAuthority {
-            backing: DirBacking::Fs(confine(crate::confine::ConfinedDir::open_ambient(&p))?),
+        .map(|(i, dir)| Ok(DirAuthority {
+            backing: DirBacking::Fs(dir?),
             policy: String::new(),
             rights: caps.dir_rights.get(i).copied().unwrap_or(default_dir_rights),
         }))
         .collect::<Result<Vec<_>>>()?;
     let files = caps
-        .file_grants
+        .preopened_files
         .iter()
         .cloned()
+        .map(Ok)
+        .chain(
+            caps.file_grants
+                .iter()
+                .map(|path| confine(crate::confine::ConfinedFile::open_ambient(path))),
+        )
         .enumerate()
-        .map(|(i, path)| Ok(FileAuthority {
-            backing: FileBacking::Fs(confine(crate::confine::ConfinedFile::open_ambient(&path))?),
+        .map(|(i, file)| Ok(FileAuthority {
+            backing: FileBacking::Fs(file?),
             rights: caps.file_rights.get(i).copied().unwrap_or_else(FsRights::full),
         }))
         .collect::<Result<Vec<_>>>()?;

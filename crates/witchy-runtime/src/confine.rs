@@ -285,6 +285,41 @@ impl ConfinedFile {
         })
     }
 
+    /// Validate a direct host grant's existing leaf and declared access without
+    /// surrendering the parent handle retained by this authority.
+    pub fn validate_access(&self, read: bool, write: bool) -> Result<(), ConfineError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let metadata = self
+                .parent
+                .inner
+                .metadata(&self.name)
+                .map_err(|error| inaccessible(&self.display, error))?;
+            if !metadata.is_file() {
+                return err(format!("File grant `{}` is not a file", self.display.display()));
+            }
+            if read {
+                self.open_read_handle()
+                    .map_err(|error| inaccessible(&self.display, error))?;
+            }
+            if write {
+                use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
+                let mut options = cap_std::fs::OpenOptions::new();
+                options.write(true).follow(FollowSymlinks::No);
+                self.parent
+                    .inner
+                    .open_with(&self.name, &options)
+                    .map_err(|error| inaccessible(&self.display, error))?;
+            }
+            Ok(())
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (read, write);
+            err("host filesystem capabilities are unavailable on this target")
+        }
+    }
+
     /// Diagnostic provenance for this authority. Never use this path to open.
     pub fn display_path(&self) -> &Path {
         &self.display

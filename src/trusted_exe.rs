@@ -12,7 +12,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::artifact;
 use witchy_syntax::ast;
 use witchy_caps::{capabilities, grants};
-use witchy_runtime::runtime;
+use witchy_runtime::{
+    confine::{ConfinedDir, ConfinedFile},
+    runtime,
+};
 
 const MAGIC: &[u8; 16] = b"WITCHY-EXE-0092!";
 const FORMAT_VERSION: u32 = 1;
@@ -120,9 +123,9 @@ struct SecretPlan {
 #[derive(Debug)]
 pub struct ResolvedBindings {
     pub confinement: witchy_confinement::EnforcementMode,
-    pub dir_roots: Vec<std::path::PathBuf>,
+    pub dir_authorities: Vec<ConfinedDir>,
     pub dir_rights: Vec<runtime::FsRights>,
-    pub file_grants: Vec<std::path::PathBuf>,
+    pub file_authorities: Vec<ConfinedFile>,
     pub file_rights: Vec<runtime::FsRights>,
     pub env_allow: Option<Vec<String>>,
     pub net_grants: Vec<Vec<String>>,
@@ -451,9 +454,9 @@ pub fn resolve_binding_plan(
         (false, None) => None,
     };
 
-    let cwd = std::fs::canonicalize(cwd)
+    let cwd = std::path::absolute(cwd)
         .map_err(|error| format!("trusted-exe cannot resolve launch cwd `{}`: {error}", cwd.display()))?;
-    let mut dir_roots = Vec::new();
+    let mut dir_authorities = Vec::new();
     let mut dir_rights = Vec::new();
     for dir in plan.dirs {
         let candidate = match dir.source {
@@ -463,55 +466,39 @@ pub fn resolve_binding_plan(
                 if path.is_absolute() { path } else { cwd.join(path) }
             }
         };
-        let root = std::fs::canonicalize(&candidate).map_err(|error| {
+        let root = ConfinedDir::open_ambient(&candidate).map_err(|error| {
             format!(
-                "trusted-exe cannot resolve directory binding `{}` at `{}`: {error}",
+                "trusted-exe cannot admit directory binding `{}` at `{}`: {error}",
                 dir.name,
                 candidate.display()
             )
         })?;
-        if !root.is_dir() {
-            return Err(format!(
-                "trusted-exe directory binding `{}` resolves to `{}`, which is not a directory",
-                dir.name,
-                root.display()
-            ));
-        }
-        dir_roots.push(root);
+        dir_authorities.push(root);
         dir_rights.push(runtime::FsRights::new(dir.rights.read, dir.rights.write));
     }
 
-    let mut file_grants = Vec::new();
+    let mut file_authorities = Vec::new();
     let mut file_rights = Vec::new();
     for file in plan.files {
         let configured = std::path::PathBuf::from(&file.path);
         let candidate = if configured.is_absolute() { configured } else { cwd.join(configured) };
-        let path = std::fs::canonicalize(&candidate).map_err(|error| {
+        let authority = ConfinedFile::open_ambient(&candidate).map_err(|error| {
             format!(
-                "trusted-exe cannot resolve file binding `{}` at `{}`: {error}",
+                "trusted-exe cannot admit file binding `{}` at `{}`: {error}",
                 file.name,
                 candidate.display()
             )
         })?;
-        if !path.is_file() {
-            return Err(format!(
-                "trusted-exe file binding `{}` resolves to `{}`, which is not a file",
-                file.name,
-                path.display()
-            ));
-        }
-        if file.rights.read || file.rights.write {
-            let mut options = std::fs::OpenOptions::new();
-            options.read(file.rights.read).write(file.rights.write);
-            options.open(&path).map_err(|error| {
+        authority
+            .validate_access(file.rights.read, file.rights.write)
+            .map_err(|error| {
                 format!(
-                    "trusted-exe cannot open file binding `{}` at `{}` with declared rights: {error}",
+                    "trusted-exe cannot validate file binding `{}` at `{}` with declared rights: {error}",
                     file.name,
-                    path.display()
+                    candidate.display()
                 )
             })?;
-        }
-        file_grants.push(path);
+        file_authorities.push(authority);
         file_rights.push(runtime::FsRights::new(file.rights.read, file.rights.write));
     }
 
@@ -539,9 +526,9 @@ pub fn resolve_binding_plan(
         } else {
             witchy_confinement::EnforcementMode::BestEffort
         },
-        dir_roots,
+        dir_authorities,
         dir_rights,
-        file_grants,
+        file_authorities,
         file_rights,
         env_allow,
         net_grants: plan.net.into_iter().map(|binding| binding.allow).collect(),
@@ -930,10 +917,54 @@ mod tests {
         let bytes = build_binding_plan(&source, manifest).unwrap();
         let wasm = artifact::embed_launch_contract(Module::new().finish(), &source);
         let resolved = resolve_binding_plan(&bytes, &wasm, std::path::Path::new(".")).unwrap();
-        assert_eq!(resolved.dir_roots.len(), 2);
-        assert_eq!(resolved.dir_roots[0], std::fs::canonicalize(".").unwrap());
-        assert_eq!(resolved.dir_roots[1], std::path::Path::new("/"));
+        assert_eq!(resolved.dir_authorities.len(), 2);
+        assert_eq!(
+            resolved.dir_authorities[0].display_path(),
+            std::path::absolute(".").unwrap()
+        );
+        assert_eq!(resolved.dir_authorities[1].display_path(), std::path::Path::new("/"));
         assert_eq!(resolved.dir_rights, vec![runtime::FsRights::new(true, false); 2]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn admitted_trusted_bindings_survive_parent_name_replacement() {
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let scratch = std::env::temp_dir().join(format!(
+            "witchy-trusted-bindings-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&scratch).unwrap();
+        let _cleanup = Cleanup(scratch.clone());
+        let root = scratch.join("root");
+        let outside = scratch.join("outside");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(root.join("bound"), "inside").unwrap();
+        std::fs::write(outside.join("bound"), "outside").unwrap();
+
+        let dir = ConfinedDir::open_ambient(&root).unwrap();
+        let file = ConfinedFile::open_ambient(&root.join("bound")).unwrap();
+        file.validate_access(true, true).unwrap();
+
+        let original = scratch.join("original");
+        std::fs::rename(&root, &original).unwrap();
+        std::os::unix::fs::symlink(&outside, &root).unwrap();
+
+        dir.file("new", false).unwrap().write_all(b"dir").unwrap();
+        file.write_all(b"file").unwrap();
+        assert_eq!(std::fs::read(original.join("new")).unwrap(), b"dir");
+        assert_eq!(std::fs::read(original.join("bound")).unwrap(), b"file");
+        assert_eq!(std::fs::read(outside.join("bound")).unwrap(), b"outside");
     }
 
     #[test]

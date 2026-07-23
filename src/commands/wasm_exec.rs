@@ -272,7 +272,6 @@ pub(crate) fn run_trusted_application(
     let declares_right = |name: &str, right: &str| {
         resolved.declared.get(name).is_some_and(|rights| rights.contains(right))
     };
-    let mut roots = resolved.dir_roots;
     let mut network_grants = resolved.net_grants;
     let caps = runtime::Capabilities {
         print: true,
@@ -282,12 +281,11 @@ pub(crate) fn run_trusted_application(
         rand: declares("Rand"),
         env: declares("Env"),
         env_allow: resolved.env_allow,
-        dir_root: (!roots.is_empty()).then(|| roots.remove(0)),
-        dir_roots: roots,
+        preopened_dirs: resolved.dir_authorities,
         dir_rights: resolved.dir_rights,
         dir_read: declares_right("Dir", "Read"),
         dir_write: declares_right("Dir", "Write"),
-        file_grants: resolved.file_grants,
+        preopened_files: resolved.file_authorities,
         file_rights: resolved.file_rights,
         exec: resolved.exec,
         exec_allow: resolved.exec_allow,
