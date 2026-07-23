@@ -108,7 +108,7 @@ printf 'fresh browser compiler' >"$out"
     env: { ...process.env, WITCHY: BIN, WITCHY_BROWSER_WASM: missingCompiler },
     stdio: "pipe",
   });
-  for (const f of ["index.html", "docs.wasm", "glamour-dom.mjs", "witchy-runnable.js", "witchy-host.js", "docs-boot.js", "docs-asset-url.js", "wasm-fetch.js", "examples.json", "_headers", "content/SUMMARY.md", "content/introduction.md"]) {
+  for (const f of ["index.html", "docs.wasm", "glamour-dom.mjs", "witchy-runnable.js", "witchy-host.js", "docs-boot.js", "docs-run-options.js", "docs-asset-url.js", "wasm-fetch.js", "examples.json", "_headers", "content/SUMMARY.md", "content/introduction.md"]) {
     ok(existsSync(join(dist, f)), `the bundle contains ${f}`);
   }
   // The bundle carries strict cross-origin isolation for a `_headers`-honoring host.

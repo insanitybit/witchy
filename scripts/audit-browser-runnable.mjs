@@ -1,15 +1,14 @@
 #!/usr/bin/env node
-// Audit: run EVERY book example the manifest marks `runnable: true` through the
-// REAL browser path (`runWitchy` in web/witchy-host.js, driving web/witchy.wasm +
-// the browser shim). A `runnable: true` example that fails to instantiate/run
-// here is a false Run button — the exact class of bug the user hit with
-// `vm.par_map` (Console-only footprint, but its lowering emits host imports the
-// browser shim does not provide, so the module cannot instantiate).
+// Audit every complete, non-negative book example through the real browser
+// path and the exact deterministic providers used by the live docs page.
+// A complete example that is not classified browser-runnable, or a Run button
+// that fails to compile/instantiate/run, is a gate failure.
 //
 // Usage:  node scripts/audit-browser-runnable.mjs
-// Exit 0 iff every runnable example actually runs in the browser path.
+// Exit 0 iff every complete book example actually runs in the browser path.
 
 import { runWitchy } from "../web/witchy-host.js";
+import { DOCS_RUN_OPTIONS } from "../web/docs-run-options.js";
 import { readFileSync } from "node:fs";
 import { dirname, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,7 +17,9 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "..");
 
 // Load the browser compiler wasm exports (same module the playground loads).
-const wasmBytes = readFileSync(join(REPO, "web/witchy.wasm"));
+const compilerPath =
+  process.env.WITCHY_WASM_PATH || join(REPO, "web/witchy.wasm");
+const wasmBytes = readFileSync(compilerPath);
 const { instance } = await WebAssembly.instantiate(wasmBytes, {});
 const wasm = instance.exports;
 
@@ -44,12 +45,12 @@ function witchyBlocks(mdPath) {
 }
 
 const byFile = new Map();
-let failures = [];
+const failures = [];
 let ran = 0;
+let complete = 0;
 
 for (const e of manifest) {
-  if (!e.runnable) continue;
-  if (!e.file.endsWith(".md")) continue;
+  if (!e.file.startsWith("book/src/") || e.expect_error) continue;
   if (!byFile.has(e.file)) byFile.set(e.file, witchyBlocks(e.file));
   const blocks = byFile.get(e.file);
   const src = blocks[e.block - 1];
@@ -57,19 +58,34 @@ for (const e of manifest) {
     failures.push({ file: e.file, block: e.block, why: "manifest block index out of range (extraction drift)" });
     continue;
   }
+  if (!/^\s*(?:pub\s+)?fn\s+main\s*\(/m.test(src)) continue;
+  complete++;
+  if (!e.browser_runnable) {
+    failures.push({
+      file: e.file,
+      block: e.block,
+      footprint: e.footprint,
+      why: "complete example is not classified browser-runnable",
+    });
+    continue;
+  }
   ran++;
-  const r = await runWitchy(wasm, src);
+  const r = await runWitchy(wasm, src, DOCS_RUN_OPTIONS);
   if (!r.ok) {
     failures.push({ file: e.file, block: e.block, footprint: e.footprint, why: r.text.split("\n")[0].slice(0, 120) });
   }
 }
 
-console.log(`ran ${ran} runnable book examples through the browser path`);
+console.log(`ran ${ran}/${complete} complete book examples through the browser path`);
+if (complete === 0) {
+  console.log("VACUOUS: the manifest exposed no complete book examples");
+  process.exit(1);
+}
 if (failures.length === 0) {
-  console.log("ALL PASS — every runnable example instantiates + runs in the browser.");
+  console.log("ALL PASS — every complete book example instantiates + runs in the browser.");
   process.exit(0);
 }
-console.log(`\n${failures.length} FALSE-RUNNABLE (marked runnable but fail in-browser):`);
+console.log(`\n${failures.length} COMPLETE BOOK EXAMPLE FAILURE(S):`);
 for (const f of failures) {
   console.log(`  ${f.file} block ${f.block}  [${(f.footprint || []).join(",")}]`);
   console.log(`    -> ${f.why}`);

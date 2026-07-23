@@ -49,13 +49,11 @@ Note `write` *overwrites* — for a log you keep adding to, use `append`.
 fn fetch(net: Net[Connect, Tcp], addr: String) -> String:
     let sock = net.connect(addr)
     sock.recv_all()
-
-fn main(console: Console, net: Net[Connect, Tcp]):
-    console.print(fetch(net, "example.test:80"))
 ```
 
 If `fetch` tried to call `net.listen(...)`, it wouldn't compile — `Net[Connect]`
-has no `listen`.
+has no `listen`. This is deliberately a library fragment rather than an
+executable browser example: raw sockets have no honest browser provider.
 
 ## Naming a narrowed handle: `as`
 
@@ -165,12 +163,6 @@ the capability itself (`Net.tcp(…)`) rather than ad-hoc strings:
 fn talk_to_db(db: Net[Connect, Tcp]):
     let sock = db.connect("10.0.0.5:6379")
     sock.send_line("PING")
-
-fn main(console: Console, net: Net):
-    // Intersect down to one endpoint.
-    let db = net.only(Net.tcp("10.0.0.5", 6379))
-    talk_to_db(db)
-    console.print("done")
 ```
 
 `net.only(policy)` *intersects* the carried address-set with `policy`; an endpoint
@@ -189,6 +181,21 @@ the internal ranges in one line — loopback, RFC-1918, link-local (including th
 `169.254.169.254` cloud-metadata address), CGNAT, and "this host". It is matched
 against the **resolved** IP, so a hostname that rebinds to an internal address is
 refused at connect time, not just at a check beforehand.
+
+For portable HTTP clients, narrow the host-granted `Fetch` root to one origin.
+Unlike the raw-socket fragments above, this complete program runs unchanged in
+the browser and on native hosts:
+
+```witchy
+import http
+
+fn main(console: Console, fetch: Fetch):
+    let target = "https://example.com/status"
+    let api = fetch.only(http.origin(target))
+    match http.try_get(api, target):
+        Ok(response) -> console.print("status ${http.status(response)}")
+        Err(error) -> console.print("request failed: ${error}")
+```
 
 ## Spawning processes: the `Exec` capability
 
@@ -266,12 +273,12 @@ is a `Net` confined to one server *plus* the table it is scoped to:
 // destructure one, and its fields are private — reached with `match`, never
 // `.field` — so the underlying `Net` can never leak past the policy.
 capability Table:
-    net: Net[Connect, Tcp]
+    fetch: Fetch
     name: String
 
 // The only way to make one (sealed constructor).
-pub fn open_table(net: Net[Connect, Tcp], name: String) -> Table:
-    Table(net, name)
+pub fn open_table(fetch: Fetch, name: String) -> Table:
+    Table(fetch, name)
 
 // A query refuses any table but the one the handle carries — the policy lives in
 // this one reviewable place.
@@ -283,18 +290,18 @@ pub fn count(t: Table, requested: String) -> String:
             else:
                 "denied: ${requested}"
 
-fn main(console: Console, net: Net):
-    let users = open_table(net, "users")
+fn main(console: Console, fetch: Fetch):
+    let users = open_table(fetch.only("https://example.com"), "users")
     // ok: users
     console.print(count(users, "users"))
     // denied: secrets
     console.print(count(users, "secrets"))
 ```
 
-`witchy caps` sees straight through the record: `Table` audits as exactly `Net`,
+`witchy caps` sees straight through the record: `Table` audits as exactly `Fetch`,
 because the footprint sums its capability-typed fields and the `String` carries no
 authority. So you get carried policy with **nothing hidden** — the hard tier (the
-`Net` is host-confined to one server) plus a soft, library-enforced tier (the
+`Fetch` is host-confined to one origin) plus a soft, library-enforced tier (the
 `table` filter), in one unforgeable value. See
 [`examples/carried_state`](https://github.com/insanitybit/witchy/tree/master/examples/carried_state).
 

@@ -1,15 +1,15 @@
 ---
 rfc: 0102
 title: "Portable roots: the Fetch capability, host grant menus, and the provider doctrine"
-status: draft
+status: implemented
 created: 2026-07-22
 tracking: >
-  Draft. Phase order: (1) doctrine + menu documents, (2) the Fetch root with
-  native/interpreter/fixture providers and the std/http client cut-over,
-  (3) the browser Fetch provider + playground wiring, (4) browser host
-  expansion for existing families (argv, SecretStore, and sequential vm
-  workers implemented), (5) menu
-  repairs (Env, Exec, Console) as independently landable slices.
+  Implemented in five gated slices: host menus and provider doctrine; Fetch
+  across typeck, native, interpreter, fixtures, std/http, grants, and the
+  browser; browser argv, SecretStore, and sequential zero-authority VM
+  workers; attenuable Env and Exec roots; and Console[Read, Write]. The
+  runnable-book gate executes every complete book example with the same
+  explicit deterministic providers used by the live docs page.
 predecessors:
   - "[0002](0002-user-definable-capabilities.md) (user-definable capabilities — attenuation above roots; never mint from nothing)"
   - "[0012](0012-file-capability.md) (File — the grantable-root-plus-derived dual-status precedent)"
@@ -26,8 +26,9 @@ related:
 
 # RFC-0102: Portable roots — the Fetch capability, host grant menus, and the provider doctrine
 
-> Provisional syntax. Code blocks here are intentionally **not** tagged
-> `witchy` so the doc-examples test does not try to compile them.
+> The design excerpts below remain untagged because they combine schemas,
+> pseudocode, and historical phase sketches. The shipped user-facing examples
+> are checked in the book and exercised by the browser gate.
 
 ## Summary
 
@@ -425,27 +426,31 @@ stderr is not separately addressable.
 
 ## Implementation phases and evidence
 
-1. **Menus**: publish `menus/{native,browser,trusted-exe,build}.toml`; derive
+1. **Implemented — menus**: publish `menus/{native,browser,trusted-exe,build}.toml`; derive
    the book classifier from the browser menu with a test proving it equals
    the current hardcoded behavior before any widening.
-2. **`Fetch` core**: typeck family + origin policy + `Net` derivation; native
+2. **Implemented — `Fetch` core**: typeck family + origin policy + `Net` derivation; native
    + interpreter providers sharing one host implementation; fixture provider;
    differential tests over the contract (allowlist denial, redirect error,
    timeout shape); `std/http` client cut-over.
-3. **Browser `Fetch`**: the `fetch()` provider with host-side allowlist;
-   grant shapes (`[fetch]`, `--fetch`, trusted-exe binding); a playground
-   test running a real book example against a playground-hosted endpoint.
-4. **Browser expansion**: argv and `SecretStore` are implemented with explicit
+3. **Implemented — browser `Fetch`**: the `fetch()` provider with host-side
+   allowlist; grant shapes (`[fetch]`, `--fetch`, trusted-exe binding);
+   capability-host tests over the browser request contract; and complete book
+   examples run against the docs page's explicit origin-scoped fixture.
+4. **Implemented — browser expansion**: argv and `SecretStore` use explicit
    page grants; the bare `Secret` root remains denied. `vm.par_map` and
    `vm.serve` run sequentially in fresh zero-authority browser instances.
    Re-bless `book/examples.json` after each widening and record the
    `browser_runnable` delta (the acceptance metric: strictly larger, with zero
    examples made less runnable).
-5. **Menu repairs**: Env, Exec, Console as three independent branches, each
+5. **Implemented — menu repairs**: Env, Exec, Console landed as independent slices, each
    with both-backend differential coverage.
 
-Every phase lands through the serialized gate; parity-sensitive slices
-(interpreter fixture providers, typeck family) take adversarial review.
+Every phase landed through the serialized gate. `scripts/audit-browser-runnable.mjs`
+is the non-vacuous closeout proof: every non-negative `book/src` Witchy block
+that defines `main` must be classified browser-runnable and must compile,
+instantiate, and execute through `runWitchy` with the exact providers exported
+by `web/docs-run-options.js`.
 
 ## Compatibility
 

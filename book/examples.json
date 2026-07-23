@@ -936,13 +936,10 @@
   {
     "block": 2,
     "browser_runnable": false,
-    "console_only": false,
+    "console_only": true,
     "expect_error": false,
     "file": "book/src/capabilities-narrowing.md",
-    "footprint": [
-      "Console[Read,Write]",
-      "Net[Connect,Tcp]"
-    ],
+    "footprint": [],
     "output": [],
     "runnable": false
   },
@@ -1001,18 +998,28 @@
   {
     "block": 7,
     "browser_runnable": false,
-    "console_only": false,
+    "console_only": true,
     "expect_error": false,
     "file": "book/src/capabilities-narrowing.md",
-    "footprint": [
-      "Console[Read,Write]",
-      "Net[Connect,Listen,Tcp,Udp,Uds]"
-    ],
+    "footprint": [],
     "output": [],
     "runnable": false
   },
   {
     "block": 8,
+    "browser_runnable": true,
+    "console_only": false,
+    "expect_error": false,
+    "file": "book/src/capabilities-narrowing.md",
+    "footprint": [
+      "Console[Read,Write]",
+      "Fetch"
+    ],
+    "output": [],
+    "runnable": false
+  },
+  {
+    "block": 9,
     "browser_runnable": false,
     "console_only": true,
     "expect_error": false,
@@ -1022,7 +1029,7 @@
     "runnable": false
   },
   {
-    "block": 9,
+    "block": 10,
     "browser_runnable": false,
     "console_only": false,
     "expect_error": false,
@@ -1034,20 +1041,20 @@
     "runnable": false
   },
   {
-    "block": 10,
-    "browser_runnable": false,
+    "block": 11,
+    "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/capabilities-narrowing.md",
     "footprint": [
       "Console[Read,Write]",
-      "Net[Connect,Listen,Tcp,Udp,Uds]"
+      "Fetch"
     ],
     "output": [],
     "runnable": false
   },
   {
-    "block": 11,
+    "block": 12,
     "browser_runnable": false,
     "console_only": true,
     "expect_error": false,
@@ -1057,7 +1064,7 @@
     "runnable": false
   },
   {
-    "block": 12,
+    "block": 13,
     "browser_runnable": true,
     "console_only": false,
     "expect_error": false,

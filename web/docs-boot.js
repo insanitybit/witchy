@@ -9,6 +9,7 @@ import { runnableSlot, staticSlot } from "./witchy-runnable.js";
 import { assetUrl, contentUrl } from "./docs-asset-url.js";
 import { fetchWasm } from "./wasm-fetch.js";
 import { highlightWitchy, highlightShell, highlightToml } from "./witchy-highlight.js";
+import { DOCS_RUN_OPTIONS } from "./docs-run-options.js";
 
 // Every bundle asset resolves against THIS module's URL — the bundle root — never the current
 // route. A chapter routes to `/p/<slug>`, so a page-relative `./content/...` / `./witchy.wasm`
@@ -33,23 +34,6 @@ const loadCompiler = (() => {
 // The rune builds absolute `/content/...` fetch URLs; resolve them against the bundle root so a
 // chapter route can never make the fetch route-relative.
 const contentFetch = (url) => fetch(contentUrl(url, here));
-
-// Explicit, deterministic page grants for runnable documentation examples.
-// The signing seed remains host-side and use-only; the ordinary token is
-// intentionally revealable because the recipe demonstrates both policies.
-const RUN_OPTIONS = {
-  capabilities: {
-    console: { input: ["Ada"] },
-    vm: true,
-    secrets: {
-      signing: {
-        value: "0000000000000000000000000000000000000000000000000000000000000000",
-        useOnly: true,
-      },
-      "api-token": "sk-live-abc",
-    },
-  },
-};
 
 // (RFC-0041) A `glamour-app` fence names a bundled INTERACTIVE demo. Mount it LIVE with the
 // book's OWN glamour-dom runtime into a contained sub-tree. NETWORK IS DENIED — no `fetch` is
@@ -129,7 +113,7 @@ await mount(wasm, document.getElementById("app"), {
     "witchy-runnable": runnableSlot({
       loadCompiler,
       highlight: highlightWitchy,
-      runOptions: RUN_OPTIONS,
+      runOptions: DOCS_RUN_OPTIONS,
     }),
     "witchy-static": staticSlot({ highlight: highlightWitchy }),
     // Non-witchy code fences get read-only highlighting too (same token theme).

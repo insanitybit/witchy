@@ -1,16 +1,14 @@
 ---
 rfc: 0103
 title: "Derived platform confinement: kernel and web enforcement of capability grants"
-status: draft
+status: deferred
 created: 2026-07-23
 tracking: >
-  Draft. Phase order: (1) race-free per-operation confinement (openat2
-  RESOLVE_BENEATH / O_NOFOLLOW_ANY) inside witchy-runtime::confine,
-  (2) Landlock filesystem+TCP policy derived from grants in the CLI host and
-  the trusted-exe launcher, (3) grant-conditional seccomp promise classes,
-  (4) kernel-confined build steps, (5) derived CSP for the playground and
-  glamour hosts, (6) further OS providers (pledge/unveil, Seatbelt,
-  Capsicum) as they find owners.
+  Deferred before implementation; no code is in flight. Reopen only with an
+  owner for the platform-specific runtime TCB work and a phase-one plan that
+  preserves parity across supported hosts. The ordered design remains:
+  race-free per-operation confinement, derived Landlock/seccomp policy,
+  build-step confinement, derived CSP, then additional OS providers.
 predecessors:
   - "[0013](0013-capability-grant-documents.md) (grant documents — the concrete pre-execution authority statement this RFC compiles)"
   - "[0068](0068-compiled-build-step-grants.md) (build-step grants — the declared authority of third-party build code)"

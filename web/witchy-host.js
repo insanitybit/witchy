@@ -1,6 +1,12 @@
 import {
   instantiate as instantiateRuntime,
   makeSecretStoreImports,
+  WITCHY_CLOCK_IMPORTS,
+  WITCHY_CONSOLE_IMPORTS,
+  WITCHY_DIR_IMPORTS,
+  WITCHY_ENV_IMPORTS,
+  WITCHY_FETCH_IMPORTS,
+  WITCHY_VM_IMPORTS,
 } from "./witchy-runtime/witchy-runtime.mjs";
 
 // Shared host shim for the witchy browser playground — imported by both
@@ -83,15 +89,25 @@ export async function runWitchy(wasm, source, opts = {}) {
 
   const compiled = new WebAssembly.Module(binary);
   const imports = WebAssembly.Module.imports(compiled);
-  const usesVm = imports.some(
-    (entry) => entry.module === "witchy" && entry.name.startsWith("vm_"),
+  const importedWitchyNames = new Set(
+    imports
+      .filter((entry) => entry.module === "witchy")
+      .map((entry) => entry.name),
   );
-  const usesConsoleInput = imports.some(
-    (entry) => entry.module === "witchy" && entry.name === "console_read_len",
+  const runtimeFamilies = [
+    ["clock", WITCHY_CLOCK_IMPORTS],
+    ["console", WITCHY_CONSOLE_IMPORTS],
+    ["dir", WITCHY_DIR_IMPORTS],
+    ["env", WITCHY_ENV_IMPORTS],
+    ["fetch", WITCHY_FETCH_IMPORTS],
+    ["vm", WITCHY_VM_IMPORTS],
+  ];
+  const hasRuntimeProvider = runtimeFamilies.some(
+    ([family, names]) =>
+      opts.capabilities
+      && opts.capabilities[family]
+      && names.some((name) => importedWitchyNames.has(name)),
   );
-  const hasRuntimeProvider =
-    (opts.capabilities && opts.capabilities.vm === true && usesVm)
-    || (opts.capabilities && opts.capabilities.console && usesConsoleInput);
   if (hasRuntimeProvider) {
     try {
       const host = await instantiateRuntime(compiled, opts);

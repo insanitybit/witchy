@@ -269,12 +269,10 @@ witchy_fmt_check() {
     "$target_dir/debug/witchy" fmt --check "${files[@]}"
 }
 
-# Run every `runnable` book block through the SHIPPED browser wasm + host and
-# assert its output equals the committed manifest oracle — the SAME check CI runs
-# (`scripts/validate_book_examples.mjs`), but here as a pre-merge gate step so a
-# false Run button (e.g. a `Console`-only-footprint program that uses `std/vm`'s
-# worker ops, which the browser shim can't provide) is caught BEFORE it lands, not
-# just detected post-merge. Uses the wasm built in the step above. Best-effort:
+# Run pinned examples and every complete book example through the SHIPPED
+# browser wasm + host. The second audit uses the exact providers wired into the
+# live docs page, so a browser-runnable classification cannot create a false Run
+# button. Uses the wasm built in the step above. Best-effort:
 # skips (green) if node or the wasm are absent so the gate never hard-depends on
 # a JS toolchain that may not be present everywhere.
 validate_runnable_book() {
@@ -285,6 +283,7 @@ validate_runnable_book() {
     # Point the validator at the freshly-built wasm via env — do NOT copy over the
     # tracked web/witchy.wasm (a dirtied worktree would break the coordinator's ff-merge).
     WITCHY_WASM_PATH="$built" node scripts/validate_book_examples.mjs
+    WITCHY_WASM_PATH="$built" node scripts/audit-browser-runnable.mjs
 }
 
 # nextest builds what it needs, so no separate build step; without nextest the
