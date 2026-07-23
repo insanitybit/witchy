@@ -8,7 +8,7 @@ tracking: >
   Implemented. `witchy build --target trusted-exe` emits a versioned,
   digest-checked native launcher containing the ordinary compiled WASM and a
   checked binding plan for `main`. Cwd/fixed Dir roots, fixed File paths,
-  explicit Net/Exec policy, conventional process capabilities, and named
+  explicit Env/Net/Exec policy, conventional process capabilities, and named
   SecretStore environment providers resolve through the existing runtime;
   portable `.wasm` remains consumer-hosted and explicit-grant.
 related:
@@ -305,8 +305,15 @@ Capabilities with one conventional process binding need no manifest entry:
 | `Console` | process standard streams |
 | `Clock` | operating-system clocks |
 | `Rand` | operating-system randomness |
-| `Env` | inherited process environment |
 | `SecretStore` | an empty store, or named providers from target configuration |
+
+`Env` requires a same-named target binding whose `names` list is the complete
+set of process variables that root may read:
+
+```toml
+[targets.trusted-exe.env]
+environment = { from = "system", names = ["HOME", "LANG"] }
+```
 
 `Net` and `Exec` also require explicit target bindings because an author may
 choose unrestricted OS-visible access or a narrower compiled-in policy. `Exec`

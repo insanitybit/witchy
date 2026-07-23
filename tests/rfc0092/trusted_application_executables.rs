@@ -57,7 +57,9 @@ fn trusted_executable_end_to_end() {
         "[rune]\nname = \"trusted_fixture\"\nversion = \"0.1.0\"\n\n\
          [targets.trusted-exe.dirs]\n\
          cwd = { from = \"cwd\" }\n\
-         root = { from = \"path\", path = \"/\" }\n",
+         root = { from = \"path\", path = \"/\" }\n\
+         [targets.trusted-exe.env]\n\
+         env = { from = \"system\", names = [\"RFC0092_TEST_LABEL\"] }\n",
     )
     .unwrap();
     std::fs::write(

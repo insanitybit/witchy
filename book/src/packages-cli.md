@@ -118,6 +118,9 @@ filesystem = { from = "path", path = "/" }
 [targets.trusted-exe.files]
 config = { from = "path", path = "./app.toml" }
 
+[targets.trusted-exe.env]
+environment = { from = "system", names = ["HOME", "LANG"] }
+
 [targets.trusted-exe.net]
 network = { from = "allow", addresses = ["api.example.com:443"] }
 # `from = "system"` is the explicit unrestricted alternative.
@@ -129,8 +132,10 @@ runner = { from = "allow", programs = ["git"] }
 token = { from = "env:APP_TOKEN", use-only = true }
 ```
 
-`Console`, `Clock`, `Rand`, `Env`, argv, and an empty `SecretStore` use their
-conventional process values and need no table entry. Bare `Secret`,
+`Env` bindings explicitly name the process variables the packaged application
+may read; an empty `names` list grants none. `Console`, `Clock`, `Rand`, argv,
+and an empty `SecretStore` use their conventional process values and need no
+table entry. Bare `Secret`,
 `NativeLoader`, and user-defined grantable root parameters are rejected until a
 safe target provider exists.
 

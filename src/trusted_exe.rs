@@ -38,7 +38,7 @@ pub struct OwnedEmbeddedApplication {
     pub bindings: Vec<u8>,
 }
 
-const PLAN_VERSION: u32 = 1;
+const PLAN_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -47,6 +47,7 @@ struct BindingPlan {
     declared: BTreeMap<String, BTreeSet<String>>,
     dirs: Vec<DirPlan>,
     files: Vec<FilePlan>,
+    env: Option<EnvPlan>,
     net: Vec<NetPlan>,
     exec: Option<ExecPlan>,
     secrets: Vec<SecretPlan>,
@@ -91,6 +92,13 @@ struct NetPlan {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct EnvPlan {
+    name: String,
+    names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ExecPlan {
     name: String,
     /// `None` is explicit unrestricted process execution. `Some` is the
@@ -113,6 +121,7 @@ pub struct ResolvedBindings {
     pub dir_rights: Vec<runtime::FsRights>,
     pub file_grants: Vec<std::path::PathBuf>,
     pub file_rights: Vec<runtime::FsRights>,
+    pub env_allow: Option<Vec<String>>,
     pub net_grants: Vec<Vec<String>>,
     pub exec: bool,
     pub exec_allow: Option<Vec<String>>,
@@ -140,6 +149,8 @@ struct TrustedTarget {
     #[serde(default)]
     files: BTreeMap<String, RawFileBinding>,
     #[serde(default)]
+    env: BTreeMap<String, RawEnvBinding>,
+    #[serde(default)]
     net: BTreeMap<String, RawNetBinding>,
     #[serde(default)]
     exec: BTreeMap<String, RawExecBinding>,
@@ -158,6 +169,12 @@ enum RawDirBinding {
 #[serde(tag = "from", rename_all = "kebab-case", deny_unknown_fields)]
 enum RawFileBinding {
     Path { path: String },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "from", rename_all = "kebab-case", deny_unknown_fields)]
+enum RawEnvBinding {
+    System { names: Vec<String> },
 }
 
 #[derive(Debug, Deserialize)]
@@ -207,6 +224,7 @@ pub fn build_binding_plan(module: &ast::Module, manifest: &str) -> Result<Vec<u8
 
     let mut dirs = Vec::new();
     let mut files = Vec::new();
+    let mut env = None;
     let mut net = Vec::new();
     let mut exec = None;
     let mut secret_store_count = 0usize;
@@ -221,7 +239,26 @@ pub fn build_binding_plan(module: &ast::Module, manifest: &str) -> Result<Vec<u8
             return Err(unsupported_parameter(&parameter.name, ty));
         };
         match name.as_str() {
-            "Console" | "Clock" | "Rand" | "Env" => {}
+            "Console" | "Clock" | "Rand" => {}
+            "Env" => {
+                if env.is_some() {
+                    return Err("trusted-exe currently supports one root `Env` parameter".into());
+                }
+                let binding = target
+                    .env
+                    .remove(&parameter.name)
+                    .ok_or_else(|| binding_error(&target, "env", &parameter.name, "Env"))?;
+                let RawEnvBinding::System { mut names } = binding;
+                if names.iter().any(String::is_empty) {
+                    return Err(format!(
+                        "trusted-exe Env binding `{}` contains an empty variable name",
+                        parameter.name
+                    ));
+                }
+                names.sort();
+                names.dedup();
+                env = Some(EnvPlan { name: parameter.name.clone(), names });
+            }
             "SecretStore" => secret_store_count += 1,
             "Dir" => {
                 let binding = target
@@ -320,6 +357,7 @@ pub fn build_binding_plan(module: &ast::Module, manifest: &str) -> Result<Vec<u8
     }
     reject_extra("dirs", &target.dirs)?;
     reject_extra("files", &target.files)?;
+    reject_extra("env", &target.env)?;
     reject_extra("net", &target.net)?;
     reject_extra("exec", &target.exec)?;
 
@@ -341,6 +379,7 @@ pub fn build_binding_plan(module: &ast::Module, manifest: &str) -> Result<Vec<u8
         declared: owned_contract(&capabilities::run_grant(module)),
         dirs,
         files,
+        env,
         net,
         exec,
         secrets,
@@ -368,6 +407,16 @@ pub fn resolve_binding_plan(
     if owned_contract(&declared) != plan.declared {
         return Err("trusted-exe binding plan does not match the embedded `witchy.launch` contract".into());
     }
+    let env_allow = match (declared.contains_key("Env"), plan.env) {
+        (true, Some(binding)) => Some(binding.names),
+        (true, None) => {
+            return Err("trusted-exe binding plan withholds the declared `Env` root".into());
+        }
+        (false, Some(_)) => {
+            return Err("trusted-exe binding plan grants `Env` outside the launch contract".into());
+        }
+        (false, None) => None,
+    };
 
     let cwd = std::fs::canonicalize(cwd)
         .map_err(|error| format!("trusted-exe cannot resolve launch cwd `{}`: {error}", cwd.display()))?;
@@ -452,6 +501,7 @@ pub fn resolve_binding_plan(
         dir_rights,
         file_grants,
         file_rights,
+        env_allow,
         net_grants: plan.net.into_iter().map(|binding| binding.allow).collect(),
         exec: plan.exec.is_some(),
         exec_allow: plan.exec.and_then(|binding| binding.programs),
@@ -504,6 +554,8 @@ fn binding_error(target: &TrustedTarget, expected: &str, name: &str, ty: &str) -
         Some("dirs")
     } else if target.files.contains_key(name) {
         Some("files")
+    } else if target.env.contains_key(name) {
+        Some("env")
     } else if target.net.contains_key(name) {
         Some("net")
     } else if target.exec.contains_key(name) {
@@ -867,6 +919,34 @@ mod tests {
         )
         .unwrap_err();
         assert!(duplicate.contains("duplicate key"), "{duplicate}");
+    }
+
+    #[test]
+    fn env_binding_is_explicit_canonical_and_contract_checked() {
+        let source = module("fn main(runtime: Env):\n    return\n");
+        let manifest = "[targets.trusted-exe.env]\n\
+                        runtime = { from = \"system\", names = [\"LANG\", \"HOME\", \"LANG\"] }\n";
+        let bytes = build_binding_plan(&source, manifest).unwrap();
+        let plan: BindingPlan = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(plan.env.as_ref().unwrap().names, ["HOME", "LANG"]);
+        let wasm = artifact::embed_launch_contract(Module::new().finish(), &source);
+        let resolved = resolve_binding_plan(&bytes, &wasm, std::path::Path::new(".")).unwrap();
+        assert_eq!(resolved.env_allow.unwrap(), ["HOME", "LANG"]);
+
+        let missing = build_binding_plan(&source, "").unwrap_err();
+        assert!(missing.contains("missing `[targets.trusted-exe.env].runtime`"), "{missing}");
+        let empty = build_binding_plan(
+            &source,
+            "[targets.trusted-exe.env]\nruntime = { from = \"system\", names = [\"\"] }\n",
+        )
+        .unwrap_err();
+        assert!(empty.contains("empty variable name"), "{empty}");
+
+        let mut decoded: BindingPlan = serde_json::from_slice(&bytes).unwrap();
+        decoded.env = None;
+        let forged = serde_json::to_vec(&decoded).unwrap();
+        let error = resolve_binding_plan(&forged, &wasm, std::path::Path::new(".")).unwrap_err();
+        assert!(error.contains("withholds the declared `Env`"), "{error}");
     }
 
     #[test]

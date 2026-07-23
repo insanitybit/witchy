@@ -278,6 +278,7 @@ pub(crate) fn run_trusted_application(
         clock: declares("Clock"),
         rand: declares("Rand"),
         env: declares("Env"),
+        env_allow: resolved.env_allow,
         dir_root: (!roots.is_empty()).then(|| roots.remove(0)),
         dir_roots: roots,
         dir_rights: resolved.dir_rights,
