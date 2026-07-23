@@ -23,7 +23,7 @@
 // The ABI version this shim implements. Bump in lockstep with a breaking change
 // to the `"witchy"` import surface (a renamed/re-signatured pure import, or a
 // change to the pending-buffer protocol). RFC-0007 §"ABI stabilization".
-export const WITCHY_ABI_VERSION = 3;
+export const WITCHY_ABI_VERSION = 4;
 
 // Exact deny-by-omission surface implemented below. The Rust ABI catalog test
 // compares this list with `wir_prelude` and `instantiate` compares it with the
@@ -477,7 +477,12 @@ function runeHash(paths, contents) {
 // classification the pure `WITCHY_BROWSER_IMPORTS` list enforces, so the
 // playground host can never silently widen either.
 export const WITCHY_CLOCK_IMPORTS = Object.freeze(["now", "now_monotonic"]);
-export const WITCHY_ENV_IMPORTS = Object.freeze(["env_len", "env_fill"]);
+export const WITCHY_ENV_IMPORTS = Object.freeze([
+  "mint_env",
+  "env_only",
+  "env_len",
+  "env_fill",
+]);
 export const WITCHY_DIR_IMPORTS = Object.freeze([
   // Dir capability ops (RFC-0005 externref handles) …
   "mint_dir",
@@ -1255,20 +1260,46 @@ function makeClockImports() {
 // in the map reads back its value's UTF-8 byte length; an absent name is UNSET
 // (`env_len` -> -1), byte-identical to the native host with no explicit
 // allow-list. Values are frozen at instantiation — the guest cannot mutate them.
-function makeEnvImports(envMap, { readWstrText, writeAt }) {
-  const valueBytes = (name) => {
+function makeEnvImports(envMap, { readWstrText, readWstrList, writeAt }) {
+  const handles = new WeakSet();
+  const makeHandle = (allowed) => {
+    const handle = Object.freeze({ allowed });
+    handles.add(handle);
+    return handle;
+  };
+  const requireHandle = (handle) => {
+    if (!handle || !handles.has(handle)) {
+      throw new Error("Env externref has wrong host data");
+    }
+    return handle;
+  };
+  const valueBytes = (handle, name) => {
+    const { allowed } = requireHandle(handle);
+    if (allowed !== null && !allowed.has(name)) {
+      throw new Error(`get_env: \`${name}\` is not in this Env grant's allow-list`);
+    }
     if (!envMap.has(name)) return null;
     return utf8.encode(envMap.get(name));
   };
   const imports = {
-    env_len(namePtr) {
-      const bytes = valueBytes(readWstrText(namePtr));
+    mint_env() {
+      return makeHandle(null);
+    },
+    env_only(handle, namesPtr) {
+      const current = requireHandle(handle).allowed;
+      const requested = readWstrList(namesPtr);
+      return makeHandle(new Set(
+        current === null ? requested : requested.filter((name) => current.has(name)),
+      ));
+    },
+    env_len(handle, namePtr) {
+      const bytes = valueBytes(handle, readWstrText(namePtr));
       return bytes === null ? -1 : bytes.length;
     },
-    env_fill(namePtr, outPtr) {
+    env_fill(handle, namePtr, outPtr) {
       // A well-behaved guest only calls this after a non-negative `env_len`;
       // an absent name writes nothing (native `unwrap_or_default` → empty).
-      const bytes = valueBytes(readWstrText(namePtr));
+      const bytes = valueBytes(handle, readWstrText(namePtr));
       if (bytes !== null) writeAt(bytes, outPtr);
     },
   };
@@ -1887,6 +1918,7 @@ export async function instantiate(wasmBytes, opts = {}) {
   const marshal = {
     readWstr,
     readWstrText,
+    readWstrList,
     readWstrListRaw,
     readI64List,
     writeAt,

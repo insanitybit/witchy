@@ -20,15 +20,16 @@ breaking ABI change that must bump `WITCHY_ABI_VERSION`.
 
 ## ABI version
 
-The current ABI version is **3**. The JavaScript host pins it as
+The current ABI version is **4**. The JavaScript host pins it as
 `WITCHY_ABI_VERSION` (exported from `web/witchy-runtime/witchy-runtime.mjs`). The
 version covers: the import module name `"witchy"`, the set of import names and
 their `(params) -> results` signatures, the value/memory representation, and the
 pending-buffer protocol. Bump it in lockstep with any change to those.
 Version 1 is the baseline frozen for the first 0.1 release. Version 2 adds the
 opaque Fetch grant, attenuation, and staged request imports. Version 3 adds the
-Net-to-Fetch derivation import; earlier pre-release import counts were not
-separately published ABI versions.
+Net-to-Fetch derivation import. Version 4 makes Env an opaque, attenuable
+externref rather than ambient host state; earlier pre-release import counts
+were not separately published ABI versions.
 
 ## Import inclusion is tree-shaken
 
@@ -132,7 +133,7 @@ It does **not** implement unavailable capability sizing imports
 
 ## The imports
 
-ABI version 3 declares **91 imports** (`IMPORT_COUNT` in
+ABI version 4 declares **93 imports** (`IMPORT_COUNT` in
 `crates/witchy-wir/src/wir_prelude.rs`). That file owns the ordered signatures
 and the explicit metadata rendered below. The classes are:
 
@@ -171,8 +172,10 @@ byte-for-byte and instantiates an all-import probe against the native host.
 | `secretstore_lookup` | `(i32) -> externref` | capability authority | Secret | omitted |
 | `crypto_reveal_len` | `(externref) -> i32` | capability authority | Secret | omitted |
 | `mint_secret` | `(i32) -> externref` | capability authority | Secret | omitted |
-| `env_len` | `(i32) -> i32` | capability authority | Env | omitted |
-| `env_fill` | `(i32, i32)` | capability authority | Env | omitted |
+| `mint_env` | `() -> externref` | capability authority | Env | omitted |
+| `env_only` | `(externref, i32) -> externref` | capability authority | Env | omitted |
+| `env_len` | `(externref, i32) -> i32` | capability authority | Env | omitted |
+| `env_fill` | `(externref, i32, i32)` | capability authority | Env | omitted |
 | `dir_read_len` | `(externref, i32) -> i32` | capability authority | Dir.Read | omitted |
 | `dir_list_size` | `(externref) -> i32` | capability authority | Dir.Read | omitted |
 | `args_size` | `() -> i32` | launch input | none | provided |

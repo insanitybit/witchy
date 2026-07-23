@@ -562,7 +562,8 @@ impl Codegen<'_> {
                     W::CallHost { import: "rand_u64_host".to_string(), args: vec![] }
                 }
             }
-            // `env.get_env(name)`: only the name travels (the Env grant is the host).
+            // `env.get_env(name)`: the unforgeable Env handle and name both cross
+            // the host ABI so value-level attenuation remains authoritative.
             // `fail(msg)`: a deliberate, loud abort. (RFC-0045) The message is no
             // longer dropped — it is handed to the always-linked, authority-free
             // `__witchy_abort` host import (the `Fail` template passes the string
@@ -584,7 +585,7 @@ impl Codegen<'_> {
             }
             ("get_env", 2) => {
                 self.uses_get_env = true;
-                call("get_env", self.lower_args(&[&args[1]])?)
+                call("get_env", self.lower_args(&[&args[0], &args[1]])?)
             }
             // `console.print(msg)`: the Console arg is type-level; print the msg
             // (a void host helper), then yield Nil as `i32.const 0`.
@@ -813,7 +814,13 @@ impl Codegen<'_> {
             // (`dir_only`), a `Net` narrows its ADDRESS set (`net_restrict`, the host op
             // name is historical — the user-facing verb is `only`).
             ("only", 2) => {
-                if matches!(self.type_table.type_of(&args[0]), Some(witchy_types::typeck::Ty::Dir(_))) {
+                if matches!(
+                    self.type_table.type_of(&args[0]),
+                    Some(witchy_types::typeck::Ty::Env)
+                ) {
+                    let a = self.lower_args(&[&args[0], &args[1]])?;
+                    if self.collect_wir { call("env_only", a) } else { host("env_only_host", a) }
+                } else if matches!(self.type_table.type_of(&args[0]), Some(witchy_types::typeck::Ty::Dir(_))) {
                     self.used_dir_ops.insert("only");
                     let pattern = Expr::Field { base: Box::new(args[1].clone()), field: "pattern".into() };
                     let a = self.lower_args(&[&args[0], &pattern])?;

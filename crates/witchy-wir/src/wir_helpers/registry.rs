@@ -446,6 +446,18 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
+        "env_only" => Some(WirHelperSpec {
+            func: host_call_helper_typed(
+                "env_only",
+                "env_only",
+                &[WirTy::Extern, WirTy::List(Box::new(WirTy::Str))],
+                WirTy::Extern,
+            ),
+            helper_deps: &[],
+            import_deps: &["env_only"],
+            uses_heap: false,
+            uses_table: false,
+        }),
         "net_fetch" => Some(WirHelperSpec {
             func: host_call_helper_typed(
                 "net_fetch",

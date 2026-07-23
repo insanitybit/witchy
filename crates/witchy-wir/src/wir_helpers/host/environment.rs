@@ -2,7 +2,7 @@
 
 use crate::wir::*;
 
-/// `$get_env(name) -> Option(String)` through the capability-checked host ABI.
+/// `$get_env(env, name) -> Option(String)` through the capability-checked host ABI.
 pub(in crate::wir_helpers) fn get_env_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
@@ -11,11 +11,14 @@ pub(in crate::wir_helpers) fn get_env_helper() -> WirFunc {
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     WirFunc {
         name: "get_env".into(),
-        params: vec![WirLocal { name: "name".into(), ty: WirTy::Str }],
+        params: vec![
+            WirLocal { name: "env".into(), ty: WirTy::Extern },
+            WirLocal { name: "name".into(), ty: WirTy::Str },
+        ],
         ret: vec![WirTy::Bool],
         locals: ["len", "str", "res"].iter().map(|n| WirLocal { name: (*n).into(), ty: WirTy::Bool }).collect(),
         body: vec![
-            N::SetLocal { local: "len".into(), value: E::CallHost { import: "env_len".into(), args: vec![getl("name")] } },
+            N::SetLocal { local: "len".into(), value: E::CallHost { import: "env_len".into(), args: vec![getl("env"), getl("name")] } },
             N::If {
                 cond: b(BinOp::Lt, getl("len"), i32c(0)),
                 then_: vec![
@@ -30,7 +33,7 @@ pub(in crate::wir_helpers) fn get_env_helper() -> WirFunc {
             // (RFC-0016) the value string, then the `Some[tag=0][ptr]` wrapper, via `$rc_alloc`.
             N::SetLocal { local: "str".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
             N::Store { ptr: getl("str"), value: getl("len"), kind: Kind::I32, offset: 0 },
-            N::Do(E::CallHost { import: "env_fill".into(), args: vec![getl("name"), b(BinOp::Add, getl("str"), i32c(4))] }),
+            N::Do(E::CallHost { import: "env_fill".into(), args: vec![getl("env"), getl("name"), b(BinOp::Add, getl("str"), i32c(4))] }),
             N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![i32c(12)] } },
             N::Store { ptr: getl("res"), value: i32c(0), kind: Kind::I32, offset: 0 },
             N::Store { ptr: getl("res"), value: E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(getl("str")) }, kind: Kind::I64, offset: 4 },

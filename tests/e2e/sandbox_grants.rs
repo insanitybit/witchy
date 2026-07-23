@@ -25,6 +25,11 @@ fn grant_document_env_is_name_scoped() {
     sandbox::grant_document_env_is_name_scoped();
 }
 
+#[test]
+fn env_only_is_monotone_and_typed() {
+    sandbox::env_only_is_monotone_and_typed();
+}
+
 /// RFC-0005 Stage 2 / RFC-0012: direct `--file` grants are minted as File
 /// externrefs in the compiled sandbox path, for both read and write leaf ops.
 #[test]

@@ -1183,8 +1183,8 @@ fn packed_list_in_type(t: &ast::Type, packed_names: &HashSet<&str>) -> Option<St
 
 /// (RFC-0005) Names of the capabilities represented as an unforgeable `externref`
 /// on the compiled backend — the caps with NO boxed i64-slot representation.
-/// `Console`/`Clock`/`Rand`/`Env` are zero-representation (no runtime handle),
-/// while `SecretStore`/`Exec` are root authorities with no guest-held handle to
+/// `Console`/`Clock`/`Rand` are zero-representation (no runtime handle), while
+/// `SecretStore`/`Exec` are root authorities with no guest-held handle to
 /// migrate. `Option(cap)` is represented as nullable externref; structural
 /// containers/tuples/functions over these caps still need typed GC/closure
 /// lowering and are rejected at boundaries.
@@ -4046,6 +4046,31 @@ impl Checker {
         Ok(Some(ret))
     }
 
+    fn check_env_op(&mut self, name: &str, args: &[Expr]) -> Result<Option<Ty>, TypeError> {
+        if name != "only" {
+            return Ok(None);
+        }
+        let Some(receiver) = args.first() else {
+            return Ok(None);
+        };
+        let receiver_ty = self.infer(receiver)?;
+        if !matches!(self.resolve(&receiver_ty), Ty::Env) {
+            return Ok(None);
+        }
+        if args.len() != 2 {
+            return terr(format!("`only` expects 2 argument(s) but got {}", args.len()));
+        }
+        let names = self.infer(&args[1])?;
+        self.unify(&Ty::List(Box::new(Ty::String)), &names)
+            .map_err(|error| TypeError {
+                message: format!(
+                    "in call to `only`: Env names must be a List(String): {}",
+                    error.message
+                ),
+            })?;
+        Ok(Some(Ty::Env))
+    }
+
     /// Type-check a directory-capability op, enforcing that the `Dir`'s rights
     /// permit the verb: `read`/`exists`/`subdir`/`list` need `Read`; `write`/
     /// `append`/`make_dir` need `Write`. (Narrowing is done with the `as`
@@ -5358,6 +5383,9 @@ impl Checker {
                 return terr(msg);
             }
             if let Some(t) = self.check_file_op(call_name, args)? {
+                return Ok(t);
+            }
+            if let Some(t) = self.check_env_op(call_name, args)? {
                 return Ok(t);
             }
             if let Some(t) = self.check_fetch_op(call_name, args)? {

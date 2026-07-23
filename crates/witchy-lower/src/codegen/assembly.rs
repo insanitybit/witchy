@@ -1595,6 +1595,7 @@ fn assemble_wir_module_with_structs_mode(
     let mut main_param_is_args: Vec<bool> = Vec::new();
     let mut main_param_is_dir: Vec<bool> = Vec::new();
     let mut main_param_is_file: Vec<bool> = Vec::new();
+    let mut main_param_is_env: Vec<bool> = Vec::new();
     let mut main_param_is_net: Vec<bool> = Vec::new();
     let mut main_param_is_fetch: Vec<bool> = Vec::new();
     let mut main_param_is_secret: Vec<bool> = Vec::new();
@@ -1651,6 +1652,8 @@ fn assemble_wir_module_with_structs_mode(
                         .push(matches!(&p.ty, Some(Type::Named(n, _)) if n == "Dir"));
                     main_param_is_file
                         .push(matches!(&p.ty, Some(Type::Named(n, _)) if n == "File"));
+                    main_param_is_env
+                        .push(matches!(&p.ty, Some(Type::Named(n, _)) if n == "Env"));
                     main_param_is_net
                         .push(matches!(&p.ty, Some(Type::Named(n, _)) if n == "Net"));
                     main_param_is_fetch
@@ -1896,6 +1899,9 @@ fn assemble_wir_module_with_structs_mode(
             if main_param_is_dir.iter().any(|is_dir| *is_dir) {
                 import_names.insert("mint_dir");
             }
+            if main_param_is_env.iter().any(|is_env| *is_env) {
+                import_names.insert("mint_env");
+            }
             if main_param_is_net.iter().any(|is_net| *is_net) {
                 import_names.insert("mint_net");
             }
@@ -1999,6 +2005,11 @@ fn assemble_wir_module_with_structs_mode(
                         args: vec![WirExpr::ConstI32(file_grant_ord)],
                     });
                     file_grant_ord += 1;
+                } else if main_param_is_env.get(i).copied().unwrap_or(false) {
+                    main_args.push(WirExpr::CallHost {
+                        import: "mint_env".into(),
+                        args: vec![],
+                    });
                 } else if main_param_is_net.get(i).copied().unwrap_or(false) {
                     main_args.push(WirExpr::CallHost {
                         import: "mint_net".into(),

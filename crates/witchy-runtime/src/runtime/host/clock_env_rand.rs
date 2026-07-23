@@ -1,6 +1,6 @@
-use wasmtime::{Caller, Error, Linker, Result};
+use wasmtime::{Caller, Error, ExternRef, Linker, Result, Rooted};
 
-use super::super::{memory_of, read_wstr, VmState};
+use super::super::{memory_of, read_wstr, read_wstr_list, EnvAuthority, VmState};
 
 /// Register the `Clock` observation imports.
 pub(in crate::runtime) fn link_clock(linker: &mut Linker<VmState>) -> Result<()> {
@@ -17,9 +17,49 @@ pub(in crate::runtime) fn link_rand(linker: &mut Linker<VmState>) -> Result<()> 
 
 /// Register the `Env` lookup imports.
 pub(in crate::runtime) fn link_env(linker: &mut Linker<VmState>) -> Result<()> {
+    linker.func_wrap("witchy", "mint_env", host_mint_env)?;
+    linker.func_wrap("witchy", "env_only", host_env_only)?;
     linker.func_wrap("witchy", "env_len", host_env_len)?;
     linker.func_wrap("witchy", "env_fill", host_env_fill)?;
     Ok(())
+}
+
+fn env_authority_ref(
+    caller: &Caller<'_, VmState>,
+    env: Option<Rooted<ExternRef>>,
+) -> Result<EnvAuthority> {
+    let env = env.ok_or_else(|| Error::msg("null Env externref"))?;
+    env.data(caller)?
+        .ok_or_else(|| Error::msg("Env externref has no host data"))?
+        .downcast_ref::<EnvAuthority>()
+        .cloned()
+        .ok_or_else(|| Error::msg("Env externref has wrong host data"))
+}
+
+fn host_mint_env(mut caller: Caller<'_, VmState>) -> Result<Option<Rooted<ExternRef>>> {
+    let allow = caller
+        .data()
+        .caps
+        .env_allow
+        .as_ref()
+        .map(|names| names.iter().cloned().collect());
+    ExternRef::new(&mut caller, EnvAuthority { allow }).map(Some)
+}
+
+fn host_env_only(
+    mut caller: Caller<'_, VmState>,
+    env: Option<Rooted<ExternRef>>,
+    names_ptr: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
+    let current = env_authority_ref(&caller, env)?;
+    let mem = memory_of(&mut caller)?;
+    let requested: std::collections::BTreeSet<_> =
+        read_wstr_list(mem.data(&caller), names_ptr)?.into_iter().collect();
+    let allow = Some(match current.allow {
+        Some(current) => requested.intersection(&current).cloned().collect(),
+        None => requested,
+    });
+    ExternRef::new(&mut caller, EnvAuthority { allow }).map(Some)
 }
 
 /// `now() -> Int`: wall-clock milliseconds since the Unix epoch — the same value
@@ -60,11 +100,16 @@ fn host_now_monotonic(_caller: Caller<'_, VmState>) -> i64 {
 /// variable's value, or -1 when unset (or not valid Unicode — matching the
 /// interpreter's `std::env::var`, which errors on both). The guest sizes its
 /// buffer from this, then calls `env_fill`. Linked only under an `Env` grant.
-fn host_env_len(mut caller: Caller<'_, VmState>, name_ptr: i32) -> Result<i32> {
+fn host_env_len(
+    mut caller: Caller<'_, VmState>,
+    env: Option<Rooted<ExternRef>>,
+    name_ptr: i32,
+) -> Result<i32> {
+    let env = env_authority_ref(&caller, env)?;
     let mem = memory_of(&mut caller)?;
     let name = read_wstr(mem.data(&caller), name_ptr)?;
-    if let Some(allow) = &caller.data().caps.env_allow {
-        if !allow.iter().any(|k| k == &name) {
+    if let Some(allow) = &env.allow {
+        if !allow.contains(&name) {
             return Err(Error::msg(format!("get_env: `{name}` is not in this Env grant's allow-list")));
         }
     }
@@ -77,11 +122,17 @@ fn host_env_len(mut caller: Caller<'_, VmState>, name_ptr: i32) -> Result<i32> {
 /// `env_fill(name_ptr, out_ptr)`: write the named environment variable's value
 /// bytes into guest memory at `out_ptr` (the guest pre-allocated `env_len`
 /// bytes). Linked only under an `Env` grant.
-fn host_env_fill(mut caller: Caller<'_, VmState>, name_ptr: i32, out_ptr: i32) -> Result<()> {
+fn host_env_fill(
+    mut caller: Caller<'_, VmState>,
+    env: Option<Rooted<ExternRef>>,
+    name_ptr: i32,
+    out_ptr: i32,
+) -> Result<()> {
+    let env = env_authority_ref(&caller, env)?;
     let mem = memory_of(&mut caller)?;
     let name = read_wstr(mem.data(&caller), name_ptr)?;
-    if let Some(allow) = &caller.data().caps.env_allow {
-        if !allow.iter().any(|k| k == &name) {
+    if let Some(allow) = &env.allow {
+        if !allow.contains(&name) {
             return Err(Error::msg(format!("get_env: `{name}` is not in this Env grant's allow-list")));
         }
     }

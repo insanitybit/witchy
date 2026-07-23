@@ -72,6 +72,7 @@ pub const OPS: &[CapOp] = &[
     op!("now_monotonic", Clock, 1, Int, "clock.now_monotonic()"),
     op!("rand_u64", Rand, 1, Int, "rand.rand_u64()"),
     op!("get_env", Env, 2, OptionString, "env.get_env(name)"),
+    op!("only", Env, 2, SameReceiver, "env.only(names)"),
     op!("exec", Exec, 5, String, "exec.exec(dir, path, args, stdin)"),
     op!("write_out", BuildOut, 3, Nil, "out.write_out(path, contents)"),
     op!("read_build", BuildRead, 2, String, "build_read.read_build(path)"),

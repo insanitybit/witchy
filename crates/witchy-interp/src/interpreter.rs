@@ -289,12 +289,12 @@ pub enum BuildCap {
 /// being passed as arguments. This is the hybrid capability model — a function
 /// that needs to perform an effect must be handed the capability for it, so a
 /// library that was never granted one cannot perform that effect.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Capability {
     Console,
     Clock,
     Rand,
-    Env,
+    Env(Option<std::collections::BTreeSet<String>>),
     /// The right to spawn a native subprocess (`exec`). Right-less and payload-
     /// free: the executable is named + confined by a `Dir[Read]` argument.
     Exec,
@@ -883,7 +883,7 @@ impl Interpreter {
             Some(Type::Named(n, _)) if n == "Console" => Ok(Value::Cap(Capability::Console)),
             Some(Type::Named(n, _)) if n == "Clock" => Ok(Value::Cap(Capability::Clock)),
             Some(Type::Named(n, _)) if n == "Rand" => Ok(Value::Cap(Capability::Rand)),
-            Some(Type::Named(n, _)) if n == "Env" => Ok(Value::Cap(Capability::Env)),
+            Some(Type::Named(n, _)) if n == "Env" => Ok(Value::Cap(Capability::Env(None))),
             Some(Type::Named(n, _)) if n == "Dir" => Ok(Value::Dir(DirValue::Fs(self.root.clone()), String::new())),
             Some(Type::Named(n, _)) if n == "Net" => Ok(Value::Net(self.net_allow.clone())),
             Some(Type::Named(n, _)) if n == "Fetch" => {

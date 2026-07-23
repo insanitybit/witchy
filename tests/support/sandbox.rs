@@ -441,3 +441,74 @@ pub(crate) fn grant_document_env_is_name_scoped() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+pub(crate) fn env_only_is_monotone_and_typed() {
+    let dir = unique("env-only");
+    std::fs::create_dir_all(&dir).unwrap();
+    let allowed = dir.join("allowed.witchy");
+    let denied = dir.join("denied.witchy");
+    let mistyped = dir.join("mistyped.witchy");
+    let grants = dir.join("grants.toml");
+
+    std::fs::write(
+        &allowed,
+        "import option\nfn main(console: Console, runtime: Env):\n    let public = runtime.only([\"RFC0102_PUBLIC\"])\n    match public.get_env(\"RFC0102_PUBLIC\"):\n        Some(value) -> console.print(value)\n        None -> console.print(\"unset\")\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &denied,
+        "import option\nfn main(console: Console, runtime: Env):\n    let public = runtime.only([\"RFC0102_PUBLIC\"])\n    let widened = public.only([\"RFC0102_PRIVATE\"])\n    match widened.get_env(\"RFC0102_PRIVATE\"):\n        Some(value) -> console.print(value)\n        None -> console.print(\"unset\")\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &mistyped,
+        "fn main(runtime: Env):\n    let invalid = runtime.only([1])\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &grants,
+        "[env]\nruntime = [\"RFC0102_PUBLIC\", \"RFC0102_PRIVATE\"]\n",
+    )
+    .unwrap();
+
+    let retained = Command::new(BIN)
+        .args(["sandbox", "--grants", grants.to_str().unwrap(), allowed.to_str().unwrap()])
+        .env("RFC0102_PUBLIC", "visible")
+        .output()
+        .unwrap();
+    assert!(
+        retained.status.success() && stdout(&retained).contains("visible"),
+        "Env.only must preserve retained names: out={} err={}",
+        stdout(&retained),
+        stderr(&retained)
+    );
+
+    let cannot_widen = Command::new(BIN)
+        .args(["sandbox", "--grants", grants.to_str().unwrap(), denied.to_str().unwrap()])
+        .env("RFC0102_PRIVATE", "hidden")
+        .output()
+        .unwrap();
+    assert!(!cannot_widen.status.success(), "nested Env.only must not regain authority");
+    assert!(
+        stdout(&cannot_widen).contains("not in this Env grant's allow-list")
+            || stderr(&cannot_widen).contains("not in this Env grant's allow-list"),
+        "expected attenuation diagnostic: out={} err={}",
+        stdout(&cannot_widen),
+        stderr(&cannot_widen)
+    );
+
+    let bad_names = Command::new(BIN)
+        .args(["check", mistyped.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!bad_names.status.success(), "Env.only must require List(String)");
+    assert!(
+        stdout(&bad_names).contains("List(String)")
+            || stderr(&bad_names).contains("List(String)"),
+        "expected Env.only list diagnostic: out={} err={}",
+        stdout(&bad_names),
+        stderr(&bad_names)
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

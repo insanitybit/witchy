@@ -2269,10 +2269,17 @@ impl Interpreter {
             // `env.get_env(name) -> Option(String)` (None when unset). Reading the
             // process environment is ambient authority, so it is capability-gated.
             "get_env" => match args {
-                [Value::Cap(Capability::Env), Value::Str(name)] => Ok(Some(match std::env::var(name.as_str()) {
-                    Ok(v) => Value::ctor("Some", vec![Value::str(v)]),
-                    Err(_) => Value::ctor("None", Vec::new()),
-                })),
+                [Value::Cap(Capability::Env(allow)), Value::Str(name)] => {
+                    if allow.as_ref().is_some_and(|names| !names.contains(name.as_str())) {
+                        return err(format!(
+                            "get_env: `{name}` is not in this Env grant's allow-list"
+                        ));
+                    }
+                    Ok(Some(match std::env::var(name.as_str()) {
+                        Ok(v) => Value::ctor("Some", vec![Value::str(v)]),
+                        Err(_) => Value::ctor("None", Vec::new()),
+                    }))
+                }
                 _ => err("get_env expects an Env and a variable name"),
             },
             // --- build-time host operations (only reachable from a `build` step) ---
@@ -2422,6 +2429,20 @@ impl Interpreter {
             // set; `deny` subtracts it (a monotone exclusion recorded as `!`-prefixed entries
             // the shared `net_allows` honours).
             "only" => match args {
+                [Value::Cap(Capability::Env(allow)), Value::List(names)] => {
+                    let requested = names
+                        .iter()
+                        .map(|name| match name {
+                            Value::Str(name) => Ok(name.as_str().to_string()),
+                            _ => err("Env.only expects a List(String)"),
+                        })
+                        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+                    let narrowed = match allow {
+                        Some(current) => requested.intersection(current).cloned().collect(),
+                        None => requested,
+                    };
+                    Ok(Some(Value::Cap(Capability::Env(Some(narrowed)))))
+                }
                 [Value::Fetch(policy), Value::Str(origins)] => policy
                     .only(origins.lines().map(str::to_owned))
                     .map(Value::Fetch)
@@ -2446,7 +2467,7 @@ impl Interpreter {
                     )))
                 }
                 _ => err(
-                    "only expects a Fetch and origins, a Net and a NetPolicy, or a Dir and a DirPolicy",
+                    "only expects an Env and names, a Fetch and origins, a Net and a NetPolicy, or a Dir and a DirPolicy",
                 ),
             },
             "send_raw" => match args {

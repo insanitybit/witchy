@@ -139,6 +139,38 @@ try {
     ok(eq(shimLines, ["GREETING=hi"]), "Env reads a page-supplied value");
     const oracle = nativeRun(src, { env: { GREETING: "hi" } });
     ok(eq(shimLines, oracle), "Env output matches the native oracle byte-for-byte");
+
+    const NARROW = `fn main(console: Console, env: Env):
+    let public = env.only(["GREETING"])
+    match public.get_env("GREETING"):
+        Some(v) -> console.print(v)
+        None -> console.print("unset")
+`;
+    const narrowSrc = compile(NARROW);
+    const narrow = await instantiate(narrowSrc.bytes, {
+      capabilities: { env: { GREETING: "hi", HIDDEN: "secret" } },
+    });
+    const narrowLines = narrow.run();
+    ok(eq(narrowLines, ["hi"]), "Env.only preserves an explicitly retained name");
+    ok(
+      eq(narrowLines, nativeRun(narrowSrc.src, { env: { GREETING: "hi", HIDDEN: "secret" } })),
+      "Env.only output matches the native interpreter",
+    );
+
+    const OMITTED = `fn main(console: Console, env: Env):
+    let public = env.only(["GREETING"])
+    match public.get_env("HIDDEN"):
+        Some(v) -> console.print(v)
+        None -> console.print("unset")
+`;
+    const omitted = await instantiate(compile(OMITTED).bytes, {
+      capabilities: { env: { GREETING: "hi", HIDDEN: "secret" } },
+    });
+    let narrowedDenied = false;
+    try { omitted.run(); } catch (e) {
+      narrowedDenied = String(e).includes("not in this Env grant's allow-list");
+    }
+    ok(narrowedDenied, "Env.only cannot regain an omitted page-supplied name");
   }
 
   // === 3. Dir: in-memory tree, full op surface, parity with native ==========
