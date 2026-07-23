@@ -20,6 +20,11 @@ fn grant_document_file_rights_are_parameter_exact() {
     sandbox::grant_document_file_rights_are_parameter_exact();
 }
 
+#[test]
+fn grant_document_env_is_name_scoped() {
+    sandbox::grant_document_env_is_name_scoped();
+}
+
 /// RFC-0005 Stage 2 / RFC-0012: direct `--file` grants are minted as File
 /// externrefs in the compiled sandbox path, for both read and write leaf ops.
 #[test]

@@ -322,6 +322,7 @@ pub(crate) fn run_linked_compiled(
     file_grants: Vec<std::path::PathBuf>,
     net_allow: Vec<String>,
     fetch_origins: Vec<String>,
+    env_allow: Option<Vec<String>>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<runtime::SecretGrant>,
@@ -336,6 +337,7 @@ pub(crate) fn run_linked_compiled(
         file_grants,
         net_allow,
         fetch_origins,
+        env_allow,
         args,
         signing_key,
         named_secrets,
@@ -367,6 +369,7 @@ pub(crate) fn run_checked_compiled(
         file_grants,
         net_allow,
         fetch_origins,
+        None,
         args,
         signing_key,
         named_secrets,
@@ -384,6 +387,7 @@ fn run_compiled(
     file_grants: Vec<std::path::PathBuf>,
     net_allow: Vec<String>,
     fetch_origins: Vec<String>,
+    env_allow: Option<Vec<String>>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<runtime::SecretGrant>,
@@ -442,6 +446,7 @@ fn run_compiled(
     }
     if grant.contains_key("Env") {
         caps.env = true;
+        caps.env_allow = env_allow;
     }
     if grant.contains_key("Exec") {
         caps.exec = true;

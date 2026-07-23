@@ -18,6 +18,8 @@
 //! github = ["github.com:443"]
 //! [fetch]
 //! api = ["https://api.github.com"]
+//! [env]
+//! runtime = ["HOME", "LANG"]
 //! [secrets]
 //! gh = { from = "env:GITHUB_OAUTH" }
 //! [user_caps]
@@ -45,6 +47,10 @@ pub struct GrantDoc {
     /// Origin allowlists keyed by the `Fetch` parameter they bind to.
     #[serde(default)]
     pub fetch: BTreeMap<String, Vec<String>>,
+    /// Environment-variable name allowlists keyed by the `Env` parameter they
+    /// bind to. An empty list grants a real Env that can read no names.
+    #[serde(default)]
+    pub env: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub secrets: BTreeMap<String, SecretGrant>,
     /// RFC-0038: bare, library-defined `grantable` capabilities the host mints at
@@ -125,6 +131,9 @@ impl GrantDoc {
         if !self.fetch.is_empty() {
             cs.insert("Fetch", Rights::new());
         }
+        if !self.env.is_empty() {
+            cs.insert("Env", Rights::new());
+        }
         if !self.secrets.is_empty() {
             // A `[secrets]` section models NAMED store secrets, reached through a
             // `SecretStore` (`SecretStore.get`/`require`). It does NOT confer a bare
@@ -196,10 +205,10 @@ impl CrossCheck {
     }
 }
 
-/// The capabilities a grant document models. `Console`/`Clock`/`Env` are low-risk
-/// and always host-provided (not enumerated in a grant doc), and `Exec` has no
-/// document section yet, so they are outside the cross-check.
-const GRANTABLE: &[&str] = &["Dir", "File", "Net", "Fetch", "Secret", "SecretStore"];
+/// The capabilities a grant document models. `Console`/`Clock` are currently
+/// host-provided outside the document, and `Exec` has no section yet.
+const GRANTABLE: &[&str] =
+    &["Dir", "File", "Net", "Fetch", "Env", "Secret", "SecretStore"];
 
 fn grantable_only(cs: &CapSet) -> CapSet {
     cs.iter()
@@ -246,6 +255,7 @@ mod tests {
              [dirs]\ndata = { root = \"./data\", rights = [\"Read\", \"Write\"] }\n\
              [net]\ngithub = [\"github.com:443\", \"api.github.com:443\"]\n\
              [fetch]\napi = [\"https://api.github.com\"]\n\
+             [env]\nruntime = [\"HOME\", \"LANG\"]\n\
              [secrets]\ngh = { from = \"env:GITHUB_OAUTH\" }\n",
         )
         .expect("valid grant doc");
@@ -254,6 +264,7 @@ mod tests {
         assert_eq!(doc.dirs["data"].root, "./data");
         assert_eq!(doc.net["github"], vec!["github.com:443", "api.github.com:443"]);
         assert_eq!(doc.fetch["api"], vec!["https://api.github.com"]);
+        assert_eq!(doc.env["runtime"], vec!["HOME", "LANG"]);
         assert_eq!(doc.secrets["gh"].from, "env:GITHUB_OAUTH");
     }
 
@@ -291,6 +302,14 @@ mod tests {
         let grant = doc.cap_set();
         assert!(grant.contains_key("Fetch"));
         assert!(!grant.contains_key("Net"));
+    }
+
+    #[test]
+    fn env_section_confers_env_including_an_empty_name_set() {
+        let named = GrantDoc::parse("[env]\nruntime = [\"HOME\", \"LANG\"]\n").unwrap();
+        assert!(named.cap_set().contains_key("Env"));
+        let empty = GrantDoc::parse("[env]\nruntime = []\n").unwrap();
+        assert!(empty.cap_set().contains_key("Env"));
     }
 
     /// (BUG-117) A `[secrets]` section confers `SecretStore` (named store secrets)

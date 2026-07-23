@@ -306,6 +306,7 @@ fn run_tests_in_module(
                 Vec::new(),
                 policy.grants.net_allow.clone(),
                 Vec::new(),
+                None,
                 Vec::new(),
                 None,
                 Vec::new(),

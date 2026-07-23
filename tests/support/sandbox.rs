@@ -355,3 +355,89 @@ pub(crate) fn sandbox_reveal_gates_signing_key_only() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// RFC-0102: an Env grant document binds a named `Env` parameter to an
+/// allow-list. The footprint admits the Env family, while the runtime enforces
+/// the individual variable names.
+pub(crate) fn grant_document_env_is_name_scoped() {
+    let dir = unique("env-grant");
+    std::fs::create_dir_all(&dir).unwrap();
+    let allowed = dir.join("allowed.witchy");
+    let denied = dir.join("denied.witchy");
+    let grants = dir.join("grants.toml");
+    let no_env = dir.join("no-env.toml");
+    let wrong_binding = dir.join("wrong-binding.toml");
+
+    std::fs::write(
+        &allowed,
+        "import option\nfn main(console: Console, runtime: Env):\n    match runtime.get_env(\"RFC0102_ALLOWED\"):\n        Some(value) -> console.print(value)\n        None -> console.print(\"unset\")\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &denied,
+        "import option\nfn main(console: Console, runtime: Env):\n    match runtime.get_env(\"RFC0102_DENIED\"):\n        Some(value) -> console.print(value)\n        None -> console.print(\"unset\")\n",
+    )
+    .unwrap();
+    std::fs::write(&grants, "[env]\nruntime = [\"RFC0102_ALLOWED\"]\n").unwrap();
+    std::fs::write(&no_env, "").unwrap();
+    std::fs::write(&wrong_binding, "[env]\nother = [\"RFC0102_ALLOWED\"]\n").unwrap();
+
+    let permitted = Command::new(BIN)
+        .args(["sandbox", "--grants", grants.to_str().unwrap(), allowed.to_str().unwrap()])
+        .env("RFC0102_ALLOWED", "visible")
+        .output()
+        .unwrap();
+    assert!(
+        permitted.status.success() && stdout(&permitted).contains("visible"),
+        "allowed Env name must be readable: out={} err={}",
+        stdout(&permitted),
+        stderr(&permitted)
+    );
+
+    let omitted = Command::new(BIN)
+        .args(["sandbox", "--grants", grants.to_str().unwrap(), denied.to_str().unwrap()])
+        .env("RFC0102_DENIED", "hidden")
+        .output()
+        .unwrap();
+    assert!(!omitted.status.success(), "an omitted Env name must be denied");
+    assert!(
+        stdout(&omitted).contains("not in this Env grant's allow-list")
+            || stderr(&omitted).contains("not in this Env grant's allow-list"),
+        "expected Env allow-list diagnostic: out={} err={}",
+        stdout(&omitted),
+        stderr(&omitted)
+    );
+
+    let missing_family = Command::new(BIN)
+        .args(["sandbox", "--grants", no_env.to_str().unwrap(), allowed.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!missing_family.status.success(), "omitting the Env family must fail the footprint check");
+    assert!(
+        stdout(&missing_family).contains("is insufficient")
+            || stderr(&missing_family).contains("is insufficient"),
+        "expected footprint diagnostic: out={} err={}",
+        stdout(&missing_family),
+        stderr(&missing_family)
+    );
+
+    let mismatched = Command::new(BIN)
+        .args([
+            "sandbox",
+            "--grants",
+            wrong_binding.to_str().unwrap(),
+            allowed.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!mismatched.status.success(), "an Env grant for a different parameter must not bind");
+    assert!(
+        stdout(&mismatched).contains("[env].runtime")
+            || stderr(&mismatched).contains("[env].runtime"),
+        "expected same-name Env binding diagnostic: out={} err={}",
+        stdout(&mismatched),
+        stderr(&mismatched)
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
