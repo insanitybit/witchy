@@ -727,7 +727,10 @@ fn app_csp() -> String:
     // Runtime output comes from the concrete surface below; drift fails closed.
     let expected = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'self'; worker-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types 'none'"
     let derived = app_csp_for([], ["'self'"])
-    if derived == expected: derived else: "default-src 'none'"
+    if derived == expected:
+        derived
+    else:
+        "default-src 'none'"
 
 fn app_csp_for(fetch_origins: List(String), host_connect: List(String)) -> String:
     let connect = csp_connect_sources(host_connect, fetch_origins)
@@ -739,7 +742,10 @@ fn csp_connect_sources(host_connect: List(String), fetch_origins: List(String)) 
         sources.push(source)
     for origin in fetch_origins:
         sources.push(origin)
-    if sources.is_empty(): "'none'" else: list.join(sources, " ")
+    if sources.is_empty():
+        "'none'"
+    else:
+        list.join(sources, " ")
 
 // The sandbox frame intentionally OMITS Perfect Types so the bootstrap can set
 // `srcdoc` and the renderer can use innerHTML — safe because the frame is
