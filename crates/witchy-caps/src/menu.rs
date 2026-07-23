@@ -469,6 +469,7 @@ mod tests {
             ("Clock", &[]),
             ("Env", &[]),
             ("Dir", &["Read", "Write"]),
+            ("Fetch", &[]),
         ]);
         assert!(menu.check(&supported).portable());
 
@@ -539,17 +540,24 @@ mod tests {
     }
 
     #[test]
-    fn grant_plan_returns_the_typed_portability_failure() {
+    fn browser_fetch_plan_uses_the_real_origin_scoped_provider() {
         let menu = HostMenu::parse(BROWSER_MENU).unwrap();
-        let report = menu
+        let plan = menu
             .plan(&requirements(&[("Fetch", &[])]))
-            .expect_err("browser Fetch is not implemented yet");
+            .expect("browser Fetch provider");
+        assert_eq!(plan.capabilities.len(), 1);
+        let fetch = &plan.capabilities[0];
         assert_eq!(
-            report.missing_capabilities,
-            vec![CapabilityRequirement {
+            fetch.requirement,
+            CapabilityRequirement {
                 kind: CapabilityKind::Fetch,
-                rights: Vec::new(),
-            }]
+                rights: Vec::new()
+            }
+        );
+        assert_eq!(fetch.provider, "browser-fetch");
+        assert_eq!(
+            fetch.settings.get("origins"),
+            Some(&toml::Value::String("host-configured".to_string()))
         );
     }
 

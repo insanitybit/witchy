@@ -23,9 +23,11 @@ python3 -m http.server -d web 8000   # any static file server works
   the printed output or the parse/type/runtime error.
 - `index.html` is the UI, preloaded with the language reference's examples.
 
-Only `Console`-only programs produce output (the browser grants no `Dir`/`Net`/
-`Clock`/`Env`); a program that asks for those type-checks but errors when it
-tries to use them — which itself demonstrates the capability model.
+The low-level runtime has explicit browser providers for Clock, page-supplied
+Env, in-memory Dir, and origin-scoped Fetch. The editor shell still starts with
+no ambient capabilities; examples opt into only the providers declared by the
+browser host menu. Raw Net remains unavailable because browser `fetch()` is
+Fetch authority, not a byte-stream socket.
 
 `web/witchy.wasm` is a build artifact (gitignored); regenerate it with the
 build script.

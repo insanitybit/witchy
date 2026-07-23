@@ -14,8 +14,10 @@
 //   4. Confinement — a `..`/absolute path is refused by BOTH the shim (throw) and
 //               the native run (abort), with matching messages.
 //   5. Entry policy — `dir.only(Dir.ext(".log"))` denies a non-matching file.
-//   6. Deny-by-omission is preserved — the DEFAULT host still LinkErrors on any
-//      Dir/Clock/Env program, and Exec/Secret/Net stay denied EVEN under the
+//   6. Fetch — explicit origin-scoped real fetch() authority, JSPI suspension,
+//      request/response parity, pre-I/O denial, and fail-closed limits.
+//   7. Deny-by-omission is preserved — the DEFAULT host still LinkErrors on any
+//      Dir/Clock/Env/Fetch program, and Exec/Secret/Net stay denied EVEN under the
 //      opt-in host (their imports are simply never built).
 //
 // Node is the host engine. Usage: node web/witchy-runtime/capability-host.test.mjs [witchy-binary]
@@ -213,7 +215,153 @@ try {
       `dir.only(ext:".log") admits app.log but denies secret.key: ${msg.slice(0, 60)}`);
   }
 
-  // === 6. Exec/Secret/Net stay DENIED even under the opt-in host ============
+  // === 6. Fetch: JSPI suspension + origin confinement + uniform failures =====
+  {
+    const FETCH = `fn main(console: Console, fetch: Fetch):
+    let api = fetch.only("https://api.example.com")
+    console.print(api.send_raw("GET", "https://api.example.com/data", "X-Test: yes", ""))
+`;
+    const { bytes } = compile(FETCH);
+
+    let denied = false;
+    try { await instantiate(bytes); } catch (e) { denied = e instanceof WebAssembly.LinkError; }
+    ok(denied, "Fetch program is DENIED under the default host (LinkError)");
+
+    const requests = [];
+    const fakeFetch = async (url, options) => {
+      requests.push({ url, options });
+      await Promise.resolve();
+      return {
+        status: 200,
+        redirected: false,
+        type: "basic",
+        headers: new Map([["x-fixture", "yes"]]),
+        arrayBuffer: async () => new TextEncoder().encode("ok").buffer,
+      };
+    };
+    const host = await instantiate(bytes, {
+      capabilities: { fetch: { origins: ["HTTPS://API.Example.com"] } },
+      fetchImpl: fakeFetch,
+    });
+    const lines = await host.run();
+    ok(
+      eq(lines, ["HTTP/1.1 200\r\nx-fixture: yes\r\n\r\nok"]),
+      "Fetch suspends and resumes the same Wasm run with the native raw-response envelope",
+    );
+    ok(
+      requests.length === 1 &&
+        requests[0].url === "https://api.example.com/data" &&
+        requests[0].options.credentials === "omit" &&
+        requests[0].options.redirect === "manual" &&
+        requests[0].options.headers[0][0] === "X-Test",
+      "Fetch sends exactly one credential-free, no-redirect request after canonical admission",
+    );
+
+    let unrestrictedRejected = false;
+    try {
+      await instantiate(bytes, { capabilities: { fetch: true }, fetchImpl: fakeFetch });
+    } catch (e) {
+      unrestrictedRejected = /explicit grant object/.test(String(e.message));
+    }
+    ok(unrestrictedRejected, "browser Fetch refuses an implicit unrestricted grant");
+
+    let malformedRejected = false;
+    try {
+      await instantiate(bytes, {
+        capabilities: { fetch: { origins: ["https://api.example.com/path"] } },
+        fetchImpl: fakeFetch,
+      });
+    } catch (e) {
+      malformedRejected = /must not contain a path/.test(String(e.message));
+    }
+    ok(malformedRejected, "malformed origin grants fail before instantiation");
+
+    const FORBIDDEN = `fn main(console: Console, fetch: Fetch):
+    console.print(fetch.send_raw("GET", "https://blocked.example/data", "", ""))
+`;
+    let forbiddenCalls = 0;
+    const forbiddenHost = await instantiate(compile(FORBIDDEN).bytes, {
+      capabilities: { fetch: { origins: ["https://api.example.com"] } },
+      fetchImpl: async () => { forbiddenCalls++; throw new Error("must not run"); },
+    });
+    const forbiddenLines = await forbiddenHost.run();
+    ok(
+      forbiddenCalls === 0 &&
+        forbiddenLines[0] ===
+          "WITCHY_FETCH_ERROR:denied:Fetch origin `https://blocked.example:443` is not granted",
+      "origin denial is returned before any fetch() I/O",
+    );
+
+    const NARROW = `fn main(console: Console, fetch: Fetch):
+    let narrowed = fetch.only("https://blocked.example")
+    console.print("unreachable")
+`;
+    const narrowHost = await instantiate(compile(NARROW).bytes, {
+      capabilities: { fetch: { origins: ["https://api.example.com"] } },
+      fetchImpl: fakeFetch,
+    });
+    let narrowingRejected = false;
+    try { await narrowHost.run(); } catch (e) {
+      narrowingRejected = /is not granted/.test(String(e.message));
+    }
+    ok(narrowingRejected, "fetch.only cannot widen beyond the granted origins");
+
+    const REDIRECT = `fn main(console: Console, fetch: Fetch):
+    console.print(fetch.send_raw("GET", "https://api.example.com/redirect", "", ""))
+`;
+    const redirectHost = await instantiate(compile(REDIRECT).bytes, {
+      capabilities: { fetch: { origins: ["https://api.example.com"] } },
+      fetchImpl: async () => ({
+        status: 302,
+        redirected: false,
+        type: "basic",
+        headers: new Map([["location", "https://secret.example/"]]),
+        arrayBuffer: async () => new ArrayBuffer(0),
+      }),
+    });
+    ok(
+      eq(await redirectHost.run(), [
+        "WITCHY_FETCH_ERROR:redirect:Fetch redirects are disabled (HTTP status 302)",
+      ]),
+      "redirects are rejected without disclosing Location",
+    );
+
+    const timeoutHost = await instantiate(compile(FORBIDDEN.replace("blocked.example", "api.example.com")).bytes, {
+      capabilities: {
+        fetch: { origins: ["https://api.example.com"], timeoutMs: 5 },
+      },
+      fetchImpl: (_url, { signal }) => new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+      }),
+    });
+    ok(
+      eq(await timeoutHost.run(), [
+        "WITCHY_FETCH_ERROR:timeout:Fetch request timed out",
+      ]),
+      "the host timeout resumes Wasm with the uniform timeout error",
+    );
+
+    const oversizedHost = await instantiate(compile(FORBIDDEN.replace("blocked.example", "api.example.com")).bytes, {
+      capabilities: {
+        fetch: { origins: ["https://api.example.com"], maxResponseBytes: 2 },
+      },
+      fetchImpl: async () => ({
+        status: 200,
+        redirected: false,
+        type: "basic",
+        headers: new Map(),
+        arrayBuffer: async () => new TextEncoder().encode("large").buffer,
+      }),
+    });
+    ok(
+      eq(await oversizedHost.run(), [
+        "WITCHY_FETCH_ERROR:response-too-large:Fetch response exceeds the 2-byte host limit",
+      ]),
+      "buffered browser responses enforce the host byte limit",
+    );
+  }
+
+  // === 7. Exec/Secret/Net stay DENIED even under the opt-in host ============
   {
     const EXEC = `import exec
 

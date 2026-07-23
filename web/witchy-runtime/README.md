@@ -1,7 +1,9 @@
-# witchy-runtime — a pure-compute JavaScript host for witchy-WASM
+# witchy-runtime — a deny-by-default JavaScript host for witchy-WASM
 
-`witchy-runtime.mjs` runs witchyc-compiled WASM in JavaScript (browser or Node)
-with **every capability denied**. It is the browser analog of the wasmtime host
+`witchy-runtime.mjs` runs witchyc-compiled WASM in JavaScript (browser or Node).
+With no options, **every capability is denied**. Explicit `opts.capabilities`
+select real or virtual browser providers without adding ambient authority. It is
+the browser analog of the wasmtime host
 in [`crates/witchy-runtime/src/runtime.rs`](../../crates/witchy-runtime/src/runtime.rs), with the capability set fixed to
 empty — the implementation of
 [RFC-0007](../../rfcs/0007-witchy-wasm-browser-target.md). The ABI it targets is
@@ -31,7 +33,7 @@ import { instantiate } from "./witchy-runtime.mjs";
 const { run, output } = await instantiate(wasmBytes, {
   onPrint: (line) => console.log(line), // optional; else lines collect in `output`
 });
-run();          // calls the module's exported `run`; returns the output array
+run();          // synchronous without Fetch; returns the output array
 ```
 
 `instantiate(wasmBytes, opts) -> { instance, output, run, callString, memory }`:
@@ -42,6 +44,13 @@ run();          // calls the module's exported `run`; returns the output array
   accumulate in the returned `output` array.
 - `opts.nodeCrypto` / `opts.cryptoBackend` — override the crypto backend (Node's
   `node:crypto` is auto-detected; SHA-256/HMAC/`rune_hash` work with no backend).
+- `opts.capabilities.fetch = { origins: [...] }` — opt into real browser
+  `fetch()` with an explicit canonical-origin allowlist. The returned `run` and
+  `callString` are Promise-returning for a Fetch-enabled instance and must be
+  awaited. Optional positive `timeoutMs` and non-negative `maxResponseBytes`
+  values tighten the 30-second/16-MiB defaults.
+- `opts.fetchImpl` — inject a fetch-compatible function for deterministic tests;
+  production defaults to `globalThis.fetch`.
 
 The exported `WITCHY_ABI_VERSION` is the ABI version this runtime implements;
 the Rust catalog test compares it with the compiler-owned version.
@@ -93,9 +102,15 @@ output), `fill_pending` / `write_pending_list` (the string bridge),
 diagnostics. The exported `WITCHY_BROWSER_IMPORTS` list is checked against both
 the compiler catalog and the actual JavaScript import object.
 
-**Refuses (absent):** all capability-authority imports (`dir_*`, `net_*`,
-`exec_run`, `now`, `env_*`, secrets, build authority, signing) plus unsupported
-native launch/toolchain services such as `args_size` and `compiler_*`. A module
+**Opt-in providers:** real browser `Clock`; immutable page-supplied `Env`;
+per-run in-memory `Dir`; and real browser `Fetch`, constrained to explicit
+origins. Fetch sends no credentials, refuses redirects, bounds buffered
+responses, and uses WebAssembly JSPI to suspend and resume the guest around the
+asynchronous platform call.
+
+**Refuses (absent):** unrequested capability imports and unsupported families
+including raw `Net`, `Exec`, secrets, build authority, and signing, plus native
+launch/toolchain services such as `args_size` and `compiler_*`. A module
 importing any of these cannot instantiate.
 
 See [`spec/wasm-abi.md`](../../spec/wasm-abi.md) for the full import table and the

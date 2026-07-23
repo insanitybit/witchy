@@ -302,8 +302,14 @@ a self-contained synchronous implementation needing none.
   signature and the pending-buffer protocol above.
 - **`web/witchy-runtime/witchy-runtime.mjs`** — the JavaScript pure-compute host
   ([RFC-0007](../rfcs/0007-witchy-wasm-browser-target.md)). Provides exactly the imports marked `browser: provided` above and
-  omits every capability-authority import. Its
-  `instantiate(wasmBytes, { onPrint })` returns `{ instance, output, run }`.
+  omits every capability-authority import by default. Explicit capability
+  options add only the selected browser-menu provider imports. In particular,
+  an origin-scoped Fetch grant adds `mint_fetch`, `fetch_only`, and
+  `fetch_send_len`; the last is wrapped with WebAssembly JSPI, and Fetch-bearing
+  exports are driven through `WebAssembly.promising` so a platform `fetch()`
+  Promise suspends and resumes the guest without blocking the browser thread.
+  Its `instantiate(wasmBytes, { onPrint, capabilities })` returns
+  `{ instance, output, run }`.
   See the [browser runtime guide](../web/witchy-runtime/README.md).
 
 The spike [`web/witchy-runtime/spike.mjs`](../web/witchy-runtime/spike.mjs) (driven by the Rust test

@@ -19,3 +19,8 @@ provider = "memory"
 determinism = "deterministic"
 rights = ["Read", "Write"]
 source = "per-run"
+
+[grants.Fetch]
+provider = "browser-fetch"
+determinism = "nondeterministic"
+origins = "host-configured"

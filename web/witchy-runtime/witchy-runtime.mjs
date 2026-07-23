@@ -443,7 +443,7 @@ function runeHash(paths, contents) {
 // The default `instantiate` above stays capability-DENIED (deny-by-omission).
 // A caller that explicitly passes `opts.capabilities` opts into a SUPERSET
 // import object that adds ONLY the requested families — never an ambient
-// widening. The three families the browser can honestly back are:
+// widening. The families the browser can honestly back are:
 //
 //   * Clock  — real browser wall/monotonic time on the existing `now`/
 //              `now_monotonic` i64 ABI (no virtualization needed).
@@ -457,6 +457,10 @@ function runeHash(paths, contents) {
 //              crates/witchy-runtime/src/runtime.rs + crates/witchy-caps. It
 //              NEVER touches a real filesystem (no `node:fs`): the whole tree
 //              lives in JS `Map`/`Set` state scoped to this instantiation.
+//   * Fetch  — real browser fetch(), scoped to an explicit canonical-origin
+//              allowlist. `fetch_send_len` is a JSPI-suspending import, so the
+//              guest's ordinary synchronous call resumes after the Promise
+//              settles without blocking the browser thread.
 //
 // `Exec`, `Secret`, raw `Net`, `mint_file` (a top-level File grant), argv and
 // compiler introspection remain DENIED BY OMISSION even under this host — they
@@ -488,6 +492,11 @@ export const WITCHY_DIR_IMPORTS = Object.freeze([
   // NOT the top-level `mint_file` grant, which stays denied).
   "file_read_len",
   "file_write",
+]);
+export const WITCHY_FETCH_IMPORTS = Object.freeze([
+  "mint_fetch",
+  "fetch_only",
+  "fetch_send_len",
 ]);
 
 // The DIR_DENY_ALL sentinel — a single NUL (U+0000), byte-identical to
@@ -704,12 +713,142 @@ function memMakeDir(fs, path) {
   fs.recordAncestors(path);
 }
 
-// Normalize `opts.capabilities` into `{ clock, env, dir }`. Absent/false =>
+const FETCH_DEFAULT_TIMEOUT_MS = 30_000;
+const FETCH_DEFAULT_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
+
+function fetchFailure(code, message) {
+  return { code, message };
+}
+
+function invalidFetch(message) {
+  return fetchFailure("invalid-request", `invalid Fetch request: ${message}`);
+}
+
+function parseFetchUrl(input, originOnly = false) {
+  const text = String(input);
+  for (let i = 0; i < text.length; i++) {
+    const cp = text.charCodeAt(i);
+    if (cp <= 0x1f || cp === 0x7f || cp === 0x20) {
+      throw invalidFetch("URL contains whitespace or a control character");
+    }
+  }
+  if (text.includes("#")) {
+    throw invalidFetch("URL fragments are not sent by Fetch");
+  }
+  const schemeEnd = text.indexOf("://");
+  if (schemeEnd < 0) {
+    throw invalidFetch("URL is missing `scheme://`");
+  }
+  const scheme = text.slice(0, schemeEnd).toLowerCase();
+  if (scheme !== "http" && scheme !== "https") {
+    throw invalidFetch("Fetch URLs and origins must use `http` or `https`");
+  }
+  const rest = text.slice(schemeEnd + 3);
+  let authorityEnd = rest.length;
+  for (const separator of ["/", "?"]) {
+    const index = rest.indexOf(separator);
+    if (index >= 0) authorityEnd = Math.min(authorityEnd, index);
+  }
+  const authority = rest.slice(0, authorityEnd);
+  if (authority === "") throw invalidFetch("URL has an empty host");
+  if (authority.includes("@")) {
+    throw invalidFetch(
+      "URL credentials are forbidden; pass explicit authorization headers",
+    );
+  }
+
+  const defaultPort = scheme === "http" ? 80 : 443;
+  let host;
+  let port = defaultPort;
+  if (authority.startsWith("[")) {
+    const close = authority.indexOf("]");
+    if (close < 0) throw invalidFetch("unterminated IPv6 host");
+    host = authority.slice(0, close + 1);
+    const suffix = authority.slice(close + 1);
+    if (suffix !== "") {
+      if (!suffix.startsWith(":")) throw invalidFetch("invalid IPv6 authority");
+      port = parseFetchPort(suffix.slice(1));
+    }
+  } else {
+    const colons = [...authority].filter((char) => char === ":").length;
+    if (colons > 1) {
+      throw invalidFetch("IPv6 URL hosts must be enclosed in brackets");
+    }
+    const colon = authority.lastIndexOf(":");
+    if (colon >= 0) {
+      host = authority.slice(0, colon);
+      const portText = authority.slice(colon + 1);
+      if (host === "" || portText === "") throw invalidFetch("invalid URL authority");
+      port = parseFetchPort(portText);
+    } else {
+      host = authority;
+    }
+  }
+  host = host.toLowerCase();
+  const suffix = rest.slice(authorityEnd);
+  const pathAndQuery =
+    suffix === "" ? "/" : suffix.startsWith("?") ? `/${suffix}` : suffix;
+  if (originOnly && pathAndQuery !== "/") {
+    throw invalidFetch("an origin grant must not contain a path or query");
+  }
+  return {
+    origin: `${scheme}://${host}:${port}`,
+    url: text,
+  };
+}
+
+function parseFetchPort(text) {
+  if (!/^[0-9]+$/.test(text)) throw invalidFetch("invalid URL port");
+  const port = Number(text);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw invalidFetch("invalid URL port");
+  }
+  return port;
+}
+
+function normalizeFetchGrant(grant) {
+  if (!grant || typeof grant !== "object" || Array.isArray(grant)) {
+    throw new Error(
+      "witchy-runtime: Fetch requires an explicit grant object with an `origins` array",
+    );
+  }
+  if (!Array.isArray(grant.origins)) {
+    throw new Error(
+      "witchy-runtime: Fetch grant must contain an explicit `origins` array",
+    );
+  }
+  const origins = new Set();
+  for (const value of grant.origins) {
+    try {
+      origins.add(parseFetchUrl(String(value), true).origin);
+    } catch (error) {
+      throw new Error(`witchy-runtime: invalid Fetch grant: ${error.message}`);
+    }
+  }
+  const timeoutMs =
+    grant.timeoutMs === undefined ? FETCH_DEFAULT_TIMEOUT_MS : Number(grant.timeoutMs);
+  const maxResponseBytes =
+    grant.maxResponseBytes === undefined
+      ? FETCH_DEFAULT_MAX_RESPONSE_BYTES
+      : Number(grant.maxResponseBytes);
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error("witchy-runtime: Fetch grant `timeoutMs` must be a positive integer");
+  }
+  if (!Number.isInteger(maxResponseBytes) || maxResponseBytes < 0) {
+    throw new Error(
+      "witchy-runtime: Fetch grant `maxResponseBytes` must be a non-negative integer",
+    );
+  }
+  return { origins, timeoutMs, maxResponseBytes };
+}
+
+// Normalize `opts.capabilities` into `{ clock, env, dir, fetch }`. Absent/false =>
 // that family stays DENIED (its imports are never built). `env` becomes a Map
 // (empty when enabled with no entries); `dir` becomes an array of grant specs
-// (one per `mint_dir` ordinal), each `{ fs, read, write }`.
+// (one per `mint_dir` ordinal), each `{ fs, read, write }`; `fetch` becomes an
+// array of explicit origin-scoped grants (one per `mint_fetch` ordinal).
 function normalizeCapabilities(spec) {
-  const out = { clock: false, env: null, dir: null };
+  const out = { clock: false, env: null, dir: null, fetch: null };
   if (!spec || typeof spec !== "object") return out;
 
   out.clock = spec.clock === true;
@@ -731,6 +870,11 @@ function normalizeCapabilities(spec) {
         write: grant.write === true, // default: NOT writable
       };
     });
+  }
+
+  if (spec.fetch) {
+    const grants = Array.isArray(spec.fetch) ? spec.fetch : [spec.fetch];
+    out.fetch = grants.map(normalizeFetchGrant);
   }
 
   return out;
@@ -918,6 +1062,194 @@ function makeDirImports(grants, { readWstr, readWstrText, stagePending, stageLis
   return imports;
 }
 
+function parseFetchHeaders(text) {
+  const headers = [];
+  for (let line of text.split("\n")) {
+    if (line.endsWith("\r")) line = line.slice(0, -1);
+    const colon = line.indexOf(":");
+    if (colon < 0) continue;
+    const name = line.slice(0, colon).trim();
+    const value = line.slice(colon + 1).trim();
+    if (name === "" || !/^[A-Za-z0-9!#$%&'*+\-.^_`|~]+$/.test(name)) {
+      throw invalidFetch(`header name \`${name}\` is not an HTTP token`);
+    }
+    if (/[\u0000-\u0008\u000b-\u001f\u007f\r\n]/.test(value)) {
+      throw invalidFetch(`header \`${name}\` contains a forbidden control character`);
+    }
+    if (["host", "connection", "content-length", "transfer-encoding"].includes(name.toLowerCase())) {
+      throw invalidFetch(`header \`${name}\` is controlled by the Fetch provider`);
+    }
+    headers.push([name, value]);
+  }
+  return headers;
+}
+
+async function readBoundedFetchBody(response, limit) {
+  if (response.body && typeof response.body.getReader === "function") {
+    const reader = response.body.getReader();
+    const chunks = [];
+    let length = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const bytes = new Uint8Array(value);
+      length += bytes.length;
+      if (length > limit) {
+        await reader.cancel();
+        throw fetchFailure(
+          "response-too-large",
+          `Fetch response exceeds the ${limit}-byte host limit`,
+        );
+      }
+      chunks.push(bytes);
+    }
+    const body = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) {
+      body.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return body;
+  }
+  const body = new Uint8Array(await response.arrayBuffer());
+  if (body.length > limit) {
+    throw fetchFailure(
+      "response-too-large",
+      `Fetch response exceeds the ${limit}-byte host limit`,
+    );
+  }
+  return body;
+}
+
+function makeFetchImports(grants, { readWstrText, stagePending }, fetchImpl) {
+  if (typeof WebAssembly.Suspending !== "function" || typeof WebAssembly.promising !== "function") {
+    throw new Error(
+      "witchy-runtime: browser Fetch requires WebAssembly JSPI " +
+      "(`WebAssembly.Suspending` and `WebAssembly.promising`)",
+    );
+  }
+  const platformFetch = fetchImpl || globalThis.fetch;
+  if (typeof platformFetch !== "function") {
+    throw new Error("witchy-runtime: browser Fetch requires a `fetch()` implementation");
+  }
+
+  const imports = {
+    mint_fetch(ordinal) {
+      const grant = grants[ordinal];
+      if (!grant) throw new Error(`invalid Fetch grant index ${ordinal}`);
+      return {
+        kind: "fetch",
+        origins: new Set(grant.origins),
+        timeoutMs: grant.timeoutMs,
+        maxResponseBytes: grant.maxResponseBytes,
+      };
+    },
+    fetch_only(fetch, originsPtr) {
+      const text = readWstrText(originsPtr);
+      const requested = text === "" ? [] : text.split(/\r?\n/);
+      const origins = new Set();
+      for (const value of requested) {
+        let origin;
+        try {
+          origin = parseFetchUrl(value, true).origin;
+        } catch (error) {
+          throw new Error(`fetch.only: ${error.message}`);
+        }
+        if (!fetch.origins.has(origin)) {
+          throw new Error(`fetch.only: Fetch origin \`${origin}\` is not granted`);
+        }
+        origins.add(origin);
+      }
+      return {
+        kind: "fetch",
+        origins,
+        timeoutMs: fetch.timeoutMs,
+        maxResponseBytes: fetch.maxResponseBytes,
+      };
+    },
+    async fetch_send_len(fetch, methodPtr, urlPtr, headersPtr, bodyPtr) {
+      let failure = null;
+      let payload = null;
+      const method = readWstrText(methodPtr);
+      const url = readWstrText(urlPtr);
+      const headersText = readWstrText(headersPtr);
+      const bodyText = readWstrText(bodyPtr);
+      try {
+        if (method === "" || !/^[A-Za-z0-9!#$%&'*+\-.^_`|~]+$/.test(method)) {
+          throw invalidFetch("method is not an HTTP token");
+        }
+        const parsed = parseFetchUrl(url);
+        const headers = parseFetchHeaders(headersText);
+        if (!fetch.origins.has(parsed.origin)) {
+          throw fetchFailure(
+            "denied",
+            `Fetch origin \`${parsed.origin}\` is not granted`,
+          );
+        }
+
+        const controller = new AbortController();
+        let timedOut = false;
+        const timer = setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, fetch.timeoutMs);
+        let response;
+        let body;
+        try {
+          response = await platformFetch(parsed.url, {
+            method,
+            headers,
+            body: bodyText === "" ? undefined : bodyText,
+            credentials: "omit",
+            redirect: "manual",
+            signal: controller.signal,
+          });
+          if (
+            response.redirected ||
+            response.type === "opaqueredirect" ||
+            (response.status >= 300 && response.status < 400)
+          ) {
+            throw fetchFailure(
+              "redirect",
+              `Fetch redirects are disabled (HTTP status ${response.status})`,
+            );
+          }
+          body = await readBoundedFetchBody(response, fetch.maxResponseBytes);
+        } catch (error) {
+          if (timedOut || error?.name === "AbortError") {
+            throw fetchFailure("timeout", "Fetch request timed out");
+          }
+          throw error;
+        } finally {
+          clearTimeout(timer);
+        }
+
+        let raw = `HTTP/1.1 ${response.status}\r\n`;
+        for (const [name, value] of response.headers) {
+          raw += `${name}: ${value}\r\n`;
+        }
+        raw += `\r\n${decodeLossy(body)}`;
+        payload = raw;
+      } catch (error) {
+        failure =
+          error && typeof error.code === "string" && typeof error.message === "string"
+            ? error
+            : fetchFailure(
+                "network",
+                `Fetch network error: ${error?.message || String(error)}`,
+              );
+      }
+      if (failure) payload = `WITCHY_FETCH_ERROR:${failure.code}:${failure.message}`;
+      const bytes = utf8.encode(payload);
+      stagePending(bytes);
+      return bytes.length;
+    },
+  };
+  checkFamilyImports("Fetch", imports, WITCHY_FETCH_IMPORTS);
+  imports.fetch_send_len = new WebAssembly.Suspending(imports.fetch_send_len);
+  return imports;
+}
+
 /**
  * Instantiate a witchyc-compiled, footprint-empty WASM module under the
  * pure-compute host. Provides only the NON-capability `"witchy"` imports; a
@@ -931,6 +1263,8 @@ function makeDirImports(grants, { readWstr, readWstrText, stagePending, stageLis
  * @param {object} [opts.cryptoBackend]  override the crypto backend (testing)
  * @param {object} [opts.nodeCrypto]  a `node:crypto`-shaped object (auto-detected
  *        on Node when omitted)
+ * @param {Function} [opts.fetchImpl]  injected fetch implementation (testing);
+ *        defaults to the platform's global fetch
  */
 export async function instantiate(wasmBytes, opts = {}) {
   const output = [];
@@ -1191,6 +1525,9 @@ export async function instantiate(wasmBytes, opts = {}) {
   if (caps.clock) Object.assign(witchy, makeClockImports());
   if (caps.env) Object.assign(witchy, makeEnvImports(caps.env, marshal));
   if (caps.dir) Object.assign(witchy, makeDirImports(caps.dir, marshal));
+  if (caps.fetch) {
+    Object.assign(witchy, makeFetchImports(caps.fetch, marshal, opts.fetchImpl));
+  }
 
   ({ instance } = await WebAssembly.instantiate(wasmBytes, { witchy }));
   memory = instance.exports.memory;
@@ -1198,6 +1535,9 @@ export async function instantiate(wasmBytes, opts = {}) {
   const run = () => {
     if (typeof instance.exports.run !== "function") {
       throw new Error("witchy-runtime: the module does not export `run`");
+    }
+    if (caps.fetch) {
+      return WebAssembly.promising(instance.exports.run)().then(() => output);
     }
     instance.exports.run();
     return output;
@@ -1236,12 +1576,17 @@ export async function instantiate(wasmBytes, opts = {}) {
     const inPtr = galloc(4 + bytes.length);
     dv().setInt32(inPtr, bytes.length, true); // little-endian length header
     u8().set(bytes, inPtr + 4);
-    const outPtr = fn(inPtr, bytes.length);
-    const outLen = dv().getInt32(outPtr, true);
-    const result = decodeLossy(u8().slice(outPtr + 4, outPtr + 4 + outLen));
-    // Free everything this call allocated: the result is now a detached JS string.
-    if (heapGlobal != null) heapGlobal.value = heapBase;
-    return result;
+    const finish = (outPtr) => {
+      const outLen = dv().getInt32(outPtr, true);
+      const result = decodeLossy(u8().slice(outPtr + 4, outPtr + 4 + outLen));
+      // Free everything this call allocated: the result is now a detached JS string.
+      if (heapGlobal != null) heapGlobal.value = heapBase;
+      return result;
+    };
+    if (caps.fetch) {
+      return WebAssembly.promising(fn)(inPtr, bytes.length).then(finish);
+    }
+    return finish(fn(inPtr, bytes.length));
   };
 
   return {
