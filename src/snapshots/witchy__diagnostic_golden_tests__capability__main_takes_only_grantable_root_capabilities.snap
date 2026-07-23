@@ -1,5 +1,6 @@
 ---
 source: src/diagnostic_golden_tests.rs
-expression: "type_diag(\"type Config:\\n    Config(Int)\\n\\nfn main(console: Console, c: Config):\\n    print(console, \\\"hi\\\")\\n\")"
+assertion_line: 550
+expression: "type_diag(\"type Config:\\n    Config(Int)\\n\\nfn main(console: Console, c: Config):\\n    console.print(\\\"hi\\\")\\n\")"
 ---
-type error: `main` parameter `c` has type `main.Config`, but `main` may only take host capabilities (Console, Clock, Env, Dir, Net, Exec, Secret, SecretStore), a `grantable` library capability, or `List(String)` for command-line args
+type error: `main` parameter `c` has type `main.Config`, but `main` may only take host capabilities (Console, Clock, Env, Dir, Net, Fetch, Exec, Secret, SecretStore), a `grantable` library capability, or `List(String)` for command-line args

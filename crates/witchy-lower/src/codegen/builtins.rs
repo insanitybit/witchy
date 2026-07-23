@@ -808,16 +808,27 @@ impl Codegen<'_> {
             // (`dir_only`), a `Net` narrows its ADDRESS set (`net_restrict`, the host op
             // name is historical — the user-facing verb is `only`).
             ("only", 2) => {
-                let pattern = Expr::Field { base: Box::new(args[1].clone()), field: "pattern".into() };
                 if matches!(self.type_table.type_of(&args[0]), Some(witchy_types::typeck::Ty::Dir(_))) {
                     self.used_dir_ops.insert("only");
+                    let pattern = Expr::Field { base: Box::new(args[1].clone()), field: "pattern".into() };
                     let a = self.lower_args(&[&args[0], &pattern])?;
                     if self.collect_wir { call("dir_only", a) } else { host("dir_only_host", a) }
+                } else if matches!(
+                    self.type_table.type_of(&args[0]),
+                    Some(witchy_types::typeck::Ty::Fetch)
+                ) {
+                    let a = self.lower_args(&[&args[0], &args[1]])?;
+                    if self.collect_wir { call("fetch_only", a) } else { host("fetch_only_host", a) }
                 } else {
                     self.used_net_ops.insert("restrict");
+                    let pattern = Expr::Field { base: Box::new(args[1].clone()), field: "pattern".into() };
                     let a = self.lower_args(&[&args[0], &pattern])?;
                     if self.collect_wir { call("net_restrict", a) } else { host("net_restrict_host", a) }
                 }
+            }
+            ("send_raw", 5) => {
+                let a = self.lower_args(&[&args[0], &args[1], &args[2], &args[3], &args[4]])?;
+                if self.collect_wir { call("fetch_send", a) } else { host("fetch_send_host", a) }
             }
             ("deny", 2) => {
                 self.used_net_ops.insert("deny");

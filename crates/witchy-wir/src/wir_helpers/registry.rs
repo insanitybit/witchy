@@ -8,6 +8,7 @@ use super::encoding::{crypto_hash_helper, crypto_keyed_helper};
 use super::host::{
     compiler_introspect_helper, host_call_helper_ret, host_call_helper_typed,
     host_void_helper, host_void_helper_typed, net_recv_helper, staged_string_helper,
+    staged_string_helper_typed,
     two_phase_helper_typed,
 };
 use crate::wir::*;
@@ -431,6 +432,35 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             helper_deps: &[],
             import_deps: &["dir_only"],
             uses_heap: false,
+            uses_table: false,
+        }),
+        "fetch_only" => Some(WirHelperSpec {
+            func: host_call_helper_typed(
+                "fetch_only",
+                "fetch_only",
+                &[WirTy::Extern, WirTy::Str],
+                WirTy::Extern,
+            ),
+            helper_deps: &[],
+            import_deps: &["fetch_only"],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "fetch_send" => Some(WirHelperSpec {
+            func: staged_string_helper_typed(
+                "fetch_send",
+                &[
+                    ("fetch".into(), WirTy::Extern),
+                    ("method".into(), WirTy::Str),
+                    ("url".into(), WirTy::Str),
+                    ("headers".into(), WirTy::Str),
+                    ("body".into(), WirTy::Str),
+                ],
+                "fetch_send_len",
+            ),
+            helper_deps: &["rc_alloc"],
+            import_deps: &["fetch_send_len", "fill_pending"],
+            uses_heap: true,
             uses_table: false,
         }),
         // RFC-0012/RFC-0005 Stage 2: `dir.open`/`dir.create` navigate a Dir to a

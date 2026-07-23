@@ -3,6 +3,7 @@ pub(super) mod clock_env_rand;
 pub(super) mod console;
 pub(super) mod crypto;
 pub(super) mod filesystem;
+pub(super) mod fetch;
 pub(super) mod network;
 pub(super) mod secret;
 pub(super) mod staging;

@@ -2408,6 +2408,13 @@ impl Interpreter {
             // set; `deny` subtracts it (a monotone exclusion recorded as `!`-prefixed entries
             // the shared `net_allows` honours).
             "only" => match args {
+                [Value::Fetch(policy), Value::Str(origins)] => policy
+                    .only(origins.lines().map(str::to_owned))
+                    .map(Value::Fetch)
+                    .map(Some)
+                    .map_err(|error| RuntimeError {
+                        message: format!("fetch.only: {error}"),
+                    }),
                 [Value::Net(allow), Value::Ctor { fields, .. }] if fields.len() == 1 => {
                     let Value::Str(addr) = &fields[0] else {
                         return err("only expects a NetPolicy");
@@ -2424,7 +2431,50 @@ impl Interpreter {
                         witchy_caps::capabilities::dir_only(pol, refine),
                     )))
                 }
-                _ => err("only expects a Net and a NetPolicy, or a Dir and a DirPolicy"),
+                _ => err(
+                    "only expects a Fetch and origins, a Net and a NetPolicy, or a Dir and a DirPolicy",
+                ),
+            },
+            "send_raw" => match args {
+                [
+                    Value::Fetch(policy),
+                    Value::Str(method),
+                    Value::Str(url),
+                    Value::Str(headers),
+                    Value::Str(body),
+                ] => {
+                    let request = witchy_runtime::fetch::FetchRequest {
+                        method: method.as_ref().clone(),
+                        url: url.as_ref().clone(),
+                        headers: headers
+                            .lines()
+                            .filter_map(|line| line.split_once(':'))
+                            .map(|(name, value)| {
+                                (name.trim().to_string(), value.trim().to_string())
+                            })
+                            .collect(),
+                        body: body.as_bytes().to_vec(),
+                    };
+                    let payload = match witchy_runtime::fetch::send(policy, &request) {
+                        Ok(response) => {
+                            let mut raw = format!("HTTP/1.1 {}\r\n", response.status);
+                            for (name, value) in response.headers {
+                                raw.push_str(&name);
+                                raw.push_str(": ");
+                                raw.push_str(&value);
+                                raw.push_str("\r\n");
+                            }
+                            raw.push_str("\r\n");
+                            raw.push_str(&String::from_utf8_lossy(&response.body));
+                            raw
+                        }
+                        Err(error) => {
+                            format!("WITCHY_FETCH_ERROR:{}:{error}", error.code())
+                        }
+                    };
+                    Ok(Some(Value::str(payload)))
+                }
+                _ => err("send_raw expects (Fetch, method, url, headers, body)"),
             },
             "deny" => match args {
                 [Value::Net(allow), Value::Ctor { fields, .. }] if fields.len() == 1 => {

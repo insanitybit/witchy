@@ -638,6 +638,69 @@ fn main(console: Console):
         handle.join().expect("server thread");
     }
 
+    #[test]
+    fn fetch_capability_raw_abi_agrees_across_backends() {
+        use crate::runtime::{Capabilities, Runtime};
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let origin = format!("http://{}", listener.local_addr().expect("address"));
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut request = Vec::new();
+                let mut buf = [0u8; 512];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream.read(&mut buf).expect("read request");
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buf[..read]);
+                }
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-length: 11\r\nconnection: close\r\n\r\nfetch works",
+                    )
+                    .expect("write response");
+            }
+        });
+
+        let src = format!(
+            "fn main(console: Console, fetch: Fetch):\n    let narrowed = fetch.only(\"{origin}\")\n    let response = narrowed.send_raw(\"GET\", \"{origin}/hello\", \"\", \"\")\n    console.print(response)\n"
+        );
+        let module = parser::parse_module(&src).expect("parse");
+        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
+        typeck::check(&linked).expect("typecheck");
+        let interpreted =
+            interpreter::run_module_fetch(linked.clone(), ".", vec![origin.clone()])
+                .expect("interpreter");
+        let bytes = codegen::compile_module_binary(&linked)
+            .expect_lowered("the binary path lowers Fetch");
+        let mut runtime = Runtime::batch().expect("runtime");
+        let mut actor = runtime
+            .spawn(
+                &bytes,
+                Capabilities {
+                    print: true,
+                    quiet: true,
+                    fetch_grants: vec![vec![origin]],
+                    ..Default::default()
+                },
+                64,
+            )
+            .expect("spawn");
+        actor.run().expect("run");
+        let compiled = actor.output();
+        assert_eq!(compiled, interpreted, "Fetch response must agree");
+        assert!(
+            compiled
+                .first()
+                .is_some_and(|response| response.contains("200") && response.contains("fetch works")),
+            "Fetch response must preserve status and body: {compiled:?}"
+        );
+        server.join().expect("server thread");
+    }
+
     /// `http.try_get` is fallible: a dial to an ALLOWLISTED-but-closed port
     /// yields `Err(...)` rather than trapping — on BOTH backends. This is the
     /// primitive that lets a proxy answer 502 for a down upstream instead of

@@ -289,6 +289,8 @@ pub struct Capabilities {
     /// Additional root `Net` grants, aligned after `net_allow`, for entrypoints
     /// with several independently bound network parameters.
     pub net_grants: Vec<Vec<String>>,
+    /// Root Fetch grants, one origin allowlist per `Fetch` parameter in `main`.
+    pub fetch_grants: Vec<Vec<String>>,
     /// The `host:port` allowlist backing a build step's `BuildNet` capability.
     /// Kept separate from runtime `Net` so precompiled modules granted network
     /// authority cannot import the build-only `fetch_build` primitive.
@@ -460,6 +462,8 @@ pub struct VmState {
     /// `Socket`, and `Listener` values are externrefs carrying host-side resources,
     /// not guest-forgeable indices into these grants.
     nets: Vec<NetAuthority>,
+    /// Declarative Fetch grants awaiting wrapper-local `mint_fetch(i)`.
+    fetch_grants: Vec<Vec<String>>,
     /// (RFC-0032) When this VM is a `serve` POOL WORKER, the shared listener (plus
     /// its TLS config) it must reuse instead of binding its own. `listen` returns
     /// this; `serve_pool` sees it set and does NOT spawn another pool (only the
@@ -943,6 +947,9 @@ pub(crate) fn link_capability_imports(
     if net && (caps.net_connect || caps.net_listen) {
         host::network::link_socket_io(linker)?;
     }
+    if !caps.fetch_grants.is_empty() {
+        host::fetch::link(linker)?;
+    }
     if caps.signing_key.is_some() {
         host::secret::link_mint(linker)?;
     }
@@ -1055,6 +1062,7 @@ fn vmstate_from_caps(
         pending_ints: None,
         pending_bytes: None,
         nets,
+        fetch_grants: caps.fetch_grants.clone(),
         worker_listener,
         build_out: caps.build_out.clone(),
         build_read_roots: caps.build_read_roots.clone(),

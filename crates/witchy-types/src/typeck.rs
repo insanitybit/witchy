@@ -79,6 +79,8 @@ pub enum Ty {
     /// the executable is named and confined through a `Dir[Read]` argument, so
     /// "you can only execute a file you can read". See rfcs/0004-self-hosted-cli.md.
     Exec,
+    /// Origin-scoped authority to perform host HTTP(S) requests.
+    Fetch,
     Dir(DirRights),
     File(FileRights),
     Net(NetRights),
@@ -130,6 +132,7 @@ impl fmt::Display for Ty {
             Ty::Env => write!(f, "Env"),
             Ty::Secret => write!(f, "Secret"),
             Ty::Exec => write!(f, "Exec"),
+            Ty::Fetch => write!(f, "Fetch"),
             Ty::Dir(r) => write!(f, "{r}"),
             Ty::File(r) => write!(f, "{r}"),
             Ty::Net(r) => write!(f, "{r}"),
@@ -453,6 +456,7 @@ fn is_builtin_authority_type_name(name: &str) -> bool {
             | "Dir"
             | "File"
             | "Net"
+            | "Fetch"
             | "Exec"
             | "Socket"
             | "Listener"
@@ -1199,6 +1203,7 @@ fn ty_externref_cap_name(ty: &Ty) -> Option<&'static str> {
         Ty::Env => "Env",
         Ty::Secret => "Secret",
         Ty::Exec => "Exec",
+        Ty::Fetch => "Fetch",
         Ty::Dir(_) => "Dir",
         Ty::File(_) => "File",
         Ty::Net(_) => "Net",
@@ -1573,7 +1578,7 @@ fn check_main_signature(module: &Module) -> Result<(), TypeError> {
         };
         return terr(format!(
             "`main` parameter `{}` {found}, but `main` may only take host capabilities \
-             (Console, Clock, Env, Dir, Net, Exec, Secret, SecretStore), a `grantable` \
+             (Console, Clock, Env, Dir, Net, Fetch, Exec, Secret, SecretStore), a `grantable` \
              library capability, or `List(String)` for command-line args",
             p.name
         ));
@@ -2566,6 +2571,7 @@ impl Checker {
             "Env" => Ty::Env,
             "Secret" => Ty::Secret,
             "Exec" => Ty::Exec,
+            "Fetch" => Ty::Fetch,
             "Dir" => Ty::Dir(dir_rights(args)),
             "File" => Ty::File(file_rights(args)),
             "Net" => Ty::Net(net_rights(args)),
@@ -2879,7 +2885,7 @@ impl Checker {
                 }
                 Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
                 | Ty::Bool | Ty::Unit | Ty::Console | Ty::Clock | Ty::Rand | Ty::Env
-                | Ty::Secret | Ty::Exec | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
+                | Ty::Secret | Ty::Exec | Ty::Fetch | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
                 | Ty::Socket | Ty::Listener | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv
                 | Ty::BuildNet | Ty::BuildExec | Ty::Var(_) => None,
             }
@@ -2917,7 +2923,7 @@ impl Checker {
                 }
                 Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
                 | Ty::Bool | Ty::Unit | Ty::Console | Ty::Clock | Ty::Rand | Ty::Env
-                | Ty::Secret | Ty::Exec | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
+                | Ty::Secret | Ty::Exec | Ty::Fetch | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
                 | Ty::Socket | Ty::Listener | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv
                 | Ty::BuildNet | Ty::BuildExec | Ty::Var(_) => false,
             }
@@ -2943,6 +2949,7 @@ impl Checker {
                 Ty::Env => "Env",
                 Ty::Secret => "Secret",
                 Ty::Exec => "Exec",
+                Ty::Fetch => "Fetch",
                 Ty::Dir(_) => "Dir",
                 Ty::File(_) => "File",
                 Ty::Net(_) => "Net",
@@ -3002,7 +3009,7 @@ impl Checker {
                 Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
                 | Ty::Bool | Ty::Unit | Ty::Var(_) => None,
                 // Direct capabilities were handled by `direct` above.
-                Ty::Console | Ty::Clock | Ty::Rand | Ty::Env | Ty::Secret | Ty::Exec
+                Ty::Console | Ty::Clock | Ty::Rand | Ty::Env | Ty::Secret | Ty::Exec | Ty::Fetch
                 | Ty::Dir(_) | Ty::File(_) | Ty::Net(_) | Ty::Socket | Ty::Listener
                 | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv | Ty::BuildNet
                 | Ty::BuildExec => None,
@@ -3024,6 +3031,7 @@ impl Checker {
                 Ty::Env => "Env",
                 Ty::Secret => "Secret",
                 Ty::Exec => "Exec",
+                Ty::Fetch => "Fetch",
                 Ty::Dir(_) => "Dir",
                 Ty::File(_) => "File",
                 Ty::Net(_) => "Net",
@@ -3138,7 +3146,7 @@ impl Checker {
                 }
                 Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
                 | Ty::Bool | Ty::Unit | Ty::Var(_) => None,
-                Ty::Console | Ty::Clock | Ty::Rand | Ty::Env | Ty::Secret | Ty::Exec
+                Ty::Console | Ty::Clock | Ty::Rand | Ty::Env | Ty::Secret | Ty::Exec | Ty::Fetch
                 | Ty::Dir(_) | Ty::File(_) | Ty::Net(_) | Ty::Socket | Ty::Listener
                 | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv | Ty::BuildNet
                 | Ty::BuildExec => None,
@@ -3175,6 +3183,7 @@ impl Checker {
             Ty::Env => Some("Env".to_string()),
             Ty::Secret => Some("Secret".to_string()),
             Ty::Exec => Some("Exec".to_string()),
+            Ty::Fetch => Some("Fetch".to_string()),
             Ty::Dir(_) => Some("Dir".to_string()),
             Ty::File(_) => Some("File".to_string()),
             Ty::Net(_) => Some("Net".to_string()),
@@ -3253,7 +3262,7 @@ impl Checker {
             }
             Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
             | Ty::Bool | Ty::Unit | Ty::Console | Ty::Clock | Ty::Rand | Ty::Env
-            | Ty::Secret | Ty::Exec | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
+            | Ty::Secret | Ty::Exec | Ty::Fetch | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
             | Ty::Socket | Ty::Listener | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv
             | Ty::BuildNet | Ty::BuildExec | Ty::Var(_) => Ok(()),
         }
@@ -3273,7 +3282,7 @@ impl Checker {
             }
             Ty::Int | Ty::Float | Ty::Duration | Ty::String | Ty::Bytes | Ty::Msg
             | Ty::Bool | Ty::Unit | Ty::Console | Ty::Clock | Ty::Rand | Ty::Env
-            | Ty::Secret | Ty::Exec | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
+            | Ty::Secret | Ty::Exec | Ty::Fetch | Ty::Dir(_) | Ty::File(_) | Ty::Net(_)
             | Ty::Socket | Ty::Listener | Ty::BuildOut | Ty::BuildRead | Ty::BuildEnv
             | Ty::BuildNet | Ty::BuildExec | Ty::Var(_) => None,
         }
@@ -4241,6 +4250,42 @@ impl Checker {
         Ok(Some(Ty::String))
     }
 
+    /// Type-check the narrow host Fetch ABI. The stdlib owns typed
+    /// Request/Response conversion; the compiler sees only strings and an
+    /// unforgeable, origin-scoped authority.
+    fn check_fetch_op(&mut self, name: &str, args: &[Expr]) -> Result<Option<Ty>, TypeError> {
+        if name != "only" && name != "send_raw" {
+            return Ok(None);
+        }
+        let Some(receiver) = args.first() else {
+            return Ok(None);
+        };
+        let receiver_ty = self.infer(receiver)?;
+        match self.resolve(&receiver_ty) {
+            Ty::Fetch => {}
+            Ty::Var(_) if name == "send_raw" => self.unify(&receiver_ty, &Ty::Fetch)?,
+            _ => return Ok(None),
+        }
+        let arity = if name == "only" { 2 } else { 5 };
+        if args.len() != arity {
+            return terr(format!(
+                "`{name}` expects {arity} argument(s) but got {}",
+                args.len()
+            ));
+        }
+        for arg in &args[1..] {
+            let actual = self.infer(arg)?;
+            self.unify(&Ty::String, &actual).map_err(|err| TypeError {
+                message: format!("in call to `{name}`: {}", err.message),
+            })?;
+        }
+        Ok(Some(if name == "only" {
+            Ty::Fetch
+        } else {
+            Ty::String
+        }))
+    }
+
     /// Resolve a call's first argument as a `Net` capability and yield its verbs.
     /// An unconstrained variable defaults to the full set (bare `Net`).
     fn net_cap_rights(&mut self, name: &str, arg: &Expr) -> Result<NetRights, TypeError> {
@@ -4436,8 +4481,12 @@ impl Checker {
             }
             (Ty::Console, Ty::Console) => true,
             (Ty::Exec, Ty::Exec) => true,
+            (Ty::Fetch, Ty::Fetch) => true,
             // An unconstrained source: pin it to the ascribed capability.
-            (Ty::Var(_), Ty::Dir(_) | Ty::File(_) | Ty::Net(_) | Ty::Console | Ty::Exec) => {
+            (
+                Ty::Var(_),
+                Ty::Dir(_) | Ty::File(_) | Ty::Net(_) | Ty::Console | Ty::Exec | Ty::Fetch,
+            ) => {
                 return self.unify(src, target).map_err(|e| TypeError {
                     message: format!("in `as` ascription: {}", e.message),
                 });
@@ -4726,7 +4775,14 @@ impl Checker {
         match t {
             Ty::Fn(_, _, _) => Some(Uncomparable::Function),
             Ty::Dyn(_, _) => Some(Uncomparable::Existential),
-            Ty::Console | Ty::Clock | Ty::Rand | Ty::Env | Ty::Secret | Ty::Exec | Ty::Socket
+            Ty::Console
+            | Ty::Clock
+            | Ty::Rand
+            | Ty::Env
+            | Ty::Secret
+            | Ty::Exec
+            | Ty::Fetch
+            | Ty::Socket
             | Ty::Listener | Ty::Dir(_) | Ty::File(_) | Ty::Net(_) | Ty::BuildOut | Ty::BuildRead
             | Ty::BuildEnv | Ty::BuildNet | Ty::BuildExec => Some(Uncomparable::Capability),
             Ty::List(e) => self.uncomparable_kind(e, seen),
@@ -5283,6 +5339,9 @@ impl Checker {
                 return terr(msg);
             }
             if let Some(t) = self.check_file_op(call_name, args)? {
+                return Ok(t);
+            }
+            if let Some(t) = self.check_fetch_op(call_name, args)? {
                 return Ok(t);
             }
             if let Some(t) = self.check_dir_op(call_name, args)? {
@@ -7936,6 +7995,7 @@ pub fn ty_to_ast(t: &Ty) -> Option<witchy_syntax::ast::Type> {
         Ty::Env => T::Named("Env".into(), Vec::new()),
         Ty::Secret => T::Named("Secret".into(), Vec::new()),
         Ty::Exec => T::Named("Exec".into(), Vec::new()),
+        Ty::Fetch => T::Named("Fetch".into(), Vec::new()),
         Ty::Dir(rights) => {
             if !rights.read && !rights.write {
                 return None;

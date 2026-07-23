@@ -272,6 +272,9 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "file_read_len" (func $file_read_len_host (param externref) (result i32)))
   (import "witchy" "file_write" (func $file_write_host (param externref i32)))
   (import "witchy" "mint_net" (func $mint_net_host (param i32) (result externref)))
+  (import "witchy" "mint_fetch" (func $mint_fetch_host (param i32) (result externref)))
+  (import "witchy" "fetch_only" (func $fetch_only_host (param externref i32) (result externref)))
+  (import "witchy" "fetch_send_len" (func $fetch_send_host (param externref i32 i32 i32 i32) (result i32)))
   (import "witchy" "net_connect" (func $net_connect_host (param externref i32) (result externref)))
   (import "witchy" "net_try_connect" (func $net_try_connect_host (param externref i32) (result externref)))
   (import "witchy" "net_resolve_size" (func $net_resolve_size_host (param externref i32) (result i32)))
@@ -302,10 +305,10 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 87;
+pub const IMPORT_COUNT: usize = 90;
 
 /// Version of the public `"witchy"` host-import contract.
-pub const WITCHY_ABI_VERSION: u32 = 1;
+pub const WITCHY_ABI_VERSION: u32 = 2;
 
 /// The role an import plays at the host boundary. This classification is part
 /// of the public Wasm ABI: it tells embedders which imports grant authority,
@@ -346,6 +349,8 @@ pub enum AbiImportAuthority {
     NetGrant,
     NetConnect,
     NetListen,
+    FetchGrant,
+    Fetch,
     Clock,
     Rand,
     Exec,
@@ -369,6 +374,8 @@ impl AbiImportAuthority {
             Self::NetGrant => "Net.grant",
             Self::NetConnect => "Net.Connect",
             Self::NetListen => "Net.Listen",
+            Self::FetchGrant => "Fetch.grant",
+            Self::Fetch => "Fetch",
             Self::Clock => "Clock",
             Self::Rand => "Rand",
             Self::Exec => "Exec",
@@ -394,6 +401,8 @@ const AUTH_NET_CONNECT: &[AbiImportAuthority] = &[AbiImportAuthority::NetConnect
 const AUTH_NET_LISTEN: &[AbiImportAuthority] = &[AbiImportAuthority::NetListen];
 const AUTH_NET_LISTEN_SECRET: &[AbiImportAuthority] =
     &[AbiImportAuthority::NetListen, AbiImportAuthority::Secret];
+const AUTH_FETCH_GRANT: &[AbiImportAuthority] = &[AbiImportAuthority::FetchGrant];
+const AUTH_FETCH: &[AbiImportAuthority] = &[AbiImportAuthority::Fetch];
 const AUTH_CLOCK: &[AbiImportAuthority] = &[AbiImportAuthority::Clock];
 const AUTH_RAND: &[AbiImportAuthority] = &[AbiImportAuthority::Rand];
 const AUTH_EXEC: &[AbiImportAuthority] = &[AbiImportAuthority::Exec];
@@ -469,6 +478,9 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "file_read_len"
         | "file_write"
         | "mint_net"
+        | "mint_fetch"
+        | "fetch_only"
+        | "fetch_send_len"
         | "net_connect"
         | "net_try_connect"
         | "net_resolve_size"
@@ -524,6 +536,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         "mint_file" => AUTH_FILE_GRANT,
         "file_read_len" | "file_write" => AUTH_FILE_AUTHORITY,
         "mint_net" => AUTH_NET_GRANT,
+        "mint_fetch" => AUTH_FETCH_GRANT,
+        "fetch_only" | "fetch_send_len" => AUTH_FETCH,
         "net_connect"
         | "net_try_connect"
         | "net_resolve_size"

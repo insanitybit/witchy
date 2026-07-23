@@ -43,6 +43,15 @@ pub(in crate::wir_helpers) fn two_phase_helper_typed(
 /// stage a Witchy `String`: `len = host(args...)`; allocate `[len][bytes]`;
 /// `fill_pending(res+4)`.
 pub(in crate::wir_helpers) fn staged_string_helper(name: &str, params: &[&str], run_import: &str) -> WirFunc {
+    let typed = params.iter().map(|p| ((*p).to_string(), WirTy::Bool)).collect::<Vec<_>>();
+    staged_string_helper_typed(name, &typed, run_import)
+}
+
+pub(in crate::wir_helpers) fn staged_string_helper_typed(
+    name: &str,
+    params: &[(String, WirTy)],
+    run_import: &str,
+) -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -50,7 +59,7 @@ pub(in crate::wir_helpers) fn staged_string_helper(name: &str, params: &[&str], 
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
     WirFunc {
         name: name.into(),
-        params: params.iter().map(|p| WirLocal { name: (*p).into(), ty: WirTy::Bool }).collect(),
+        params: params.iter().map(|(name, ty)| WirLocal { name: name.clone(), ty: ty.clone() }).collect(),
         ret: vec![WirTy::Bool],
         locals: vec![
             WirLocal { name: "len".into(), ty: WirTy::Bool },
@@ -59,7 +68,10 @@ pub(in crate::wir_helpers) fn staged_string_helper(name: &str, params: &[&str], 
         body: vec![
             N::SetLocal {
                 local: "len".into(),
-                value: E::CallHost { import: run_import.into(), args: params.iter().map(|p| getl(p)).collect() },
+                value: E::CallHost {
+                    import: run_import.into(),
+                    args: params.iter().map(|(name, _)| getl(name)).collect(),
+                },
             },
             N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
             N::Store { ptr: getl("res"), value: getl("len"), kind: Kind::I32, offset: 0 },

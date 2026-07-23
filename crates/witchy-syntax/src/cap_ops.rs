@@ -22,6 +22,7 @@ pub enum ReceiverKind {
     File,
     Dir,
     Net,
+    Fetch,
     Socket,
     Listener,
 }
@@ -94,6 +95,14 @@ pub const OPS: &[CapOp] = &[
     op!("listen", Net, 2, Listener, "net.listen(addr)"),
     op!("listen_tls", Net, 4, Listener, "net.listen_tls(addr, cert_pem, key)"),
     op!("only", Net, 2, SameReceiver, "cap.only(policy)"),
+    op!("only", Fetch, 2, SameReceiver, "fetch.only(origins)"),
+    op!(
+        "send_raw",
+        Fetch,
+        5,
+        String,
+        "fetch.send_raw(method, url, headers, body)"
+    ),
     op!("deny", Net, 2, SameReceiver, "net.deny(policy)"),
     op!("resolve", Net, 2, String, "net.resolve(host)"),
     op!("connect_pinned", Net, 5, Socket, "net.connect_pinned(ip, host, port, secure)"),

@@ -65,6 +65,7 @@ pub fn run_checked_module(
             Vec::new(),
             net_allow,
             Vec::new(),
+            Vec::new(),
             None,
             Vec::new(),
             UserCapGrants::new(),
@@ -141,7 +142,7 @@ pub(crate) fn run_comptime_module_outputs_budgeted_in_scope_with_qualifiers(
 ) -> Result<ComptimeOutputs, RuntimeError> {
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
-        run_module_inner_limited(module, root, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, Vec::new(), UserCapGrants::new(), step_limit, fresh_ident_scope, compiler_expr_qualifiers)
+        run_module_inner_limited(module, root, Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, Vec::new(), UserCapGrants::new(), step_limit, fresh_ident_scope, compiler_expr_qualifiers)
     })
     .map(|outcome| ComptimeOutputs {
         output: outcome.output,
@@ -159,7 +160,7 @@ pub fn run_module_files(
 ) -> Result<Vec<String>, RuntimeError> {
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
-        run_module_inner_limited(module, root, Vec::new(), file_grants, Vec::new(), Vec::new(), None, Vec::new(), UserCapGrants::new(), DEFAULT_STEP_LIMIT, None, None)
+        run_module_inner_limited(module, root, Vec::new(), file_grants, Vec::new(), Vec::new(), Vec::new(), None, Vec::new(), UserCapGrants::new(), DEFAULT_STEP_LIMIT, None, None)
     })
     .map(|outcome| outcome.output)
 }
@@ -227,6 +228,7 @@ pub fn run_module_exit_secrets(
             Vec::new(),
             Vec::new(),
             net_allow,
+            Vec::new(),
             args,
             signing_key,
             named_secrets,
@@ -321,7 +323,7 @@ pub fn run_module_user_caps(
 ) -> Result<Vec<String>, RuntimeError> {
     let root = root.as_ref().to_path_buf();
     run_on_deep_stack(move || {
-        run_module_inner_limited(module, root, Vec::new(), file_grants, net_allow, args, None, Vec::new(), user_caps, DEFAULT_STEP_LIMIT, None, None)
+        run_module_inner_limited(module, root, Vec::new(), file_grants, net_allow, Vec::new(), args, None, Vec::new(), user_caps, DEFAULT_STEP_LIMIT, None, None)
     })
     .map(|outcome| outcome.output)
 }
@@ -334,7 +336,36 @@ fn run_module_inner(
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
 ) -> Result<InterpreterOutcome, RuntimeError> {
-    run_module_inner_limited(module, root, dir_roots, Vec::new(), net_allow, args, signing_key, Vec::new(), UserCapGrants::new(), DEFAULT_STEP_LIMIT, None, None)
+    run_module_inner_limited(module, root, dir_roots, Vec::new(), net_allow, Vec::new(), args, signing_key, Vec::new(), UserCapGrants::new(), DEFAULT_STEP_LIMIT, None, None)
+}
+
+/// Run a module with an origin-scoped root `Fetch` grant. Existing runners
+/// intentionally pass an empty grant so adding Fetch does not create ambient
+/// network authority.
+pub fn run_module_fetch(
+    module: Module,
+    root: impl AsRef<Path>,
+    fetch_origins: Vec<String>,
+) -> Result<Vec<String>, RuntimeError> {
+    let root = root.as_ref().to_path_buf();
+    run_on_deep_stack(move || {
+        run_module_inner_limited(
+            module,
+            root,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            fetch_origins,
+            Vec::new(),
+            None,
+            Vec::new(),
+            UserCapGrants::new(),
+            DEFAULT_STEP_LIMIT,
+            None,
+            None,
+        )
+    })
+    .map(|outcome| outcome.output)
 }
 
 /// Prepare the interpreter's executable AST through the same typed existential
@@ -382,6 +413,7 @@ fn run_module_inner_limited(
     dir_roots: Vec<PathBuf>,
     file_grants: Vec<PathBuf>,
     net_allow: Vec<String>,
+    fetch_origins: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<(String, Vec<u8>, bool)>,
@@ -396,6 +428,7 @@ fn run_module_inner_limited(
         dir_roots,
         file_grants,
         net_allow,
+        fetch_origins,
         args,
         signing_key,
         named_secrets,
@@ -414,6 +447,7 @@ fn run_module_inner_limited_with_catalog(
     dir_roots: Vec<PathBuf>,
     file_grants: Vec<PathBuf>,
     net_allow: Vec<String>,
+    fetch_origins: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<(String, Vec<u8>, bool)>,
@@ -432,6 +466,7 @@ fn run_module_inner_limited_with_catalog(
     interp.dir_roots = dir_roots;
     interp.file_grants = file_grants;
     interp.net_allow = net_allow;
+    interp.fetch_origins = fetch_origins;
     interp.signing_key = signing_key;
     interp.user_cap_grants = user_caps;
     // The signing key is the `signing` secret in the store, so a program may take

@@ -93,6 +93,7 @@ fn maximal_capabilities() -> Capabilities {
         exec: true,
         exec_allow: Some(vec!["true".into()]),
         net_allow: Some(vec!["127.0.0.1:0".into()]),
+        fetch_grants: vec![vec!["http://127.0.0.1:1".into()]],
         build_net_allow: Some(vec!["127.0.0.1:0".into()]),
         net_connect: true,
         net_listen: true,

@@ -1596,6 +1596,7 @@ fn assemble_wir_module_with_structs_mode(
     let mut main_param_is_dir: Vec<bool> = Vec::new();
     let mut main_param_is_file: Vec<bool> = Vec::new();
     let mut main_param_is_net: Vec<bool> = Vec::new();
+    let mut main_param_is_fetch: Vec<bool> = Vec::new();
     let mut main_param_is_secret: Vec<bool> = Vec::new();
     // RFC-0038: `Some((type_name, nfields))` for a grantable-capability `main` param
     // (its record is minted at the root); `None` otherwise.
@@ -1652,6 +1653,8 @@ fn assemble_wir_module_with_structs_mode(
                         .push(matches!(&p.ty, Some(Type::Named(n, _)) if n == "File"));
                     main_param_is_net
                         .push(matches!(&p.ty, Some(Type::Named(n, _)) if n == "Net"));
+                    main_param_is_fetch
+                        .push(matches!(&p.ty, Some(Type::Named(n, _)) if n == "Fetch"));
                     main_param_is_secret
                         .push(matches!(&p.ty, Some(Type::Named(n, _)) if n == "Secret"));
                     let uc = match &p.ty {
@@ -1896,6 +1899,9 @@ fn assemble_wir_module_with_structs_mode(
             if main_param_is_net.iter().any(|is_net| *is_net) {
                 import_names.insert("mint_net");
             }
+            if main_param_is_fetch.iter().any(|is_fetch| *is_fetch) {
+                import_names.insert("mint_fetch");
+            }
             if main_param_is_secret.iter().any(|is_secret| *is_secret) {
                 import_names.insert("mint_secret");
             }
@@ -1975,6 +1981,7 @@ fn assemble_wir_module_with_structs_mode(
             let mut dir_grant_ord = 0i32;
             let mut file_grant_ord = 0i32;
             let mut net_grant_ord = 0i32;
+            let mut fetch_grant_ord = 0i32;
             let mut user_cap_ord = 0i32;
             let mut main_args: Vec<WirExpr> = Vec::with_capacity(main_params);
             for i in 0..main_params {
@@ -1998,6 +2005,12 @@ fn assemble_wir_module_with_structs_mode(
                         args: vec![WirExpr::ConstI32(net_grant_ord)],
                     });
                     net_grant_ord += 1;
+                } else if main_param_is_fetch.get(i).copied().unwrap_or(false) {
+                    main_args.push(WirExpr::CallHost {
+                        import: "mint_fetch".into(),
+                        args: vec![WirExpr::ConstI32(fetch_grant_ord)],
+                    });
+                    fetch_grant_ord += 1;
                 } else if main_param_is_secret.get(i).copied().unwrap_or(false) {
                     main_args.push(WirExpr::CallHost {
                         import: "mint_secret".into(),

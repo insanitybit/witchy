@@ -120,6 +120,8 @@ pub enum Value {
     /// A network capability: an allow-list of permitted `host:port` destinations
     /// (wasi:sockets / cap-std-net style). Attenuable via `restrict`.
     Net(Vec<String>),
+    /// An origin-scoped HTTP(S) authority shared with the compiled runtime.
+    Fetch(witchy_runtime::fetch::FetchPolicy),
     /// A single secret's raw bytes (a signing seed, or a value secret like a token)
     /// plus its **use-only** flag (RFC-0060). Unforgeable — minted only by the host
     /// or fetched from a `SecretStore`. The ability to use it *is* authority;
@@ -353,6 +355,7 @@ impl fmt::Display for Value {
             Value::Dir(..) => write!(f, "<dir>"),
             Value::File(_) => write!(f, "<file>"),
             Value::Net(_) => write!(f, "<net>"),
+            Value::Fetch(_) => write!(f, "<fetch>"),
             Value::Secret(_, _) => write!(f, "<secret>"),
             Value::SecretStore(_) => write!(f, "<secret store>"),
             Value::Socket(id) => write!(f, "<socket #{id}>"),
@@ -547,6 +550,8 @@ pub struct Interpreter {
     file_grants: Vec<PathBuf>,
     /// Allow-list backing the root `Net` capability.
     net_allow: Vec<String>,
+    /// Origin allow-list backing the root `Fetch` capability.
+    fetch_origins: Vec<String>,
     /// (`Rand`) splitmix64 state for `rand_u64`. Seeded from `WITCHY_RAND_SEED` for
     /// deterministic parity/tests; `None` until first use, then clock-seeded (the
     /// interpreter is the oracle/playground, never the production CSPRNG path).
@@ -826,6 +831,7 @@ impl Interpreter {
             dir_roots: Vec::new(),
             file_grants: Vec::new(),
             net_allow: Vec::new(),
+            fetch_origins: Vec::new(),
             rand_state: witchy_runtime::rand::seed_from_env(),
             signing_key: None,
             secrets: std::collections::BTreeMap::new(),
@@ -880,6 +886,13 @@ impl Interpreter {
             Some(Type::Named(n, _)) if n == "Env" => Ok(Value::Cap(Capability::Env)),
             Some(Type::Named(n, _)) if n == "Dir" => Ok(Value::Dir(DirValue::Fs(self.root.clone()), String::new())),
             Some(Type::Named(n, _)) if n == "Net" => Ok(Value::Net(self.net_allow.clone())),
+            Some(Type::Named(n, _)) if n == "Fetch" => {
+                witchy_runtime::fetch::FetchPolicy::allow(self.fetch_origins.clone())
+                    .map(Value::Fetch)
+                    .map_err(|error| RuntimeError {
+                        message: format!("invalid Fetch grant: {error}"),
+                    })
+            }
             Some(Type::Named(n, _)) if n == "Exec" => Ok(Value::Cap(Capability::Exec)),
             Some(Type::Named(n, _)) if n == "Secret" => match self.signing_key {
                 // The bare `Secret` is the signing key: revealable=false is enforced by
@@ -894,7 +907,7 @@ impl Interpreter {
                     None => "no type annotation".to_string(),
                 };
                 err(format!(
-                    "`main` parameters must be capabilities (Console, Clock, Env, Dir, Net, Exec, Secret) or `List(String)` for command-line args; got {found}"
+                    "`main` parameters must be capabilities (Console, Clock, Env, Dir, Net, Fetch, Exec, Secret) or `List(String)` for command-line args; got {found}"
                 ))
             }
         }

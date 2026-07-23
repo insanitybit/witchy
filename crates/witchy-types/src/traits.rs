@@ -2807,6 +2807,7 @@ fn cap_receiver_kind_ast(ty: &Type) -> Option<cap_ops::ReceiverKind> {
         "File" => Some(cap_ops::ReceiverKind::File),
         "Dir" => Some(cap_ops::ReceiverKind::Dir),
         "Net" => Some(cap_ops::ReceiverKind::Net),
+        "Fetch" => Some(cap_ops::ReceiverKind::Fetch),
         "Socket" => Some(cap_ops::ReceiverKind::Socket),
         "Listener" => Some(cap_ops::ReceiverKind::Listener),
         _ => None,
