@@ -595,7 +595,7 @@
   },
   {
     "block": 35,
-    "browser_runnable": false,
+    "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
     "file": "spec/language.md",
@@ -800,7 +800,7 @@
   },
   {
     "block": 6,
-    "browser_runnable": false,
+    "browser_runnable": true,
     "console_only": true,
     "expect_error": false,
     "file": "book/src/appendix-recipes.md",
@@ -1390,7 +1390,7 @@
   },
   {
     "block": 2,
-    "browser_runnable": false,
+    "browser_runnable": true,
     "console_only": false,
     "expect_error": false,
     "file": "book/src/project.md",
