@@ -723,7 +723,23 @@ fn compartment_csp() -> String:
 // our own inlined rune. `connect-src 'self'` keeps every fetch same-origin (the proxy is why
 // coven is reachable, and there are no ambient cookies — auth is a bearer capability).
 fn app_csp() -> String:
-    "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'self'; worker-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types 'none'"
+    // The first literal is a checked fixture consumed by the browser harness.
+    // Runtime output comes from the concrete surface below; drift fails closed.
+    let expected = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'self'; worker-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types 'none'"
+    let derived = app_csp_for([], ["'self'"])
+    if derived == expected: derived else: "default-src 'none'"
+
+fn app_csp_for(fetch_origins: List(String), host_connect: List(String)) -> String:
+    let connect = csp_connect_sources(host_connect, fetch_origins)
+    "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src ${connect}; frame-src 'self'; worker-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types 'none'"
+
+fn csp_connect_sources(host_connect: List(String), fetch_origins: List(String)) -> String:
+    var sources = []
+    for source in host_connect:
+        sources.push(source)
+    for origin in fetch_origins:
+        sources.push(origin)
+    if sources.is_empty(): "'none'" else: list.join(sources, " ")
 
 // The sandbox frame intentionally OMITS Perfect Types so the bootstrap can set
 // `srcdoc` and the renderer can use innerHTML — safe because the frame is

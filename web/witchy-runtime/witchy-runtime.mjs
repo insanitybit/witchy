@@ -965,6 +965,55 @@ function normalizeCapabilities(spec) {
   return out;
 }
 
+function normalizeCspHostSource(source) {
+  const value = String(source);
+  if (value === "'self'") return value;
+  try {
+    return parseFetchUrl(value, true).origin;
+  } catch (error) {
+    throw new Error(`witchy-runtime: invalid CSP host connect source: ${error.message}`);
+  }
+}
+
+/**
+ * Derive a page CSP from the same normalized capability object used to build
+ * browser host imports. `hostConnect` is for bootstrap I/O such as loading the
+ * compiler WASM; every other connect source comes from concrete Fetch grants.
+ */
+export function deriveContentSecurityPolicy(
+  capabilities,
+  {
+    hostConnect = [],
+    scriptSources = ["'self'", "'wasm-unsafe-eval'"],
+    styleSources = ["'self'"],
+    imageSources = [],
+    fontSources = [],
+    frameSources = [],
+  } = {},
+) {
+  const caps = normalizeCapabilities(capabilities);
+  const connectSources = new Set(hostConnect.map(normalizeCspHostSource));
+  for (const grant of caps.fetch || []) {
+    for (const origin of grant.origins) connectSources.add(origin);
+  }
+  const directive = (name, sources) =>
+    `${name} ${sources.length === 0 ? "'none'" : [...new Set(sources)].sort().join(" ")}`;
+  return [
+    "default-src 'none'",
+    directive("script-src", scriptSources),
+    directive("style-src", styleSources),
+    directive("img-src", imageSources),
+    directive("media-src", []),
+    directive("font-src", fontSources),
+    directive("connect-src", [...connectSources]),
+    directive("frame-src", frameSources),
+    "worker-src 'none'",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'none'",
+  ].join("; ");
+}
+
 // Assert a family's implemented imports exactly match its frozen catalog — the
 // per-family analog of the pure-surface drift check, so no opt-in host silently
 // widens beyond its declared surface.

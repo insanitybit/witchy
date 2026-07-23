@@ -214,6 +214,29 @@ impl Policy {
         }
     }
 
+    /// Project concrete browser Fetch authority plus explicit host bootstrap
+    /// needs into one fail-closed CSP `connect-src` directive.
+    pub fn csp_connect_src(&self, host_sources: &[&str]) -> Result<String, String> {
+        let mut sources = BTreeSet::new();
+        for source in host_sources
+            .iter()
+            .copied()
+            .chain(self.network.fetch_origins.iter().map(String::as_str))
+        {
+            if !valid_csp_connect_source(source) {
+                return Err(format!("invalid CSP connect source `{source}`"));
+            }
+            sources.insert(source);
+        }
+        if sources.is_empty() {
+            return Ok("connect-src 'none'".to_string());
+        }
+        Ok(format!(
+            "connect-src {}",
+            sources.into_iter().collect::<Vec<_>>().join(" ")
+        ))
+    }
+
     pub fn normalize_classes(&mut self) {
         if !self.filesystem.is_empty() {
             self.syscall_classes.insert(SyscallClass::FsOpen);
@@ -235,6 +258,17 @@ fn scope_order(scope: FsScope) -> u8 {
         FsScope::Tree => 0,
         FsScope::File => 1,
     }
+}
+
+fn valid_csp_connect_source(source: &str) -> bool {
+    if source == "'self'" {
+        return true;
+    }
+    (source.starts_with("https://") || source.starts_with("http://"))
+        && source.len() > "http://".len()
+        && !source
+            .bytes()
+            .any(|byte| byte.is_ascii_whitespace() || matches!(byte, b';' | b'\'' | b'"'))
 }
 
 fn is_non_tcp_target(target: &str) -> bool {
@@ -322,5 +356,25 @@ mod tests {
         assert!(policy.network.has_unexpressed_transport);
         assert!(policy.syscall_classes.contains(&SyscallClass::Network));
         assert!(policy.syscall_classes.contains(&SyscallClass::Listen));
+    }
+
+    #[test]
+    fn csp_connect_src_is_the_sorted_union_of_host_and_fetch_authority() {
+        let mut policy = Policy::default();
+        policy.add_fetch_origin("https://z.example:443");
+        policy.add_fetch_origin("https://a.example:8443");
+        assert_eq!(
+            policy.csp_connect_src(&["'self'"]).unwrap(),
+            "connect-src 'self' https://a.example:8443 https://z.example:443"
+        );
+        assert_eq!(
+            Policy::default().csp_connect_src(&[]).unwrap(),
+            "connect-src 'none'"
+        );
+        policy.add_fetch_origin("https://safe.example; script-src *");
+        assert_eq!(
+            policy.csp_connect_src(&[]).unwrap_err(),
+            "invalid CSP connect source `https://safe.example; script-src *`"
+        );
     }
 }
