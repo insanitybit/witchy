@@ -113,7 +113,7 @@ fn main(console: Console):
         )
         .unwrap();
         let (out, exit) =
-            crate::run_file_sandboxed(path.to_str().unwrap(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, Vec::new())
+            crate::run_file_sandboxed(path.to_str().unwrap(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, Vec::new())
                 .expect("sandbox run");
         assert_eq!(out, vec!["42"]);
         assert_eq!(exit, None, "a Nil-returning main has no exit code");

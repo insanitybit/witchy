@@ -67,11 +67,13 @@ fn require_exact_fs_rights(
 /// footprint, announcing the grant on stderr. The `Dir` root and `Net` allowlist
 /// are host policy (the `--dir`/`--net` flags); the program's footprint decides
 /// whether they are granted at all.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_file_sandboxed(
     path: &str,
     dir_roots: Vec<std::path::PathBuf>,
     file_grants: Vec<std::path::PathBuf>,
     net_allow: Vec<String>,
+    fetch_origins: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<runtime::SecretGrant>,
@@ -99,7 +101,7 @@ pub(crate) fn run_file_sandboxed(
         "sandboxing `{path}` \u{2014} granted exactly: {}",
         capabilities::show_caps(&grant)
     );
-    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, args, signing_key, named_secrets, Vec::new(), true, false)
+    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, fetch_origins, args, signing_key, named_secrets, Vec::new(), true, false)
 }
 
 /// Resolve a `[secrets]` entry's `from = "env:VAR"` to the secret bytes the host
@@ -167,6 +169,7 @@ pub(crate) fn run_file_grants(
     let mut net_allow: Vec<String> = doc.net.values().flatten().cloned().collect();
     net_allow.sort();
     net_allow.dedup();
+    let mut fetch_origins: Vec<String> = Vec::new();
     let mut named_secrets: Vec<runtime::SecretGrant> = Vec::new();
     for (name, s) in &doc.secrets {
         // BUG-146: carry the document's `use-only` modifier through to the runtime
@@ -207,6 +210,29 @@ pub(crate) fn run_file_grants(
                     require_exact_fs_rights(&format!("[dirs].{}", p.name), declared, required)?;
                     dir_roots.push(std::path::PathBuf::from(&g.root));
                 }
+                Some(ast::Type::Named(n, _)) if n == "Fetch" => {
+                    if !fetch_origins.is_empty() {
+                        return Err(
+                            "grant documents currently support one `Fetch` parameter per entrypoint"
+                                .to_string(),
+                        );
+                    }
+                    let origins = doc.fetch.get(&p.name).ok_or_else(|| {
+                        format!(
+                            "grant `{grants_path}` has no `[fetch].{}` for `main` parameter `{}`",
+                            p.name, p.name
+                        )
+                    })?;
+                    witchy_runtime::fetch::FetchPolicy::allow(origins.clone()).map_err(
+                        |error| {
+                            format!(
+                                "grant `[fetch].{}` contains an invalid origin: {error}",
+                                p.name
+                            )
+                        },
+                    )?;
+                    fetch_origins = origins.clone();
+                }
                 Some(ast::Type::Named(n, _)) if grantable.contains_key(n.as_str()) => {
                     // RFC-0038: a bare grantable cap — pull each policy field from the
                     // `[user_caps]` entry in the cap's declared field order.
@@ -245,6 +271,9 @@ pub(crate) fn run_file_grants(
     if !net_allow.is_empty() {
         eprintln!("  net:   {}", net_allow.join(", "));
     }
+    for (name, origins) in &doc.fetch {
+        eprintln!("  fetch  {name}: {}", origins.join(", "));
+    }
     for (name, s) in &doc.secrets {
         eprintln!("  secret {name}: {}", s.from);
     }
@@ -262,5 +291,5 @@ pub(crate) fn run_file_grants(
     }
     // Secrets reach the program by name through the `SecretStore` (`require`/`get`);
     // the bare root `Secret` (`--signing-key`) is not granted via documents here.
-    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, args, None, named_secrets, user_cap_fields, true, false)
+    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, fetch_origins, args, None, named_secrets, user_cap_fields, true, false)
 }

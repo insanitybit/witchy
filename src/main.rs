@@ -173,7 +173,8 @@ fn load_signing_seed(path: &str) -> Result<[u8; 32], String> {
 // test suite.
 #[cfg(test)]
 pub(crate) fn execute_file(path: &str, net_allow: Vec<String>) -> Result<Vec<String>, String> {
-    execute_file_exit(path, net_allow, Vec::new(), None, Vec::new()).map(|(output, _)| output)
+    execute_file_exit(path, net_allow, Vec::new(), Vec::new(), None, Vec::new())
+        .map(|(output, _)| output)
 }
 
 /// Link, type-check, and run `path`, returning its output and the process exit
@@ -182,6 +183,7 @@ pub(crate) fn execute_file(path: &str, net_allow: Vec<String>) -> Result<Vec<Str
 pub(crate) fn execute_file_exit(
     path: &str,
     net_allow: Vec<String>,
+    fetch_origins: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<runtime::SecretGrant>,
@@ -203,7 +205,7 @@ pub(crate) fn execute_file_exit(
     // share one runtime, so dev == deploy by construction. The interpreter is only
     // the differential oracle (`witchy parity`) and the comptime evaluator — never
     // a user-program run path.
-    run_checked_compiled(&checked, Vec::new(), Vec::new(), net_allow, args, signing_key, named_secrets, Vec::new(), false, false)
+    run_checked_compiled(&checked, Vec::new(), Vec::new(), net_allow, fetch_origins, args, signing_key, named_secrets, Vec::new(), false, false)
         .map(|(lines, code)| (lines, code.unwrap_or(0)))
 }
 

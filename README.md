@@ -169,7 +169,8 @@ design and threat model live in [rfcs/package-manager.md](rfcs/package-manager.m
 The supported-preview commands are:
 
 ```text
-witchy [--net <host:port>]... <file.witchy>   run a program
+witchy [--net <host:port>]... [--fetch <origin>]... <file.witchy>
+                                              run a program
 witchy check    <file.witchy>                 check + verify compiled acceptance without running
 witchy parity   <file.witchy>                 run on both backends, confirm identical output
 witchy test     <file.witchy|dir>             run in-language tests
@@ -177,7 +178,7 @@ witchy fmt [--check] <file.witchy>...         format or verify canonical formatt
 witchy caps     <file.witchy>                 report the host-capability footprint
 witchy caps-diff <old.witchy> <new.witchy>    fail if the footprint widens
 witchy grants-check <program> <grants.toml>   verify demanded authority fits a grant document
-witchy sandbox [--dir <root>] [--net <addr>]... <file.witchy> [args...]
+witchy sandbox [--dir <root>] [--net <addr>]... [--fetch <origin>]... <file.witchy> [args...]
                                               compile and run in a VM granted exactly its footprint
 witchy compile <file.witchy> --out <file.wasm>
                                               emit portable WebAssembly for the sandbox host

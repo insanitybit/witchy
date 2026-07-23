@@ -663,6 +663,7 @@ fn main(console: Console):
         let (out, code) = crate::execute_file_exit(
             "examples/minigrep/src/minigrep.witchy",
             Vec::new(),
+            Vec::new(),
             vec!["nobody".into(), "examples/data/poem.txt".into()],
             None,
             Vec::new(),
@@ -675,7 +676,7 @@ fn main(console: Console):
         );
         // No args: usage message and a non-zero exit code.
         let (out, code) =
-            crate::execute_file_exit("examples/minigrep/src/minigrep.witchy", Vec::new(), Vec::new(), None, Vec::new())
+            crate::execute_file_exit("examples/minigrep/src/minigrep.witchy", Vec::new(), Vec::new(), Vec::new(), None, Vec::new())
                 .unwrap();
         assert_eq!(code, 1);
         assert_eq!(out, vec!["usage: minigrep <query> <file>".to_string()]);

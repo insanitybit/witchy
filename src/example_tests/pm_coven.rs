@@ -25,7 +25,7 @@ use crate::{interpreter, parser, typeck};
     #[test]
     fn caps_guard_example_blocks_a_widening_in_witchy() {
         let (output, code) =
-            crate::execute_file_exit("examples/caps_guard/src/caps_guard.witchy", Vec::new(), Vec::new(), None, Vec::new())
+            crate::execute_file_exit("examples/caps_guard/src/caps_guard.witchy", Vec::new(), Vec::new(), Vec::new(), None, Vec::new())
                 .unwrap();
         assert_eq!(output, vec!["BLOCK: upgrade widens authority by Net[Listen]"]);
         assert_eq!(code, 2, "a widening must exit 2");
@@ -125,7 +125,7 @@ fn main(console: Console):
     #[test]
     fn coven_check_example_flags_under_declared_manifest_in_witchy() {
         let (output, code) =
-            crate::execute_file_exit("examples/coven_check/src/coven_check.witchy", Vec::new(), Vec::new(), None, Vec::new())
+            crate::execute_file_exit("examples/coven_check/src/coven_check.witchy", Vec::new(), Vec::new(), Vec::new(), None, Vec::new())
                 .unwrap();
         assert_eq!(
             output,

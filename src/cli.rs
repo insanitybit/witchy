@@ -16,13 +16,14 @@ pub(crate) fn print_usage() {
 witchy — a capability-secure language with twin interpreter and WASM backends
 
 USAGE:
-    witchy [--net <host:port>]... <file.witchy>   run a program
+    witchy [--net <host:port>]... [--fetch <origin>]... <file.witchy>
+                                                  run a program
     witchy check    <file.witchy>                 check + verify compiled acceptance without running
     witchy parity   <file.witchy>                 run on both backends, confirm identical output
                                                   (a verify-the-compiler tool, not a workflow step)
     witchy test [--integration] [--dir <root>]... [--net <addr>]... <file.witchy|dir>
                                                   run plain zero-grant or explicit integration tests
-    witchy sandbox [--dir <root>] [--net <addr>]... <file.witchy> [args...]
+    witchy sandbox [--dir <root>] [--net <addr>]... [--fetch <origin>]... <file.witchy> [args...]
                                                   compile and run in a VM granted exactly its footprint
     witchy emit-wat <file.witchy>                 print the compiled WebAssembly text (the module sandbox runs)
     witchy expand  <file.witchy>                  print canonical source after comptime/tag expansion

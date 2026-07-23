@@ -54,13 +54,14 @@ pub(crate) fn run_wasm_file(
     dir_roots: Vec<std::path::PathBuf>,
     file_grants: Vec<std::path::PathBuf>,
     net_allow: Vec<String>,
+    fetch_origins: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<runtime::SecretGrant>,
     strict_dir: bool,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
-    run_wasm_module(&bytes, dir_roots, file_grants, net_allow, args, signing_key, named_secrets, strict_dir)
+    run_wasm_module(&bytes, dir_roots, file_grants, net_allow, fetch_origins, args, signing_key, named_secrets, strict_dir)
 }
 
 /// Detect, from a compiled wasm program, whether its `main` returns an `Int` — so
@@ -134,6 +135,7 @@ pub(crate) fn run_wasm_module(
     dir_roots: Vec<std::path::PathBuf>,
     file_grants: Vec<std::path::PathBuf>,
     net_allow: Vec<String>,
+    fetch_origins: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<runtime::SecretGrant>,
@@ -156,6 +158,8 @@ pub(crate) fn run_wasm_module(
     let net_grant = imports_authority(Authority::NetGrant);
     let net_connect = imports_authority(Authority::NetConnect) || declares_right("Net", "Connect");
     let net_listen = imports_authority(Authority::NetListen) || declares_right("Net", "Listen");
+    let fetch_grant = imports_authority(Authority::FetchGrant) || declares("Fetch");
+    let fetch_use = imports_authority(Authority::Fetch);
     let uses_secret_host = imports_authority(Authority::Secret);
     if declares("Secret") && signing_key.is_none() {
         return Err(
@@ -187,6 +191,18 @@ pub(crate) fn run_wasm_module(
     }
     if imports_authority(Authority::Exec) || declares("Exec") {
         caps.exec = true;
+    }
+    if fetch_grant || fetch_use {
+        if fetch_origins.is_empty() {
+            return Err(
+                "this module requires `Fetch`, but no origins were granted \
+                 (use `--fetch <scheme://host:port>`)"
+                    .to_string(),
+            );
+        }
+        witchy_runtime::fetch::FetchPolicy::allow(fetch_origins.clone())
+            .map_err(|error| format!("invalid `--fetch` grant: {error}"))?;
+        caps.fetch_grants = vec![fetch_origins];
     }
     if dir_grant || dir_read || dir_write || declares("Dir") {
         let mut roots = dir_roots;

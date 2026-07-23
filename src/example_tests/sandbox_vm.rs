@@ -170,6 +170,7 @@ use crate::{codegen, interpreter, parser, typeck};
             vec![root.clone()],
             Vec::new(),
             Vec::new(),
+            Vec::new(),
             vec!["../secret.txt".to_string()],
             None,
             Vec::new(),

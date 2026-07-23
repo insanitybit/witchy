@@ -10,7 +10,7 @@ use witchy_caps::capabilities;
 const LAUNCH_SECTION: &str = "witchy.launch";
 const LAUNCH_VERSION: u8 = 1;
 
-const CAP_TAGS: [(&str, u8); 10] = [
+const CAP_TAGS: [(&str, u8); 11] = [
     ("Console", 0),
     ("Clock", 1),
     ("Rand", 2),
@@ -21,6 +21,7 @@ const CAP_TAGS: [(&str, u8); 10] = [
     ("File", 7),
     ("Net", 8),
     ("Exec", 9),
+    ("Fetch", 10),
 ];
 
 const DIR_RIGHTS: [(&str, u8); 2] = [("Read", 1 << 0), ("Write", 1 << 1)];
@@ -150,7 +151,7 @@ mod tests {
     #[test]
     fn launch_contract_round_trips_capabilities_and_rights() {
         let module = witchy_syntax::parser::parse_module(
-            "fn main(console: Console, root: Dir[Read], net: Net[Connect, Tcp], key: Secret):\n    return\n",
+            "fn main(console: Console, root: Dir[Read], net: Net[Connect, Tcp], key: Secret, fetch: Fetch):\n    return\n",
         )
         .unwrap();
         let wasm = embed_launch_contract(Module::new().finish(), &module);

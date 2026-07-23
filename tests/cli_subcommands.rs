@@ -343,6 +343,90 @@ fn sandbox_wasm_requires_explicit_dir_grant() {
     assert!(granted.status.success(), "sandbox --dir must run it: {}", String::from_utf8_lossy(&granted.stderr));
 }
 
+#[test]
+fn fetch_root_requires_an_explicit_valid_origin_for_source_and_wasm() {
+    let dir = workdir("fetch-grant");
+    let src = write(
+        &dir,
+        "fetch.witchy",
+        "fn main(console: Console, fetch: Fetch):\n    console.print(\"fetch-ready\")\n",
+    );
+
+    for args in [
+        vec![src.as_str()],
+        vec!["sandbox", src.as_str()],
+    ] {
+        let denied = run(&args);
+        assert!(!denied.status.success(), "{args:?} must not mint ambient Fetch");
+        assert!(
+            String::from_utf8_lossy(&denied.stderr).contains("--fetch"),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&denied.stderr),
+        );
+    }
+
+    let malformed = run(&["--fetch", "not-an-origin", &src]);
+    assert!(!malformed.status.success());
+    assert!(
+        String::from_utf8_lossy(&malformed.stderr).contains("invalid `--fetch` grant")
+    );
+
+    let granted = run(&["--fetch", "http://127.0.0.1:1", &src]);
+    assert!(
+        granted.status.success(),
+        "valid Fetch origin must launch: {}",
+        String::from_utf8_lossy(&granted.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&granted.stdout), "fetch-ready\n");
+
+    let wasm = dir.join("fetch.wasm");
+    assert!(
+        run(&["emit-wasm", &src, "-o", wasm.to_str().unwrap()])
+            .status
+            .success()
+    );
+    let denied_wasm = run(&["sandbox", wasm.to_str().unwrap()]);
+    assert!(!denied_wasm.status.success());
+    assert!(String::from_utf8_lossy(&denied_wasm.stderr).contains("--fetch"));
+    let granted_wasm = run(&[
+        "sandbox",
+        "--fetch",
+        "http://127.0.0.1:1",
+        wasm.to_str().unwrap(),
+    ]);
+    assert!(
+        granted_wasm.status.success(),
+        "valid Fetch origin must launch precompiled Wasm: {}",
+        String::from_utf8_lossy(&granted_wasm.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&granted_wasm.stdout),
+        "fetch-ready\n"
+    );
+
+    let grants = write(
+        &dir,
+        "fetch.grants.toml",
+        "[fetch]\nfetch = [\"http://127.0.0.1:1\"]\n",
+    );
+    let documented = run(&[
+        "sandbox",
+        "--grants",
+        &grants,
+        "--accept-grants",
+        &src,
+    ]);
+    assert!(
+        documented.status.success(),
+        "named Fetch grant must bind through the document: {}",
+        String::from_utf8_lossy(&documented.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&documented.stdout),
+        "fetch-ready\n"
+    );
+}
+
 // ---- BUG-112: SecretStore is mintable empty ----
 
 #[test]

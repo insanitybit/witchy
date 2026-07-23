@@ -32,14 +32,27 @@ for the program to call.
 # The host backs the Dir with a real directory and the Net with an allowlist.
 witchy sandbox --dir ./data program.witchy
 witchy sandbox --net api.example.com:443 client.witchy
+witchy sandbox --fetch https://api.example.com portable-client.witchy
 ```
 
 A granted `Dir` is backed by `--dir <root>`; a granted `Net` by one or more
-`--net <host:port>` allowlist entries; a single file by `--file <path>` (filling a
-`main(config: File[Read])` parameter). Anything omitted from the program's
-footprint is absent from the VM.
+`--net <host:port>` allowlist entries; a granted `Fetch` by one or more explicit
+`--fetch <scheme://host:port>` origins; a single file by `--file <path>` (filling
+a `main(config: File[Read])` parameter). Anything omitted from the program's
+footprint is absent from the VM. Fetch origins are canonicalized before launch;
+malformed origins and a required Fetch with no origin both fail before execution.
 
 ## Grant documents
+
+A named Fetch parameter binds to the same key in a reviewable grant document:
+
+```toml
+[fetch]
+api = ["https://api.example.com"]
+```
+
+For `main(api: Fetch)`, the host mints exactly that origin-scoped root. The
+section confers `Fetch`, never raw `Net`.
 
 Flags don't scale once a program needs several files, a couple of directories, a
 host, and a secret. A **grant document** enumerates the whole grant as reviewable,

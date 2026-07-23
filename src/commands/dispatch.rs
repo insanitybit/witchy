@@ -503,6 +503,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
         let mut dir_roots: Vec<std::path::PathBuf> = Vec::new();
         let mut file_grants: Vec<std::path::PathBuf> = Vec::new();
         let mut net_allow: Vec<String> = Vec::new();
+        let mut fetch_origins: Vec<String> = Vec::new();
         let mut signing_key: Option<[u8; 32]> = None;
         let mut named_secrets: Vec<runtime::SecretGrant> = Vec::new();
         let mut grants_doc: Option<String> = None;
@@ -548,6 +549,13 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                         std::process::exit(1);
                     }
                 },
+                "--fetch" if path.is_none() => match argv.next() {
+                    Some(origin) => fetch_origins.push(origin),
+                    None => {
+                        eprintln!("--fetch needs a scheme://host:port origin");
+                        std::process::exit(1);
+                    }
+                },
                 "--signing-key" if path.is_none() => match argv.next() {
                     Some(file) => match load_signing_seed(&file) {
                         Ok(seed) => signing_key = Some(seed),
@@ -583,7 +591,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
             }
         }
         let Some(path) = path else {
-            eprintln!("usage: witchy sandbox [--grants <doc.toml> [--accept-grants] | [--dir <root>] [--file <path>]... [--net <host:port>]... [--signing-key <seed-file>] [--secret name=value] [--secret-file name=path]] <file.witchy> [args...]");
+            eprintln!("usage: witchy sandbox [--grants <doc.toml> [--accept-grants] | [--dir <root>] [--file <path>]... [--net <host:port>]... [--fetch <scheme://host:port>]... [--signing-key <seed-file>] [--secret name=value] [--secret-file name=path]] <file.witchy> [args...]");
             std::process::exit(1);
         };
         // A precompiled `.wasm` runs directly (authority from its launch metadata
@@ -598,9 +606,9 @@ pub(crate) fn run() -> wasmtime::Result<()> {
         } else if path.ends_with(".wasm") {
             // `sandbox` is the strict path: a `Dir`-importing artifact needs an
             // explicit `--dir` (BUG-106), just like the source form.
-            commands::wasm_exec::run_wasm_file(&path, dir_roots, file_grants, net_allow, prog_args, signing_key, named_secrets, true)
+            commands::wasm_exec::run_wasm_file(&path, dir_roots, file_grants, net_allow, fetch_origins, prog_args, signing_key, named_secrets, true)
         } else {
-            commands::sandbox::run_file_sandboxed(&path, dir_roots, file_grants, net_allow, prog_args, signing_key, named_secrets)
+            commands::sandbox::run_file_sandboxed(&path, dir_roots, file_grants, net_allow, fetch_origins, prog_args, signing_key, named_secrets)
         };
         match result {
             Ok((lines, exit_code)) => {
@@ -729,6 +737,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
     // hand over). With no file argument, show usage.
     {
         let mut net_allow: Vec<String> = Vec::new();
+        let mut fetch_origins: Vec<String> = Vec::new();
         let mut file: Option<String> = None;
         let mut prog_args: Vec<String> = Vec::new();
         let mut signing_key: Option<[u8; 32]> = None;
@@ -760,6 +769,16 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                     Some(host) => net_allow.push(host),
                     None => {
                         eprintln!("--net requires a <host:port> argument");
+                        std::process::exit(1);
+                    }
+                }
+            } else if let Some(origin) = arg.strip_prefix("--fetch=") {
+                fetch_origins.push(origin.to_string());
+            } else if arg == "--fetch" {
+                match args.next() {
+                    Some(origin) => fetch_origins.push(origin),
+                    None => {
+                        eprintln!("--fetch requires a <scheme://host:port> argument");
                         std::process::exit(1);
                     }
                 }
@@ -816,7 +835,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
             Some(path) if path.ends_with(".wasm") => {
                 // Dev run: default a `Dir` to the cwd (not strict) — the convenience
                 // the source `witchy <file>` run keeps.
-                match commands::wasm_exec::run_wasm_file(path, Vec::new(), Vec::new(), net_allow, prog_args, signing_key, named_secrets, false) {
+                match commands::wasm_exec::run_wasm_file(path, Vec::new(), Vec::new(), net_allow, fetch_origins, prog_args, signing_key, named_secrets, false) {
                     Ok((lines, code)) => {
                         for line in lines {
                             println!("{line}");
@@ -835,7 +854,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                 Ok(())
             }
             Some(path) => {
-                match execute_file_exit(path, net_allow, prog_args, signing_key, named_secrets) {
+                match execute_file_exit(path, net_allow, fetch_origins, prog_args, signing_key, named_secrets) {
                     Ok((output, code)) => {
                         for line in output {
                             println!("{line}");

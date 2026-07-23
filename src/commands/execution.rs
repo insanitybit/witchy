@@ -321,6 +321,7 @@ pub(crate) fn run_linked_compiled(
     dir_roots: Vec<std::path::PathBuf>,
     file_grants: Vec<std::path::PathBuf>,
     net_allow: Vec<String>,
+    fetch_origins: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<runtime::SecretGrant>,
@@ -334,6 +335,7 @@ pub(crate) fn run_linked_compiled(
         dir_roots,
         file_grants,
         net_allow,
+        fetch_origins,
         args,
         signing_key,
         named_secrets,
@@ -349,6 +351,7 @@ pub(crate) fn run_checked_compiled(
     dir_roots: Vec<std::path::PathBuf>,
     file_grants: Vec<std::path::PathBuf>,
     net_allow: Vec<String>,
+    fetch_origins: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<runtime::SecretGrant>,
@@ -363,6 +366,7 @@ pub(crate) fn run_checked_compiled(
         dir_roots,
         file_grants,
         net_allow,
+        fetch_origins,
         args,
         signing_key,
         named_secrets,
@@ -379,6 +383,7 @@ fn run_compiled(
     dir_roots: Vec<std::path::PathBuf>,
     file_grants: Vec<std::path::PathBuf>,
     net_allow: Vec<String>,
+    fetch_origins: Vec<String>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<runtime::SecretGrant>,
@@ -477,6 +482,37 @@ fn run_compiled(
         caps.net_allow = Some(net_allow);
         caps.net_connect = rights.contains("Connect");
         caps.net_listen = rights.contains("Listen");
+    }
+    if grant.contains_key("Fetch") {
+        if fetch_origins.is_empty() {
+            return Err(
+                "this program's `main` requires `Fetch`, but no origins were granted \
+                 (use `--fetch <scheme://host:port>`)"
+                    .to_string(),
+            );
+        }
+        witchy_runtime::fetch::FetchPolicy::allow(fetch_origins.clone())
+            .map_err(|error| format!("invalid `--fetch` grant: {error}"))?;
+        let fetch_params = linked
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "main" => Some(
+                    function
+                        .params
+                        .iter()
+                        .filter(|param| {
+                            matches!(
+                                &param.ty,
+                                Some(ast::Type::Named(name, _)) if name == "Fetch"
+                            )
+                        })
+                        .count(),
+                ),
+                _ => None,
+            })
+            .unwrap_or(0);
+        caps.fetch_grants = vec![fetch_origins; fetch_params];
     }
     if grant.contains_key("Secret") || grant.contains_key("SecretStore") {
         caps.signing_key = signing_key;

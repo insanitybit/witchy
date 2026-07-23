@@ -46,6 +46,7 @@ granted exactly its footprint:
 - `--dir <root>` backs a `Dir`,
 - `--file <path>` backs a single `File` parameter (the i-th `File` ← the i-th `--file`),
 - `--net <host:port>` allowlists a network address,
+- `--fetch <scheme://host:port>` allowlists an HTTP origin for `Fetch`,
 - `--grants <file>` reads the whole grant from a reviewable TOML document.
 
 `grants-check` validates such a document against the program's computed footprint

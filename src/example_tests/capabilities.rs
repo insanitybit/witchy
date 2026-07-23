@@ -1092,6 +1092,7 @@ fn yes(b: Bool) -> String:
             vec![root.clone()],
             Vec::new(),
             Vec::new(),
+            Vec::new(),
             vec!["data.txt".to_string()],
             None,
             Vec::new(),
