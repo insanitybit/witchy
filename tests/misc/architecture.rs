@@ -5,10 +5,11 @@ use std::process::Command;
 use serde_json::Value;
 
 const STAGE_DEPENDENCIES: &[(&str, &[&str])] = &[
-    ("witchy-syntax", &[]),
-    ("witchy-types", &["witchy-syntax"]),
+    ("witchy-cap-model", &[]),
+    ("witchy-syntax", &["witchy-cap-model"]),
+    ("witchy-types", &["witchy-cap-model", "witchy-syntax"]),
     ("witchy-wir", &["witchy-syntax"]),
-    ("witchy-caps", &["witchy-syntax"]),
+    ("witchy-caps", &["witchy-cap-model", "witchy-syntax"]),
     ("witchy-lower", &["witchy-syntax", "witchy-types", "witchy-wir"]),
     (
         "witchy-runtime",

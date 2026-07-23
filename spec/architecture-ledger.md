@@ -25,10 +25,11 @@ stage crates have this maximum direct-dependency graph:
 
 | Stage | Allowed stage dependencies | Classification | Next boundary change |
 |---|---|---|---|
-| `witchy-syntax` | none | KEEP | Keep source, AST, diagnostics, expansion, and base lowering self-contained. |
-| `witchy-types` | `syntax` | KEEP | Expose checked modules and stable type/witness identities instead of pass internals. |
+| `witchy-cap-model` | none | KEEP | Keep the capability names, classes, arities, and rights vocabulary dependency-bottom and free of syntax, policy, or runtime behavior. |
+| `witchy-syntax` | `cap-model` | KEEP | Keep source, AST, diagnostics, expansion, and base lowering self-contained above the shared capability vocabulary. |
+| `witchy-types` | `cap-model`, `syntax` | KEEP | Expose checked modules and stable type/witness identities instead of pass internals. |
 | `witchy-wir` | `syntax` | NARROW | Retain only the shared diagnostic-template dependency; keep AST and type-system concepts out of WIR. |
-| `witchy-caps` | `syntax` | KEEP | Keep source-footprint analysis compiler-side; split reusable runtime policy data only when needed. |
+| `witchy-caps` | `cap-model`, `syntax` | KEEP | Keep source-footprint analysis compiler-side and consume the dependency-bottom capability vocabulary without duplicating it. |
 | `witchy-lower` | `syntax`, `types`, `wir` | KEEP | Lower typed source to WIR through explicit checked/type-information inputs. |
 | `witchy-runtime` | `caps`, `syntax`, `wir` | EXTRACT | Compiler implementation and Wasmtime bridging now have distinct `native/compiler.rs` and `runtime/compiler.rs` seams; inject the service implementation from above until post-compilation enforcement has no parser/type/WIR implementation dependency. |
 | `witchy-interp` | `caps`, `runtime`, `syntax`, `types` | NARROW | Consume runtime values and policy interfaces without importing the native Wasm sandbox. |
