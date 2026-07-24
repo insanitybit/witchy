@@ -1089,6 +1089,7 @@ impl Runtime {
         link_capability_imports(&mut linker, &caps)?;
         host::fixture::link_basic(&mut linker, &roots)?;
         host::fixture::link_filesystem(&mut linker, &roots)?;
+        host::fixture::link_fetch(&mut linker, &roots)?;
         let instance = linker.instantiate(&mut store, &module)?;
         self.next_id += 1;
         let mut vm = Vm {

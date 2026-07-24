@@ -1,6 +1,6 @@
 use wasmtime::{Caller, Error, Extern, ExternRef, Linker, Result, Rooted};
 use witchy_test_host::{FixtureRoots, HostHandle, HostRequest, HostResponse};
-use witchy_testkit::{SourceLocation, U64Text};
+use witchy_testkit::{FixtureErrorCode, FixtureFetchRequest, SourceLocation, U64Text};
 
 use super::super::{memory_of, read_wstr, read_wstr_list, slice, VmState};
 
@@ -51,6 +51,19 @@ pub(in crate::runtime) fn link_filesystem(
     linker.func_wrap("witchy", "dir_create", host_dir_create)?;
     linker.func_wrap("witchy", "file_read_len", host_file_read_len)?;
     linker.func_wrap("witchy", "file_write", host_file_write)?;
+    Ok(())
+}
+
+pub(in crate::runtime) fn link_fetch(
+    linker: &mut Linker<VmState>,
+    roots: &FixtureRoots,
+) -> Result<()> {
+    if roots.fetch.is_none() {
+        return Ok(());
+    }
+    linker.func_wrap("witchy", "mint_fetch", host_mint_fetch)?;
+    linker.func_wrap("witchy", "fetch_only", host_fetch_only)?;
+    linker.func_wrap("witchy", "fetch_send_len", host_fetch_send_len)?;
     Ok(())
 }
 
@@ -123,6 +136,7 @@ fn root_handle(caller: &Caller<'_, VmState>, family: &str) -> Result<HostHandle>
     match family {
         "Env" => roots.env,
         "Filesystem" => roots.filesystem,
+        "Fetch" => roots.fetch,
         _ => None,
     }
     .ok_or_else(|| Error::msg(format!("fixture plan declared no {family} provider")))
@@ -505,4 +519,110 @@ fn stage_bytes(caller: &mut Caller<'_, VmState>, bytes: Vec<u8>, operation: &str
         .map_err(|_| Error::msg(format!("fixture {operation} exceeds the guest ABI size limit")))?;
     caller.data_mut().pending = Some(bytes);
     Ok(length)
+}
+
+fn host_mint_fetch(
+    mut caller: Caller<'_, VmState>,
+    index: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
+    if index != 0 {
+        return Err(Error::msg(format!("invalid fixture Fetch grant index {index}")));
+    }
+    let handle = root_handle(&caller, "Fetch")?;
+    ExternRef::new(&mut caller, handle).map(Some)
+}
+
+fn host_fetch_only(
+    mut caller: Caller<'_, VmState>,
+    fetch: Option<Rooted<ExternRef>>,
+    origins_pointer: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
+    let fetch = fixture_handle(&caller, fetch, "Fetch")?;
+    let memory = memory_of(&mut caller)?;
+    let origins = read_wstr(memory.data(&caller), origins_pointer)?
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    match invoke(&mut caller, HostRequest::FetchOnly { fetch, origins })? {
+        HostResponse::Handle(handle) => ExternRef::new(&mut caller, handle).map(Some),
+        response => Err(Error::msg(format!(
+            "fixture Fetch.only returned unexpected response {response:?}"
+        ))),
+    }
+}
+
+fn host_fetch_send_len(
+    mut caller: Caller<'_, VmState>,
+    fetch: Option<Rooted<ExternRef>>,
+    method_pointer: i32,
+    url_pointer: i32,
+    headers_pointer: i32,
+    body_pointer: i32,
+) -> Result<i32> {
+    let fetch = fixture_handle(&caller, fetch, "Fetch")?;
+    let memory = memory_of(&mut caller)?;
+    let data = memory.data(&caller);
+    let method = read_wstr(data, method_pointer)?;
+    let url = read_wstr(data, url_pointer)?;
+    let headers = read_wstr(data, headers_pointer)?
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.trim().to_owned(), value.trim().to_owned()))
+        .collect();
+    let body = read_wstr(data, body_pointer)?.into_bytes();
+    let request = FixtureFetchRequest {
+        method,
+        url,
+        headers,
+        body,
+    };
+    let source = fixture_source(&mut caller);
+    let response = caller
+        .data_mut()
+        .fixture_host
+        .as_mut()
+        .ok_or_else(|| Error::msg("internal error: fixture import without a fixture host"))?
+        .invoke(HostRequest::FetchSend { fetch, request }, source);
+    let payload = match response {
+        Ok(HostResponse::Fetch(response)) => {
+            let mut raw = format!("HTTP/1.1 {}\r\n", response.status);
+            for (name, value) in response.headers {
+                raw.push_str(&name);
+                raw.push_str(": ");
+                raw.push_str(&value);
+                raw.push_str("\r\n");
+            }
+            raw.push_str("\r\n");
+            raw.push_str(&String::from_utf8_lossy(&response.body));
+            raw
+        }
+        Ok(response) => {
+            return Err(Error::msg(format!(
+                "fixture Fetch.send returned unexpected response {response:?}"
+            )));
+        }
+        Err(failure) => {
+            let Some(code) = fetch_failure_code(failure.code) else {
+                return Err(Error::msg(format!(
+                    "fixture {:?}: {}",
+                    failure.code, failure.message
+                )));
+            };
+            format!("WITCHY_FETCH_ERROR:{code}:{}", failure.message)
+        }
+    };
+    stage_bytes(&mut caller, payload.into_bytes(), "Fetch response")
+}
+
+const fn fetch_failure_code(code: FixtureErrorCode) -> Option<&'static str> {
+    match code {
+        FixtureErrorCode::Denied | FixtureErrorCode::PermissionDenied => Some("denied"),
+        FixtureErrorCode::InvalidRequest => Some("invalid-request"),
+        FixtureErrorCode::Timeout => Some("timeout"),
+        FixtureErrorCode::Redirect => Some("redirect"),
+        FixtureErrorCode::Network => Some("network"),
+        FixtureErrorCode::InvalidData => Some("malformed-response"),
+        FixtureErrorCode::ResponseTooLarge => Some("response-too-large"),
+        _ => None,
+    }
 }

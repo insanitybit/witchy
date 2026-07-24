@@ -847,4 +847,159 @@ fn compiled_filesystem_fixture_uses_opaque_handles_and_shared_state() {
         ]
     );
 }
+
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn compiled_fetch_fixture_stages_success_and_provider_failures_without_network() {
+    use witchy_testkit::{
+        ConsoleFixture, FetchFixture, FixtureErrorCode, FixtureFailure, FixtureFamily,
+        FixtureOutcome, FixturePlan, FixtureStep, FixtureValue,
+    };
+
+    const URL: &str = "https://example.com/data";
+    const RESPONSE: &str = "HTTP/1.1 200\r\nX-Test: fixture\r\n\r\nok";
+    const TIMEOUT: &str = "WITCHY_FETCH_ERROR:timeout:configured timeout";
+    const MODULE: &str = r#"
+        (module
+          (import "witchy" "mint_fetch" (func $mint_fetch (param i32) (result externref)))
+          (import "witchy" "fetch_send_len"
+            (func $fetch_send_len (param externref i32 i32 i32 i32) (result i32)))
+          (import "witchy" "fill_pending" (func $fill_pending (param i32)))
+          (import "witchy" "print" (func $print (param i32 i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "\03\00\00\00GET")
+          (data (i32.const 32) "\18\00\00\00https://example.com/data")
+          (data (i32.const 96) "\00\00\00\00")
+          (data (i32.const 104) "\00\00\00\00")
+          (func (export "run") (local $fetch externref) (local $length i32)
+            i32.const 0
+            call $mint_fetch
+            local.set $fetch
+            local.get $fetch
+            i32.const 0
+            i32.const 32
+            i32.const 96
+            i32.const 104
+            call $fetch_send_len
+            local.set $length
+            i32.const 256
+            call $fill_pending
+            i32.const 256
+            local.get $length
+            call $print
+            local.get $fetch
+            i32.const 0
+            i32.const 32
+            i32.const 96
+            i32.const 104
+            call $fetch_send_len
+            local.set $length
+            i32.const 256
+            call $fill_pending
+            i32.const 256
+            local.get $length
+            call $print))
+    "#;
+    let request_arguments = std::collections::BTreeMap::from([
+        ("method".to_owned(), FixtureValue::String("GET".to_owned())),
+        ("headers".to_owned(), FixtureValue::List(Vec::new())),
+        ("body".to_owned(), FixtureValue::Bytes(String::new())),
+    ]);
+    let plan = FixturePlan {
+        version: 1,
+        console: Some(ConsoleFixture {
+            script: vec![
+                FixtureStep {
+                    operation: "print".to_owned(),
+                    target: None,
+                    arguments: std::collections::BTreeMap::from([(
+                        "text".to_owned(),
+                        FixtureValue::String(RESPONSE.to_owned()),
+                    )]),
+                    effective_rights: Some(vec!["Write".to_owned()]),
+                    outcome: FixtureOutcome::Return {
+                        value: FixtureValue::Null,
+                    },
+                    required: true,
+                },
+                FixtureStep {
+                    operation: "print".to_owned(),
+                    target: None,
+                    arguments: std::collections::BTreeMap::from([(
+                        "text".to_owned(),
+                        FixtureValue::String(TIMEOUT.to_owned()),
+                    )]),
+                    effective_rights: Some(vec!["Write".to_owned()]),
+                    outcome: FixtureOutcome::Return {
+                        value: FixtureValue::Null,
+                    },
+                    required: true,
+                },
+            ],
+        }),
+        fetch: Some(FetchFixture {
+            origins: vec!["https://example.com:443".to_owned()],
+            script: vec![
+                FixtureStep {
+                    operation: "fetch_send_len".to_owned(),
+                    target: Some(URL.to_owned()),
+                    arguments: request_arguments.clone(),
+                    effective_rights: Some(vec!["https://example.com:443".to_owned()]),
+                    outcome: FixtureOutcome::Return {
+                        value: FixtureValue::Map(std::collections::BTreeMap::from([
+                            ("status".to_owned(), FixtureValue::String("200".to_owned())),
+                            (
+                                "headers".to_owned(),
+                                FixtureValue::List(vec![FixtureValue::Map(
+                                    std::collections::BTreeMap::from([
+                                        (
+                                            "name".to_owned(),
+                                            FixtureValue::String("X-Test".to_owned()),
+                                        ),
+                                        (
+                                            "value".to_owned(),
+                                            FixtureValue::String("fixture".to_owned()),
+                                        ),
+                                    ]),
+                                )]),
+                            ),
+                            ("body".to_owned(), FixtureValue::Bytes("6f6b".to_owned())),
+                        ])),
+                    },
+                    required: true,
+                },
+                FixtureStep {
+                    operation: "fetch_send_len".to_owned(),
+                    target: Some(URL.to_owned()),
+                    arguments: request_arguments,
+                    effective_rights: Some(vec!["https://example.com:443".to_owned()]),
+                    outcome: FixtureOutcome::Fail {
+                        error: FixtureFailure {
+                            code: FixtureErrorCode::Timeout,
+                            message: "configured timeout".to_owned(),
+                        },
+                    },
+                    required: true,
+                },
+            ],
+        }),
+        ..FixturePlan::default()
+    };
+    let mut runtime = Runtime::batch().expect("runtime");
+    let outcome = runtime
+        .run_fixtures(MODULE, plan, 2)
+        .expect("compiled fixture run");
+    assert!(matches!(outcome.result, FixtureWasmResult::Passed));
+    assert_eq!(outcome.output, vec![RESPONSE, TIMEOUT]);
+    assert_eq!(
+        outcome
+            .transcript
+            .events
+            .iter()
+            .filter(|event| event.family == FixtureFamily::Fetch)
+            .map(|event| event.operation.as_str())
+            .collect::<Vec<_>>(),
+        vec!["mint_fetch", "fetch_send_len", "fetch_send_len"]
+    );
+}
 use std::path::PathBuf;
