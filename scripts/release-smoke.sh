@@ -215,10 +215,27 @@ printf '%s\n' \
     '    testing.assert_int_eq(release_smoke.answer(), 42)' > project/src/release_smoke_test.witchy
 witchy test project >/dev/null
 witchy build project >/dev/null
-[ "$(witchy run project)" = "project:42" ] || {
+project_output="$(witchy run project)"
+project_line="${project_output%%$'\n'*}"
+[ "$project_line" = "project:42" ] || {
     echo "release-smoke: project run produced unexpected output" >&2
+    printf '%s\n' "$project_output" >&2
     exit 1
 }
+confinement_reports="${project_output#"$project_line"}"
+confinement_reports="${confinement_reports#$'\n'}"
+if [ -n "$confinement_reports" ]; then
+    while IFS= read -r report; do
+        case "$report" in
+            "confinement: layer="*) ;;
+            *)
+                echo "release-smoke: project run produced unexpected trailing output" >&2
+                printf '%s\n' "$project_output" >&2
+                exit 1
+                ;;
+        esac
+    done <<<"$confinement_reports"
+fi
 
 printf '%s\n' \
     'capability ReleaseFixture:' \
