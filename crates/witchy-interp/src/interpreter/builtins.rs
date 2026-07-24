@@ -2226,6 +2226,29 @@ impl Interpreter {
             // `(Int, String)` over a `List(String)`. (One staged-string result, so
             // the compiled backend mirrors `dir_read` exactly — see rfcs/0004.)
             "exec" => match args {
+                #[cfg(feature = "test-fixtures")]
+                [Value::FixtureExec(exec), Value::Dir(DirValue::Fixture(dir), _), Value::Str(path), Value::Str(joined), Value::Str(stdin)] => {
+                    let arguments = if joined.is_empty() {
+                        Vec::new()
+                    } else {
+                        joined.split('\0').map(str::to_owned).collect()
+                    };
+                    match self.invoke_fixture(HostRequest::ExecRun {
+                        exec: *exec,
+                        dir: *dir,
+                        path: path.as_str().to_owned(),
+                        arguments,
+                        stdin: stdin.as_str().to_owned(),
+                    })? {
+                        HostResponse::Exec(output) => Ok(Some(Value::str(format!(
+                            "{}\n{}{}",
+                            output.exit_code, output.stdout, output.stderr
+                        )))),
+                        other => err(format!(
+                            "internal error: Exec fixture returned {other:?}"
+                        )),
+                    }
+                }
                 [Value::Cap(Capability::Exec(allow)), Value::Dir(base, pol), Value::Str(path), Value::Str(joined), Value::Str(stdin)] => {
                     if allow.as_ref().is_some_and(|programs| !programs.contains(path.as_str())) {
                         return err(format!(
@@ -2887,6 +2910,27 @@ impl Interpreter {
                         None => requested,
                     };
                     Ok(Some(Value::Cap(Capability::Exec(Some(narrowed)))))
+                }
+                #[cfg(feature = "test-fixtures")]
+                [Value::FixtureExec(exec), Value::List(programs)] => {
+                    let tools = programs
+                        .iter()
+                        .map(|program| match program {
+                            Value::Str(program) => Ok(program.as_str().to_owned()),
+                            _ => err("Exec.only expects a List(String)"),
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    match self.invoke_fixture(HostRequest::ExecOnly {
+                        exec: *exec,
+                        tools,
+                    })? {
+                        HostResponse::Handle(handle) => {
+                            Ok(Some(Value::FixtureExec(handle)))
+                        }
+                        other => err(format!(
+                            "internal error: Exec fixture returned {other:?}"
+                        )),
+                    }
                 }
                 #[cfg(feature = "test-fixtures")]
                 [Value::FixtureFetch(handle), Value::Str(origins)] => {

@@ -133,6 +133,8 @@ pub enum Value {
     #[cfg(feature = "test-fixtures")]
     FixtureFetch(HostHandle),
     #[cfg(feature = "test-fixtures")]
+    FixtureExec(HostHandle),
+    #[cfg(feature = "test-fixtures")]
     FixtureSecret(HostHandle),
     #[cfg(feature = "test-fixtures")]
     FixtureSecretStore(HostHandle),
@@ -372,6 +374,8 @@ impl fmt::Display for Value {
             Value::Fetch(_) => write!(f, "<fetch>"),
             #[cfg(feature = "test-fixtures")]
             Value::FixtureFetch(_) => write!(f, "<fetch>"),
+            #[cfg(feature = "test-fixtures")]
+            Value::FixtureExec(_) => write!(f, "<exec>"),
             #[cfg(feature = "test-fixtures")]
             Value::FixtureSecret(_) => write!(f, "<secret>"),
             #[cfg(feature = "test-fixtures")]
@@ -999,6 +1003,10 @@ impl Interpreter {
                 .fetch
                 .map(Value::FixtureFetch)
                 .ok_or_else(|| missing("Fetch")),
+            Some(Type::Named(name, _)) if name == "Exec" => roots
+                .exec
+                .map(Value::FixtureExec)
+                .ok_or_else(|| missing("Exec")),
             Some(Type::Named(name, _)) if name == "SecretStore" => roots
                 .secrets
                 .map(Value::FixtureSecretStore)
@@ -1011,7 +1019,7 @@ impl Interpreter {
             Some(Type::Named(name, _))
                 if matches!(
                     name.as_str(),
-                    "File" | "Exec" | "Secret" | "Vm"
+                    "File" | "Secret" | "Vm"
                 ) =>
             {
                 Err(RuntimeError {

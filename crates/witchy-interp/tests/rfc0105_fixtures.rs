@@ -377,3 +377,117 @@ fn secret_fixtures_keep_material_opaque_and_preserve_scripted_crypto() {
         }
     }
 }
+
+#[test]
+fn exec_fixture_requires_attenuated_exec_and_fixture_dir_authority() {
+    let module = parse_module(
+        "fn main(console: Console, tools: Dir[Read], runner: Exec):\n    let echo = runner.only([\"echo\"])\n    console.print(echo.exec(tools, \"echo\", \"hello\\0world\", \"input\"))\n",
+    )
+    .expect("parse Exec fixture program");
+    let run = FixtureStep {
+        operation: "exec_run".to_owned(),
+        target: Some("echo".to_owned()),
+        arguments: BTreeMap::from([
+            (
+                "args".to_owned(),
+                FixtureValue::List(vec![
+                    FixtureValue::String("hello".to_owned()),
+                    FixtureValue::String("world".to_owned()),
+                ]),
+            ),
+            (
+                "stdin".to_owned(),
+                FixtureValue::String("input".to_owned()),
+            ),
+        ]),
+        effective_rights: None,
+        outcome: FixtureOutcome::Return {
+            value: FixtureValue::Map(BTreeMap::from([
+                (
+                    "exit_code".to_owned(),
+                    FixtureValue::String("7".to_owned()),
+                ),
+                (
+                    "stdout".to_owned(),
+                    FixtureValue::String("fixture stdout".to_owned()),
+                ),
+                (
+                    "stderr".to_owned(),
+                    FixtureValue::String("fixture stderr".to_owned()),
+                ),
+            ])),
+        },
+        required: true,
+    };
+    let outcome = run_module_fixtures(
+        module,
+        FixturePlan {
+            version: 1,
+            console: Some(ConsoleFixture::default()),
+            filesystem: Some(FilesystemFixture {
+                entries: BTreeMap::from([(
+                    "echo".to_owned(),
+                    FilesystemEntry::File {
+                        hex: String::new(),
+                    },
+                )]),
+                rights: vec!["Read".to_owned()],
+                entry_policy: None,
+                script: Vec::new(),
+            }),
+            exec: Some(witchy_testkit::ExecFixture {
+                tools: vec!["echo".to_owned()],
+                script: vec![run],
+            }),
+            expectations: Expectations::default(),
+            ..FixturePlan::default()
+        },
+    )
+    .expect("run Exec fixture");
+    match outcome.result {
+        FixtureProgramResult::Passed { output, .. } => {
+            assert_eq!(output, vec!["7\nfixture stdoutfixture stderr"]);
+        }
+        FixtureProgramResult::Failed { error, .. } => {
+            panic!("Exec fixture failed: {error}")
+        }
+    }
+    let exec_run = outcome
+        .transcript
+        .events
+        .iter()
+        .find(|event| event.operation == "exec_run")
+        .expect("exec_run transcript event");
+    assert!(
+        exec_run
+            .effective_rights
+            .contains(&"exec:echo".to_owned())
+    );
+    assert!(exec_run.effective_rights.contains(&"dir:Read".to_owned()));
+
+    let widening_module = parse_module(
+        "fn main(runner: Exec):\n    runner.only([\"bin/sh\"])\n",
+    )
+    .expect("parse Exec widening program");
+    let widening = run_module_fixtures(
+        widening_module,
+        FixturePlan {
+            version: 1,
+            exec: Some(witchy_testkit::ExecFixture {
+                tools: vec!["echo".to_owned()],
+                script: Vec::new(),
+            }),
+            expectations: Expectations::default(),
+            ..FixturePlan::default()
+        },
+    )
+    .expect("run Exec widening fixture");
+    match widening.result {
+        FixtureProgramResult::Passed { .. } => {
+            panic!("Exec fixture attenuation widened its allow-list")
+        }
+        FixtureProgramResult::Failed { error, .. } => {
+            assert!(error.message.contains("cannot widen"));
+        }
+    }
+}
