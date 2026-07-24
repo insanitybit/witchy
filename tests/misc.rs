@@ -44,6 +44,8 @@ mod rfc0087_migration_census;
 mod rfc0089_fip_contract;
 #[path = "misc/rfc0094_persistent_std_cache.rs"]
 mod rfc0094_persistent_std_cache;
+#[path = "misc/rfc0105_fixture_cli.rs"]
+mod rfc0105_fixture_cli;
 #[path = "misc/typed_errors.rs"]
 mod typed_errors;
 #[path = "misc/vm_worker_isolation.rs"]
