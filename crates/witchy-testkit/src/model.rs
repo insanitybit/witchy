@@ -237,6 +237,8 @@ pub struct FixtureFailure {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FixtureErrorCode {
+    Denied,
+    InvalidRequest,
     PermissionDenied,
     NotFound,
     AlreadyExists,
@@ -244,10 +246,28 @@ pub enum FixtureErrorCode {
     InvalidData,
     Interrupted,
     Timeout,
+    Redirect,
+    Network,
+    ResponseTooLarge,
     SpawnFailed,
     ProviderFailure,
     Exhausted,
     UnexpectedCall,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixtureFetchRequest {
+    pub method: String,
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixtureFetchResponse {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

@@ -123,8 +123,8 @@ impl FixtureSession {
             FixtureFamily::Rand => self.basic.rand_state.is_some(),
             FixtureFamily::Env => self.basic.env_values.is_some(),
             FixtureFamily::Argv => self.basic.argv.is_some(),
+            FixtureFamily::Fetch => self.fetch.configured(),
             FixtureFamily::Filesystem
-            | FixtureFamily::Fetch
             | FixtureFamily::SecretStore
             | FixtureFamily::Exec
             | FixtureFamily::Vm => false,

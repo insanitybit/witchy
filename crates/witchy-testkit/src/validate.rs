@@ -141,8 +141,17 @@ impl FixturePlan {
         if let Some(fetch) = &self.fetch {
             check_unique_strings("fetch.origins", &fetch.origins, limits)?;
             for (index, origin) in fetch.origins.iter().enumerate() {
-                validate_origin(origin)
-                    .map_err(|message| invalid(format!("fetch.origins[{index}]"), message))?;
+                let parsed = witchy_cap_model::FetchOrigin::parse(origin)
+                    .map_err(|error| invalid(format!("fetch.origins[{index}]"), error.to_string()))?;
+                if parsed.as_str() != *origin {
+                    return Err(invalid(
+                        format!("fetch.origins[{index}]"),
+                        format!("origin must use canonical spelling `{}`", parsed.as_str()),
+                    ));
+                }
+            }
+            for (index, step) in fetch.script.iter().enumerate() {
+                validate_fetch_step(step, index)?;
             }
         }
         if let Some(secrets) = &self.secrets {
@@ -408,6 +417,44 @@ fn validate_exec(exec: &ExecFixture, limits: &PlanValidationLimits) -> Result<()
     Ok(())
 }
 
+fn validate_fetch_step(
+    step: &FixtureStep,
+    index: usize,
+) -> Result<(), PlanValidationError> {
+    let path = format!("fetch.script[{index}]");
+    if step.operation != "fetch_send_len" {
+        return Err(invalid(
+            format!("{path}.operation"),
+            "Fetch scripts support only `fetch_send_len`",
+        ));
+    }
+    let crate::FixtureOutcome::Return {
+        value: crate::FixtureValue::Map(fields),
+    } = &step.outcome
+    else {
+        return Ok(());
+    };
+    let Some(crate::FixtureValue::String(status)) = fields.get("status") else {
+        return Err(invalid(
+            format!("{path}.outcome.value.status"),
+            "Fetch response status must be an unsigned decimal string",
+        ));
+    };
+    let status = status.parse::<u16>().map_err(|_| {
+        invalid(
+            format!("{path}.outcome.value.status"),
+            "Fetch response status is out of range",
+        )
+    })?;
+    if (300..400).contains(&status) {
+        return Err(invalid(
+            format!("{path}.outcome"),
+            "redirects must be scripted as a `redirect` failure",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_fixture_path(path: &str) -> Result<(), String> {
     if path.is_empty() {
         return Err("path must not be empty".into());
@@ -420,21 +467,6 @@ fn validate_fixture_path(path: &str) -> Result<(), String> {
         .any(|component| component.is_empty() || component == "." || component == "..")
     {
         return Err("path must not contain empty, `.` or `..` components".into());
-    }
-    Ok(())
-}
-
-fn validate_origin(origin: &str) -> Result<(), String> {
-    let rest = origin
-        .strip_prefix("https://")
-        .or_else(|| origin.strip_prefix("http://"))
-        .ok_or_else(|| "origin must use http or https".to_owned())?;
-    if rest.is_empty()
-        || rest.contains(['/', '?', '#', '@', '\0'])
-        || rest.starts_with('.')
-        || rest.ends_with('.')
-    {
-        return Err("origin must contain only a scheme and authority".into());
     }
     Ok(())
 }
@@ -586,9 +618,9 @@ mod tests {
         assert!(right_plan.message().contains("unknown Dir right"));
 
         let origin_plan =
-            crate::parse_fixture_plan(br#"{"version":1,"fetch":{"origins":["https://example.com/path"]}}"#)
+            crate::parse_fixture_plan(br#"{"version":1,"fetch":{"origins":["https://example.com:443/path"]}}"#)
                 .expect_err("origin path");
-        assert!(origin_plan.message().contains("scheme and authority"));
+        assert!(origin_plan.message().contains("must not contain a path"));
 
         let tool_plan =
             crate::parse_fixture_plan(br#"{"version":1,"exec":{"tools":["/bin/sh"]}}"#)
@@ -603,5 +635,14 @@ mod tests {
         )
         .expect_err("file descendants");
         assert!(error.message().contains("file cannot contain"));
+    }
+
+    #[test]
+    fn fetch_redirects_must_be_failure_outcomes() {
+        let error = crate::parse_fixture_plan(
+            br#"{"version":1,"fetch":{"origins":["https://example.com:443"],"script":[{"operation":"fetch_send_len","outcome":{"kind":"return","value":{"kind":"map","value":{"status":{"kind":"string","value":"302"},"headers":{"kind":"list","value":[]},"body":{"kind":"bytes","value":""}}}}}]}}"#,
+        )
+        .expect_err("successful redirect response");
+        assert!(error.message().contains("redirects must be scripted"));
     }
 }

@@ -7,6 +7,7 @@ license = "MIT OR Apache-2.0"
 description = "witchy compiler — runtime values, the capability host registry, and the wasmtime sandbox (TCB)"
 
 [dependencies]
+witchy-cap-model = { path = "../witchy-cap-model" }
 witchy-caps = { path = "../witchy-caps" }
 witchy-confinement = { path = "../witchy-confinement" }
 witchy-syntax = { path = "../witchy-syntax" }

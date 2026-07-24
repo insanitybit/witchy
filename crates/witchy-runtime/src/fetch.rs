@@ -18,13 +18,13 @@ pub struct Origin {
 
 impl Origin {
     pub fn parse(input: &str) -> Result<Self, FetchError> {
-        let parsed = ParsedUrl::parse(input, true)?;
-        if parsed.path_and_query != "/" {
-            return Err(FetchError::invalid(
-                "an origin grant must not contain a path, query, or fragment",
-            ));
-        }
-        Ok(parsed.origin)
+        let origin = witchy_cap_model::FetchOrigin::parse(input)
+            .map_err(|error| FetchError::invalid(error.to_string()))?;
+        Ok(Self {
+            scheme: Scheme::parse(origin.scheme().as_str())?,
+            host: origin.host().to_string(),
+            port: origin.port(),
+        })
     }
 
     pub fn as_str(&self) -> String {
@@ -320,41 +320,14 @@ pub fn send(policy: &FetchPolicy, request: &FetchRequest) -> Result<FetchRespons
 }
 
 fn validate_method(method: &str) -> Result<(), FetchError> {
-    if method.is_empty()
-        || !method
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
-    {
-        return Err(FetchError::invalid("method is not an HTTP token"));
-    }
-    Ok(())
+    witchy_cap_model::validate_fetch_method(method)
+        .map_err(|error| FetchError::invalid(error.to_string()))
 }
 
 fn validate_headers(headers: &[(String, String)]) -> Result<(), FetchError> {
     for (name, value) in headers {
-        if name.is_empty()
-            || !name
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
-        {
-            return Err(FetchError::invalid(format!(
-                "header name `{name}` is not an HTTP token"
-            )));
-        }
-        if value.bytes().any(|byte| matches!(byte, b'\r' | b'\n' | 0..=8 | 11..=31 | 127)) {
-            return Err(FetchError::invalid(format!(
-                "header `{name}` contains a forbidden control character"
-            )));
-        }
-        if name.eq_ignore_ascii_case("host")
-            || name.eq_ignore_ascii_case("connection")
-            || name.eq_ignore_ascii_case("content-length")
-            || name.eq_ignore_ascii_case("transfer-encoding")
-        {
-            return Err(FetchError::invalid(format!(
-                "header `{name}` is controlled by the Fetch provider"
-            )));
-        }
+        witchy_cap_model::validate_fetch_header(name, value)
+            .map_err(|error| FetchError::invalid(error.to_string()))?;
     }
     Ok(())
 }
@@ -506,85 +479,17 @@ struct ParsedUrl {
 
 impl ParsedUrl {
     fn parse(input: &str, origin_only: bool) -> Result<Self, FetchError> {
-        if input.bytes().any(|byte| byte.is_ascii_control() || byte == b' ') {
-            return Err(FetchError::invalid(
-                "URL contains whitespace or a control character",
-            ));
-        }
-        let fragment = input.find('#');
-        if origin_only && fragment.is_some() {
-            return Err(FetchError::invalid(
-                "an origin grant must not contain a path, query, or fragment",
-            ));
-        }
-        let input = fragment.map_or(input, |index| &input[..index]);
-        let (scheme, rest) = input
-            .split_once("://")
-            .ok_or_else(|| FetchError::invalid("URL is missing `scheme://`"))?;
-        let scheme = Scheme::parse(scheme)?;
-        let authority_end = rest.find(['/', '?']).unwrap_or(rest.len());
-        let authority = &rest[..authority_end];
-        if authority.is_empty() {
-            return Err(FetchError::invalid("URL has an empty host"));
-        }
-        if authority.contains('@') {
-            return Err(FetchError::invalid(
-                "URL credentials are forbidden; pass explicit authorization headers",
-            ));
-        }
-        let (host, port) = split_authority(authority, scheme.default_port())?;
-        let path_and_query = match &rest[authority_end..] {
-            "" => "/".to_string(),
-            suffix if suffix.starts_with('?') => format!("/{suffix}"),
-            suffix => suffix.to_string(),
-        };
-        if origin_only && path_and_query != "/" {
-            return Err(FetchError::invalid(
-                "an origin grant must not contain a path or query",
-            ));
-        }
+        let parsed = witchy_cap_model::ParsedFetchUrl::parse(input, origin_only)
+            .map_err(|error| FetchError::invalid(error.to_string()))?;
+        let origin = parsed.origin();
         Ok(Self {
             origin: Origin {
-                scheme,
-                host: host.to_ascii_lowercase(),
-                port,
+                scheme: Scheme::parse(origin.scheme().as_str())?,
+                host: origin.host().to_string(),
+                port: origin.port(),
             },
-            path_and_query,
+            path_and_query: parsed.path_and_query().to_string(),
         })
-    }
-}
-
-fn split_authority(authority: &str, default_port: u16) -> Result<(&str, u16), FetchError> {
-    if authority.starts_with('[') {
-        let close = authority
-            .find(']')
-            .ok_or_else(|| FetchError::invalid("unterminated IPv6 host"))?;
-        let host = &authority[..=close];
-        let suffix = &authority[close + 1..];
-        let port = if suffix.is_empty() {
-            default_port
-        } else {
-            suffix
-                .strip_prefix(':')
-                .ok_or_else(|| FetchError::invalid("invalid IPv6 authority"))?
-                .parse()
-                .map_err(|_| FetchError::invalid("invalid URL port"))?
-        };
-        return Ok((host, port));
-    }
-    if authority.matches(':').count() > 1 {
-        return Err(FetchError::invalid(
-            "IPv6 URL hosts must be enclosed in brackets",
-        ));
-    }
-    match authority.rsplit_once(':') {
-        Some((host, port)) if !host.is_empty() && !port.is_empty() => Ok((
-            host,
-            port.parse()
-                .map_err(|_| FetchError::invalid("invalid URL port"))?,
-        )),
-        Some(_) => Err(FetchError::invalid("invalid URL authority")),
-        None => Ok((authority, default_port)),
     }
 }
 

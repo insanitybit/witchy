@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, VecDeque};
 
 use crate::basic::BasicProviderState;
 use crate::filesystem::FilesystemProviderState;
+use crate::fetch::FetchProviderState;
 use crate::{
     Expectations, FixtureErrorCode, FixtureFailure, FixtureFamily, FixtureOutcome, FixturePlan,
     FixtureStep, FixtureValue, PlanValidationError, SourceLocation, TEST_TRANSCRIPT_VERSION,
@@ -44,6 +45,7 @@ pub struct FixtureSession {
     max_events: usize,
     pub(crate) basic: BasicProviderState,
     pub(crate) filesystem: FilesystemProviderState,
+    pub(crate) fetch: FetchProviderState,
 }
 
 impl FixtureSession {
@@ -52,6 +54,7 @@ impl FixtureSession {
         plan.validate_with(&limits)?;
         let basic = BasicProviderState::new(&plan);
         let filesystem = FilesystemProviderState::new(&plan);
+        let fetch = FetchProviderState::new(&plan);
 
         let mut scripts = BTreeMap::new();
         macro_rules! take_script {
@@ -86,6 +89,7 @@ impl FixtureSession {
             max_events: limits.max_script_steps,
             basic,
             filesystem,
+            fetch,
         })
     }
 

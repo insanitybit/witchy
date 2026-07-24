@@ -269,6 +269,254 @@ pub fn dir_admits(policy: &str, name: &str, is_dir: bool) -> bool {
     (!has_extension || extension_allowed) && (!has_kind || kind_allowed)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FetchScheme {
+    Http,
+    Https,
+}
+
+impl FetchScheme {
+    pub fn parse(value: &str) -> Result<Self, FetchUrlError> {
+        match value.to_ascii_lowercase().as_str() {
+            "http" => Ok(Self::Http),
+            "https" => Ok(Self::Https),
+            _ => Err(FetchUrlError::new(
+                "Fetch URLs and origins must use `http` or `https`",
+            )),
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::Https => "https",
+        }
+    }
+
+    pub const fn default_port(self) -> u16 {
+        match self {
+            Self::Http => 80,
+            Self::Https => 443,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchOrigin {
+    scheme: FetchScheme,
+    host: String,
+    port: u16,
+}
+
+impl FetchOrigin {
+    pub fn parse(input: &str) -> Result<Self, FetchUrlError> {
+        let parsed = ParsedFetchUrl::parse(input, true)?;
+        if parsed.path_and_query != "/" {
+            return Err(FetchUrlError::new(
+                "an origin grant must not contain a path, query, or fragment",
+            ));
+        }
+        Ok(parsed.origin)
+    }
+
+    pub const fn scheme(&self) -> FetchScheme {
+        self.scheme
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    pub const fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub fn as_str(&self) -> String {
+        format!(
+            "{}://{}:{}",
+            self.scheme.as_str(),
+            display_fetch_host(&self.host),
+            self.port
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedFetchUrl {
+    origin: FetchOrigin,
+    path_and_query: String,
+}
+
+impl ParsedFetchUrl {
+    pub fn parse(input: &str, origin_only: bool) -> Result<Self, FetchUrlError> {
+        if input.bytes().any(|byte| byte.is_ascii_control() || byte == b' ') {
+            return Err(FetchUrlError::new(
+                "URL contains whitespace or a control character",
+            ));
+        }
+        let fragment = input.find('#');
+        if origin_only && fragment.is_some() {
+            return Err(FetchUrlError::new(
+                "an origin grant must not contain a path, query, or fragment",
+            ));
+        }
+        let input = fragment.map_or(input, |index| &input[..index]);
+        let (scheme, rest) = input
+            .split_once("://")
+            .ok_or_else(|| FetchUrlError::new("URL is missing `scheme://`"))?;
+        let scheme = FetchScheme::parse(scheme)?;
+        let authority_end = rest.find(['/', '?']).unwrap_or(rest.len());
+        let authority = &rest[..authority_end];
+        if authority.is_empty() {
+            return Err(FetchUrlError::new("URL has an empty host"));
+        }
+        if authority.contains('@') {
+            return Err(FetchUrlError::new(
+                "URL credentials are forbidden; pass explicit authorization headers",
+            ));
+        }
+        let (host, port) = split_fetch_authority(authority, scheme.default_port())?;
+        let path_and_query = match &rest[authority_end..] {
+            "" => "/".to_string(),
+            suffix if suffix.starts_with('?') => format!("/{suffix}"),
+            suffix => suffix.to_string(),
+        };
+        if origin_only && path_and_query != "/" {
+            return Err(FetchUrlError::new(
+                "an origin grant must not contain a path or query",
+            ));
+        }
+        Ok(Self {
+            origin: FetchOrigin {
+                scheme,
+                host: host.to_ascii_lowercase(),
+                port,
+            },
+            path_and_query,
+        })
+    }
+
+    pub fn origin(&self) -> &FetchOrigin {
+        &self.origin
+    }
+
+    pub fn path_and_query(&self) -> &str {
+        &self.path_and_query
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchUrlError {
+    message: String,
+}
+
+impl FetchUrlError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for FetchUrlError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for FetchUrlError {}
+
+pub fn validate_fetch_method(method: &str) -> Result<(), FetchUrlError> {
+    if is_http_token(method) {
+        Ok(())
+    } else {
+        Err(FetchUrlError::new("method is not an HTTP token"))
+    }
+}
+
+pub fn validate_fetch_header(name: &str, value: &str) -> Result<(), FetchUrlError> {
+    validate_http_header_syntax(name, value)?;
+    if name.eq_ignore_ascii_case("host")
+        || name.eq_ignore_ascii_case("connection")
+        || name.eq_ignore_ascii_case("content-length")
+        || name.eq_ignore_ascii_case("transfer-encoding")
+    {
+        return Err(FetchUrlError::new(format!(
+            "header `{name}` is controlled by the Fetch provider"
+        )));
+    }
+    Ok(())
+}
+
+pub fn validate_http_header_syntax(name: &str, value: &str) -> Result<(), FetchUrlError> {
+    if !is_http_token(name) {
+        return Err(FetchUrlError::new(format!(
+            "header name `{name}` is not an HTTP token"
+        )));
+    }
+    if value
+        .bytes()
+        .any(|byte| matches!(byte, b'\r' | b'\n' | 0..=8 | 11..=31 | 127))
+    {
+        return Err(FetchUrlError::new(format!(
+            "header `{name}` contains a forbidden control character"
+        )));
+    }
+    Ok(())
+}
+
+fn is_http_token(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+}
+
+fn split_fetch_authority(
+    authority: &str,
+    default_port: u16,
+) -> Result<(&str, u16), FetchUrlError> {
+    if authority.starts_with('[') {
+        let close = authority
+            .find(']')
+            .ok_or_else(|| FetchUrlError::new("unterminated IPv6 host"))?;
+        let host = &authority[..=close];
+        let suffix = &authority[close + 1..];
+        let port = if suffix.is_empty() {
+            default_port
+        } else {
+            suffix
+                .strip_prefix(':')
+                .ok_or_else(|| FetchUrlError::new("invalid IPv6 authority"))?
+                .parse()
+                .map_err(|_| FetchUrlError::new("invalid URL port"))?
+        };
+        return Ok((host, port));
+    }
+    if authority.matches(':').count() > 1 {
+        return Err(FetchUrlError::new(
+            "IPv6 URL hosts must be enclosed in brackets",
+        ));
+    }
+    match authority.rsplit_once(':') {
+        Some((host, port)) if !host.is_empty() && !port.is_empty() => Ok((
+            host,
+            port.parse()
+                .map_err(|_| FetchUrlError::new("invalid URL port"))?,
+        )),
+        Some(_) => Err(FetchUrlError::new("invalid URL authority")),
+        None => Ok((authority, default_port)),
+    }
+}
+
+fn display_fetch_host(host: &str) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,5 +553,28 @@ mod tests {
         assert!(!dir_admits(&dir_only("", "garbled"), "anything", true));
         assert!(dir_admits("ext:.txt", "nested", true));
         assert!(!dir_admits("kind:file", "nested", true));
+    }
+
+    #[test]
+    fn fetch_origins_and_requests_share_canonical_security_checks() {
+        assert_eq!(
+            FetchOrigin::parse("HTTPS://Example.COM")
+                .expect("origin")
+                .as_str(),
+            "https://example.com:443"
+        );
+        assert_eq!(
+            ParsedFetchUrl::parse("https://example.com/a?q=1#ignored", false)
+                .expect("request")
+                .origin()
+                .as_str(),
+            "https://example.com:443"
+        );
+        assert!(FetchOrigin::parse("https://user@example.com").is_err());
+        assert!(FetchOrigin::parse("https://example.com/path").is_err());
+        assert!(validate_fetch_method("GE\rT").is_err());
+        assert!(validate_fetch_header("Host", "example.com").is_err());
+        assert!(validate_fetch_header("X-Test", "ok\r\nInjected: yes").is_err());
+        assert!(validate_http_header_syntax("Content-Length", "12").is_ok());
     }
 }

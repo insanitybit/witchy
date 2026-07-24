@@ -2983,6 +2983,7 @@ dependencies = [
  "tempfile",
  "wasmtime",
  "webpki-roots 0.26.11",
+ "witchy-cap-model",
  "witchy-caps",
  "witchy-confinement",
  "witchy-syntax",

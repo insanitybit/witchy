@@ -9,6 +9,7 @@
 mod basic;
 mod engine;
 mod filesystem;
+mod fetch;
 mod json;
 mod model;
 mod validate;
@@ -16,6 +17,7 @@ mod validate;
 pub use basic::{FixtureHandle, ProviderResult};
 pub use engine::{FixtureCall, FixtureSession};
 pub use filesystem::FilesystemProviderResult;
+pub use fetch::FetchProviderResult;
 pub use json::{PlanDecodeError, canonical_plan_json, parse_fixture_plan};
 pub use model::*;
 pub use validate::{PlanValidationError, PlanValidationLimits};
