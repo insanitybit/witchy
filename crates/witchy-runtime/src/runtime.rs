@@ -1094,7 +1094,7 @@ impl Runtime {
         let transcript_result = match &execution {
             Ok(()) => witchy_testkit::TestResult::Passed,
             Err(error) => witchy_testkit::TestResult::Failed {
-                message: error.to_string(),
+                message: error.root_cause().to_string(),
             },
         };
         let transcript = vm
@@ -1107,7 +1107,7 @@ impl Runtime {
         let result = match execution {
             Ok(()) => FixtureWasmResult::Passed,
             Err(error) => FixtureWasmResult::Failed {
-                error: error.to_string(),
+                error: error.root_cause().to_string(),
             },
         };
         Ok(FixtureWasmOutcome {

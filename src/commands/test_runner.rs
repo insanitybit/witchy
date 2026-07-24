@@ -474,26 +474,14 @@ fn same_fixture_evidence(left: &TestTranscript, right: &TestTranscript) -> bool 
         && same_result_kind
 }
 
-fn finish_fixture_outcome(outcome: FixtureBackendOutcome) -> Result<Vec<String>, String> {
-    if outcome.passed {
-        Ok(outcome.output)
-    } else {
-        Err(outcome
-            .error
-            .unwrap_or_else(|| "fixture test failed without a diagnostic".to_string()))
-    }
-}
-
 fn run_fixture_test(
     module: &ast::Module,
     plan: &FixturePlan,
     backend: TestBackend,
-) -> Result<Vec<String>, String> {
+) -> Result<FixtureBackendOutcome, String> {
     match backend {
-        TestBackend::Interpreter => {
-            finish_fixture_outcome(run_interpreter_fixtures(module, plan)?)
-        }
-        TestBackend::Wasm => finish_fixture_outcome(run_wasm_fixtures(module, plan)?),
+        TestBackend::Interpreter => run_interpreter_fixtures(module, plan),
+        TestBackend::Wasm => run_wasm_fixtures(module, plan),
         TestBackend::Both => {
             let interpreted = run_interpreter_fixtures(module, plan)?;
             let compiled = run_wasm_fixtures(module, plan)?;
@@ -509,7 +497,7 @@ fn run_fixture_test(
                     compiled.transcript
                 ));
             }
-            finish_fixture_outcome(compiled)
+            Ok(compiled)
         }
     }
 }
@@ -519,6 +507,7 @@ struct TestModuleResult {
     passed: Vec<String>,
     failed: Vec<TestFailure>,
     output: std::collections::BTreeMap<String, Vec<String>>,
+    transcripts: std::collections::BTreeMap<String, TestTranscript>,
 }
 
 /// Discover and run the tests in an already-linked module (`stem` = the entry file's
@@ -627,41 +616,84 @@ fn run_tests_in_module(
         // The synthesized `main` plus codegen's reachability pruning keep unused
         // effectful production functions out of the test artifact. A module that
         // does not lower is itself a failure: the test cannot run where it ships.
-        let outcome = if let Some(plan) = policy.fixture_plan {
-            run_fixture_test(&m, plan, policy.backend)
-        } else if policy.integration {
-            run_linked_compiled(
-                &m,
-                policy.grants.dir_roots.clone(),
-                Vec::new(),
-                policy.grants.net_allow.clone(),
-                Vec::new(),
-                None,
-                None,
-                Vec::new(),
-                Vec::new(),
-                None,
-                Vec::new(),
-                Vec::new(),
-                true,
-                witchy_confinement::EnforcementMode::Disabled,
-            )
-            .map(|(output, _)| output)
-        } else {
-            match codegen::compile_module_binary(&m) {
-                codegen::LoweringOutcome::Lowered(bytes) => {
-                    run_wasm_test_bytes(&bytes)
+        let (outcome, transcript) = if let Some(plan) = policy.fixture_plan {
+            match run_fixture_test(&m, plan, policy.backend) {
+                Ok(fixture) => {
+                    let FixtureBackendOutcome {
+                        passed,
+                        output,
+                        error,
+                        transcript,
+                    } = fixture;
+                    let outcome = if passed {
+                        Ok(output)
+                    } else {
+                        Err((
+                            error.unwrap_or_else(|| {
+                                "fixture test failed without a diagnostic".to_string()
+                            }),
+                            output,
+                        ))
+                    };
+                    (outcome, Some(transcript))
                 }
-                codegen::LoweringOutcome::Unsupported(reason) => Err(reason.to_string()),
-                codegen::LoweringOutcome::Rejected(error) => Err(error.to_string()),
+                Err(error) => (Err((error, Vec::new())), None),
             }
+        } else if policy.integration {
+            (
+                run_linked_compiled(
+                    &m,
+                    policy.grants.dir_roots.clone(),
+                    Vec::new(),
+                    policy.grants.net_allow.clone(),
+                    Vec::new(),
+                    None,
+                    None,
+                    Vec::new(),
+                    Vec::new(),
+                    None,
+                    Vec::new(),
+                    Vec::new(),
+                    true,
+                    witchy_confinement::EnforcementMode::Disabled,
+                )
+                .map(|(output, _)| output)
+                .map_err(|error| (error, Vec::new())),
+                None,
+            )
+        } else {
+            (
+                match codegen::compile_module_binary(&m) {
+                    codegen::LoweringOutcome::Lowered(bytes) => {
+                        run_wasm_test_bytes(&bytes).map_err(|error| (error, Vec::new()))
+                    }
+                    codegen::LoweringOutcome::Unsupported(reason) => {
+                        Err((reason.to_string(), Vec::new()))
+                    }
+                    codegen::LoweringOutcome::Rejected(error) => {
+                        Err((error.to_string(), Vec::new()))
+                    }
+                },
+                None,
+            )
         };
         match outcome {
             Ok(output) => {
                 result.output.insert(test.clone(), output);
+                if let Some(transcript) = transcript {
+                    result.transcripts.insert(test.clone(), transcript);
+                }
                 result.passed.push(test);
             }
-            Err(msg) => result.failed.push((test, msg)),
+            Err((msg, output)) => {
+                if !output.is_empty() {
+                    result.output.insert(test.clone(), output);
+                }
+                if let Some(transcript) = transcript {
+                    result.transcripts.insert(test.clone(), transcript);
+                }
+                result.failed.push((test, msg));
+            }
         }
     }
     Ok(result)
@@ -850,6 +882,11 @@ mod test_mode_link_tests {
         .expect("fixture parity run");
         assert!(result.failed.is_empty(), "{:?}", result.failed);
         assert_eq!(result.passed, vec!["suite.test_console".to_string()]);
+        let transcript = result
+            .transcripts
+            .get("suite.test_console")
+            .expect("fixture transcript retained at the CLI result boundary");
+        assert_eq!(transcript.stdout, vec!["fixture".to_string()]);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1059,6 +1096,7 @@ pub(crate) fn run_tests(options: &TestOptions) -> Result<bool, String> {
                         "status": "skipped",
                         "error": e,
                         "output": [],
+                        "transcript": serde_json::Value::Null,
                     }));
                 } else {
                     eprintln!("  skipped {file}: {e}");
@@ -1098,6 +1136,7 @@ pub(crate) fn run_tests(options: &TestOptions) -> Result<bool, String> {
                         "status": "failed",
                         "error": e,
                         "output": [],
+                        "transcript": serde_json::Value::Null,
                     }));
                 } else {
                     println!("running test(s) in {file}");
@@ -1125,6 +1164,7 @@ pub(crate) fn run_tests(options: &TestOptions) -> Result<bool, String> {
                     "status": if options.list { "listed" } else { "passed" },
                     "error": serde_json::Value::Null,
                     "output": output,
+                    "transcript": result.transcripts.get(name),
                 }));
             } else if options.list {
                 println!("{name}");
@@ -1145,6 +1185,7 @@ pub(crate) fn run_tests(options: &TestOptions) -> Result<bool, String> {
                     "status": "failed",
                     "error": msg,
                     "output": result.output.get(name).cloned().unwrap_or_default(),
+                    "transcript": result.transcripts.get(name),
                 }));
             } else {
                 println!("test {name} ... FAILED: {msg}");
@@ -1155,7 +1196,7 @@ pub(crate) fn run_tests(options: &TestOptions) -> Result<bool, String> {
     }
     if options.format == TestOutputFormat::Json {
         let document = serde_json::json!({
-            "schema": 1,
+            "schema": 2,
             "tests": json_tests,
             "summary": {
                 "status": if total_fail == 0 { "passed" } else { "failed" },

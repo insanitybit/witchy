@@ -136,12 +136,57 @@ fn json_output_is_single_document_with_captured_parity_output() {
     );
     let document: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("one JSON result document");
-    assert_eq!(document["schema"], 1);
+    assert_eq!(document["schema"], 2);
     assert_eq!(document["summary"]["status"], "passed");
     assert_eq!(document["summary"]["passed"], 1);
     assert_eq!(document["tests"][0]["name"], "suite.test_json");
     assert_eq!(document["tests"][0]["status"], "passed");
     assert_eq!(document["tests"][0]["output"][0], "captured");
+    assert_eq!(document["tests"][0]["transcript"]["version"], 1);
+    assert_eq!(document["tests"][0]["transcript"]["stdout"][0], "captured");
+}
+
+#[test]
+fn failed_fixture_json_retains_partial_output_and_transcript() {
+    let temp = TempDir::new("failed-json");
+    let suite = temp.write(
+        "suite.witchy",
+        "import testing\n\n\
+         fn test_failure(console: Console):\n    \
+         console.print(\"before-failure\")\n    \
+         testing.fail_with(\"expected failure\")\n",
+    );
+    let plan = temp.write_plan(&console_plan());
+    let output = run(&[
+        Path::new("test"),
+        Path::new("--fixtures"),
+        &plan,
+        Path::new("--format"),
+        Path::new("json"),
+        &suite,
+    ]);
+    assert!(
+        !output.status.success(),
+        "failing fixture unexpectedly passed: {}",
+        text(&output.stdout)
+    );
+    let document: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("failed JSON result document");
+    assert_eq!(document["schema"], 2);
+    assert_eq!(document["summary"]["status"], "failed");
+    assert_eq!(document["tests"][0]["status"], "failed");
+    assert_eq!(document["tests"][0]["output"][0], "before-failure");
+    assert_eq!(
+        document["tests"][0]["transcript"]["stdout"][0],
+        "before-failure"
+    );
+    assert!(
+        document["tests"][0]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("expected failure")),
+        "{}",
+        document["tests"][0]["error"]
+    );
 }
 
 #[test]
