@@ -61,6 +61,22 @@ fn text(output: &[u8]) -> String {
     String::from_utf8_lossy(output).into_owned()
 }
 
+fn diagnostic(output: &Output) -> String {
+    format!("{}{}", text(&output.stdout), text(&output.stderr))
+}
+
+fn assert_sealed_rejected(output: &Output, path: &str) {
+    let message = diagnostic(output);
+    assert!(
+        !output.status.success(),
+        "{path} unexpectedly inherited test-only sealed construction authority: {message}"
+    );
+    assert!(
+        message.contains("sealed type") && message.contains("Version"),
+        "{path} failed for the wrong reason: {message}"
+    );
+}
+
 fn console_plan() -> FixturePlan {
     FixturePlan {
         console: Some(ConsoleFixture::default()),
@@ -336,4 +352,115 @@ fn vm_with_dir_preserves_fixture_state_across_both_backends() {
     );
     assert!(stdout.contains("test suite.test_vm ... ok"));
     assert_eq!(stdout.matches("  shared!").count(), 2, "{stdout}");
+}
+
+#[test]
+fn plain_tests_cannot_receive_real_authority_implicitly() {
+    let temp = TempDir::new("plain-authority");
+    let ambient = temp.write("ambient/secret.txt", "must remain ambient");
+    let suite = temp.write(
+        "suite.witchy",
+        "fn test_read_ambient(root: Dir):\n    let _ = root.read(\"secret.txt\")\n",
+    );
+
+    let output = run(&[Path::new("test"), &suite]);
+    let message = diagnostic(&output);
+    assert!(!output.status.success(), "plain authority unexpectedly granted: {message}");
+    assert_eq!(output.status.code(), Some(1), "{message}");
+    assert!(
+        message.contains("declares capability parameter")
+            && message.contains("witchy test --integration"),
+        "{message}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(ambient).expect("ambient sentinel remains readable"),
+        "must remain ambient"
+    );
+}
+
+#[test]
+fn test_only_sealed_construction_does_not_escape_to_production_commands() {
+    let temp = TempDir::new("production-boundary");
+    temp.write(
+        "sealed_lib.witchy",
+        "sealed type Version:\n    Version(Int, Int, Int)\n\n\
+         pub fn major(version: Version) -> Int:\n    \
+         match version:\n        Version(value, _, _) -> value\n",
+    );
+    let suite = temp.write(
+        "suite.witchy",
+        "import sealed_lib\nimport testing\n\n\
+         fn test_constructs_edge_case():\n    \
+         let version = sealed_lib.Version(99, 0, 0)\n    \
+         testing.assert_int_eq(sealed_lib.major(version), 99)\n",
+    );
+
+    let test = run(&[Path::new("test"), &suite]);
+    assert!(
+        test.status.success(),
+        "authenticated test control failed: {}",
+        diagnostic(&test)
+    );
+
+    assert_sealed_rejected(&run(&[&suite]), "run");
+    assert_sealed_rejected(&run(&[Path::new("check"), &suite]), "check");
+
+    let artifact = temp.0.join("escaped.wasm");
+    assert_sealed_rejected(
+        &run(&[
+            Path::new("compile"),
+            &suite,
+            Path::new("--out"),
+            &artifact,
+        ]),
+        "compile",
+    );
+    assert!(!artifact.exists(), "rejected compile left a production artifact");
+
+    let build_out = temp.0.join("build-out");
+    assert_sealed_rejected(
+        &run(&[
+            Path::new("build-step"),
+            &suite,
+            Path::new("--out"),
+            &build_out,
+        ]),
+        "build-step",
+    );
+    assert!(
+        !build_out.exists(),
+        "rejected build step created an output directory"
+    );
+
+    assert_sealed_rejected(
+        &run(&[Path::new("pm"), Path::new("build"), &suite]),
+        "package-manager build",
+    );
+}
+
+#[test]
+fn test_linking_does_not_authorize_sealed_construction_during_comptime() {
+    let temp = TempDir::new("comptime-boundary");
+    temp.write(
+        "sealed_lib.witchy",
+        "sealed type Version:\n    Version(Int, Int, Int)\n",
+    );
+    let suite = temp.write(
+        "suite.witchy",
+        "import sealed_lib\n\n\
+         comptime:\n    \
+         emit(\"fn leaked() -> Int:\")\n    \
+         emit(\"    let version = sealed_lib.Version(99, 0, 0)\")\n    \
+         emit(\"    99\")\n\n\
+         fn test_control():\n    let value = 1\n",
+    );
+
+    assert_sealed_rejected(
+        &run(&[Path::new("test"), &suite]),
+        "test-mode comptime",
+    );
+    assert_sealed_rejected(
+        &run(&[Path::new("check"), &suite]),
+        "production comptime",
+    );
 }

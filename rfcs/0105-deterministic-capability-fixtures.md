@@ -521,7 +521,7 @@ This RFC is implemented only when every item below has checked evidence:
 - [x] Browser passes canonical wire vectors and full showcase transcript parity.
 - [x] Handles are branded, rights never widen, origins never widen, and fixture
   data cannot become host authority.
-- [ ] Plain tests, dependency tests, production commands, comptime, build, and
+- [x] Plain tests, dependency tests, production commands, comptime, build, and
   package-manager paths have adversarial non-escalation tests.
 - [x] `witchy test` implements discovery, listing, filtering, capture,
   deterministic seeds, fixture selection, integration grants, backend choice,
@@ -541,10 +541,8 @@ This RFC is implemented only when every item below has checked evidence:
 - [ ] No task-owned branch, worktree, compatibility shim, TODO, deferred phase,
   or queue entry remains in flight.
 
-The four unchecked rows are live closure blockers, not deferred scope:
+The three unchecked rows are live closure blockers, not deferred scope:
 
-- the full plain/dependency/production/comptime/build/package-manager
-  non-escalation matrix still needs one checked adversarial inventory;
 - the private extracted docs artifact has not yet run the flagship and every
   complete book example in fresh opaque derived-CSP frames;
 - e2e, extracted-artifact smoke, and the serialized full gate must pass on the

@@ -878,10 +878,10 @@ pub enum LinkMode {
     /// Production/default linking: sealed constructors are available only in the
     /// module that declares them.
     Production,
-    /// `witchy test` linking: the entry module may construct foreign `sealed type`
-    /// values so tests can exercise malformed domain data. Sealed capabilities
-    /// stay production-strict; mock capability backends are a separate RFC-0077
-    /// increment.
+    /// `witchy test` linking: handwritten items in the entry test module may
+    /// construct foreign `sealed type` values so tests can exercise malformed
+    /// domain data. Generated items and items containing generated syntax stay
+    /// production-strict, as do sealed capabilities.
     Test,
 }
 
@@ -1743,7 +1743,7 @@ pub fn link_with_user_modules_with_mode_and_origins_and_source_check(
     // `Expr::Ctor { name: "module.Ctor" }`, so a qualified spelling can no longer
     // slip past the name-keyed check (BUG-313, fail-closed). Modules are still
     // unmerged here, so each item knows its home module.
-    check_sealing(&modules, mode, entry)?;
+    check_sealing(&modules, &origin_tables, mode, entry)?;
 
     let mut fns: FnTable = HashMap::new();
     for (name, m) in &modules {
@@ -2896,7 +2896,12 @@ fn inherent_method_symbol(im: &ImplDef, method: &str) -> String {
 /// constructor name (bare or canonical `module.Ctor`) -> (home module, is_capability).
 type SealMap = HashMap<String, (String, bool)>;
 
-fn check_sealing(modules: &[(String, Module)], mode: LinkMode, entry: &str) -> Result<(), LinkError> {
+fn check_sealing(
+    modules: &[(String, Module)],
+    origin_tables: &HashMap<String, crate::origin::OriginTable>,
+    mode: LinkMode,
+    entry: &str,
+) -> Result<(), LinkError> {
     // Each CONSTRUCTOR of a sealed type is registered under both its bare name and
     // its canonical `module.Ctor` spelling (whichever form reaches `seal_use` after
     // `type_resolve` — a qualified `m.Ctor` is the BUG-313 bypass). The value is the
@@ -2923,8 +2928,19 @@ fn check_sealing(modules: &[(String, Module)], mode: LinkMode, entry: &str) -> R
         return Ok(());
     }
     for (mname, m) in modules {
-        let allow_test_sealed_type_construction = mode == LinkMode::Test && mname == entry;
-        for item in &m.items {
+        for (item_index, item) in m.items.iter().enumerate() {
+            // Test-only construction is authenticated at the source definition
+            // site. A comptime-emitted item, or a handwritten item containing
+            // tag-generated syntax, is not wholly source-authored and cannot
+            // inherit that privilege merely by landing in the entry module.
+            let source_authored = origin_tables.get(mname).is_none_or(|origins| {
+                origins
+                    .nodes()
+                    .iter()
+                    .all(|origin| origin.node.item as usize != item_index)
+            });
+            let allow_test_sealed_type_construction =
+                mode == LinkMode::Test && mname == entry && source_authored;
             match item {
                 Item::Function(f) => {
                     seal_block(&f.body, &sealed, mname, allow_test_sealed_type_construction)?;
