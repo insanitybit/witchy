@@ -65,6 +65,524 @@ export function readOptimizationStats(exports) {
   return stats;
 }
 
+const FIXTURE_AUTHORITY_IMPORTS = new Set([
+  "print",
+  "console_read_len",
+  "now",
+  "now_monotonic",
+  "rand_u64",
+  "mint_env",
+  "env_only",
+  "env_len",
+  "env_fill",
+  "args_size",
+  "mint_dir",
+  "dir_subdir",
+  "dir_only",
+  "dir_read_len",
+  "dir_exists",
+  "dir_is_dir",
+  "dir_list_size",
+  "dir_open",
+  "dir_write",
+  "dir_append",
+  "dir_make_dir",
+  "dir_create",
+  "file_read_len",
+  "file_write",
+  "mint_fetch",
+  "fetch_only",
+  "fetch_send_len",
+  "secretstore_lookup",
+  "crypto_reveal_len",
+  "crypto.sign",
+  "crypto.public_key",
+  "mint_secret",
+  "mint_exec",
+  "exec_only",
+  "exec_run",
+]);
+
+class FixtureProviderError extends Error {
+  constructor(failure) {
+    super(`fixture ${failure.code}: ${failure.message}`);
+    this.failure = failure;
+  }
+}
+
+function createFixtureBridge(wasm, plan) {
+  const required = [
+    "witchy_fixture_open",
+    "witchy_fixture_invoke",
+    "witchy_fixture_finish",
+    "witchy_fixture_discard",
+  ];
+  for (const name of required) {
+    if (typeof wasm[name] !== "function") {
+      throw new Error(
+        "browser compiler lacks fixture support; rebuild it with " +
+        "`./scripts/build-playground.sh`",
+      );
+    }
+  }
+  const enc = new TextEncoder();
+  const dec = new TextDecoder("utf-8", { fatal: true });
+  const u8 = () => new Uint8Array(wasm.memory.buffer);
+  const dv = () => new DataView(wasm.memory.buffer);
+  const tagged = (text, call) => {
+    const bytes = enc.encode(text);
+    const ptr = wasm.witchy_alloc(bytes.length || 1);
+    u8().set(bytes, ptr);
+    let result;
+    try {
+      result = call(ptr, bytes.length);
+    } finally {
+      wasm.witchy_free(ptr, bytes.length || 1);
+    }
+    const status = dv().getUint32(result, true);
+    const length = dv().getUint32(result + 4, true);
+    const payload = u8().slice(result + 8, result + 8 + length);
+    wasm.witchy_free(result, 8 + length);
+    const decoded = dec.decode(payload);
+    if (status !== 0) throw new Error(decoded);
+    return decoded;
+  };
+  const planJson = typeof plan === "string" ? plan : JSON.stringify(plan);
+  const opened = JSON.parse(tagged(
+    planJson,
+    (ptr, len) => wasm.witchy_fixture_open(ptr, len),
+  ));
+  if (
+    opened.version !== 1
+    || !opened.host
+    || opened.host.version !== 1
+    || !opened.host.roots
+    || typeof opened.session !== "string"
+    || !/^[1-9][0-9]*$/.test(opened.session)
+  ) {
+    throw new Error("browser compiler returned a malformed fixture session");
+  }
+  const session = Number(opened.session);
+  if (!Number.isSafeInteger(session) || session > 0xffffffff) {
+    throw new Error("browser compiler returned an out-of-range fixture session");
+  }
+  let active = true;
+  return {
+    roots: opened.host.roots,
+    invoke(operation, fields, source) {
+      if (!active) throw new Error("fixture session is already finished");
+      const request = {
+        version: 1,
+        request: { operation, ...fields },
+      };
+      if (source) request.source = source;
+      const response = JSON.parse(tagged(
+        JSON.stringify(request),
+        (ptr, len) => wasm.witchy_fixture_invoke(session, ptr, len),
+      ));
+      if (response.version !== 1 || !response.outcome) {
+        throw new Error("browser compiler returned a malformed fixture response");
+      }
+      return response.outcome;
+    },
+    finish(status, message = "") {
+      if (!active) throw new Error("fixture session is already finished");
+      const transcript = JSON.parse(tagged(
+        message,
+        (ptr, len) => wasm.witchy_fixture_finish(session, status, ptr, len),
+      ));
+      active = false;
+      return transcript;
+    },
+    discard() {
+      if (!active) return false;
+      active = false;
+      return wasm.witchy_fixture_discard(session) === 1;
+    },
+  };
+}
+
+function installFixtureImports(real, bridge, io) {
+  const roots = bridge.roots;
+  const handles = new WeakSet();
+  const handle = (raw, family) => {
+    if (typeof raw !== "string" || !/^[1-9][0-9]*$/.test(raw)) {
+      throw new Error(`fixture ${family} returned a malformed handle`);
+    }
+    const value = Object.freeze({ raw, family });
+    handles.add(value);
+    return value;
+  };
+  const rawHandle = (value, family) => {
+    if (!value || typeof value !== "object" || !handles.has(value) || value.family !== family) {
+      throw new Error(`${family} fixture externref has wrong host data`);
+    }
+    return value.raw;
+  };
+  const outcome = (operation, fields = {}) =>
+    bridge.invoke(operation, fields, io.source());
+  const response = (operation, fields, kind) => {
+    const result = outcome(operation, fields);
+    if (result.kind === "fail") throw new FixtureProviderError(result.error);
+    if (result.kind !== "return" || !result.value || result.value.kind !== kind) {
+      throw new Error(`fixture ${operation} returned an unexpected response`);
+    }
+    return result.value.value;
+  };
+  const unit = (operation, fields = {}) => {
+    const result = outcome(operation, fields);
+    if (result.kind === "fail") throw new FixtureProviderError(result.error);
+    if (result.kind !== "return" || !result.value || result.value.kind !== "unit") {
+      throw new Error(`fixture ${operation} returned an unexpected response`);
+    }
+  };
+  const root = (name, family) => {
+    const raw = roots[name];
+    if (typeof raw !== "string") {
+      throw new Error(`fixture plan declared no ${family} provider`);
+    }
+    return handle(raw, family);
+  };
+  const stageBytes = (bytes, label) => {
+    const staged = Uint8Array.from(bytes);
+    if (staged.length > 0x7fffffff) {
+      throw new Error(`fixture ${label} exceeds the guest ABI size limit`);
+    }
+    io.stage(staged);
+    return staged.length;
+  };
+
+  if (roots.console) {
+    real.print = (ptr, len) => {
+      const text = io.readRawText(ptr, len).replace(/\n+$/, "");
+      unit("console_write", { text });
+      io.capture(text);
+    };
+    real.console_read_len = () =>
+      stageBytes(
+        io.encode(response("console_read", {}, "string")),
+        "Console input",
+      );
+  } else {
+    delete real.print;
+  }
+
+  if (roots.clock) {
+    const clock = () => BigInt(response("clock_now", {}, "u64"));
+    real.now = () => BigInt.asIntN(64, clock() / 1000000n);
+    real.now_monotonic = () => BigInt.asIntN(64, clock());
+  }
+  if (roots.rand) {
+    real.rand_u64 = () =>
+      BigInt.asIntN(64, BigInt(response("rand_u64", {}, "u64")));
+  }
+
+  if (typeof roots.env === "string") {
+    real.mint_env = () => root("env", "Env");
+    real.env_only = (env, namesPtr) =>
+      handle(
+        response(
+          "env_only",
+          { env: rawHandle(env, "Env"), names: io.readWstrList(namesPtr) },
+          "handle",
+        ),
+        "Env",
+      );
+    real.env_len = (env, namePtr) => {
+      const value = response(
+        "env_get",
+        { env: rawHandle(env, "Env"), name: io.readWstrText(namePtr) },
+        "optional_string",
+      );
+      if (value === null) {
+        io.clearStage();
+        return -1;
+      }
+      return stageBytes(io.encode(value), "Env value");
+    };
+    real.env_fill = (_env, _namePtr, outPtr) => io.fill(outPtr);
+  }
+
+  if (roots.argv) {
+    real.args_size = () => {
+      const values = response("argv", {}, "strings");
+      io.stageList(values);
+      return io.listSize(values);
+    };
+  } else {
+    real.args_size = () => {
+      throw new Error("fixture plan declared no Argv provider");
+    };
+  }
+
+  if (typeof roots.filesystem === "string") {
+    real.mint_dir = (index) => {
+      if (index !== 0) throw new Error(`invalid fixture Dir grant index ${index}`);
+      return root("filesystem", "Dir");
+    };
+    real.dir_subdir = (dir, namePtr) =>
+      handle(
+        response(
+          "dir_subdir",
+          { dir: rawHandle(dir, "Dir"), name: io.readWstrText(namePtr) },
+          "handle",
+        ),
+        "Dir",
+      );
+    real.dir_only = (dir, refinePtr) =>
+      handle(
+        response(
+          "dir_only",
+          { dir: rawHandle(dir, "Dir"), refine: io.readWstrText(refinePtr) },
+          "handle",
+        ),
+        "Dir",
+      );
+    real.dir_read_len = (dir, pathPtr) =>
+      stageBytes(
+        response(
+          "dir_read",
+          { dir: rawHandle(dir, "Dir"), path: io.readWstrText(pathPtr) },
+          "bytes",
+        ),
+        "Dir read",
+      );
+    real.dir_exists = (dir, pathPtr) =>
+      Number(response(
+        "dir_exists",
+        { dir: rawHandle(dir, "Dir"), path: io.readWstrText(pathPtr) },
+        "bool",
+      ));
+    real.dir_is_dir = (dir, pathPtr) =>
+      Number(response(
+        "dir_is_dir",
+        { dir: rawHandle(dir, "Dir"), path: io.readWstrText(pathPtr) },
+        "bool",
+      ));
+    real.dir_list_size = (dir) => {
+      const values = response(
+        "dir_list",
+        { dir: rawHandle(dir, "Dir") },
+        "strings",
+      );
+      io.stageList(values);
+      return io.listSize(values);
+    };
+    real.dir_open = (dir, pathPtr) =>
+      handle(
+        response(
+          "dir_open",
+          { dir: rawHandle(dir, "Dir"), path: io.readWstrText(pathPtr) },
+          "handle",
+        ),
+        "File",
+      );
+    real.dir_write = (dir, pathPtr, contentsPtr) => {
+      response(
+        "dir_write",
+        {
+          dir: rawHandle(dir, "Dir"),
+          path: io.readWstrText(pathPtr),
+          bytes: [...io.readWstr(contentsPtr)],
+        },
+        "count",
+      );
+    };
+    real.dir_append = (dir, pathPtr, contentsPtr) => {
+      response(
+        "dir_append",
+        {
+          dir: rawHandle(dir, "Dir"),
+          path: io.readWstrText(pathPtr),
+          bytes: [...io.readWstr(contentsPtr)],
+        },
+        "count",
+      );
+    };
+    real.dir_make_dir = (dir, pathPtr) =>
+      unit("dir_make_dir", {
+        dir: rawHandle(dir, "Dir"),
+        path: io.readWstrText(pathPtr),
+      });
+    real.dir_create = (dir, pathPtr) =>
+      handle(
+        response(
+          "dir_create",
+          { dir: rawHandle(dir, "Dir"), path: io.readWstrText(pathPtr) },
+          "handle",
+        ),
+        "File",
+      );
+    real.file_read_len = (file) =>
+      stageBytes(
+        response("file_read", { file: rawHandle(file, "File") }, "bytes"),
+        "File read",
+      );
+    real.file_write = (file, contentsPtr) => {
+      response(
+        "file_write",
+        {
+          file: rawHandle(file, "File"),
+          bytes: [...io.readWstr(contentsPtr)],
+        },
+        "count",
+      );
+    };
+  }
+
+  if (typeof roots.fetch === "string") {
+    real.mint_fetch = (index) => {
+      if (index !== 0) throw new Error(`invalid fixture Fetch grant index ${index}`);
+      return root("fetch", "Fetch");
+    };
+    real.fetch_only = (fetch, originsPtr) =>
+      handle(
+        response(
+          "fetch_only",
+          {
+            fetch: rawHandle(fetch, "Fetch"),
+            origins: io.readWstrText(originsPtr).split("\n"),
+          },
+          "handle",
+        ),
+        "Fetch",
+      );
+    real.fetch_send_len = (fetch, methodPtr, urlPtr, headersPtr, bodyPtr) => {
+      const headers = io.readWstrText(headersPtr)
+        .split("\n")
+        .filter((line) => line.includes(":"))
+        .map((line) => {
+          const colon = line.indexOf(":");
+          return [line.slice(0, colon).trim(), line.slice(colon + 1).trim()];
+        });
+      const result = outcome("fetch_send", {
+        fetch: rawHandle(fetch, "Fetch"),
+        request: {
+          method: io.readWstrText(methodPtr),
+          url: io.readWstrText(urlPtr),
+          headers,
+          body: [...io.readWstr(bodyPtr)],
+        },
+      });
+      let payload;
+      if (result.kind === "fail") {
+        const codes = {
+          denied: "denied",
+          permission_denied: "denied",
+          invalid_request: "invalid-request",
+          timeout: "timeout",
+          redirect: "redirect",
+          network: "network",
+          invalid_data: "malformed-response",
+          response_too_large: "response-too-large",
+        };
+        const code = codes[result.error.code];
+        if (!code) throw new FixtureProviderError(result.error);
+        payload = `WITCHY_FETCH_ERROR:${code}:${result.error.message}`;
+      } else if (
+        result.kind === "return"
+        && result.value
+        && result.value.kind === "fetch"
+      ) {
+        const fetched = result.value.value;
+        let raw = `HTTP/1.1 ${fetched.status}\r\n`;
+        for (const [name, value] of fetched.headers) raw += `${name}: ${value}\r\n`;
+        payload = raw + "\r\n" + io.decode(Uint8Array.from(fetched.body));
+      } else {
+        throw new Error("fixture fetch_send returned an unexpected response");
+      }
+      return stageBytes(io.encode(payload), "Fetch response");
+    };
+  }
+
+  if (typeof roots.secrets === "string") {
+    const store = root("secrets", "SecretStore");
+    real.secretstore_lookup = (namePtr) => {
+      const raw = response(
+        "secret_store_lookup",
+        { store: rawHandle(store, "SecretStore"), name: io.readWstrText(namePtr) },
+        "optional_handle",
+      );
+      return raw === null ? null : handle(raw, "Secret");
+    };
+    real.crypto_reveal_len = (secret) =>
+      stageBytes(
+        io.encode(response(
+          "secret_reveal",
+          { secret: rawHandle(secret, "Secret") },
+          "string",
+        )),
+        "Secret reveal",
+      );
+    real["crypto.sign"] = (secret, messagePtr, outPtr) => {
+      const signature = response(
+        "secret_sign",
+        {
+          secret: rawHandle(secret, "Secret"),
+          message: io.readWstrText(messagePtr),
+        },
+        "string",
+      );
+      io.write(io.encode(signature), outPtr);
+    };
+    real["crypto.public_key"] = (secret, outPtr) => {
+      const key = response(
+        "secret_public_key",
+        { secret: rawHandle(secret, "Secret") },
+        "string",
+      );
+      io.write(io.encode(key), outPtr);
+    };
+  }
+
+  if (typeof roots.exec === "string") {
+    real.mint_exec = () => root("exec", "Exec");
+    real.exec_only = (exec, toolsPtr) =>
+      handle(
+        response(
+          "exec_only",
+          { exec: rawHandle(exec, "Exec"), tools: io.readWstrList(toolsPtr) },
+          "handle",
+        ),
+        "Exec",
+      );
+    real.exec_run = (exec, dir, pathPtr, argumentsPtr, stdinPtr) => {
+      const joined = io.readWstrText(argumentsPtr);
+      const value = response(
+        "exec_run",
+        {
+          exec: rawHandle(exec, "Exec"),
+          dir: rawHandle(dir, "Dir"),
+          path: io.readWstrText(pathPtr),
+          arguments: joined === "" ? [] : joined.split("\0"),
+          stdin: io.readWstrText(stdinPtr),
+        },
+        "exec",
+      );
+      return stageBytes(
+        io.encode(`${value.exit_code}\n${value.stdout}${value.stderr}`),
+        "Exec response",
+      );
+    };
+  }
+}
+
+function fixtureRunResult(transcript, stats, fallbackMessage = "") {
+  const passed = transcript.result && transcript.result.kind === "passed";
+  const lines = [...(transcript.stdout || []), ...(transcript.stderr || [])];
+  if (!passed) {
+    const message = transcript.result && transcript.result.message;
+    if (message) lines.push(message);
+    else if (fallbackMessage) lines.push(fallbackMessage);
+  }
+  return {
+    ok: passed,
+    text: lines.join("\n"),
+    stats,
+    transcript,
+  };
+}
+
 // Compile + instantiate + run `source` on the browser's own engine; return
 // `{ ok, text, stats }` (text is the joined output, or the error / trap message;
 // stats are the compiled module's deterministic RFC-0089 resource counters).
@@ -94,6 +612,19 @@ export async function runCompiledWitchy(wasm, binary, opts = {}) {
   };
 
   const compiled = new WebAssembly.Module(binary);
+  const hasFixturePlan = opts.fixturePlan !== undefined;
+  if (
+    hasFixturePlan
+    && (opts.capabilities !== undefined
+      || opts.args !== undefined
+      || opts.fetchImpl !== undefined)
+  ) {
+    return {
+      ok: false,
+      text: "fixture plans cannot be combined with real browser providers, argv, or fetch",
+      stats: {},
+    };
+  }
   const imports = WebAssembly.Module.imports(compiled);
   const importedWitchyNames = new Set(
     imports
@@ -114,7 +645,7 @@ export async function runCompiledWitchy(wasm, binary, opts = {}) {
       && opts.capabilities[family]
       && names.some((name) => importedWitchyNames.has(name)),
   );
-  if (hasRuntimeProvider) {
+  if (hasRuntimeProvider && !hasFixturePlan) {
     try {
       const host = await instantiateRuntime(compiled, opts);
       const lines = await host.run();
@@ -147,6 +678,17 @@ export async function runCompiledWitchy(wasm, binary, opts = {}) {
   const readWstr = (ptr) => {
     const len = dv().getUint32(ptr, true);
     return u8().slice(ptr + 4, ptr + 4 + len);
+  };
+  const readWstrText = (ptr) => dec.decode(readWstr(ptr));
+  const readWstrList = (ptr) => {
+    const count = dv().getInt32(ptr, true);
+    if (count < 0) throw new Error("negative List(String) length");
+    const values = [];
+    for (let index = 0; index < count; index++) {
+      const valuePtr = Number(dv().getBigUint64(ptr + 4 + 8 * index, true));
+      values.push(readWstrText(valuePtr));
+    }
+    return values;
   };
   // Copy `bytes` into a fresh lib buffer; the caller frees it.
   const toLib = (bytes) => {
@@ -260,7 +802,58 @@ export async function runCompiledWitchy(wasm, binary, opts = {}) {
     },
   };
 
-  const secretSpec = opts.capabilities && opts.capabilities.secrets;
+  let instance = null;
+  let fixtureBridge = null;
+  if (hasFixturePlan) {
+    try {
+      fixtureBridge = createFixtureBridge(wasm, opts.fixturePlan);
+      const source = () => {
+        const site = BigInt(instance?.exports.__witchy_diagnostic_site?.value || 0n);
+        if (site === 0n) return undefined;
+        const functionPtr = Number((site >> 32n) & 0xffffffffn);
+        const line = Number(site & 0xffffffffn);
+        const functionName = functionPtr === 0 ? "" : readWstrText(functionPtr);
+        const dot = functionName.lastIndexOf(".");
+        return {
+          module: dot < 0 ? functionName : functionName.slice(0, dot),
+          line: String(line),
+          column: "1",
+        };
+      };
+      installFixtureImports(real, fixtureBridge, {
+        encode: (value) => new TextEncoder().encode(value),
+        decode: (bytes) => dec.decode(bytes),
+        readRawText: (ptr, len) => dec.decode(u8().slice(ptr, ptr + len)),
+        readWstr,
+        readWstrText,
+        readWstrList,
+        write: writeInner,
+        stage: (bytes) => { pending = bytes; },
+        clearStage: () => { pending = new Uint8Array(0); },
+        fill: (outPtr) => {
+          u8().set(pending, outPtr);
+          pending = new Uint8Array(0);
+        },
+        stageList: (values) => { pendingList = values.slice(); },
+        listSize: (values) =>
+          values.reduce(
+            (size, value) => size + 4 + new TextEncoder().encode(value).length,
+            4 + 8 * values.length,
+          ),
+        capture: (line) => out.push(line),
+        source,
+      });
+    } catch (error) {
+      if (fixtureBridge) fixtureBridge.discard();
+      return {
+        ok: false,
+        text: `fixture error: ${String((error && error.message) || error)}`,
+        stats: {},
+      };
+    }
+  }
+
+  const secretSpec = !hasFixturePlan && opts.capabilities && opts.capabilities.secrets;
   const hasSecretStore = secretSpec !== undefined && secretSpec !== false;
   if (hasSecretStore) {
     Object.assign(
@@ -283,6 +876,9 @@ export async function runCompiledWitchy(wasm, binary, opts = {}) {
   const witchy = new Proxy(real, {
     get(target, name) {
       if (name in target) return target[name];
+      if (hasFixturePlan && FIXTURE_AUTHORITY_IMPORTS.has(String(name))) {
+        return undefined;
+      }
       return () => {
         throw new Error(
           `capability '${String(name)}' is not available in the browser playground`,
@@ -291,7 +887,6 @@ export async function runCompiledWitchy(wasm, binary, opts = {}) {
     },
   });
 
-  let instance = null;
   try {
     ({ instance } = await WebAssembly.instantiate(binary, { witchy }));
     innerMem = instance.exports.memory;
@@ -300,10 +895,38 @@ export async function runCompiledWitchy(wasm, binary, opts = {}) {
     } else {
       instance.exports.run();
     }
+    if (fixtureBridge) {
+      const transcript = fixtureBridge.finish(0);
+      fixtureBridge = null;
+      return fixtureRunResult(
+        transcript,
+        readOptimizationStats(instance.exports),
+      );
+    }
   } catch (e) {
     const msg = `runtime error: ${String((e && e.message) || e)}`;
     const stats = instance == null ? {} : readOptimizationStats(instance.exports);
+    if (fixtureBridge) {
+      try {
+        const transcript = fixtureBridge.finish(1, msg);
+        fixtureBridge = null;
+        return fixtureRunResult(transcript, stats, msg);
+      } catch (finishError) {
+        fixtureBridge.discard();
+        fixtureBridge = null;
+        return {
+          ok: false,
+          text: out.concat(
+            msg,
+            `fixture cleanup error: ${String((finishError && finishError.message) || finishError)}`,
+          ).join("\n"),
+          stats,
+        };
+      }
+    }
     return { ok: false, text: out.concat(msg).join("\n"), stats };
+  } finally {
+    if (fixtureBridge) fixtureBridge.discard();
   }
   return { ok: true, text: out.join("\n"), stats: readOptimizationStats(instance.exports) };
 }
