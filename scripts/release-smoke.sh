@@ -220,6 +220,31 @@ witchy build project >/dev/null
     exit 1
 }
 
+printf '%s\n' \
+    'capability ReleaseFixture:' \
+    '    console: Console' \
+    '    clock: Clock' \
+    '    args: List(String)' \
+    '' \
+    'fn test_extracted_fixture(root: ReleaseFixture):' \
+    '    match root:' \
+    '        ReleaseFixture(console, clock, args) ->' \
+    '            console.print("${clock.now()}:${args.at(0)}")' > fixture.witchy
+printf '%s\n' \
+    '{"version":1,"console":{},"clock":{"start_ns":"42000000","step_ns":"1"},"argv":["artifact"],"expectations":{"calls":[{"family":"console","operation":"print","minimum":"1","maximum":"1"},{"family":"clock","operation":"now","minimum":"1","maximum":"1"},{"family":"argv","operation":"args","minimum":"1","maximum":"1"}]}}' > fixture.json
+fixture_output="$(
+    witchy test --fixtures fixture.json --backend both \
+        --filter extracted_fixture --show-output fixture.witchy
+)"
+case "$fixture_output" in
+    *"test fixture.test_extracted_fixture ... ok"*"42:artifact"*"1 passed; 0 failed"*) ;;
+    *)
+        echo "release-smoke: extracted fixture parity produced unexpected output" >&2
+        printf '%s\n' "$fixture_output" >&2
+        exit 1
+        ;;
+esac
+
 witchy compile hello.witchy --out portable.wasm >/dev/null
 [ -s portable.wasm ] || { echo "release-smoke: portable WASM was not written" >&2; exit 1; }
 [ "$(witchy sandbox portable.wasm)" = "release-smoke" ] || {
