@@ -132,6 +132,26 @@ impl Interpreter {
         match name {
             // Effectful: requires the Console capability as its first argument.
             "print" => match args {
+                #[cfg(feature = "test-fixtures")]
+                [Value::Cap(Capability::Console), msg]
+                    if self.fixture_host.is_some() =>
+                {
+                    let line = msg
+                        .to_string()
+                        .trim_end_matches('\n')
+                        .to_owned();
+                    match self.invoke_fixture(HostRequest::ConsoleWrite {
+                        text: line.clone(),
+                    })? {
+                        HostResponse::Unit => {
+                            self.output.push(line);
+                            Ok(Some(Value::Unit))
+                        }
+                        other => err(format!(
+                            "internal error: Console fixture returned {other:?}"
+                        )),
+                    }
+                }
                 [Value::Cap(Capability::Console), msg] => {
                     // Each print is one output line; the trailing newline is the
                     // line terminator. Strip it to match the WASM host
@@ -144,6 +164,19 @@ impl Interpreter {
                 _ => err("print expects a Console capability and a message: console.print(msg)"),
             },
             "read_line" => match args {
+                #[cfg(feature = "test-fixtures")]
+                [Value::Cap(Capability::Console)]
+                    if self.fixture_host.is_some() =>
+                {
+                    match self.invoke_fixture(HostRequest::ConsoleRead)? {
+                        HostResponse::String(line) => Ok(Some(Value::str(
+                            line.trim_end_matches(['\r', '\n']).to_owned(),
+                        ))),
+                        other => err(format!(
+                            "internal error: Console fixture returned {other:?}"
+                        )),
+                    }
+                }
                 [Value::Cap(Capability::Console)] => {
                     let line = match self.console_input.as_mut() {
                         Some(lines) => lines.pop_front().unwrap_or_default(),
@@ -2230,6 +2263,19 @@ impl Interpreter {
             // `Clock` capability, since reading the real clock is ambient
             // nondeterminism (a side channel), not a pure computation.
             "now" => match args {
+                #[cfg(feature = "test-fixtures")]
+                [Value::Cap(Capability::Clock)]
+                    if self.fixture_host.is_some() =>
+                {
+                    match self.invoke_fixture(HostRequest::ClockNow)? {
+                        HostResponse::U64(nanoseconds) => {
+                            Ok(Some(Value::Int((nanoseconds / 1_000_000) as i64)))
+                        }
+                        other => err(format!(
+                            "internal error: Clock fixture returned {other:?}"
+                        )),
+                    }
+                }
                 [Value::Cap(Capability::Clock)] => {
                     let ms = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -2244,6 +2290,19 @@ impl Interpreter {
             // process-start reference is lazily set on the first call, so a
             // start/stop bracket around a computation yields its elapsed time.
             "now_monotonic" => match args {
+                #[cfg(feature = "test-fixtures")]
+                [Value::Cap(Capability::Clock)]
+                    if self.fixture_host.is_some() =>
+                {
+                    match self.invoke_fixture(HostRequest::ClockNow)? {
+                        HostResponse::U64(nanoseconds) => {
+                            Ok(Some(Value::Int(nanoseconds as i64)))
+                        }
+                        other => err(format!(
+                            "internal error: Clock fixture returned {other:?}"
+                        )),
+                    }
+                }
                 [Value::Cap(Capability::Clock)] => {
                     static START: std::sync::LazyLock<std::time::Instant> =
                         std::sync::LazyLock::new(std::time::Instant::now);
@@ -2256,6 +2315,19 @@ impl Interpreter {
             // unseeded the oracle clock-seeds splitmix (the production CSPRNG is the
             // compiled host's getrandom, not this tree-walker).
             "rand_u64" => match args {
+                #[cfg(feature = "test-fixtures")]
+                [Value::Cap(Capability::Rand)]
+                    if self.fixture_host.is_some() =>
+                {
+                    match self.invoke_fixture(HostRequest::RandU64)? {
+                        HostResponse::U64(value) => {
+                            Ok(Some(Value::Int(value as i64)))
+                        }
+                        other => err(format!(
+                            "internal error: Rand fixture returned {other:?}"
+                        )),
+                    }
+                }
                 [Value::Cap(Capability::Rand)] => Ok(Some(Value::Int(self.rand_next()))),
                 _ => err("rand_u64 expects a Rand"),
             },
@@ -2263,6 +2335,34 @@ impl Interpreter {
             // `env.get_env(name) -> Option(String)` (None when unset). Reading the
             // process environment is ambient authority, so it is capability-gated.
             "get_env" => match args {
+                #[cfg(feature = "test-fixtures")]
+                [Value::Cap(Capability::Env(allow)), Value::Str(name)]
+                    if self.fixture_host.is_some() =>
+                {
+                    let handle = self
+                        .fixture_env_handles
+                        .get(allow)
+                        .copied()
+                        .ok_or_else(|| RuntimeError {
+                            message:
+                                "invalid or foreign Env fixture capability"
+                                    .into(),
+                        })?;
+                    match self.invoke_fixture(HostRequest::EnvGet {
+                        env: handle,
+                        name: name.as_str().to_owned(),
+                    })? {
+                        HostResponse::OptionalString(Some(value)) => Ok(Some(
+                            Value::ctor("Some", vec![Value::str(value)]),
+                        )),
+                        HostResponse::OptionalString(None) => {
+                            Ok(Some(Value::ctor("None", Vec::new())))
+                        }
+                        other => err(format!(
+                            "internal error: Env fixture returned {other:?}"
+                        )),
+                    }
+                }
                 [Value::Cap(Capability::Env(allow)), Value::Str(name)] => {
                     if allow.as_ref().is_some_and(|names| !names.contains(name.as_str())) {
                         return err(format!(
@@ -2441,6 +2541,53 @@ impl Interpreter {
             // set; `deny` subtracts it (a monotone exclusion recorded as `!`-prefixed entries
             // the shared `net_allows` honours).
             "only" => match args {
+                #[cfg(feature = "test-fixtures")]
+                [Value::Cap(Capability::Env(allow)), Value::List(names)]
+                    if self.fixture_host.is_some() =>
+                {
+                    let requested = names
+                        .iter()
+                        .map(|name| match name {
+                            Value::Str(name) => {
+                                Ok(name.as_str().to_owned())
+                            }
+                            _ => err("Env.only expects a List(String)"),
+                        })
+                        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+                    let current_handle = self
+                        .fixture_env_handles
+                        .get(allow)
+                        .copied()
+                        .ok_or_else(|| RuntimeError {
+                            message:
+                                "invalid or foreign Env fixture capability"
+                                    .into(),
+                        })?;
+                    let effective = match allow {
+                        Some(current) => requested
+                            .intersection(current)
+                            .cloned()
+                            .collect(),
+                        None => requested.clone(),
+                    };
+                    let requested_names =
+                        requested.into_iter().collect::<Vec<_>>();
+                    match self.invoke_fixture(HostRequest::EnvOnly {
+                        env: current_handle,
+                        names: requested_names,
+                    })? {
+                        HostResponse::Handle(handle) => {
+                            self.fixture_env_handles
+                                .insert(Some(effective.clone()), handle);
+                            Ok(Some(Value::Cap(Capability::Env(Some(
+                                effective,
+                            )))))
+                        }
+                        other => err(format!(
+                            "internal error: Env fixture returned {other:?}"
+                        )),
+                    }
+                }
                 [Value::Cap(Capability::Exec(allow)), Value::List(programs)] => {
                     let requested = programs
                         .iter()

@@ -2950,6 +2950,8 @@ dependencies = [
  "witchy-caps",
  "witchy-runtime",
  "witchy-syntax",
+ "witchy-test-host",
+ "witchy-testkit",
  "witchy-types",
 ]
 

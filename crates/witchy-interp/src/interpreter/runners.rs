@@ -9,6 +9,10 @@ use std::path::{Path, PathBuf};
 
 use witchy_syntax::ast::{Module, Type};
 use witchy_types::runtime_type::RuntimeDeclarationCatalog;
+#[cfg(feature = "test-fixtures")]
+use witchy_test_host::{FixtureHost, HostRequest, HostResponse};
+#[cfg(feature = "test-fixtures")]
+use witchy_testkit::{FixturePlan, TestResult, TestTranscript};
 
 use super::*;
 
@@ -42,6 +46,125 @@ pub fn run_module(
     net_allow: Vec<String>,
 ) -> Result<Vec<String>, RuntimeError> {
     run_module_args(module, root, net_allow, Vec::new())
+}
+
+#[cfg(feature = "test-fixtures")]
+#[derive(Debug)]
+pub enum FixtureProgramResult {
+    Passed {
+        output: Vec<String>,
+        exit_code: i32,
+    },
+    Failed {
+        output: Vec<String>,
+        error: RuntimeError,
+    },
+}
+
+#[cfg(feature = "test-fixtures")]
+#[derive(Debug)]
+pub struct FixtureInterpreterOutcome {
+    pub result: FixtureProgramResult,
+    pub transcript: TestTranscript,
+}
+
+/// Run one module under a deterministic fixture plan. This is the only
+/// interpreter entry point that installs a fixture host; all ordinary,
+/// compile-time, and build runners retain their production boundaries.
+#[cfg(feature = "test-fixtures")]
+pub fn run_module_fixtures(
+    module: Module,
+    plan: FixturePlan,
+) -> Result<FixtureInterpreterOutcome, RuntimeError> {
+    let host = FixtureHost::new(plan).map_err(|error| RuntimeError {
+        message: format!("invalid fixture plan: {error}"),
+    })?;
+    run_on_deep_stack(move || run_module_fixtures_inner(module, host))
+}
+
+#[cfg(feature = "test-fixtures")]
+fn run_module_fixtures_inner(
+    module: Module,
+    host: FixtureHost,
+) -> Result<FixtureInterpreterOutcome, RuntimeError> {
+    let (module, witnesses) = prepare_runtime_module(module, None)?;
+    let mut interp = Interpreter::new_with_witnesses(module, witnesses);
+    interp.fixture_host = Some(host);
+    if let Some(env) = interp
+        .fixture_host
+        .as_ref()
+        .and_then(|host| host.roots().env)
+    {
+        interp.fixture_env_handles.insert(None, env);
+    }
+
+    let execution = (|| -> Result<(Vec<String>, i32), RuntimeError> {
+        let root_args = match interp.functions.get("main").cloned() {
+            Some(function) => {
+                let mut values = Vec::with_capacity(function.params.len());
+                for parameter in &function.params {
+                    if is_args_param(&parameter.ty) {
+                        match interp.invoke_fixture(HostRequest::Argv)? {
+                            HostResponse::Strings(args) => values.push(
+                                Value::list(args.into_iter().map(Value::str).collect()),
+                            ),
+                            other => {
+                                return err(format!(
+                                    "internal error: argv fixture returned {other:?}"
+                                ));
+                            }
+                        }
+                    } else if let Some(Type::Named(name, _)) = &parameter.ty
+                        && interp.record_fields.contains_key(name)
+                    {
+                        return err(format!(
+                            "fixture `main` cannot bind grantable record capability `{name}`"
+                        ));
+                    } else {
+                        values.push(interp.root_cap_for(&parameter.ty)?);
+                    }
+                }
+                values
+            }
+            None => Vec::new(),
+        };
+        let returned = interp
+            .call("main", root_args)
+            .map_err(|error| rt_at_line(error, interp.cur_line, &interp.cur_fn))?;
+        let exit_code = match returned {
+            Value::Int(value) => value as i32,
+            _ => 0,
+        };
+        if interp.output.is_empty()
+            && !matches!(returned, Value::Unit | Value::Int(_))
+        {
+            interp.output.push(format!("{returned}"));
+        }
+        Ok((interp.output.clone(), exit_code))
+    })();
+
+    let transcript_result = match &execution {
+        Ok(_) => TestResult::Passed,
+        Err(error) => TestResult::Failed {
+            message: error.message.clone(),
+        },
+    };
+    let transcript = interp
+        .fixture_host
+        .take()
+        .expect("fixture runner installed a fixture host")
+        .finish(transcript_result);
+    let result = match execution {
+        Ok((output, exit_code)) => FixtureProgramResult::Passed {
+            output,
+            exit_code,
+        },
+        Err(error) => FixtureProgramResult::Failed {
+            output: interp.output,
+            error,
+        },
+    };
+    Ok(FixtureInterpreterOutcome { result, transcript })
 }
 
 /// Run with deterministic Console input rather than process stdin.

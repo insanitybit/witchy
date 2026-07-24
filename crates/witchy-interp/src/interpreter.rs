@@ -41,6 +41,10 @@ use witchy_syntax::intrinsics;
 use witchy_syntax::origin::SyntaxCategory;
 use witchy_syntax::parser::parse_module;
 use witchy_types::witness::WitnessPlan;
+#[cfg(feature = "test-fixtures")]
+use witchy_test_host::{FixtureHost, HostHandle, HostRequest, HostResponse};
+#[cfg(feature = "test-fixtures")]
+use witchy_testkit::{SourceLocation, U64Text};
 
 mod environment;
 use environment::{Assign, Env};
@@ -647,6 +651,11 @@ pub struct Interpreter {
     /// tail calls retain their ordinary call boundary; recursive SCCs trampoline.
     proper_tail_edges: FxHashMap<String, FxHashSet<String>>,
     pub output: Vec<String>,
+    #[cfg(feature = "test-fixtures")]
+    fixture_host: Option<FixtureHost>,
+    #[cfg(feature = "test-fixtures")]
+    fixture_env_handles:
+        BTreeMap<Option<std::collections::BTreeSet<String>>, HostHandle>,
 }
 
 /// Maximum call-nesting depth. Comfortably below what the 4 GiB interpreter
@@ -877,12 +886,118 @@ impl Interpreter {
             tail_dynamic_chain: false,
             proper_tail_edges,
             output: Vec::new(),
+            #[cfg(feature = "test-fixtures")]
+            fixture_host: None,
+            #[cfg(feature = "test-fixtures")]
+            fixture_env_handles: BTreeMap::new(),
+        }
+    }
+
+    #[cfg(feature = "test-fixtures")]
+    fn fixture_source(&self) -> Option<SourceLocation> {
+        if self.cur_line == 0 {
+            return None;
+        }
+        let module = self
+            .cur_fn
+            .rsplit_once('.')
+            .map_or(self.cur_fn.as_str(), |(module, _)| module);
+        Some(SourceLocation {
+            module: module.to_owned(),
+            line: U64Text::new(u64::from(self.cur_line)),
+            column: U64Text::new(1),
+        })
+    }
+
+    #[cfg(feature = "test-fixtures")]
+    fn invoke_fixture(
+        &mut self,
+        request: HostRequest,
+    ) -> Result<HostResponse, RuntimeError> {
+        let source = self.fixture_source();
+        let host = self.fixture_host.as_mut().ok_or_else(|| RuntimeError {
+            message: "internal error: fixture operation without a fixture host".into(),
+        })?;
+        host.invoke(request, source).map_err(|failure| RuntimeError {
+            message: format!(
+                "fixture {:?}: {}",
+                failure.code, failure.message
+            ),
+        })
+    }
+
+    #[cfg(feature = "test-fixtures")]
+    fn fixture_root_cap_for(
+        &self,
+        ty: &Option<Type>,
+    ) -> Result<Value, RuntimeError> {
+        let roots = self
+            .fixture_host
+            .as_ref()
+            .expect("fixture root construction requires a fixture host")
+            .roots();
+        let missing = |name: &str| RuntimeError {
+            message: format!(
+                "`main` requires `{name}`, but the fixture plan declared no `{name}` provider"
+            ),
+        };
+        match ty {
+            Some(Type::Named(name, _)) if name == "Console" => roots
+                .console
+                .then_some(Value::Cap(Capability::Console))
+                .ok_or_else(|| missing("Console")),
+            Some(Type::Named(name, _)) if name == "Clock" => roots
+                .clock
+                .then_some(Value::Cap(Capability::Clock))
+                .ok_or_else(|| missing("Clock")),
+            Some(Type::Named(name, _)) if name == "Rand" => roots
+                .rand
+                .then_some(Value::Cap(Capability::Rand))
+                .ok_or_else(|| missing("Rand")),
+            Some(Type::Named(name, _)) if name == "Env" => roots
+                .env
+                .map(|_| Value::Cap(Capability::Env(None)))
+                .ok_or_else(|| missing("Env")),
+            Some(Type::Named(name, _)) if name == "Net" => Err(RuntimeError {
+                message:
+                    "raw `Net` is integration-only and cannot be provided by deterministic fixtures"
+                        .into(),
+            }),
+            Some(Type::Named(name, _))
+                if matches!(
+                    name.as_str(),
+                    "Dir" | "File" | "Fetch" | "Exec" | "Secret" | "SecretStore" | "Vm"
+                ) =>
+            {
+                Err(RuntimeError {
+                    message: format!(
+                        "the deterministic interpreter adapter does not yet support `{name}`"
+                    ),
+                })
+            }
+            other => {
+                let found = match other {
+                    Some(found) => {
+                        format!("`{}`", witchy_syntax::format::type_str(found))
+                    }
+                    None => "no type annotation".to_owned(),
+                };
+                Err(RuntimeError {
+                    message: format!(
+                        "fixture `main` parameters must be declared fixture roots or `List(String)` argv; got {found}"
+                    ),
+                })
+            }
         }
     }
 
     /// Mint the root capability for a `main` parameter of the given type. This
     /// is where authority enters the program — `main` is the root entrypoint.
     fn root_cap_for(&self, ty: &Option<Type>) -> Result<Value, RuntimeError> {
+        #[cfg(feature = "test-fixtures")]
+        if self.fixture_host.is_some() {
+            return self.fixture_root_cap_for(ty);
+        }
         match ty {
             Some(Type::Named(n, _)) if n == "Console" => Ok(Value::Cap(Capability::Console)),
             Some(Type::Named(n, _)) if n == "Clock" => Ok(Value::Cap(Capability::Clock)),
