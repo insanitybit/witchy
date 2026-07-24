@@ -75,6 +75,10 @@ cp web/witchy-runtime/witchy-runtime.mjs "$OUT/witchy-runtime/"
 cp web/docs.html "$OUT/index.html"
 cp web/rfc0103-browser-probe.html web/rfc0103-browser-probe.js "$OUT/"
 cp book/examples.json "$OUT/"
+mkdir -p "$OUT/fixture-showcase"
+cp projects/fixture-showcase/src/fixture_showcase.witchy \
+   projects/fixture-showcase/release.fixture.json \
+   "$OUT/fixture-showcase/"
 # Strict cross-origin isolation on every response (house rule) — for a `_headers`-honoring host.
 cp web/_headers "$OUT/"
 

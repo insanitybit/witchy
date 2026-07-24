@@ -531,7 +531,7 @@ This RFC is implemented only when every item below has checked evidence:
   transcript ordering, cleanup failure, and configured limits.
 - [x] `std/testing.witchy` and all compatibility paths are reduced to the
   smallest final surface.
-- [ ] The flagship application and every complete book example run from the
+- [x] The flagship application and every complete book example run from the
   private extracted artifact in fresh opaque browser frames with derived CSP.
 - [x] Book, CLI help, README, architecture, status, RFC references, and examples
   manifest state the same current truth.
@@ -541,10 +541,8 @@ This RFC is implemented only when every item below has checked evidence:
 - [ ] No task-owned branch, worktree, compatibility shim, TODO, deferred phase,
   or queue entry remains in flight.
 
-The three unchecked rows are live closure blockers, not deferred scope:
+The two unchecked rows are live closure blockers, not deferred scope:
 
-- the private extracted docs artifact has not yet run the flagship and every
-  complete book example in fresh opaque derived-CSP frames;
 - e2e, extracted-artifact smoke, and the serialized full gate must pass on the
   exact landing commit;
 - task branches, worktrees, compatibility residue, and queue entries can be

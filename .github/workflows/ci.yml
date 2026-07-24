@@ -150,7 +150,6 @@ jobs:
   docs-build:
     name: Build private docs bundle
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/master'
     permissions:
       contents: read
     steps:
@@ -163,17 +162,16 @@ jobs:
       - name: Build the release binary (compiles the docs app to wasm via build-docs.sh)
         run: cargo build --release
       - name: Build the browser compiler wasm (the Run buttons)
-        run: |
-          cargo build --release --lib --no-default-features --target wasm32-unknown-unknown
-          mkdir -p web
-          cp target/wasm32-unknown-unknown/release/witchy.wasm web/witchy.wasm
+        run: cargo build --release --lib --no-default-features --target wasm32-unknown-unknown
       - name: Assemble the deployable bundle
-        run: ./scripts/build-docs.sh dist
+        run: WITCHY_BROWSER_WASM=target/wasm32-unknown-unknown/release/witchy.wasm ./scripts/build-docs.sh dist
+      - name: Package the exact private preview bytes
+        run: ./scripts/docs-artifact.sh package dist witchy-docs-private-preview.tar.gz
       - name: Upload private docs preview artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: witchy-docs-private-preview
-          path: dist
+          path: witchy-docs-private-preview.tar.gz
           if-no-files-found: error
           retention-days: 5
 
@@ -202,7 +200,8 @@ jobs:
         run: node scripts/validate_book_examples.mjs
 
   browser-confinement:
-    name: Browser confinement and runnable book
+    name: Extracted docs artifact, browser confinement, and runnable book
+    needs: [docs-build]
     runs-on: macos-latest
     permissions:
       contents: read
@@ -210,18 +209,15 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      - uses: ./.github/actions/install-rust
+      - name: Download the exact private docs artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          targets: wasm32-unknown-unknown
-      - name: Build docs and browser compiler
-        run: |
-          cargo build --release
-          cargo build --release --lib --no-default-features --target wasm32-unknown-unknown
-          WITCHY_BROWSER_WASM=target/wasm32-unknown-unknown/release/witchy.wasm ./scripts/build-docs.sh dist
+          name: witchy-docs-private-preview
+          path: private-docs-artifact
       - name: Enable Safari automation
         run: sudo safaridriver --enable
-      - name: Prove derived CSP and run every complete book example in opaque frames
-        run: node scripts/probe-browser-confinement.mjs dist
+      - name: Extract and prove flagship, derived CSP, and every complete example
+        run: ./scripts/docs-artifact.sh smoke private-docs-artifact/witchy-docs-private-preview.tar.gz
 
   fmt:
     name: Formatting check (std + examples + projects)

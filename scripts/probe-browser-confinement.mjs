@@ -244,6 +244,7 @@ try {
       const e = document.getElementById("result"); return {
         state: e && e.dataset.state,
         text: e && e.textContent,
+        flagship: e && e.dataset.flagship,
         complete: e && e.dataset.complete,
         exact: e && e.dataset.exact,
       };
@@ -257,12 +258,15 @@ try {
       + `static requests: ${JSON.stringify(staticRequests)} ${driverError}`,
     );
   }
+  if (state.flagship !== "pass") {
+    throw new Error(`browser probe omitted the flagship fixture result: ${JSON.stringify(state)}`);
+  }
   if (allowedHits === 0) throw new Error("positive-control origin received no request");
   if (blockedHits !== 0) {
     throw new Error(`CSP failed: ungranted origin received ${blockedHits} request(s)`);
   }
   console.log(
-    `RFC-0103 BROWSER PASS: blocked origin received 0 requests; `
+    `RFC-0103 BROWSER PASS: flagship fixture passed; blocked origin received 0 requests; `
     + `${state.complete} complete examples ran in opaque frames `
     + `(${state.exact} exact manifest outputs)`,
   );

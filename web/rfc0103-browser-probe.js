@@ -40,6 +40,31 @@ async function run() {
   const manifest = await fetch("./examples.json").then((response) => response.json());
   const pages = new Map();
   const runner = createSandboxedProgramRunner({ document, loadCompiler, timeoutMs: 60_000 });
+  const [flagshipSource, flagshipPlan] = await Promise.all([
+    fetch("./fixture-showcase/fixture_showcase.witchy").then((response) => {
+      if (!response.ok) throw new Error(`failed to load flagship source: HTTP ${response.status}`);
+      return response.text();
+    }),
+    fetch("./fixture-showcase/release.fixture.json").then((response) => {
+      if (!response.ok) throw new Error(`failed to load flagship plan: HTTP ${response.status}`);
+      return response.text();
+    }),
+  ]);
+  const flagship = await runner(flagshipSource, { fixturePlan: flagshipPlan });
+  if (!flagship.ok || flagship.text !== "release api at 1700000000000ms in staging") {
+    throw new Error(
+      `flagship fixture expected deterministic release output, got ${JSON.stringify(flagship)}`,
+    );
+  }
+  const flagshipFamilies = new Set(
+    (flagship.transcript?.events || []).map((event) => event.family),
+  );
+  for (const family of ["console", "clock", "env", "argv"]) {
+    if (!flagshipFamilies.has(family)) {
+      throw new Error(`flagship fixture transcript omitted ${family}`);
+    }
+  }
+
   let complete = 0;
   let exact = 0;
   for (const entry of manifest) {
@@ -77,10 +102,11 @@ async function run() {
   }
   if (complete === 0 || exact === 0) throw new Error("browser example probe was vacuous");
   result.dataset.state = "pass";
+  result.dataset.flagship = "pass";
   result.dataset.complete = String(complete);
   result.dataset.exact = String(exact);
   result.textContent =
-    `PASS: CSP blocked the ungranted origin; ${complete} complete examples ran `
+    `PASS: flagship fixture passed; CSP blocked the ungranted origin; ${complete} complete examples ran `
     + `in opaque frames (${exact} exact manifest outputs)`;
 }
 
