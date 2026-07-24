@@ -67,6 +67,19 @@ pub(in crate::runtime) fn link_fetch(
     Ok(())
 }
 
+pub(in crate::runtime) fn link_exec(
+    linker: &mut Linker<VmState>,
+    roots: &FixtureRoots,
+) -> Result<()> {
+    if roots.exec.is_none() {
+        return Ok(());
+    }
+    linker.func_wrap("witchy", "mint_exec", host_mint_exec)?;
+    linker.func_wrap("witchy", "exec_only", host_exec_only)?;
+    linker.func_wrap("witchy", "exec_run", host_exec_run)?;
+    Ok(())
+}
+
 pub(in crate::runtime) fn invoke(
     caller: &mut Caller<'_, VmState>,
     request: HostRequest,
@@ -141,6 +154,7 @@ pub(in crate::runtime) fn root_handle(
         "Filesystem" => roots.filesystem,
         "Fetch" => roots.fetch,
         "SecretStore" => roots.secrets,
+        "Exec" => roots.exec,
         _ => None,
     }
     .ok_or_else(|| Error::msg(format!("fixture plan declared no {family} provider")))
@@ -628,5 +642,69 @@ const fn fetch_failure_code(code: FixtureErrorCode) -> Option<&'static str> {
         FixtureErrorCode::InvalidData => Some("malformed-response"),
         FixtureErrorCode::ResponseTooLarge => Some("response-too-large"),
         _ => None,
+    }
+}
+
+fn host_mint_exec(mut caller: Caller<'_, VmState>) -> Result<Option<Rooted<ExternRef>>> {
+    let handle = root_handle(&caller, "Exec")?;
+    ExternRef::new(&mut caller, handle).map(Some)
+}
+
+fn host_exec_only(
+    mut caller: Caller<'_, VmState>,
+    exec: Option<Rooted<ExternRef>>,
+    tools_pointer: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
+    let exec = fixture_handle(&caller, exec, "Exec")?;
+    let memory = memory_of(&mut caller)?;
+    let tools = read_wstr_list(memory.data(&caller), tools_pointer)?;
+    match invoke(&mut caller, HostRequest::ExecOnly { exec, tools })? {
+        HostResponse::Handle(handle) => ExternRef::new(&mut caller, handle).map(Some),
+        response => Err(Error::msg(format!(
+            "fixture Exec.only returned unexpected response {response:?}"
+        ))),
+    }
+}
+
+fn host_exec_run(
+    mut caller: Caller<'_, VmState>,
+    exec: Option<Rooted<ExternRef>>,
+    dir: Option<Rooted<ExternRef>>,
+    path_pointer: i32,
+    arguments_pointer: i32,
+    stdin_pointer: i32,
+) -> Result<i32> {
+    let exec = fixture_handle(&caller, exec, "Exec")?;
+    let dir = fixture_handle(&caller, dir, "Dir")?;
+    let memory = memory_of(&mut caller)?;
+    let data = memory.data(&caller);
+    let path = read_wstr(data, path_pointer)?;
+    let joined = read_wstr(data, arguments_pointer)?;
+    let arguments = if joined.is_empty() {
+        Vec::new()
+    } else {
+        joined.split('\0').map(str::to_owned).collect()
+    };
+    let stdin = read_wstr(data, stdin_pointer)?;
+    match invoke(
+        &mut caller,
+        HostRequest::ExecRun {
+            exec,
+            dir,
+            path,
+            arguments,
+            stdin,
+        },
+    )? {
+        HostResponse::Exec(response) => {
+            let payload = format!(
+                "{}\n{}{}",
+                response.exit_code, response.stdout, response.stderr
+            );
+            stage_bytes(&mut caller, payload.into_bytes(), "Exec response")
+        }
+        response => Err(Error::msg(format!(
+            "fixture Exec.run returned unexpected response {response:?}"
+        ))),
     }
 }

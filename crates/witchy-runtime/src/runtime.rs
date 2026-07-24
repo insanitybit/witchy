@@ -1090,6 +1090,7 @@ impl Runtime {
         host::fixture::link_basic(&mut linker, &roots)?;
         host::fixture::link_filesystem(&mut linker, &roots)?;
         host::fixture::link_fetch(&mut linker, &roots)?;
+        host::fixture::link_exec(&mut linker, &roots)?;
         if roots.secrets.is_some() {
             host::crypto::link_keyed(&mut linker)?;
         }

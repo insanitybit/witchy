@@ -1177,4 +1177,128 @@ fn compiled_secret_fixture_keeps_material_opaque_and_scripts_crypto() {
     assert!(!secret_evidence.contains("746f702d736563726574"));
     assert_eq!(secret_events.len(), 6);
 }
+
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn compiled_exec_fixture_uses_allowlisted_script_without_spawning() {
+    use witchy_testkit::{
+        ConsoleFixture, ExecFixture, FilesystemEntry, FilesystemFixture, FixtureFamily,
+        FixtureOutcome, FixturePlan, FixtureStep, FixtureValue,
+    };
+
+    const PAYLOAD: &str = "7\nouterr";
+    const MODULE: &str = r#"
+        (module
+          (import "witchy" "mint_dir" (func $mint_dir (param i32) (result externref)))
+          (import "witchy" "mint_exec" (func $mint_exec (result externref)))
+          (import "witchy" "exec_run"
+            (func $exec_run (param externref externref i32 i32 i32) (result i32)))
+          (import "witchy" "fill_pending" (func $fill_pending (param i32)))
+          (import "witchy" "print" (func $print (param i32 i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "\04\00\00\00tool")
+          (data (i32.const 32) "\07\00\00\00--check")
+          (data (i32.const 64) "\05\00\00\00input")
+          (func (export "run")
+            (local $dir externref)
+            (local $exec externref)
+            (local $length i32)
+            i32.const 0
+            call $mint_dir
+            local.set $dir
+            call $mint_exec
+            local.set $exec
+            local.get $exec
+            local.get $dir
+            i32.const 0
+            i32.const 32
+            i32.const 64
+            call $exec_run
+            local.set $length
+            i32.const 256
+            call $fill_pending
+            i32.const 256
+            local.get $length
+            call $print))
+    "#;
+    let plan = FixturePlan {
+        version: 1,
+        console: Some(ConsoleFixture {
+            script: vec![FixtureStep {
+                operation: "print".to_owned(),
+                target: None,
+                arguments: std::collections::BTreeMap::from([(
+                    "text".to_owned(),
+                    FixtureValue::String(PAYLOAD.to_owned()),
+                )]),
+                effective_rights: Some(vec!["Write".to_owned()]),
+                outcome: FixtureOutcome::Return {
+                    value: FixtureValue::Null,
+                },
+                required: true,
+            }],
+        }),
+        filesystem: Some(FilesystemFixture {
+            entries: std::collections::BTreeMap::from([(
+                "tool".to_owned(),
+                FilesystemEntry::File {
+                    hex: "66697874757265".to_owned(),
+                },
+            )]),
+            rights: vec!["Read".to_owned()],
+            entry_policy: None,
+            script: Vec::new(),
+        }),
+        exec: Some(ExecFixture {
+            tools: vec!["tool".to_owned()],
+            script: vec![FixtureStep {
+                operation: "exec_run".to_owned(),
+                target: Some("tool".to_owned()),
+                arguments: std::collections::BTreeMap::from([
+                    (
+                        "args".to_owned(),
+                        FixtureValue::List(vec![FixtureValue::String("--check".to_owned())]),
+                    ),
+                    (
+                        "stdin".to_owned(),
+                        FixtureValue::String("input".to_owned()),
+                    ),
+                ]),
+                effective_rights: Some(vec!["exec:tool".to_owned(), "dir:Read".to_owned()]),
+                outcome: FixtureOutcome::Return {
+                    value: FixtureValue::Map(std::collections::BTreeMap::from([
+                        (
+                            "exit_code".to_owned(),
+                            FixtureValue::String("7".to_owned()),
+                        ),
+                        ("stdout".to_owned(), FixtureValue::String("out".to_owned())),
+                        ("stderr".to_owned(), FixtureValue::String("err".to_owned())),
+                    ])),
+                },
+                required: true,
+            }],
+        }),
+        ..FixturePlan::default()
+    };
+    let mut runtime = Runtime::batch().expect("runtime");
+    let outcome = runtime
+        .run_fixtures(MODULE, plan, 2)
+        .expect("compiled fixture run");
+    assert!(matches!(outcome.result, FixtureWasmResult::Passed));
+    assert_eq!(outcome.output, vec![PAYLOAD]);
+    assert_eq!(
+        outcome
+            .transcript
+            .events
+            .iter()
+            .map(|event| (event.family, event.operation.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (FixtureFamily::Filesystem, "mint_dir"),
+            (FixtureFamily::Exec, "mint_exec"),
+            (FixtureFamily::Exec, "exec_run"),
+            (FixtureFamily::Console, "print"),
+        ]
+    );
+}
 use std::path::PathBuf;
