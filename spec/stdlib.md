@@ -3915,7 +3915,7 @@ Drive `root` (and everything it spawns) to completion on a deterministic round-r
 
 ## `testing`
 
-The witchy test support module. `witchy test <file>` discovers every zero-parameter function named `test_*`, runs each one, and reports it as passing unless it aborts — which these assertions do, with a message, via the `fail` primitive. Tests are pure functions: they take no capabilities, so a test suite provably has no effects.
+The Witchy test support module. `witchy test <file>` discovers `test_*` functions and reports each as passing unless it aborts. Plain tests receive zero real authority. Deterministic capability parameters come only from a validated external fixture plan; this module provides assertions and ordinary collaborators, not capability constructors.
 
   import testing
 
@@ -3951,10 +3951,6 @@ A fixed, authority-free clock collaborator. This is ordinary data, not a forged 
 #### `fn fixed_rand(value: Int) -> FixedRand`
 
 A fixed, authority-free Rand collaborator. Every draw returns `value`, which makes boundary/error paths reproducible without pretending to be a real cryptographic randomness capability.
-
-#### `fn mock_dir(entries: List((String, String))) -> Dir[Read]`
-
-A read-only in-memory directory for tests. Each entry is a `(path, contents)` pair; paths are Dir-relative file paths. The returned capability supports the ordinary Dir[Read] surface (`read`, `exists`, `is_dir`, `subtree`, `list`, `read_file`) without granting any real filesystem authority.
 
 #### `fn assert(cond: Bool, msg: String)`
 

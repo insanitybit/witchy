@@ -1,6 +1,6 @@
 # RFC-0105: Deterministic capability fixtures and test transcripts
 
-Status: accepted; implementation required before this RFC may be marked implemented
+Status: accepted; implementation in progress
 
 ## Summary
 
@@ -26,13 +26,14 @@ capability values forgeable.
 Witchy already has pieces of a testing story:
 
 - RFC-0077 gives plain tests zero real authority, permits test-boundary
-  construction of sealed domain data, provides `testing.mock_dir`, and defines
-  explicit `Dir` and `Net` integration grants.
+  construction of sealed domain data, and defines explicit `Dir` and `Net`
+  integration grants. Its former `testing.mock_dir` experiment has been removed
+  in favor of this RFC's single fixture path.
 - RFC-0091 provides opt-in browser capability providers.
 - RFC-0102 requires deterministic fixture providers for portable I/O roots.
 - RFC-0013 and RFC-0057 define grant documents and attenuation.
-- `WITCHY_RAND_SEED`, browser documentation fixtures, Console input queues, and
-  the native/interpreter mock directory provide local deterministic behavior.
+- `WITCHY_RAND_SEED`, browser documentation fixtures, and Console input queues
+  provided local deterministic behavior before this shared contract.
 
 Those mechanisms do not form one system. They use different configuration
 shapes, duplicate in-memory filesystem behavior, do not share failure scripts,
@@ -233,10 +234,8 @@ model permission denied, not found, already exists, not a directory, invalid
 data, interrupted, timeout, and generic provider failure only where that error
 is representable by the production contract.
 
-`testing.mock_dir` becomes a compatibility-free standard-library constructor
-over the test fixture boundary or is deleted once all callers migrate. The
-interpreter and Wasmtime implementations must not retain separate filesystem
-semantics.
+`testing.mock_dir` and its interpreter/Wasmtime-specific filesystem backings are
+deleted. The fixture plan is the only capability virtualization path.
 
 ### Fetch
 
@@ -290,11 +289,17 @@ input and transcript metadata.
 
 ### User-defined capability records
 
-The runner recursively assembles a user capability record from fixture-backed
-root fields and ordinary data defaults exactly as it assembles production
-grants. A missing leaf is diagnosed with its full field path. Duplicate aliases
-of one root share provider state only when they descend from the same declared
-fixture instance; otherwise they remain isolated.
+For an owned test module, the runner recursively assembles a concrete,
+non-generic named-field capability record whose leaves are supported fixture
+roots or argv. It flattens those leaves into the compiler-generated test
+driver's ordinary root parameters, then constructs the sealed record only at
+the authenticated test boundary. A missing or unsupported leaf is diagnosed
+with its full field path. Recursive aggregates terminate with a diagnostic.
+Dependency tests cannot inherit this construction privilege.
+
+Fixture plans do not invent defaults for arbitrary domain data. Put such values
+in an ordinary collaborator, argv, or the relevant provider's explicit plan
+data.
 
 ## Scripting and expectations
 
@@ -328,29 +333,32 @@ Limit errors are normal test failures, never panics or unbounded allocation.
 The command accepts a file, directory, project, or rune and supports:
 
 ```text
-witchy test [PATH]
+witchy test <file.witchy|dir>
     --list
-    --filter PATTERN
-    --backend wasm|interp|parity
-    --fixture FILE
-    --seed U64
+    --filter <text>
+    --backend interpreter|wasm|both
+    --fixtures <plan.json>
+    --seed <u64>
     --show-output
     --format human|json
     --integration
-    --dir GRANT
-    --net GRANT
+    --dir <root>
+    --net <addr>
 ```
 
-The default backend is Wasm. `parity` runs the same normalized plan on
-interpreter and Wasm and compares result, guest-observable error, output, and
-transcript. Browser parity is a checked book/e2e shard rather than a required
-local browser launch for every `witchy test`.
+Fixture runs default to `both`; ordinary and integration runs default to Wasm.
+`both` runs the same normalized plan on interpreter and Wasm and compares
+result, guest-observable error, output, and transcript. Browser parity is a
+checked book/e2e shard rather than a required local browser launch for every
+`witchy test`.
 
 Discovery order and JSON output are stable. Filtering occurs after discovery
 and before compilation. `--list` performs discovery and validation without
-running tests. Output is captured by default and shown on failure; `--show-output`
-also shows passing output. Exit codes distinguish success, test failure, and
-usage/infrastructure failure. Every usage and fixture error includes the
+running tests. Output is captured by default; failed fixture output is shown
+automatically and `--show-output` also shows passing output. JSON schema 2
+retains transcripts and partial output on pass and failure. Exit status `0`
+means success, `1` means completed tests failed, and `2` means usage, fixture,
+or infrastructure failure. Every usage and fixture error includes the
 responsible CLI argument or fixture source location.
 
 Inline fixture syntax in Witchy source is not added by this RFC. A test chooses
@@ -425,10 +433,10 @@ environment values, or backend object identities.
 ## Compatibility and migration
 
 This RFC does not promise compatibility for pre-0.1 testing internals.
-Duplicate and environment-variable-driven test paths are removed after their
+Duplicate and environment-variable-driven test paths are removed as their
 callers migrate:
 
-- `testing.mock_dir` migrates to the shared filesystem fixture;
+- `testing.mock_dir` and both backend-local mock filesystems are removed;
 - direct `Capabilities::console_input` test setup migrates to `FixturePlan`;
 - test use of `WITCHY_RAND_SEED` migrates to the plan seed;
 - documentation-specific Fetch fixtures migrate to the canonical plan;

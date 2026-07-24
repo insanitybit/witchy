@@ -181,7 +181,8 @@ witchy [--net <host:port>]... [--fetch <origin>]... <file.witchy>
                                               run a program
 witchy check    <file.witchy>                 check + verify compiled acceptance without running
 witchy parity   <file.witchy>                 run on both backends, confirm identical output
-witchy test     <file.witchy|dir>             run in-language tests
+witchy test [--fixtures <plan.json>] [--backend interpreter|wasm|both] <file.witchy|dir>
+                                              run zero-authority deterministic tests or explicit integrations
 witchy fmt [--check] <file.witchy>...         format or verify canonical formatting
 witchy caps     <file.witchy>                 report the host-capability footprint
 witchy caps-diff <old.witchy> <new.witchy>    fail if the footprint widens
@@ -207,12 +208,13 @@ Witchy's compiler — front end, type checker, and the WIR → wasm backend —
 itself compiles to WebAssembly, so the playground runs **in the browser** with
 no server: it compiles your snippet to a wasm binary and instantiates *that* on
 the browser's own WebAssembly engine. It is the same compiler and backend as
-native `witchy`, run under a different host: the browser uses the pure-compute,
-capability-denied host (infrastructure imports like `print` are provided;
-`Dir`/`Net`/`Clock`/`Env`/`Exec`/secrets are omitted), so a pure snippet runs
-while one that reaches for host authority fails to instantiate. Native `witchy
-sandbox`, by contrast, links the wasmtime host with the program's granted
-footprint. Build the page and open it:
+native `witchy`, run under a different host. By default the browser host grants
+no capabilities. An explicit page provider or validated deterministic fixture
+plan may supply Console, Clock, Rand, Env, argv, in-memory Dir/File, Fetch,
+SecretStore, or scripted Exec; raw Net remains unavailable. Documentation
+fixture runs use fresh opaque frames and return only normalized output and
+transcripts. Native `witchy sandbox`, by contrast, links real providers only for
+the program's explicit grants. Build the page and open it:
 
 ```sh
 ./scripts/build-playground.sh

@@ -2233,9 +2233,7 @@ impl Interpreter {
                     if !witchy_caps::capabilities::dir_admits(pol, path, false) {
                         return err(format!("`{path}` is not permitted by this Dir capability's entry policy"));
                     }
-                    let DirValue::Fs(base) = base else {
-                        return err("exec cannot run programs from an in-memory mock Dir");
-                    };
+                    let DirValue::Fs(base) = base;
                     let prog = base
                         .file(path, true)
                         .map_err(|error| RuntimeError { message: error.0 })?;

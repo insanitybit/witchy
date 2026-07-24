@@ -7,8 +7,9 @@ tracking: >
   Implemented. Sealed domain-data construction is available for the
   entry module under `witchy test` and remains production-strict elsewhere.
   Plain tests run with zero real host grants; unused effectful production code
-  is pruned from the synthesized test artifact. `testing.mock_dir` is
-  implemented as a read-only in-memory `Dir[Read]` backend for both test tiers.
+  is pruned from the synthesized test artifact. The historical
+  `testing.mock_dir` experiment was removed; RFC-0105 now owns deterministic
+  capability fixtures and transcripts.
   The real-capability integration tier is implemented for explicit `Dir` and
   `Net` grants, with manifest/lock-resolved dependency tests held at zero real
   authority. Additional capability mocks or integration grant kinds are not an
@@ -24,6 +25,14 @@ related:
 ---
 
 # RFC-0077: Test doubles in witchy
+
+> **Superseded capability-mock slice (2026-07-24):** RFC-0105 replaced the
+> historical `testing.mock_dir` constructor and backend-local mock filesystems
+> with one external fixture plan shared by interpreter, Wasmtime, and browser.
+> References below to `mock_dir` describe the implementation history, not a
+> current standard-library API. This RFC remains authoritative for zero real
+> authority, package ownership, pruning, sealed domain-data construction, and
+> explicit integration grants.
 
 > **Implementation status (2026-07-15):** the runner split is implemented:
 > `witchy test` links the entry test module in test mode, allowing direct

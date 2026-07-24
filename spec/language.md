@@ -1685,9 +1685,12 @@ fn test_doubling():
     testing.assert_int_eq(double(21), 42)
 ```
 
-`witchy test <file|dir>` runs every zero-parameter `test_*` function; a test
-fails by aborting (the `testing` assertions abort with a message). Tests take no
-capabilities, so a suite provably has no effects.
+`witchy test <file|dir>` runs every selected `test_*` function; a test fails by
+aborting (the `testing` assertions abort with a message). Plain tests receive no
+real authority. Capability-parameterized tests use either validated inert
+fixture plans (`--fixtures`, deterministic and transcripted) or explicit owned
+integration grants (`--integration`); dependency tests never inherit real
+grants or fixture-record construction privilege.
 
 ## 16. Semantics guarantees (the parity contract)
 

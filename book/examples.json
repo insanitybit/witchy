@@ -1538,6 +1538,16 @@
     "runnable": false
   },
   {
+    "block": 3,
+    "browser_runnable": false,
+    "console_only": true,
+    "expect_error": false,
+    "file": "book/src/testing.md",
+    "footprint": [],
+    "output": [],
+    "runnable": false
+  },
+  {
     "block": 1,
     "browser_runnable": true,
     "console_only": true,

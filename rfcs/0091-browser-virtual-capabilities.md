@@ -185,10 +185,9 @@ that are legitimately nondeterministic.
   wires it in; wiring the docs cell onto it is a follow-up, not part of phase 1
   (doing it now would create Run buttons the book's shipped engine can't honor).
 - This RFC does not resolve RFC-0077's test-runner mock model. The overlap is
-  narrow: 0077's `mock_dir` in-memory backend and this RFC's browser `Dir` want
-  the same *shape* of in-memory filesystem. They live on opposite sides of the
-  FFI (0077's is native Rust; this one is JS in the shim), so phase 1 mirrors the
-  native semantics in JS rather than sharing code; unifying them is optional
+  historical: RFC-0077's removed `mock_dir` backend and this RFC's browser `Dir`
+  wanted the same *shape* of in-memory filesystem. RFC-0105 now supplies the
+  shared fixture contract and transcript semantics across that FFI boundary
   later cleanup.
 
 ## Acceptance
