@@ -284,6 +284,7 @@ validate_runnable_book() {
     # tracked web/witchy.wasm (a dirtied worktree would break the coordinator's ff-merge).
     WITCHY_WASM_PATH="$built" node scripts/validate_book_examples.mjs
     WITCHY_WASM_PATH="$built" node scripts/audit-browser-runnable.mjs
+    WITCHY_WASM_PATH="$built" node web/witchy-runtime/fixture-host.test.mjs
 }
 
 # nextest builds what it needs, so no separate build step; without nextest the
@@ -300,7 +301,7 @@ if [ -n "$shard" ]; then
             cargo nextest run --workspace -E 'test(/^example_tests::/)'
             ;;
         wasm)
-            "${wasm_cargo[@]}" build --lib --no-default-features --target wasm32-unknown-unknown
+            "${wasm_cargo[@]}" build --lib --no-default-features --features browser-fixtures --target wasm32-unknown-unknown
             # Same browser-runnability check the full gate runs — so an agent
             # validating a book/classifier change with `--wasm` catches a false
             # Run button in their focused shard, not only at full-gate time.
@@ -658,7 +659,7 @@ launch_clippy_leg
 
 wasm_log="$(mktemp "${TMPDIR:-/tmp}/witchy-wasm-XXXXXX")"
 wasm_started=$(date +%s)
-( background_leg "${wasm_cargo[@]}" build --lib --no-default-features --target wasm32-unknown-unknown ) >"$wasm_log" 2>&1 &
+( background_leg "${wasm_cargo[@]}" build --lib --no-default-features --features browser-fixtures --target wasm32-unknown-unknown ) >"$wasm_log" 2>&1 &
 wasm_pid=$!
 
 run_watched "tests (workspace)"        "${test_cmd[@]}"
