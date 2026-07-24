@@ -77,9 +77,11 @@ created through the authenticated test boundary.
 ### Plain tests
 
 A plain test gets no real host grants. This includes filesystem, network,
-Fetch, environment, subprocess, secrets, clock, random, stdin, and VM spawning.
-The runner may supply fixture-backed capabilities requested by the test's
-signature and present in its fixture plan.
+Fetch, environment, subprocess, secrets, clock, random, and stdin. RFC-0102's
+VM workers are a zero-authority host facility rather than a capability root;
+using their deterministic sequential semantics does not grant authority. The
+runner may supply fixture-backed capabilities requested by the test's signature
+and present in its fixture plan.
 
 Fixture plans are data, not authority. They must be fully decoded and validated
 before any guest module is instantiated. No plan field may name:
@@ -138,7 +140,6 @@ FixturePlan {
     fetch: FetchFixture?,
     secrets: SecretStoreFixture?,
     exec: ExecFixture?,
-    vm: VmFixture?,
     argv: List(String)?,
     expectations: Expectations
 }
@@ -266,13 +267,20 @@ returns scripted stdout, stderr, and exit status or a spawn/timeout/I/O failure.
 No fixture field is interpreted as a host executable path, and no subprocess is
 spawned. Narrowing cannot add tools.
 
-### VM
+### VM facility (explicit fixture exclusion)
 
-The plan supplies an ordered spawn script over logical child module identities,
-arguments, and child fixture subplans. Execution is sequential. Child
-transcripts are nested at the spawn event and use fresh handle brands. A child
-cannot inherit an undeclared parent fixture family. Unsupported shared-memory,
-threaded, or externally scheduled behavior is rejected rather than simulated.
+VM is not a fixture family and `FixturePlan` has no `vm` field. Witchy's shipped
+surface is RFC-0102's zero-authority, same-module `vm.par_map`, `vm.with_dir`,
+and `vm.serve` facility, not a logical child-module spawn capability. The
+interpreter executes the specified sequential reference semantics; native Wasm
+and the browser use fresh worker instances. `vm.with_dir` may receive a
+fixture-backed `Dir`, whose authority and transcript remain owned by the shared
+filesystem provider. No VM worker inherits any other fixture family.
+
+Plans that contain `vm` are rejected as unknown rather than accepted by an
+unreachable adapter. Tests cover the real facility through interpreter/Wasm/
+browser parity. Shared-memory, externally scheduled, and freely racing worker
+behavior remain outside the deterministic contract instead of being simulated.
 
 ### Argv
 
@@ -305,7 +313,6 @@ Strict expectations may assert:
 - complete script consumption;
 - final filesystem contents;
 - captured Console and Exec output;
-- nested VM child transcripts.
 
 An unexpected call fails at that call with the test source location when the
 compiler can provide it. An unconsumed required step fails at test completion
@@ -313,7 +320,7 @@ and points to the fixture declaration. Cleanup runs after success, guest
 failure, timeout, and provider failure. Cleanup failure is reported without
 hiding the primary failure.
 
-Plans have deterministic size, event, byte, recursion, and VM-depth limits.
+Plans have deterministic size, event, byte, and value-recursion limits.
 Limit errors are normal test failures, never panics or unbounded allocation.
 
 ## `witchy test`
@@ -401,8 +408,9 @@ Its test progression demonstrates:
 7. interpreter/Wasm transcript parity;
 8. the same complete examples in fresh browser frames.
 
-The example must not add a capability merely to exercise this RFC. Exec and VM
-are included only where the application has a credible use for them.
+The example must not add a capability merely to exercise this RFC. The Exec
+capability and VM facility are included only where the application has a
+credible use for them.
 
 ## Diagnostics and provenance
 
@@ -492,8 +500,11 @@ This RFC is implemented only when every item below has checked evidence:
   edge.
 - [ ] Canonical plan parsing rejects malformed, ambiguous, oversized, cyclic,
   and unknown input without panic.
-- [ ] Console, Clock, Rand, Env, Dir/File, Fetch, SecretStore, Exec, VM, argv,
+- [ ] Console, Clock, Rand, Env, Dir/File, Fetch, SecretStore, Exec, argv,
   and user capability records satisfy the provider contracts above.
+- [ ] The real zero-authority VM facility retains sequential interpreter,
+  native Wasm, and browser parity; fixture plans reject a `vm` family, and
+  `vm.with_dir` can observe only its explicitly passed fixture-backed `Dir`.
 - [ ] Raw Net is rejected in plain fixture plans and remains explicit
   integration authority.
 - [ ] Every provider supports its meaningful production error shapes,
@@ -533,4 +544,3 @@ This RFC is implemented only when every item below has checked evidence:
 - RFC-0013 and RFC-0057 remain authoritative for real grants and attenuation.
   Fixture plans are not grant documents.
 - RFC-0084 remains deferred. This RFC does not implement interception.
-
