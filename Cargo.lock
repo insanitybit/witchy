@@ -3002,6 +3002,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "witchy-testkit"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "witchy-cap-model",
+]
+
+[[package]]
 name = "witchy-types"
 version = "0.1.0"
 dependencies = [
