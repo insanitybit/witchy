@@ -502,7 +502,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
             Ok(options) => options,
             Err(e) => {
                 eprintln!("{e}\n{}", commands::test_runner::TEST_USAGE);
-                std::process::exit(1);
+                std::process::exit(2);
             }
         };
         match commands::test_runner::run_tests(&options) {
@@ -510,7 +510,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
             Ok(false) => std::process::exit(1),
             Err(e) => {
                 eprintln!("{e}");
-                std::process::exit(1);
+                std::process::exit(2);
             }
         }
     }

@@ -170,6 +170,7 @@ fn failed_fixture_json_retains_partial_output_and_transcript() {
         "failing fixture unexpectedly passed: {}",
         text(&output.stdout)
     );
+    assert_eq!(output.status.code(), Some(1));
     let document: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("failed JSON result document");
     assert_eq!(document["schema"], 2);
@@ -249,5 +250,6 @@ fn seed_override_is_reproducible_and_duplicate_json_keys_fail_closed() {
     ]);
     let diagnostic = format!("{}{}", text(&rejected.stdout), text(&rejected.stderr));
     assert!(!rejected.status.success(), "duplicate keys unexpectedly accepted");
+    assert_eq!(rejected.status.code(), Some(2));
     assert!(diagnostic.contains("duplicate"), "{diagnostic}");
 }

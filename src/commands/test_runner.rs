@@ -1502,6 +1502,9 @@ pub(crate) fn run_tests(options: &TestOptions) -> Result<bool, String> {
                 }));
             } else {
                 println!("test {name} ... FAILED: {msg}");
+                for line in result.output.get(name).into_iter().flatten() {
+                    println!("  {line}");
+                }
             }
         }
         total_pass += result.passed.len();
