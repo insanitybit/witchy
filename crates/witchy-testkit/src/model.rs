@@ -196,6 +196,8 @@ pub struct ExecFixture {
 #[serde(deny_unknown_fields)]
 pub struct VmFixture {
     #[serde(default)]
+    pub children: BTreeMap<String, Box<FixturePlan>>,
+    #[serde(default)]
     pub script: Vec<FixtureStep>,
 }
 
@@ -381,6 +383,8 @@ pub struct TestEvent {
     pub outcome: FixtureOutcome,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceLocation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child: Option<Box<TestTranscript>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

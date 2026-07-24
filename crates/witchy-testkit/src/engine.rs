@@ -5,6 +5,7 @@ use crate::exec::ExecProviderState;
 use crate::filesystem::FilesystemProviderState;
 use crate::fetch::FetchProviderState;
 use crate::secret::SecretProviderState;
+use crate::vm::VmProviderState;
 use crate::{
     Expectations, FixtureErrorCode, FixtureFailure, FixtureFamily, FixtureOutcome, FixturePlan,
     FixtureStep, FixtureValue, PlanValidationError, SourceLocation, TEST_TRANSCRIPT_VERSION,
@@ -50,6 +51,7 @@ pub struct FixtureSession {
     pub(crate) filesystem: FilesystemProviderState,
     pub(crate) fetch: FetchProviderState,
     pub(crate) secrets: SecretProviderState,
+    pub(crate) vm: VmProviderState,
 }
 
 impl FixtureSession {
@@ -61,6 +63,7 @@ impl FixtureSession {
         let filesystem = FilesystemProviderState::new(&plan);
         let fetch = FetchProviderState::new(&plan);
         let secrets = SecretProviderState::new(&plan);
+        let vm = VmProviderState::new(&plan);
 
         let mut scripts = BTreeMap::new();
         macro_rules! take_script {
@@ -98,6 +101,7 @@ impl FixtureSession {
             filesystem,
             fetch,
             secrets,
+            vm,
         })
     }
 
@@ -297,6 +301,7 @@ impl FixtureSession {
                 effective_rights: call.effective_rights,
                 outcome: outcome.clone(),
                 source: call.source,
+                child: None,
             });
             outcome
         } else {
@@ -360,6 +365,32 @@ impl FixtureSession {
             }
         }
         None
+    }
+
+    pub(crate) fn attach_child_transcript(
+        &mut self,
+        transcript: TestTranscript,
+    ) -> Result<(), FixtureFailure> {
+        let Some(event) = self.events.last_mut() else {
+            return Err(FixtureFailure {
+                code: FixtureErrorCode::ProviderFailure,
+                message: "VM child completed without a parent spawn event".into(),
+            });
+        };
+        if event.family != FixtureFamily::Vm || event.operation != "vm_spawn" {
+            return Err(FixtureFailure {
+                code: FixtureErrorCode::ProviderFailure,
+                message: "VM child transcript is not adjacent to its spawn event".into(),
+            });
+        }
+        if event.child.is_some() {
+            return Err(FixtureFailure {
+                code: FixtureErrorCode::ProviderFailure,
+                message: "VM spawn event already has a child transcript".into(),
+            });
+        }
+        event.child = Some(Box::new(transcript));
+        Ok(())
     }
 }
 
