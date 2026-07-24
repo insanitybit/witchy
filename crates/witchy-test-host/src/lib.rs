@@ -43,7 +43,6 @@ pub struct FixtureRoots {
     pub fetch: Option<HostHandle>,
     pub secrets: Option<HostHandle>,
     pub exec: Option<HostHandle>,
-    pub vm: bool,
     pub argv: bool,
 }
 
@@ -148,7 +147,6 @@ impl FixtureHost {
         host.roots.clock = host.session.has_fixture(FixtureFamily::Clock);
         host.roots.rand = host.session.has_fixture(FixtureFamily::Rand);
         host.roots.argv = host.session.has_fixture(FixtureFamily::Argv);
-        host.roots.vm = host.session.has_fixture(FixtureFamily::Vm);
         let env = host.mint_root(FixtureFamily::Env)?;
         let filesystem = host.mint_root(FixtureFamily::Filesystem)?;
         let fetch = host.mint_root(FixtureFamily::Fetch)?;
@@ -338,19 +336,6 @@ impl FixtureHost {
         }
     }
 
-    pub fn spawn_vm<F>(
-        &mut self,
-        module: &str,
-        arguments: &[String],
-        source: Option<SourceLocation>,
-        run: F,
-    ) -> Result<TestTranscript, FixtureFailure>
-    where
-        F: FnOnce(&mut FixtureSession) -> TestResult,
-    {
-        self.session.vm_spawn(module, arguments, source, run)
-    }
-
     #[must_use]
     pub fn finish(self, result: TestResult) -> TestTranscript {
         self.session.finish(result)
@@ -445,7 +430,7 @@ mod tests {
     use witchy_testkit::{
         ClockFixture, ConsoleFixture, EnvFixture, ExecFixture, Expectations,
         FetchFixture, FilesystemEntry, FilesystemFixture, FixtureOutcome,
-        RandFixture, SecretStoreFixture, VmFixture,
+        RandFixture, SecretStoreFixture,
     };
 
     fn plan() -> FixturePlan {
@@ -499,7 +484,6 @@ mod tests {
             fetch: Some(FetchFixture::default()),
             secrets: Some(SecretStoreFixture::default()),
             exec: Some(ExecFixture::default()),
-            vm: Some(VmFixture::default()),
             argv: Some(Vec::new()),
             expectations: Expectations::default(),
         })
@@ -513,7 +497,6 @@ mod tests {
         assert!(roots.fetch.is_some());
         assert!(roots.secrets.is_some());
         assert!(roots.exec.is_some());
-        assert!(roots.vm);
         assert!(roots.argv);
     }
 

@@ -14,7 +14,6 @@ pub struct PlanValidationLimits {
     pub max_collection_items: usize,
     pub max_script_steps: usize,
     pub max_value_depth: usize,
-    pub max_vm_depth: usize,
     pub max_string_bytes: usize,
     pub max_fixture_bytes: usize,
 }
@@ -26,7 +25,6 @@ impl Default for PlanValidationLimits {
             max_collection_items: 16_384,
             max_script_steps: 100_000,
             max_value_depth: 64,
-            max_vm_depth: 16,
             max_string_bytes: 1024 * 1024,
             max_fixture_bytes: 16 * 1024 * 1024,
         }
@@ -73,13 +71,12 @@ impl FixturePlan {
         &self,
         limits: &PlanValidationLimits,
     ) -> Result<(), PlanValidationError> {
-        self.validate_at_depth(limits, 0)
+        self.validate_with_limits(limits)
     }
 
-    fn validate_at_depth(
+    fn validate_with_limits(
         &self,
         limits: &PlanValidationLimits,
-        vm_depth: usize,
     ) -> Result<(), PlanValidationError> {
         if self.version != crate::FIXTURE_PLAN_VERSION {
             return Err(invalid(
@@ -196,33 +193,6 @@ impl FixturePlan {
         if let Some(exec) = &self.exec {
             validate_exec(exec, limits)?;
         }
-        if let Some(vm) = &self.vm {
-            if vm_depth >= limits.max_vm_depth {
-                return Err(invalid(
-                    "vm.children",
-                    format!("VM fixture nesting exceeds limit {}", limits.max_vm_depth),
-                ));
-            }
-            check_count("vm.children", vm.children.len(), limits)?;
-            for (name, child) in &vm.children {
-                check_name(&format!("vm.children.{name}"), name, limits)?;
-                if name.contains(['/', '\\', '\0']) || name == "." || name == ".." {
-                    return Err(invalid(
-                        format!("vm.children.{name}"),
-                        "child module must be a logical identity, not a path",
-                    ));
-                }
-                child.validate_at_depth(limits, vm_depth + 1)?;
-            }
-            for (index, step) in vm.script.iter().enumerate() {
-                if step.operation != "vm_spawn" {
-                    return Err(invalid(
-                        format!("vm.script[{index}].operation"),
-                        "VM scripts support only `vm_spawn`",
-                    ));
-                }
-            }
-        }
         if let Some(argv) = &self.argv {
             check_count("argv", argv.len(), limits)?;
             for (index, argument) in argv.iter().enumerate() {
@@ -308,9 +278,6 @@ impl FixturePlan {
         }
         if let Some(value) = &self.exec {
             scripts.push(("exec", value.script.as_slice()));
-        }
-        if let Some(value) = &self.vm {
-            scripts.push(("vm", value.script.as_slice()));
         }
         scripts
     }
@@ -691,24 +658,9 @@ mod tests {
     }
 
     #[test]
-    fn vm_fixture_nesting_is_bounded() {
-        let limits = PlanValidationLimits {
-            max_vm_depth: 3,
-            ..Default::default()
-        };
-        let mut plan = FixturePlan::default();
-        for depth in (0..=3).rev() {
-            plan = FixturePlan {
-                vm: Some(crate::VmFixture {
-                    children: std::collections::BTreeMap::from([(
-                        format!("child-{depth}"),
-                        Box::new(plan),
-                    )]),
-                    script: Vec::new(),
-                }),
-                ..Default::default()
-            };
-        }
-        assert!(plan.validate_with(&limits).is_err());
+    fn vm_is_not_a_fixture_plan_family() {
+        let error = crate::parse_fixture_plan(br#"{"version":1,"vm":{}}"#)
+            .expect_err("VM is a zero-authority host facility, not a fixture family");
+        assert!(error.message().contains("unknown field `vm`"));
     }
 }

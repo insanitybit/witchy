@@ -15,7 +15,6 @@ mod json;
 mod model;
 mod secret;
 mod validate;
-mod vm;
 
 pub use basic::{FixtureHandle, ProviderResult};
 pub use engine::{FixtureCall, FixtureSession};
@@ -25,5 +24,4 @@ pub use fetch::FetchProviderResult;
 pub use json::{PlanDecodeError, canonical_plan_json, parse_fixture_plan};
 pub use model::*;
 pub use secret::SecretProviderResult;
-pub use vm::VmProviderResult;
 pub use validate::{PlanValidationError, PlanValidationLimits};

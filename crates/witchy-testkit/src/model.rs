@@ -27,8 +27,6 @@ pub struct FixturePlan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exec: Option<ExecFixture>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vm: Option<VmFixture>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub argv: Option<Vec<String>>,
     #[serde(default)]
     pub expectations: Expectations,
@@ -46,7 +44,6 @@ impl Default for FixturePlan {
             fetch: None,
             secrets: None,
             exec: None,
-            vm: None,
             argv: None,
             expectations: Expectations::default(),
         }
@@ -192,15 +189,6 @@ pub struct ExecFixture {
     pub script: Vec<FixtureStep>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct VmFixture {
-    #[serde(default)]
-    pub children: BTreeMap<String, Box<FixturePlan>>,
-    #[serde(default)]
-    pub script: Vec<FixtureStep>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FixtureStep {
@@ -299,7 +287,6 @@ pub enum FixtureFamily {
     Fetch,
     SecretStore,
     Exec,
-    Vm,
     Argv,
 }
 
@@ -314,7 +301,7 @@ impl FixtureFamily {
             Self::Fetch => Some(CapabilityKind::Fetch),
             Self::SecretStore => Some(CapabilityKind::SecretStore),
             Self::Exec => Some(CapabilityKind::Exec),
-            Self::Vm | Self::Argv => None,
+            Self::Argv => None,
         }
     }
 }
@@ -383,8 +370,6 @@ pub struct TestEvent {
     pub outcome: FixtureOutcome,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceLocation>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub child: Option<Box<TestTranscript>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

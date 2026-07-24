@@ -126,7 +126,6 @@ impl FixtureSession {
             FixtureFamily::Fetch => self.fetch.configured(),
             FixtureFamily::SecretStore => self.secrets.configured(),
             FixtureFamily::Exec => self.exec.configured(),
-            FixtureFamily::Vm => self.vm.configured(),
             FixtureFamily::Filesystem => self.filesystem.configured(),
         }
     }
