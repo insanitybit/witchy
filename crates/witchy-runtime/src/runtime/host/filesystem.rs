@@ -1,22 +1,9 @@
-use std::sync::Arc;
-
 use wasmtime::{Caller, Error, ExternRef, Linker, Result, Rooted};
 
 use super::super::{
-    confine, memory_of, read_wstr, read_wstr_list, read_wstr_pair_list, DirAuthority,
-    DirBacking, ExecAuthority, FileAuthority, FileBacking, FsRights, VmState,
+    confine, memory_of, read_wstr, read_wstr_list, DirAuthority, DirBacking,
+    ExecAuthority, FileAuthority, FileBacking, FsRights, VmState,
 };
-
-/// Register the test-only in-memory Dir mint (RFC-0077). The import grants no
-/// host authority; it wraps guest-provided strings in an opaque externref so
-/// ordinary `Dir[Read]` code can be tested without real filesystem grants.
-/// Source-level link mode decides where `testing.mock_dir` is allowed; the
-/// runtime gate is the second line of defense for hosts embedding precompiled
-/// artifacts.
-pub(in crate::runtime) fn link_mock_dir(linker: &mut Linker<VmState>) -> Result<()> {
-    linker.func_wrap("witchy", "testing_mock_dir", host_testing_mock_dir)?;
-    Ok(())
-}
 
 /// Register the root `Dir` grant mint.
 pub(in crate::runtime) fn link_mint_dir(linker: &mut Linker<VmState>) -> Result<()> {
@@ -178,108 +165,10 @@ fn host_mint_dir(mut caller: Caller<'_, VmState>, i: i32) -> Result<Option<Roote
     ExternRef::new(&mut caller, dir).map(Some)
 }
 
-fn host_testing_mock_dir(
-    mut caller: Caller<'_, VmState>,
-    entries_ptr: i32,
-) -> Result<Option<Rooted<ExternRef>>> {
-    let mem = memory_of(&mut caller)?;
-    let entries = read_wstr_pair_list(mem.data(&caller), entries_ptr)?;
-    let mut files = std::collections::BTreeMap::new();
-    for (path, contents) in entries {
-        let path = mock_normalize(&path)?;
-        if path.is_empty() {
-            return Err(Error::msg("mock Dir entry path must name a file"));
-        }
-        files.insert(path, contents);
-    }
-    let dir = DirAuthority {
-        backing: DirBacking::Mock {
-            root: String::new(),
-            files: Arc::new(files),
-        },
-        policy: String::new(),
-        rights: FsRights::new(true, false),
-    };
-    ExternRef::new(&mut caller, dir).map(Some)
-}
-
-fn mock_normalize(rel: &str) -> Result<String> {
-    let path = std::path::Path::new(rel);
-    if path.is_absolute() {
-        return Err(Error::msg(format!("mock Dir path `{rel}` must be relative")));
-    }
-    let mut parts = Vec::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::CurDir => {}
-            std::path::Component::Normal(part) => {
-                let Some(part) = part.to_str() else {
-                    return Err(Error::msg(format!("mock Dir path `{rel}` is not valid UTF-8")));
-                };
-                parts.push(part.to_string());
-            }
-            std::path::Component::ParentDir => {
-                return Err(Error::msg(format!("mock Dir path `{rel}` may not contain `..`")));
-            }
-            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
-                return Err(Error::msg(format!("mock Dir path `{rel}` must be relative")));
-            }
-        }
-    }
-    Ok(parts.join("/"))
-}
-
-fn mock_join(root: &str, rel: &str) -> Result<String> {
-    let rel = mock_normalize(rel)?;
-    Ok(match (root.is_empty(), rel.is_empty()) {
-        (_, true) => root.to_string(),
-        (true, false) => rel,
-        (false, false) => format!("{root}/{rel}"),
-    })
-}
-
-fn mock_is_dir(files: &std::collections::BTreeMap<String, String>, path: &str) -> bool {
-    if path.is_empty() {
-        return true;
-    }
-    let prefix = format!("{path}/");
-    files.keys().any(|entry| entry.starts_with(&prefix))
-}
-
-fn mock_exists(files: &std::collections::BTreeMap<String, String>, path: &str) -> bool {
-    files.contains_key(path) || mock_is_dir(files, path)
-}
-
-fn mock_list(files: &std::collections::BTreeMap<String, String>, root: &str) -> Result<Vec<String>> {
-    if !mock_is_dir(files, root) {
-        return Err(Error::msg(format!("list failed for mock Dir `{root}`: not a directory")));
-    }
-    let mut names = std::collections::BTreeSet::new();
-    let prefix = if root.is_empty() {
-        String::new()
-    } else {
-        format!("{root}/")
-    };
-    for path in files.keys() {
-        let Some(rest) = path.strip_prefix(&prefix) else {
-            continue;
-        };
-        if rest.is_empty() {
-            continue;
-        }
-        let name = rest.split('/').next().unwrap_or(rest);
-        names.insert(name.to_string());
-    }
-    Ok(names.into_iter().collect())
-}
-
 fn dir_child_backing(dir: &DirAuthority, name: &str) -> Result<DirBacking> {
     match &dir.backing {
         DirBacking::Fs(base) => {
             Ok(DirBacking::Fs(confine(base.open_dir(name))?))
-        }
-        DirBacking::Mock { root, files } => {
-            Ok(DirBacking::Mock { root: mock_join(root, name)?, files: files.clone() })
         }
     }
 }
@@ -288,9 +177,6 @@ fn dir_file_backing(dir: &DirAuthority, rel: &str, write: bool) -> Result<FileBa
     match &dir.backing {
         DirBacking::Fs(base) => {
             Ok(FileBacking::Fs(confine(base.file(rel, !write))?))
-        }
-        DirBacking::Mock { root, files } => {
-            Ok(FileBacking::Mock { path: mock_join(root, rel)?, files: files.clone() })
         }
     }
 }
@@ -302,10 +188,6 @@ fn read_file_backing(file: &FileBacking) -> Result<String> {
                 Error::msg(format!("read failed for `{}`: {e}", file.display_path().display()))
             })
         }
-        FileBacking::Mock { path, files } => files
-            .get(path)
-            .cloned()
-            .ok_or_else(|| Error::msg(format!("read failed for mock Dir `{path}`: no such file"))),
     }
 }
 
@@ -316,9 +198,6 @@ fn write_file_backing(file: &FileBacking, contents: String) -> Result<()> {
                 Error::msg(format!("write failed for `{}`: {e}", file.display_path().display()))
             })
         }
-        FileBacking::Mock { path, .. } => Err(Error::msg(format!(
-            "write failed for mock Dir `{path}`: mock directories are read-only"
-        ))),
     }
 }
 
@@ -515,9 +394,7 @@ fn host_exec_run(
     // every other Dir op: a `Dir[...].only(...)` may only run a file it admits — "you
     // can only run a file you can read" was false while this was skipped.
     dir_guard(&dir, &path, false)?;
-    let DirBacking::Fs(base) = &dir.backing else {
-        return Err(Error::msg("exec cannot run programs from an in-memory mock Dir"));
-    };
+    let DirBacking::Fs(base) = &dir.backing;
     let prog = confine(base.file(&path, true))?;
     let argv: Vec<&str> = if joined.is_empty() { Vec::new() } else { joined.split('\0').collect() };
     let output = prog.run(&argv, &stdin).map_err(|e| {
@@ -544,9 +421,6 @@ fn host_dir_exists(
     dir_require_read(&dir)?;
     let ok = match &dir.backing {
         DirBacking::Fs(base) => base.exists(&rel).unwrap_or(false),
-        DirBacking::Mock { root, files } => {
-            mock_join(root, &rel).map(|path| mock_exists(files, &path)).unwrap_or(false)
-        }
     };
     Ok(ok as i32)
 }
@@ -563,9 +437,6 @@ fn host_dir_is_dir(
     dir_require_read(&dir)?;
     let ok = match &dir.backing {
         DirBacking::Fs(base) => base.is_dir(&rel).unwrap_or(false),
-        DirBacking::Mock { root, files } => {
-            mock_join(root, &rel).map(|path| mock_is_dir(files, &path)).unwrap_or(false)
-        }
     };
     Ok(ok as i32)
 }
@@ -580,7 +451,6 @@ fn host_dir_list_size(mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRe
         DirBacking::Fs(base) => base.entries().map_err(|e| {
             Error::msg(format!("list failed for `{}`: {e}", base.display_path().display()))
         })?,
-        DirBacking::Mock { root, files } => mock_list(files, root)?,
     };
     let size = 4 + 8 * names.len() + names.iter().map(|n| 4 + n.len()).sum::<usize>();
     caller.data_mut().pending_list = Some(names);
@@ -627,9 +497,6 @@ fn host_dir_append(
                 Error::msg(format!("append failed for `{}`: {e}", file.display_path().display()))
             })
         }
-        FileBacking::Mock { path, .. } => Err(Error::msg(format!(
-            "append failed for mock Dir `{path}`: mock directories are read-only"
-        ))),
     }
 }
 
@@ -651,12 +518,6 @@ fn host_dir_make_dir(
                 "make_dir failed for `{}`: {}",
                 base.display_path().join(&name).display(),
                 e.0
-            )))
-        }
-        DirBacking::Mock { root, .. } => {
-            let path = mock_join(root, &name)?;
-            Err(Error::msg(format!(
-                "make_dir failed for mock Dir `{path}`: mock directories are read-only"
             )))
         }
     }

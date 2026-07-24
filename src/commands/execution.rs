@@ -313,8 +313,7 @@ fn main(console: Console):
 /// This is the shared core of `witchy run` (dev, root at cwd) and `witchy sandbox`
 /// (strict, announced grant) — one runtime for both, so dev == deploy. `strict_dir`
 /// is the one host-policy difference: sandbox requires an explicit `--dir` (deny by
-/// omission) while dev `run` defaults a `Dir` to the cwd. `test_mocks` enables only
-/// the authority-free `testing.mock_*` host backends; it never mints a real grant.
+/// omission) while dev `run` defaults a `Dir` to the cwd.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_linked_compiled(
     linked: &ast::Module,
@@ -330,7 +329,6 @@ pub(crate) fn run_linked_compiled(
     named_secrets: Vec<runtime::SecretGrant>,
     user_cap_fields: Vec<Vec<String>>,
     strict_dir: bool,
-    test_mocks: bool,
     confinement: witchy_confinement::EnforcementMode,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     run_compiled(
@@ -348,7 +346,6 @@ pub(crate) fn run_linked_compiled(
         named_secrets,
         user_cap_fields,
         strict_dir,
-        test_mocks,
         confinement,
     )
 }
@@ -365,7 +362,6 @@ pub(crate) fn run_checked_compiled(
     named_secrets: Vec<runtime::SecretGrant>,
     user_cap_fields: Vec<Vec<String>>,
     strict_dir: bool,
-    test_mocks: bool,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     let wasm = commands::compile::compile_checked_to_wasm_cached(checked)?;
     run_compiled(
@@ -383,7 +379,6 @@ pub(crate) fn run_checked_compiled(
         named_secrets,
         user_cap_fields,
         strict_dir,
-        test_mocks,
         witchy_confinement::EnforcementMode::Disabled,
     )
 }
@@ -404,7 +399,6 @@ fn run_compiled(
     named_secrets: Vec<runtime::SecretGrant>,
     user_cap_fields: Vec<Vec<String>>,
     strict_dir: bool,
-    test_mocks: bool,
     confinement: witchy_confinement::EnforcementMode,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     // Install the compiler-service natives (compiler.footprint/diff/doc),
@@ -452,7 +446,6 @@ fn run_compiled(
         quiet: true,
         args,
         user_cap_fields,
-        test_mocks,
         ..Default::default()
     };
     if grant.contains_key("Clock") {

@@ -2,7 +2,7 @@ use super::support::coven::*;
 
 #[cfg(unix)]
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::Command;
 
 /// RFC-0013: `witchy sandbox --grants <doc>` mints the capability set from a grant
 /// document — binding each `File`/`Dir` `main` parameter to the same-named entry —

@@ -65,8 +65,7 @@ mod calls;
 mod places;
 mod capability_values;
 use capability_values::{
-    dir_child_value, dir_file_value, mock_exists, mock_is_dir, mock_join, mock_list,
-    net_narrow_to, read_file_value, write_file_value,
+    dir_child_value, dir_file_value, net_narrow_to, read_file_value, write_file_value,
 };
 mod reflection;
 use reflection::{
@@ -83,10 +82,6 @@ use reflection::{
 #[derive(Debug, Clone, PartialEq)]
 pub enum DirValue {
     Fs(witchy_runtime::confine::ConfinedDir),
-    Mock {
-        root: String,
-        files: Rc<BTreeMap<String, String>>,
-    },
     #[cfg(feature = "test-fixtures")]
     Fixture(HostHandle),
 }
@@ -94,10 +89,6 @@ pub enum DirValue {
 #[derive(Debug, Clone, PartialEq)]
 pub enum FileValue {
     Fs(witchy_runtime::confine::ConfinedFile),
-    Mock {
-        path: String,
-        files: Rc<BTreeMap<String, String>>,
-    },
     #[cfg(feature = "test-fixtures")]
     Fixture(HostHandle),
 }

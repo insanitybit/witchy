@@ -90,7 +90,6 @@ fn maximal_capabilities() -> Capabilities {
         file_grants: vec![root.join("witchy-abi-catalog-file")],
         dir_read: true,
         dir_write: true,
-        test_mocks: true,
         exec: true,
         exec_allow: Some(vec!["true".into()]),
         net_allow: Some(vec!["127.0.0.1:0".into()]),

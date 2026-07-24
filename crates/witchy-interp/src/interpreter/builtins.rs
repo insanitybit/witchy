@@ -2397,9 +2397,6 @@ impl Interpreter {
                                 )),
                             }
                         }
-                        FileValue::Mock { path, .. } => err(format!(
-                            "append failed for mock Dir `{path}`: mock directories are read-only"
-                        )),
                         #[cfg(feature = "test-fixtures")]
                         FileValue::Fixture(_) => err(
                             "internal error: fixture File bypassed fixture dispatch",
@@ -2427,9 +2424,6 @@ impl Interpreter {
                 [Value::Dir(base, _), Value::Str(rel)] => {
                     let ok = match base {
                         DirValue::Fs(base) => base.exists(rel).unwrap_or(false),
-                        DirValue::Mock { root, files } => {
-                            mock_join(root, rel).map(|path| mock_exists(files, &path)).unwrap_or(false)
-                        }
                         #[cfg(feature = "test-fixtures")]
                         DirValue::Fixture(_) => false,
                     };
@@ -2456,9 +2450,6 @@ impl Interpreter {
                 [Value::Dir(base, _), Value::Str(rel)] => {
                     let ok = match base {
                         DirValue::Fs(base) => base.is_dir(rel).unwrap_or(false),
-                        DirValue::Mock { root, files } => {
-                            mock_join(root, rel).map(|path| mock_is_dir(files, &path)).unwrap_or(false)
-                        }
                         #[cfg(feature = "test-fixtures")]
                         DirValue::Fixture(_) => false,
                     };
@@ -2488,7 +2479,6 @@ impl Interpreter {
                                 base.display_path().display()
                             ),
                         })?,
-                        DirValue::Mock { root, files } => mock_list(files, root)?,
                         #[cfg(feature = "test-fixtures")]
                         DirValue::Fixture(_) => {
                             return err("internal error: fixture Dir bypassed fixture dispatch");
@@ -2528,10 +2518,6 @@ impl Interpreter {
                                     e.0
                                 )),
                             }
-                        }
-                        DirValue::Mock { root, .. } => {
-                            let path = mock_join(root, name)?;
-                            err(format!("make_dir failed for mock Dir `{path}`: mock directories are read-only"))
                         }
                         #[cfg(feature = "test-fixtures")]
                         DirValue::Fixture(_) => err(

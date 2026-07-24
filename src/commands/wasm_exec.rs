@@ -400,7 +400,6 @@ pub(crate) fn run_wasm_test_bytes(bytes: &[u8]) -> Result<Vec<String>, String> {
                 print: true,
                 print_int: true,
                 quiet: true,
-                test_mocks: true,
                 ..Default::default()
             },
             RUN_MEMORY_PAGES,

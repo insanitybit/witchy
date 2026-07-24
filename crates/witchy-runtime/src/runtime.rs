@@ -267,10 +267,6 @@ pub struct Capabilities {
     /// grant for each Dir grant", preserving older callers that grant one
     /// uniform root.
     pub dir_rights: Vec<FsRights>,
-    /// Enable authority-free in-memory test capability constructors such as
-    /// `testing.mock_dir`. This links read-only Dir/File operation imports for
-    /// mock externrefs, but it does not mint or expose any real filesystem root.
-    pub test_mocks: bool,
     /// Direct `File` grants (RFC-0012): the i-th `File` parameter of `main` maps to
     /// the i-th path here. Backed by `--file` or `[files]`.
     pub file_grants: Vec<std::path::PathBuf>,
@@ -545,10 +541,6 @@ impl FsRights {
 #[derive(Clone, Debug)]
 enum DirBacking {
     Fs(crate::confine::ConfinedDir),
-    Mock {
-        root: String,
-        files: Arc<std::collections::BTreeMap<String, String>>,
-    },
 }
 
 #[derive(Clone, Debug)]
@@ -561,10 +553,6 @@ struct DirAuthority {
 #[derive(Clone, Debug)]
 enum FileBacking {
     Fs(crate::confine::ConfinedFile),
-    Mock {
-        path: String,
-        files: Arc<std::collections::BTreeMap<String, String>>,
-    },
 }
 
 #[derive(Clone, Debug)]
@@ -1189,13 +1177,10 @@ pub(crate) fn link_capability_imports(
         !caps.preopened_dirs.is_empty() || caps.dir_root.is_some() || !caps.dir_roots.is_empty();
     let dir_read = caps.dir_read || caps.dir_rights.iter().any(|r| r.read);
     let dir_write = caps.dir_write || caps.dir_rights.iter().any(|r| r.write);
-    if caps.test_mocks {
-        host::filesystem::link_mock_dir(linker)?;
-    }
+    let has_readable_dir = has_real_dir && dir_read;
     if has_real_dir {
         host::filesystem::link_mint_dir(linker)?;
     }
-    let has_readable_dir = (has_real_dir && dir_read) || caps.test_mocks;
     if has_readable_dir {
         host::filesystem::link_dir_read(linker)?;
     }
@@ -1442,44 +1427,6 @@ fn read_wstr_list(data: &[u8], ptr: i32) -> Result<Vec<String>> {
             slot[0], slot[1], slot[2], slot[3], slot[4], slot[5], slot[6], slot[7],
         ]);
         out.push(read_wstr(data, elem as i32)?);
-    }
-    Ok(out)
-}
-
-/// Read a guest `List((String, String))`. Tuple values are laid out as
-/// `[tag/len: i32][field0: i64][field1: i64]`; each field is a string pointer.
-fn read_wstr_pair_list(data: &[u8], ptr: i32) -> Result<Vec<(String, String)>> {
-    let len_bytes = slice(data, ptr, 4)?;
-    let len = i32::from_le_bytes([len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]]);
-    let mut out = Vec::with_capacity((len.max(0) as usize).min(data.len() / 8));
-    for i in 0..len {
-        let slot = slice(data, ptr + 4 + 8 * i, 8)?;
-        let pair_ptr = i64::from_le_bytes([
-            slot[0], slot[1], slot[2], slot[3], slot[4], slot[5], slot[6], slot[7],
-        ]) as i32;
-        let first_slot = slice(data, pair_ptr + 4, 8)?;
-        let second_slot = slice(data, pair_ptr + 12, 8)?;
-        let first = i64::from_le_bytes([
-            first_slot[0],
-            first_slot[1],
-            first_slot[2],
-            first_slot[3],
-            first_slot[4],
-            first_slot[5],
-            first_slot[6],
-            first_slot[7],
-        ]) as i32;
-        let second = i64::from_le_bytes([
-            second_slot[0],
-            second_slot[1],
-            second_slot[2],
-            second_slot[3],
-            second_slot[4],
-            second_slot[5],
-            second_slot[6],
-            second_slot[7],
-        ]) as i32;
-        out.push((read_wstr(data, first)?, read_wstr(data, second)?));
     }
     Ok(out)
 }

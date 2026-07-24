@@ -102,7 +102,7 @@ pub(crate) fn run_file_sandboxed(
         "sandboxing `{path}` \u{2014} granted exactly: {}",
         capabilities::show_caps(&grant)
     );
-    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, fetch_origins, None, None, Vec::new(), args, signing_key, named_secrets, Vec::new(), true, false, confinement)
+    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, fetch_origins, None, None, Vec::new(), args, signing_key, named_secrets, Vec::new(), true, confinement)
 }
 
 /// Resolve a `[secrets]` entry's `from = "env:VAR"` to the secret bytes the host
@@ -346,5 +346,5 @@ pub(crate) fn run_file_grants(
     }
     // Secrets reach the program by name through the `SecretStore` (`require`/`get`);
     // the bare root `Secret` (`--signing-key`) is not granted via documents here.
-    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, fetch_origins, env_allow, exec_allow, exec_child_paths, args, None, named_secrets, user_cap_fields, true, false, confinement)
+    run_linked_compiled(&linked, dir_roots, file_grants, net_allow, fetch_origins, env_allow, exec_allow, exec_child_paths, args, None, named_secrets, user_cap_fields, true, confinement)
 }
