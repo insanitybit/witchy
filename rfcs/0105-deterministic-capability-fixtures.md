@@ -504,42 +504,55 @@ or transcript construction.
 
 This RFC is implemented only when every item below has checked evidence:
 
-- [ ] `witchy-testkit` has no ambient authority and no forbidden dependency
+- [x] `witchy-testkit` has no ambient authority and no forbidden dependency
   edge.
-- [ ] Canonical plan parsing rejects malformed, ambiguous, oversized, cyclic,
+- [x] Canonical plan parsing rejects malformed, ambiguous, oversized, cyclic,
   and unknown input without panic.
-- [ ] Console, Clock, Rand, Env, Dir/File, Fetch, SecretStore, Exec, argv,
+- [x] Console, Clock, Rand, Env, Dir/File, Fetch, SecretStore, Exec, argv,
   and user capability records satisfy the provider contracts above.
 - [ ] The real zero-authority VM facility retains sequential interpreter,
   native Wasm, and browser parity; fixture plans reject a `vm` family, and
   `vm.with_dir` can observe only its explicitly passed fixture-backed `Dir`.
-- [ ] Raw Net is rejected in plain fixture plans and remains explicit
+- [x] Raw Net is rejected in plain fixture plans and remains explicit
   integration authority.
-- [ ] Every provider supports its meaningful production error shapes,
+- [x] Every provider supports its meaningful production error shapes,
   sequencing, exhaustion, and cleanup behavior.
-- [ ] Interpreter and Wasm consume the same testkit state machines.
-- [ ] Browser passes canonical wire vectors and full showcase transcript parity.
-- [ ] Handles are branded, rights never widen, origins never widen, and fixture
+- [x] Interpreter and Wasm consume the same testkit state machines.
+- [x] Browser passes canonical wire vectors and full showcase transcript parity.
+- [x] Handles are branded, rights never widen, origins never widen, and fixture
   data cannot become host authority.
 - [ ] Plain tests, dependency tests, production commands, comptime, build, and
   package-manager paths have adversarial non-escalation tests.
-- [ ] `witchy test` implements discovery, listing, filtering, capture,
+- [x] `witchy test` implements discovery, listing, filtering, capture,
   deterministic seeds, fixture selection, integration grants, backend choice,
   parity, stable exits, source diagnostics, and JSON output.
-- [ ] Focused provider tests cover success, malformed data, permission failures,
+- [x] Focused provider tests cover success, malformed data, permission failures,
   partial I/O, timeout, process failure, unexpected calls, missing calls,
   transcript ordering, cleanup failure, and configured limits.
-- [ ] `std/testing.witchy` and all compatibility paths are reduced to the
+- [x] `std/testing.witchy` and all compatibility paths are reduced to the
   smallest final surface.
 - [ ] The flagship application and every complete book example run from the
   private extracted artifact in fresh opaque browser frames with derived CSP.
-- [ ] Book, CLI help, README, architecture, status, RFC references, and examples
+- [x] Book, CLI help, README, architecture, status, RFC references, and examples
   manifest state the same current truth.
 - [ ] Warning-denied Clippy, formatting check, focused tests, interpreter/Wasm
   parity, browser/book, e2e, private installed-artifact smoke, and serialized
   full gate pass on the exact merged commit.
 - [ ] No task-owned branch, worktree, compatibility shim, TODO, deferred phase,
   or queue entry remains in flight.
+
+The five unchecked rows are live closure blockers, not deferred scope:
+
+- fixture-backed `vm.with_dir` and its browser callback adapter remain
+  unavailable;
+- the full plain/dependency/production/comptime/build/package-manager
+  non-escalation matrix still needs one checked adversarial inventory;
+- the private extracted docs artifact has not yet run the flagship and every
+  complete book example in fresh opaque derived-CSP frames;
+- e2e, extracted-artifact smoke, and the serialized full gate must pass on the
+  exact landing commit;
+- task branches, worktrees, compatibility residue, and queue entries can be
+  removed only after that landing.
 
 ## RFC relationships
 
