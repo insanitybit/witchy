@@ -4,9 +4,10 @@
 
 use crate::commands::execution::run_linked_compiled;
 use crate::{
-    ast, codegen, enforce_performance_modes, is_entry_function, link_file_with_mode, linker, parser,
-    run_wasm_test_bytes, typeck,
+    ast, codegen, enforce_performance_modes, interpreter, is_entry_function,
+    link_file_with_mode, linker, parser, run_wasm_test_bytes, runtime, typeck,
 };
+use witchy_testkit::{FixturePlan, TestResult, TestTranscript};
 
 /// Run a program on BOTH backends — the tree-walking interpreter and compiled
 /// WebAssembly — and confirm they produce identical output. Witchy's
@@ -16,7 +17,14 @@ use crate::{
 pub(crate) type TestFailure = (String, String);
 
 pub(crate) const TEST_USAGE: &str =
-    "usage: witchy test [--integration] [--dir <root>]... [--net <addr>]... <file.witchy|dir>";
+    "usage: witchy test [--fixtures <plan.json>] [--backend interpreter|wasm|both] [--integration] [--dir <root>]... [--net <addr>]... <file.witchy|dir>";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TestBackend {
+    Interpreter,
+    Wasm,
+    Both,
+}
 
 #[derive(Clone, Debug, Default)]
 struct TestGrants {
@@ -29,6 +37,8 @@ pub(crate) struct TestOptions {
     path: String,
     integration: bool,
     grants: TestGrants,
+    fixture_path: Option<std::path::PathBuf>,
+    backend: TestBackend,
 }
 
 impl TestOptions {
@@ -37,6 +47,8 @@ impl TestOptions {
         let mut path = None;
         let mut integration = false;
         let mut grants = TestGrants::default();
+        let mut fixture_path = None;
+        let mut backend = None;
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--integration" => {
@@ -57,6 +69,35 @@ impl TestOptions {
                         .ok_or_else(|| "`--net` requires a host or host:port".to_string())?;
                     grants.net_allow.push(addr);
                 }
+                "--fixtures" => {
+                    let plan = args
+                        .next()
+                        .ok_or_else(|| "`--fixtures` requires a fixture plan path".to_string())?;
+                    if fixture_path
+                        .replace(std::path::PathBuf::from(plan))
+                        .is_some()
+                    {
+                        return Err("`--fixtures` may be specified only once".to_string());
+                    }
+                }
+                "--backend" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| "`--backend` requires interpreter, wasm, or both".to_string())?;
+                    let parsed = match value.as_str() {
+                        "interpreter" => TestBackend::Interpreter,
+                        "wasm" => TestBackend::Wasm,
+                        "both" => TestBackend::Both,
+                        _ => {
+                            return Err(format!(
+                                "unknown test backend `{value}`; expected interpreter, wasm, or both"
+                            ));
+                        }
+                    };
+                    if backend.replace(parsed).is_some() {
+                        return Err("`--backend` may be specified only once".to_string());
+                    }
+                }
                 flag if flag.starts_with('-') => {
                     return Err(format!("unknown `witchy test` option `{flag}`"));
                 }
@@ -71,7 +112,27 @@ impl TestOptions {
         if !integration && (!grants.dir_roots.is_empty() || !grants.net_allow.is_empty()) {
             return Err("real `--dir`/`--net` grants require `witchy test --integration`".to_string());
         }
-        Ok(Self { path, integration, grants })
+        if fixture_path.is_some() && integration {
+            return Err(
+                "`--fixtures` and `--integration` are mutually exclusive; fixture tests receive zero real authority"
+                    .to_string(),
+            );
+        }
+        if fixture_path.is_none() && backend.is_some() {
+            return Err("`--backend` currently applies to `--fixtures` runs".to_string());
+        }
+        let backend = backend.unwrap_or(if fixture_path.is_some() {
+            TestBackend::Both
+        } else {
+            TestBackend::Wasm
+        });
+        Ok(Self {
+            path,
+            integration,
+            grants,
+            fixture_path,
+            backend,
+        })
     }
 }
 
@@ -80,6 +141,8 @@ struct TestRunPolicy<'a> {
     integration: bool,
     real_grants: bool,
     grants: &'a TestGrants,
+    fixture_plan: Option<&'a FixturePlan>,
+    backend: TestBackend,
 }
 
 /// Rewrite the placeholder call `witchy_test_target()` in a synthesized test-driver
@@ -146,6 +209,9 @@ fn validate_integration_test_params(
     params: &[ast::Param],
     policy: TestRunPolicy<'_>,
 ) -> Result<(), String> {
+    if let Some(plan) = policy.fixture_plan {
+        return validate_fixture_test_params(test, params, plan);
+    }
     if !policy.integration && !params.is_empty() {
         return Err(format!(
             "test `{test}` declares capability parameter(s); run it with `witchy test --integration` and explicit grants"
@@ -200,6 +266,172 @@ fn validate_integration_test_params(
         ));
     }
     Ok(())
+}
+
+fn validate_fixture_test_params(
+    test: &str,
+    params: &[ast::Param],
+    plan: &FixturePlan,
+) -> Result<(), String> {
+    for param in params {
+        let Some(ty) = param.ty.as_ref() else {
+            return Err(format!(
+                "fixture test `{test}` parameter `{}` needs an explicit capability type",
+                param.name
+            ));
+        };
+        let ast::Type::Named(name, _) = ty.unqualified() else {
+            return Err(format!(
+                "fixture test `{test}` parameter `{}` must be a supported root capability",
+                param.name
+            ));
+        };
+        let declared = match name.as_str() {
+            "Console" => plan.console.is_some(),
+            "Clock" => plan.clock.is_some(),
+            "Rand" => plan.rand.is_some(),
+            "Env" => plan.env.is_some(),
+            "Dir" => plan.filesystem.is_some(),
+            "Fetch" => plan.fetch.is_some(),
+            "SecretStore" => plan.secrets.is_some(),
+            "Exec" => plan.exec.is_some() && plan.filesystem.is_some(),
+            "File" => {
+                return Err(format!(
+                    "fixture test `{test}` parameter `{}` requests a root `File`; fixture File handles must be derived from a declared `Dir`",
+                    param.name
+                ));
+            }
+            "Net" => {
+                return Err(format!(
+                    "fixture test `{test}` parameter `{}` requests raw `Net`, which has no deterministic fixture provider",
+                    param.name
+                ));
+            }
+            other => {
+                return Err(format!(
+                    "fixture test `{test}` parameter `{}` has unsupported fixture type `{other}`",
+                    param.name
+                ));
+            }
+        };
+        if !declared {
+            return Err(format!(
+                "fixture test `{test}` parameter `{}` requires `{name}`, but the fixture plan does not declare it",
+                param.name
+            ));
+        }
+    }
+    Ok(())
+}
+
+struct FixtureBackendOutcome {
+    passed: bool,
+    output: Vec<String>,
+    error: Option<String>,
+    transcript: TestTranscript,
+}
+
+fn run_interpreter_fixtures(
+    module: &ast::Module,
+    plan: &FixturePlan,
+) -> Result<FixtureBackendOutcome, String> {
+    let outcome = interpreter::run_module_fixtures(module.clone(), plan.clone())
+        .map_err(|error| error.to_string())?;
+    let (passed, output, error) = match outcome.result {
+        interpreter::FixtureProgramResult::Passed { output, .. } => (true, output, None),
+        interpreter::FixtureProgramResult::Failed { output, error } => {
+            (false, output, Some(error.to_string()))
+        }
+    };
+    Ok(FixtureBackendOutcome {
+        passed,
+        output,
+        error,
+        transcript: outcome.transcript,
+    })
+}
+
+fn run_wasm_fixtures(
+    module: &ast::Module,
+    plan: &FixturePlan,
+) -> Result<FixtureBackendOutcome, String> {
+    let bytes = match codegen::compile_module_binary(module) {
+        codegen::LoweringOutcome::Lowered(bytes) => bytes,
+        codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
+        codegen::LoweringOutcome::Rejected(error) => return Err(error.to_string()),
+    };
+    let mut runtime = runtime::Runtime::batch().map_err(|error| error.to_string())?;
+    let outcome = runtime
+        .run_fixtures(&bytes, plan.clone(), crate::RUN_MEMORY_PAGES)
+        .map_err(|error| error.to_string())?;
+    let (passed, error) = match outcome.result {
+        runtime::FixtureWasmResult::Passed => (true, None),
+        runtime::FixtureWasmResult::Failed { error } => (false, Some(error)),
+    };
+    Ok(FixtureBackendOutcome {
+        passed,
+        output: outcome.output,
+        error,
+        transcript: outcome.transcript,
+    })
+}
+
+fn same_fixture_evidence(left: &TestTranscript, right: &TestTranscript) -> bool {
+    let same_result_kind = matches!(
+        (&left.result, &right.result),
+        (TestResult::Passed, TestResult::Passed)
+            | (TestResult::Failed { .. }, TestResult::Failed { .. })
+            | (
+                TestResult::InfrastructureError { .. },
+                TestResult::InfrastructureError { .. }
+            )
+    );
+    left.version == right.version
+        && left.seed == right.seed
+        && left.events == right.events
+        && left.stdout == right.stdout
+        && left.stderr == right.stderr
+        && same_result_kind
+}
+
+fn finish_fixture_outcome(outcome: FixtureBackendOutcome) -> Result<(), String> {
+    if outcome.passed {
+        Ok(())
+    } else {
+        Err(outcome
+            .error
+            .unwrap_or_else(|| "fixture test failed without a diagnostic".to_string()))
+    }
+}
+
+fn run_fixture_test(
+    module: &ast::Module,
+    plan: &FixturePlan,
+    backend: TestBackend,
+) -> Result<(), String> {
+    match backend {
+        TestBackend::Interpreter => {
+            finish_fixture_outcome(run_interpreter_fixtures(module, plan)?)
+        }
+        TestBackend::Wasm => finish_fixture_outcome(run_wasm_fixtures(module, plan)?),
+        TestBackend::Both => {
+            let interpreted = run_interpreter_fixtures(module, plan)?;
+            let compiled = run_wasm_fixtures(module, plan)?;
+            if interpreted.passed != compiled.passed
+                || interpreted.output != compiled.output
+                || !same_fixture_evidence(&interpreted.transcript, &compiled.transcript)
+            {
+                return Err(format!(
+                    "fixture backend divergence\ninterpreter: output={:?}, transcript={:?}\nwasm: output={:?}, transcript={:?}",
+                    interpreted.output,
+                    interpreted.transcript,
+                    compiled.output,
+                    compiled.transcript
+                ));
+            }
+            finish_fixture_outcome(compiled)
+        }
+    }
 }
 
 /// Discover and run the tests in an already-linked module (`stem` = the entry file's
@@ -299,7 +531,9 @@ fn run_tests_in_module(
         // The synthesized `main` plus codegen's reachability pruning keep unused
         // effectful production functions out of the test artifact. A module that
         // does not lower is itself a failure: the test cannot run where it ships.
-        let outcome = if policy.integration {
+        let outcome = if let Some(plan) = policy.fixture_plan {
+            run_fixture_test(&m, plan, policy.backend)
+        } else if policy.integration {
             run_linked_compiled(
                 &m,
                 policy.grants.dir_roots.clone(),
@@ -348,14 +582,24 @@ pub(crate) fn run_tests_in_file(path: &str) -> Result<(Vec<String>, Vec<TestFail
         &stem,
         &async_tests,
         &gen_tests,
-        TestRunPolicy { integration: false, real_grants: false, grants: &grants },
+        TestRunPolicy {
+            integration: false,
+            real_grants: false,
+            grants: &grants,
+            fixture_plan: None,
+            backend: TestBackend::Wasm,
+        },
     )
 }
 
 #[cfg(test)]
 mod test_mode_link_tests {
-    use super::run_tests_in_file;
+    use super::{
+        raw_test_shapes, run_tests_in_file, run_tests_in_module, TestBackend, TestGrants,
+        TestOptions, TestRunPolicy,
+    };
     use crate::link_file;
+    use witchy_testkit::{ConsoleFixture, FixturePlan};
 
     fn unique_dir(name: &str) -> std::path::PathBuf {
         let nanos = std::time::SystemTime::now()
@@ -500,6 +744,69 @@ mod test_mode_link_tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn fixture_options_default_to_backend_parity_and_reject_real_grants() {
+        let options = TestOptions::parse([
+            "--fixtures".to_string(),
+            "plan.json".to_string(),
+            "suite.witchy".to_string(),
+        ])
+        .expect("fixture options");
+        assert_eq!(options.backend, TestBackend::Both);
+        assert_eq!(
+            options.fixture_path.as_deref(),
+            Some(std::path::Path::new("plan.json"))
+        );
+        let error = TestOptions::parse([
+            "--fixtures".to_string(),
+            "plan.json".to_string(),
+            "--integration".to_string(),
+            "suite.witchy".to_string(),
+        ])
+        .expect_err("fixtures cannot inherit integration grants");
+        assert!(error.contains("zero real authority"), "{error}");
+    }
+
+    #[test]
+    fn fixture_test_runs_real_witchy_source_with_identical_backend_evidence() {
+        let dir = unique_dir("fixture_backend_parity");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let suite = dir.join("suite.witchy");
+        std::fs::write(
+            &suite,
+            "fn test_console(console: Console):\n    console.print(\"fixture\")\n",
+        )
+        .unwrap();
+        let path = suite.to_str().unwrap();
+        let (linked, stem) =
+            crate::link_file_with_mode(path, crate::linker::LinkMode::Test).expect("test link");
+        let (async_tests, gen_tests) = raw_test_shapes(path);
+        let grants = TestGrants::default();
+        let plan = FixturePlan {
+            console: Some(ConsoleFixture::default()),
+            ..FixturePlan::default()
+        };
+        let (passed, failed) = run_tests_in_module(
+            &linked,
+            &stem,
+            &async_tests,
+            &gen_tests,
+            TestRunPolicy {
+                integration: false,
+                real_grants: false,
+                grants: &grants,
+                fixture_plan: Some(&plan),
+                backend: TestBackend::Both,
+            },
+        )
+        .expect("fixture parity run");
+        assert!(failed.is_empty(), "{failed:?}");
+        assert_eq!(passed, vec!["suite.test_console".to_string()]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[derive(Debug, Default)]
@@ -628,6 +935,24 @@ fn collect_resolved_dependency_roots(
 /// report, and return whether everything passed.
 pub(crate) fn run_tests(options: &TestOptions) -> Result<bool, String> {
     let path = &options.path;
+    let fixture_plan = options
+        .fixture_path
+        .as_ref()
+        .map(|fixture_path| {
+            let bytes = std::fs::read(fixture_path).map_err(|error| {
+                format!(
+                    "cannot read fixture plan `{}`: {error}",
+                    fixture_path.display()
+                )
+            })?;
+            witchy_testkit::parse_fixture_plan(&bytes).map_err(|error| {
+                format!(
+                    "invalid fixture plan `{}`: {error}",
+                    fixture_path.display()
+                )
+            })
+        })
+        .transpose()?;
     let mut files: Vec<String> = Vec::new();
     let meta = std::fs::metadata(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
     let ownership = TestPackageOwnership::resolve(path)?;
@@ -681,6 +1006,8 @@ pub(crate) fn run_tests(options: &TestOptions) -> Result<bool, String> {
             integration: options.integration,
             real_grants: options.integration && owns_test,
             grants,
+            fixture_plan: fixture_plan.as_ref(),
+            backend: options.backend,
         };
         let (passed, failed) = match run_tests_in_module(
             &linked,
