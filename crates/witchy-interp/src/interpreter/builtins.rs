@@ -149,42 +149,33 @@ impl Interpreter {
             }
         }
         #[cfg(feature = "test-fixtures")]
-        if name == intrinsics::CRYPTO_SIGN {
-            return match args {
-                [Value::FixtureSecret(secret), Value::Str(message)] => {
-                    match self.invoke_fixture(witchy_test_host::HostRequest::SecretSign {
-                        secret: *secret,
-                        message: message.to_string(),
-                    })? {
-                        witchy_test_host::HostResponse::String(value) => {
-                            Ok(Some(Value::str(value)))
-                        }
-                        response => err(format!(
-                            "fixture secret sign returned unexpected response {response:?}"
-                        )),
-                    }
+        if name == intrinsics::CRYPTO_SIGN
+            && let [Value::FixtureSecret(secret), Value::Str(message)] = args
+        {
+            return match self.invoke_fixture(witchy_test_host::HostRequest::SecretSign {
+                secret: *secret,
+                message: message.to_string(),
+            })? {
+                witchy_test_host::HostResponse::String(value) => {
+                    Ok(Some(Value::str(value)))
                 }
-                _ => err(format!("{} expects (Secret, message)", intrinsics::CRYPTO_SIGN)),
+                response => err(format!(
+                    "fixture secret sign returned unexpected response {response:?}"
+                )),
             };
         }
         #[cfg(feature = "test-fixtures")]
-        if name == intrinsics::CRYPTO_PUBLIC_KEY {
-            return match args {
-                [Value::FixtureSecret(secret)] => {
-                    match self.invoke_fixture(witchy_test_host::HostRequest::SecretPublicKey {
-                        secret: *secret,
-                    })? {
-                        witchy_test_host::HostResponse::String(value) => {
-                            Ok(Some(Value::str(value)))
-                        }
-                        response => err(format!(
-                            "fixture secret public key returned unexpected response {response:?}"
-                        )),
-                    }
+        if name == intrinsics::CRYPTO_PUBLIC_KEY
+            && let [Value::FixtureSecret(secret)] = args
+        {
+            return match self.invoke_fixture(witchy_test_host::HostRequest::SecretPublicKey {
+                secret: *secret,
+            })? {
+                witchy_test_host::HostResponse::String(value) => {
+                    Ok(Some(Value::str(value)))
                 }
-                _ => err(format!(
-                    "{} expects a Secret",
-                    intrinsics::CRYPTO_PUBLIC_KEY
+                response => err(format!(
+                    "fixture secret public key returned unexpected response {response:?}"
                 )),
             };
         }
@@ -2233,9 +2224,11 @@ impl Interpreter {
                     if !witchy_caps::capabilities::dir_admits(pol, path, false) {
                         return err(format!("`{path}` is not permitted by this Dir capability's entry policy"));
                     }
+                    #[cfg(not(feature = "test-fixtures"))]
+                    let DirValue::Fs(base) = base;
+                    #[cfg(feature = "test-fixtures")]
                     let base = match base {
                         DirValue::Fs(base) => base,
-                        #[cfg(feature = "test-fixtures")]
                         DirValue::Fixture(_) => {
                             return err("exec cannot run programs from a fixture-backed Dir");
                         }

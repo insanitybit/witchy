@@ -257,8 +257,8 @@ fn seed_override_is_reproducible_and_duplicate_json_keys_fail_closed() {
 #[test]
 fn flagship_fixture_example_runs_with_backend_parity_and_checked_output() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let plan = root.join("examples/fixture_showcase/release.fixture.json");
-    let example = root.join("examples/fixture_showcase");
+    let plan = root.join("projects/fixture-showcase/release.fixture.json");
+    let example = root.join("projects/fixture-showcase");
     let output = run(&[
         Path::new("test"),
         Path::new("--fixtures"),
@@ -276,7 +276,9 @@ fn flagship_fixture_example_runs_with_backend_parity_and_checked_output() {
         "{stdout}{}",
         text(&output.stderr)
     );
-    assert!(stdout.contains("test fixture_showcase_test.test_fixture_world ... ok"));
+    assert!(
+        stdout.contains("test fixture_showcase_fixture_test.test_fixture_world ... ok")
+    );
     assert!(stdout.contains("release api at 1700000000000ms in staging"));
     assert!(stdout.contains("1 passed; 0 failed"));
 }

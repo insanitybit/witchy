@@ -27,14 +27,15 @@ stage crates have this maximum direct-dependency graph:
 |---|---|---|---|
 | `witchy-cap-model` | none | KEEP | Keep the capability names, classes, arities, and rights vocabulary dependency-bottom and free of syntax, policy, or runtime behavior. |
 | `witchy-testkit` | `cap-model` | KEEP | Keep deterministic fixture models, validation, provider state machines, expectations, and transcripts authority-free and independent of compiler and runtime stages. |
+| `witchy-test-host` | `testkit` | KEEP | Keep backend-neutral fixture dispatch over opaque handles; adapters in the interpreter, Wasmtime runtime, and browser remain consumers rather than dependencies. |
 | `witchy-syntax` | `cap-model` | KEEP | Keep source, AST, diagnostics, expansion, and base lowering self-contained above the shared capability vocabulary. |
 | `witchy-types` | `cap-model`, `syntax` | KEEP | Expose checked modules and stable type/witness identities instead of pass internals. |
 | `witchy-wir` | `syntax` | NARROW | Retain only the shared diagnostic-template dependency; keep AST and type-system concepts out of WIR. |
 | `witchy-caps` | `cap-model`, `syntax` | KEEP | Keep source-footprint analysis compiler-side and consume the dependency-bottom capability vocabulary without duplicating it. |
 | `witchy-confinement` | none | KEEP | Own the target-neutral derived filesystem, network, Fetch-origin, and syscall-class policy plus target-gated enforcement providers, without depending on compiler stages, Wasmtime, or browsers. The safe Linux Landlock dependency is not a stage edge. |
 | `witchy-lower` | `syntax`, `types`, `wir` | KEEP | Lower typed source to WIR through explicit checked/type-information inputs. |
-| `witchy-runtime` | `caps`, `confinement`, `syntax`, `wir` | EXTRACT | Derive one target-neutral outer policy from concrete runtime grants; keep platform providers outside the Wasmtime kernel. Compiler implementation and Wasmtime bridging have distinct `native/compiler.rs` and `runtime/compiler.rs` seams; inject the service implementation from above until post-compilation enforcement has no parser/type/WIR implementation dependency. |
-| `witchy-interp` | `caps`, `runtime`, `syntax`, `types` | NARROW | Consume runtime values and policy interfaces without importing the native Wasm sandbox. |
+| `witchy-runtime` | `cap-model`, `caps`, `confinement`, `syntax`, `test-host`, `testkit`, `wir` | EXTRACT | Derive one target-neutral outer policy from concrete runtime grants; keep platform providers outside the Wasmtime kernel. The optional fixture adapter consumes the authority-free test host and testkit; compiler implementation and Wasmtime bridging have distinct `native/compiler.rs` and `runtime/compiler.rs` seams. Inject the service implementation from above until post-compilation enforcement has no parser/type/WIR implementation dependency. |
+| `witchy-interp` | `caps`, `runtime`, `syntax`, `test-host`, `testkit`, `types` | NARROW | Consume runtime values and policy interfaces without importing the native Wasm sandbox. Its optional fixture adapter delegates to the same test host and testkit as Wasmtime. |
 
 This graph describes allowed coupling, not desired coupling. In particular,
 the compiler-stage dependencies of `witchy-runtime` are transitional and must

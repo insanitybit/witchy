@@ -11,6 +11,6 @@ pub fn emit_release(console: Console, clock: Clock, env: Env, args: List(String)
 
     console.print(release_line(service, environment, clock.now()))
 
-fn main(console: Console, clock: Clock, env: Env, args: List(String)) -> Int:
-    emit_release(console, clock, env, args)
+fn main(console: Console) -> Int:
+    console.print(release_line("demo", "development", 0))
     0

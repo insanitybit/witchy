@@ -310,7 +310,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
 
 /// The number of host imports the prelude declares (used to split function
 /// indices: imports `0..IMPORT_COUNT`, helpers after).
-pub const IMPORT_COUNT: usize = 96;
+pub const IMPORT_COUNT: usize = 95;
 
 /// Version of the public `"witchy"` host-import contract.
 pub const WITCHY_ABI_VERSION: u32 = 6;

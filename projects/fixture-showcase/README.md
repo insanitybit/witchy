@@ -12,18 +12,18 @@ This rune demonstrates Witchy's testing boundary in one small application:
 Run the pure unit test:
 
 ```sh
-witchy test --filter release_line examples/fixture_showcase
+witchy test --filter release_line projects/fixture-showcase
 ```
 
 Run the capability test with deterministic providers and backend parity:
 
 ```sh
 witchy test \
-  --fixtures examples/fixture_showcase/release.fixture.json \
+  --fixtures projects/fixture-showcase/release.fixture.json \
   --backend both \
   --filter fixture_world \
   --show-output \
-  examples/fixture_showcase
+  projects/fixture-showcase
 ```
 
 The output includes:
