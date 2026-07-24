@@ -7,9 +7,10 @@ use witchy_interp::interpreter::{
 };
 use witchy_syntax::parser::parse_module;
 use witchy_testkit::{
-    ClockFixture, ConsoleFixture, EnvFixture, Expectations, FilesystemEntry,
-    FilesystemFixture, FixtureFamily, FixturePlan, RandFixture, TestResult,
-    U64Text,
+    ClockFixture, ConsoleFixture, EnvFixture, Expectations, FetchFixture,
+    FilesystemEntry, FilesystemFixture, FixtureErrorCode, FixtureFailure,
+    FixtureFamily, FixtureOutcome, FixturePlan, FixtureStep, FixtureValue,
+    RandFixture, TestResult, U64Text,
 };
 
 fn basic_plan() -> FixturePlan {
@@ -159,5 +160,78 @@ fn filesystem_fixture_is_shared_across_dir_and_file_handles() {
             .filter(|event| event.family == FixtureFamily::Filesystem)
             .count()
             >= 7
+    );
+}
+
+#[test]
+fn fetch_fixture_returns_raw_responses_and_provider_error_sentinels() {
+    let success_url = "https://example.com/data";
+    let timeout_url = "https://example.com/slow";
+    let request_step = |url: &str, outcome: FixtureOutcome| FixtureStep {
+        operation: "fetch_send_len".to_owned(),
+        target: Some(url.to_owned()),
+        arguments: BTreeMap::from([
+            ("method".to_owned(), FixtureValue::String("GET".to_owned())),
+            ("headers".to_owned(), FixtureValue::List(Vec::new())),
+            ("body".to_owned(), FixtureValue::Bytes(String::new())),
+        ]),
+        effective_rights: Some(vec!["https://example.com:443".to_owned()]),
+        outcome,
+        required: true,
+    };
+    let success = FixtureOutcome::Return {
+        value: FixtureValue::Map(BTreeMap::from([
+            ("status".to_owned(), FixtureValue::String("200".to_owned())),
+            ("headers".to_owned(), FixtureValue::List(Vec::new())),
+            ("body".to_owned(), FixtureValue::Bytes("66697874757265".to_owned())),
+        ])),
+    };
+    let timeout = FixtureOutcome::Fail {
+        error: FixtureFailure {
+            code: FixtureErrorCode::Timeout,
+            message: "configured timeout".to_owned(),
+        },
+    };
+    let module = parse_module(&format!(
+        "fn main(console: Console, fetch: Fetch):\n    console.print(fetch.send_raw(\"GET\", \"{success_url}\", \"\", \"\"))\n    console.print(fetch.send_raw(\"GET\", \"{timeout_url}\", \"\", \"\"))\n"
+    ))
+    .expect("parse Fetch fixture program");
+    let outcome = run_module_fixtures(
+        module,
+        FixturePlan {
+            version: 1,
+            console: Some(ConsoleFixture::default()),
+            fetch: Some(FetchFixture {
+                origins: vec!["https://example.com:443".to_owned()],
+                script: vec![
+                    request_step(success_url, success),
+                    request_step(timeout_url, timeout),
+                ],
+            }),
+            expectations: Expectations::default(),
+            ..FixturePlan::default()
+        },
+    )
+    .expect("run Fetch fixture");
+    match outcome.result {
+        FixtureProgramResult::Passed { output, .. } => {
+            assert!(output[0].starts_with("HTTP/1.1 200\r\n\r\nfixture"));
+            assert_eq!(
+                output[1],
+                "WITCHY_FETCH_ERROR:timeout:configured timeout"
+            );
+        }
+        FixtureProgramResult::Failed { error, .. } => {
+            panic!("Fetch fixture failed: {error}")
+        }
+    }
+    assert_eq!(
+        outcome
+            .transcript
+            .events
+            .iter()
+            .filter(|event| event.family == FixtureFamily::Fetch)
+            .count(),
+        3
     );
 }

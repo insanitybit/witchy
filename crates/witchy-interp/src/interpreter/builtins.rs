@@ -2803,6 +2803,21 @@ impl Interpreter {
                     };
                     Ok(Some(Value::Cap(Capability::Exec(Some(narrowed)))))
                 }
+                #[cfg(feature = "test-fixtures")]
+                [Value::FixtureFetch(handle), Value::Str(origins)] => {
+                    let origins = origins.lines().map(str::to_owned).collect::<Vec<_>>();
+                    match self.invoke_fixture(HostRequest::FetchOnly {
+                        fetch: *handle,
+                        origins,
+                    })? {
+                        HostResponse::Handle(handle) => {
+                            Ok(Some(Value::FixtureFetch(handle)))
+                        }
+                        other => err(format!(
+                            "internal error: Fetch fixture returned {other:?}"
+                        )),
+                    }
+                }
                 [Value::Cap(Capability::Env(allow)), Value::List(names)] => {
                     let requested = names
                         .iter()
@@ -2865,6 +2880,67 @@ impl Interpreter {
                 ),
             },
             "send_raw" => match args {
+                #[cfg(feature = "test-fixtures")]
+                [
+                    Value::FixtureFetch(handle),
+                    Value::Str(method),
+                    Value::Str(url),
+                    Value::Str(headers),
+                    Value::Str(body),
+                ] => {
+                    let request = witchy_testkit::FixtureFetchRequest {
+                        method: method.as_ref().clone(),
+                        url: url.as_ref().clone(),
+                        headers: headers
+                            .lines()
+                            .filter_map(|line| line.split_once(':'))
+                            .map(|(name, value)| {
+                                (name.trim().to_owned(), value.trim().to_owned())
+                            })
+                            .collect(),
+                        body: body.as_bytes().to_vec(),
+                    };
+                    match self.invoke_fixture_raw(HostRequest::FetchSend {
+                        fetch: *handle,
+                        request,
+                    }) {
+                        Ok(HostResponse::Fetch(response)) => {
+                            let mut raw = format!("HTTP/1.1 {}\r\n", response.status);
+                            for (name, value) in response.headers {
+                                raw.push_str(&name);
+                                raw.push_str(": ");
+                                raw.push_str(&value);
+                                raw.push_str("\r\n");
+                            }
+                            raw.push_str("\r\n");
+                            raw.push_str(&String::from_utf8_lossy(&response.body));
+                            Ok(Some(Value::str(raw)))
+                        }
+                        Ok(other) => err(format!(
+                            "internal error: Fetch fixture returned {other:?}"
+                        )),
+                        Err(failure) => {
+                            let code = match failure.code {
+                                FixtureErrorCode::Denied
+                                | FixtureErrorCode::PermissionDenied => Some("denied"),
+                                FixtureErrorCode::InvalidRequest => Some("invalid-request"),
+                                FixtureErrorCode::Timeout => Some("timeout"),
+                                FixtureErrorCode::Redirect => Some("redirect"),
+                                FixtureErrorCode::Network => Some("network"),
+                                FixtureErrorCode::InvalidData => Some("malformed-response"),
+                                FixtureErrorCode::ResponseTooLarge => Some("response-too-large"),
+                                _ => None,
+                            };
+                            match code {
+                                Some(code) => Ok(Some(Value::str(format!(
+                                    "WITCHY_FETCH_ERROR:{code}:{}",
+                                    failure.message
+                                )))),
+                                None => Err(Self::fixture_failure_error(failure)),
+                            }
+                        }
+                    }
+                }
                 [
                     Value::Fetch(policy),
                     Value::Str(method),

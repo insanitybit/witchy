@@ -44,7 +44,7 @@ use witchy_types::witness::WitnessPlan;
 #[cfg(feature = "test-fixtures")]
 use witchy_test_host::{FixtureHost, HostHandle, HostRequest, HostResponse};
 #[cfg(feature = "test-fixtures")]
-use witchy_testkit::{SourceLocation, U64Text};
+use witchy_testkit::{FixtureErrorCode, FixtureFailure, SourceLocation, U64Text};
 
 mod environment;
 use environment::{Assign, Env};
@@ -130,6 +130,8 @@ pub enum Value {
     Net(Vec<String>),
     /// An origin-scoped HTTP(S) authority shared with the compiled runtime.
     Fetch(witchy_runtime::fetch::FetchPolicy),
+    #[cfg(feature = "test-fixtures")]
+    FixtureFetch(HostHandle),
     /// A single secret's raw bytes (a signing seed, or a value secret like a token)
     /// plus its **use-only** flag (RFC-0060). Unforgeable — minted only by the host
     /// or fetched from a `SecretStore`. The ability to use it *is* authority;
@@ -364,6 +366,8 @@ impl fmt::Display for Value {
             Value::File(_) => write!(f, "<file>"),
             Value::Net(_) => write!(f, "<net>"),
             Value::Fetch(_) => write!(f, "<fetch>"),
+            #[cfg(feature = "test-fixtures")]
+            Value::FixtureFetch(_) => write!(f, "<fetch>"),
             Value::Secret(_, _) => write!(f, "<secret>"),
             Value::SecretStore(_) => write!(f, "<secret store>"),
             Value::Socket(id) => write!(f, "<socket #{id}>"),
@@ -918,16 +922,31 @@ impl Interpreter {
         &mut self,
         request: HostRequest,
     ) -> Result<HostResponse, RuntimeError> {
+        self.invoke_fixture_raw(request)
+            .map_err(Self::fixture_failure_error)
+    }
+
+    #[cfg(feature = "test-fixtures")]
+    fn invoke_fixture_raw(
+        &mut self,
+        request: HostRequest,
+    ) -> Result<HostResponse, FixtureFailure> {
         let source = self.fixture_source();
-        let host = self.fixture_host.as_mut().ok_or_else(|| RuntimeError {
+        let host = self.fixture_host.as_mut().ok_or_else(|| FixtureFailure {
+            code: FixtureErrorCode::ProviderFailure,
             message: "internal error: fixture operation without a fixture host".into(),
         })?;
-        host.invoke(request, source).map_err(|failure| RuntimeError {
+        host.invoke(request, source)
+    }
+
+    #[cfg(feature = "test-fixtures")]
+    fn fixture_failure_error(failure: FixtureFailure) -> RuntimeError {
+        RuntimeError {
             message: format!(
                 "fixture {:?}: {}",
                 failure.code, failure.message
             ),
-        })
+        }
     }
 
     #[cfg(feature = "test-fixtures")]
@@ -968,6 +987,10 @@ impl Interpreter {
                     Value::Dir(DirValue::Fixture(handle), String::new())
                 })
                 .ok_or_else(|| missing("Dir")),
+            Some(Type::Named(name, _)) if name == "Fetch" => roots
+                .fetch
+                .map(Value::FixtureFetch)
+                .ok_or_else(|| missing("Fetch")),
             Some(Type::Named(name, _)) if name == "Net" => Err(RuntimeError {
                 message:
                     "raw `Net` is integration-only and cannot be provided by deterministic fixtures"
@@ -976,7 +999,7 @@ impl Interpreter {
             Some(Type::Named(name, _))
                 if matches!(
                     name.as_str(),
-                    "File" | "Fetch" | "Exec" | "Secret" | "SecretStore" | "Vm"
+                    "File" | "Exec" | "Secret" | "SecretStore" | "Vm"
                 ) =>
             {
                 Err(RuntimeError {
