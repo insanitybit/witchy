@@ -159,11 +159,18 @@ impl FixturePlan {
             let mut total_bytes = 0usize;
             for (name, secret) in &secrets.entries {
                 check_name(&format!("secrets.entries.{name}"), name, limits)?;
+                let bytes = validate_hex(
+                    &format!("secrets.entries.{name}.hex"),
+                    &secret.hex,
+                )?;
+                if secret.usage == crate::SecretUsage::Signing && bytes != 32 {
+                    return Err(invalid(
+                        format!("secrets.entries.{name}.hex"),
+                        "signing secrets must contain exactly 32 bytes",
+                    ));
+                }
                 total_bytes = total_bytes
-                    .checked_add(validate_hex(
-                        &format!("secrets.entries.{name}.hex"),
-                        &secret.hex,
-                    )?)
+                    .checked_add(bytes)
                     .ok_or_else(|| invalid("secrets.entries", "byte count overflow"))?;
             }
             if total_bytes > limits.max_fixture_bytes {

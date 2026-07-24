@@ -171,7 +171,16 @@ pub struct SecretStoreFixture {
 pub struct SecretFixture {
     pub hex: String,
     #[serde(default)]
-    pub revealable: bool,
+    pub usage: SecretUsage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretUsage {
+    #[default]
+    Revealable,
+    UseOnly,
+    Signing,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]

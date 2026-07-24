@@ -265,8 +265,7 @@ pub fn dir_admits(policy: &str, name: &str, is_dir: bool) -> bool {
 /// or a served TLS key) may be consumed by handle but never read back into guest
 /// memory. Defined once here so the interpreter and the compiled runtime surface
 /// the SAME text and cannot drift on this refusal.
-pub const USE_ONLY_SECRET_REVEAL_ERROR: &str =
-    "this secret is use-only and cannot be revealed; use it by handle (e.g. crypto.sign or server.serve_tls)";
+pub use witchy_cap_model::USE_ONLY_SECRET_REVEAL_ERROR;
 
 /// Whether `secret`'s bytes are the host's signing key (the `--signing-key` seed).
 /// A `Secret` equal to the signing key — the bare `Secret` capability, or

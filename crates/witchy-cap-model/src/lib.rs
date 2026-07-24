@@ -190,6 +190,9 @@ pub fn is_build_capability(name: &str) -> bool {
         .is_some_and(|kind| kind.class() == CapabilityClass::Build)
 }
 
+pub const USE_ONLY_SECRET_REVEAL_ERROR: &str =
+    "this secret is use-only and cannot be revealed; use it by handle (e.g. crypto.sign or server.serve_tls)";
+
 const DIR_DENY_ALL: &str = "\u{0}";
 
 /// Narrow a directory entry policy by intersecting each constrained dimension.

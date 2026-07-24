@@ -12,6 +12,7 @@ mod filesystem;
 mod fetch;
 mod json;
 mod model;
+mod secret;
 mod validate;
 
 pub use basic::{FixtureHandle, ProviderResult};
@@ -20,4 +21,5 @@ pub use filesystem::FilesystemProviderResult;
 pub use fetch::FetchProviderResult;
 pub use json::{PlanDecodeError, canonical_plan_json, parse_fixture_plan};
 pub use model::*;
+pub use secret::SecretProviderResult;
 pub use validate::{PlanValidationError, PlanValidationLimits};
