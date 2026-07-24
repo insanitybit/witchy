@@ -253,3 +253,30 @@ fn seed_override_is_reproducible_and_duplicate_json_keys_fail_closed() {
     assert_eq!(rejected.status.code(), Some(2));
     assert!(diagnostic.contains("duplicate"), "{diagnostic}");
 }
+
+#[test]
+fn flagship_fixture_example_runs_with_backend_parity_and_checked_output() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let plan = root.join("examples/fixture_showcase/release.fixture.json");
+    let example = root.join("examples/fixture_showcase");
+    let output = run(&[
+        Path::new("test"),
+        Path::new("--fixtures"),
+        &plan,
+        Path::new("--backend"),
+        Path::new("both"),
+        Path::new("--filter"),
+        Path::new("fixture_world"),
+        Path::new("--show-output"),
+        &example,
+    ]);
+    let stdout = text(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{stdout}{}",
+        text(&output.stderr)
+    );
+    assert!(stdout.contains("test fixture_showcase_test.test_fixture_world ... ok"));
+    assert!(stdout.contains("release api at 1700000000000ms in staging"));
+    assert!(stdout.contains("1 passed; 0 failed"));
+}

@@ -2233,7 +2233,13 @@ impl Interpreter {
                     if !witchy_caps::capabilities::dir_admits(pol, path, false) {
                         return err(format!("`{path}` is not permitted by this Dir capability's entry policy"));
                     }
-                    let DirValue::Fs(base) = base;
+                    let base = match base {
+                        DirValue::Fs(base) => base,
+                        #[cfg(feature = "test-fixtures")]
+                        DirValue::Fixture(_) => {
+                            return err("exec cannot run programs from a fixture-backed Dir");
+                        }
+                    };
                     let prog = base
                         .file(path, true)
                         .map_err(|error| RuntimeError { message: error.0 })?;

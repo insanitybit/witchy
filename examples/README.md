@@ -19,7 +19,7 @@ examples, see the [book tour](../book/src/tour.md).
 
 ## Supported-preview showcase
 
-Start with these five runes. Together they exercise the deliberately supported
+Start with these six runes. Together they exercise the deliberately supported
 preview path without requiring the package registry, browser applications, or
 experimental language features. See [Witchy product status](../PRODUCT-STATUS.md)
 for the promise and trust boundaries behind that label.
@@ -31,6 +31,7 @@ for the promise and trust boundaries behind that label.
 | 3 | [capability_rights](capability_rights/) | Auditable per-function authority and explicit narrowing from broader to narrower rights. |
 | 4 | [file_capability](file_capability/) | Least-authority file handles and the `Dir`/`File` confinement boundary. |
 | 5 | [minigrep](minigrep/) | A useful capability-typed CLI with tests and a checked `trusted-exe` binding plan. |
+| 6 | [fixture_showcase](fixture_showcase/) | Pure unit tests plus deterministic capability fixtures with interpreter/Wasmtime parity and checked effect counts. |
 
 From the repository root, the following sequence checks the source, runs its
 tests, compares both backends, emits and executes portable WASM, inspects
@@ -53,6 +54,10 @@ witchy examples/file_capability/src/file_capability.witchy
 
 witchy examples/minigrep/src/minigrep.witchy nobody examples/data/poem.txt
 witchy test examples/minigrep
+
+witchy test --filter release_line examples/fixture_showcase
+witchy test --fixtures examples/fixture_showcase/release.fixture.json \
+  --backend both --filter fixture_world --show-output examples/fixture_showcase
 ```
 
 `minigrep` also has a checked `trusted-exe` binding plan:

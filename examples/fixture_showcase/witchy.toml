@@ -1,0 +1,5 @@
+[rune]
+name = "fixture_showcase"
+version = "0.1.0"
+
+[dependencies]
