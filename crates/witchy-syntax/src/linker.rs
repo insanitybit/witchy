@@ -2407,8 +2407,6 @@ struct RewriteContext<'a> {
     fns: &'a FnTable,
     bound: &'a HashSet<String>,
     user_std_shadows: &'a HashSet<String>,
-    mode: LinkMode,
-    entry: &'a str,
     definition_site: bool,
 }
 
@@ -2498,10 +2496,6 @@ pub fn mark_definition_site_expr(
         fns: &fns,
         bound: &bound,
         user_std_shadows: &user_std_shadows,
-        // The final consumer link enforces test-only calls with its real mode.
-        // This prepass only proves the definition module could resolve the name.
-        mode: LinkMode::Test,
-        entry: definition_module,
         definition_site: true,
     };
     rewrite_expr(expr, &context, None)
@@ -2516,12 +2510,12 @@ fn rewrite_block(
     fns: &FnTable,
     bound: &HashSet<String>,
     user_std_shadows: &HashSet<String>,
-    mode: LinkMode,
-    entry: &str,
+    _mode: LinkMode,
+    _entry: &str,
 ) -> Result<(), LinkError> {
     let context = RewriteContext {
         module: m, imports: imps, bare_imports, fns, bound,
-        user_std_shadows, mode, entry, definition_site: false,
+        user_std_shadows, definition_site: false,
     };
     rewrite_block_with_context(b, &context)
 }
@@ -3175,8 +3169,6 @@ fn resolve_call(
         fns,
         bound,
         user_std_shadows,
-        mode,
-        entry,
         definition_site: _,
     } = *context;
     if let Some(target) = call_site_expr_target(name) {
@@ -3186,13 +3178,9 @@ fn resolve_call(
         return resolve_call(target, context, line);
     }
     if let Some(resolved) = definition_site_target(name, fns, m, line)? {
-        check_test_only_call(&resolved, m, mode, entry, line)?;
         return Ok(resolved);
     }
-    let accept = |resolved: String| -> Result<String, LinkError> {
-        check_test_only_call(&resolved, m, mode, entry, line)?;
-        Ok(resolved)
-    };
+    let accept = |resolved: String| -> Result<String, LinkError> { Ok(resolved) };
     check_private_intrinsic_call(name, m, line)?;
     if let Some((modname, fname)) = name.split_once('.') {
         // The prelude modules are importable-by-default everywhere (the link
@@ -3338,28 +3326,6 @@ fn definition_site_tag_module(
             line,
         ),
     }
-}
-
-fn check_test_only_call(
-    resolved: &str,
-    module_name: &str,
-    mode: LinkMode,
-    entry: &str,
-    line: Option<u32>,
-) -> Result<(), LinkError> {
-    if resolved != "testing.mock_dir" {
-        return Ok(());
-    }
-    if mode == LinkMode::Test && module_name == entry {
-        return Ok(());
-    }
-    lerr_at(
-        "`testing.mock_dir` is available only inside the entry module run by \
-         `witchy test`; production code and dependency test modules cannot mint \
-         mock capabilities",
-        module_name,
-        line,
-    )
 }
 
 // ---------------------------------------------------------------------------

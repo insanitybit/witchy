@@ -3,7 +3,6 @@
 //! impl continuation; a child module keeps full access to the interpreter's
 //! private fields and helpers.
 
-use std::collections::BTreeMap;
 use std::io::{BufReader, Read, Write};
 use std::net::TcpListener;
 use std::rc::Rc;
@@ -2115,32 +2114,6 @@ impl Interpreter {
             intrinsics::DICT_LENGTH => match args {
                 [Value::Dict(entries)] => Ok(Some(Value::Int(entries.len() as i64))),
                 _ => err("size expects a Dict"),
-            },
-            intrinsics::TESTING_MOCK_DIR => match args {
-                [Value::List(entries)] => {
-                    let mut files = BTreeMap::new();
-                    for entry in entries.iter() {
-                        let Value::Tuple(fields) = entry else {
-                            return err("mock_dir entries must be `(String, String)` pairs");
-                        };
-                        let [Value::Str(path), Value::Str(contents)] = fields.as_slice() else {
-                            return err("mock_dir entries must be `(String, String)` pairs");
-                        };
-                        let path = mock_normalize(path)?;
-                        if path.is_empty() {
-                            return err("mock Dir entry path must name a file");
-                        }
-                        files.insert(path, (**contents).clone());
-                    }
-                    Ok(Some(Value::Dir(
-                        DirValue::Mock {
-                            root: String::new(),
-                            files: Rc::new(files),
-                        },
-                        String::new(),
-                    )))
-                }
-                _ => err("mock_dir expects a list of `(path, contents)` pairs"),
             },
             // Filesystem capability (cap-std style): attenuate to a subdirectory.
             "subtree" => match args {

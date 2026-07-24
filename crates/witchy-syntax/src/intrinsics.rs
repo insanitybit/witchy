@@ -49,7 +49,6 @@ pub enum IntrinsicId {
     ChannelSend,
     ChannelRecv,
     ChannelSelect,
-    TestingMockDir,
     SecretStoreGet,
     SecretStoreRequire,
     MetaItem,
@@ -194,7 +193,6 @@ pub enum IntrinsicSignature {
     BytesIntToInt,
     BytesBytesToBytes,
     BytesIntIntToBytes,
-    EntriesToReadOnlyDir,
     SecretStoreStringToOptionSecret,
     SecretStoreStringToSecret,
     StringToString,
@@ -371,7 +369,6 @@ pub enum IntrinsicEffect {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CapabilityEffect {
     None,
-    ConstructsReadOnlyTestDir,
     ReadsSecretStore,
     UsesSecret,
 }
@@ -434,7 +431,6 @@ const NO_PRIVATE_CALLERS: &[&str] = &[];
 const MESSAGE_BRIDGE_CALLERS: &[&str] = &["chan", "task"];
 const DYNAMIC_BRIDGE_CALLERS: &[&str] = &["dynamic"];
 const BYTES_BRIDGE_CALLERS: &[&str] = &["bytes"];
-const TESTING_BRIDGE_CALLERS: &[&str] = &["testing"];
 const META_BRIDGE_CALLERS: &[&str] = &["meta"];
 const ENCODING_HELPERS: &[&str] = &["encoding"];
 
@@ -490,7 +486,6 @@ pub(crate) const CHANNEL_SEND: &str = "__channel_send";
 pub(crate) const CHANNEL_RECV: &str = "__channel_recv";
 pub(crate) const CHANNEL_SELECT: &str = "__channel_select";
 
-pub const TESTING_MOCK_DIR: &str = "__mock_dir";
 pub const SECRETSTORE_GET: &str = "secretstore.get";
 pub const SECRETSTORE_REQUIRE: &str = "secretstore.require";
 pub(crate) const META_ITEM: &str = "__meta_item";
@@ -1233,21 +1228,6 @@ pub const ALL: &[IntrinsicSpec] = &[
         wir_host_call: None,
         diagnostic_name: "channel select",
         private_callers: MESSAGE_BRIDGE_CALLERS,
-    },
-    IntrinsicSpec {
-        id: IntrinsicId::TestingMockDir,
-        name: TESTING_MOCK_DIR,
-        arity: 1,
-        signature: IntrinsicSignature::EntriesToReadOnlyDir,
-        effect: IntrinsicEffect::Pure,
-        capability_effect: CapabilityEffect::ConstructsReadOnlyTestDir,
-        lowering: IntrinsicLowering::Builtin,
-        runtime: IntrinsicRuntime::InterpreterBuiltin,
-        wir_helpers: &["testing_mock_dir"],
-        dynamic_wir_helpers: false,
-        wir_host_call: None,
-        diagnostic_name: "testing.mock_dir",
-        private_callers: TESTING_BRIDGE_CALLERS,
     },
     IntrinsicSpec {
         id: IntrinsicId::SecretStoreGet,
@@ -3246,10 +3226,6 @@ mod tests {
         for name in BYTES_BRIDGES {
             assert_eq!(private_intrinsic_callers(name), Some(BYTES_BRIDGE_CALLERS));
         }
-        assert_eq!(
-            private_intrinsic_callers(TESTING_MOCK_DIR),
-            Some(TESTING_BRIDGE_CALLERS)
-        );
         assert_eq!(private_intrinsic_callers(META_ITEM), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_EXPR), Some(META_BRIDGE_CALLERS));
         assert_eq!(private_intrinsic_callers(META_FRESH_IDENT), Some(META_BRIDGE_CALLERS));
@@ -3347,7 +3323,6 @@ mod tests {
             CHANNEL_SEND,
             CHANNEL_RECV,
             CHANNEL_SELECT,
-            TESTING_MOCK_DIR,
             META_ITEM,
             META_EXPR,
             META_FRESH_IDENT,

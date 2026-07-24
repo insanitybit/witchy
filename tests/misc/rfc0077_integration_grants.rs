@@ -133,25 +133,6 @@ fn net_parameters_require_an_explicit_allowlist() {
 }
 
 #[test]
-fn mock_capabilities_work_in_both_test_tiers_without_real_grants() {
-    let temp = TempDir::new("mocks");
-    let suite = temp.write(
-        "mock_suite.witchy",
-        "import testing\n\nfn test_mock_dir():\n    let root = testing.mock_dir([(\"config.txt\", \"mocked\")])\n    testing.assert_eq(root.read(\"config.txt\"), \"mocked\")\n",
-    );
-
-    for integration in [false, true] {
-        let mut command = vec![OsString::from("test")];
-        if integration {
-            command.push(OsString::from("--integration"));
-        }
-        command.push(suite.clone().into_os_string());
-        let output = run(command);
-        assert!(output.status.success(), "mock failed with integration={integration}: {}", text(&output));
-    }
-}
-
-#[test]
 fn fixed_clock_and_rand_collaborators_are_deterministic_and_authority_free() {
     let source = r#"import testing
 

@@ -237,7 +237,6 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "dir_read_len" (func $dir_read_len_host (param externref i32) (result i32)))
   (import "witchy" "dir_list_size" (func $dir_list_size_host (param externref) (result i32)))
   (import "witchy" "args_size" (func $args_size_host (result i32)))
-  (import "witchy" "testing_mock_dir" (func $testing_mock_dir_host (param i32) (result externref)))
   (import "witchy" "write_pending_list" (func $write_pending_list_host (param i32)))
   (import "witchy" "vm_par_map_run" (func $vm_par_map_run_host (param i32 i32) (result i32)))
   (import "witchy" "vm_par_map_write" (func $vm_par_map_write_host (param i32)))
@@ -530,7 +529,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "vm_par_map_bytes_write"
         | "vm_with_dir_run"
         | "vm_serve_run"
-        | "testing_mock_dir" => C::InternalService,
+        => C::InternalService,
 
         "heap_register" | "heap_frontier" | "__witchy_abort" => C::RuntimeDiagnostic,
         _ => return None,

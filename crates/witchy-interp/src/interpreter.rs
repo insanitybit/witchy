@@ -65,7 +65,7 @@ mod calls;
 mod places;
 mod capability_values;
 use capability_values::{
-    dir_child_value, dir_file_value, mock_exists, mock_is_dir, mock_join, mock_list, mock_normalize,
+    dir_child_value, dir_file_value, mock_exists, mock_is_dir, mock_join, mock_list,
     net_narrow_to, read_file_value, write_file_value,
 };
 mod reflection;

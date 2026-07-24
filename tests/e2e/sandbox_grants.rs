@@ -172,14 +172,6 @@ fn required_confinement_refuses_an_unsupported_host_before_main() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// RFC-0077 rider 2: authority-free mock constructors are a `witchy test`
-/// privilege, not a generally available way to mint capability-shaped values.
-/// Pin every production entry that can otherwise reach linking or comptime.
-#[test]
-fn testing_mock_dir_is_rejected_by_production_entry_paths() {
-    sandbox::testing_mock_dir_is_rejected_by_production_entry_paths();
-}
-
 #[cfg(unix)]
 #[test]
 fn sandbox_dir_list_rejects_non_utf8_names() {

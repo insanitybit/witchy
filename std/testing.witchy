@@ -69,13 +69,6 @@ impl RandSource for FixedRand:
 pub fn fixed_rand(value: Int) -> FixedRand:
     FixedRand(value)
 
-// A read-only in-memory directory for tests. Each entry is a `(path, contents)`
-// pair; paths are Dir-relative file paths. The returned capability supports the
-// ordinary Dir[Read] surface (`read`, `exists`, `is_dir`, `subtree`, `list`,
-// `read_file`) without granting any real filesystem authority.
-pub fn mock_dir(entries: List((String, String))) -> Dir[Read]:
-    __mock_dir(entries)
-
 // Abort the test with `msg` unless `cond` holds.
 pub fn assert(cond: Bool, msg: String):
     if !cond:

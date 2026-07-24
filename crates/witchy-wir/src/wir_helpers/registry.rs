@@ -413,18 +413,6 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
-        "testing_mock_dir" => Some(WirHelperSpec {
-            func: host_call_helper_typed(
-                "testing_mock_dir",
-                "testing_mock_dir",
-                &[WirTy::List(Box::new(WirTy::Str))],
-                WirTy::Extern,
-            ),
-            helper_deps: &[],
-            import_deps: &["testing_mock_dir"],
-            uses_heap: false,
-            uses_table: false,
-        }),
         "dir_subdir" => Some(WirHelperSpec {
             func: host_call_helper_typed("dir_subdir", "dir_subdir", &[WirTy::Extern, WirTy::Str], WirTy::Extern),
             helper_deps: &[],

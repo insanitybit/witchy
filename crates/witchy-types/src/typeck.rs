@@ -3745,10 +3745,6 @@ impl Checker {
             S::BytesIntIntToBytes => {
                 Some((vec![Ty::Bytes, Ty::Int, Ty::Int], Ty::Bytes))
             }
-            S::EntriesToReadOnlyDir => Some((
-                vec![Ty::List(Box::new(Ty::Tuple(vec![Ty::String, Ty::String])))],
-                Ty::Dir(DirRights { read: true, write: false }),
-            )),
             S::SecretStoreStringToOptionSecret => Some((
                 vec![Ty::Named("SecretStore".into(), Vec::new()), Ty::String],
                 Ty::Named("Option".into(), vec![Ty::Secret]),
