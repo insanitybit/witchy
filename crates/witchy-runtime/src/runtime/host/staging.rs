@@ -152,6 +152,20 @@ fn host_fill_pending(mut caller: Caller<'_, VmState>, out_ptr: i32) -> Result<()
 /// `args_size() -> bytes`: stage the host-provided argv and report the byte
 /// size of its `List(String)` structure (laid out by `write_pending_list`).
 fn host_args_size(mut caller: Caller<'_, VmState>) -> Result<i32> {
+    #[cfg(feature = "test-fixtures")]
+    if caller.data().fixture_host.is_some() {
+        let args = match super::fixture::invoke(&mut caller, witchy_test_host::HostRequest::Argv)? {
+            witchy_test_host::HostResponse::Strings(args) => args,
+            response => {
+                return Err(Error::msg(format!(
+                    "fixture argv returned unexpected response {response:?}"
+                )));
+            }
+        };
+        let size = 4 + 8 * args.len() + args.iter().map(|arg| 4 + arg.len()).sum::<usize>();
+        caller.data_mut().pending_list = Some(args);
+        return Ok(size as i32);
+    }
     let args = caller.data().caps.args.clone();
     let size = 4 + 8 * args.len() + args.iter().map(|a| 4 + a.len()).sum::<usize>();
     caller.data_mut().pending_list = Some(args);

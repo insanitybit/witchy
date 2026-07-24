@@ -2989,6 +2989,8 @@ dependencies = [
  "witchy-caps",
  "witchy-confinement",
  "witchy-syntax",
+ "witchy-test-host",
+ "witchy-testkit",
  "witchy-wir",
 ]
 

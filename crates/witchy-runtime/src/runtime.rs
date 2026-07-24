@@ -690,6 +690,23 @@ pub struct VmState {
     engine: Engine,
     module: Module,
     preempt: bool,
+    #[cfg(feature = "test-fixtures")]
+    pub(crate) fixture_host: Option<witchy_test_host::FixtureHost>,
+}
+
+#[cfg(feature = "test-fixtures")]
+#[derive(Debug)]
+pub enum FixtureWasmResult {
+    Passed,
+    Failed { error: String },
+}
+
+#[cfg(feature = "test-fixtures")]
+#[derive(Debug)]
+pub struct FixtureWasmOutcome {
+    pub result: FixtureWasmResult,
+    pub output: Vec<String>,
+    pub transcript: witchy_testkit::TestTranscript,
 }
 
 /// A spawned VM plus the entrypoint we can drive.
@@ -1031,6 +1048,81 @@ impl Runtime {
         Ok(Vm { store, instance, aborted: false })
     }
 
+    /// Execute one compiled module under an inert deterministic fixture plan.
+    ///
+    /// This entry point owns the fixture host for exactly one run and returns
+    /// its finalized transcript. Production spawn paths cannot accept a plan.
+    #[cfg(feature = "test-fixtures")]
+    pub fn run_fixtures(
+        &mut self,
+        wasm: impl AsRef<[u8]>,
+        plan: witchy_testkit::FixturePlan,
+        memory_pages_max: usize,
+    ) -> Result<FixtureWasmOutcome> {
+        let fixture_host = witchy_test_host::FixtureHost::new(plan)
+            .map_err(|error| Error::msg(format!("invalid fixture plan: {error}")))?;
+        let roots = fixture_host.roots().clone();
+        let id = self.next_id;
+        let module = build_module(&self.engine, wasm.as_ref(), !self.preempt)?;
+        let limits = StoreLimitsBuilder::new()
+            .memory_size(memory_pages_max * 64 * 1024)
+            .build();
+        let caps = Capabilities::none();
+        let mut state = vmstate_from_caps(
+            id,
+            &caps,
+            limits,
+            None,
+            &self.engine,
+            &module,
+            self.preempt,
+            self.compiler_services.clone(),
+        )?;
+        state.fixture_host = Some(fixture_host);
+
+        let mut store = Store::new(&self.engine, state);
+        store.limiter(|state| &mut state.limits);
+        if self.preempt {
+            store.set_epoch_deadline(1);
+        }
+        let mut linker: Linker<VmState> = Linker::new(&self.engine);
+        link_capability_imports(&mut linker, &caps)?;
+        host::fixture::link_basic(&mut linker, &roots)?;
+        let instance = linker.instantiate(&mut store, &module)?;
+        self.next_id += 1;
+        let mut vm = Vm {
+            store,
+            instance,
+            aborted: false,
+        };
+        let execution = vm.run();
+        let output = vm.output();
+        let transcript_result = match &execution {
+            Ok(()) => witchy_testkit::TestResult::Passed,
+            Err(error) => witchy_testkit::TestResult::Failed {
+                message: error.to_string(),
+            },
+        };
+        let transcript = vm
+            .store
+            .data_mut()
+            .fixture_host
+            .take()
+            .expect("fixture run installed a fixture host")
+            .finish(transcript_result);
+        let result = match execution {
+            Ok(()) => FixtureWasmResult::Passed,
+            Err(error) => FixtureWasmResult::Failed {
+                error: error.to_string(),
+            },
+        };
+        Ok(FixtureWasmOutcome {
+            result,
+            output,
+            transcript,
+        })
+    }
+
     /// Run a VM, but preempt it if it runs longer than `budget`. A watchdog
     /// advances the engine epoch once the budget elapses; the VM traps at
     /// its next loop back-edge or call. This is how the scheduler reclaims a
@@ -1316,6 +1408,8 @@ fn vmstate_from_caps(
         engine: engine.clone(),
         module: module.clone(),
         preempt,
+        #[cfg(feature = "test-fixtures")]
+        fixture_host: None,
     })
 }
 

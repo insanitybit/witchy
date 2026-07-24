@@ -12,6 +12,8 @@ witchy-caps = { path = "../witchy-caps" }
 witchy-confinement = { path = "../witchy-confinement" }
 witchy-syntax = { path = "../witchy-syntax" }
 witchy-wir = { path = "../witchy-wir" }
+witchy-test-host = { path = "../witchy-test-host", optional = true }
+witchy-testkit = { path = "../witchy-testkit", optional = true }
 # Pure-Rust crypto for the wasm-safe path (the playground never runs
 # security-critical crypto); the native path below uses aws-lc-rs instead.
 sha2 = "0.11.0"
@@ -46,6 +48,7 @@ cap-std-ext = "5.1.2"
 
 [features]
 native = ["dep:wasmtime", "dep:getrandom"]
+test-fixtures = ["native", "dep:witchy-test-host", "dep:witchy-testkit"]
 # Exposes the scoped TLS-root registry used by the root package's hermetic
 # integration tests. Normal builds cannot add trust anchors through this API.
 test-support = []

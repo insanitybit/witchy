@@ -649,4 +649,124 @@ fn empty_network_grant_remains_distinct_from_no_network_grant() {
     assert!(empty.network.connect_tcp_ports.is_empty());
     assert!(empty.syscall_classes.contains(&SyscallClass::Network));
 }
+
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn compiled_basic_fixtures_use_one_shared_host_and_transcript() {
+    use witchy_testkit::{
+        ClockFixture, ConsoleFixture, EnvFixture, Expectations, FixtureFamily, FixtureOutcome,
+        FixturePlan, FixtureStep, FixtureValue, RandFixture, U64Text,
+    };
+
+    const MODULE: &str = r#"
+        (module
+          (import "witchy" "print" (func $print (param i32 i32)))
+          (import "witchy" "console_read_len" (func $read (result i32)))
+          (import "witchy" "now" (func $now (result i64)))
+          (import "witchy" "now_monotonic" (func $mono (result i64)))
+          (import "witchy" "rand_u64" (func $rand (result i64)))
+          (import "witchy" "mint_env" (func $mint_env (result externref)))
+          (import "witchy" "env_len" (func $env_len (param externref i32) (result i32)))
+          (import "witchy" "args_size" (func $args_size (result i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "hello\0a")
+          (data (i32.const 16) "\04\00\00\00MODE")
+          (func (export "run") (local $env externref)
+            i32.const 0
+            i32.const 6
+            call $print
+            call $read
+            drop
+            call $now
+            drop
+            call $mono
+            drop
+            call $rand
+            drop
+            call $mint_env
+            local.set $env
+            local.get $env
+            i32.const 16
+            call $env_len
+            drop
+            call $args_size
+            drop))
+    "#;
+    let plan = FixturePlan {
+        version: 1,
+        console: Some(ConsoleFixture {
+            script: vec![
+                FixtureStep {
+                    operation: "print".to_owned(),
+                    target: None,
+                    arguments: std::collections::BTreeMap::from([(
+                        "text".to_owned(),
+                        FixtureValue::String("hello".to_owned()),
+                    )]),
+                    effective_rights: Some(vec!["Write".to_owned()]),
+                    outcome: FixtureOutcome::Return {
+                        value: FixtureValue::Null,
+                    },
+                    required: true,
+                },
+                FixtureStep {
+                    operation: "console_read_len".to_owned(),
+                    target: None,
+                    arguments: std::collections::BTreeMap::new(),
+                    effective_rights: Some(vec!["Read".to_owned()]),
+                    outcome: FixtureOutcome::Return {
+                        value: FixtureValue::String("fixture input".to_owned()),
+                    },
+                    required: true,
+                },
+            ],
+        }),
+        clock: Some(ClockFixture {
+            start_ns: Some(U64Text::new(2_000_000)),
+            step_ns: Some(U64Text::new(1_000_000)),
+            repeat_last: false,
+            script: Vec::new(),
+        }),
+        rand: Some(RandFixture {
+            seed: Some(U64Text::new(7)),
+            script: Vec::new(),
+        }),
+        env: Some(EnvFixture {
+            values: std::collections::BTreeMap::from([(
+                "MODE".to_owned(),
+                "fixture".to_owned(),
+            )]),
+            allow: vec!["MODE".to_owned()],
+            script: Vec::new(),
+        }),
+        argv: Some(vec!["one".to_owned()]),
+        expectations: Expectations::default(),
+        ..FixturePlan::default()
+    };
+    let mut runtime = Runtime::batch().expect("runtime");
+    let outcome = runtime
+        .run_fixtures(MODULE, plan, 2)
+        .expect("compiled fixture run");
+    assert!(matches!(outcome.result, FixtureWasmResult::Passed));
+    assert_eq!(outcome.output, vec!["hello"]);
+    assert_eq!(outcome.transcript.stdout, vec!["hello"]);
+    assert_eq!(
+        outcome
+            .transcript
+            .events
+            .iter()
+            .map(|event| (event.family, event.operation.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (FixtureFamily::Env, "mint_env"),
+            (FixtureFamily::Console, "print"),
+            (FixtureFamily::Console, "console_read_len"),
+            (FixtureFamily::Clock, "now"),
+            (FixtureFamily::Clock, "now"),
+            (FixtureFamily::Rand, "rand_u64"),
+            (FixtureFamily::Env, "env_len"),
+            (FixtureFamily::Argv, "args"),
+        ]
+    );
+}
 use std::path::PathBuf;
