@@ -1088,6 +1088,7 @@ impl Runtime {
         let mut linker: Linker<VmState> = Linker::new(&self.engine);
         link_capability_imports(&mut linker, &caps)?;
         host::fixture::link_basic(&mut linker, &roots)?;
+        host::fixture::link_filesystem(&mut linker, &roots)?;
         let instance = linker.instantiate(&mut store, &module)?;
         self.next_id += 1;
         let mut vm = Vm {

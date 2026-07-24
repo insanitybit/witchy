@@ -769,4 +769,82 @@ fn compiled_basic_fixtures_use_one_shared_host_and_transcript() {
         ]
     );
 }
+
+#[cfg(feature = "test-fixtures")]
+#[test]
+fn compiled_filesystem_fixture_uses_opaque_handles_and_shared_state() {
+    use witchy_testkit::{
+        FilesystemEntry, FilesystemFixture, FixtureFamily, FixturePlan,
+    };
+
+    const MODULE: &str = r#"
+        (module
+          (import "witchy" "mint_dir" (func $mint_dir (param i32) (result externref)))
+          (import "witchy" "dir_read_len"
+            (func $dir_read_len (param externref i32) (result i32)))
+          (import "witchy" "dir_write"
+            (func $dir_write (param externref i32 i32)))
+          (import "witchy" "dir_exists"
+            (func $dir_exists (param externref i32) (result i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "\08\00\00\00seed.txt")
+          (data (i32.const 32) "\07\00\00\00new.txt")
+          (data (i32.const 64) "\03\00\00\00new")
+          (func (export "run") (local $dir externref)
+            i32.const 0
+            call $mint_dir
+            local.set $dir
+            local.get $dir
+            i32.const 0
+            call $dir_read_len
+            drop
+            local.get $dir
+            i32.const 32
+            i32.const 64
+            call $dir_write
+            local.get $dir
+            i32.const 32
+            call $dir_exists
+            drop
+            local.get $dir
+            i32.const 32
+            call $dir_read_len
+            drop))
+    "#;
+    let plan = FixturePlan {
+        version: 1,
+        filesystem: Some(FilesystemFixture {
+            entries: std::collections::BTreeMap::from([(
+                "seed.txt".to_owned(),
+                FilesystemEntry::File {
+                    hex: "6f6c64".to_owned(),
+                },
+            )]),
+            rights: vec!["Read".to_owned(), "Write".to_owned()],
+            entry_policy: None,
+            script: Vec::new(),
+        }),
+        ..FixturePlan::default()
+    };
+    let mut runtime = Runtime::batch().expect("runtime");
+    let outcome = runtime
+        .run_fixtures(MODULE, plan, 2)
+        .expect("compiled fixture run");
+    assert!(matches!(outcome.result, FixtureWasmResult::Passed));
+    assert_eq!(
+        outcome
+            .transcript
+            .events
+            .iter()
+            .map(|event| (event.family, event.operation.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (FixtureFamily::Filesystem, "mint_dir"),
+            (FixtureFamily::Filesystem, "dir_read_len"),
+            (FixtureFamily::Filesystem, "dir_write"),
+            (FixtureFamily::Filesystem, "dir_exists"),
+            (FixtureFamily::Filesystem, "dir_read_len"),
+        ]
+    );
+}
 use std::path::PathBuf;
