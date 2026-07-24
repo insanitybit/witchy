@@ -58,6 +58,9 @@ required-features = ["native"]
 # default; the wasm playground builds the library alone with it OFF.
 default = ["native"]
 native = ["dep:wasmtime", "dep:lsp-server", "dep:serde_json", "dep:serde", "dep:toml", "dep:tiny_http", "dep:getrandom", "dep:blake3", "dep:witchy-testkit", "witchy-wir/native", "witchy-caps/native", "witchy-interp/test-fixtures", "witchy-runtime/test-fixtures"]
+# Shared deterministic fixture sessions for the opaque-frame browser host.
+# Kept out of ordinary library builds; the playground/docs builder enables it.
+browser-fixtures = ["dep:serde_json", "dep:witchy-test-host", "dep:witchy-testkit"]
 
 [dependencies]
 # Stage-aligned crates extracted from the monolith (RFC-0018). Re-exported from
@@ -68,6 +71,7 @@ witchy-interp = { path = "crates/witchy-interp" }
 witchy-lower = { path = "crates/witchy-lower" }
 witchy-runtime = { path = "crates/witchy-runtime" }
 witchy-syntax = { path = "crates/witchy-syntax" }
+witchy-test-host = { path = "crates/witchy-test-host", optional = true }
 witchy-testkit = { path = "crates/witchy-testkit", optional = true }
 witchy-types = { path = "crates/witchy-types" }
 witchy-wir = { path = "crates/witchy-wir" }

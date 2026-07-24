@@ -2913,6 +2913,7 @@ dependencies = [
  "witchy-lower",
  "witchy-runtime",
  "witchy-syntax",
+ "witchy-test-host",
  "witchy-testkit",
  "witchy-types",
  "witchy-wir",

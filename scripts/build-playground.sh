@@ -29,7 +29,8 @@ else
 fi
 
 echo "building the witchy interpreter for wasm32-unknown-unknown..."
-"${RUN[@]}" build --release --lib --no-default-features --target wasm32-unknown-unknown
+"${RUN[@]}" build --release --lib --no-default-features --features browser-fixtures \
+    --target wasm32-unknown-unknown
 
 # Honor a custom CARGO_TARGET_DIR — the cargo build above wrote the module there.
 WASM="${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/release/witchy.wasm"

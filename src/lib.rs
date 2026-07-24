@@ -527,6 +527,107 @@ pub fn crypto_verify(op: i32, pk: &str, msg: &str, sig: &str) -> bool {
 // `[u32 len][payload]` (always succeed; bad input already folds to a sentinel).
 // The caller frees each block (`8 + len` or `4 + len`) with `witchy_free`.
 
+#[cfg(any(
+    all(target_arch = "wasm32", feature = "browser-fixtures"),
+    all(test, feature = "browser-fixtures")
+))]
+mod fixture_sessions {
+    use std::collections::BTreeMap;
+
+    use witchy_test_host::FixtureHost;
+    use witchy_testkit::TestResult;
+
+    #[derive(Default)]
+    pub struct FixtureSessionStore {
+        sessions: BTreeMap<u32, FixtureHost>,
+        next_session: u32,
+    }
+
+    impl FixtureSessionStore {
+        pub fn open(&mut self, plan: &[u8]) -> Result<String, String> {
+            let host = FixtureHost::from_plan_json(plan).map_err(|error| error.to_string())?;
+            let roots: serde_json::Value = serde_json::from_str(
+                &host.roots_json().map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| format!("fixture host returned invalid roots JSON: {error}"))?;
+            let session = self.allocate_session()?;
+            self.sessions.insert(session, host);
+            Ok(serde_json::json!({
+                "version": 1,
+                "session": session.to_string(),
+                "host": roots,
+            })
+            .to_string())
+        }
+
+        pub fn invoke(&mut self, session: u32, request: &[u8]) -> Result<String, String> {
+            self.sessions
+                .get_mut(&session)
+                .ok_or_else(|| format!("unknown or finished fixture session {session}"))?
+                .invoke_json(request)
+                .map_err(|error| error.to_string())
+        }
+
+        pub fn finish(&mut self, session: u32, result: TestResult) -> Result<String, String> {
+            self.sessions
+                .remove(&session)
+                .ok_or_else(|| format!("unknown or finished fixture session {session}"))?
+                .finish_json(result)
+                .map_err(|error| error.to_string())
+        }
+
+        pub fn discard(&mut self, session: u32) -> bool {
+            self.sessions.remove(&session).is_some()
+        }
+
+        fn allocate_session(&mut self) -> Result<u32, String> {
+            for _ in 0..=self.sessions.len() {
+                let candidate = self.next_session.max(1);
+                self.next_session = candidate.checked_add(1).unwrap_or(1);
+                if !self.sessions.contains_key(&candidate) {
+                    return Ok(candidate);
+                }
+            }
+            Err("fixture session identifier space exhausted".to_owned())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        const PLAN: &[u8] = br#"{"version":1,"argv":["browser"]}"#;
+
+        #[test]
+        fn sessions_are_isolated_consumed_once_and_explicitly_discardable() {
+            let mut store = FixtureSessionStore::default();
+            let first: serde_json::Value =
+                serde_json::from_str(&store.open(PLAN).expect("first session")).unwrap();
+            let second: serde_json::Value =
+                serde_json::from_str(&store.open(PLAN).expect("second session")).unwrap();
+            let first = first["session"].as_str().unwrap().parse::<u32>().unwrap();
+            let second = second["session"].as_str().unwrap().parse::<u32>().unwrap();
+            assert_ne!(first, second);
+
+            let request = br#"{"version":1,"request":{"operation":"argv"}}"#;
+            assert!(store.invoke(first, request).unwrap().contains("browser"));
+            assert!(store.invoke(second, request).unwrap().contains("browser"));
+            assert!(
+                store
+                    .invoke(u32::MAX, request)
+                    .expect_err("forged session must fail")
+                    .contains("unknown")
+            );
+
+            let transcript = store.finish(first, TestResult::Passed).unwrap();
+            assert!(transcript.contains("\"result\":{\"kind\":\"passed\"}"));
+            assert!(store.finish(first, TestResult::Passed).is_err());
+            assert!(store.discard(second));
+            assert!(!store.discard(second));
+        }
+    }
+}
+
 /// Owned browser-ABI buffers. JavaScript sees only the address of each boxed
 /// slice; Rust retains ownership and validates the exact base/length before a
 /// read or free. That turns the foreign pointer contract into safe, testable
@@ -664,6 +765,14 @@ mod abi_buffers {
 )]
 mod wasm_abi {
     use super::abi_buffers;
+    #[cfg(feature = "browser-fixtures")]
+    use std::cell::RefCell;
+
+    #[cfg(feature = "browser-fixtures")]
+    thread_local! {
+        static FIXTURE_SESSIONS: RefCell<super::fixture_sessions::FixtureSessionStore> =
+            RefCell::new(super::fixture_sessions::FixtureSessionStore::default());
+    }
 
     /// Allocate `len` bytes of guest memory for JS to write into.
     #[unsafe(no_mangle)]
@@ -709,6 +818,96 @@ mod wasm_abi {
             Ok(binary) => pack_tagged(0, &binary),
             Err(message) => pack_tagged(1, message.as_bytes()),
         }
+    }
+
+    /// Open a deterministic fixture session from canonical plan JSON.
+    ///
+    /// Returns tagged JSON containing the nonzero session identifier and roots
+    /// minted from the plan. The session is scoped to this compiler-Wasm
+    /// instance, which the book runs in a fresh opaque-origin frame.
+    #[cfg(feature = "browser-fixtures")]
+    #[unsafe(no_mangle)]
+    pub extern "C" fn witchy_fixture_open(ptr: *const u8, len: usize) -> *mut u8 {
+        let Some(plan) = abi_buffers::read(ptr, len) else {
+            return pack_tagged(1, b"browser ABI rejected an invalid fixture plan buffer");
+        };
+        match FIXTURE_SESSIONS.with(|sessions| sessions.borrow_mut().open(&plan)) {
+            Ok(response) => pack_tagged(0, response.as_bytes()),
+            Err(message) => pack_tagged(1, message.as_bytes()),
+        }
+    }
+
+    /// Dispatch one versioned fixture-host request and return its tagged JSON
+    /// response. Provider failures are successful protocol responses.
+    #[cfg(feature = "browser-fixtures")]
+    #[unsafe(no_mangle)]
+    pub extern "C" fn witchy_fixture_invoke(
+        session: u32,
+        ptr: *const u8,
+        len: usize,
+    ) -> *mut u8 {
+        let Some(request) = abi_buffers::read(ptr, len) else {
+            return pack_tagged(1, b"browser ABI rejected an invalid fixture request buffer");
+        };
+        match FIXTURE_SESSIONS
+            .with(|sessions| sessions.borrow_mut().invoke(session, &request))
+        {
+            Ok(response) => pack_tagged(0, response.as_bytes()),
+            Err(message) => pack_tagged(1, message.as_bytes()),
+        }
+    }
+
+    /// Consume one fixture session and return its canonical transcript JSON.
+    ///
+    /// Status 0 is passed, 1 is failed, and 2 is infrastructure error. Failed
+    /// statuses carry their message in `ptr[..len]`; passed requires no message.
+    #[cfg(feature = "browser-fixtures")]
+    #[unsafe(no_mangle)]
+    pub extern "C" fn witchy_fixture_finish(
+        session: u32,
+        status: i32,
+        ptr: *const u8,
+        len: usize,
+    ) -> *mut u8 {
+        let Some(message) = abi_buffers::read(ptr, len) else {
+            return pack_tagged(1, b"browser ABI rejected an invalid fixture result buffer");
+        };
+        let result = match status {
+            0 if message.is_empty() => witchy_testkit::TestResult::Passed,
+            0 => {
+                return pack_tagged(
+                    1,
+                    b"a passed fixture result must not carry an error message",
+                );
+            }
+            1 | 2 => {
+                let Ok(message) = String::from_utf8(message) else {
+                    return pack_tagged(1, b"fixture result message must be valid UTF-8");
+                };
+                if status == 1 {
+                    witchy_testkit::TestResult::Failed { message }
+                } else {
+                    witchy_testkit::TestResult::InfrastructureError { message }
+                }
+            }
+            _ => return pack_tagged(1, b"unknown fixture result status"),
+        };
+        match FIXTURE_SESSIONS
+            .with(|sessions| sessions.borrow_mut().finish(session, result))
+        {
+            Ok(transcript) => pack_tagged(0, transcript.as_bytes()),
+            Err(message) => pack_tagged(1, message.as_bytes()),
+        }
+    }
+
+    /// Drop an unfinished session after an adapter exception. Returns 1 only
+    /// when a live registry entry was removed; arbitrary identifiers do nothing.
+    #[cfg(feature = "browser-fixtures")]
+    #[unsafe(no_mangle)]
+    pub extern "C" fn witchy_fixture_discard(session: u32) -> i32 {
+        FIXTURE_SESSIONS
+            .with(|sessions| sessions.borrow_mut().discard(session))
+            .into()
     }
 
     /// `float_to_str(x)` → `[u32 len][utf-8]`. Free with `witchy_free(p, 4 + len)`.
