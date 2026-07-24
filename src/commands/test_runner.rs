@@ -218,6 +218,7 @@ impl TestOptions {
 struct TestRunPolicy<'a> {
     integration: bool,
     real_grants: bool,
+    fixture_record_authority: bool,
     grants: &'a TestGrants,
     fixture_plan: Option<&'a FixturePlan>,
     backend: TestBackend,
@@ -231,28 +232,32 @@ struct TestRunPolicy<'a> {
 /// body: bare (`witchy_test_target()`), or as an argument (`task.run(
 /// witchy_test_target())`, the async driver), so this recurses through calls,
 /// method calls, and unary ops.
-fn patch_test_target(expr: &mut ast::Expr, name: &str, params: &[ast::Param]) {
+fn patch_test_target(expr: &mut ast::Expr, name: &str, args: &[ast::Expr]) {
     match expr {
-        ast::Expr::Call { name: n, args } => {
+        ast::Expr::Call {
+            name: n,
+            args: call_args,
+        } => {
             if n == "witchy_test_target" {
                 *n = name.to_string();
-                *args = params
-                    .iter()
-                    .map(|param| ast::Expr::Var(param.name.clone()))
-                    .collect();
+                *call_args = args.to_vec();
             } else {
-                for a in args {
-                    patch_test_target(a, name, params);
+                for arg in call_args {
+                    patch_test_target(arg, name, args);
                 }
             }
         }
-        ast::Expr::MethodCall { receiver, args, .. } => {
-            patch_test_target(receiver, name, params);
-            for a in args {
-                patch_test_target(a, name, params);
+        ast::Expr::MethodCall {
+            receiver,
+            args: call_args,
+            ..
+        } => {
+            patch_test_target(receiver, name, args);
+            for arg in call_args {
+                patch_test_target(arg, name, args);
             }
         }
-        ast::Expr::Unary { expr, .. } => patch_test_target(expr, name, params),
+        ast::Expr::Unary { expr, .. } => patch_test_target(expr, name, args),
         _ => {}
     }
 }
@@ -285,12 +290,20 @@ fn raw_test_shapes(path: &str) -> (std::collections::HashSet<String>, std::colle
 }
 
 fn validate_integration_test_params(
+    linked: &ast::Module,
     test: &str,
     params: &[ast::Param],
     policy: TestRunPolicy<'_>,
 ) -> Result<(), String> {
     if let Some(plan) = policy.fixture_plan {
-        return validate_fixture_test_params(test, params, plan);
+        fixture_driver_shape(
+            linked,
+            test,
+            params,
+            plan,
+            policy.fixture_record_authority,
+        )?;
+        return Ok(());
     }
     if !policy.integration && !params.is_empty() {
         return Err(format!(
@@ -348,11 +361,208 @@ fn validate_integration_test_params(
     Ok(())
 }
 
-fn validate_fixture_test_params(
+#[derive(Debug)]
+struct FixtureDriverShape {
+    params: Vec<ast::Param>,
+    args: Vec<ast::Expr>,
+}
+
+fn fixture_record_type<'a>(
+    module: &'a ast::Module,
+    requested: &str,
+) -> Result<Option<&'a ast::TypeDef>, String> {
+    let exact = module.items.iter().find_map(|item| match item {
+        ast::Item::Type(definition) if definition.name == requested => Some(definition),
+        _ => None,
+    });
+    if exact.is_some() {
+        return Ok(exact);
+    }
+    let matches = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            ast::Item::Type(definition)
+                if definition.name.rsplit('.').next() == Some(requested) =>
+            {
+                Some(definition)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [] => Ok(None),
+        [definition] => Ok(Some(*definition)),
+        _ => Err(format!(
+            "fixture capability record type `{requested}` is ambiguous after linking"
+        )),
+    }
+}
+
+fn fixture_leaf_declared(
+    test: &str,
+    path: &str,
+    ty: &ast::Type,
+    plan: &FixturePlan,
+) -> Result<bool, String> {
+    if typeck::is_args_type(ty) {
+        if plan.argv.is_none() {
+            return Err(format!(
+                "fixture test `{test}` field `{path}` requires argv, but the fixture plan does not declare it"
+            ));
+        }
+        return Ok(true);
+    }
+    let ast::Type::Named(name, _) = ty.unqualified() else {
+        return Ok(false);
+    };
+    let declared = match name.as_str() {
+        "Console" => Some(plan.console.is_some()),
+        "Clock" => Some(plan.clock.is_some()),
+        "Rand" => Some(plan.rand.is_some()),
+        "Env" => Some(plan.env.is_some()),
+        "Dir" => Some(plan.filesystem.is_some()),
+        "Fetch" => Some(plan.fetch.is_some()),
+        "SecretStore" => Some(plan.secrets.is_some()),
+        "Exec" => Some(plan.exec.is_some() && plan.filesystem.is_some()),
+        "File" => {
+            return Err(format!(
+                "fixture test `{test}` field `{path}` requests a root `File`; fixture File handles must be derived from a declared `Dir`"
+            ));
+        }
+        "Secret" => {
+            return Err(format!(
+                "fixture test `{test}` field `{path}` requests a root `Secret`; fixture secrets must be derived from a declared `SecretStore`"
+            ));
+        }
+        "Net" => {
+            return Err(format!(
+                "fixture test `{test}` field `{path}` requests raw `Net`, which has no deterministic fixture provider"
+            ));
+        }
+        _ => None,
+    };
+    match declared {
+        Some(true) => Ok(true),
+        Some(false) => Err(format!(
+            "fixture test `{test}` field `{path}` requires `{name}`, but the fixture plan does not declare it"
+        )),
+        None => Ok(false),
+    }
+}
+
+struct FixtureShapeBuilder<'a> {
+    module: &'a ast::Module,
+    plan: &'a FixturePlan,
+    test: &'a str,
+    params: Vec<ast::Param>,
+    next_root: usize,
+    visiting: std::collections::HashSet<String>,
+}
+
+impl FixtureShapeBuilder<'_> {
+    fn value(
+        &mut self,
+        ty: &ast::Type,
+        path: &str,
+        top_level: bool,
+        record_authority: bool,
+    ) -> Result<ast::Expr, String> {
+        if fixture_leaf_declared(self.test, path, ty, self.plan)? {
+            let name = format!("__fixture_root_{}", self.next_root);
+            self.next_root += 1;
+            self.params.push(ast::Param {
+                name: name.clone(),
+                ty: Some(ty.clone()),
+                convention: ast::Convention::default(),
+                default: None,
+            });
+            return Ok(ast::Expr::Var(name));
+        }
+        let ast::Type::Named(name, arguments) = ty.unqualified() else {
+            return Err(format!(
+                "fixture test `{}` field `{path}` has unsupported fixture type `{}`",
+                self.test,
+                witchy_syntax::format::type_str(ty)
+            ));
+        };
+        let Some(definition) = fixture_record_type(self.module, name)? else {
+            return Err(format!(
+                "fixture test `{}` field `{path}` has unsupported fixture type `{name}`",
+                self.test
+            ));
+        };
+        if top_level && !definition.is_capability {
+            return Err(format!(
+                "fixture test `{}` parameter `{path}` is `{name}`, but only a capability record may aggregate fixture roots",
+                self.test
+            ));
+        }
+        if top_level && !record_authority {
+            return Err(format!(
+                "dependency test `{}` cannot receive compiler-assembled fixture capability record `{name}`",
+                self.test
+            ));
+        }
+        if !arguments.is_empty()
+            || !witchy_syntax::ast::effective_type_def_params(definition).is_empty()
+        {
+            return Err(format!(
+                "fixture test `{}` field `{path}` uses generic capability record `{name}`; fixture record assembly requires a concrete non-generic record",
+                self.test
+            ));
+        }
+        let [variant] = definition.variants.as_slice() else {
+            return Err(format!(
+                "fixture test `{}` field `{path}` uses `{name}`, but fixture aggregation requires one named-field record variant",
+                self.test
+            ));
+        };
+        if variant.field_names.len() != variant.fields.len() || variant.fields.is_empty() {
+            return Err(format!(
+                "fixture test `{}` field `{path}` uses `{name}`, but fixture aggregation requires a non-empty named-field record",
+                self.test
+            ));
+        }
+        if !self.visiting.insert(definition.name.clone()) {
+            return Err(format!(
+                "fixture test `{}` field `{path}` recursively contains capability record `{name}`",
+                self.test
+            ));
+        }
+        let mut fields = Vec::with_capacity(variant.fields.len());
+        for (field_name, field_type) in variant.field_names.iter().zip(&variant.fields) {
+            fields.push(self.value(
+                field_type,
+                &format!("{path}.{field_name}"),
+                false,
+                record_authority,
+            )?);
+        }
+        self.visiting.remove(&definition.name);
+        Ok(ast::Expr::Ctor {
+            name: variant.name.clone(),
+            args: fields,
+        })
+    }
+}
+
+fn fixture_driver_shape(
+    module: &ast::Module,
     test: &str,
     params: &[ast::Param],
     plan: &FixturePlan,
-) -> Result<(), String> {
+    record_authority: bool,
+) -> Result<FixtureDriverShape, String> {
+    let mut builder = FixtureShapeBuilder {
+        module,
+        plan,
+        test,
+        params: Vec::new(),
+        next_root: 0,
+        visiting: std::collections::HashSet::new(),
+    };
+    let mut args = Vec::with_capacity(params.len());
     for param in params {
         let Some(ty) = param.ty.as_ref() else {
             return Err(format!(
@@ -360,48 +570,12 @@ fn validate_fixture_test_params(
                 param.name
             ));
         };
-        let ast::Type::Named(name, _) = ty.unqualified() else {
-            return Err(format!(
-                "fixture test `{test}` parameter `{}` must be a supported root capability",
-                param.name
-            ));
-        };
-        let declared = match name.as_str() {
-            "Console" => plan.console.is_some(),
-            "Clock" => plan.clock.is_some(),
-            "Rand" => plan.rand.is_some(),
-            "Env" => plan.env.is_some(),
-            "Dir" => plan.filesystem.is_some(),
-            "Fetch" => plan.fetch.is_some(),
-            "SecretStore" => plan.secrets.is_some(),
-            "Exec" => plan.exec.is_some() && plan.filesystem.is_some(),
-            "File" => {
-                return Err(format!(
-                    "fixture test `{test}` parameter `{}` requests a root `File`; fixture File handles must be derived from a declared `Dir`",
-                    param.name
-                ));
-            }
-            "Net" => {
-                return Err(format!(
-                    "fixture test `{test}` parameter `{}` requests raw `Net`, which has no deterministic fixture provider",
-                    param.name
-                ));
-            }
-            other => {
-                return Err(format!(
-                    "fixture test `{test}` parameter `{}` has unsupported fixture type `{other}`",
-                    param.name
-                ));
-            }
-        };
-        if !declared {
-            return Err(format!(
-                "fixture test `{test}` parameter `{}` requires `{name}`, but the fixture plan does not declare it",
-                param.name
-            ));
-        }
+        args.push(builder.value(ty, &param.name, true, record_authority)?);
     }
-    Ok(())
+    Ok(FixtureDriverShape {
+        params: builder.params,
+        args,
+    })
 }
 
 struct FixtureBackendOutcome {
@@ -580,10 +754,33 @@ fn run_tests_in_module(
             ));
             continue;
         }
-        if let Err(e) = validate_integration_test_params(&test, &params, policy) {
+        if let Err(e) = validate_integration_test_params(linked, &test, &params, policy) {
             result.failed.push((test, e));
             continue;
         }
+        let driver_shape = if let Some(plan) = policy.fixture_plan {
+            match fixture_driver_shape(
+                linked,
+                &test,
+                &params,
+                plan,
+                policy.fixture_record_authority,
+            ) {
+                Ok(shape) => shape,
+                Err(error) => {
+                    result.failed.push((test, error));
+                    continue;
+                }
+            }
+        } else {
+            FixtureDriverShape {
+                params: params.clone(),
+                args: params
+                    .iter()
+                    .map(|param| ast::Expr::Var(param.name.clone()))
+                    .collect(),
+            }
+        };
         // Synthesize a `main` (replacing any real one) that runs the test, and run it.
         // The test name is linker-qualified (`suite.test_x`), which the parser would
         // read as a method call — so parse a placeholder and patch the call in the AST.
@@ -600,9 +797,9 @@ fn run_tests_in_module(
         let mut driver = parser::parse_module(driver_src).map_err(|e| e.to_string())?;
         for it in &mut driver.items {
             if let ast::Item::Function(f) = it {
-                f.params = params.clone();
+                f.params = driver_shape.params.clone();
                 if let Some(ast::Stmt::Expr(e)) = f.body.stmts.first_mut() {
-                    patch_test_target(e, &test, &params);
+                    patch_test_target(e, &test, &driver_shape.args);
                 }
             }
         }
@@ -715,6 +912,7 @@ pub(crate) fn run_tests_in_file(path: &str) -> Result<(Vec<String>, Vec<TestFail
         TestRunPolicy {
             integration: false,
             real_grants: false,
+            fixture_record_authority: true,
             grants: &grants,
             fixture_plan: None,
             backend: TestBackend::Wasm,
@@ -872,6 +1070,7 @@ mod test_mode_link_tests {
             TestRunPolicy {
                 integration: false,
                 real_grants: false,
+                fixture_record_authority: true,
                 grants: &grants,
                 fixture_plan: Some(&plan),
                 backend: TestBackend::Both,
@@ -889,6 +1088,119 @@ mod test_mode_link_tests {
         assert_eq!(transcript.stdout, vec!["fixture".to_string()]);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fixture_test_assembles_owned_capability_record_on_both_backends() {
+        let dir = unique_dir("fixture_capability_record");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let suite = dir.join("suite.witchy");
+        std::fs::write(
+            &suite,
+            "capability TestRoot:\n    console: Console\n    args: List(String)\n\n\
+             fn test_record(root: TestRoot):\n    \
+             match root:\n        \
+             TestRoot(console, args) -> console.print(args.at(0))\n",
+        )
+        .unwrap();
+        let path = suite.to_str().unwrap();
+        let (linked, stem) =
+            crate::link_file_with_mode(path, crate::linker::LinkMode::Test).expect("test link");
+        let (async_tests, gen_tests) = raw_test_shapes(path);
+        let grants = TestGrants::default();
+        let plan = FixturePlan {
+            console: Some(ConsoleFixture::default()),
+            argv: Some(vec!["record-root".to_string()]),
+            ..FixturePlan::default()
+        };
+        let result = run_tests_in_module(
+            &linked,
+            &stem,
+            &async_tests,
+            &gen_tests,
+            TestRunPolicy {
+                integration: false,
+                real_grants: false,
+                fixture_record_authority: true,
+                grants: &grants,
+                fixture_plan: Some(&plan),
+                backend: TestBackend::Both,
+                filter: None,
+                list: false,
+            },
+        )
+        .expect("owned fixture capability record run");
+        assert!(result.failed.is_empty(), "{:?}", result.failed);
+        assert_eq!(
+            result.output.get("suite.test_record"),
+            Some(&vec!["record-root".to_string()])
+        );
+
+        let denied = run_tests_in_module(
+            &linked,
+            &stem,
+            &async_tests,
+            &gen_tests,
+            TestRunPolicy {
+                integration: false,
+                real_grants: false,
+                fixture_record_authority: false,
+                grants: &grants,
+                fixture_plan: Some(&plan),
+                backend: TestBackend::Both,
+                filter: None,
+                list: false,
+            },
+        )
+        .expect("dependency denial is an ordinary test failure");
+        assert!(denied.passed.is_empty(), "{:?}", denied.passed);
+        assert_eq!(denied.failed.len(), 1);
+        assert!(
+            denied.failed[0]
+                .1
+                .contains("dependency test")
+                && denied.failed[0]
+                    .1
+                    .contains("compiler-assembled fixture capability record"),
+            "{:?}",
+            denied.failed
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fixture_capability_record_recursion_is_rejected_before_execution() {
+        let module = crate::parser::parse_module(
+            "capability RecursiveRoot:\n    next: RecursiveRoot\n\n\
+             fn test_recursive(root: RecursiveRoot):\n    nil\n",
+        )
+        .expect("recursive capability record parses");
+        let function = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                crate::ast::Item::Function(function)
+                    if function.name == "test_recursive" =>
+                {
+                    Some(function)
+                }
+                _ => None,
+            })
+            .expect("test function");
+        let error = super::fixture_driver_shape(
+            &module,
+            "test_recursive",
+            &function.params,
+            &FixturePlan::default(),
+            true,
+        )
+        .expect_err("recursive fixture aggregate must terminate with a diagnostic");
+        assert!(
+            error.contains("recursively contains capability record `RecursiveRoot`"),
+            "{error}"
+        );
     }
 }
 
@@ -1112,6 +1424,7 @@ pub(crate) fn run_tests(options: &TestOptions) -> Result<bool, String> {
         let policy = TestRunPolicy {
             integration: options.integration,
             real_grants: options.integration && owns_test,
+            fixture_record_authority: owns_test,
             grants,
             fixture_plan: fixture_plan.as_ref(),
             backend: options.backend,
