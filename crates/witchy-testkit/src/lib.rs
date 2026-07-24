@@ -6,10 +6,12 @@
 
 #![deny(unsafe_code)]
 
+mod engine;
 mod json;
 mod model;
 mod validate;
 
+pub use engine::{FixtureCall, FixtureSession};
 pub use json::{PlanDecodeError, canonical_plan_json, parse_fixture_plan};
 pub use model::*;
 pub use validate::{PlanValidationError, PlanValidationLimits};

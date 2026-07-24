@@ -181,6 +181,32 @@ impl FixturePlan {
             &self.expectations.absent_families,
         )?;
         check_count(
+            "expectations.ordered_calls",
+            self.expectations.ordered_calls.len(),
+            limits,
+        )?;
+        for (index, expectation) in self.expectations.ordered_calls.iter().enumerate() {
+            check_name(
+                &format!("expectations.ordered_calls[{index}].operation"),
+                &expectation.operation,
+                limits,
+            )?;
+            if let Some(target) = &expectation.target {
+                check_string(
+                    &format!("expectations.ordered_calls[{index}].target"),
+                    target,
+                    limits,
+                )?;
+            }
+            if let Some(rights) = &expectation.effective_rights {
+                check_unique_strings(
+                    &format!("expectations.ordered_calls[{index}].effective_rights"),
+                    rights,
+                    limits,
+                )?;
+            }
+        }
+        check_count(
             "expectations.calls",
             self.expectations.calls.len(),
             limits,
@@ -243,6 +269,9 @@ fn validate_step(
     limits: &PlanValidationLimits,
 ) -> Result<(), PlanValidationError> {
     check_name(&format!("{path}.operation"), &step.operation, limits)?;
+    if let Some(target) = &step.target {
+        check_string(&format!("{path}.target"), target, limits)?;
+    }
     check_count(
         &format!("{path}.arguments"),
         step.arguments.len(),
@@ -256,6 +285,9 @@ fn validate_step(
             0,
             limits,
         )?;
+    }
+    if let Some(rights) = &step.effective_rights {
+        check_unique_strings(&format!("{path}.effective_rights"), rights, limits)?;
     }
     let value = match &step.outcome {
         crate::FixtureOutcome::Return { value } => value,
@@ -505,7 +537,9 @@ mod tests {
                 start_ns: Some(U64Text::new(1)),
                 script: vec![FixtureStep {
                     operation: "now".into(),
+                    target: None,
                     arguments: Default::default(),
+                    effective_rights: None,
                     outcome: crate::FixtureOutcome::Return {
                         value: FixtureValue::String("2".into()),
                     },
@@ -525,7 +559,9 @@ mod tests {
                 seed: Some(U64Text::new(7)),
                 script: vec![FixtureStep {
                     operation: "rand_u64".into(),
+                    target: None,
                     arguments: Default::default(),
+                    effective_rights: None,
                     outcome: crate::FixtureOutcome::Return {
                         value: FixtureValue::String("8".into()),
                     },

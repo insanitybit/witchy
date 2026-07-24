@@ -59,9 +59,22 @@ pub struct Expectations {
     #[serde(default)]
     pub require_complete_scripts: bool,
     #[serde(default)]
+    pub ordered_calls: Vec<OrderedCallExpectation>,
+    #[serde(default)]
     pub calls: Vec<CallExpectation>,
     #[serde(default)]
     pub absent_families: Vec<FixtureFamily>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrderedCallExpectation {
+    pub family: FixtureFamily,
+    pub operation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_rights: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -181,8 +194,12 @@ pub struct VmFixture {
 #[serde(deny_unknown_fields)]
 pub struct FixtureStep {
     pub operation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
     #[serde(default)]
     pub arguments: BTreeMap<String, FixtureValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_rights: Option<Vec<String>>,
     pub outcome: FixtureOutcome,
     #[serde(default = "default_true")]
     pub required: bool,

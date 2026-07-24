@@ -208,7 +208,7 @@ mod tests {
         .expect("valid plan");
         assert_eq!(
             canonical_plan_json(&plan).expect("canonical plan"),
-            r#"{"version":1,"rand":{"seed":"9","script":[]},"env":{"values":{"A":"first","Z":"last"},"allow":["A"],"script":[]},"expectations":{"require_complete_scripts":false,"calls":[],"absent_families":[]}}"#
+            r#"{"version":1,"rand":{"seed":"9","script":[]},"env":{"values":{"A":"first","Z":"last"},"allow":["A"],"script":[]},"expectations":{"require_complete_scripts":false,"ordered_calls":[],"calls":[],"absent_families":[]}}"#
         );
     }
 }
