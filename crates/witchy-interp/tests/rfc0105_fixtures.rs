@@ -235,3 +235,145 @@ fn fetch_fixture_returns_raw_responses_and_provider_error_sentinels() {
         3
     );
 }
+
+#[test]
+fn secret_fixtures_keep_material_opaque_and_preserve_scripted_crypto() {
+    let reveal_module = parse_module(
+        "import crypto\nimport secretstore\n\nfn main(console: Console, secrets: SecretStore):\n    let token = secretstore.require(secrets, \"token\")\n    console.print(crypto.reveal(token))\n",
+    )
+    .expect("parse reveal fixture program");
+    let reveal = run_module_fixtures(
+        reveal_module,
+        FixturePlan {
+            version: 1,
+            console: Some(ConsoleFixture::default()),
+            secrets: Some(witchy_testkit::SecretStoreFixture {
+                entries: BTreeMap::from([(
+                    "token".to_owned(),
+                    witchy_testkit::SecretFixture {
+                        hex: "666978747572652d746f6b656e".to_owned(),
+                        usage: witchy_testkit::SecretUsage::Revealable,
+                    },
+                )]),
+                script: Vec::new(),
+            }),
+            expectations: Expectations::default(),
+            ..FixturePlan::default()
+        },
+    )
+    .expect("run reveal fixture");
+    match reveal.result {
+        FixtureProgramResult::Passed { output, .. } => {
+            assert_eq!(output, vec!["fixture-token"]);
+        }
+        FixtureProgramResult::Failed { error, .. } => {
+            panic!("secret reveal fixture failed: {error}")
+        }
+    }
+
+    let lookup = FixtureStep {
+        operation: "secretstore_lookup".to_owned(),
+        target: Some("signing".to_owned()),
+        arguments: BTreeMap::new(),
+        effective_rights: None,
+        outcome: FixtureOutcome::Return {
+            value: FixtureValue::String("Secret".to_owned()),
+        },
+        required: true,
+    };
+    let sign = FixtureStep {
+        operation: "crypto.sign".to_owned(),
+        target: None,
+        arguments: BTreeMap::from([(
+            "message".to_owned(),
+            FixtureValue::String("payload".to_owned()),
+        )]),
+        effective_rights: None,
+        outcome: FixtureOutcome::Return {
+            value: FixtureValue::String("fixture-signature".to_owned()),
+        },
+        required: true,
+    };
+    let public_key = FixtureStep {
+        operation: "crypto.public_key".to_owned(),
+        target: None,
+        arguments: BTreeMap::new(),
+        effective_rights: None,
+        outcome: FixtureOutcome::Return {
+            value: FixtureValue::String("fixture-public-key".to_owned()),
+        },
+        required: true,
+    };
+    let scripted_module = parse_module(
+        "import crypto\nimport secretstore\n\nfn main(console: Console, secrets: SecretStore):\n    let signing = secretstore.require(secrets, \"signing\")\n    console.print(crypto.sign(signing, \"payload\"))\n    console.print(crypto.public_key(signing))\n",
+    )
+    .expect("parse scripted crypto fixture program");
+    let scripted = run_module_fixtures(
+        scripted_module,
+        FixturePlan {
+            version: 1,
+            console: Some(ConsoleFixture::default()),
+            secrets: Some(witchy_testkit::SecretStoreFixture {
+                entries: BTreeMap::from([(
+                    "signing".to_owned(),
+                    witchy_testkit::SecretFixture {
+                        hex: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+                            .to_owned(),
+                        usage: witchy_testkit::SecretUsage::Signing,
+                    },
+                )]),
+                script: vec![lookup, sign, public_key],
+            }),
+            expectations: Expectations::default(),
+            ..FixturePlan::default()
+        },
+    )
+    .expect("run scripted crypto fixture");
+    match scripted.result {
+        FixtureProgramResult::Passed { output, .. } => {
+            assert_eq!(
+                output,
+                vec!["fixture-signature", "fixture-public-key"]
+            );
+        }
+        FixtureProgramResult::Failed { error, .. } => {
+            panic!("scripted crypto fixture failed: {error}")
+        }
+    }
+
+    let use_only_module = parse_module(
+        "import crypto\nimport secretstore\n\nfn main(secrets: SecretStore):\n    crypto.reveal(secretstore.require(secrets, \"token\"))\n",
+    )
+    .expect("parse use-only fixture program");
+    let use_only = run_module_fixtures(
+        use_only_module,
+        FixturePlan {
+            version: 1,
+            secrets: Some(witchy_testkit::SecretStoreFixture {
+                entries: BTreeMap::from([(
+                    "token".to_owned(),
+                    witchy_testkit::SecretFixture {
+                        hex: "736563726574".to_owned(),
+                        usage: witchy_testkit::SecretUsage::UseOnly,
+                    },
+                )]),
+                script: Vec::new(),
+            }),
+            expectations: Expectations::default(),
+            ..FixturePlan::default()
+        },
+    )
+    .expect("run use-only fixture");
+    match use_only.result {
+        FixtureProgramResult::Passed { .. } => {
+            panic!("use-only secret was unexpectedly revealed")
+        }
+        FixtureProgramResult::Failed { error, .. } => {
+            assert!(
+                error
+                    .message
+                    .contains(witchy_caps::capabilities::USE_ONLY_SECRET_REVEAL_ERROR)
+            );
+        }
+    }
+}

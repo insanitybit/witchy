@@ -27,6 +27,26 @@ impl Interpreter {
         // here (not in `native`) because a `SecretStore` is not a `NativeValue`.
         if name == intrinsics::SECRETSTORE_GET {
             return match args {
+                #[cfg(feature = "test-fixtures")]
+                [Value::FixtureSecretStore(store), Value::Str(key)] => {
+                    match self.invoke_fixture(witchy_test_host::HostRequest::SecretStoreLookup {
+                        store: *store,
+                        name: key.to_string(),
+                    })? {
+                        witchy_test_host::HostResponse::OptionalHandle(secret) => Ok(Some(
+                            match secret {
+                                Some(secret) => Value::Ctor {
+                                    name: "Some".into(),
+                                    fields: Rc::new(vec![Value::FixtureSecret(secret)]),
+                                },
+                                None => Value::ctor("None", Vec::new()),
+                            },
+                        )),
+                        response => err(format!(
+                            "fixture SecretStore lookup returned unexpected response {response:?}"
+                        )),
+                    }
+                }
                 [Value::SecretStore(map), Value::Str(key)] => Ok(Some(match map.get(key.as_str()) {
                     Some((bytes, use_only)) => Value::Ctor {
                         name: "Some".into(),
@@ -76,6 +96,20 @@ impl Interpreter {
         // or a loud error if absent (a configuration mistake, not an `Option`).
         if name == intrinsics::SECRETSTORE_REQUIRE {
             return match args {
+                #[cfg(feature = "test-fixtures")]
+                [Value::FixtureSecretStore(store), Value::Str(key)] => {
+                    match self.invoke_fixture(witchy_test_host::HostRequest::SecretStoreRequire {
+                        store: *store,
+                        name: key.to_string(),
+                    })? {
+                        witchy_test_host::HostResponse::Handle(secret) => {
+                            Ok(Some(Value::FixtureSecret(secret)))
+                        }
+                        response => err(format!(
+                            "fixture SecretStore require returned unexpected response {response:?}"
+                        )),
+                    }
+                }
                 [Value::SecretStore(map), Value::Str(key)] => match map.get(key.as_str()) {
                     Some((bytes, use_only)) => Ok(Some(Value::Secret(bytes.clone(), *use_only))),
                     None => err(format!("required secret `{key}` was not granted")),
@@ -91,6 +125,17 @@ impl Interpreter {
         // only named value-secrets are. Mirrors the WASM host (`host_crypto_reveal_len`)
         // through the one shared identity rule so the backends can't drift.
         if name == intrinsics::CRYPTO_REVEAL {
+            #[cfg(feature = "test-fixtures")]
+            if let [Value::FixtureSecret(secret)] = args {
+                return match self.invoke_fixture(witchy_test_host::HostRequest::SecretReveal {
+                    secret: *secret,
+                })? {
+                    witchy_test_host::HostResponse::String(value) => Ok(Some(Value::str(value))),
+                    response => err(format!(
+                        "fixture secret reveal returned unexpected response {response:?}"
+                    )),
+                };
+            }
             if let [Value::Secret(bytes, use_only)] = args {
                 // (RFC-0060) A use-only secret is consumable by handle but never revealable.
                 if *use_only {
@@ -103,6 +148,46 @@ impl Interpreter {
                     return err("the signing key is not revealable; use crypto.sign / crypto.public_key");
                 }
             }
+        }
+        #[cfg(feature = "test-fixtures")]
+        if name == intrinsics::CRYPTO_SIGN {
+            return match args {
+                [Value::FixtureSecret(secret), Value::Str(message)] => {
+                    match self.invoke_fixture(witchy_test_host::HostRequest::SecretSign {
+                        secret: *secret,
+                        message: message.to_string(),
+                    })? {
+                        witchy_test_host::HostResponse::String(value) => {
+                            Ok(Some(Value::str(value)))
+                        }
+                        response => err(format!(
+                            "fixture secret sign returned unexpected response {response:?}"
+                        )),
+                    }
+                }
+                _ => err(format!("{} expects (Secret, message)", intrinsics::CRYPTO_SIGN)),
+            };
+        }
+        #[cfg(feature = "test-fixtures")]
+        if name == intrinsics::CRYPTO_PUBLIC_KEY {
+            return match args {
+                [Value::FixtureSecret(secret)] => {
+                    match self.invoke_fixture(witchy_test_host::HostRequest::SecretPublicKey {
+                        secret: *secret,
+                    })? {
+                        witchy_test_host::HostResponse::String(value) => {
+                            Ok(Some(Value::str(value)))
+                        }
+                        response => err(format!(
+                            "fixture secret public key returned unexpected response {response:?}"
+                        )),
+                    }
+                }
+                _ => err(format!(
+                    "{} expects a Secret",
+                    intrinsics::CRYPTO_PUBLIC_KEY
+                )),
+            };
         }
         // Native stdlib modules (crypto, …): pure, stateless functions reached by
         // their qualified name (`crypto.sha256`). Dispatched through the registry

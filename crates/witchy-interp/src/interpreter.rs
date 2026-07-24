@@ -132,6 +132,10 @@ pub enum Value {
     Fetch(witchy_runtime::fetch::FetchPolicy),
     #[cfg(feature = "test-fixtures")]
     FixtureFetch(HostHandle),
+    #[cfg(feature = "test-fixtures")]
+    FixtureSecret(HostHandle),
+    #[cfg(feature = "test-fixtures")]
+    FixtureSecretStore(HostHandle),
     /// A single secret's raw bytes (a signing seed, or a value secret like a token)
     /// plus its **use-only** flag (RFC-0060). Unforgeable — minted only by the host
     /// or fetched from a `SecretStore`. The ability to use it *is* authority;
@@ -368,6 +372,10 @@ impl fmt::Display for Value {
             Value::Fetch(_) => write!(f, "<fetch>"),
             #[cfg(feature = "test-fixtures")]
             Value::FixtureFetch(_) => write!(f, "<fetch>"),
+            #[cfg(feature = "test-fixtures")]
+            Value::FixtureSecret(_) => write!(f, "<secret>"),
+            #[cfg(feature = "test-fixtures")]
+            Value::FixtureSecretStore(_) => write!(f, "<secret store>"),
             Value::Secret(_, _) => write!(f, "<secret>"),
             Value::SecretStore(_) => write!(f, "<secret store>"),
             Value::Socket(id) => write!(f, "<socket #{id}>"),
@@ -991,6 +999,10 @@ impl Interpreter {
                 .fetch
                 .map(Value::FixtureFetch)
                 .ok_or_else(|| missing("Fetch")),
+            Some(Type::Named(name, _)) if name == "SecretStore" => roots
+                .secrets
+                .map(Value::FixtureSecretStore)
+                .ok_or_else(|| missing("SecretStore")),
             Some(Type::Named(name, _)) if name == "Net" => Err(RuntimeError {
                 message:
                     "raw `Net` is integration-only and cannot be provided by deterministic fixtures"
@@ -999,7 +1011,7 @@ impl Interpreter {
             Some(Type::Named(name, _))
                 if matches!(
                     name.as_str(),
-                    "File" | "Exec" | "Secret" | "SecretStore" | "Vm"
+                    "File" | "Exec" | "Secret" | "Vm"
                 ) =>
             {
                 Err(RuntimeError {
