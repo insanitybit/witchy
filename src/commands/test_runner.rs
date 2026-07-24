@@ -17,13 +17,19 @@ use witchy_testkit::{FixturePlan, TestResult, TestTranscript};
 pub(crate) type TestFailure = (String, String);
 
 pub(crate) const TEST_USAGE: &str =
-    "usage: witchy test [--fixtures <plan.json>] [--backend interpreter|wasm|both] [--integration] [--dir <root>]... [--net <addr>]... <file.witchy|dir>";
+    "usage: witchy test [--fixtures <plan.json>] [--backend interpreter|wasm|both] [--filter <text>] [--list] [--show-output] [--seed <u64>] [--format human|json] [--integration] [--dir <root>]... [--net <addr>]... <file.witchy|dir>";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TestBackend {
     Interpreter,
     Wasm,
     Both,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TestOutputFormat {
+    Human,
+    Json,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -39,6 +45,11 @@ pub(crate) struct TestOptions {
     grants: TestGrants,
     fixture_path: Option<std::path::PathBuf>,
     backend: TestBackend,
+    filter: Option<String>,
+    list: bool,
+    show_output: bool,
+    seed: Option<u64>,
+    format: TestOutputFormat,
 }
 
 impl TestOptions {
@@ -49,6 +60,11 @@ impl TestOptions {
         let mut grants = TestGrants::default();
         let mut fixture_path = None;
         let mut backend = None;
+        let mut filter = None;
+        let mut list = false;
+        let mut show_output = false;
+        let mut seed = None;
+        let mut format = None;
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--integration" => {
@@ -98,6 +114,57 @@ impl TestOptions {
                         return Err("`--backend` may be specified only once".to_string());
                     }
                 }
+                "--filter" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| "`--filter` requires a non-empty substring".to_string())?;
+                    if value.is_empty() {
+                        return Err("`--filter` requires a non-empty substring".to_string());
+                    }
+                    if filter.replace(value).is_some() {
+                        return Err("`--filter` may be specified only once".to_string());
+                    }
+                }
+                "--list" => {
+                    if list {
+                        return Err("`--list` may be specified only once".to_string());
+                    }
+                    list = true;
+                }
+                "--show-output" => {
+                    if show_output {
+                        return Err("`--show-output` may be specified only once".to_string());
+                    }
+                    show_output = true;
+                }
+                "--seed" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| "`--seed` requires an unsigned 64-bit integer".to_string())?;
+                    let parsed = value.parse::<u64>().map_err(|_| {
+                        format!("invalid test seed `{value}`; expected an unsigned 64-bit integer")
+                    })?;
+                    if seed.replace(parsed).is_some() {
+                        return Err("`--seed` may be specified only once".to_string());
+                    }
+                }
+                "--format" => {
+                    let value = args
+                        .next()
+                        .ok_or_else(|| "`--format` requires human or json".to_string())?;
+                    let parsed = match value.as_str() {
+                        "human" => TestOutputFormat::Human,
+                        "json" => TestOutputFormat::Json,
+                        _ => {
+                            return Err(format!(
+                                "unknown test output format `{value}`; expected human or json"
+                            ));
+                        }
+                    };
+                    if format.replace(parsed).is_some() {
+                        return Err("`--format` may be specified only once".to_string());
+                    }
+                }
                 flag if flag.starts_with('-') => {
                     return Err(format!("unknown `witchy test` option `{flag}`"));
                 }
@@ -121,6 +188,12 @@ impl TestOptions {
         if fixture_path.is_none() && backend.is_some() {
             return Err("`--backend` currently applies to `--fixtures` runs".to_string());
         }
+        if fixture_path.is_none() && seed.is_some() {
+            return Err("`--seed` requires `--fixtures` with a Rand provider".to_string());
+        }
+        if list && show_output {
+            return Err("`--list` cannot be combined with `--show-output`".to_string());
+        }
         let backend = backend.unwrap_or(if fixture_path.is_some() {
             TestBackend::Both
         } else {
@@ -132,6 +205,11 @@ impl TestOptions {
             grants,
             fixture_path,
             backend,
+            filter,
+            list,
+            show_output,
+            seed,
+            format: format.unwrap_or(TestOutputFormat::Human),
         })
     }
 }
@@ -143,6 +221,8 @@ struct TestRunPolicy<'a> {
     grants: &'a TestGrants,
     fixture_plan: Option<&'a FixturePlan>,
     backend: TestBackend,
+    filter: Option<&'a str>,
+    list: bool,
 }
 
 /// Rewrite the placeholder call `witchy_test_target()` in a synthesized test-driver
@@ -394,9 +474,9 @@ fn same_fixture_evidence(left: &TestTranscript, right: &TestTranscript) -> bool 
         && same_result_kind
 }
 
-fn finish_fixture_outcome(outcome: FixtureBackendOutcome) -> Result<(), String> {
+fn finish_fixture_outcome(outcome: FixtureBackendOutcome) -> Result<Vec<String>, String> {
     if outcome.passed {
-        Ok(())
+        Ok(outcome.output)
     } else {
         Err(outcome
             .error
@@ -408,7 +488,7 @@ fn run_fixture_test(
     module: &ast::Module,
     plan: &FixturePlan,
     backend: TestBackend,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     match backend {
         TestBackend::Interpreter => {
             finish_fixture_outcome(run_interpreter_fixtures(module, plan)?)
@@ -434,6 +514,13 @@ fn run_fixture_test(
     }
 }
 
+#[derive(Default)]
+struct TestModuleResult {
+    passed: Vec<String>,
+    failed: Vec<TestFailure>,
+    output: std::collections::BTreeMap<String, Vec<String>>,
+}
+
 /// Discover and run the tests in an already-linked module (`stem` = the entry file's
 /// stem). Every function named `test_*` that the ENTRY file itself declares is
 /// invoked through a synthesized `main` on compiled WASM. Plain tests take no
@@ -448,7 +535,7 @@ fn run_tests_in_module(
     async_tests: &std::collections::HashSet<String>,
     gen_tests: &std::collections::HashSet<String>,
     policy: TestRunPolicy<'_>,
-) -> Result<(Vec<String>, Vec<TestFailure>), String> {
+) -> Result<TestModuleResult, String> {
     typeck::check(linked).map_err(|e| e.to_string())?;
     // BUG-177: a test run honors `mode opt` like `check`/`run` — a copy-cliff or a
     // missing ownership convention fails the run, it is not silently ignored.
@@ -477,9 +564,18 @@ fn run_tests_in_module(
             _ => None,
         })
         .collect();
-    let mut passed = Vec::new();
-    let mut failed = Vec::new();
+    let mut result = TestModuleResult::default();
     for (test, is_async, is_gen, params) in tests {
+        if policy
+            .filter
+            .is_some_and(|filter| !test.contains(filter))
+        {
+            continue;
+        }
+        if policy.list {
+            result.passed.push(test);
+            continue;
+        }
         // BUG-184: an async/gen test's body does NOT run when the function is merely
         // CALLED — calling an `async fn` yields a `Task` and a `gen fn` yields an
         // iterator, both discarded, so a `fail_with` inside never fires and the test
@@ -489,14 +585,14 @@ fn run_tests_in_module(
         // than running to completion, so it cannot be a test; report it as a failure
         // rather than a silent pass.
         if is_gen {
-            failed.push((
+            result.failed.push((
                 test,
                 "a `gen fn` cannot be run as a test — it yields a sequence instead of running to completion".to_string(),
             ));
             continue;
         }
         if let Err(e) = validate_integration_test_params(&test, &params, policy) {
-            failed.push((test, e));
+            result.failed.push((test, e));
             continue;
         }
         // Synthesize a `main` (replacing any real one) that runs the test, and run it.
@@ -551,22 +647,25 @@ fn run_tests_in_module(
                 true,
                 witchy_confinement::EnforcementMode::Disabled,
             )
-            .map(|_| ())
+            .map(|(output, _)| output)
         } else {
             match codegen::compile_module_binary(&m) {
                 codegen::LoweringOutcome::Lowered(bytes) => {
-                    run_wasm_test_bytes(&bytes).map(|_| ())
+                    run_wasm_test_bytes(&bytes)
                 }
                 codegen::LoweringOutcome::Unsupported(reason) => Err(reason.to_string()),
                 codegen::LoweringOutcome::Rejected(error) => Err(error.to_string()),
             }
         };
         match outcome {
-            Ok(()) => passed.push(test),
-            Err(msg) => failed.push((test, msg)),
+            Ok(output) => {
+                result.output.insert(test.clone(), output);
+                result.passed.push(test);
+            }
+            Err(msg) => result.failed.push((test, msg)),
         }
     }
-    Ok((passed, failed))
+    Ok(result)
 }
 
 /// Link `path` and run its own tests — the single-file convenience the test suite
@@ -577,7 +676,7 @@ pub(crate) fn run_tests_in_file(path: &str) -> Result<(Vec<String>, Vec<TestFail
     let (linked, stem) = link_file_with_mode(path, linker::LinkMode::Test)?;
     let (async_tests, gen_tests) = raw_test_shapes(path);
     let grants = TestGrants::default();
-    run_tests_in_module(
+    let result = run_tests_in_module(
         &linked,
         &stem,
         &async_tests,
@@ -588,8 +687,11 @@ pub(crate) fn run_tests_in_file(path: &str) -> Result<(Vec<String>, Vec<TestFail
             grants: &grants,
             fixture_plan: None,
             backend: TestBackend::Wasm,
+            filter: None,
+            list: false,
         },
-    )
+    )?;
+    Ok((result.passed, result.failed))
 }
 
 #[cfg(test)]
@@ -788,7 +890,7 @@ mod test_mode_link_tests {
             console: Some(ConsoleFixture::default()),
             ..FixturePlan::default()
         };
-        let (passed, failed) = run_tests_in_module(
+        let result = run_tests_in_module(
             &linked,
             &stem,
             &async_tests,
@@ -799,11 +901,13 @@ mod test_mode_link_tests {
                 grants: &grants,
                 fixture_plan: Some(&plan),
                 backend: TestBackend::Both,
+                filter: None,
+                list: false,
             },
         )
         .expect("fixture parity run");
-        assert!(failed.is_empty(), "{failed:?}");
-        assert_eq!(passed, vec!["suite.test_console".to_string()]);
+        assert!(result.failed.is_empty(), "{:?}", result.failed);
+        assert_eq!(result.passed, vec!["suite.test_console".to_string()]);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -935,7 +1039,7 @@ fn collect_resolved_dependency_roots(
 /// report, and return whether everything passed.
 pub(crate) fn run_tests(options: &TestOptions) -> Result<bool, String> {
     let path = &options.path;
-    let fixture_plan = options
+    let mut fixture_plan = options
         .fixture_path
         .as_ref()
         .map(|fixture_path| {
@@ -953,6 +1057,18 @@ pub(crate) fn run_tests(options: &TestOptions) -> Result<bool, String> {
             })
         })
         .transpose()?;
+    if let Some(seed) = options.seed {
+        let plan = fixture_plan
+            .as_mut()
+            .expect("option parsing requires a fixture plan for --seed");
+        let rand = plan
+            .rand
+            .as_mut()
+            .ok_or_else(|| "`--seed` requires the fixture plan to declare `rand`".to_string())?;
+        rand.seed = Some(witchy_testkit::U64Text::new(seed));
+        plan.validate()
+            .map_err(|error| format!("fixture plan is invalid after applying --seed: {error}"))?;
+    }
     let mut files: Vec<String> = Vec::new();
     let meta = std::fs::metadata(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
     let ownership = TestPackageOwnership::resolve(path)?;
@@ -982,6 +1098,7 @@ pub(crate) fn run_tests(options: &TestOptions) -> Result<bool, String> {
     }
     let mut total_pass = 0usize;
     let mut total_fail = 0usize;
+    let mut json_tests = Vec::new();
     for file in &files {
         // Distinguish a LINK failure from a post-link (compile) failure (BUG-120).
         // In a directory sweep, a file that can't LINK standalone — a module of a
@@ -993,7 +1110,17 @@ pub(crate) fn run_tests(options: &TestOptions) -> Result<bool, String> {
         let (linked, stem) = match link_file_with_mode(file, linker::LinkMode::Test) {
             Ok(v) => v,
             Err(e) if meta.is_dir() => {
-                eprintln!("  skipped {file}: {e}");
+                if options.format == TestOutputFormat::Json {
+                    json_tests.push(serde_json::json!({
+                        "file": file,
+                        "name": serde_json::Value::Null,
+                        "status": "skipped",
+                        "error": e,
+                        "output": [],
+                    }));
+                } else {
+                    eprintln!("  skipped {file}: {e}");
+                }
                 continue;
             }
             Err(e) => return Err(e),
@@ -1008,8 +1135,10 @@ pub(crate) fn run_tests(options: &TestOptions) -> Result<bool, String> {
             grants,
             fixture_plan: fixture_plan.as_ref(),
             backend: options.backend,
+            filter: options.filter.as_deref(),
+            list: options.list,
         };
-        let (passed, failed) = match run_tests_in_module(
+        let result = match run_tests_in_module(
             &linked,
             &stem,
             &async_tests,
@@ -1020,28 +1149,90 @@ pub(crate) fn run_tests(options: &TestOptions) -> Result<bool, String> {
             Err(e) => {
                 // Linked OK but broken (a type error or a `mode opt` violation): count
                 // it as a failure so the run exits non-zero (BUG-120).
-                println!("running test(s) in {file}");
-                println!("test {file} ... FAILED to compile: {e}");
+                if options.format == TestOutputFormat::Json {
+                    json_tests.push(serde_json::json!({
+                        "file": file,
+                        "name": serde_json::Value::Null,
+                        "status": "failed",
+                        "error": e,
+                        "output": [],
+                    }));
+                } else {
+                    println!("running test(s) in {file}");
+                    println!("test {file} ... FAILED to compile: {e}");
+                }
                 total_fail += 1;
                 continue;
             }
         };
-        if passed.is_empty() && failed.is_empty() {
+        if result.passed.is_empty() && result.failed.is_empty() {
             continue;
         }
-        println!("running {} test(s) in {file}", passed.len() + failed.len());
-        for name in &passed {
-            println!("test {name} ... ok");
+        if options.format == TestOutputFormat::Human && !options.list {
+            println!(
+                "running {} test(s) in {file}",
+                result.passed.len() + result.failed.len()
+            );
         }
-        for (name, msg) in &failed {
-            println!("test {name} ... FAILED: {msg}");
+        for name in &result.passed {
+            let output = result.output.get(name).cloned().unwrap_or_default();
+            if options.format == TestOutputFormat::Json {
+                json_tests.push(serde_json::json!({
+                    "file": file,
+                    "name": name,
+                    "status": if options.list { "listed" } else { "passed" },
+                    "error": serde_json::Value::Null,
+                    "output": output,
+                }));
+            } else if options.list {
+                println!("{name}");
+            } else {
+                println!("test {name} ... ok");
+                if options.show_output {
+                    for line in output {
+                        println!("  {line}");
+                    }
+                }
+            }
         }
-        total_pass += passed.len();
-        total_fail += failed.len();
+        for (name, msg) in &result.failed {
+            if options.format == TestOutputFormat::Json {
+                json_tests.push(serde_json::json!({
+                    "file": file,
+                    "name": name,
+                    "status": "failed",
+                    "error": msg,
+                    "output": result.output.get(name).cloned().unwrap_or_default(),
+                }));
+            } else {
+                println!("test {name} ... FAILED: {msg}");
+            }
+        }
+        total_pass += result.passed.len();
+        total_fail += result.failed.len();
     }
-    println!(
-        "\ntest result: {}. {total_pass} passed; {total_fail} failed",
-        if total_fail == 0 { "ok" } else { "FAILED" }
-    );
+    if options.format == TestOutputFormat::Json {
+        let document = serde_json::json!({
+            "schema": 1,
+            "tests": json_tests,
+            "summary": {
+                "status": if total_fail == 0 { "passed" } else { "failed" },
+                "passed": total_pass,
+                "failed": total_fail,
+            },
+        });
+        println!(
+            "{}",
+            serde_json::to_string(&document)
+                .map_err(|error| format!("cannot serialize test result: {error}"))?
+        );
+    } else if options.list {
+        println!("\n{total_pass} test(s)");
+    } else {
+        println!(
+            "\ntest result: {}. {total_pass} passed; {total_fail} failed",
+            if total_fail == 0 { "ok" } else { "FAILED" }
+        );
+    }
     Ok(total_fail == 0)
 }

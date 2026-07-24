@@ -21,7 +21,7 @@ USAGE:
     witchy check    <file.witchy>                 check + verify compiled acceptance without running
     witchy parity   <file.witchy>                 run on both backends, confirm identical output
                                                   (a verify-the-compiler tool, not a workflow step)
-    witchy test [--fixtures <plan.json>] [--backend interpreter|wasm|both] [--integration] [--dir <root>]... [--net <addr>]... <file.witchy|dir>
+    witchy test [--fixtures <plan.json>] [--backend interpreter|wasm|both] [--filter <text>] [--list] [--show-output] [--seed <u64>] [--format human|json] [--integration] [--dir <root>]... [--net <addr>]... <file.witchy|dir>
                                                   run zero-authority fixture tests on one or both backends, or explicit integration tests
     witchy sandbox [--confine <best-effort|required>] [--dir <root>] [--net <addr>]... [--fetch <origin>]... <file.witchy> [args...]
                                                   compile and run in a VM granted exactly its footprint
