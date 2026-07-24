@@ -87,6 +87,8 @@ pub enum DirValue {
         root: String,
         files: Rc<BTreeMap<String, String>>,
     },
+    #[cfg(feature = "test-fixtures")]
+    Fixture(HostHandle),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -96,6 +98,8 @@ pub enum FileValue {
         path: String,
         files: Rc<BTreeMap<String, String>>,
     },
+    #[cfg(feature = "test-fixtures")]
+    Fixture(HostHandle),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -958,6 +962,12 @@ impl Interpreter {
                 .env
                 .map(|_| Value::Cap(Capability::Env(None)))
                 .ok_or_else(|| missing("Env")),
+            Some(Type::Named(name, _)) if name == "Dir" => roots
+                .filesystem
+                .map(|handle| {
+                    Value::Dir(DirValue::Fixture(handle), String::new())
+                })
+                .ok_or_else(|| missing("Dir")),
             Some(Type::Named(name, _)) if name == "Net" => Err(RuntimeError {
                 message:
                     "raw `Net` is integration-only and cannot be provided by deterministic fixtures"
@@ -966,7 +976,7 @@ impl Interpreter {
             Some(Type::Named(name, _))
                 if matches!(
                     name.as_str(),
-                    "Dir" | "File" | "Fetch" | "Exec" | "Secret" | "SecretStore" | "Vm"
+                    "File" | "Fetch" | "Exec" | "Secret" | "SecretStore" | "Vm"
                 ) =>
             {
                 Err(RuntimeError {

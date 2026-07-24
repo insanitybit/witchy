@@ -86,6 +86,10 @@ pub(super) fn dir_child_value(dir: &DirValue, name: &str) -> Result<DirValue, Ru
         DirValue::Mock { root, files } => {
             Ok(DirValue::Mock { root: mock_join(root, name)?, files: files.clone() })
         }
+        #[cfg(feature = "test-fixtures")]
+        DirValue::Fixture(_) => {
+            err("internal error: fixture Dir bypassed fixture dispatch")
+        }
     }
 }
 
@@ -97,6 +101,10 @@ pub(super) fn dir_file_value(dir: &DirValue, rel: &str, write: bool) -> Result<F
             .map_err(|error| RuntimeError { message: error.0 }),
         DirValue::Mock { root, files } => {
             Ok(FileValue::Mock { path: mock_join(root, rel)?, files: files.clone() })
+        }
+        #[cfg(feature = "test-fixtures")]
+        DirValue::Fixture(_) => {
+            err("internal error: fixture Dir bypassed fixture dispatch")
         }
     }
 }
@@ -115,6 +123,10 @@ pub(super) fn read_file_value(file: &FileValue) -> Result<String, RuntimeError> 
             .ok_or_else(|| RuntimeError {
                 message: format!("read failed for mock Dir `{path}`: no such file"),
             }),
+        #[cfg(feature = "test-fixtures")]
+        FileValue::Fixture(_) => {
+            err("internal error: fixture File bypassed fixture dispatch")
+        }
     }
 }
 
@@ -129,6 +141,10 @@ pub(super) fn write_file_value(file: &FileValue, contents: &str) -> Result<(), R
         FileValue::Mock { path, .. } => err(format!(
             "write failed for mock Dir `{path}`: mock directories are read-only"
         )),
+        #[cfg(feature = "test-fixtures")]
+        FileValue::Fixture(_) => {
+            err("internal error: fixture File bypassed fixture dispatch")
+        }
     }
 }
 

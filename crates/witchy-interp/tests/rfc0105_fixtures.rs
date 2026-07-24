@@ -7,8 +7,9 @@ use witchy_interp::interpreter::{
 };
 use witchy_syntax::parser::parse_module;
 use witchy_testkit::{
-    ClockFixture, ConsoleFixture, EnvFixture, Expectations, FixtureFamily,
-    FixturePlan, RandFixture, TestResult, U64Text,
+    ClockFixture, ConsoleFixture, EnvFixture, Expectations, FilesystemEntry,
+    FilesystemFixture, FixtureFamily, FixturePlan, RandFixture, TestResult,
+    U64Text,
 };
 
 fn basic_plan() -> FixturePlan {
@@ -113,4 +114,50 @@ fn undeclared_root_fails_before_ambient_authority_is_used() {
         outcome.transcript.result,
         TestResult::Failed { .. }
     ));
+}
+
+#[test]
+fn filesystem_fixture_is_shared_across_dir_and_file_handles() {
+    let module = parse_module(
+        "fn main(console: Console, dir: Dir[Read, Write]):\n    console.print(dir.read(\"input.txt\"))\n    let output = dir.write_file(\"output.txt\")\n    output.write(\"created\")\n    console.print(dir.read(\"output.txt\"))\n    dir.append(\"output.txt\", \"!\")\n    console.print(dir.read(\"output.txt\"))\n",
+    )
+    .expect("parse filesystem fixture program");
+    let outcome = run_module_fixtures(
+        module,
+        FixturePlan {
+            version: 1,
+            console: Some(ConsoleFixture::default()),
+            filesystem: Some(FilesystemFixture {
+                entries: BTreeMap::from([(
+                    "input.txt".to_owned(),
+                    FilesystemEntry::File {
+                        hex: "68656c6c6f".to_owned(),
+                    },
+                )]),
+                rights: vec!["Read".to_owned(), "Write".to_owned()],
+                entry_policy: None,
+                script: Vec::new(),
+            }),
+            expectations: Expectations::default(),
+            ..FixturePlan::default()
+        },
+    )
+    .expect("run filesystem fixture");
+    match outcome.result {
+        FixtureProgramResult::Passed { output, .. } => {
+            assert_eq!(output, ["hello", "created", "created!"]);
+        }
+        FixtureProgramResult::Failed { error, .. } => {
+            panic!("filesystem fixture failed: {error}")
+        }
+    }
+    assert!(
+        outcome
+            .transcript
+            .events
+            .iter()
+            .filter(|event| event.family == FixtureFamily::Filesystem)
+            .count()
+            >= 7
+    );
 }

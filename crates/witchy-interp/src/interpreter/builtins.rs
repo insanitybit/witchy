@@ -2059,6 +2059,21 @@ impl Interpreter {
             },
             // Filesystem capability (cap-std style): attenuate to a subdirectory.
             "subtree" => match args {
+                #[cfg(feature = "test-fixtures")]
+                [Value::Dir(DirValue::Fixture(handle), _), Value::Str(name)] => {
+                    match self.invoke_fixture(HostRequest::DirSubdir {
+                        dir: *handle,
+                        name: name.as_str().to_owned(),
+                    })? {
+                        HostResponse::Handle(handle) => Ok(Some(Value::Dir(
+                            DirValue::Fixture(handle),
+                            String::new(),
+                        ))),
+                        other => err(format!(
+                            "internal error: Dir fixture returned {other:?}"
+                        )),
+                    }
+                }
                 // A subtree inherits the parent's entry policy (refinement is monotone).
                 // Opening a sub-directory is a directory traversal (RFC-0011 `kind`): a
                 // `files()` policy forbids it, an `ext`/empty policy does not.
@@ -2073,6 +2088,20 @@ impl Interpreter {
             // RFC-0012 navigation: a `Dir` opens a confined `File`. `read_file`
             // requires the file to exist; `write_file` allows a not-yet-existing target.
             "read_file" => match args {
+                #[cfg(feature = "test-fixtures")]
+                [Value::Dir(DirValue::Fixture(handle), _), Value::Str(rel)] => {
+                    match self.invoke_fixture(HostRequest::DirOpen {
+                        dir: *handle,
+                        path: rel.as_str().to_owned(),
+                    })? {
+                        HostResponse::Handle(handle) => {
+                            Ok(Some(Value::File(FileValue::Fixture(handle))))
+                        }
+                        other => err(format!(
+                            "internal error: Dir fixture returned {other:?}"
+                        )),
+                    }
+                }
                 [Value::Dir(base, pol), Value::Str(rel)] => {
                     if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
@@ -2082,6 +2111,20 @@ impl Interpreter {
                 _ => err("read_file expects a Dir and a relative path"),
             },
             "write_file" => match args {
+                #[cfg(feature = "test-fixtures")]
+                [Value::Dir(DirValue::Fixture(handle), _), Value::Str(rel)] => {
+                    match self.invoke_fixture(HostRequest::DirCreate {
+                        dir: *handle,
+                        path: rel.as_str().to_owned(),
+                    })? {
+                        HostResponse::Handle(handle) => {
+                            Ok(Some(Value::File(FileValue::Fixture(handle))))
+                        }
+                        other => err(format!(
+                            "internal error: Dir fixture returned {other:?}"
+                        )),
+                    }
+                }
                 [Value::Dir(base, pol), Value::Str(rel)] => {
                     if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
@@ -2133,6 +2176,37 @@ impl Interpreter {
             },
             // Read a file relative to a Dir capability (confined to its subtree).
             "read" => match args {
+                #[cfg(feature = "test-fixtures")]
+                [Value::Dir(DirValue::Fixture(handle), _), Value::Str(rel)] => {
+                    match self.invoke_fixture(HostRequest::DirRead {
+                        dir: *handle,
+                        path: rel.as_str().to_owned(),
+                    })? {
+                        HostResponse::Bytes(bytes) => String::from_utf8(bytes)
+                            .map(Value::str)
+                            .map(Some)
+                            .map_err(|error| RuntimeError {
+                                message: format!("read returned invalid UTF-8: {error}"),
+                            }),
+                        other => err(format!(
+                            "internal error: Dir fixture returned {other:?}"
+                        )),
+                    }
+                }
+                #[cfg(feature = "test-fixtures")]
+                [Value::File(FileValue::Fixture(handle))] => {
+                    match self.invoke_fixture(HostRequest::FileRead { file: *handle })? {
+                        HostResponse::Bytes(bytes) => String::from_utf8(bytes)
+                            .map(Value::str)
+                            .map(Some)
+                            .map_err(|error| RuntimeError {
+                                message: format!("read returned invalid UTF-8: {error}"),
+                            }),
+                        other => err(format!(
+                            "internal error: File fixture returned {other:?}"
+                        )),
+                    }
+                }
                 [Value::Dir(base, pol), Value::Str(rel)] => {
                     if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
@@ -2147,6 +2221,47 @@ impl Interpreter {
             // (the target may not exist yet, so confinement is checked via its
             // parent directory).
             "write" => match args {
+                #[cfg(feature = "test-fixtures")]
+                [
+                    Value::Dir(DirValue::Fixture(handle), _),
+                    Value::Str(rel),
+                    Value::Str(contents),
+                ] => {
+                    match self.invoke_fixture(HostRequest::DirWrite {
+                        dir: *handle,
+                        path: rel.as_str().to_owned(),
+                        bytes: contents.as_bytes().to_vec(),
+                    })? {
+                        HostResponse::Count(count) if count == contents.len() => {
+                            Ok(Some(Value::Unit))
+                        }
+                        HostResponse::Count(count) => err(format!(
+                            "partial fixture write: wrote {count} of {} bytes",
+                            contents.len()
+                        )),
+                        other => err(format!(
+                            "internal error: Dir fixture returned {other:?}"
+                        )),
+                    }
+                }
+                #[cfg(feature = "test-fixtures")]
+                [Value::File(FileValue::Fixture(handle)), Value::Str(contents)] => {
+                    match self.invoke_fixture(HostRequest::FileWrite {
+                        file: *handle,
+                        bytes: contents.as_bytes().to_vec(),
+                    })? {
+                        HostResponse::Count(count) if count == contents.len() => {
+                            Ok(Some(Value::Unit))
+                        }
+                        HostResponse::Count(count) => err(format!(
+                            "partial fixture write: wrote {count} of {} bytes",
+                            contents.len()
+                        )),
+                        other => err(format!(
+                            "internal error: File fixture returned {other:?}"
+                        )),
+                    }
+                }
                 [Value::Dir(base, pol), Value::Str(rel), Value::Str(contents)] => {
                     if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
@@ -2164,6 +2279,29 @@ impl Interpreter {
             // Append to a file (creating it if absent) — `write`'s confinement
             // and rights, without clobbering existing contents.
             "append" => match args {
+                #[cfg(feature = "test-fixtures")]
+                [
+                    Value::Dir(DirValue::Fixture(handle), _),
+                    Value::Str(rel),
+                    Value::Str(contents),
+                ] => {
+                    match self.invoke_fixture(HostRequest::DirAppend {
+                        dir: *handle,
+                        path: rel.as_str().to_owned(),
+                        bytes: contents.as_bytes().to_vec(),
+                    })? {
+                        HostResponse::Count(count) if count == contents.len() => {
+                            Ok(Some(Value::Unit))
+                        }
+                        HostResponse::Count(count) => err(format!(
+                            "partial fixture append: wrote {count} of {} bytes",
+                            contents.len()
+                        )),
+                        other => err(format!(
+                            "internal error: Dir fixture returned {other:?}"
+                        )),
+                    }
+                }
                 [Value::Dir(base, pol), Value::Str(rel), Value::Str(contents)] => {
                     if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
                         return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
@@ -2181,6 +2319,10 @@ impl Interpreter {
                         FileValue::Mock { path, .. } => err(format!(
                             "append failed for mock Dir `{path}`: mock directories are read-only"
                         )),
+                        #[cfg(feature = "test-fixtures")]
+                        FileValue::Fixture(_) => err(
+                            "internal error: fixture File bypassed fixture dispatch",
+                        ),
                     }
                 }
                 _ => err("append expects a Dir, a relative path, and contents"),
@@ -2189,12 +2331,26 @@ impl Interpreter {
             // (never errors), so a path outside the subtree, or a missing file,
             // simply reads as `false`. Lets `read` callers avoid a crash.
             "exists" => match args {
+                #[cfg(feature = "test-fixtures")]
+                [Value::Dir(DirValue::Fixture(handle), _), Value::Str(rel)] => {
+                    match self.invoke_fixture(HostRequest::DirExists {
+                        dir: *handle,
+                        path: rel.as_str().to_owned(),
+                    })? {
+                        HostResponse::Bool(value) => Ok(Some(Value::Bool(value))),
+                        other => err(format!(
+                            "internal error: Dir fixture returned {other:?}"
+                        )),
+                    }
+                }
                 [Value::Dir(base, _), Value::Str(rel)] => {
                     let ok = match base {
                         DirValue::Fs(base) => base.exists(rel).unwrap_or(false),
                         DirValue::Mock { root, files } => {
                             mock_join(root, rel).map(|path| mock_exists(files, &path)).unwrap_or(false)
                         }
+                        #[cfg(feature = "test-fixtures")]
+                        DirValue::Fixture(_) => false,
                     };
                     Ok(Some(Value::Bool(ok)))
                 }
@@ -2204,12 +2360,26 @@ impl Interpreter {
             // total (a path outside the subtree or a non-dir reads as `false`), so
             // a caller can walk `src/**` without tripping over a file.
             "is_dir" => match args {
+                #[cfg(feature = "test-fixtures")]
+                [Value::Dir(DirValue::Fixture(handle), _), Value::Str(rel)] => {
+                    match self.invoke_fixture(HostRequest::DirIsDir {
+                        dir: *handle,
+                        path: rel.as_str().to_owned(),
+                    })? {
+                        HostResponse::Bool(value) => Ok(Some(Value::Bool(value))),
+                        other => err(format!(
+                            "internal error: Dir fixture returned {other:?}"
+                        )),
+                    }
+                }
                 [Value::Dir(base, _), Value::Str(rel)] => {
                     let ok = match base {
                         DirValue::Fs(base) => base.is_dir(rel).unwrap_or(false),
                         DirValue::Mock { root, files } => {
                             mock_join(root, rel).map(|path| mock_is_dir(files, &path)).unwrap_or(false)
                         }
+                        #[cfg(feature = "test-fixtures")]
+                        DirValue::Fixture(_) => false,
                     };
                     Ok(Some(Value::Bool(ok)))
                 }
@@ -2218,6 +2388,17 @@ impl Interpreter {
             // List the immediate entries of the Dir capability's own directory, as
             // sorted names (deterministic — `read_dir` order is OS-dependent).
             "list" => match args {
+                #[cfg(feature = "test-fixtures")]
+                [Value::Dir(DirValue::Fixture(handle), _)] => {
+                    match self.invoke_fixture(HostRequest::DirList { dir: *handle })? {
+                        HostResponse::Strings(names) => Ok(Some(Value::list(
+                            names.into_iter().map(Value::str).collect(),
+                        ))),
+                        other => err(format!(
+                            "internal error: Dir fixture returned {other:?}"
+                        )),
+                    }
+                }
                 [Value::Dir(base, _)] => {
                     let names: Vec<String> = match base {
                         DirValue::Fs(base) => base.entries().map_err(|error| RuntimeError {
@@ -2227,6 +2408,10 @@ impl Interpreter {
                             ),
                         })?,
                         DirValue::Mock { root, files } => mock_list(files, root)?,
+                        #[cfg(feature = "test-fixtures")]
+                        DirValue::Fixture(_) => {
+                            return err("internal error: fixture Dir bypassed fixture dispatch");
+                        }
                     };
                     Ok(Some(Value::list(names.into_iter().map(Value::str).collect())))
                 }
@@ -2236,6 +2421,18 @@ impl Interpreter {
             // like `write` (idempotent — succeeds if it already exists). Creating a
             // directory is a directory op (RFC-0011 `kind`): a `files()` policy forbids it.
             "make_dir" => match args {
+                #[cfg(feature = "test-fixtures")]
+                [Value::Dir(DirValue::Fixture(handle), _), Value::Str(name)] => {
+                    match self.invoke_fixture(HostRequest::DirMakeDir {
+                        dir: *handle,
+                        path: name.as_str().to_owned(),
+                    })? {
+                        HostResponse::Unit => Ok(Some(Value::Unit)),
+                        other => err(format!(
+                            "internal error: Dir fixture returned {other:?}"
+                        )),
+                    }
+                }
                 [Value::Dir(base, pol), Value::Str(name)] => {
                     if !witchy_caps::capabilities::dir_admits(pol, name, true) {
                         return err(format!("`{name}` is not permitted by this Dir capability's entry policy"));
@@ -2255,6 +2452,10 @@ impl Interpreter {
                             let path = mock_join(root, name)?;
                             err(format!("make_dir failed for mock Dir `{path}`: mock directories are read-only"))
                         }
+                        #[cfg(feature = "test-fixtures")]
+                        DirValue::Fixture(_) => err(
+                            "internal error: fixture Dir bypassed fixture dispatch",
+                        ),
                     }
                 }
                 _ => err("make_dir expects a Dir and a name"),
@@ -2623,6 +2824,26 @@ impl Interpreter {
                     .map_err(|error| RuntimeError {
                         message: format!("fetch.only: {error}"),
                     }),
+                #[cfg(feature = "test-fixtures")]
+                [Value::Dir(DirValue::Fixture(handle), _), Value::Ctor { fields, .. }]
+                    if fields.len() == 1 =>
+                {
+                    let Value::Str(refine) = &fields[0] else {
+                        return err("only expects a DirPolicy");
+                    };
+                    match self.invoke_fixture(HostRequest::DirOnly {
+                        dir: *handle,
+                        refine: refine.as_str().to_owned(),
+                    })? {
+                        HostResponse::Handle(handle) => Ok(Some(Value::Dir(
+                            DirValue::Fixture(handle),
+                            refine.as_str().to_owned(),
+                        ))),
+                        other => err(format!(
+                            "internal error: Dir fixture returned {other:?}"
+                        )),
+                    }
+                }
                 [Value::Net(allow), Value::Ctor { fields, .. }] if fields.len() == 1 => {
                     let Value::Str(addr) = &fields[0] else {
                         return err("only expects a NetPolicy");
