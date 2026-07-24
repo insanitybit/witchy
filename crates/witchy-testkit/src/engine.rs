@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, VecDeque};
 
+use crate::basic::BasicProviderState;
 use crate::{
     Expectations, FixtureErrorCode, FixtureFailure, FixtureFamily, FixtureOutcome, FixturePlan,
     FixtureStep, FixtureValue, PlanValidationError, SourceLocation, TEST_TRANSCRIPT_VERSION,
@@ -40,12 +41,14 @@ pub struct FixtureSession {
     stderr: Vec<String>,
     seed: Option<U64Text>,
     max_events: usize,
+    pub(crate) basic: BasicProviderState,
 }
 
 impl FixtureSession {
     pub fn new(mut plan: FixturePlan) -> Result<Self, PlanValidationError> {
         let limits = crate::PlanValidationLimits::default();
         plan.validate_with(&limits)?;
+        let basic = BasicProviderState::new(&plan);
 
         let mut scripts = BTreeMap::new();
         macro_rules! take_script {
@@ -78,6 +81,7 @@ impl FixtureSession {
             stderr: Vec::new(),
             seed,
             max_events: limits.max_script_steps,
+            basic,
         })
     }
 
@@ -218,7 +222,11 @@ impl FixtureSession {
         None
     }
 
-    fn record_failure(
+    pub(crate) fn has_script(&self, family: FixtureFamily) -> bool {
+        self.scripts.get(&family).is_some_and(|steps| !steps.is_empty())
+    }
+
+    pub(crate) fn record_failure(
         &mut self,
         call: FixtureCall,
         code: FixtureErrorCode,
@@ -235,7 +243,11 @@ impl FixtureSession {
         )
     }
 
-    fn record(&mut self, call: FixtureCall, outcome: FixtureOutcome) -> FixtureOutcome {
+    pub(crate) fn record(
+        &mut self,
+        call: FixtureCall,
+        outcome: FixtureOutcome,
+    ) -> FixtureOutcome {
         let count = self
             .calls
             .entry((call.family, call.operation.clone()))

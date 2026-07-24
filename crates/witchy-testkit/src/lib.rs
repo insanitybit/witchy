@@ -6,11 +6,13 @@
 
 #![deny(unsafe_code)]
 
+mod basic;
 mod engine;
 mod json;
 mod model;
 mod validate;
 
+pub use basic::{FixtureHandle, ProviderResult};
 pub use engine::{FixtureCall, FixtureSession};
 pub use json::{PlanDecodeError, canonical_plan_json, parse_fixture_plan};
 pub use model::*;
